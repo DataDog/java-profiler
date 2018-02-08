@@ -165,8 +165,8 @@ Metric
     const std::string _name,
     const Numeric     _number,
     const Type        _type,
-    const double      _rate = 1.0,
-    const Tags&       _tags = Tags()
+    const double      _rate     = 1.0,
+    const Tags&       _tags     = Tags()
 )
 noexcept
 {
@@ -292,13 +292,13 @@ Event
 (
     const std::string _title,
     const std::string _text,
-    const Numeric     _timestamp = 0,
-    const std::string _hostname = "",
-    const std::string _aggregation_key = "",
-    const Priority    _priority = Priority::Normal,
-    const std::string _source_type_name = "",
-    const Alert       _alert_type = Alert::Info,
-    const Tags&       _tags = Tags()
+    const Numeric     _timestamp         = 0,
+    const std::string _hostname          = "",
+    const std::string _aggregation_key   = "",
+    const Priority    _priority          = Priority::Normal,
+    const std::string _source_type_name  = "",
+    const Alert       _alert_type        = Alert::Info,
+    const Tags&       _tags              = Tags()
 )
 noexcept
 {
@@ -374,9 +374,9 @@ ServiceCheck
 (
     const std::string _title,
     const Status      _status,
-    const Numeric     _timestamp = 0,
-    const std::string _hostname = "",
-    const Tags&       _tags = Tags()
+    const Numeric     _timestamp  = 0,
+    const std::string _hostname   = "",
+    const Tags&       _tags       = Tags()
 )
 noexcept
 {
