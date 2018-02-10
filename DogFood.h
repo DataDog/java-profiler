@@ -51,37 +51,61 @@ namespace DogFood {
 
 ////////////////////////////////////////////////////////////////
 // UDP Send
+//
 //     Linux and Apple (POSIX-ish)
+//
 #if defined(__linux__) || defined(__APPLE__)
     #include <arpa/inet.h>
     #include <sys/socket.h>
     #include <unistd.h>
 
-    #define UDP_SEND_DATAGRAM(data,size) do {               \
-        struct sockaddr_in client;                          \
-        int fd = socket(AF_INET, SOCK_DGRAM, 0);            \
-        if (fd == -1) return false;                         \
-        std::memset(&client, 0, sizeof(client));            \
-        client.sin_family = AF_INET;                        \
-        client.sin_port = htons(DOGSTATSD_PORT);            \
-        client.sin_addr.s_addr = inet_addr(DOGSTATSD_HOST); \
-        if (sendto(fd,data,size,0,(struct sockaddr*)&client,\
-        sizeof(client)) == -1) { close(fd); return false; } \
-        close(fd); } while (0)
-
-//     Microsoft Windows 
+    #define UDP_SEND_DATAGRAM(data,size)                       \
+        do {                                                   \
+            struct sockaddr_in client;                         \
+            int fd = socket(AF_INET, SOCK_DGRAM, 0);           \
+            if (fd == -1) return false;                        \
+            std::memset(&client, 0, sizeof(client));           \
+            client.sin_family = AF_INET;                       \
+            client.sin_port = htons(DOGSTATSD_PORT);           \
+            client.sin_addr.s_addr = inet_addr(DOGSTATSD_HOST);\
+            if(sendto(fd,data,size,0,(struct sockaddr*)&client,\
+            sizeof(client)) == -1){ close(fd); return false; } \
+            close(fd);                                         \
+        } while (0)
+//
+//     Microsoft Windows
+//
 #elif defined(_MSC_VER)
     #define UDP_SEND_DATAGRAM(data,size)\
         static_assert(false, "Microsoft not supported!");
 #else
+//
+//     OS Unknown
+//
     #error "Well, sorry for your weird OS..."
 #endif
 
 
-//     Send a c++ std::string
-#define DOGFOOD_SEND_STDSTRING(string)\
-    UDP_SEND_DATAGRAM(string.c_str(),string.length())
-
+////////////////////////////////////////////////////////////////
+// DogFood Send
+//
+//     UDP by default
+//
+#ifndef DOGFOOD_UNIT_TEST
+    #define DOGFOOD_SEND_STDSTRING(string)\
+        UDP_SEND_DATAGRAM(string.c_str(),string.length())
+//
+//     Mock to global variable for unit testing
+//
+#else
+    static std::string _udp_send_mock;
+    #define DOGFOOD_SEND_STDSTRING(string)                     \
+        do {                                                   \
+            _udp_send_mock.clear();                            \
+            _udp_send_mock.append(string);                     \
+            std::printf("%s\n",string.c_str());                \
+        } while (0)
+#endif
 ////////////////////////////////////////////////////////////////
 //                                                            //
 //         88888888888                                        //
