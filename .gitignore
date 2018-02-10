@@ -33,3 +33,6 @@
 
 # VS Code
 .vscode/
+
+# Mac OS
+*.DSYM/
