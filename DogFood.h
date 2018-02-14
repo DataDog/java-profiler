@@ -39,14 +39,22 @@ namespace DogFood {
 
 ////////////////////////////////////////////////////////////////
 // DogStatsD
+//
 //     Configuration for communicating with the DogStatsD agent
 //     Allow overriding the defaults by using `-D` compiler
-//     flag. 
+//     flag.
+//     
+//     Override the default port
+//         E.G. - g++ (...) -DDOGSTATSD_PORT=12345
+//
+//     Override the default host
+//         E.G. - g++ (...) -DDOGSTATSD_PORT="255.255.255.255"
+//
 #ifndef DOGSTATSD_HOST
-#define DOGSTATSD_HOST "127.0.0.1"
+    #define DOGSTATSD_HOST "127.0.0.1"
 #endif
 #ifndef DOGSTATSD_PORT
-#define DOGSTATSD_PORT 8125
+    #define DOGSTATSD_PORT 8125
 #endif
 
 ////////////////////////////////////////////////////////////////
@@ -76,8 +84,8 @@ namespace DogFood {
 //     Microsoft Windows
 //
 #elif defined(_MSC_VER)
-    #define UDP_SEND_DATAGRAM(data,size)\
-        static_assert(false, "Microsoft not supported!");
+    #define UDP_SEND_DATAGRAM(data,size)                       \
+        static_assert(false, "Microsoft not supported yet!");
 #else
 //
 //     OS Unknown
@@ -92,7 +100,7 @@ namespace DogFood {
 //     UDP by default
 //
 #ifndef DOGFOOD_UNIT_TEST
-    #define DOGFOOD_SEND_STDSTRING(string)\
+    #define DOGFOOD_SEND_STDSTRING(string)                     \
         UDP_SEND_DATAGRAM(string.c_str(),string.length())
 //
 //     Mock to global variable for unit testing
@@ -124,13 +132,17 @@ namespace DogFood {
 
 ////////////////////////////////////////////////////////////////
 // Tags
+//
 //     Use a map of string->string for storing 'Key'->'Value'
-//     pairs. If the 'Value' is empty, only the 'Key' is used.
+//     pairs. If the 'Value' is empty, only the 'Key' is used
+//
 using Tags = std::map<std::string, std::string>;
 
 ////////////////////////////////////////////////////////////////
 // ExtractTags
-//     - Return a string modeling the a Tags object
+//
+//     Return a string modeling the a Tags object
+//
 inline std::string ExtractTags(const Tags& _tags)
 {
     // The tags string to build up
@@ -140,7 +152,7 @@ inline std::string ExtractTags(const Tags& _tags)
     if (_tags.size() > 0) stream += "|#";
 
     ////////////////////////////////////////////////////////////
-    // Add each tags
+    // Add each tag
     for (const auto p : _tags)
     {
         // If the 'Key' is not empty
@@ -165,9 +177,11 @@ inline std::string ExtractTags(const Tags& _tags)
 
 ////////////////////////////////////////////////////////////////
 // ValidateMetricName
+//
 //     - Must not be empty or longer than 200 characters
 //     - Must begin with an alphanumeric
 //     - Must not contain '|', ':', or '@'
+//
 inline bool ValidateMetricName(const std::string& _name)
 {
     return
@@ -181,7 +195,9 @@ inline bool ValidateMetricName(const std::string& _name)
 
 ////////////////////////////////////////////////////////////////
 // ValidateSampleRate
-//     - Must be between 0.0 and 1.0 (inclusive)
+//
+//     Must be between 0.0 and 1.0 (inclusive)
+//
 inline bool ValidateSampleRate(const float _rate)
 {
     return
@@ -191,12 +207,16 @@ inline bool ValidateSampleRate(const float _rate)
 
 ////////////////////////////////////////////////////////////////
 // Type
+//
 //     The 'Type' of a DataDog 'Metric'
+//
 enum Type { Counter, Gauge, Timer, Histogram, Set };
 
 ////////////////////////////////////////////////////////////////
 // ValidateSampleRate
-//     - Must be between 0.0 and 1.0 (inclusive)
+//
+//     Must be between 0.0 and 1.0 (inclusive)
+//
 inline bool ValidateType(const Type& _type)
 {
     switch (_type)
@@ -214,7 +234,9 @@ inline bool ValidateType(const Type& _type)
 
 ////////////////////////////////////////////////////////////////
 // EscapeEventText
-//     - Insert line breaks with an escaped slash (\\n)
+//
+//     Insert line breaks with an escaped slash (\\n)
+//
 inline std::string EscapeEventText(const std::string& _text)
 {
     // String buffer
@@ -224,12 +246,23 @@ inline std::string EscapeEventText(const std::string& _text)
     for (const char c : _text)
     {
         // Replace newline literals with '\\n'
-        if (c == '\n') buffer.append("\\\\n");
+        if (c == '\n') buffer.append("\\\n");
         else           buffer.push_back(c);
     }
 
     // Return the escaped buffer
     return buffer;
+}
+
+////////////////////////////////////////////////////////////////
+// ValidatePayloadSize
+//
+//     - Must be less than 65,507 bytes (inclusive)
+//     - 65,507 = 65,535 − 8 (UDP header) − 20 (IP header)
+//
+inline bool ValidatePayloadSize(const std::string& _payload)
+{
+    return _payload.size() <= 65507;
 }
 
 ////////////////////////////////////////////////////////////////
@@ -247,31 +280,38 @@ inline std::string EscapeEventText(const std::string& _text)
 
 ////////////////////////////////////////////////////////////////
 // Format
+//
 //     'metric.name:value|type|@sample_rate|#tag1:value,tag2'
 //
 //     - metric.name
 //         A string with no colons, bars, or @ characters.
 //         See the metric naming policy.
+//
 //     - value
 //         An integer or float.
+//
 //     - type
 //         'c' for counter, 'g' for gauge, 'ms' for timer,
 //         'h' for histogram, 's' for set.
+//
 //     - @sample_rate
 //         (Optional)
 //             A float between 0 and 1, inclusive.
 //             Only works with counter, histogram,
 //             and timer metrics. Default is 1
 //             (i.e. sample 100% of the time).
+//
 //     - tags
 //         (Optional)
 //             A comma separated list of tags.
 //             Use colons for key/value tags, i.e. env:prod.
 //             The key device is reserved; Datadog drops a
 //             user-added tag like device:foobar.
+//
 
 ////////////////////////////////////////////////////////////////
 // Samples
+//
 //     # Increment the page.views counter
 //     'page.views:1|c'
 //
@@ -289,10 +329,13 @@ inline std::string EscapeEventText(const std::string& _text)
 //
 //     # Track active China users and use a sample rate
 //     'users.online:1|c|@0.5|#country:china'
+//
 
 ////////////////////////////////////////////////////////////////
 // Template
+//
 //     Numeric should be an integral or floating-point type
+//
 template <typename Numeric>
 typename std::enable_if<
     std::is_integral<Numeric>::value      ||
@@ -310,7 +353,7 @@ noexcept
 {
     ////////////////////////////////////////////////////////////
     // Declare the datagram stream
-    std::stringstream datagram;
+    std::string datagram;
 
     ////////////////////////////////////////////////////////////
     // Validate the name
@@ -318,41 +361,55 @@ noexcept
 
     ////////////////////////////////////////////////////////////
     // Verify the rate
+    //
     //     - Must be between 0.0 and 1.0 (inclusive)
+    //
     if (!ValidateSampleRate(_rate)) return false;
     
     ////////////////////////////////////////////////////////////
     // Add the name and the numeric to the datagram
-    // `metric.name:value|`
-    datagram << _name << ":" << _number << "|";
+    //
+    //     `metric.name:value|`
+    //
+    datagram += _name += ":" += std::to_string(_number) += "|";
 
     ////////////////////////////////////////////////////////////
     // Verify the type and append the datagram
-    // `c` or `g` or `ms` or `h` or `s`
+    //
+    //     `c` or `g` or `ms` or `h` or `s`
+    //
     switch (_type)
     {
-        case Type::Counter:   datagram << "c";  break;
-        case Type::Gauge:     datagram << "g";  break;
-        case Type::Timer:     datagram << "ms"; break;
-        case Type::Histogram: datagram << "h";  break;
-        case Type::Set:       datagram << "s";  break;
+        case Type::Counter:   datagram += "c";  break;
+        case Type::Gauge:     datagram += "g";  break;
+        case Type::Timer:     datagram += "ms"; break;
+        case Type::Histogram: datagram += "h";  break;
+        case Type::Set:       datagram += "s";  break;
         default:              return false;
     }
 
     ////////////////////////////////////////////////////////////
     // Add the rate to the datagram if present
-    // `|@sample_rate`
+    //
+    //     `|@sample_rate`
+    //
     if (_rate != 1.0)
-        datagram << "|@" << _rate;
+        datagram += "|@" += std::to_string(_rate);
 
     ////////////////////////////////////////////////////////////
     // Extract the tags string into the datagram if present
-    // `|#tag1:value,tag2`
-    datagram << ExtractTags(_tags);
+    //
+    //     `|#tag1:value,tag2`
+    //
+    datagram += ExtractTags(_tags);
+
+    ////////////////////////////////////////////////////////////
+    // Validate the payload size
+    if (!ValidatePayloadSize(datagram.tellp())) return false;
 
     ////////////////////////////////////////////////////////////
     // Send the datagram
-    DOGFOOD_SEND_STDSTRING(datagram.str());
+    DOGFOOD_SEND_STDSTRING(datagram);
 
     return true;
 }
@@ -372,45 +429,57 @@ noexcept
 
 ////////////////////////////////////////////////////////////////
 // Format
+//
 //     '_e{title.length,text.length}:title|text|d:timestamp|
 //      h:hostname|p:priority|t:alert_type|#tag1,tag2'
 //
 //     - _e
 //         The datagram must begin with _e
+//
 //     - title
 //         Event title.
+//
 //     - text
 //         Event text.
 //         Insert line breaks with an escaped slash (\\n)
+//
 //     - d:timestamp
 //         (Optional)
 //             Add a timestamp to the event.
 //             Default is the current Unix epoch timestamp.
+//
 //     - h:hostname
 //         (Optional)
 //             Add a hostname to the event. No default.
+//
 //     - k:aggregation_key
 //         (Optional)
 //             Add an aggregation key to group the event with
 //             others that have the same key. No default.
+//
 //     - p:priority
 //         (Optional)
 //             Set to ‘normal’ or ‘low’. Default ‘normal’.
+//
 //     - s:source_type_name
 //         (Optional)
 //             Add a source type to the event. No default.
+//
 //     - t:alert_type
 //         (Optional)
 //             Set to ‘error’, ‘warning’, ‘info’ or ‘success’.
 //             Default ‘info’.
+//
 //     - #tag1:value1,tag2,tag3:value3...
 //         (Optional)
 //             The colon in tags is part of the tag list string
 //             and has no parsing purpose like for the other
 //             parameters. No default.
+//
 
 ////////////////////////////////////////////////////////////////
 // Samples
+//
 //     # Send an exception
 //     '_e{21,36}:An exception occurred|Cannot parse CSV file
 //      from 10.0.0.17|t:warning|#err_type:bad_file'
@@ -418,20 +487,27 @@ noexcept
 //     # Send an event with a newline in the text
 //     '_e{21,42}:An exception occurred|Cannot parse JSON
 //      request:\\n{"foo: "bar"}|p:low|#err_type:bad_request'
+//
 
 ////////////////////////////////////////////////////////////////
 // Priority
+//
 //     The 'Priority' of a DataDog 'Event'
+//
 enum class Priority { Low, Normal };
 
 ////////////////////////////////////////////////////////////////
 // Alert
+//
 //     The 'Alert' type of a DataDog 'Event'
+//
 enum class Alert { Info, Success, Warning, Error };
 
 ////////////////////////////////////////////////////////////////
 // Template
+//
 //     Numeric should be an integral or floating-point type
+//
 template <typename Numeric>
 typename std::enable_if<
     std::is_integral<Numeric>::value      ||
@@ -453,7 +529,7 @@ noexcept
 {
     ////////////////////////////////////////////////////////////
     // Declare the datagram stream
-    std::stringstream datagram;
+    std::string datagram;
 
     ////////////////////////////////////////////////////////////
     // Get the escaped text
@@ -461,50 +537,60 @@ noexcept
 
     ////////////////////////////////////////////////////////////
     // Add the title and text to the datagram
-    // `_e{title.length,text.length}:title|text|`
+    //
+    //     `_e{title.length,text.length}:title|text|`
+    //
     datagram
-        << "_e{" << _title.length() << "," << _etext.length()
-        << "}:"  << _title          << "|" << _etext;
+        += "_e{" += _title.length() += "," += _etext.length()
+        += "}:"  += _title          += "|" += _etext;
 
     ////////////////////////////////////////////////////////////
     // Add the timestamp to the datagram if present
     if (_timestamp != static_cast<Numeric>(0))
-        datagram << "|d:" << _timestamp;
+        datagram += "|d:" += std::to_string(_timestamp);
 
     ////////////////////////////////////////////////////////////
     // Add the hostname to the datagram if present
     if (_hostname != "")
-        datagram << "|h:" << _hostname;
+        datagram += "|h:" += _hostname;
 
     ////////////////////////////////////////////////////////////
     // Add the priority to the datagram if present
     if (_priority == Priority::Low)
-        datagram << "|p:" << "low";
+        datagram += "|p:" += "low";
 
     ////////////////////////////////////////////////////////////
     // Add the source type name to the datagram if present
     if (_source_type_name != "")
-        datagram << "|s:" << _source_type_name;
+        datagram += "|s:" += _source_type_name;
 
     ////////////////////////////////////////////////////////////
     // Verify the alert type and append the datagram if valid
-    // `success` or `warning` or `error`
+    //
+    //     `success` or `warning` or `error`
+    //
     switch (_alert_type)
     {
-        case Alert::Success: datagram << "|t:success"; break;
-        case Alert::Warning: datagram << "|t:warning"; break;
-        case Alert::Error:   datagram << "|t:error";   break;
+        case Alert::Success: datagram += "|t:success"; break;
+        case Alert::Warning: datagram += "|t:warning"; break;
+        case Alert::Error:   datagram += "|t:error";   break;
         default:                                       break;
     }
 
     ////////////////////////////////////////////////////////////
     // Extract the tags string into the datagram
-    // `|#tag1:value,tag2`
-    datagram << ExtractTags(_tags);
+    //
+    //     `|#tag1:value,tag2`
+    //
+    datagram += ExtractTags(_tags);
+
+    ////////////////////////////////////////////////////////////
+    // Validate the payload size
+    if (!ValidatePayloadSize(datagram.length())) return false;
 
     ////////////////////////////////////////////////////////////
     // Send the datagram
-    DOGFOOD_SEND_STDSTRING(datagram.str());
+    DOGFOOD_SEND_STDSTRING(datagram);
 
     return true;
 }
@@ -565,13 +651,16 @@ noexcept
 
 ////////////////////////////////////////////////////////////////
 // Samples
+//
 //     # Send a CRITICAL status for a remote connection
 //     '_sc|Redis connection|2|#redis_instance:10.0.0.16:6379|
 //      m:Redis connection timed out after 10s'
 
 ////////////////////////////////////////////////////////////////
 // Status
+//
 //     The 'Status' of a DataDog 'Service Check'
+//
 enum class Status {
     Ok,
     Warning,
@@ -581,7 +670,9 @@ enum class Status {
 
 ////////////////////////////////////////////////////////////////
 // Template
+//
 //     Numeric should be an integral or floating-point type
+//
 template <typename Numeric>
 typename std::enable_if<
     std::is_integral<Numeric>::value      ||
@@ -600,54 +691,64 @@ noexcept
 {
     ////////////////////////////////////////////////////////////
     // Declare the datagram stream
-    std::stringstream datagram;
+    std::string datagram;
 
     ////////////////////////////////////////////////////////////
     // Add the name to the datagram
-    // `_sc|name|`
-    datagram << "_sc|" << _name << "|";
+    //
+    //     `_sc|name|`
+    //
+    datagram += "_sc|" += _name += "|";
 
     ////////////////////////////////////////////////////////////
     // Verify the status and append the datagram if valid
-    // `0` or `1` or `2` or `3`
+    //
+    //     `0` or `1` or `2` or `3`
+    //
     switch (_status)
     {
-        case Status::Ok:       datagram << "0"; break;
-        case Status::Warning:  datagram << "1"; break;
-        case Status::Critical: datagram << "2"; break;
-        case Status::Unknown:  datagram << "3"; break;
+        case Status::Ok:       datagram += "0"; break;
+        case Status::Warning:  datagram += "1"; break;
+        case Status::Critical: datagram += "2"; break;
+        case Status::Unknown:  datagram += "3"; break;
         default:               return false;
     }
 
     ////////////////////////////////////////////////////////////
     // Add the timestamp to the datagram if present
     if (_timestamp != static_cast<Numeric>(0))
-        datagram << "|d:" << _timestamp;
+        datagram += "|d:" += _timestamp;
 
     ////////////////////////////////////////////////////////////
     // Add the hostname to the datagram if present
     if (_hostname != "")
-        datagram << "|h:" << _hostname;
+        datagram += "|h:" += _hostname;
 
     ////////////////////////////////////////////////////////////
     // Extract the tags string into the datagram
-    // `|#tag1:value,tag2`
-    datagram << ExtractTags(_tags);
+    //
+    //     `|#tag1:value,tag2`
+    //
+    datagram += ExtractTags(_tags);
 
     ////////////////////////////////////////////////////////////
     // Add the service check message name
     // to the datagram if present
     if (_message != "")
-        datagram << "|m:" << _message;
+        datagram += "|m:" += _message;
+
+    ////////////////////////////////////////////////////////////
+    // Validate the payload size
+    if (!ValidatePayloadSize(datagram.length())) return false;
 
     ////////////////////////////////////////////////////////////
     // Send the datagram
-    DOGFOOD_SEND_STDSTRING(datagram.str());
+    DOGFOOD_SEND_STDSTRING(datagram);
 
     return true;
 }
 
-}      // namespace DogFood
+} // namespace DogFood
 #endif // _DOGFOOD_DOGFOOD_H
 
 // Well, I guess that is the end. Until next time, folks!
