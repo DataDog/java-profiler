@@ -35,8 +35,6 @@
 #include <sstream>
 #include <string>
 
-namespace DogFood {
-
 ////////////////////////////////////////////////////////////////
 // DogStatsD
 //
@@ -51,10 +49,10 @@ namespace DogFood {
 //         E.G. - g++ (...) -DDOGSTATSD_PORT="255.255.255.255"
 //
 #ifndef DOGSTATSD_HOST
-    #define DOGSTATSD_HOST "127.0.0.1"
+	#define DOGSTATSD_HOST "127.0.0.1"
 #endif
 #ifndef DOGSTATSD_PORT
-    #define DOGSTATSD_PORT 8125
+	#define DOGSTATSD_PORT 8125
 #endif
 
 ////////////////////////////////////////////////////////////////
@@ -63,36 +61,55 @@ namespace DogFood {
 //     Linux and Apple (POSIX-ish)
 //
 #if defined(__linux__) || defined(__APPLE__)
-    #include <arpa/inet.h>
-    #include <sys/socket.h>
-    #include <unistd.h>
+	#include <arpa/inet.h>
+	#include <sys/socket.h>
+	#include <unistd.h>
+	#define UDP_SEND_DATAGRAM(data,length) do {\
+			struct sockaddr_in client;\
+			int fd=socket(AF_INET, SOCK_DGRAM, 0);\
+			if (fd==-1)return false;\
+			int size=static_cast<int>(sizeof(client));\
+			std::memset(&client,0,size);\
+			client.sin_family=AF_INET;\
+			client.sin_port=htons(DOGSTATSD_PORT);\
+			client.sin_addr.s_addr=inet_addr(DOGSTATSD_HOST);\
+			struct sockaddr* addr= (struct sockaddr*)&client;\
+			if(sendto(fd,data,length,0,addr,size)==-1)\
+			{close(fd);return false;}close(fd);\
+		} while (0)
 
-    #define UDP_SEND_DATAGRAM(data,size)                       \
-        do {                                                   \
-            struct sockaddr_in client;                         \
-            int fd = socket(AF_INET, SOCK_DGRAM, 0);           \
-            if (fd == -1) return false;                        \
-            std::memset(&client, 0, sizeof(client));           \
-            client.sin_family = AF_INET;                       \
-            client.sin_port = htons(DOGSTATSD_PORT);           \
-            client.sin_addr.s_addr = inet_addr(DOGSTATSD_HOST);\
-            if(sendto(fd,data,size,0,(struct sockaddr*)&client,\
-            sizeof(client)) == -1){ close(fd); return false; } \
-            close(fd);                                         \
-        } while (0)
+	#define _DOGFOOD_NOEXCEPT noexcept
+
 //
 //     Microsoft Windows
 //
 #elif defined(_MSC_VER)
-    #define UDP_SEND_DATAGRAM(data,size)                       \
-        static_assert(false, "Microsoft not supported yet!");
-#else
-//
-//     OS Unknown
-//
-    #error "Well, sorry for your weird OS..."
-#endif
+	#include <WinSock2.h>
+	#pragma comment(lib, "Ws2_32.lib")
+	#pragma warning( disable : 4996 ) 
+	#define UDP_SEND_DATAGRAM(data,length) do {\
+			struct sockaddr_in client;\
+			SOCKET fd=socket(AF_INET, SOCK_DGRAM, 0);\
+			if (fd==INVALID_SOCKET)return false;\
+			int size=static_cast<int>(sizeof(client));\
+			std::memset(&client,0,size);\
+			client.sin_family= AF_INET;\
+			client.sin_port=htons(9236);\
+			client.sin_addr.s_addr=inet_addr(DOGSTATSD_HOST);\
+			struct sockaddr* a=\
+			reinterpret_cast<struct sockaddr*>(&client);\
+			if(sendto(fd,reinterpret_cast<const char*>(data),\
+			static_cast<int>(length),0,a,size)==SOCKET_ERROR)\
+			{closesocket(fd);return false;}closesocket(fd);\
+		} while (0)
 
+	#define _DOGFOOD_NOEXCEPT
+#else
+	//
+	//     OS Unknown
+	//
+	#error "Well, sorry for your weird OS..."
+#endif
 
 ////////////////////////////////////////////////////////////////
 // DogFood Send
@@ -100,20 +117,23 @@ namespace DogFood {
 //     UDP by default
 //
 #ifndef DOGFOOD_UNIT_TEST
-    #define DOGFOOD_SEND_STDSTRING(string)                     \
+#define DOGFOOD_SEND_STDSTRING(string)                     \
         UDP_SEND_DATAGRAM(string.c_str(),string.length())
 //
 //     Mock to global variable for unit testing
 //
 #else
-    static std::string _udp_send_mock;
-    #define DOGFOOD_SEND_STDSTRING(string)                     \
+static std::string _udp_send_mock;
+#define DOGFOOD_SEND_STDSTRING(string)                     \
         do {                                                   \
             _udp_send_mock.clear();                            \
             _udp_send_mock.append(string);                     \
             std::printf("%s\n",string.c_str());                \
-        } while (0)
+		        } while (0)
 #endif
+
+namespace DogFood {
+
 ////////////////////////////////////////////////////////////////
 //                                                            //
 //         88888888888                                        //
@@ -170,7 +190,7 @@ inline std::string ExtractTags(const Tags& _tags)
     }
 
     // Remove the trailing comma if present
-    if (stream.back() == ',') stream.pop_back();
+    if (stream.size() > 0 && stream.back() == ',') stream.pop_back();
 
     return stream;
 }
@@ -198,7 +218,7 @@ inline bool ValidateMetricName(const std::string& _name)
 //
 //     Must be between 0.0 and 1.0 (inclusive)
 //
-inline bool ValidateSampleRate(const float _rate)
+inline bool ValidateSampleRate(const double _rate)
 {
     return
         _rate >= 0.0 &&
@@ -349,7 +369,7 @@ Metric
     const double      _rate     = 1.0,
     const Tags&       _tags     = Tags()
 )
-noexcept
+_DOGFOOD_NOEXCEPT
 {
     ////////////////////////////////////////////////////////////
     // Declare the datagram stream
@@ -371,7 +391,7 @@ noexcept
     //
     //     `metric.name:value|`
     //
-    datagram += _name += ":" += std::to_string(_number) += "|";
+    datagram += _name + ":" + std::to_string(_number) + "|";
 
     ////////////////////////////////////////////////////////////
     // Verify the type and append the datagram
@@ -394,7 +414,7 @@ noexcept
     //     `|@sample_rate`
     //
     if (_rate != 1.0)
-        datagram += "|@" += std::to_string(_rate);
+        datagram += "|@" + std::to_string(_rate);
 
     ////////////////////////////////////////////////////////////
     // Extract the tags string into the datagram if present
@@ -405,7 +425,7 @@ noexcept
 
     ////////////////////////////////////////////////////////////
     // Validate the payload size
-    if (!ValidatePayloadSize(datagram.tellp())) return false;
+    if (!ValidatePayloadSize(datagram)) return false;
 
     ////////////////////////////////////////////////////////////
     // Send the datagram
@@ -525,7 +545,7 @@ Event
     const Alert       _alert_type        = Alert::Info,
     const Tags&       _tags              = Tags()
 )
-noexcept
+_DOGFOOD_NOEXCEPT
 {
     ////////////////////////////////////////////////////////////
     // Declare the datagram stream
@@ -541,28 +561,29 @@ noexcept
     //     `_e{title.length,text.length}:title|text|`
     //
     datagram
-        += "_e{" += _title.length() += "," += _etext.length()
-        += "}:"  += _title          += "|" += _etext;
+		+= "_e{" + std::to_string(_title.length()) +
+		     "," + std::to_string(_etext.length()) +
+		    "}:" + _title + "|" + _etext;
 
     ////////////////////////////////////////////////////////////
     // Add the timestamp to the datagram if present
     if (_timestamp != static_cast<Numeric>(0))
-        datagram += "|d:" += std::to_string(_timestamp);
+        datagram += "|d:" + std::to_string(_timestamp);
 
     ////////////////////////////////////////////////////////////
     // Add the hostname to the datagram if present
     if (_hostname != "")
-        datagram += "|h:" += _hostname;
+        datagram += "|h:" + _hostname;
 
     ////////////////////////////////////////////////////////////
     // Add the priority to the datagram if present
     if (_priority == Priority::Low)
-        datagram += "|p:" += "low";
+        datagram += "|p:low";
 
     ////////////////////////////////////////////////////////////
     // Add the source type name to the datagram if present
     if (_source_type_name != "")
-        datagram += "|s:" += _source_type_name;
+        datagram += "|s:" + _source_type_name;
 
     ////////////////////////////////////////////////////////////
     // Verify the alert type and append the datagram if valid
@@ -586,7 +607,7 @@ noexcept
 
     ////////////////////////////////////////////////////////////
     // Validate the payload size
-    if (!ValidatePayloadSize(datagram.length())) return false;
+    if (!ValidatePayloadSize(datagram)) return false;
 
     ////////////////////////////////////////////////////////////
     // Send the datagram
@@ -687,7 +708,7 @@ ServiceCheck
     const std::string _message   = "",
     const Tags&       _tags      = Tags()
 )
-noexcept
+_DOGFOOD_NOEXCEPT
 {
     ////////////////////////////////////////////////////////////
     // Declare the datagram stream
@@ -698,7 +719,7 @@ noexcept
     //
     //     `_sc|name|`
     //
-    datagram += "_sc|" += _name += "|";
+    datagram += "_sc|" + _name + "|";
 
     ////////////////////////////////////////////////////////////
     // Verify the status and append the datagram if valid
@@ -717,12 +738,12 @@ noexcept
     ////////////////////////////////////////////////////////////
     // Add the timestamp to the datagram if present
     if (_timestamp != static_cast<Numeric>(0))
-        datagram += "|d:" += _timestamp;
+        datagram += "|d:" + std::to_string(_timestamp);
 
     ////////////////////////////////////////////////////////////
     // Add the hostname to the datagram if present
     if (_hostname != "")
-        datagram += "|h:" += _hostname;
+        datagram += "|h:" + _hostname;
 
     ////////////////////////////////////////////////////////////
     // Extract the tags string into the datagram
@@ -735,11 +756,11 @@ noexcept
     // Add the service check message name
     // to the datagram if present
     if (_message != "")
-        datagram += "|m:" += _message;
+        datagram += "|m:" + _message;
 
     ////////////////////////////////////////////////////////////
     // Validate the payload size
-    if (!ValidatePayloadSize(datagram.length())) return false;
+    if (!ValidatePayloadSize(datagram)) return false;
 
     ////////////////////////////////////////////////////////////
     // Send the datagram
@@ -750,5 +771,9 @@ noexcept
 
 } // namespace DogFood
 #endif // _DOGFOOD_DOGFOOD_H
+
+#if defined(_MSC_VER)
+	#pragma warning( default : 4996 ) 
+#endif
 
 // Well, I guess that is the end. Until next time, folks!

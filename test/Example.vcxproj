@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{14743249-793A-4986-80BC-1DA6539FB273}</ProjectGuid>
+    <ProjectName>PopQuiz</ProjectName>
+    <RootNamespace>PopQuiz</RootNamespace>
+  </PropertyGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="build.props" />
+    <Import Project="config.props" />
+  </ImportGroup>
+  <ItemGroup>
+    <ClInclude Include="..\PopQuiz.hpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="ExampleOne.unit_test.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\LICENSE" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

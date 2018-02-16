@@ -36,3 +36,11 @@
 
 # Mac OS
 *.DSYM/
+
+# Visual Studio
+bin/
+obj/
+*.suo
+*.db
+*.sdf
+*.opensdf
