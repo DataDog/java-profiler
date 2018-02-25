@@ -36,7 +36,8 @@ A C++ API for reporting DataDog metrics
 // ...std::this_thread::sleep_for
 #include <thread>
 
-int main() {
+int main()
+{
     // Metrics Forever
     while (true) {
         // Report a 'metric'
