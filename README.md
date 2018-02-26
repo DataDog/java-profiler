@@ -4,6 +4,11 @@ A C++ API for reporting DataDog metrics
 - Cross Platform
 - Communicate with **DogStatsD** agent over UDP
 
+## DataDog
+Running the barebones example program in `example/DogFood.example.cpp` produces the following:
+
+![DataDog Capture](https://github.com/garrettsickles/DogFood/blob/master/example/Example.PNG?raw=true)
+
 ## Configuration
 ```cpp
 ////////////////////////////////////////////////////////////////
