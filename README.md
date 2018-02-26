@@ -1,4 +1,7 @@
 # DogFood
+
+[![Build Status](https://travis-ci.org/garrettsickles/DogFood.svg?branch=master)](https://travis-ci.org/garrettsickles/DogFood)
+
 A C++ API for reporting DataDog metrics
 - Header Only
 - Cross Platform
