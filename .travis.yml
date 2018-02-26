@@ -1,0 +1,10 @@
+language: c++
+sudo: false
+os: linux
+
+compiler:
+  - g++
+
+script:
+  - cd example
+  - make
