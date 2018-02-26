@@ -20,7 +20,7 @@ BIN_EXAMPLE := $(TGT_BIN:$(DIR_SRC)/%.$(EXT_CPP)=$(DIR_BIN)/%)
 
 $(BIN_EXAMPLE): $(DIR_BIN)/% : $(DIR_SRC)/%.$(EXT_CPP)
 	@mkdir -p bin
-	@$(CPP_BIN) $(CPP_STD) $(CPP_WRN) $(CPP_INC) -c $< -o $@
+	@$(CPP_BIN) $(CPP_STD) $(CPP_WRN) $(CPP_INC) $< -o $@
 
 clean:
 	@rm -rf $(DIR_BIN)/*
