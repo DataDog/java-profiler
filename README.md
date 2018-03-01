@@ -25,7 +25,7 @@ Running the barebones example program in `example/DogFood.example.cpp` produces 
 //         E.G. - g++ (...) -DDOGSTATSD_PORT=12345
 //
 //     Override the default host
-//         E.G. - g++ (...) -DDOGSTATSD_PORT="255.255.255.255"
+//         E.G. - g++ (...) -DDOGSTATSD_HOST="255.255.255.255"
 //
 #ifndef DOGSTATSD_HOST
 	#define DOGSTATSD_HOST "127.0.0.1"
