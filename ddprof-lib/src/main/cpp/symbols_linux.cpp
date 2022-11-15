@@ -187,7 +187,7 @@ class ElfParser {
     void addRelocationSymbols(ElfSection* reltab, const char* plt);
 
   public:
-    static void parseProgramHeaders(CodeCache* cc, const char* base);
+    static void parseProgramHeaders(CodeCache* cc, const char* base, const char* end);
     static bool parseFile(CodeCache* cc, const char* base, const char* file_name, bool use_debug);
     static void parseMem(CodeCache* cc, const char* base);
 };
@@ -250,9 +250,9 @@ void ElfParser::parseMem(CodeCache* cc, const char* base) {
     }
 }
 
-void ElfParser::parseProgramHeaders(CodeCache* cc, const char* base) {
+void ElfParser::parseProgramHeaders(CodeCache* cc, const char* base, const char* end) {
     ElfParser elf(cc, base, base);
-    if (elf.validHeader()) {
+    if (elf.validHeader() && base + elf._header->e_phoff < end) {
         cc->setTextBase(base);
         elf.calcVirtualLoadAddress();
         elf.parseDynamicSection();
@@ -604,7 +604,7 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
                     // Be careful: executable file is not always ELF, e.g. classes.jsa
                     unsigned long offs = map.offs();
                     if ((unsigned long)image_base > offs && (image_base -= offs) >= last_readable_base) {
-                        ElfParser::parseProgramHeaders(cc, image_base);
+                        ElfParser::parseProgramHeaders(cc, image_base, image_end);
                     }
                     ElfParser::parseFile(cc, image_base, map.file(), true);
                 }
