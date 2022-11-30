@@ -168,6 +168,7 @@ build/helpers: $(JAVA_HELPER_SOURCES)
 # 	$(JAVAC) $(JAVAC_OPTIONS) -g:none $^
 
 test: all
+	test/load-libraries-test.sh
 	test/smoke-test.sh
 	test/jfr-smoke-test.sh
 	test/context-smoke-test.sh
