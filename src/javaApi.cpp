@@ -143,11 +143,7 @@ Java_one_profiler_AsyncProfiler_getContextPage0(JNIEnv* env, jobject unused, jin
 
 extern "C" DLLEXPORT jint JNICALL
 Java_one_profiler_AsyncProfiler_getMaxContextPages0(JNIEnv* env, jobject unused) {
-    if (sizeof(void*) == 8) {
-        return (jint) Contexts::getMaxPages();
-    }
-    // feature disabled on 32 bit systems
-    return 0;
+    return (jint) Contexts::getMaxPages();
 }
 
 #define F(name, sig)  {(char*)#name, (char*)sig, (void*)Java_one_profiler_AsyncProfiler_##name}
