@@ -317,12 +317,13 @@ bool Profiler::isAddressInCode(uintptr_t addr) {
 }
 
 int Profiler::getNativeTrace(void* ucontext, ASGCT_CallFrame* frames, int event_type, int tid, StackContext* java_ctx, bool *truncated) {
-    const void* callchain[MAX_NATIVE_FRAMES];
-    int native_frames = 0;
-
-    if (_cstack == CSTACK_NO || (event_type != BCI_CPU && event_type != BCI_WALL && _cstack == CSTACK_DEFAULT)) {
+    if (_cstack == CSTACK_NO
+        || (event_type == BCI_ALLOC || event_type == BCI_ALLOC_OUTSIDE_TLAB)
+        || (event_type != BCI_CPU && event_type != BCI_WALL && _cstack == CSTACK_DEFAULT)) {
         return 0;
     }
+    const void* callchain[MAX_NATIVE_FRAMES];
+    int native_frames = 0;
 
     if (event_type == BCI_CPU && _cpu_engine == &perf_events) {
         native_frames += PerfEvents::walkKernel(tid, callchain + native_frames, MAX_NATIVE_FRAMES - native_frames, java_ctx);
