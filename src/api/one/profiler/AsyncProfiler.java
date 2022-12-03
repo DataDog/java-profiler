@@ -229,12 +229,7 @@ public class AsyncProfiler {
         if (contextStorage == null) {
             return;
         }
-        int pageIndex = tid / PAGE_SIZE;
-        ByteBuffer page = contextStorage[pageIndex];
-        if (page == null) {
-            // the underlying page allocation is atomic so we don't care which view we have over it
-            contextStorage[pageIndex] = page = getContextPage0(tid).order(ByteOrder.LITTLE_ENDIAN);
-        }
+        ByteBuffer page = getPage(tid);
         int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
         page.putLong(index, spanId);
         page.putLong(index + 8, rootSpanId);
@@ -246,6 +241,40 @@ public class AsyncProfiler {
      */
     public void clearContext() {
         clearContext(TID.get());
+    }
+
+    /**
+     * Records the available parallelism of the thread pool the thread belongs to.
+     */
+    public void setPoolParallelism(int tid, int parallelism) {
+        if (contextStorage == null) {
+            return;
+        }
+        ByteBuffer page = getPage(tid);
+        int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
+        page.putInt(index + 24, parallelism);
+    }
+
+    /**
+     * Resets the thread-local pool parallelism
+     */
+    public void clearPoolParallelism(int tid) {
+        if (contextStorage == null) {
+            return;
+        }
+        ByteBuffer page = getPage(tid);
+        int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
+        page.putInt(index + 24, 1);
+    }
+
+    private ByteBuffer getPage(int tid) {
+        int pageIndex = tid / PAGE_SIZE;
+        ByteBuffer page = contextStorage[pageIndex];
+        if (page == null) {
+            // the underlying page allocation is atomic so we don't care which view we have over it
+            contextStorage[pageIndex] = page = getContextPage0(tid).order(ByteOrder.LITTLE_ENDIAN);
+        }
+        return page;
     }
 
     /**
