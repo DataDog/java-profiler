@@ -75,6 +75,10 @@ void MemLeakTracer::cleanup_table() {
     _table_size = newsz;
 
     _table_lock.unlock();
+
+    end = OS::nanotime();
+    Log::debug("Memory Leak profiler cleanup took %.2fms (%.2fus/element)",
+                1.0f * (end - start) / 1000 / 1000, 1.0f * (end - start) / 1000 / sz);
 }
 
 void MemLeakTracer::flush_table() {
