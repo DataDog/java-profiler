@@ -30,6 +30,7 @@
 #include "flightRecorder.h"
 #include "incbin.h"
 #include "jfrMetadata.h"
+#include "jvm.h"
 #include "dictionary.h"
 #include "os.h"
 #include "profiler.h"
@@ -201,7 +202,7 @@ class Lookup {
         char* method_sig = NULL;
 
         jint class_modifiers = 0;
-        if (jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
+        if (JVM::is_readable_pointer((void*)method) && jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
             jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
             jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
             mi->_class = _classes->lookup(class_name + 1, strlen(class_name) - 2);

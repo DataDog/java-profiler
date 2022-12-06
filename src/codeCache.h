@@ -112,6 +112,8 @@ class CodeCache {
 
     ~CodeCache();
 
+    void dump();
+
     const char* name() const {
         return _name;
     }
