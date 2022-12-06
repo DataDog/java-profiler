@@ -67,9 +67,9 @@ class MemLeakTracer : public Engine {
 
     static Error initialize(Arguments& args);
 
-    static void cleanup_table(JNIEnv* env, jobjectArray *entries, jint *nentries);
+    static void cleanup_table();
 
-    static void flush_table(JNIEnv* env);
+    static void flush_table();
 
     static void* cleanup_thread(void *arg);
 

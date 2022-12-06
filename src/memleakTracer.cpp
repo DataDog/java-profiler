@@ -24,10 +24,6 @@
 #include "tsc.h"
 #include "vmStructs.h"
 
-
-INCBIN(MEM_LEAK_CLASS, "one/profiler/MemLeak.class")
-INCBIN(MEM_LEAK_ENTRY_CLASS, "one/profiler/MemLeakEntry.class")
-
 bool MemLeakTracer::_initialized = false;
 int MemLeakTracer::_interval;
 
@@ -41,10 +37,6 @@ int MemLeakTracer::_max_stack_depth;
 
 jclass MemLeakTracer::_Class;
 jmethodID MemLeakTracer::_Class_getName;
-jclass MemLeakTracer::_MemLeak;
-jmethodID MemLeakTracer::_MemLeak_process;
-jclass MemLeakTracer::_MemLeakEntry;
-jmethodID MemLeakTracer::_MemLeakEntry_init;
 
 pthread_t MemLeakTracer::_cleanup_thread;
 pthread_mutex_t MemLeakTracer::_cleanup_mutex;
@@ -57,24 +49,12 @@ static int __min(int a, int b) {
     return a < b ? a : b;
 }
 
-void MemLeakTracer::cleanup_table(JNIEnv* env, jobjectArray *entries, jint *nentries) {
-    if (entries) {
-        *nentries = 0;
-    }
+void MemLeakTracer::cleanup_table() {
+    JNIEnv *env = VM::jni();
 
     u64 start = OS::nanotime(), end;
 
     _table_lock.lock();
-
-    if (entries) {
-        *entries = env->NewObjectArray(_table_size, _MemLeakEntry, NULL);
-    }
-
-    if (env->PushLocalFrame(_table_size + 1) != 0) {
-        Log::debug("Memory Leak profiler failed to push local frame");
-        _table_lock.unlock();
-        return;
-    }
 
     u32 sz, newsz = 0;
     for (u32 i = 0; i < (sz = _table_size); i++) {
@@ -84,10 +64,6 @@ void MemLeakTracer::cleanup_table(JNIEnv* env, jobjectArray *entries, jint *nent
             _table[i].age += 1;
 
             _table[newsz++] = _table[i];
-            if (entries) {
-                env->SetObjectArrayElement(*entries, (*nentries)++,
-                    env->NewObject(_MemLeakEntry, _MemLeakEntry_init, _table[i].ref, _table[i].ref_size, _table[i].age));
-            }
         } else {
             env->DeleteWeakGlobalRef(_table[i].ref);
             delete[] _table[i].frames;
@@ -98,8 +74,6 @@ void MemLeakTracer::cleanup_table(JNIEnv* env, jobjectArray *entries, jint *nent
 
     _table_size = newsz;
 
-    env->PopLocalFrame(NULL);
-
     _table_lock.unlock();
 
     end = OS::nanotime();
@@ -107,7 +81,8 @@ void MemLeakTracer::cleanup_table(JNIEnv* env, jobjectArray *entries, jint *nent
                 1.0f * (end - start) / 1000 / 1000, 1.0f * (end - start) / 1000 / sz);
 }
 
-void MemLeakTracer::flush_table(JNIEnv *env) {
+void MemLeakTracer::flush_table() {
+    JNIEnv *env = VM::jni();
     u64 start = OS::nanotime(), end;
 
     _table_lock.lockShared();
@@ -156,17 +131,9 @@ void* MemLeakTracer::cleanup_thread(void *arg) {
         _cleanup_round -= 1;
         pthread_mutex_unlock(&_cleanup_mutex);
 
-        jobjectArray entries = NULL;
         jint nentries = 0;
 
-        JNIEnv *env = VM::jni();
-        cleanup_table(env, &entries, &nentries);
-
-        env->CallStaticObjectMethod(_MemLeak, _MemLeak_process, entries, nentries);
-        env->ExceptionDescribe();
-        env->ExceptionClear();
-
-        env->DeleteLocalRef(entries);
+        cleanup_table();
     }
 
 exit:
@@ -200,8 +167,8 @@ Error MemLeakTracer::start(Arguments& args) {
 
 void MemLeakTracer::stop() {
     JNIEnv* env = VM::jni();
-    cleanup_table(env, NULL, NULL);
-    flush_table(env);
+    cleanup_table();
+    flush_table();
 
     // Disable Java Object Sample events
     jvmtiEnv* jvmti = VM::jvmti();
@@ -233,29 +200,6 @@ Error MemLeakTracer::initialize(Arguments& args) {
         return Error("Unable to find java/lang/Class.getName");
     }
 
-    if (!(_MemLeak = env->DefineClass(NULL, NULL, (const jbyte*)MEM_LEAK_CLASS, INCBIN_SIZEOF(MEM_LEAK_CLASS))) ||
-        !(_MemLeak = (jclass)env->NewGlobalRef(_MemLeak))) {
-        free(_table);
-        env->ExceptionDescribe();
-        return Error("Failed to initialize one/profiler/MemLeak class");
-    }
-    if (!(_MemLeak_process = env->GetStaticMethodID(_MemLeak, "process", "([Lone/profiler/MemLeakEntry;I)V"))) {
-        free(_table);
-        env->ExceptionDescribe();
-        return Error("Unable to find one/profiler/MemLeak.process");
-    }
-    if (!(_MemLeakEntry = env->DefineClass(NULL, NULL, (const jbyte*)MEM_LEAK_ENTRY_CLASS, INCBIN_SIZEOF(MEM_LEAK_ENTRY_CLASS))) ||
-        !(_MemLeakEntry = (jclass)env->NewGlobalRef(_MemLeakEntry))) {
-        free(_table);
-        env->ExceptionDescribe();
-        return Error("Failed to initialize one/profiler/MemLeakEntry class");
-    }
-    if (!(_MemLeakEntry_init = env->GetMethodID(_MemLeakEntry, "<init>", "(Ljava/lang/Object;IJ)V"))) {
-        free(_table);
-        env->ExceptionDescribe();
-        return Error("Unable to find one/profiler/MemLeakEntry.<init>");
-    }
-
     _cleanup_round = 0;
     _cleanup_run = true;
     if (pthread_mutex_init(&_cleanup_mutex, NULL) != 0 ||
@@ -271,12 +215,11 @@ Error MemLeakTracer::initialize(Arguments& args) {
     // this symbol should be availabel given the current JVTMI heap sampler implementation
     // Note: when/if that implementation would change in the future the alernatives should be added here
     const void* get_interval_ptr = libjvm->findSymbol("_ZN17ThreadHeapSampler21get_sampling_intervalEv");
-    _get_sampling_interval = (get_sampling_interval)get_interval_ptr;
-
-    if (_get_sampling_interval == NULL) {
+    if (get_interval_ptr == NULL) {
         // fail if it is not possible to resolve the required symbol
         return Error("Unable to resolve the sampling interval getter");
     }
+    _get_sampling_interval = (get_sampling_interval)get_interval_ptr;
 
     env->ExceptionClear();
     _initialized = true;
@@ -349,8 +292,13 @@ retry:
             // Only increase the size of the table to 8k elements
             int newcap = __min(_table_cap * 2, _table_max_cap);
             if (_table_cap != newcap) {
-                _table = (MemLeakTableEntry*)realloc(_table, sizeof(MemLeakTableEntry) * (_table_cap = newcap));
-                Log::debug("Increased size of Memory Leak table to %d entries", _table_cap);
+                MemLeakTableEntry* tmp = (MemLeakTableEntry*)realloc(_table, sizeof(MemLeakTableEntry) * (_table_cap = newcap));
+                if (tmp != NULL) {
+                    _table = tmp;
+                    Log::debug("Increased size of Memory Leak table to %d entries", _table_cap);
+                } else {
+                    Log::debug("Cannot add sampled object to Memory Leak table, resize attempt failed, the table is overflowing");        
+                }
             }
 
             _table_lock.unlock();
