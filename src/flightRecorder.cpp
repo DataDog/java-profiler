@@ -81,11 +81,11 @@ struct CpuTimes {
 
 class MethodInfo {
   public:
-    MethodInfo() : _mark(false), _thread_entry(false), _key(0), _modifiers(0) {
+    MethodInfo() : _mark(false), _is_entry(false), _key(0), _modifiers(0) {
     }
 
     bool _mark;
-    bool _thread_entry;
+    bool _is_entry;
     u32 _key;
     u32 _class;
     u32 _name;
@@ -228,10 +228,13 @@ class Lookup {
                     jclass klass = method_class;
                     do {
                         if (jni->CallBooleanMethod(Thread_class, equals, klass)) {
-                            mi->_thread_entry = true;
+                            mi->_is_entry = true;
                             break;
                         }
                     } while ((klass = jni->GetSuperclass(klass)) != NULL);
+                } else if (mi->_modifiers & 9 != 0 && strncmp(method_name, "main", 4) == 0 && strncmp(method_sig, "(Ljava/lang/String;)V", 21)) {
+                    // public static void main(String[] args) - 'public static' translates to modifier bits 0 and 3, hence check for '9'
+                    mi->_is_entry = true;
                 }
             }
         } else {
@@ -1055,7 +1058,7 @@ class Recording {
             if (trace->num_frames > 0) {
                 MethodInfo* mi = lookup->resolveMethod(trace->frames[trace->num_frames - 1]);
                 if (mi->_type < FRAME_NATIVE) {
-                    buf->put8(mi->_thread_entry ? 0 : 1);
+                    buf->put8(mi->_is_entry ? 0 : 1);
                 } else {
                     buf->put8(trace->truncated);
                 }
