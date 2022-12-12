@@ -71,7 +71,7 @@ class ProfiledThread {
     inline u64 noteCPUSample() {
         return ++_cpu_epoch;
     }
-    bool noteWallSample(bool all, u64 context_key, u64* skipped_samples);
+    bool noteWallSample(u64 context_key, u64* skipped_samples);
 
     static void signalHandler(int signo, siginfo_t* siginfo, void* ucontext);
 };

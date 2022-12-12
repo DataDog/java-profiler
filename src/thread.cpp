@@ -157,13 +157,7 @@ void ProfiledThread::releaseFromBuffer() {
     }
 }
 
-bool ProfiledThread::noteWallSample(bool all, u64 context_key, u64* skipped_samples) {
-    if (all) {
-        _wall_epoch = _cpu_epoch;
-        *skipped_samples = 0;
-        return true;
-    }
-
+bool ProfiledThread::noteWallSample(u64 context_key, u64* skipped_samples) {
     if (_wall_epoch == _cpu_epoch && _context_key == context_key) {
         *skipped_samples = ++_skipped_samples;
         return false;
