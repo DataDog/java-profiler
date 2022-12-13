@@ -1,5 +1,5 @@
 # Datadog Java Profiler Library
-_Based on [async-profiler](https://github.com/jvm-profiling-tools/async-profiler)_
+_Based on [async-profiler 2.8.3](https://github.com/jvm-profiling-tools/async-profiler/releases/tag/v2.8.3)_
 
 ## Usage
 **!TODO!**
