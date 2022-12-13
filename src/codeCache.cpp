@@ -152,13 +152,13 @@ const char* CodeCache::binarySearch(const void* address) {
 }
 
 void CodeCache::dump() {
-    #ifdef DEBUG
+    #ifdef TRACE
     fprintf(stdout, "Dumping symbols for %s:\n+-\n", _name);
     for (int i = 0; i < _count; i++) {
         fprintf(stdout, "%d. %s\n", i, _blobs[i]._name);
     }
     fprintf(stdout, "+-\n");
-    #endif // DEBUG
+    #endif // TRACE
 }
 
 const void* CodeCache::findSymbol(const char* name) {
