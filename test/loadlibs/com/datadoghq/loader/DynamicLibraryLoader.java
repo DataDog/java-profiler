@@ -53,7 +53,8 @@ public class DynamicLibraryLoader {
         try {
             File root = new File(DynamicLibraryLoader.class
                 .getResource("DynamicLibraryLoader.class").toURI()).getParentFile();
-            while (!root.getName().equals("async-profiler")) {
+            // TODO make the exit condition not to depend on the project root folder name
+            while (!root.getName().equals("java-profiler")) {
                 root = root.getParentFile();
             }
             return root.toPath().resolve("build/libasyncProfiler.so").toAbsolutePath().toString();
