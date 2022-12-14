@@ -54,12 +54,12 @@ public class DynamicLibraryLoader {
             File root = new File(DynamicLibraryLoader.class
                 .getResource("DynamicLibraryLoader.class").toURI()).getParentFile();
             // TODO make the exit condition not to depend on the project root folder name
-            while (!root.getName().equals("java-profiler")) {
+            while (!root.getName().startsWith("java-profiler")) {
                 root = root.getParentFile();
             }
             return root.toPath().resolve("build/libjavaProfiler.so").toAbsolutePath().toString();
         } catch (Throwable t) {
-             throw new RuntimeException("Could not find asyncProfiler lib", t);
+             throw new RuntimeException("Could not find javaProfiler lib", t);
         }
     }
 

@@ -7,7 +7,7 @@ public class Utils {
             try {
                 File root = new File(Utils.class
                     .getResource("Utils.class").toURI()).getParentFile();
-                while (!root.getName().equals("java-profiler")) {
+                while (!root.getName().startsWith("java-profiler")) {
                     root = root.getParentFile();
                 }
                 return root.toPath().resolve("build/libjavaProfiler.so").toAbsolutePath().toString();

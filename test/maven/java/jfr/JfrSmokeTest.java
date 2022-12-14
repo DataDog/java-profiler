@@ -43,7 +43,7 @@ public class JfrSmokeTest {
         Path tempDir = Files.createTempDirectory("jfr_test-");
         try {
             File whereami = new File(JfrSmokeTest.class.getResource("JfrSmokeTest.class").toURI()).getParentFile();
-            while (!whereami.getName().equals("java-profiler")) {
+            while (!whereami.getName().startsWith("java-profiler")) {
                 whereami = whereami.getParentFile();
             }
             File launcher = Paths.get(whereami.toURI()).resolve("test/run_renaissance.sh").toFile();
