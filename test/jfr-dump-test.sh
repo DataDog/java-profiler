@@ -25,12 +25,11 @@ function assert_string() {
 
     FILENAME=/tmp/dump_test.jfr
     DUMP_1=/tmp/dump_test_1.jfr
-    DUMP_1_SECS=1
 
     rm -f $FILENAME
     rm -f $DUMP_1
 
-    ${JAVA_HOME}/bin/java -cp .:../build/java-profiler.jar -agentpath:../build/libjavaProfiler.so=start,wall=500ms,jfr,file=$FILENAME Target $DUMP_1 $DUMP_1_SECS &
+    ${JAVA_HOME}/bin/java -cp .:../build/java-profiler.jar -agentpath:../build/libjavaProfiler.so=start,wall=5ms,jfr,file=$FILENAME Target $DUMP_1 1 &
     JAVAPID=$!
 
     function cleanup {
@@ -39,16 +38,18 @@ function assert_string() {
 
     trap cleanup EXIT
 
-    sleep $DUMP_1_SECS
+    sleep 2
     # wait for the internal dump
 
-    if [ -z "$(${JAVA_HOME}/bin/jps | grep $PID)" ]; then
+    if [ -z "$(${JAVA_HOME}/bin/jps | grep $JAVAPID)" ]; then
         echo "Test application died. Check the output."
         exit 1
     fi
 
+    sleep 1
+
     kill $JAVAPID
 
-    assert_string "$(jfr summary $DUMP_1 | grep Duration)" "Duration: $DUMP_1_SECS s"
+    assert_string "$(jfr summary $DUMP_1 | grep Duration)" "Duration: 1 s"
 
 )
