@@ -31,7 +31,13 @@ function assert_string() {
     rm -f $DUMP_1
 
     ${JAVA_HOME}/bin/java -cp .:../build/java-profiler.jar -agentpath:../build/libjavaProfiler.so=start,wall=500ms,jfr,file=$FILENAME Target $DUMP_1 $DUMP_1_SECS &
-    PID=$!
+    JAVAPID=$!
+
+    function cleanup {
+        kill $JAVAPID 2>/dev/null || true
+    }
+
+    trap cleanup EXIT
 
     sleep $DUMP_1_SECS
     # wait for the internal dump
@@ -41,7 +47,7 @@ function assert_string() {
         exit 1
     fi
 
-    kill $PID
+    kill $JAVAPID
 
     assert_string "$(jfr summary $DUMP_1 | grep Duration)" "Duration: $DUMP_1_SECS s"
 

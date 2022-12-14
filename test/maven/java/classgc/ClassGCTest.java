@@ -72,10 +72,15 @@ public class ClassGCTest {
                 }
             }
         };
+        long ts = System.nanoTime() + 30_000_000_000L; // 30s timeout
         for (int i = 0; i < 100_000; i++) {
             Class<?> clazz = Class.forName(CLASS_NAME, true, new TestClassLoader(CLASS_NAME, compiledClass));
             MethodHandle consumeCpu = cv.get(clazz);
             consumeCpu.invokeExact();
+            if (System.nanoTime() > ts) {
+                System.out.println("Timeout (30s). Exitting.");
+                break;
+            }
         }
     }
 
