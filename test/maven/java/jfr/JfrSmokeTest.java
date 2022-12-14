@@ -51,6 +51,7 @@ public class JfrSmokeTest {
                     launcher.getAbsolutePath(),
                     "-pa", "cpu,wall,file=" + tempDir.toString() + "/profile.jfr",
                     "-r", "2", "akka-uct");
+            System.out.println("===> cmd: " + pb.command());
             pb = pb.redirectError(ProcessBuilder.Redirect.PIPE).redirectOutput(ProcessBuilder.Redirect.PIPE);
             Instant startTs = Instant.now();
             Process process = pb.start();

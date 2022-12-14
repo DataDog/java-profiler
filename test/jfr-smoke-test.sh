@@ -11,5 +11,5 @@ fi
 (
   cd $(dirname $0)/..
 
-  mvn test
+  mvn --no-transfer-progress test
 )
