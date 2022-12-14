@@ -1,9 +1,9 @@
 # Datadog Java Profiler Library
-_Based on [async-profiler 2.8.3](https://github.com/jvm-profiling-tools/async-profiler/releases/tag/v2.8.3)_
+_Based on [java-profiler 2.8.3](https://github.com/jvm-profiling-tools/java-profiler/releases/tag/v2.8.3)_
 
 ## Disclaimer
-This is not a fork of [async-profiler](https://github.com/jvm-profiling-tools/async-profiler). This is a work derived from __async-profiler__ but tailored very specifically for Datadog needs.
-If you need a full-fledged Java profiler head back to [async-profiler](https://github.com/jvm-profiling-tools/async-profiler)
+This is not a fork of [java-profiler](https://github.com/jvm-profiling-tools/java-profiler). This is a work derived from __async-profiler__ but tailored very specifically for Datadog needs.
+If you need a full-fledged Java profiler head back to [java-profiler](https://github.com/jvm-profiling-tools/java-profiler)
 
 ## Usage
 **!TODO!**
@@ -11,7 +11,7 @@ If you need a full-fledged Java profiler head back to [async-profiler](https://g
 
 ## Build
 ### Building Local Artifacts
-In order to ease up consuming of the async-profiler library in downstream projects (eg. dd-trace-java) it is possible to quickly build a maven artifact (jar) which can replace the stable dependency to test the changes.
+In order to ease up consuming of the java-profiler library in downstream projects (eg. dd-trace-java) it is possible to quickly build a maven artifact (jar) which can replace the stable dependency to test the changes.
 
 #### Prerequisites
 The local build requires docker and Java 11 to be installed.
@@ -21,7 +21,7 @@ Use `./datadog/scripts/build_locally.sh` to build linux-x64 only maven artifact.
 
 After running this script you should see something like
 ```shell
-jaroslav.bachorik@COMP-C02FJ0PSMD6V async-profiler % ./datadog/scripts/build_locally.sh
+jaroslav.bachorik@COMP-C02FJ0PSMD6V java-profiler % ./datadog/scripts/build_locally.sh
 === Building Async Profiler
 ==    Version     : 2.6-DD-jb_local_artifact-bc38fb7712459603349d7a36a90c9d02611a450d
 ==    Architecture: linux-amd64

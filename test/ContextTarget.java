@@ -4,14 +4,14 @@
 // import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
 // import datadog.trace.bootstrap.instrumentation.api.ScopeSource;
 
-import one.profiler.AsyncProfiler;
+import one.profiler.JavaProfiler;
 import java.util.concurrent.ThreadLocalRandom;
 
 public class ContextTarget {
-    private static final AsyncProfiler ap;
+    private static final JavaProfiler ap;
 
     static {
-        ap = AsyncProfiler.getInstance();
+        ap = JavaProfiler.getInstance();
     }
 
     public static void main(String[] args) {

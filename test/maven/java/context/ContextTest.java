@@ -16,7 +16,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.ThreadLocalRandom;
 
-import one.profiler.AsyncProfiler;
+import one.profiler.JavaProfiler;
 import utils.Utils;
 
 import static org.openjdk.jmc.common.item.Attribute.attr;
@@ -36,12 +36,12 @@ public class ContextTest {
     @Test
     public void testReadContext() throws Exception {
         Path jfrDump = Files.createTempFile("context-test", ".jfr");
-        AsyncProfiler ap = AsyncProfiler.getInstance(Utils.getAsyncProfilerLib());
+        JavaProfiler ap = JavaProfiler.getInstance(Utils.getJavaProfilerLib());
         int tid = ap.getNativeThreadId();
         ap.addThread(tid);
         ap.setContext(tid, 42, 84);
         ap.setPoolParallelism(tid, 89);
-        ap.execute("start,cpu=1ms,wall=~1ms,jfr,thread,file=" + jfrDump.toAbsolutePath());
+        ap.execute("start,cpu=1ms,wall=~1ms,jfr,file=" + jfrDump.toAbsolutePath());
         // sleep to get some wall samples
         Thread.sleep(10);
         // do some work to get some cpu samples

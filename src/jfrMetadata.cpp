@@ -185,7 +185,7 @@ void JfrMetadata::initialize() {
                 << field("jvmSystem", T_FLOAT, "JVM System", F_PERCENTAGE)
                 << field("machineTotal", T_FLOAT, "Machine Total", F_PERCENTAGE))
 
-            << (type("jdk.ActiveRecording", T_ACTIVE_RECORDING, "Async-profiler Recording")
+            << (type("jdk.ActiveRecording", T_ACTIVE_RECORDING, "java-profiler Recording")
                 << category("Flight Recorder")
                 << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
                 << field("duration", T_LONG, "Duration", F_DURATION_TICKS)
@@ -200,7 +200,7 @@ void JfrMetadata::initialize() {
                 << field("recordingStart", T_LONG, "Start Time", F_TIME_MILLIS)
                 << field("recordingDuration", T_LONG, "Recording Duration", F_DURATION_MILLIS))
 
-            << (type("jdk.ActiveSetting", T_ACTIVE_SETTING, "Async-profiler Setting")
+            << (type("jdk.ActiveSetting", T_ACTIVE_SETTING, "java-profiler Setting")
                 << category("Flight Recorder")
                 << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
                 << field("duration", T_LONG, "Duration", F_DURATION_TICKS)

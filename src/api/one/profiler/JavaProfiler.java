@@ -24,12 +24,12 @@ import java.nio.file.Path;
 
 /**
  * Java API for in-process profiling. Serves as a wrapper around
- * async-profiler native library. This class is a singleton.
+ * java-profiler native library. This class is a singleton.
  * The first call to {@link #getInstance()} initiates loading of
- * libasyncProfiler.so.
+ * libjavaProfiler.so.
  */
-public class AsyncProfiler {
-    private static AsyncProfiler instance;
+public final class JavaProfiler {
+    private static JavaProfiler instance;
     private static final int CONTEXT_SIZE = 64;
     // must be kept in sync with PAGE_SIZE in context.h
     private static final int PAGE_SIZE = 1024;
@@ -41,19 +41,19 @@ public class AsyncProfiler {
 
     private ByteBuffer[] contextStorage;
 
-    private AsyncProfiler() {
+    private JavaProfiler() {
     }
 
-    public static AsyncProfiler getInstance() {
+    public static JavaProfiler getInstance() {
         return getInstance(null);
     }
 
-    public static synchronized AsyncProfiler getInstance(String libPath) {
+    public static synchronized JavaProfiler getInstance(String libPath) {
         if (instance != null) {
             return instance;
         }
 
-        AsyncProfiler profiler = new AsyncProfiler();
+        JavaProfiler profiler = new JavaProfiler();
         if (libPath != null) {
             System.load(libPath);
         } else {
@@ -61,7 +61,7 @@ public class AsyncProfiler {
                 // No need to load library, if it has been preloaded with -agentpath
                 profiler.getVersion();
             } catch (UnsatisfiedLinkError e) {
-                System.loadLibrary("asyncProfiler");
+                System.loadLibrary("javaProfiler");
             }
         }
         profiler.initializeContextStorage();
@@ -150,20 +150,6 @@ public class AsyncProfiler {
             throw new NullPointerException();
         }
         return execute0(command);
-    }
-
-    /**
-     * Dump profile in 'collapsed stacktraces' format
-     *
-     * @param counter Which counter to display in the output
-     * @return Textual representation of the profile
-     */
-    public String dumpCollapsed(Counter counter) {
-        try {
-            return execute0("collapsed," + counter.name().toLowerCase());
-        } catch (IOException e) {
-            throw new IllegalStateException(e);
-        }
     }
 
     /**

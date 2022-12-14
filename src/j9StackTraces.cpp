@@ -87,7 +87,7 @@ void J9StackTraces::stop() {
 }
 
 void J9StackTraces::timerLoop() {
-    JNIEnv* jni = VM::attachThread("Async-profiler Sampler");
+    JNIEnv* jni = VM::attachThread("java-profiler Sampler");
     __atomic_store_n(&_self_env, jni, __ATOMIC_RELEASE);
 
     jni->PushLocalFrame(64);

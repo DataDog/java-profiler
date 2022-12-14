@@ -5,7 +5,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.concurrent.ThreadLocalRandom;
-import one.profiler.AsyncProfiler;
+import one.profiler.JavaProfiler;
 
 public class DynamicLibraryLoader {
 
@@ -27,9 +27,9 @@ public class DynamicLibraryLoader {
     }
 
     private static void startProfilerAndDoWork(String jfrFile) throws Exception {
-        AsyncProfiler ap = AsyncProfiler.getInstance(getAsyncProfilerLib());
+        JavaProfiler ap = JavaProfiler.getInstance(getJavaProfilerLib());
         Path jfrDump = Paths.get(jfrFile);
-        ap.execute("start,loglevel=TRACE,cpu=1m,wall=~1ms,filter=0,thread,jfr,file=" + jfrDump.toAbsolutePath());
+        ap.execute("start,loglevel=TRACE,cpu=1m,wall=~1ms,filter=0,jfr,file=" + jfrDump.toAbsolutePath());
         ap.addThread(ap.getNativeThreadId());
         work();
         ap.stop();
@@ -49,7 +49,7 @@ public class DynamicLibraryLoader {
     private native boolean loadLibrary(String libraryFile, String functionName);
 
 
-    private static String getAsyncProfilerLib() {
+    private static String getJavaProfilerLib() {
         try {
             File root = new File(DynamicLibraryLoader.class
                 .getResource("DynamicLibraryLoader.class").toURI()).getParentFile();
@@ -57,7 +57,7 @@ public class DynamicLibraryLoader {
             while (!root.getName().equals("java-profiler")) {
                 root = root.getParentFile();
             }
-            return root.toPath().resolve("build/libasyncProfiler.so").toAbsolutePath().toString();
+            return root.toPath().resolve("build/libjavaProfiler.so").toAbsolutePath().toString();
         } catch (Throwable t) {
              throw new RuntimeException("Could not find asyncProfiler lib", t);
         }

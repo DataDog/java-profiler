@@ -27,7 +27,7 @@ function assertSamples() {
   echo "---"
   FILENAME=/tmp/java-context-smoke.jfr
 
-  LD_PRELOAD=../build/debug/libdebug.so ${JAVA_HOME}/bin/java -cp .:../build/async-profiler.jar -agentpath:../build/debug/libasyncProfiler.so=start,${CPU_ARG},${WALL_ARG},${FILTER_ARG},context,jfr,threads,file=$FILENAME ContextTarget
+  LD_PRELOAD=../build/debug/libdebug.so ${JAVA_HOME}/bin/java -cp .:../build/java-profiler.jar -agentpath:../build/debug/libjavaProfiler.so=start,${CPU_ARG},${WALL_ARG},${FILTER_ARG},context,jfr,threads,cframes=no,file=$FILENAME ContextTarget
   CPU_SAMPLES=$(jfr summary $FILENAME | grep datadog\.ExecutionSample | tr -s " " | cut -f 3 -d ' ')
   WALL_SAMPLES=$(jfr summary $FILENAME | grep datadog\.MethodSample | tr -s " " | cut -f 3 -d ' ')
 
@@ -64,7 +64,7 @@ function assertSamples() {
   cd $(dirname $0)
 
   if [ "ContextTarget.class" -ot "ContextTarget.java" ]; then
-     ${JAVA_HOME}/bin/javac -cp .:../build/async-profiler.jar ContextTarget.java
+     ${JAVA_HOME}/bin/javac -cp .:../build/java-profiler.jar ContextTarget.java
   fi
 
   assertSamples "true" "false" "false"

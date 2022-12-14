@@ -64,7 +64,6 @@ static const Multiplier UNIVERSAL[] = {{'n', 1}, {'u', 1000}, {'m', 1000000}, {'
 //     event=EVENT      - which event to trace (cpu, wall, cache-misses, etc.)
 //     alloc[=BYTES]    - profile allocations with BYTES interval
 //     lock[=DURATION]  - profile contended locks longer than DURATION ns
-//     collapsed        - dump collapsed stacks (the format used by FlameGraph script)
 //     jfr              - dump events in Java Flight Recorder format
 //     traces[=N]       - dump top N call traces
 //     samples          - count the number of samples (default)

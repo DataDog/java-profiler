@@ -6,9 +6,9 @@
     <version>0.1-SNAPSHOT</version>
     <packaging>jar</packaging>
 
-    <name>datadog-async-profiler</name>
+    <name>datadog-java-profiler</name>
     <url>https://www.datadoghq.com/</url>
-    <description>Datadog specific fork of async-profiler (https://github.com/jvm-profiling-tools/async-profiler)</description>
+    <description>Datadog Java Profiler Library (https://github.com/DataDog/java-profiler)</description>
 
     <licenses>
         <license>
@@ -18,28 +18,28 @@
         </license>
     </licenses>
     <scm>
-        <url>https://github.com/DataDog/async-profiler</url>
-        <connection>scm:git:git@github.com:DataDog/async-profiler.git</connection>
-        <developerConnection>scm:git:git@github.com:DataDog/async-profiler.git</developerConnection>
+        <url>https://github.com/DataDog/java-profiler-library</url>
+        <connection>scm:git:git@github.com:DataDog/java-profiler.git</connection>
+        <developerConnection>scm:git:git@github.com:DataDog/java-profiler.git</developerConnection>
     </scm>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <async.profiler.dir>${project.basedir}/../async-profiler</async.profiler.dir>
+        <java.profiler.dir>${project.basedir}/../java-profiler</java.profiler.dir>
         <native.resource.dir>${project.baseDir}/resources</native.resource.dir>
     </properties>
 
     <build>
-        <sourceDirectory>${async.profiler.dir}/src/api</sourceDirectory>
+        <sourceDirectory>${java.profiler.dir}/src/api</sourceDirectory>
         <resources>
             <resource>
                 <directory>${native.resource.dir}</directory>
             </resource>
         </resources>
-        <testSourceDirectory>${async.profiler.dir}/test/maven/java</testSourceDirectory>
+        <testSourceDirectory>${java.profiler.dir}/test/maven/java</testSourceDirectory>
         <testResources>
             <testResource>
-                <directory>${async.profiler.dir}/test/resources</directory>
+                <directory>${java.profiler.dir}/test/resources</directory>
             </testResource>
         </testResources>
 

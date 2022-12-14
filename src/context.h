@@ -38,7 +38,7 @@ typedef struct {
     u32 parallelism;
 } ContextSnapshot;
 
-// must be kept in sync with PAGE_SIZE in AsyncProfiler.java
+// must be kept in sync with PAGE_SIZE in JavaProfiler.java
 const u32 PAGE_SIZE = 1024;
 
 typedef struct {

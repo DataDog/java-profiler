@@ -118,7 +118,7 @@ void MemLeakTracer::flush_table() {
 }
 
 void* MemLeakTracer::cleanup_thread(void *arg) {
-    VM::attachThread("Async-profiler Memory Leak cleanup");
+    VM::attachThread("java-profiler Memory Leak cleanup");
 
     while (true) {
         pthread_mutex_lock(&_cleanup_mutex);

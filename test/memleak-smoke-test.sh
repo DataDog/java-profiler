@@ -10,31 +10,38 @@ fi
 
 (
   cd $(dirname $0)
+  source include.sh
 
   if [ "MemLeakTarget.class" -ot "MemLeakTarget.java" ]; then
      ${JAVA_HOME}/bin/javac MemLeakTarget.java
   fi
 
-  ${JAVA_HOME}/bin/java MemLeakTarget &
+  JFR_FILENAME=/tmp/java-memleak-smoke.jfr
+  JSON_FILENAME="${JFR_FILENAME}.json"
+  COLLAPSED_OUT="${JFR_FILENAME}.txt"
 
-  FILENAME=/tmp/java-memleak-smoke.trace
+  # cleanup first
+  rm -f $JFR_FILENAME
+  rm -f $JSON_FILENAME
+  rm -f $COLLAPSED_OUT
+
+  ${JAVA_HOME}/bin/java -agentpath:../build/libjavaProfiler.so=start,memleak=524288,cstack=no,jfr,file=$JFR_FILENAME MemLeakTarget &
+
   JAVAPID=$!
 
   function cleanup {
-    kill $JAVAPID
+    kill $JAVAPID 2>/dev/null || true
   }
 
   trap cleanup EXIT
 
   sleep 1     # allow the Java runtime to initialize
-  ../profiler.sh -f $FILENAME -o collapsed -d 5 -e memleak -t $JAVAPID
+  kill $JAVAPID
+  $JAVA_HOME/bin/jfr print --events datadog.HeapLiveObject --json $JFR_FILENAME > $JSON_FILENAME
+  jq '.recording | try .events[]?.values | select((.objectClass.name == "[Ljava.lang.Integer;") or (.objectClass.name == "[I")) | .stackTrace.frames[]? | select((.method.type.name == "MemLeakTarget") and (.method.name == "allocate"))' $JSON_FILENAME > $COLLAPSED_OUT
 
-  function assert_string() {
-    if ! grep -q "$1" $FILENAME; then
-      exit 1
-    fi
-  }
-
-  assert_string "\[AllocThread-1 tid=[0-9]\+\];.*[MemLeakTarget.allocate;]\+java.lang.Integer\[\]"
-  assert_string "\[AllocThread-2 tid=[0-9]\+\];.*[MemLeakTarget.allocate;]\+int\[\]"
+  if [ ! -s "$COLLAPSED_OUT" ]; then
+    echo "No live samples for Integer[] and int[] were found!"
+    exit 1
+  fi
 )

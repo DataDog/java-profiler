@@ -55,7 +55,7 @@ void J9WallClock::stop() {
 }
 
 void J9WallClock::timerLoop() {
-    JNIEnv* jni = VM::attachThread("Async-profiler Sampler");
+    JNIEnv* jni = VM::attachThread("java-profiler Sampler");
     jvmtiEnv* jvmti = VM::jvmti();
 
     int max_frames = _max_stack_depth + MAX_NATIVE_FRAMES + RESERVED_FRAMES;

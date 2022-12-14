@@ -47,15 +47,15 @@ mkdir -p .resources
 
 PWD=$(pwd)
 BASEDIR=$PWD
-while [ $(basename $BASEDIR) != "async-profiler" ]; do
+while [ $(basename $BASEDIR) != "java-profiler" ]; do
   cd ..
   BASEDIR=$(pwd)
 done
 cd $PWD
 
-AGENT_PATH=${BASEDIR}/build/libasyncProfiler.so
+AGENT_PATH=${BASEDIR}/build/libjavaProfiler.so
 if [ ! -f "$AGENT_PATH" ]; then
   # we are running in CI - the library will be in a different place
-  AGENT_PATH=${BASEDIR}/src/main/resources/native-libs/linux-x64/libasyncProfiler.so
+  AGENT_PATH=${BASEDIR}/src/main/resources/native-libs/linux-x64/libjavaProfiler.so
 fi
 ${JAVA_HOME}/bin/java -agentpath:${AGENT_PATH}=start,${PROFILER_ARGS} -jar .resources/renaissance.jar "${BENCHMARK_ARGS[@]}"

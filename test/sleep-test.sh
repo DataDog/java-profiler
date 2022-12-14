@@ -17,7 +17,7 @@ fi
 
   FILENAME=/tmp/java-sleep.jfr
 
-  ${JAVA_HOME}/bin/java -cp .:../build/async-profiler.jar -agentpath:../build/libasyncProfiler.so=start,wall=500ms,jfr,thread,file=$FILENAME SleepTest 1000
+  ${JAVA_HOME}/bin/java -cp .:../build/java-profiler.jar -agentpath:../build/libjavaProfiler.so=start,wall=500ms,jfr,file=$FILENAME SleepTest 1000
 
   # wait for normal termination
 

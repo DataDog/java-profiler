@@ -17,7 +17,7 @@
 package one.profiler;
 
 /**
- * Predefined event names to use in {@link AsyncProfiler#start(String, long)}
+ * Predefined event names to use in {@link JavaProfiler#start(String, long)}
  */
 public class Events {
     public static final String CPU    = "cpu";

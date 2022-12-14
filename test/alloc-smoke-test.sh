@@ -15,26 +15,27 @@ fi
      ${JAVA_HOME}/bin/javac AllocatingTarget.java
   fi
 
-  ${JAVA_HOME}/bin/java AllocatingTarget &
+  FILENAME=/tmp/alloc-smoke-test.jfr
+  ${JAVA_HOME}/bin/java -cp .:../build/java-profiler.jar -agentpath:../build/debug/libjavaProfiler.so=start,filter,alloc,context,jfr,file=$FILENAME AllocatingTarget &
 
-  FILENAME=/tmp/java-alloc-smoke.trace
   JAVAPID=$!
 
   function cleanup {
-    kill $JAVAPID
+    kill $JAVAPID 2>/dev/null || true
   }
 
   trap cleanup EXIT
 
-  sleep 1     # allow the Java runtime to initialize
-  ../profiler.sh -f $FILENAME -o collapsed -d 5 -e alloc -t $JAVAPID
+  sleep 1
+  kill $JAVAPID
 
-  function assert_string() {
-    if ! grep -q "$1" $FILENAME; then
+  if [ -f $FILENAME ]; then
+    if [ -z "$($JAVA_HOME/bin/jfr summary $FILENAME | grep 'datadog.ObjectAllocationInNewTLAB')" ]; then
+      echo "Expecting 'datadog.ObjectAllocationInNewTLAB' events!"
       exit 1
     fi
-  }
-
-  assert_string "\[AllocThread-1 tid=[0-9]\+\];.*AllocatingTarget.allocate;.*java.lang.Integer\[\]"
-  assert_string "\[AllocThread-2 tid=[0-9]\+\];.*AllocatingTarget.allocate;.*int\[\]"
+  else
+    echo "Missing JFR recording!"
+    exit 1
+  fi
 )

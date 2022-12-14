@@ -44,7 +44,7 @@ usage() {
     echo "  --end function    end profiling when function is executed"
     echo "  --ttsp            time-to-safepoint profiling"
     echo "  --jfrsync config  synchronize profiler with JFR recording"
-    echo "  --lib path        full path to libasyncProfiler.so in the container"
+    echo "  --lib path        full path to libjavaProfiler.so in the container"
     echo ""
     echo "<pid> is a numeric process ID of the target JVM"
     echo "      or 'jps' keyword to find running JVM automatically"
@@ -121,7 +121,7 @@ done
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_BIN")" > /dev/null 2>&1; pwd -P)"
 
 JATTACH=$SCRIPT_DIR/build/jattach
-PROFILER=$SCRIPT_DIR/build/libasyncProfiler.so
+PROFILER=$SCRIPT_DIR/build/libjavaProfiler.so
 ACTION="collect"
 DURATION="60"
 FILE=""
@@ -296,7 +296,7 @@ fi
 # If no -f argument is given, use temporary file to transfer output to caller terminal.
 # Let the target process create the file in case this script is run by superuser.
 if [ "$USE_TMP" = true ]; then
-    FILE=/tmp/async-profiler.$$.$PID
+    FILE=/tmp/java-profiler.$$.$PID
 else
     case "$FILE" in
         /*)
@@ -308,7 +308,7 @@ else
             ;;
     esac
 fi
-LOG=/tmp/async-profiler-log.$$.$PID
+LOG=/tmp/java-profiler-log.$$.$PID
 
 UNAME_S=$(uname -s)
 if [ "$UNAME_S" = "Linux" ]; then

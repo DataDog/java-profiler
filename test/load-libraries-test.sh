@@ -10,6 +10,8 @@ fi
 
 (
   cd $(dirname $0)
+  source include.sh
+
   cd loadlibs
   # build some dynamic libraries to load
   g++ -c -fPIC -o increment.o increment.cpp
@@ -21,7 +23,7 @@ fi
   JFR=/tmp/load-libraries-test.jfr
   rm -f $JFR
 
-  CLASSPATH=../../build/async-profiler.jar
+  CLASSPATH=../../build/java-profiler.jar
 
   export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:.
   $JAVA_HOME/bin/javac -cp $CLASSPATH com/datadoghq/loader/DynamicLibraryLoader.java
@@ -29,7 +31,8 @@ fi
     -Djava.library.path=. com.datadoghq.loader.DynamicLibraryLoader \
     $JFR ./libincrement.so:increment
 
-  $JAVA_HOME/bin/jfr print --json $JFR
+  # $JAVA_HOME/bin/jfr print --json $JFR
+  $JAVA_HOME/bin/jfr summary $JFR
 )
 
 

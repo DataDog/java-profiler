@@ -10,7 +10,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 
-import one.profiler.AsyncProfiler;
+import one.profiler.JavaProfiler;
 import utils.Utils;
 
 import static org.junit.jupiter.api.Assertions.fail;
@@ -20,25 +20,25 @@ public class ShutdownTest {
 
   @Test
   public void testShutdownCpu() throws IOException {
-    AsyncProfiler ap = AsyncProfiler.getInstance(Utils.getAsyncProfilerLib());
+    JavaProfiler ap = JavaProfiler.getInstance(Utils.getJavaProfilerLib());
     runTest(ap, "start,cpu=10us,filter=0,thread");
   }
 
   @Test
   public void testShutdownWall() throws IOException {
-    AsyncProfiler ap = AsyncProfiler.getInstance(Utils.getAsyncProfilerLib());
+    JavaProfiler ap = JavaProfiler.getInstance(Utils.getJavaProfilerLib());
     ap.addThread(ap.getNativeThreadId());
     runTest(ap, "start,wall=~10us,filter=0,thread");
   }
 
   @Test
   public void testShutdownCpuAndWall() throws IOException {
-    AsyncProfiler ap = AsyncProfiler.getInstance(Utils.getAsyncProfilerLib());
+    JavaProfiler ap = JavaProfiler.getInstance(Utils.getJavaProfilerLib());
     ap.addThread(ap.getNativeThreadId());
     runTest(ap, "start,cpu=10us,wall=~10us,filter=0,thread");
   }
 
-  private static void runTest(AsyncProfiler asyncProfiler, String command) throws IOException {
+  private static void runTest(JavaProfiler asyncProfiler, String command) throws IOException {
     Path jfrDump = Files.createTempFile("filter-test", ".jfr");
     String commandWithDump = command + ",jfr,file=" + jfrDump.toAbsolutePath();
     ExecutorService executor = Executors.newSingleThreadExecutor();

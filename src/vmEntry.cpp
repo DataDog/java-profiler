@@ -100,7 +100,7 @@ bool VM::init(JavaVM* vm, bool attach) {
 #ifdef __APPLE__
     Dl_info dl_info;
     if (dladdr((const void*)wakeupHandler, &dl_info) && dl_info.dli_fname != NULL) {
-        // Make sure async-profiler DSO cannot be unloaded, since it contains JVM callbacks.
+        // Make sure java-profiler DSO cannot be unloaded, since it contains JVM callbacks.
         // On Linux, we use 'nodelete' linker option.
         dlopen(dl_info.dli_fname, RTLD_LAZY | RTLD_NODELETE);
     }

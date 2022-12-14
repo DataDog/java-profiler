@@ -10,32 +10,35 @@ fi
 
 (
   cd $(dirname $0)
+  source include.sh
 
   if [ "Target.class" -ot "Target.java" ]; then
-     ${JAVA_HOME}/bin/javac -cp ../build/async-profiler.jar Target.java
+     ${JAVA_HOME}/bin/javac -cp ../build/java-profiler.jar Target.java
   fi
 
-  ${JAVA_HOME}/bin/java Target &
+  FILENAME=/tmp/java-smoke.jfr
+  COLLAPSED_OUT=/tmp/smoke-test.txt
 
-  FILENAME=/tmp/java-smoke.trace
+  # cleanup first
+  rm -f $FILENAME
+  rm -f $COLLAPSED_OUT
+
+  ${JAVA_HOME}/bin/java -agentpath:../build/libjavaProfiler.so=start,cpu=1ms,jfr,cstack=no,file=$FILENAME Target &
+
   JAVAPID=$!
 
   function cleanup {
-    kill $JAVAPID
+    kill $JAVAPID 2>/dev/null || true
   }
 
   trap cleanup EXIT
 
   sleep 1     # allow the Java runtime to initialize
-  ../profiler.sh -f $FILENAME -o collapsed -d 5 $JAVAPID
-
-  function assert_string() {
-    if ! grep -q "$1" $FILENAME; then
-      exit 1
-    fi
-  }
-
-  assert_string "Target.main;Target.method1 "
-  assert_string "Target.main;Target.method2 "
-  assert_string "Target.main;Target.method3;java/io/File"
+  kill $JAVAPID
+  
+  collapseJfr datadog.ExecutionSample $FILENAME $COLLAPSED_OUT
+  
+  assert_string "Target.main;Target.method1 " $COLLAPSED_OUT
+  assert_string "Target.main;Target.method2 " $COLLAPSED_OUT
+  assert_string "Target.main;Target.method3;java/io/File" $COLLAPSED_OUT
 )

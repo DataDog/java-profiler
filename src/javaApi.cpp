@@ -36,7 +36,7 @@ static void throwNew(JNIEnv* env, const char* exception_class, const char* messa
 
 
 extern "C" DLLEXPORT void JNICALL
-Java_one_profiler_AsyncProfiler_start0(JNIEnv* env, jobject unused, jstring event, jlong interval, jboolean reset) {
+Java_one_profiler_JavaProfiler_start0(JNIEnv* env, jobject unused, jstring event, jlong interval, jboolean reset) {
     Arguments args;
     const char* event_str = env->GetStringUTFChars(event, NULL);
     if (strcmp(event_str, EVENT_CPU) == 0) {
@@ -63,7 +63,7 @@ Java_one_profiler_AsyncProfiler_start0(JNIEnv* env, jobject unused, jstring even
 }
 
 extern "C" DLLEXPORT void JNICALL
-Java_one_profiler_AsyncProfiler_stop0(JNIEnv* env, jobject unused) {
+Java_one_profiler_JavaProfiler_stop0(JNIEnv* env, jobject unused) {
     Error error = Profiler::instance()->stop();
 
     if (error) {
@@ -72,12 +72,12 @@ Java_one_profiler_AsyncProfiler_stop0(JNIEnv* env, jobject unused) {
 }
 
 extern "C" DLLEXPORT jint JNICALL
-Java_one_profiler_AsyncProfiler_getTid0(JNIEnv* env, jobject unused) {
+Java_one_profiler_JavaProfiler_getTid0(JNIEnv* env, jobject unused) {
     return OS::threadId();
 }
 
 extern "C" DLLEXPORT jstring JNICALL
-Java_one_profiler_AsyncProfiler_execute0(JNIEnv* env, jobject unused, jstring command) {
+Java_one_profiler_JavaProfiler_execute0(JNIEnv* env, jobject unused, jstring command) {
     Arguments args;
     const char* command_str = env->GetStringUTFChars(command, NULL);
     Error error = args.parse(command_str);
@@ -118,12 +118,12 @@ Java_one_profiler_AsyncProfiler_execute0(JNIEnv* env, jobject unused, jstring co
 }
 
 extern "C" DLLEXPORT jlong JNICALL
-Java_one_profiler_AsyncProfiler_getSamples(JNIEnv* env, jobject unused) {
+Java_one_profiler_JavaProfiler_getSamples(JNIEnv* env, jobject unused) {
     return (jlong)Profiler::instance()->total_samples();
 }
 
 extern "C" DLLEXPORT void JNICALL
-Java_one_profiler_AsyncProfiler_filterThread0(JNIEnv* env, jobject unused, jint tid, jboolean enable) {
+Java_one_profiler_JavaProfiler_filterThread0(JNIEnv* env, jobject unused, jint tid, jboolean enable) {
     if (tid < 0) {
         return;
     }
@@ -136,17 +136,17 @@ Java_one_profiler_AsyncProfiler_filterThread0(JNIEnv* env, jobject unused, jint 
 }
 
 extern "C" DLLEXPORT jobject JNICALL
-Java_one_profiler_AsyncProfiler_getContextPage0(JNIEnv* env, jobject unused, jint tid) {
+Java_one_profiler_JavaProfiler_getContextPage0(JNIEnv* env, jobject unused, jint tid) {
     ContextPage page = Contexts::getPage((int) tid);
     return env->NewDirectByteBuffer((void*) page.storage, (jlong) page.capacity);
 }
 
 extern "C" DLLEXPORT jint JNICALL
-Java_one_profiler_AsyncProfiler_getMaxContextPages0(JNIEnv* env, jobject unused) {
+Java_one_profiler_JavaProfiler_getMaxContextPages0(JNIEnv* env, jobject unused) {
     return (jint) Contexts::getMaxPages();
 }
 
-#define F(name, sig)  {(char*)#name, (char*)sig, (void*)Java_one_profiler_AsyncProfiler_##name}
+#define F(name, sig)  {(char*)#name, (char*)sig, (void*)Java_one_profiler_JavaProfiler_##name}
 
 static const JNINativeMethod profiler_natives[] = {
     F(start0,                "(Ljava/lang/String;JZ)V"),
@@ -164,7 +164,7 @@ static const JNINativeMethod* execute0 = &profiler_natives[2];
 #undef F
 
 
-// Since AsyncProfiler class can be renamed or moved to another package (shaded),
+// Since JavaProfiler class can be renamed or moved to another package (shaded),
 // we look for the actual class in the stack trace.
 void JavaAPI::registerNatives(jvmtiEnv* jvmti, JNIEnv* jni) {
     jvmtiFrameInfo frame[10];
@@ -178,7 +178,7 @@ void JavaAPI::registerNatives(jvmtiEnv* jvmti, JNIEnv* jni) {
     jmethodID loadLibrary = jni->GetStaticMethodID(System, "loadLibrary", "(Ljava/lang/String;)V");
 
     // Look for System.load() or System.loadLibrary() method in the stack trace.
-    // The next frame will belong to AsyncProfiler class.
+    // The next frame will belong to JavaProfiler class.
     for (int i = 0; i < frame_count - 1; i++) {
         if (frame[i].method == load || frame[i].method == loadLibrary) {
             jclass profiler_class;

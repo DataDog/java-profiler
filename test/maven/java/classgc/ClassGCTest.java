@@ -21,20 +21,20 @@ import javax.tools.ToolProvider;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import one.profiler.AsyncProfiler;
+import one.profiler.JavaProfiler;
 import utils.Utils;
 
 public class ClassGCTest {
 
-    private AsyncProfiler profiler;
+    private JavaProfiler profiler;
     private Path jfrDump;
 
     @BeforeEach
     public void setup() throws IOException {
         jfrDump = Files.createTempFile(getClass().getName(), ".jfr");
-        profiler = AsyncProfiler.getInstance(Utils.getAsyncProfilerLib());
+        profiler = JavaProfiler.getInstance(Utils.getJavaProfilerLib());
         profiler.addThread(profiler.getNativeThreadId());
-        profiler.execute("start,cpu=1ms,wall=1ms,filter=0,memleak,jfr,thread,file=" + jfrDump.toAbsolutePath());
+        profiler.execute("start,cpu=1ms,wall=1ms,filter=0,memleak,jfr,file=" + jfrDump.toAbsolutePath());
     }
 
     @AfterEach

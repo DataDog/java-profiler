@@ -522,7 +522,7 @@ int Profiler::getJavaTraceJvmti(jvmtiFrameInfo* jvmti_frames, ASGCT_CallFrame* f
 int Profiler::getJavaTraceInternal(jvmtiFrameInfo* jvmti_frames, ASGCT_CallFrame* frames, int max_depth) {
     // We cannot call pure JVM TI here, because it assumes _thread_in_native state,
     // but allocation events happen in _thread_in_vm state,
-    // see https://github.com/jvm-profiling-tools/async-profiler/issues/64
+    // see https://github.com/jvm-profiling-tools/java-profiler/issues/64
     JNIEnv* jni = VM::jni();
     if (jni == NULL) {
         return 0;
@@ -1245,9 +1245,6 @@ Error Profiler::dump(std::ostream& out, Arguments& args) {
     }
 
     switch (args._output) {
-        case OUTPUT_COLLAPSED:
-            dumpCollapsed(out, args);
-            break;
         case OUTPUT_JFR:
             if (_state == RUNNING) {
                 return _jfr.dump(args.file());
@@ -1274,38 +1271,6 @@ void Profiler::switchThreadEvents(jvmtiEventMode mode) {
         jvmti->SetEventNotificationMode(mode, JVMTI_EVENT_THREAD_START, NULL);
         jvmti->SetEventNotificationMode(mode, JVMTI_EVENT_THREAD_END, NULL);
         _thread_events_state = mode;
-    }
-}
-
-/*
- * Dump stacks in FlameGraph input format:
- * 
- * <frame>;<frame>;...;<topmost frame> <count>
- */
-void Profiler::dumpCollapsed(std::ostream& out, Arguments& args) {
-    FrameName fn(args, args._style, _epoch, _thread_names_lock, _thread_names);
-    char buf[32];
-    memset(buf, 0, sizeof(buf));
-    std::vector<CallTraceSample*> samples;
-    _call_trace_storage.collectSamples(samples);
-
-    for (std::vector<CallTraceSample*>::const_iterator it = samples.begin(); it != samples.end(); ++it) {
-        CallTrace* trace = (*it)->acquireTrace();
-        if (trace == NULL || excludeTrace(&fn, trace)) continue;
-
-        u64 counter = args._counter == COUNTER_SAMPLES ? (*it)->samples : (*it)->counter;
-        if (counter == 0) continue;
-
-        for (int j = trace->num_frames - 1; j >= 0; j--) {
-            const char* frame_name = fn.name(trace->frames[j]);
-            out << frame_name << (j == 0 ? ' ' : ';');
-        }
-        // Beware of locale-sensitive conversion
-        out.write(buf, sprintf(buf, "%llu\n", counter));
-    }
-
-    if (!out.good()) {
-        Log::warn("Output file may be incomplete");
     }
 }
 
@@ -1345,7 +1310,7 @@ void Profiler::startTimer() {
     jmethodID init = jni->GetMethodID(Thread, "<init>", "(Ljava/lang/String;)V");
     jmethodID setDaemon = jni->GetMethodID(Thread, "setDaemon", "(Z)V");
 
-    jstring name = jni->NewStringUTF("Async-profiler Timer");
+    jstring name = jni->NewStringUTF("java-profiler Timer");
     if (name != NULL && init != NULL && setDaemon != NULL) {
         jthread thread_obj = jni->NewObject(Thread, init, name);
         if (thread_obj != NULL) {

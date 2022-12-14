@@ -5,7 +5,7 @@ export PROFILER_VERSION=$1
 FORCE_TESTS=$2
 FORCE_CPPCHECK=$3
 
-cd /data/src/async-profiler
+cd /data/src/java-profiler
 # make sure all previously compiled classes are gone to prevent any bytecode incompatibility
 find . -name '*.class' | xargs -I {} rm -f {} || true
 # build the library
@@ -27,4 +27,4 @@ fi
 if [ "yes" = "$FORCE_TESTS" ]; then
   make test
 fi
-cp build/libasyncProfiler.so /data/libs/libasyncProfiler.so
+cp build/libjavaProfiler.so /data/libs/libjavaProfiler.so

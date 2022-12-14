@@ -1,7 +1,7 @@
 import java.io.File;
 import java.nio.file.Paths;
 
-import one.profiler.AsyncProfiler;
+import one.profiler.JavaProfiler;
 
 class Target {
     private static volatile int value;
@@ -53,7 +53,7 @@ class Target {
     private static void tryDump() {
         if (dumpPath != null && ts > 0) {
             if (System.nanoTime() - ts > (dumpAfterSecs * 1_000_000_000L)) {
-                if (!AsyncProfiler.getInstance().dumpJfr(Paths.get(dumpPath))) {
+                if (!JavaProfiler.getInstance().dumpJfr(Paths.get(dumpPath))) {
                     throw new IllegalStateException("Unable to dump JFR data to " + dumpPath);
                 }
                 ts = -1;

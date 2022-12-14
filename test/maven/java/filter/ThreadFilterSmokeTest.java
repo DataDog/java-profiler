@@ -1,6 +1,6 @@
 package filter;
 
-import one.profiler.AsyncProfiler;
+import one.profiler.JavaProfiler;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -13,6 +13,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+
+import utils.Utils;
 
 public class ThreadFilterSmokeTest {
   private ExecutorService executorService;
@@ -30,14 +32,14 @@ public class ThreadFilterSmokeTest {
   @Test
   public void smokeTest() throws Exception {
     Path jfrDump = Files.createTempFile("filter-test", ".jfr");
-    AsyncProfiler asyncProfiler = AsyncProfiler.getInstance();
+    JavaProfiler asyncProfiler = JavaProfiler.getInstance(Utils.getJavaProfilerLib());
     doThreadFiltering(asyncProfiler);
-    asyncProfiler.execute("start,wall=~1ms,filter=0,jfr,thread,file=" + jfrDump.toAbsolutePath());
+    asyncProfiler.execute("start,wall=~1ms,filter=0,jfr,file=" + jfrDump.toAbsolutePath());
     doThreadFiltering(asyncProfiler);
     asyncProfiler.stop();
   }
 
-  private void doThreadFiltering(AsyncProfiler asyncProfiler) throws Exception {
+  private void doThreadFiltering(JavaProfiler asyncProfiler) throws Exception {
     Future<?>[] futures = new Future[1000];
     for (int i = 0; i < futures.length; i++) {
       int id = i;

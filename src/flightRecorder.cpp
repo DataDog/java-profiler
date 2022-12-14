@@ -40,14 +40,6 @@
 #include "tsc.h"
 #include "vmStructs.h"
 
-
-INCBIN(JFR_SYNC_CLASS, "one/profiler/JfrSync.class")
-
-static void JNICALL JfrSync_stopProfiler(JNIEnv* env, jclass cls) {
-    Profiler::instance()->stop();
-}
-
-
 const int BUFFER_SIZE = 1024;
 const int BUFFER_LIMIT = BUFFER_SIZE - 128;
 const int RECORDING_BUFFER_SIZE = 65536;
@@ -764,8 +756,8 @@ class Recording {
         buf->putVar64(_tid);
         buf->put8(0);
         buf->put8(1);
-        buf->putUtf8("async-profiler " PROFILER_VERSION);
-        buf->putUtf8("async-profiler.jfr");
+        buf->putUtf8("java-profiler " PROFILER_VERSION);
+        buf->putUtf8("java-profiler.jfr");
         buf->putVar64(MAX_JLONG);
         if (VM::hotspot_version() >= 14) {
             buf->put8(0);

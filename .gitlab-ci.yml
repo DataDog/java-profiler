@@ -18,6 +18,6 @@ trigger_internal_build:
     AP_SHORT_COMMIT_SHA: ${CI_COMMIT_SHORT_SHA}
     AP_COMMIT_TAG: ${CI_COMMIT_REF_NAME}
   trigger:
-    project: DataDog/async-profiler-build
+    project: DataDog/java-profiler-build
     strategy: depend
     branch: $DOWNSTREAM_BRANCH
