@@ -26,7 +26,7 @@ fi
 
   trap cleanup EXIT
 
-  sleep 1
+  sleep 5
   kill $JAVAPID
 
   if [ -f $FILENAME ]; then

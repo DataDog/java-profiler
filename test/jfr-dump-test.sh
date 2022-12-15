@@ -38,7 +38,7 @@ function assert_string() {
 
     trap cleanup EXIT
 
-    sleep 2
+    sleep 5
     # wait for the internal dump
 
     if [ -z "$(${JAVA_HOME}/bin/jps | grep $JAVAPID)" ]; then

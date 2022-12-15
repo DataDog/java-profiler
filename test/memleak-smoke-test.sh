@@ -35,7 +35,7 @@ fi
 
   trap cleanup EXIT
 
-  sleep 1     # allow the Java runtime to initialize
+  sleep 5     # allow the Java runtime to initialize
   kill $JAVAPID
   $JAVA_HOME/bin/jfr print --events datadog.HeapLiveObject --json $JFR_FILENAME > $JSON_FILENAME
   jq '.recording | try .events[]?.values | select((.objectClass.name == "[Ljava.lang.Integer;") or (.objectClass.name == "[I")) | .stackTrace.frames[]? | select((.method.type.name == "MemLeakTarget") and (.method.name == "allocate"))' $JSON_FILENAME > $COLLAPSED_OUT
