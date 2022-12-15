@@ -33,7 +33,7 @@ fi
 
   trap cleanup EXIT
 
-  sleep 1     # allow the Java runtime to initialize
+  sleep 5     # allow the Java runtime to initialize
   kill $JAVAPID
   
   collapseJfr datadog.ExecutionSample $FILENAME $COLLAPSED_OUT
