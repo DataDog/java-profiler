@@ -1,7 +1,6 @@
 name: "Cppcheck"
 
 on:
-  - push
   - pull_request
 
 jobs:

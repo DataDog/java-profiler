@@ -8,6 +8,11 @@ if [ -z "${JAVA_HOME}" ]; then
   exit 1
 fi
 
+if [ ! -z "$($JAVA_HOME/bin/java -version 2>&1 | grep 1.8.0)" ]; then
+  echo "MemLeak Profiler is not supported for OpenJDK 8"
+  exit 0
+fi
+
 (
   cd $(dirname $0)
   source include.sh
