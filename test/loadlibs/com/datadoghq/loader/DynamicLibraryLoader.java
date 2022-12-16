@@ -29,7 +29,7 @@ public class DynamicLibraryLoader {
     private static void startProfilerAndDoWork(String jfrFile) throws Exception {
         JavaProfiler ap = JavaProfiler.getInstance(getJavaProfilerLib());
         Path jfrDump = Paths.get(jfrFile);
-        ap.execute("start,loglevel=TRACE,cpu=1m,wall=~1ms,filter=0,jfr,file=" + jfrDump.toAbsolutePath());
+        ap.execute("start,loglevel=TRACE,cpu=1m,wall=1ms,filter=0,jfr,cstack=no,file=" + jfrDump.toAbsolutePath());
         ap.addThread(ap.getNativeThreadId());
         work();
         ap.stop();
