@@ -10,21 +10,17 @@ cd /data/src/java-profiler
 find . -name '*.class' | xargs -I {} rm -f {} || true
 # build the library
 
-# set up Java home according to the actual OS
-if [ -d /usr/lib/jvm/java-11-openjdk-amd64/ ]; then
-  export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64/
-elif [ -d /usr/lib/jvm/java-11-openjdk/ ]; then
-  export JAVA_HOME=/usr/lib/jvm/java-11-openjdk/
-else
-  echo "Unsupported Java home"
-  exit 1
-fi
+find . -name '*.class' | xargs -I {} rm -f {}
+CMD=""
 
-make clean all
 if [ "yes" = "$FORCE_CPPCHECK" ]; then
-  make cppcheck
+  CMD="cppcheck"
 fi
 if [ "yes" = "$FORCE_TESTS" ]; then
-  make test
+  CMD+=" test"
 fi
+if [ -z "$CMD" ]; then
+  CMD="all"
+fi
+make clean $CMD
 cp build/libjavaProfiler.so /data/libs/libjavaProfiler.so

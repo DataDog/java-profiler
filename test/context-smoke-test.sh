@@ -9,6 +9,11 @@ if [ -z "${JAVA_HOME}" ]; then
   exit 1
 fi
 
+LIBDEBUG=
+if [ ! -z "$(ldd --version 2>&1 | grep -i 'glibc')" ]; then
+  LIBDEBUG=../build/debug/libdebug.so
+fi
+
 function assertSamples() {
   CPU_ARG=
   WALL_ARG=
@@ -27,7 +32,7 @@ function assertSamples() {
   echo "---"
   FILENAME=/tmp/java-context-smoke.jfr
 
-  LD_PRELOAD=../build/debug/libdebug.so ${JAVA_HOME}/bin/java -cp .:../build/java-profiler.jar -agentpath:../build/debug/libjavaProfiler.so=start,${CPU_ARG},${WALL_ARG},${FILTER_ARG},context,jfr,threads,cframes=no,file=$FILENAME ContextTarget
+  LD_PRELOAD=$LIBDEBUG ${JAVA_HOME}/bin/java -cp .:../build/java-profiler.jar -agentpath:../build/debug/libjavaProfiler.so=start,${CPU_ARG},${WALL_ARG},${FILTER_ARG},context,jfr,threads,cframes=no,file=$FILENAME ContextTarget
   CPU_SAMPLES=$(jfr summary $FILENAME | grep datadog\.ExecutionSample | tr -s " " | cut -f 3 -d ' ')
   WALL_SAMPLES=$(jfr summary $FILENAME | grep datadog\.MethodSample | tr -s " " | cut -f 3 -d ' ')
 

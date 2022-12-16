@@ -111,9 +111,9 @@ void VMStructs::ready() {
     JNIEnv* env = VM::jni();
     initThreadBridge(env);
     initLogging(env);
-    #ifdef DEBUG
+    #ifdef TRACE
     _libjvm->dump();
-    #endif // DEBUG
+    #endif // TRACE
 }
 
 void VMStructs::initOffsets() {
