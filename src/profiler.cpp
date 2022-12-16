@@ -1078,7 +1078,7 @@ Error Profiler::start(Arguments& args, bool reset) {
         return error;
     }
 
-    switchLibraryTrap(true);
+    switchLibraryTrap(_cstack != CSTACK_NO);
     if (args._output == OUTPUT_JFR) {
         error = _jfr.start(args, reset);
         if (error) {
