@@ -1,5 +1,7 @@
 #! /bin/bash
 
+set -euo pipefail
+
 SCRIPT_DIR=$(dirname ${BASH_SOURCE[0]})
 HERE=$(cd "${SCRIPT_DIR}" &>/dev/null && printf "%s/%s" "$PWD")
 JAVA_PROFILER_DIR="${HERE}/../.."
@@ -60,13 +62,13 @@ done
 
 case $ARCH in
   linux-x64)
-    IMAGE="debian:latest"
+    IMAGE="bellsoft/liberica-openjdk-debian:17.0.5"
     ;;
   linux-x64-musl)
-    IMAGE="alpine"
+    IMAGE="bellsoft/liberica-openjdk-alpine-musl:17.0.5"
     ;;
   linux-arm64)
-    IMAGE="arm64v8/alpine"
+    IMAGE="bellsoft/liberica-openjdk-debian:17.0.5"
     ;;
   *)
     echo "Only linux-x64, linux-x64-musl and linux-arm64 are valid arch options."
@@ -108,15 +110,16 @@ rm -f /tmp/docker.log
 echo "-> Building native library"
 # run the native build
 docker run --rm -it --platform ${PLATFORM} -v ${JAVA_PROFILER_DIR}:/data/src/java-profiler -v ${MAVEN_DIR}/resources/native-libs/${ARCH}:/data/libs -v ${HERE}/../maven/repository:/root/.m2/repository ${TAG} bash -eux /devtools/build_in_docker.sh ${VERSION} ${FORCE_TESTS} ${FORCE_CPPCHECK}
+echo $?
 echo "-> Built native library"
 
-if [ 0 -ne $? ] || [ ! -z "$(fgrep 'error' /tmp/docker.log)" ]; then
+if [ 0 -ne $? ] || [ ! -z "$(fgrep 'error' /tmp/docker.log 2>/dev/null)" ]; then
   # print the output and exit if there is error
   cat /tmp/docker.log
   exit 1
 fi
 
-if [ ! -z "$(fgrep 'warning' /tmp/docker.log)" ]; then
+if [ ! -z "$(fgrep 'warning' /tmp/docker.log 2>/dev/null)" ]; then
   # just print the output for warnings
   cat /tmp/docker.log
 fi

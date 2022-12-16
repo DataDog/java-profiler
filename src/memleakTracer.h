@@ -64,6 +64,7 @@ class MemLeakTracer : public Engine {
     static bool _cleanup_run;
 
     static get_sampling_interval _get_sampling_interval;
+    static int* _sampling_interval;
 
     static Error initialize(Arguments& args);
 

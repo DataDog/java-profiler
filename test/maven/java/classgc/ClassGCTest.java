@@ -9,6 +9,7 @@ import java.io.OutputStream;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
 import java.util.List;
 import javax.tools.FileObject;
 import javax.tools.ForwardingJavaFileManager;
@@ -34,7 +35,7 @@ public class ClassGCTest {
         jfrDump = Files.createTempFile(getClass().getName(), ".jfr");
         profiler = JavaProfiler.getInstance(Utils.getJavaProfilerLib());
         profiler.addThread(profiler.getNativeThreadId());
-        profiler.execute("start,cpu=1ms,wall=1ms,filter=0,memleak,jfr,file=" + jfrDump.toAbsolutePath());
+        profiler.execute("start,cpu=1ms,wall=1ms,filter=0,memleak=524288,cstack=no,jfr,file=" + jfrDump.toAbsolutePath());
     }
 
     @AfterEach
@@ -111,7 +112,7 @@ public class ClassGCTest {
     private static byte[] compile(String className, String code) {
         JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
         ClassFileManager manager = new ClassFileManager(compiler.getStandardFileManager(null, null, null));
-        compiler.getTask(null, manager, null, null, null, List.of(new CharSequenceJavaFileObject(className, code))).call();
+        compiler.getTask(null, manager, null, null, null, Collections.singletonList(new CharSequenceJavaFileObject(className, code))).call();
         return manager.javaFileObject.getBytes();
     }
 

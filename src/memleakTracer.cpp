@@ -44,6 +44,7 @@ pthread_cond_t MemLeakTracer::_cleanup_cond;
 u32 MemLeakTracer::_cleanup_round;
 bool MemLeakTracer::_cleanup_run;
 get_sampling_interval MemLeakTracer::_get_sampling_interval;
+int* MemLeakTracer::_sampling_interval;
 
 static int __min(int a, int b) {
     return a < b ? a : b;
@@ -212,12 +213,18 @@ Error MemLeakTracer::initialize(Arguments& args) {
 
     CodeCache* libjvm = VMStructs::libjvm();
 
-    // this symbol should be availabel given the current JVTMI heap sampler implementation
+    // this symbol should be available given the current JVTMI heap sampler implementation
     // Note: when/if that implementation would change in the future the alernatives should be added here
     const void* get_interval_ptr = libjvm->findSymbol("_ZN17ThreadHeapSampler21get_sampling_intervalEv");
     if (get_interval_ptr == NULL) {
+        _sampling_interval = (int*) libjvm->findSymbol("_ZN17ThreadHeapSampler18_sampling_intervalE");
+    }
+    if (get_interval_ptr == NULL && _sampling_interval == NULL) {
         // fail if it is not possible to resolve the required symbol
-        return Error("Unable to resolve the sampling interval getter");
+        Log::warn("Memleak profiling is not supported on this JDK");
+        // set _table_max_cap to 0 in order to disable memleak profiling
+        _table_max_cap = 0;
+        return Error::OK;
     }
     _get_sampling_interval = (get_sampling_interval)get_interval_ptr;
 
@@ -267,7 +274,7 @@ retry:
     if (idx < _table_cap) {
         _table[idx].ref = ref;
         _table[idx].ref_size = size;
-        _table[idx].interval = _get_sampling_interval();
+        _table[idx].interval = _sampling_interval != NULL ? *_sampling_interval : _get_sampling_interval();
         _table[idx].age = 0;
         _table[idx].frames_size = frames_size;
         _table[idx].frames = new jvmtiFrameInfo[_table[idx].frames_size];
