@@ -26,10 +26,10 @@ const ContextSnapshot Contexts::get(int tid) {
     if (page != NULL) {
         Context& context = page[tid % PAGE_SIZE];
         if ((context.spanId ^ context.rootSpanId) == context.checksum && context.spanId != 0) {
-            return {context.spanId, context.rootSpanId, context.parallelism};
+            return { .spanId = context.spanId, .rootSpanId = context.rootSpanId, .parallelism = context.parallelism };
         }
     }
-    return {0, 0, 1};
+    return { .spanId = 0, .rootSpanId = 0, .parallelism = 1 };
 }
 
 void Contexts::initialize(int pageIndex) {

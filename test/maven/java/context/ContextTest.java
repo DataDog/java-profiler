@@ -51,8 +51,9 @@ public class ContextTest {
         }
         System.err.println(value);
         Thread.sleep(10);
-        ap.clearPoolParallelism(tid);
         ap.stop();
+        // call after stopping the profiler to avoid breaking the assert below
+        ap.clearPoolParallelism(tid);
         IItemCollection events = JfrLoaderToolkit.loadEvents(jfrDump.toFile());
         IItemCollection cpuSamples = events.apply(ItemFilters.type("datadog.ExecutionSample"));
         assertTrue(cpuSamples.hasItems());
