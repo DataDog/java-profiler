@@ -29,16 +29,12 @@ print_help() {
 
 FORCE_REBUILD="no"
 ARCH="linux-x64"
-PLATFORM="linux/amd64"
 FORCE_TESTS="no"
 FORCE_CPPCHECK="no"
 while getopts "a:tfhc" arg; do
   case $arg in
     a)
       ARCH=${OPTARG}
-      if [ ${ARCH} = "linux-arm64" ]; then
-        PLATFORM="linux/arm64"
-      fi
       ;;
     f)
       FORCE_REBUILD="yes"
@@ -67,11 +63,8 @@ case $ARCH in
   linux-x64-musl)
     IMAGE="bellsoft/liberica-openjdk-alpine-musl:17.0.5"
     ;;
-  linux-arm64)
-    IMAGE="bellsoft/liberica-openjdk-debian:17.0.5"
-    ;;
   *)
-    echo "Only linux-x64, linux-x64-musl and linux-arm64 are valid arch options."
+    echo "Only linux-x64 and linux-x64-musl are valid arch options."
     exit 0
     ;;
 esac
@@ -79,7 +72,7 @@ esac
 TAG="java-profiler-build:$ARCH"
 
 if [ -z "$(docker images | grep java-profiler-build | grep ${ARCH})" ] || [ "yes" = "${FORCE_REBUILD}" ];then
-  docker build --build-arg IMAGE=${IMAGE} -t ${TAG} --platform ${PLATFORM} ${JAVA_PROFILER_DIR}/datadog/docker
+  docker -v build --build-arg IMAGE=${IMAGE} -t ${TAG} ${JAVA_PROFILER_DIR}/datadog/docker
 fi
 
 # create the native lib arch specific directory
@@ -109,7 +102,7 @@ rm -f /tmp/docker.log
 
 echo "-> Building native library"
 # run the native build
-docker run --rm -it --platform ${PLATFORM} -v ${JAVA_PROFILER_DIR}:/data/src/java-profiler -v ${MAVEN_DIR}/resources/native-libs/${ARCH}:/data/libs -v ${HERE}/../maven/repository:/root/.m2/repository ${TAG} bash -eux /devtools/build_in_docker.sh ${VERSION} ${FORCE_TESTS} ${FORCE_CPPCHECK}
+docker run --rm -it -v ${JAVA_PROFILER_DIR}:/data/src/java-profiler -v ${MAVEN_DIR}/resources/native-libs/${ARCH}:/data/libs -v ${HERE}/../maven/repository:/root/.m2/repository ${TAG} bash -eux /devtools/build_in_docker.sh ${VERSION} ${FORCE_TESTS} ${FORCE_CPPCHECK}
 echo $?
 echo "-> Built native library"
 
