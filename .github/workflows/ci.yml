@@ -69,10 +69,9 @@ jobs:
             find . -type d -name 'jdk*' -maxdepth 1| xargs -I {} mv {} test_jdk
       - name: Test
         run: |
-          ls -la
           export JAVA_HOME=$(pwd)/test_jdk
           export PATH=$JAVA_HOME/bin:$PATH
-          chmod a+x test/test-all.sh
+          chmod a+x test/*.sh
           ./test/test-all.sh
       - name: Upload logs
         uses: actions/upload-artifact@v3
@@ -109,10 +108,9 @@ jobs:
             find . -type d -name 'jdk*' -maxdepth 1 | xargs -I {} mv {} test_jdk
       - name: Test
         run: |
-          ls -la
           export JAVA_HOME=$(pwd)/test_jdk
           export PATH=$JAVA_HOME/bin:$PATH
-          chmod a+x test/test-all.sh
+          chmod a+x test/*.sh
           ./test/test-all.sh
       - name: Upload logs
         uses: actions/upload-artifact@v3
