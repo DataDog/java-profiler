@@ -100,7 +100,7 @@ jobs:
         with:
           name: musl-build
       - name: Setup system
-        run: apk update && apk add wget hexdump linux-headers bash make git maven cppcheck jq >/dev/null
+        run: apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ git maven cppcheck jq >/dev/null
       - name: Prepare JDK ${{ matrix.java_version }}
         run: |
             wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-x64-musl.tar.gz -O jdk.tar.gz
