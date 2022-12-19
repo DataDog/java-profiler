@@ -1,16 +1,30 @@
-name: Build'n'Test
+name: CI Run
 
 on:
   - push
   - pull_request
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      -uses: actions/checkout@v3
+      -name: Setup
+       run: sudo apt-get -y update && sudo apt-get -y install cppcheck
+      -name: Check
+       run: make cppcheck
+    outputs:
+      COMMIT_SHA: ${{ env.GITHUB_SHA }}
+
   build-linux-glibc:
+    needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+      - name: Restore
+        run: git checkout ${{ needs.check.COMMIT_SHA }}
       - name: Build
-        run: make clean all
+        run: make cppcheck all
       - name: Upload temp build artifact
         uses: actions/upload-artifact@v3
         if: success()
@@ -19,6 +33,7 @@ jobs:
           path: .
 
   build-linux-musl:
+    needs: check
     runs-on: ubuntu-latest
 
     container:
@@ -29,8 +44,10 @@ jobs:
       - uses: actions/checkout@v3
       - name: Setup system
         run: apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ git maven cppcheck jq >/dev/null
+      - name: Restore
+        run: git checkout ${{ needs.check.COMMIT_SHA }}
       - name: Build
-        run: make clean all
+        run: make cppcheck all
       - name: Upload temp build artifact
         uses: actions/upload-artifact@v3
         if: success()
