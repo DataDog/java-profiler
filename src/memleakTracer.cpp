@@ -149,7 +149,10 @@ Error MemLeakTracer::start(Arguments& args) {
     }
 
     if (VM::hotspot_version() < 11) {
-        return Error("Memory Leak profiler requires Java 11+");
+        Log::warn("Memory Leak profiler requires Java 11+");
+        // disable memleak profiler
+        _table_max_cap = 0;
+        return Error::OK;
     }
 
 
