@@ -21,7 +21,7 @@ jobs:
       - name: Clean
         run: make clean
       - name: Build
-        run: make cppcheck all
+        run: make all
       - name: Upload temp build artifact
         uses: actions/upload-artifact@v3
         if: success()
@@ -43,7 +43,7 @@ jobs:
       - name: Clean
         run: make clean
       - name: Build
-        run: make cppcheck all
+        run: make all
       - name: Upload temp build artifact
         uses: actions/upload-artifact@v3
         if: success()
