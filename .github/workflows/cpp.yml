@@ -8,11 +8,11 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      -uses: actions/checkout@v3
-      -name: Setup
-       run: sudo apt-get -y update && sudo apt-get -y install cppcheck
-      -name: Check
-       run: make cppcheck
+      - uses: actions/checkout@v3
+      - name: Setup
+        run: sudo apt-get -y update && sudo apt-get -y install cppcheck
+      - name: Check
+        run: make cppcheck
     outputs:
       COMMIT_SHA: ${{ env.GITHUB_SHA }}
 
