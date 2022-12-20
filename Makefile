@@ -157,7 +157,6 @@ test: all
 	test/smoke-test.sh
 	test/jfr-smoke-test.sh
 	test/context-smoke-test.sh
-	test/alloc-smoke-test.sh
 	test/load-library-test.sh
 	test/sleep-test.sh
 	test/jfr-dump-test.sh
