@@ -50,7 +50,7 @@ public class MemleakProfilerTest extends AbstractProfilerTest {
         @Override
         public void run() {
             ThreadLocalRandom random = ThreadLocalRandom.current();
-            for (int i = 0; i < 100_000; i++) {
+            for (int i = 0; i < 200_000; i++) {
                 allocate(random, random.nextInt(256));
             }
         }

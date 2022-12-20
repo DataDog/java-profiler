@@ -48,7 +48,7 @@ public class ContextTest extends AbstractProfilerTest {
                 }
             }
         }
-        // FIXME 
+        // FIXME
 //        IItemCollection wallSamples = verifyEvents("datadog.MethodSample");
 //        for (IItemIterable wallSample : wallSamples) {
 //            IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(wallSample.getType());
