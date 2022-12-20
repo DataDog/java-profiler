@@ -67,7 +67,7 @@ public abstract class AbstractProfilerTest {
   protected void before() {
   }
 
-  protected void after() {
+  protected void after() throws IOException {
   }
 
   protected void runTests(Runnable... runnables) throws InterruptedException {
@@ -104,7 +104,7 @@ public abstract class AbstractProfilerTest {
       assertTrue(events.hasItems());
       for (String expectedEventType : expectedEventTypes) {
         assertTrue(events.apply(ItemFilters.type(expectedEventType)).hasItems(),
-            expectedEventType + " was empty for " + getProfilerCommand());
+                expectedEventType + " was empty for " + getProfilerCommand());
       }
     } catch (Throwable t) {
       fail(getProfilerCommand() + " " + t.getMessage());
@@ -123,6 +123,10 @@ public abstract class AbstractProfilerTest {
       fail(getProfilerCommand() + " " + t.getMessage());
       return null;
     }
+  }
+
+  protected void verifyStackTraces(String eventType, String... patterns) {
+
   }
 
 
