@@ -39,6 +39,9 @@ public abstract class AbstractProfilerTest {
   public static final IAttribute<IQuantity> PARALLELISM = attr("parallelism", "parallelism",
           "parallelism", NUMBER);
 
+  public static final IAttribute<IQuantity> WEIGHT = attr("weight", "weight",
+          "weight", NUMBER);
+
   protected JavaProfiler profiler;
   private Path jfrDump;
 
