@@ -39,7 +39,6 @@ public class LoadLibraryTest extends AbstractProfilerTest {
             for (IItem item : sample) {
                 IMCStackTrace stackTrace = stackTraceAccessor.getMember(item);
                 for (IMCFrame frame : stackTrace.getFrames()) {
-                    System.err.println("debug: " + frame.getMethod().getMethodName());
                     if (frame.getMethod().getMethodName().contains("Java_sun_management")) {
                         ok = true;
                         break outer;
