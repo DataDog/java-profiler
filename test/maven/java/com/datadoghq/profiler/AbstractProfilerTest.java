@@ -2,6 +2,7 @@ package com.datadoghq.profiler;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.openjdk.jmc.common.IMCStackTrace;
 import org.openjdk.jmc.common.item.Attribute;
 import org.openjdk.jmc.common.item.IAttribute;
 import org.openjdk.jmc.common.item.IItemCollection;
@@ -42,6 +43,8 @@ public abstract class AbstractProfilerTest {
   public static final IAttribute<IQuantity> WEIGHT = attr("weight", "weight",
           "weight", NUMBER);
 
+  public static final IAttribute<IMCStackTrace> STACK_TRACE = attr("stackTrace", "stackTrace", "", UnitLookup.STACKTRACE);
+
   protected JavaProfiler profiler;
   private Path jfrDump;
 
@@ -64,7 +67,7 @@ public abstract class AbstractProfilerTest {
   protected void before() {
   }
 
-  protected void after() {
+  protected void after() throws IOException {
   }
 
   protected void runTests(Runnable... runnables) throws InterruptedException {
@@ -101,7 +104,7 @@ public abstract class AbstractProfilerTest {
       assertTrue(events.hasItems());
       for (String expectedEventType : expectedEventTypes) {
         assertTrue(events.apply(ItemFilters.type(expectedEventType)).hasItems(),
-            expectedEventType + " was empty for " + getProfilerCommand());
+                expectedEventType + " was empty for " + getProfilerCommand());
       }
     } catch (Throwable t) {
       fail(getProfilerCommand() + " " + t.getMessage());
@@ -120,6 +123,10 @@ public abstract class AbstractProfilerTest {
       fail(getProfilerCommand() + " " + t.getMessage());
       return null;
     }
+  }
+
+  protected void verifyStackTraces(String eventType, String... patterns) {
+
   }
 
 

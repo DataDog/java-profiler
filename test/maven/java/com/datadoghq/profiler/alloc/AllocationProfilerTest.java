@@ -1,6 +1,7 @@
 package com.datadoghq.profiler.alloc;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.Aggregators;
 import org.openjdk.jmc.common.item.IItemCollection;
@@ -12,6 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Disabled("flaky")
 public class AllocationProfilerTest extends AbstractProfilerTest {
 
 
