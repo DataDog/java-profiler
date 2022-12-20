@@ -1,4 +1,4 @@
-package shutdown;
+package com.datadoghq.profiler.shutdown;
 
 import org.junit.jupiter.api.Test;
 
@@ -11,8 +11,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 
 import one.profiler.JavaProfiler;
-import utils.Utils;
 
+import static com.datadoghq.profiler.AbstractProfilerTest.getJavaProfilerLib;
 import static org.junit.jupiter.api.Assertions.fail;
 
 public class ShutdownTest {
@@ -21,27 +21,27 @@ public class ShutdownTest {
   @Test
   public void testShutdownCpu() throws IOException {
     System.out.println("=== testShutdownCpu()");
-    JavaProfiler ap = JavaProfiler.getInstance(Utils.getJavaProfilerLib());
-    runTest(ap, "start,cpu=10us,filter=0");
+    JavaProfiler profiler = JavaProfiler.getInstance(getJavaProfilerLib());
+    runTest(profiler, "start,cpu=10us,filter=0");
   }
 
   @Test
   public void testShutdownWall() throws IOException {
     System.out.println("=== testShutdownWall()");
-    JavaProfiler ap = JavaProfiler.getInstance(Utils.getJavaProfilerLib());
-    ap.addThread(ap.getNativeThreadId());
-    runTest(ap, "start,wall=10us,filter=0");
+    JavaProfiler profiler = JavaProfiler.getInstance(getJavaProfilerLib());
+    profiler.addThread(profiler.getNativeThreadId());
+    runTest(profiler, "start,wall=10us,filter=0");
   }
 
   @Test
   public void testShutdownCpuAndWall() throws IOException {
     System.out.println("=== testShutdownCpuAndWall()");
-    JavaProfiler ap = JavaProfiler.getInstance(Utils.getJavaProfilerLib());
-    ap.addThread(ap.getNativeThreadId());
-    runTest(ap, "start,cpu=10us,wall=~10us,filter=0");
+    JavaProfiler profiler = JavaProfiler.getInstance(getJavaProfilerLib());
+    profiler.addThread(profiler.getNativeThreadId());
+    runTest(profiler, "start,cpu=10us,wall=~10us,filter=0");
   }
 
-  private static void runTest(JavaProfiler asyncProfiler, String command) throws IOException {
+  private static void runTest(JavaProfiler profiler, String command) throws IOException {
     Path jfrDump = Files.createTempFile("filter-test", ".jfr");
     String commandWithDump = command + ",jfr,file=" + jfrDump.toAbsolutePath();
     ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -52,13 +52,13 @@ public class ShutdownTest {
         public void run() {
           for (int i = 0; i < 100; i++) {
             try {
-              asyncProfiler.execute(commandWithDump);
+              profiler.execute(commandWithDump);
               try {
                 Thread.sleep(20);
               } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
               } finally {
-                asyncProfiler.stop();
+                profiler.stop();
               }
             } catch (Throwable error) {
               errors.offer(error);

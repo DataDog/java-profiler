@@ -52,7 +52,7 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
     @Override
     public void run() {
       Random random = new Random(0);
-      for (int i = 0; i < 100_000; i++) {
+      for (int i = 0; i < 1_000_000; i++) {
         allocate(random);
       }
     }
