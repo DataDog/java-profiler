@@ -1,47 +1,27 @@
-package context;
+package com.datadoghq.profiler.context;
 
+import com.datadoghq.profiler.AbstractProfilerTest;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.IMCThread;
-import org.openjdk.jmc.common.item.IAttribute;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.item.ItemFilters;
 import org.openjdk.jmc.common.unit.IQuantity;
 import org.openjdk.jmc.flightrecorder.JfrAttributes;
-import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.concurrent.ThreadLocalRandom;
 
-import one.profiler.JavaProfiler;
-import utils.Utils;
-
-import static org.openjdk.jmc.common.item.Attribute.attr;
-import static org.openjdk.jmc.common.unit.UnitLookup.NUMBER;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class ContextTest {
-
-  public static final IAttribute<IQuantity> LOCAL_ROOT_SPAN_ID = attr("localRootSpanId", "localRootSpanId",
-      "localRootSpanId", NUMBER);
-  public static final IAttribute<IQuantity> SPAN_ID = attr("spanId", "spanId",
-      "spanId", NUMBER);
-  public static final IAttribute<IQuantity> PARALLELISM = attr("parallelism", "parallelism",
-      "parallelism", NUMBER);
+public class ContextTest extends AbstractProfilerTest {
 
     @Test
     public void testReadContext() throws Exception {
-        Path jfrDump = Files.createTempFile("context-test", ".jfr");
-        JavaProfiler ap = JavaProfiler.getInstance(Utils.getJavaProfilerLib());
-        int tid = ap.getNativeThreadId();
-        ap.addThread(tid);
-        ap.setContext(tid, 42, 84);
-        ap.setPoolParallelism(tid, 89);
-        ap.execute("start,cpu=1ms,wall=~1ms,jfr,file=" + jfrDump.toAbsolutePath());
+        int tid = profiler.getNativeThreadId();
+        profiler.addThread(tid);
+        profiler.setContext(tid, 42, 84);
+        profiler.setPoolParallelism(tid, 89);
         // sleep to get some wall samples
         Thread.sleep(10);
         // do some work to get some cpu samples
@@ -51,12 +31,10 @@ public class ContextTest {
         }
         System.err.println(value);
         Thread.sleep(10);
-        ap.stop();
+        stopProfiler();
         // call after stopping the profiler to avoid breaking the assert below
-        ap.clearPoolParallelism(tid);
-        IItemCollection events = JfrLoaderToolkit.loadEvents(jfrDump.toFile());
-        IItemCollection cpuSamples = events.apply(ItemFilters.type("datadog.ExecutionSample"));
-        assertTrue(cpuSamples.hasItems());
+        profiler.clearPoolParallelism(tid);
+        IItemCollection cpuSamples = verifyEvents("datadog.ExecutionSample");
         for (IItemIterable cpuSample : cpuSamples) {
             IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(cpuSample.getType());
             IMemberAccessor<IQuantity, IItem> spanIdAccessor = SPAN_ID.getAccessor(cpuSample.getType());
@@ -70,8 +48,7 @@ public class ContextTest {
                 }
             }
         }
-        IItemCollection wallSamples = events.apply(ItemFilters.type("datadog.MethodSample"));
-        assertTrue(wallSamples.hasItems());
+        IItemCollection wallSamples = verifyEvents("datadog.MethodSample");
         for (IItemIterable wallSample : wallSamples) {
             IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(wallSample.getType());
             IMemberAccessor<IQuantity, IItem> spanIdAccessor = SPAN_ID.getAccessor(wallSample.getType());
@@ -90,4 +67,8 @@ public class ContextTest {
         }
     }
 
+    @Override
+    protected String getProfilerCommand() {
+        return "cpu=1ms,wall=~1ms";
+    }
 }

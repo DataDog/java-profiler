@@ -1,47 +1,24 @@
-package classgc;
+package com.datadoghq.profiler.classgc;
 
+import com.datadoghq.profiler.AbstractProfilerTest;
+import org.junit.jupiter.api.Test;
+
+import javax.tools.*;
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.OutputStream;
 import java.net.URI;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.Collections;
-import java.util.List;
-import javax.tools.FileObject;
-import javax.tools.ForwardingJavaFileManager;
-import javax.tools.JavaCompiler;
-import javax.tools.JavaFileManager;
-import javax.tools.SimpleJavaFileObject;
-import javax.tools.StandardJavaFileManager;
-import javax.tools.ToolProvider;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import one.profiler.JavaProfiler;
-import utils.Utils;
+public class ClassGCTest extends AbstractProfilerTest {
 
-public class ClassGCTest {
 
-    private JavaProfiler profiler;
-    private Path jfrDump;
 
-    @BeforeEach
-    public void setup() throws IOException {
-        jfrDump = Files.createTempFile(getClass().getName(), ".jfr");
-        profiler = JavaProfiler.getInstance(Utils.getJavaProfilerLib());
-        profiler.addThread(profiler.getNativeThreadId());
-        profiler.execute("start,cpu=1ms,wall=1ms,filter=0,memleak=524288,cstack=no,jfr,file=" + jfrDump.toAbsolutePath());
-    }
-
-    @AfterEach
-    public void cleanup() throws IOException {
-        profiler.stop();
-        Files.deleteIfExists(jfrDump);
+    @Override
+    protected String getProfilerCommand() {
+        return "cpu=1ms,wall=1ms,filter=0,memleak=524288,cstack=no";
     }
 
     private static final String CLASS_NAME = "code.Worker";
@@ -59,6 +36,7 @@ public class ClassGCTest {
 
     @Test
     public void profileWithManyShortLivedClasses() throws Throwable {
+        registerCurrentThreadForWallClockProfiling();
         // compiles code and loads it with many different classloaders, in the hope that
         // the classes will get GC'd by the time the JFR is dumped
         byte[] compiledClass = compile(CLASS_NAME, JAVA_CODE);

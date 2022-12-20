@@ -1,6 +1,5 @@
 package com.datadoghq.profiler;
 
-import com.datadoghq.profiler.alloc.AllocationProfilerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.openjdk.jmc.common.item.Attribute;
@@ -15,10 +14,14 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.UUID;
+
 import one.profiler.JavaProfiler;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.openjdk.jmc.common.item.Attribute.attr;
+import static org.openjdk.jmc.common.unit.UnitLookup.NUMBER;
 
 public abstract class AbstractProfilerTest {
 
@@ -29,12 +32,20 @@ public abstract class AbstractProfilerTest {
   public static final IAttribute<IQuantity> SIZE =
           Attribute.attr("allocationSize", "allocationSize", "Allocation Size", UnitLookup.NUMBER);
 
-  private JavaProfiler profiler;
+  public static final IAttribute<IQuantity> LOCAL_ROOT_SPAN_ID = attr("localRootSpanId", "localRootSpanId",
+          "localRootSpanId", NUMBER);
+  public static final IAttribute<IQuantity> SPAN_ID = attr("spanId", "spanId",
+          "spanId", NUMBER);
+  public static final IAttribute<IQuantity> PARALLELISM = attr("parallelism", "parallelism",
+          "parallelism", NUMBER);
+
+  protected JavaProfiler profiler;
   private Path jfrDump;
 
   @BeforeEach
   public void setupProfiler() throws IOException {
-    jfrDump = Files.createTempFile(getClass().getName(), ".jfr");
+    before();
+    jfrDump = Files.createTempFile(getClass().getName() + UUID.randomUUID(), ".jfr");
     profiler = JavaProfiler.getInstance(getJavaProfilerLib());
     profiler.execute("start," + getProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath());
     stopped = false;
@@ -44,6 +55,13 @@ public abstract class AbstractProfilerTest {
   public void cleanup() throws IOException {
     stopProfiler();
     Files.deleteIfExists(jfrDump);
+    after();
+  }
+
+  protected void before() {
+  }
+
+  protected void after() {
   }
 
   protected void runTests(Runnable... runnables) throws InterruptedException {
