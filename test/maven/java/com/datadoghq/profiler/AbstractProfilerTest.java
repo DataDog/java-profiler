@@ -41,6 +41,8 @@ public abstract class AbstractProfilerTest {
           "localRootSpanId", NUMBER);
   public static final IAttribute<IQuantity> SPAN_ID = attr("spanId", "spanId",
           "spanId", NUMBER);
+  public static final IAttribute<IQuantity> WEIGHT_ACCESSOR = attr("weight", "weight",
+          "weight", NUMBER);
   public static final IAttribute<IQuantity> PARALLELISM = attr("parallelism", "parallelism",
           "parallelism", NUMBER);
 
@@ -53,25 +55,25 @@ public abstract class AbstractProfilerTest {
   private Path jfrDump;
 
   @BeforeEach
-  public void setupProfiler() throws IOException {
-    before();
+  public void setupProfiler() throws Exception {
     jfrDump = Files.createTempFile(getClass().getName() + UUID.randomUUID(), ".jfr");
     profiler = JavaProfiler.getInstance(getJavaProfilerLib());
     profiler.execute("start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath());
     stopped = false;
+    before();
   }
 
   @AfterEach
-  public void cleanup() throws IOException {
+  public void cleanup() throws Exception {
+    after();
     stopProfiler();
     Files.deleteIfExists(jfrDump);
-    after();
   }
 
-  protected void before() {
+  protected void before() throws Exception {
   }
 
-  protected void after() throws IOException {
+  protected void after() throws Exception {
   }
 
   protected void runTests(Runnable... runnables) throws InterruptedException {
