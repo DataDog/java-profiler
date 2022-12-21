@@ -30,6 +30,6 @@ public class LoadLibraryTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "cpu=1ms,cstack=fp";
+        return "cpu=1ms";
     }
 }
