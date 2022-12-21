@@ -11,6 +11,8 @@ import org.openjdk.jmc.common.item.IMemberAccessor;
 
 import java.lang.management.ClassLoadingMXBean;
 import java.lang.management.ManagementFactory;
+import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -25,11 +27,13 @@ public class LoadLibraryTest extends AbstractProfilerTest {
         ClassLoadingMXBean bean = ManagementFactory.getClassLoadingMXBean();
 
         long n = 0;
-        while (n >= 0) {
+        long tsLimit = System.nanoTime() + 3_000_000_000L; //  3 seconds
+        while (System.nanoTime() < tsLimit) {
             n += bean.getLoadedClassCount();
             n += bean.getTotalLoadedClassCount();
             n += bean.getUnloadedClassCount();
         }
+        System.out.println("=== accumulated: " + n);
         stopProfiler();
         verifyEventsPresent("datadog.ExecutionSample");
         IItemCollection executionSamples = verifyEvents("datadog.ExecutionSample");
@@ -51,6 +55,6 @@ public class LoadLibraryTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "cpu=1ms,cstack=no";
+        return "cpu=1ms,cstack=fp";
     }
 }

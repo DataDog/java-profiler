@@ -153,25 +153,6 @@ public final class JavaProfiler {
     }
 
     /**
-     * Dump profile in JFR format.<br>
-     * This will cause the current data to be first written in a separate file and then truncated
-     * such that two subsequent calls to this method will result in non-overlapping recordings.
-     * @param path path 
-     * @return
-     */
-    public boolean dumpJfr(Path path) {
-        if (!Files.exists(path.getParent())) {
-            throw new IllegalArgumentException("Path " + path.getParent() + " does not exist");
-        }
-        try {
-            String ret = execute0("dump,file=" + path.toString() + ",output=jfr");
-            return ret.isEmpty() || ret.equals("OK");
-        } catch (IOException e) {
-            throw new IllegalStateException(e);
-        }
-    }
-
-    /**
      * Add the given thread to the set of profiled threads.
      * 'filter' option must be enabled to use this method.
      *

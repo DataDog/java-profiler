@@ -51,13 +51,13 @@ class Target {
     }
 
     private static void tryDump() {
-        if (dumpPath != null && ts > 0) {
-            if (System.nanoTime() - ts > (dumpAfterSecs * 1_000_000_000L)) {
-                if (!JavaProfiler.getInstance().dumpJfr(Paths.get(dumpPath))) {
-                    throw new IllegalStateException("Unable to dump JFR data to " + dumpPath);
-                }
-                ts = -1;
-            }
-        }
+        // if (dumpPath != null && ts > 0) {
+        //     if (System.nanoTime() - ts > (dumpAfterSecs * 1_000_000_000L)) {
+        //         if (!JavaProfiler.getInstance().dumpJfr(Paths.get(dumpPath))) {
+        //             throw new IllegalStateException("Unable to dump JFR data to " + dumpPath);
+        //         }
+        //         ts = -1;
+        //     }
+        // }
     }
 }
