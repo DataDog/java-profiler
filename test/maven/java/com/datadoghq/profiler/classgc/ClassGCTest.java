@@ -2,6 +2,7 @@ package com.datadoghq.profiler.classgc;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import javax.tools.*;
 import java.io.ByteArrayOutputStream;
@@ -35,6 +36,7 @@ public class ClassGCTest extends AbstractProfilerTest {
             "}";
 
     @Test
+    @Timeout(30)
     public void profileWithManyShortLivedClasses() throws Throwable {
         registerCurrentThreadForWallClockProfiling();
         // compiles code and loads it with many different classloaders, in the hope that
@@ -51,14 +53,12 @@ public class ClassGCTest extends AbstractProfilerTest {
                 }
             }
         };
-        long ts = System.nanoTime() + 30_000_000_000L; // 30s timeout
-        for (int i = 0; i < 100_000; i++) {
+        for (int i = 0; i < 10_000; i++) {
             Class<?> clazz = Class.forName(CLASS_NAME, true, new TestClassLoader(CLASS_NAME, compiledClass));
             MethodHandle consumeCpu = cv.get(clazz);
             consumeCpu.invokeExact();
-            if (System.nanoTime() > ts) {
-                System.out.println("Timeout (30s). Exitting.");
-                break;
+            if (i % 100 == 0) {
+                System.gc();
             }
         }
     }
