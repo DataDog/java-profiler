@@ -28,7 +28,7 @@ import static org.openjdk.jmc.common.unit.UnitLookup.NUMBER;
 
 public abstract class AbstractProfilerTest {
 
-  private static final boolean ALLOW_NATIVE_CSTACKS = false;
+  private static final boolean ALLOW_NATIVE_CSTACKS = true;
 
   private boolean stopped = true;
 
