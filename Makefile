@@ -154,7 +154,7 @@ build/$(API_JAR): $(API_SOURCES)
 
 test: all
 	test/load-libraries-test.sh
-	test/maven-tests.sh
+	test/maven-test.sh
 	echo "All tests passed"
 
 test-%: all
