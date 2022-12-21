@@ -28,6 +28,8 @@ import static org.openjdk.jmc.common.unit.UnitLookup.NUMBER;
 
 public abstract class AbstractProfilerTest {
 
+  private static final boolean ALLOW_NATIVE_CSTACKS = false;
+
   private boolean stopped = true;
 
   public static final IAttribute<String> TYPE =
@@ -55,7 +57,7 @@ public abstract class AbstractProfilerTest {
     before();
     jfrDump = Files.createTempFile(getClass().getName() + UUID.randomUUID(), ".jfr");
     profiler = JavaProfiler.getInstance(getJavaProfilerLib());
-    profiler.execute("start," + getProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath());
+    profiler.execute("start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath());
     stopped = false;
   }
 
@@ -98,6 +100,13 @@ public abstract class AbstractProfilerTest {
     profiler.addThread(profiler.getNativeThreadId());
   }
 
+  private String getAmendedProfilerCommand() {
+    String profilerCommand = getProfilerCommand();
+    return ALLOW_NATIVE_CSTACKS || profilerCommand.contains("cstack=")
+            ? profilerCommand
+            : profilerCommand + ",cstack=no";
+  }
+
   protected abstract String getProfilerCommand();
 
   protected void verifyEventsPresent(String... expectedEventTypes) {
@@ -106,7 +115,7 @@ public abstract class AbstractProfilerTest {
       assertTrue(events.hasItems());
       for (String expectedEventType : expectedEventTypes) {
         assertTrue(events.apply(ItemFilters.type(expectedEventType)).hasItems(),
-                expectedEventType + " was empty for " + getProfilerCommand());
+                expectedEventType + " was empty for " + getAmendedProfilerCommand());
       }
     } catch (Throwable t) {
       fail(getProfilerCommand() + " " + t.getMessage());
@@ -119,7 +128,7 @@ public abstract class AbstractProfilerTest {
       assertTrue(events.hasItems());
       IItemCollection collection = events.apply(ItemFilters.type(eventType));
         assertTrue(collection.hasItems(),
-            eventType + " was empty for " + getProfilerCommand());
+            eventType + " was empty for " + getAmendedProfilerCommand());
         return collection;
     } catch (Throwable t) {
       fail(getProfilerCommand() + " " + t.getMessage());

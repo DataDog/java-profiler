@@ -5,8 +5,6 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.management.ClassLoadingMXBean;
 import java.lang.management.ManagementFactory;
-import java.util.Random;
-import java.util.concurrent.ThreadLocalRandom;
 
 public class LoadLibraryTest extends AbstractProfilerTest {
 
