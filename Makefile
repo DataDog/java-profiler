@@ -154,7 +154,7 @@ build/$(API_JAR): $(API_SOURCES)
 
 test: all
 	test/load-libraries-test.sh
-	test/jfr-smoke-test.sh
+	test/maven-tests.sh
 	echo "All tests passed"
 
 test-%: all
