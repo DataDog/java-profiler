@@ -46,7 +46,7 @@ public class JfrSmokeTest {
             ProcessBuilder pb = new ProcessBuilder(
                     launcher.getAbsolutePath(),
                     "-pa", "cpu,wall,file=" + tempDir.toString() + "/profile.jfr",
-                    "-r", "2", "akka-uct");
+                    "-t", "5", "fj-kmeans");
             System.out.println("===> cmd: " + pb.command());
             pb = pb.redirectError(ProcessBuilder.Redirect.PIPE).redirectOutput(ProcessBuilder.Redirect.PIPE);
             Instant startTs = Instant.now();
