@@ -1,9 +1,11 @@
-package com.datadoghq.profiler.wallclock;
+package com.datadoghq.profiler.cpu;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.context.ContextExecutor;
 import com.datadoghq.profiler.context.Tracing;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledIfEnvironmentVariable;
+import org.junit.jupiter.api.condition.DisabledIfEnvironmentVariables;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
@@ -19,13 +21,16 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class ContextWallClockTest extends AbstractProfilerTest {
+@DisabledIfEnvironmentVariable(named = "TEST_CONFIGURATION", matches = "musl/8u.*")
+public class ContextCpuTest extends AbstractProfilerTest {
 
+    private static volatile long sink;
     private ContextExecutor executor;
 
     private Map<String, List<Long>> methodsToSpanIds;
@@ -38,7 +43,6 @@ public class ContextWallClockTest extends AbstractProfilerTest {
 
     @Test
     public void test() throws ExecutionException, InterruptedException {
-        registerCurrentThreadForWallClockProfiling();
         for (int i = 0, id = 1; i < 100; i++, id += 3) {
             method1(id);
         }
@@ -46,69 +50,54 @@ public class ContextWallClockTest extends AbstractProfilerTest {
         Set<Long> method1SpanIds = new HashSet<>(methodsToSpanIds.get("method1Impl"));
         Set<Long> method2SpanIds = new HashSet<>(methodsToSpanIds.get("method2Impl"));
         Set<Long> method3SpanIds = new HashSet<>(methodsToSpanIds.get("method3Impl"));
-        IItemCollection events = verifyEvents("datadog.MethodSample");
+        IItemCollection events = verifyEvents("datadog.ExecutionSample");
         // we have 100 method1, method2, and method3 calls, but can't guarantee we sampled them all
         long method1Weight = 0;
         long method2Weight = 0;
         long method3Weight = 0;
-        long unattributedWeight = 0;
-        for (IItemIterable wallclockSamples : events) {
-            IMemberAccessor<String, IItem> frameAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(wallclockSamples.getType());
-            IMemberAccessor<IQuantity, IItem> spanIdAccessor = SPAN_ID.getAccessor(wallclockSamples.getType());
-            IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(wallclockSamples.getType());
-            IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT_ACCESSOR.getAccessor(wallclockSamples.getType());
-            IMemberAccessor<IQuantity, IItem> parallelismAccessor = PARALLELISM.getAccessor(wallclockSamples.getType());
-            for (IItem sample : wallclockSamples) {
+        long totalWeight = 0;
+        for (IItemIterable cpuSamples : events) {
+            IMemberAccessor<String, IItem> frameAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
+            IMemberAccessor<IQuantity, IItem> spanIdAccessor = SPAN_ID.getAccessor(cpuSamples.getType());
+            IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(cpuSamples.getType());
+            for (IItem sample : cpuSamples) {
                 String stackTrace = frameAccessor.getMember(sample);
                 long spanId = spanIdAccessor.getMember(sample).longValue();
                 long rootSpanId = rootSpanIdAccessor.getMember(sample).longValue();
-                long weight = weightAccessor.getMember(sample).longValue();
-                long parallelism = parallelismAccessor.getMember(sample).longValue();
-                // a lot fo care needs to be taken here with samples that fall between a context activation and
-                // a method call. E.g. not finding method2Impl in the stack trace doesn't mean the sample wasn't
-                // taken in the part of method2 between activation and invoking method2Impl, which complicates
-                // assertions when we only find method1Impl
                 if (stackTrace.contains("method3Impl")) {
                     // method3 is scheduled after method2, and method1 blocks on it, so spanId == rootSpanId + 2
-                    assertEquals(rootSpanId + 2, spanId, stackTrace);
-                    assertTrue(spanId == 0 || method3SpanIds.contains(spanId), stackTrace);
-                    // FIXME assertEquals(executor.getCorePoolSize(), parallelism);
-                    method3Weight += weight;
+                    if (spanId > 0) {
+                        assertEquals(rootSpanId + 2, spanId, stackTrace);
+                        assertTrue(method3SpanIds.contains(spanId), stackTrace);
+                        method3Weight += 1;
+                    }
                 } else if (stackTrace.contains("method2Impl")) {
                     // method2 is called next, so spanId == rootSpanId + 1
-                    assertEquals(rootSpanId + 1, spanId, stackTrace);
-                    assertTrue(spanId == 0 || method2SpanIds.contains(spanId), stackTrace);
-                    // FIXME assertEquals(1, parallelism);
-                    method2Weight += weight;
+                    if (spanId > 0) {
+                        assertEquals(rootSpanId + 1, spanId, stackTrace);
+                        assertTrue(method2SpanIds.contains(spanId), stackTrace);
+                        method2Weight += 1;
+                    }
                 } else if (stackTrace.contains("method1Impl")
                         && !stackTrace.contains("method2") && !stackTrace.contains("method3")) {
                     // need to check this after method2 because method1 calls method2
                     // it's the root so spanId == rootSpanId
                     assertEquals(rootSpanId, spanId, stackTrace);
                     assertTrue(spanId == 0 || method1SpanIds.contains(spanId), stackTrace);
-                    // FIXME assertEquals(1, parallelism);
-                    method1Weight += weight;
+                    method1Weight += 1;
                 }
-                assertTrue(weight <= 10 && weight > 0);
-                if (spanId == 0) {
-                    unattributedWeight += weight;
-                }
+                totalWeight++;
             }
         }
-        double totalWeight = method1Weight + method2Weight + method3Weight + unattributedWeight;
-        // method1 has ~50% self time, 50% calling method2
-        assertWeight("method1Impl", totalWeight, method1Weight, 0.33);
-        // method2 has as much self time as method1
-        assertWeight("method2Impl", totalWeight, method2Weight, 0.33);
-        // method3 has as much self time as method1, and should account for half the executor's thread's time
-        assertWeight("method3Impl", totalWeight, method3Weight, 0.33);
+        assertInRange(method1Weight / (double) totalWeight, 0.2, 0.6);
+        assertInRange(method2Weight / (double) totalWeight, 0.2, 0.6);
+        assertInRange(method3Weight / (double) totalWeight, 0.1, 0.6);
 
     }
 
-    private void assertWeight(String name, double total, long weight, double expected) {
-        assertTrue(Math.abs(weight / total - expected)  < 0.2, String.format("expect %f weight for %s but have %f", expected, name, weight / total));
+    private static void assertInRange(double value, double min, double max) {
+        assertTrue(value >= min && value <= max, value + " not in (" + min + "," + max + ")");
     }
-
 
     public void method1(int id) throws ExecutionException, InterruptedException {
         try (Tracing.Context context = Tracing.newContext(() -> id, profiler)) {
@@ -117,7 +106,7 @@ public class ContextWallClockTest extends AbstractProfilerTest {
     }
 
     public void method1Impl(int id, Tracing.Context context) throws ExecutionException, InterruptedException {
-        sleep(10);
+        burnCycles();
         Future<?> wait = executor.submit(() -> method3(id));
         method2(id);
         wait.get();
@@ -131,7 +120,7 @@ public class ContextWallClockTest extends AbstractProfilerTest {
     }
 
     public void method2Impl(Tracing.Context context) {
-        sleep(10);
+        burnCycles();
         record("method2Impl", context);
     }
 
@@ -142,7 +131,7 @@ public class ContextWallClockTest extends AbstractProfilerTest {
     }
 
     public void method3Impl(Tracing.Context context) {
-        sleep(10);
+        burnCycles();
         record("method3Impl", context);
     }
 
@@ -152,13 +141,12 @@ public class ContextWallClockTest extends AbstractProfilerTest {
                 .add(context.getSpanId());
     }
 
-
-    private void sleep(long millis) {
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+    private void burnCycles() {
+        long blackhole = sink;
+        for (int i = 0; i < 1_000_000; i++) {
+            blackhole ^= ThreadLocalRandom.current().nextLong();
         }
+        sink = blackhole;
     }
 
     @Override
@@ -169,6 +157,6 @@ public class ContextWallClockTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=~1ms,filter=0";
+        return "cpu=1us";
     }
 }

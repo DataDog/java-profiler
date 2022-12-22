@@ -1,4 +1,4 @@
-package com.datadoghq.profiler.wallclock;
+package com.datadoghq.profiler.context;
 
 import java.util.concurrent.FutureTask;
 

@@ -1,10 +1,13 @@
-package com.datadoghq.profiler.wallclock;
+package com.datadoghq.profiler.context;
 
 import one.profiler.JavaProfiler;
 
-import java.util.concurrent.*;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RunnableFuture;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
-class ContextExecutor extends ThreadPoolExecutor {
+public class ContextExecutor extends ThreadPoolExecutor {
 
     private final JavaProfiler profiler;
     public ContextExecutor(int corePoolSize, JavaProfiler profiler) {
