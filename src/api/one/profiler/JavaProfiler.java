@@ -16,11 +16,15 @@
 
 package one.profiler;
 
+import sun.misc.Unsafe;
+
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 
 /**
  * Java API for in-process profiling. Serves as a wrapper around
@@ -29,6 +33,20 @@ import java.nio.file.Path;
  * libjavaProfiler.so.
  */
 public final class JavaProfiler {
+
+    private static final Unsafe UNSAFE;
+    static {
+        Unsafe unsafe = null;
+        String version = System.getProperty("java.version");
+        if (version.startsWith("1.8")) {
+            try {
+                Field f = Unsafe.class.getDeclaredField("theUnsafe");
+                f.setAccessible(true);
+                unsafe = (Unsafe) f.get(null);
+            } catch (Exception ignore) { }
+        }
+        UNSAFE = unsafe;
+    }
     private static JavaProfiler instance;
     private static final int CONTEXT_SIZE = 64;
     // must be kept in sync with PAGE_SIZE in context.h
@@ -40,6 +58,7 @@ public final class JavaProfiler {
     };
 
     private ByteBuffer[] contextStorage;
+    private long[] contextBaseOffsets;
 
     private JavaProfiler() {
     }
@@ -73,7 +92,13 @@ public final class JavaProfiler {
         if (this.contextStorage == null) {
             int maxPages = getMaxContextPages0();
             if (maxPages > 0) {
-                contextStorage = new ByteBuffer[maxPages];
+                if (UNSAFE != null) {
+                    contextBaseOffsets = new long[maxPages];
+                    // be sure to choose an illegal address as a sentinel value
+                    Arrays.fill(contextBaseOffsets, Long.MIN_VALUE);
+                } else {
+                    contextStorage = new ByteBuffer[maxPages];
+                }
             }
         }
     }
@@ -193,6 +218,26 @@ public final class JavaProfiler {
      * @param rootSpanId Root Span identifier that should be stored for current thread
      */
     public void setContext(int tid, long spanId, long rootSpanId) {
+        if (UNSAFE != null) {
+            setContextJDK8(tid, spanId, rootSpanId);
+        } else {
+            setContextByteBuffer(tid, spanId, rootSpanId);
+        }
+    }
+
+    private void setContextJDK8(int tid, long spanId, long rootSpanId) {
+        if (contextBaseOffsets == null) {
+            return;
+        }
+        long pageOffset = getPageUnsafe(tid);
+        int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
+        long base = pageOffset + index;
+        UNSAFE.putLong(base, spanId);
+        UNSAFE.putLong(base + 8, rootSpanId);
+        UNSAFE.putLong(base + 16, spanId ^ rootSpanId);
+    }
+
+    private void setContextByteBuffer(int tid, long spanId, long rootSpanId) {
         if (contextStorage == null) {
             return;
         }
@@ -214,6 +259,23 @@ public final class JavaProfiler {
      * Records the available parallelism of the thread pool the thread belongs to.
      */
     public void setPoolParallelism(int tid, int parallelism) {
+        if (UNSAFE != null) {
+            setPoolParallelismJDK8(tid, parallelism);
+        } else {
+            setPoolParallelismByteBuffer(tid, parallelism);
+        }
+    }
+
+    private void setPoolParallelismJDK8(int tid, int parallelism) {
+        if (contextBaseOffsets == null) {
+            return;
+        }
+        long pageOffset = getPageUnsafe(tid);
+        int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
+        UNSAFE.putInt(pageOffset + index + 24, parallelism);
+    }
+
+    private void setPoolParallelismByteBuffer(int tid, int parallelism) {
         if (contextStorage == null) {
             return;
         }
@@ -226,6 +288,23 @@ public final class JavaProfiler {
      * Resets the thread-local pool parallelism
      */
     public void clearPoolParallelism(int tid) {
+        if (UNSAFE != null) {
+            clearPoolParallelismUnsafe(tid);
+        } else {
+            clearPoolParallelismByteBuffer(tid);
+        }
+    }
+
+    private void clearPoolParallelismUnsafe(int tid) {
+        if (contextBaseOffsets == null) {
+            return;
+        }
+        long pageOffset = getPageUnsafe(tid);
+        int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
+        UNSAFE.putInt(pageOffset + index + 24, 1);
+    }
+
+    private void clearPoolParallelismByteBuffer(int tid) {
         if (contextStorage == null) {
             return;
         }
@@ -242,6 +321,15 @@ public final class JavaProfiler {
             contextStorage[pageIndex] = page = getContextPage0(tid).order(ByteOrder.LITTLE_ENDIAN);
         }
         return page;
+    }
+
+    private long getPageUnsafe(int tid) {
+        int pageIndex = tid / PAGE_SIZE;
+        long offset = contextBaseOffsets[pageIndex];
+        if (offset == Long.MIN_VALUE) {
+            contextBaseOffsets[pageIndex] = offset = getContextPageOffset0(tid);
+        }
+        return offset;
     }
 
     /**
@@ -263,5 +351,10 @@ public final class JavaProfiler {
 
     private static native int getTid0();
     private static native ByteBuffer getContextPage0(int tid);
+    // this is only here because ByteBuffer.putLong splits its argument into 8 bytes
+    // before performing the write, which makes it more likely that writing the context
+    // will be interrupted by the signal, leading to more rejected context values on samples
+    // ByteBuffer is simpler and fit for purpose on modern JDKs
+    private static native long getContextPageOffset0(int tid);
     private static native int getMaxContextPages0();
 }

@@ -141,6 +141,12 @@ Java_one_profiler_JavaProfiler_getContextPage0(JNIEnv* env, jobject unused, jint
     return env->NewDirectByteBuffer((void*) page.storage, (jlong) page.capacity);
 }
 
+extern "C" DLLEXPORT jlong JNICALL
+Java_one_profiler_JavaProfiler_getContextPageOffset0(JNIEnv* env, jobject unused, jint tid) {
+    ContextPage page = Contexts::getPage((int) tid);
+    return (jlong) page.storage;
+}
+
 extern "C" DLLEXPORT jint JNICALL
 Java_one_profiler_JavaProfiler_getMaxContextPages0(JNIEnv* env, jobject unused) {
     return (jint) Contexts::getMaxPages();
@@ -156,7 +162,8 @@ static const JNINativeMethod profiler_natives[] = {
     F(filterThread0,         "(I;Z)V"),
     F(getTid0,               "()I"),
     F(getContextPage0,       "(I)Ljava/nio/ByteBuffer"),
-    F(getMaxContextPages0,   "()I")
+    F(getMaxContextPages0,   "()I"),
+    F(getContextPageOffset0, "(I)L")
 };
 
 static const JNINativeMethod* execute0 = &profiler_natives[2];
