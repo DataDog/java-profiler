@@ -1,4 +1,4 @@
-package com.datadoghq.profiler.wallclock;
+package com.datadoghq.profiler.context;
 
 import one.profiler.JavaProfiler;
 
