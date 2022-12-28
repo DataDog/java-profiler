@@ -89,8 +89,8 @@ public class ContextCpuTest extends AbstractProfilerTest {
                 totalWeight++;
             }
         }
-        assertInRange(method1Weight / (double) totalWeight, 0.2, 0.6);
-        assertInRange(method2Weight / (double) totalWeight, 0.2, 0.6);
+        assertInRange(method1Weight / (double) totalWeight, 0.15, 0.6);
+        assertInRange(method2Weight / (double) totalWeight, 0.15, 0.6);
         assertInRange(method3Weight / (double) totalWeight, 0.1, 0.6);
 
     }
