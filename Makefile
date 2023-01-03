@@ -168,7 +168,7 @@ cppcheck:
 	cppcheck \
 		--error-exitcode=2 \
 		--suppress=memleak:src/codeCache.cpp:30 \
-		--suppress=memleakOnRealloc:src/dwarf.cpp:345 \
+		--suppress=memleakOnRealloc:src/dwarf.cpp:377 \
 		--suppress=memleakOnRealloc:src/memleakTracer.cpp:352 \
 		--suppress=memleakOnRealloc:src/jattach/jattach_openj9.c:147 \
 		--suppress=comparePointers:src/flightRecorder.cpp:1408 \
