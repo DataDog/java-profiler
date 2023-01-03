@@ -64,6 +64,24 @@ enum {
     DW_OP_plus    = 0x22,
 };
 
+enum {
+    // DWARF Exception Header value format
+    DW_EH_PE_uleb128 = 0x01,
+    DW_EH_PE_udata2  = 0x02,
+    DW_EH_PE_udata4  = 0x03,
+    DW_EH_PE_udata8  = 0x04,
+    DW_EH_PE_sleb128 = 0x09,
+    DW_EH_PE_sdata2  = 0x0a,
+    DW_EH_PE_sdata4  = 0x0b,
+    DW_EH_PE_sdata8  = 0x0c,
+    // DWARF Exception Header application
+    DW_EH_PE_absptr  = 0x00,
+    DW_EH_PE_pcrel   = 0x10,
+    DW_EH_PE_datarel = 0x30,
+    // valid in both
+    DW_EH_PE_omit    = 0xff,
+};
+
 
 FrameDesc FrameDesc::default_frame = {0, DW_REG_FP | (2 * DW_STACK_SLOT) << 8, -2 * DW_STACK_SLOT};
 
@@ -83,13 +101,27 @@ DwarfParser::DwarfParser(const char* name, const char* image_base, const char* e
     parse(eh_frame_hdr);
 }
 
+static constexpr u8 omit_sign_bit(u8 value) {
+    // each signed flag = unsigned equivalent | 0x80
+    return value & 0xf7;
+}
+
+static constexpr u8 omit_sign_bit_mask_low(u8 value) {
+    // each signed flag = unsigned equivalent | 0x80
+    return value & 0x7;
+}
+
 void DwarfParser::parse(const char* eh_frame_hdr) {
     u8 version = eh_frame_hdr[0];
     u8 eh_frame_ptr_enc = eh_frame_hdr[1];
     u8 fde_count_enc = eh_frame_hdr[2];
     u8 table_enc = eh_frame_hdr[3];
 
-    if (version != 1 || (eh_frame_ptr_enc & 0x7) != 0x3 || (fde_count_enc & 0x7) != 0x3 || (table_enc & 0xf7) != 0x33) {
+    if (version != 1
+        || omit_sign_bit_mask_low(eh_frame_ptr_enc) != DW_EH_PE_udata4
+        || omit_sign_bit_mask_low(fde_count_enc) != DW_EH_PE_udata4
+        // note that DW_EH_PE_pcrel is not supported, it remains to be seen whether support should be added
+        || omit_sign_bit(table_enc) != (DW_EH_PE_datarel | DW_EH_PE_udata4)) {
         Log::warn("Unsupported .eh_frame_hdr [%02x%02x%02x%02x] in %s",
                   version, eh_frame_ptr_enc, fde_count_enc, table_enc, _name);
         return;
