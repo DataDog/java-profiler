@@ -267,9 +267,7 @@ public final class JavaProfiler {
     }
 
     private void setPoolParallelismJDK8(int tid, int parallelism) {
-        if (contextBaseOffsets == null) {
-            return;
-        }
+        assert UNSAFE != null && contextBaseOffsets != null;
         long pageOffset = getPageUnsafe(tid);
         int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
         UNSAFE.putInt(pageOffset + index + 24, parallelism);
@@ -296,9 +294,7 @@ public final class JavaProfiler {
     }
 
     private void clearPoolParallelismUnsafe(int tid) {
-        if (contextBaseOffsets == null) {
-            return;
-        }
+        assert UNSAFE != null && contextBaseOffsets != null;
         long pageOffset = getPageUnsafe(tid);
         int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
         UNSAFE.putInt(pageOffset + index + 24, 1);
