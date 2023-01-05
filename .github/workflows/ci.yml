@@ -132,6 +132,8 @@ jobs:
     needs: [test-linux-musl, test-linux-glibc]
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
       - uses: webfactory/ssh-agent@v0.7.0
         with:
           ssh-private-key: ${{ secrets.SSH_DEPLOY_PRIVATE }}
