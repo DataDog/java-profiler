@@ -39,9 +39,9 @@ typedef struct {
 } ContextSnapshot;
 
 // must be kept in sync with PAGE_SIZE in JavaProfiler.java
-const int PAGE_SIZE = 1024;
-const int PAGE_MASK = PAGE_SIZE - 1;
-const int PAGE_SHIFT = __builtin_popcount(PAGE_MASK);
+const int DD_CONTEXT_PAGE_SIZE = 1024;
+const int DD_CONTEXT_PAGE_MASK = DD_CONTEXT_PAGE_SIZE - 1;
+const int DD_CONTEXT_PAGE_SHIFT = __builtin_popcount(DD_CONTEXT_PAGE_MASK);
 
 typedef struct {
     const int capacity;
