@@ -21,10 +21,10 @@
 Context** Contexts::_pages = new Context *[Contexts::getMaxPages()]();
 
 const ContextSnapshot Contexts::get(int tid) {
-    int pageIndex = tid / PAGE_SIZE;
+    int pageIndex = tid >> PAGE_SHIFT;
     Context* page = _pages[pageIndex];
     if (page != NULL) {
-        Context& context = page[tid % PAGE_SIZE];
+        Context& context = page[tid & PAGE_MASK];
         if ((context.spanId ^ context.rootSpanId) == context.checksum && context.spanId != 0) {
             return { .spanId = context.spanId, .rootSpanId = context.rootSpanId, .parallelism = context.parallelism };
         }
@@ -34,7 +34,7 @@ const ContextSnapshot Contexts::get(int tid) {
 
 void Contexts::initialize(int pageIndex) {
     if (__atomic_load_n(&_pages[pageIndex], __ATOMIC_ACQUIRE) == NULL) {
-        int capacity = PAGE_SIZE * sizeof(Context);
+        u32 capacity = PAGE_SIZE * sizeof(Context);
         Context *page = (Context*) aligned_alloc(sizeof(Context), capacity);
         // need to zero the storage because there is no aligned_calloc
         memset(page, 0, capacity);
@@ -45,7 +45,7 @@ void Contexts::initialize(int pageIndex) {
 }
 
 ContextPage Contexts::getPage(int tid) {
-    int pageIndex = tid / PAGE_SIZE;
+    int pageIndex = tid >> PAGE_SHIFT;
     initialize(pageIndex);
     return {.capacity = PAGE_SIZE * sizeof(Context), .storage = _pages[pageIndex]};
 }
