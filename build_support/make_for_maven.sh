@@ -18,6 +18,11 @@ HERE=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
         arm64) ARCH+="-arm64";;
         *) echo "Unsupported CPU: $CPU"; exit 1;;
     esac
+
+    if [[ $(ldd /bin/ls) =~ .*musl.* ]]; then
+        ARCH+="-musl"
+    fi
+    
     make clean all
 
     TARGET_DIR=src/main/resources/native-libs/$ARCH
