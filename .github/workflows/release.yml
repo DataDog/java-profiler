@@ -16,6 +16,7 @@ jobs:
           CURRENT_VERSION=$(mvn --no-transfer-progress org.apache.maven.plugins:maven-help-plugin:2.1.1:evaluate -Dexpression=project.version | grep -E '^[0-9]+\..*' | sed "s#-SNAPSHOT##g")
           git checkout -b release/$CURRENT_VERSION
           mvn --no-transfer-progress -DskipTests versions:set -DnewVersion=$CURRENT_VERSION versions:commit
+          git add .
           git commit -m "Preparing release $CURRENT_VERSION"
           git tag v$CURRENT_VERSION
           git push -n --set-upstream origin release/$CURRENT_VERSION
@@ -23,5 +24,6 @@ jobs:
           git checkout main
           mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.majorVersion}.\${parsedVersion.minorVersion}.\${parsedVersion.nextIncrementalVersion}-SNAPSHOT versions:commit
           NEW_VERSION=$(mvn --no-transfer-progress org.apache.maven.plugins:maven-help-plugin:2.1.1:evaluate -Dexpression=project.version | grep -E '^[0-9]+\..*')
+          git add .
           git commit -m "Bumpin the version to $NEW_VERSION"
           git push -n
