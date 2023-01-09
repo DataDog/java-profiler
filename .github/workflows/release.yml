@@ -1,13 +1,13 @@
 name: Automated Release
 
-on:
+on: 
   workflow_dispatch:
     inputs:
-      name: dry_run
-      description: Perform the release dry-run
-      required: true 
-      type: boolean
-      default: true
+      dry_run:
+        description: Perform the release dry-run
+        required: true 
+        type: boolean
+        default: true
 
 
 jobs:
