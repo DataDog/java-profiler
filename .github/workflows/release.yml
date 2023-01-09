@@ -11,9 +11,11 @@ jobs:
       - name: Prepare release
         run: |
           set -x
+          git config --global user.email "java-profiler@datadoghq.com"
+          git config --global user.name "Datadog Java Profiler"
           CURRENT_VERSION=$(mvn --no-transfer-progress org.apache.maven.plugins:maven-help-plugin:2.1.1:evaluate -Dexpression=project.version | grep -E '^[0-9]+\..*' | sed "s#-SNAPSHOT##g")
           git checkout -b release/$CURRENT_VERSION
-          mvn -DskipTests versions:set -DnewVersion=$CURRENT_VERSION versions:commit
+          mvn --no-transfer-progress -DskipTests versions:set -DnewVersion=$CURRENT_VERSION versions:commit
           git commit -m "Preparing release $CURRENT_VERSION"
           git tag v$CURRENT_VERSION
           git push -n --set-upstream origin release/$CURRENT_VERSION
