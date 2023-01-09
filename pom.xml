@@ -96,11 +96,7 @@
                             </execution>
                         </executions>
                         <configuration>
-                            <executable>make</executable>
-                            <arguments>
-                                <argument>clean</argument>
-                                <argument>all</argument>
-                            </arguments>
+                            <executable>build_support/make_for_maven.sh</executable>
                         </configuration>
                     </plugin>
                 </plugins>
