@@ -75,16 +75,18 @@
     </build>
     <profiles>
         <profile>
-            <id>build</id>
+            <id>with-native</id>
             <activation>
-                <activeByDefault>true</activeByDefault>
+                <property>
+                    <name>!skip-native</name>
+                </property>
             </activation>
             <build>
                 <plugins>
                     <plugin>
                         <groupId>org.codehaus.mojo</groupId>
                         <artifactId>exec-maven-plugin</artifactId>
-                        <version>3.1.0</version>
+                        <version>3.0.0</version>
                         <executions>
                             <execution>
                                 <phase>generate-sources</phase>
