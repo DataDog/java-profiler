@@ -19,7 +19,7 @@ jobs:
       - name: Prepare release
         run: |
           echo '::echo::on'
-          if [ "${{ inputs.dry_run }}" == "true" ];
+          if [ "${{ inputs.dry_run }}" == "true" ]; then
             DRY_RUN="-n"
           fi
           git config --global user.email "java-profiler@datadoghq.com"
