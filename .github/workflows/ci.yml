@@ -144,10 +144,10 @@ jobs:
         run: |
           git config --global user.email "java-profiler@datadoghq.com"
           git config --global user.name "Datadog Java Profiler"
-          git switch -c branch_$GITHUB_REF_NAME
+          git switch -c release/$GITHUB_REF_NAME
           git remote add upstream git@github.com:DataDog/java-profiler.git
           git remote update
           git checkout upstream/main
           git switch -c upstream_main
-          git merge --allow-unrelated-histories --ff -X theirs branch_$GITHUB_REF_NAME
+          git merge --allow-unrelated-histories --ff -X theirs release/$GITHUB_REF_NAME
           git push -v upstream HEAD:main $GITHUB_REF_NAME
