@@ -2,8 +2,8 @@
 _Based on [java-profiler 2.8.3](https://github.com/jvm-profiling-tools/java-profiler/releases/tag/v2.8.3)_
 
 ## Disclaimer
-This is not a fork of [java-profiler](https://github.com/jvm-profiling-tools/java-profiler). This is a work derived from __async-profiler__ but tailored very specifically for Datadog needs.
-If you need a full-fledged Java profiler head back to [java-profiler](https://github.com/jvm-profiling-tools/java-profiler)
+This is not a fork of [async-profiler](https://github.com/jvm-profiling-tools/async-profiler). This is a work derived from __async-profiler__ but tailored very specifically for Datadog needs.
+If you need a full-fledged Java profiler head back to [async-profiler](https://github.com/jvm-profiling-tools/async-profiler)
 
 ## Usage
 **!TODO!**
@@ -22,7 +22,7 @@ Use `./datadog/scripts/build_locally.sh` to build linux-x64 only maven artifact.
 After running this script you should see something like
 ```shell
 jaroslav.bachorik@COMP-C02FJ0PSMD6V java-profiler % ./datadog/scripts/build_locally.sh
-=== Building Async Profiler
+=== Building Java Profiler
 ==    Version     : 2.6-DD-jb_local_artifact-bc38fb7712459603349d7a36a90c9d02611a450d
 ==    Architecture: linux-amd64
 ==    With tests  : no
@@ -47,4 +47,4 @@ The build script support the following arguments:
 
 ### Consuming the artifact
 For dd-trace-java you just need to set the `java.profiler.jar` project property.
-Eg. you can run the gradle build like this - ./gradlew clean -Pjava.profiler.jar=file:///tmp/ap-tools-2.6-DD-jb_local_artifact-bc38fb7712459603349d7a36a90c9d02611a450d.jar :dd-java-agent:shadowJar` - which will result in a custom `dd-java-agent.jar` build containing your test version of async profiler.
+Eg. you can run the gradle build like this - ./gradlew clean -Pjava.profiler.jar=file:///tmp/ap-tools-2.6-DD-jb_local_artifact-bc38fb7712459603349d7a36a90c9d02611a450d.jar :dd-java-agent:shadowJar` - which will result in a custom `dd-java-agent.jar` build containing your test version of Java profiler.
