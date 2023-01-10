@@ -2,7 +2,6 @@ package com.datadoghq.profiler;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.openjdk.jmc.common.IMCFrame;
 import org.openjdk.jmc.common.IMCStackTrace;
 import org.openjdk.jmc.common.item.*;
 import org.openjdk.jmc.common.unit.IQuantity;
@@ -10,7 +9,6 @@ import org.openjdk.jmc.common.unit.UnitLookup;
 import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 
 import java.io.File;
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -18,7 +16,6 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 
-import one.profiler.JavaProfiler;
 import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;

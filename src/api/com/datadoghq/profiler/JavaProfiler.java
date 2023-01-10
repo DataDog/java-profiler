@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package one.profiler;
+package com.datadoghq.profiler;
 
 import sun.misc.Unsafe;
 
@@ -22,8 +22,6 @@ import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.Arrays;
 
 /**
@@ -51,11 +49,7 @@ public final class JavaProfiler {
     private static final int CONTEXT_SIZE = 64;
     // must be kept in sync with PAGE_SIZE in context.h
     private static final int PAGE_SIZE = 1024;
-    private static final ThreadLocal<Integer> TID = new ThreadLocal<Integer>() {
-        @Override protected Integer initialValue() {
-            return getTid0();
-        }
-    };
+    private static final ThreadLocal<Integer> TID = ThreadLocal.withInitial(JavaProfiler::getTid0);
 
     private ByteBuffer[] contextStorage;
     private long[] contextBaseOffsets;
@@ -101,35 +95,6 @@ public final class JavaProfiler {
                 }
             }
         }
-    }
-
-    /**
-     * Start profiling
-     *
-     * @param event Profiling event, see {@link Events}
-     * @param interval Sampling interval, e.g. nanoseconds for Events.CPU
-     * @throws IllegalStateException If profiler is already running
-     */
-    public void start(String event, long interval) throws IllegalStateException {
-        if (event == null) {
-            throw new NullPointerException();
-        }
-        start0(event, interval, true);
-    }
-
-    /**
-     * Start or resume profiling without resetting collected data.
-     * Note that event and interval may change since the previous profiling session.
-     *
-     * @param event Profiling event, see {@link Events}
-     * @param interval Sampling interval, e.g. nanoseconds for Events.CPU
-     * @throws IllegalStateException If profiler is already running
-     */
-    public void resume(String event, long interval) throws IllegalStateException {
-        if (event == null) {
-            throw new NullPointerException();
-        }
-        start0(event, interval, false);
     }
 
     /**
@@ -340,7 +305,6 @@ public final class JavaProfiler {
         return getTid0();
     }
 
-    private native void start0(String event, long interval, boolean reset) throws IllegalStateException;
     private native void stop0() throws IllegalStateException;
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
     private native void filterThread0(int tid, boolean enable);
