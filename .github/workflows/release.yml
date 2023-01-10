@@ -1,21 +1,41 @@
-name: Release
+name: Automated Release
 
-on:
-  push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
+on: 
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Perform the release dry-run
+        required: true 
+        type: boolean
+        default: true
+
 
 jobs:
-  release:
+  release-branch:
     runs-on: ubuntu-latest
+    if: endsWith(github.repository, 'java-profiler-library')
     steps:
-      - name: Build Changelog
-        id: github_release
-        uses: mikepenz/release-changelog-builder-action@v3
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create Release
-        uses: mikepenz/action-gh-release@v0.2.0-a03 #softprops/action-gh-release
-        with:
-          body: ${{steps.github_release.outputs.changelog}}
+      - uses: actions/checkout@v3
+      - name: Prepare release
+        run: |
+          echo '::echo::on'
+          if [ "${{ inputs.dry_run }}" == "true" ]; then
+            DRY_RUN="-n"
+          fi
+          git config --global user.email "java-profiler@datadoghq.com"
+          git config --global user.name "Datadog Java Profiler"
+          CURRENT_VERSION=$(mvn --no-transfer-progress org.apache.maven.plugins:maven-help-plugin:2.1.1:evaluate -Dexpression=project.version | grep -E '^[0-9]+\..*' | sed "s#-SNAPSHOT##g")
+          git checkout -b release/$CURRENT_VERSION
+          mvn --no-transfer-progress -DskipTests versions:set -DnewVersion=$CURRENT_VERSION versions:commit
+          git add .
+          git commit -m "Preparing release $CURRENT_VERSION"
+          git tag v$CURRENT_VERSION
+          git push $DRY_RUN --set-upstream origin release/$CURRENT_VERSION
+          git push $DRY_RUN --tags
+          
+          git checkout main
+          mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.majorVersion}.\${parsedVersion.nextMinorVersion}.0-SNAPSHOT versions:commit
+          NEW_VERSION=$(mvn --no-transfer-progress org.apache.maven.plugins:maven-help-plugin:2.1.1:evaluate -Dexpression=project.version | grep -E '^[0-9]+\..*')
+          git add .
+          git commit -m "Bumping the version to $NEW_VERSION"
+          git push $DRY_RUN

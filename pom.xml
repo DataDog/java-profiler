@@ -1,14 +1,14 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
     <modelVersion>4.0.0</modelVersion>
-    <groupId>tools.profiler</groupId>
-    <artifactId>java-profiler</artifactId>
-    <version>2.8.3</version>
+    <groupId>com.datadoghq</groupId>
+    <artifactId>jplib</artifactId>
+    <version>0.1.0</version>
     <packaging>jar</packaging>
 
-    <name>java-profiler</name>
-    <url>https://profiler.tools</url>
-    <description>Low overhead sampling profiler for Java</description>
+    <name>datadog-java-profiler</name>
+    <url>https://www.datadoghq.com/</url>
+    <description>Datadog Java Profiler Library</description>
 
     <licenses>
         <license>
@@ -18,15 +18,20 @@
         </license>
     </licenses>
     <scm>
-        <url>https://github.com/jvm-profiling-tools/java-profiler</url>
-        <connection>scm:git:git@github.com:jvm-profiling-tools/java-profiler.git</connection>
-        <developerConnection>scm:git:git@github.com:jvm-profiling-tools/java-profiler.git</developerConnection>
+        <url>https://github.com/DataDog/java-profiler</url>
+        <connection>scm:git:git@github.com:DataDog/java-profiler.git</connection>
+        <developerConnection>scm:git:git@github.com:DataDog/java-profiler.git</developerConnection>
     </scm>
     <developers>
         <developer>
-            <id>apangin</id>
-            <name>Andrei Pangin</name>
-            <email>noreply@pangin.pro</email>
+            <id>jbachorik</id>
+            <name>Jaroslav Bachorik</name>
+            <email>jaroslav.bachorik@datadoghq.com</email>
+        </developer>
+        <developer>
+            <id>richardstartin</id>
+            <name>Richard Startin</name>
+            <email>richard.startin@datatoghq.com</email>
         </developer>
     </developers>
 
@@ -35,13 +40,19 @@
     </properties>
 
     <build>
-        <sourceDirectory>src/api</sourceDirectory>
+        <sourceDirectory>${project.basedir}/src/api</sourceDirectory>
+        <resources>
+            <resource>
+                <directory>${project.basedir}/src/main/resources</directory>
+            </resource>
+        </resources>
         <testSourceDirectory>${project.basedir}/test/maven/java</testSourceDirectory>
         <testResources>
             <testResource>
-                <directory>${project.basedir}/test/maven/resources</directory>
+                <directory>${project.basedir}/test/resources</directory>
             </testResource>
         </testResources>
+
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -50,6 +61,8 @@
                 <configuration>
                     <source>8</source>
                     <target>8</target>
+                    <testSource>8</testSource>
+                    <testTarget>8</testTarget>
                 </configuration>
             </plugin>
             <plugin>
@@ -58,48 +71,83 @@
                 <!-- JUnit 5 requires Surefire version 2.22.0 or higher -->
                 <version>2.22.2</version>
             </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-source-plugin</artifactId>
-                <version>3.2.0</version>
-                <executions>
-                    <execution>
-                        <id>attach-sources</id>
-                        <goals>
-                            <goal>jar-no-fork</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-javadoc-plugin</artifactId>
-                <version>3.2.0</version>
-                <executions>
-                    <execution>
-                        <id>attach-javadocs</id>
-                        <goals>
-                            <goal>jar</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-gpg-plugin</artifactId>
-                <version>1.6</version>
-                <executions>
-                    <execution>
-                        <id>sign-artifacts</id>
-                        <phase>verify</phase>
-                        <goals>
-                            <goal>sign</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
         </plugins>
     </build>
+    <profiles>
+        <profile>
+            <id>with-native</id>
+            <activation>
+                <property>
+                    <name>!skip-native</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.0.0</version>
+                        <executions>
+                            <execution>
+                                <phase>generate-sources</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <executable>build_support/make_for_maven.sh</executable>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>deploy</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>3.2.0</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <version>3.2.0</version>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.simplify4u.plugins</groupId>
+                        <artifactId>sign-maven-plugin</artifactId>
+                        <version>1.0.0</version>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
     <dependencies>
         <!-- https://mvnrepository.com/artifact/org.junit.jupiter/junit-jupiter-engine -->
         <dependency>
@@ -130,7 +178,6 @@
             <version>0.16</version>
             <scope>test</scope>
         </dependency>
-
     </dependencies>
 
     <distributionManagement>

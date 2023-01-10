@@ -8,8 +8,13 @@ if [ -z "${JAVA_HOME}" ]; then
   exit 1
 fi
 
-(
-  cd $(dirname $0)/..
+HERE=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-  mvn -B test
+(
+  cd $HERE/..
+
+  if [ -f build/libjavaProfiler.so ]; then
+    SKIP_ARG="-Dskip-native"
+  fi
+  mvn $SKIP_ARG -B test
 )
