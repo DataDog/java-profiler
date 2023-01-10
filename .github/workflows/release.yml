@@ -31,6 +31,7 @@ jobs:
           git commit -m "Preparing release $CURRENT_VERSION"
           git tag v$CURRENT_VERSION
           git push $DRY_RUN --set-upstream origin release/$CURRENT_VERSION
+          git push $DRY_RUN --tags
           
           git checkout main
           mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.majorVersion}.\${parsedVersion.nextMinorVersion}.0-SNAPSHOT versions:commit
