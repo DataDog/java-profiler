@@ -63,5 +63,7 @@ jobs:
       - name: Create Release
         id: create_release
         uses: nickatnight/releases-action@v3
+        with:
+          branch: "main"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
