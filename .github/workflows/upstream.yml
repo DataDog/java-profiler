@@ -1,5 +1,5 @@
 name: Upstream
-
+run-name: Upstream ${{ inputs.release_branch }}
 on: 
   workflow_dispatch:
     inputs:
@@ -35,7 +35,7 @@ jobs:
           if [ -z "${{ inputs.release_branch }}" ]; then
             VERSION=$(echo $GITHUB_REF_NAME | sed 's#release/##g')
           else
-            VERSION=$(echo "${{ inputs.release_branch }}" | sed 's#release/##g'")
+            VERSION=$(echo "${{ inputs.release_branch }}" | sed 's#release/##g')
           fi
           git config --global user.email "java-profiler@datadoghq.com"
           git config --global user.name "Datadog Java Profiler"
