@@ -85,6 +85,7 @@ class Profiler {
     std::map<int, jlong> _thread_ids;
     Dictionary _class_map;
     Dictionary _symbol_map;
+    Dictionary _string_label_map;
     ThreadFilter _thread_filter;
     CallTraceStorage _call_trace_storage;
     FlightRecorder _jfr;
@@ -205,6 +206,7 @@ class Profiler {
     Engine* wallEngine() { return _wall_engine; }
 
     Dictionary* classMap() { return &_class_map; }
+    Dictionary* stringLabelMap() { return &_string_label_map; }
     ThreadFilter* threadFilter() { return &_thread_filter; }
 
     Error run(Arguments& args);
@@ -222,6 +224,7 @@ class Profiler {
     void recordExternalSample(u64 counter, int tid, jvmtiFrameInfo *jvmti_frames, jint num_jvmti_frames, bool truncated, jint event_type, Event* event);
     void recordExternalSample(u64 counter, int tid, int num_frames, ASGCT_CallFrame* frames, bool truncated, jint event_type, Event* event);
     void recordWallClockEpoch(int tid, WallClockEpochEvent* event);
+    void recordTraceRoot(int tid, TraceRootEvent* event);
     void writeLog(LogLevel level, const char* message);
     void writeLog(LogLevel level, const char* message, size_t len);
 

@@ -127,6 +127,7 @@ class Lookup {
     Dictionary* _classes;
     Dictionary _packages;
     Dictionary _symbols;
+    Dictionary* _strings;
 
   private:
     void fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* lib_name) {
@@ -248,8 +249,8 @@ class Lookup {
     }
 
   public:
-    Lookup(MethodMap* method_map, Dictionary* classes) :
-        _method_map(method_map), _classes(classes), _packages(), _symbols() {
+    Lookup(MethodMap* method_map, Dictionary* classes, Dictionary* strings) :
+        _method_map(method_map), _classes(classes), _packages(), _symbols(), _strings(strings) {
     }
 
     MethodInfo* resolveMethod(ASGCT_CallFrame& frame) {
@@ -299,16 +300,6 @@ class Lookup {
         return _symbols.lookup(name);
     }
 };
-
-class ContextLookup {
-  public:
-    Dictionary _contexts;
-
-    u32 getContext(const char* name) {
-        return _contexts.lookup(name);
-    }
-};
-
 
 class Buffer {
   private:
@@ -464,8 +455,6 @@ class Recording {
     bool _cpu_monitor_enabled;
     Buffer _cpu_monitor_buf;
     CpuTimes _last_times;
-
-    ContextLookup _context_lookup;
 
     static float ratio(float value) {
         return value < 0 ? 0 : value > 1 ? 1 : value;
@@ -966,10 +955,10 @@ class Recording {
         buf->put8(0);
         buf->put8(0);
         buf->put8(1);
+        // constant pool count - bump each time a new pool is added
+        buf->put8(10);
 
-        buf->put8(9);
-
-        Lookup lookup(&_method_map, Profiler::instance()->classMap());
+        Lookup lookup(&_method_map, Profiler::instance()->classMap(), Profiler::instance()->stringLabelMap());
         writeFrameTypes(buf);
         writeThreadStates(buf);
         writeThreads(buf);
@@ -978,6 +967,7 @@ class Recording {
         writeClasses(buf, &lookup);
         writePackages(buf, &lookup);
         writeSymbols(buf, &lookup);
+        writeStrings(buf, &lookup);
         writeLogLevels(buf);
     }
 
@@ -1135,12 +1125,21 @@ class Recording {
     }
 
     void writeSymbols(Buffer* buf, Lookup* lookup) {
-        std::map<u32, const char*> symbols;
-        lookup->_symbols.collect(symbols);
+        writeConstantPoolSection(buf, T_SYMBOL, &lookup->_symbols);
+    }
 
-        buf->putVar64(T_SYMBOL);
-        buf->putVar64(symbols.size());
-        for (std::map<u32, const char*>::const_iterator it = symbols.begin(); it != symbols.end(); ++it) {
+    void writeStrings(Buffer* buf, Lookup* lookup) {
+        writeConstantPoolSection(buf, T_STRING, lookup->_strings);
+    }
+
+    void writeConstantPoolSection(Buffer* buf, JfrType type, Dictionary* dictionary) {
+        std::map<u32, const char*> constants;
+        dictionary->collect(constants);
+
+
+        buf->putVar64(type);
+        buf->putVar64(constants.size());
+        for (std::map<u32, const char*>::const_iterator it = constants.begin(); it != constants.end(); ++it) {
             buf->putVar64(it->first | _base_id);
             buf->putUtf8(it->second);
             flushIfNeeded(buf);
@@ -1199,6 +1198,18 @@ class Recording {
         buf->putVar64(event->_num_permission_denied);
         buf->put8(start, buf->offset() - start);
         flushIfNeeded(buf); 
+    }
+
+    void recordTraceRoot(Buffer* buf, int tid, TraceRootEvent* event) {
+        int start = buf->skip(1);
+        buf->putVar64(T_ENDPOINT);
+        buf->putVar64(event->_start_time);
+        buf->putVar64(event->_duration_millis);
+        buf->putVar32(tid);
+        buf->putVar32(event->_label);
+        buf->putVar64(event->_local_root_span_id);
+        buf->put8(start, buf->offset() - start);
+        flushIfNeeded(buf);
     }
 
     void recordAllocationInNewTLAB(Buffer* buf, int tid, u32 call_trace_id, AllocEvent* event) {
@@ -1382,6 +1393,13 @@ void FlightRecorder::wallClockEpoch(int lock_index, WallClockEpochEvent* event) 
     if (_rec != NULL) {
         Buffer* buf = _rec->buffer(lock_index);
         _rec->recordWallClockEpoch(buf, event);
+    }
+}
+
+void FlightRecorder::recordTraceRoot(int lock_index, int tid, TraceRootEvent* event) {
+    if (_rec != NULL) {
+        Buffer* buf = _rec->buffer(lock_index);
+        _rec->recordTraceRoot(buf, tid, event);
     }
 }
 

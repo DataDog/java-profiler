@@ -25,6 +25,7 @@
 #include "vmStructs.h"
 #include "context.h"
 #include "engine.h"
+#include "thread.h"
 #include "wallClock.h"
 
 static void throwNew(JNIEnv* env, const char* exception_class, const char* message) {
@@ -124,6 +125,23 @@ Java_com_datadoghq_profiler_JavaProfiler_getMaxContextPages0(JNIEnv* env, jobjec
     return (jint) Contexts::getMaxPages();
 }
 
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(JNIEnv* env, jobject unused, jlong startMillis,
+                                                      jlong durationMillis, jlong rootSpanId, jstring endpoint,
+                                                      jint sizeLimit) {
+    const char* endpoint_str = env->GetStringUTFChars(endpoint, NULL);
+    jint length = env->GetStringUTFLength(endpoint);
+    u32 label = Profiler::instance()->stringLabelMap()->bounded_lookup(endpoint_str, length, sizeLimit);
+    bool acceptValue = label != INT_MAX;
+    if (acceptValue) {
+        TraceRootEvent event(startMillis, durationMillis, rootSpanId, label);
+        int tid = ProfiledThread::currentTid();
+        Profiler::instance()->recordTraceRoot(tid, &event);
+    }
+    env->ReleaseStringUTFChars(endpoint, endpoint_str);
+    return acceptValue;
+}
+
 #define F(name, sig)  {(char*)#name, (char*)sig, (void*)Java_com_datadoghq_profiler_JavaProfiler_##name}
 
 static const JNINativeMethod profiler_natives[] = {
@@ -134,7 +152,8 @@ static const JNINativeMethod profiler_natives[] = {
     F(getTid0,               "()I"),
     F(getContextPage0,       "(I)Ljava/nio/ByteBuffer"),
     F(getMaxContextPages0,   "()I"),
-    F(getContextPageOffset0, "(I)L")
+    F(getContextPageOffset0, "(I)L"),
+    F(recordTrace0,          "(L;L;L;Ljava/lang/String;I)Z")
 };
 
 static const JNINativeMethod* execute0 = &profiler_natives[2];
