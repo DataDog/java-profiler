@@ -35,17 +35,19 @@ jobs:
           VERSION=$(echo $GITHUB_REF_NAME | sed 's#release/##g')
           git config --global user.email "java-profiler@datadoghq.com"
           git config --global user.name "Datadog Java Profiler"
-          if [ ! -z "${{ inputs.release_branch }}"" ]; then
+          if [ ! -z "${{ inputs.release_branch }}" ]; then
             git checkout "${{ inputs.release_branch }}"
           fi
           git remote add upstream git@github.com:DataDog/java-profiler.git
           git remote update
           git checkout upstream/main
-          git switch -c upstream/$GITHUB_REF_NAME # switch to the release branch on the upstream
+          # switch to the release branch on the upstream
+          git switch -c upstream/$GITHUB_REF_NAME
           # and merge the downstream release branch
           git merge --allow-unrelated-histories --ff -X theirs $GITHUB_REF_NAME
           # the assumption is that v<VERSION> tag is taken from the release branch
-          git push --atomic upstream HEAD:main v${VERSION} # push the upstream relase branch to 'main' together with the tag
+          # push the upstream relase branch to 'main' together with the tag
+          git push --atomic upstream HEAD:main v${VERSION}
 
   release-from-upstream:
     if: startsWith(github.event.ref, 'refs/tags/v') && endsWith(github.repository, 'java-profiler')
