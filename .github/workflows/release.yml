@@ -40,6 +40,9 @@ jobs:
       - name: Create release
         run: |
           echo '::echo::on'
+          if [ "${{ inputs.release_type }}" == "minor" ]; then
+            echo "Minor"
+          fi
           if [ "${{ inputs.dry_run }}" == "true" ]; then
             DRY_RUN="-n"
           fi
