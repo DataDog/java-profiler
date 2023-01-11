@@ -23,6 +23,10 @@ jobs:
     runs-on: ubuntu-latest
     if: endsWith(github.repository, 'java-profiler-library')
     steps:
+      - name: Output Inputs
+        run: |
+          echo "${{ toJSON(github.event.inputs) }}"
+          echo "${{ toJSON(inputs) }}"
       - uses: webfactory/ssh-agent@v0.7.0
         with:
           ssh-private-key: ${{ secrets.SSH_PUSH_SECRET }}
@@ -34,24 +38,12 @@ jobs:
           git config --global user.name "Datadog Java Profiler"
       - name: Create release
         run: |
-          if [ "${{ inputs.release_type }}" != "patch" ] && [[ ${GITHUB_REF_NAME} =~ release/.* ]]; then
-            echo "Only patch release can be performed from a releaase branch"
-            exit 1
-          fi
           echo '::echo::on'
           if [ "${{ inputs.dry_run }}" == "true" ]; then
             DRY_RUN="-n"
           fi
           cd java-profiler
           git checkout $GITHUB_REF_NAME
-          # version = 0.1.0-SNAPSHOT
-          if [ "${{ inputs.release_type }}" == "major" ]; then
-            mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.nextMajorVersion}.0.0-SNAPSHOT versions:commit
-            # version = 1.0.0-SNAPSHOT
-          else if [ ${{ inputs.release_type }} == "patch" ]; then
-            mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.majorVersion}.\${parsedVersion.minorVersion}\.${parsedVersion.nextIncrementalVersion}-SNAPSHOT versions:commit
-            # version = 0.1.1-SNAPSHOT
-          fi
           CURRENT_VERSION=$(mvn --no-transfer-progress org.apache.maven.plugins:maven-help-plugin:2.1.1:evaluate -Dexpression=project.version | grep -E '^[0-9]+\..*' | sed "s#-SNAPSHOT##g")
           git checkout -b release/$CURRENT_VERSION
           mvn --no-transfer-progress -DskipTests versions:set -DnewVersion=$CURRENT_VERSION versions:commit
@@ -60,11 +52,6 @@ jobs:
           git push $DRY_RUN --set-upstream origin release/$CURRENT_VERSION
           
           git checkout main
-          if [ "${{ inputs.release_type" }} == "major" ]; then
-            mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.nextMajorVersion}.\${parsedVersion.nextMinorVersion}.0-SNAPSHOT versions:commit
-          else 
-            mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.majorVersion}.\${parsedVersion.nextMinorVersion}.0-SNAPSHOT versions:commit
-          fi
           NEW_VERSION=$(mvn --no-transfer-progress org.apache.maven.plugins:maven-help-plugin:2.1.1:evaluate -Dexpression=project.version | grep -E '^[0-9]+\..*')
           git add .
           git commit -m "Bumping the version to $NEW_VERSION"
