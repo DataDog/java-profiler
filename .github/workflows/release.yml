@@ -40,8 +40,6 @@ jobs:
           git config --global user.name "Datadog Java Profiler"
       - name: Create release
         run: |
-          set -x
-          echo '::echo::on'
           if [ "${{ inputs.release_type }}" != "patch" ]&& [[ ${GITHUB_REF_NAME} =~ release/.* ]]; then
             echo "::error Only patch release can be performed from a releaase branch"
             exit 1
