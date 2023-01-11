@@ -2,6 +2,8 @@ name: CI Run
 
 on:
   push:
+    branches:
+      - main
     tags-ignore:
       - v*
   pull_request:
