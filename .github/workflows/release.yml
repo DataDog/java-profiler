@@ -33,10 +33,10 @@ jobs:
           git config --global user.name "Datadog Java Profiler"
       - name: Create release
         run: |
-          if [ "${{ inputs.release_type }}" != "patch" ] && [[ ${GITHUB_REF_NAME} =~ release/.* ]]; then
-            echo "Only patch release can be performed from a releaase branch"
-            exit 1
-          fi
+          # if [ "${{ inputs.release_type }}" != "patch" ] && [[ ${GITHUB_REF_NAME} =~ release/.* ]]; then
+          #   echo "Only patch release can be performed from a releaase branch"
+          #   exit 1
+          # fi
           echo '::echo::on'
           if [ "${{ inputs.dry_run }}" == "true" ]; then
             DRY_RUN="-n"
