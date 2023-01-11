@@ -53,6 +53,7 @@ jobs:
           if [ "${{ inputs.dry_run }}" == "true" ]; then
             DRY_RUN="-n"
           fi
+          
           cd java-profiler
           git checkout $GITHUB_REF_NAME
           # version = 0.1.0-SNAPSHOT
@@ -74,6 +75,8 @@ jobs:
           if [ "${{ inputs.dry_run }}" == "true" ]; then
             DRY_RUN="-n"
           fi
+
+          cd java-profiler
           git checkout main
           if [ "${{ inputs.release_type }}" == "major" ]; then
             mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.nextMajorVersion}.1.0-SNAPSHOT versions:commit
