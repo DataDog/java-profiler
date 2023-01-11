@@ -53,7 +53,7 @@ jobs:
           if [ "${{ inputs.dry_run }}" == "true" ]; then
             DRY_RUN="-n"
           fi
-          
+
           cd java-profiler
           git checkout $GITHUB_REF_NAME
           # version = 0.1.0-SNAPSHOT
@@ -69,7 +69,9 @@ jobs:
           mvn --no-transfer-progress -DskipTests versions:set -DnewVersion=$CURRENT_VERSION versions:commit
           git add .
           git commit -m "Creating release $CURRENT_VERSION"
+          git tag v${CURRENT_VERSION}
           git push $DRY_RUN --set-upstream origin release/$CURRENT_VERSION
+          git push $DRY_RUN --tags
       - name: Bump the dev version
         run: |
           if [ "${{ inputs.dry_run }}" == "true" ]; then

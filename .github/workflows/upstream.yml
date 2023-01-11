@@ -1,0 +1,48 @@
+name: Upstreaming
+
+on:
+  push:
+    branches:
+      - main
+      - 'releaase/**'
+
+jobs:
+  merge-upstream:
+    if: startsWith(github.event.ref, 'refs/branches/release/') && endsWith(github.repository, 'java-profiler-library')
+    runs-on: ubuntu-latest
+    needs: [test-linux-musl, test-linux-glibc]
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v4
+      - uses: webfactory/ssh-agent@v0.7.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_DEPLOY_PRIVATE }}
+      - name: Upstream release
+        run: |
+          VERSION=$(echo $GITHUB_REF_NAME | sed 's#release/##g')
+          git config --global user.email "java-profiler@datadoghq.com"
+          git config --global user.name "Datadog Java Profiler"
+          git remote add upstream git@github.com:DataDog/java-profiler.git
+          git remote update
+          git checkout upstream/main
+          git switch -c upstream/$GITHUB_REF_NAME # switch to the release branch on the upstream
+          # and merge the downstream release branch
+          git merge --allow-unrelated-histories --ff -X theirs $GITHUB_REF_NAME
+          # the assumption is that v<VERSION> tag is taken from the release branch
+          git push --atomic upstream HEAD:main v${VERSION} # push the upstream relase branch to 'main' together with the tag
+
+  release-from-upstream:
+    if: startsWith(github.event.ref, 'refs/tags/v') && endsWith(github.repository, 'java-profiler')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Create Release
+        id: create_release
+        uses: nickatnight/releases-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
