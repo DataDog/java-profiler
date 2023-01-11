@@ -130,7 +130,7 @@ jobs:
           path: build/
 
   merge-upstream:
-    if: startsWith(github.event.ref, 'refs/branches/release/') && endsWith(github.repository, 'java-profiler-library')
+    if: startsWith(github.event.ref, 'refs/heads/release/') && endsWith(github.repository, 'java-profiler-library')
     runs-on: ubuntu-latest
     needs: [test-linux-musl, test-linux-glibc]
     steps:

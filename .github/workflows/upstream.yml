@@ -21,7 +21,7 @@ on:
 
 jobs:
   merge-upstream:
-    if: (startsWith(github.event.ref, 'refs/branches/release/') || inputs.release_branch != '') && endsWith(github.repository, 'java-profiler-library')
+    if: (startsWith(github.event.ref, 'refs/heads/release/') || inputs.release_branch != '') && endsWith(github.repository, 'java-profiler-library')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
