@@ -53,7 +53,7 @@ jobs:
           if [ "${{ inputs.release_type }}" == "major" ]; then
             mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.nextMajorVersion}.0.0-SNAPSHOT versions:commit
             # version = 1.0.0-SNAPSHOT
-          else if [ "${{ inputs.release_type }}" == "patch" ]; then
+          elif [ "${{ inputs.release_type }}" == "patch" ]; then
             mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.majorVersion}.\${parsedVersion.minorVersion}\.${parsedVersion.nextIncrementalVersion}-SNAPSHOT versions:commit
             # version = 0.1.1-SNAPSHOT
           fi
