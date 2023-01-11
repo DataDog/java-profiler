@@ -43,11 +43,11 @@ jobs:
           set -x
           echo '::echo::on'
           if [ "${{ inputs.release_type }}" != "patch" ]&& [[ ${GITHUB_REF_NAME} =~ release/.* ]]; then
-            echo "Only patch release can be performed from a releaase branch"
+            echo "::error Only patch release can be performed from a releaase branch"
             exit 1
           fi
           if [ "${{ inputs.release_type }}" == "patch" ]&& [[ ! ${GITHUB_REF_NAME} =~ release/.* ]]; then
-            echo "A patch release can be performed only from a releaase branch"
+            echo "::error A patch release can be performed only from a releaase branch"
             exit 1
           fi
           if [ "${{ inputs.dry_run }}" == "true" ]; then
