@@ -20,6 +20,7 @@ on:
 
 jobs:
   release-branch:
+    run-name: "${{ inputs.release_type }} release of ${{ github.ref }} branch"
     runs-on: ubuntu-latest
     if: endsWith(github.repository, 'java-profiler-library')
     steps:
@@ -66,7 +67,7 @@ jobs:
           
           git checkout main
           if [ "${{ inputs.release_type }}" == "major" ]; then
-            mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.nextMajorVersion}.\${parsedVersion.nextMinorVersion}.0-SNAPSHOT versions:commit
+            mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.nextMajorVersion}.1.0-SNAPSHOT versions:commit
           else 
             mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.majorVersion}.\${parsedVersion.nextMinorVersion}.0-SNAPSHOT versions:commit
           fi
