@@ -34,36 +34,8 @@ static void throwNew(JNIEnv* env, const char* exception_class, const char* messa
     }
 }
 
-
 extern "C" DLLEXPORT void JNICALL
-Java_one_profiler_JavaProfiler_start0(JNIEnv* env, jobject unused, jstring event, jlong interval, jboolean reset) {
-    Arguments args;
-    const char* event_str = env->GetStringUTFChars(event, NULL);
-    if (strcmp(event_str, EVENT_CPU) == 0) {
-        args._cpu = interval > 0 ? interval : DEFAULT_CPU_INTERVAL;
-    } else if (strcmp(event_str, EVENT_WALL) == 0) {
-        args._wall = interval > 0 ? interval : DEFAULT_WALL_INTERVAL;
-    } else if (strcmp(event_str, EVENT_ALLOC) == 0) {
-        args._alloc = interval > 0 ? interval : 0;
-    } else if (strcmp(event_str, EVENT_LOCK) == 0) {
-        args._lock = interval > 0 ? interval : 0;
-    } else if (strcmp(event_str, EVENT_MEMLEAK) == 0) {
-        args._memleak = interval > 0 ? interval : 1;
-    } else {
-        args._event = event_str;
-        args._interval = interval;
-    }
-
-    Error error = Profiler::instance()->start(args, reset);
-    env->ReleaseStringUTFChars(event, event_str);
-
-    if (error) {
-        throwNew(env, "java/lang/IllegalStateException", error.message());
-    }
-}
-
-extern "C" DLLEXPORT void JNICALL
-Java_one_profiler_JavaProfiler_stop0(JNIEnv* env, jobject unused) {
+Java_com_datadoghq_profiler_JavaProfiler_stop0(JNIEnv* env, jobject unused) {
     Error error = Profiler::instance()->stop();
 
     if (error) {
@@ -72,12 +44,12 @@ Java_one_profiler_JavaProfiler_stop0(JNIEnv* env, jobject unused) {
 }
 
 extern "C" DLLEXPORT jint JNICALL
-Java_one_profiler_JavaProfiler_getTid0(JNIEnv* env, jobject unused) {
+Java_com_datadoghq_profiler_JavaProfiler_getTid0(JNIEnv* env, jobject unused) {
     return OS::threadId();
 }
 
 extern "C" DLLEXPORT jstring JNICALL
-Java_one_profiler_JavaProfiler_execute0(JNIEnv* env, jobject unused, jstring command) {
+Java_com_datadoghq_profiler_JavaProfiler_execute0(JNIEnv* env, jobject unused, jstring command) {
     Arguments args;
     const char* command_str = env->GetStringUTFChars(command, NULL);
     Error error = args.parse(command_str);
@@ -118,12 +90,12 @@ Java_one_profiler_JavaProfiler_execute0(JNIEnv* env, jobject unused, jstring com
 }
 
 extern "C" DLLEXPORT jlong JNICALL
-Java_one_profiler_JavaProfiler_getSamples(JNIEnv* env, jobject unused) {
+Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv* env, jobject unused) {
     return (jlong)Profiler::instance()->total_samples();
 }
 
 extern "C" DLLEXPORT void JNICALL
-Java_one_profiler_JavaProfiler_filterThread0(JNIEnv* env, jobject unused, jint tid, jboolean enable) {
+Java_com_datadoghq_profiler_JavaProfiler_filterThread0(JNIEnv* env, jobject unused, jint tid, jboolean enable) {
     if (tid < 0) {
         return;
     }
@@ -136,26 +108,25 @@ Java_one_profiler_JavaProfiler_filterThread0(JNIEnv* env, jobject unused, jint t
 }
 
 extern "C" DLLEXPORT jobject JNICALL
-Java_one_profiler_JavaProfiler_getContextPage0(JNIEnv* env, jobject unused, jint tid) {
+Java_com_datadoghq_profiler_JavaProfiler_getContextPage0(JNIEnv* env, jobject unused, jint tid) {
     ContextPage page = Contexts::getPage((int) tid);
     return env->NewDirectByteBuffer((void*) page.storage, (jlong) page.capacity);
 }
 
 extern "C" DLLEXPORT jlong JNICALL
-Java_one_profiler_JavaProfiler_getContextPageOffset0(JNIEnv* env, jobject unused, jint tid) {
+Java_com_datadoghq_profiler_JavaProfiler_getContextPageOffset0(JNIEnv* env, jobject unused, jint tid) {
     ContextPage page = Contexts::getPage((int) tid);
     return (jlong) page.storage;
 }
 
 extern "C" DLLEXPORT jint JNICALL
-Java_one_profiler_JavaProfiler_getMaxContextPages0(JNIEnv* env, jobject unused) {
+Java_com_datadoghq_profiler_JavaProfiler_getMaxContextPages0(JNIEnv* env, jobject unused) {
     return (jint) Contexts::getMaxPages();
 }
 
-#define F(name, sig)  {(char*)#name, (char*)sig, (void*)Java_one_profiler_JavaProfiler_##name}
+#define F(name, sig)  {(char*)#name, (char*)sig, (void*)Java_com_datadoghq_profiler_JavaProfiler_##name}
 
 static const JNINativeMethod profiler_natives[] = {
-    F(start0,                "(Ljava/lang/String;JZ)V"),
     F(stop0,                 "()V"),
     F(execute0,              "(Ljava/lang/String;)Ljava/lang/String;"),
     F(getSamples,            "()J"),
