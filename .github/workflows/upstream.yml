@@ -23,7 +23,6 @@ jobs:
   merge-upstream:
     if: (startsWith(github.event.ref, 'refs/branches/release/') || !isEmpty(inputs.release_branch)) && endsWith(github.repository, 'java-profiler-library')
     runs-on: ubuntu-latest
-    needs: [test-linux-musl, test-linux-glibc]
     steps:
       - uses: actions/checkout@v3
         with:
@@ -36,8 +35,8 @@ jobs:
           VERSION=$(echo $GITHUB_REF_NAME | sed 's#release/##g')
           git config --global user.email "java-profiler@datadoghq.com"
           git config --global user.name "Datadog Java Profiler"
-          if [ ! -z "${{ inputs.release_branch" }} ]; then
-            git checkout "${{ inputs.release_branch" }}
+          if [ ! -z "${{ inputs.release_branch }}"" ]; then
+            git checkout "${{ inputs.release_branch }}"
           fi
           git remote add upstream git@github.com:DataDog/java-profiler.git
           git remote update
