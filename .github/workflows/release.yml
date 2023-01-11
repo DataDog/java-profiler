@@ -70,8 +70,7 @@ jobs:
           git add .
           git commit -m "Creating release $CURRENT_VERSION"
           git tag v${CURRENT_VERSION}
-          git push $DRY_RUN --set-upstream origin release/$CURRENT_VERSION
-          git push $DRY_RUN --tags
+          git push $DRY_RUN --atomic --set-upstream origin release/$CURRENT_VERSION v${CURRENT_VERSION}
       - name: Bump the dev version
         run: |
           if [ "${{ inputs.dry_run }}" == "true" ]; then
