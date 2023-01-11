@@ -64,7 +64,11 @@ jobs:
           git add .
           git commit -m "Creating release $CURRENT_VERSION"
           git push $DRY_RUN --set-upstream origin release/$CURRENT_VERSION
-          
+      -name: Bump the dev version
+        run: |
+          if [ "${{ inputs.dry_run }}" == "true" ]; then
+            DRY_RUN="-n"
+          fi
           git checkout main
           if [ "${{ inputs.release_type }}" == "major" ]; then
             mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.nextMajorVersion}.1.0-SNAPSHOT versions:commit
