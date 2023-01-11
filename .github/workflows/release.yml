@@ -1,4 +1,5 @@
 name: Automated Release
+run-name: "${{ inputs.release_type }} release of ${{ github.ref }} branch"
 
 on: 
   workflow_dispatch:
@@ -20,7 +21,6 @@ on:
 
 jobs:
   release-branch:
-    run-name: "${{ inputs.release_type }} release of ${{ github.ref }} branch"
     runs-on: ubuntu-latest
     if: endsWith(github.repository, 'java-profiler-library')
     steps:
