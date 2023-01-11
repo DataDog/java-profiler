@@ -64,7 +64,7 @@ jobs:
           git add .
           git commit -m "Creating release $CURRENT_VERSION"
           git push $DRY_RUN --set-upstream origin release/$CURRENT_VERSION
-      -name: Bump the dev version
+      - name: Bump the dev version
         run: |
           if [ "${{ inputs.dry_run }}" == "true" ]; then
             DRY_RUN="-n"
