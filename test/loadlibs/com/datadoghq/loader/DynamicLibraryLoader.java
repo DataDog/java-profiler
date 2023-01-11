@@ -5,7 +5,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.concurrent.ThreadLocalRandom;
-import one.profiler.JavaProfiler;
+import com.datadoghq.profiler.JavaProfiler;
 
 public class DynamicLibraryLoader {
 

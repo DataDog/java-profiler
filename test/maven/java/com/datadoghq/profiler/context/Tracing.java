@@ -1,6 +1,6 @@
 package com.datadoghq.profiler.context;
 
-import one.profiler.JavaProfiler;
+import com.datadoghq.profiler.JavaProfiler;
 
 import java.util.ArrayDeque;
 import java.util.Deque;

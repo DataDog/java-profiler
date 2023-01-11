@@ -10,7 +10,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 
-import one.profiler.JavaProfiler;
+import com.datadoghq.profiler.JavaProfiler;
 
 import static com.datadoghq.profiler.AbstractProfilerTest.getJavaProfilerLib;
 import static org.junit.jupiter.api.Assertions.fail;

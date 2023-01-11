@@ -19,12 +19,12 @@ MERGE=true
 
 JAVAC=$(JAVA_HOME)/bin/javac
 JAR=$(JAVA_HOME)/bin/jar
-JAVAC_OPTIONS=-source 7 -target 7 -Xlint:-options
+JAVAC_OPTIONS=-source 8 -target 8 -Xlint:-options
 
 SOURCES := $(wildcard src/*.cpp)
 HEADERS := $(wildcard src/*.h)
 DEBUG_SOURCES := $(wildcard src/debug/*.c)
-API_SOURCES := $(wildcard src/api/one/profiler/*.java)
+API_SOURCES := $(wildcard src/api/com/datadoghq/profiler/*.java)
 
 ifeq ($(JAVA_HOME),)
   export JAVA_HOME:=$(shell java -cp . JavaHome)
