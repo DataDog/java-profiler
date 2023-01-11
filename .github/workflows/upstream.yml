@@ -32,7 +32,11 @@ jobs:
           ssh-private-key: ${{ secrets.SSH_DEPLOY_PRIVATE }}
       - name: Upstream release
         run: |
-          VERSION=$(echo $GITHUB_REF_NAME | sed 's#release/##g')
+          if [ -z "${{ inputs.release_branch }}" ]; then
+            VERSION=$(echo $GITHUB_REF_NAME | sed 's#release/##g')
+          else
+            VERSION=$(echo "${{ inputs.release_branch }}" | sed 's#release/##g'")
+          fi
           git config --global user.email "java-profiler@datadoghq.com"
           git config --global user.name "Datadog Java Profiler"
           if [ ! -z "${{ inputs.release_branch }}" ]; then
@@ -42,9 +46,9 @@ jobs:
           git remote update
           git checkout upstream/main
           # switch to the release branch on the upstream
-          git switch -c upstream/$GITHUB_REF_NAME
+          git switch -c upstream/release/$VERSION
           # and merge the downstream release branch
-          git merge --allow-unrelated-histories --ff -X theirs $GITHUB_REF_NAME
+          git merge --allow-unrelated-histories --ff -X theirs release/$VERSION
           # the assumption is that v<VERSION> tag is taken from the release branch
           # push the upstream relase branch to 'main' together with the tag
           git push --atomic upstream HEAD:main v${VERSION}
