@@ -31,7 +31,7 @@ jobs:
       - uses: webfactory/ssh-agent@v0.7.0
         with:
           ssh-private-key: ${{ secrets.SSH_PUSH_SECRET }}
-      - name: Checkout $GITHUB_REPOSITORY
+      - name: Checkout ${{ env.GITHUB_REPOSITORY }}
         run: git clone git@github.com:$GITHUB_REPOSITORY.git java-profiler
       - name: Configure git env
         run: |
@@ -40,8 +40,8 @@ jobs:
       - name: Create release
         run: |
           echo '::echo::on'
-          if [ "${{ inputs.release_type }}" == "minor" ]; then
-            echo "Minor"
+          if [ "${{ inputs.release_type }}" != "patch" ]; then
+            echo "Non patch"
           fi
           if [ "${{ inputs.dry_run }}" == "true" ]; then
             DRY_RUN="-n"
