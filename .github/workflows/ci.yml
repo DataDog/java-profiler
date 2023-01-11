@@ -3,7 +3,7 @@ name: CI Run
 on:
   push:
     branches:
-      - *
+      - '*'
     tags-ignore:
       - v*
   pull_request:
