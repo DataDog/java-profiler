@@ -69,6 +69,7 @@ enum JfrType {
     T_NATIVE_LIBRARY = 116,
     T_LOG = 117,
     T_WALLCLOCK_SAMPLE_EPOCH = 118,
+    T_ENDPOINT = 119,
     T_ANNOTATION = 200,
     T_LABEL = 201,
     T_CATEGORY = 202,

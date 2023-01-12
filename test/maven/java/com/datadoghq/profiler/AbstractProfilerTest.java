@@ -21,7 +21,7 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.openjdk.jmc.common.item.Attribute.attr;
-import static org.openjdk.jmc.common.unit.UnitLookup.NUMBER;
+import static org.openjdk.jmc.common.unit.UnitLookup.*;
 
 public abstract class AbstractProfilerTest {
 
@@ -30,16 +30,17 @@ public abstract class AbstractProfilerTest {
   private boolean stopped = true;
 
   public static final IAttribute<String> TYPE =
-          Attribute.attr("objectClass", "objectClass", "Object Class", UnitLookup.PLAIN_TEXT);
+          attr("objectClass", "objectClass", "Object Class", PLAIN_TEXT);
   public static final IAttribute<IQuantity> SIZE =
-          Attribute.attr("allocationSize", "allocationSize", "Allocation Size", UnitLookup.NUMBER);
+          attr("allocationSize", "allocationSize", "Allocation Size", NUMBER);
+
+  public static final IAttribute<IQuantity> DURATION =
+          attr("duration", "duration", "Duration", TIMESPAN);
 
   public static final IAttribute<IQuantity> LOCAL_ROOT_SPAN_ID = attr("localRootSpanId", "localRootSpanId",
           "localRootSpanId", NUMBER);
   public static final IAttribute<IQuantity> SPAN_ID = attr("spanId", "spanId",
           "spanId", NUMBER);
-  public static final IAttribute<IQuantity> WEIGHT_ACCESSOR = attr("weight", "weight",
-          "weight", NUMBER);
   public static final IAttribute<IQuantity> PARALLELISM = attr("parallelism", "parallelism",
           "parallelism", NUMBER);
 

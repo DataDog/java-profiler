@@ -56,7 +56,7 @@ public class ContextWallClockTest extends AbstractProfilerTest {
             IMemberAccessor<String, IItem> frameAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(wallclockSamples.getType());
             IMemberAccessor<IQuantity, IItem> spanIdAccessor = SPAN_ID.getAccessor(wallclockSamples.getType());
             IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(wallclockSamples.getType());
-            IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT_ACCESSOR.getAccessor(wallclockSamples.getType());
+            IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT.getAccessor(wallclockSamples.getType());
             IMemberAccessor<IQuantity, IItem> parallelismAccessor = PARALLELISM.getAccessor(wallclockSamples.getType());
             for (IItem sample : wallclockSamples) {
                 String stackTrace = frameAccessor.getMember(sample);

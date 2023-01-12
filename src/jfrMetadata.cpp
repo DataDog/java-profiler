@@ -167,6 +167,14 @@ void JfrMetadata::initialize() {
                 << field("spanId", T_LONG, "Span ID")
                 << field("localRootSpanId", T_LONG, "Local Root Span ID"))
 
+            << (type("datadog.Endpoint", T_ENDPOINT, "Endpoint")
+                << category("Datadog")
+                << field("startTime", T_LONG, "Start Time", F_TIME_MILLIS)
+                << field("duration", T_LONG, "Duration", F_DURATION_MILLIS)
+                << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
+                << field("endpoint", T_STRING, "Endpoint", F_CPOOL)
+                << field("localRootSpanId", T_LONG, "Local Root Span ID"))
+
             << (type("jdk.ThreadPark", T_THREAD_PARK, "Java Thread Park")
                 << category("Java Application")
                 << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)

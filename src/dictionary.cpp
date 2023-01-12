@@ -35,6 +35,7 @@ static inline bool keyEquals(const char* candidate, const char* key, size_t leng
 Dictionary::Dictionary() {
     _table = (DictTable*)calloc(1, sizeof(DictTable));
     _table->base_index = _base_index = 1;
+    _size = 0;
 }
 
 Dictionary::~Dictionary() {
@@ -46,6 +47,7 @@ void Dictionary::clear() {
     clear(_table);
     memset(_table, 0, sizeof(DictTable));
     _table->base_index = _base_index = 1;
+    _size = 0;
 }
 
 void Dictionary::clear(DictTable* table) {
@@ -76,35 +78,50 @@ unsigned int Dictionary::lookup(const char* key) {
 }
 
 unsigned int Dictionary::lookup(const char* key, size_t length) {
+    return lookup(key, length, true, 0);
+}
+
+unsigned int Dictionary::lookup(const char* key, size_t length, bool for_insert, unsigned int sentinel) {
     DictTable* table = _table;
     unsigned int h = hash(key, length);
 
     while (true) {
         DictRow* row = &table->rows[h % ROWS];
         for (int c = 0; c < CELLS; c++) {
-            if (row->keys[c] == NULL) {
+            if (for_insert && row->keys[c] == NULL) {
                 char* new_key = allocateKey(key, length);
                 if (__sync_bool_compare_and_swap(&row->keys[c], NULL, new_key)) {
+                    atomicInc(_size);
                     return table->index(h % ROWS, c);
                 }
                 free(new_key);
             }
-            if (keyEquals(row->keys[c], key, length)) {
+            if (row->keys[c] && keyEquals(row->keys[c], key, length)) {
                 return table->index(h % ROWS, c);
             }
         }
 
         if (row->next == NULL) {
-            DictTable* new_table = (DictTable*)calloc(1, sizeof(DictTable));
-            new_table->base_index = __sync_add_and_fetch(&_base_index, TABLE_CAPACITY);
-            if (!__sync_bool_compare_and_swap(&row->next, NULL, new_table)) {
-                free(new_table);
+            if (for_insert) {
+                DictTable *new_table = (DictTable *) calloc(1, sizeof(DictTable));
+                new_table->base_index = __sync_add_and_fetch(&_base_index, TABLE_CAPACITY);
+                if (!__sync_bool_compare_and_swap(&row->next, NULL, new_table)) {
+                    free(new_table);
+                }
+            } else {
+                return sentinel;
             }
         }
 
         table = row->next;
         h = (h >> ROW_BITS) | (h << (32 - ROW_BITS));
     }
+}
+
+unsigned int Dictionary::bounded_lookup(const char *key, size_t length, int size_limit) {
+    // bounded lookup will find the encoding if the key is already mapped,
+    // but will only grow the dictionary if the current size is below the limit
+    return lookup(key, length, _size < size_limit, INT_MAX);
 }
 
 void Dictionary::collect(std::map<unsigned int, const char*>& map) {
