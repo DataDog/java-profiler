@@ -1,5 +1,5 @@
 name: Automated Release
-run-name: "${{ inputs.dry_run && 'Dry-run for ' || '' }} ${{ inputs.release_type }} release of ${{ github.ref }} branch"
+run-name: "${{ inputs.dry_run && 'Dry-run for ' || 'Preform ' }} ${{ inputs.release_type }} release of ${{ github.ref }} branch"
 
 on: 
   workflow_dispatch:
