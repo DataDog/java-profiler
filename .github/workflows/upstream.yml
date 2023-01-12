@@ -1,5 +1,5 @@
 name: Upstream
-run-name: Upstream ${{ inputs.release_branch }}
+run-name: Release ${{ inputs.release_branch }} ${{ github.event.ref_name }}
 on: 
   workflow_dispatch:
     inputs:
