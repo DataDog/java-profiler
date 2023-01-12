@@ -48,12 +48,15 @@ class Dictionary {
   private:
     DictTable* _table;
     volatile unsigned int _base_index;
+    volatile int _size;
 
     static void clear(DictTable* table);
 
     static unsigned int hash(const char* key, size_t length);
 
     static void collect(std::map<unsigned int, const char*>& map, DictTable* table);
+
+    unsigned int lookup(const char* key, size_t length, bool for_insert, unsigned int sentinel);
 
   public:
     Dictionary();
@@ -63,6 +66,7 @@ class Dictionary {
 
     unsigned int lookup(const char* key);
     unsigned int lookup(const char* key, size_t length);
+    unsigned int bounded_lookup(const char* key, size_t length, int size_limit);
 
     void collect(std::map<unsigned int, const char*>& map);
 };

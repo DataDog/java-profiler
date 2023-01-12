@@ -62,8 +62,9 @@ jobs:
           fetch-depth: 0
       - name: Create Release
         id: create_release
-        uses: nickatnight/releases-action@v3
+        uses: ncipollo/release-action@v1
         with:
-          branch: "main"
+          generateReleaseNotes: true
+          allowUpdates: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
