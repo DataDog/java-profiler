@@ -111,8 +111,7 @@ void JfrMetadata::initialize() {
                 << field("state", T_THREAD_STATE, "Thread State", F_CPOOL)
                 << field("spanId", T_LONG, "Span ID")
                 << field("localRootSpanId", T_LONG, "Local Root Span ID")
-                << field("weight", T_LONG, "Sample weight")
-                << field("parallelism", T_LONG, "Thread Pool Parallelism"))
+                << field("weight", T_LONG, "Sample weight"))
 
             << (type("datadog.WallClockSamplingEpoch", T_WALLCLOCK_SAMPLE_EPOCH, "WallClock Sampling Epoch")
                 << category("Datadog", "Profiling")
@@ -169,8 +168,8 @@ void JfrMetadata::initialize() {
 
             << (type("datadog.Endpoint", T_ENDPOINT, "Endpoint")
                 << category("Datadog")
-                << field("startTime", T_LONG, "Start Time", F_TIME_MILLIS)
-                << field("duration", T_LONG, "Duration", F_DURATION_MILLIS)
+                << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+                << field("duration", T_LONG, "Duration", F_DURATION_TICKS)
                 << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
                 << field("endpoint", T_STRING, "Endpoint", F_CPOOL)
                 << field("localRootSpanId", T_LONG, "Local Root Span ID"))

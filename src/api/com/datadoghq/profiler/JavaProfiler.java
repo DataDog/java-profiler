@@ -23,9 +23,6 @@ import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
-import java.util.concurrent.TimeUnit;
-
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 /**
  * Java API for in-process profiling. Serves as a wrapper around
@@ -148,10 +145,9 @@ public final class JavaProfiler {
     /**
      * Records the completion of the trace root
      */
-    public boolean recordTraceRoot(long startTime, long duration, TimeUnit unit, long rootSpanId, String endpoint,
+    public boolean recordTraceRoot(long rootSpanId, String endpoint,
                                    int sizeLimit) {
-        return recordTrace0(MILLISECONDS.convert(startTime, unit), MILLISECONDS.convert(duration, unit), rootSpanId,
-                endpoint, sizeLimit);
+        return recordTrace0(rootSpanId, endpoint, sizeLimit);
     }
 
     /**
@@ -232,60 +228,6 @@ public final class JavaProfiler {
         clearContext(TID.get());
     }
 
-    /**
-     * Records the available parallelism of the thread pool the thread belongs to.
-     */
-    public void setPoolParallelism(int tid, int parallelism) {
-        if (UNSAFE != null) {
-            setPoolParallelismJDK8(tid, parallelism);
-        } else {
-            setPoolParallelismByteBuffer(tid, parallelism);
-        }
-    }
-
-    private void setPoolParallelismJDK8(int tid, int parallelism) {
-        assert UNSAFE != null && contextBaseOffsets != null;
-        long pageOffset = getPageUnsafe(tid);
-        int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
-        UNSAFE.putInt(pageOffset + index + 24, parallelism);
-    }
-
-    private void setPoolParallelismByteBuffer(int tid, int parallelism) {
-        if (contextStorage == null) {
-            return;
-        }
-        ByteBuffer page = getPage(tid);
-        int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
-        page.putInt(index + 24, parallelism);
-    }
-
-    /**
-     * Resets the thread-local pool parallelism
-     */
-    public void clearPoolParallelism(int tid) {
-        if (UNSAFE != null) {
-            clearPoolParallelismUnsafe(tid);
-        } else {
-            clearPoolParallelismByteBuffer(tid);
-        }
-    }
-
-    private void clearPoolParallelismUnsafe(int tid) {
-        assert UNSAFE != null && contextBaseOffsets != null;
-        long pageOffset = getPageUnsafe(tid);
-        int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
-        UNSAFE.putInt(pageOffset + index + 24, 1);
-    }
-
-    private void clearPoolParallelismByteBuffer(int tid) {
-        if (contextStorage == null) {
-            return;
-        }
-        ByteBuffer page = getPage(tid);
-        int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
-        page.putInt(index + 24, 1);
-    }
-
     private ByteBuffer getPage(int tid) {
         int pageIndex = tid / PAGE_SIZE;
         ByteBuffer page = contextStorage[pageIndex];
@@ -330,6 +272,5 @@ public final class JavaProfiler {
     private static native long getContextPageOffset0(int tid);
     private static native int getMaxContextPages0();
 
-    private static native boolean recordTrace0(long startTimeMillis, long durationMillis, long rootSpanId,
-                                               String endpoint, int sizeLimit);
+    private static native boolean recordTrace0(long rootSpanId, String endpoint, int sizeLimit);
 }

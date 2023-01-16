@@ -24,8 +24,7 @@ typedef struct {
     u64 spanId;
     u64 rootSpanId;
     u64 checksum;
-    u32 parallelism = 1;
-    u32 pad1;
+    u64 pad1;
     u64 pad2;
     u64 pad3;
     u64 pad4;
@@ -35,7 +34,6 @@ typedef struct {
 typedef struct {
     u64 spanId;
     u64 rootSpanId;
-    u32 parallelism;
 } ContextSnapshot;
 
 // must be kept in sync with PAGE_SIZE in JavaProfiler.java
