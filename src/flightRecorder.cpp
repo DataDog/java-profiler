@@ -1203,8 +1203,8 @@ class Recording {
     void recordTraceRoot(Buffer* buf, int tid, TraceRootEvent* event) {
         int start = buf->skip(1);
         buf->putVar64(T_ENDPOINT);
-        buf->putVar64(event->_start_time);
-        buf->putVar64(event->_duration_millis);
+        buf->putVar64(TSC::ticks());
+        buf->putVar64(0);
         buf->putVar32(tid);
         buf->putVar32(event->_label);
         buf->putVar64(event->_local_root_span_id);

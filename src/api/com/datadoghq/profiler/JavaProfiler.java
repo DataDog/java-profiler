@@ -23,9 +23,6 @@ import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
-import java.util.concurrent.TimeUnit;
-
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 /**
  * Java API for in-process profiling. Serves as a wrapper around
@@ -148,10 +145,9 @@ public final class JavaProfiler {
     /**
      * Records the completion of the trace root
      */
-    public boolean recordTraceRoot(long startTime, long duration, TimeUnit unit, long rootSpanId, String endpoint,
+    public boolean recordTraceRoot(long rootSpanId, String endpoint,
                                    int sizeLimit) {
-        return recordTrace0(MILLISECONDS.convert(startTime, unit), MILLISECONDS.convert(duration, unit), rootSpanId,
-                endpoint, sizeLimit);
+        return recordTrace0(rootSpanId, endpoint, sizeLimit);
     }
 
     /**
@@ -330,6 +326,5 @@ public final class JavaProfiler {
     private static native long getContextPageOffset0(int tid);
     private static native int getMaxContextPages0();
 
-    private static native boolean recordTrace0(long startTimeMillis, long durationMillis, long rootSpanId,
-                                               String endpoint, int sizeLimit);
+    private static native boolean recordTrace0(long rootSpanId, String endpoint, int sizeLimit);
 }
