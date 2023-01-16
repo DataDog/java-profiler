@@ -34,9 +34,6 @@ public abstract class AbstractProfilerTest {
   public static final IAttribute<IQuantity> SIZE =
           attr("allocationSize", "allocationSize", "Allocation Size", NUMBER);
 
-  public static final IAttribute<IQuantity> DURATION =
-          attr("duration", "duration", "Duration", TIMESPAN);
-
   public static final IAttribute<IQuantity> LOCAL_ROOT_SPAN_ID = attr("localRootSpanId", "localRootSpanId",
           "localRootSpanId", NUMBER);
   public static final IAttribute<IQuantity> SPAN_ID = attr("spanId", "spanId",

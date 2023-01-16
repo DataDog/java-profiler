@@ -2,20 +2,17 @@ package com.datadoghq.profiler.endpoints;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import org.junit.jupiter.api.Test;
-import org.openjdk.jmc.common.item.*;
+import org.openjdk.jmc.common.item.IAttribute;
+import org.openjdk.jmc.common.item.IItem;
+import org.openjdk.jmc.common.item.IItemCollection;
+import org.openjdk.jmc.common.item.IItemIterable;
+import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.unit.IQuantity;
-import org.openjdk.jmc.common.unit.QuantityConversionException;
-import org.openjdk.jmc.common.unit.UnitLookup;
 
 import java.util.BitSet;
-import java.util.Comparator;
-import java.util.List;
 import java.util.UUID;
-import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
-import static java.util.concurrent.TimeUnit.NANOSECONDS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
@@ -26,11 +23,7 @@ public class EndpointTest extends AbstractProfilerTest {
     @Test
     public void testEndpoints() {
         Endpoint[] endpoints = IntStream.range(0, 1000)
-                .mapToObj(i -> new Endpoint(
-                        MILLISECONDS.toNanos(System.currentTimeMillis()),
-                        MILLISECONDS.toNanos(i),
-                        i,
-                        i + ""))
+                .mapToObj(i -> new Endpoint(i, i + ""))
                 .toArray(Endpoint[]::new);
         int sizeLimit = endpoints.length;
         // insert up to limit
@@ -42,8 +35,7 @@ public class EndpointTest extends AbstractProfilerTest {
             record(endpoint, true, sizeLimit);
         }
         // reject above size limit
-        record(new Endpoint(System.nanoTime(), 10, 0, UUID.randomUUID().toString()),
-                false, sizeLimit);
+        record(new Endpoint(0, UUID.randomUUID().toString()), false, sizeLimit);
 
         stopProfiler();
         IItemCollection events = verifyEvents("datadog.Endpoint");
@@ -53,7 +45,6 @@ public class EndpointTest extends AbstractProfilerTest {
         for (IItemIterable it : events) {
             IMemberAccessor<String, IItem> endpointAccessor = endpointAttribute.getAccessor(it.getType());
             IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(it.getType());
-            IMemberAccessor<IQuantity, IItem> durationAccessor = DURATION.getAccessor(it.getType());
             for (IItem event : it) {
                 long rootSpanId = rootSpanIdAccessor.getMember(event).longValue();
                 Endpoint endpoint = endpoints[(int) rootSpanId];
@@ -62,10 +53,6 @@ public class EndpointTest extends AbstractProfilerTest {
                 String recordedEndpoint = endpointAccessor.getMember(event);
                 assertEquals(endpoint.endpoint, recordedEndpoint, message);
                 assertEquals(endpoint.rootSpanId, rootSpanId, message);
-                assertEquals(UnitLookup.MILLISECOND, durationAccessor.getMember(event).getUnit());
-                long durationMillis = durationAccessor.getMember(event).longValue();
-                long originalDurationMillis = NANOSECONDS.toMillis(endpoint.durationNanos);
-                assertEquals(originalDurationMillis, durationMillis, message);
             }
         }
         for (int i = 0; i < endpoints.length; i++) {
@@ -74,8 +61,7 @@ public class EndpointTest extends AbstractProfilerTest {
     }
 
     private void record(Endpoint endpoint, boolean shouldAccept, int sizeLimit) {
-        assertEquals(shouldAccept, profiler.recordTraceRoot(endpoint.startNanos, endpoint.durationNanos, NANOSECONDS,
-                endpoint.rootSpanId, endpoint.endpoint, sizeLimit));
+        assertEquals(shouldAccept, profiler.recordTraceRoot(endpoint.rootSpanId, endpoint.endpoint, sizeLimit));
     }
 
     @Override
@@ -84,14 +70,10 @@ public class EndpointTest extends AbstractProfilerTest {
     }
 
     static class Endpoint {
-        private final long startNanos;
-        private final long durationNanos;
         private final long rootSpanId;
         private final String endpoint;
 
-        Endpoint(long startNanos, long durationNanos, long rootSpanId, String endpoint) {
-            this.startNanos = startNanos;
-            this.durationNanos = durationNanos;
+        Endpoint(long rootSpanId, String endpoint) {
             this.rootSpanId = rootSpanId;
             this.endpoint = endpoint;
         }
@@ -99,9 +81,7 @@ public class EndpointTest extends AbstractProfilerTest {
         @Override
         public String toString() {
             return "Endpoint{" +
-                    "startNanos=" + startNanos +
-                    ", durationNanos=" + durationNanos +
-                    ", rootSpanId=" + rootSpanId +
+                    "rootSpanId=" + rootSpanId +
                     ", endpoint='" + endpoint + '\'' +
                     '}';
         }

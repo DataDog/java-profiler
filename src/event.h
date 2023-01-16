@@ -141,13 +141,11 @@ class WallClockEpochEvent {
 
 class TraceRootEvent {
   public:
-    u64 _start_time;
-    u64 _duration_millis;
     u64 _local_root_span_id;
     u32 _label;
 
-    TraceRootEvent(u64 start_time, u64 duration_millis, u64 local_root_span_id, u32 label) :
-        _start_time(start_time), _duration_millis(duration_millis), _local_root_span_id(local_root_span_id), _label(label) {};
+    TraceRootEvent(u64 local_root_span_id, u32 label) :
+        _local_root_span_id(local_root_span_id), _label(label) {};
 };
 
 #endif // _EVENT_H
