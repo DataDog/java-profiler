@@ -20,10 +20,4 @@ public class ContextExecutor extends ThreadPoolExecutor {
     protected <T> RunnableFuture<T> newTaskFor(Runnable runnable, T value) {
         return ContextTask.wrap(runnable, value);
     }
-
-    @Override
-    protected void beforeExecute(Thread thread, Runnable runnable) {
-        profiler.setPoolParallelism(profiler.getNativeThreadId(), getPoolSize());
-        super.beforeExecute(thread, runnable);
-    }
 }

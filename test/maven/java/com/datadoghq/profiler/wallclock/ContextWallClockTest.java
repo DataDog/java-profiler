@@ -57,13 +57,11 @@ public class ContextWallClockTest extends AbstractProfilerTest {
             IMemberAccessor<IQuantity, IItem> spanIdAccessor = SPAN_ID.getAccessor(wallclockSamples.getType());
             IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(wallclockSamples.getType());
             IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT.getAccessor(wallclockSamples.getType());
-            IMemberAccessor<IQuantity, IItem> parallelismAccessor = PARALLELISM.getAccessor(wallclockSamples.getType());
             for (IItem sample : wallclockSamples) {
                 String stackTrace = frameAccessor.getMember(sample);
                 long spanId = spanIdAccessor.getMember(sample).longValue();
                 long rootSpanId = rootSpanIdAccessor.getMember(sample).longValue();
                 long weight = weightAccessor.getMember(sample).longValue();
-                long parallelism = parallelismAccessor.getMember(sample).longValue();
                 // a lot fo care needs to be taken here with samples that fall between a context activation and
                 // a method call. E.g. not finding method2Impl in the stack trace doesn't mean the sample wasn't
                 // taken in the part of method2 between activation and invoking method2Impl, which complicates
@@ -72,13 +70,11 @@ public class ContextWallClockTest extends AbstractProfilerTest {
                     // method3 is scheduled after method2, and method1 blocks on it, so spanId == rootSpanId + 2
                     assertEquals(rootSpanId + 2, spanId, stackTrace);
                     assertTrue(spanId == 0 || method3SpanIds.contains(spanId), stackTrace);
-                    // FIXME assertEquals(executor.getCorePoolSize(), parallelism);
                     method3Weight += weight;
                 } else if (stackTrace.contains("method2Impl")) {
                     // method2 is called next, so spanId == rootSpanId + 1
                     assertEquals(rootSpanId + 1, spanId, stackTrace);
                     assertTrue(spanId == 0 || method2SpanIds.contains(spanId), stackTrace);
-                    // FIXME assertEquals(1, parallelism);
                     method2Weight += weight;
                 } else if (stackTrace.contains("method1Impl")
                         && !stackTrace.contains("method2") && !stackTrace.contains("method3")) {
@@ -86,7 +82,6 @@ public class ContextWallClockTest extends AbstractProfilerTest {
                     // it's the root so spanId == rootSpanId
                     assertEquals(rootSpanId, spanId, stackTrace);
                     assertTrue(spanId == 0 || method1SpanIds.contains(spanId), stackTrace);
-                    // FIXME assertEquals(1, parallelism);
                     method1Weight += weight;
                 }
                 assertTrue(weight <= 10 && weight > 0);

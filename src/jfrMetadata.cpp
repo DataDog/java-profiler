@@ -111,8 +111,7 @@ void JfrMetadata::initialize() {
                 << field("state", T_THREAD_STATE, "Thread State", F_CPOOL)
                 << field("spanId", T_LONG, "Span ID")
                 << field("localRootSpanId", T_LONG, "Local Root Span ID")
-                << field("weight", T_LONG, "Sample weight")
-                << field("parallelism", T_LONG, "Thread Pool Parallelism"))
+                << field("weight", T_LONG, "Sample weight"))
 
             << (type("datadog.WallClockSamplingEpoch", T_WALLCLOCK_SAMPLE_EPOCH, "WallClock Sampling Epoch")
                 << category("Datadog", "Profiling")

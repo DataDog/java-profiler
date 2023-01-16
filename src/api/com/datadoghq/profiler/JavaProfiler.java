@@ -228,60 +228,6 @@ public final class JavaProfiler {
         clearContext(TID.get());
     }
 
-    /**
-     * Records the available parallelism of the thread pool the thread belongs to.
-     */
-    public void setPoolParallelism(int tid, int parallelism) {
-        if (UNSAFE != null) {
-            setPoolParallelismJDK8(tid, parallelism);
-        } else {
-            setPoolParallelismByteBuffer(tid, parallelism);
-        }
-    }
-
-    private void setPoolParallelismJDK8(int tid, int parallelism) {
-        assert UNSAFE != null && contextBaseOffsets != null;
-        long pageOffset = getPageUnsafe(tid);
-        int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
-        UNSAFE.putInt(pageOffset + index + 24, parallelism);
-    }
-
-    private void setPoolParallelismByteBuffer(int tid, int parallelism) {
-        if (contextStorage == null) {
-            return;
-        }
-        ByteBuffer page = getPage(tid);
-        int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
-        page.putInt(index + 24, parallelism);
-    }
-
-    /**
-     * Resets the thread-local pool parallelism
-     */
-    public void clearPoolParallelism(int tid) {
-        if (UNSAFE != null) {
-            clearPoolParallelismUnsafe(tid);
-        } else {
-            clearPoolParallelismByteBuffer(tid);
-        }
-    }
-
-    private void clearPoolParallelismUnsafe(int tid) {
-        assert UNSAFE != null && contextBaseOffsets != null;
-        long pageOffset = getPageUnsafe(tid);
-        int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
-        UNSAFE.putInt(pageOffset + index + 24, 1);
-    }
-
-    private void clearPoolParallelismByteBuffer(int tid) {
-        if (contextStorage == null) {
-            return;
-        }
-        ByteBuffer page = getPage(tid);
-        int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
-        page.putInt(index + 24, 1);
-    }
-
     private ByteBuffer getPage(int tid) {
         int pageIndex = tid / PAGE_SIZE;
         ByteBuffer page = contextStorage[pageIndex];
