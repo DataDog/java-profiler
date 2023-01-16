@@ -171,6 +171,7 @@ void JfrMetadata::initialize() {
                 << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
                 << field("duration", T_LONG, "Duration", F_DURATION_TICKS)
                 << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
+                << field("stackTrace", T_STACK_TRACE, "Stack Trace", F_CPOOL)
                 << field("endpoint", T_STRING, "Endpoint", F_CPOOL)
                 << field("localRootSpanId", T_LONG, "Local Root Span ID"))
 

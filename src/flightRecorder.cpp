@@ -1203,8 +1203,9 @@ class Recording {
         int start = buf->skip(1);
         buf->putVar64(T_ENDPOINT);
         buf->putVar64(TSC::ticks());
-        buf->putVar64(0);
+        buf->put8(0);
         buf->putVar32(tid);
+        buf->put8(0);
         buf->putVar32(event->_label);
         buf->putVar64(event->_local_root_span_id);
         buf->put8(start, buf->offset() - start);
