@@ -20,16 +20,22 @@
 
 Context** Contexts::_pages = new Context *[Contexts::getMaxPages()]();
 
-const ContextSnapshot Contexts::get(int tid) {
+static Context DD_EMPTY_CONTEXT = {};
+
+Context Contexts::get(int tid) {
     int pageIndex = tid >> DD_CONTEXT_PAGE_SHIFT;
     Context* page = _pages[pageIndex];
     if (page != NULL) {
-        Context& context = page[tid & DD_CONTEXT_PAGE_MASK];
-        if ((context.spanId ^ context.rootSpanId) == context.checksum && context.spanId != 0) {
-            return { .spanId = context.spanId, .rootSpanId = context.rootSpanId };
+        Context context = page[tid & DD_CONTEXT_PAGE_MASK];
+        if ((context.spanId ^ context.rootSpanId) == context.checksum) {
+            return context;
         }
     }
-    return { .spanId = 0, .rootSpanId = 0 };
+    return empty();
+}
+
+Context Contexts::empty() {
+    return DD_EMPTY_CONTEXT;
 }
 
 void Contexts::initialize(int pageIndex) {

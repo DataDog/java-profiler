@@ -711,7 +711,7 @@ void PerfEvents::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     if (_enabled) {
         int tid = OS::threadId();
         Shims::instance().setSighandlerTid(tid);
-        ContextSnapshot ctx = Contexts::get(tid);
+        Context ctx = Contexts::get(tid);
 
         u64 counter = readCounter(siginfo, ucontext);
         ExecutionEvent event;

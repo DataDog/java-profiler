@@ -23,6 +23,8 @@ import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Java API for in-process profiling. Serves as a wrapper around
@@ -31,6 +33,8 @@ import java.util.Arrays;
  * libjavaProfiler.so.
  */
 public final class JavaProfiler {
+
+    private static final int PROVENANCE = ThreadLocalRandom.current().nextInt();
 
     private static final Unsafe UNSAFE;
     static {
@@ -49,10 +53,15 @@ public final class JavaProfiler {
     private static final int CONTEXT_SIZE = 64;
     // must be kept in sync with PAGE_SIZE in context.h
     private static final int PAGE_SIZE = 1024;
+    private static final int SPAN_OFFSET = 0;
+    private static final int ROOT_SPAN_OFFSET = 8;
+    private static final int CHECKSUM_OFFSET = 16;
+    private static final int DYNAMIC_TAGS_OFFSET = 24;
     private static final ThreadLocal<Integer> TID = ThreadLocal.withInitial(JavaProfiler::getTid0);
 
     private ByteBuffer[] contextStorage;
     private long[] contextBaseOffsets;
+    private final AtomicInteger tagOffset = new AtomicInteger(0);
 
     private JavaProfiler() {
     }
@@ -145,8 +154,7 @@ public final class JavaProfiler {
     /**
      * Records the completion of the trace root
      */
-    public boolean recordTraceRoot(long rootSpanId, String endpoint,
-                                   int sizeLimit) {
+    public boolean recordTraceRoot(long rootSpanId, String endpoint, int sizeLimit) {
         return recordTrace0(rootSpanId, endpoint, sizeLimit);
     }
 
@@ -205,9 +213,9 @@ public final class JavaProfiler {
         long pageOffset = getPageUnsafe(tid);
         int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
         long base = pageOffset + index;
-        UNSAFE.putLong(base, spanId);
-        UNSAFE.putLong(base + 8, rootSpanId);
-        UNSAFE.putLong(base + 16, spanId ^ rootSpanId);
+        UNSAFE.putLong(base + SPAN_OFFSET, spanId);
+        UNSAFE.putLong(base + ROOT_SPAN_OFFSET, rootSpanId);
+        UNSAFE.putLong(base + CHECKSUM_OFFSET, spanId ^ rootSpanId);
     }
 
     private void setContextByteBuffer(int tid, long spanId, long rootSpanId) {
@@ -216,9 +224,9 @@ public final class JavaProfiler {
         }
         ByteBuffer page = getPage(tid);
         int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
-        page.putLong(index, spanId);
-        page.putLong(index + 8, rootSpanId);
-        page.putLong(index + 16, spanId ^ rootSpanId);
+        page.putLong(index + SPAN_OFFSET, spanId);
+        page.putLong(index + ROOT_SPAN_OFFSET, rootSpanId);
+        page.putLong(index + CHECKSUM_OFFSET, spanId ^ rootSpanId);
     }
 
     /**
@@ -255,6 +263,90 @@ public final class JavaProfiler {
         setContext(tid, 0, 0);
     }
 
+    /**
+     * Sets a context value
+     * @param tid the thread the context is associated with
+     * @param attribute the attribute, must have been registered via @see JavaProfiler#registerContextAttribute
+     * @param value the encoding of the value. Must have been encoded via @see JavaProfiler#registerContextValue
+     */
+    public void setContextValue(int tid, ContextAttribute attribute, int value) {
+        if (UNSAFE != null) {
+            setContextJDK8(tid, attribute, value);
+        } else {
+            setContextByteBuffer(tid, attribute, value);
+        }
+    }
+
+    private void setContextJDK8(int tid, ContextAttribute attribute, int value) {
+        if (contextBaseOffsets == null) {
+            return;
+        }
+        long pageOffset = getPageUnsafe(tid);
+        UNSAFE.putLong(pageOffset + addressOf(tid, attribute), pack(attribute, value));
+    }
+
+    public void setContextByteBuffer(int tid, ContextAttribute attribute, int value) {
+        if (contextStorage == null) {
+            return;
+        }
+        ByteBuffer page = getPage(tid);
+
+        page.putLong(addressOf(tid, attribute), pack(attribute, value));
+    }
+
+    private static long pack(ContextAttribute attribute, int value) {
+        return ((long) attribute.encoding << 32) | value;
+    }
+
+    private static int addressOf(int tid, ContextAttribute attribute) {
+        if (attribute.provenance != PROVENANCE) {
+            throw new IllegalStateException("context attribute not registered with profiler");
+        }
+        return ((tid % PAGE_SIZE) * CONTEXT_SIZE + DYNAMIC_TAGS_OFFSET)
+                // TODO - we want to limit cardinality and a great way to enforce that is with the size of these
+                //  fields to a smaller type, say, u16. This would also allow us to pack more data into each thread's
+                //  slot. However, the current implementation of the dictionary trades monotonicity and minimality for
+                //  space, so imposing a limit of 64K values does not impose a limit on the number of bits required per
+                //  value. Condensing this mapping would also result in savings in varint encoded event sizes.
+                //
+                // TODO - for now we just embed the tag attribute and value next to each other in the slot, which is
+                //  very wasteful (this limits us to 5 tags in total but we use 32 bits to represent the tag name)
+                //  but this is much simpler than implementing suitable global storage to associate slots
+                //  with an attribute - this will be done in a second iteration.
+                + attribute.offset * Long.BYTES;
+    }
+
+    // can be increased to 10 if the attribute labels are stored elsewhere,
+    // or further by limiting to 16 bits per value
+    // FIXME must be kept in sync with context.h
+    private static final int TAGS_STORAGE_LIMIT = 2;
+
+    /**
+     * Registers an attribute which can be used later to set context
+     * @param attribute the name of the attribute
+     * @return the tag if registration is possible, otherwise null
+     */
+    public ContextAttribute registerContextAttribute(CharSequence attribute) {
+        int encoding = registerContextAttribute0(attribute.toString(), TAGS_STORAGE_LIMIT);
+        if (encoding >= 0) {
+            int offset = tagOffset.getAndIncrement();
+            if (offset < TAGS_STORAGE_LIMIT) {
+                return new ContextAttribute(PROVENANCE, offset, encoding, attribute);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Registers a value and returns an encoding which can be used to refer
+     * to the value in the future
+     * @param value the value to record
+     * @return the encoding to use to refer to the value when setting context
+     */
+    public int registerContextValue(CharSequence value) {
+        return registerContextValue0(value.toString());
+    }
+
     public int getNativeThreadId() {
         return getTid0();
     }
@@ -273,4 +365,8 @@ public final class JavaProfiler {
     private static native int getMaxContextPages0();
 
     private static native boolean recordTrace0(long rootSpanId, String endpoint, int sizeLimit);
+
+    private static native int registerContextAttribute0(String attribute, int limit);
+
+    private static native int registerContextValue0(String value);
 }
