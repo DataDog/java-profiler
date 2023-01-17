@@ -62,8 +62,8 @@ class Contexts {
 
   public:
     // get must not allocate
-    static Context get(int tid);
-    static Context empty();
+    static Context& get(int tid);
+    static Context& empty();
     // not to be called except to share with Java callers as a DirectByteBuffer
     static ContextPage getPage(int tid);
     static int getMaxPages();

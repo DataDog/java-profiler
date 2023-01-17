@@ -1145,7 +1145,7 @@ class Recording {
         }
     }
 
-    void writeContext(Buffer* buf, Context context) {
+    void writeContext(Buffer* buf, Context& context) {
         buf->putVar64(context.spanId);
         buf->putVar64(context.rootSpanId);
         for (size_t i = 0; i < DD_MAX_TAGS; i++) {
