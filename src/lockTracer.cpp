@@ -190,14 +190,13 @@ bool LockTracer::isConcurrentLock(const char* lock_name) {
 void LockTracer::recordContendedLock(int event_type, u64 start_time, u64 end_time,
                                      const char* lock_name, jobject lock, jlong timeout) {
     int tid = ProfiledThread::currentTid();
-    ContextSnapshot ctx = Contexts::get(tid);
 
     LockEvent event;
     event._start_time = start_time;
     event._end_time = end_time;
     event._address = *(uintptr_t*)lock;
     event._timeout = timeout;
-    event._context = ctx;
+    event._context = Contexts::get(tid);
 
     if (lock_name != NULL) {
         if (lock_name[0] == 'L') {

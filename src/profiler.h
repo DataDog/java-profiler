@@ -86,6 +86,8 @@ class Profiler {
     Dictionary _class_map;
     Dictionary _symbol_map;
     Dictionary _string_label_map;
+    Dictionary _context_attribute_map;
+    Dictionary _context_value_map;
     ThreadFilter _thread_filter;
     CallTraceStorage _call_trace_storage;
     FlightRecorder _jfr;
@@ -207,6 +209,8 @@ class Profiler {
 
     Dictionary* classMap() { return &_class_map; }
     Dictionary* stringLabelMap() { return &_string_label_map; }
+    Dictionary* contextAttributeMap() { return &_context_attribute_map; }
+    Dictionary* contextValueMap() { return &_context_value_map; }
     ThreadFilter* threadFilter() { return &_thread_filter; }
 
     Error run(Arguments& args);

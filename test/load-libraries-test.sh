@@ -32,7 +32,7 @@ fi
     $JFR ./libincrement.so:increment
 
   # $JAVA_HOME/bin/jfr print --json $JFR
-  $JAVA_HOME/bin/jfr summary $JFR
+  # $JAVA_HOME/bin/jfr summary $JFR
 )
 
 

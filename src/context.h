@@ -20,21 +20,29 @@
 #include "arch.h"
 #include "arguments.h"
 
+// FIXME - we want dynamically sized arrays of structs instead of a hardcoded limit and hardcoded scalar fields
+static const u32 DD_MAX_TAGS = 2;
+static const u32 DD_TAGS_CAPACITY = 5;
+
 typedef struct {
-    u64 spanId;
-    u64 rootSpanId;
-    u64 checksum;
-    u64 pad1;
-    u64 pad2;
-    u64 pad3;
-    u64 pad4;
-    u64 pad5;
-} Context;
+    u32 value;
+    u32 attribute;
+
+    bool is_valid() {
+        return attribute != 0;
+    }
+} Tag;
 
 typedef struct {
     u64 spanId;
     u64 rootSpanId;
-} ContextSnapshot;
+    u64 checksum;
+    Tag tags[DD_TAGS_CAPACITY];
+
+    Tag get_tag(int i) {
+        return tags[i];
+    }
+} Context;
 
 // must be kept in sync with PAGE_SIZE in JavaProfiler.java
 const int DD_CONTEXT_PAGE_SIZE = 1024;
@@ -54,7 +62,8 @@ class Contexts {
 
   public:
     // get must not allocate
-    static const ContextSnapshot get(int tid);
+    static Context& get(int tid);
+    static Context& empty();
     // not to be called except to share with Java callers as a DirectByteBuffer
     static ContextPage getPage(int tid);
     static int getMaxPages();
