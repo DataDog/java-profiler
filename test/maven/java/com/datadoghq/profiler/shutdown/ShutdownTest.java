@@ -29,7 +29,7 @@ public class ShutdownTest {
   public void testShutdownWall() throws IOException {
     System.out.println("=== testShutdownWall()");
     JavaProfiler profiler = JavaProfiler.getInstance(getJavaProfilerLib());
-    profiler.addThread(profiler.getNativeThreadId());
+    profiler.addThread();
     runTest(profiler, "start,wall=10us,filter=0");
   }
 
@@ -37,7 +37,7 @@ public class ShutdownTest {
   public void testShutdownCpuAndWall() throws IOException {
     System.out.println("=== testShutdownCpuAndWall()");
     JavaProfiler profiler = JavaProfiler.getInstance(getJavaProfilerLib());
-    profiler.addThread(profiler.getNativeThreadId());
+    profiler.addThread();
     runTest(profiler, "start,cpu=10us,wall=~10us,filter=0");
   }
 
