@@ -127,7 +127,6 @@ class Lookup {
     Dictionary* _classes;
     Dictionary _packages;
     Dictionary _symbols;
-    Dictionary* _strings;
 
   private:
     void fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* lib_name) {
@@ -249,9 +248,8 @@ class Lookup {
     }
 
   public:
-    Lookup(MethodMap* method_map, Dictionary* classes, Dictionary* strings) :
-        _method_map(method_map), _classes(classes), _packages(), _symbols(), _strings(strings) {
-    }
+    Lookup(MethodMap* method_map, Dictionary* classes) :
+        _method_map(method_map), _classes(classes), _packages(), _symbols() {}
 
     MethodInfo* resolveMethod(ASGCT_CallFrame& frame) {
         jmethodID method = frame.method_id;
@@ -956,9 +954,9 @@ class Recording {
         buf->put8(0);
         buf->put8(1);
         // constant pool count - bump each time a new pool is added
-        buf->put8(10);
+        buf->put8(12);
 
-        Lookup lookup(&_method_map, Profiler::instance()->classMap(), Profiler::instance()->stringLabelMap());
+        Lookup lookup(&_method_map, Profiler::instance()->classMap());
         writeFrameTypes(buf);
         writeThreadStates(buf);
         writeThreads(buf);
@@ -966,8 +964,10 @@ class Recording {
         writeMethods(buf, &lookup);
         writeClasses(buf, &lookup);
         writePackages(buf, &lookup);
-        writeSymbols(buf, &lookup);
-        writeStrings(buf, &lookup);
+        writeConstantPoolSection(buf, T_SYMBOL, &lookup._symbols);
+        writeConstantPoolSection(buf, T_STRING, Profiler::instance()->stringLabelMap());
+        writeConstantPoolSection(buf, T_ATTRIBUTE, Profiler::instance()->contextAttributeMap());
+        writeConstantPoolSection(buf, T_ATTRIBUTE_VALUE, Profiler::instance()->contextValueMap());
         writeLogLevels(buf);
     }
 
@@ -1124,19 +1124,9 @@ class Recording {
         }
     }
 
-    void writeSymbols(Buffer* buf, Lookup* lookup) {
-        writeConstantPoolSection(buf, T_SYMBOL, &lookup->_symbols);
-    }
-
-    void writeStrings(Buffer* buf, Lookup* lookup) {
-        writeConstantPoolSection(buf, T_STRING, lookup->_strings);
-    }
-
     void writeConstantPoolSection(Buffer* buf, JfrType type, Dictionary* dictionary) {
         std::map<u32, const char*> constants;
         dictionary->collect(constants);
-
-
         buf->putVar64(type);
         buf->putVar64(constants.size());
         for (std::map<u32, const char*>::const_iterator it = constants.begin(); it != constants.end(); ++it) {
@@ -1155,33 +1145,42 @@ class Recording {
         }
     }
 
-    void recordExecutionSample(Buffer* buf, int tid, u32 call_trace_id, ExecutionEvent* event) {
-        ContextSnapshot context = event->_context;
+    void writeContext(Buffer* buf, Context& context) {
+        buf->putVar64(context.spanId);
+        buf->putVar64(context.rootSpanId);
+        for (size_t i = 0; i < DD_MAX_TAGS; i++) {
+            Tag tag = context.get_tag(i);
+            if (tag.is_valid()) {
+                buf->putVar32(tag.attribute);
+                buf->putVar32(tag.value);
+            } else {
+                buf->put8(0);
+                buf->put8(0);
+            }
+        }
+    }
 
+    void recordExecutionSample(Buffer* buf, int tid, u32 call_trace_id, ExecutionEvent* event) {
         int start = buf->skip(1);
         buf->putVar64(T_EXECUTION_SAMPLE);
         buf->putVar64(TSC::ticks());
         buf->putVar64(tid);
         buf->putVar64(call_trace_id);
         buf->putVar64(event->_thread_state);
-        buf->putVar64(context.spanId);
-        buf->putVar64(context.rootSpanId);
         buf->putVar64(event->_weight);
+        writeContext(buf, event->_context);
         buf->put8(start, buf->offset() - start);
     }
 
     void recordMethodSample(Buffer* buf, int tid, u32 call_trace_id, ExecutionEvent* event) {
-        ContextSnapshot context = event->_context;
-
         int start = buf->skip(1);
         buf->putVar64(T_METHOD_SAMPLE);
         buf->putVar64(TSC::ticks());
         buf->putVar64(tid);
         buf->putVar64(call_trace_id);
         buf->putVar64(event->_thread_state);
-        buf->putVar64(context.spanId);
-        buf->putVar64(context.rootSpanId);
         buf->putVar64(event->_weight);
+        writeContext(buf, event->_context);
         buf->put8(start, buf->offset() - start);
     }
 
@@ -1213,8 +1212,6 @@ class Recording {
     }
 
     void recordAllocationInNewTLAB(Buffer* buf, int tid, u32 call_trace_id, AllocEvent* event) {
-        ContextSnapshot context = event->_context;
-
         int start = buf->skip(1);
         buf->putVar64(T_ALLOC_IN_NEW_TLAB);
         buf->putVar64(TSC::ticks());
@@ -1223,14 +1220,11 @@ class Recording {
         buf->putVar64(event->_id);
         buf->putVar64(event->_instance_size);
         buf->putVar64(event->_total_size);
-        buf->putVar64(context.spanId);
-        buf->putVar64(context.rootSpanId);
+        writeContext(buf, event->_context);
         buf->put8(start, buf->offset() - start);
     }
 
     void recordAllocationOutsideTLAB(Buffer* buf, int tid, u32 call_trace_id, AllocEvent* event) {
-        ContextSnapshot context = event->_context;
-
         int start = buf->skip(1);
         buf->putVar64(T_ALLOC_OUTSIDE_TLAB);
         buf->putVar64(TSC::ticks());
@@ -1238,8 +1232,7 @@ class Recording {
         buf->putVar64(call_trace_id);
         buf->putVar64(event->_id);
         buf->putVar64(event->_total_size);
-        buf->putVar64(context.spanId);
-        buf->putVar64(context.rootSpanId);
+        writeContext(buf, event->_context);
         buf->put8(start, buf->offset() - start);
     }
 
@@ -1257,8 +1250,6 @@ class Recording {
     }
 
     void recordMonitorBlocked(Buffer* buf, int tid, u32 call_trace_id, LockEvent* event) {
-        ContextSnapshot context = event->_context;
-
         int start = buf->skip(1);
         buf->putVar64(T_MONITOR_ENTER);
         buf->putVar64(event->_start_time);
@@ -1268,8 +1259,7 @@ class Recording {
         buf->putVar64(event->_id);
         buf->put8(0);
         buf->putVar64(event->_address);
-        buf->putVar64(context.spanId);
-        buf->putVar64(context.rootSpanId);
+        writeContext(buf, event->_context);
         buf->put8(start, buf->offset() - start);
     }
 

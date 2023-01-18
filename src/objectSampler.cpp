@@ -34,12 +34,11 @@ void ObjectSampler::SampledObjectAlloc(jvmtiEnv* jvmti, JNIEnv* jni, jthread thr
 
 void ObjectSampler::recordAllocation(jvmtiEnv* jvmti, int event_type, jclass object_klass, jlong size) {
     int tid = ProfiledThread::currentTid();
-    ContextSnapshot ctx = Contexts::get(tid);
 
     AllocEvent event;
     event._total_size = size > _interval ? size : _interval;
     event._instance_size = size;
-    event._context = ctx;
+    event._context = Contexts::get(tid);
 
     char* class_name;
     if (jvmti->GetClassSignature(object_klass, &class_name, NULL) == 0) {

@@ -29,10 +29,10 @@ using namespace std;
 class Event {
   public:
     u32 _id;
-    ContextSnapshot _context;
+    Context _context;
 
-    Event(ContextSnapshot ctx) : _id(0), _context(ctx) {}
-    Event() : Event({0, 0}) {}
+    Event(Context ctx) : _id(0), _context(ctx) {}
+    Event() : Event(Contexts::empty()) {}
 };
 
 class ExecutionEvent : public Event {

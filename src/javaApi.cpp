@@ -141,18 +141,39 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(JNIEnv* env, jobject unuse
     return acceptValue;
 }
 
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_registerContextAttribute0(JNIEnv* env, jobject unused, jstring attribute,
+                                                                   jint storageLimit) {
+    const char* attr_str = env->GetStringUTFChars(attribute, NULL);
+    jint length = env->GetStringUTFLength(attribute);
+    u32 encoding = Profiler::instance()->contextAttributeMap()->bounded_lookup(attr_str, length, storageLimit);
+    env->ReleaseStringUTFChars(attribute, attr_str);
+    return encoding == INT_MAX ? -1 : encoding;
+}
+
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_registerContextValue0(JNIEnv* env, jobject unused, jstring value) {
+    const char* value_str = env->GetStringUTFChars(value, NULL);
+    jint length = env->GetStringUTFLength(value);
+    u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(value_str, length, 1 << 16);
+    env->ReleaseStringUTFChars(value, value_str);
+    return encoding == INT_MAX ? -1 : encoding;
+}
+
 #define F(name, sig)  {(char*)#name, (char*)sig, (void*)Java_com_datadoghq_profiler_JavaProfiler_##name}
 
 static const JNINativeMethod profiler_natives[] = {
-    F(stop0,                 "()V"),
-    F(execute0,              "(Ljava/lang/String;)Ljava/lang/String;"),
-    F(getSamples,            "()J"),
-    F(filterThread0,         "(I;Z)V"),
-    F(getTid0,               "()I"),
-    F(getContextPage0,       "(I)Ljava/nio/ByteBuffer"),
-    F(getMaxContextPages0,   "()I"),
-    F(getContextPageOffset0, "(I)L"),
-    F(recordTrace0,          "(L;Ljava/lang/String;I)Z")
+    F(stop0,                     "()V"),
+    F(execute0,                  "(Ljava/lang/String;)Ljava/lang/String;"),
+    F(getSamples,                "()J"),
+    F(filterThread0,             "(I;Z)V"),
+    F(getTid0,                   "()I"),
+    F(getContextPage0,           "(I)Ljava/nio/ByteBuffer"),
+    F(getMaxContextPages0,       "()I"),
+    F(getContextPageOffset0,     "(I)L"),
+    F(recordTrace0,              "(L;Ljava/lang/String;I)Z"),
+    F(registerContextAttribute0, "(Ljava/lang/String;I)I"),
+    F(registerContextValue0,     "(Ljava/lang/String;I)I")
 };
 
 static const JNINativeMethod* execute0 = &profiler_natives[2];
