@@ -14,8 +14,7 @@ final class RegisteringThreadFactory implements ThreadFactory {
     @Override
     public Thread newThread(Runnable task) {
         Thread thread = new Thread(() -> {
-            // TODO simplify this, it has become apparent this API has a lot of downsides
-            profiler.addThread(profiler.getNativeThreadId());
+            profiler.addThread();
             task.run();
         });
         thread.setDaemon(true);

@@ -1,7 +1,7 @@
 package com.datadoghq.profiler.context;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
-import com.datadoghq.profiler.ContextAttribute;
+import com.datadoghq.profiler.ContextSetter;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IAttribute;
 import org.openjdk.jmc.common.item.IItem;
@@ -11,10 +11,10 @@ import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.unit.IQuantity;
 import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.ToIntFunction;
 import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -35,15 +35,11 @@ public class TagContextTest extends AbstractProfilerTest {
     @Test
     public void test() throws InterruptedException {
         registerCurrentThreadForWallClockProfiling();
-        int tid = profiler.getNativeThreadId();
-        ContextAttribute contextAttribute = profiler.registerContextAttribute("tag");
-        assertNotNull(contextAttribute);
-        Map<CharSequence, Integer> dictionary = new HashMap<>();
-        ToIntFunction<String> dictionarize =
-                value -> dictionary.computeIfAbsent(value, v -> profiler.registerContextValue(v));
+        ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag", "tag"));
+
         String[] strings = IntStream.range(0, 10).mapToObj(String::valueOf).toArray(String[]::new);
         for (int i = 0; i < strings.length * 10; i++) {
-            work(tid, contextAttribute, strings[i % strings.length], dictionarize);
+            work(contextSetter, "tag", strings[i % strings.length]);
         }
         stopProfiler();
         IItemCollection events = verifyEvents("datadog.MethodSample");
@@ -87,9 +83,9 @@ public class TagContextTest extends AbstractProfilerTest {
         }
     }
 
-    private void work(int tid, ContextAttribute contextAttribute, String contextValue,
-                      ToIntFunction<String> dictionarize) throws InterruptedException {
-        profiler.setContextValue(tid, contextAttribute, dictionarize.applyAsInt(contextValue));
+    private void work(ContextSetter contextSetter, String contextAttribute, String contextValue)
+            throws InterruptedException {
+        assertTrue(contextSetter.setContextValue(contextAttribute, contextValue));
         Thread.sleep(10);
     }
 

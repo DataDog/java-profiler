@@ -92,7 +92,7 @@ public abstract class AbstractProfilerTest {
   }
 
   protected void registerCurrentThreadForWallClockProfiling() {
-    profiler.addThread(profiler.getNativeThreadId());
+    profiler.addThread();
   }
 
   private String getAmendedProfilerCommand() {

@@ -37,15 +37,14 @@ public class ThreadFilterSmokeTest extends AbstractProfilerTest {
     for (int i = 0; i < futures.length; i++) {
       int id = i;
       futures[i] = executorService.submit(() -> {
-        int tid = profiler.getNativeThreadId();
-        profiler.addThread(tid);
+        profiler.addThread();
         profiler.setContext(id, 42);
         try {
           Thread.sleep(2);
         } catch(InterruptedException e) {
           Thread.currentThread().interrupt();
         }
-        profiler.removeThread(tid);
+        profiler.removeThread();
       });
     }
     for (Future<?> future : futures) {
