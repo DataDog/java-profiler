@@ -35,7 +35,6 @@ public class TagContextTest extends AbstractProfilerTest {
     @Test
     public void test() throws InterruptedException {
         registerCurrentThreadForWallClockProfiling();
-        int tid = profiler.getNativeThreadId();
         ContextAttribute contextAttribute = profiler.registerContextAttribute("tag");
         assertNotNull(contextAttribute);
         Map<CharSequence, Integer> dictionary = new HashMap<>();
@@ -43,7 +42,7 @@ public class TagContextTest extends AbstractProfilerTest {
                 value -> dictionary.computeIfAbsent(value, v -> profiler.registerContextValue(v));
         String[] strings = IntStream.range(0, 10).mapToObj(String::valueOf).toArray(String[]::new);
         for (int i = 0; i < strings.length * 10; i++) {
-            work(tid, contextAttribute, strings[i % strings.length], dictionarize);
+            work(contextAttribute, strings[i % strings.length], dictionarize);
         }
         stopProfiler();
         IItemCollection events = verifyEvents("datadog.MethodSample");
@@ -87,9 +86,9 @@ public class TagContextTest extends AbstractProfilerTest {
         }
     }
 
-    private void work(int tid, ContextAttribute contextAttribute, String contextValue,
+    private void work(ContextAttribute contextAttribute, String contextValue,
                       ToIntFunction<String> dictionarize) throws InterruptedException {
-        profiler.setContextValue(tid, contextAttribute, dictionarize.applyAsInt(contextValue));
+        profiler.setContextValue(contextAttribute, dictionarize.applyAsInt(contextValue));
         Thread.sleep(10);
     }
 

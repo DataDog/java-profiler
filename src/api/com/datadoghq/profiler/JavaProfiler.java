@@ -161,21 +161,17 @@ public final class JavaProfiler {
     /**
      * Add the given thread to the set of profiled threads.
      * 'filter' option must be enabled to use this method.
-     *
-     * @param tid native thread id to include in profiling
      */
-    public void addThread(int tid) {
-        filterThread0(tid, true);
+    public void addThread() {
+        filterThread0(true);
     }
 
     /**
      * Remove the given thread to the set of profiled threads.
      * 'filter' option must be enabled to use this method.
-     *
-     * @param tid native thread id to remove from profiling
      */
-    public void removeThread(int tid) {
-        filterThread0(tid, false);
+    public void removeThread() {
+        filterThread0(false);
     }
 
 
@@ -187,18 +183,7 @@ public final class JavaProfiler {
      * @param rootSpanId Root Span identifier that should be stored for current thread
      */
     public void setContext(long spanId, long rootSpanId) {
-        setContext(TID.get(), spanId, rootSpanId);
-    }
-
-    /**
-     * Passing context identifier to a profiler. This ID is thread-local and is dumped in
-     * the JFR output only. 0 is a reserved value for "no-context".
-     *
-     * @param tid the native thread id
-     * @param spanId Span identifier that should be stored for current thread
-     * @param rootSpanId Root Span identifier that should be stored for current thread
-     */
-    public void setContext(int tid, long spanId, long rootSpanId) {
+        int tid = TID.get();
         if (UNSAFE != null) {
             setContextJDK8(tid, spanId, rootSpanId);
         } else {
@@ -229,12 +214,7 @@ public final class JavaProfiler {
         page.putLong(index + CHECKSUM_OFFSET, spanId ^ rootSpanId);
     }
 
-    /**
-     * Clears context identifier for current thread.
-     */
-    public void clearContext() {
-        clearContext(TID.get());
-    }
+
 
     private ByteBuffer getPage(int tid) {
         int pageIndex = tid / PAGE_SIZE;
@@ -256,20 +236,19 @@ public final class JavaProfiler {
     }
 
     /**
-     * Clears context identifier for the given thread id.
-     * @param tid the native thread id
+     * Clears context identifier for current thread.
      */
-    public void clearContext(int tid) {
-        setContext(tid, 0, 0);
+    public void clearContext() {
+        setContext(0, 0);
     }
 
     /**
      * Sets a context value
-     * @param tid the thread the context is associated with
      * @param attribute the attribute, must have been registered via @see JavaProfiler#registerContextAttribute
      * @param value the encoding of the value. Must have been encoded via @see JavaProfiler#registerContextValue
      */
-    public void setContextValue(int tid, ContextAttribute attribute, int value) {
+    public void setContextValue(ContextAttribute attribute, int value) {
+        int tid = TID.get();
         if (UNSAFE != null) {
             setContextJDK8(tid, attribute, value);
         } else {
@@ -347,13 +326,9 @@ public final class JavaProfiler {
         return registerContextValue0(value.toString());
     }
 
-    public int getNativeThreadId() {
-        return getTid0();
-    }
-
     private native void stop0() throws IllegalStateException;
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
-    private native void filterThread0(int tid, boolean enable);
+    private native void filterThread0(boolean enable);
 
     private static native int getTid0();
     private static native ByteBuffer getContextPage0(int tid);

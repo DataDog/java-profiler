@@ -96,7 +96,8 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv* env, jobject unused)
 }
 
 extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_filterThread0(JNIEnv* env, jobject unused, jint tid, jboolean enable) {
+Java_com_datadoghq_profiler_JavaProfiler_filterThread0(JNIEnv* env, jobject unused, jboolean enable) {
+    int tid = ProfiledThread::currentTid();
     if (tid < 0) {
         return;
     }
