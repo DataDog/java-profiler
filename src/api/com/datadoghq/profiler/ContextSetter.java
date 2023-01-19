@@ -49,6 +49,15 @@ public class ContextSetter {
         return false;
     }
 
+    public boolean clearContextValue(String attribute) {
+        ContextAttribute contextAttribute = registration.get(attribute);
+        if (contextAttribute != null) {
+            profiler.setContextValue(contextAttribute, 0);
+            return true;
+        }
+        return false;
+    }
+
     @SuppressWarnings("unchecked")
     private static Map<String, ContextAttribute> tryMakeImmutable(Map<String, ContextAttribute> map) {
         try {
