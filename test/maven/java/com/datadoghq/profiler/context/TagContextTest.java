@@ -18,7 +18,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
@@ -87,6 +86,7 @@ public class TagContextTest extends AbstractProfilerTest {
             throws InterruptedException {
         assertTrue(contextSetter.setContextValue(contextAttribute, contextValue));
         Thread.sleep(10);
+        assertTrue(contextSetter.clearContextValue(contextAttribute));
     }
 
     @Override
