@@ -362,6 +362,18 @@ Error Arguments::parse(const char* args) {
             CASE("reverse")
                 _reverse = true;
 
+            CASE("attributes")
+                if (value != NULL) {
+                    std::string input(value);
+                    std::size_t start = 0;
+                    std::size_t end = 0;
+                    while ((end = input.find(";", start)) != std::string::npos) {
+                        _context_attributes.push_back(input.substr(start, end - start));
+                        start = end + 1;
+                    }
+                    _context_attributes.push_back(input.substr(start));
+                }
+
             DEFAULT()
                 if (_unknown_arg == NULL) _unknown_arg = arg;
         }

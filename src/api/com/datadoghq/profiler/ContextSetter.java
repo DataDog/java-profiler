@@ -1,48 +1,51 @@
 package com.datadoghq.profiler;
 
-import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.MethodType;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class ContextSetter {
 
-    private static final MethodHandle IMMUTABLE_COPY = findCopyOf();
+    private static final int TAGS_STORAGE_LIMIT = 10;
     private final List<ConcurrentHashMap<String, Integer>> encodings;
-    private final Map<String, ContextAttribute> registration;
+    private final List<String> attributes;
     private final JavaProfiler profiler;
 
     public ContextSetter(JavaProfiler profiler, List<String> attributes) {
         this.profiler = profiler;
         Set<String> unique = new HashSet<>(attributes);
-        encodings = new ArrayList<>(unique.size());
-        Map<String, ContextAttribute> registration = new HashMap<>();
+        this.encodings = new ArrayList<>(unique.size());
+        this.attributes = new ArrayList<>(unique.size());
+        int i = 0;
         for (String attribute : attributes) {
             if (!unique.remove(attribute)) {
                 continue;
             }
-            ContextAttribute contextAttribute = profiler.registerContextAttribute(attribute);
-            if (contextAttribute != null) {
-                registration.put(attribute, contextAttribute);
+            // TODO ask JNI for this info instead to stop it from diverging
+            if (i < TAGS_STORAGE_LIMIT) {
+                this.attributes.add(attribute);
                 encodings.add(new ConcurrentHashMap<>());
+                i++;
             }
         }
-        this.registration = tryMakeImmutable(registration);
+    }
+
+    public int offsetOf(String attribute) {
+        return attributes.indexOf(attribute);
     }
 
     public boolean setContextValue(String attribute, String value) {
-        ContextAttribute contextAttribute = registration.get(attribute);
-        if (contextAttribute != null) {
-            int encoding = encodings.get(contextAttribute.offset)
+        return setContextValue(offsetOf(attribute), value);
+    }
+
+    public boolean setContextValue(int offset, String value) {
+        if (offset >= 0) {
+            int encoding = encodings.get(offset)
                     .computeIfAbsent(value, profiler::registerContextValue);
             if (encoding >= 0) {
-                profiler.setContextValue(contextAttribute, encoding);
+                profiler.setContextValue(offset, encoding);
                 return true;
             }
         }
@@ -50,29 +53,14 @@ public class ContextSetter {
     }
 
     public boolean clearContextValue(String attribute) {
-        ContextAttribute contextAttribute = registration.get(attribute);
-        if (contextAttribute != null) {
-            profiler.setContextValue(contextAttribute, 0);
+        return clearContextValue(offsetOf(attribute));
+    }
+
+    public boolean clearContextValue(int offset) {
+        if (offset >= 0) {
+            profiler.setContextValue(offset, 0);
             return true;
         }
         return false;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Map<String, ContextAttribute> tryMakeImmutable(Map<String, ContextAttribute> map) {
-        try {
-            return IMMUTABLE_COPY == null ? map : (Map<String, ContextAttribute>) IMMUTABLE_COPY.invokeExact(map);
-        } catch (Throwable ignore) {
-            return map;
-        }
-    }
-
-    private static MethodHandle findCopyOf() {
-        try {
-            return MethodHandles.lookup().findStatic(Map.class, "copyOf",
-                    MethodType.methodType(Map.class, Map.class));
-        } catch (NoSuchMethodException | IllegalAccessException ignore) {
-        }
-        return null;
     }
 }

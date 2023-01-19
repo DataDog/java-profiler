@@ -42,6 +42,10 @@ public abstract class AbstractProfilerTest {
   public static final IAttribute<IQuantity> WEIGHT = attr("weight", "weight",
           "weight", NUMBER);
 
+  public static final IAttribute<String> TAG_1 = attr("tag1", "", "", PLAIN_TEXT);
+  public static final IAttribute<String> TAG_2 = attr("tag2", "", "", PLAIN_TEXT);
+  public static final IAttribute<String> TAG_3 = attr("tag3", "", "", PLAIN_TEXT);
+
   public static final IAttribute<IMCStackTrace> STACK_TRACE = attr("stackTrace", "stackTrace", "", UnitLookup.STACKTRACE);
 
   protected JavaProfiler profiler;
@@ -97,9 +101,12 @@ public abstract class AbstractProfilerTest {
 
   private String getAmendedProfilerCommand() {
     String profilerCommand = getProfilerCommand();
-    return ALLOW_NATIVE_CSTACKS || profilerCommand.contains("cstack=")
+    return (ALLOW_NATIVE_CSTACKS || profilerCommand.contains("cstack=")
             ? profilerCommand
-            : profilerCommand + ",cstack=no";
+            : profilerCommand + ",cstack=no")
+            // FIXME - test framework doesn't seem to be forking each test, so need to sync
+            //  these across test cases for now
+            + ",attributes=tag1;tag2;tag3";
   }
 
   protected abstract String getProfilerCommand();
