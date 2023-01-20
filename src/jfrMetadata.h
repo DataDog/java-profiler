@@ -21,7 +21,6 @@
 #include <map>
 #include <vector>
 #include <stdio.h>
-#include <string.h>
 
 
 enum JfrType {
@@ -131,6 +130,17 @@ class Element {
     Element& operator<<(const Element& child) {
         if (!const_cast<Element&>(child).is_nofield()) {
             _children.push_back(&child);
+        }
+        return *this;
+    }
+
+    Element& operator||(const std::vector<std::string>& customAttributes) {
+        for (auto name : customAttributes) {
+            Element* child = new Element("field");
+            child->attribute("name", name.c_str());
+            child->attribute("class", T_ATTRIBUTE_VALUE);
+            child->attribute("constantPool", "true");
+            _children.push_back(child);
         }
         return *this;
     }
@@ -245,15 +255,13 @@ class JfrMetadata : Element {
   public:
     JfrMetadata();
 
-    static void initialize();
+    static void initialize(const std::vector<std::string>& contextAttributes);
 
     static Element* root() {
-        initialize();
         return &_root;
     }
 
     static std::vector<std::string>& strings() {
-        initialize();
         return _strings;
     }
 };

@@ -23,8 +23,6 @@ import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Java API for in-process profiling. Serves as a wrapper around
@@ -33,8 +31,6 @@ import java.util.concurrent.atomic.AtomicInteger;
  * libjavaProfiler.so.
  */
 public final class JavaProfiler {
-
-    private static final int PROVENANCE = ThreadLocalRandom.current().nextInt();
 
     private static final Unsafe UNSAFE;
     static {
@@ -61,7 +57,6 @@ public final class JavaProfiler {
 
     private ByteBuffer[] contextStorage;
     private long[] contextBaseOffsets;
-    private final AtomicInteger tagOffset = new AtomicInteger(0);
 
     private JavaProfiler() {
     }
@@ -244,76 +239,42 @@ public final class JavaProfiler {
 
     /**
      * Sets a context value
-     * @param attribute the attribute, must have been registered via @see JavaProfiler#registerContextAttribute
+     * @param offset the offset
      * @param value the encoding of the value. Must have been encoded via @see JavaProfiler#registerContextValue
      */
-    public void setContextValue(ContextAttribute attribute, int value) {
+    public void setContextValue(int offset, int value) {
         int tid = TID.get();
         if (UNSAFE != null) {
-            setContextJDK8(tid, attribute, value);
+            setContextJDK8(tid, offset, value);
         } else {
-            setContextByteBuffer(tid, attribute, value);
+            setContextByteBuffer(tid, offset, value);
         }
     }
 
-    private void setContextJDK8(int tid, ContextAttribute attribute, int value) {
+    private void setContextJDK8(int tid, int offset, int value) {
         if (contextBaseOffsets == null) {
             return;
         }
         long pageOffset = getPageUnsafe(tid);
-        UNSAFE.putLong(pageOffset + addressOf(tid, attribute), pack(attribute, value));
+        UNSAFE.putInt(pageOffset + addressOf(tid, offset), value);
     }
 
-    public void setContextByteBuffer(int tid, ContextAttribute attribute, int value) {
+    public void setContextByteBuffer(int tid, int offset, int value) {
         if (contextStorage == null) {
             return;
         }
         ByteBuffer page = getPage(tid);
-
-        page.putLong(addressOf(tid, attribute), pack(attribute, value));
+        page.putInt(addressOf(tid, offset), value);
     }
 
-    private static long pack(ContextAttribute attribute, int value) {
-        return ((long) attribute.encoding << 32) | value;
-    }
-
-    private static int addressOf(int tid, ContextAttribute attribute) {
-        if (attribute.provenance != PROVENANCE) {
-            throw new IllegalStateException("context attribute not registered with profiler");
-        }
+    private static int addressOf(int tid, int offset) {
         return ((tid % PAGE_SIZE) * CONTEXT_SIZE + DYNAMIC_TAGS_OFFSET)
                 // TODO - we want to limit cardinality and a great way to enforce that is with the size of these
                 //  fields to a smaller type, say, u16. This would also allow us to pack more data into each thread's
                 //  slot. However, the current implementation of the dictionary trades monotonicity and minimality for
                 //  space, so imposing a limit of 64K values does not impose a limit on the number of bits required per
                 //  value. Condensing this mapping would also result in savings in varint encoded event sizes.
-                //
-                // TODO - for now we just embed the tag attribute and value next to each other in the slot, which is
-                //  very wasteful (this limits us to 5 tags in total but we use 32 bits to represent the tag name)
-                //  but this is much simpler than implementing suitable global storage to associate slots
-                //  with an attribute - this will be done in a second iteration.
-                + attribute.offset * Long.BYTES;
-    }
-
-    // can be increased to 10 if the attribute labels are stored elsewhere,
-    // or further by limiting to 16 bits per value
-    // FIXME must be kept in sync with context.h
-    private static final int TAGS_STORAGE_LIMIT = 2;
-
-    /**
-     * Registers an attribute which can be used later to set context
-     * @param attribute the name of the attribute
-     * @return the tag if registration is possible, otherwise null
-     */
-    public ContextAttribute registerContextAttribute(CharSequence attribute) {
-        int encoding = registerContextAttribute0(attribute.toString(), TAGS_STORAGE_LIMIT);
-        if (encoding >= 0) {
-            int offset = tagOffset.getAndIncrement();
-            if (offset < TAGS_STORAGE_LIMIT) {
-                return new ContextAttribute(PROVENANCE, offset, encoding, attribute);
-            }
-        }
-        return null;
+                + offset * Integer.BYTES;
     }
 
     /**
@@ -340,8 +301,6 @@ public final class JavaProfiler {
     private static native int getMaxContextPages0();
 
     private static native boolean recordTrace0(long rootSpanId, String endpoint, int sizeLimit);
-
-    private static native int registerContextAttribute0(String attribute, int limit);
 
     private static native int registerContextValue0(String value);
 }

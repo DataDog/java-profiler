@@ -1091,6 +1091,8 @@ Error Profiler::start(Arguments& args, bool reset) {
 
     switchLibraryTrap(_cstack != CSTACK_NO);
     if (args._output == OUTPUT_JFR) {
+        JfrMetadata::initialize(args._context_attributes);
+        _num_context_attributes = args._context_attributes.size();
         error = _jfr.start(args, reset);
         if (error) {
             uninstallTraps();

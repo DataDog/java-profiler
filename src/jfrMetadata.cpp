@@ -26,7 +26,7 @@ bool JfrMetadata::_initialized = false;
 JfrMetadata::JfrMetadata() : Element("root") {
 }
 
-void JfrMetadata::initialize() {
+void JfrMetadata::initialize(const std::vector<std::string>& contextAttributes) {
     if (_initialized) {
         return;
     }
@@ -93,9 +93,6 @@ void JfrMetadata::initialize() {
             << (type("profiler.types.LogLevel", T_LOG_LEVEL, "Log Level", true)
                 << field("name", T_STRING, "Name"))
 
-            << (type("profiler.types.Attribute", T_ATTRIBUTE, "Attribute", true)
-                << field("attribute", T_STRING, "Attribute"))
-
             << (type("profiler.types.AttributeValue", T_ATTRIBUTE_VALUE, "Value", true)
                 << field("value", T_STRING, "Value"))
 
@@ -108,10 +105,7 @@ void JfrMetadata::initialize() {
                 << field("weight", T_LONG, "Sample weight")
                 << field("spanId", T_LONG, "Span ID")
                 << field("localRootSpanId", T_LONG, "Local Root Span ID")
-                << field("attribute1", T_ATTRIBUTE, "Attribute 1", F_CPOOL)
-                << field("value1", T_ATTRIBUTE_VALUE, "Value 1", F_CPOOL)
-                << field("attribute2", T_ATTRIBUTE, "Attribute 2", F_CPOOL)
-                << field("value2", T_ATTRIBUTE_VALUE, "Value 2", F_CPOOL))
+                || contextAttributes)
 
             << (type("datadog.MethodSample", T_METHOD_SAMPLE, "Method Wall Profiling Sample")
                 << category("Datadog", "Profiling")
@@ -122,10 +116,7 @@ void JfrMetadata::initialize() {
                 << field("weight", T_LONG, "Sample weight")
                 << field("spanId", T_LONG, "Span ID")
                 << field("localRootSpanId", T_LONG, "Local Root Span ID")
-                << field("attribute1", T_ATTRIBUTE, "Attribute 1", F_CPOOL)
-                << field("value1", T_ATTRIBUTE_VALUE, "Value 1", F_CPOOL)
-                << field("attribute2", T_ATTRIBUTE, "Attribute 2", F_CPOOL)
-                << field("value2", T_ATTRIBUTE_VALUE, "Value 2", F_CPOOL))
+                || contextAttributes)
 
             << (type("datadog.WallClockSamplingEpoch", T_WALLCLOCK_SAMPLE_EPOCH, "WallClock Sampling Epoch")
                 << category("Datadog", "Profiling")
@@ -147,10 +138,7 @@ void JfrMetadata::initialize() {
                 << field("tlabSize", T_LONG, "TLAB Size", F_BYTES)
                 << field("spanId", T_LONG, "Span ID")
                 << field("localRootSpanId", T_LONG, "Local Root Span ID")
-                << field("attribute1", T_ATTRIBUTE, "Attribute 1", F_CPOOL)
-                << field("value1", T_ATTRIBUTE_VALUE, "Value 1", F_CPOOL)
-                << field("attribute2", T_ATTRIBUTE, "Attribute 2", F_CPOOL)
-                << field("value2", T_ATTRIBUTE_VALUE, "Value 2", F_CPOOL))
+                || contextAttributes)
 
             << (type("datadog.ObjectAllocationOutsideTLAB", T_ALLOC_OUTSIDE_TLAB, "Allocation outside TLAB")
                 << category("Java Application")
@@ -161,10 +149,7 @@ void JfrMetadata::initialize() {
                 << field("allocationSize", T_LONG, "Allocation Size", F_BYTES)
                 << field("spanId", T_LONG, "Span ID")
                 << field("localRootSpanId", T_LONG, "Local Root Span ID")
-                << field("attribute1", T_ATTRIBUTE, "Attribute 1", F_CPOOL)
-                << field("value1", T_ATTRIBUTE_VALUE, "Value 1", F_CPOOL)
-                << field("attribute2", T_ATTRIBUTE, "Attribute 2", F_CPOOL)
-                << field("value2", T_ATTRIBUTE_VALUE, "Value 2", F_CPOOL))
+                || contextAttributes)
 
             << (type("datadog.HeapLiveObject", T_HEAP_LIVE_OBJECT, "Heap Live Object")
                 << category("Datadog")
@@ -187,10 +172,7 @@ void JfrMetadata::initialize() {
                 << field("address", T_LONG, "Monitor Address", F_ADDRESS)
                 << field("spanId", T_LONG, "Span ID")
                 << field("localRootSpanId", T_LONG, "Local Root Span ID")
-                << field("attribute1", T_ATTRIBUTE, "Attribute 1", F_CPOOL)
-                << field("value1", T_ATTRIBUTE_VALUE, "Value 1", F_CPOOL)
-                << field("attribute2", T_ATTRIBUTE, "Attribute 2", F_CPOOL)
-                << field("value2", T_ATTRIBUTE_VALUE, "Value 2", F_CPOOL))
+                || contextAttributes)
 
             << (type("datadog.Endpoint", T_ENDPOINT, "Endpoint")
                 << category("Datadog")

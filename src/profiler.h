@@ -86,7 +86,6 @@ class Profiler {
     Dictionary _class_map;
     Dictionary _symbol_map;
     Dictionary _string_label_map;
-    Dictionary _context_attribute_map;
     Dictionary _context_value_map;
     ThreadFilter _thread_filter;
     CallTraceStorage _call_trace_storage;
@@ -121,6 +120,7 @@ class Profiler {
     CodeCacheArray _native_libs;
     const void* _call_stub_begin;
     const void* _call_stub_end;
+    u32 _num_context_attributes;
 
     // dlopen() hook support
     void** _dlopen_entry;
@@ -190,7 +190,8 @@ class Profiler {
         _native_libs(),
         _call_stub_begin(NULL),
         _call_stub_end(NULL),
-        _dlopen_entry(NULL) {
+        _dlopen_entry(NULL),
+        _num_context_attributes(0) {
 
         for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
             _calltrace_buffer[i] = NULL;
@@ -209,8 +210,8 @@ class Profiler {
 
     Dictionary* classMap() { return &_class_map; }
     Dictionary* stringLabelMap() { return &_string_label_map; }
-    Dictionary* contextAttributeMap() { return &_context_attribute_map; }
     Dictionary* contextValueMap() { return &_context_value_map; }
+    u32 numContextAttributes() { return _num_context_attributes; }
     ThreadFilter* threadFilter() { return &_thread_filter; }
 
     Error run(Arguments& args);

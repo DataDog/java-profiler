@@ -143,16 +143,6 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(JNIEnv* env, jobject unuse
 }
 
 extern "C" DLLEXPORT jint JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_registerContextAttribute0(JNIEnv* env, jobject unused, jstring attribute,
-                                                                   jint storageLimit) {
-    const char* attr_str = env->GetStringUTFChars(attribute, NULL);
-    jint length = env->GetStringUTFLength(attribute);
-    u32 encoding = Profiler::instance()->contextAttributeMap()->bounded_lookup(attr_str, length, storageLimit);
-    env->ReleaseStringUTFChars(attribute, attr_str);
-    return encoding == INT_MAX ? -1 : encoding;
-}
-
-extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_registerContextValue0(JNIEnv* env, jobject unused, jstring value) {
     const char* value_str = env->GetStringUTFChars(value, NULL);
     jint length = env->GetStringUTFLength(value);
@@ -173,7 +163,6 @@ static const JNINativeMethod profiler_natives[] = {
     F(getMaxContextPages0,       "()I"),
     F(getContextPageOffset0,     "(I)L"),
     F(recordTrace0,              "(L;Ljava/lang/String;I)Z"),
-    F(registerContextAttribute0, "(Ljava/lang/String;I)I"),
     F(registerContextValue0,     "(Ljava/lang/String;I)I")
 };
 

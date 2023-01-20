@@ -775,6 +775,9 @@ class Recording {
         writeStringSetting(buf, T_ACTIVE_RECORDING, "loglevel", Log::LEVEL_NAME[Log::level()]);
         writeBoolSetting(buf, T_ACTIVE_RECORDING, "hotspot", VM::isHotspot());
         writeBoolSetting(buf, T_ACTIVE_RECORDING, "openj9", VM::isOpenJ9());
+        for (auto attribute : args._context_attributes) {
+            writeStringSetting(buf, T_ACTIVE_RECORDING, "contextattribute", attribute.c_str());
+        }
 
         if (!((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) || args._cpu >= 0)) {
             writeBoolSetting(buf, T_EXECUTION_SAMPLE, "enabled", false);
@@ -954,7 +957,7 @@ class Recording {
         buf->put8(0);
         buf->put8(1);
         // constant pool count - bump each time a new pool is added
-        buf->put8(12);
+        buf->put8(11);
 
         Lookup lookup(&_method_map, Profiler::instance()->classMap());
         writeFrameTypes(buf);
@@ -966,7 +969,6 @@ class Recording {
         writePackages(buf, &lookup);
         writeConstantPoolSection(buf, T_SYMBOL, &lookup._symbols);
         writeConstantPoolSection(buf, T_STRING, Profiler::instance()->stringLabelMap());
-        writeConstantPoolSection(buf, T_ATTRIBUTE, Profiler::instance()->contextAttributeMap());
         writeConstantPoolSection(buf, T_ATTRIBUTE_VALUE, Profiler::instance()->contextValueMap());
         writeLogLevels(buf);
     }
@@ -1148,15 +1150,9 @@ class Recording {
     void writeContext(Buffer* buf, Context& context) {
         buf->putVar64(context.spanId);
         buf->putVar64(context.rootSpanId);
-        for (size_t i = 0; i < DD_MAX_TAGS; i++) {
+        for (size_t i = 0; i < Profiler::instance()->numContextAttributes(); i++) {
             Tag tag = context.get_tag(i);
-            if (tag.is_valid()) {
-                buf->putVar32(tag.attribute);
-                buf->putVar32(tag.value);
-            } else {
-                buf->put8(0);
-                buf->put8(0);
-            }
+            buf->putVar32(tag.value);
         }
     }
 
