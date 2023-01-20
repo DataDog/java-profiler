@@ -18,6 +18,8 @@
 #define _ARGUMENTS_H
 
 #include <stddef.h>
+#include <vector>
+#include <string>
 
 
 const long DEFAULT_CPU_INTERVAL  = 10 * 1000 * 1000; // 10 ms
@@ -175,6 +177,7 @@ class Arguments {
     const char* _title;
     double _minwidth;
     bool _reverse;
+    std::vector<std::string> _context_attributes;
 
     Arguments(bool persistent = false) :
         _buf(NULL),
@@ -220,7 +223,8 @@ class Arguments {
         _end(NULL),
         _title(NULL),
         _minwidth(0),
-        _reverse(false) {
+        _reverse(false),
+        _context_attributes({}) {
     }
 
     ~Arguments();

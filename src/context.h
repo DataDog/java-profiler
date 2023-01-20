@@ -20,17 +20,10 @@
 #include "arch.h"
 #include "arguments.h"
 
-// FIXME - we want dynamically sized arrays of structs instead of a hardcoded limit and hardcoded scalar fields
-static const u32 DD_MAX_TAGS = 2;
-static const u32 DD_TAGS_CAPACITY = 5;
+static const u32 DD_TAGS_CAPACITY = 10;
 
 typedef struct {
     u32 value;
-    u32 attribute;
-
-    bool is_valid() {
-        return attribute != 0;
-    }
 } Tag;
 
 typedef struct {
