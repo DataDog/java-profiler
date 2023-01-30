@@ -71,37 +71,28 @@
                 <!-- JUnit 5 requires Surefire version 2.22.0 or higher -->
                 <version>2.22.2</version>
             </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.0.0</version>
+                <executions>
+                    <execution>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <executable>build_support/make_for_maven.sh</executable>
+                    <arguments>
+                        <argument>${skip-native}</argument>
+                    </arguments>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
     <profiles>
-        <profile>
-            <id>with-native</id>
-            <activation>
-                <property>
-                    <name>!skip-native</name>
-                </property>
-            </activation>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.codehaus.mojo</groupId>
-                        <artifactId>exec-maven-plugin</artifactId>
-                        <version>3.0.0</version>
-                        <executions>
-                            <execution>
-                                <phase>process-resources</phase>
-                                <goals>
-                                    <goal>exec</goal>
-                                </goals>
-                            </execution>
-                        </executions>
-                        <configuration>
-                            <executable>build_support/make_for_maven.sh</executable>
-                        </configuration>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
         <profile>
             <id>deploy</id>
             <build>

@@ -2,6 +2,12 @@
 
 set -e
 
+ARG=$1
+if [ "${ARG:-no}" != "no" ]; then
+    echo "Skipping native build"
+    exit 0
+fi
+
 HERE=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 cd $HERE/..
@@ -26,7 +32,6 @@ if [[ $(ldd /bin/ls) =~ .*musl.* ]]; then
 fi
 
 rm -rf build
-
 
 make all
 
