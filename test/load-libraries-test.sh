@@ -8,38 +8,36 @@ if [ -z "${JAVA_HOME}" ]; then
   exit 1
 fi
 
-(
-  cd $(dirname $0)
-  source include.sh
+HERE=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-  cd loadlibs
-  # build some dynamic libraries to load
-  g++ -c -fPIC -o increment.o increment.cpp
-  gcc -shared -o libincrement.so increment.o
+source ${HERE}/include.sh
 
-  g++ -ldl -c -fPIC -I$JAVA_HOME/include/linux/ -I$JAVA_HOME/include/ com_datadoghq_loader_DynamicLibraryLoader.cpp -o com_datadoghq_loader_DynamicLibraryLoader.o
-  g++ -shared -fPIC -o libloader.so com_datadoghq_loader_DynamicLibraryLoader.o -lc
+cd ${HERE}/loadlibs
+# build some dynamic libraries to load
+g++ -c -fPIC -o increment.o increment.cpp
+gcc -shared -o libincrement.so increment.o
 
-  JFR=/tmp/load-libraries-test.jfr
-  rm -f $JFR
+g++ -ldl -c -fPIC -I$JAVA_HOME/include/linux/ -I$JAVA_HOME/include/ com_datadoghq_loader_DynamicLibraryLoader.cpp -o com_datadoghq_loader_DynamicLibraryLoader.o
+g++ -shared -fPIC -o libloader.so com_datadoghq_loader_DynamicLibraryLoader.o -lc
 
-  # need to package the profiler JAR with the native artifacts
-  # will skip tests and native build because they will be initiated elsewhere
-  if [ -f ../../build/libjavaProfielr.so ]; then
-    SKIP_NATIVE_ARG="-Dskip-native"
-  fi
+JFR=/tmp/load-libraries-test.jfr
+rm -f $JFR
 
-  CLASSPATH=$(find ../../target -name 'jplib-*.jar')
-  unzip -l $CLASSPATH
+# need to package the profiler JAR with the native artifacts
+# will skip tests and native build because they will be initiated elsewhere
+if [ -f ${HERE}/../build/libjavaProfielr.so ]; then
+  SKIP_NATIVE_ARG="-Dskip-native"
+fi
 
-  export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:.
-  $JAVA_HOME/bin/javac -cp $CLASSPATH com/datadoghq/loader/DynamicLibraryLoader.java
-  $JAVA_HOME/bin/java -cp .:$CLASSPATH \
-    -Djava.library.path=. com.datadoghq.loader.DynamicLibraryLoader \
-    $JFR ./libincrement.so:increment
+CLASSPATH=$(find ${HERE}/../target -name 'jplib-*.jar')
 
-  # $JAVA_HOME/bin/jfr print --json $JFR
-  # $JAVA_HOME/bin/jfr summary $JFR
-)
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:.
+$JAVA_HOME/bin/javac -cp $CLASSPATH com/datadoghq/loader/DynamicLibraryLoader.java
+$JAVA_HOME/bin/java -cp .:$CLASSPATH \
+  -Djava.library.path=. com.datadoghq.loader.DynamicLibraryLoader \
+  $JFR ./libincrement.so:increment
+
+# $JAVA_HOME/bin/jfr print --json $JFR
+# $JAVA_HOME/bin/jfr summary $JFR
 
 
