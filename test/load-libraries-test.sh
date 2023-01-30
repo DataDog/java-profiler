@@ -23,7 +23,14 @@ fi
   JFR=/tmp/load-libraries-test.jfr
   rm -f $JFR
 
-  CLASSPATH=../../build/java-profiler.jar
+  # need to package the profiler JAR with the native artifacts
+  # will skip tests and native build because they will be initiated elsewhere
+  if [ -f ../../build/libjavaProfielr.so ]; then
+    SKIP_NATIVE_ARG="-Dskip-native"
+  fi
+
+  CLASSPATH=$(find ../../target -name 'jplib-*.jar')
+  unzip -l $CLASSPATH
 
   export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:.
   $JAVA_HOME/bin/javac -cp $CLASSPATH com/datadoghq/loader/DynamicLibraryLoader.java

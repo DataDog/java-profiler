@@ -45,12 +45,13 @@ done
 mkdir -p .resources
 (cd .resources && if [ ! -e renaissance.jar ]; then wget https://github.com/renaissance-benchmarks/renaissance/releases/download/v0.14.0/renaissance-mit-0.14.0.jar -nv -O renaissance.jar; fi)
 
-BASEDIR=$(dirname ${BASH_SOURCE[0]:-$0})/..
+HERE=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+BASEDIR="${HERE}/.."
 
 AGENT_PATH=${BASEDIR}/build/libjavaProfiler.so
 if [ ! -f "$AGENT_PATH" ]; then
   # we are running in CI - the library will be in a different place
-  AGENT_PATH=${BASEDIR}/src/main/resources/native-libs/linux-x64/libjavaProfiler.so
+  AGENT_PATH=${BASEDIR}/target/classes/META-INF/native/linux-x64/libjavaProfiler.so
 fi
 echo "${JAVA_HOME}/bin/java -agentpath:${AGENT_PATH}=start,${PROFILER_ARGS} -jar .resources/renaissance.jar ${BENCHMARK_ARGS[@]}"
 ${JAVA_HOME}/bin/java -agentpath:${AGENT_PATH}=start,${PROFILER_ARGS} -jar .resources/renaissance.jar "${BENCHMARK_ARGS[@]}"

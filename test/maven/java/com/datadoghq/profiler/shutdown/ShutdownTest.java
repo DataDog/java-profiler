@@ -12,7 +12,6 @@ import java.util.concurrent.LinkedBlockingQueue;
 
 import com.datadoghq.profiler.JavaProfiler;
 
-import static com.datadoghq.profiler.AbstractProfilerTest.getJavaProfilerLib;
 import static org.junit.jupiter.api.Assertions.fail;
 
 public class ShutdownTest {
@@ -21,14 +20,14 @@ public class ShutdownTest {
   @Test
   public void testShutdownCpu() throws IOException {
     System.out.println("=== testShutdownCpu()");
-    JavaProfiler profiler = JavaProfiler.getInstance(getJavaProfilerLib());
+    JavaProfiler profiler = JavaProfiler.getInstance();
     runTest(profiler, "start,cpu=10us,filter=0");
   }
 
   @Test
   public void testShutdownWall() throws IOException {
     System.out.println("=== testShutdownWall()");
-    JavaProfiler profiler = JavaProfiler.getInstance(getJavaProfilerLib());
+    JavaProfiler profiler = JavaProfiler.getInstance();
     profiler.addThread();
     runTest(profiler, "start,wall=10us,filter=0");
   }
@@ -36,7 +35,7 @@ public class ShutdownTest {
   @Test
   public void testShutdownCpuAndWall() throws IOException {
     System.out.println("=== testShutdownCpuAndWall()");
-    JavaProfiler profiler = JavaProfiler.getInstance(getJavaProfilerLib());
+    JavaProfiler profiler = JavaProfiler.getInstance();
     profiler.addThread();
     runTest(profiler, "start,cpu=10us,wall=~10us,filter=0");
   }

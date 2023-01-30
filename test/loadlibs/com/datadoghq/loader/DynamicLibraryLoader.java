@@ -1,10 +1,9 @@
 package com.datadoghq.loader;
 
-import java.io.File;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.concurrent.ThreadLocalRandom;
+
 import com.datadoghq.profiler.JavaProfiler;
 
 public class DynamicLibraryLoader {
@@ -27,7 +26,7 @@ public class DynamicLibraryLoader {
     }
 
     private static void startProfilerAndDoWork(String jfrFile) throws Exception {
-        JavaProfiler ap = JavaProfiler.getInstance(getJavaProfilerLib());
+        JavaProfiler ap = JavaProfiler.getInstance();
         Path jfrDump = Paths.get(jfrFile);
         ap.execute("start,loglevel=TRACE,cpu=1m,wall=1ms,filter=0,jfr,file=" + jfrDump.toAbsolutePath());
         ap.addThread();
@@ -47,20 +46,5 @@ public class DynamicLibraryLoader {
 
 
     private native boolean loadLibrary(String libraryFile, String functionName);
-
-
-    private static String getJavaProfilerLib() {
-        try {
-            File root = new File(DynamicLibraryLoader.class
-                .getResource("DynamicLibraryLoader.class").toURI()).getParentFile();
-            // TODO make the exit condition not to depend on the project root folder name
-            while (!root.getName().startsWith("java-profiler")) {
-                root = root.getParentFile();
-            }
-            return root.toPath().resolve("build/libjavaProfiler.so").toAbsolutePath().toString();
-        } catch (Throwable t) {
-             throw new RuntimeException("Could not find javaProfiler lib", t);
-        }
-    }
 
 }

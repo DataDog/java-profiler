@@ -1,27 +1,31 @@
 package com.datadoghq.profiler;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.openjdk.jmc.common.IMCStackTrace;
-import org.openjdk.jmc.common.item.*;
-import org.openjdk.jmc.common.unit.IQuantity;
-import org.openjdk.jmc.common.unit.UnitLookup;
-import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
-
-import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
-
+import org.junit.jupiter.api.AfterEach;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
+import org.junit.jupiter.api.BeforeEach;
+import org.openjdk.jmc.common.IMCStackTrace;
 import static org.openjdk.jmc.common.item.Attribute.attr;
-import static org.openjdk.jmc.common.unit.UnitLookup.*;
+import org.openjdk.jmc.common.item.IAttribute;
+import org.openjdk.jmc.common.item.IItem;
+import org.openjdk.jmc.common.item.IItemCollection;
+import org.openjdk.jmc.common.item.IItemIterable;
+import org.openjdk.jmc.common.item.IMemberAccessor;
+import org.openjdk.jmc.common.item.ItemFilters;
+import org.openjdk.jmc.common.unit.IQuantity;
+import org.openjdk.jmc.common.unit.UnitLookup;
+import static org.openjdk.jmc.common.unit.UnitLookup.NUMBER;
+import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
+import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
+import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 public abstract class AbstractProfilerTest {
 
@@ -53,8 +57,8 @@ public abstract class AbstractProfilerTest {
 
   @BeforeEach
   public void setupProfiler() throws Exception {
-    jfrDump = Files.createTempFile(getClass().getName() + UUID.randomUUID(), ".jfr");
-    profiler = JavaProfiler.getInstance(getJavaProfilerLib());
+    jfrDump = Files.createTempFile(Paths.get("/tmp"), getClass().getName() + UUID.randomUUID(), ".jfr");
+    profiler = JavaProfiler.getInstance();
     profiler.execute("start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath());
     stopped = false;
     before();
@@ -151,19 +155,5 @@ public abstract class AbstractProfilerTest {
       }
     }
     assertTrue(unmatched.isEmpty(), "couldn't find datadog.ExecutionSample with " + unmatched);
-  }
-
-
-  public static String getJavaProfilerLib() {
-    try {
-      File root = new File(AbstractProfilerTest.class
-          .getResource("AbstractProfilerTest.class").toURI()).getParentFile();
-      while (!root.getName().startsWith("java-profiler")) {
-        root = root.getParentFile();
-      }
-      return root.toPath().resolve("build/libjavaProfiler.so").toAbsolutePath().toString();
-    } catch (Throwable t) {
-      throw new RuntimeException("Could not find javaProfiler lib", t);
-    }
   }
 }

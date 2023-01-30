@@ -16,5 +16,5 @@ HERE=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
   if [ -f build/libjavaProfiler.so ]; then
     SKIP_ARG="-Dskip-native"
   fi
-  mvn $SKIP_ARG -B test
+  mvn $SKIP_ARG -B package test
 )
