@@ -10,11 +10,11 @@ fi
 
 HERE=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-(
-  cd $HERE/..
+cd $HERE/..
 
-  if [ -f build/libjavaProfiler.so ]; then
-    SKIP_ARG="-Dskip-native"
-  fi
-  mvn $SKIP_ARG -B test
-)
+if [ -f build/libjavaProfiler.so ]; then
+  SKIP_ARG="-Dskip-native"
+fi
+chmod a+x build_support/make_for_maven.sh
+mvn $SKIP_ARG -B package test
+

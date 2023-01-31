@@ -6,6 +6,9 @@ trigger_internal_build:
     - if: '$CI_COMMIT_BRANCH == "main"'
       when: always
       allow_failure: false
+    - if: '$CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
+      when: always
+      allow_failure: false
     - if: '$CI_COMMIT_REF_NAME != $CI_COMMIT_BRANCH'
       when: always
       allow_failure: false
@@ -14,11 +17,11 @@ trigger_internal_build:
       allow_failure: true
   variables:
     DOWNSTREAM_BRANCH: "main"
-    AP_DEFAULT_BRANCH: "main"
-    AP_COMMIT_BRANCH: ${CI_COMMIT_BRANCH}
-    AP_COMMIT_SHA: ${CI_COMMIT_SHA}
-    AP_SHORT_COMMIT_SHA: ${CI_COMMIT_SHORT_SHA}
-    AP_COMMIT_TAG: ${CI_COMMIT_REF_NAME}
+    JPLIB_DEFAULT_BRANCH: "main"
+    JPLIB_COMMIT_BRANCH: ${CI_COMMIT_BRANCH}
+    JPLIB_COMMIT_SHA: ${CI_COMMIT_SHA}
+    JPLIB_SHORT_COMMIT_SHA: ${CI_COMMIT_SHORT_SHA}
+    JPLIB_COMMIT_TAG: ${CI_COMMIT_REF_NAME}
   trigger:
     project: DataDog/async-profiler-build
     strategy: depend
