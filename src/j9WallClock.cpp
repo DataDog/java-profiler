@@ -96,7 +96,6 @@ void J9WallClock::timerLoop() {
                 }
                 ExecutionEvent event;
                 event._thread_state = ts;
-                event._context = Contexts::get(tid);
                 if (ts == THREAD_RUNNING) {    
                     Profiler::instance()->recordExternalSample(_interval, tid, si->frame_count, frames, /*truncated=*/false, BCI_CPU, &event);
                 }

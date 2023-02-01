@@ -150,7 +150,6 @@ void J9StackTraces::timerLoop() {
                 continue;
             }
             ExecutionEvent event;
-            event._context = Contexts::get(tid);
             Profiler::instance()->recordExternalSample(notif->counter, tid, num_frames, frames, /*truncated=*/false, BCI_CPU, &event);
         }
     }
