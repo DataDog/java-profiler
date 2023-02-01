@@ -68,50 +68,74 @@ public final class JavaProfiler {
     private JavaProfiler() {
     }
 
+    /**
+     * Get a {@linkplain JavaProfiler} instance backed by the bundled native library and using
+     * the default temp directory as the scratch where the bundled library will be exploded
+     * before linking.
+     */
     public static JavaProfiler getInstance() throws IOException {
-        return getInstance(System.getProperty("java.io.tmpdir"));
+        return getInstance(null, null);
     }
 
-    public synchronized static JavaProfiler getInstance(String scratchDir) throws IOException {
+    /**
+     * Get a {@linkplain JavaProfiler} instance backed by the bundled native library and using
+     * the given directory as the scratch where the bundled library will be exploded
+     * before linking.
+     * @param scratchDir directory where the bundled library will be exploded before linking
+     */
+    public static JavaProfiler getInstance(String scratchDir) throws IOException {
+        return getInstance(null, scratchDir);
+    }
+
+    /**
+     * Get a {@linkplain JavaProfiler} instance backed by the given native library and using
+     * the given directory as the scratch where the bundled library will be exploded
+     * before linking.
+     * @param libLocation the path to the native library to be used instead of the bundled one
+     * @param scratchDir directory where the bundled library will be exploded before linking; ignored when 'libLocation' is {@literal null}
+     */
+    public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir) throws IOException {
         if (instance != null) {
             return instance;
         }
 
         JavaProfiler profiler = new JavaProfiler();
-        OperatingSystem os = OperatingSystem.current();
-        String qualifier = (os == OperatingSystem.linux && isMusl()) ? "musl" : null;
+        if (libLocation == null) {
+            OperatingSystem os = OperatingSystem.current();
+            String qualifier = (os == OperatingSystem.linux && isMusl()) ? "musl" : null;
 
-        Path libraryPath = libraryFromClasspath(os, Arch.current(), qualifier, Paths.get(scratchDir));
-
-        System.load(libraryPath.toString());
+            Path libraryPath = libraryFromClasspath(os, Arch.current(), qualifier, Paths.get(scratchDir != null ? scratchDir : System.getProperty("java.io.tmpdir")));
+            libLocation = libraryPath.toString();
+        }
+        System.load(libLocation);
         profiler.initializeContextStorage();
         instance = profiler;
         return profiler;
     }
 
-  /**
-   * Locates a library on class-path (eg. in a JAR) and creates a publicly accessible temporary copy
-   * of the library which can then be used by the application by its absolute path.
-   *
-   * @param path The resource path designating the library - must start with {@code '/'} (absolute
-   *     path)
-   * @return The library absolute path. The caller should properly dispose of the file once it is
-   *     not needed. The file is marked for 'delete-on-exit' so it won't survive a JVM restart.
-   * @throws IOException
-   */
-  private static Path libraryFromClasspath(OperatingSystem os, Arch arch, String qualifier, Path tempDir) throws IOException {
-    String resourcePath = NATIVE_LIBS + "/" + os.name().toLowerCase() + "-" + arch.name().toLowerCase() + ((qualifier != null && !qualifier.isEmpty()) ? "-" + qualifier : "") + "/" + LIBRARY_NAME;
-    
-    InputStream libraryData =  JavaProfiler.class.getResourceAsStream(resourcePath);
+    /**
+     * Locates a library on class-path (eg. in a JAR) and creates a publicly accessible temporary copy
+     * of the library which can then be used by the application by its absolute path.
+     *
+     * @param path The resource path designating the library - must start with {@code '/'} (absolute
+     *     path)
+     * @return The library absolute path. The caller should properly dispose of the file once it is
+     *     not needed. The file is marked for 'delete-on-exit' so it won't survive a JVM restart.
+     * @throws IOException
+     */
+    private static Path libraryFromClasspath(OperatingSystem os, Arch arch, String qualifier, Path tempDir) throws IOException {
+        String resourcePath = NATIVE_LIBS + "/" + os.name().toLowerCase() + "-" + arch.name().toLowerCase() + ((qualifier != null && !qualifier.isEmpty()) ? "-" + qualifier : "") + "/" + LIBRARY_NAME;
+        
+        InputStream libraryData =  JavaProfiler.class.getResourceAsStream(resourcePath);
 
-    if (libraryData != null) {
-        Path libFile = Files.createTempFile(tempDir, "libjavaProfiler", ".so");
-        Files.copy(libraryData, libFile, StandardCopyOption.REPLACE_EXISTING);
-        libFile.toFile().deleteOnExit();
-        return libFile;
+        if (libraryData != null) {
+            Path libFile = Files.createTempFile(tempDir, "libjavaProfiler", ".so");
+            Files.copy(libraryData, libFile, StandardCopyOption.REPLACE_EXISTING);
+            libFile.toFile().deleteOnExit();
+            return libFile;
+        }
+        return null;
     }
-    return null;
-  }
 
     private void initializeContextStorage() {
         if (this.contextStorage == null) {
