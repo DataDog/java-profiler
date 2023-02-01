@@ -1164,7 +1164,7 @@ class Recording {
         buf->putVar64(call_trace_id);
         buf->putVar64(event->_thread_state);
         buf->putVar64(event->_weight);
-        writeContext(buf, event->_context);
+        writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
     }
 
@@ -1176,7 +1176,7 @@ class Recording {
         buf->putVar64(call_trace_id);
         buf->putVar64(event->_thread_state);
         buf->putVar64(event->_weight);
-        writeContext(buf, event->_context);
+        writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
     }
 
@@ -1216,7 +1216,7 @@ class Recording {
         buf->putVar64(event->_id);
         buf->putVar64(event->_instance_size);
         buf->putVar64(event->_total_size);
-        writeContext(buf, event->_context);
+        writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
     }
 
@@ -1228,7 +1228,7 @@ class Recording {
         buf->putVar64(call_trace_id);
         buf->putVar64(event->_id);
         buf->putVar64(event->_total_size);
-        writeContext(buf, event->_context);
+        writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
     }
 
@@ -1255,7 +1255,7 @@ class Recording {
         buf->putVar64(event->_id);
         buf->put8(0);
         buf->putVar64(event->_address);
-        writeContext(buf, event->_context);
+        writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
     }
 

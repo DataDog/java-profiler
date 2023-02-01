@@ -72,7 +72,6 @@ void AllocTracer::recordAllocation(void* ucontext, int event_type, uintptr_t rkl
     AllocEvent event;
     event._total_size = total_size;
     event._instance_size = instance_size;
-    event._context = Contexts::get(tid);
 
     if (VMStructs::hasClassNames()) {
         VMSymbol* symbol = VMKlass::fromHandle(rklass)->name();

@@ -714,7 +714,6 @@ void PerfEvents::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
 
         u64 counter = readCounter(siginfo, ucontext);
         ExecutionEvent event;
-        event._context = Contexts::get(tid);
         Profiler::instance()->recordSample(ucontext, counter, tid, BCI_CPU, &event);
         Shims::instance().setSighandlerTid(-1);
     } else {
