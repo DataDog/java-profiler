@@ -26,6 +26,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.Arrays;
+import java.util.concurrent.TimeUnit;
 
 import sun.misc.Unsafe;
 
@@ -202,6 +203,10 @@ public final class JavaProfiler {
      */
     public boolean recordTraceRoot(long rootSpanId, String endpoint, int sizeLimit) {
         return recordTrace0(rootSpanId, endpoint, sizeLimit);
+    }
+
+    public void recordQueueingTime(long duration, TimeUnit unit) {
+        recordQueueingTime0(unit.toMillis(duration));
     }
 
     /**
@@ -404,6 +409,8 @@ public final class JavaProfiler {
     private static native int getMaxContextPages0();
 
     private static native boolean recordTrace0(long rootSpanId, String endpoint, int sizeLimit);
+
+    private static native void recordQueueingTime0(long millis);
 
     private static native int registerContextValue0(String value);
 }
