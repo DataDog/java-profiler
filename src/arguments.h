@@ -25,7 +25,6 @@
 const long DEFAULT_CPU_INTERVAL  = 10 * 1000 * 1000; // 10 ms
 const long DEFAULT_WALL_INTERVAL = 50 * 1000 * 1000; // 50 ms
 const long DEFAULT_ALLOC_INTERVAL = 524287;  // 512 KiB
-const int DEFAULT_CPU_THREADS_PER_TICK  = 8;
 const int DEFAULT_WALL_THREADS_PER_TICK = 16;
 const int DEFAULT_JSTACKDEPTH = 2048;
 const int DEFAULT_MEMLEAK_CAP = 8192;
@@ -49,11 +48,6 @@ enum Action {
     ACTION_LIST,
     ACTION_VERSION,
     ACTION_FULL_VERSION
-};
-
-enum Counter {
-    COUNTER_SAMPLES,
-    COUNTER_TOTAL
 };
 
 enum Ring {
@@ -136,13 +130,10 @@ class Arguments {
 
   public:
     Action _action;
-    Counter _counter;
     Ring _ring;
     const char* _event;
-    int _timeout;
     long _interval;
     long _cpu;
-    int _cpu_threads_per_tick;
     long _wall;
     bool _wall_collapsing;
     int _wall_threads_per_tick;
@@ -156,27 +147,13 @@ class Arguments {
     const char* _log;
     const char* _loglevel;
     const char* _unknown_arg;
-    const char* _server;
     const char* _filter;
-    int _include;
-    int _exclude;
     unsigned char _mcache;
-    bool _loop;
-    bool _threads;
-    bool _sched;
-    int _style;
     CStack _cstack;
     Output _output;
     long _chunk_size;
     long _chunk_time;
     int _jfr_options;
-    unsigned int _file_num;
-    const char* _begin;
-    const char* _end;
-    // FlameGraph parameters
-    const char* _title;
-    double _minwidth;
-    bool _reverse;
     std::vector<std::string> _context_attributes;
 
     Arguments(bool persistent = false) :
@@ -184,13 +161,10 @@ class Arguments {
         _shared(false),
         _persistent(persistent),
         _action(ACTION_NONE),
-        _counter(COUNTER_SAMPLES),
         _ring(RING_ANY),
         _event(NULL),
-        _timeout(0),
         _interval(0),
         _cpu(-1),
-        _cpu_threads_per_tick(DEFAULT_CPU_THREADS_PER_TICK),
         _wall(-1),
         _wall_collapsing(false),
         _wall_threads_per_tick(DEFAULT_WALL_THREADS_PER_TICK),
@@ -204,26 +178,11 @@ class Arguments {
         _log(NULL),
         _loglevel(NULL),
         _unknown_arg(NULL),
-        _server(NULL),
         _filter(NULL),
-        _include(0),
-        _exclude(0),
         _mcache(0),
-        _loop(false),
-        _threads(false),
-        _sched(false),
-        _style(0),
         _cstack(CSTACK_DEFAULT),
         _output(OUTPUT_NONE),
-        _chunk_size(100 * 1024 * 1024),
-        _chunk_time(3600),
         _jfr_options(0),
-        _file_num(0),
-        _begin(NULL),
-        _end(NULL),
-        _title(NULL),
-        _minwidth(0),
-        _reverse(false),
         _context_attributes({}) {
     }
 

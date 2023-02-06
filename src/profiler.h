@@ -109,10 +109,7 @@ class Profiler {
     int _max_stack_depth;
     int _safe_mode;
     CStack _cstack;
-    bool _add_event_frame;
-    bool _add_thread_frame;
-    bool _add_sched_frame;
-    bool _update_thread_names;
+
     volatile jvmtiEventMode _thread_events_state;
 
     SpinLock _stubs_lock;
@@ -149,19 +146,12 @@ class Profiler {
     void updateThreadName(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread);
     void updateJavaThreadNames();
     void updateNativeThreadNames();
-    bool excludeTrace(FrameName* fn, CallTrace* trace);
     void mangle(const char* name, char* buf, size_t size);
     Engine* selectCpuEngine(Arguments& args);
     Engine* selectWallEngine(Arguments& args);
     Engine* selectAllocEngine(long alloc_interval);
     Engine* activeEngine();
     Error checkJvmCapabilities();
-
-    time_t addTimeout(time_t start, int timeout);
-    void startTimer();
-    void stopTimer();
-    void timerLoop(void* timer_id);
-    static void timerThreadEntry(jvmtiEnv* jvmti, JNIEnv* jni, void* arg);
 
     void lockAll();
     void unlockAll();
