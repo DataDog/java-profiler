@@ -76,6 +76,15 @@ class WallClock : public Engine {
     inline void enableEvents(bool enabled) {
         _enabled = enabled;
     }
+
+    u64 convertToSampleWeight(long millis) {
+        long weight = millis / intervalMillis();
+        return weight <= 0 ? 1 : weight;
+    }
+
+    u64 intervalMillis() {
+        return _interval / 1000 / 1000;
+    }
 };
 
 #endif // _WALLCLOCK_H

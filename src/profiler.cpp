@@ -688,6 +688,32 @@ void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event) {
     _locks[lock_index].unlock();
 }
 
+void Profiler::recordWallClockQueueingTime(int tid, u64 millis) {
+    if(WallClock* wc = dynamic_cast<WallClock*>(_wall_engine)) {
+        u64 interval = wc->intervalMillis();
+        if (millis < interval / 2) {
+            return;
+        }
+        u32 lock_index = getLockIndex(tid);
+        if (!_locks[lock_index].tryLock() &&
+            !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+            !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+            return;
+        }
+        // this is coming from a JNI caller, so we're not in a signal handler,
+        // so we can allocate and safely call JVMTI
+        ASGCT_CallFrame* frames = _calltrace_buffer[lock_index]->_asgct_frames;
+        jvmtiFrameInfo* jvmti_frames = _calltrace_buffer[lock_index]->_jvmti_frames;
+        int num_frames = getJavaTraceJvmti(jvmti_frames, frames, 0, _max_stack_depth);
+        u32 call_trace_id = _call_trace_storage.put(num_frames, frames, false, interval);
+        ExecutionEvent event;
+        event._thread_state = THREAD_QUEUEING;
+        event._weight = wc->convertToSampleWeight(millis);
+        _jfr.recordEvent(lock_index, tid, call_trace_id, BCI_WALL, &event, interval);
+        _locks[lock_index].unlock();
+    }
+}
+
 void Profiler::recordTraceRoot(int tid, TraceRootEvent *event) {
     u32 lock_index = getLockIndex(tid);
     if (!_locks[lock_index].tryLock() &&
