@@ -29,10 +29,8 @@ using namespace std;
 class Event {
   public:
     u32 _id;
-    Context _context;
 
-    Event(Context ctx) : _id(0), _context(ctx) {}
-    Event() : Event(Contexts::empty()) {}
+    Event() : _id(0) {}
 };
 
 class ExecutionEvent : public Event {

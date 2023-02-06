@@ -66,8 +66,6 @@ class FrameName {
     static JMethodCache _cache;
 
     ClassMap _class_names;
-    std::vector<Matcher> _include;
-    std::vector<Matcher> _exclude;
     char _buf[800];  // must be large enough for class name + method name + method signature
     int _style;
     unsigned char _cache_epoch;
@@ -88,9 +86,6 @@ class FrameName {
     ~FrameName();
 
     const char* name(ASGCT_CallFrame& frame, bool for_matching = false);
-
-    bool hasIncludeList() { return !_include.empty(); }
-    bool hasExcludeList() { return !_exclude.empty(); }
 
     bool include(const char* frame_name);
     bool exclude(const char* frame_name);

@@ -147,41 +147,16 @@ Error Arguments::parse(const char* args) {
             CASE("version")
                 _action = value == NULL ? ACTION_VERSION : ACTION_FULL_VERSION;
 
-            // Output formats
-            CASE("collapsed")
-                _output = OUTPUT_COLLAPSED;
-
             CASE("jfr")
                 _output = OUTPUT_JFR;
                 if (value != NULL) {
                     _jfr_options = (int)strtol(value, NULL, 0);
                 }
 
-            CASE("samples")
-                _counter = COUNTER_SAMPLES;
-
-            CASE("total")
-                _counter = COUNTER_TOTAL;
-
-            CASE("chunksize")
-                if (value == NULL || (_chunk_size = parseUnits(value, BYTES)) < 0) {
-                    msg = "Invalid chunksize";
-                }
-
-            CASE("chunktime")
-                if (value == NULL || (_chunk_time = parseUnits(value, SECONDS)) < 0) {
-                    msg = "Invalid chunktime";
-                }
-
             CASE("cpu")
                 _cpu = value == NULL ? 0 : parseUnits(value, NANOS);
                 if (_cpu < 0) {
                     msg = "cpu must be >= 0";
-                }
-
-            CASE("cputpt")
-                if (value == NULL || (_cpu_threads_per_tick = atoi(value)) <= 0) {
-                    msg = "cputpt must be > 0";
                 }
 
             CASE("wall")
@@ -218,17 +193,6 @@ Error Arguments::parse(const char* args) {
                     msg = "Duplicate event argument";
                 } else {
                     _event = value;
-                }
-
-            CASE("timeout")
-                if (value == NULL || (_timeout = parseTimeout(value)) == -1 || !_persistent) {
-                    msg = "Invalid timeout";
-                }
-
-            CASE("loop")
-                _loop = true;
-                if (value == NULL || (_timeout = parseTimeout(value)) == -1 || !_persistent) {
-                    msg = "Invalid loop duration";
                 }
 
             CASE("alloc")
@@ -286,27 +250,9 @@ Error Arguments::parse(const char* args) {
                 }
                 _loglevel = value;
 
-            CASE("server")
-                if (value == NULL || value[0] == 0) {
-                    msg = "server address must not be empty";
-                }
-                _server = value;
-
             // Filters
             CASE("filter")
                 _filter = value == NULL ? "" : value;
-
-            CASE("include")
-                if (value != NULL) appendToEmbeddedList(_include, value);
-
-            CASE("exclude")
-                if (value != NULL) appendToEmbeddedList(_exclude, value);
-
-            CASE("threads")
-                _threads = true;
-
-            CASE("sched")
-                _sched = true;
 
             CASE("allkernel")
                 _ring = RING_KERNEL;
@@ -326,41 +272,6 @@ Error Arguments::parse(const char* args) {
                         _cstack = CSTACK_FP;
                     }
                 }
-
-            // Output style modifiers
-            CASE("simple")
-                _style |= STYLE_SIMPLE;
-
-            CASE("dot")
-                _style |= STYLE_DOTTED;
-
-            CASE("sig")
-                _style |= STYLE_SIGNATURES;
-
-            CASE("ann")
-                _style |= STYLE_ANNOTATE;
-
-            CASE("lib")
-                _style |= STYLE_LIB_NAMES;
-
-            CASE("mcache")
-                _mcache = value == NULL ? 1 : (unsigned char)strtol(value, NULL, 0);
-
-            CASE("begin")
-                _begin = value;
-
-            CASE("end")
-                _end = value;
-
-            // FlameGraph options
-            CASE("title")
-                _title = value;
-
-            CASE("minwidth")
-                if (value != NULL) _minwidth = atof(value);
-
-            CASE("reverse")
-                _reverse = true;
 
             CASE("attributes")
                 if (value != NULL) {
@@ -449,15 +360,6 @@ const char* Arguments::expandFilePattern(const char* pattern) {
                 ptr += snprintf(ptr, end - ptr, "%d%02d%02d-%02d%02d%02d",
                                 t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
                                 t.tm_hour, t.tm_min, t.tm_sec);
-                continue;
-            } else if (c == 'n') {
-                unsigned int max_files = 0;
-                const char* p;
-                if (*pattern == '{' && (p = strchr(pattern, '}')) != NULL) {
-                    max_files = atoi(pattern + 1);
-                    pattern = p + 1;
-                }
-                ptr += snprintf(ptr, end - ptr, "%u", max_files > 0 ? _file_num % max_files : _file_num);
                 continue;
             } else if (c == '{') {
                 char env_key[128];

@@ -84,8 +84,6 @@ JMethodCache FrameName::_cache;
 
 FrameName::FrameName(Arguments& args, int style, int epoch, Mutex& thread_names_lock, ThreadMap& thread_names) :
     _class_names(),
-    _include(),
-    _exclude(),
     _style(style),
     _cache_epoch((unsigned char)epoch),
     _cache_max_age(args._mcache),
@@ -95,9 +93,6 @@ FrameName::FrameName(Arguments& args, int style, int epoch, Mutex& thread_names_
     // Require printf to use standard C format regardless of system locale
     _saved_locale = uselocale(newlocale(LC_NUMERIC_MASK, "C", (locale_t)0));
     memset(_buf, 0, sizeof(_buf));
-
-    buildFilter(_include, args._buf, args._include);
-    buildFilter(_exclude, args._buf, args._exclude);
 
     Profiler::instance()->classMap()->collect(_class_names);
 }
@@ -308,23 +303,5 @@ const char* FrameName::name(ASGCT_CallFrame& frame, bool for_matching) {
             return type_suffix != NULL ? strcat(newName, type_suffix) : newName;
         }
     }
-}
-
-bool FrameName::include(const char* frame_name) {
-    for (int i = 0; i < _include.size(); i++) {
-        if (_include[i].matches(frame_name)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool FrameName::exclude(const char* frame_name) {
-    for (int i = 0; i < _exclude.size(); i++) {
-        if (_exclude[i].matches(frame_name)) {
-            return true;
-        }
-    }
-    return false;
 }
 

@@ -42,7 +42,6 @@ void ITimer::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     Shims::instance().setSighandlerTid(tid);
 
     ExecutionEvent event;
-    event._context = Contexts::get(tid);
     Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, &event);
     Shims::instance().setSighandlerTid(-1);
 }

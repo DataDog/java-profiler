@@ -67,7 +67,6 @@ void WallClock::signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64
     }
 
     ExecutionEvent event;
-    event._context = ctx;
     event._thread_state = getThreadState(ucontext);
     event._weight = skipped + 1;
     Profiler::instance()->recordSample(ucontext, last_sample, tid, BCI_WALL, &event);

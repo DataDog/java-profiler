@@ -443,8 +443,6 @@ class Recording {
 
     u64 _base_id;
     u64 _bytes_written;
-    u64 _chunk_size;
-    u64 _chunk_time;
 
     int _tid;
     int _available_processors;
@@ -467,9 +465,6 @@ class Recording {
         _recording_start_ticks = _start_ticks;
         _base_id = 0;
         _bytes_written = 0;
-
-        _chunk_size = args._chunk_size <= 0 ? MAX_JLONG : (args._chunk_size < 262144 ? 262144 : args._chunk_size);
-        _chunk_time = args._chunk_time <= 0 ? MAX_JLONG : (args._chunk_time < 5 ? 5 : args._chunk_time) * 1000000ULL;
 
         _tid = OS::threadId();
         addThread(_tid);
@@ -574,10 +569,6 @@ class Recording {
         writeHeader(_buf);
         writeMetadata(_buf);
         flush(_buf);
-    }
-
-    bool needSwitchChunk(u64 wall_time) {
-        return loadAcquire(_bytes_written) >= _chunk_size || wall_time - _start_time >= _chunk_time;
     }
 
     void cpuMonitorCycle() {
@@ -761,17 +752,10 @@ class Recording {
         writeStringSetting(buf, T_ACTIVE_RECORDING, "version", PROFILER_VERSION);
         writeStringSetting(buf, T_ACTIVE_RECORDING, "ring", SETTING_RING[args._ring]);
         writeStringSetting(buf, T_ACTIVE_RECORDING, "cstack", SETTING_CSTACK[args._cstack]);
-        writeStringSetting(buf, T_ACTIVE_RECORDING, "event", args._event);
         writeStringSetting(buf, T_ACTIVE_RECORDING, "filter", args._filter);
-        writeStringSetting(buf, T_ACTIVE_RECORDING, "begin", args._begin);
-        writeStringSetting(buf, T_ACTIVE_RECORDING, "end", args._end);
-        writeListSetting(buf, T_ACTIVE_RECORDING, "include", args._buf, args._include);
-        writeListSetting(buf, T_ACTIVE_RECORDING, "exclude", args._buf, args._exclude);
         writeIntSetting(buf, T_ACTIVE_RECORDING, "jstackdepth", args._jstackdepth);
         writeIntSetting(buf, T_ACTIVE_RECORDING, "safemode", args._safe_mode);
         writeIntSetting(buf, T_ACTIVE_RECORDING, "jfropts", args._jfr_options);
-        writeIntSetting(buf, T_ACTIVE_RECORDING, "chunksize", args._chunk_size);
-        writeIntSetting(buf, T_ACTIVE_RECORDING, "chunktime", args._chunk_time);
         writeStringSetting(buf, T_ACTIVE_RECORDING, "loglevel", Log::LEVEL_NAME[Log::level()]);
         writeBoolSetting(buf, T_ACTIVE_RECORDING, "hotspot", VM::isHotspot());
         writeBoolSetting(buf, T_ACTIVE_RECORDING, "openj9", VM::isOpenJ9());
@@ -987,9 +971,10 @@ class Recording {
 
     void writeThreadStates(Buffer* buf) {
         buf->putVar64(T_THREAD_STATE);
-        buf->put8(2);
+        buf->put8(3);
         buf->putVar64(THREAD_RUNNING);     buf->putUtf8("STATE_RUNNABLE");
         buf->putVar64(THREAD_SLEEPING);    buf->putUtf8("STATE_SLEEPING");
+        buf->putVar64(THREAD_QUEUEING);    buf->putUtf8("STATE_QUEUEING");
     }
 
     void writeThreads(Buffer* buf) {
@@ -1164,7 +1149,7 @@ class Recording {
         buf->putVar64(call_trace_id);
         buf->putVar64(event->_thread_state);
         buf->putVar64(event->_weight);
-        writeContext(buf, event->_context);
+        writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
     }
 
@@ -1176,7 +1161,7 @@ class Recording {
         buf->putVar64(call_trace_id);
         buf->putVar64(event->_thread_state);
         buf->putVar64(event->_weight);
-        writeContext(buf, event->_context);
+        writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
     }
 
@@ -1216,7 +1201,7 @@ class Recording {
         buf->putVar64(event->_id);
         buf->putVar64(event->_instance_size);
         buf->putVar64(event->_total_size);
-        writeContext(buf, event->_context);
+        writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
     }
 
@@ -1228,7 +1213,7 @@ class Recording {
         buf->putVar64(call_trace_id);
         buf->putVar64(event->_id);
         buf->putVar64(event->_total_size);
-        writeContext(buf, event->_context);
+        writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
     }
 
@@ -1255,7 +1240,7 @@ class Recording {
         buf->putVar64(event->_id);
         buf->put8(0);
         buf->putVar64(event->_address);
-        writeContext(buf, event->_context);
+        writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
     }
 
@@ -1360,19 +1345,6 @@ void FlightRecorder::flush() {
         _rec->switchChunk();
         _rec_lock.unlock();
     }
-}
-
-bool FlightRecorder::timerTick(u64 wall_time) {
-    if (!_rec_lock.tryLockShared()) {
-        // No active recording
-        return false;
-    }
-
-    _rec->cpuMonitorCycle();
-    bool need_switch_chunk = _rec->needSwitchChunk(wall_time);
-
-    _rec_lock.unlockShared();
-    return need_switch_chunk;
 }
 
 void FlightRecorder::wallClockEpoch(int lock_index, WallClockEpochEvent* event) {

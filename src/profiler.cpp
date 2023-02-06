@@ -612,13 +612,6 @@ void Profiler::recordExternalSample(u64 counter, int tid, jvmtiFrameInfo *jvmti_
 
     num_frames += convertFrames(jvmti_frames, frames + num_frames, num_jvmti_frames);
 
-    if (_add_thread_frame) {
-        num_frames += makeFrame(frames + num_frames, BCI_THREAD_ID, tid);
-    }
-    if (_add_sched_frame) {
-        num_frames += makeFrame(frames + num_frames, BCI_NATIVE_FRAME, (uintptr_t)OS::schedPolicy(tid));
-    }
-
     u32 call_trace_id = _call_trace_storage.put(num_frames, frames, truncated, counter);
     _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event, counter);
 
@@ -648,9 +641,6 @@ void Profiler::recordSample(void* ucontext, u64 counter, int tid, jint event_typ
     jvmtiFrameInfo* jvmti_frames = _calltrace_buffer[lock_index]->_jvmti_frames;
 
     int num_frames = 0;
-    if (_add_event_frame && event_type <= BCI_ALLOC && event_type >= BCI_PARK && event->_id) {
-        num_frames = makeFrame(frames, event_type, event->_id);
-    }
 
     StackContext java_ctx = {0};
     ASGCT_CallFrame* native_stop = frames + num_frames;
@@ -681,13 +671,6 @@ void Profiler::recordSample(void* ucontext, u64 counter, int tid, jint event_typ
         num_frames += makeFrame(frames + num_frames, BCI_ERROR, "no_Java_frame");
     }
 
-    if (_add_thread_frame) {
-        num_frames += makeFrame(frames + num_frames, BCI_THREAD_ID, tid);
-    }
-    if (_add_sched_frame) {
-        num_frames += makeFrame(frames + num_frames, BCI_ERROR, OS::schedPolicy(0));
-    }
-
     u32 call_trace_id = _call_trace_storage.put(num_frames, frames, truncated, counter);
     _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event, counter);
 
@@ -705,6 +688,32 @@ void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event) {
     _locks[lock_index].unlock();
 }
 
+void Profiler::recordWallClockQueueingTime(int tid, u64 millis) {
+    if(WallClock* wc = dynamic_cast<WallClock*>(_wall_engine)) {
+        u64 interval = wc->intervalMillis();
+        if (millis < interval / 2) {
+            return;
+        }
+        u32 lock_index = getLockIndex(tid);
+        if (!_locks[lock_index].tryLock() &&
+            !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+            !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+            return;
+        }
+        // this is coming from a JNI caller, so we're not in a signal handler,
+        // so we can allocate and safely call JVMTI
+        ASGCT_CallFrame* frames = _calltrace_buffer[lock_index]->_asgct_frames;
+        jvmtiFrameInfo* jvmti_frames = _calltrace_buffer[lock_index]->_jvmti_frames;
+        int num_frames = getJavaTraceJvmti(jvmti_frames, frames, 0, _max_stack_depth);
+        u32 call_trace_id = _call_trace_storage.put(num_frames, frames, false, interval);
+        ExecutionEvent event;
+        event._thread_state = THREAD_QUEUEING;
+        event._weight = wc->convertToSampleWeight(millis);
+        _jfr.recordEvent(lock_index, tid, call_trace_id, BCI_WALL, &event, interval);
+        _locks[lock_index].unlock();
+    }
+}
+
 void Profiler::recordTraceRoot(int tid, TraceRootEvent *event) {
     u32 lock_index = getLockIndex(tid);
     if (!_locks[lock_index].tryLock() &&
@@ -718,13 +727,6 @@ void Profiler::recordTraceRoot(int tid, TraceRootEvent *event) {
 
 void Profiler::recordExternalSample(u64 counter, int tid, int num_frames, ASGCT_CallFrame* frames, bool truncated, jint event_type, Event* event) {
     atomicInc(_total_samples);
-
-    if (_add_thread_frame) {
-        num_frames += makeFrame(frames + num_frames, BCI_THREAD_ID, tid);
-    }
-    if (_add_sched_frame) {
-        num_frames += makeFrame(frames + num_frames, BCI_ERROR, OS::schedPolicy(tid));
-    }
 
     u32 call_trace_id = _call_trace_storage.put(num_frames, frames, truncated, counter);
 
@@ -855,74 +857,47 @@ void Profiler::setThreadInfo(int tid, const char* name, jlong java_thread_id) {
 }
 
 void Profiler::updateThreadName(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
-    if (_update_thread_names) {
-        JitWriteProtection jit(true);  // workaround for JDK-8262896
-        jvmtiThreadInfo thread_info;
-        int native_thread_id = VMThread::nativeThreadId(jni, thread);
-        if (native_thread_id >= 0 && jvmti->GetThreadInfo(thread, &thread_info) == 0) {
-            jlong java_thread_id = VMThread::javaThreadId(jni, thread);
-            setThreadInfo(native_thread_id, thread_info.name, java_thread_id);
-            jvmti->Deallocate((unsigned char*)thread_info.name);
-        }
+    JitWriteProtection jit(true);  // workaround for JDK-8262896
+    jvmtiThreadInfo thread_info;
+    int native_thread_id = VMThread::nativeThreadId(jni, thread);
+    if (native_thread_id >= 0 && jvmti->GetThreadInfo(thread, &thread_info) == 0) {
+        jlong java_thread_id = VMThread::javaThreadId(jni, thread);
+        setThreadInfo(native_thread_id, thread_info.name, java_thread_id);
+        jvmti->Deallocate((unsigned char*)thread_info.name);
     }
 }
 
 void Profiler::updateJavaThreadNames() {
-    if (_update_thread_names) {
-        jvmtiEnv* jvmti = VM::jvmti();
-        jint thread_count;
-        jthread* thread_objects;
-        if (jvmti->GetAllThreads(&thread_count, &thread_objects) != 0) {
-            return;
-        }
-
-        JNIEnv* jni = VM::jni();
-        for (int i = 0; i < thread_count; i++) {
-            updateThreadName(jvmti, jni, thread_objects[i]);
-        }
-
-        jvmti->Deallocate((unsigned char*)thread_objects);
+    jvmtiEnv* jvmti = VM::jvmti();
+    jint thread_count;
+    jthread* thread_objects;
+    if (jvmti->GetAllThreads(&thread_count, &thread_objects) != 0) {
+        return;
     }
+
+    JNIEnv* jni = VM::jni();
+    for (int i = 0; i < thread_count; i++) {
+        updateThreadName(jvmti, jni, thread_objects[i]);
+    }
+
+    jvmti->Deallocate((unsigned char*)thread_objects);
 }
 
 void Profiler::updateNativeThreadNames() {
-    if (_update_thread_names) {
-        ThreadList* thread_list = OS::listThreads();
-        char name_buf[64];
+    ThreadList* thread_list = OS::listThreads();
+    char name_buf[64];
 
-        for (int tid; (tid = thread_list->next()) != -1; ) {
-            MutexLocker ml(_thread_names_lock);
-            std::map<int, std::string>::iterator it = _thread_names.lower_bound(tid);
-            if (it == _thread_names.end() || it->first != tid) {
-                if (OS::threadName(tid, name_buf, sizeof(name_buf))) {
-                    _thread_names.insert(it, std::map<int, std::string>::value_type(tid, name_buf));
-                }
+    for (int tid; (tid = thread_list->next()) != -1; ) {
+        MutexLocker ml(_thread_names_lock);
+        std::map<int, std::string>::iterator it = _thread_names.lower_bound(tid);
+        if (it == _thread_names.end() || it->first != tid) {
+            if (OS::threadName(tid, name_buf, sizeof(name_buf))) {
+                _thread_names.insert(it, std::map<int, std::string>::value_type(tid, name_buf));
             }
         }
-
-        delete thread_list;
-    }
-}
-
-bool Profiler::excludeTrace(FrameName* fn, CallTrace* trace) {
-    bool checkInclude = fn->hasIncludeList();
-    bool checkExclude = fn->hasExcludeList();
-    if (!(checkInclude || checkExclude)) {
-        return false;
     }
 
-    for (int i = 0; i < trace->num_frames; i++) {
-        const char* frame_name = fn->name(trace->frames[i], true);
-        if (checkExclude && fn->exclude(frame_name)) {
-            return true;
-        }
-        if (checkInclude && fn->include(frame_name)) {
-            checkInclude = false;
-            if (!checkExclude) break;
-        }
-    }
-
-    return checkInclude;
+    delete thread_list;
 }
 
 Engine* Profiler::selectCpuEngine(Arguments& args) {
@@ -1037,10 +1012,6 @@ Error Profiler::start(Arguments& args, bool reset) {
         lockAll();
         _class_map.clear();
         _call_trace_storage.clear();
-        // Make sure frame structure is consistent throughout the entire recording
-        _add_event_frame = args._output != OUTPUT_JFR;
-        _add_thread_frame = args._threads && args._output != OUTPUT_JFR;
-        _add_sched_frame = args._sched;
         unlockAll();
 
         // Reset thread names and IDs
@@ -1069,7 +1040,6 @@ Error Profiler::start(Arguments& args, bool reset) {
         _safe_mode |= GC_TRACES | LAST_JAVA_PC;
     }
 
-    _update_thread_names = args._threads || args._output == OUTPUT_JFR;
     _thread_filter.init(args._filter);
 
     _cpu_engine = selectCpuEngine(args);
@@ -1084,7 +1054,7 @@ Error Profiler::start(Arguments& args, bool reset) {
     // Kernel symbols are useful only for perf_events without --all-user
     updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
 
-    error = installTraps(args._begin, args._end);
+    error = installTraps(NULL, NULL);
     if (error) {
         return error;
     }
@@ -1139,11 +1109,6 @@ Error Profiler::start(Arguments& args, bool reset) {
     _start_time = time(NULL);
     _epoch++;
 
-    if (args._timeout != 0 || args._output == OUTPUT_JFR) {
-        _stop_time = addTimeout(_start_time, args._timeout);
-        startTimer();
-    }
-
     return Error::OK;
 
 error4:
@@ -1187,9 +1152,6 @@ Error Profiler::stop() {
     switchThreadEvents(JVMTI_DISABLE);
     updateJavaThreadNames();
     updateNativeThreadNames();
-
-    // Make sure no periodic events sent after JFR stops
-    stopTimer();
 
     // Acquire all spinlocks to avoid race with remaining signals
     lockAll();
@@ -1285,98 +1247,6 @@ void Profiler::switchThreadEvents(jvmtiEventMode mode) {
         jvmti->SetEventNotificationMode(mode, JVMTI_EVENT_THREAD_END, NULL);
         _thread_events_state = mode;
     }
-}
-
-time_t Profiler::addTimeout(time_t start, int timeout) {
-    if (timeout == 0) {
-        return (time_t)0x7fffffff;
-    } else if (timeout > 0) {
-        return start + timeout;
-    }
-
-    struct tm t;
-    localtime_r(&start, &t);
-
-    int hh = (timeout >> 16) & 0xff;
-    if (hh < 24) {
-        t.tm_hour = hh;
-    }
-    int mm = (timeout >> 8) & 0xff;
-    if (mm < 60) {
-        t.tm_min = mm;
-    }
-    int ss = timeout & 0xff;
-    if (ss < 60) {
-        t.tm_sec = ss;
-    }
-
-    time_t result = mktime(&t);
-    if (result <= start) {
-        result += (hh < 24 ? 86400 : (mm < 60 ? 3600 : 60));
-    }
-    return result;
-}
-
-void Profiler::startTimer() {
-    JNIEnv* jni = VM::jni();
-    jclass Thread = jni->FindClass("java/lang/Thread");
-    jmethodID init = jni->GetMethodID(Thread, "<init>", "(Ljava/lang/String;)V");
-    jmethodID setDaemon = jni->GetMethodID(Thread, "setDaemon", "(Z)V");
-
-    jstring name = jni->NewStringUTF("java-profiler Timer");
-    if (name != NULL && init != NULL && setDaemon != NULL) {
-        jthread thread_obj = jni->NewObject(Thread, init, name);
-        if (thread_obj != NULL) {
-            jni->CallVoidMethod(thread_obj, setDaemon, JNI_TRUE);
-            MutexLocker ml(_timer_lock);
-            _timer_id = (void*)(intptr_t)(0x80000000 | _epoch);
-            if (VM::jvmti()->RunAgentThread(thread_obj, timerThreadEntry, _timer_id, JVMTI_THREAD_NORM_PRIORITY) == 0) {
-                return;
-            }
-            _timer_id = 0;
-        }
-    }
-
-    jni->ExceptionDescribe();
-}
-
-void Profiler::stopTimer() {
-    MutexLocker ml(_timer_lock);
-    if (_timer_id != NULL) {
-        _timer_id = NULL;
-        _timer_lock.notify();
-    }
-}
-
-void Profiler::timerLoop(void* timer_id) {
-    u64 current_micros = OS::micros();
-    u64 stop_micros = _stop_time * 1000000ULL;
-    u64 sleep_until = _jfr.active() ? current_micros + 1000000 : stop_micros;
-
-    MutexLocker ml(_timer_lock);
-    while (_timer_id == timer_id) {
-        while (!_timer_lock.waitUntil(sleep_until) && _timer_id == timer_id) {
-            // timeout not reached
-        }
-        if (_timer_id != timer_id) return;
-
-        if ((current_micros = OS::micros()) >= stop_micros) {
-            VM::restartProfiler();
-            return;
-        }
-
-        bool need_switch_chunk = _jfr.timerTick(current_micros);
-        if (need_switch_chunk) {
-            // Flush under profiler state lock
-            flushJfr();
-        }
-
-        sleep_until = current_micros + 1000000;
-    }
-}
-
-void Profiler::timerThreadEntry(jvmtiEnv* jvmti, JNIEnv* jni, void* arg) {
-    instance()->timerLoop(arg);
 }
 
 Error Profiler::runInternal(Arguments& args, std::ostream& out) {
@@ -1495,11 +1365,6 @@ Error Profiler::restart(Arguments& args) {
         if (error) {
             return error;
         }
-    }
-
-    if (args._loop) {
-        args._file_num++;
-        return start(args, true);
     }
 
     return Error::OK;
