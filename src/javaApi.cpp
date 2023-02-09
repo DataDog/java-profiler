@@ -151,15 +151,6 @@ Java_com_datadoghq_profiler_JavaProfiler_registerContextValue0(JNIEnv* env, jobj
     return encoding == INT_MAX ? -1 : encoding;
 }
 
-extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_recordQueueingTime0(JNIEnv* env, jobject unused, jlong millis) {
-    int tid = ProfiledThread::currentTid();
-    if (tid < 0) {
-        return;
-    }
-    Profiler::instance()->recordWallClockQueueingTime(tid, millis);
-}
-
 #define F(name, sig)  {(char*)#name, (char*)sig, (void*)Java_com_datadoghq_profiler_JavaProfiler_##name}
 
 static const JNINativeMethod profiler_natives[] = {
@@ -172,7 +163,6 @@ static const JNINativeMethod profiler_natives[] = {
     F(getMaxContextPages0,       "()I"),
     F(getContextPageOffset0,     "(I)L"),
     F(recordTrace0,              "(L;Ljava/lang/String;I)Z"),
-    F(recordQueueingTime0,       "(L)V"),
     F(registerContextValue0,     "(Ljava/lang/String;I)I")
 };
 

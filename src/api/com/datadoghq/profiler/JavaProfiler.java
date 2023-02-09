@@ -205,10 +205,6 @@ public final class JavaProfiler {
         return recordTrace0(rootSpanId, endpoint, sizeLimit);
     }
 
-    public void recordQueueingTime(long duration, TimeUnit unit) {
-        recordQueueingTime0(unit.toMillis(duration));
-    }
-
     /**
      * Add the given thread to the set of profiled threads.
      * 'filter' option must be enabled to use this method.
@@ -409,8 +405,6 @@ public final class JavaProfiler {
     private static native int getMaxContextPages0();
 
     private static native boolean recordTrace0(long rootSpanId, String endpoint, int sizeLimit);
-
-    private static native void recordQueueingTime0(long millis);
 
     private static native int registerContextValue0(String value);
 }
