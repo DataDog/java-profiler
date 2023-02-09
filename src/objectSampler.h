@@ -20,14 +20,31 @@
 #include <jvmti.h>
 #include "arch.h"
 #include "engine.h"
+#include "livenessTracker.h"
 
+typedef int(*get_sampling_interval)();
+static int __min(int a, int b) {
+    return a < b ? a : b;
+}
 
 class ObjectSampler : public Engine {
-  protected:
-    static u64 _interval;
-    static volatile u64 _allocated_bytes;
+  friend Recording;
 
-    static void recordAllocation(jvmtiEnv* jvmti, int event_type, jclass object_klass, jlong size);
+  private:
+    static get_sampling_interval _get_sampling_interval;
+    static int* _sampling_interval;
+
+    static int sampling_interval() {
+      return _sampling_interval != NULL ? *_sampling_interval : _get_sampling_interval();
+    }
+
+    static int _interval;
+    static bool _record_allocations;
+    static bool _record_liveness;
+    static int _max_stack_depth;
+
+  protected:
+    static void recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread, int event_type, jobject object, jclass object_klass, jlong size);
 
   public:
     const char* title() {

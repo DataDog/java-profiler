@@ -27,7 +27,6 @@
 #include "perfEvents.h"
 #include "allocTracer.h"
 #include "lockTracer.h"
-#include "memleakTracer.h"
 #include "objectSampler.h"
 #include "wallClock.h"
 #include "j9ObjectSampler.h"
@@ -64,7 +63,6 @@ static ObjectSampler object_sampler;
 static WallClock wall_engine;
 static J9WallClock j9_engine;
 static ITimer itimer;
-static MemLeakTracer memleak_tracer;
 
 
 // Stack recovery techniques used to workaround AsyncGetCallTrace flaws.
@@ -929,7 +927,7 @@ Engine* Profiler::selectWallEngine(Arguments& args) {
     return (Engine*)&wall_engine;
 }
 
-Engine* Profiler::selectAllocEngine(long alloc_interval) {
+Engine* Profiler::selectAllocEngine(Arguments& args) {
     if (VM::canSampleObjects()) {
         return &object_sampler;
     } else {
@@ -948,8 +946,6 @@ Engine* Profiler::activeEngine() {
             return _alloc_engine;
         case EM_LOCK:
             return &lock_tracer;
-        case EM_MEMLEAK:
-            return &memleak_tracer;
         default:
             Log::error("Unknown event_mask %d", _event_mask);
             return NULL;
@@ -994,9 +990,8 @@ Error Profiler::start(Arguments& args, bool reset) {
     _event_mask = ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU : 0) |
                   (args._cpu >= 0 ? EM_CPU : 0) |
                   (args._wall >= 0 ? EM_WALL : 0) |
-                  (args._alloc >= 0 ? EM_ALLOC : 0) |
-                  (args._lock >= 0 ? EM_LOCK : 0) |
-                  (args._memleak > 0 ? EM_MEMLEAK : 0);
+                  (args._memory >= 0 ? EM_ALLOC : 0) |
+                  (args._lock >= 0 ? EM_LOCK : 0);
     if (_event_mask == 0) {
         return Error("No profiling events specified");
     } else if ((_event_mask & (_event_mask - 1)) && args._output != OUTPUT_JFR) {
@@ -1084,7 +1079,7 @@ Error Profiler::start(Arguments& args, bool reset) {
         }
     }
     if (_event_mask & EM_ALLOC) {
-        _alloc_engine = selectAllocEngine(args._alloc);
+        _alloc_engine = selectAllocEngine(args);
         error = _alloc_engine->start(args);
         if (error) {
             goto error2;
@@ -1094,12 +1089,6 @@ Error Profiler::start(Arguments& args, bool reset) {
         error = lock_tracer.start(args);
         if (error) {
             goto error3;
-        }
-    }
-    if (_event_mask & EM_MEMLEAK) {
-        error = memleak_tracer.start(args);
-        if (error) {
-            goto error4;
         }
     }
 
@@ -1142,7 +1131,6 @@ Error Profiler::stop() {
 
     uninstallTraps();
 
-    if (_event_mask & EM_MEMLEAK) memleak_tracer.stop();
     if (_event_mask & EM_LOCK) lock_tracer.stop();
     if (_event_mask & EM_ALLOC) _alloc_engine->stop();
     if (_event_mask & EM_WALL) _wall_engine->stop();
@@ -1178,15 +1166,12 @@ Error Profiler::check(Arguments& args) {
         _wall_engine = selectWallEngine(args);
         error = _wall_engine->check(args);
     }
-    if (!error && args._alloc >= 0) {
-        _alloc_engine = selectAllocEngine(args._alloc);
+    if (!error && args._memory >= 0) {
+        _alloc_engine = selectAllocEngine(args);
         error = _alloc_engine->check(args);
     }
     if (!error && args._lock >= 0) {
         error = lock_tracer.check(args);
-    }
-    if (!error && args._memleak > 0) {
-        error = memleak_tracer.check(args);
     }
 
     return error;
@@ -1300,7 +1285,6 @@ Error Profiler::runInternal(Arguments& args, std::ostream& out) {
             out << "  " << EVENT_CPU << std::endl;
             out << "  " << EVENT_ALLOC << std::endl;
             out << "  " << EVENT_LOCK << std::endl;
-            out << "  " << EVENT_MEMLEAK << std::endl;
             out << "  " << EVENT_WALL << std::endl;
             out << "  " << EVENT_ITIMER << std::endl;
 

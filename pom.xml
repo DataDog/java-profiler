@@ -70,6 +70,10 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <!-- JUnit 5 requires Surefire version 2.22.0 or higher -->
                 <version>2.22.2</version>
+                <configuration>
+                    <!-- This makes JOL complain less -->
+                    <argLine>-Djdk.attach.allowAttachSelf -Djol.tryWithSudo</argLine>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>

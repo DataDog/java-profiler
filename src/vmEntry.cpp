@@ -207,8 +207,8 @@ bool VM::init(JavaVM* vm, bool attach) {
     callbacks.MonitorContendedEnter = LockTracer::MonitorContendedEnter;
     callbacks.MonitorContendedEntered = LockTracer::MonitorContendedEntered;
     // callbacks.VMObjectAlloc = J9ObjectSampler::VMObjectAlloc;
-    callbacks.SampledObjectAlloc = Profiler::SampledObjectAlloc;
-    callbacks.GarbageCollectionFinish = Profiler::GarbageCollectionFinish;
+    callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
+    callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;
     _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);

@@ -3,9 +3,15 @@ package com.datadoghq.profiler.alloc;
 import com.datadoghq.profiler.AbstractProfilerTest;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.openjdk.jmc.common.IMCType;
 import org.openjdk.jmc.common.item.Aggregators;
 import org.openjdk.jmc.common.item.IItemCollection;
+import org.openjdk.jmc.common.item.IItem;
+import org.openjdk.jmc.common.item.IItemFilter;
+import org.openjdk.jmc.common.item.IItemIterable;
+import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.item.ItemFilters;
+import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 import org.openjdk.jol.info.GraphLayout;
 
 import java.util.Random;
@@ -21,7 +27,7 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
     AllocatingTarget target1 = new AllocatingTarget();
     AllocatingTarget target2 = new AllocatingTarget();
     runTests(target1, target2);
-    IItemCollection allocations = verifyEvents("datadog.ObjectAllocationInNewTLAB");
+    IItemCollection allocations = verifyEvents("datadog.ObjectSample");
     // FIXME when more tests are ported to this structure
     //     assertAllocations(allocations, int[].class, target1, target2);
     //     assertAllocations(allocations, Integer[].class, target1, target2);
@@ -32,18 +38,18 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
     for (AllocatingTarget target : targets) {
       allocated += target.getAllocated(clazz);
     }
-    IItemCollection allocationsByType = allocations.apply(ItemFilters.equals(TYPE, clazz.getCanonicalName()));
+    IItemCollection allocationsByType = allocations.apply(allocatedTypeFilter(clazz.getCanonicalName()));
     assertTrue(allocationsByType.hasItems());
-    long recorded = allocationsByType.getAggregate(Aggregators.sum(SIZE)).longValue();
-    long absoluteError = Math.abs(recorded - allocated);
-    assertTrue(absoluteError < allocated / 10,
-        String.format("allocation samples should be within 10pct tolerance of allocated memory (recorded %d, allocated %d)",
-            recorded, allocated));
+    long recorded = allocationsByType.getAggregate(Aggregators.sum(SCALED_SIZE)).longValue();
+    double error = Math.abs(recorded - allocated) / (double)allocated;
+    assertTrue(error <= 0.10,
+        String.format("allocation samples should be within 10pct tolerance of allocated memory (recorded %d, allocated %d :: %4.2f)",
+            recorded, allocated, error * 100));
   }
 
   @Override
   protected String getProfilerCommand() {
-    return "alloc";
+    return "memory=" + (256 * 1024) + ":a";
   }
 
 

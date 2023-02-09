@@ -514,6 +514,16 @@ class Recording {
 
         writeNativeLibraries(_buf);
 
+        // write the engine dependent setting
+        if (ObjectSampler::_record_allocations) {
+            writeIntSetting(_buf, T_ALLOC, "interval", ObjectSampler::_interval);
+        }
+        if (ObjectSampler::_record_liveness) {
+            writeIntSetting(_buf, T_HEAP_LIVE_OBJECT, "interval", ObjectSampler::_interval);
+            writeIntSetting(_buf, T_HEAP_LIVE_OBJECT, "capacity", LivenessTracker::instance()->_table_cap);
+            writeIntSetting(_buf, T_HEAP_LIVE_OBJECT, "maximum capacity", LivenessTracker::instance()->_table_max_cap);
+        }
+
         _stop_time = OS::micros();
         _stop_ticks = TSC::ticks();
 
@@ -775,22 +785,13 @@ class Recording {
             writeIntSetting(buf, T_METHOD_SAMPLE, "interval", args._wall ? args._wall : DEFAULT_WALL_INTERVAL);
         }
 
-        writeBoolSetting(buf, T_ALLOC_IN_NEW_TLAB, "enabled", args._alloc >= 0);
-        writeBoolSetting(buf, T_ALLOC_OUTSIDE_TLAB, "enabled", args._alloc >= 0);
-        if (args._alloc >= 0) {
-            writeIntSetting(buf, T_ALLOC_IN_NEW_TLAB, "alloc", args._alloc);
-        }
+        writeBoolSetting(buf, T_ALLOC, "enabled", args._record_allocations);
+        writeBoolSetting(buf, T_HEAP_LIVE_OBJECT, "enabled", args._record_liveness);
 
         writeBoolSetting(buf, T_MONITOR_ENTER, "enabled", args._lock >= 0);
         writeBoolSetting(buf, T_THREAD_PARK, "enabled", args._lock >= 0);
         if (args._lock >= 0) {
             writeIntSetting(buf, T_MONITOR_ENTER, "lock", args._lock);
-        }
-
-        writeBoolSetting(buf, T_HEAP_LIVE_OBJECT, "enabled", args._memleak > 0);
-        if (args._memleak > 0) {
-            writeIntSetting(buf, T_HEAP_LIVE_OBJECT, "memleak", args._memleak);
-            writeIntSetting(buf, T_HEAP_LIVE_OBJECT, "memleak_cap", args._memleak_cap);
         }
 
         writeBoolSetting(buf, T_ACTIVE_RECORDING, "debugSymbols", VMStructs::hasDebugSymbols());
@@ -1192,32 +1193,20 @@ class Recording {
         flushIfNeeded(buf);
     }
 
-    void recordAllocationInNewTLAB(Buffer* buf, int tid, u32 call_trace_id, AllocEvent* event) {
+    void recordAllocation(Buffer* buf, int tid, u32 call_trace_id, AllocEvent* event) {
         int start = buf->skip(1);
-        buf->putVar64(T_ALLOC_IN_NEW_TLAB);
+        buf->putVar64(T_ALLOC);
         buf->putVar64(TSC::ticks());
         buf->putVar64(tid);
         buf->putVar64(call_trace_id);
         buf->putVar64(event->_id);
-        buf->putVar64(event->_instance_size);
-        buf->putVar64(event->_total_size);
+        buf->putVar64(event->_size);
+        buf->putFloat(event->_weight);
         writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
     }
 
-    void recordAllocationOutsideTLAB(Buffer* buf, int tid, u32 call_trace_id, AllocEvent* event) {
-        int start = buf->skip(1);
-        buf->putVar64(T_ALLOC_OUTSIDE_TLAB);
-        buf->putVar64(TSC::ticks());
-        buf->putVar64(tid);
-        buf->putVar64(call_trace_id);
-        buf->putVar64(event->_id);
-        buf->putVar64(event->_total_size);
-        writeContext(buf, Contexts::get(tid));
-        buf->put8(start, buf->offset() - start);
-    }
-
-    void recordHeapLiveObject(Buffer* buf, int tid, u32 call_trace_id, MemLeakEvent* event) {
+    void recordHeapLiveObject(Buffer* buf, int tid, u32 call_trace_id, ObjectLivenessEvent* event) {
         int start = buf->skip(1);
         buf->putVar64(T_HEAP_LIVE_OBJECT);
         buf->putVar64(event->_start_time);
@@ -1225,8 +1214,8 @@ class Recording {
         buf->putVar32(call_trace_id);
         buf->putVar32(event->_id);
         buf->putVar64(event->_age);
-        buf->putVar64(event->_instance_size);
-        buf->putVar64(event->_interval);
+        buf->putVar64(event->_alloc._size);
+        buf->putFloat(event->_alloc._weight);
         buf->put8(start, buf->offset() - start);
     }
 
@@ -1373,13 +1362,10 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u32 call_trace_id,
                 _rec->recordMethodSample(buf, tid, call_trace_id, (ExecutionEvent*)event);
                 break;
             case BCI_ALLOC:
-                _rec->recordAllocationInNewTLAB(buf, tid, call_trace_id, (AllocEvent*)event);
+                _rec->recordAllocation(buf, tid, call_trace_id, (AllocEvent*)event);
                 break;
-            case BCI_ALLOC_OUTSIDE_TLAB:
-                _rec->recordAllocationOutsideTLAB(buf, tid, call_trace_id, (AllocEvent*)event);
-                break;
-            case BCI_MEMLEAK:
-                _rec->recordHeapLiveObject(buf, tid, call_trace_id, (MemLeakEvent*)event);
+            case BCI_LIVENESS:
+                _rec->recordHeapLiveObject(buf, tid, call_trace_id, (ObjectLivenessEvent*)event);
                 break;
             case BCI_LOCK:
                 _rec->recordMonitorBlocked(buf, tid, call_trace_id, (LockEvent*)event);

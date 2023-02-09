@@ -184,42 +184,42 @@ Error Arguments::parse(const char* args) {
                 if (value == NULL || value[0] == 0) {
                     msg = "event must not be empty";
                 } else if (strcmp(value, EVENT_ALLOC) == 0) {
-                    if (_alloc < 0) _alloc = 0;
+                    if (_memory < 0) _memory = 0;
                 } else if (strcmp(value, EVENT_LOCK) == 0) {
                     if (_lock < 0) _lock = 0;
-                } else if (strcmp(value, EVENT_MEMLEAK) == 0) {
-                    if (_memleak <= 0) _memleak = 1;
                 } else if (_event != NULL) {
                     msg = "Duplicate event argument";
                 } else {
                     _event = value;
                 }
 
-            CASE("alloc")
-                _alloc = value == NULL ? 0 : parseUnits(value, BYTES);
-                if (_alloc < 0) {
-                    msg = "alloc must be >= 0";
+            CASE("memory")
+                char* config = strchr(value, ':');
+                if (config) {
+                    *(config++) = 0; // terminate the 'value' string and update the pointer to the 'config' section
+                }
+                _memory = value == NULL ? 0 : parseUnits(value, BYTES);
+                if (_memory >= 0) {
+                    if (config) {
+                        if (strchr(config, 'a')) {
+                            _record_allocations = true;
+                        }
+                        if (strchr(config, 'l')) {
+                            _record_liveness = true;
+                        }
+                    } else {
+                        // enable both allocations and liveness tracking
+                        _record_allocations = true;
+                        _record_liveness = true;
+                    }
+                } else {
+                    msg = "memory sampling interval must be >= 0";
                 }
 
             CASE("lock")
                 _lock = value == NULL ? 0 : parseUnits(value, NANOS);
                 if (_lock < 0) {
                     msg = "lock must be >= 0";
-                }
-
-            CASE("memleak")
-                _memleak = value == NULL ? 1 : parseUnits(value, BYTES);
-                if (_memleak < 0) {
-                    msg = "memleak must be >= 0";
-                }
-
-            CASE("memleakcap")
-                if (value == NULL || value[0] == 0) {
-                    msg = "memleakcap must have a value";
-                }
-                _memleak_cap = parseUnits(value, UNIVERSAL);
-                if (_memleak_cap < 0) {
-                    msg = "memleakcap must be >= 0";
                 }
 
             CASE("interval")
@@ -295,7 +295,7 @@ Error Arguments::parse(const char* args) {
         return Error(msg);
     }
 
-    if (_event == NULL && _cpu < 0 && _wall < 0 && _alloc < 0 && _lock < 0 && _memleak == 0) {
+    if (_event == NULL && _cpu < 0 && _wall < 0 && _memory < 0 && _lock < 0) {
         _event = EVENT_CPU;
     }
 

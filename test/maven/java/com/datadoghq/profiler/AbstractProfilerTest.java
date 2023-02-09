@@ -13,15 +13,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import org.junit.jupiter.api.BeforeEach;
 import org.openjdk.jmc.common.IMCStackTrace;
+import org.openjdk.jmc.common.item.Attribute;
 import static org.openjdk.jmc.common.item.Attribute.attr;
+import org.openjdk.jmc.common.IMCType;
 import org.openjdk.jmc.common.item.IAttribute;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
+import org.openjdk.jmc.common.item.IItemFilter;
 import org.openjdk.jmc.common.item.ItemFilters;
+import org.openjdk.jmc.common.item.IType;
 import org.openjdk.jmc.common.unit.IQuantity;
 import org.openjdk.jmc.common.unit.UnitLookup;
+import static org.openjdk.jmc.common.unit.UnitLookup.BYTE;
 import static org.openjdk.jmc.common.unit.UnitLookup.NUMBER;
 import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
 import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
@@ -33,18 +38,28 @@ public abstract class AbstractProfilerTest {
 
   private boolean stopped = true;
 
-  public static final IAttribute<String> TYPE =
-          attr("objectClass", "objectClass", "Object Class", PLAIN_TEXT);
-  public static final IAttribute<IQuantity> SIZE =
-          attr("allocationSize", "allocationSize", "Allocation Size", NUMBER);
+  public static final IQuantity ZERO_BYTES = BYTE.quantity(0);
+  public static final IAttribute<IQuantity> SIZE = attr("size", "size", "", BYTE.getContentType());
+  public static final IAttribute<IQuantity> WEIGHT = attr("weight", "weight", "weight", NUMBER);
+  
+  public static final IAttribute<IQuantity> SCALED_SIZE = new Attribute<IQuantity>("scaledSize", "scaled size", "", BYTE.getContentType()) {
+      @Override
+      public <U> IMemberAccessor<IQuantity, U> customAccessor(IType<U> type) {
+          IMemberAccessor<IQuantity, U> sizeAccessor = SIZE.getAccessor(type);
+          IMemberAccessor<IQuantity, U> weightAccessor = WEIGHT.getAccessor(type);
+          if (sizeAccessor == null || weightAccessor == null) {
+            return i -> ZERO_BYTES;
+          }
+          return i -> sizeAccessor.getMember(i).multiply(weightAccessor.getMember(i).doubleValue());
+      }
+  };
 
   public static final IAttribute<IQuantity> LOCAL_ROOT_SPAN_ID = attr("localRootSpanId", "localRootSpanId",
           "localRootSpanId", NUMBER);
   public static final IAttribute<IQuantity> SPAN_ID = attr("spanId", "spanId",
           "spanId", NUMBER);
 
-  public static final IAttribute<IQuantity> WEIGHT = attr("weight", "weight",
-          "weight", NUMBER);
+
 
   public static final IAttribute<String> THREAD_STATE =
           attr("state", "state", "Thread State", PLAIN_TEXT);
@@ -78,6 +93,15 @@ public abstract class AbstractProfilerTest {
   }
 
   protected void after() throws Exception {
+  }
+
+  protected static IItemFilter allocatedTypeFilter(String className) {
+    return type -> {
+      IMemberAccessor<IMCType, IItem> accessor = JdkAttributes.OBJECT_CLASS.getAccessor(type);
+      return iItem -> {
+        return accessor != null && accessor.getMember(iItem).getFullName().equals(className);
+      };
+    };
   }
 
   protected void runTests(Runnable... runnables) throws InterruptedException {
@@ -140,7 +164,7 @@ public abstract class AbstractProfilerTest {
             eventType + " was empty for " + getAmendedProfilerCommand());
         return collection;
     } catch (Throwable t) {
-      fail(getProfilerCommand() + " " + t.getMessage());
+      fail(getProfilerCommand() + " " + t);
       return null;
     }
   }

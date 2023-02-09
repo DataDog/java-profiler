@@ -27,13 +27,11 @@ const long DEFAULT_WALL_INTERVAL = 50 * 1000 * 1000; // 50 ms
 const long DEFAULT_ALLOC_INTERVAL = 524287;  // 512 KiB
 const int DEFAULT_WALL_THREADS_PER_TICK = 16;
 const int DEFAULT_JSTACKDEPTH = 2048;
-const int DEFAULT_MEMLEAK_CAP = 8192;
 
 const char* const EVENT_NOOP   = "noop";
 const char* const EVENT_CPU    = "cpu";
 const char* const EVENT_ALLOC  = "alloc";
 const char* const EVENT_LOCK   = "lock";
-const char* const EVENT_MEMLEAK = "memleak";
 const char* const EVENT_WALL   = "wall";
 const char* const EVENT_ITIMER = "itimer";
 
@@ -137,10 +135,10 @@ class Arguments {
     long _wall;
     bool _wall_collapsing;
     int _wall_threads_per_tick;
-    long _alloc;
+    long _memory;
+    bool _record_allocations;
+    bool _record_liveness;
     long _lock;
-    long _memleak;
-    int _memleak_cap;
     int  _jstackdepth;
     int _safe_mode;
     const char* _file;
@@ -168,10 +166,10 @@ class Arguments {
         _wall(-1),
         _wall_collapsing(false),
         _wall_threads_per_tick(DEFAULT_WALL_THREADS_PER_TICK),
-        _alloc(-1),
+        _memory(-1),
+        _record_allocations(false),
+        _record_liveness(false),
         _lock(-1),
-        _memleak(0),
-        _memleak_cap(DEFAULT_MEMLEAK_CAP),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),
         _file(NULL),
