@@ -972,10 +972,9 @@ class Recording {
 
     void writeThreadStates(Buffer* buf) {
         buf->putVar64(T_THREAD_STATE);
-        buf->put8(3);
+        buf->put8(2);
         buf->putVar64(THREAD_RUNNING);     buf->putUtf8("STATE_RUNNABLE");
         buf->putVar64(THREAD_SLEEPING);    buf->putUtf8("STATE_SLEEPING");
-        buf->putVar64(THREAD_QUEUEING);    buf->putUtf8("STATE_QUEUEING");
     }
 
     void writeThreads(Buffer* buf) {
