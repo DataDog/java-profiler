@@ -407,4 +407,10 @@ public final class JavaProfiler {
     private static native boolean recordTrace0(long rootSpanId, String endpoint, int sizeLimit);
 
     private static native int registerContextValue0(String value);
+
+    public void dump(Path recording) {
+        dump0(recording.toAbsolutePath().toString());
+    }
+
+    private static native void dump0(String recordingFilePath);
 }

@@ -210,7 +210,7 @@ class Profiler {
     Error start(Arguments& args, bool reset);
     Error stop();
     Error flushJfr();
-    Error dump(std::ostream& out, Arguments& args);
+    Error dump(const char* path);
     void switchThreadEvents(jvmtiEventMode mode);
     int convertNativeTrace(int native_frames, const void** callchain, ASGCT_CallFrame* frames);
     void recordSample(void* ucontext, u64 counter, int tid, jint event_type, Event* event);

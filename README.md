@@ -47,4 +47,4 @@ The build script support the following arguments:
 
 ### Consuming the artifact
 For dd-trace-java you just need to set the `java.profiler.jar` project property.
-Eg. you can run the gradle build like this - ./gradlew clean -Pjava.profiler.jar=file:///tmp/ap-tools-2.6-DD-jb_local_artifact-bc38fb7712459603349d7a36a90c9d02611a450d.jar :dd-java-agent:shadowJar` - which will result in a custom `dd-java-agent.jar` build containing your test version of Java profiler.
+Eg. you can run the gradle build like this - ./gradlew clean -Pjava.profiler.jar=file://<path-to-artifact.jar> :dd-java-agent:shadowJar` - which will result in a custom `dd-java-agent.jar` build containing your test version of Java profiler.

@@ -326,6 +326,20 @@ void OS::copyFile(int src_fd, int dst_fd, off_t offset, size_t size) {
     munmap(buf, offset);
 }
 
+int OS::truncateFile(int fd) {
+    int rslt = ftruncate(fd, 0);
+    if (rslt == 0) {
+        return lseek(fd, 0, SEEK_SET);
+    }
+    return rslt;
+}
+
+int OS::fileSize(int fd) {
+    struct stat fileinfo = {0};
+    fstat(fd, &fileinfo);
+    return fileinfo.st_size;
+}
+
 void OS::freePageCache(int fd, off_t start_offset) {
     // Not supported on macOS
 }

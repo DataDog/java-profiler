@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <assert.h>
+
 #include <fstream>
 #include <sstream>
 #include <errno.h>
@@ -63,27 +65,14 @@ Java_com_datadoghq_profiler_JavaProfiler_execute0(JNIEnv* env, jobject unused, j
 
     Log::open(args);
 
-    if (!args.hasOutputFile()) {
-        std::ostringstream out;
-        error = Profiler::instance()->runInternal(args, out);
-        if (!error) {
-            if (out.tellp() >= 0x3fffffff) {
-                throwNew(env, "java/lang/IllegalStateException", "Output exceeds string size limit");
-                return NULL;
-            }
-            return env->NewStringUTF(out.str().c_str());
-        }
-    } else {
-        std::ofstream out(args.file(), std::ios::out | std::ios::trunc);
-        if (!out.is_open()) {
-            throwNew(env, "java/io/IOException", strerror(errno));
+    std::ostringstream out;
+    error = Profiler::instance()->runInternal(args, out);
+    if (!error) {
+        if (out.tellp() >= 0x3fffffff) {
+            throwNew(env, "java/lang/IllegalStateException", "Output exceeds string size limit");
             return NULL;
         }
-        error = Profiler::instance()->runInternal(args, out);
-        out.close();
-        if (!error) {
-            return env->NewStringUTF("OK");
-        }
+        return env->NewStringUTF(out.str().c_str());
     }
 
     throwNew(env, "java/lang/IllegalStateException", error.message());
@@ -151,6 +140,15 @@ Java_com_datadoghq_profiler_JavaProfiler_registerContextValue0(JNIEnv* env, jobj
     return encoding == INT_MAX ? -1 : encoding;
 }
 
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_dump0(JNIEnv* env, jobject unused, jstring path) {
+    assert(path != NULL);
+    const char* path_str = env->GetStringUTFChars(path, NULL);
+    assert(path_str != NULL);
+    Profiler::instance()->dump(path_str);
+    env->ReleaseStringUTFChars(path, path_str);
+}
+
 #define F(name, sig)  {(char*)#name, (char*)sig, (void*)Java_com_datadoghq_profiler_JavaProfiler_##name}
 
 static const JNINativeMethod profiler_natives[] = {
@@ -163,7 +161,8 @@ static const JNINativeMethod profiler_natives[] = {
     F(getMaxContextPages0,       "()I"),
     F(getContextPageOffset0,     "(I)L"),
     F(recordTrace0,              "(L;Ljava/lang/String;I)Z"),
-    F(registerContextValue0,     "(Ljava/lang/String;I)I")
+    F(registerContextValue0,     "(Ljava/lang/String;I)I"),
+    F(dump0,                     "(Ljava/lang/String;)V")
 };
 
 static const JNINativeMethod* execute0 = &profiler_natives[2];

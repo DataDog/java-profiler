@@ -152,8 +152,10 @@ jobs:
         uses: actions/upload-artifact@v3
         if: always()
         with:
-          name: hs_err_files.zip
-          path: hs_err_*
+          name: reports.zip
+          path: |
+            hs_err_*
+            target/surefire-reports/
       - uses: actions/upload-artifact@v3
         if: success()
         with:

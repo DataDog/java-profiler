@@ -126,6 +126,12 @@ public abstract class AbstractProfilerTest {
     }
   }
 
+  protected void dump(Path recording) {
+    if (!stopped) {
+      profiler.dump(recording);
+    }
+  }
+
   protected void registerCurrentThreadForWallClockProfiling() {
     profiler.addThread();
   }
@@ -142,9 +148,14 @@ public abstract class AbstractProfilerTest {
 
   protected abstract String getProfilerCommand();
 
+  
   protected void verifyEventsPresent(String... expectedEventTypes) {
+    verifyEventsPresent(jfrDump, expectedEventTypes);
+  }
+
+  protected void verifyEventsPresent(Path recording, String... expectedEventTypes) {  
     try {
-      IItemCollection events = JfrLoaderToolkit.loadEvents(Files.newInputStream(jfrDump));
+      IItemCollection events = JfrLoaderToolkit.loadEvents(Files.newInputStream(recording));
       assertTrue(events.hasItems());
       for (String expectedEventType : expectedEventTypes) {
         assertTrue(events.apply(ItemFilters.type(expectedEventType)).hasItems(),
@@ -156,8 +167,12 @@ public abstract class AbstractProfilerTest {
   }
 
   protected IItemCollection verifyEvents(String eventType) {
+    return verifyEvents(jfrDump, eventType);
+  }
+
+  protected IItemCollection verifyEvents(Path recording, String eventType) {
     try {
-      IItemCollection events = JfrLoaderToolkit.loadEvents(Files.newInputStream(jfrDump));
+      IItemCollection events = JfrLoaderToolkit.loadEvents(Files.newInputStream(recording));
       assertTrue(events.hasItems());
       IItemCollection collection = events.apply(ItemFilters.type(eventType));
         assertTrue(collection.hasItems(),
@@ -170,8 +185,12 @@ public abstract class AbstractProfilerTest {
   }
 
   protected void verifyStackTraces(String eventType, String... patterns) {
+    verifyStackTraces(jfrDump, eventType, patterns);
+  }
+
+  protected void verifyStackTraces(Path recording, String eventType, String... patterns) {
     Set<String> unmatched = new HashSet<>(Arrays.asList(patterns));
-    outer: for (IItemIterable sample : verifyEvents(eventType)) {
+    outer: for (IItemIterable sample : verifyEvents(recording, eventType)) {
       IMemberAccessor<String, IItem> stackTraceAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(sample.getType());
       for (IItem item : sample) {
         String stackTrace = stackTraceAccessor.getMember(item);

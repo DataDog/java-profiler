@@ -40,7 +40,6 @@ enum Action {
     ACTION_START,
     ACTION_RESUME,
     ACTION_STOP,
-    ACTION_DUMP,
     ACTION_CHECK,
     ACTION_STATUS,
     ACTION_LIST,
@@ -148,7 +147,6 @@ class Arguments {
     const char* _filter;
     unsigned char _mcache;
     CStack _cstack;
-    Output _output;
     long _chunk_size;
     long _chunk_time;
     int _jfr_options;
@@ -179,7 +177,6 @@ class Arguments {
         _filter(NULL),
         _mcache(0),
         _cstack(CSTACK_DEFAULT),
-        _output(OUTPUT_NONE),
         _jfr_options(0),
         _context_attributes({}) {
     }
@@ -191,11 +188,6 @@ class Arguments {
     Error parse(const char* args);
 
     const char* file();
-
-    bool hasOutputFile() const {
-        return _file != NULL &&
-            (_action == ACTION_STOP || _action == ACTION_DUMP ? _output != OUTPUT_JFR : _action >= ACTION_STATUS);
-    }
 
     bool hasOption(JfrOption option) const {
         return (_jfr_options & option) != 0;

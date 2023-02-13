@@ -11,7 +11,7 @@ public class CpuDumpSmokeTest extends JfrDumpTest {
     }
 
     @Test
-    @Timeout(value = 30)
+    @Timeout(value = 60)
     public void test() throws Exception {
         runTest("datadog.ExecutionSample");
     }

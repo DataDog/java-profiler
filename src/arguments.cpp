@@ -108,7 +108,9 @@ Error Arguments::parse(const char* args) {
     }
 
     size_t len = strlen(args);
-    free(_buf);
+    if (_buf != NULL) {
+        free(_buf);
+    }
     _buf = (char*)malloc(len + EXTRA_BUF_SIZE + 1);
     if (_buf == NULL) {
         return Error("Not enough memory to parse arguments");
@@ -132,9 +134,6 @@ Error Arguments::parse(const char* args) {
             CASE("stop")
                 _action = ACTION_STOP;
 
-            CASE("dump")
-                _action = ACTION_DUMP;
-
             CASE("check")
                 _action = ACTION_CHECK;
 
@@ -148,7 +147,6 @@ Error Arguments::parse(const char* args) {
                 _action = value == NULL ? ACTION_VERSION : ACTION_FULL_VERSION;
 
             CASE("jfr")
-                _output = OUTPUT_JFR;
                 if (value != NULL) {
                     _jfr_options = (int)strtol(value, NULL, 0);
                 }
@@ -299,17 +297,6 @@ Error Arguments::parse(const char* args) {
         _event = EVENT_CPU;
     }
 
-    if (_file != NULL && _output == OUTPUT_NONE) {
-        _output = detectOutputFormat(_file);
-        if (_output == OUTPUT_NONE) {
-            return Error("Unsuported format. Use '*.jfr' or '*.collapsed' or '*.folded'");
-        }
-    }
-
-    if (_action == ACTION_NONE && _output != OUTPUT_NONE) {
-        _action = ACTION_DUMP;
-    }
-
     return Error::OK;
 }
 
@@ -429,11 +416,14 @@ int Arguments::parseTimeout(const char* str) {
 }
 
 Arguments::~Arguments() {
-    if (!_shared) free(_buf);
+    if (_buf != NULL) {
+        free(_buf);
+        _buf = NULL;
+    }
 }
 
 void Arguments::save(Arguments& other) {
-    if (!_shared) free(_buf);
-    *this = other;
+    other = *this;
+    other._buf = NULL;
     other._shared = true;
 }

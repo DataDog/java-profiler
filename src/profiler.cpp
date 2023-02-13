@@ -968,8 +968,6 @@ Error Profiler::start(Arguments& args, bool reset) {
                   (args._lock >= 0 ? EM_LOCK : 0);
     if (_event_mask == 0) {
         return Error("No profiling events specified");
-    } else if ((_event_mask & (_event_mask - 1)) && args._output != OUTPUT_JFR) {
-        return Error("Only JFR output supports multiple events");
     }
 
     if (reset || _start_time == 0) {
@@ -1029,15 +1027,14 @@ Error Profiler::start(Arguments& args, bool reset) {
     }
 
     switchLibraryTrap(_cstack != CSTACK_NO);
-    if (args._output == OUTPUT_JFR) {
-        JfrMetadata::initialize(args._context_attributes);
-        _num_context_attributes = args._context_attributes.size();
-        error = _jfr.start(args, reset);
-        if (error) {
-            uninstallTraps();
-            switchLibraryTrap(false);
-            return error;
-        }
+
+    JfrMetadata::initialize(args._context_attributes);
+    _num_context_attributes = args._context_attributes.size();
+    error = _jfr.start(args, reset);
+    if (error) {
+        uninstallTraps();
+        switchLibraryTrap(false);
+        return error;
     }
 
     if (_event_mask & EM_CPU) {
@@ -1167,7 +1164,7 @@ Error Profiler::flushJfr() {
     return Error::OK;
 }
 
-Error Profiler::dump(std::ostream& out, Arguments& args) {
+Error Profiler::dump(const char* path) {
     MutexLocker ml(_state_lock);
     if (_state != IDLE && _state != RUNNING) {
         return Error("Profiler has not started");
@@ -1176,16 +1173,11 @@ Error Profiler::dump(std::ostream& out, Arguments& args) {
     if (_state == RUNNING) {
         updateJavaThreadNames();
         updateNativeThreadNames();
-    }
-
-    switch (args._output) {
-        case OUTPUT_JFR:
-            if (_state == RUNNING) {
-                return _jfr.dump(args.file());
-            }
-            break;
-        default:
-            return Error("No output format selected");
+        
+        lockAll();
+        Error err = _jfr.dump(path);
+        unlockAll();
+        return err;
     }
 
     return Error::OK;
@@ -1221,22 +1213,9 @@ Error Profiler::runInternal(Arguments& args, std::ostream& out) {
         }
         case ACTION_STOP: {
             Error error = stop();
-            if (args._output == OUTPUT_NONE) {
-                if (error) {
-                    return error;
-                }
-                out << "Profiling stopped after " << uptime() << " seconds. No dump options specified\n";
-                break;
-            }
             // Fall through
         }
-        case ACTION_DUMP: {
-            Error error = dump(out, args);
-            if (error) {
-                return error;
-            }
-            break;
-        }
+
         case ACTION_CHECK: {
             Error error = check(args);
             if (error) {
@@ -1290,19 +1269,7 @@ Error Profiler::runInternal(Arguments& args, std::ostream& out) {
 }
 
 Error Profiler::run(Arguments& args) {
-    if (!args.hasOutputFile()) {
-        return runInternal(args, std::cout);
-    } else {
-        // Open output file under the lock to avoid races with background timer
-        MutexLocker ml(_state_lock);
-        std::ofstream out(args.file(), std::ios::out | std::ios::trunc);
-        if (!out.is_open()) {
-            return Error("Could not open output file");
-        }
-        Error error = runInternal(args, out);
-        out.close();
-        return error;
-    }
+    return runInternal(args, std::cout);
 }
 
 Error Profiler::restart(Arguments& args) {
@@ -1311,18 +1278,6 @@ Error Profiler::restart(Arguments& args) {
     Error error = stop();
     if (error) {
         return error;
-    }
-
-    if (args._file != NULL && args._output != OUTPUT_NONE && args._output != OUTPUT_JFR) {
-        std::ofstream out(args.file(), std::ios::out | std::ios::trunc);
-        if (!out.is_open()) {
-            return Error("Could not open output file");
-        }
-        error = dump(out, args);
-        out.close();
-        if (error) {
-            return error;
-        }
     }
 
     return Error::OK;

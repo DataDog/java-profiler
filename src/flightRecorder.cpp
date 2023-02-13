@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <assert.h>
+
 #include <map>
 #include <string>
 #include <arpa/inet.h>
@@ -434,6 +436,7 @@ class Recording {
     ThreadFilter _thread_set;
     MethodMap _method_map;
 
+    Arguments _args;
     u64 _start_time;
     u64 _recording_start_time;
     u64 _start_ticks;
@@ -458,6 +461,7 @@ class Recording {
 
   public:
     Recording(int fd, Arguments& args) : _fd(fd), _thread_set(), _method_map() {
+        args.save(_args);
         _chunk_start = lseek(_fd, 0, SEEK_END);
         _start_time = OS::micros();
         _start_ticks = TSC::ticks();
@@ -569,15 +573,42 @@ class Recording {
         return chunk_end;
     }
 
-    void switchChunk() {
-        _chunk_start = finishChunk();
+    void switchChunk(int fd) {
+        _chunk_start = finishChunk(true);
         _start_time = _stop_time;
         _start_ticks = _stop_ticks;
-        _base_id += 0x1000000;
         _bytes_written = 0;
+        if (fd > -1) {
+            // move the chunk to external file and reset the continuous recording file
+            OS::copyFile(_fd, fd, 0, _chunk_start);
+            int rslt = OS::truncateFile(_fd);
+            // need to reset the file offset here
+            _chunk_start = 0;
+            _base_id = 0;
+        } else {
+            // same file, different logical chunk
+            _base_id += 0x1000000;
+        }
 
         writeHeader(_buf);
         writeMetadata(_buf);
+        if (fd > -1) {
+            // if the recording file is to be restarted write out all the info events again
+            writeSettings(_buf, _args);
+            if (!_args.hasOption(NO_SYSTEM_INFO)) {
+                writeOsCpuInfo(_buf);
+                writeJvmInfo(_buf);
+            }
+            if (!_args.hasOption(NO_SYSTEM_PROPS)) {
+                writeSystemProperties(_buf);
+            }
+            if (!_args.hasOption(NO_NATIVE_LIBS)) {
+                _recorded_lib_count = 0;
+                writeNativeLibraries(_buf);
+            } else {
+                _recorded_lib_count = -1;
+            }
+        }
         flush(_buf);
     }
 
@@ -1305,23 +1336,20 @@ void FlightRecorder::stop() {
 
 Error FlightRecorder::dump(const char* filename) {
     if (_rec != NULL) {
-        Error rslt = Error::OK;
         _rec_lock.lock();
         if (filename != NULL && strcmp(filename, _filename) != 0) {
-            // if the filname to dump the recording to is specified move the current working file there
+            // if the filename to dump the recording to is specified move the current working file there
             int copy_fd = open(filename, O_CREAT | O_RDWR | O_TRUNC, 0644);
-            _rec->copyTo(copy_fd);
+            _rec->switchChunk(copy_fd);
             close(copy_fd);
-            // ... and restart the recording a-new
-            delete _rec;
-            _rec = NULL;
-            
-            rslt = newRecording(true);
+            _rec_lock.unlock();
         } else {
-            flush();
+            // need to unlock in the exceptional path as well
+            _rec_lock.unlock();
+            return Error("Can not dump recording to itself. Provide a different file name!");
         }
-        _rec_lock.unlock();
-        return rslt;
+        
+        return Error::OK;
     } else {
         return Error("No active recording");
     }
@@ -1330,7 +1358,7 @@ Error FlightRecorder::dump(const char* filename) {
 void FlightRecorder::flush() {
     if (_rec != NULL) {
         _rec_lock.lock();
-        _rec->switchChunk();
+        _rec->switchChunk(-1);
         _rec_lock.unlock();
     }
 }

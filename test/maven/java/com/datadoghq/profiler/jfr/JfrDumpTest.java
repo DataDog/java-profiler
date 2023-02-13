@@ -3,17 +3,30 @@ package com.datadoghq.profiler.jfr;
 import com.datadoghq.profiler.AbstractProfilerTest;
 
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 public abstract class JfrDumpTest extends AbstractProfilerTest {
 
-    public void runTest(String eventName) {
-        for (int i = 0; i < 100; i++) {
+    public void runTest(String eventName) throws Exception {
+        Path recording = Files.createTempFile("dump-", ".jfr");
+        for (int j = 0; j < 10; j++) {
+            for (int i = 0; i < 50; i++) {
+                method1();
+                method2();
+                method3();
+            }
+            dump(recording);
+            verifyStackTraces(recording, eventName, "method1", "method2", "method3");
+        }
+        for (int i = 0; i < 500; i++) {
             method1();
             method2();
             method3();
         }
         stopProfiler();
         verifyStackTraces(eventName, "method1", "method2", "method3");
+        Files.deleteIfExists(recording);
     }
 
     private static volatile int value;
