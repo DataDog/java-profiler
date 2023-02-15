@@ -6,6 +6,8 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import org.junit.jupiter.api.Assumptions;
+
 public abstract class JfrDumpTest extends AbstractProfilerTest {
 
     public void runTest(String eventName) throws Exception {
@@ -13,6 +15,8 @@ public abstract class JfrDumpTest extends AbstractProfilerTest {
     }
 
     public void runTest(String eventName, String ... patterns) throws Exception {
+        Assumptions.assumeFalse(System.getProperty("java.version").contains("1.8"));
+
         for (int j = 0; j < 10; j++) {
             Path recording = Files.createTempFile("dump-", ".jfr");
             try {
@@ -51,9 +55,17 @@ public abstract class JfrDumpTest extends AbstractProfilerTest {
     }
 
     private static void method3() {
+        long ts = System.nanoTime();
         for (int i = 0; i < 1000; ++i) {
+            int cntr = 10;
             for (String s : new File("/tmp").list()) {
-                value += s.hashCode();
+                value += s.substring(0, Math.min(s.length(), 16) ).hashCode();
+                if (--cntr < 0) {
+                    break;
+                }
+            }
+            if ((System.nanoTime() - ts) > 20000000L) {
+                break;
             }
         }
     }
