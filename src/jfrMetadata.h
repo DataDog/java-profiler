@@ -83,6 +83,7 @@ enum JfrType {
     T_PERCENTAGE = 208
 };
 
+typedef std::map<JfrType, long> TypeHistogram;
 
 class Attribute {
   public:

@@ -18,9 +18,11 @@
 #define _OBJECTSAMPLER_H
 
 #include <jvmti.h>
+#include <time.h>
 #include "arch.h"
 #include "engine.h"
 #include "livenessTracker.h"
+#include "jfrMetadata.h"
 
 typedef int(*get_sampling_interval)();
 static int __min(int a, int b) {
@@ -38,15 +40,25 @@ class ObjectSampler : public Engine {
       return _sampling_interval != NULL ? *_sampling_interval : _get_sampling_interval();
     }
 
-    static int _interval;
-    static bool _record_allocations;
-    static bool _record_liveness;
-    static int _max_stack_depth;
+    static ObjectSampler* const _instance;
+
+    int _interval;
+    bool _record_allocations;
+    bool _record_liveness;
+    int _max_stack_depth;
+
+    long _last_event_count;
+
+    const static int CONFIG_UPDATE_CHECK_PERIDD_SECS = 1;
 
   protected:
-    static void recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread, int event_type, jobject object, jclass object_klass, jlong size);
+    void recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread, int event_type, jobject object, jclass object_klass, jlong size);
 
   public:
+    static ObjectSampler* const instance() {
+        return _instance;
+    }
+
     const char* title() {
         return "Allocation profile";
     }
@@ -57,6 +69,7 @@ class ObjectSampler : public Engine {
 
     Error check(Arguments& args);
     Error start(Arguments& args);
+    Error updateConfiguration(TypeHistogram &event_histo);
     void stop();
 
     static void JNICALL SampledObjectAlloc(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,

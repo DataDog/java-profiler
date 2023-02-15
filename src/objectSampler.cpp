@@ -18,6 +18,7 @@
 #include <jni.h>
 #include <string.h>
 #include "objectSampler.h"
+#include "pidController.h"
 #include "profiler.h"
 #include "context.h"
 #include "thread.h"
@@ -25,15 +26,12 @@
 get_sampling_interval ObjectSampler::_get_sampling_interval;
 int* ObjectSampler::_sampling_interval;
 
-int ObjectSampler::_interval;
-int ObjectSampler::_max_stack_depth;
 
-bool ObjectSampler::_record_allocations;
-bool ObjectSampler::_record_liveness;
+ObjectSampler* const ObjectSampler::_instance = new ObjectSampler();
 
 void ObjectSampler::SampledObjectAlloc(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
                                        jobject object, jclass object_klass, jlong size) {
-    recordAllocation(jvmti, jni, thread, BCI_ALLOC, object, object_klass, size);
+    ObjectSampler::instance()->recordAllocation(jvmti, jni, thread, BCI_ALLOC, object, object_klass, size);
 }
 
 void ObjectSampler::recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread, int event_type, jobject object, jclass object_klass, jlong size) {
@@ -124,6 +122,8 @@ Error ObjectSampler::start(Arguments& args) {
         jvmtiEnv* jvmti = VM::jvmti();
         jvmti->SetHeapSamplingInterval(_interval);
         jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
+        // need to reset the running sum in order for 'updateConfiguration' to be able to generate proper diffs
+        _last_event_count = 0;
     }
 
     return Error::OK;
@@ -136,4 +136,34 @@ void ObjectSampler::stop() {
     if (_record_liveness) {
         LivenessTracker::instance()->stop();
     }
+}
+
+Error ObjectSampler::updateConfiguration(TypeHistogram &event_histo) {
+    if (_record_allocations) {
+        static PidController pid_controller(
+            1000, // target 60k events per minute or 1k per second
+            16, // use a rather strong proportional gain in order to react quickly to bursts
+            23, // emphasize the integration based gain to focus on long-term rate limiting rather than on fair distribution
+            3,  // the derivational gain is rather small because the allocation rate can change abruptly (low impact of the predicted allocation rate)
+            CONFIG_UPDATE_CHECK_PERIDD_SECS, 
+            15
+        );
+
+        long event_count = event_histo[T_ALLOC];
+        if (event_count < _last_event_count) {
+            _last_event_count = 0;
+        }
+        u64 count_diff = (u64)(event_count - _last_event_count);
+
+        float signal = pid_controller.compute(count_diff);
+        int current_interval = sampling_interval();
+        int required_interval = current_interval - signal;
+        if (required_interval >= _interval) { // do not dip below the manually configured sampling interval
+            int ret = VM::jvmti()->SetHeapSamplingInterval(required_interval);
+        }
+        
+        _last_event_count = event_count;
+    }
+
+    return Error::OK;
 }

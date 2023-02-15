@@ -416,14 +416,33 @@ class Buffer {
 class RecordingBuffer : public Buffer {
   private:
     char _buf[RECORDING_BUFFER_SIZE - sizeof(Buffer)];
+    TypeHistogram _event_frequency;
 
   public:
     RecordingBuffer() : Buffer() {
+    }
+
+    TypeHistogram reset() {
+        Buffer::reset();
+        TypeHistogram histo = _event_frequency;
+        _event_frequency.clear();
+        return histo;
+    }
+
+    TypeHistogram histogram() {
+        return _event_frequency;
+    }
+
+    void recordType(JfrType type) {
+        _event_frequency[type]++;
     }
 };
 
 
 class Recording {
+  friend ObjectSampler;
+  friend Profiler;
+
   private:
     static char* _agent_properties;
     static char* _jvm_args;
@@ -455,12 +474,52 @@ class Recording {
     Buffer _cpu_monitor_buf;
     CpuTimes _last_times;
 
+    bool _running;
+    pthread_t _thread;
+
     static float ratio(float value) {
         return value < 0 ? 0 : value > 1 ? 1 : value;
     }
 
+    void collectHistogram(TypeHistogram& event_histo, bool flush) {
+        for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+            TypeHistogram histo = flush ? flush_with_histo(&_buf[i]) : _buf[i].histogram();
+            for(auto& it : histo) {
+                event_histo[it.first] += it.second;
+            }
+        }
+    }
+
+    void timerLoop() {
+        VM::attachThread("java-profiler Allocation Sampler Rate Limiter");
+        const u64 delay = ObjectSampler::CONFIG_UPDATE_CHECK_PERIDD_SECS * 1000 * 1000 * 1000L; // 1 sec
+        while (_running) {
+            OS::sleep(delay);
+            Profiler* p = Profiler::instance();
+            TypeHistogram histo;
+            for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+                if (p->_locks[i].tryLockShared()) {
+                    TypeHistogram buf_hist = _buf[i].histogram();
+                    if (buf_hist.size() > 0) {
+                        for (auto it = buf_hist.begin(); it != buf_hist.end(); ++it) {
+                            histo[it->first] += it->second;
+                        }
+                    }
+                    p->_locks[i].unlockShared();
+                }
+            }
+            ObjectSampler::instance()->updateConfiguration(histo);
+        }
+    }
+
+    static void* threadEntry(void* recording) {
+        ((Recording*)recording)->timerLoop();
+        return NULL;
+    }
+
   public:
     Recording(int fd, Arguments& args) : _fd(fd), _thread_set(), _method_map() {
+        
         args.save(_args);
         _chunk_start = lseek(_fd, 0, SEEK_END);
         _start_time = OS::micros();
@@ -497,9 +556,17 @@ class Recording {
             _last_times.proc.real = OS::getProcessCpuTime(&_last_times.proc.user, &_last_times.proc.system);
             _last_times.total.real = OS::getTotalCpuTime(&_last_times.total.user, &_last_times.total.system);
         }
+        _running = true;
+        if (pthread_create(&_thread, NULL, threadEntry, this) != 0) {
+          fprintf(stdout, "Unable to start periodic configuration updater\n");
+        }
     }
 
     ~Recording() {
+        _running = false;
+        pthread_kill(_thread, WAKEUP_SIGNAL);
+        pthread_join(_thread, NULL);
+
         off_t chunk_end = finishChunk(true);
 
         close(_fd);
@@ -518,12 +585,13 @@ class Recording {
 
         writeNativeLibraries(_buf);
 
+        const ObjectSampler* oSampler = ObjectSampler::instance();
         // write the engine dependent setting
-        if (ObjectSampler::_record_allocations) {
-            writeIntSetting(_buf, T_ALLOC, "interval", ObjectSampler::_interval);
+        if (oSampler->_record_allocations) {
+            writeIntSetting(_buf, T_ALLOC, "interval", oSampler->_interval);
         }
-        if (ObjectSampler::_record_liveness) {
-            writeIntSetting(_buf, T_HEAP_LIVE_OBJECT, "interval", ObjectSampler::_interval);
+        if (oSampler->_record_liveness) {
+            writeIntSetting(_buf, T_HEAP_LIVE_OBJECT, "interval", oSampler->_interval);
             writeIntSetting(_buf, T_HEAP_LIVE_OBJECT, "capacity", LivenessTracker::instance()->_table_cap);
             writeIntSetting(_buf, T_HEAP_LIVE_OBJECT, "maximum capacity", LivenessTracker::instance()->_table_max_cap);
         }
@@ -535,9 +603,10 @@ class Recording {
             writeRecordingInfo(_buf);
         }
 
-        for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
-            flush(&_buf[i]);
-        }
+        TypeHistogram event_histo;
+        collectHistogram(event_histo, true);
+
+        ObjectSampler::instance()->updateConfiguration(event_histo);
 
         off_t cpool_offset = lseek(_fd, 0, SEEK_CUR);
         writeCpool(_buf);
@@ -574,7 +643,7 @@ class Recording {
     }
 
     void switchChunk(int fd) {
-        _chunk_start = finishChunk(true);
+        _chunk_start = finishChunk(fd > -1);
         _start_time = _stop_time;
         _start_ticks = _stop_ticks;
         _bytes_written = 0;
@@ -653,7 +722,7 @@ class Recording {
         }
     }
 
-    Buffer* buffer(int lock_index) {
+    RecordingBuffer* buffer(int lock_index) {
         return &_buf[lock_index];
     }
 
@@ -704,6 +773,14 @@ class Recording {
         }
 
         return true;
+    }
+    
+    TypeHistogram flush_with_histo(RecordingBuffer* buf) {
+        ssize_t result = write(_fd, buf->data(), buf->offset());
+        if (result > 0) {
+            atomicInc(_bytes_written, result);
+        }
+        return buf->reset();
     }
 
     void flush(Buffer* buf) {
@@ -1223,7 +1300,7 @@ class Recording {
         flushIfNeeded(buf);
     }
 
-    void recordAllocation(Buffer* buf, int tid, u32 call_trace_id, AllocEvent* event) {
+    void recordAllocation(RecordingBuffer* buf, int tid, u32 call_trace_id, AllocEvent* event) {
         int start = buf->skip(1);
         buf->putVar64(T_ALLOC);
         buf->putVar64(TSC::ticks());
@@ -1234,6 +1311,8 @@ class Recording {
         buf->putFloat(event->_weight);
         writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
+
+        buf->recordType(T_ALLOC);
     }
 
     void recordHeapLiveObject(Buffer* buf, int tid, u32 call_trace_id, ObjectLivenessEvent* event) {
@@ -1380,7 +1459,7 @@ void FlightRecorder::recordTraceRoot(int lock_index, int tid, TraceRootEvent* ev
 void FlightRecorder::recordEvent(int lock_index, int tid, u32 call_trace_id,
                                  int event_type, Event* event, u64 counter) {
     if (_rec != NULL) {
-        Buffer* buf = _rec->buffer(lock_index);
+        RecordingBuffer* buf = _rec->buffer(lock_index);
         switch (event_type) {
             case 0:
                 _rec->recordExecutionSample(buf, tid, call_trace_id, (ExecutionEvent*)event);

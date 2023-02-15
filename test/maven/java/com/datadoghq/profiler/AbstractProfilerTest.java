@@ -158,8 +158,10 @@ public abstract class AbstractProfilerTest {
       IItemCollection events = JfrLoaderToolkit.loadEvents(Files.newInputStream(recording));
       assertTrue(events.hasItems());
       for (String expectedEventType : expectedEventTypes) {
-        assertTrue(events.apply(ItemFilters.type(expectedEventType)).hasItems(),
+        IItemCollection filtered = events.apply(ItemFilters.type(expectedEventType));
+        assertTrue(filtered.hasItems(),
                 expectedEventType + " was empty for " + getAmendedProfilerCommand());
+        System.out.println(expectedEventType + " count: " + filtered.stream().count());
       }
     } catch (Throwable t) {
       fail(getProfilerCommand() + " " + t.getMessage());
@@ -177,6 +179,7 @@ public abstract class AbstractProfilerTest {
       IItemCollection collection = events.apply(ItemFilters.type(eventType));
         assertTrue(collection.hasItems(),
             eventType + " was empty for " + getAmendedProfilerCommand());
+        System.out.println(eventType + " count: " + collection.stream().flatMap(IItemIterable::stream).count());
         return collection;
     } catch (Throwable t) {
       fail(getProfilerCommand() + " " + t);

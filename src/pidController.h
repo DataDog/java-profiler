@@ -20,6 +20,10 @@
 #include <cmath>
 #include "arch.h"
 
+/*
+ * A simple implementation of a PID controller.
+ * Heavily influenced by https://tttapa.github.io/Pages/Arduino/Control-Theory/Motor-Fader/PID-Cpp-Implementation.html 
+ */
 class PidController {
     private:
         u64 _target;
