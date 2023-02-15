@@ -17,8 +17,10 @@
 #include <cmath>
 #include "pidController.h"
 
-double PidController::compute(u64 input) {
-    double absolute_error = static_cast<double>(_target) - static_cast<double>(input);
+double PidController::compute(u64 input, double time_delta_coefficient) {
+    // time_delta_coefficient allows variable sampling window
+    // the values are linearly scaled using that coefficient to reinterpret the given value within the expected sampling window
+    double absolute_error = (static_cast<double>(_target) - static_cast<double>(input)) * time_delta_coefficient;
 
     double avg_error = (_alpha * absolute_error) + ((1 - _alpha) * _avg_error);
     double derivative = avg_error - _avg_error;

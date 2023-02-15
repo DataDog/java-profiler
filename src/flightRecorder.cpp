@@ -474,38 +474,8 @@ class Recording {
     Buffer _cpu_monitor_buf;
     CpuTimes _last_times;
 
-    bool _running;
-    pthread_t _thread;
-
     static float ratio(float value) {
         return value < 0 ? 0 : value > 1 ? 1 : value;
-    }
-
-    void timerLoop() {
-        VM::attachThread("java-profiler Allocation Sampler Rate Limiter");
-        const u64 delay = ObjectSampler::CONFIG_UPDATE_CHECK_PERIDD_SECS * 1000 * 1000 * 1000L; // 1 sec
-        while (_running) {
-            OS::sleep(delay);
-            Profiler* p = Profiler::instance();
-            TypeHistogram histo;
-            for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
-                if (p->_locks[i].tryLockShared()) {
-                    TypeHistogram buf_hist = _buf[i].histogram();
-                    if (buf_hist.size() > 0) {
-                        for (auto it = buf_hist.begin(); it != buf_hist.end(); ++it) {
-                            histo[it->first] += it->second;
-                        }
-                    }
-                    p->_locks[i].unlockShared();
-                }
-            }
-            ObjectSampler::instance()->updateConfiguration(histo);
-        }
-    }
-
-    static void* threadEntry(void* recording) {
-        ((Recording*)recording)->timerLoop();
-        return NULL;
     }
 
   public:
@@ -547,22 +517,12 @@ class Recording {
             _last_times.proc.real = OS::getProcessCpuTime(&_last_times.proc.user, &_last_times.proc.system);
             _last_times.total.real = OS::getTotalCpuTime(&_last_times.total.user, &_last_times.total.system);
         }
-        _running = true;
-        if (pthread_create(&_thread, NULL, threadEntry, this) != 0) {
-          Log::warn("Unable to start periodic configuration updater");
-        }
     }
 
     ~Recording() {
-        _running = false;
-
         off_t chunk_end = finishChunk(true);
 
         close(_fd);
-
-        // destroy the config update thread as the last step to prevent interfering with the profiler shutdown
-        pthread_kill(_thread, WAKEUP_SIGNAL);
-        pthread_join(_thread, NULL);
     }
     
     void copyTo(int target_fd) {

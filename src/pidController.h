@@ -53,7 +53,7 @@ class PidController {
             _avg_error(0),
             _integral_value(0) {}
         
-        double compute(u64 input);
+        double compute(u64 input, double time_delta_seconds);
 };
 
 

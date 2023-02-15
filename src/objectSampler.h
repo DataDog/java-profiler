@@ -47,9 +47,12 @@ class ObjectSampler : public Engine {
     bool _record_liveness;
     int _max_stack_depth;
 
-    long _last_event_count;
+    u64 _last_config_update_ts;
+    u64 _alloc_event_count;
 
-    const static int CONFIG_UPDATE_CHECK_PERIDD_SECS = 1;
+    const static int CONFIG_UPDATE_CHECK_PERIOD_SECS = 1;
+
+    Error updateConfiguration(u64 events, double time_coefficient);
 
   protected:
     void recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread, int event_type, jobject object, jclass object_klass, jlong size);
@@ -69,7 +72,6 @@ class ObjectSampler : public Engine {
 
     Error check(Arguments& args);
     Error start(Arguments& args);
-    Error updateConfiguration(TypeHistogram &event_histo);
     void stop();
 
     static void JNICALL SampledObjectAlloc(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,

@@ -63,6 +63,24 @@ void ObjectSampler::recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread threa
 
     if (_record_allocations) {
         Profiler::instance()->recordExternalSample(size, tid, frames, frames_size, /*truncated=*/false, BCI_ALLOC, &event);
+        
+        u64 current_samples = __sync_add_and_fetch(&_alloc_event_count, 1);
+        // in order to lower the number of atomic reads from the timestamp variable the check will be performed only each 1024 samples
+        // the number 1024 is chosen arbitrarily to +- match the expected number of samples per sampling window (1000)
+        if ((current_samples & 1023) == 0) { // effectively 'current_samples % 1024 == 0'
+            static u64 check_period_ns = static_cast<u64>(CONFIG_UPDATE_CHECK_PERIOD_SECS) * 1000 * 1000 * 1000;
+            u64 now = OS::nanotime();
+            u64 prev = __atomic_load_n(&_last_config_update_ts, __ATOMIC_RELAXED);
+            u64 time_diff = now - prev;
+            // the config was last updated more than CONFIG_UPDATE_CHECK_PERIOD_SECS seconds ago
+            if (time_diff > check_period_ns) {
+                // this branch can be entered on multiple threads concurrently but only one will be able to make the config change
+                if (__atomic_compare_exchange(&_last_config_update_ts, &prev, &now, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+                    __sync_fetch_and_add(&_alloc_event_count, -current_samples);
+                    updateConfiguration(current_samples, static_cast<double>(check_period_ns) / time_diff);
+                }
+            }
+        }
     }
 
     if (_record_liveness) {
@@ -122,8 +140,9 @@ Error ObjectSampler::start(Arguments& args) {
         jvmtiEnv* jvmti = VM::jvmti();
         jvmti->SetHeapSamplingInterval(_interval);
         jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
+        __atomic_store_n(&_last_config_update_ts, OS::nanotime(), __ATOMIC_RELEASE);
         // need to reset the running sum in order for 'updateConfiguration' to be able to generate proper diffs
-        _last_event_count = 0;
+        _alloc_event_count = 0;
     }
 
     return Error::OK;
@@ -138,31 +157,21 @@ void ObjectSampler::stop() {
     }
 }
 
-Error ObjectSampler::updateConfiguration(TypeHistogram &event_histo) {
-    if (_record_allocations) {
-        static PidController pid_controller(
-            1000, // target 60k events per minute or 1k per second
-            16, // use a rather strong proportional gain in order to react quickly to bursts
-            23, // emphasize the integration based gain to focus on long-term rate limiting rather than on fair distribution
-            3,  // the derivational gain is rather small because the allocation rate can change abruptly (low impact of the predicted allocation rate)
-            CONFIG_UPDATE_CHECK_PERIDD_SECS, 
-            15
-        );
+Error ObjectSampler::updateConfiguration(u64 events, double time_coefficient) {
+    static PidController pid_controller(
+        1000, // target 60k events per minute or 1k per second
+        16, // use a rather strong proportional gain in order to react quickly to bursts
+        23, // emphasize the integration based gain to focus on long-term rate limiting rather than on fair distribution
+        3,  // the derivational gain is rather small because the allocation rate can change abruptly (low impact of the predicted allocation rate)
+        CONFIG_UPDATE_CHECK_PERIOD_SECS, 
+        15
+    );
 
-        long event_count = event_histo[T_ALLOC];
-        if (event_count < _last_event_count) {
-            _last_event_count = 0;
-        }
-        u64 count_diff = (u64)(event_count - _last_event_count);
-
-        float signal = pid_controller.compute(count_diff);
-        int current_interval = sampling_interval();
-        int required_interval = current_interval - signal;
-        if (required_interval >= _interval) { // do not dip below the manually configured sampling interval
-            int ret = VM::jvmti()->SetHeapSamplingInterval(required_interval);
-        }
-        
-        _last_event_count = event_count;
+    float signal = pid_controller.compute(events, time_coefficient);
+    int current_interval = sampling_interval();
+    int required_interval = current_interval - signal;
+    if (required_interval >= _interval) { // do not dip below the manually configured sampling interval
+        VM::jvmti()->SetHeapSamplingInterval(required_interval);
     }
 
     return Error::OK;
