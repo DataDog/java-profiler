@@ -549,18 +549,20 @@ class Recording {
         }
         _running = true;
         if (pthread_create(&_thread, NULL, threadEntry, this) != 0) {
-          fprintf(stdout, "Unable to start periodic configuration updater\n");
+          Log::warn("Unable to start periodic configuration updater");
         }
     }
 
     ~Recording() {
         _running = false;
-        pthread_kill(_thread, WAKEUP_SIGNAL);
-        pthread_join(_thread, NULL);
 
         off_t chunk_end = finishChunk(true);
 
         close(_fd);
+
+        // destroy the config update thread as the last step to prevent interfering with the profiler shutdown
+        pthread_kill(_thread, WAKEUP_SIGNAL);
+        pthread_join(_thread, NULL);
     }
     
     void copyTo(int target_fd) {
