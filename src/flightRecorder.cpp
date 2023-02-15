@@ -481,15 +481,6 @@ class Recording {
         return value < 0 ? 0 : value > 1 ? 1 : value;
     }
 
-    void collectHistogram(TypeHistogram& event_histo, bool flush) {
-        for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
-            TypeHistogram histo = flush ? flush_with_histo(&_buf[i]) : _buf[i].histogram();
-            for(auto& it : histo) {
-                event_histo[it.first] += it.second;
-            }
-        }
-    }
-
     void timerLoop() {
         VM::attachThread("java-profiler Allocation Sampler Rate Limiter");
         const u64 delay = ObjectSampler::CONFIG_UPDATE_CHECK_PERIDD_SECS * 1000 * 1000 * 1000L; // 1 sec
@@ -603,10 +594,9 @@ class Recording {
             writeRecordingInfo(_buf);
         }
 
-        TypeHistogram event_histo;
-        collectHistogram(event_histo, true);
-
-        ObjectSampler::instance()->updateConfiguration(event_histo);
+        for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+            flush(&_buf[i]);
+        }
 
         off_t cpool_offset = lseek(_fd, 0, SEEK_CUR);
         writeCpool(_buf);
@@ -773,14 +763,6 @@ class Recording {
         }
 
         return true;
-    }
-    
-    TypeHistogram flush_with_histo(RecordingBuffer* buf) {
-        ssize_t result = write(_fd, buf->data(), buf->offset());
-        if (result > 0) {
-            atomicInc(_bytes_written, result);
-        }
-        return buf->reset();
     }
 
     void flush(Buffer* buf) {
