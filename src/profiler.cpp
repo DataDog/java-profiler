@@ -58,7 +58,6 @@ static Engine noop_engine;
 static PerfEvents perf_events;
 // static AllocTracer alloc_tracer;
 static LockTracer lock_tracer;
-static ObjectSampler object_sampler;
 // static J9ObjectSampler j9_object_sampler;
 static WallClock wall_engine;
 static J9WallClock j9_engine;
@@ -903,7 +902,7 @@ Engine* Profiler::selectWallEngine(Arguments& args) {
 
 Engine* Profiler::selectAllocEngine(Arguments& args) {
     if (VM::canSampleObjects()) {
-        return &object_sampler;
+        return static_cast<Engine*>(ObjectSampler::instance());
     } else {
         Log::info("Not enabling the alloc profiler, SampledObjectAlloc is not supported on this JVM");
         return &noop_engine;
