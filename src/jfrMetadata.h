@@ -18,7 +18,6 @@
 #define _JFRMETADATA_H
 
 #include <string>
-#include <map>
 #include <vector>
 #include <stdio.h>
 
@@ -82,8 +81,6 @@ enum JfrType {
     T_UNSIGNED = 207,
     T_PERCENTAGE = 208
 };
-
-typedef std::map<JfrType, long> TypeHistogram;
 
 class Attribute {
   public:
