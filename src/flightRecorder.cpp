@@ -416,25 +416,9 @@ class Buffer {
 class RecordingBuffer : public Buffer {
   private:
     char _buf[RECORDING_BUFFER_SIZE - sizeof(Buffer)];
-    TypeHistogram _event_frequency;
 
   public:
     RecordingBuffer() : Buffer() {
-    }
-
-    TypeHistogram reset() {
-        Buffer::reset();
-        TypeHistogram histo = _event_frequency;
-        _event_frequency.clear();
-        return histo;
-    }
-
-    TypeHistogram histogram() {
-        return _event_frequency;
-    }
-
-    void recordType(JfrType type) {
-        _event_frequency[type]++;
     }
 };
 
@@ -1255,8 +1239,6 @@ class Recording {
         buf->putFloat(event->_weight);
         writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
-
-        buf->recordType(T_ALLOC);
     }
 
     void recordHeapLiveObject(Buffer* buf, int tid, u32 call_trace_id, ObjectLivenessEvent* event) {
