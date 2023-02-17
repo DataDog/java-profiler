@@ -142,9 +142,7 @@ Java_com_datadoghq_profiler_JavaProfiler_registerContextValue0(JNIEnv* env, jobj
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_dump0(JNIEnv* env, jobject unused, jstring path) {
-    assert(path != NULL);
     const char* path_str = env->GetStringUTFChars(path, NULL);
-    assert(path_str != NULL);
     Profiler::instance()->dump(path_str);
     env->ReleaseStringUTFChars(path, path_str);
 }
@@ -165,7 +163,7 @@ static const JNINativeMethod profiler_natives[] = {
     F(dump0,                     "(Ljava/lang/String;)V")
 };
 
-static const JNINativeMethod* execute0 = &profiler_natives[2];
+static const JNINativeMethod* dump0 = &profiler_natives[10];
 
 #undef F
 
