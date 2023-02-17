@@ -17,6 +17,7 @@
 #ifndef _FLIGHTRECORDER_H
 #define _FLIGHTRECORDER_H
 
+#include <string.h>
 #include "arch.h"
 #include "arguments.h"
 #include "event.h"
@@ -27,7 +28,7 @@ class Recording;
 
 class FlightRecorder {
   private:
-    const char* _filename;
+    std::string _filename;
     Arguments _args;
     Recording* _rec;
 
@@ -38,7 +39,7 @@ class FlightRecorder {
 
     Error start(Arguments& args, bool reset);
     void stop();
-    Error dump(const char* filename);
+    Error dump(const char* filename, const int length);
     void flush();
     void wallClockEpoch(int lock_index, WallClockEpochEvent* event);
     void recordTraceRoot(int lock_index, int tid, TraceRootEvent* event);

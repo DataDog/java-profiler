@@ -23,7 +23,6 @@
 #include "context.h"
 #include "j9Ext.h"
 #include "j9ObjectSampler.h"
-#include "javaApi.h"
 #include "os.h"
 #include "profiler.h"
 #include "lockTracer.h"
@@ -425,8 +424,6 @@ JNI_OnLoad(JavaVM* vm, void* reserved) {
     if (!VM::init(vm, true)) {
         return 0;
     }
-
-    JavaAPI::registerNatives(VM::jvmti(), VM::jni());
     return JNI_VERSION_1_6;
 }
 

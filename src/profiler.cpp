@@ -1163,7 +1163,7 @@ Error Profiler::flushJfr() {
     return Error::OK;
 }
 
-Error Profiler::dump(const char* path) {
+Error Profiler::dump(const char* path, const int length) {
     MutexLocker ml(_state_lock);
     if (_state != IDLE && _state != RUNNING) {
         return Error("Profiler has not started");
@@ -1174,7 +1174,7 @@ Error Profiler::dump(const char* path) {
         updateNativeThreadNames();
         
         lockAll();
-        Error err = _jfr.dump(path);
+        Error err = _jfr.dump(path, length);
         unlockAll();
         return err;
     }
