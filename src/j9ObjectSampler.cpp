@@ -19,34 +19,43 @@
 #include "vmEntry.h"
 
 
+// !!! This class is not used currently and as such all the implementation is commented out !!!
+
 void J9ObjectSampler::JavaObjectAlloc(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
                                       jobject object, jclass object_klass, jlong size) {
+    #ifdef NEVER
     if (_interval > 0  && updateCounter(_allocated_bytes, size, _interval)) {
         recordAllocation(jvmti, BCI_ALLOC, object_klass, size);
     }
+    #endif
 }
 
 void J9ObjectSampler::VMObjectAlloc(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
                                     jobject object, jclass object_klass, jlong size) {
+    #ifdef NEVER
     if (_interval > 0  && updateCounter(_allocated_bytes, size, _interval)) {
         recordAllocation(jvmti, BCI_ALLOC_OUTSIDE_TLAB, object_klass, size);
     }
+    #endif
 }
 
 Error J9ObjectSampler::check(Arguments& args) {
+    #ifdef NEVER
     if (J9Ext::InstrumentableObjectAlloc_id < 0) {
         return Error("InstrumentableObjectAlloc is not supported on this JVM");
     }
+    #endif
     return Error::OK;
 }
 
 Error J9ObjectSampler::start(Arguments& args) {
+    #ifdef NEVER
     Error error = check(args);
     if (error) {
         return error;
     }
 
-    _interval = args._alloc > 0 ? args._alloc : DEFAULT_ALLOC_INTERVAL;
+    _interval = args._memory > 0 ? args._memory : DEFAULT_ALLOC_INTERVAL;
     _allocated_bytes = 0;
 
     jvmtiEnv* jvmti = VM::jvmti();
@@ -54,12 +63,15 @@ Error J9ObjectSampler::start(Arguments& args) {
         return Error("Could not enable InstrumentableObjectAlloc callback");
     }
     jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_OBJECT_ALLOC, NULL);
+    #endif
 
     return Error::OK;
 }
 
 void J9ObjectSampler::stop() {
+    #ifdef NEVER
     jvmtiEnv* jvmti = VM::jvmti();
     jvmti->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_VM_OBJECT_ALLOC, NULL);
     jvmti->SetExtensionEventCallback(J9Ext::InstrumentableObjectAlloc_id, NULL);
+    #endif
 }

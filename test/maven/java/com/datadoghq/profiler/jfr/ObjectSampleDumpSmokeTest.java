@@ -3,16 +3,16 @@ package com.datadoghq.profiler.jfr;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-public class CpuDumpSmokeTest extends JfrDumpTest {
+public class ObjectSampleDumpSmokeTest extends JfrDumpTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "cpu=1ms,cstack=no";
+        return "memory=16536:a";
     }
 
     @Test
     @Timeout(value = 60)
     public void test() throws Exception {
-        runTest("datadog.ExecutionSample");
+        runTest("datadog.ObjectSample", "method3");
     }
 }

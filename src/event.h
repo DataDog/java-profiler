@@ -43,8 +43,8 @@ class ExecutionEvent : public Event {
 
 class AllocEvent : public Event {
   public:
-    u64 _total_size;
-    u64 _instance_size;
+    u64 _size;
+    float _weight;
 };
 
 class LockEvent : public Event {
@@ -55,12 +55,11 @@ class LockEvent : public Event {
     long long _timeout;
 };
 
-class MemLeakEvent : public Event {
+class ObjectLivenessEvent : public Event {
   public:
+    AllocEvent _alloc;
     u64 _start_time;
     u64 _age;
-    u64 _instance_size;
-    u64 _interval;
 };
 
 class WallClockEpochEvent {

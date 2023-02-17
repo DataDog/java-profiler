@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <assert.h>
+
 #include <map>
 #include <string>
 #include <arpa/inet.h>
@@ -422,6 +424,9 @@ class RecordingBuffer : public Buffer {
 
 
 class Recording {
+  friend ObjectSampler;
+  friend Profiler;
+
   private:
     static char* _agent_properties;
     static char* _jvm_args;
@@ -434,6 +439,7 @@ class Recording {
     ThreadFilter _thread_set;
     MethodMap _method_map;
 
+    Arguments _args;
     u64 _start_time;
     u64 _recording_start_time;
     u64 _start_ticks;
@@ -458,6 +464,8 @@ class Recording {
 
   public:
     Recording(int fd, Arguments& args) : _fd(fd), _thread_set(), _method_map() {
+        
+        args.save(_args);
         _chunk_start = lseek(_fd, 0, SEEK_END);
         _start_time = OS::micros();
         _start_ticks = TSC::ticks();
@@ -514,6 +522,17 @@ class Recording {
 
         writeNativeLibraries(_buf);
 
+        const ObjectSampler* oSampler = ObjectSampler::instance();
+        // write the engine dependent setting
+        if (oSampler->_record_allocations) {
+            writeIntSetting(_buf, T_ALLOC, "interval", oSampler->_interval);
+        }
+        if (oSampler->_record_liveness) {
+            writeIntSetting(_buf, T_HEAP_LIVE_OBJECT, "interval", oSampler->_interval);
+            writeIntSetting(_buf, T_HEAP_LIVE_OBJECT, "capacity", LivenessTracker::instance()->_table_cap);
+            writeIntSetting(_buf, T_HEAP_LIVE_OBJECT, "maximum capacity", LivenessTracker::instance()->_table_max_cap);
+        }
+
         _stop_time = OS::micros();
         _stop_ticks = TSC::ticks();
 
@@ -559,15 +578,42 @@ class Recording {
         return chunk_end;
     }
 
-    void switchChunk() {
-        _chunk_start = finishChunk();
+    void switchChunk(int fd) {
+        _chunk_start = finishChunk(fd > -1);
         _start_time = _stop_time;
         _start_ticks = _stop_ticks;
-        _base_id += 0x1000000;
         _bytes_written = 0;
+        if (fd > -1) {
+            // move the chunk to external file and reset the continuous recording file
+            OS::copyFile(_fd, fd, 0, _chunk_start);
+            int rslt = OS::truncateFile(_fd);
+            // need to reset the file offset here
+            _chunk_start = 0;
+            _base_id = 0;
+        } else {
+            // same file, different logical chunk
+            _base_id += 0x1000000;
+        }
 
         writeHeader(_buf);
         writeMetadata(_buf);
+        if (fd > -1) {
+            // if the recording file is to be restarted write out all the info events again
+            writeSettings(_buf, _args);
+            if (!_args.hasOption(NO_SYSTEM_INFO)) {
+                writeOsCpuInfo(_buf);
+                writeJvmInfo(_buf);
+            }
+            if (!_args.hasOption(NO_SYSTEM_PROPS)) {
+                writeSystemProperties(_buf);
+            }
+            if (!_args.hasOption(NO_NATIVE_LIBS)) {
+                _recorded_lib_count = 0;
+                writeNativeLibraries(_buf);
+            } else {
+                _recorded_lib_count = -1;
+            }
+        }
         flush(_buf);
     }
 
@@ -612,7 +658,7 @@ class Recording {
         }
     }
 
-    Buffer* buffer(int lock_index) {
+    RecordingBuffer* buffer(int lock_index) {
         return &_buf[lock_index];
     }
 
@@ -775,22 +821,13 @@ class Recording {
             writeIntSetting(buf, T_METHOD_SAMPLE, "interval", args._wall ? args._wall : DEFAULT_WALL_INTERVAL);
         }
 
-        writeBoolSetting(buf, T_ALLOC_IN_NEW_TLAB, "enabled", args._alloc >= 0);
-        writeBoolSetting(buf, T_ALLOC_OUTSIDE_TLAB, "enabled", args._alloc >= 0);
-        if (args._alloc >= 0) {
-            writeIntSetting(buf, T_ALLOC_IN_NEW_TLAB, "alloc", args._alloc);
-        }
+        writeBoolSetting(buf, T_ALLOC, "enabled", args._record_allocations);
+        writeBoolSetting(buf, T_HEAP_LIVE_OBJECT, "enabled", args._record_liveness);
 
         writeBoolSetting(buf, T_MONITOR_ENTER, "enabled", args._lock >= 0);
         writeBoolSetting(buf, T_THREAD_PARK, "enabled", args._lock >= 0);
         if (args._lock >= 0) {
             writeIntSetting(buf, T_MONITOR_ENTER, "lock", args._lock);
-        }
-
-        writeBoolSetting(buf, T_HEAP_LIVE_OBJECT, "enabled", args._memleak > 0);
-        if (args._memleak > 0) {
-            writeIntSetting(buf, T_HEAP_LIVE_OBJECT, "memleak", args._memleak);
-            writeIntSetting(buf, T_HEAP_LIVE_OBJECT, "memleak_cap", args._memleak_cap);
         }
 
         writeBoolSetting(buf, T_ACTIVE_RECORDING, "debugSymbols", VMStructs::hasDebugSymbols());
@@ -971,10 +1008,9 @@ class Recording {
 
     void writeThreadStates(Buffer* buf) {
         buf->putVar64(T_THREAD_STATE);
-        buf->put8(3);
+        buf->put8(2);
         buf->putVar64(THREAD_RUNNING);     buf->putUtf8("STATE_RUNNABLE");
         buf->putVar64(THREAD_SLEEPING);    buf->putUtf8("STATE_SLEEPING");
-        buf->putVar64(THREAD_QUEUEING);    buf->putUtf8("STATE_QUEUEING");
     }
 
     void writeThreads(Buffer* buf) {
@@ -1192,32 +1228,20 @@ class Recording {
         flushIfNeeded(buf);
     }
 
-    void recordAllocationInNewTLAB(Buffer* buf, int tid, u32 call_trace_id, AllocEvent* event) {
+    void recordAllocation(RecordingBuffer* buf, int tid, u32 call_trace_id, AllocEvent* event) {
         int start = buf->skip(1);
-        buf->putVar64(T_ALLOC_IN_NEW_TLAB);
+        buf->putVar64(T_ALLOC);
         buf->putVar64(TSC::ticks());
         buf->putVar64(tid);
         buf->putVar64(call_trace_id);
         buf->putVar64(event->_id);
-        buf->putVar64(event->_instance_size);
-        buf->putVar64(event->_total_size);
+        buf->putVar64(event->_size);
+        buf->putFloat(event->_weight);
         writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
     }
 
-    void recordAllocationOutsideTLAB(Buffer* buf, int tid, u32 call_trace_id, AllocEvent* event) {
-        int start = buf->skip(1);
-        buf->putVar64(T_ALLOC_OUTSIDE_TLAB);
-        buf->putVar64(TSC::ticks());
-        buf->putVar64(tid);
-        buf->putVar64(call_trace_id);
-        buf->putVar64(event->_id);
-        buf->putVar64(event->_total_size);
-        writeContext(buf, Contexts::get(tid));
-        buf->put8(start, buf->offset() - start);
-    }
-
-    void recordHeapLiveObject(Buffer* buf, int tid, u32 call_trace_id, MemLeakEvent* event) {
+    void recordHeapLiveObject(Buffer* buf, int tid, u32 call_trace_id, ObjectLivenessEvent* event) {
         int start = buf->skip(1);
         buf->putVar64(T_HEAP_LIVE_OBJECT);
         buf->putVar64(event->_start_time);
@@ -1225,8 +1249,8 @@ class Recording {
         buf->putVar32(call_trace_id);
         buf->putVar32(event->_id);
         buf->putVar64(event->_age);
-        buf->putVar64(event->_instance_size);
-        buf->putVar64(event->_interval);
+        buf->putVar64(event->_alloc._size);
+        buf->putFloat(event->_alloc._weight);
         buf->put8(start, buf->offset() - start);
     }
 
@@ -1281,10 +1305,12 @@ char* Recording::_jvm_flags = NULL;
 char* Recording::_java_command = NULL;
 
 Error FlightRecorder::start(Arguments& args, bool reset) {
-    _filename = args.file();
-    if (_filename == NULL || _filename[0] == 0) {
+    const char* file = args.file();
+    if (file == NULL || file[0] == 0) {
+        _filename = "";
         return Error("Flight Recorder output file is not specified");
     }
+    _filename = file;
     _args = args;
 
     if (!TSC::initialized()) {
@@ -1297,7 +1323,7 @@ Error FlightRecorder::start(Arguments& args, bool reset) {
 }
 
 Error FlightRecorder::newRecording(bool reset) {
-    int fd = open(_filename, O_CREAT | O_RDWR | (reset ? O_TRUNC : 0), 0644);
+    int fd = open(_filename.c_str(), O_CREAT | O_RDWR | (reset ? O_TRUNC : 0), 0644);
     if (fd == -1) {
         return Error("Could not open Flight Recorder output file");
     }
@@ -1315,25 +1341,22 @@ void FlightRecorder::stop() {
     }
 }
 
-Error FlightRecorder::dump(const char* filename) {
+Error FlightRecorder::dump(const char* filename, const int length) {
     if (_rec != NULL) {
-        Error rslt = Error::OK;
         _rec_lock.lock();
-        if (filename != NULL && strcmp(filename, _filename) != 0) {
-            // if the filname to dump the recording to is specified move the current working file there
+        if (_filename.length() != length || strncmp(filename, _filename.c_str(), length) != 0) {
+            // if the filename to dump the recording to is specified move the current working file there
             int copy_fd = open(filename, O_CREAT | O_RDWR | O_TRUNC, 0644);
-            _rec->copyTo(copy_fd);
+            _rec->switchChunk(copy_fd);
             close(copy_fd);
-            // ... and restart the recording a-new
-            delete _rec;
-            _rec = NULL;
-            
-            rslt = newRecording(true);
+            _rec_lock.unlock();
         } else {
-            flush();
+            // need to unlock in the exceptional path as well
+            _rec_lock.unlock();
+            return Error("Can not dump recording to itself. Provide a different file name!");
         }
-        _rec_lock.unlock();
-        return rslt;
+        
+        return Error::OK;
     } else {
         return Error("No active recording");
     }
@@ -1342,7 +1365,7 @@ Error FlightRecorder::dump(const char* filename) {
 void FlightRecorder::flush() {
     if (_rec != NULL) {
         _rec_lock.lock();
-        _rec->switchChunk();
+        _rec->switchChunk(-1);
         _rec_lock.unlock();
     }
 }
@@ -1364,7 +1387,7 @@ void FlightRecorder::recordTraceRoot(int lock_index, int tid, TraceRootEvent* ev
 void FlightRecorder::recordEvent(int lock_index, int tid, u32 call_trace_id,
                                  int event_type, Event* event, u64 counter) {
     if (_rec != NULL) {
-        Buffer* buf = _rec->buffer(lock_index);
+        RecordingBuffer* buf = _rec->buffer(lock_index);
         switch (event_type) {
             case 0:
                 _rec->recordExecutionSample(buf, tid, call_trace_id, (ExecutionEvent*)event);
@@ -1373,13 +1396,10 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u32 call_trace_id,
                 _rec->recordMethodSample(buf, tid, call_trace_id, (ExecutionEvent*)event);
                 break;
             case BCI_ALLOC:
-                _rec->recordAllocationInNewTLAB(buf, tid, call_trace_id, (AllocEvent*)event);
+                _rec->recordAllocation(buf, tid, call_trace_id, (AllocEvent*)event);
                 break;
-            case BCI_ALLOC_OUTSIDE_TLAB:
-                _rec->recordAllocationOutsideTLAB(buf, tid, call_trace_id, (AllocEvent*)event);
-                break;
-            case BCI_MEMLEAK:
-                _rec->recordHeapLiveObject(buf, tid, call_trace_id, (MemLeakEvent*)event);
+            case BCI_LIVENESS:
+                _rec->recordHeapLiveObject(buf, tid, call_trace_id, (ObjectLivenessEvent*)event);
                 break;
             case BCI_LOCK:
                 _rec->recordMonitorBlocked(buf, tid, call_trace_id, (LockEvent*)event);

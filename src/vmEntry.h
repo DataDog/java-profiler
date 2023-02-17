@@ -56,7 +56,7 @@ enum ASGCT_CallFrameType {
     BCI_NATIVE_FRAME        = -11,  // native function name (char*)
     BCI_ALLOC               = -12,  // name of the allocated class
     BCI_ALLOC_OUTSIDE_TLAB  = -13,  // name of the class allocated outside TLAB
-    BCI_MEMLEAK             = -14,  // name of the allocated class
+    BCI_LIVENESS             = -14,  // name of the allocated class
     BCI_LOCK                = -15,  // class name of the locked object
     BCI_PARK                = -16,  // class name of the park() blocker
     BCI_THREAD_ID           = -17,  // method_id designates a thread

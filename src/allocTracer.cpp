@@ -22,6 +22,9 @@
 #include "vmStructs.h"
 
 
+// !!! This class is currently unused and all implementation code was commented out !!!
+// If allocation profiling on JDK 8 is required this class will have to be brought back to life
+
 int AllocTracer::_trap_kind;
 Trap AllocTracer::_in_new_tlab(0);
 Trap AllocTracer::_outside_tlab(1);
@@ -32,6 +35,7 @@ volatile u64 AllocTracer::_allocated_bytes;
 
 // Called whenever our breakpoint trap is hit
 void AllocTracer::trapHandler(int signo, siginfo_t* siginfo, void* ucontext) {
+    #ifdef NEVER
     StackFrame frame(ucontext);
     int event_type;
     uintptr_t total_size;
@@ -63,10 +67,12 @@ void AllocTracer::trapHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     if (_interval > 0 && updateCounter(_allocated_bytes, total_size, _interval)) {
         recordAllocation(ucontext, event_type, klass, total_size, instance_size);
     }
+    #endif
 }
 
 void AllocTracer::recordAllocation(void* ucontext, int event_type, uintptr_t rklass,
                                    uintptr_t total_size, uintptr_t instance_size) {
+    #ifdef NEVER
     int tid = ProfiledThread::currentTid();
 
     AllocEvent event;
@@ -79,9 +85,11 @@ void AllocTracer::recordAllocation(void* ucontext, int event_type, uintptr_t rkl
     }
 
     Profiler::instance()->recordSample(ucontext, total_size, tid, event_type, &event);
+    #endif
 }
 
 Error AllocTracer::check(Arguments& args) {
+    #ifdef NEVER
     if (_in_new_tlab.entry() != 0 && _outside_tlab.entry() != 0) {
         return Error::OK;
     }
@@ -106,27 +114,32 @@ Error AllocTracer::check(Arguments& args) {
     _in_new_tlab.assign(ne);
     _outside_tlab.assign(oe);
     _in_new_tlab.pair(_outside_tlab);
+    #endif
 
     return Error::OK;
 }
 
 Error AllocTracer::start(Arguments& args) {
+    #ifdef NEVER
     Error error = check(args);
     if (error) {
         return error;
     }
 
-    _interval = args._alloc > 0 ? args._alloc : 0;
+    _interval = args._memory > 0 ? args._memory : 0;
     _allocated_bytes = 0;
 
     if (!_in_new_tlab.install() || !_outside_tlab.install()) {
         return Error("Cannot install allocation breakpoints");
     }
+    #endif
 
     return Error::OK;
 }
 
 void AllocTracer::stop() {
+    #ifdef NEVER
     _in_new_tlab.uninstall();
     _outside_tlab.uninstall();
+    #endif
 }

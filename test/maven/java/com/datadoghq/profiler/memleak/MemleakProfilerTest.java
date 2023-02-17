@@ -18,18 +18,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class MemleakProfilerTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
-        return "memleak=524288,cstack=no";
+        return "memory=524288:l,cstack=no";
     }
 
     @Test
-    public void shouldGetObjectAllocationInNewTLABSamples() throws InterruptedException {
+    public void shouldGetLiveObjectSamples() throws InterruptedException {
         MemLeakTarget target1 = new MemLeakTarget();
         MemLeakTarget target2 = new MemLeakTarget();
         runTests(target1, target2);
         IItemCollection allocations = verifyEvents("datadog.HeapLiveObject");
         // FIXME verify what was allocated
-        //     assertAllocations(allocations, int[].class, target1, target2);
-        //     assertAllocations(allocations, Integer[].class, target1, target2);
+        // assertAllocations(allocations, int[].class, target1, target2);
+        // assertAllocations(allocations, Integer[].class, target1, target2);
     }
 
     private static void assertAllocations(IItemCollection allocations, Class<?> clazz, MemLeakTarget... targets) {
@@ -37,9 +37,9 @@ public class MemleakProfilerTest extends AbstractProfilerTest {
         for (MemLeakTarget target : targets) {
             allocated += target.getAllocated(clazz);
         }
-        IItemCollection allocationsByType = allocations.apply(ItemFilters.equals(TYPE, clazz.getCanonicalName()));
+        IItemCollection allocationsByType = allocations.apply(allocatedTypeFilter(clazz.getCanonicalName()));
         assertTrue(allocationsByType.hasItems());
-        long recorded = allocationsByType.getAggregate(Aggregators.sum(SIZE)).longValue();
+        long recorded = allocationsByType.getAggregate(Aggregators.sum(SCALED_SIZE)).longValue();
         long absoluteError = Math.abs(recorded - allocated);
         assertTrue(absoluteError < allocated / 10,
                 String.format("allocation samples should be within 10pct tolerance of allocated memory (recorded %d, allocated %d)",

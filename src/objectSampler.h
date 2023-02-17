@@ -18,18 +18,50 @@
 #define _OBJECTSAMPLER_H
 
 #include <jvmti.h>
+#include <time.h>
 #include "arch.h"
 #include "engine.h"
+#include "livenessTracker.h"
+#include "jfrMetadata.h"
 
+typedef int(*get_sampling_interval)();
+static int __min(int a, int b) {
+    return a < b ? a : b;
+}
 
 class ObjectSampler : public Engine {
-  protected:
-    static u64 _interval;
-    static volatile u64 _allocated_bytes;
+  friend Recording;
 
-    static void recordAllocation(jvmtiEnv* jvmti, int event_type, jclass object_klass, jlong size);
+  private:
+    static get_sampling_interval _get_sampling_interval;
+    static int* _sampling_interval;
+
+    static int sampling_interval() {
+      return _sampling_interval != NULL ? *_sampling_interval : _get_sampling_interval();
+    }
+
+    static ObjectSampler* const _instance;
+
+    int _interval;
+    bool _record_allocations;
+    bool _record_liveness;
+    int _max_stack_depth;
+
+    u64 _last_config_update_ts;
+    u64 _alloc_event_count;
+
+    const static int CONFIG_UPDATE_CHECK_PERIOD_SECS = 1;
+
+    Error updateConfiguration(u64 events, double time_coefficient);
+
+  protected:
+    void recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread, int event_type, jobject object, jclass object_klass, jlong size);
 
   public:
+    static ObjectSampler* const instance() {
+        return _instance;
+    }
+
     const char* title() {
         return "Allocation profile";
     }

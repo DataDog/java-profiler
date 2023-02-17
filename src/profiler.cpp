@@ -27,7 +27,6 @@
 #include "perfEvents.h"
 #include "allocTracer.h"
 #include "lockTracer.h"
-#include "memleakTracer.h"
 #include "objectSampler.h"
 #include "wallClock.h"
 #include "j9ObjectSampler.h"
@@ -59,12 +58,10 @@ static Engine noop_engine;
 static PerfEvents perf_events;
 // static AllocTracer alloc_tracer;
 static LockTracer lock_tracer;
-static ObjectSampler object_sampler;
 // static J9ObjectSampler j9_object_sampler;
 static WallClock wall_engine;
 static J9WallClock j9_engine;
 static ITimer itimer;
-static MemLeakTracer memleak_tracer;
 
 
 // Stack recovery techniques used to workaround AsyncGetCallTrace flaws.
@@ -688,32 +685,6 @@ void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event) {
     _locks[lock_index].unlock();
 }
 
-void Profiler::recordWallClockQueueingTime(int tid, u64 millis) {
-    if(WallClock* wc = dynamic_cast<WallClock*>(_wall_engine)) {
-        u64 interval = wc->intervalMillis();
-        if (millis < interval / 2) {
-            return;
-        }
-        u32 lock_index = getLockIndex(tid);
-        if (!_locks[lock_index].tryLock() &&
-            !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-            !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
-            return;
-        }
-        // this is coming from a JNI caller, so we're not in a signal handler,
-        // so we can allocate and safely call JVMTI
-        ASGCT_CallFrame* frames = _calltrace_buffer[lock_index]->_asgct_frames;
-        jvmtiFrameInfo* jvmti_frames = _calltrace_buffer[lock_index]->_jvmti_frames;
-        int num_frames = getJavaTraceJvmti(jvmti_frames, frames, 0, _max_stack_depth);
-        u32 call_trace_id = _call_trace_storage.put(num_frames, frames, false, interval);
-        ExecutionEvent event;
-        event._thread_state = THREAD_QUEUEING;
-        event._weight = wc->convertToSampleWeight(millis);
-        _jfr.recordEvent(lock_index, tid, call_trace_id, BCI_WALL, &event, interval);
-        _locks[lock_index].unlock();
-    }
-}
-
 void Profiler::recordTraceRoot(int tid, TraceRootEvent *event) {
     u32 lock_index = getLockIndex(tid);
     if (!_locks[lock_index].tryLock() &&
@@ -929,9 +900,9 @@ Engine* Profiler::selectWallEngine(Arguments& args) {
     return (Engine*)&wall_engine;
 }
 
-Engine* Profiler::selectAllocEngine(long alloc_interval) {
+Engine* Profiler::selectAllocEngine(Arguments& args) {
     if (VM::canSampleObjects()) {
-        return &object_sampler;
+        return static_cast<Engine*>(ObjectSampler::instance());
     } else {
         Log::info("Not enabling the alloc profiler, SampledObjectAlloc is not supported on this JVM");
         return &noop_engine;
@@ -948,8 +919,6 @@ Engine* Profiler::activeEngine() {
             return _alloc_engine;
         case EM_LOCK:
             return &lock_tracer;
-        case EM_MEMLEAK:
-            return &memleak_tracer;
         default:
             Log::error("Unknown event_mask %d", _event_mask);
             return NULL;
@@ -994,13 +963,10 @@ Error Profiler::start(Arguments& args, bool reset) {
     _event_mask = ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU : 0) |
                   (args._cpu >= 0 ? EM_CPU : 0) |
                   (args._wall >= 0 ? EM_WALL : 0) |
-                  (args._alloc >= 0 ? EM_ALLOC : 0) |
-                  (args._lock >= 0 ? EM_LOCK : 0) |
-                  (args._memleak > 0 ? EM_MEMLEAK : 0);
+                  (args._memory >= 0 ? EM_ALLOC : 0) |
+                  (args._lock >= 0 ? EM_LOCK : 0);
     if (_event_mask == 0) {
         return Error("No profiling events specified");
-    } else if ((_event_mask & (_event_mask - 1)) && args._output != OUTPUT_JFR) {
-        return Error("Only JFR output supports multiple events");
     }
 
     if (reset || _start_time == 0) {
@@ -1060,15 +1026,14 @@ Error Profiler::start(Arguments& args, bool reset) {
     }
 
     switchLibraryTrap(_cstack != CSTACK_NO);
-    if (args._output == OUTPUT_JFR) {
-        JfrMetadata::initialize(args._context_attributes);
-        _num_context_attributes = args._context_attributes.size();
-        error = _jfr.start(args, reset);
-        if (error) {
-            uninstallTraps();
-            switchLibraryTrap(false);
-            return error;
-        }
+
+    JfrMetadata::initialize(args._context_attributes);
+    _num_context_attributes = args._context_attributes.size();
+    error = _jfr.start(args, reset);
+    if (error) {
+        uninstallTraps();
+        switchLibraryTrap(false);
+        return error;
     }
 
     if (_event_mask & EM_CPU) {
@@ -1084,7 +1049,7 @@ Error Profiler::start(Arguments& args, bool reset) {
         }
     }
     if (_event_mask & EM_ALLOC) {
-        _alloc_engine = selectAllocEngine(args._alloc);
+        _alloc_engine = selectAllocEngine(args);
         error = _alloc_engine->start(args);
         if (error) {
             goto error2;
@@ -1094,12 +1059,6 @@ Error Profiler::start(Arguments& args, bool reset) {
         error = lock_tracer.start(args);
         if (error) {
             goto error3;
-        }
-    }
-    if (_event_mask & EM_MEMLEAK) {
-        error = memleak_tracer.start(args);
-        if (error) {
-            goto error4;
         }
     }
 
@@ -1142,7 +1101,6 @@ Error Profiler::stop() {
 
     uninstallTraps();
 
-    if (_event_mask & EM_MEMLEAK) memleak_tracer.stop();
     if (_event_mask & EM_LOCK) lock_tracer.stop();
     if (_event_mask & EM_ALLOC) _alloc_engine->stop();
     if (_event_mask & EM_WALL) _wall_engine->stop();
@@ -1178,15 +1136,12 @@ Error Profiler::check(Arguments& args) {
         _wall_engine = selectWallEngine(args);
         error = _wall_engine->check(args);
     }
-    if (!error && args._alloc >= 0) {
-        _alloc_engine = selectAllocEngine(args._alloc);
+    if (!error && args._memory >= 0) {
+        _alloc_engine = selectAllocEngine(args);
         error = _alloc_engine->check(args);
     }
     if (!error && args._lock >= 0) {
         error = lock_tracer.check(args);
-    }
-    if (!error && args._memleak > 0) {
-        error = memleak_tracer.check(args);
     }
 
     return error;
@@ -1208,7 +1163,7 @@ Error Profiler::flushJfr() {
     return Error::OK;
 }
 
-Error Profiler::dump(std::ostream& out, Arguments& args) {
+Error Profiler::dump(const char* path, const int length) {
     MutexLocker ml(_state_lock);
     if (_state != IDLE && _state != RUNNING) {
         return Error("Profiler has not started");
@@ -1217,16 +1172,11 @@ Error Profiler::dump(std::ostream& out, Arguments& args) {
     if (_state == RUNNING) {
         updateJavaThreadNames();
         updateNativeThreadNames();
-    }
-
-    switch (args._output) {
-        case OUTPUT_JFR:
-            if (_state == RUNNING) {
-                return _jfr.dump(args.file());
-            }
-            break;
-        default:
-            return Error("No output format selected");
+        
+        lockAll();
+        Error err = _jfr.dump(path, length);
+        unlockAll();
+        return err;
     }
 
     return Error::OK;
@@ -1262,22 +1212,9 @@ Error Profiler::runInternal(Arguments& args, std::ostream& out) {
         }
         case ACTION_STOP: {
             Error error = stop();
-            if (args._output == OUTPUT_NONE) {
-                if (error) {
-                    return error;
-                }
-                out << "Profiling stopped after " << uptime() << " seconds. No dump options specified\n";
-                break;
-            }
             // Fall through
         }
-        case ACTION_DUMP: {
-            Error error = dump(out, args);
-            if (error) {
-                return error;
-            }
-            break;
-        }
+
         case ACTION_CHECK: {
             Error error = check(args);
             if (error) {
@@ -1300,7 +1237,6 @@ Error Profiler::runInternal(Arguments& args, std::ostream& out) {
             out << "  " << EVENT_CPU << std::endl;
             out << "  " << EVENT_ALLOC << std::endl;
             out << "  " << EVENT_LOCK << std::endl;
-            out << "  " << EVENT_MEMLEAK << std::endl;
             out << "  " << EVENT_WALL << std::endl;
             out << "  " << EVENT_ITIMER << std::endl;
 
@@ -1332,19 +1268,7 @@ Error Profiler::runInternal(Arguments& args, std::ostream& out) {
 }
 
 Error Profiler::run(Arguments& args) {
-    if (!args.hasOutputFile()) {
-        return runInternal(args, std::cout);
-    } else {
-        // Open output file under the lock to avoid races with background timer
-        MutexLocker ml(_state_lock);
-        std::ofstream out(args.file(), std::ios::out | std::ios::trunc);
-        if (!out.is_open()) {
-            return Error("Could not open output file");
-        }
-        Error error = runInternal(args, out);
-        out.close();
-        return error;
-    }
+    return runInternal(args, std::cout);
 }
 
 Error Profiler::restart(Arguments& args) {
@@ -1353,18 +1277,6 @@ Error Profiler::restart(Arguments& args) {
     Error error = stop();
     if (error) {
         return error;
-    }
-
-    if (args._file != NULL && args._output != OUTPUT_NONE && args._output != OUTPUT_JFR) {
-        std::ofstream out(args.file(), std::ios::out | std::ios::trunc);
-        if (!out.is_open()) {
-            return Error("Could not open output file");
-        }
-        error = dump(out, args);
-        out.close();
-        if (error) {
-            return error;
-        }
     }
 
     return Error::OK;

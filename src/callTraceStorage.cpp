@@ -264,6 +264,14 @@ u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
                 trace = storeCallTrace(num_frames, frames, truncated);
             }
             table->values()[slot].setTrace(trace);
+
+            #ifdef NEVER
+            // clear the slot in the prev table such it is not written out to constant pool multiple times
+            LongHashTable* prev_table = table->prev();
+            if (prev_table != NULL) {
+                prev_table->keys()[slot] = 0;
+            }
+            #endif
             break;
         }
 

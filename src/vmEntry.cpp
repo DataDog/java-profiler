@@ -23,7 +23,6 @@
 #include "context.h"
 #include "j9Ext.h"
 #include "j9ObjectSampler.h"
-#include "javaApi.h"
 #include "os.h"
 #include "profiler.h"
 #include "lockTracer.h"
@@ -207,8 +206,8 @@ bool VM::init(JavaVM* vm, bool attach) {
     callbacks.MonitorContendedEnter = LockTracer::MonitorContendedEnter;
     callbacks.MonitorContendedEntered = LockTracer::MonitorContendedEntered;
     // callbacks.VMObjectAlloc = J9ObjectSampler::VMObjectAlloc;
-    callbacks.SampledObjectAlloc = Profiler::SampledObjectAlloc;
-    callbacks.GarbageCollectionFinish = Profiler::GarbageCollectionFinish;
+    callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
+    callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;
     _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
@@ -425,8 +424,6 @@ JNI_OnLoad(JavaVM* vm, void* reserved) {
     if (!VM::init(vm, true)) {
         return 0;
     }
-
-    JavaAPI::registerNatives(VM::jvmti(), VM::jni());
     return JNI_VERSION_1_6;
 }
 

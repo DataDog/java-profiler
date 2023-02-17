@@ -91,15 +91,19 @@ build:
 	mkdir -p build/debug
 
 build/debug/$(LIB_PROFILER_SO): $(SOURCES) $(HEADERS)
+ifneq ($(OS),Darwin)
 ifeq ($(MERGE),true)
 	for f in src/*.cpp; do echo '#include "'$$f'"'; done |\
 	$(CXX) $(CXXFLAGS) -DPROFILER_VERSION=\"$(PROFILER_VERSION)\" $(INCLUDES) -DDEBUG -fPIC -shared -o $@ -xc++ - $(LIBS)
 else
 	$(CXX) $(CXXFLAGS) -DPROFILER_VERSION=\"$(PROFILER_VERSION)\" $(INCLUDES) -DDEBUG -fPIC -shared -o $@ $(SOURCES) $(LIBS)
 endif
+endif
 
 build/debug/$(LIB_DEBUG_SO): $(DEBUG_SOURCES) $(HEADERS)
+ifneq ($(OS),Darwin)
 	$(CC) $(CFLAGS) $(INCLUDES) -fPIC -shared -o $@ $(DEBUG_SOURCES)
+endif
 
 build/$(LIB_PROFILER_SO): $(SOURCES) $(HEADERS)
 ifeq ($(MERGE),true)
@@ -126,10 +130,7 @@ cppcheck:
 		--error-exitcode=2 \
 		--suppress=memleak:src/codeCache.cpp:30 \
 		--suppress=memleakOnRealloc:src/dwarf.cpp:377 \
-		--suppress=memleakOnRealloc:src/memleakTracer.cpp:352 \
 		--suppress=memleakOnRealloc:src/jattach/jattach_openj9.c:147 \
 		--suppress=comparePointers:src/flightRecorder.cpp:1408 \
-		--suppress=comparePointers:src/memleakTracer.cpp:236 \
-		--suppress=comparePointers:src/memleakTracer.cpp:247 \
 		--force \
 		src/

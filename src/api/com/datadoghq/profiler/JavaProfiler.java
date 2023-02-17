@@ -16,6 +16,8 @@
 
 package com.datadoghq.profiler;
 
+import sun.misc.Unsafe;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Field;
@@ -26,9 +28,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.Arrays;
-import java.util.concurrent.TimeUnit;
-
-import sun.misc.Unsafe;
 
 /**
  * Java API for in-process profiling. Serves as a wrapper around
@@ -205,10 +204,6 @@ public final class JavaProfiler {
         return recordTrace0(rootSpanId, endpoint, sizeLimit);
     }
 
-    public void recordQueueingTime(long duration, TimeUnit unit) {
-        recordQueueingTime0(unit.toMillis(duration));
-    }
-
     /**
      * Add the given thread to the set of profiled threads.
      * 'filter' option must be enabled to use this method.
@@ -344,6 +339,15 @@ public final class JavaProfiler {
     }
 
     /**
+     * Dumps the JFR recording at the provided path
+     * @param recording the path to the recording
+     * @throws NullPointerException if recording is null
+     */
+    public void dump(Path recording) {
+        dump0(recording.toAbsolutePath().toString());
+    }
+
+    /**
      * There is information about the linking in the ELF file. Since properly parsing ELF is not
      * trivial this code will attempt a brute-force approach and will scan the first 4096 bytes
      * of the 'java' program image for anything prefixed with `/ld-` - in practice this will contain
@@ -410,7 +414,7 @@ public final class JavaProfiler {
 
     private static native boolean recordTrace0(long rootSpanId, String endpoint, int sizeLimit);
 
-    private static native void recordQueueingTime0(long millis);
-
     private static native int registerContextValue0(String value);
+
+    private static native void dump0(String recordingFilePath);
 }

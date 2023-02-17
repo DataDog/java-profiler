@@ -14,9 +14,10 @@
  * limitations under the License.
  */
 
+#include <jni.h>
 #include <string.h>
 #include "incbin.h"
-#include "memleakTracer.h"
+#include "livenessTracker.h"
 #include "os.h"
 #include "profiler.h"
 #include "log.h"
@@ -24,33 +25,9 @@
 #include "tsc.h"
 #include "vmStructs.h"
 
-bool MemLeakTracer::_initialized = false;
-int MemLeakTracer::_interval;
+LivenessTracker* const LivenessTracker::_instance = new LivenessTracker();
 
-SpinLock MemLeakTracer::_table_lock;
-MemLeakTableEntry* MemLeakTracer::_table;
-volatile int MemLeakTracer::_table_size;
-int MemLeakTracer::_table_cap;
-int MemLeakTracer::_table_max_cap;
-
-int MemLeakTracer::_max_stack_depth;
-
-jclass MemLeakTracer::_Class;
-jmethodID MemLeakTracer::_Class_getName;
-
-pthread_t MemLeakTracer::_cleanup_thread;
-pthread_mutex_t MemLeakTracer::_cleanup_mutex;
-pthread_cond_t MemLeakTracer::_cleanup_cond;
-u32 MemLeakTracer::_cleanup_round;
-bool MemLeakTracer::_cleanup_run;
-get_sampling_interval MemLeakTracer::_get_sampling_interval;
-int* MemLeakTracer::_sampling_interval;
-
-static int __min(int a, int b) {
-    return a < b ? a : b;
-}
-
-void MemLeakTracer::cleanup_table() {
+void LivenessTracker::cleanup_table() {
     JNIEnv *env = VM::jni();
 
     u64 start = OS::nanotime(), end;
@@ -78,11 +55,11 @@ void MemLeakTracer::cleanup_table() {
     _table_lock.unlock();
 
     end = OS::nanotime();
-    Log::debug("Memory Leak profiler cleanup took %.2fms (%.2fus/element)",
+    Log::debug("Liveness tracker cleanup took %.2fms (%.2fus/element)",
                 1.0f * (end - start) / 1000 / 1000, 1.0f * (end - start) / 1000 / sz);
 }
 
-void MemLeakTracer::flush_table() {
+void LivenessTracker::flush_table() {
     JNIEnv *env = VM::jni();
     u64 start = OS::nanotime(), end;
 
@@ -92,20 +69,17 @@ void MemLeakTracer::flush_table() {
     for (int i = 0; i < (sz = _table_size); i++) {
         jobject ref = env->NewLocalRef(_table[i].ref);
         if (ref != NULL) {
-            MemLeakEvent event;
+            ObjectLivenessEvent event;
             event._start_time = _table[i].time;
             event._age = _table[i].age;
-            event._instance_size = _table[i].ref_size;
-            event._interval = _table[i].interval;
+            event._alloc = _table[i].alloc;
 
             jstring name_str = (jstring)env->CallObjectMethod(env->GetObjectClass(ref), _Class_getName);
             const char *name = env->GetStringUTFChars(name_str, NULL);
             event._id = name != NULL ? Profiler::instance()->classMap()->lookup(name) : 0;
             env->ReleaseStringUTFChars(name_str, name);
 
-            Profiler::instance()->recordExternalSample(_table[i].ref_size, _table[i].tid,
-                                                       _table[i].frames, _table[i].frames_size, /*truncated=*/false,
-                                                       BCI_MEMLEAK, &event);
+            Profiler::instance()->recordExternalSample(1, _table[i].tid, _table[i].frames, _table[i].frames_size, /*truncated=*/false, BCI_LIVENESS, &event);
         }
 
         env->DeleteLocalRef(ref);
@@ -114,12 +88,17 @@ void MemLeakTracer::flush_table() {
     _table_lock.unlockShared();
 
     end = OS::nanotime();
-    Log::debug("Memory Leak profiler flush took %.2fms (%.2fus/element)",
+    Log::debug("Liveness tracker flush took %.2fms (%.2fus/element)",
                 1.0f * (end - start) / 1000 / 1000, 1.0f * (end - start) / 1000 / sz);
 }
 
-void* MemLeakTracer::cleanup_thread(void *arg) {
-    VM::attachThread("java-profiler Memory Leak cleanup");
+void* LivenessTracker::cleanup_thread(void *arg) {
+    LivenessTracker::instance()->runCleanup();
+    return NULL;
+}
+
+void LivenessTracker::runCleanup() {
+    VM::attachThread("java-profiler Liveness tracker cleanup");
 
     while (true) {
         pthread_mutex_lock(&_cleanup_mutex);
@@ -139,69 +118,106 @@ void* MemLeakTracer::cleanup_thread(void *arg) {
 
 exit:
     VM::detachThread();
-    return NULL;
 }
 
-Error MemLeakTracer::start(Arguments& args) {
-    if (!_initialized) {
-        Error err = initialize(args);
-        if (err) { return err; }
+static jlong getMaxHeap(JNIEnv* env) {
+    static jclass _rt;
+    static jmethodID _get_rt;
+    static jmethodID _max_memory;
+
+    if (!(_rt = env->FindClass("java/lang/Runtime"))) {
+        env->ExceptionDescribe();
+        return -1;
     }
 
-    if (VM::hotspot_version() < 11) {
-        Log::warn("Memory Leak profiler requires Java 11+");
-        // disable memleak profiler
-        _table_max_cap = 0;
-        return Error::OK;
+    if (!(_get_rt = env->GetStaticMethodID(_rt, "getRuntime", "()Ljava/lang/Runtime;"))) {
+        env->ExceptionDescribe();
+        return -1;
     }
 
+    if (!(_max_memory = env->GetMethodID(_rt, "maxMemory", "()J"))) {
+        env->ExceptionDescribe();
+        return -1;
+    }
+
+    jobject rt = (jobject)env->CallStaticObjectMethod(_rt, _get_rt);
+    return (jlong)env->CallLongMethod(rt, _max_memory);
+}
+
+Error LivenessTracker::initialize_table(int sampling_interval) {
+    _table_max_cap = 0;
+    jlong max_heap = getMaxHeap(VM::jni());
+    if (max_heap == -1) {
+        return Error("Unable to retrieve the max heap value");
+    }
+
+    int required_table_capacity = sampling_interval > 0 ? max_heap / sampling_interval : max_heap;
+    
+    if (required_table_capacity > MAX_TRACKING_TABLE_SIZE) {
+        Log::warn("Tracking liveness for allocation samples with interval %d can not cover full heap.", sampling_interval);
+    }
+    _table_max_cap = __min(MAX_TRACKING_TABLE_SIZE, required_table_capacity);
+
+    _table_cap = std::max(2048, _table_max_cap / 8); // the table will grow at most 3 times before fully covering heap
+    return Error::OK;
+}
+
+Error LivenessTracker::start(Arguments& args) {
+    Error err = initialize(args);
+    if (err) { return err; }
 
     // Enable Java Object Sample events
     jvmtiEnv* jvmti = VM::jvmti();
-    jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
     jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_GARBAGE_COLLECTION_FINISH, NULL);
-
-    _interval = args._memleak;
-    if (jvmti->SetHeapSamplingInterval(_interval) != JVMTI_ERROR_NONE) {
-        Log::warn("Failed to set Memory Leak heap sampling interval to %d", _interval);
-    }
 
     return Error::OK;
 }
 
-void MemLeakTracer::stop() {
+void LivenessTracker::stop() {
     JNIEnv* env = VM::jni();
     cleanup_table();
     flush_table();
 
-    // Disable Java Object Sample events
-    jvmtiEnv* jvmti = VM::jvmti();
-    jvmti->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
-    jvmti->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_GARBAGE_COLLECTION_FINISH, NULL);
+    // do not disable GC notifications here - the tracker is supposed to survive multiple recordings
 }
 
 static int _min(int a, int b) { return a < b ? a : b; }
 
-Error MemLeakTracer::initialize(Arguments& args) {
-    // jvmtiEnv* jvmti = VM::jvmti();
+Error LivenessTracker::initialize(Arguments& args) {
+    if (_initialized) {
+        // if the tracker was previously initialized return the stored result for consistency
+        // this hack also means that if the profiler is started with different arguments for liveness tracking those will be ignored
+        // it is required in order to be able to track the object liveness across many recordings
+        return _stored_error;
+    }
+    _initialized = true;
+
+    if (VM::hotspot_version() < 11) {
+        Log::warn("Liveness tracking requires Java 11+");
+        // disable liveness tracking
+        _table_max_cap = 0;
+        return _stored_error = Error::OK;
+    }
+
     JNIEnv* env = VM::jni();
 
+    Error err = initialize_table(args._memory);
+    if (err) {
+        return _stored_error = err;
+    }
     _table_size = 0;
-    _table_cap = __min(2048, args._memleak_cap); // with default 512k sampling interval, it's enough for 1G of heap
-    _table_max_cap = args._memleak_cap;
-    _table = (MemLeakTableEntry*)malloc(sizeof(MemLeakTableEntry) * _table_cap);
-
-    _max_stack_depth = Profiler::instance()->max_stack_depth();
+    _table_cap = __min(2048, _table_max_cap); // with default 512k sampling interval, it's enough for 1G of heap
+    _table = (TrackingEntry*)malloc(sizeof(TrackingEntry) * _table_cap);
 
     if (!(_Class = env->FindClass("java/lang/Class"))) {
         free(_table);
         env->ExceptionDescribe();
-        return Error("Unable to find java/lang/Class");
+        return _stored_error = Error("Unable to find java/lang/Class");
     }
     if (!(_Class_getName = env->GetMethodID(_Class, "getName", "()Ljava/lang/String;"))) {
         free(_table);
         env->ExceptionDescribe();
-        return Error("Unable to find java/lang/Class.getName");
+        return _stored_error = Error("Unable to find java/lang/Class.getName");
     }
 
     _cleanup_round = 0;
@@ -211,34 +227,15 @@ Error MemLeakTracer::initialize(Arguments& args) {
         pthread_create(&_cleanup_thread, NULL, cleanup_thread, NULL) != 0) {
         _cleanup_run = false;
         free(_table);
-        return Error("Unable to create Memory Leak cleanup thread");
+        return _stored_error = Error("Unable to create Liveness tracker cleanup thread");
     }
-
-    CodeCache* libjvm = VMStructs::libjvm();
-
-    // this symbol should be available given the current JVTMI heap sampler implementation
-    // Note: when/if that implementation would change in the future the alernatives should be added here
-    const void* get_interval_ptr = libjvm->findSymbol("_ZN17ThreadHeapSampler21get_sampling_intervalEv");
-    if (get_interval_ptr == NULL) {
-        _sampling_interval = (int*) libjvm->findSymbol("_ZN17ThreadHeapSampler18_sampling_intervalE");
-    }
-    if (get_interval_ptr == NULL && _sampling_interval == NULL) {
-        // fail if it is not possible to resolve the required symbol
-        Log::warn("Memleak profiling is not supported on this JDK");
-        // set _table_max_cap to 0 in order to disable memleak profiling
-        _table_max_cap = 0;
-        return Error::OK;
-    }
-    _get_sampling_interval = (get_sampling_interval)get_interval_ptr;
 
     env->ExceptionClear();
-    _initialized = true;
 
-    return Error::OK;
+    return _stored_error = Error::OK;
 }
 
-void JNICALL MemLeakTracer::SampledObjectAlloc(jvmtiEnv *jvmti, JNIEnv* env,
-        jthread thread, jobject object, jclass object_klass, jlong size) {
+void LivenessTracker::track(JNIEnv* env, AllocEvent &event, jint tid, jobject object, int num_frames, jvmtiFrameInfo* frames) {
     if (_table_max_cap == 0) {
         // we are not to store any objects
         return;
@@ -249,20 +246,10 @@ void JNICALL MemLeakTracer::SampledObjectAlloc(jvmtiEnv *jvmti, JNIEnv* env,
         return;
     }
 
-    jvmtiFrameInfo *frames = new jvmtiFrameInfo[_max_stack_depth];
-    jint frames_size = 0;
-    if (jvmti->GetStackTrace(thread, 0, _max_stack_depth,
-                                frames, &frames_size) != JVMTI_ERROR_NONE || frames_size <= 0) {
-        delete[] frames;
-        return;
-    }
-
     bool retried = false;
 
 retry:
     if (!_table_lock.tryLockShared()) {
-        // another thread is holding the non-shared lock
-        delete[] frames;
         return;
     }
 
@@ -275,15 +262,14 @@ retry:
                 !__sync_bool_compare_and_swap(&_table_size, idx, idx + 1));
 
     if (idx < _table_cap) {
+        _table[idx].tid = tid;
+        _table[idx].time = TSC::ticks();
         _table[idx].ref = ref;
-        _table[idx].ref_size = size;
-        _table[idx].interval = _sampling_interval != NULL ? *_sampling_interval : _get_sampling_interval();
+        _table[idx].alloc = event;
         _table[idx].age = 0;
-        _table[idx].frames_size = frames_size;
+        _table[idx].frames_size = num_frames;
         _table[idx].frames = new jvmtiFrameInfo[_table[idx].frames_size];
         memcpy(_table[idx].frames, frames, sizeof(jvmtiFrameInfo) * _table[idx].frames_size);
-        _table[idx].tid = ProfiledThread::currentTid();
-        _table[idx].time = TSC::ticks();
     }
 
     _table_lock.unlockShared();
@@ -302,12 +288,12 @@ retry:
             // Only increase the size of the table to 8k elements
             int newcap = __min(_table_cap * 2, _table_max_cap);
             if (_table_cap != newcap) {
-                MemLeakTableEntry* tmp = (MemLeakTableEntry*)realloc(_table, sizeof(MemLeakTableEntry) * (_table_cap = newcap));
+                TrackingEntry* tmp = (TrackingEntry*)realloc(_table, sizeof(TrackingEntry) * (_table_cap = newcap));
                 if (tmp != NULL) {
                     _table = tmp;
-                    Log::debug("Increased size of Memory Leak table to %d entries", _table_cap);
+                    Log::debug("Increased size of Liveness tracking table to %d entries", _table_cap);
                 } else {
-                    Log::debug("Cannot add sampled object to Memory Leak table, resize attempt failed, the table is overflowing");        
+                    Log::debug("Cannot add sampled object to Liveness tracking table, resize attempt failed, the table is overflowing");        
                 }
             }
 
@@ -315,20 +301,24 @@ retry:
 
             goto retry;
         } else {
-            Log::debug("Cannot add sampled object to Memory Leak table, it's overflowing");
+            Log::debug("Cannot add sampled object to Liveness tracking table, it's overflowing");
         }
     }
 
     delete[] frames;
 }
 
-void JNICALL MemLeakTracer::GarbageCollectionFinish(jvmtiEnv *jvmti_env) {
+void JNICALL LivenessTracker::GarbageCollectionFinish(jvmtiEnv *jvmti_env) {
+    LivenessTracker::instance()->onGC();
+}
+
+void LivenessTracker::onGC() {
     if (!_initialized) {
         return;
     }
 
     if (pthread_mutex_lock(&_cleanup_mutex) != 0) {
-        Log::debug("Unable to lock Memory Leak cleanup mutex in GarbageCollectionFinish");
+        Log::debug("[LivenessTracker] Unable to lock for cleanup");
         return;
     }
     _cleanup_round += 1;

@@ -18,7 +18,6 @@
 #define _JFRMETADATA_H
 
 #include <string>
-#include <map>
 #include <vector>
 #include <stdio.h>
 
@@ -55,8 +54,8 @@ enum JfrType {
     T_EVENT = 100,
     T_EXECUTION_SAMPLE = 101,
     T_METHOD_SAMPLE = 102,
-    T_ALLOC_IN_NEW_TLAB = 103,
-    T_ALLOC_OUTSIDE_TLAB = 104,
+    T_ALLOC = 103,
+    // <empty slot> = 104,
     T_HEAP_LIVE_OBJECT = 105,
     T_MONITOR_ENTER = 106,
     T_THREAD_PARK = 107,
@@ -82,7 +81,6 @@ enum JfrType {
     T_UNSIGNED = 207,
     T_PERCENTAGE = 208
 };
-
 
 class Attribute {
   public:
