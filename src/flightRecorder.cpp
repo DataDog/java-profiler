@@ -1339,10 +1339,10 @@ void FlightRecorder::stop() {
     }
 }
 
-Error FlightRecorder::dump(const char* filename) {
+Error FlightRecorder::dump(const char* filename, const int length) {
     if (_rec != NULL) {
         _rec_lock.lock();
-        if (filename != NULL && strcmp(filename, _filename) != 0) {
+        if (strncmp(filename, _filename, length) != 0) {
             // if the filename to dump the recording to is specified move the current working file there
             int copy_fd = open(filename, O_CREAT | O_RDWR | O_TRUNC, 0644);
             _rec->switchChunk(copy_fd);

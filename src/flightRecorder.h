@@ -38,7 +38,7 @@ class FlightRecorder {
 
     Error start(Arguments& args, bool reset);
     void stop();
-    Error dump(const char* filename);
+    Error dump(const char* filename, const int length);
     void flush();
     void wallClockEpoch(int lock_index, WallClockEpochEvent* event);
     void recordTraceRoot(int lock_index, int tid, TraceRootEvent* event);

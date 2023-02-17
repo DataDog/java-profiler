@@ -142,6 +142,6 @@ Java_com_datadoghq_profiler_JavaProfiler_registerContextValue0(JNIEnv* env, jobj
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_dump0(JNIEnv* env, jobject unused, jstring path) {
     const char* path_str = env->GetStringUTFChars(path, NULL);
-    Profiler::instance()->dump(path_str);
+    Profiler::instance()->dump(path_str, env->GetStringUTFLength(path));
     env->ReleaseStringUTFChars(path, path_str);
 }
