@@ -17,6 +17,7 @@
 #ifndef _FLIGHTRECORDER_H
 #define _FLIGHTRECORDER_H
 
+#include <string.h>
 #include "arch.h"
 #include "arguments.h"
 #include "event.h"
@@ -27,7 +28,7 @@ class Recording;
 
 class FlightRecorder {
   private:
-    const char* _filename;
+    std::string _filename;
     Arguments _args;
     Recording* _rec;
 

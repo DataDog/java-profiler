@@ -1305,10 +1305,12 @@ char* Recording::_jvm_flags = NULL;
 char* Recording::_java_command = NULL;
 
 Error FlightRecorder::start(Arguments& args, bool reset) {
-    _filename = args.file();
-    if (_filename == NULL || _filename[0] == 0) {
+    const char* file = args.file();
+    if (file == NULL || file[0] == 0) {
+        _filename = "";
         return Error("Flight Recorder output file is not specified");
     }
+    _filename = file;
     _args = args;
 
     if (!TSC::initialized()) {
@@ -1321,7 +1323,7 @@ Error FlightRecorder::start(Arguments& args, bool reset) {
 }
 
 Error FlightRecorder::newRecording(bool reset) {
-    int fd = open(_filename, O_CREAT | O_RDWR | (reset ? O_TRUNC : 0), 0644);
+    int fd = open(_filename.c_str(), O_CREAT | O_RDWR | (reset ? O_TRUNC : 0), 0644);
     if (fd == -1) {
         return Error("Could not open Flight Recorder output file");
     }
@@ -1342,7 +1344,7 @@ void FlightRecorder::stop() {
 Error FlightRecorder::dump(const char* filename, const int length) {
     if (_rec != NULL) {
         _rec_lock.lock();
-        if (strncmp(filename, _filename, length) != 0) {
+        if (_filename.length() != length || strncmp(filename, _filename.c_str(), length) != 0) {
             // if the filename to dump the recording to is specified move the current working file there
             int copy_fd = open(filename, O_CREAT | O_RDWR | O_TRUNC, 0644);
             _rec->switchChunk(copy_fd);
