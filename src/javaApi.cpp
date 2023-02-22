@@ -25,6 +25,7 @@
 #include "profiler.h"
 #include "vmStructs.h"
 #include "context.h"
+#include "constants.h"
 #include "engine.h"
 #include "thread.h"
 #include "wallClock.h"
@@ -130,13 +131,12 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(JNIEnv* env, jobject unuse
     return acceptValue;
 }
 
-extern "C" DLLEXPORT jint JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_registerContextValue0(JNIEnv* env, jobject unused, jstring value) {
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_registerConstant0(JNIEnv* env, jobject unused, jstring value, jint encoding) {
     const char* value_str = env->GetStringUTFChars(value, NULL);
     jint length = env->GetStringUTFLength(value);
-    u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(value_str, length, 1 << 16);
+    Constants::set(value_str, length, encoding);
     env->ReleaseStringUTFChars(value, value_str);
-    return encoding == INT_MAX ? -1 : encoding;
 }
 
 extern "C" DLLEXPORT void JNICALL

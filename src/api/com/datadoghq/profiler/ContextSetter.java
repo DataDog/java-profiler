@@ -5,11 +5,14 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class ContextSetter {
 
     private static final int TAGS_STORAGE_LIMIT = 10;
     private final List<ConcurrentHashMap<String, Integer>> encodings;
+
+    private final AtomicInteger dictionaryCode = new AtomicInteger();
     private final List<String> attributes;
     private final JavaProfiler profiler;
 
@@ -40,14 +43,32 @@ public class ContextSetter {
         return setContextValue(offsetOf(attribute), value);
     }
 
+    @Deprecated()
     public boolean setContextValue(int offset, String value) {
         if (offset >= 0) {
             int encoding = encodings.get(offset)
-                    .computeIfAbsent(value, profiler::registerContextValue);
+                    .computeIfAbsent(value, newKey -> {
+                        int ordinal = dictionaryCode.incrementAndGet();
+                        profiler.registerConstant(newKey, ordinal);
+                        return ordinal;
+                    });
             if (encoding >= 0) {
                 profiler.setContextValue(offset, encoding);
                 return true;
             }
+        }
+        return false;
+    }
+
+    public void registerContextValue(CharSequence key, int encoding) {
+        assert dictionaryCode.get() == 0 : "detected deprecated method being used alongside external constant registration";
+        profiler.registerConstant(key.toString(), encoding);
+    }
+
+    public boolean setContextValue(int offset, int encoding) {
+        if (offset >= 0 && encoding >= 0) {
+            profiler.setContextValue(offset, encoding);
+            return true;
         }
         return false;
     }

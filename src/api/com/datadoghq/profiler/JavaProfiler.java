@@ -329,13 +329,12 @@ public final class JavaProfiler {
     }
 
     /**
-     * Registers a value and returns an encoding which can be used to refer
-     * to the value in the future
-     * @param value the value to record
-     * @return the encoding to use to refer to the value when setting context
+     * Registers a constant so that its encoding can be used in place of the string
+     * @param key the key to be written into the attribute value constant pool
+     * @param encoding the encoding
      */
-    public int registerContextValue(CharSequence value) {
-        return registerContextValue0(value.toString());
+    public void registerConstant(String key, int encoding) {
+        registerConstant0(key, encoding);
     }
 
     /**
@@ -414,7 +413,7 @@ public final class JavaProfiler {
 
     private static native boolean recordTrace0(long rootSpanId, String endpoint, int sizeLimit);
 
-    private static native int registerContextValue0(String value);
+    private static native int registerConstant0(String value, int encoding);
 
     private static native void dump0(String recordingFilePath);
 }
