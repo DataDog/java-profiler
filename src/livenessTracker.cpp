@@ -16,6 +16,7 @@
 
 #include <jni.h>
 #include <string.h>
+#include "context.h"
 #include "incbin.h"
 #include "livenessTracker.h"
 #include "os.h"
@@ -73,6 +74,7 @@ void LivenessTracker::flush_table() {
             event._start_time = _table[i].time;
             event._age = _table[i].age;
             event._alloc = _table[i].alloc;
+            event._ctx = _table[i].ctx;
 
             jstring name_str = (jstring)env->CallObjectMethod(env->GetObjectClass(ref), _Class_getName);
             const char *name = env->GetStringUTFChars(name_str, NULL);
@@ -270,6 +272,7 @@ retry:
         _table[idx].frames_size = num_frames;
         _table[idx].frames = new jvmtiFrameInfo[_table[idx].frames_size];
         memcpy(_table[idx].frames, frames, sizeof(jvmtiFrameInfo) * _table[idx].frames_size);
+        _table[idx].ctx = Contexts::get(tid);
     }
 
     _table_lock.unlockShared();
