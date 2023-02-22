@@ -20,6 +20,7 @@
 #include <jvmti.h>
 #include <pthread.h>
 #include "arch.h"
+#include "context.h"
 #include "engine.h"
 #include "spinLock.h"
 
@@ -31,6 +32,7 @@ typedef struct TrackingEntry {
     jint tid;
     jlong time;
     jlong age;
+    Context ctx;
 } TrackingEntry;
 
 class LivenessTracker  {

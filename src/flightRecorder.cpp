@@ -1251,6 +1251,7 @@ class Recording {
         buf->putVar64(event->_age);
         buf->putVar64(event->_alloc._size);
         buf->putFloat(event->_alloc._weight);
+        writeContext(buf, event->_ctx);
         buf->put8(start, buf->offset() - start);
     }
 

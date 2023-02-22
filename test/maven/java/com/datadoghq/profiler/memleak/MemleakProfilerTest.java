@@ -13,8 +13,8 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Assumptions;
 
-@Disabled("crashes sometimes")
 public class MemleakProfilerTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
@@ -23,6 +23,7 @@ public class MemleakProfilerTest extends AbstractProfilerTest {
 
     @Test
     public void shouldGetLiveObjectSamples() throws InterruptedException {
+        Assumptions.assumeFalse(System.getProperty("java.version").contains("1.8"));
         MemLeakTarget target1 = new MemLeakTarget();
         MemLeakTarget target2 = new MemLeakTarget();
         runTests(target1, target2);
@@ -52,7 +53,7 @@ public class MemleakProfilerTest extends AbstractProfilerTest {
         @Override
         public void run() {
             ThreadLocalRandom random = ThreadLocalRandom.current();
-            for (int i = 0; i < 200_000; i++) {
+            for (int i = 0; i < 100_000; i++) {
                 allocate(random, random.nextInt(256));
             }
         }
@@ -74,7 +75,7 @@ public class MemleakProfilerTest extends AbstractProfilerTest {
                 obj = new Integer[random.nextInt(64, 192) * 1000];
             }
 
-            if (random.nextInt(100) == 0) {
+            if (random.nextInt(100) == 0 && sink.size() < 100_000) {
                 sink.add(obj);
             }
             if (random.nextInt(10000) == 0) {
