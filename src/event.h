@@ -20,6 +20,7 @@
 #include <cstring>
 #include <memory>
 #include <stdint.h>
+#include "context.h"
 #include "os.h"
 using namespace std;
 
@@ -60,6 +61,7 @@ class ObjectLivenessEvent : public Event {
     AllocEvent _alloc;
     u64 _start_time;
     u64 _age;
+    Context _ctx;
 };
 
 class WallClockEpochEvent {
