@@ -171,7 +171,6 @@ Error LivenessTracker::initialize_table(int sampling_interval) {
 Error LivenessTracker::start(Arguments& args) {
     Error err = initialize(args);
     if (err) { return err; }
-    fprintf(stdout, "===> initializing live heap tracker\n");
     // Enable Java Object Sample events
     jvmtiEnv* jvmti = VM::jvmti();
     jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_GARBAGE_COLLECTION_FINISH, NULL);
@@ -238,7 +237,6 @@ Error LivenessTracker::initialize(Arguments& args) {
 
     env->ExceptionClear();
 
-    fprintf(stdout, "===> live heap tracker initialized ok\n");
     return _stored_error = Error::OK;
 }
 
