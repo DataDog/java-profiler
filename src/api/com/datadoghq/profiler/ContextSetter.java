@@ -27,7 +27,18 @@ public class ContextSetter {
     }
 
     public int encode(String key) {
-        return key == null ? 0 : jniCache.computeIfAbsent(key, profiler::registerConstant);
+        if (key != null) {
+            Integer encoding = jniCache.get(key);
+            if (encoding != null) {
+                return encoding;
+            } else if (jniCache.size() <= 1 << 16) {
+                int e = profiler.registerConstant(key);
+                if (e > 0 && jniCache.putIfAbsent(key, e) == null) {
+                    return e;
+                }
+            }
+        }
+        return 0;
     }
 
     public int offsetOf(String attribute) {

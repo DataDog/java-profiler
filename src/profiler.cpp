@@ -1170,6 +1170,7 @@ Error Profiler::dump(const char* path, const int length) {
     }
 
     if (_state == RUNNING) {
+        LivenessTracker::instance()->flush();
         updateJavaThreadNames();
         updateNativeThreadNames();
         
