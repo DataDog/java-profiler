@@ -28,7 +28,6 @@
 #include <sys/types.h>
 #include <sys/utsname.h>
 #include <unistd.h>
-#include "constants.h"
 #include "context.h"
 #include "flightRecorder.h"
 #include "incbin.h"
@@ -991,7 +990,7 @@ class Recording {
         writePackages(buf, &lookup);
         writeConstantPoolSection(buf, T_SYMBOL, &lookup._symbols);
         writeConstantPoolSection(buf, T_STRING, Profiler::instance()->stringLabelMap());
-        writeSharedConstants(buf);
+        writeConstantPoolSection(buf, T_ATTRIBUTE_VALUE, Profiler::instance()->contextValueMap());
         writeLogLevels(buf);
     }
 
@@ -1163,12 +1162,6 @@ class Recording {
         std::map<u32, const char*> constants;
         dictionary->collect(constants);
         writeConstantPoolSection(buf, type, constants);
-    }
-
-    void writeSharedConstants(Buffer* buf) {
-        std::map<u32, const char*> constants;
-            Constants::collect(constants);
-        writeConstantPoolSection(buf, T_ATTRIBUTE_VALUE, constants);
     }
 
     void writeLogLevels(Buffer* buf) {
