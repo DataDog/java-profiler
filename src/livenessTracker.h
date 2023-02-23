@@ -87,6 +87,7 @@ class LivenessTracker  {
     Error start(Arguments& args);
     void stop();
     void track(JNIEnv* env, AllocEvent &event, jint tid, jobject object, int num_frames, jvmtiFrameInfo* frames);
+    void flush();
 
     static void JNICALL GarbageCollectionFinish(jvmtiEnv *jvmti_env);
 };
