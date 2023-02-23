@@ -291,7 +291,7 @@ public final class JavaProfiler {
     /**
      * Sets a context value
      * @param offset the offset
-     * @param value the encoding of the value. Must have been encoded via @see JavaProfiler#registerContextValue
+     * @param value the encoding of the value. Must have been encoded via @see JavaProfiler#registerConstant
      */
     public void setContextValue(int offset, int value) {
         int tid = TID.get();
@@ -331,10 +331,9 @@ public final class JavaProfiler {
     /**
      * Registers a constant so that its encoding can be used in place of the string
      * @param key the key to be written into the attribute value constant pool
-     * @param encoding the encoding
      */
-    public void registerConstant(String key, int encoding) {
-        registerConstant0(key, encoding);
+    int registerConstant(String key) {
+        return registerConstant0(key);
     }
 
     /**
@@ -413,7 +412,7 @@ public final class JavaProfiler {
 
     private static native boolean recordTrace0(long rootSpanId, String endpoint, int sizeLimit);
 
-    private static native int registerConstant0(String value, int encoding);
+    private static native int registerConstant0(String value);
 
     private static native void dump0(String recordingFilePath);
 }
