@@ -18,10 +18,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.IntStream;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class TagContextTest extends AbstractProfilerTest {
 
@@ -91,8 +88,22 @@ public class TagContextTest extends AbstractProfilerTest {
     private void work(ContextSetter contextSetter, String contextAttribute, String contextValue)
             throws InterruptedException {
         assertTrue(contextSetter.setContextValue(contextAttribute, contextValue));
+        checkTagValues(contextSetter, contextAttribute);
         Thread.sleep(10);
         assertTrue(contextSetter.clearContextValue(contextAttribute));
+    }
+
+    private void checkTagValues(ContextSetter contextSetter, String contextAttribute) {
+        int[] tags = contextSetter.snapshotTags();
+        // expects tag1/tag2/tag3 - change this if the tested tags change
+        int offset = Integer.parseInt(contextAttribute.substring(3)) - 1;
+        for (int i = 0; i < tags.length; i++) {
+            if (i == offset) {
+                assertNotEquals(0, tags[i]);
+            } else {
+                assertEquals(0, tags[i]);
+            }
+        }
     }
 
     @Override
