@@ -41,6 +41,18 @@ public class ContextSetter {
         return 0;
     }
 
+    public int[] snapshotTags() {
+        int[] snapshot = new int[attributes.size()];
+        snapshotTags(snapshot);
+        return snapshot;
+    }
+
+    public void snapshotTags(int[] snapshot) {
+        if (snapshot.length <= attributes.size()) {
+            profiler.copyTags(snapshot);
+        }
+    }
+
     public int offsetOf(String attribute) {
         return attributes.indexOf(attribute);
     }

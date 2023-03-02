@@ -318,6 +318,38 @@ public final class JavaProfiler {
         page.putInt(addressOf(tid, offset), value);
     }
 
+    void copyTags(int[] snapshot) {
+        int tid = TID.get();
+        if (UNSAFE != null) {
+            copyTagsJDK8(tid, snapshot);
+        } else {
+            copyTagsByteBuffer(tid, snapshot);
+        }
+    }
+
+    void copyTagsJDK8(int tid, int[] snapshot) {
+        if (contextBaseOffsets == null) {
+            return;
+        }
+        long pageOffset = getPageUnsafe(tid);
+        long address = pageOffset + addressOf(tid, 0);
+        for (int i = 0; i < snapshot.length; i++) {
+            snapshot[i] = UNSAFE.getInt(address);
+            address += Integer.BYTES;
+        }
+    }
+
+    void copyTagsByteBuffer(int tid, int[] snapshot) {
+        if (contextStorage == null) {
+            return;
+        }
+        ByteBuffer page = getPage(tid);
+        int address = addressOf(tid, 0);
+        for (int i = 0; i < snapshot.length; i++) {
+            snapshot[i] = page.getInt(address + i * Integer.BYTES);
+        }
+    }
+
     private static int addressOf(int tid, int offset) {
         return ((tid % PAGE_SIZE) * CONTEXT_SIZE + DYNAMIC_TAGS_OFFSET)
                 // TODO - we want to limit cardinality and a great way to enforce that is with the size of these
