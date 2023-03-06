@@ -381,10 +381,11 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
         saved_fp = frame.fp();
 
         const void* pc = (const void*) saved_pc;
-        if (_unwalkable_runtime_stubs.contains(pc)) {
+        CodeBlob* unwalkable_code = _unwalkable_runtime_stubs.find(pc);
+        if (unwalkable_code != nullptr) {
             // some stub we've deemed unsafe to walk (e.g. call_stub, ZBarrierSetRuntime::load_barrier_*)
             frames->bci = BCI_NATIVE_FRAME;
-            frames->method_id = (jmethodID)(_unwalkable_runtime_stubs.find(pc)->_name);
+            frames->method_id = (jmethodID)(unwalkable_code->_name);
             return 1;
         }
     }
