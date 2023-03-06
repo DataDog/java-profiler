@@ -116,9 +116,8 @@ void Profiler::addRuntimeStub(const void* address, int length, const char* name)
     _runtime_stubs.add(address, length, name, true);
     _stubs_lock.unlock();
 
-    if (strcmp(name, "call_stub") == 0) {
-        _call_stub_begin = address;
-        _call_stub_end = (const char*)address + length;
+    if (strcmp(name, "call_stub") == 0 || strncmp(name, "load_barrier", 12) == 0) {
+        _unwalkable_runtime_stubs.add(address, length, name, true);
     }
 
     CodeHeap::updateBounds(address, (const char*)address + length);
@@ -307,7 +306,7 @@ const char* Profiler::findNativeMethod(const void* address) {
 bool Profiler::isAddressInCode(uintptr_t addr) {
     const void* pc = (const void*)addr;
     if (CodeHeap::contains(pc)) {
-        return CodeHeap::findNMethod(pc) != NULL && !(pc >= _call_stub_begin && pc < _call_stub_end);
+        return CodeHeap::findNMethod(pc) != NULL && !(_unwalkable_runtime_stubs.contains(pc));
     } else {
         return findLibraryByAddress(pc) != NULL;
     }
@@ -385,10 +384,11 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
     if (!(_safe_mode & UNWIND_NATIVE)) {
         int state = vm_thread->state();
         if (state == 8 || state == 9) {
-            if (saved_pc >= (uintptr_t)_call_stub_begin && saved_pc < (uintptr_t)_call_stub_end) {
-                // call_stub is unsafe to walk
+            const void* pc = (const void*) saved_pc;
+            if (_unwalkable_runtime_stubs.contains(pc)) {
+                // some stub we've deemed unsafe to walk (e.g. call_stub, ZBarrierSetRuntime::load_barrier_*)
                 frames->bci = BCI_NATIVE_FRAME;
-                frames->method_id = (jmethodID)"call_stub";
+                frames->method_id = (jmethodID)(_unwalkable_runtime_stubs.find(pc)->_name);
                 return 1;
             }
             if (DWARF_SUPPORTED && java_ctx->sp != 0) {
