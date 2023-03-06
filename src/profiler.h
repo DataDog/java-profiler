@@ -113,8 +113,7 @@ class Profiler {
     SpinLock _stubs_lock;
     CodeCache _runtime_stubs;
     CodeCacheArray _native_libs;
-    const void* _call_stub_begin;
-    const void* _call_stub_end;
+    CodeCache _unwalkable_runtime_stubs;
     u32 _num_context_attributes;
 
     // dlopen() hook support
@@ -175,9 +174,8 @@ class Profiler {
         _thread_events_state(JVMTI_DISABLE),
         _stubs_lock(),
         _runtime_stubs("[stubs]"),
+        _unwalkable_runtime_stubs("[unwalkable stubs]"),
         _native_libs(),
-        _call_stub_begin(NULL),
-        _call_stub_end(NULL),
         _dlopen_entry(NULL),
         _num_context_attributes(0) {
 
