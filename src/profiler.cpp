@@ -379,18 +379,19 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
         saved_pc = frame.pc();
         saved_sp = frame.sp();
         saved_fp = frame.fp();
+
+        const void* pc = (const void*) saved_pc;
+        if (_unwalkable_runtime_stubs.contains(pc)) {
+            // some stub we've deemed unsafe to walk (e.g. call_stub, ZBarrierSetRuntime::load_barrier_*)
+            frames->bci = BCI_NATIVE_FRAME;
+            frames->method_id = (jmethodID)(_unwalkable_runtime_stubs.find(pc)->_name);
+            return 1;
+        }
     }
 
     if (!(_safe_mode & UNWIND_NATIVE)) {
         int state = vm_thread->state();
         if (state == 8 || state == 9) {
-            const void* pc = (const void*) saved_pc;
-            if (_unwalkable_runtime_stubs.contains(pc)) {
-                // some stub we've deemed unsafe to walk (e.g. call_stub, ZBarrierSetRuntime::load_barrier_*)
-                frames->bci = BCI_NATIVE_FRAME;
-                frames->method_id = (jmethodID)(_unwalkable_runtime_stubs.find(pc)->_name);
-                return 1;
-            }
             if (DWARF_SUPPORTED && java_ctx->sp != 0) {
                 // If a thread is in Java state, unwind manually to the last known Java frame,
                 // since JVM does not always correctly unwind native frames
