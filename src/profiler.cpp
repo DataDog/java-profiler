@@ -846,9 +846,6 @@ void Profiler::updateJavaThreadNames() {
         return;
     }
 
-    _thread_names.clear();
-    _thread_ids.clear();
-
     JNIEnv* jni = VM::jni();
     for (int i = 0; i < thread_count; i++) {
         updateThreadName(jvmti, jni, thread_objects[i]);
