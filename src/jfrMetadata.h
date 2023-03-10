@@ -47,9 +47,7 @@ enum JfrType {
     T_PACKAGE = 29,
     T_SYMBOL = 30,
     T_LOG_LEVEL = 31,
-    T_ATTRIBUTE = 32,
     T_ATTRIBUTE_VALUE = 32,
-    T_TAG = 33,
 
     T_EVENT = 100,
     T_EXECUTION_SAMPLE = 101,
