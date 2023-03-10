@@ -73,6 +73,8 @@
                 <configuration>
                     <!-- This makes JOL complain less -->
                     <argLine>-Djdk.attach.allowAttachSelf -Djol.tryWithSudo</argLine>
+                    <forkCount>1</forkCount>
+                    <reuseForks>false</reuseForks>
                 </configuration>
             </plugin>
             <plugin>
