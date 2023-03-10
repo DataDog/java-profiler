@@ -116,8 +116,9 @@ void Profiler::addRuntimeStub(const void* address, int length, const char* name)
     _runtime_stubs.add(address, length, name, true);
     _stubs_lock.unlock();
 
-    if (strcmp(name, "call_stub") == 0 || strncmp(name, "load_barrier", 12) == 0) {
-        _unwalkable_runtime_stubs.add(address, length, name, true);
+    if (strcmp(name, "call_stub") == 0) {
+        _call_stub_begin = address;
+        _call_stub_end = (const char*) address + length;
     }
 
     CodeHeap::updateBounds(address, (const char*)address + length);
@@ -306,7 +307,7 @@ const char* Profiler::findNativeMethod(const void* address) {
 bool Profiler::isAddressInCode(uintptr_t addr) {
     const void* pc = (const void*)addr;
     if (CodeHeap::contains(pc)) {
-        return CodeHeap::findNMethod(pc) != NULL && !(_unwalkable_runtime_stubs.contains(pc));
+        return CodeHeap::findNMethod(pc) != NULL && !(pc >= _call_stub_begin && pc < _call_stub_end);
     } else {
         return findLibraryByAddress(pc) != NULL;
     }
@@ -379,20 +380,17 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
         saved_pc = frame.pc();
         saved_sp = frame.sp();
         saved_fp = frame.fp();
-
-        const void* pc = (const void*) saved_pc;
-        CodeBlob* unwalkable_code = _unwalkable_runtime_stubs.find(pc);
-        if (unwalkable_code != nullptr) {
-            // some stub we've deemed unsafe to walk (e.g. call_stub, ZBarrierSetRuntime::load_barrier_*)
-            frames->bci = BCI_NATIVE_FRAME;
-            frames->method_id = (jmethodID)(unwalkable_code->_name);
-            return 1;
-        }
     }
 
     if (!(_safe_mode & UNWIND_NATIVE)) {
         int state = vm_thread->state();
         if (state == 8 || state == 9) {
+            if (saved_pc >= (uintptr_t)_call_stub_begin && saved_pc < (uintptr_t)_call_stub_end) {
+                // call_stub is unsafe to walk
+                frames->bci = BCI_NATIVE_FRAME;
+                frames->method_id = (jmethodID)"call_stub";
+                return 1;
+            }
             if (DWARF_SUPPORTED && java_ctx->sp != 0) {
                 // If a thread is in Java state, unwind manually to the last known Java frame,
                 // since JVM does not always correctly unwind native frames
