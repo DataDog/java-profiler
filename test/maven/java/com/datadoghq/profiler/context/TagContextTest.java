@@ -2,7 +2,6 @@ package com.datadoghq.profiler.context;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.ContextSetter;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
@@ -21,7 +20,6 @@ import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-@Disabled("stopped passing in CI - tag1 accessor is null")
 public class TagContextTest extends AbstractProfilerTest {
 
     @Test
