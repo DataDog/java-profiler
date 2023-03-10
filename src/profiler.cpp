@@ -380,6 +380,17 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
         saved_pc = frame.pc();
         saved_sp = frame.sp();
         saved_fp = frame.fp();
+
+        if (!VMStructs::isSafeToWalk(saved_pc)) {
+            frames->bci = BCI_NATIVE_FRAME;
+            CodeBlob* codeBlob = VMStructs::libjvm()->find((const void*) saved_pc);
+            if (codeBlob) {
+                frames->method_id = (jmethodID) codeBlob->_name;
+            } else {
+                frames->method_id = (jmethodID) "unknown_unwalkable";
+            }
+            return 1;
+        }
     }
 
     if (!(_safe_mode & UNWIND_NATIVE)) {
@@ -845,9 +856,6 @@ void Profiler::updateJavaThreadNames() {
     if (jvmti->GetAllThreads(&thread_count, &thread_objects) != 0) {
         return;
     }
-
-    _thread_names.clear();
-    _thread_ids.clear();
 
     JNIEnv* jni = VM::jni();
     for (int i = 0; i < thread_count; i++) {

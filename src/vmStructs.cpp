@@ -19,9 +19,11 @@
 #include "vmStructs.h"
 #include "vmEntry.h"
 #include "j9Ext.h"
+#include "vector"
 
 
 CodeCache* VMStructs::_libjvm = NULL;
+CodeCache VMStructs::_unsafe_to_walk("unwalkable code");
 
 bool VMStructs::_has_class_names = false;
 bool VMStructs::_has_method_structs = false;
@@ -335,6 +337,29 @@ void VMStructs::resolveOffsets() {
     }
 }
 
+void VMStructs::initUnsafeFunctions() {
+    // see https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zBarrierSetRuntime.hpp#L33
+    // https://bugs.openjdk.org/browse/JDK-8302317
+    std::vector<const char*> mangledUnsafeFunctionNames {
+            "_ZN18ZBarrierSetRuntime40load_barrier_on_weak_oop_field_preloadedEP7oopDescP3oop",
+            "_ZN18ZBarrierSetRuntime43load_barrier_on_phantom_oop_field_preloadedEP7oopDescP3oop",
+            "_ZN18ZBarrierSetRuntime40weak_load_barrier_on_oop_field_preloadedEP7oopDescP3oop",
+            "_ZN18ZBarrierSetRuntime45weak_load_barrier_on_weak_oop_field_preloadedEP7oopDescP3oop",
+            "_ZN18ZBarrierSetRuntime48weak_load_barrier_on_phantom_oop_field_preloadedEP7oopDescP3oop",
+            "_ZN18ZBarrierSetRuntime25load_barrier_on_oop_arrayEP7oopDesci",
+            "_ZN9JavaCalls11call_helperEv"
+    };
+    for (const char* mangledSymbolName : mangledUnsafeFunctionNames) {
+        const void* symbol = _libjvm->findSymbol(mangledSymbolName);
+        if (symbol) {
+            CodeBlob* blob = _libjvm->find(symbol);
+            if (blob) {
+                _unsafe_to_walk.add(blob->_start, ((uintptr_t) blob->_end - (uintptr_t) blob->_start), blob->_name, true);
+            }
+        }
+    }
+}
+
 void VMStructs::initJvmFunctions() {
     _get_stack_trace = (GetStackTraceFunc)_libjvm->findSymbolByPrefix("_ZN8JvmtiEnv13GetStackTraceEP10JavaThreadiiP");
 
@@ -342,6 +367,7 @@ void VMStructs::initJvmFunctions() {
         _lock_func = (LockFunc)_libjvm->findSymbol("_ZN7Monitor28lock_without_safepoint_checkEv");
         _unlock_func = (LockFunc)_libjvm->findSymbol("_ZN7Monitor6unlockEv");
     }
+    initUnsafeFunctions();
 }
 
 void VMStructs::initTLS(void* vm_thread) {
@@ -459,4 +485,8 @@ void* JVMFlag::find(const char* name) {
         }
     }
     return NULL;
+}
+
+bool VMStructs::isSafeToWalk(uintptr_t pc) {
+    return !(_unsafe_to_walk.contains((const void*) pc) && _unsafe_to_walk.findFrameDesc((const void*) pc));
 }
