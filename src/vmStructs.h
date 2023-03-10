@@ -26,6 +26,7 @@
 class VMStructs {
   protected:
     static CodeCache* _libjvm;
+    static CodeCache _unsafe_to_walk;
 
     static bool _has_class_names;
     static bool _has_method_structs;
@@ -97,6 +98,7 @@ class VMStructs {
     static void initTLS(void* vm_thread);
     static void initThreadBridge(JNIEnv* env);
     static void initLogging(JNIEnv* env);
+    static void initUnsafeFunctions();
 
     const char* at(int offset) {
         return (const char*)this + offset;
@@ -134,6 +136,8 @@ class VMStructs {
     static bool hasDebugSymbols() {
         return _get_stack_trace != NULL;
     }
+
+    static bool isSafeToWalk(uintptr_t pc);
 };
 
 
