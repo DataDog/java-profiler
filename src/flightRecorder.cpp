@@ -475,7 +475,6 @@ class Recording {
         _bytes_written = 0;
 
         _tid = OS::threadId();
-        addThread(_tid);
         VM::jvmti()->GetAvailableProcessors(&_available_processors);
 
         writeHeader(_buf);
@@ -1014,8 +1013,11 @@ class Recording {
     }
 
     void writeThreads(Buffer* buf) {
+        addThread(_tid);
         std::vector<int> threads;
+        threads.reserve(_thread_set.size());
         _thread_set.collect(threads);
+        _thread_set.clear();
 
         Profiler* profiler = Profiler::instance();
         MutexLocker ml(profiler->_thread_names_lock);
