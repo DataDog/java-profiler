@@ -340,22 +340,17 @@ void VMStructs::resolveOffsets() {
 void VMStructs::initUnsafeFunctions() {
     // see https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zBarrierSetRuntime.hpp#L33
     // https://bugs.openjdk.org/browse/JDK-8302317
-    std::vector<const char*> mangledUnsafeFunctionNames {
-            "_ZN18ZBarrierSetRuntime40load_barrier_on_weak_oop_field_preloadedEP7oopDescP3oop",
-            "_ZN18ZBarrierSetRuntime43load_barrier_on_phantom_oop_field_preloadedEP7oopDescP3oop",
-            "_ZN18ZBarrierSetRuntime40weak_load_barrier_on_oop_field_preloadedEP7oopDescP3oop",
-            "_ZN18ZBarrierSetRuntime45weak_load_barrier_on_weak_oop_field_preloadedEP7oopDescP3oop",
-            "_ZN18ZBarrierSetRuntime48weak_load_barrier_on_phantom_oop_field_preloadedEP7oopDescP3oop",
-            "_ZN18ZBarrierSetRuntime25load_barrier_on_oop_arrayEP7oopDesci",
-            "_ZN9JavaCalls11call_helperEv"
+    std::vector<const char*> unsafeMangledPrefixes {
+            "_ZN18ZBarrierSetRuntime",
+            "_ZN9JavaCalls11call_helper"
     };
-    for (const char* mangledSymbolName : mangledUnsafeFunctionNames) {
-        const void* symbol = _libjvm->findSymbol(mangledSymbolName);
-        if (symbol) {
-            CodeBlob* blob = _libjvm->find(symbol);
-            if (blob) {
-                _unsafe_to_walk.add(blob->_start, ((uintptr_t) blob->_end - (uintptr_t) blob->_start), blob->_name, true);
-            }
+
+    std::vector<const void*> symbols;
+    _libjvm->findSymbolsByPrefix(unsafeMangledPrefixes, symbols);
+    for (const void* symbol : symbols) {
+        CodeBlob *blob = _libjvm->find(symbol);
+        if (blob) {
+            _unsafe_to_walk.add(blob->_start, ((uintptr_t) blob->_end - (uintptr_t) blob->_start), blob->_name, true);
         }
     }
 }

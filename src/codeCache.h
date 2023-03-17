@@ -18,6 +18,7 @@
 #define _CODECACHE_H
 
 #include <jvmti.h>
+#include <vector>
 
 
 #define NO_MIN_ADDRESS  ((const void*)-1)
@@ -144,6 +145,7 @@ class CodeCache {
     const void* findSymbol(const char* name);
     const void* findSymbolByPrefix(const char* prefix);
     const void* findSymbolByPrefix(const char* prefix, int prefix_len);
+    void findSymbolsByPrefix(std::vector<const char*>& prefixes, std::vector<const void*>& symbols);
 
     void setGlobalOffsetTable(void** start, void** end, bool patchable);
     void** findGlobalOffsetEntry(void* address);
