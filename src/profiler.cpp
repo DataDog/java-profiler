@@ -42,7 +42,6 @@
 #include "stackWalker.h"
 #include "symbols.h"
 #include "thread.h"
-#include "varint.inline.h"
 #include "vmStructs.h"
 #include "context.h"
 
@@ -74,22 +73,6 @@ enum StackRecovery {
     LAST_JAVA_PC  = (1 << 4),
     GC_TRACES     = (1 << 5),
 };
-
-struct MethodSample {
-    u64 samples;
-    u64 counter;
-
-    void add(u64 add_samples, u64 add_counter) {
-        samples += add_samples;
-        counter += add_counter;
-    }
-};
-
-typedef std::pair<std::string, MethodSample> NamedMethodSample;
-
-static bool sortByCounter(const NamedMethodSample& a, const NamedMethodSample& b) {
-    return a.second.counter > b.second.counter;
-}
 
 
 static inline int makeFrame(ASGCT_CallFrame* frames, jint type, jmethodID id) {
@@ -920,22 +903,6 @@ Engine* Profiler::selectAllocEngine(Arguments& args) {
     }
 }
 
-Engine* Profiler::activeEngine() {
-    switch (_event_mask) {
-        case EM_CPU:
-            return _cpu_engine;
-        case EM_WALL:
-            return _wall_engine;
-        case EM_ALLOC:
-            return _alloc_engine;
-        case EM_LOCK:
-            return &lock_tracer;
-        default:
-            Log::error("Unknown event_mask %d", _event_mask);
-            return NULL;
-    }
-}
-
 Error Profiler::checkJvmCapabilities() {
     if (!VMStructs::hasJavaThreadId()) {
         return Error("Could not find Thread ID field. Unsupported JVM?");
@@ -1269,9 +1236,6 @@ Error Profiler::runInternal(Arguments& args, std::ostream& out) {
         case ACTION_VERSION:
             out << PROFILER_VERSION;
             out.flush();
-            break;
-        case ACTION_FULL_VERSION:
-            out << FULL_VERSION_STRING;
             break;
         default:
             break;

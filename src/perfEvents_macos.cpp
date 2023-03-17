@@ -37,14 +37,6 @@ void PerfEvents::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
 void PerfEvents::signalHandlerJ9(int signo, siginfo_t* siginfo, void* ucontext) {
 }
 
-const char* PerfEvents::title() {
-    return Engine::title();
-}
-
-const char* PerfEvents::units() {
-    return Engine::units();
-}
-
 Error PerfEvents::check(Arguments& args) {
     return Error("PerfEvents are unsupported on macOS");
 }

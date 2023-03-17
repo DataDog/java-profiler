@@ -62,14 +62,6 @@ class ObjectSampler : public Engine {
         return _instance;
     }
 
-    const char* title() {
-        return "Allocation profile";
-    }
-
-    const char* units() {
-        return "bytes";
-    }
-
     Error check(Arguments& args);
     Error start(Arguments& args);
     void stop();
