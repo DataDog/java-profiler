@@ -43,13 +43,6 @@ class Engine {
     }
 
   public:
-    virtual const char* title() {
-        return "Flame Graph";
-    }
-
-    virtual const char* units() {
-        return "total";
-    }
 
     virtual const char* name() {
         return "Engine";

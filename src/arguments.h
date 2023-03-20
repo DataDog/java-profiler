@@ -43,8 +43,7 @@ enum Action {
     ACTION_CHECK,
     ACTION_STATUS,
     ACTION_LIST,
-    ACTION_VERSION,
-    ACTION_FULL_VERSION
+    ACTION_VERSION
 };
 
 enum Ring {
@@ -116,14 +115,9 @@ class Arguments {
     char* _buf;
     bool _shared;
     bool _persistent;
-
-    void appendToEmbeddedList(int& list, char* value);
     const char* expandFilePattern(const char* pattern);
-
     static long long hash(const char* arg);
-    static Output detectOutputFormat(const char* file);
     static long parseUnits(const char* str, const Multiplier* multipliers);
-    static int parseTimeout(const char* str);
 
   public:
     Action _action;
@@ -147,8 +141,6 @@ class Arguments {
     const char* _filter;
     unsigned char _mcache;
     CStack _cstack;
-    long _chunk_size;
-    long _chunk_time;
     int _jfr_options;
     std::vector<std::string> _context_attributes;
 

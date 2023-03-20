@@ -39,9 +39,6 @@ class J9WallClock : public Engine {
     void timerLoop();
 
   public:
-    const char* title() {
-        return _sample_idle_threads ? "J9 WallClock Profiler" : "J9 Execution Profiler";
-    }
 
     const char* units() {
         return "ns";

@@ -15,7 +15,6 @@
  */
 
 #include "context.h"
-#include "vmEntry.h"
 #include "os.h"
 
 Context** Contexts::_pages = new Context *[Contexts::getMaxPages()]();
