@@ -60,11 +60,11 @@ void LivenessTracker::cleanup_table() {
                 1.0f * (end - start) / 1000 / 1000, 1.0f * (end - start) / 1000 / sz);
 }
 
-void LivenessTracker::flush() {
-    flush_table();
+void LivenessTracker::flush(std::set<int> &tracked_thread_ids) {
+    flush_table(&tracked_thread_ids);
 }
 
-void LivenessTracker::flush_table() {
+void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
     JNIEnv *env = VM::jni();
     u64 start = OS::nanotime(), end;
 
@@ -74,6 +74,9 @@ void LivenessTracker::flush_table() {
     for (int i = 0; i < (sz = _table_size); i++) {
         jobject ref = env->NewLocalRef(_table[i].ref);
         if (ref != NULL) {
+            if (tracked_thread_ids != NULL) {
+                tracked_thread_ids->insert(_table[i].tid);
+            }
             ObjectLivenessEvent event;
             event._start_time = _table[i].time;
             event._age = _table[i].age;
@@ -181,7 +184,7 @@ Error LivenessTracker::start(Arguments& args) {
 void LivenessTracker::stop() {
     JNIEnv* env = VM::jni();
     cleanup_table();
-    flush_table();
+    flush_table(NULL);
 
     // do not disable GC notifications here - the tracker is supposed to survive multiple recordings
 }
