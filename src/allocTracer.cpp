@@ -16,10 +16,8 @@
 
 #include "allocTracer.h"
 #include "context.h"
-#include "profiler.h"
 #include "stackFrame.h"
 #include "thread.h"
-#include "vmStructs.h"
 
 
 // !!! This class is currently unused and all implementation code was commented out !!!

@@ -65,9 +65,6 @@ class ProfiledThread {
         return _tid;
     }
 
-    inline u64 getCpuEpoch() {
-        return _cpu_epoch;
-    }
     inline u64 noteCPUSample() {
         return ++_cpu_epoch;
     }

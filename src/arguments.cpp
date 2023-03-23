@@ -144,7 +144,7 @@ Error Arguments::parse(const char* args) {
                 _action = ACTION_LIST;
 
             CASE("version")
-                _action = value == NULL ? ACTION_VERSION : ACTION_FULL_VERSION;
+                _action = ACTION_VERSION;
 
             CASE("jfr")
                 if (value != NULL) {
@@ -275,7 +275,7 @@ Error Arguments::parse(const char* args) {
                 if (value != NULL) {
                     std::string input(value);
                     std::size_t start = 0;
-                    std::size_t end = 0;
+                    std::size_t end;
                     while ((end = input.find(";", start)) != std::string::npos) {
                         _context_attributes.push_back(input.substr(start, end - start));
                         start = end + 1;
@@ -305,12 +305,6 @@ const char* Arguments::file() {
         return expandFilePattern(_file);
     }
     return _file;
-}
-
-// The linked list of string offsets is embedded right into _buf array
-void Arguments::appendToEmbeddedList(int& list, char* value) {
-    ((int*)value)[-1] = list;
-    list = (int)(value - _buf);
 }
 
 // Should match statically computed HASH(arg)
@@ -370,18 +364,6 @@ const char* Arguments::expandFilePattern(const char* pattern) {
     return _buf;
 }
 
-Output Arguments::detectOutputFormat(const char* file) {
-    const char* ext = strrchr(file, '.');
-    if (ext != NULL) {
-        if (strcmp(ext, ".jfr") == 0) {
-            return OUTPUT_JFR;
-        } else if (strcmp(ext, ".collapsed") == 0 || strcmp(ext, ".folded") == 0) {
-            return OUTPUT_COLLAPSED;
-        }
-    }
-    return OUTPUT_NONE;
-}
-
 long Arguments::parseUnits(const char* str, const Multiplier* multipliers) {
     char* end;
     long result = strtol(str, &end, 0);
@@ -401,18 +383,6 @@ long Arguments::parseUnits(const char* str, const Multiplier* multipliers) {
     }
 
     return -1;
-}
-
-int Arguments::parseTimeout(const char* str) {
-    const char* p = strchr(str, ':');
-    if (p == NULL) {
-        return parseUnits(str, SECONDS);
-    }
-
-    int hh = str[0] >= '0' && str[0] <= '2' ? atoi(str) : 0xff;
-    int mm = p[1] >= '0' && p[1] <= '5' ? atoi(p + 1) : 0xff;
-    int ss = (p = strchr(p + 1, ':')) != NULL && p[1] >= '0' && p[1] <= '5' ? atoi(p + 1) : 0xff;
-    return 0xff000000 | hh << 16 | mm << 8 | ss;
 }
 
 Arguments::~Arguments() {

@@ -50,8 +50,6 @@ class PerfEvents : public Engine {
     virtual int registerThread(int tid);
     virtual void unregisterThread(int tid);
 
-    const char* title();
-    const char* units();
     const char* name() {
       return "PerfEvents";
     }

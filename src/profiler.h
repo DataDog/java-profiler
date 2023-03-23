@@ -37,11 +37,6 @@
 #include "objectSampler.h"
 #include "thread.h"
 
-
-const char FULL_VERSION_STRING[] =
-    "java-profiler " PROFILER_VERSION " built on " __DATE__ "\n"
-    "Copyright 2016-2021 Andrei Pangin\n";
-
 const int MAX_NATIVE_FRAMES = 128;
 const int RESERVED_FRAMES   = 4;
 const int CONCURRENCY_LEVEL = 16;
@@ -148,14 +143,10 @@ class Profiler {
     Engine* selectCpuEngine(Arguments& args);
     Engine* selectWallEngine(Arguments& args);
     Engine* selectAllocEngine(Arguments& args);
-    Engine* activeEngine();
     Error checkJvmCapabilities();
 
     void lockAll();
     void unlockAll();
-
-    // TODO: Remove when tests are switched to JFR validation
-    void dumpCollapsed(std::ostream& out, Arguments& args);
 
     static Profiler* const _instance;
 

@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include <cmath>
 #include "pidController.h"
 
 double PidController::compute(u64 input, double time_delta_coefficient) {

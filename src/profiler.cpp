@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <set>
 #include <dlfcn.h>
 #include <unistd.h>
 #include <stdint.h>
@@ -42,7 +43,6 @@
 #include "stackWalker.h"
 #include "symbols.h"
 #include "thread.h"
-#include "varint.inline.h"
 #include "vmStructs.h"
 #include "context.h"
 
@@ -74,22 +74,6 @@ enum StackRecovery {
     LAST_JAVA_PC  = (1 << 4),
     GC_TRACES     = (1 << 5),
 };
-
-struct MethodSample {
-    u64 samples;
-    u64 counter;
-
-    void add(u64 add_samples, u64 add_counter) {
-        samples += add_samples;
-        counter += add_counter;
-    }
-};
-
-typedef std::pair<std::string, MethodSample> NamedMethodSample;
-
-static bool sortByCounter(const NamedMethodSample& a, const NamedMethodSample& b) {
-    return a.second.counter > b.second.counter;
-}
 
 
 static inline int makeFrame(ASGCT_CallFrame* frames, jint type, jmethodID id) {
@@ -920,22 +904,6 @@ Engine* Profiler::selectAllocEngine(Arguments& args) {
     }
 }
 
-Engine* Profiler::activeEngine() {
-    switch (_event_mask) {
-        case EM_CPU:
-            return _cpu_engine;
-        case EM_WALL:
-            return _wall_engine;
-        case EM_ALLOC:
-            return _alloc_engine;
-        case EM_LOCK:
-            return &lock_tracer;
-        default:
-            Log::error("Unknown event_mask %d", _event_mask);
-            return NULL;
-    }
-}
-
 Error Profiler::checkJvmCapabilities() {
     if (!VMStructs::hasJavaThreadId()) {
         return Error("Could not find Thread ID field. Unsupported JVM?");
@@ -985,7 +953,7 @@ Error Profiler::start(Arguments& args, bool reset) {
         _total_samples = 0;
         memset(_failures, 0, sizeof(_failures));
 
-        // Reset dicrionaries and bitmaps
+        // Reset dictionaries and bitmaps
         lockAll();
         _class_map.clear();
         _call_trace_storage.clear();
@@ -1181,13 +1149,47 @@ Error Profiler::dump(const char* path, const int length) {
     }
 
     if (_state == RUNNING) {
-        LivenessTracker::instance()->flush();
+        std::set<int> thread_ids;
+        // flush the liveness tracker instance and note all the threads referenced by the live objects
+        LivenessTracker::instance()->flush(thread_ids);
+
         updateJavaThreadNames();
         updateNativeThreadNames();
         
         lockAll();
         Error err = _jfr.dump(path, length);
+        
+        // Reset dictionaries and bitmaps
+        _class_map.clear();
+        _call_trace_storage.clear();
         unlockAll();
+
+        // // Reset thread names and IDs
+        MutexLocker ml(_thread_names_lock);
+        if (thread_ids.empty()) {
+            // take the fast path
+            _thread_names.clear();
+            _thread_ids.clear();
+        } else {
+            // we need to honor the thread referenced from th liveness tracker
+            std::map<int, std::string>::iterator name_itr = _thread_names.begin();
+            while (name_itr != _thread_names.end()) {
+                if (thread_ids.find(name_itr->first) != thread_ids.end()) {
+                    name_itr = _thread_names.erase(name_itr);
+                } else {
+                    ++name_itr;
+                }
+            }
+            std::map<int, jlong>::iterator id_itr = _thread_ids.begin();
+            while (id_itr != _thread_ids.end()) {
+                if (thread_ids.find(name_itr->first) != thread_ids.end()) {
+                    id_itr = _thread_ids.erase(id_itr);
+                } else {
+                    ++id_itr;
+                }
+            }
+        }
+
         return err;
     }
 
@@ -1269,9 +1271,6 @@ Error Profiler::runInternal(Arguments& args, std::ostream& out) {
         case ACTION_VERSION:
             out << PROFILER_VERSION;
             out.flush();
-            break;
-        case ACTION_FULL_VERSION:
-            out << FULL_VERSION_STRING;
             break;
         default:
             break;

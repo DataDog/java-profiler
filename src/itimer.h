@@ -31,9 +31,6 @@ class ITimer : public Engine {
     static void signalHandlerJ9(int signo, siginfo_t* siginfo, void* ucontext);
 
   public:
-    const char* title() {
-        return "CPU profile";
-    }
 
     const char* units() {
         return "ns";

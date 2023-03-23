@@ -24,6 +24,8 @@
 #include "engine.h"
 #include "spinLock.h"
 
+#include <set>
+
 typedef struct TrackingEntry {
     jweak ref;
     AllocEvent alloc;
@@ -69,7 +71,7 @@ class LivenessTracker  {
 
     void cleanup_table();
 
-    void flush_table();
+    void flush_table(std::set<int> *tracked_thread_ids);
 
     void onGC();
     void runCleanup();
@@ -87,7 +89,7 @@ class LivenessTracker  {
     Error start(Arguments& args);
     void stop();
     void track(JNIEnv* env, AllocEvent &event, jint tid, jobject object, int num_frames, jvmtiFrameInfo* frames);
-    void flush();
+    void flush(std::set<int> &tracked_thread_ids);
 
     static void JNICALL GarbageCollectionFinish(jvmtiEnv *jvmti_env);
 };

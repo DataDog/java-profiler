@@ -58,10 +58,6 @@ class WallClock : public Engine {
         _running(false),
         _thread(0) {}
 
-    const char* title() {
-        return "Wall profile";
-    }
-
     const char* units() {
         return "ns";
     }

@@ -759,20 +759,6 @@ void PerfEvents::signalHandlerJ9(int signo, siginfo_t* siginfo, void* ucontext) 
     ioctl(siginfo->si_fd, PERF_EVENT_IOC_REFRESH, 1);
 }
 
-const char* PerfEvents::title() {
-    if (_event_type == NULL || _event_type->name == EVENT_CPU) {
-        return "CPU profile";
-    } else if (_event_type->type == PERF_TYPE_SOFTWARE || _event_type->type == PERF_TYPE_HARDWARE || _event_type->type == PERF_TYPE_HW_CACHE) {
-        return _event_type->name;
-    } else {
-        return "Flame Graph";
-    }
-}
-
-const char* PerfEvents::units() {
-    return _event_type == NULL || _event_type->name == EVENT_CPU ? "ns" : "total";
-}
-
 Error PerfEvents::check(Arguments& args) {
     // The official way of knowing if perf_event_open() support is enabled
     // is checking for the existence of the file /proc/sys/kernel/perf_event_paranoid
