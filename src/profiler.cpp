@@ -810,7 +810,7 @@ void Profiler::setupSignalHandlers() {
     if (orig_trapHandler == (void*)SIG_DFL || orig_trapHandler == (void*)SIG_IGN) {
         orig_trapHandler = NULL;
     }
-    if (VM::hotspot_version() > 0) {
+    if (VM::java_version() > 0) {
         // HotSpot tolerates interposed SIGSEGV/SIGBUS handler; other JVMs probably not
         orig_segvHandler = OS::replaceCrashHandler(segvHandler);
     }
@@ -981,7 +981,7 @@ Error Profiler::start(Arguments& args, bool reset) {
     }
 
     _safe_mode = args._safe_mode;
-    if (VM::hotspot_version() < 8) {
+    if (VM::java_version() < 8) {
         _safe_mode |= GC_TRACES | LAST_JAVA_PC;
     }
 
