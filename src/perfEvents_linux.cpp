@@ -32,7 +32,6 @@
 #include <sys/syscall.h>
 #include <linux/perf_event.h>
 #include "arch.h"
-#include "j9StackTraces.h"
 #include "debugSupport.h"
 #include "log.h"
 #include "os.h"
@@ -724,41 +723,6 @@ void PerfEvents::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     ioctl(siginfo->si_fd, PERF_EVENT_IOC_REFRESH, 1);
 }
 
-void PerfEvents::signalHandlerJ9(int signo, siginfo_t* siginfo, void* ucontext) {
-    if (siginfo->si_code <= 0) {
-        // Looks like an external signal; don't treat as a profiling event
-        return;
-    }
-
-    if (_enabled) {
-        u64 counter = readCounter(siginfo, ucontext);
-        J9StackTraceNotification notif = {
-            .env = NULL,
-            .counter = (u64)_interval,
-            .num_frames = 0, 
-            .truncated = false,
-            .reserved = 0
-        };
-        Shims::instance().setSighandlerTid(ProfiledThread::currentTid());
-        StackContext java_ctx;
-        notif.num_frames += _cstack == CSTACK_NO ? 0 : PerfEvents::walkKernel(ProfiledThread::currentTid(), notif.addr + notif.num_frames, MAX_J9_NATIVE_FRAMES - notif.num_frames, &java_ctx);
-        if (_cstack == CSTACK_DWARF) {
-            notif.num_frames += StackWalker::walkDwarf(ucontext, notif.addr + notif.num_frames, MAX_J9_NATIVE_FRAMES - notif.num_frames, &java_ctx, &notif.truncated);
-            Shims::instance().setSighandlerTid(-1);
-        } else {
-            notif.num_frames += StackWalker::walkFP(ucontext, notif.addr + notif.num_frames, MAX_J9_NATIVE_FRAMES - notif.num_frames, &java_ctx, &notif.truncated);
-            Shims::instance().setSighandlerTid(-1);
-        }
-        J9StackTraces::checkpoint(counter, &notif);
-    } else {
-        resetBuffer(ProfiledThread::currentTid());
-    }
-    
-
-    ioctl(siginfo->si_fd, PERF_EVENT_IOC_RESET, 0);
-    ioctl(siginfo->si_fd, PERF_EVENT_IOC_REFRESH, 1);
-}
-
 Error PerfEvents::check(Arguments& args) {
     // The official way of knowing if perf_event_open() support is enabled
     // is checking for the existence of the file /proc/sys/kernel/perf_event_paranoid
@@ -869,16 +833,7 @@ Error PerfEvents::start(Arguments& args) {
         _max_events = max_events;
     }
 
-    if (VM::isOpenJ9()) {
-        if (_cstack == CSTACK_DEFAULT) _cstack = CSTACK_DWARF;
-        OS::installSignalHandler(SIGPROF, signalHandlerJ9);
-        Error error = J9StackTraces::start(args);
-        if (error) {
-            return error;
-        }
-    } else {
-        OS::installSignalHandler(SIGPROF, signalHandler);
-    }
+    OS::installSignalHandler(SIGPROF, signalHandler);
 
     // Enable pthread hook before traversing currently running threads
     __atomic_store_n(_pthread_entry, (void*)pthread_setspecific_hook, __ATOMIC_RELEASE);
@@ -927,7 +882,6 @@ Error PerfEvents::start(Arguments& args) {
 
     if (err != 0) {
         __atomic_store_n(_pthread_entry, (void*)pthread_setspecific, __ATOMIC_RELEASE);
-        J9StackTraces::stop();
         Profiler::instance()->switchThreadEvents(JVMTI_DISABLE);
         if (err == EACCES || err == EPERM) {
             return Error("No access to perf events. Try --all-user option or 'sysctl kernel.perf_event_paranoid=1'");

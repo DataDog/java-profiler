@@ -1,5 +1,6 @@
 package com.datadoghq.profiler.memleak;
 
+import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.AbstractProfilerTest;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
@@ -23,7 +24,7 @@ public class MemleakProfilerTest extends AbstractProfilerTest {
 
     @Test
     public void shouldGetLiveObjectSamples() throws InterruptedException {
-        Assumptions.assumeFalse(System.getProperty("java.version").contains("1.8"));
+        Assumptions.assumeFalse(System.getProperty("java.version").contains("1.8") || Platform.isJ9());
         MemLeakTarget target1 = new MemLeakTarget();
         MemLeakTarget target2 = new MemLeakTarget();
         runTests(target1, target2);

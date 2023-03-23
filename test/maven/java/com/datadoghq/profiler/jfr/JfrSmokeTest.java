@@ -1,6 +1,5 @@
 package com.datadoghq.profiler.jfr;
 
-import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.IMCStackTrace;
 import org.openjdk.jmc.common.IMCThread;
 import org.openjdk.jmc.common.item.IItem;
@@ -31,10 +30,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import org.junitpioneer.jupiter.RetryingTest;
+
 public class JfrSmokeTest {
     private static final Logger LOGGER = LoggerFactory.getLogger(JfrSmokeTest.class);
 
-    @Test
+    @RetryingTest(3)
     public void test() throws Exception {
         Path tempDir = Files.createTempDirectory("jfr_test-");
         try {

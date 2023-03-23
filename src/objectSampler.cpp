@@ -108,7 +108,7 @@ Error ObjectSampler::check(Arguments& args) {
     CodeCache* libjvm = VMStructs::libjvm();
 
     // this symbol should be available given the current JVTMI heap sampler implementation
-    // Note: when/if that implementation would change in the future the alernatives should be added here
+    // Note: when/if that implementation would change in the future the alternatives should be added here
     const void* get_interval_ptr = libjvm->findSymbol("_ZN17ThreadHeapSampler21get_sampling_intervalEv");
     if (get_interval_ptr == NULL) {
         _sampling_interval = (int*) libjvm->findSymbol("_ZN17ThreadHeapSampler18_sampling_intervalE");

@@ -1,6 +1,7 @@
 package com.datadoghq.profiler.jfr;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.Platform;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -15,7 +16,7 @@ public abstract class JfrDumpTest extends AbstractProfilerTest {
     }
 
     public void runTest(String eventName, String ... patterns) throws Exception {
-        Assumptions.assumeFalse(System.getProperty("java.version").contains("1.8"));
+        Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
 
         for (int j = 0; j < 10; j++) {
             Path recording = Files.createTempFile("dump-", ".jfr");

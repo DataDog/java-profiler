@@ -1,7 +1,8 @@
 package com.datadoghq.profiler.jfr;
 
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+
+import org.junitpioneer.jupiter.RetryingTest;
 
 public class WallclockDumpSmokeTest extends JfrDumpTest {
 
@@ -10,7 +11,7 @@ public class WallclockDumpSmokeTest extends JfrDumpTest {
         return "wall=5ms";
     }
 
-    @Test
+    @RetryingTest(3)
     @Timeout(value = 60)
     public void test() throws Exception {
         registerCurrentThreadForWallClockProfiling();

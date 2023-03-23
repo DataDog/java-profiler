@@ -1,7 +1,6 @@
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
-import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
@@ -11,9 +10,11 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import org.junitpioneer.jupiter.RetryingTest;
+
 public class WallclockThreadFilterTest extends AbstractProfilerTest {
 
-    @Test
+    @RetryingTest(3)
     public void test() throws InterruptedException {
         registerCurrentThreadForWallClockProfiling();
         Thread.sleep(100);

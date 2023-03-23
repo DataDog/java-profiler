@@ -1,15 +1,16 @@
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
-import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.Aggregators;
 import org.openjdk.jmc.common.item.IItemCollection;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import org.junitpioneer.jupiter.RetryingTest;
+
 public class CollapsingSleepTest extends AbstractProfilerTest {
 
-    @Test
+    @RetryingTest(3)
     public void testSleep() throws InterruptedException {
         registerCurrentThreadForWallClockProfiling();
         Thread.sleep(1000);

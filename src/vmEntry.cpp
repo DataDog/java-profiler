@@ -115,8 +115,7 @@ bool VM::init(JavaVM* vm, bool attach) {
                    strstr(prop, "Dynamic Code Evolution") != NULL;
         is_zero_vm = strstr(prop, "Zero") != NULL;
         _zing = !_hotspot && strstr(prop, "Zing") != NULL;
-        _jvmti->Deallocate((unsigned char*)prop);
-    }
+        _openj9 = !_hotspot && strstr(prop, "OpenJ9") != NULL;
 
         _jvmti->Deallocate((unsigned char*)prop);
     }
@@ -134,7 +133,10 @@ bool VM::init(JavaVM* vm, bool attach) {
     if (_jvmti->GetSystemProperty(prop_name, &prop) == 0) {
         if (strncmp(prop, "1.8.0", 5) == 0) {
             _java_version = 8;
-            _java_update_version = atoi(prop + 6);
+            _java_update_version = atoi(prop + 5);
+        } else if (strncmp(prop, "8.0.", 4) == 0) {
+            _java_version = 8;
+            _java_update_version = atoi(prop + 4);
         } else {
             _java_version = atoi(prop);
             if (_java_version < 9) {

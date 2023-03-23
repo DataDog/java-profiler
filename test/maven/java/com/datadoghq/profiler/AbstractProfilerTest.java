@@ -197,9 +197,11 @@ public abstract class AbstractProfilerTest {
       IMemberAccessor<String, IItem> stackTraceAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(sample.getType());
       for (IItem item : sample) {
         String stackTrace = stackTraceAccessor.getMember(item);
-        unmatched.removeIf(stackTrace::contains);
-        if (unmatched.isEmpty()) {
-          break outer;
+        if (stackTrace != null) {
+          unmatched.removeIf(stackTrace::contains);
+          if (unmatched.isEmpty()) {
+            break outer;
+          }
         }
       }
     }
