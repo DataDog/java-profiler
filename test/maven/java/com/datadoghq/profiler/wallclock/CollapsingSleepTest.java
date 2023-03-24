@@ -6,11 +6,11 @@ import org.openjdk.jmc.common.item.IItemCollection;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import org.junitpioneer.jupiter.RetryingTest;
+import org.junit.jupiter.api.Test;
 
 public class CollapsingSleepTest extends AbstractProfilerTest {
 
-    @RetryingTest(3)
+    @Test
     public void testSleep() throws InterruptedException {
         registerCurrentThreadForWallClockProfiling();
         Thread.sleep(1000);

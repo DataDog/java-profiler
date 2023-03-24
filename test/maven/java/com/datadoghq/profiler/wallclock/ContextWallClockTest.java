@@ -25,7 +25,7 @@ import org.junit.jupiter.api.Assumptions;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import org.junitpioneer.jupiter.RetryingTest;
+import org.junit.jupiter.api.Test;
 
 public class ContextWallClockTest extends AbstractProfilerTest {
 
@@ -39,7 +39,7 @@ public class ContextWallClockTest extends AbstractProfilerTest {
         methodsToSpanIds = new ConcurrentHashMap<>();
     }
 
-    @RetryingTest(3)
+    @Test
     public void test() throws ExecutionException, InterruptedException {
         Assumptions.assumeFalse(Platform.isJ9() && Platform.isJavaVersion(17));
 

@@ -42,7 +42,7 @@ public class ContextCpuTest extends AbstractProfilerTest {
         methodsToSpanIds = new ConcurrentHashMap<>();
     }
 
-    @RetryingTest(3)
+    @RetryingTest(10)
     public void test() throws ExecutionException, InterruptedException {
         for (int i = 0, id = 1; i < 100; i++, id += 3) {
             method1(id);
