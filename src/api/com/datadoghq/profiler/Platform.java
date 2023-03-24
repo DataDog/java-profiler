@@ -102,7 +102,7 @@ public final class Platform {
     return results;
   }
 
-  private static Version parseJavaVersion(String javaVersion) {
+  static Version parseJavaVersion(String javaVersion) {
     // Remove pre-release part, usually -ea
     final int indexOfDash = javaVersion.indexOf('-');
     if (indexOfDash >= 0) {
