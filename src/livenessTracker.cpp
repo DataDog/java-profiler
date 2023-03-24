@@ -200,7 +200,7 @@ Error LivenessTracker::initialize(Arguments& args) {
     }
     _initialized = true;
 
-    if (VM::hotspot_version() < 11) {
+    if (VM::java_version() < 11) {
         Log::warn("Liveness tracking requires Java 11+");
         // disable liveness tracking
         _table_max_cap = 0;

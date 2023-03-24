@@ -55,6 +55,12 @@ class J9Ext {
     static jvmtiExtensionFunction _GetAllStackTracesExtended;
 
   public:
+    static bool can_use_ASGCT() {
+        return (VM::java_version() == 8 && VM::java_update_version() >= 362) ||
+                (VM::java_version() == 11 && VM::java_update_version() >= 18) ||
+                (VM::java_version() == 17 && VM::java_update_version() >= 6);
+    }
+
     static bool initialize(jvmtiEnv* jvmti, const void* j9thread_self);
 
     static int GetOSThreadID(jthread thread) {
@@ -78,6 +84,21 @@ class J9Ext {
         return JVMTI_EXT(_GetAllStackTracesExtended, jint, jint, void**, jint*)(
             _jvmti, SHOW_COMPILED_FRAMES | SHOW_INLINED_FRAMES,
             max_frame_count, stack_info_ptr, thread_count_ptr);
+    }
+
+    static jvmtiError GetStackTrace(jthread thread, jint start_depth, jint max_frame_count, ASGCT_CallFrame* frame_buffer, jint* count_ptr) {
+        jvmtiFrameInfoExtended buffer[max_frame_count];
+
+        jvmtiError err = GetStackTraceExtended(thread, start_depth, max_frame_count, buffer, count_ptr);
+        if (err) {
+            return err;
+        }
+        for (int j = 0; j < *count_ptr; j++) {
+            jvmtiFrameInfoExtended* fi = &buffer[j];
+            frame_buffer[j].method_id = fi->method;
+            frame_buffer[j].bci = FrameType::encode(fi->type, fi->location);
+        }
+        return JVMTI_ERROR_NONE;
     }
 
     static void* j9thread_self() {

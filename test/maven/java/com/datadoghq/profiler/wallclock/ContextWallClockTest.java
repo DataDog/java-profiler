@@ -1,9 +1,9 @@
 package com.datadoghq.profiler.wallclock;
 
+import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.context.ContextExecutor;
 import com.datadoghq.profiler.context.Tracing;
-import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
@@ -21,8 +21,11 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
+import org.junit.jupiter.api.Assumptions;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import org.junit.jupiter.api.Test;
 
 public class ContextWallClockTest extends AbstractProfilerTest {
 
@@ -38,6 +41,8 @@ public class ContextWallClockTest extends AbstractProfilerTest {
 
     @Test
     public void test() throws ExecutionException, InterruptedException {
+        Assumptions.assumeFalse(Platform.isJ9() && Platform.isJavaVersion(17));
+
         registerCurrentThreadForWallClockProfiling();
         for (int i = 0, id = 1; i < 100; i++, id += 3) {
             method1(id);

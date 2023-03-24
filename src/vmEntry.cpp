@@ -39,7 +39,8 @@ static Arguments _agent_args(true);
 JavaVM* VM::_vm;
 jvmtiEnv* VM::_jvmti = NULL;
 
-int VM::_hotspot_version = 0;
+int VM::_java_version = 0;
+int VM::_java_update_version = 0;
 bool VM::_openj9 = false;
 bool VM::_hotspot = false;
 bool VM::_zing = false;
@@ -114,19 +115,8 @@ bool VM::init(JavaVM* vm, bool attach) {
                    strstr(prop, "Dynamic Code Evolution") != NULL;
         is_zero_vm = strstr(prop, "Zero") != NULL;
         _zing = !_hotspot && strstr(prop, "Zing") != NULL;
-        _jvmti->Deallocate((unsigned char*)prop);
-    }
+        _openj9 = !_hotspot && strstr(prop, "OpenJ9") != NULL;
 
-    if (_hotspot && _jvmti->GetSystemProperty("java.vm.version", &prop) == 0) {
-        if (strncmp(prop, "25.", 3) == 0) {
-            _hotspot_version = 8;
-        } else if (strncmp(prop, "24.", 3) == 0) {
-            _hotspot_version = 7;
-        } else if (strncmp(prop, "20.", 3) == 0) {
-            _hotspot_version = 6;
-        } else if ((_hotspot_version = atoi(prop)) < 9) {
-            _hotspot_version = 9;
-        }
         _jvmti->Deallocate((unsigned char*)prop);
     }
 
@@ -138,7 +128,27 @@ bool VM::init(JavaVM* vm, bool attach) {
     profiler->updateSymbols(false);
 
     _openj9 = !_hotspot && J9Ext::initialize(_jvmti, profiler->resolveSymbol("j9thread_self*"));
-    _can_sample_objects = !_hotspot || hotspot_version() >= 11;
+
+    const char *prop_name = _openj9 ? "jdk.extensions.version" : "java.vm.version";
+    if (_jvmti->GetSystemProperty(prop_name, &prop) == 0) {
+        if (strncmp(prop, "1.8.0", 5) == 0) {
+            _java_version = 8;
+            _java_update_version = atoi(prop + 5);
+        } else if (strncmp(prop, "8.0.", 4) == 0) {
+            _java_version = 8;
+            _java_update_version = atoi(prop + 4);
+        } else {
+            _java_version = atoi(prop);
+            if (_java_version < 9) {
+                _java_version = 9;
+            }
+            // format is 11.0.17+8
+            // this shortcut for parsing the update version should hold till Java 99
+            _java_update_version = atoi(prop + 5);
+        }
+        _jvmti->Deallocate((unsigned char*)prop);
+    }
+    _can_sample_objects = !_hotspot || java_version() >= 11;
 
     CodeCache* lib = isOpenJ9()
         ? profiler->findJvmLibrary("libj9vm")
@@ -158,7 +168,7 @@ bool VM::init(JavaVM* vm, bool attach) {
         }
     }
 
-    if (!attach && hotspot_version() == 8 && OS::isLinux()) {
+    if (!attach && java_version() == 8 && OS::isLinux()) {
         // Workaround for JDK-8185348
         char* func = (char*)lib->findSymbol("_ZN6Method26checked_resolve_jmethod_idEP10_jmethodID");
         if (func != NULL) {
@@ -175,7 +185,7 @@ bool VM::init(JavaVM* vm, bool attach) {
 
     _can_sample_objects =
         potential_capabilities.can_generate_sampled_object_alloc_events
-            && (!_hotspot || hotspot_version() >= 11);
+            && (!_hotspot || java_version() >= 11);
 
     jvmtiCapabilities capabilities = {0};
     capabilities.can_generate_all_class_hook_events = 1;
@@ -215,7 +225,7 @@ bool VM::init(JavaVM* vm, bool attach) {
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_PREPARE, NULL);
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_DYNAMIC_CODE_GENERATED, NULL);
 
-    if (hotspot_version() == 0 || !CodeHeap::available()) {
+    if (java_version() == 0 || !CodeHeap::available()) {
         // Workaround for JDK-8173361: avoid CompiledMethodLoad events when possible
         _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_COMPILED_METHOD_LOAD, NULL);
     } else {
