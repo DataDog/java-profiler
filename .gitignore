@@ -1,5 +1,4 @@
-/build/
-/build/debug/
+**/build/
 /nbproject/
 /out/
 /.idea/
@@ -12,10 +11,10 @@
 .classpath
 .project
 .settings
+.gradle
 *.iml
 
 **/.resources/
-**/*.jar
 
 # ignore all temporary locations related to maven builds
 datadog/maven/tmp
@@ -24,3 +23,4 @@ datadog/maven/resources
 
 **/harness*
 **/launcher*
+/gradle.properties

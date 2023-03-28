@@ -1,0 +1,113 @@
+import java.nio.charset.Charset
+import java.nio.file.Files
+import java.nio.file.Paths
+
+buildscript {
+  repositories {
+    mavenLocal()
+    mavenCentral()
+    gradlePluginPortal()
+  }
+}
+
+def os() {
+  return org.gradle.internal.os.OperatingSystem.current()
+}
+
+def osIdentifier() {
+  if (os().isMacOsX()) {
+    return 'macos'
+  } else if (os().isLinux()) {
+    return 'linux'
+  }
+  throw new RuntimeException("Unknown OS: ${os().toString()}")
+}
+
+def arch() {
+  return System.getProperty('os.arch')
+}
+
+def archIdentifier() {
+  String reportedArch = System.getProperty('os.arch')
+  switch (reportedArch) {
+    case 'x86_64':
+    case 'amd64':
+      case 'k8': return 'x64'
+    case 'x86':
+    case 'i386':
+    case 'i486':
+    case 'i586':
+      case 'i686': return 'x86'
+    case 'ARM':
+      case 'aarch32': return 'arm'
+    case 'arm64':
+      case 'aarch64': return 'arm64'
+    default: throw new RuntimeException("Unknown arch type: ${reportedArch}")
+  }
+}
+
+def javaHome() {
+  return System.getProperty('java.home')
+}
+
+def containsArray(byte[] container, int offset, byte[] contained) {
+  for (int i = 0; i < contained.length; i++) {
+    int leftPos = offset + i
+    if (leftPos >= container.length) {
+      return false
+    }
+    if (container[leftPos] != contained[i]) {
+      return false
+    }
+  }
+  return true
+}
+
+/**
+ * There is information about the linking in the ELF file. Since properly parsing ELF is not
+ * trivial this code will attempt a brute-force approach and will scan the first 4096 bytes
+ * of the 'java' program image for anything prefixed with `/ld-` - in practice this will contain
+ * `/ld-musl` for musl systems and probably something else for non-musl systems (eg. `/ld-linux-...`).
+ * However, if such string is missing should indicate that the system is not a musl one.
+ */
+def isMusl() {
+  def magic = new byte[]{
+    127, 69, 76, 70
+  } // *ELF
+  def prefix = '/ld-'.getBytes(Charset.defaultCharset()) // '/ld-*'
+  def musl = 'musl'.getBytes(Charset.defaultCharset()) // 'musl'
+
+  java.nio.file.Path binary = Paths.get(javaHome(), "bin", "java")
+  byte[] buffer = new byte[4096]
+
+  try (InputStream  is = Files.newInputStream(binary)) {
+    int read = is.read(buffer, 0, 4)
+    if (read != 4 || !containsArray(buffer, 0, magic)) {
+      return false
+    }
+    read = is.read(buffer)
+    if (read <= 0) {
+      return false
+    }
+    int prefixPos = 0
+    for (int i = 0; i < read; i++) {
+      if (buffer[i] == prefix[prefixPos]) {
+        if (++prefixPos == prefix.length) {
+          return containsArray(buffer, i + 1, musl)
+        }
+      } else {
+        prefixPos = 0
+      }
+    }
+  }
+  return false
+}
+
+ext {
+  isMusl = this.&isMusl
+  os = this.&os
+  osIdentifier = this.&osIdentifier
+  arch = this.&arch
+  archIdentifier = this.&archIdentifier
+  javaHome = this.&javaHome
+}

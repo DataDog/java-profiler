@@ -1,0 +1,3 @@
+include ':ddprof-lib'
+include ':ddprof-test'
+include ':malloc-shim'
