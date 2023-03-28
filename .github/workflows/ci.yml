@@ -33,17 +33,6 @@ jobs:
           fi
         fi
 
-  cpp-check: 
-    runs-on: ubuntu-latest
-    needs: check-for-pr
-    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
-    steps:
-      - uses: actions/checkout@v3
-      - name: Setup
-        run: sudo apt -y update && sudo apt -y install cppcheck
-      - name: Check
-        run: make cppcheck
-
   build-linux-glibc:
     runs-on: ubuntu-latest
     needs: check-for-pr
@@ -53,7 +42,7 @@ jobs:
       - name: Clean
         run: make clean
       - name: Build
-        run: mvn package -DskipTests
+        run: "./gradlew :ddprof-lib:copyLibs -x test"
       - name: Upload temp build artifact
         uses: actions/upload-artifact@v3
         if: success()
@@ -73,11 +62,11 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Setup system
-        run: apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ git maven cppcheck jq >/dev/null
+        run: apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git maven cppcheck jq >/dev/null
       - name: Clean
         run: make clean
       - name: Build
-        run: mvn package -DskipTests
+        run: "./gradlew :ddprof-lib:copyLibs -x test"
       - name: Upload temp build artifact
         uses: actions/upload-artifact@v3
         if: success()

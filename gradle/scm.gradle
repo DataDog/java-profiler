@@ -1,0 +1,15 @@
+scmVersion {
+  tag {
+    prefix = 'v_'
+    versionSeparator = ''
+    initialVersion({config, position -> '0.28.0'})
+  }
+
+  versionIncrementer 'incrementMinor'
+
+  checks {
+    uncommittedChanges = true
+    aheadOfRemote = true
+    snapshotDependencies = false
+  }
+}

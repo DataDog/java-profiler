@@ -1,0 +1,204 @@
+plugins {
+    id 'cpp-library'
+    id 'java'
+    id 'maven-publish'
+    id 'signing'
+
+    id 'com.github.ben-manes.versions' version '0.27.0'
+    id "com.diffplug.spotless" version "6.11.0"
+}
+
+def libraryName = "ddprof"
+
+description = "Datadog Java Profiler Library"
+
+def libraryTargetPath() {
+    def musl = isMusl()
+    return "${projectDir}/build/classes/java/main/META-INF/native-libs/${osIdentifier()}-${archIdentifier()}${isMusl() ? '-musl' : ''}"
+}
+
+def librarySourcePath() {
+    def osarchext = ""
+    if (osIdentifier() == 'linux' && archIdentifier() != 'x64') {
+        osarchext = "x86-64"
+    } else if (osIdentifier() == 'macos') {
+        osarchext = archIdentifier() == 'x64' ? 'x86-64' : 'aarch64'
+    }
+    return "${projectDir}/build/lib/main/release/${osIdentifier()}/${osarchext}/libjavaProfiler.${osIdentifier() == 'macos' ? 'dylib' : 'so'}"
+}
+
+ext {
+    libraryTargetPath = this.&libraryTargetPath
+    librarySourcePath = this.&librarySourcePath
+}
+
+def isGitlabCI = System.getenv("GITLAB_CI") != null
+
+tasks.withType(CppCompile).configureEach {
+    onlyIf {
+        !project.hasProperty('skip-native')
+    }
+    def taskIncludes = ["${javaHome()}/include"]
+    def taskArgs = ["-fno-omit-frame-pointer", "-momit-leaf-frame-pointer", "-fvisibility=hidden", "-std=c++11", "-DPROFILER_VERSION=\"${version}\""]
+
+    if (os().isMacOsX()) {
+        taskIncludes.add "${javaHome()}/include/darwin"
+        taskArgs.addAll(["-D_XOPEN_SOURCE", "-D_DARWIN_C_SOURCE"])
+    } else if (os().isLinux()) {
+        taskIncludes.add "${javaHome()}/include/linux"
+        if (isMusl()) {
+            taskArgs.add '-D__musl__'
+        }
+    }
+
+    if (it.name.contains('Debug')) {
+        taskArgs.add "-DDEBUG"
+    }
+    
+    taskIncludes.add "${projectDir}/../malloc-shim/src/main/public"
+
+    includes {
+        taskIncludes
+    }
+
+    compilerArgs.addAll(taskArgs)
+
+}
+
+tasks.withType(LinkSharedLibrary) {
+    onlyIf {
+        !project.hasProperty('skip-native')
+    }
+    linkerArgs.addAll(["-ldl", "-lpthread", "-static-libstdc++"])
+    if (os().isLinux()) {
+        linkerArgs.addAll(["-Wl,-z,defs", "-Wl,-z,nodelete", "-lrt"])
+    }
+    linkerArgs.add '-v'
+}
+
+tasks.withType(StripSymbols) {
+    onlyIf {
+        !project.hasProperty('skip-native')
+    }
+}
+
+library {
+    baseName = "javaProfiler"
+    source.from file('src/main/cpp')
+    privateHeaders.from file('src/main/cpp')
+
+    targetMachines = [machines.macOS, machines.linux.x86_64]
+    linkage = [Linkage.SHARED]
+}
+
+
+dependencies {
+    project (':malloc-shim')
+}
+
+task copyLibs(type: Copy) {
+    dependsOn assemble
+
+    from file(librarySourcePath())
+    into file(libraryTargetPath())
+}
+
+task sourcesJar(type: Jar) {
+    from sourceSets.main.allJava
+    archiveBaseName = libraryName
+    archiveClassifier = "sources"
+    archiveVersion = version
+}
+
+task javadocJar(type: Jar) {
+    dependsOn javadoc
+    archiveBaseName = libraryName
+    archiveClassifier = 'javadoc'
+    archiveVersion = version
+    from javadoc.destinationDir
+}
+
+javadoc.dependsOn copyLibs
+
+task assembleJar(type: Jar) {
+    if (!project.hasProperty('skip-native')) {
+        dependsOn copyLibs
+    }
+    archiveBaseName = libraryName
+    archiveClassifier = ""
+    archiveVersion = version
+    from sourceSets.main.output.classesDirs
+}
+
+test {
+    useJUnitPlatform()
+}
+
+configurations {
+    assembled {
+        canBeConsumed = true
+        canBeResolved = false
+        extendsFrom implementation
+    }
+}
+
+artifacts {
+    assembled(assembleJar)
+    assembled(sourcesJar)
+    assembled(javadocJar)
+}
+
+publishing {
+    publications {
+        assembled(MavenPublication) { publication ->
+            publication.artifact project.tasks.assembleJar
+            publication.artifact sourcesJar
+            publication.artifact javadocJar
+
+            publication.groupId = 'com.datadoghq'
+            publication.artifactId = 'ddprof'
+        }
+    }
+}
+
+signing {
+    useInMemoryPgpKeys(System.getenv("GPG_PRIVATE_KEY"), System.getenv("GPG_PASSWORD"))
+    sign publishing.publications.assembled
+}
+
+tasks.withType(Sign).configureEach {
+    // Only sign in Gitlab CI
+    onlyIf { isGitlabCI || (System.getenv("GPG_PRIVATE_KEY") != null && System.getenv("GPG_PASSWORD") != null) }
+}
+
+/**
+ * State assertions below...
+ */
+
+gradle.taskGraph.whenReady { TaskExecutionGraph taskGraph ->
+    if (taskGraph.hasTask(publish) || taskGraph.hasTask("publishToSonatype")) {
+        assert project.findProperty("removeJarVersionNumbers") != true
+        if (taskGraph.hasTask("publishToSonatype")) {
+            assert System.getenv("SONATYPE_USERNAME") != null
+            assert System.getenv("SONATYPE_PASSWORD") != null
+            if (isCI) {
+                assert System.getenv("GPG_PRIVATE_KEY") != null
+                assert System.getenv("GPG_PASSWORD") != null
+            }
+        }
+    }
+}
+
+afterEvaluate {
+    assert description: "Project $project.path is published, must have a description"
+}
+
+tasks.withType(AbstractPublishToMaven).configureEach {
+    if (it.name.contains('AssembledPublication')) {
+        it.dependsOn assembleJar
+    }
+    rootProject.subprojects {
+        mustRunAfter tasks.matching { it instanceof VerificationTask }
+    }
+}
+

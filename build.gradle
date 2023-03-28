@@ -1,0 +1,69 @@
+buildscript {
+  dependencies {
+    classpath "pl.allegro.tech.build:axion-release-plugin:1.14.4"
+  }
+  repositories {
+    mavenLocal()
+    mavenCentral()
+    gradlePluginPortal()
+  }
+}
+
+plugins {
+  id 'pl.allegro.tech.build.axion-release' version '1.14.4'
+  id 'io.github.gradle-nexus.publish-plugin' version '1.0.0'
+  id "com.diffplug.spotless" version "6.11.0"
+}
+
+repositories {
+  mavenLocal()
+  mavenCentral()
+  gradlePluginPortal()
+
+  maven {
+    content {
+      includeGroup "com.datadoghq"
+    }
+    mavenContent {
+      snapshotsOnly()
+    }
+    url 'https://oss.sonatype.org/content/repositories/snapshots/'
+  }
+}
+
+apply from: "$rootDir/gradle/scm.gradle"
+apply from: "$rootDir/gradle/spotless.gradle"
+
+allprojects {
+  group = 'com.datadoghq'
+  version = scmVersion.version
+
+  apply from: rootProject.file('common.gradle')
+}
+
+apply from: rootProject.file('common.gradle')
+
+def isCI = System.getenv("CI") != null
+
+nexusPublishing {
+  repositories {
+    def forceLocal = project.hasProperty('forceLocal')
+
+    if (forceLocal && !isCI) {
+      local {
+        // For testing use with https://hub.docker.com/r/sonatype/nexus
+        // docker run --rm -d -p 8081:8081 --name nexus sonatype/nexus
+        // Doesn't work for testing releases though... (due to staging)
+        nexusUrl = uri("http://localhost:8081/nexus/content/repositories/releases/")
+        snapshotRepositoryUrl = uri("http://localhost:8081/nexus/content/repositories/snapshots/")
+        username = "admin"
+        password = "admin123"
+      }
+    } else {
+      sonatype {
+        username = System.getenv("SONATYPE_USERNAME")
+        password = System.getenv("SONATYPE_PASSWORD")
+      }
+    }
+  }
+}
