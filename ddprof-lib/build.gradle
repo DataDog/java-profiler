@@ -69,9 +69,12 @@ tasks.withType(LinkSharedLibrary) {
     onlyIf {
         !project.hasProperty('skip-native')
     }
-    linkerArgs.addAll(["-ldl", "-lpthread", "-static-libstdc++"])
+    linkerArgs.addAll(["-ldl", "-lpthread"])
     if (os().isLinux()) {
         linkerArgs.addAll(["-Wl,-z,defs", "-Wl,-z,nodelete", "-lrt"])
+        if (isMusl()) {
+            linkerArgs.add("-static-libstdc++")
+        }
     }
     linkerArgs.add '-v'
 }
