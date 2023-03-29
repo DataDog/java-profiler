@@ -31,7 +31,6 @@
 #include "objectSampler.h"
 #include "wallClock.h"
 #include "j9ObjectSampler.h"
-#include "j9StackTraces.h"
 #include "j9WallClock.h"
 #include "itimer.h"
 #include "dwarf.h"
@@ -810,7 +809,7 @@ void Profiler::setupSignalHandlers() {
     if (orig_trapHandler == (void*)SIG_DFL || orig_trapHandler == (void*)SIG_IGN) {
         orig_trapHandler = NULL;
     }
-    if (VM::hotspot_version() > 0) {
+    if (VM::java_version() > 0) {
         // HotSpot tolerates interposed SIGSEGV/SIGBUS handler; other JVMs probably not
         orig_segvHandler = OS::replaceCrashHandler(segvHandler);
     }
@@ -870,8 +869,8 @@ Engine* Profiler::selectCpuEngine(Arguments& args) {
     if (args._cpu < 0 && (args._event == NULL || strcmp(args._event, EVENT_NOOP) == 0)) {
         return &noop_engine;
     } else if (args._cpu >= 0 || strcmp(args._event, EVENT_CPU) == 0) {
-        if (VM::isOpenJ9()) {
-            // signal based samplers are unstable on J9
+        if (VM::isOpenJ9() && !J9Ext::can_use_ASGCT()) {
+            // signal based samplers are unstable on J9 before 8.0.362, 11.0.18 and 17.0.6
             return (Engine*)&j9_engine;
         }
         return !perf_events.check(args) ? (Engine*)&perf_events : &itimer;
@@ -888,7 +887,7 @@ Engine* Profiler::selectWallEngine(Arguments& args) {
     if (args._wall < 0 && (args._event == NULL || strcmp(args._event, EVENT_WALL) != 0)) {
         return &noop_engine;
     }
-    if (VM::isOpenJ9()) {
+    if (VM::isOpenJ9() && !J9Ext::can_use_ASGCT()) {
         j9_engine.sampleIdleThreads();
         return (Engine*)&j9_engine;
     }
@@ -896,7 +895,7 @@ Engine* Profiler::selectWallEngine(Arguments& args) {
 }
 
 Engine* Profiler::selectAllocEngine(Arguments& args) {
-    if (VM::canSampleObjects()) {
+    if (!VM::isOpenJ9() && VM::canSampleObjects()) {
         return static_cast<Engine*>(ObjectSampler::instance());
     } else {
         Log::info("Not enabling the alloc profiler, SampledObjectAlloc is not supported on this JVM");
@@ -981,7 +980,7 @@ Error Profiler::start(Arguments& args, bool reset) {
     }
 
     _safe_mode = args._safe_mode;
-    if (VM::hotspot_version() < 8) {
+    if (VM::java_version() < 8) {
         _safe_mode |= GC_TRACES | LAST_JAVA_PC;
     }
 

@@ -1,11 +1,12 @@
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
-import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.Aggregators;
 import org.openjdk.jmc.common.item.IItemCollection;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import org.junit.jupiter.api.Test;
 
 public class CollapsingSleepTest extends AbstractProfilerTest {
 

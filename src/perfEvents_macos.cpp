@@ -34,8 +34,6 @@ u64 PerfEvents::readCounter(siginfo_t* siginfo, void* ucontext) {
 void PerfEvents::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
 }
 
-void PerfEvents::signalHandlerJ9(int signo, siginfo_t* siginfo, void* ucontext) {
-}
 
 Error PerfEvents::check(Arguments& args) {
     return Error("PerfEvents are unsupported on macOS");

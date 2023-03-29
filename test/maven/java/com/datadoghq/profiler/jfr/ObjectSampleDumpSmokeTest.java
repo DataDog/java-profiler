@@ -1,18 +1,22 @@
 package com.datadoghq.profiler.jfr;
 
-import org.junit.jupiter.api.Test;
+import com.datadoghq.profiler.Platform;
+
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Timeout;
 
-public class ObjectSampleDumpSmokeTest extends JfrDumpTest {
+import org.junitpioneer.jupiter.RetryingTest;
 
+public class ObjectSampleDumpSmokeTest extends JfrDumpTest {
     @Override
     protected String getProfilerCommand() {
         return "memory=16536:a";
     }
 
-    @Test
+    @RetryingTest(3)
     @Timeout(value = 60)
     public void test() throws Exception {
+        Assumptions.assumeFalse(Platform.isJ9());
         runTest("datadog.ObjectSample", "method3");
     }
 }

@@ -3,7 +3,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.datadoghq</groupId>
     <artifactId>jplib</artifactId>
-    <version>0.27.0</version>
+    <version>0.28.0</version>
     <packaging>jar</packaging>
 
     <name>datadog-java-profiler</name>
@@ -153,6 +153,13 @@
             <version>5.8.2</version>
             <scope>test</scope>
         </dependency>
+        <!-- https://mvnrepository.com/artifact/org.junit-pioneer/junit-pioneer -->
+        <dependency>
+            <groupId>org.junit-pioneer</groupId>
+            <artifactId>junit-pioneer</artifactId>
+            <version>1.9.1</version>
+            <scope>test</scope>
+        </dependency>
         <!-- https://mvnrepository.com/artifact/org.slf4j/slf4j-simple -->
         <dependency>
             <groupId>org.slf4j</groupId>
@@ -173,6 +180,13 @@
             <groupId>org.openjdk.jol</groupId>
             <artifactId>jol-core</artifactId>
             <version>0.16</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-params</artifactId>
+            <version>5.8.2</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

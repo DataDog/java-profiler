@@ -342,7 +342,8 @@ void VMStructs::initUnsafeFunctions() {
     // https://bugs.openjdk.org/browse/JDK-8302317
     std::vector<const char*> unsafeMangledPrefixes {
             "_ZN18ZBarrierSetRuntime",
-            "_ZN9JavaCalls11call_helper"
+            "_ZN9JavaCalls11call_helper",
+            "_ZN14MM_RootScanner"
     };
 
     std::vector<const void*> symbols;
@@ -358,7 +359,7 @@ void VMStructs::initUnsafeFunctions() {
 void VMStructs::initJvmFunctions() {
     _get_stack_trace = (GetStackTraceFunc)_libjvm->findSymbolByPrefix("_ZN8JvmtiEnv13GetStackTraceEP10JavaThreadiiP");
 
-    if (VM::hotspot_version() == 8) {
+    if (VM::java_version() == 8) {
         _lock_func = (LockFunc)_libjvm->findSymbol("_ZN7Monitor28lock_without_safepoint_checkEv");
         _unlock_func = (LockFunc)_libjvm->findSymbol("_ZN7Monitor6unlockEv");
     }
@@ -404,7 +405,8 @@ void VMStructs::initThreadBridge(JNIEnv* env) {
 
 void VMStructs::initLogging(JNIEnv* env) {
     // Workaround for JDK-8238460
-    if (VM::hotspot_version() >= 15) {
+    // Can not be used for OpenJ9 because it will crash the VM
+    if (VM::java_version() >= 15 && !VM::isOpenJ9()) {
         VMManagement* management = VM::management();
         if (management != NULL) {
             jstring log_config = management->ExecuteDiagnosticCommand(env, env->NewStringUTF("VM.log list"));

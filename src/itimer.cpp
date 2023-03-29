@@ -17,7 +17,6 @@
 #include <sys/time.h>
 #include "debugSupport.h"
 #include "itimer.h"
-#include "j9StackTraces.h"
 #include "os.h"
 #include "profiler.h"
 #include "stackWalker.h"
@@ -46,25 +45,6 @@ void ITimer::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     Shims::instance().setSighandlerTid(-1);
 }
 
-void ITimer::signalHandlerJ9(int signo, siginfo_t* siginfo, void* ucontext) {
-    if (!_enabled) return;
-
-    J9StackTraceNotification notif = {
-        .env = NULL,
-        .counter = 0,
-        .num_frames = 0, 
-        .truncated = false,
-        .reserved = 0
-    };
-    StackContext java_ctx;
-    Shims::instance().setSighandlerTid(ProfiledThread::currentTid());
-    notif.num_frames = _cstack == CSTACK_NO ? 0 : _cstack == CSTACK_DWARF
-        ? StackWalker::walkDwarf(ucontext, notif.addr, MAX_J9_NATIVE_FRAMES, &java_ctx, &notif.truncated)
-        : StackWalker::walkFP(ucontext, notif.addr, MAX_J9_NATIVE_FRAMES, &java_ctx, &notif.truncated);
-    Shims::instance().setSighandlerTid(-1);
-    J9StackTraces::checkpoint(_interval, &notif);
-}
-
 Error ITimer::check(Arguments& args) {
     OS::installSignalHandler(SIGPROF, NULL, SIG_IGN);
 
@@ -86,16 +66,7 @@ Error ITimer::start(Arguments& args) {
     _interval = args._interval ? args._interval : DEFAULT_CPU_INTERVAL;
     _cstack = args._cstack;
 
-    if (VM::isOpenJ9()) {
-        if (_cstack == CSTACK_DEFAULT) _cstack = CSTACK_DWARF;
-        OS::installSignalHandler(SIGPROF, signalHandlerJ9);
-        Error error = J9StackTraces::start(args);
-        if (error) {
-            return error;
-        }
-    } else {
-        OS::installSignalHandler(SIGPROF, signalHandler);
-    }
+    OS::installSignalHandler(SIGPROF, signalHandler);
 
     time_t sec = _interval / 1000000000;
     suseconds_t usec = (_interval % 1000000000) / 1000;
@@ -111,6 +82,4 @@ Error ITimer::start(Arguments& args) {
 void ITimer::stop() {
     struct itimerval tv = {{0, 0}, {0, 0}};
     setitimer(ITIMER_PROF, &tv, NULL);
-
-    J9StackTraces::stop();
 }

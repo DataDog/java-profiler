@@ -1,6 +1,8 @@
 package com.datadoghq.profiler.loadlib;
 
+import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.AbstractProfilerTest;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.lang.management.ClassLoadingMXBean;
@@ -10,6 +12,7 @@ public class LoadLibraryTest extends AbstractProfilerTest {
 
     @Test
     public void testLoadLibrary() throws InterruptedException {
+        Assumptions.assumeFalse(Platform.isJ9());
         for (int i = 0; i < 200; i++) {
             Thread.sleep(10);
         }

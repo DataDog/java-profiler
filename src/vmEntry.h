@@ -113,7 +113,8 @@ class VM {
     static JavaVM* _vm;
     static jvmtiEnv* _jvmti;
 
-    static int _hotspot_version;
+    static int _java_version;
+    static int _java_update_version;
     static bool _openj9;
     static bool _hotspot;
     static bool _zing;
@@ -161,8 +162,12 @@ class VM {
         return _getManagement != NULL ? _getManagement(0x20030000) : NULL;
     }
 
-    static int hotspot_version() {
-        return _hotspot_version;
+    static int java_version() {
+        return _java_version;
+    }
+
+    static int java_update_version() {
+        return _java_update_version;
     }
 
     static bool isOpenJ9() {

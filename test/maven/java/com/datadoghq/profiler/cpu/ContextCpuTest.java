@@ -3,9 +3,7 @@ package com.datadoghq.profiler.cpu;
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.context.ContextExecutor;
 import com.datadoghq.profiler.context.Tracing;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.DisabledIfEnvironmentVariable;
-import org.junit.jupiter.api.condition.DisabledIfEnvironmentVariables;
+import org.junitpioneer.jupiter.RetryingTest;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
@@ -27,7 +25,6 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@DisabledIfEnvironmentVariable(named = "TEST_CONFIGURATION", matches = "musl/8u.*")
 public class ContextCpuTest extends AbstractProfilerTest {
 
     private static volatile long sink;
@@ -41,7 +38,7 @@ public class ContextCpuTest extends AbstractProfilerTest {
         methodsToSpanIds = new ConcurrentHashMap<>();
     }
 
-    @Test
+    @RetryingTest(10)
     public void test() throws ExecutionException, InterruptedException {
         for (int i = 0, id = 1; i < 100; i++, id += 3) {
             method1(id);

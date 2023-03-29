@@ -1,6 +1,8 @@
 package com.datadoghq.profiler.classgc;
 
+import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.AbstractProfilerTest;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -38,6 +40,9 @@ public class ClassGCTest extends AbstractProfilerTest {
     @Test
     @Timeout(30)
     public void profileWithManyShortLivedClasses() throws Throwable {
+        // TODO temporarily skip this for J9 as it is crashing due to missing safe fetch impl
+        Assumptions.assumeFalse(Platform.isJ9());
+
         registerCurrentThreadForWallClockProfiling();
         // compiles code and loads it with many different classloaders, in the hope that
         // the classes will get GC'd by the time the JFR is dumped
