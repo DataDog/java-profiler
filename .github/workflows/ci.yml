@@ -33,58 +33,21 @@ jobs:
           fi
         fi
 
-  build-linux-glibc:
-    runs-on: ubuntu-latest
-    needs: check-for-pr
-    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
-    steps:
-      - uses: actions/checkout@v3
-      - name: Clean
-        run: make clean
-      - name: Build
-        run: "./gradlew :ddprof-lib:copyLibs -x test"
-      - name: Upload temp build artifact
-        uses: actions/upload-artifact@v3
-        if: success()
-        with:
-          name: glibc-build
-          path: .
-
-  build-linux-musl:
-    runs-on: ubuntu-latest
-    needs: check-for-pr
-    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
-
-    container:
-      image: "bellsoft/liberica-openjdk-alpine-musl:11.0.17"
-      options: --cpus 2
-
-    steps:
-      - uses: actions/checkout@v3
-      - name: Setup system
-        run: apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git maven cppcheck jq >/dev/null
-      - name: Clean
-        run: make clean
-      - name: Build
-        run: "./gradlew :ddprof-lib:copyLibs -x test"
-      - name: Upload temp build artifact
-        uses: actions/upload-artifact@v3
-        if: success()
-        with:
-          name: musl-build
-          path: .
-
   test-linux-glibc:
-    needs: build-linux-glibc
+    needs: check-for-pr
+    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
     strategy:
       matrix:
-        java_version: [8u362+9, 11.0.18+10, 17.0.6+10, 20+37]
+        java_version: [8u362+9, 11.0.18+10, 17.0.6+10]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 180
     steps:
-      - uses: actions/download-artifact@v2
+      - uses: actions/checkout@v3
+      - name: Prepare build JDK
+        uses: actions/setup-java@v3
         with:
-          name: glibc-build
+          distribution: 'temurin'
+          java-version: "11"
       - name: Prepare JDK ${{ matrix.java_version }}
         run: |
             wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-amd64.tar.gz -O jdk.tar.gz
@@ -93,10 +56,8 @@ jobs:
       - name: Test
         run: |
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
-          export JAVA_HOME=$(pwd)/test_jdk
-          export PATH=$JAVA_HOME/bin:$PATH
-          chmod a+x test/*.sh 
-          ./test/test-all.sh
+          export JAVA_TEST_HOME=$(pwd)/test_jdk
+          ./gradlew :ddprof-test:test
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -110,25 +71,32 @@ jobs:
           path: build/
 
   test-linux-glibc-j9:
-    needs: build-linux-glibc
+    needs: check-for-pr
+    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
     strategy:
       matrix:
-        java_version: [8, 11, 17,]
+        java_version: [8, 11, 17]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 180
     steps:
-      - uses: actions/setup-java@v3
+      - uses: actions/checkout@v3
+      - name: Prepare test JDK
+        uses: actions/setup-java@v3
         with:
           distribution: 'adopt-openj9'
           java-version: "${{ matrix.java_version }}"
-      - uses: actions/download-artifact@v2
+      - name: Store JAVA_TEST_HOME
+        run: JAVA_PATH=$(which java) && echo "JAVA_TEST_HOME=${JAVA_PATH/\/bin\/java/\/}" >> $GITHUB_ENV
+      - name: Prepare build JDK
+        uses: actions/setup-java@v3
         with:
-          name: glibc-build
+          distribution: 'adopt-openj9'
+          java-version: "11"
       - name: Test
         run: |
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
-          chmod a+x test/*.sh 
-          ./test/test-all.sh
+          chmod a+x gradlew
+          ./gradlew :ddprof-test:test
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -142,21 +110,25 @@ jobs:
           path: build/
 
   test-linux-musl:
-    needs: build-linux-musl
+    needs: check-for-pr
+    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
     strategy:
       matrix:
-        java_version: [8u362+9, 11.0.18+10, 17.0.6+10, 20+37]
+        java_version: [8u362+9, 11.0.18+10, 17.0.6+10]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     container:
       image: "bellsoft/liberica-openjdk-alpine-musl:11.0.17"
       options: --cpus 2
     steps:
-      - uses: actions/download-artifact@v2
-        with:
-          name: musl-build
+      - uses: actions/checkout@v3
       - name: Setup system
-        run: apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ git maven cppcheck jq >/dev/null
+        run: apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq >/dev/null
+      - name: Prepare build JDK
+        run: |
+          wget -nv https://download.bell-sw.com/java/11.0.18+10/bellsoft-jdk11.0.18+10-linux-x64-musl.tar.gz -O jdk.tar.gz
+          tar xzf *.tar.gz
+          find . -type d -name 'jdk*' -maxdepth 1 | xargs -I {} mv {} build_jdk
       - name: Prepare JDK ${{ matrix.java_version }}
         run: |
             wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-x64-musl.tar.gz -O jdk.tar.gz
@@ -164,19 +136,19 @@ jobs:
             find . -type d -name 'jdk*' -maxdepth 1 | xargs -I {} mv {} test_jdk
       - name: Test
         run: |
-          export TEST_CONFIGURATION=musl/${{ matrix.java_version }}
-          export JAVA_HOME=$(pwd)/test_jdk
+          export JAVA_HOME=$(pwd)/build_jdk
           export PATH=$JAVA_HOME/bin:$PATH
-          chmod a+x test/*.sh
-          ./test/test-all.sh
+          export TEST_CONFIGURATION=musl/${{ matrix.java_version }}
+          export JAVA_TEST_HOME=$(pwd)/test_jdk
+          ./gradlew :ddprof-test:test
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
         with:
           name: reports.zip
           path: |
-            hs_err_*
-            target/surefire-reports/
+            ddprof-test/hs_err_*
+            ddprof-test/build/reports/tests
       - uses: actions/upload-artifact@v3
         if: success()
         with:
@@ -186,7 +158,7 @@ jobs:
   merge-upstream:
     if: startsWith(github.event.ref, 'refs/heads/release/') && endsWith(github.repository, 'java-profiler-library')
     runs-on: ubuntu-latest
-    needs: [test-linux-musl, test-linux-glibc]
+    needs: [test-linux-musl, test-linux-glibc, test-linux-glibc-j9]
     steps:
       - name: Upstream release
         uses: ./.github/workflows/upstream.yml@merge-upstream
