@@ -47,8 +47,8 @@ enum Action {
 };
 
 enum Ring {
-    RING_KERNEL = 1 << 1,
-    RING_USER   = 1 << 2,
+    RING_KERNEL = 1,
+    RING_USER   = 1 << 1,
     RING_ANY    = RING_KERNEL | RING_USER,
 };
 
