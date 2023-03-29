@@ -736,6 +736,7 @@ class Recording {
         buf->put64(_start_ticks);        // start ticks
         buf->put64(TSC::frequency());    // ticks per sec
         buf->put32(1);                   // features
+        flushIfNeeded(buf);
     }
 
     void writeMetadata(Buffer* buf) {
@@ -754,6 +755,7 @@ class Recording {
         writeElement(buf, JfrMetadata::root());
 
         buf->putVar32(metadata_start, buf->offset() - metadata_start);
+        flushIfNeeded(buf);
     }
 
     void writeElement(Buffer* buf, const Element* e) {
@@ -769,6 +771,7 @@ class Recording {
         for (int i = 0; i < e->_children.size(); i++) {
             writeElement(buf, e->_children[i]);
         }
+        flushIfNeeded(buf);
     }
 
     void writeRecordingInfo(Buffer* buf) {
@@ -833,6 +836,7 @@ class Recording {
         writeBoolSetting(buf, T_ACTIVE_RECORDING, "kernelSymbols", Symbols::haveKernelSymbols());
         writeStringSetting(buf, T_ACTIVE_RECORDING, "cpuEngine", Profiler::instance()->cpuEngine()->name());
         writeStringSetting(buf, T_ACTIVE_RECORDING, "wallEngine", Profiler::instance()->wallEngine()->name());
+        flushIfNeeded(buf);
     }
 
     void writeStringSetting(Buffer* buf, int category, const char* key, const char* value) {
@@ -864,6 +868,7 @@ class Recording {
             writeStringSetting(buf, category, key, base + offset);
             offset = ((int*)(base + offset))[-1];
         }
+        flushIfNeeded(buf);
     }
 
     void writeOsCpuInfo(Buffer* buf) {
@@ -891,6 +896,7 @@ class Recording {
         buf->putVar64(_available_processors);
         buf->putVar64(_available_processors);
         buf->putVar32(start, buf->offset() - start);
+        flushIfNeeded(buf);
     }
 
     void writeJvmInfo(Buffer* buf) {
@@ -917,6 +923,7 @@ class Recording {
         buf->putVar64(OS::processStartTime());
         buf->putVar64(OS::processId());
         buf->putVar32(start, buf->offset() - start);
+        flushIfNeeded(buf);
 
         jvmti->Deallocate((unsigned char*)jvm_version);
         jvmti->Deallocate((unsigned char*)jvm_name);
@@ -944,6 +951,7 @@ class Recording {
                 jvmti->Deallocate((unsigned char*)value);
             }
         }
+        flushIfNeeded(buf);
 
         jvmti->Deallocate((unsigned char*)keys);
     }
@@ -964,6 +972,7 @@ class Recording {
             buf->putVar64((uintptr_t) native_libs[i]->minAddress());
             buf->putVar64((uintptr_t) native_libs[i]->maxAddress());
             buf->putVar32(start, buf->offset() - start);
+            flushIfNeeded(buf);
         }
 
         _recorded_lib_count = native_lib_count;
@@ -991,6 +1000,7 @@ class Recording {
         writeConstantPoolSection(buf, T_STRING, Profiler::instance()->stringLabelMap());
         writeConstantPoolSection(buf, T_ATTRIBUTE_VALUE, Profiler::instance()->contextValueMap());
         writeLogLevels(buf);
+        flushIfNeeded(buf);
     }
 
     void writeFrameTypes(Buffer* buf) {
@@ -1003,6 +1013,7 @@ class Recording {
         buf->putVar32(FRAME_CPP);          buf->putUtf8("C++");
         buf->putVar32(FRAME_KERNEL);       buf->putUtf8("Kernel");
         buf->putVar32(FRAME_C1_COMPILED);  buf->putUtf8("C1 compiled");
+        flushIfNeeded(buf);
     }
 
     void writeThreadStates(Buffer* buf) {
@@ -1010,6 +1021,7 @@ class Recording {
         buf->put8(2);
         buf->putVar64(THREAD_RUNNING);     buf->putUtf8("STATE_RUNNABLE");
         buf->putVar64(THREAD_SLEEPING);    buf->putUtf8("STATE_SLEEPING");
+        flushIfNeeded(buf);
     }
 
     void writeThreads(Buffer* buf) {
@@ -1172,6 +1184,7 @@ class Recording {
         for (int i = LOG_TRACE; i <= LOG_ERROR; i++) {
             buf->putVar32(i);
             buf->putUtf8(Log::LEVEL_NAME[i]);
+            flushIfNeeded(buf);
         }
     }
 
@@ -1194,6 +1207,7 @@ class Recording {
         buf->putVar64(event->_weight);
         writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
+        flushIfNeeded(buf);
     }
 
     void recordMethodSample(Buffer* buf, int tid, u32 call_trace_id, ExecutionEvent* event) {
@@ -1206,6 +1220,7 @@ class Recording {
         buf->putVar64(event->_weight);
         writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
+        flushIfNeeded(buf);
     }
 
     void recordWallClockEpoch(Buffer* buf, WallClockEpochEvent* event) {
@@ -1246,6 +1261,7 @@ class Recording {
         buf->putFloat(event->_weight);
         writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
+        flushIfNeeded(buf);
     }
 
     void recordHeapLiveObject(Buffer* buf, int tid, u32 call_trace_id, ObjectLivenessEvent* event) {
@@ -1260,6 +1276,7 @@ class Recording {
         buf->putFloat(event->_alloc._weight);
         writeContext(buf, event->_ctx);
         buf->put8(start, buf->offset() - start);
+        flushIfNeeded(buf);
     }
 
     void recordMonitorBlocked(Buffer* buf, int tid, u32 call_trace_id, LockEvent* event) {
@@ -1274,6 +1291,7 @@ class Recording {
         buf->putVar64(event->_address);
         writeContext(buf, Contexts::get(tid));
         buf->put8(start, buf->offset() - start);
+        flushIfNeeded(buf);
     }
 
     void recordThreadPark(Buffer* buf, int tid, u32 call_trace_id, LockEvent* event) {
@@ -1288,6 +1306,7 @@ class Recording {
         buf->putVar64(MIN_JLONG);
         buf->putVar64(event->_address);
         buf->put8(start, buf->offset() - start);
+        flushIfNeeded(buf);
     }
 
     void recordCpuLoad(Buffer* buf, float proc_user, float proc_system, float machine_total) {
@@ -1298,6 +1317,7 @@ class Recording {
         buf->putFloat(proc_system);
         buf->putFloat(machine_total);
         buf->put8(start, buf->offset() - start);
+        flushIfNeeded(buf);
     }
 
     void addThread(int tid) {
