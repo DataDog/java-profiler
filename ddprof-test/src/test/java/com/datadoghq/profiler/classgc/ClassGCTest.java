@@ -45,7 +45,7 @@ public class ClassGCTest extends AbstractProfilerTest {
         // the classes will get GC'd by the time the JFR is dumped
         byte[] compiledClass = compile(CLASS_NAME, JAVA_CODE);
         MethodHandles.Lookup lookup = MethodHandles.publicLookup();
-        ClassValue<MethodHandle> cv = new ClassValue<>() {
+        ClassValue<MethodHandle> cv = new ClassValue<MethodHandle>() {
             @Override
             protected MethodHandle computeValue(Class<?> type) {
                 try {

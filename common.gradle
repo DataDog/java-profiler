@@ -47,7 +47,11 @@ def archIdentifier() {
 }
 
 def javaHome() {
-  return System.getProperty('java.home')
+  def jhome = System.getenv('JAVA_HOME')
+  if (jhome == null) {
+    jhome = System.getProperty('java.home')
+  }
+  return jhome
 }
 
 def containsArray(byte[] container, int offset, byte[] contained) {

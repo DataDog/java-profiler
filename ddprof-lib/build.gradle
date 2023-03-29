@@ -13,7 +13,6 @@ def libraryName = "ddprof"
 description = "Datadog Java Profiler Library"
 
 def libraryTargetPath() {
-    def musl = isMusl()
     return "${projectDir}/build/classes/java/main/META-INF/native-libs/${osIdentifier()}-${archIdentifier()}${isMusl() ? '-musl' : ''}"
 }
 
@@ -135,6 +134,14 @@ task assembleJar(type: Jar) {
 
 test {
     useJUnitPlatform()
+}
+
+tasks.withType(Test) {
+    def javaHome = System.getenv("JAVA_TEST_HOME")
+    if (javaHome == null) {
+        javaHome = System.getenv("JAVA_HOME")
+    }
+    executable = new File("${javaHome}", 'bin/java')
 }
 
 configurations {
