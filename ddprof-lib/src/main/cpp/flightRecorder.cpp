@@ -59,7 +59,7 @@ static jmethodID _start_method;
 static jmethodID _stop_method;
 static jmethodID _box_method;
 
-static const char* const SETTING_RING[] = {NULL, "kernel", "user"};
+static const char* const SETTING_RING[] = {NULL, "kernel", "user", "any"};
 static const char* const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 
 
@@ -819,7 +819,6 @@ class Recording {
             writeBoolSetting(buf, T_EXECUTION_SAMPLE, "enabled", true);
             writeIntSetting(buf, T_EXECUTION_SAMPLE, "interval", args._event != NULL ? args._interval : args._cpu);
         }
-
         writeBoolSetting(buf, T_METHOD_SAMPLE, "enabled", args._wall >= 0);
         if (args._wall >= 0) {
             writeIntSetting(buf, T_METHOD_SAMPLE, "interval", args._wall ? args._wall : DEFAULT_WALL_INTERVAL);
