@@ -1,6 +1,8 @@
 package com.datadoghq.profiler.alloc;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.Platform;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junitpioneer.jupiter.RetryingTest;
@@ -18,6 +20,8 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
 
   @RetryingTest(5)
   public void shouldGetObjectAllocationSamples() throws InterruptedException {
+    Assumptions.assumeFalse(Platform.isJ9());
+
     AllocatingTarget target1 = new AllocatingTarget();
     AllocatingTarget target2 = new AllocatingTarget();
     runTests(target1, target2);
