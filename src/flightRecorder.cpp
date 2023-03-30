@@ -49,6 +49,8 @@ const int RECORDING_BUFFER_LIMIT = RECORDING_BUFFER_SIZE - 4096;
 const int MAX_STRING_LENGTH = 8191;
 const u64 MAX_JLONG = 0x7fffffffffffffffULL;
 const u64 MIN_JLONG = 0x8000000000000000ULL;
+const int MAX_JFR_EVENT_SIZE = 256;
+const int JFR_EVENT_FLUSH_THRESHOLD = RECORDING_BUFFER_LIMIT - MAX_JFR_EVENT_SIZE;
 
 
 static SpinLock _rec_lock(1);
@@ -718,7 +720,7 @@ class Recording {
         buf->reset();
     }
 
-    void flushIfNeeded(Buffer* buf, int limit = RECORDING_BUFFER_LIMIT) {
+    void flushIfNeeded(Buffer* buf, int limit = JFR_EVENT_FLUSH_THRESHOLD) {
         if (buf->offset() >= limit) {
             flush(buf);
         }
@@ -1197,6 +1199,12 @@ class Recording {
         }
     }
 
+    void writeEventSizePrefix(Buffer* buf, int start) {
+        int size = buf->offset() - start;
+        assert(size < MAX_JFR_EVENT_SIZE);
+        buf->put8(start, size);
+    }
+
     void recordExecutionSample(Buffer* buf, int tid, u32 call_trace_id, ExecutionEvent* event) {
         int start = buf->skip(1);
         buf->putVar64(T_EXECUTION_SAMPLE);
@@ -1206,7 +1214,7 @@ class Recording {
         buf->putVar64(event->_thread_state);
         buf->putVar64(event->_weight);
         writeContext(buf, Contexts::get(tid));
-        buf->put8(start, buf->offset() - start);
+        writeEventSizePrefix(buf, start);
         flushIfNeeded(buf);
     }
 
@@ -1219,7 +1227,7 @@ class Recording {
         buf->putVar64(event->_thread_state);
         buf->putVar64(event->_weight);
         writeContext(buf, Contexts::get(tid));
-        buf->put8(start, buf->offset() - start);
+        writeEventSizePrefix(buf, start);
         flushIfNeeded(buf);
     }
 
@@ -1233,8 +1241,8 @@ class Recording {
         buf->putVar64(event->_num_failed_samples);
         buf->putVar64(event->_num_exited_threads);
         buf->putVar64(event->_num_permission_denied);
-        buf->put8(start, buf->offset() - start);
-        flushIfNeeded(buf); 
+        writeEventSizePrefix(buf, start);
+        flushIfNeeded(buf);
     }
 
     void recordTraceRoot(Buffer* buf, int tid, TraceRootEvent* event) {
@@ -1246,7 +1254,7 @@ class Recording {
         buf->put8(0);
         buf->putVar32(event->_label);
         buf->putVar64(event->_local_root_span_id);
-        buf->put8(start, buf->offset() - start);
+        writeEventSizePrefix(buf, start);
         flushIfNeeded(buf);
     }
 
@@ -1260,7 +1268,7 @@ class Recording {
         buf->putVar64(event->_size);
         buf->putFloat(event->_weight);
         writeContext(buf, Contexts::get(tid));
-        buf->put8(start, buf->offset() - start);
+        writeEventSizePrefix(buf, start);
         flushIfNeeded(buf);
     }
 
@@ -1275,7 +1283,7 @@ class Recording {
         buf->putVar64(event->_alloc._size);
         buf->putFloat(event->_alloc._weight);
         writeContext(buf, event->_ctx);
-        buf->put8(start, buf->offset() - start);
+        writeEventSizePrefix(buf, start);
         flushIfNeeded(buf);
     }
 
@@ -1290,7 +1298,7 @@ class Recording {
         buf->put8(0);
         buf->putVar64(event->_address);
         writeContext(buf, Contexts::get(tid));
-        buf->put8(start, buf->offset() - start);
+        writeEventSizePrefix(buf, start);
         flushIfNeeded(buf);
     }
 
@@ -1305,7 +1313,7 @@ class Recording {
         buf->putVar64(event->_timeout);
         buf->putVar64(MIN_JLONG);
         buf->putVar64(event->_address);
-        buf->put8(start, buf->offset() - start);
+        writeEventSizePrefix(buf, start);
         flushIfNeeded(buf);
     }
 
@@ -1316,7 +1324,7 @@ class Recording {
         buf->putFloat(proc_user);
         buf->putFloat(proc_system);
         buf->putFloat(machine_total);
-        buf->put8(start, buf->offset() - start);
+        writeEventSizePrefix(buf, start);
         flushIfNeeded(buf);
     }
 
