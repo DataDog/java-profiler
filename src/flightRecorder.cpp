@@ -50,7 +50,7 @@ const int MAX_STRING_LENGTH = 8191;
 const u64 MAX_JLONG = 0x7fffffffffffffffULL;
 const u64 MIN_JLONG = 0x8000000000000000ULL;
 const int MAX_JFR_EVENT_SIZE = 256;
-const int JFR_EVENT_FLUSH_THRESHOLD = RECORDING_BUFFER_LIMIT - MAX_JFR_EVENT_SIZE;
+const int JFR_EVENT_FLUSH_THRESHOLD = RECORDING_BUFFER_LIMIT;
 
 
 static SpinLock _rec_lock(1);
@@ -1168,9 +1168,11 @@ class Recording {
         buf->putVar64(type);
         buf->putVar64(constants.size());
         for (std::map<u32, const char*>::const_iterator it = constants.begin(); it != constants.end(); ++it) {
+            int length = strlen(it->second);
+            // 5 is max varint length
+            flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - length - 5);
             buf->putVar64(it->first | _base_id);
-            buf->putUtf8(it->second);
-            flushIfNeeded(buf);
+            buf->putUtf8(it->second, length);
         }
     }
 
