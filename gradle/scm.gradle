@@ -12,4 +12,9 @@ scmVersion {
     aheadOfRemote = true
     snapshotDependencies = false
   }
+
+  nextVersion {
+    suffix.set("SNAPSHOT")
+    separator.set("-")
+  }
 }

@@ -41,27 +41,28 @@ jobs:
       - name: Create release
         run: |
           if [ "${{ inputs.release_type }}" != "patch" ]&& [[ ${GITHUB_REF_NAME} =~ release/.* ]]; then
-            echo "::error Only patch release can be performed from a releaase branch"
+            echo "::error Only patch release can be performed from a release branch"
             exit 1
           fi
           if [ "${{ inputs.release_type }}" == "patch" ]&& [[ ! ${GITHUB_REF_NAME} =~ release/.* ]]; then
-            echo "::error::A patch release can be performed only from a releaase branch"
+            echo "::error::A patch release can be performed only from a release branch"
             exit 1
           fi
           if [ "${{ inputs.dry_run }}" == "true" ]; then
-            DRY_RUN="-n"
+            DRY_RUN="-Prelease.dryRun"
           fi
 
           cd java-profiler
           git checkout $GITHUB_REF_NAME
           # version = 0.1.0-SNAPSHOT
           if [ "${{ inputs.release_type }}" == "major" ]; then
-            mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.nextMajorVersion}.0.0-SNAPSHOT versions:commit
+            ./gradlew markNextVersion -Prelease.incrementer=incrementMajor
             # version = 1.0.0-SNAPSHOT
           elif [ "${{ inputs.release_type }}" == "patch" ]; then
-            mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.majorVersion}.\${parsedVersion.minorVersion}.\${parsedVersion.nextIncrementalVersion}-SNAPSHOT versions:commit
+            ./gradlew markNextVersion -Prelease.incrementer=incrementPatch
             # version = 0.1.1-SNAPSHOT
           fi
+          ./gradlew release
           CURRENT_VERSION=$(mvn --no-transfer-progress org.apache.maven.plugins:maven-help-plugin:2.1.1:evaluate -Dexpression=project.version | grep -E '^[0-9]+\..*' | sed "s#-SNAPSHOT##g")
           git checkout -b release/$CURRENT_VERSION
           mvn --no-transfer-progress -DskipTests versions:set -DnewVersion=$CURRENT_VERSION versions:commit
