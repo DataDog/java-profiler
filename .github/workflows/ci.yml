@@ -57,6 +57,7 @@ jobs:
         run: |
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
           export JAVA_TEST_HOME=$(pwd)/test_jdk
+          chmod a+x ddprof-lib/test.sh
           ./gradlew :ddprof-test:test
       - name: Upload logs
         uses: actions/upload-artifact@v3
@@ -96,6 +97,7 @@ jobs:
         run: |
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
           chmod a+x gradlew
+          chmod a+x ddprof-lib/test.sh
           ./gradlew :ddprof-test:test
       - name: Upload logs
         uses: actions/upload-artifact@v3
@@ -140,6 +142,7 @@ jobs:
           export PATH=$JAVA_HOME/bin:$PATH
           export TEST_CONFIGURATION=musl/${{ matrix.java_version }}
           export JAVA_TEST_HOME=$(pwd)/test_jdk
+          chmod a+x ddprof-lib/test.sh
           ./gradlew :ddprof-test:test
       - name: Upload logs
         uses: actions/upload-artifact@v3

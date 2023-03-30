@@ -12,6 +12,10 @@ def libraryName = "ddprof"
 
 description = "Datadog Java Profiler Library"
 
+if (rootDir.toString().endsWith("ddprof-lib")) {
+    apply from: rootProject.file('../common.gradle')
+}
+
 def libraryTargetPath() {
     return "${projectDir}/build/classes/java/main/META-INF/native-libs/${osIdentifier()}-${archIdentifier()}${isMusl() ? '-musl' : ''}"
 }
@@ -95,11 +99,20 @@ library {
 
 
 dependencies {
-    project (':malloc-shim')
+    if (os().isLinux()) {
+        project(':malloc-shim')
+    }
+}
+
+task cppTest(type: Exec) {
+    workingDir "$projectDir"
+    commandLine './test.sh'
+
+    dependsOn assemble
 }
 
 task copyLibs(type: Copy) {
-    dependsOn assemble
+    dependsOn cppTest
 
     from file(librarySourcePath())
     into file(libraryTargetPath())
