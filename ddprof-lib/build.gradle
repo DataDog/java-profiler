@@ -55,7 +55,8 @@ tasks.withType(CppCompile).configureEach {
     }
 
     if (it.name.contains('Debug')) {
-        taskArgs.add "-DDEBUG"
+//        taskArgs.addAll(["-DDEBUG", "-fsanitize=address"])
+        taskArgs.addAll(["-DDEBUG"])
     }
     
     taskIncludes.add "${projectDir}/../malloc-shim/src/main/public"
@@ -80,6 +81,10 @@ tasks.withType(LinkSharedLibrary) {
         }
     }
     linkerArgs.add '-v'
+
+//    if (it.name.contains('Debug')) {
+//        linkerArgs.add "-fsanitize=address"
+//    }
 }
 
 tasks.withType(StripSymbols) {

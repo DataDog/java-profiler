@@ -15,23 +15,23 @@ jobs:
     outputs:
       skip: ${{ steps.check.outputs.skip }}
     steps:
-    - name: Check if PR exists
-      id: check
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        if [ -z "${{ github.base_ref }}" ]; then
-          prs=$(gh pr list \
-              --repo "$GITHUB_REPOSITORY" \
-              --json baseRefName,headRefName \
-              --jq '
-                  map(select(.baseRefName == "${{ github.base_ref }}" and .headRefName == "${{ github.head_ref }}"))
-                  | length
-              ')
-          if ((prs > 0)); then
-              echo "skip=true" >> "$GITHUB_OUTPUT"
+      - name: Check if PR exists
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -z "${{ github.base_ref }}" ]; then
+            prs=$(gh pr list \
+                --repo "$GITHUB_REPOSITORY" \
+                --json baseRefName,headRefName \
+                --jq '
+                    map(select(.baseRefName == "${{ github.base_ref }}" and .headRefName == "${{ github.head_ref }}"))
+                    | length
+                ')
+            if ((prs > 0)); then
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+            fi
           fi
-        fi
 
   test-linux-glibc:
     needs: check-for-pr
@@ -50,9 +50,9 @@ jobs:
           java-version: "11"
       - name: Prepare JDK ${{ matrix.java_version }}
         run: |
-            wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-amd64.tar.gz -O jdk.tar.gz
-            tar xzf *.tar.gz
-            find . -type d -name 'jdk*' -maxdepth 1| xargs -I {} mv {} test_jdk
+          wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-amd64.tar.gz -O jdk.tar.gz
+          tar xzf *.tar.gz
+          find . -type d -name 'jdk*' -maxdepth 1| xargs -I {} mv {} test_jdk
       - name: Test
         run: |
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
@@ -63,8 +63,11 @@ jobs:
         uses: actions/upload-artifact@v3
         if: always()
         with:
-          name: hs_err_files.zip
-          path: hs_err_*
+          name: reports-linux-glibc-${{ matrix.java_version }}.zip
+          path: |
+            ddprof-test/hs_err_*
+            ddprof-test/build/reports/tests
+            ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
       - uses: actions/upload-artifact@v3
         if: success()
         with:
@@ -103,8 +106,11 @@ jobs:
         uses: actions/upload-artifact@v3
         if: always()
         with:
-          name: hs_err_files.zip
-          path: hs_err_*
+          name: reports-linux-glibc-j9-${{ matrix.java_version }}.zip
+          path: |
+            ddprof-test/hs_err_*
+            ddprof-test/build/reports/tests
+            ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
       - uses: actions/upload-artifact@v3
         if: success()
         with:
@@ -125,7 +131,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Setup system
-        run: apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq >/dev/null
+        run: apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake >/dev/null
       - name: Prepare build JDK
         run: |
           wget -nv https://download.bell-sw.com/java/11.0.18+10/bellsoft-jdk11.0.18+10-linux-x64-musl.tar.gz -O jdk.tar.gz
@@ -133,9 +139,9 @@ jobs:
           find . -type d -name 'jdk*' -maxdepth 1 | xargs -I {} mv {} build_jdk
       - name: Prepare JDK ${{ matrix.java_version }}
         run: |
-            wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-x64-musl.tar.gz -O jdk.tar.gz
-            tar xzf *.tar.gz
-            find . -type d -name 'jdk*' -maxdepth 1 | xargs -I {} mv {} test_jdk
+          wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-x64-musl.tar.gz -O jdk.tar.gz
+          tar xzf *.tar.gz
+          find . -type d -name 'jdk*' -maxdepth 1 | xargs -I {} mv {} test_jdk
       - name: Test
         run: |
           export JAVA_HOME=$(pwd)/build_jdk
@@ -148,10 +154,11 @@ jobs:
         uses: actions/upload-artifact@v3
         if: always()
         with:
-          name: reports.zip
+          name: reports-linux-musl-${{ matrix.java_version }}.zip
           path: |
             ddprof-test/hs_err_*
             ddprof-test/build/reports/tests
+            ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
       - uses: actions/upload-artifact@v3
         if: success()
         with:

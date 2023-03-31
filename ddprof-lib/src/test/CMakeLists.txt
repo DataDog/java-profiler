@@ -26,7 +26,7 @@ target_link_libraries(
 include_directories(../main/cpp)
 target_link_directories(
     ddprof_test PRIVATE
-    "../../build/lib/main/debug/linux/x86_64"
+    "../../build/lib/main/debug/linux"
     "../../build/lib/main/debug/linux/aarch64"
     "../../build/lib/main/debug/macos/aarch64"
     "../../build/lib/main/debug/macos/x86_64"

@@ -2,7 +2,7 @@ scmVersion {
   tag {
     prefix = 'v_'
     versionSeparator = ''
-    initialVersion({config, position -> '0.29.0'})
+    initialVersion({config, position -> '0.30.0'})
   }
 
   versionIncrementer 'incrementMinor'

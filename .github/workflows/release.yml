@@ -49,7 +49,7 @@ jobs:
             exit 1
           fi
           if [ "${{ inputs.dry_run }}" == "true" ]; then
-            DRY_RUN="-Prelease.dryRun"
+            DRY_RUN="--dry-run"
           fi
 
           cd java-profiler
@@ -62,28 +62,8 @@ jobs:
             ./gradlew markNextVersion -Prelease.incrementer=incrementPatch
             # version = 0.1.1-SNAPSHOT
           fi
-          ./gradlew release
-          CURRENT_VERSION=$(mvn --no-transfer-progress org.apache.maven.plugins:maven-help-plugin:2.1.1:evaluate -Dexpression=project.version | grep -E '^[0-9]+\..*' | sed "s#-SNAPSHOT##g")
+          CURRENT_VERSION=$(./gradlew createRelease | grep 'Creating tag' | cut -f2 -d'_')
           git checkout -b release/$CURRENT_VERSION
-          mvn --no-transfer-progress -DskipTests versions:set -DnewVersion=$CURRENT_VERSION versions:commit
           git add .
           git commit -m "Creating release $CURRENT_VERSION"
-          git tag v${CURRENT_VERSION}
-          git push $DRY_RUN --atomic --set-upstream origin release/$CURRENT_VERSION v${CURRENT_VERSION}
-      - name: Bump the dev version
-        run: |
-          if [ "${{ inputs.dry_run }}" == "true" ]; then
-            DRY_RUN="-n"
-          fi
-
-          cd java-profiler
-          git checkout main
-          if [ "${{ inputs.release_type }}" == "major" ]; then
-            mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.nextMajorVersion}.1.0-SNAPSHOT versions:commit
-          else 
-            mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.majorVersion}.\${parsedVersion.nextMinorVersion}.0-SNAPSHOT versions:commit
-          fi
-          NEW_VERSION=$(mvn --no-transfer-progress org.apache.maven.plugins:maven-help-plugin:2.1.1:evaluate -Dexpression=project.version | grep -E '^[0-9]+\..*')
-          git add .
-          git commit -m "Bumping the version to $NEW_VERSION"
-          git push $DRY_RUN
+          git push $DRY_RUN --atomic --set-upstream origin release/$CURRENT_VERSION v_${CURRENT_VERSION}

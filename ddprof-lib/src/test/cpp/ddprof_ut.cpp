@@ -7,6 +7,14 @@
         return len;
     }
 
+    TEST(Buffer, var64_encoding) {
+        RecordingBuffer buf;
+
+        u64 val = 2097150;
+
+        buf.putVar64(val);
+    }
+
     TEST(Buffer, skip_flush) {
         RecordingBuffer buf;
 
@@ -28,7 +36,7 @@
         EXPECT_DEATH({
             buf.skip(RECORDING_BUFFER_LIMIT);
             buf.skip(RECORDING_BUFFER_LIMIT);
-        }, "Assertion failed:.*");
+        }, "Assertion .*");
     }
 
     TEST(Buffer, writeString) {
@@ -46,7 +54,7 @@
 
         EXPECT_DEATH({
             buf.putUtf8(str);
-        }, "Assertion failed:.*");
+        }, "Assertion .*");
 
     }
 

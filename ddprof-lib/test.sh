@@ -4,7 +4,7 @@ set -e
 
 CMAKE=$(which cmake)
 if [ -z "$CMAKE" ]; then
-  echo "Please, install cmake"
+  echo "[ERROR] Please, install cmake"
   exit 1
 fi
 
