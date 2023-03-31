@@ -15,9 +15,14 @@ FetchContent_MakeAvailable(googletest)
 
 enable_testing()
 
+# Include all *.cpp files from the cpp folder
+file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS
+    "${PROJECT_SOURCE_DIR}/cpp/*.cpp"
+)
+
 add_executable(
   ddprof_test
-  cpp/ddprof_ut.cpp
+  ${SRC_FILES}
 )
 target_link_libraries(
   ddprof_test
