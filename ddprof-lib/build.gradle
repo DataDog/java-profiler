@@ -12,6 +12,7 @@ def libraryName = "ddprof"
 
 description = "Datadog Java Profiler Library"
 
+// this feels weird but it is the only way invoking `./gradlew :ddprof-lib:*` tasks will work
 if (rootDir.toString().endsWith("ddprof-lib")) {
     apply from: rootProject.file('../common.gradle')
 }
@@ -23,6 +24,7 @@ def libraryTargetPath() {
 def librarySourcePath() {
     def osarchext = ""
     if (osIdentifier() == 'linux' && archIdentifier() != 'x64') {
+        // when built on aarch64 the location the library is built in is 'x86-64' ¯\_(ツ)_/¯
         osarchext = "x86-64"
     } else if (osIdentifier() == 'macos') {
         osarchext = archIdentifier() == 'x64' ? 'x86-64' : 'aarch64'
@@ -37,6 +39,7 @@ ext {
 
 def isGitlabCI = System.getenv("GITLAB_CI") != null
 
+// configure the compiler here
 tasks.withType(CppCompile).configureEach {
     onlyIf {
         !project.hasProperty('skip-native')
@@ -55,7 +58,6 @@ tasks.withType(CppCompile).configureEach {
     }
 
     if (it.name.contains('Debug')) {
-//        taskArgs.addAll(["-DDEBUG", "-fsanitize=address"])
         taskArgs.addAll(["-DDEBUG"])
     }
     
@@ -69,6 +71,7 @@ tasks.withType(CppCompile).configureEach {
 
 }
 
+// configure linker
 tasks.withType(LinkSharedLibrary) {
     onlyIf {
         !project.hasProperty('skip-native')
@@ -81,10 +84,6 @@ tasks.withType(LinkSharedLibrary) {
         }
     }
     linkerArgs.add '-v'
-
-//    if (it.name.contains('Debug')) {
-//        linkerArgs.add "-fsanitize=address"
-//    }
 }
 
 tasks.withType(StripSymbols) {
@@ -98,6 +97,8 @@ library {
     source.from file('src/main/cpp')
     privateHeaders.from file('src/main/cpp')
 
+    // aarch64 support is still incubating
+    // for the time being an aarch64 linux machine will match 'machines.linux.x86_64'
     targetMachines = [machines.macOS, machines.linux.x86_64]
     linkage = [Linkage.SHARED]
 }
@@ -105,10 +106,13 @@ library {
 
 dependencies {
     if (os().isLinux()) {
+        // the malloc shim works only on linux
         project(':malloc-shim')
     }
 }
 
+// the bridge between the gradle build and gtests
+// the gradle gtest plugin(s) are quite unusable at this moment - using a shell script seems to be the only sane option
 task cppTest(type: Exec) {
     workingDir "$projectDir"
     commandLine './test.sh'
@@ -221,6 +225,7 @@ afterEvaluate {
     assert description: "Project $project.path is published, must have a description"
 }
 
+// we are publishing very customized artifacts - we are attaching the native library to the resulting JAR artifact
 tasks.withType(AbstractPublishToMaven).configureEach {
     if (it.name.contains('AssembledPublication')) {
         it.dependsOn assembleJar
