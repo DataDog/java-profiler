@@ -55,6 +55,8 @@ ContextPage Contexts::getPage(int tid) {
     return {.capacity = DD_CONTEXT_PAGE_SIZE * sizeof(Context), .storage = _pages[pageIndex]};
 }
 
+// The number of pages that can cover all allowed thread IDs
 int Contexts::getMaxPages() {
-    return OS::getMaxThreadId() / DD_CONTEXT_PAGE_SIZE;
+    // as usual, the pages are 0-based so the actual limit should the max page id + 1
+    return (OS::getMaxThreadId() / DD_CONTEXT_PAGE_SIZE) + 1;
 }
