@@ -4,6 +4,11 @@ project(ddprof-lib-test)
 # GoogleTest requires at least C++14
 set(CMAKE_CXX_STANDARD 14)
 
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+
 include(FetchContent)
 FetchContent_Declare(
   googletest
@@ -20,23 +25,28 @@ file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/cpp/*.cpp"
 )
 
+file(GLOB_RECURSE OBJ_FILES CONFIGURE_DEPENDS
+    "${PROJECT_SOURCE_DIR}/../../build/obj/main/debug/**/*.o"
+)
+
 add_executable(
-  ddprof_test
+  ddprof-lib-test
   ${SRC_FILES}
 )
+
 target_link_libraries(
-  ddprof_test
+  ddprof-lib-test
   GTest::gtest_main
+  ${OBJ_FILES}
 )
-include_directories(../main/cpp)
-target_link_directories(
-    ddprof_test PRIVATE
-    "../../build/lib/main/debug/linux"
-    "../../build/lib/main/debug/linux/aarch64"
-    "../../build/lib/main/debug/macos/aarch64"
-    "../../build/lib/main/debug/macos/x86_64"
-    )
-target_link_libraries(ddprof_test javaProfiler)
+
+
+include_directories(
+    ../main/cpp
+    $ENV{JAVA_HOME}/include
+    $ENV{JAVA_HOME}/include/darwin
+    $ENV{JAVA_HOME}/include/linux
+)
 
 include(GoogleTest)
-gtest_discover_tests(ddprof_test)
+gtest_discover_tests(ddprof-lib-test)

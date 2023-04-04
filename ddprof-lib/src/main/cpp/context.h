@@ -19,6 +19,7 @@
 
 #include "arch.h"
 #include "arguments.h"
+#include "os.h"
 
 static const u32 DD_TAGS_CAPACITY = 10;
 
@@ -51,6 +52,7 @@ typedef struct {
 class Contexts {
 
   private:
+    static int _max_pages;
     static Context** _pages;
     static void initialize(int pageIndex);
 
@@ -60,7 +62,7 @@ class Contexts {
     static Context& empty();
     // not to be called except to share with Java callers as a DirectByteBuffer
     static ContextPage getPage(int tid);
-    static int getMaxPages();
+    static int getMaxPages(int maxTid = OS::getMaxThreadId());
 };
 
 #endif /* _CONTEXT_H */

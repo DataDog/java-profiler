@@ -14,16 +14,19 @@
  * limitations under the License.
  */
 
+#include <assert.h>
 #include <cstring>
 #include "context.h"
 #include "os.h"
 
-Context** Contexts::_pages = new Context *[Contexts::getMaxPages()]();
+int Contexts::_max_pages = Contexts::getMaxPages();
+Context** Contexts::_pages = new Context *[_max_pages]();
 
 static Context DD_EMPTY_CONTEXT = {};
 
 Context& Contexts::get(int tid) {
     int pageIndex = tid >> DD_CONTEXT_PAGE_SHIFT;
+    assert(pageIndex < _max_pages);
     Context* page = _pages[pageIndex];
     if (page != NULL) {
         Context& context = page[tid & DD_CONTEXT_PAGE_MASK];
@@ -56,6 +59,10 @@ ContextPage Contexts::getPage(int tid) {
     return {.capacity = DD_CONTEXT_PAGE_SIZE * sizeof(Context), .storage = _pages[pageIndex]};
 }
 
-int Contexts::getMaxPages() {
-    return OS::getMaxThreadId() / DD_CONTEXT_PAGE_SIZE;
+// The number of pages that can cover all allowed thread IDs
+int Contexts::getMaxPages(int maxTid) {
+    // Max thread id is 0-based but exclusive - eg. value of 1024 will mean that max 1024 will be ever
+    // present. The following formula will 'round up' the number of pages necessary to hold the given
+    // number of threads.
+    return (int)((long)maxTid + DD_CONTEXT_PAGE_SIZE - 1) / DD_CONTEXT_PAGE_SIZE;
 }

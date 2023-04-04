@@ -1,6 +1,8 @@
     #include <gtest/gtest.h>
 
     #include "buffers.h"
+    #include "context.h"
+    #include "os.h"
 
     ssize_t callback(char* ptr, int len) {
         fprintf(stderr, "here\n");
@@ -56,6 +58,30 @@
             buf.putUtf8(str);
         }, "Assertion .*");
 
+    }
+
+    TEST(OS, threadId_sanity) {
+        EXPECT_FALSE(OS::getMaxThreadId() < 0);
+    }
+
+    TEST(Context, maxtid_sanity) {
+        int maxTid = OS::getMaxThreadId();
+
+        Context& ctx1 = Contexts::get(0);
+        Context& ctx2 = Contexts::get(maxTid - 1);
+
+        if (maxTid >= DD_CONTEXT_PAGE_SIZE) {
+            Context& ctx3 = Contexts::get(DD_CONTEXT_PAGE_SIZE);
+        }
+    }
+
+    TEST(Context, maxpages) {
+        EXPECT_EQ(0, Contexts::getMaxPages(0));
+        EXPECT_EQ(1, Contexts::getMaxPages(1) == 1);
+        EXPECT_EQ(1, Contexts::getMaxPages(DD_CONTEXT_PAGE_SIZE / 2));
+        EXPECT_EQ(1, Contexts::getMaxPages(DD_CONTEXT_PAGE_SIZE));
+        EXPECT_EQ(2, Contexts::getMaxPages(DD_CONTEXT_PAGE_SIZE + 1));
+        EXPECT_EQ(2048, Contexts::getMaxPages(2097152));
     }
 
     int main(int argc, char **argv) {
