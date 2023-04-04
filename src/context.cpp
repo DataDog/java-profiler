@@ -57,6 +57,8 @@ ContextPage Contexts::getPage(int tid) {
 
 // The number of pages that can cover all allowed thread IDs
 int Contexts::getMaxPages() {
-    // as usual, the pages are 0-based so the actual limit should the max page id + 1
-    return (OS::getMaxThreadId() / DD_CONTEXT_PAGE_SIZE) + 1;
+    // Max thread id is 0-based but exclusive - eg. value of 1024 will mean that max 1024 will be ever
+    // present. The following formula will 'round up' the number of pages necessary to hold the given
+    // number of threads.
+    return ((long)OS::getMaxThreadId() + DD_CONTEXT_PAGE_SIZE - 1) / DD_CONTEXT_PAGE_SIZE;
 }
