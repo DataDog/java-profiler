@@ -17,6 +17,7 @@
 #include <assert.h>
 #include <cstring>
 #include "context.h"
+#include "counters.h"
 #include "os.h"
 
 int Contexts::_max_pages = Contexts::getMaxPages();
@@ -49,7 +50,10 @@ void Contexts::initialize(int pageIndex) {
         memset(page, 0, capacity);
         if (!__sync_bool_compare_and_swap(&_pages[pageIndex], NULL, page)) {
             free(page);
-        } 
+        } else {
+            Counters::increment(Counters::CONTEXT_STORAGE_BYTES, capacity);
+            Counters::increment(Counters::CONTEXT_STORAGE_PAGES);
+        }
     }
 }
 

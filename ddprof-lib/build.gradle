@@ -60,6 +60,9 @@ tasks.withType(CppCompile).configureEach {
     if (it.name.contains('Debug')) {
         taskArgs.addAll(["-DDEBUG"])
     }
+
+    // TODO remove for release builds
+    taskArgs.addAll(["-DCOUNTERS"])
     
     taskIncludes.add "${projectDir}/../malloc-shim/src/main/public"
 

@@ -28,6 +28,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Java API for in-process profiling. Serves as a wrapper around
@@ -380,6 +382,23 @@ public final class JavaProfiler {
     }
 
     /**
+     * If the profiler is built in debug mode, returns counters recorded during profile execution.
+     * These are for whitebox testing and not intended for production use.
+     * @return a map of counters
+     */
+    public Map<String, Long> getDebugCounters() {
+        Map<String, Long> counters = new HashMap<>();
+        ByteBuffer buffer = getDebugCounters0().order(ByteOrder.LITTLE_ENDIAN);
+        if (buffer.hasRemaining()) {
+            String[] names = describeDebugCounters0();
+            for (int i = 0; i < names.length && i * 64 < buffer.capacity(); i++) {
+                counters.put(names[i], buffer.getLong(i * 64));
+            }
+        }
+        return counters;
+    }
+
+    /**
      * There is information about the linking in the ELF file. Since properly parsing ELF is not
      * trivial this code will attempt a brute-force approach and will scan the first 4096 bytes
      * of the 'java' program image for anything prefixed with `/ld-` - in practice this will contain
@@ -449,4 +468,8 @@ public final class JavaProfiler {
     private static native int registerConstant0(String value);
 
     private static native void dump0(String recordingFilePath);
+
+    private static native ByteBuffer getDebugCounters0();
+
+    private static native String[] describeDebugCounters0();
 }
