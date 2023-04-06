@@ -28,6 +28,7 @@
 #include "engine.h"
 #include "thread.h"
 #include "wallClock.h"
+#include "counters.h"
 
 static void throwNew(JNIEnv* env, const char* exception_class, const char* message) {
     jclass cls = env->FindClass(exception_class);
@@ -144,4 +145,28 @@ Java_com_datadoghq_profiler_JavaProfiler_dump0(JNIEnv* env, jobject unused, jstr
     const char* path_str = env->GetStringUTFChars(path, NULL);
     Profiler::instance()->dump(path_str, env->GetStringUTFLength(path));
     env->ReleaseStringUTFChars(path, path_str);
+}
+
+extern "C" DLLEXPORT jobject JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getDebugCounters0(JNIEnv* env, jobject unused) {
+    #ifdef COUNTERS
+    return env->NewDirectByteBuffer((void*) Counters::_counters, (jlong) Counters::size());
+    #else
+    return env->NewDirectByteBuffer(nullptr, 0);
+    #endif // COUNTERS
+}
+
+extern "C" DLLEXPORT jobjectArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_describeDebugCounters0(JNIEnv *env, jobject unused) {
+    #ifdef COUNTERS
+    std::vector<const char*> counter_names = Counters::describeCounters();
+    jobjectArray array = (jobjectArray) env->NewObjectArray(counter_names.size(),
+                                                            env->FindClass("java/lang/String"),env->NewStringUTF(""));
+    for (int i = 0; i < counter_names.size(); i++) {
+        env->SetObjectArrayElement(array, i, env->NewStringUTF(counter_names.at(i)));
+    }
+    return array;
+    #else
+    return nullptr;
+    #endif // COUNTERS
 }

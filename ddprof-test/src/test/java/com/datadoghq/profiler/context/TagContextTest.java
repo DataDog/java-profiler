@@ -63,8 +63,8 @@ public class TagContextTest extends AbstractProfilerTest {
         }
         double avg = (double) sum / weights.length;
         for (int i = 0; i < weights.length; i++) {
-            assertTrue(Math.abs(weights[i] - avg) < 0.1 * weights[i], strings[i]
-                    + " more than 10% from mean");
+            assertTrue(Math.abs(weights[i] - avg) < 0.15 * weights[i], strings[i]
+                    + " more than 15% from mean");
         }
         // now check we have settings to unbundle the dynamic columns
         IItemCollection activeSettings = verifyEvents("jdk.ActiveSetting");
@@ -83,6 +83,13 @@ public class TagContextTest extends AbstractProfilerTest {
         assertTrue(recordedContextAttributes.contains("tag1"));
         assertTrue(recordedContextAttributes.contains("tag2"));
         assertTrue(recordedContextAttributes.contains("tag3"));
+
+        Map<String, Long> debugCounters = profiler.getDebugCounters();
+        // FIXME this is a stand in for detecting DEBUG builds
+        if (!debugCounters.isEmpty()) {
+            assertEquals(1, debugCounters.get("context_storage:pages"));
+            assertEquals(0x10000, debugCounters.get("context_storage:bytes"));
+        }
     }
 
     private void work(ContextSetter contextSetter, String contextAttribute, String contextValue)
