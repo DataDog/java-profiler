@@ -22,6 +22,9 @@ dependencies {
 }
 
 test {
+    onlyIf {
+        !project.hasProperty('skip-tests')
+    }
     useJUnitPlatform()
     jvmArgs '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true'
 }

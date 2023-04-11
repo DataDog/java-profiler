@@ -117,6 +117,9 @@ dependencies {
 // the bridge between the gradle build and gtests
 // the gradle gtest plugin(s) are quite unusable at this moment - using a shell script seems to be the only sane option
 task cppTest(type: Exec) {
+    onlyIf {
+        !project.hasProperty('skip-tests')
+    }
     workingDir "$projectDir"
     commandLine './test.sh'
 
@@ -158,10 +161,16 @@ task assembleJar(type: Jar) {
 }
 
 test {
+    onlyIf {
+        !project.hasProperty('skip-tests')
+    }
     useJUnitPlatform()
 }
 
 tasks.withType(Test) {
+    onlyIf {
+        !project.hasProperty('skip-tests')
+    }
     def javaHome = System.getenv("JAVA_TEST_HOME")
     if (javaHome == null) {
         javaHome = System.getenv("JAVA_HOME")
