@@ -1,6 +1,6 @@
 buildscript {
   dependencies {
-    classpath "pl.allegro.tech.build:axion-release-plugin:1.14.4"
+    classpath "pl.allegro.tech.build:axion-release-plugin:1.15.0"
   }
   repositories {
     mavenLocal()

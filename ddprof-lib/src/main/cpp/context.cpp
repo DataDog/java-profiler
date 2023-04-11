@@ -68,5 +68,9 @@ int Contexts::getMaxPages(int maxTid) {
     // Max thread id is 0-based but exclusive - eg. value of 1024 will mean that max 1024 will be ever
     // present. The following formula will 'round up' the number of pages necessary to hold the given
     // number of threads.
-    return (int)((long)maxTid + DD_CONTEXT_PAGE_SIZE - 1) / DD_CONTEXT_PAGE_SIZE;
+
+    //! the next sequence of computation and static cast to int needs to be split into two statements
+    //  - otherwise the gtest will crash and burn while linking
+    long ret = ((long)maxTid + DD_CONTEXT_PAGE_SIZE - 1) / DD_CONTEXT_PAGE_SIZE;
+    return (int)ret;
 }
