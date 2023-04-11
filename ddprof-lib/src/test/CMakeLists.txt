@@ -9,7 +9,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-include(CMakePrintHelpers)
 include(FetchContent)
 FetchContent_Declare(
   googletest
@@ -39,7 +38,9 @@ file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/../main/cpp/counters.cpp"
 )
 
-cmake_print_variables(SRC_FILES PROJECT_SOURCE_DIR CMAKE_SYSTEM_NAME)
+# uncomment the following lines to print out various build related variables
+# include(CMakePrintHelpers)
+# cmake_print_variables(SRC_FILES PROJECT_SOURCE_DIR CMAKE_SYSTEM_NAME)
 
 add_executable(
   ddprof-lib-test

@@ -10,7 +10,8 @@ if [ -z "$CMAKE" ]; then
   exit 1
 fi
 
+TARGET=${HERE}/build/cmake
 cd ${HERE}/src/test
-cmake -Wno-dev -S . -B build
-cmake --build build
-cd build && ctest
+cmake -Wno-dev -S . -B ${TARGET}
+cmake --build ${TARGET}
+cd ${TARGET} && ctest
