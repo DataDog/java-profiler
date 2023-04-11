@@ -41,48 +41,29 @@ jobs:
       - name: Create release
         run: |
           if [ "${{ inputs.release_type }}" != "patch" ]&& [[ ${GITHUB_REF_NAME} =~ release/.* ]]; then
-            echo "::error Only patch release can be performed from a releaase branch"
+            echo "::error Only patch release can be performed from a release branch"
             exit 1
           fi
           if [ "${{ inputs.release_type }}" == "patch" ]&& [[ ! ${GITHUB_REF_NAME} =~ release/.* ]]; then
-            echo "::error::A patch release can be performed only from a releaase branch"
+            echo "::error::A patch release can be performed only from a release branch"
             exit 1
           fi
           if [ "${{ inputs.dry_run }}" == "true" ]; then
-            DRY_RUN="-n"
+            DRY_RUN="--dry-run"
           fi
 
           cd java-profiler
           git checkout $GITHUB_REF_NAME
           # version = 0.1.0-SNAPSHOT
           if [ "${{ inputs.release_type }}" == "major" ]; then
-            mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.nextMajorVersion}.0.0-SNAPSHOT versions:commit
+            ./gradlew markNextVersion -Prelease.incrementer=incrementMajor
             # version = 1.0.0-SNAPSHOT
           elif [ "${{ inputs.release_type }}" == "patch" ]; then
-            mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.majorVersion}.\${parsedVersion.minorVersion}.\${parsedVersion.nextIncrementalVersion}-SNAPSHOT versions:commit
+            ./gradlew markNextVersion -Prelease.incrementer=incrementPatch
             # version = 0.1.1-SNAPSHOT
           fi
-          CURRENT_VERSION=$(mvn --no-transfer-progress org.apache.maven.plugins:maven-help-plugin:2.1.1:evaluate -Dexpression=project.version | grep -E '^[0-9]+\..*' | sed "s#-SNAPSHOT##g")
+          CURRENT_VERSION=$(./gradlew createRelease | grep 'Creating tag' | cut -f2 -d'_')
           git checkout -b release/$CURRENT_VERSION
-          mvn --no-transfer-progress -DskipTests versions:set -DnewVersion=$CURRENT_VERSION versions:commit
           git add .
           git commit -m "Creating release $CURRENT_VERSION"
-          git tag v${CURRENT_VERSION}
-          git push $DRY_RUN --atomic --set-upstream origin release/$CURRENT_VERSION v${CURRENT_VERSION}
-      - name: Bump the dev version
-        run: |
-          if [ "${{ inputs.dry_run }}" == "true" ]; then
-            DRY_RUN="-n"
-          fi
-
-          cd java-profiler
-          git checkout main
-          if [ "${{ inputs.release_type }}" == "major" ]; then
-            mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.nextMajorVersion}.1.0-SNAPSHOT versions:commit
-          else 
-            mvn --no-transfer-progress build-helper:parse-version versions:set -DnewVersion=\${parsedVersion.majorVersion}.\${parsedVersion.nextMinorVersion}.0-SNAPSHOT versions:commit
-          fi
-          NEW_VERSION=$(mvn --no-transfer-progress org.apache.maven.plugins:maven-help-plugin:2.1.1:evaluate -Dexpression=project.version | grep -E '^[0-9]+\..*')
-          git add .
-          git commit -m "Bumping the version to $NEW_VERSION"
-          git push $DRY_RUN
+          git push $DRY_RUN --atomic --set-upstream origin release/$CURRENT_VERSION v_${CURRENT_VERSION}
