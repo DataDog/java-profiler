@@ -21,7 +21,7 @@ def libraryTargetPath() {
     return "${projectDir}/build/classes/java/main/META-INF/native-libs/${osIdentifier()}-${archIdentifier()}${isMusl() ? '-musl' : ''}"
 }
 
-def librarySourcePath() {
+def librarySourcePath(boolean debug = false) {
     def osarchext = ""
     if (osIdentifier() == 'linux' && archIdentifier() != 'x64') {
         // when built on aarch64 the location the library is built in is 'x86-64' ¯\_(ツ)_/¯
@@ -29,7 +29,8 @@ def librarySourcePath() {
     } else if (osIdentifier() == 'macos') {
         osarchext = archIdentifier() == 'x64' ? 'x86-64' : 'aarch64'
     }
-    return "${projectDir}/build/lib/main/release/${osIdentifier()}/${osarchext}/libjavaProfiler.${osIdentifier() == 'macos' ? 'dylib' : 'so'}"
+    def libsDir = debug ? "debug" : "release"
+    return "${projectDir}/build/lib/main/${libsDir}/${osIdentifier()}/${osarchext}/libjavaProfiler.${osIdentifier() == 'macos' ? 'dylib' : 'so'}"
 }
 
 ext {
@@ -58,11 +59,8 @@ tasks.withType(CppCompile).configureEach {
     }
 
     if (it.name.contains('Debug')) {
-        taskArgs.addAll(["-DDEBUG"])
+        taskArgs.addAll(["-DDEBUG", "-DCOUNTERS"])
     }
-
-    // TODO remove for release builds
-    taskArgs.addAll(["-DCOUNTERS"])
     
     taskIncludes.add "${projectDir}/../malloc-shim/src/main/public"
 
@@ -133,6 +131,15 @@ task copyLibs(type: Copy) {
     into file(libraryTargetPath())
 }
 
+task copyDebugLibs(type: Copy) {
+    // This must depend on copyLibs as Gradle detects that this task is using the same target path
+    // and keeps on complaining about undeclared inputs
+    dependsOn copyLibs
+
+    from file(librarySourcePath(true))
+    into file(libraryTargetPath())
+}
+
 task sourcesJar(type: Jar) {
     from sourceSets.main.allJava
     archiveBaseName = libraryName
@@ -156,6 +163,16 @@ task assembleJar(type: Jar) {
     }
     archiveBaseName = libraryName
     archiveClassifier = ""
+    archiveVersion = version
+    from sourceSets.main.output.classesDirs
+}
+
+task assembleDebugJar(type: Jar) {
+    if (!project.hasProperty('skip-native')) {
+        dependsOn copyDebugLibs
+    }
+    archiveBaseName = libraryName
+    archiveClassifier = "debug"
     archiveVersion = version
     from sourceSets.main.output.classesDirs
 }
@@ -184,12 +201,18 @@ configurations {
         canBeResolved = false
         extendsFrom implementation
     }
+    debug {
+        canBeConsumed = true
+        canBeResolved = false
+        extendsFrom implementation
+    }
 }
 
 artifacts {
     assembled(assembleJar)
     assembled(sourcesJar)
     assembled(javadocJar)
+    debug(assembleDebugJar)
 }
 
 publishing {
