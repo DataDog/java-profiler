@@ -47,10 +47,11 @@ struct DictTable {
 class Dictionary {
   private:
     DictTable* _table;
+    const int _id;
     volatile unsigned int _base_index;
     volatile int _size;
 
-    static void clear(DictTable* table);
+    static void clear(DictTable* table, int id);
 
     static unsigned int hash(const char* key, size_t length);
 
@@ -59,7 +60,16 @@ class Dictionary {
     unsigned int lookup(const char* key, size_t length, bool for_insert, unsigned int sentinel);
 
   public:
-    Dictionary();
+    Dictionary() : _id(0) {
+        _table = (DictTable*)calloc(1, sizeof(DictTable));
+        _table->base_index = _base_index = 1;
+        _size = 0;
+    }
+    Dictionary(int id) : _id(id) {
+        _table = (DictTable*)calloc(1, sizeof(DictTable));
+        _table->base_index = _base_index = 1;
+        _size = 0;
+    }
     ~Dictionary();
 
     void clear();

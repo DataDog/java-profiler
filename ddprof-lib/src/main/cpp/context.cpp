@@ -51,8 +51,8 @@ void Contexts::initialize(int pageIndex) {
         if (!__sync_bool_compare_and_swap(&_pages[pageIndex], NULL, page)) {
             free(page);
         } else {
-            Counters::increment(Counters::CONTEXT_STORAGE_BYTES, capacity);
-            Counters::increment(Counters::CONTEXT_STORAGE_PAGES);
+            Counters::increment(CONTEXT_STORAGE_BYTES, capacity);
+            Counters::increment(CONTEXT_STORAGE_PAGES);
         }
     }
 }

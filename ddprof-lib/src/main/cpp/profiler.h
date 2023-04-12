@@ -170,7 +170,11 @@ class Profiler {
         _call_stub_begin(NULL),
         _call_stub_end(NULL),
         _dlopen_entry(NULL),
-        _num_context_attributes(0) {
+        _num_context_attributes(0),
+        _class_map(1),
+        _symbol_map(2),
+        _string_label_map(3),
+        _context_value_map(4) {
 
         for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
             _calltrace_buffer[i] = NULL;

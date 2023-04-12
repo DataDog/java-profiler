@@ -9,10 +9,13 @@ import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.unit.IQuantity;
 
+import java.util.Arrays;
 import java.util.BitSet;
+import java.util.Map;
 import java.util.UUID;
 import java.util.stream.IntStream;
 
+import static com.datadoghq.profiler.MoreAssertions.*;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
@@ -58,6 +61,11 @@ public class EndpointTest extends AbstractProfilerTest {
         for (int i = 0; i < endpoints.length; i++) {
             assertTrue(recovered.get(i), i + " not tested");
         }
+        Map<String, Long> debugCounters = profiler.getDebugCounters();
+        assertEquals(endpoints.length, debugCounters.get("dictionary:endpoints:keys"));
+        assertEquals(Arrays.stream(endpoints).mapToInt(ep -> ep.endpoint.length() + 1).sum(), debugCounters.get("dictionary:endpoints:keys:bytes"));
+        assertBoundedBy(debugCounters.get("dictionary:endpoints:pages"), 300, "endpoint storage too many pages");
+        assertBoundedBy(debugCounters.get("dictionary:endpoints:bytes"), 300 * DICTIONARY_PAGE_SIZE, "endpoint storage too many pages");
     }
 
     private void record(Endpoint endpoint, boolean shouldAccept, int sizeLimit) {

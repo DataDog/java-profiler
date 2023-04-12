@@ -18,6 +18,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.IntStream;
 
+import static com.datadoghq.profiler.MoreAssertions.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 public class TagContextTest extends AbstractProfilerTest {
@@ -85,11 +86,14 @@ public class TagContextTest extends AbstractProfilerTest {
         assertTrue(recordedContextAttributes.contains("tag3"));
 
         Map<String, Long> debugCounters = profiler.getDebugCounters();
+        debugCounters.forEach((k, v) -> System.err.println(k + ":" + v));
         assertFalse(debugCounters.isEmpty());
-        if (!debugCounters.isEmpty()) {
-            assertEquals(1, debugCounters.get("context_storage:pages"));
-            assertEquals(0x10000, debugCounters.get("context_storage:bytes"));
-        }
+        assertEquals(1, debugCounters.get("context_storage:pages"));
+        assertEquals(0x10000, debugCounters.get("context_storage:bytes"));
+        assertEquals(strings.length, debugCounters.get("dictionary:context:keys"));
+        assertEquals(Arrays.stream(strings).mapToInt(s -> s.length() + 1).sum(), debugCounters.get("dictionary:context:keys:bytes"));
+        assertBoundedBy(debugCounters.get("dictionary:context:pages"), strings.length, "context storage too many pages");
+        assertBoundedBy(debugCounters.get("dictionary:context:bytes"), strings.length * DICTIONARY_PAGE_SIZE, "context storage too many pages");
     }
 
     private void work(ContextSetter contextSetter, String contextAttribute, String contextValue)
