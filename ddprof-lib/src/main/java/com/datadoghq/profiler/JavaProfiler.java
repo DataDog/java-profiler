@@ -125,7 +125,7 @@ public final class JavaProfiler {
      * @param tempDir The working scratch dir where to store the temp library file
      * @return The library absolute path. The caller should properly dispose of the file once it is
      *     not needed. The file is marked for 'delete-on-exit' so it won't survive a JVM restart.
-     * @throws IOException
+     * @throws IOException, IllegalStateException if the resource is not found on the classpath
      */
     private static Path libraryFromClasspath(OperatingSystem os, Arch arch, String qualifier, Path tempDir) throws IOException {
         String resourcePath = NATIVE_LIBS + "/" + os.name().toLowerCase() + "-" + arch.name().toLowerCase() + ((qualifier != null && !qualifier.isEmpty()) ? "-" + qualifier : "") + "/" + LIBRARY_NAME;
@@ -138,7 +138,7 @@ public final class JavaProfiler {
             libFile.toFile().deleteOnExit();
             return libFile;
         }
-        return null;
+        throw new IllegalStateException(resourcePath + " not found on classpath");
     }
 
     private void initializeContextStorage() {
