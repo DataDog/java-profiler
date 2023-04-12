@@ -85,7 +85,7 @@ public class TagContextTest extends AbstractProfilerTest {
         assertTrue(recordedContextAttributes.contains("tag3"));
 
         Map<String, Long> debugCounters = profiler.getDebugCounters();
-        // FIXME this is a stand in for detecting DEBUG builds
+        assertFalse(debugCounters.isEmpty());
         if (!debugCounters.isEmpty()) {
             assertEquals(1, debugCounters.get("context_storage:pages"));
             assertEquals(0x10000, debugCounters.get("context_storage:bytes"));
