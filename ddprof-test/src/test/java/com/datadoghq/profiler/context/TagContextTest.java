@@ -86,7 +86,6 @@ public class TagContextTest extends AbstractProfilerTest {
         assertTrue(recordedContextAttributes.contains("tag3"));
 
         Map<String, Long> debugCounters = profiler.getDebugCounters();
-        debugCounters.forEach((k, v) -> System.err.println(k + ":" + v));
         assertFalse(debugCounters.isEmpty());
         assertEquals(1, debugCounters.get("context_storage:pages"));
         assertEquals(0x10000, debugCounters.get("context_storage:bytes"));

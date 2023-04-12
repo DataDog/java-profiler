@@ -22,6 +22,8 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Assumptions;
+
+import static com.datadoghq.profiler.MoreAssertions.assertInRange;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -102,7 +104,13 @@ public class ContextWallClockTest extends AbstractProfilerTest {
         assertWeight("method2Impl", totalWeight, method2Weight, 0.33);
         // method3 has as much self time as method1, and should account for half the executor's thread's time
         assertWeight("method3Impl", totalWeight, method3Weight, 0.33);
-
+        Map<String, Long> debugCounters = profiler.getDebugCounters();
+        // these are here to verify these counters produce reasonable values so they can be used for memory leak detection
+        assertInRange(debugCounters.get("calltrace_storage:traces"), 10, 10000);
+        assertInRange(debugCounters.get("calltrace_storage:bytes"), 1024, 8 * 1024 * 1024);
+        // this allocator is only used for calltrace storage and eagerly allocates chunks of 8MiB
+        assertEquals(8 * 1024 * 1024, debugCounters.get("linear_allocator:bytes"));
+        assertEquals(1, debugCounters.get("linear_allocator:chunks"));
     }
 
     private void assertWeight(String name, double total, long weight, double expected) {

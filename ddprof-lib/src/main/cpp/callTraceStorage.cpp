@@ -17,6 +17,7 @@
 #include <string.h>
 #include "callTraceStorage.h"
 #include "os.h"
+#include "counters.h"
 
 
 static const u32 INITIAL_CAPACITY = 65536;
@@ -166,7 +167,8 @@ u64 CallTraceStorage::calcHash(int num_frames, ASGCT_CallFrame* frames, bool tru
 
 CallTrace* CallTraceStorage::storeCallTrace(int num_frames, ASGCT_CallFrame* frames, bool truncated) {
     const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
-    CallTrace* buf = (CallTrace*)_allocator.alloc(header_size + num_frames * sizeof(ASGCT_CallFrame));
+    const size_t total_size = header_size + num_frames * sizeof(ASGCT_CallFrame);
+    CallTrace* buf = (CallTrace*)_allocator.alloc(total_size);
     if (buf != NULL) {
         buf->num_frames = num_frames;
         // Do not use memcpy inside signal handler
@@ -174,6 +176,8 @@ CallTrace* CallTraceStorage::storeCallTrace(int num_frames, ASGCT_CallFrame* fra
             buf->frames[i] = frames[i];
         }
         buf->truncated = truncated;
+        Counters::increment(CALLTRACE_STORAGE_BYTES, total_size);
+        Counters::increment(CALLTRACE_STORAGE_TRACES);
     }
     return buf;
 }

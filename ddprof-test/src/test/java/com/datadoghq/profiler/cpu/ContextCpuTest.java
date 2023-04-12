@@ -24,6 +24,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
+import static com.datadoghq.profiler.MoreAssertions.assertInRange;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -96,10 +97,13 @@ public class ContextCpuTest extends AbstractProfilerTest {
             assertInRange(method2Weight / (double) totalWeight, 0.1, 0.6);
             assertInRange(method3Weight / (double) totalWeight, 0.05, 0.6);
         }
-    }
-
-    private static void assertInRange(double value, double min, double max) {
-        assertTrue(value >= min && value <= max, value + " not in (" + min + "," + max + ")");
+        Map<String, Long> debugCounters = profiler.getDebugCounters();
+        // these are here to verify these counters produce reasonable values so they can be used for memory leak detection
+        assertInRange(debugCounters.get("calltrace_storage:traces"), 10, 10000);
+        assertInRange(debugCounters.get("calltrace_storage:bytes"), 1024, 8 * 1024 * 1024);
+        // this allocator is only used for calltrace storage and eagerly allocates chunks of 8MiB
+        assertEquals(8 * 1024 * 1024, debugCounters.get("linear_allocator:bytes"));
+        assertEquals(1, debugCounters.get("linear_allocator:chunks"));
     }
 
     public void method1(int id) throws ExecutionException, InterruptedException {
