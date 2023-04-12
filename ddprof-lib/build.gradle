@@ -132,6 +132,8 @@ task copyLibs(type: Copy) {
 }
 
 task copyDebugLibs(type: Copy) {
+    // This must depend on copyLibs as Gradle detects that this task is using the same target path
+    // and keeps on complaining about undeclared inputs
     dependsOn copyLibs
 
     from file(librarySourcePath(true))
@@ -166,7 +168,9 @@ task assembleJar(type: Jar) {
 }
 
 task assembleDebugJar(type: Jar) {
-    dependsOn copyDebugLibs
+    if (!project.hasProperty('skip-native')) {
+        dependsOn copyDebugLibs
+    }
     archiveBaseName = libraryName
     archiveClassifier = "debug"
     archiveVersion = version
