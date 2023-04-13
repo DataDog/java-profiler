@@ -19,7 +19,7 @@
 #include <string.h>
 #include "dictionary.h"
 #include "arch.h"
-
+#include "counters.h"
 
 static inline char* allocateKey(const char* key, size_t length) {
     char* result = (char*)malloc(length + 1);
@@ -32,36 +32,37 @@ static inline bool keyEquals(const char* candidate, const char* key, size_t leng
     return strncmp(candidate, key, length) == 0 && candidate[length] == 0;
 }
 
-
-Dictionary::Dictionary() {
-    _table = (DictTable*)calloc(1, sizeof(DictTable));
-    _table->base_index = _base_index = 1;
-    _size = 0;
-}
-
 Dictionary::~Dictionary() {
-    clear(_table);
+    clear(_table, _id);
     free(_table);
 }
 
 void Dictionary::clear() {
-    clear(_table);
+    clear(_table, _id);
     memset(_table, 0, sizeof(DictTable));
     _table->base_index = _base_index = 1;
+    Counters::decrement(DICTIONARY_KEYS, _size, _id);
     _size = 0;
 }
 
-void Dictionary::clear(DictTable* table) {
+void Dictionary::clear(DictTable* table, int id) {
     for (int i = 0; i < ROWS; i++) {
         DictRow* row = &table->rows[i];
         for (int j = 0; j < CELLS; j++) {
+            #ifdef COUNTERS
+            if (row->keys[j]) {
+                Counters::decrement(DICTIONARY_KEYS_BYTES, strlen(row->keys[j]), id);
+            }
+            #endif // COUNTERS
             free(row->keys[j]);
         }
         if (row->next != NULL) {
-            clear(row->next);
+            clear(row->next, id);
             free(row->next);
         }
     }
+    Counters::decrement(DICTIONARY_PAGES, 1, id);
+    Counters::decrement(DICTIONARY_PAGES, sizeof(DictTable), id);
 }
 
 // Many popular symbols are quite short, e.g. "[B", "()V" etc.
@@ -92,6 +93,8 @@ unsigned int Dictionary::lookup(const char* key, size_t length, bool for_insert,
             if (for_insert && row->keys[c] == NULL) {
                 char* new_key = allocateKey(key, length);
                 if (__sync_bool_compare_and_swap(&row->keys[c], NULL, new_key)) {
+                    Counters::increment(DICTIONARY_KEYS, 1, _id);
+                    Counters::increment(DICTIONARY_KEYS_BYTES, length + 1, _id);
                     atomicInc(_size);
                     return table->index(h % ROWS, c);
                 }
@@ -108,6 +111,9 @@ unsigned int Dictionary::lookup(const char* key, size_t length, bool for_insert,
                 new_table->base_index = __sync_add_and_fetch(&_base_index, TABLE_CAPACITY);
                 if (!__sync_bool_compare_and_swap(&row->next, NULL, new_table)) {
                     free(new_table);
+                } else {
+                    Counters::increment(DICTIONARY_PAGES, 1, _id);
+                    Counters::increment(DICTIONARY_BYTES, sizeof(DictTable), _id);
                 }
             } else {
                 return sentinel;
