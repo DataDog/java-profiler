@@ -45,6 +45,7 @@
 #include "thread.h"
 #include "vmStructs.h"
 #include "context.h"
+#include "counters.h"
 
 
 // The instance is not deleted on purpose, since profiler structures
@@ -1095,6 +1096,9 @@ Error Profiler::stop() {
     _jfr.stop();
     unlockAll();
 
+    Counters::set(THREAD_IDS_COUNT, _thread_ids.size());
+    Counters::set(THREAD_NAMES_COUNT, _thread_names.size());
+
     _state = IDLE;
     return Error::OK;
 }
@@ -1189,6 +1193,9 @@ Error Profiler::dump(const char* path, const int length) {
                 }
             }
         }
+
+        Counters::set(THREAD_IDS_COUNT, _thread_ids.size());
+        Counters::set(THREAD_NAMES_COUNT, _thread_names.size());
 
         return err;
     }

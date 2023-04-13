@@ -45,8 +45,9 @@
     X(CALLTRACE_STORAGE_BYTES, "calltrace_storage:bytes") \
     X(CALLTRACE_STORAGE_TRACES, "calltrace_storage:traces") \
     X(LINEAR_ALLOCATOR_BYTES, "linear_allocator:bytes") \
-    X(LINEAR_ALLOCATOR_CHUNKS, "linear_allocator:chunks")
-
+    X(LINEAR_ALLOCATOR_CHUNKS, "linear_allocator:chunks")   \
+    X(THREAD_IDS_COUNT, "thread_ids:count")  \
+    X(THREAD_NAMES_COUNT, "thread_names:count")
 #define X_ENUM(a, b) a,
 typedef enum CounterId {
     DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS
@@ -61,6 +62,12 @@ public:
 
     static constexpr int size() {
         return DD_NUM_COUNTERS * sizeof(u64) * 8;
+    }
+
+    static void set(CounterId counter, u64 value, int offset = 0) {
+        #ifdef COUNTERS
+        storeRelease(_counters[(static_cast<int>(counter) + offset) * sizeof(u64)], value);
+        #endif // COUNTERS
     }
 
     static void increment(CounterId counter, u64 delta = 1, int offset = 0) {

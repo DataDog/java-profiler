@@ -111,6 +111,8 @@ public class ContextWallClockTest extends AbstractProfilerTest {
         // this allocator is only used for calltrace storage and eagerly allocates chunks of 8MiB
         assertEquals(8 * 1024 * 1024, debugCounters.get("linear_allocator:bytes"));
         assertEquals(1, debugCounters.get("linear_allocator:chunks"));
+        assertInRange(debugCounters.get("thread_ids:count"), 1, 100);
+        assertInRange(debugCounters.get("thread_names:count"), 1, 100);
     }
 
     private void assertWeight(String name, double total, long weight, double expected) {
