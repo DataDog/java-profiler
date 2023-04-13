@@ -41,7 +41,11 @@
     X(DICTIONARY_ENDPOINTS_KEYS_BYTES, "dictionary:endpoints:keys:bytes") \
     X(DICTIONARY_CONTEXT_KEYS_BYTES, "dictionary:context:keys:bytes") \
     X(CONTEXT_STORAGE_BYTES, "context_storage:bytes") \
-    X(CONTEXT_STORAGE_PAGES, "context_storage:pages")
+    X(CONTEXT_STORAGE_PAGES, "context_storage:pages")       \
+    X(CALLTRACE_STORAGE_BYTES, "calltrace_storage:bytes") \
+    X(CALLTRACE_STORAGE_TRACES, "calltrace_storage:traces") \
+    X(LINEAR_ALLOCATOR_BYTES, "linear_allocator:bytes") \
+    X(LINEAR_ALLOCATOR_CHUNKS, "linear_allocator:chunks")
 
 #define X_ENUM(a, b) a,
 typedef enum CounterId {

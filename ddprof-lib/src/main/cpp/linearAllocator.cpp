@@ -16,6 +16,7 @@
 
 #include "linearAllocator.h"
 #include "os.h"
+#include "counters.h"
 
 
 LinearAllocator::LinearAllocator(size_t chunk_size) {
@@ -65,12 +66,16 @@ Chunk* LinearAllocator::allocateChunk(Chunk* current) {
     if (chunk != NULL) {
         chunk->prev = current;
         chunk->offs = sizeof(Chunk);
+        Counters::increment(LINEAR_ALLOCATOR_BYTES, _chunk_size);
+        Counters::increment(LINEAR_ALLOCATOR_CHUNKS);
     }
     return chunk;
 }
 
 void LinearAllocator::freeChunk(Chunk* current) {
     OS::safeFree(current, _chunk_size);
+    Counters::decrement(LINEAR_ALLOCATOR_BYTES, _chunk_size);
+    Counters::decrement(LINEAR_ALLOCATOR_CHUNKS);
 }
 
 void LinearAllocator::reserveChunk(Chunk* current) {
