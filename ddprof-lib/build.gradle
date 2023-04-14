@@ -38,6 +38,9 @@ ext {
     librarySourcePath = this.&librarySourcePath
 }
 
+sourceCompatibility = JavaVersion.VERSION_1_8
+targetCompatibility = JavaVersion.VERSION_1_8
+
 def isGitlabCI = System.getenv("GITLAB_CI") != null
 
 // configure the compiler here
