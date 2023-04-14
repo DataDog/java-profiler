@@ -57,7 +57,7 @@ class J9Ext {
 
   public:
     static bool can_use_ASGCT() {
-        return (VM::java_version() == 8 && VM::java_update_version() >= 362) ||
+        return (VM::java_version() == 8 && VM::java_update_version() >= 361) ||
                 (VM::java_version() == 11 && VM::java_update_version() >= 18) ||
                 (VM::java_version() == 17 && VM::java_update_version() >= 6);
     }
