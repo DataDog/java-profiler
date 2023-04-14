@@ -129,9 +129,10 @@ task cppTest(type: Exec) {
 
 task copyLibs(type: Copy) {
     dependsOn cppTest
-
-    from file(librarySourcePath())
-    into file(libraryTargetPath())
+    if (!project.hasProperty("with-libs")) {
+        from file(librarySourcePath())
+        into file(libraryTargetPath())
+    }
 }
 
 task copyDebugLibs(type: Copy) {
@@ -142,6 +143,21 @@ task copyDebugLibs(type: Copy) {
     from file(librarySourcePath(true))
     into file(libraryTargetPath())
 }
+
+// Allow specifying the external location for the native libraries
+// The libraries should be properly sorted into subfolders corresponding to the `libraryTargetPath` value for each
+// os/arch/libc combination
+task copyExternalLibs(type: Copy) {
+    if (project.hasProperty("with-libs")) {
+        from(project.getProperty("with-libs")) {
+            include "**/*.so"
+            include "**/*.dylib"
+        }
+        into "${projectDir}/build/classes/java/main/META-INF/native-libs"
+    }
+}
+
+jar.dependsOn copyExternalLibs
 
 task sourcesJar(type: Jar) {
     from sourceSets.main.allJava
@@ -161,6 +177,7 @@ task javadocJar(type: Jar) {
 javadoc.dependsOn copyLibs
 
 task assembleJar(type: Jar) {
+    dependsOn copyExternalLibs
     if (!project.hasProperty('skip-native')) {
         dependsOn copyLibs
     }
