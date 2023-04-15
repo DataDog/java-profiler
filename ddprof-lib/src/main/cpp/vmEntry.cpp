@@ -118,6 +118,7 @@ bool VM::init(JavaVM* vm, bool attach) {
         _openj9 = !_hotspot && strstr(prop, "OpenJ9") != NULL;
 
         _jvmti->Deallocate((unsigned char*)prop);
+        prop = NULL;
     }
 
     _libjvm = getLibraryHandle("libjvm.so");
@@ -133,14 +134,35 @@ bool VM::init(JavaVM* vm, bool attach) {
         if (_jvmti->GetSystemProperty("jdk.extensions.version", &prop) == 0) {
             // OpenJ9 Semeru will report the version here
             // insert debug output here
-        } else if (_jvmti->GetSystemProperty("java.fullversion", &prop) == 0) {
-            // IBM JDK 8 will report something here
-            // The reported string contains JRE 1.8.0 and then later year and (possibly) hash code
-            // Although not very precise, this is best we can get :/
-            // insert debug output here
+        } else {
+            if (prop != NULL) {
+                _jvmti->Deallocate((unsigned char*)prop);
+                prop = NULL;
+            }
+            if (_jvmti->GetSystemProperty("java.fullversion", &prop) == 0) {
+                // IBM JDK 8 will report something here
+                // The reported string contains JRE 1.8.0 and then later year and (possibly) hash code
+                // Although not very precise, this is best we can get :/
+                // insert debug output here
+            } else {
+                if (prop != NULL) {
+                    _jvmti->Deallocate((unsigned char*)prop);
+                    prop = NULL;
+                }
+            }
         }
     }
-    if (prop != NULL || _jvmti->GetSystemProperty("java.vm.version", &prop) == 0) {
+    if (prop == NULL) {
+        if (_jvmti->GetSystemProperty("java.vm.version", &prop) == 0) {
+            // insert debug output here
+        } else {
+            if (prop != NULL) {
+                _jvmti->Deallocate((unsigned char*)prop);
+                    prop = NULL;
+            } 
+        }
+    }
+    if (prop != NULL) {
         if (strncmp(prop, "1.8.0", 5) == 0) {
             _java_version = 8;
             _java_update_version = atoi(prop + 5);
