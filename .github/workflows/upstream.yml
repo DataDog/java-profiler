@@ -57,9 +57,8 @@ jobs:
           echo "-> ${VERSION}"
           git config --global user.email "java-profiler@datadoghq.com"
           git config --global user.name "Datadog Java Profiler"
-          if [ ! -z "${{ inputs.release_tag }}" ]; then
-            git checkout release/${VERSION}
-          fi
+          # force checkout of the branch to merge upstream
+          git checkout release/${VERSION}
           git remote add upstream git@github.com:DataDog/java-profiler.git
           git remote update
           git checkout upstream/main
@@ -84,6 +83,5 @@ jobs:
         with:
           generateReleaseNotes: false
           allowUpdates: true
-          prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
