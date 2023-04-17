@@ -249,6 +249,34 @@ publishing {
     }
 }
 
+tasks.withType(GenerateMavenPom).configureEach {
+    doFirst {
+        MavenPom pom = it.pom
+        pom.name = project.name
+        pom.description = "${project.description} (${project.version})"
+        pom.packaging = "jar"
+        pom.url = "https://github.com/datadog/java-profiler"
+        pom.licenses {
+            license {
+                name = "The Apache Software License, Version 2.0"
+                url = "http://www.apache.org/licenses/LICENSE-2.0.txt"
+                distribution = "repo"
+            }
+        }
+        pom.scm {
+            connection = "scm:https://datadog@github.com/datadog/java-profiler"
+            developerConnection = "scm:git@github.com:datadog/java-profiler"
+            url = "https://github.com/datadog/java-profiler"
+        }
+        pom.developers {
+            developer {
+                id = "datadog"
+                name = "Datadog"
+            }
+        }
+    }
+}
+
 signing {
     useInMemoryPgpKeys(System.getenv("GPG_PRIVATE_KEY"), System.getenv("GPG_PASSWORD"))
     sign publishing.publications.assembled
