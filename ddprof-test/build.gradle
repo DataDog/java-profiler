@@ -1,0 +1,30 @@
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation project(path: ":ddprof-lib", configuration: 'debug')
+
+    // https://mvnrepository.com/artifact/org.junit.jupiter/junit-jupiter-api
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.9.2'
+    testImplementation 'org.junit.jupiter:junit-jupiter-engine:5.9.2'
+    testImplementation 'org.junit.jupiter:junit-jupiter-params:5.9.2'
+    testImplementation 'org.slf4j:slf4j-simple:1.7.32'
+    testImplementation 'org.openjdk.jmc:flightrecorder:8.1.0'
+    testImplementation 'org.openjdk.jol:jol-core:0.16'
+    // https://mvnrepository.com/artifact/org.junit-pioneer/junit-pioneer
+    testImplementation group: 'org.junit-pioneer', name: 'junit-pioneer', version: '1.9.1'
+
+}
+
+test {
+    onlyIf {
+        !project.hasProperty('skip-tests')
+    }
+    useJUnitPlatform()
+    jvmArgs '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true'
+}
