@@ -224,7 +224,7 @@ class Lookup {
                             break;
                         }
                     } while ((klass = jni->GetSuperclass(klass)) != NULL);
-                } else if (mi->_modifiers & 9 != 0 && strncmp(method_name, "main", 4) == 0 && strncmp(method_sig, "(Ljava/lang/String;)V", 21)) {
+                } else if ((mi->_modifiers & 9) != 0 && strncmp(method_name, "main", 4) == 0 && strncmp(method_sig, "(Ljava/lang/String;)V", 21)) {
                     // public static void main(String[] args) - 'public static' translates to modifier bits 0 and 3, hence check for '9'
                     mi->_is_entry = true;
                 }
