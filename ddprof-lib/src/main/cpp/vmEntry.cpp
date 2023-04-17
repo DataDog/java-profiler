@@ -118,6 +118,7 @@ bool VM::init(JavaVM* vm, bool attach) {
         _openj9 = !_hotspot && strstr(prop, "OpenJ9") != NULL;
 
         _jvmti->Deallocate((unsigned char*)prop);
+        prop = NULL;
     }
 
     _libjvm = getLibraryHandle("libjvm.so");
@@ -129,14 +130,62 @@ bool VM::init(JavaVM* vm, bool attach) {
 
     _openj9 = !_hotspot && J9Ext::initialize(_jvmti, profiler->resolveSymbol("j9thread_self*"));
 
-    const char *prop_name = _openj9 ? "jdk.extensions.version" : "java.vm.version";
-    if (_jvmti->GetSystemProperty(prop_name, &prop) == 0) {
+    if (_openj9) {
+        if (_jvmti->GetSystemProperty("jdk.extensions.version", &prop) == 0) {
+            // OpenJ9 Semeru will report the version here
+            // insert debug output here
+        } else {
+            if (prop != NULL) {
+                _jvmti->Deallocate((unsigned char*)prop);
+                prop = NULL;
+            }
+            if (_jvmti->GetSystemProperty("java.fullversion", &prop) == 0) {
+                // IBM JDK 8 will report something here
+                // The reported string contains JRE 1.8.0 and then later year and (possibly) hash code
+                // Although not very precise, this is best we can get :/
+                // insert debug output here
+            } else {
+                if (prop != NULL) {
+                    _jvmti->Deallocate((unsigned char*)prop);
+                    prop = NULL;
+                }
+            }
+        }
+    }
+    if (prop == NULL) {
+        if (_jvmti->GetSystemProperty("java.vm.version", &prop) == 0) {
+            // insert debug output here
+        } else {
+            if (prop != NULL) {
+                _jvmti->Deallocate((unsigned char*)prop);
+                    prop = NULL;
+            } 
+        }
+    }
+    if (prop != NULL) {
         if (strncmp(prop, "1.8.0", 5) == 0) {
             _java_version = 8;
             _java_update_version = atoi(prop + 5);
         } else if (strncmp(prop, "8.0.", 4) == 0) {
             _java_version = 8;
             _java_update_version = atoi(prop + 4);
+        } else if (strncmp(prop, "JRE 1.8.0", 9) == 0) {
+            // IBM JDK 8 does not report the 'real' version in any property accessible from JVMTI
+            // The only piece of info we can use has the following format
+            // `JRE 1.8.0 <some text> 20230313_47323 <some more text>`
+            // Considering that JDK 8.0.361 is the only release in 2023 we can use that part of the
+            // version string to pretend anything after year 2023 inclusive is 8.0.361.
+            // Not perfect, but this is the only thing we have.
+            _java_version = 8;
+            char* idx = strstr(prop, " 202");
+            if (idx != NULL) {
+                int year = atol(idx + 1);
+                if (year >= 2023) {
+                    _java_update_version = 361;
+                } else {
+                    _java_update_version = 351;
+                }
+            }
         } else {
             _java_version = atoi(prop);
             if (_java_version < 9) {
