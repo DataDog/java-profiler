@@ -144,7 +144,7 @@ u64 OS::processStartTime() {
 
     if (start_time == 0) {
         char buf[64];
-        sprintf(buf, "/proc/%d", processId());
+        snprintf(buf, sizeof(buf), "/proc/%d", processId());
 
         struct stat st;
         if (stat(buf, &st) == 0) {
@@ -203,7 +203,7 @@ const char* OS::schedPolicy(int thread_id) {
 
 bool OS::threadName(int thread_id, char* name_buf, size_t name_len) {
     char buf[64];
-    sprintf(buf, "/proc/self/task/%d/comm", thread_id);
+    snprintf(buf, sizeof(buf), "/proc/self/task/%d/comm", thread_id);
     int fd = open(buf, O_RDONLY);
     if (fd == -1) {
         return false;
@@ -221,7 +221,7 @@ bool OS::threadName(int thread_id, char* name_buf, size_t name_len) {
 
 ThreadState OS::threadState(int thread_id) {
     char buf[512];
-    sprintf(buf, "/proc/self/task/%d/stat", thread_id);
+    snprintf(buf, sizeof(buf), "/proc/self/task/%d/stat", thread_id);
     int fd = open(buf, O_RDONLY);
     if (fd == -1) {
         return THREAD_INVALID;

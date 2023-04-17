@@ -734,7 +734,7 @@ class Recording {
 
     void writeIntSetting(Buffer* buf, int category, const char* key, long long value) {
         char str[32];
-        sprintf(str, "%lld", value);
+        snprintf(str, sizeof(str), "%lld", value);
         writeStringSetting(buf, category, key, str);
     }
 
@@ -922,7 +922,7 @@ class Recording {
                 thread_name = it->second.c_str();
                 thread_id = thread_ids[threads[i]];
             } else {
-                sprintf(name_buf, "[tid=%d]", threads[i]);
+                snprintf(name_buf, sizeof(name_buf), "[tid=%d]", threads[i]);
                 thread_name = name_buf;
                 thread_id = 0;
             }
