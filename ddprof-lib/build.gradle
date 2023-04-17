@@ -30,7 +30,8 @@ def librarySourcePath(boolean debug = false) {
         osarchext = archIdentifier() == 'x64' ? 'x86-64' : 'aarch64'
     }
     def libsDir = debug ? "debug" : "release"
-    return "${projectDir}/build/lib/main/${libsDir}/${osIdentifier()}/${osarchext}/libjavaProfiler.${osIdentifier() == 'macos' ? 'dylib' : 'so'}"
+    def qualifier = debug ? "" : "stripped"
+    return "${projectDir}/build/lib/main/${libsDir}/${osIdentifier()}/${osarchext}/${qualifier}/libjavaProfiler.${osIdentifier() == 'macos' ? 'dylib' : 'so'}"
 }
 
 ext {
