@@ -3,25 +3,23 @@ run-name: Release ${{ inputs.release_branch }} ${{ github.event.ref_name }}
 on: 
   workflow_dispatch:
     inputs:
-      release_branch:
+      release_tag:
         type: string
-        description: "Release branch"
-        required: false
+        description: "Release tag"
+        required: true
   workflow_call:
     inputs:
-      release_branch:
+      release_tag:
         type: string
-        description: "Release branch"
+        description: "Release tag"
         required: false
   push:
-    branches:
-      - release/**
     tags:
-      - v*.*.*
+      - v_*.*.*
 
 jobs:
   merge-upstream:
-    if: (startsWith(github.event.ref, 'refs/heads/release/') || inputs.release_branch != '') && endsWith(github.repository, 'java-profiler-library')
+    if: (startsWith(github.event.ref, 'refs/tags/v_') || inputs.release_tag != '') && endsWith(github.repository, 'java-profiler-library')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -30,39 +28,51 @@ jobs:
       - uses: webfactory/ssh-agent@v0.7.0
         with:
           ssh-private-key: ${{ secrets.SSH_DEPLOY_PRIVATE }}
-      - name: Create Release
-        id: create_release
+      - name: Create Release [automatic]
+        id: create_release_auto
         uses: ncipollo/release-action@v1
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
         with:
           generateReleaseNotes: true
           allowUpdates: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create Release [manual]
+        id: create_release_manual
+        uses: ncipollo/release-action@v1
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        with:
+          generateReleaseNotes: true
+          allowUpdates: true
+          tag: ${{ inputs.release_tag}}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Upstream release
         run: |
-          if [ -z "${{ inputs.release_branch }}" ]; then
-            VERSION=$(echo $GITHUB_REF_NAME | sed 's#release/##g')
+          if [ -z "${{ inputs.release_tag }}" ]; then
+            VERSION=$(echo $GITHUB_REF_NAME | sed 's#v_##g')
           else
-            VERSION=$(echo "${{ inputs.release_branch }}" | sed 's#release/##g')
+            VERSION=$(echo "${{ inputs.release_tag }}" | sed 's#v_##g')
           fi
+          echo "-> ${VERSION}"
           git config --global user.email "java-profiler@datadoghq.com"
           git config --global user.name "Datadog Java Profiler"
-          if [ ! -z "${{ inputs.release_branch }}" ]; then
-            git checkout "${{ inputs.release_branch }}"
+          if [ ! -z "${{ inputs.release_tag }}" ]; then
+            git checkout release/${VERSION}
           fi
           git remote add upstream git@github.com:DataDog/java-profiler.git
           git remote update
           git checkout upstream/main
           # switch to the release branch on the upstream
-          git switch -c upstream/release/$VERSION
+          git switch -c upstream/release/${VERSION}
           # and merge the downstream release branch
-          git merge --allow-unrelated-histories --ff -X theirs release/$VERSION
-          # the assumption is that v<VERSION> tag is taken from the release branch
+          git merge --allow-unrelated-histories --ff -X theirs release/${VERSION}
+          # the assumption is that v_<VERSION> tag is taken from the release branch
           # push the upstream release branch to 'main' together with the tag
           git push --atomic upstream HEAD:main v_${VERSION}
 
   release-from-upstream:
-    if: startsWith(github.event.ref, 'refs/tags/v') && endsWith(github.repository, 'java-profiler')
+    if: startsWith(github.event.ref, 'refs/tags/v_') && endsWith(github.repository, 'java-profiler')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
