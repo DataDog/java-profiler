@@ -57,6 +57,7 @@ jobs:
         run: |
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
           export JAVA_TEST_HOME=$(pwd)/test_jdk
+          export BUILD_TYPE=SanitizedDebug
           chmod a+x ddprof-lib/test.sh
           ./gradlew :ddprof-test:test --info
       - name: Upload logs
@@ -99,6 +100,7 @@ jobs:
       - name: Test
         run: |
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
+          export BUILD_TYPE=SanitizedDebug
           chmod a+x gradlew
           chmod a+x ddprof-lib/test.sh
           ./gradlew :ddprof-test:test --info

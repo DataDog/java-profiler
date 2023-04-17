@@ -19,5 +19,8 @@ function build_and_test() {
   cd ${TARGET} && ctest
 }
 
-build_and_test SanitizedDebug
-build_and_test Debug
+if [ -z "${BUILD_TYPE}" ]; then
+  BUILD_TYPE="Debug"
+fi
+
+build_and_test ${BUILD_TYPE}
