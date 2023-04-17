@@ -10,8 +10,14 @@ if [ -z "$CMAKE" ]; then
   exit 1
 fi
 
-TARGET=${HERE}/build/cmake
-cd ${HERE}/src/test
-cmake -Wno-dev -S . -B ${TARGET}
-cmake --build ${TARGET}
-cd ${TARGET} && ctest
+function build_and_test() {
+  BUILD_TYPE=$1
+  TARGET=${HERE}/build_${BUILD_TYPE}
+  cd ${HERE}/src/test
+  cmake -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -Wno-dev -S . -B ${TARGET}
+  cmake --build ${TARGET}
+  cd ${TARGET} && ctest
+}
+
+build_and_test SanitizedDebug
+build_and_test Debug
