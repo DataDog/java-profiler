@@ -93,6 +93,7 @@ jobs:
       - name: Prepare JDK ${{ matrix.java_version }}
         run: |
           sudo apt-get install openjdk-${{ matrix.java_version }}-jdk
+          uname -r
       - name: Test
         run: |
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
