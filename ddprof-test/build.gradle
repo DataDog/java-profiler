@@ -39,3 +39,7 @@ tasks.withType(Test) {
     }
     executable = new File("${javaHome}", 'bin/java')
 }
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs.addAll(['--release', '8'])
+}
