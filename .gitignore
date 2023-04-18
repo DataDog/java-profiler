@@ -1,4 +1,6 @@
 **/build/
+**/build_*/
+**/build-*/
 /nbproject/
 /out/
 /.idea/

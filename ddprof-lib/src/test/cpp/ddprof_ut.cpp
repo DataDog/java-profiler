@@ -57,7 +57,7 @@
         EXPECT_DEATH({
             buf.putUtf8(str);
         }, "Assertion .*");
-
+        free(str);
     }
 
     TEST(OS, threadId_sanity) {
