@@ -28,3 +28,18 @@ test {
     useJUnitPlatform()
     jvmArgs '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true'
 }
+
+tasks.withType(Test) {
+    onlyIf {
+        !project.hasProperty('skip-tests')
+    }
+    def javaHome = System.getenv("JAVA_TEST_HOME")
+    if (javaHome == null) {
+        javaHome = System.getenv("JAVA_HOME")
+    }
+    executable = new File("${javaHome}", 'bin/java')
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs.addAll(['--release', '8'])
+}

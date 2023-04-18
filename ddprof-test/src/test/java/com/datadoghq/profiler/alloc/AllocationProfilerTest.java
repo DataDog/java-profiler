@@ -21,6 +21,7 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
   @RetryingTest(5)
   public void shouldGetObjectAllocationSamples() throws InterruptedException {
     Assumptions.assumeFalse(Platform.isJ9());
+    Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
 
     AllocatingTarget target1 = new AllocatingTarget();
     AllocatingTarget target2 = new AllocatingTarget();
