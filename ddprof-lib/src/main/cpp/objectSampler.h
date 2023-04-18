@@ -33,16 +33,10 @@ class ObjectSampler : public Engine {
   friend Recording;
 
   private:
-    static get_sampling_interval _get_sampling_interval;
-    static int* _sampling_interval;
-
-    static int sampling_interval() {
-      return _sampling_interval != NULL ? *_sampling_interval : _get_sampling_interval();
-    }
-
     static ObjectSampler* const _instance;
 
     int _interval;
+    int _configured_interval;
     bool _record_allocations;
     bool _record_liveness;
     int _max_stack_depth;
