@@ -8,6 +8,7 @@ repositories {
 
 dependencies {
     testImplementation project(path: ":ddprof-lib", configuration: 'debug')
+    testImplementation project(path: ":ddprof-test-tracer")
 
     // https://mvnrepository.com/artifact/org.junit.jupiter/junit-jupiter-api
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.9.2'
