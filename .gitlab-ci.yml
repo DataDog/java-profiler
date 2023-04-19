@@ -23,6 +23,6 @@ trigger_internal_build:
     JPLIB_SHORT_COMMIT_SHA: ${CI_COMMIT_SHORT_SHA}
     JPLIB_COMMIT_TAG: ${CI_COMMIT_REF_NAME}
   trigger:
-    project: DataDog/async-profiler-build
+    project: DataDog/apm-reliability/async-profiler-build
     strategy: depend
     branch: $DOWNSTREAM_BRANCH
