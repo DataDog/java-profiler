@@ -41,20 +41,22 @@
     X(DICTIONARY_ENDPOINTS_KEYS_BYTES, "dictionary:endpoints:keys:bytes") \
     X(DICTIONARY_CONTEXT_KEYS_BYTES, "dictionary:context:keys:bytes") \
     X(CONTEXT_STORAGE_BYTES, "context_storage:bytes") \
-    X(CONTEXT_STORAGE_PAGES, "context_storage:pages")       \
+    X(CONTEXT_STORAGE_PAGES, "context_storage:pages") \
     X(CALLTRACE_STORAGE_BYTES, "calltrace_storage:bytes") \
     X(CALLTRACE_STORAGE_TRACES, "calltrace_storage:traces") \
     X(LINEAR_ALLOCATOR_BYTES, "linear_allocator:bytes") \
-    X(LINEAR_ALLOCATOR_CHUNKS, "linear_allocator:chunks")   \
+    X(LINEAR_ALLOCATOR_CHUNKS, "linear_allocator:chunks") \
     X(THREAD_IDS_COUNT, "thread_ids:count")  \
     X(THREAD_NAMES_COUNT, "thread_names:count")
 #define X_ENUM(a, b) a,
-typedef enum CounterId {
+typedef enum CounterId : int {
     DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS
 } CounterId;
 #undef X_ENUM
 
 class Counters {
+private:
+    static u64* init();
 public:
     #ifdef COUNTERS
         static volatile u64* _counters;
@@ -66,13 +68,13 @@ public:
 
     static void set(CounterId counter, u64 value, int offset = 0) {
         #ifdef COUNTERS
-        storeRelease(_counters[(static_cast<int>(counter) + offset) * sizeof(u64)], value);
+        storeRelease(_counters[(static_cast<int>(counter) + offset) * 8], value);
         #endif // COUNTERS
     }
 
     static void increment(CounterId counter, u64 delta = 1, int offset = 0) {
         #ifdef COUNTERS
-        atomicInc(_counters[(static_cast<int>(counter) + offset) * sizeof(u64)], delta);
+        atomicInc(_counters[(static_cast<int>(counter) + offset) * 8], delta);
         #endif // COUNTERS
     }
 

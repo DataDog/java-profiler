@@ -46,12 +46,13 @@ public class WhiteboxProfiler implements ExternalProfiler {
     public Collection<? extends Result> afterTrial(BenchmarkResult br, long pid, File stdOut, File stdErr) {
         // TODO unit encoded in counter name for now, so results are effectively dimensionless
         try {
+            Map<String, Long> counters = JavaProfiler.getInstance().getDebugCounters();
             JavaProfiler.getInstance().stop();
             long fileSize = Files.size(jfr);
             Files.deleteIfExists(jfr);
             List<ScalarResult> results = new ArrayList<>();
             results.add(new ScalarResult("jfr:filesize:bytes", fileSize, "", AggregationPolicy.MAX));
-            for (Map.Entry<String, Long> counter : JavaProfiler.getInstance().getDebugCounters().entrySet()) {
+            for (Map.Entry<String, Long> counter : counters.entrySet()) {
                 results.add(new ScalarResult(counter.getKey(), counter.getValue(), "", AggregationPolicy.MAX));
             }
             return results;
