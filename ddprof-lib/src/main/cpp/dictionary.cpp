@@ -55,10 +55,12 @@ void Dictionary::clear(DictTable* table, int id) {
             }
             #endif // COUNTERS
             free(row->keys[j]);
+            row->keys[j] = NULL;
         }
         if (row->next != NULL) {
             clear(row->next, id);
             free(row->next);
+            row->next = NULL;
         }
     }
     Counters::decrement(DICTIONARY_PAGES, 1, id);
