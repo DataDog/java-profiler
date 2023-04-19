@@ -65,6 +65,8 @@ tasks.withType(CppCompile).configureEach {
     if (it.name.contains('Debug')) {
         taskArgs.addAll(["-DDEBUG", "-DCOUNTERS"])
     }
+
+    // TODO for Clang we would use scan-build utility instead but it needs to be installed first
     
     taskIncludes.add "${projectDir}/../malloc-shim/src/main/public"
 
@@ -198,6 +200,15 @@ task assembleDebugJar(type: Jar) {
     from sourceSets.main.output.classesDirs
 }
 
+task scanBuild(type: Exec) {
+    workingDir "${projectDir}/src/test/make"
+    commandLine 'scan-build'
+    args "-o", "${projectDir}/build/reports/scan-build",
+        "--force-analyze-debug-code",
+        "--use-analyzer", "/usr/bin/clang++",
+        "make", "-j4",  "clean", "all"
+}
+
 test {
     onlyIf {
         !project.hasProperty('skip-tests')
@@ -318,4 +329,3 @@ tasks.withType(AbstractPublishToMaven).configureEach {
         mustRunAfter tasks.matching { it instanceof VerificationTask }
     }
 }
-
