@@ -18,11 +18,17 @@
 #include <string.h>
 #include "threadFilter.h"
 #include "os.h"
+#include "counters.h"
 
+void trackPage() {
+    Counters::increment(THREAD_FILTER_PAGES, 1);
+    Counters::increment(THREAD_FILTER_BYTES, BITMAP_SIZE);
+}
     
 ThreadFilter::ThreadFilter() {
     memset(_bitmap, 0, sizeof(_bitmap));
     _bitmap[0] = (u32*)OS::safeAlloc(BITMAP_SIZE);
+    trackPage();
 
     _enabled = false;
     _size = 0;
@@ -86,6 +92,8 @@ void ThreadFilter::add(int thread_id) {
         if (oldb != NULL) {
             OS::safeFree(b, BITMAP_SIZE);
             b = oldb;
+        } else {
+            trackPage();
         }
     }
 
