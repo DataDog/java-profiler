@@ -42,13 +42,12 @@ public class WhiteboxProfiler implements InternalProfiler {
     public Collection<? extends Result> afterIteration(BenchmarkParams benchmarkParams, IterationParams iterationParams, IterationResult result) {
         // TODO unit encoded in counter name for now, so results are effectively dimensionless
         try {
-            Map<String, Long> counters = JavaProfiler.getInstance().getDebugCounters();
             JavaProfiler.getInstance().stop();
             long fileSize = Files.size(jfr);
             Files.deleteIfExists(jfr);
             List<ScalarResult> results = new ArrayList<>();
             results.add(new ScalarResult("jfr:filesize:bytes", fileSize, "", AggregationPolicy.MAX));
-            for (Map.Entry<String, Long> counter : counters.entrySet()) {
+            for (Map.Entry<String, Long> counter : JavaProfiler.getInstance().getDebugCounters().entrySet()) {
                 results.add(new ScalarResult(counter.getKey(), counter.getValue(), "", AggregationPolicy.MAX));
             }
             return results;
