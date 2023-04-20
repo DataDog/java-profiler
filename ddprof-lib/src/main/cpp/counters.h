@@ -47,7 +47,9 @@
     X(LINEAR_ALLOCATOR_BYTES, "linear_allocator:bytes") \
     X(LINEAR_ALLOCATOR_CHUNKS, "linear_allocator:chunks") \
     X(THREAD_IDS_COUNT, "thread_ids:count")  \
-    X(THREAD_NAMES_COUNT, "thread_names:count")
+    X(THREAD_NAMES_COUNT, "thread_names:count") \
+    X(THREAD_FILTER_PAGES, "thread_filter:pages") \
+    X(THREAD_FILTER_BYTES, "thread_filter:bytes")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
     DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS
