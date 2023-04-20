@@ -2,13 +2,13 @@ package com.datadoghq.profiler.stresstest;
 
 import com.datadoghq.profiler.JavaProfiler;
 import org.openjdk.jmh.infra.BenchmarkParams;
-import org.openjdk.jmh.profile.ExternalProfiler;
+import org.openjdk.jmh.infra.IterationParams;
+import org.openjdk.jmh.profile.InternalProfiler;
 import org.openjdk.jmh.results.AggregationPolicy;
-import org.openjdk.jmh.results.BenchmarkResult;
+import org.openjdk.jmh.results.IterationResult;
 import org.openjdk.jmh.results.Result;
 import org.openjdk.jmh.results.ScalarResult;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,21 +18,17 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-public class WhiteboxProfiler implements ExternalProfiler {
+public class WhiteboxProfiler implements InternalProfiler {
 
     private Path jfr;
+
     @Override
-    public Collection<String> addJVMInvokeOptions(BenchmarkParams benchmarkParams) {
-        return Collections.emptyList();
+    public String getDescription() {
+        return "ddprof-whitebox";
     }
 
     @Override
-    public Collection<String> addJVMOptions(BenchmarkParams benchmarkParams) {
-        return Collections.emptyList();
-    }
-
-    @Override
-    public void beforeTrial(BenchmarkParams benchmarkParams) {
+    public void beforeIteration(BenchmarkParams benchmarkParams, IterationParams iterationParams) {
         try {
             jfr = Files.createTempFile(benchmarkParams.getBenchmark() + System.currentTimeMillis(), ".jfr");
             String command = "start," + benchmarkParams.getParam("command") + ",jfr,file=" + jfr.toAbsolutePath();
@@ -43,7 +39,7 @@ public class WhiteboxProfiler implements ExternalProfiler {
     }
 
     @Override
-    public Collection<? extends Result> afterTrial(BenchmarkResult br, long pid, File stdOut, File stdErr) {
+    public Collection<? extends Result> afterIteration(BenchmarkParams benchmarkParams, IterationParams iterationParams, IterationResult result) {
         // TODO unit encoded in counter name for now, so results are effectively dimensionless
         try {
             JavaProfiler.getInstance().stop();
@@ -59,20 +55,5 @@ public class WhiteboxProfiler implements ExternalProfiler {
             e.printStackTrace();
             return Collections.emptyList();
         }
-    }
-
-    @Override
-    public boolean allowPrintOut() {
-        return true;
-    }
-
-    @Override
-    public boolean allowPrintErr() {
-        return true;
-    }
-
-    @Override
-    public String getDescription() {
-        return "ddprof-whitebox";
     }
 }

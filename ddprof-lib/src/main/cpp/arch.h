@@ -27,6 +27,10 @@ static inline u64 atomicInc(volatile u64& var, u64 increment = 1) {
     return __sync_fetch_and_add(&var, increment);
 }
 
+static inline long long atomicInc(volatile long long& var, long long increment = 1) {
+    return __sync_fetch_and_add(&var, increment);
+}
+
 static inline int atomicInc(volatile int& var, int increment = 1) {
     return __sync_fetch_and_add(&var, increment);
 }
@@ -35,7 +39,7 @@ static inline u64 loadAcquire(u64& var) {
     return __atomic_load_n(&var, __ATOMIC_ACQUIRE);
 }
 
-static inline void storeRelease(volatile u64& var, u64 value) {
+static inline void storeRelease(volatile long long& var, long long value) {
     return __atomic_store_n(&var, value, __ATOMIC_RELEASE);
 }
 

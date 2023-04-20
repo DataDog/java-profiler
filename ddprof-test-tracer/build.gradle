@@ -1,0 +1,15 @@
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation project(path: ":ddprof-lib", configuration: 'debug')
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs.addAll(['--release', '8'])
+}
