@@ -15,6 +15,7 @@
 .settings
 .gradle
 *.iml
+/ddprof-stresstest/jmh-result.json
 
 **/.resources/
 
