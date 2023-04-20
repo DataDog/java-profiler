@@ -56,29 +56,29 @@ typedef enum CounterId : int {
 
 class Counters {
 private:
-    static u64* init();
+    static long long* init();
 public:
     #ifdef COUNTERS
-        static volatile u64* _counters;
+        static volatile long long* _counters;
     #endif // COUNTERS
 
     static constexpr int size() {
-        return DD_NUM_COUNTERS * sizeof(u64) * 8;
+        return DD_NUM_COUNTERS * sizeof(long long) * 8;
     }
 
-    static void set(CounterId counter, u64 value, int offset = 0) {
+    static void set(CounterId counter, long long value, int offset = 0) {
         #ifdef COUNTERS
         storeRelease(_counters[(static_cast<int>(counter) + offset) * 8], value);
         #endif // COUNTERS
     }
 
-    static void increment(CounterId counter, u64 delta = 1, int offset = 0) {
+    static void increment(CounterId counter, long long delta = 1, int offset = 0) {
         #ifdef COUNTERS
         atomicInc(_counters[(static_cast<int>(counter) + offset) * 8], delta);
         #endif // COUNTERS
     }
 
-    static void decrement(CounterId counter, u64 delta = 1, int offset = 0) {
+    static void decrement(CounterId counter, long long delta = 1, int offset = 0) {
         #ifdef COUNTERS
         increment(counter, -delta, offset);
         #endif // COUNTERS

@@ -17,13 +17,13 @@
 #include <cstring>
 #include <stdlib.h>
 
-u64* Counters::init() {
-    u32 alignment = sizeof(u64) * 8;
-    u64* counters = (u64*) aligned_alloc(alignment, DD_NUM_COUNTERS * alignment);
+long long* Counters::init() {
+    u32 alignment = sizeof(long long) * 8;
+    long long* counters = (long long*) aligned_alloc(alignment, DD_NUM_COUNTERS * alignment);
     memset(counters, 0, DD_NUM_COUNTERS * alignment);
     return counters;
 }
 
 #ifdef COUNTERS
-volatile u64* Counters::_counters = Counters::init();
+volatile long long* Counters::_counters = Counters::init();
 #endif // COUNTERS
