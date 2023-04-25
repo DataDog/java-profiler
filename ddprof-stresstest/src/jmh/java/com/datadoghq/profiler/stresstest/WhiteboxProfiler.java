@@ -31,7 +31,9 @@ public class WhiteboxProfiler implements InternalProfiler {
     public void beforeIteration(BenchmarkParams benchmarkParams, IterationParams iterationParams) {
         try {
             jfr = Files.createTempFile(benchmarkParams.getBenchmark() + System.currentTimeMillis(), ".jfr");
-            String command = "start," + benchmarkParams.getParam("command") + ",jfr,file=" + jfr.toAbsolutePath();
+            String command = "start," + benchmarkParams.getParam("command")
+                    .replace(':', ';') // simplify result parsing
+                    + ",jfr,file=" + jfr.toAbsolutePath();
             JavaProfiler.getInstance().execute(command);
         } catch (IOException e) {
             e.printStackTrace();

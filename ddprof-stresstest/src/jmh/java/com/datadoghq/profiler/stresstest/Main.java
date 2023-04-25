@@ -15,7 +15,7 @@ public class Main {
                 .include("com.datadoghq.profiler.stresstest.scenarios.*")
                 .addProfiler(WhiteboxProfiler.class)
                 .forks(1)
-                .resultFormat(ResultFormatType.CSV)
+                .resultFormat(ResultFormatType.SCSV)
                 .warmupIterations(0)
                 .measurementIterations(1)
                 .measurementTime(TimeValue.seconds(5))
