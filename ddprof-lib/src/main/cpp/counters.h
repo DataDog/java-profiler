@@ -58,11 +58,25 @@ typedef enum CounterId : int {
 
 class Counters {
 private:
+    volatile long long* _counters;
     static long long* init();
+    Counters() {
+        #ifdef COUNTERS
+        _counters = Counters::init();
+        #endif // COUNTERS
+    }
 public:
-    #ifdef COUNTERS
-        static volatile long long* _counters;
-    #endif // COUNTERS
+    static Counters& instance() {
+        static Counters instance;
+        return instance;
+    }
+
+    Counters(Counters const&) = delete;
+    void operator=(Counters const&) = delete;
+
+    static long long* getCounters() {
+        return const_cast<long long*>(Counters::instance()._counters);
+    }
 
     static constexpr int size() {
         return DD_NUM_COUNTERS * sizeof(long long) * 8;
@@ -70,13 +84,13 @@ public:
 
     static void set(CounterId counter, long long value, int offset = 0) {
         #ifdef COUNTERS
-        storeRelease(_counters[(static_cast<int>(counter) + offset) * 8], value);
+        storeRelease(Counters::instance()._counters[(static_cast<int>(counter) + offset) * 8], value);
         #endif // COUNTERS
     }
 
     static void increment(CounterId counter, long long delta = 1, int offset = 0) {
         #ifdef COUNTERS
-        atomicInc(_counters[(static_cast<int>(counter) + offset) * 8], delta);
+        atomicInc(Counters::instance()._counters[(static_cast<int>(counter) + offset) * 8], delta);
         #endif // COUNTERS
     }
 
