@@ -35,6 +35,7 @@ jobs:
         with:
           generateReleaseNotes: true
           allowUpdates: true
+          draft: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Create Release [manual]
@@ -45,6 +46,7 @@ jobs:
           generateReleaseNotes: true
           allowUpdates: true
           tag: ${{ inputs.release_tag}}
+          draft: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Upstream release
@@ -57,9 +59,8 @@ jobs:
           echo "-> ${VERSION}"
           git config --global user.email "java-profiler@datadoghq.com"
           git config --global user.name "Datadog Java Profiler"
-          if [ ! -z "${{ inputs.release_tag }}" ]; then
-            git checkout release/${VERSION}
-          fi
+          # force checkout of the branch to merge upstream
+          git checkout release/${VERSION}
           git remote add upstream git@github.com:DataDog/java-profiler.git
           git remote update
           git checkout upstream/main

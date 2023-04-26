@@ -24,9 +24,6 @@
 #include "thread.h"
 #include "vmStructs.h"
 
-get_sampling_interval ObjectSampler::_get_sampling_interval;
-int* ObjectSampler::_sampling_interval;
-
 
 ObjectSampler* const ObjectSampler::_instance = new ObjectSampler();
 
@@ -39,10 +36,9 @@ void ObjectSampler::recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread threa
     int tid = ProfiledThread::currentTid();
 
     AllocEvent event;
-    int interval = sampling_interval();
 
     event._size = size;
-    event._weight =  (size == 0 || interval == 0) ? 1 : 1 / (1 - std::exp(-size / (float)interval));
+    event._weight =  (size == 0 || _interval == 0) ? 1 : 1 / (1 - std::exp(-size / (float)_interval));
 
     char* class_name;
     if (jvmti->GetClassSignature(object_klass, &class_name, NULL) == 0) {
@@ -99,27 +95,11 @@ Error ObjectSampler::check(Arguments& args) {
     }
     
     _interval = args._memory;
+    _configured_interval = _interval;
     _record_allocations = args._record_allocations;
     _record_liveness = args._record_liveness;
 
     _max_stack_depth = Profiler::instance()->max_stack_depth();
-
-    // resolve the function/member pointers to retrieve the current JVMTI heap sampling interval
-    // the reason for re-retrieving is that the interval can be modified by external JVMTI agents
-    CodeCache* libjvm = VMStructs::libjvm();
-
-    // this symbol should be available given the current JVTMI heap sampler implementation
-    // Note: when/if that implementation would change in the future the alternatives should be added here
-    const void* get_interval_ptr = libjvm->findSymbol("_ZN17ThreadHeapSampler21get_sampling_intervalEv");
-    if (get_interval_ptr == NULL) {
-        _sampling_interval = (int*) libjvm->findSymbol("_ZN17ThreadHeapSampler18_sampling_intervalE");
-    }
-    if (get_interval_ptr == NULL && _sampling_interval == NULL) {
-        // fail if it is not possible to resolve the required symbol
-        Log::warn("Allocation sampling is not supported on this JDK");
-        return Error::OK;
-    }
-    _get_sampling_interval = (get_sampling_interval)get_interval_ptr;
 
     return Error::OK;
 }
@@ -138,7 +118,10 @@ Error ObjectSampler::start(Arguments& args) {
                 return error;
             }
         }
+        
         jvmtiEnv* jvmti = VM::jvmti();
+        // JVMTI Object Sampler is a 'solo' feature, meaning that it can only be used by one JVMTI environment.
+        // Therefore, we can rely on the fact that if this agent gets hold of the sample it will be its exclusive owner.
         jvmti->SetHeapSamplingInterval(_interval);
         jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
         __atomic_store_n(&_last_config_update_ts, OS::nanotime(), __ATOMIC_RELEASE);
@@ -169,10 +152,11 @@ Error ObjectSampler::updateConfiguration(u64 events, double time_coefficient) {
     );
 
     float signal = pid_controller.compute(events, time_coefficient);
-    int current_interval = sampling_interval();
-    int required_interval = current_interval - signal;
-    if (required_interval >= _interval) { // do not dip below the manually configured sampling interval
-        VM::jvmti()->SetHeapSamplingInterval(required_interval);
+    int required_interval = _interval - signal;
+    required_interval = required_interval >= _configured_interval ? required_interval : _configured_interval; // do not dip below the manually configured sampling interval
+    if (required_interval != _interval) {
+        _interval = required_interval;
+        VM::jvmti()->SetHeapSamplingInterval(_interval);
     }
 
     return Error::OK;

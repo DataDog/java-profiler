@@ -1,4 +1,6 @@
 **/build/
+**/build_*/
+**/build-*/
 /nbproject/
 /out/
 /.idea/
@@ -13,6 +15,7 @@
 .settings
 .gradle
 *.iml
+/ddprof-stresstest/jmh-result.*
 
 **/.resources/
 

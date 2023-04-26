@@ -33,6 +33,26 @@ jobs:
             fi
           fi
 
+  scan-build:
+    needs: check-for-pr
+    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: System setup
+        run: |
+          sudo apt install -y clang clang-tools openjdk-11-jdk
+      - name: Scan Build
+        run: |
+          ./gradlew scanBuild --no-daemon
+      - name: Upload logs
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: scan-build-reports.zip
+          path: |
+            ddprof-lib/build/reports/scan-build
+
   test-linux-glibc:
     needs: check-for-pr
     if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
@@ -57,6 +77,7 @@ jobs:
         run: |
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
           export JAVA_TEST_HOME=$(pwd)/test_jdk
+          export BUILD_TYPE=SanitizedDebug
           chmod a+x ddprof-lib/test.sh
           ./gradlew :ddprof-test:test --info
       - name: Upload logs
@@ -68,10 +89,54 @@ jobs:
             ddprof-test/hs_err_*
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
+            ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
       - uses: actions/upload-artifact@v3
         if: success()
         with:
           name: x64-glibc
+          path: build/
+
+  test-ubuntu-jdk:
+    needs: check-for-pr
+    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
+    strategy:
+      matrix:
+        java_version: [11, 17]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v3
+      - name: Prepare build JDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: "11"
+      - name: Prepare JDK ${{ matrix.java_version }}
+        run: |
+          sudo apt-get install openjdk-${{ matrix.java_version }}-jdk
+          uname -r
+      - name: Test
+        run: |
+          export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
+          export JAVA_TEST_HOME=/usr/lib/jvm/java-${{ matrix.java_version }}-openjdk-amd64
+          export JAVA_HOME=$JAVA_HOME
+          export PATH=$JAVA_HOME/bin:$PATH
+          export BUILD_TYPE=SanitizedDebug
+          ./gradlew :ddprof-test:test --info
+      - name: Upload logs
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: reports-linux-ubuntu-jdk-${{ matrix.java_version }}.zip
+          path: |
+            ddprof-test/hs_err_*
+            ddprof-test/build/reports/tests
+            ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
+            ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
+      - uses: actions/upload-artifact@v3
+        if: success()
+        with:
+          name: x64-ubuntu-jdk
           path: build/
 
   test-linux-glibc-j9:
@@ -99,6 +164,7 @@ jobs:
       - name: Test
         run: |
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
+          export BUILD_TYPE=SanitizedDebug
           chmod a+x gradlew
           chmod a+x ddprof-lib/test.sh
           ./gradlew :ddprof-test:test --info
@@ -111,6 +177,7 @@ jobs:
             ddprof-test/hs_err_*
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
+            ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
       - uses: actions/upload-artifact@v3
         if: success()
         with:
@@ -159,6 +226,7 @@ jobs:
             ddprof-test/hs_err_*
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
+            ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
       - uses: actions/upload-artifact@v3
         if: success()
         with:

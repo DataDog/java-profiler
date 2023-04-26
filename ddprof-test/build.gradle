@@ -8,6 +8,7 @@ repositories {
 
 dependencies {
     testImplementation project(path: ":ddprof-lib", configuration: 'debug')
+    testImplementation project(path: ":ddprof-test-tracer")
 
     // https://mvnrepository.com/artifact/org.junit.jupiter/junit-jupiter-api
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.9.2'
@@ -27,4 +28,19 @@ test {
     }
     useJUnitPlatform()
     jvmArgs '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true'
+}
+
+tasks.withType(Test) {
+    onlyIf {
+        !project.hasProperty('skip-tests')
+    }
+    def javaHome = System.getenv("JAVA_TEST_HOME")
+    if (javaHome == null) {
+        javaHome = System.getenv("JAVA_HOME")
+    }
+    executable = new File("${javaHome}", 'bin/java')
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs.addAll(['--release', '8'])
 }

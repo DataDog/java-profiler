@@ -3,18 +3,8 @@ trigger_internal_build:
   rules:
     - if: $CI_PROJECT_NAME =~ /java-profiler$/
       when: never
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      when: always
+    - when: always
       allow_failure: false
-    - if: '$CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
-      when: always
-      allow_failure: false
-    - if: '$CI_COMMIT_REF_NAME != $CI_COMMIT_BRANCH'
-      when: always
-      allow_failure: false
-    - if: '$CI_COMMIT_BRANCH != "main"'
-      when: manual
-      allow_failure: true
   variables:
     DOWNSTREAM_BRANCH: "main"
     JPLIB_DEFAULT_BRANCH: "main"
@@ -23,6 +13,6 @@ trigger_internal_build:
     JPLIB_SHORT_COMMIT_SHA: ${CI_COMMIT_SHORT_SHA}
     JPLIB_COMMIT_TAG: ${CI_COMMIT_REF_NAME}
   trigger:
-    project: DataDog/async-profiler-build
+    project: DataDog/apm-reliability/async-profiler-build
     strategy: depend
     branch: $DOWNSTREAM_BRANCH
