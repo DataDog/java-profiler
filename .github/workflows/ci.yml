@@ -55,11 +55,32 @@ jobs:
           find . -type d -name 'jdk*' -maxdepth 1| xargs -I {} mv {} test_jdk
       - name: Test
         run: |
+          export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
+          export LIBC=glibc
           export JAVA_TEST_HOME=$(pwd)/test_jdk
           export BUILD_TYPE=SanitizedDebug
           chmod a+x ddprof-lib/test.sh
           ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
+      - name: Read Stress Test Report
+        id: linux-glibc-read-report
+        run: |
+          REPORT=$(cat ddprof-stresstest/jmh-result.html | cat | tr '\n' ' ')
+          echo "report=${REPORT}" >> $GITHUB_OUTPUT
+      - name: Post PR comment
+        uses: actions/github-script@v5
+        env:
+          report: '${{ steps.linux-glibc-read-report.outputs.report }}'
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: process.env.report
+            })
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -97,12 +118,33 @@ jobs:
           uname -r
       - name: Test
         run: |
+          export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
+          export LIBC=glibc
           export JAVA_TEST_HOME=/usr/lib/jvm/java-${{ matrix.java_version }}-openjdk-amd64
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
           export BUILD_TYPE=SanitizedDebug
           ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
+      - name: Read Stress Test Report
+        id: ubuntu-read-report
+        run: |
+          REPORT=$(cat ddprof-stresstest/jmh-result.html | cat | tr '\n' ' ')
+          echo "report=${REPORT}" >> $GITHUB_OUTPUT
+      - name: Post PR comment
+        uses: actions/github-script@v5
+        env:
+          report: '${{ steps.ubuntu-read-report.outputs.report }}'
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: process.env.report
+            })
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -143,11 +185,14 @@ jobs:
           java-version: "11"
       - name: Test
         run: |
+          export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
+          export LIBC=glibc
           export BUILD_TYPE=SanitizedDebug
           chmod a+x gradlew
           chmod a+x ddprof-lib/test.sh
           ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -193,10 +238,32 @@ jobs:
         run: |
           export JAVA_HOME=$(pwd)/build_jdk
           export PATH=$JAVA_HOME/bin:$PATH
+          export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=musl/${{ matrix.java_version }}
+          export LIBC=musl
           export JAVA_TEST_HOME=$(pwd)/test_jdk
           chmod a+x ddprof-lib/test.sh
           ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
+      - name: Read Stress Test Report
+        id: linux-musl-read-report
+        run: |
+          REPORT=$(cat ddprof-stresstest/jmh-result.html | cat | tr '\n' ' ')
+          echo "report=${REPORT}" >> $GITHUB_OUTPUT
+          echo $REPORT
+      - name: Post PR comment
+        uses: actions/github-script@v5
+        env:
+          report: '${{ steps.linux-musl-read-report.outputs.report }}'
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: process.env.report
+            })
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
