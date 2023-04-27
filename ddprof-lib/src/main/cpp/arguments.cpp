@@ -192,7 +192,7 @@ Error Arguments::parse(const char* args) {
                 }
 
             CASE("memory")
-                char* config = strchr(value, ':');
+                char* config = value ? strchr(value, ':') : NULL;
                 if (config) {
                     *(config++) = 0; // terminate the 'value' string and update the pointer to the 'config' section
                 }
