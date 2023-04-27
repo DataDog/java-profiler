@@ -62,10 +62,10 @@ public class EndpointTest extends AbstractProfilerTest {
             assertTrue(recovered.get(i), i + " not tested");
         }
         Map<String, Long> debugCounters = profiler.getDebugCounters();
-        assertEquals(endpoints.length, debugCounters.get("dictionary:endpoints:keys"));
-        assertEquals(Arrays.stream(endpoints).mapToInt(ep -> ep.endpoint.length() + 1).sum(), debugCounters.get("dictionary:endpoints:keys:bytes"));
-        assertBoundedBy(debugCounters.get("dictionary:endpoints:pages"), 300, "endpoint storage too many pages");
-        assertBoundedBy(debugCounters.get("dictionary:endpoints:bytes"), 300 * DICTIONARY_PAGE_SIZE, "endpoint storage too many pages");
+        assertEquals(endpoints.length, debugCounters.get("dictionary_endpoints_keys"));
+        assertEquals(Arrays.stream(endpoints).mapToInt(ep -> ep.endpoint.length() + 1).sum(), debugCounters.get("dictionary_endpoints_keys_bytes"));
+        assertBoundedBy(debugCounters.get("dictionary_endpoints_pages"), 300, "endpoint storage too many pages");
+        assertBoundedBy(debugCounters.get("dictionary_endpoints_bytes"), 300 * DICTIONARY_PAGE_SIZE, "endpoint storage too many pages");
     }
 
     private void record(Endpoint endpoint, boolean shouldAccept, int sizeLimit) {

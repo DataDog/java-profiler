@@ -23,7 +23,3 @@ long long* Counters::init() {
     memset(counters, 0, DD_NUM_COUNTERS * alignment);
     return counters;
 }
-
-#ifdef COUNTERS
-volatile long long* Counters::_counters = Counters::init();
-#endif // COUNTERS

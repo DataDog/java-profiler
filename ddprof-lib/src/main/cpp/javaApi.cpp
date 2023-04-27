@@ -150,7 +150,7 @@ Java_com_datadoghq_profiler_JavaProfiler_dump0(JNIEnv* env, jobject unused, jstr
 extern "C" DLLEXPORT jobject JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getDebugCounters0(JNIEnv* env, jobject unused) {
     #ifdef COUNTERS
-    return env->NewDirectByteBuffer((void*) Counters::_counters, (jlong) Counters::size());
+    return env->NewDirectByteBuffer((void*) Counters::getCounters(), (jlong) Counters::size());
     #else
     return env->NewDirectByteBuffer(nullptr, 0);
     #endif // COUNTERS

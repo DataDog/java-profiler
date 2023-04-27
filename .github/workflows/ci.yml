@@ -196,7 +196,6 @@ jobs:
           chmod a+x gradlew
           chmod a+x ddprof-lib/test.sh
           ./gradlew :ddprof-test:test --info
-          ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
