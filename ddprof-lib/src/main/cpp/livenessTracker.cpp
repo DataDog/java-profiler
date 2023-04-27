@@ -182,7 +182,6 @@ Error LivenessTracker::start(Arguments& args) {
 }
 
 void LivenessTracker::stop() {
-    JNIEnv* env = VM::jni();
     cleanup_table();
     flush_table(NULL);
 

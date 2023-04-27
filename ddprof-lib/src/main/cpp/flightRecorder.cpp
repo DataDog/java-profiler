@@ -379,8 +379,7 @@ class Recording {
     }
 
     ~Recording() {
-        off_t chunk_end = finishChunk(true);
-
+        finishChunk(true);
         close(_fd);
     }
     
@@ -461,7 +460,7 @@ class Recording {
         if (fd > -1) {
             // move the chunk to external file and reset the continuous recording file
             OS::copyFile(_fd, fd, 0, _chunk_start);
-            int rslt = OS::truncateFile(_fd);
+            OS::truncateFile(_fd);
             // need to reset the file offset here
             _chunk_start = 0;
             _base_id = 0;

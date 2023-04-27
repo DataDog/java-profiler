@@ -376,6 +376,8 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
             }
             return 1;
         }
+    } else {
+        return 0;
     }
 
     if (!(_safe_mode & UNWIND_NATIVE)) {
