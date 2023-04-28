@@ -60,7 +60,7 @@ class Counters {
 private:
     volatile long long* _counters;
     static long long* init();
-    Counters() {
+    Counters() : _counters() {
         #ifdef COUNTERS
         _counters = Counters::init();
         #endif // COUNTERS

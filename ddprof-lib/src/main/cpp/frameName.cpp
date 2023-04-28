@@ -55,12 +55,12 @@ Matcher::Matcher(const Matcher& m) {
 }
 
 Matcher& Matcher::operator=(const Matcher& m) {
-    free(_pattern);
-
-    _type = m._type;
-    _pattern = strdup(m._pattern);
-    _len = m._len;
-
+    if (&m != this) {
+        free(_pattern);
+        _type = m._type;
+        _pattern = strdup(m._pattern);
+        _len = m._len;
+    }
     return *this;
 }
 
