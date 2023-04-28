@@ -120,7 +120,7 @@ class Element {
 
     Element& attribute(const char* key, JfrType value) {
         char value_str[16];
-        snprintf(value_str, sizeof(value_str), "%u", value);
+        snprintf(value_str, sizeof(value_str), "%i", value);
         return attribute(key, value_str);
     }
 

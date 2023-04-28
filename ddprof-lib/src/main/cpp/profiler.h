@@ -174,7 +174,15 @@ class Profiler {
         _class_map(1),
         _symbol_map(2),
         _string_label_map(3),
-        _context_value_map(4) {
+        _context_value_map(4),
+        _cpu_engine(),
+        _alloc_engine(),
+        _event_mask(0),
+        _stop_time(),
+        _total_samples(0),
+        _failures(),
+        _cstack(CSTACK_NO)
+        {
 
         for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
             _calltrace_buffer[i] = NULL;

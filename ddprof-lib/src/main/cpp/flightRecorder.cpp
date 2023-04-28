@@ -73,8 +73,9 @@ struct CpuTimes {
 
 class MethodInfo {
   public:
-    MethodInfo() : _mark(false), _is_entry(false), _key(0), _modifiers(0) {
-    }
+    MethodInfo() : _mark(false), _is_entry(false), _key(0), _modifiers(0),
+     _class(0), _name(0), _sig(0), _line_number_table_size(0), _line_number_table(),
+     _type() {}
 
     bool _mark;
     bool _is_entry;
