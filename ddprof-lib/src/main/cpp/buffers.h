@@ -25,7 +25,7 @@ class Buffer {
   public:
     Buffer() : _offset(0) {}
 
-    virtual int limit() {
+    virtual int limit() const {
         return _limit;
     }
 
@@ -159,7 +159,7 @@ class RecordingBuffer : public Buffer {
     RecordingBuffer() : Buffer() {
     }
 
-    virtual int limit() {
+    virtual int limit() const {
         return _limit;
     }
 
