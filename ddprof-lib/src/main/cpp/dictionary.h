@@ -17,6 +17,7 @@
 #ifndef _DICTIONARY_H
 #define _DICTIONARY_H
 
+#include "counters.h"
 #include <map>
 #include <stddef.h>
 
@@ -60,13 +61,11 @@ class Dictionary {
     unsigned int lookup(const char* key, size_t length, bool for_insert, unsigned int sentinel);
 
   public:
-    Dictionary() : _id(0) {
-        _table = (DictTable*)calloc(1, sizeof(DictTable));
-        _table->base_index = _base_index = 1;
-        _size = 0;
-    }
+    Dictionary() : Dictionary(0) {}
     Dictionary(int id) : _id(id) {
         _table = (DictTable*)calloc(1, sizeof(DictTable));
+        Counters::increment(DICTIONARY_PAGES, 1, id);
+        Counters::increment(DICTIONARY_BYTES, sizeof(DictTable), id);
         _table->base_index = _base_index = 1;
         _size = 0;
     }
