@@ -50,21 +50,20 @@
                     </li>
                 </xsl:for-each>
                 </ul>
-                <!-- Temporarily disable very noisy style violations - until we get a collapsing HTML -->
-<!--                <hr/>-->
-<!--                <h2>Style Violations</h2>-->
-<!--                <ul>-->
-<!--                <xsl:for-each select="results/errors/error[@severity = 'style']">-->
-<!--                    <xsl:variable name="source">-->
-<!--                        <xsl:value-of select="concat(location/@file, '#L', location/@line)"/>-->
-<!--                    </xsl:variable>-->
-<!--                    <li>-->
-<!--                        <a href="https://github.com/DataDog/java-profiler-library/blob/target_branch/{$source}">-->
-<!--                            <xsl:value-of select="@msg"/>-->
-<!--                        </a>-->
-<!--                    </li>-->
-<!--                </xsl:for-each>-->
-<!--                </ul>-->
+                <hr/>
+                <h2>Style Violations</h2>
+                <ul>
+                <xsl:for-each select="results/errors/error[@severity = 'style']">
+                    <xsl:variable name="source">
+                        <xsl:value-of select="concat(location/@file, '#L', location/@line)"/>
+                    </xsl:variable>
+                    <li>
+                        <a href="https://github.com/DataDog/java-profiler-library/blob/target_branch/{$source}">
+                            <xsl:value-of select="@msg"/>
+                        </a>
+                    </li>
+                </xsl:for-each>
+                </ul>
             </body>
         </html>
     </xsl:template>
