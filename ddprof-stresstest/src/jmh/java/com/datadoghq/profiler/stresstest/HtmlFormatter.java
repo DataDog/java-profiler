@@ -132,11 +132,7 @@ public class HtmlFormatter {
     }
 
     private String emit(String v) {
-        if (v.contains(delimiter) || v.contains(" ") || v.contains("\n") || v.contains("\r") || v.contains("")) {
-            return v.replaceAll("", "");
-        } else {
-            return v;
-        }
+        return v;
     }
 
     private String emit(int i) {
