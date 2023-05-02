@@ -64,7 +64,7 @@ void Dictionary::clear(DictTable* table, int id) {
         }
     }
     Counters::decrement(DICTIONARY_PAGES, 1, id);
-    Counters::decrement(DICTIONARY_PAGES, sizeof(DictTable), id);
+    Counters::decrement(DICTIONARY_BYTES, sizeof(DictTable), id);
 }
 
 // Many popular symbols are quite short, e.g. "[B", "()V" etc.
