@@ -33,6 +33,11 @@ void ObjectSampler::SampledObjectAlloc(jvmtiEnv* jvmti, JNIEnv* jni, jthread thr
 }
 
 void ObjectSampler::recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread, int event_type, jobject object, jclass object_klass, jlong size) {
+    if (!(_record_allocations || _record_liveness)) {
+        // nothing to do here, bail out
+        return;
+    }
+
     int tid = ProfiledThread::currentTid();
 
     AllocEvent event;
@@ -42,12 +47,17 @@ void ObjectSampler::recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread threa
 
     char* class_name;
     if (jvmti->GetClassSignature(object_klass, &class_name, NULL) == 0) {
+        int id = -1;
         if (class_name[0] == 'L') {
-            event._id = Profiler::instance()->classMap()->lookup(class_name + 1, strlen(class_name) - 2);
+            id = Profiler::instance()->lookupClass(class_name + 1, strlen(class_name) - 2);
         } else {
-            event._id = Profiler::instance()->classMap()->lookup(class_name);
+            id = Profiler::instance()->lookupClass(class_name, strlen(class_name));
         }
         jvmti->Deallocate((unsigned char*)class_name);
+        if (id == -1) {
+            return;
+        }
+        event._id = id;
     }
 
     jvmtiFrameInfo *frames = new jvmtiFrameInfo[_max_stack_depth];

@@ -863,6 +863,8 @@ class Recording {
         // constant pool count - bump each time a new pool is added
         buf->put8(11);
 
+        // Profiler::instance()->classMap() provides access to non-locked _class_map instance
+        // The non-locked access is ok here as this code will never run concurrently to _class_map.clear()
         Lookup lookup(&_method_map, Profiler::instance()->classMap());
         writeFrameTypes(buf);
         writeThreadStates(buf);
@@ -1008,6 +1010,7 @@ class Recording {
 
     void writeClasses(Buffer* buf, Lookup* lookup) {
         std::map<u32, const char*> classes;
+        // no need to lock _classes as this code will never run concurrently with resetting that dictionary
         lookup->_classes->collect(classes);
 
         buf->putVar64(T_CLASS);

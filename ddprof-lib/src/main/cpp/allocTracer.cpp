@@ -79,7 +79,11 @@ void AllocTracer::recordAllocation(void* ucontext, int event_type, uintptr_t rkl
 
     if (VMStructs::hasClassNames()) {
         VMSymbol* symbol = VMKlass::fromHandle(rklass)->name();
-        event._id = Profiler::instance()->classMap()->lookup(symbol->body(), symbol->length());
+        int id = Profiler::instance()->lookupClass(symbol->body(), symbol->length());
+        if (id == -1) {
+            return;
+        }
+        event._id = id;
     }
 
     Profiler::instance()->recordSample(ucontext, total_size, tid, event_type, &event);
