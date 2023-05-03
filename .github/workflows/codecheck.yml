@@ -1,5 +1,9 @@
 name: Code Quality Checks
 
+concurrency:
+  group: pr-code_quality_${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 on:
   pull_request:
 
@@ -33,21 +37,13 @@ jobs:
       - name: Read Report
         id: read-report
         run: |
-          REPORT=$(find ddprof-lib/build/reports/scan-build -name 'index.html' | xargs -I {} python .github/scripts/scanbuild_report_cleanup.py {} ${{ github.head_ref }} | cat | tr '\n' ' ')
-          echo "report=${REPORT}" >> $GITHUB_OUTPUT
-      - name: Post PR comment
-        uses: actions/github-script@v5
-        env:
-          report: '${{ steps.read-report.outputs.report }}'
+          find ddprof-lib/build/reports/scan-build -name 'index.html' | xargs -I {} python .github/scripts/scanbuild_report_cleanup.py {} ${{ github.head_ref }} > comment.html
+      - name: Post or update PR comment
+        uses: ./.github/actions/pr_comment
         with:
-          github-token: ${{secrets.GITHUB_TOKEN}}
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: process.env.report
-            })
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          search-text: "scan-build"
+          comment-file: 'comment.html'
 
   cppcheck:
     if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
@@ -82,19 +78,12 @@ jobs:
           path: |
             report.html
             report.xml
-      - name: Post PR comment
-        uses: actions/github-script@v5
+      - name: Post or update PR comment
+        uses: ./.github/actions/pr_comment
         with:
-          github-token: ${{secrets.GITHUB_TOKEN}}
-          script: |
-            const fs = require('fs');
-            const htmlContent = fs.readFileSync('comment.html', 'utf8');
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: htmlContent
-            });
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          search-text: "cppcheck"
+          comment-file: 'comment.html'
   codeql:
     if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
     runs-on: ubuntu-latest
