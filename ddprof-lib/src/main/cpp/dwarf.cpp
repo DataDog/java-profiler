@@ -373,8 +373,13 @@ void DwarfParser::addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off) {
 
 FrameDesc* DwarfParser::addRecordRaw(u32 loc, int cfa, int fp_off) {
     if (_count >= _capacity) {
-        _capacity *= 2;
-        _table = (FrameDesc*)realloc(_table, _capacity * sizeof(FrameDesc));
+        FrameDesc* frameDesc = (FrameDesc*)realloc(_table, _capacity * 2 * sizeof(FrameDesc));
+        if (frameDesc) {
+            _capacity *= 2;
+            _table = frameDesc;
+        } else {
+            return NULL;
+        }
     }
 
     FrameDesc* f = &_table[_count++];

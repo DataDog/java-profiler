@@ -32,7 +32,6 @@ public class WhiteboxProfiler implements InternalProfiler {
         try {
             jfr = Files.createTempFile(benchmarkParams.getBenchmark() + System.currentTimeMillis(), ".jfr");
             String command = "start," + benchmarkParams.getParam("command")
-                    .replace(':', ';') // simplify result parsing
                     + ",jfr,file=" + jfr.toAbsolutePath();
             JavaProfiler.getInstance().execute(command);
         } catch (IOException e) {
@@ -48,7 +47,7 @@ public class WhiteboxProfiler implements InternalProfiler {
             long fileSize = Files.size(jfr);
             Files.deleteIfExists(jfr);
             List<ScalarResult> results = new ArrayList<>();
-            results.add(new ScalarResult("jfr:filesize:bytes", fileSize, "", AggregationPolicy.MAX));
+            results.add(new ScalarResult("jfr_filesize_bytes", fileSize, "", AggregationPolicy.MAX));
             for (Map.Entry<String, Long> counter : JavaProfiler.getInstance().getDebugCounters().entrySet()) {
                 results.add(new ScalarResult(counter.getKey(), counter.getValue(), "", AggregationPolicy.MAX));
             }

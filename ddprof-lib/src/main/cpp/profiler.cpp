@@ -36,7 +36,6 @@
 #include "itimer.h"
 #include "dwarf.h"
 #include "flightRecorder.h"
-#include "frameName.h"
 #include "os.h"
 #include "safeAccess.h"
 #include "stackFrame.h"
@@ -376,6 +375,8 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
             }
             return 1;
         }
+    } else {
+        return 0;
     }
 
     if (!(_safe_mode & UNWIND_NATIVE)) {
@@ -955,8 +956,13 @@ Error Profiler::start(Arguments& args, bool reset) {
         memset(_failures, 0, sizeof(_failures));
 
         // Reset dictionaries and bitmaps
-        lockAll();
+        // Reset class map under lock because ObjectSampler may try to use it while it is being cleaned up
+        _class_map_lock.lock();
         _class_map.clear();
+        _class_map_lock.unlock();
+
+        // Reset call trace storage
+        lockAll();
         _call_trace_storage.clear();
         unlockAll();
 
@@ -1163,10 +1169,13 @@ Error Profiler::dump(const char* path, const int length) {
         lockAll();
         Error err = _jfr.dump(path, length);
         
-        // Reset dictionaries and bitmaps
-        _class_map.clear();
+        // Reset calltrace storage
         _call_trace_storage.clear();
         unlockAll();
+        // Reset classmap
+        _class_map_lock.lock();
+        _class_map.clear();
+        _class_map_lock.unlock();
 
         // // Reset thread names and IDs
         MutexLocker ml(_thread_names_lock);
@@ -1313,4 +1322,14 @@ void Profiler::shutdown(Arguments& args) {
     }
 
     _state = TERMINATED;
+}
+
+int Profiler::lookupClass(const char* key, size_t length) {
+    if (_class_map_lock.tryLockShared()) {
+        int ret = _class_map.lookup(key, length);
+        _class_map_lock.unlockShared();
+        return ret;
+    }
+    // unable to lookup the class
+    return -1;
 }

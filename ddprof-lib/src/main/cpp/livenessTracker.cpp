@@ -85,7 +85,7 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
 
             jstring name_str = (jstring)env->CallObjectMethod(env->GetObjectClass(ref), _Class_getName);
             const char *name = env->GetStringUTFChars(name_str, NULL);
-            event._id = name != NULL ? Profiler::instance()->classMap()->lookup(name) : 0;
+            event._id = name != NULL ? Profiler::instance()->lookupClass(name, strlen(name)) : 0;
             env->ReleaseStringUTFChars(name_str, name);
 
             Profiler::instance()->recordExternalSample(1, _table[i].tid, _table[i].frames, _table[i].frames_size, /*truncated=*/false, BCI_LIVENESS, &event);
@@ -182,7 +182,6 @@ Error LivenessTracker::start(Arguments& args) {
 }
 
 void LivenessTracker::stop() {
-    JNIEnv* env = VM::jni();
     cleanup_table();
     flush_table(NULL);
 

@@ -198,11 +198,16 @@ void LockTracer::recordContendedLock(int event_type, u64 start_time, u64 end_tim
     event._timeout = timeout;
 
     if (lock_name != NULL) {
+        int id = -1;
         if (lock_name[0] == 'L') {
-            event._id = Profiler::instance()->classMap()->lookup(lock_name + 1, strlen(lock_name) - 2);
+            id = Profiler::instance()->lookupClass(lock_name + 1, strlen(lock_name) - 2);
         } else {
-            event._id = Profiler::instance()->classMap()->lookup(lock_name);
+            id = Profiler::instance()->lookupClass(lock_name, strlen(lock_name));
         }
+        if (id == -1) {
+            return;
+        }
+        event._id = id;
     }
 
     u64 duration_nanos = (u64)((end_time - start_time) * _ticks_to_nanos);

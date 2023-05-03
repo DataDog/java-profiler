@@ -73,8 +73,9 @@ struct CpuTimes {
 
 class MethodInfo {
   public:
-    MethodInfo() : _mark(false), _is_entry(false), _key(0), _modifiers(0) {
-    }
+    MethodInfo() : _mark(false), _is_entry(false), _key(0), _modifiers(0),
+     _class(0), _name(0), _sig(0), _line_number_table_size(0), _line_number_table(),
+     _type() {}
 
     bool _mark;
     bool _is_entry;
@@ -379,8 +380,7 @@ class Recording {
     }
 
     ~Recording() {
-        off_t chunk_end = finishChunk(true);
-
+        finishChunk(true);
         close(_fd);
     }
     
@@ -461,7 +461,7 @@ class Recording {
         if (fd > -1) {
             // move the chunk to external file and reset the continuous recording file
             OS::copyFile(_fd, fd, 0, _chunk_start);
-            int rslt = OS::truncateFile(_fd);
+            OS::truncateFile(_fd);
             // need to reset the file offset here
             _chunk_start = 0;
             _base_id = 0;
@@ -863,6 +863,8 @@ class Recording {
         // constant pool count - bump each time a new pool is added
         buf->put8(11);
 
+        // Profiler::instance()->classMap() provides access to non-locked _class_map instance
+        // The non-locked access is ok here as this code will never run concurrently to _class_map.clear()
         Lookup lookup(&_method_map, Profiler::instance()->classMap());
         writeFrameTypes(buf);
         writeThreadStates(buf);
@@ -1008,6 +1010,7 @@ class Recording {
 
     void writeClasses(Buffer* buf, Lookup* lookup) {
         std::map<u32, const char*> classes;
+        // no need to lock _classes as this code will never run concurrently with resetting that dictionary
         lookup->_classes->collect(classes);
 
         buf->putVar64(T_CLASS);

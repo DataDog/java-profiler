@@ -77,7 +77,6 @@ class Profiler {
     std::map<int, std::string> _thread_names;
     std::map<int, jlong> _thread_ids;
     Dictionary _class_map;
-    Dictionary _symbol_map;
     Dictionary _string_label_map;
     Dictionary _context_value_map;
     ThreadFilter _thread_filter;
@@ -97,6 +96,7 @@ class Profiler {
     u64 _total_samples;
     u64 _failures[ASGCT_FAILURE_TYPES];
 
+    SpinLock _class_map_lock;
     SpinLock _locks[CONCURRENCY_LEVEL];
     CallTraceBuffer* _calltrace_buffer[CONCURRENCY_LEVEL];
     int _max_stack_depth;
@@ -172,9 +172,16 @@ class Profiler {
         _dlopen_entry(NULL),
         _num_context_attributes(0),
         _class_map(1),
-        _symbol_map(2),
-        _string_label_map(3),
-        _context_value_map(4) {
+        _string_label_map(2),
+        _context_value_map(3),
+        _cpu_engine(),
+        _alloc_engine(),
+        _event_mask(0),
+        _stop_time(),
+        _total_samples(0),
+        _failures(),
+        _cstack(CSTACK_NO)
+        {
 
         for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
             _calltrace_buffer[i] = NULL;
@@ -196,6 +203,8 @@ class Profiler {
     Dictionary* contextValueMap() { return &_context_value_map; }
     u32 numContextAttributes() { return _num_context_attributes; }
     ThreadFilter* threadFilter() { return &_thread_filter; }
+
+    int lookupClass(const char* key, size_t length);
 
     Error run(Arguments& args);
     Error runInternal(Arguments& args, std::ostream& out);

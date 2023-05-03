@@ -1,0 +1,128 @@
+name: Code Quality Checks
+
+on:
+  pull_request:
+
+jobs:
+  scan-build:
+    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: System setup
+        run: |
+          sudo apt install -y clang clang-tools openjdk-11-jdk
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.9
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install beautifulsoup4
+      - name: Scan Build
+        run: |
+          ./gradlew scanBuild --no-daemon
+      - name: Upload logs
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: scan-build-reports
+          path: |
+            ddprof-lib/build/reports/scan-build
+      - name: Read Report
+        id: read-report
+        run: |
+          REPORT=$(find ddprof-lib/build/reports/scan-build -name 'index.html' | xargs -I {} python .github/scripts/scanbuild_report_cleanup.py {} ${{ github.head_ref }} | cat | tr '\n' ' ')
+          echo "report=${REPORT}" >> $GITHUB_OUTPUT
+      - name: Post PR comment
+        uses: actions/github-script@v5
+        env:
+          report: '${{ steps.read-report.outputs.report }}'
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: process.env.report
+            })
+
+  cppcheck:
+    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: System setup
+        run: |
+          sudo apt install -y cppcheck xsltproc
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.9
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install beautifulsoup4
+      - name: Run Cppcheck
+        id: run-cppcheck
+        run: |
+          cppcheck --quiet --force --enable=all --std=c++11 --language=c++ --xml --output-file=report.xml ddprof-lib/src/main/cpp/*
+          xsltproc --output report.html .github/scripts/cppcheck-html.xslt report.xml
+          xsltproc --output report-gh.html .github/scripts/cppcheck-gh.xslt report.xml
+          sed -i "s#target_branch#${{ github.head_ref }}#g" report.html
+          sed -i "s#target_branch#${{ github.head_ref }}#g" report-gh.html
+          python .github/scripts/cppcheck_report_cleanup.py report-gh.html >> comment.html
+      - name: Upload logs
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: cppcheck-report
+          path: |
+            report.html
+            report.xml
+      - name: Post PR comment
+        uses: actions/github-script@v5
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          script: |
+            const fs = require('fs');
+            const htmlContent = fs.readFileSync('comment.html', 'utf8');
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: htmlContent
+            });
+  codeql:
+    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'cpp', 'java' ]
+        # CodeQL supports [ 'cpp', 'csharp', 'go', 'java', 'javascript', 'python', 'ruby' ]
+        # Learn more about CodeQL language support at https://git.io/codeql-language-support
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      # Initializes the CodeQL tools for scanning.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v2
+        with:
+          languages: ${{ matrix.language }}
+          # If you wish to specify custom queries, you can do so here or in a config file.
+          # By default, queries listed here will override any specified in a config file.
+          # Prefix the list here with "+" to use these queries and those in the config file.
+          # queries: ./path/to/local/query, your-org/your-repo/queries@main
+      - run: ./gradlew -x test assembleJar
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
