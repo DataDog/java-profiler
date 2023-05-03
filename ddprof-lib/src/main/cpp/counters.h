@@ -22,22 +22,18 @@
 #define DD_COUNTER_TABLE(X) \
     X(DICTIONARY_BYTES, "dictionary_bytes") \
     X(DICTIONARY_CLASSES_BYTES, "dictionary_classes_bytes") \
-    X(DICTIONARY_SYMBOLS_BYTES, "dictionary_symbols_bytes") \
     X(DICTIONARY_ENDPOINTS_BYTES, "dictionary_endpoints_bytes") \
     X(DICTIONARY_CONTEXT_BYTES, "dictionary_context_bytes") \
     X(DICTIONARY_PAGES, "dictionary_pages") \
     X(DICTIONARY_CLASSES_PAGES, "dictionary_classes_pages") \
-    X(DICTIONARY_SYMBOLS_PAGES, "dictionary_symbols_pages") \
     X(DICTIONARY_ENDPOINTS_PAGES, "dictionary_endpoints_pages") \
     X(DICTIONARY_CONTEXT_PAGES, "dictionary_context_pages") \
     X(DICTIONARY_KEYS, "dictionary_keys") \
     X(DICTIONARY_CLASSES_KEYS, "dictionary_classes_keys") \
-    X(DICTIONARY_SYMBOLS_KEYS, "dictionary_symbols_keys") \
     X(DICTIONARY_ENDPOINTS_KEYS, "dictionary_endpoints_keys") \
     X(DICTIONARY_CONTEXT_KEYS, "dictionary_context_keys") \
     X(DICTIONARY_KEYS_BYTES, "dictionary_keys_bytes") \
     X(DICTIONARY_CLASSES_KEYS_BYTES, "dictionary_classes_keys_bytes") \
-    X(DICTIONARY_SYMBOLS_KEYS_BYTES, "dictionary_symbols_keys_bytes") \
     X(DICTIONARY_ENDPOINTS_KEYS_BYTES, "dictionary_endpoints_keys_bytes") \
     X(DICTIONARY_CONTEXT_KEYS_BYTES, "dictionary_context_keys_bytes") \
     X(CONTEXT_STORAGE_BYTES, "context_storage_bytes") \

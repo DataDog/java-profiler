@@ -77,7 +77,6 @@ class Profiler {
     std::map<int, std::string> _thread_names;
     std::map<int, jlong> _thread_ids;
     Dictionary _class_map;
-    Dictionary _symbol_map;
     Dictionary _string_label_map;
     Dictionary _context_value_map;
     ThreadFilter _thread_filter;
@@ -172,9 +171,8 @@ class Profiler {
         _dlopen_entry(NULL),
         _num_context_attributes(0),
         _class_map(1),
-        _symbol_map(2),
-        _string_label_map(3),
-        _context_value_map(4),
+        _string_label_map(2),
+        _context_value_map(3),
         _cpu_engine(),
         _alloc_engine(),
         _event_mask(0),
