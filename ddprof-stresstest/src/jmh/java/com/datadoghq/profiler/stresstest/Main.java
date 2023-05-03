@@ -17,16 +17,17 @@ public class Main {
     public static final String SCENARIOS_PACKAGE = "com.datadoghq.profiler.stresstest.scenarios.";
 
     public static void main(String... args) throws Exception {
+        CommandLineOptions commandLineOptions = new CommandLineOptions(args);
         Mode mode = Mode.AverageTime;
         Options options = new OptionsBuilder()
                 .parent(new CommandLineOptions(args))
                 .include(SCENARIOS_PACKAGE + "*")
                 .addProfiler(WhiteboxProfiler.class)
-                .forks(1)
-                .warmupIterations(0)
-                .measurementIterations(1)
-                .measurementTime(TimeValue.seconds(5))
-                .timeUnit(TimeUnit.MICROSECONDS)
+                .forks(commandLineOptions.getForkCount().orElse(1))
+                .warmupIterations(commandLineOptions.getWarmupIterations().orElse(0))
+                .measurementIterations(commandLineOptions.getMeasurementIterations().orElse(1))
+                .measurementTime(commandLineOptions.getMeasurementTime().orElse(TimeValue.seconds(5)))
+                .timeUnit(commandLineOptions.getTimeUnit().orElse(TimeUnit.MICROSECONDS))
                 .mode(mode)
                 .build();
         Collection<RunResult> results = new Runner(options).run();
