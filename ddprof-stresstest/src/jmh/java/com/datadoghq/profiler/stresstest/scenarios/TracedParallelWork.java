@@ -21,7 +21,7 @@ public class TracedParallelWork {
     @State(Scope.Benchmark)
     public static class BenchmarkState extends Configuration {
 
-        public static final String COMMAND = BASE_COMMAND + ",attributes=tag0:tag1";
+        public static final String COMMAND = BASE_COMMAND + ",attributes=tag0;tag1";
 
         @Param(COMMAND)
         String command;
