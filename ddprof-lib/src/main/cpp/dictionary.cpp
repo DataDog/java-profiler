@@ -54,13 +54,13 @@ void Dictionary::clear(DictTable* table, int id) {
                 Counters::decrement(DICTIONARY_KEYS_BYTES, strlen(row->keys[j]), id);
             }
             #endif // COUNTERS
-            free(row->keys[j]);
-            row->keys[j] = NULL;
+            free(row->keys[j]); // content is zeroed en-mass in the clear() function
         }
         if (row->next != NULL) {
             clear(row->next, id);
-            free(row->next);
+            DictTable* tmp = row->next;
             row->next = NULL;
+            free(tmp);
         }
     }
     Counters::decrement(DICTIONARY_PAGES, 1, id);
