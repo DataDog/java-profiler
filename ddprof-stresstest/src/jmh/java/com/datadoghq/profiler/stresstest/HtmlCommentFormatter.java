@@ -60,15 +60,17 @@ public class HtmlCommentFormatter extends AbstractFormatter {
             params.addAll(res.getParams().getParamsKeys());
         }
         out.println("<h3>Results</h3>");
-        String lastBenchmark = "";
+        String lastGroup = "";
         for (RunResult result : results) {
             BenchmarkParams benchParams = result.getParams();
             String benchmarkName = benchParams.getBenchmark().replace(SCENARIOS_PACKAGE, "");
-            if (!benchmarkName.equals(lastBenchmark)) {
-                String nodeCount = benchParams.getParam("nodeCount");
-                String tagCardinality = benchParams.getParam("tagCardinality");
+            String command = benchParams.getParam("command");
+            String nodeCount = benchParams.getParam("nodeCount");
+            String tagCardinality = benchParams.getParam("tagCardinality");
+            String group = benchmarkName + "#" + command + "#" + nodeCount + "#" + tagCardinality;
+            if (!group.equals(lastGroup)) {
                 out.println("<details>");
-                out.print("<summary><b>" + benchmarkName + "</b> <i>[command='" + benchParams.getParam("command") + "'");
+                out.print("<summary><b>" + benchmarkName + "</b> <i>[command='" + command + "'");
                 if (nodeCount != null) {
                     out.print(", nodeCount=" + nodeCount);
                 }
@@ -87,7 +89,7 @@ public class HtmlCommentFormatter extends AbstractFormatter {
                 }
                 out.println("</tbody></table>");
                 out.println("</details>");
-                lastBenchmark = benchmarkName;
+                lastGroup = group;
             }
         }
         endHtml();
