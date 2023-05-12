@@ -24,7 +24,9 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Assumptions;
 
 import static com.datadoghq.profiler.MoreAssertions.assertInRange;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
@@ -64,11 +66,16 @@ public class ContextWallClockTest extends AbstractProfilerTest {
             IMemberAccessor<IQuantity, IItem> spanIdAccessor = SPAN_ID.getAccessor(wallclockSamples.getType());
             IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(wallclockSamples.getType());
             IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT.getAccessor(wallclockSamples.getType());
+            IMemberAccessor<String, IItem> stateAccessor = THREAD_STATE.getAccessor(wallclockSamples.getType());
             for (IItem sample : wallclockSamples) {
                 String stackTrace = frameAccessor.getMember(sample);
                 long spanId = spanIdAccessor.getMember(sample).longValue();
                 long rootSpanId = rootSpanIdAccessor.getMember(sample).longValue();
                 long weight = weightAccessor.getMember(sample).longValue();
+                String state = stateAccessor.getMember(sample);
+                assertDoesNotThrow(() -> Thread.State.valueOf(state));
+                assertNotEquals(Thread.State.NEW, Thread.State.valueOf(state));
+                assertNotEquals(Thread.State.TERMINATED, Thread.State.valueOf(state));
                 // a lot fo care needs to be taken here with samples that fall between a context activation and
                 // a method call. E.g. not finding method2Impl in the stack trace doesn't mean the sample wasn't
                 // taken in the part of method2 between activation and invoking method2Impl, which complicates

@@ -18,6 +18,7 @@
 #include "j9WallClock.h"
 #include "j9Ext.h"
 #include "profiler.h"
+#include "threadState.h"
 
 volatile bool J9WallClock::_enabled = false;
 
@@ -78,8 +79,8 @@ void J9WallClock::timerLoop() {
                     // no frames recorded
                     continue;
                 }
-                ThreadState ts = (si->state & JVMTI_THREAD_STATE_RUNNABLE) ? THREAD_RUNNING : THREAD_SLEEPING;
-                if (!_sample_idle_threads && ts != THREAD_RUNNING) {
+                JavaThreadState ts = convertThreadState(si->state);
+                if (!_sample_idle_threads && ts != JAVA_THREAD_RUNNABLE) {
                     // in execution profiler mode the non-running threads are skipped
                     continue;
                 }
@@ -96,7 +97,7 @@ void J9WallClock::timerLoop() {
                 }
                 ExecutionEvent event;
                 event._thread_state = ts;
-                if (ts == THREAD_RUNNING) {    
+                if (ts == JAVA_THREAD_RUNNABLE) {
                     Profiler::instance()->recordExternalSample(_interval, tid, si->frame_count, frames, /*truncated=*/false, BCI_CPU, &event);
                 }
                 if (_sample_idle_threads) {

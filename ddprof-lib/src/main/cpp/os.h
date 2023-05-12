@@ -30,14 +30,6 @@ typedef void (*TimerCallback)(void*);
 // Interrupt threads with this signal. The same signal is used inside JDK to interrupt I/O operations.
 const int WAKEUP_SIGNAL = SIGIO;
 
-enum ThreadState {
-    THREAD_INVALID,
-    THREAD_RUNNING,
-    THREAD_UNINTERRUPTIBLE,
-    THREAD_SLEEPING
-};
-
-
 class ThreadList {
   public:
     virtual ~ThreadList() {}
@@ -78,7 +70,6 @@ class OS {
     static int threadId();
     static const char* schedPolicy(int thread_id);
     static bool threadName(int thread_id, char* name_buf, size_t name_len);
-    static ThreadState threadState(int thread_id);
     static ThreadList* listThreads();
 
     static bool isLinux();

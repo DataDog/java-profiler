@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include "context.h"
 #include "os.h"
+#include "threadState.h"
 using namespace std;
 
 #define MAX_STRING_LEN 8191
@@ -36,10 +37,10 @@ class Event {
 
 class ExecutionEvent : public Event {
   public:
-    ThreadState _thread_state;
+    JavaThreadState _thread_state;
     u64 _weight;
 
-    ExecutionEvent() : Event(), _thread_state(THREAD_RUNNING), _weight(1) {}
+    ExecutionEvent() : Event(), _thread_state(JAVA_THREAD_RUNNABLE), _weight(1) {}
 };
 
 class AllocEvent : public Event {
