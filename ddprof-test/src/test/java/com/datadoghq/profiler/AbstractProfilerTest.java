@@ -140,7 +140,7 @@ public abstract class AbstractProfilerTest {
     String profilerCommand = getProfilerCommand();
     return (ALLOW_NATIVE_CSTACKS || profilerCommand.contains("cstack=")
             ? profilerCommand
-            : profilerCommand + ",cstack=no")
+            : profilerCommand + ",cstack=fp")
             // FIXME - test framework doesn't seem to be forking each test, so need to sync
             //  these across test cases for now
             + ",attributes=tag1;tag2;tag3";

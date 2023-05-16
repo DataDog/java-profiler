@@ -379,20 +379,39 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
         return 0;
     }
 
-    if (!(_safe_mode & UNWIND_NATIVE)) {
-        int state = vm_thread->state();
-        if (state == 8 || state == 9) {
-            if (saved_pc >= (uintptr_t)_call_stub_begin && saved_pc < (uintptr_t)_call_stub_end) {
-                // call_stub is unsafe to walk
-                frames->bci = BCI_NATIVE_FRAME;
-                frames->method_id = (jmethodID)"call_stub";
-                return 1;
-            }
-            if (DWARF_SUPPORTED && java_ctx->sp != 0) {
-                // If a thread is in Java state, unwind manually to the last known Java frame,
-                // since JVM does not always correctly unwind native frames
-                frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);
-            }
+    int state = vm_thread->state();
+    // from OpenJDK https://github.com/openjdk/jdk/blob/7455bb23c1d18224e48e91aae4f11fe114d04fab/src/hotspot/share/utilities/globalDefinitions.hpp#L1030
+    /*
+    enum JavaThreadState {
+        _thread_uninitialized     =  0, // should never happen (missing initialization)
+        _thread_new               =  2, // just starting up, i.e., in process of being initialized
+        _thread_new_trans         =  3, // corresponding transition state (not used, included for completeness)
+        _thread_in_native         =  4, // running in native code
+        _thread_in_native_trans   =  5, // corresponding transition state
+        _thread_in_vm             =  6, // running in VM
+        _thread_in_vm_trans       =  7, // corresponding transition state
+        _thread_in_Java           =  8, // running in Java or in stub code
+        _thread_in_Java_trans     =  9, // corresponding transition state (not used, included for completeness)
+        _thread_blocked           = 10, // blocked in vm
+        _thread_blocked_trans     = 11, // corresponding transition state
+        _thread_max_state         = 12  // maximum thread state+1 - used for statistics allocation
+    };
+     */
+    bool in_java = (state == 8 || state == 9);
+    if (in_java && java_ctx->sp) {
+        // skip ahead to the Java frames before calling AGCT
+        frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);
+    }
+    // do not attempt to unwind
+    bool in_native = (state == 4 || state == 5);
+    if (in_native) {
+        if (java_ctx->sp) {
+            // skip ahead to the Java frames before calling AGCT
+            frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);
+        } else {
+            // we've tried to unwind some native code without frame pointers,
+            // and we don't know where the top Java frame is, so we don't want to call AGCT
+            return 0;
         }
     }
 
