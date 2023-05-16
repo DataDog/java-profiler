@@ -2,7 +2,6 @@ package com.datadoghq.profiler.stresstest;
 
 import org.openjdk.jmh.annotations.Mode;
 import org.openjdk.jmh.results.RunResult;
-import org.openjdk.jmh.results.format.ResultFormatType;
 import org.openjdk.jmh.runner.Runner;
 import org.openjdk.jmh.runner.options.CommandLineOptions;
 import org.openjdk.jmh.runner.options.Options;
@@ -31,6 +30,6 @@ public class Main {
                 .mode(mode)
                 .build();
         Collection<RunResult> results = new Runner(options).run();
-        new HtmlFormatter(results, mode).print();
+        CompositeFormatter.of(new HtmlCommentFormatter(results, mode), new HtmlFormatter(results, mode)).format();
     }
 }

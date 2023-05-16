@@ -1,5 +1,9 @@
 name: CI Run
 
+concurrency:
+  group: pr-ci_${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 on:
   push:
     branches:
@@ -63,26 +67,14 @@ jobs:
           chmod a+x ddprof-lib/test.sh
           ./gradlew :ddprof-test:test --info
           ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
-      - name: Read Stress Test Report
-        id: linux-glibc-read-report
-        run: |
-          REPORT=$(cat ddprof-stresstest/jmh-result.html | cat | tr '\n' ' ')
-          echo "report=${REPORT}" >> $GITHUB_OUTPUT
-      - name: Post PR comment
-        uses: actions/github-script@v5
-        env:
-          report: '${{ steps.linux-glibc-read-report.outputs.report }}'
+      - name: Post or update PR comment
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: ./.github/actions/pr_comment
         with:
-          github-token: ${{secrets.GITHUB_TOKEN}}
-          script: |
-            if (context.issue.number) {
-              github.rest.issues.createComment({
-                issue_number: context.issue.number,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body: process.env.report
-              })
-            }
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          commenter: "pr-comment-stresstests"
+          comment-id: "stress-bellsoft_${{ matrix.java_version }}_glibc"
+          comment-file: 'ddprof-stresstest/jmh-comment.html'
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -93,6 +85,7 @@ jobs:
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
+            ddprof-stresstest/jmh-result.html
       - uses: actions/upload-artifact@v3
         if: success()
         with:
@@ -129,26 +122,14 @@ jobs:
           export BUILD_TYPE=SanitizedDebug
           ./gradlew :ddprof-test:test --info
           ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
-      - name: Read Stress Test Report
-        id: ubuntu-read-report
-        run: |
-          REPORT=$(cat ddprof-stresstest/jmh-result.html | cat | tr '\n' ' ')
-          echo "report=${REPORT}" >> $GITHUB_OUTPUT
-      - name: Post PR comment
-        uses: actions/github-script@v5
-        env:
-          report: '${{ steps.ubuntu-read-report.outputs.report }}'
+      - name: Post or update PR comment
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: ./.github/actions/pr_comment
         with:
-          github-token: ${{secrets.GITHUB_TOKEN}}
-          script: |
-            if (context.issue.number) {
-              github.rest.issues.createComment({
-                issue_number: context.issue.number,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body: process.env.report
-              })
-            }
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          commenter: "pr-comment-stresstests"
+          comment-id: "stress-ubuntu_${{ matrix.java_version }}_glibc"
+          comment-file: 'ddprof-stresstest/jmh-comment.html'
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -159,6 +140,7 @@ jobs:
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
+            stresstest.html
       - uses: actions/upload-artifact@v3
         if: success()
         with:
@@ -206,6 +188,7 @@ jobs:
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
+            ddprof-stresstest/jmh-result.html
       - uses: actions/upload-artifact@v3
         if: success()
         with:
@@ -239,6 +222,7 @@ jobs:
           find . -type d -name 'jdk*' -maxdepth 1 | xargs -I {} mv {} test_jdk
       - name: Test
         run: |
+          set -x
           export JAVA_HOME=$(pwd)/build_jdk
           export PATH=$JAVA_HOME/bin:$PATH
           export TEST_COMMIT=${{ github.sha }}
@@ -248,27 +232,14 @@ jobs:
           chmod a+x ddprof-lib/test.sh
           ./gradlew :ddprof-test:test --info
           ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
-      - name: Read Stress Test Report
-        id: linux-musl-read-report
-        run: |
-          REPORT=$(cat ddprof-stresstest/jmh-result.html | cat | tr '\n' ' ')
-          echo "report=${REPORT}" >> $GITHUB_OUTPUT
-          echo $REPORT
-      - name: Post PR comment
-        uses: actions/github-script@v5
-        env:
-          report: '${{ steps.linux-musl-read-report.outputs.report }}'
+      - name: Post or update PR comment
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: ./.github/actions/pr_comment
         with:
-          github-token: ${{secrets.GITHUB_TOKEN}}
-          script: |
-            if (context.issue.number) {
-              github.rest.issues.createComment({
-                issue_number: context.issue.number,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body: process.env.report
-              })
-            }
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          commenter: "pr-comment-stresstests"
+          search-text: "stress-bellsoft_${{ matrix.java_version }}_musl"
+          comment-file: 'ddprof-stresstest/jmh-comment.html'
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -279,6 +250,7 @@ jobs:
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
+            ./stresstest.html
       - uses: actions/upload-artifact@v3
         if: success()
         with:

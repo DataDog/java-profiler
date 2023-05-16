@@ -16,20 +16,16 @@ import java.util.TreeSet;
 
 import static com.datadoghq.profiler.stresstest.Main.SCENARIOS_PACKAGE;
 
-public class HtmlFormatter {
+public class HtmlFormatter extends AbstractFormatter {
 
     private final Collection<RunResult> results;
-    private final PrintStream out;
     private final String delimiter = "~";
     private final Mode mode;
 
     public HtmlFormatter(Collection<RunResult> results, Mode mode) throws IOException {
+        super(Paths.get(System.getProperty("user.dir")).resolve("jmh-result.html"));
         this.results = results;
         this.mode = mode;
-        Path html = Paths.get(System.getProperty("user.dir")).resolve("jmh-result.html");
-        Files.deleteIfExists(html);
-        Files.createFile(html);
-        this.out = new PrintStream(html.toFile());
     }
 
     private void printHeader(SortedSet<String> params) {
@@ -111,6 +107,7 @@ public class HtmlFormatter {
     }
 
     private void printRow(String scenario, String metric, BenchmarkParams benchmarkParams, SortedSet<String> params, Result result) {
+        out.print("<tr>");
         out.print("<td>");
         out.print(scenario);
         out.print("</td>");
@@ -132,7 +129,7 @@ public class HtmlFormatter {
     }
 
     private String emit(String v) {
-        return v;
+        return v != null ? v : " ";
     }
 
     private String emit(int i) {

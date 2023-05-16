@@ -1,5 +1,9 @@
 name: Code Quality Checks
 
+concurrency:
+  group: pr-code_quality_${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 on:
   pull_request:
 
@@ -33,21 +37,14 @@ jobs:
       - name: Read Report
         id: read-report
         run: |
-          REPORT=$(find ddprof-lib/build/reports/scan-build -name 'index.html' | xargs -I {} python .github/scripts/scanbuild_report_cleanup.py {} ${{ github.head_ref }} | cat | tr '\n' ' ')
-          echo "report=${REPORT}" >> $GITHUB_OUTPUT
-      - name: Post PR comment
-        uses: actions/github-script@v5
-        env:
-          report: '${{ steps.read-report.outputs.report }}'
+          find ddprof-lib/build/reports/scan-build -name 'index.html' | xargs -I {} python .github/scripts/python_utils.py scanbuild_cleanup {} ${{ github.head_ref }} > comment.html
+      - name: Post or update PR comment
+        uses: ./.github/actions/pr_comment
         with:
-          github-token: ${{secrets.GITHUB_TOKEN}}
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: process.env.report
-            })
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          comment-id: "scan-build"
+          commenter: "pr-comment-scanbuild"
+          comment-file: 'comment.html'
 
   cppcheck:
     if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
@@ -73,7 +70,7 @@ jobs:
           xsltproc --output report-gh.html .github/scripts/cppcheck-gh.xslt report.xml
           sed -i "s#target_branch#${{ github.head_ref }}#g" report.html
           sed -i "s#target_branch#${{ github.head_ref }}#g" report-gh.html
-          python .github/scripts/cppcheck_report_cleanup.py report-gh.html >> comment.html
+          python .github/scripts/python_utils.py cppcheck_cleanup report-gh.html >> comment.html
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -82,47 +79,41 @@ jobs:
           path: |
             report.html
             report.xml
-      - name: Post PR comment
-        uses: actions/github-script@v5
+      - name: Post or update PR comment
+        uses: ./.github/actions/pr_comment
         with:
-          github-token: ${{secrets.GITHUB_TOKEN}}
-          script: |
-            const fs = require('fs');
-            const htmlContent = fs.readFileSync('comment.html', 'utf8');
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: htmlContent
-            });
-  codeql:
-    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [ 'cpp', 'java' ]
-        # CodeQL supports [ 'cpp', 'csharp', 'go', 'java', 'javascript', 'python', 'ruby' ]
-        # Learn more about CodeQL language support at https://git.io/codeql-language-support
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v2
-
-      # Initializes the CodeQL tools for scanning.
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v2
-        with:
-          languages: ${{ matrix.language }}
-          # If you wish to specify custom queries, you can do so here or in a config file.
-          # By default, queries listed here will override any specified in a config file.
-          # Prefix the list here with "+" to use these queries and those in the config file.
-          # queries: ./path/to/local/query, your-org/your-repo/queries@main
-      - run: ./gradlew -x test assembleJar
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v2
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          comment-id: "cppcheck"
+          commenter: "pr-comment-cppcheck"
+          comment-file: 'comment.html'
+#  codeql:
+#    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
+#    runs-on: ubuntu-latest
+#    permissions:
+#      actions: read
+#      contents: read
+#      security-events: write
+#
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        language: [ 'cpp', 'java' ]
+#        # CodeQL supports [ 'cpp', 'csharp', 'go', 'java', 'javascript', 'python', 'ruby' ]
+#        # Learn more about CodeQL language support at https://git.io/codeql-language-support
+#
+#    steps:
+#      - name: Checkout repository
+#        uses: actions/checkout@v2
+#
+#      # Initializes the CodeQL tools for scanning.
+#      - name: Initialize CodeQL
+#        uses: github/codeql-action/init@v2
+#        with:
+#          languages: ${{ matrix.language }}
+#          # If you wish to specify custom queries, you can do so here or in a config file.
+#          # By default, queries listed here will override any specified in a config file.
+#          # Prefix the list here with "+" to use these queries and those in the config file.
+#          # queries: ./path/to/local/query, your-org/your-repo/queries@main
+#      - run: ./gradlew -x test assembleJar
+#      - name: Perform CodeQL Analysis
+#        uses: github/codeql-action/analyze@v2
