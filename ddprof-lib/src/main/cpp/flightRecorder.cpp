@@ -40,6 +40,7 @@
 #include "spinLock.h"
 #include "symbols.h"
 #include "threadFilter.h"
+#include "threadState.h"
 #include "tsc.h"
 #include "vmStructs.h"
 
@@ -895,9 +896,19 @@ class Recording {
 
     void writeThreadStates(Buffer* buf) {
         buf->putVar64(T_THREAD_STATE);
-        buf->put8(2);
-        buf->putVar64(THREAD_RUNNING);     buf->putUtf8("STATE_RUNNABLE");
-        buf->putVar64(THREAD_SLEEPING);    buf->putUtf8("STATE_SLEEPING");
+        buf->put8(6);
+        buf->put8(JAVA_THREAD_NEW);
+        buf->putUtf8("NEW");
+        buf->put8(JAVA_THREAD_TERMINATED);
+        buf->putUtf8("TERMINATED");
+        buf->put8(JAVA_THREAD_RUNNABLE);
+        buf->putUtf8("RUNNABLE");
+        buf->put8(JAVA_THREAD_BLOCKED);
+        buf->putUtf8("BLOCKED");
+        buf->put8(JAVA_THREAD_WAITING);
+        buf->putUtf8("WAITING");
+        buf->put8(JAVA_THREAD_TIMED_WAITING);
+        buf->putUtf8("TIMED_WAITING");
         flushIfNeeded(buf);
     }
 
