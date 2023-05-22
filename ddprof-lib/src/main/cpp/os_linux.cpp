@@ -219,38 +219,6 @@ bool OS::threadName(int thread_id, char* name_buf, size_t name_len) {
     return false;
 }
 
-ThreadState OS::threadState(int thread_id) {
-    char buf[512];
-    snprintf(buf, sizeof(buf), "/proc/self/task/%d/stat", thread_id);
-    int fd = open(buf, O_RDONLY);
-    if (fd == -1) {
-        return THREAD_INVALID;
-    }
-
-    ThreadState state = THREAD_INVALID;
-    if (read(fd, buf, sizeof(buf)) > 0) {
-        char* s = strchr(buf, ')');
-        if (s != NULL) {
-            switch (s[2]) {
-                case 'R':
-                    state = THREAD_RUNNING;
-                    break;
-                case 'D':
-                    state = THREAD_UNINTERRUPTIBLE;
-                    break;
-                case 'S':
-                    state = THREAD_SLEEPING;
-                    break;
-                default:
-                    state = THREAD_INVALID;
-            }
-        }
-    }
-
-    close(fd);
-    return state;
-}
-
 ThreadList* OS::listThreads() {
     return new LinuxThreadList();
 }

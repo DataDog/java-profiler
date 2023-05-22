@@ -24,6 +24,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 import static com.datadoghq.profiler.MoreAssertions.assertInRange;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -63,10 +64,14 @@ public class ContextCpuTest extends AbstractProfilerTest {
                 IMemberAccessor<String, IItem> frameAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
                 IMemberAccessor<IQuantity, IItem> spanIdAccessor = SPAN_ID.getAccessor(cpuSamples.getType());
                 IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(cpuSamples.getType());
+                IMemberAccessor<String, IItem> stateAccessor = THREAD_STATE.getAccessor(cpuSamples.getType());
                 for (IItem sample : cpuSamples) {
                     String stackTrace = frameAccessor.getMember(sample);
                     long spanId = spanIdAccessor.getMember(sample).longValue();
                     long rootSpanId = rootSpanIdAccessor.getMember(sample).longValue();
+                    String state = stateAccessor.getMember(sample);
+                    assertDoesNotThrow(() -> Thread.State.valueOf(state));
+                    assertEquals(Thread.State.RUNNABLE, Thread.State.valueOf(state));
                     if (stackTrace.contains("method3Impl")) {
                         // method3 is scheduled after method2, and method1 blocks on it, so spanId == rootSpanId + 2
                         if (spanId > 0) {
