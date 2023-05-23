@@ -13,13 +13,13 @@ enum JavaThreadState : int {
 };
 
 static JavaThreadState convertThreadState(int jvmtiThreadState) {
-    if ((JVMTI_THREAD_STATE_ALIVE | JVMTI_THREAD_STATE_WAITING | JVMTI_THREAD_STATE_WAITING_WITH_TIMEOUT) & jvmtiThreadState) {
+    if ((JVMTI_THREAD_STATE_WAITING | JVMTI_THREAD_STATE_WAITING_WITH_TIMEOUT) & jvmtiThreadState) {
         return JAVA_THREAD_TIMED_WAITING;
-    } else if ((JVMTI_THREAD_STATE_ALIVE | JVMTI_THREAD_STATE_WAITING | JVMTI_THREAD_STATE_WAITING_INDEFINITELY) & jvmtiThreadState) {
+    } else if ((JVMTI_THREAD_STATE_WAITING | JVMTI_THREAD_STATE_WAITING_INDEFINITELY) & jvmtiThreadState) {
         return JAVA_THREAD_WAITING;
-    } else if ((JVMTI_THREAD_STATE_ALIVE | JVMTI_THREAD_STATE_BLOCKED_ON_MONITOR_ENTER) & jvmtiThreadState) {
+    } else if ((JVMTI_THREAD_STATE_BLOCKED_ON_MONITOR_ENTER) & jvmtiThreadState) {
         return JAVA_THREAD_BLOCKED;
-    } else if ((JVMTI_THREAD_STATE_ALIVE | JVMTI_THREAD_STATE_RUNNABLE) & jvmtiThreadState) {
+    } else if ((JVMTI_THREAD_STATE_RUNNABLE) & jvmtiThreadState) {
         return JAVA_THREAD_RUNNABLE;
     } else if (JVMTI_THREAD_STATE_TERMINATED & jvmtiThreadState) {
         return JAVA_THREAD_TERMINATED;
