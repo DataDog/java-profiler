@@ -224,6 +224,7 @@ class Profiler {
     void recordTraceRoot(int tid, TraceRootEvent* event);
     void writeLog(LogLevel level, const char* message);
     void writeLog(LogLevel level, const char* message, size_t len);
+    void writeDatadogProfilerSetting(int tid, int length, const char* name, const char* value, const char* unit);
 
     void updateSymbols(bool kernel_symbols);
     const void* resolveSymbol(const char* name);

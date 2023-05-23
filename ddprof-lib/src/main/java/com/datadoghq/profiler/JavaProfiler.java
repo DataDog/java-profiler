@@ -382,6 +382,25 @@ public final class JavaProfiler {
     }
 
     /**
+     * Records a datadog.ProfilerSetting event with no unit
+     * @param name the name
+     * @param value the value
+     */
+    public void recordSetting(String name, String value) {
+        recordSetting(name, value, "");
+    }
+
+    /**
+     * Records a datadog.ProfilerSetting event
+     * @param name the name
+     * @param value the value
+     * @param unit the unit
+     */
+    public void recordSetting(String name, String value, String unit) {
+        recordSettingEvent0(name, value, unit);
+    }
+
+    /**
      * If the profiler is built in debug mode, returns counters recorded during profile execution.
      * These are for whitebox testing and not intended for production use.
      * @return a map of counters
@@ -472,4 +491,6 @@ public final class JavaProfiler {
     private static native ByteBuffer getDebugCounters0();
 
     private static native String[] describeDebugCounters0();
+
+    private static native void recordSettingEvent0(String name, String value, String unit);
 }
