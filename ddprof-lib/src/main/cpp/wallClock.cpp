@@ -140,14 +140,13 @@ void WallClock::timerLoop() {
     if (!_enabled) {
         return;
     }
-    JNIEnv* jni = VM::jni();
+    JNIEnv* jni = VM::attachThread("datadog-wallclock-sampler");
     jvmtiEnv* jvmti = VM::jvmti();
     std::vector<int> tids;
     tids.reserve(_reservoir_size);
     std::vector<int> reservoir;
     reservoir.reserve(_reservoir_size);
     int self = OS::threadId();
-    Log::debug("in wallclock timer loop on %d", self);
     ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
     thread_filter->remove(self);
 
@@ -162,9 +161,10 @@ void WallClock::timerLoop() {
 
     while (_running) {
         jthread* threads;
-        int java_thread_count;
+        jint java_thread_count = 0;
         // refresh the threads via JVMTI once every 100 iterations (1 second by default)
-        if (jvmti->GetAllThreads(&java_thread_count, &threads) == 0) {
+        int jvmtiError = jvmti->GetAllThreads(&java_thread_count, &threads);
+        if (jvmtiError == 0) {
             for (int i = 0; i < java_thread_count; i++) {
                 jthread thread = threads[i];
                 int tid = VMThread::nativeThreadId(jni, thread);
@@ -244,4 +244,5 @@ void WallClock::timerLoop() {
             jvmti->Deallocate((unsigned char*)threads);
         }
     }
+    VM::detachThread();
 }
