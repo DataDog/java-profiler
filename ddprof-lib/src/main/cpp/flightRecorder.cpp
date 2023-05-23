@@ -747,6 +747,20 @@ class Recording {
         flushIfNeeded(buf);
     }
 
+    void writeDatadogSetting(Buffer* buf, int length, const char* name, const char* value, const char* unit) {
+        flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - length);
+        int start = buf->skip(5);
+        buf->putVar64(T_DATADOG_SETTING);
+        buf->putVar64(_start_ticks);
+        buf->put8(0); // no duration, but required for compatibility with equivalent Java event
+        buf->putVar32(_tid);
+        buf->put8(0); // no stacktrace, but required for compatibility with equivalent Java event
+        buf->putUtf8(name);
+        buf->putUtf8(value);
+        buf->putUtf8(unit);
+        buf->putVar32(start, buf->offset() - start);
+    }
+
     void writeOsCpuInfo(Buffer* buf) {
         struct utsname u;
         if (uname(&u) != 0) {
@@ -1306,6 +1320,14 @@ void FlightRecorder::recordTraceRoot(int lock_index, int tid, TraceRootEvent* ev
     if (_rec != NULL) {
         Buffer* buf = _rec->buffer(lock_index);
         _rec->recordTraceRoot(buf, tid, event);
+    }
+}
+
+void FlightRecorder::recordDatadogSetting(int lock_index, int length,
+                                          const char* name, const char* value, const char* unit) {
+    if (_rec != NULL) {
+        Buffer *buf = _rec->buffer(lock_index);
+        _rec->writeDatadogSetting(buf, length, name, value, unit);
     }
 }
 
