@@ -70,10 +70,21 @@ void WallClock::signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64
     }
 
     ExecutionEvent event;
-    // if we're on a Java thread, we can look up the thread state, otherwise we'll figure it out from the top frame
-    int index = indexOf(tid);
-    int state = index >= 0 ? _thread_states[index + 1] : -1;
-    event._thread_state = state >= 0 ? convertThreadState(state) : getThreadState(ucontext);
+    // check the frame for the current state.
+    // This gives some protection against skid (e.g. threads that are running now but weren't when the signal was sent)
+    JavaThreadState state = getThreadState(ucontext);
+    // if we're running now, it doesn't matter what the JVMTI state was before the signal was sent
+    if (state != JAVA_THREAD_RUNNABLE) {
+        // if we're on a Java thread, we can look up the thread state to get more detail
+        int index = indexOf(tid);
+        if (index >= 0) {
+            int threadState = _thread_states[index + 1];
+            if (threadState >= 0) {
+                state = convertThreadState(threadState);
+            }
+        }
+    }
+    event._thread_state = state;
     event._weight = skipped + 1;
     Profiler::instance()->recordSample(ucontext, last_sample, tid, BCI_WALL, &event);
     Shims::instance().setSighandlerTid(-1);
