@@ -37,8 +37,7 @@ void LivenessTracker::cleanup_table() {
 
     u32 sz, newsz = 0;
     for (u32 i = 0; i < (sz = _table_size); i++) {
-        jobject ref = env->NewLocalRef(_table[i].ref);
-        if (ref != NULL) {
+        if (!env->IsSameObject(_table[i].ref, NULL)) {
             // it survived one more GarbageCollectionFinish event
             _table[i].age += 1;
 
@@ -47,8 +46,6 @@ void LivenessTracker::cleanup_table() {
             env->DeleteWeakGlobalRef(_table[i].ref);
             delete[] _table[i].frames;
         }
-
-        env->DeleteLocalRef(ref);
     }
 
     _table_size = newsz;
