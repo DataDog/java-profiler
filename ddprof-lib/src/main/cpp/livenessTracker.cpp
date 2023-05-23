@@ -28,6 +28,34 @@
 
 LivenessTracker* const LivenessTracker::_instance = new LivenessTracker();
 
+jlong LivenessTracker::getMaxMemory(JNIEnv* env) {
+    jclass trampoline;
+    if (!(trampoline = env->FindClass("com/datadoghq/profiler/Trampoline"))) {
+        env->ExceptionDescribe();
+        return 0;
+    }
+    jmethodID maxMemory;
+    if (!(maxMemory = env->GetStaticMethodID(trampoline, "getMaxHeap", "()J"))) {
+        env->ExceptionDescribe();
+        return -1;
+    }
+    return (jlong) env->CallStaticLongMethod(trampoline, maxMemory);
+}
+
+jlong LivenessTracker::getTotalMemory(JNIEnv* env) {
+    jclass trampoline;
+    if (!(trampoline = env->FindClass("com/datadoghq/profiler/Trampoline"))) {
+        env->ExceptionDescribe();
+        return 0;
+    }
+    jmethodID usedMemory;
+    if (!(usedMemory = env->GetStaticMethodID(trampoline, "getUsedHeap", "()J"))) {
+        env->ExceptionDescribe();
+        return -1;
+    }
+    return (jlong) env->CallStaticLongMethod(trampoline, usedMemory);
+}
+
 void LivenessTracker::cleanup_table() {
     JNIEnv *env = VM::jni();
 
@@ -52,6 +80,7 @@ void LivenessTracker::cleanup_table() {
 
     _table_lock.unlock();
 
+    Profiler::instance()->writeHeapUsage(getTotalMemory(env), true);
     end = OS::nanotime();
     Log::debug("Liveness tracker cleanup took %.2fms (%.2fus/element)",
                 1.0f * (end - start) / 1000 / 1000, 1.0f * (end - start) / 1000 / sz);
@@ -93,6 +122,8 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
 
     _table_lock.unlockShared();
 
+    Profiler::instance()->writeHeapUsage(getTotalMemory(env), false);
+
     end = OS::nanotime();
     Log::debug("Liveness tracker flush took %.2fms (%.2fus/element)",
                 1.0f * (end - start) / 1000 / 1000, 1.0f * (end - start) / 1000 / sz);
@@ -126,33 +157,9 @@ exit:
     VM::detachThread();
 }
 
-static jlong getMaxHeap(JNIEnv* env) {
-    static jclass _rt;
-    static jmethodID _get_rt;
-    static jmethodID _max_memory;
-
-    if (!(_rt = env->FindClass("java/lang/Runtime"))) {
-        env->ExceptionDescribe();
-        return -1;
-    }
-
-    if (!(_get_rt = env->GetStaticMethodID(_rt, "getRuntime", "()Ljava/lang/Runtime;"))) {
-        env->ExceptionDescribe();
-        return -1;
-    }
-
-    if (!(_max_memory = env->GetMethodID(_rt, "maxMemory", "()J"))) {
-        env->ExceptionDescribe();
-        return -1;
-    }
-
-    jobject rt = (jobject)env->CallStaticObjectMethod(_rt, _get_rt);
-    return (jlong)env->CallLongMethod(rt, _max_memory);
-}
-
 Error LivenessTracker::initialize_table(int sampling_interval) {
     _table_max_cap = 0;
-    jlong max_heap = getMaxHeap(VM::jni());
+    jlong max_heap = getMaxMemory(VM::jni());
     if (max_heap == -1) {
         return Error("Unable to retrieve the max heap value");
     }
@@ -209,20 +216,18 @@ Error LivenessTracker::initialize(Arguments& args) {
     if (err) {
         return _stored_error = err;
     }
-    _table_size = 0;
-    _table_cap = __min(2048, _table_max_cap); // with default 512k sampling interval, it's enough for 1G of heap
-    _table = (TrackingEntry*)malloc(sizeof(TrackingEntry) * _table_cap);
-
     if (!(_Class = env->FindClass("java/lang/Class"))) {
-        free(_table);
         env->ExceptionDescribe();
         return _stored_error = Error("Unable to find java/lang/Class");
     }
     if (!(_Class_getName = env->GetMethodID(_Class, "getName", "()Ljava/lang/String;"))) {
-        free(_table);
         env->ExceptionDescribe();
         return _stored_error = Error("Unable to find java/lang/Class.getName");
     }
+
+    _table_size = 0;
+    _table_cap = __min(2048, _table_max_cap); // with default 512k sampling interval, it's enough for 1G of heap
+    _table = (TrackingEntry*)malloc(sizeof(TrackingEntry) * _table_cap);
 
     _cleanup_round = 0;
     _cleanup_run = true;

@@ -174,6 +174,12 @@ void JfrMetadata::initialize(const std::vector<std::string>& contextAttributes) 
                 << field("endpoint", T_STRING, "Endpoint", F_CPOOL)
                 << field("localRootSpanId", T_LONG, "Local Root Span ID"))
 
+            << (type("datadog.HeapUsage", T_HEAP_USAGE, "JVM Heap Usage")
+                << category("Datadog")
+                << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+                << field("value", T_LONG, "Current Heap Usage", F_BYTES)
+                << field("live", T_BOOLEAN, "After GC"))
+
             << (type("jdk.ThreadPark", T_THREAD_PARK, "Java Thread Park")
                 << category("Java Application")
                 << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
