@@ -70,6 +70,7 @@ enum JfrType {
     T_LOG = 117,
     T_WALLCLOCK_SAMPLE_EPOCH = 118,
     T_ENDPOINT = 119,
+    T_DATADOG_SETTING = 120,
     T_ANNOTATION = 200,
     T_LABEL = 201,
     T_CATEGORY = 202,

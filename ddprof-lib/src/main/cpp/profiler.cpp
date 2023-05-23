@@ -740,6 +740,17 @@ void Profiler::writeLog(LogLevel level, const char* message, size_t len) {
     _jfr.recordLog(level, message, len);
 }
 
+void Profiler::writeDatadogProfilerSetting(int tid, int length, const char* name, const char* value, const char* unit) {
+    u32 lock_index = getLockIndex(tid);
+    if (!_locks[lock_index].tryLock() &&
+        !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+        !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+        return;
+    }
+    _jfr.recordDatadogSetting(lock_index, length, name, value, unit);
+    _locks[lock_index].unlock();
+}
+
 void* Profiler::dlopen_hook(const char* filename, int flags) {
     void* result = dlopen(filename, flags);
     if (result != NULL) {

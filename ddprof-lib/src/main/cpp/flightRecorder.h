@@ -52,6 +52,8 @@ class FlightRecorder {
                      int event_type, Event* event, u64 counter);
 
     void recordLog(LogLevel level, const char* message, size_t len);
+
+    void recordDatadogSetting(int lock_index, int length, const char* name, const char* value, const char* unit);
 };
 
 #endif // _FLIGHTRECORDER_H

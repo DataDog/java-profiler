@@ -170,3 +170,22 @@ Java_com_datadoghq_profiler_JavaProfiler_describeDebugCounters0(JNIEnv *env, job
     return nullptr;
     #endif // COUNTERS
 }
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(JNIEnv *env, jobject unused, jstring name, jstring value, jstring unit) {
+    int tid = ProfiledThread::currentTid();
+    if (tid < 0) {
+        return;
+    }
+    int length = 0;
+    const char* name_str = env->GetStringUTFChars(name, NULL);
+    length += env->GetStringUTFLength(name);
+    const char* value_str = env->GetStringUTFChars(value, NULL);
+    length += env->GetStringUTFLength(value);
+    const char* unit_str = env->GetStringUTFChars(unit, NULL);
+    length += env->GetStringUTFLength(unit);
+    Profiler::instance()->writeDatadogProfilerSetting(tid, length, name_str, value_str, unit_str);
+    env->ReleaseStringUTFChars(name, name_str);
+    env->ReleaseStringUTFChars(value, value_str);
+    env->ReleaseStringUTFChars(unit, unit_str);
+}
