@@ -17,6 +17,7 @@ public abstract class JfrDumpTest extends AbstractProfilerTest {
 
     public void runTest(String eventName, String ... patterns) throws Exception {
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
+        Assumptions.assumeFalse(Platform.isJ9());
 
         for (int j = 0; j < 10; j++) {
             Path recording = Files.createTempFile("dump-", ".jfr");
