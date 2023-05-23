@@ -183,6 +183,7 @@ void WallClock::timerLoop() {
                     }
                     tid = thread_list->next();
                 }
+                delete thread_list;
             }
             for (int i = 0; i < _reservoir_size && i < tids.size(); i++) {
                 reservoir.push_back(tids[i]);
