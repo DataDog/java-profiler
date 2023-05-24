@@ -21,8 +21,10 @@
 #include <stdint.h>
 #include <string.h>
 #include "codeCache.h"
+#include "jvmHeap.h"
+#include "vmEntry.h"
 
-class MemoryUsage;
+class HeapUsage;
 
 class VMStructs {
   protected:
@@ -71,6 +73,7 @@ class VMStructs {
     static int _vs_high_offset;
     static int _flag_name_offset;
     static int _flag_addr_offset;
+    static void** _collected_heap_addr;
     static const char* _flags_addr;
     static int _flag_count;
     static int _flag_size;
@@ -92,8 +95,14 @@ class VMStructs {
     static LockFunc _lock_func;
     static LockFunc _unlock_func;
 
+    typedef HeapUsage (*HeapUsageFunc)(const void*);
+    static HeapUsageFunc _heap_usage_func;
+
     typedef void* (*MemoryUsageFunc)(void*, void*, bool);
     static MemoryUsageFunc _memory_usage_func;
+
+    typedef GCHeapSummary (*GCHeapSummaryFunc)(void*);
+    static GCHeapSummaryFunc _gc_heap_summary_func;
 
     static uintptr_t readSymbol(const char* symbol_name);
     static void initOffsets();
@@ -404,51 +413,63 @@ class JVMFlag : VMStructs {
     }
 };
 
-class MemoryUsage {
-  private:
-    long _init;
-    long _max;
-    long _used;
-    long _committed;
+class HeapUsage : VMStructs {
   public:
-    MemoryUsage(long init, long max, long used, long committed) :
-        _init(init), _max(max), _used(used), _committed(committed) { }
+    size_t _initSize = -1;
+    size_t _used = -1;
+    size_t _committed = -1;
+    size_t _maxSize = -1;
+    size_t _used_at_last_gc = -1;
 
-    long init() {
-        return _init;
+    static bool isLastGCUsageSupported() {
+        // only supported for JDK 17+
+        // the CollectedHeap structure is vastly different in JDK 11 and earlier so we can't support it
+        return _collected_heap_addr != NULL && _heap_usage_func != NULL;
     }
-    long max() {
-        return _max;
-    }
-    long used() {
-        return _used;
-    }
-    long committed() {
-        return _committed;
-    }
-};
 
-class Heap : VMStructs {
-  public:
-    static MemoryUsage usage(JNIEnv* env) {
-        if (_memory_usage_func != NULL) {
-            jobject usage = (jobject) _memory_usage_func(env, (jobject) NULL, (jboolean) true);
-            jclass cls = env->GetObjectClass(usage);
-            jfieldID init_fid = env->GetFieldID(cls, "init", "J");
-            jfieldID max_fid = env->GetFieldID(cls, "max", "J");
-            jfieldID used_fid = env->GetFieldID(cls, "used", "J");
-            jfieldID committed_fid = env->GetFieldID(cls, "committed", "J");
-            if (init_fid == NULL || max_fid == NULL || used_fid == NULL || committed_fid == NULL) {
-                return MemoryUsage(-1, -1, -1, -1);
+    static bool needsNativeBindingInterception() {
+        return _collected_heap_addr == NULL || (_heap_usage_func == NULL && _gc_heap_summary_func == NULL);
+    }
+
+    static HeapUsage get() {
+        HeapUsage usage;
+        if (_collected_heap_addr != NULL) {
+            if (_heap_usage_func != NULL) {
+                // this is the JDK 17+ path
+                usage = _heap_usage_func(*_collected_heap_addr);
+                usage._used_at_last_gc = ((CollectedHeap*)*_collected_heap_addr)->_used_at_last_gc;
+            } else if (_gc_heap_summary_func != NULL) {
+                // this is the JDK 11 path
+                // we need to collect GCHeapSummary information first
+                GCHeapSummary summary = _gc_heap_summary_func(*_collected_heap_addr);
+                usage._initSize = -1;
+                usage._used = summary.used();
+                usage._committed = -1;
+                usage._maxSize = summary.maxSize();
             }
-            jlong init = env->GetLongField(usage, init_fid);
-            jlong max = env->GetLongField(usage, max_fid);
-            jlong used = env->GetLongField(usage, used_fid);
-            jlong committed = env->GetLongField(usage, committed_fid);
-
-            return MemoryUsage(init, max, used, committed);
         }
-        return MemoryUsage(-1, -1, -1, -1);
+        if (usage._maxSize == -1  && _memory_usage_func != NULL) {
+            // this path is for non-hotspot JVMs
+            // we need to patch the native method binding for JMX GetMemoryUsage to capture the native method pointer first
+           JNIEnv* env = VM::jni();
+           if (env == NULL) {
+                return usage;
+           }
+           jobject m_usage = (jobject) _memory_usage_func(env, (jobject) NULL, (jboolean) true);
+           jclass cls = env->GetObjectClass(m_usage);
+           jfieldID init_fid = env->GetFieldID(cls, "init", "J");
+           jfieldID max_fid = env->GetFieldID(cls, "max", "J");
+           jfieldID used_fid = env->GetFieldID(cls, "used", "J");
+           jfieldID committed_fid = env->GetFieldID(cls, "committed", "J");
+           if (init_fid == NULL || max_fid == NULL || used_fid == NULL || committed_fid == NULL) {
+               return usage;
+           }
+           usage._initSize = env->GetLongField(m_usage, init_fid);
+           usage._maxSize = env->GetLongField(m_usage, max_fid);
+           usage._used = env->GetLongField(m_usage, used_fid);
+           usage._committed = env->GetLongField(m_usage, committed_fid);
+        }
+        return usage;
     }
 };
 

@@ -28,10 +28,6 @@
 
 LivenessTracker* const LivenessTracker::_instance = new LivenessTracker();
 
-jlong LivenessTracker::getMaxMemory(JNIEnv* env) {
-    return Heap::usage(env).max();
-}
-
 void LivenessTracker::cleanup_table() {
     JNIEnv *env = VM::jni();
 
@@ -55,8 +51,9 @@ void LivenessTracker::cleanup_table() {
     _table_size = newsz;
 
     _table_lock.unlock();
-
-    Profiler::instance()->writeHeapUsage(Heap::usage(env).used(), true);
+    if (!HeapUsage::isLastGCUsageSupported()) {
+        Profiler::instance()->writeHeapUsage(HeapUsage::get()._used, true);
+    }
     end = OS::nanotime();
     Log::debug("Liveness tracker cleanup took %.2fms (%.2fus/element)",
                 1.0f * (end - start) / 1000 / 1000, 1.0f * (end - start) / 1000 / sz);
@@ -98,7 +95,9 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
 
     _table_lock.unlockShared();
 
-    Profiler::instance()->writeHeapUsage(Heap::usage(env).used(), false);
+    bool useLastGc = HeapUsage::isLastGCUsageSupported();
+    size_t used = useLastGc ? HeapUsage::get()._used_at_last_gc : HeapUsage::get()._used;
+    Profiler::instance()->writeHeapUsage(used, useLastGc);
 
     end = OS::nanotime();
     Log::debug("Liveness tracker flush took %.2fms (%.2fus/element)",
@@ -135,7 +134,7 @@ exit:
 
 Error LivenessTracker::initialize_table(int sampling_interval) {
     _table_max_cap = 0;
-    jlong max_heap = getMaxMemory(VM::jni());
+    jlong max_heap = HeapUsage::get()._maxSize;;
     if (max_heap == -1) {
         return Error("Unable to retrieve the max heap value");
     }

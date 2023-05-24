@@ -236,7 +236,7 @@ bool VM::init(JavaVM* vm, bool attach) {
         potential_capabilities.can_generate_sampled_object_alloc_events
             && (!_hotspot || java_version() >= 11);
     _can_intercept_binding =
-        potential_capabilities.can_generate_native_method_bind_events;
+        potential_capabilities.can_generate_native_method_bind_events && HeapUsage::needsNativeBindingInterception();
 
     jvmtiCapabilities capabilities = {0};
     capabilities.can_generate_all_class_hook_events = 1;

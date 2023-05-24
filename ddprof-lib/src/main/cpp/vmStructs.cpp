@@ -18,7 +18,6 @@
 #include <pthread.h>
 #include <unistd.h>
 #include "vmStructs.h"
-#include "vmEntry.h"
 #include "j9Ext.h"
 #include "vector"
 
@@ -89,7 +88,11 @@ VMStructs::GetStackTraceFunc VMStructs::_get_stack_trace = NULL;
 VMStructs::LockFunc VMStructs::_lock_func;
 VMStructs::LockFunc VMStructs::_unlock_func;
 
+VMStructs::HeapUsageFunc VMStructs::_heap_usage_func = NULL;
 VMStructs::MemoryUsageFunc VMStructs::_memory_usage_func = NULL;
+VMStructs::GCHeapSummaryFunc VMStructs::_gc_heap_summary_func = NULL;
+
+void** VMStructs::_collected_heap_addr = NULL;
 
 uintptr_t VMStructs::readSymbol(const char* symbol_name) {
     const void* symbol = _libjvm->findSymbol(symbol_name);
@@ -116,9 +119,7 @@ void VMStructs::ready() {
     initThreadBridge(env);
     initLogging(env);
     initMemoryUsage(env);
-    #ifdef TRACE
     _libjvm->dump();
-    #endif // TRACE
 }
 
 void VMStructs::initOffsets() {
@@ -264,6 +265,10 @@ void VMStructs::initOffsets() {
             }
         } else if (strcmp(type, "PermGen") == 0) {
             _has_perm_gen = true;
+        } else if (strcmp(type, "Universe") == 0) {
+            if (strcmp(field, "_collectedHeap") == 0) {
+                _collected_heap_addr = *(void***)(entry + address_offset);
+            }
         }
     }
 
@@ -366,6 +371,8 @@ void VMStructs::initJvmFunctions() {
         _lock_func = (LockFunc)_libjvm->findSymbol("_ZN7Monitor28lock_without_safepoint_checkEv");
         _unlock_func = (LockFunc)_libjvm->findSymbol("_ZN7Monitor6unlockEv");
     }
+    _heap_usage_func = (HeapUsageFunc)_libjvm->findSymbol("_ZN13CollectedHeap12memory_usageEv");
+    _gc_heap_summary_func = (GCHeapSummaryFunc)_libjvm->findSymbol("_ZN13CollectedHeap19create_heap_summaryEv");
     initUnsafeFunctions();
 }
 
