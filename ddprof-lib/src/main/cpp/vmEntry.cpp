@@ -25,7 +25,6 @@
 #include "j9ObjectSampler.h"
 #include "os.h"
 #include "profiler.h"
-#include "lockTracer.h"
 #include "log.h"
 #include "vmStructs.h"
 
@@ -262,8 +261,6 @@ bool VM::init(JavaVM* vm, bool attach) {
     callbacks.DynamicCodeGenerated = Profiler::DynamicCodeGenerated;
     callbacks.ThreadStart = Profiler::ThreadStart;
     callbacks.ThreadEnd = Profiler::ThreadEnd;
-    callbacks.MonitorContendedEnter = LockTracer::MonitorContendedEnter;
-    callbacks.MonitorContendedEntered = LockTracer::MonitorContendedEntered;
     // callbacks.VMObjectAlloc = J9ObjectSampler::VMObjectAlloc;
     callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
     callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;

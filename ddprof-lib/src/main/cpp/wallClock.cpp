@@ -24,8 +24,6 @@
 #include "log.h"
 #include "thread.h"
 #include "tsc.h"
-#include "jvmti.h"
-#include "vmStructs.h"
 
 volatile bool WallClock::_enabled = false;
 
@@ -70,10 +68,8 @@ void WallClock::signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64
     }
 
     ExecutionEvent event;
-    // if we're on a Java thread, we can look up the thread state, otherwise we'll figure it out from the top frame
-    int index = indexOf(tid);
-    int state = index >= 0 ? _thread_states[index + 1] : -1;
-    event._thread_state = state >= 0 ? convertThreadState(state) : getThreadState(ucontext);
+    JavaThreadState state = getThreadState(ucontext);
+    event._thread_state = state;
     event._weight = skipped + 1;
     Profiler::instance()->recordSample(ucontext, last_sample, tid, BCI_WALL, &event);
     Shims::instance().setSighandlerTid(-1);
@@ -93,13 +89,6 @@ Error WallClock::start(Arguments &args) {
             args._wall_threads_per_tick :
             DEFAULT_WALL_THREADS_PER_TICK;
 
-    _thread_state_size = (2 * _reservoir_size * sizeof(int) + 32) & ~63;
-    _thread_states = (int*) aligned_alloc(64, _thread_state_size);
-    for (int i = 0; i < _reservoir_size * 2; i += 2) {
-        _thread_states[i] = 0x7FFFFFFF;
-        _thread_states[i + 1] = -1;
-    }
-
     OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
 
     _running = true;
@@ -117,31 +106,10 @@ void WallClock::stop() {
     pthread_join(_thread, NULL);
 }
 
-void WallClock::prepareThreadStates(jvmtiEnv* jvmti, std::vector<int>& reservoir, std::unordered_map<int, jthread>& thread_lookup) {
-    // fix up default values
-    for (int i = 0; i < _reservoir_size * 2; i += 2) {
-        _thread_states[i] = 0x7FFFFFFF;
-        _thread_states[i + 1] = -1;
-    }
-    for (int i = 0; i < reservoir.size(); i++) {
-        int tid = reservoir[i];
-        _thread_states[i * 2] = tid;
-        auto const& java_thread = thread_lookup.find(tid);
-        if (java_thread != thread_lookup.end()) {
-            int state = 0;
-            if (jvmti->GetThreadState(java_thread->second, &state) == 0) {
-                _thread_states[i * 2 + 1] = state;
-            }
-        }
-    }
-}
-
 void WallClock::timerLoop() {
     if (!_enabled) {
         return;
     }
-    JNIEnv* jni = VM::attachThread("datadog-wallclock-sampler");
-    jvmtiEnv* jvmti = VM::jvmti();
     std::vector<int> tids;
     tids.reserve(_reservoir_size);
     std::vector<int> reservoir;
@@ -157,92 +125,69 @@ void WallClock::timerLoop() {
     u64 startTime = TSC::ticks();
     WallClockEpochEvent epoch(startTime);
 
-    std::unordered_map<int, jthread> thread_lookup;
-
     while (_running) {
-        jthread* threads;
-        jint java_thread_count = 0;
-        // refresh the threads via JVMTI once every 100 iterations (1 second by default)
-        int jvmtiError = jvmti->GetAllThreads(&java_thread_count, &threads);
-        if (jvmtiError == 0) {
-            for (int i = 0; i < java_thread_count; i++) {
-                jthread thread = threads[i];
-                int tid = VMThread::nativeThreadId(jni, thread);
-                thread_lookup[tid] = thread;
+        if (thread_filter->enabled()) {
+            thread_filter->collect(tids);
+        } else {
+            ThreadList* thread_list = OS::listThreads();
+            int tid = thread_list->next();
+            while (tid != -1) {
+                if (tid != self) {
+                    tids.push_back(tid);
+                }
+                tid = thread_list->next();
             }
         }
-        for (int i = 0; i < 100; i++) {
-            if (thread_filter->enabled()) {
-                thread_filter->collect(tids);
-            } else {
-                ThreadList* thread_list = OS::listThreads();
-                int tid = thread_list->next();
-                while (tid != -1) {
-                    if (tid != self) {
-                        tids.push_back(tid);
-                    }
-                    tid = thread_list->next();
-                }
-            }
-            for (int i = 0; i < _reservoir_size && i < tids.size(); i++) {
-                reservoir.push_back(tids[i]);
-            }
-            double weight = exp(log(uniform(generator)) / _reservoir_size);
-            int target = _reservoir_size + (int) (log(uniform(generator)) / log(1 - weight));
-            while (target < tids.size()) {
-                reservoir[random_index(generator)] = tids[target];
-                weight *= exp(log(uniform(generator)) / _reservoir_size);
-                target += (int) (log(uniform(generator)) / log(1 - weight));
-            }
+        for (int i = 0; i < _reservoir_size && i < tids.size(); i++) {
+            reservoir.push_back(tids[i]);
+        }
+        double weight = exp(log(uniform(generator)) / _reservoir_size);
+        int target = _reservoir_size + (int) (log(uniform(generator)) / log(1 - weight));
+        while (target < tids.size()) {
+            reservoir[random_index(generator)] = tids[target];
+            weight *= exp(log(uniform(generator)) / _reservoir_size);
+            target += (int) (log(uniform(generator)) / log(1 - weight));
+        }
 
-            // get the java thread states via JVMTI to be looked up by signalled threads
-            prepareThreadStates(jvmti, reservoir, thread_lookup);
-
-            int num_failures = 0;
-            int threads_already_exited = 0;
-            int permission_denied = 0;
-            for (int tid : reservoir) {
-                if (!OS::sendSignalToThread(tid, SIGVTALRM)) {
-                    num_failures++;
-                    if (errno != 0) {
-                        switch (errno) {
-                            case ESRCH:
-                                threads_already_exited++;
-                                break;
-                            case EPERM:
-                                permission_denied++;
-                                break;
-                            default:
-                                Log::debug("unexpected error %s", strerror(errno));
-                        }
+        int num_failures = 0;
+        int threads_already_exited = 0;
+        int permission_denied = 0;
+        for (int tid : reservoir) {
+            if (!OS::sendSignalToThread(tid, SIGVTALRM)) {
+                num_failures++;
+                if (errno != 0) {
+                    switch (errno) {
+                        case ESRCH:
+                            threads_already_exited++;
+                            break;
+                        case EPERM:
+                            permission_denied++;
+                            break;
+                        default:
+                            Log::debug("unexpected error %s", strerror(errno));
                     }
                 }
             }
-
-            epoch.updateNumSamplableThreads(tids.size());
-            epoch.updateNumFailedSamples(num_failures);
-            epoch.updateNumSuccessfulSamples(reservoir.size() - num_failures);
-            epoch.updateNumExitedThreads(threads_already_exited);
-            epoch.updateNumPermissionDenied(permission_denied);
-            auto endTime = TSC::ticks();
-            auto duration = (1000 * (endTime - startTime)) / TSC::frequency();
-            if (epoch.hasChanged() || duration >= 1000) {
-                epoch.endEpoch(duration);
-                Profiler::instance()->recordWallClockEpoch(self, &epoch);
-                epoch.newEpoch(endTime);
-                startTime = endTime;
-            } else {
-                epoch.clean();
-            }
-
-            reservoir.clear();
-            tids.clear();
-            OS::sleep(_interval);
         }
-        if (threads) {
-            thread_lookup.clear();
-            jvmti->Deallocate((unsigned char*)threads);
+
+        epoch.updateNumSamplableThreads(tids.size());
+        epoch.updateNumFailedSamples(num_failures);
+        epoch.updateNumSuccessfulSamples(reservoir.size() - num_failures);
+        epoch.updateNumExitedThreads(threads_already_exited);
+        epoch.updateNumPermissionDenied(permission_denied);
+        auto endTime = TSC::ticks();
+        auto duration = (1000 * (endTime - startTime)) / TSC::frequency();
+        if (epoch.hasChanged() || duration >= 1000) {
+            epoch.endEpoch(duration);
+            Profiler::instance()->recordWallClockEpoch(self, &epoch);
+            epoch.newEpoch(endTime);
+            startTime = endTime;
+        } else {
+            epoch.clean();
         }
+
+        reservoir.clear();
+        tids.clear();
+        OS::sleep(_interval);
     }
-    VM::detachThread();
 }
