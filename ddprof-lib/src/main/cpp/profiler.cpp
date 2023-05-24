@@ -27,7 +27,6 @@
 #include "profiler.h"
 #include "perfEvents.h"
 #include "allocTracer.h"
-#include "lockTracer.h"
 #include "objectSampler.h"
 #include "wallClock.h"
 #include "j9Ext.h"
@@ -57,7 +56,6 @@ static void (*orig_segvHandler)(int signo, siginfo_t* siginfo, void* ucontext);
 static Engine noop_engine;
 static PerfEvents perf_events;
 // static AllocTracer alloc_tracer;
-static LockTracer lock_tracer;
 // static J9ObjectSampler j9_object_sampler;
 static WallClock wall_engine;
 static J9WallClock j9_engine;
@@ -974,8 +972,7 @@ Error Profiler::start(Arguments& args, bool reset) {
     _event_mask = ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU : 0) |
                   (args._cpu >= 0 ? EM_CPU : 0) |
                   (args._wall >= 0 ? EM_WALL : 0) |
-                  (args._memory >= 0 ? EM_ALLOC : 0) |
-                  (args._lock >= 0 ? EM_LOCK : 0);
+                  (args._memory >= 0 ? EM_ALLOC : 0);
     if (_event_mask == 0) {
         return Error("No profiling events specified");
     }
@@ -1071,12 +1068,6 @@ Error Profiler::start(Arguments& args, bool reset) {
             goto error2;
         }
     }
-    if (_event_mask & EM_LOCK) {
-        error = lock_tracer.start(args);
-        if (error) {
-            goto error3;
-        }
-    }
 
     switchThreadEvents(JVMTI_ENABLE);
 
@@ -1085,9 +1076,6 @@ Error Profiler::start(Arguments& args, bool reset) {
     _epoch++;
 
     return Error::OK;
-
-error4:
-    if (_event_mask & EM_LOCK) lock_tracer.stop();
 
 error3:
     if (_event_mask & EM_ALLOC) _alloc_engine->stop();
@@ -1117,7 +1105,6 @@ Error Profiler::stop() {
 
     uninstallTraps();
 
-    if (_event_mask & EM_LOCK) lock_tracer.stop();
     if (_event_mask & EM_ALLOC) _alloc_engine->stop();
     if (_event_mask & EM_WALL) _wall_engine->stop();
     if (_event_mask & EM_CPU) _cpu_engine->stop();
@@ -1158,9 +1145,6 @@ Error Profiler::check(Arguments& args) {
     if (!error && args._memory >= 0) {
         _alloc_engine = selectAllocEngine(args);
         error = _alloc_engine->check(args);
-    }
-    if (!error && args._lock >= 0) {
-        error = lock_tracer.check(args);
     }
 
     return error;
@@ -1296,7 +1280,6 @@ Error Profiler::runInternal(Arguments& args, std::ostream& out) {
             out << "Basic events:" << std::endl;
             out << "  " << EVENT_CPU << std::endl;
             out << "  " << EVENT_ALLOC << std::endl;
-            out << "  " << EVENT_LOCK << std::endl;
             out << "  " << EVENT_WALL << std::endl;
             out << "  " << EVENT_ITIMER << std::endl;
 

@@ -44,8 +44,7 @@ const int CONCURRENCY_LEVEL = 16;
 enum EventMask {
     EM_CPU     = 1 << 0,
     EM_WALL    = 1 << 1,
-    EM_ALLOC   = 1 << 2,
-    EM_LOCK    = 1 << 3,
+    EM_ALLOC   = 1 << 2
 };
 
 union CallTraceBuffer {

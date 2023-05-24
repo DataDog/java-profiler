@@ -63,7 +63,6 @@ static const Multiplier UNIVERSAL[] = {{'n', 1}, {'u', 1000}, {'m', 1000000}, {'
 //     version[=full]   - display the agent version
 //     event=EVENT      - which event to trace (cpu, wall, cache-misses, etc.)
 //     alloc[=BYTES]    - profile allocations with BYTES interval
-//     lock[=DURATION]  - profile contended locks longer than DURATION ns
 //     jfr              - dump events in Java Flight Recorder format
 //     traces[=N]       - dump top N call traces
 //     samples          - count the number of samples (default)
@@ -183,8 +182,6 @@ Error Arguments::parse(const char* args) {
                     msg = "event must not be empty";
                 } else if (strcmp(value, EVENT_ALLOC) == 0) {
                     if (_memory < 0) _memory = 0;
-                } else if (strcmp(value, EVENT_LOCK) == 0) {
-                    if (_lock < 0) _lock = 0;
                 } else if (_event != NULL) {
                     msg = "Duplicate event argument";
                 } else {
@@ -212,12 +209,6 @@ Error Arguments::parse(const char* args) {
                     }
                 } else {
                     msg = "memory sampling interval must be >= 0";
-                }
-
-            CASE("lock")
-                _lock = value == NULL ? 0 : parseUnits(value, NANOS);
-                if (_lock < 0) {
-                    msg = "lock must be >= 0";
                 }
 
             CASE("interval")
@@ -293,7 +284,7 @@ Error Arguments::parse(const char* args) {
         return Error(msg);
     }
 
-    if (_event == NULL && _cpu < 0 && _wall < 0 && _memory < 0 && _lock < 0) {
+    if (_event == NULL && _cpu < 0 && _wall < 0 && _memory < 0) {
         _event = EVENT_CPU;
     }
 

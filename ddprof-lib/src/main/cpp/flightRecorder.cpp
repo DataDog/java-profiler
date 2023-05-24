@@ -702,12 +702,6 @@ class Recording {
         writeBoolSetting(buf, T_ALLOC, "enabled", args._record_allocations);
         writeBoolSetting(buf, T_HEAP_LIVE_OBJECT, "enabled", args._record_liveness);
 
-        writeBoolSetting(buf, T_MONITOR_ENTER, "enabled", args._lock >= 0);
-        writeBoolSetting(buf, T_THREAD_PARK, "enabled", args._lock >= 0);
-        if (args._lock >= 0) {
-            writeIntSetting(buf, T_MONITOR_ENTER, "lock", args._lock);
-        }
-
         writeBoolSetting(buf, T_ACTIVE_RECORDING, "debugSymbols", VMStructs::hasDebugSymbols());
         writeBoolSetting(buf, T_ACTIVE_RECORDING, "kernelSymbols", Symbols::haveKernelSymbols());
         writeStringSetting(buf, T_ACTIVE_RECORDING, "cpuEngine", Profiler::instance()->cpuEngine()->name());
