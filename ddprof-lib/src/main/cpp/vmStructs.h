@@ -22,6 +22,7 @@
 #include <string.h>
 #include "codeCache.h"
 
+class MemoryUsage;
 
 class VMStructs {
   protected:
@@ -91,6 +92,9 @@ class VMStructs {
     static LockFunc _lock_func;
     static LockFunc _unlock_func;
 
+    typedef void* (*MemoryUsageFunc)(void*, void*, bool);
+    static MemoryUsageFunc _memory_usage_func;
+
     static uintptr_t readSymbol(const char* symbol_name);
     static void initOffsets();
     static void resolveOffsets();
@@ -99,10 +103,13 @@ class VMStructs {
     static void initThreadBridge(JNIEnv* env);
     static void initLogging(JNIEnv* env);
     static void initUnsafeFunctions();
+    static void initMemoryUsage(JNIEnv* env);
 
     const char* at(int offset) {
         return (const char*)this + offset;
     }
+
+    static void checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni, jmethodID method, void *address);
 
   public:
     static void init(CodeCache* libjvm);
@@ -138,6 +145,8 @@ class VMStructs {
     }
 
     static bool isSafeToWalk(uintptr_t pc);
+
+    static void JNICALL NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread, jmethodID method, void *address, void **new_address_ptr);
 };
 
 
@@ -392,6 +401,54 @@ class JVMFlag : VMStructs {
 
     void* addr() {
         return *(void**) at(_flag_addr_offset);
+    }
+};
+
+class MemoryUsage {
+  private:
+    long _init;
+    long _max;
+    long _used;
+    long _committed;
+  public:
+    MemoryUsage(long init, long max, long used, long committed) :
+        _init(init), _max(max), _used(used), _committed(committed) { }
+
+    long init() {
+        return _init;
+    }
+    long max() {
+        return _max;
+    }
+    long used() {
+        return _used;
+    }
+    long committed() {
+        return _committed;
+    }
+};
+
+class Heap : VMStructs {
+  public:
+    static MemoryUsage usage(JNIEnv* env) {
+        if (_memory_usage_func != NULL) {
+            jobject usage = (jobject) _memory_usage_func(env, (jobject) NULL, (jboolean) true);
+            jclass cls = env->GetObjectClass(usage);
+            jfieldID init_fid = env->GetFieldID(cls, "init", "J");
+            jfieldID max_fid = env->GetFieldID(cls, "max", "J");
+            jfieldID used_fid = env->GetFieldID(cls, "used", "J");
+            jfieldID committed_fid = env->GetFieldID(cls, "committed", "J");
+            if (init_fid == NULL || max_fid == NULL || used_fid == NULL || committed_fid == NULL) {
+                return MemoryUsage(-1, -1, -1, -1);
+            }
+            jlong init = env->GetLongField(usage, init_fid);
+            jlong max = env->GetLongField(usage, max_fid);
+            jlong used = env->GetLongField(usage, used_fid);
+            jlong committed = env->GetLongField(usage, committed_fid);
+
+            return MemoryUsage(init, max, used, committed);
+        }
+        return MemoryUsage(-1, -1, -1, -1);
     }
 };
 

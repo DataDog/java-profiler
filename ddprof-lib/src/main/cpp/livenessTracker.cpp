@@ -29,31 +29,7 @@
 LivenessTracker* const LivenessTracker::_instance = new LivenessTracker();
 
 jlong LivenessTracker::getMaxMemory(JNIEnv* env) {
-    jclass trampoline;
-    if (!(trampoline = env->FindClass("com/datadoghq/profiler/Trampoline"))) {
-        env->ExceptionDescribe();
-        return 0;
-    }
-    jmethodID maxMemory;
-    if (!(maxMemory = env->GetStaticMethodID(trampoline, "getMaxHeap", "()J"))) {
-        env->ExceptionDescribe();
-        return -1;
-    }
-    return (jlong) env->CallStaticLongMethod(trampoline, maxMemory);
-}
-
-jlong LivenessTracker::getTotalMemory(JNIEnv* env) {
-    jclass trampoline;
-    if (!(trampoline = env->FindClass("com/datadoghq/profiler/Trampoline"))) {
-        env->ExceptionDescribe();
-        return 0;
-    }
-    jmethodID usedMemory;
-    if (!(usedMemory = env->GetStaticMethodID(trampoline, "getUsedHeap", "()J"))) {
-        env->ExceptionDescribe();
-        return -1;
-    }
-    return (jlong) env->CallStaticLongMethod(trampoline, usedMemory);
+    return Heap::usage(env).max();
 }
 
 void LivenessTracker::cleanup_table() {
@@ -80,7 +56,7 @@ void LivenessTracker::cleanup_table() {
 
     _table_lock.unlock();
 
-    Profiler::instance()->writeHeapUsage(getTotalMemory(env), true);
+    Profiler::instance()->writeHeapUsage(Heap::usage(env).used(), true);
     end = OS::nanotime();
     Log::debug("Liveness tracker cleanup took %.2fms (%.2fus/element)",
                 1.0f * (end - start) / 1000 / 1000, 1.0f * (end - start) / 1000 / sz);
@@ -122,7 +98,7 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
 
     _table_lock.unlockShared();
 
-    Profiler::instance()->writeHeapUsage(getTotalMemory(env), false);
+    Profiler::instance()->writeHeapUsage(Heap::usage(env).used(), false);
 
     end = OS::nanotime();
     Log::debug("Liveness tracker flush took %.2fms (%.2fus/element)",

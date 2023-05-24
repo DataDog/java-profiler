@@ -44,6 +44,7 @@ bool VM::_openj9 = false;
 bool VM::_hotspot = false;
 bool VM::_zing = false;
 bool VM::_can_sample_objects = false;
+bool VM::_can_intercept_binding = false;
 
 jvmtiError (JNICALL *VM::_orig_RedefineClasses)(jvmtiEnv*, jint, const jvmtiClassDefinition*);
 jvmtiError (JNICALL *VM::_orig_RetransformClasses)(jvmtiEnv*, jint, const jclass* classes);
@@ -234,6 +235,8 @@ bool VM::init(JavaVM* vm, bool attach) {
     _can_sample_objects =
         potential_capabilities.can_generate_sampled_object_alloc_events
             && (!_hotspot || java_version() >= 11);
+    _can_intercept_binding =
+        potential_capabilities.can_generate_native_method_bind_events;
 
     jvmtiCapabilities capabilities = {0};
     capabilities.can_generate_all_class_hook_events = 1;
@@ -241,6 +244,7 @@ bool VM::init(JavaVM* vm, bool attach) {
     capabilities.can_retransform_any_class = isOpenJ9() ? 0 : 1;
     // capabilities.can_generate_vm_object_alloc_events = isOpenJ9() ? 1 : 0;
     capabilities.can_generate_sampled_object_alloc_events = _can_sample_objects ? 1 : 0;
+    capabilities.can_generate_native_method_bind_events = _can_intercept_binding ? 1 : 0;
     capabilities.can_generate_garbage_collection_events = 1;
     capabilities.can_get_bytecodes = 1;
     capabilities.can_get_constant_pool = 1;
@@ -268,12 +272,14 @@ bool VM::init(JavaVM* vm, bool attach) {
     callbacks.MonitorContendedEntered = ProfiledThread::MonitorContendedEntered;
     callbacks.MonitorWait = ProfiledThread::MonitorWait;
     callbacks.MonitorWaited = ProfiledThread::MonitorWaited;
+    callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
     _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_LOAD, NULL);
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_PREPARE, NULL);
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_DYNAMIC_CODE_GENERATED, NULL);
+    _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND, NULL);
 
     if (java_version() == 0 || !CodeHeap::available()) {
         // Workaround for JDK-8173361: avoid CompiledMethodLoad events when possible

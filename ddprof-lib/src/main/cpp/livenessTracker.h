@@ -74,7 +74,6 @@ class LivenessTracker  {
     void onGC();
     void runCleanup();
 
-    jlong getTotalMemory(JNIEnv* env);
     jlong getMaxMemory(JNIEnv* env);
 
     static void* cleanup_thread(void *arg);

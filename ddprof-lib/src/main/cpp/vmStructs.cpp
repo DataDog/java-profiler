@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <cstdlib>
 #include <pthread.h>
 #include <unistd.h>
 #include "vmStructs.h"
@@ -88,6 +89,7 @@ VMStructs::GetStackTraceFunc VMStructs::_get_stack_trace = NULL;
 VMStructs::LockFunc VMStructs::_lock_func;
 VMStructs::LockFunc VMStructs::_unlock_func;
 
+VMStructs::MemoryUsageFunc VMStructs::_memory_usage_func = NULL;
 
 uintptr_t VMStructs::readSymbol(const char* symbol_name) {
     const void* symbol = _libjvm->findSymbol(symbol_name);
@@ -113,6 +115,7 @@ void VMStructs::ready() {
     JNIEnv* env = VM::jni();
     initThreadBridge(env);
     initLogging(env);
+    initMemoryUsage(env);
     #ifdef TRACE
     _libjvm->dump();
     #endif // TRACE
@@ -429,6 +432,15 @@ void VMStructs::initLogging(JNIEnv* env) {
     }
 }
 
+void VMStructs::initMemoryUsage(JNIEnv* env) {
+    jclass factory = env->FindClass("java/lang/management/ManagementFactory");
+    jclass memoryBeanClass = env->FindClass("java/lang/management/MemoryMXBean");
+    jmethodID get_memory = env->GetStaticMethodID(factory, "getMemoryMXBean", "()Ljava/lang/management/MemoryMXBean;");
+    jobject memoryBean = env->CallStaticObjectMethod(factory, get_memory);
+    jmethodID get_heap = env->GetMethodID(memoryBeanClass, "getHeapMemoryUsage", "()Ljava/lang/management/MemoryUsage;");
+    env->CallObjectMethod(memoryBean, get_heap);
+}
+
 VMThread* VMThread::current() {
     return (VMThread*)pthread_getspecific((pthread_key_t)_tls_index);
 }
@@ -486,4 +498,44 @@ void* JVMFlag::find(const char* name) {
 
 bool VMStructs::isSafeToWalk(uintptr_t pc) {
     return !(_unsafe_to_walk.contains((const void*) pc) && _unsafe_to_walk.findFrameDesc((const void*) pc));
+}
+
+void VMStructs::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread, jmethodID method, void *address, void **new_address_ptr) {
+    static int delayedCounter = 0;
+    static void** delayed = (void**)malloc(512 * sizeof(void*) * 2);
+
+    if (_memory_usage_func == NULL) {
+        if (jvmti != NULL && jni != NULL) {
+            checkNativeBinding(jvmti, jni, method, address);
+            if (delayed != NULL && delayedCounter > 0) {
+                for (int i = 0; i < delayedCounter; i++) {
+                    checkNativeBinding(jvmti, jni, (jmethodID)delayed[i * 2], (void*)delayed[i * 2 + 1]);
+                    if (_memory_usage_func != NULL) {
+                        break;
+                    }
+                }
+                delayed = NULL;
+                free(delayed);
+            }
+        } else {
+            if (delayed != NULL) {
+                delayed[delayedCounter * 2] = method;
+                delayed[delayedCounter * 2 + 1] = address;
+                delayedCounter++;
+            }
+        }
+    }
+}
+
+void VMStructs::checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni, jmethodID method, void *address) {
+    char* method_name;
+    char* method_sig;
+    int error = 0;
+    if ((error = jvmti->GetMethodName(method, &method_name, &method_sig, NULL)) == 0) {
+        if (strcmp(method_name, "getMemoryUsage0") == 0 && strcmp(method_sig, "(Z)Ljava/lang/management/MemoryUsage;") == 0) {
+            _memory_usage_func = (MemoryUsageFunc) address;
+        }
+    }
+    jvmti->Deallocate((unsigned char*)method_sig);
+    jvmti->Deallocate((unsigned char*)method_name);
 }
