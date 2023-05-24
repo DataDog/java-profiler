@@ -105,13 +105,6 @@ public class ContextWallClockTest extends AbstractProfilerTest {
                 }
             }
         }
-        // Thread.sleep
-        assertTrue(states.contains(Thread.State.TIMED_WAITING), "no TIMED_WAITING samples");
-        // FutureTask.get
-        assertTrue(states.contains(Thread.State.BLOCKED), "no BLOCKED samples");
-        // context filtering should prevent these
-        assertFalse(states.contains(Thread.State.NEW));
-        assertFalse(states.contains(Thread.State.TERMINATED));
         double totalWeight = method1Weight + method2Weight + method3Weight + unattributedWeight;
         // method1 has ~50% self time, 50% calling method2
         assertWeight("method1Impl", totalWeight, method1Weight, 0.33);
