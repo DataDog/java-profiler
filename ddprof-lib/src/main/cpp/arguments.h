@@ -31,7 +31,6 @@ const int DEFAULT_JSTACKDEPTH = 2048;
 const char* const EVENT_NOOP   = "noop";
 const char* const EVENT_CPU    = "cpu";
 const char* const EVENT_ALLOC  = "alloc";
-const char* const EVENT_LOCK   = "lock";
 const char* const EVENT_WALL   = "wall";
 const char* const EVENT_ITIMER = "itimer";
 
@@ -131,7 +130,6 @@ class Arguments {
     long _memory;
     bool _record_allocations;
     bool _record_liveness;
-    long _lock;
     int  _jstackdepth;
     int _safe_mode;
     const char* _file;
@@ -159,7 +157,6 @@ class Arguments {
         _memory(-1),
         _record_allocations(false),
         _record_liveness(false),
-        _lock(-1),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),
         _file(NULL),
