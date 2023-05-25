@@ -64,6 +64,8 @@ class LivenessTracker  {
     u32 _cleanup_round;
     bool _cleanup_run;
 
+    size_t _used_after_last_gc;
+
     Error initialize(Arguments& args);
     Error initialize_table(int sampling_interval);
 
@@ -84,7 +86,7 @@ class LivenessTracker  {
         return _instance;
     }
 
-    LivenessTracker() : _initialized(false), _stored_error(Error::OK), _table_size(0), _table_cap(0), _table(NULL), _table_max_cap(0), _Class(NULL), _Class_getName(0), _cleanup_round(0), _cleanup_run(false) {}
+    LivenessTracker() : _initialized(false), _stored_error(Error::OK), _table_size(0), _table_cap(0), _table(NULL), _table_max_cap(0), _Class(NULL), _Class_getName(0), _cleanup_round(0), _cleanup_run(false), _used_after_last_gc(0) {}
 
     Error start(Arguments& args);
     void stop();
