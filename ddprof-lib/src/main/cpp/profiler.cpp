@@ -1038,7 +1038,7 @@ Error Profiler::start(Arguments& args, bool reset) {
         return error;
     }
 
-    switchLibraryTrap(_cstack != CSTACK_NO);
+    switchLibraryTrap(_cstack == CSTACK_DWARF);
 
     JfrMetadata::initialize(args._context_attributes);
     _num_context_attributes = args._context_attributes.size();
