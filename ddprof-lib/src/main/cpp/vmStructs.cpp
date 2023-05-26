@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <pthread.h>
 #include <unistd.h>
+#include "spinLock.h"
 #include "vmStructs.h"
 #include "j9Ext.h"
 #include "vector"
@@ -508,28 +509,42 @@ bool VMStructs::isSafeToWalk(uintptr_t pc) {
 }
 
 void VMStructs::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread, jmethodID method, void *address, void **new_address_ptr) {
+    static SpinLock _lock;
     static int delayedCounter = 0;
     static void** delayed = (void**)malloc(512 * sizeof(void*) * 2);
 
     if (_memory_usage_func == NULL) {
         if (jvmti != NULL && jni != NULL) {
             checkNativeBinding(jvmti, jni, method, address);
+            void** tmpDelayed = NULL;
+            int tmpCounter = 0;
+            _lock.lock();
             if (delayed != NULL && delayedCounter > 0) {
-                for (int i = 0; i < delayedCounter; i++) {
-                    checkNativeBinding(jvmti, jni, (jmethodID)delayed[i * 2], (void*)delayed[i * 2 + 1]);
-                    if (_memory_usage_func != NULL) {
-                        break;
-                    }
-                }
+                // in order to minimize the lock time, we copy the delayed list, free it and release the lock
+                tmpCounter = delayedCounter;
+                tmpDelayed = (void**)malloc(tmpCounter * sizeof(void*) * 2);
+                memcpy(tmpDelayed, delayed, tmpCounter * sizeof(void*) * 2);
+                delayedCounter = 0;
                 delayed = NULL;
                 free(delayed);
             }
-        } else {
-            if (delayed != NULL) {
-                delayed[delayedCounter * 2] = method;
-                delayed[delayedCounter * 2 + 1] = address;
-                delayedCounter++;
+            _lock.unlock();
+            // if there was a delayed list, we check it now, not blocking on the lock
+            if (tmpDelayed != NULL) {
+                for (int i = 0; i < tmpCounter; i += 2) {
+                    checkNativeBinding(jvmti, jni, (jmethodID)tmpDelayed[i], tmpDelayed[i + 1]);
+                }
+                // don't forget to free the tmp list
+                free(tmpDelayed);
             }
+        } else {
+            _lock.lock();
+            if (delayed != NULL) {
+                delayed[delayedCounter] = method;
+                delayed[delayedCounter + 1] = address;
+                delayedCounter += 2;
+            }
+            _lock.unlock();
         }
     }
 }
