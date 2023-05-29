@@ -27,6 +27,7 @@ char* NativeFunc::create(const char* name, short lib_index) {
     NativeFunc* f = (NativeFunc*)malloc(sizeof(NativeFunc) + 1 + strlen(name));
     f->_lib_index = lib_index;
     f->_mark = 0;
+    // cppcheck-suppress memleak
     return strcpy(f->_name, name);
 }
 
@@ -52,6 +53,54 @@ CodeCache::CodeCache(const char* name, short lib_index, const void* min_address,
     _capacity = INITIAL_CODE_CACHE_CAPACITY;
     _count = 0;
     _blobs = new CodeBlob[_capacity];
+}
+
+CodeCache::CodeCache(const CodeCache& other) {
+    _name = NativeFunc::create(other._name, -1);
+    _lib_index = other._lib_index;
+    _min_address = other._min_address;
+    _max_address = other._max_address;
+    _text_base = other._text_base;
+
+    _got_start = NULL;
+    _got_end = NULL;
+
+    _dwarf_table_length = other._dwarf_table_length;
+    _dwarf_table = new FrameDesc[_dwarf_table_length];
+    memcpy(_dwarf_table, other._dwarf_table, _dwarf_table_length * sizeof(FrameDesc));
+
+    _capacity = other._capacity;
+    _count = other._count;
+    _blobs = new CodeBlob[_capacity];
+    memcpy(_blobs, other._blobs, _count * sizeof(CodeBlob));
+}
+
+CodeCache& CodeCache::operator=(const CodeCache& other) {
+    if (&other == this) {
+        return *this;
+    } else {
+        delete _name;
+        delete _dwarf_table;
+        delete _blobs;
+
+        _name = NativeFunc::create(other._name, -1);
+        _lib_index = other._lib_index;
+        _min_address = other._min_address;
+        _max_address = other._max_address;
+        _text_base = other._text_base;
+
+        _got_start = other._got_start;
+        _got_end = other._got_end;
+
+        _dwarf_table = NULL;
+        _dwarf_table_length = 0;
+
+        _capacity = INITIAL_CODE_CACHE_CAPACITY;
+        _count = 0;
+        _blobs = new CodeBlob[_capacity];
+
+        return *this;
+    }
 }
 
 CodeCache::~CodeCache() {

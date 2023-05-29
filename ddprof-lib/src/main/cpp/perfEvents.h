@@ -37,7 +37,9 @@ class PerfEvents : public Engine {
     static CStack _cstack;
     static bool _use_mmap_page;
 
+    // cppcheck-suppress unusedPrivateFunction
     static u64 readCounter(siginfo_t* siginfo, void* ucontext);
+    // cppcheck-suppress unusedPrivateFunction
     static void signalHandler(int signo, siginfo_t* siginfo, void* ucontext);
 
   public:

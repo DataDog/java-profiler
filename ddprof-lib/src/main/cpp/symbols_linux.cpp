@@ -387,9 +387,9 @@ bool ElfParser::loadSymbolsUsingBuildId() {
     int build_id_len = note->n_descsz;
 
     char path[PATH_MAX];
-    char* p = path + sprintf(path, "/usr/lib/debug/.build-id/%02hhx/", build_id[0]);
+    char* p = path + sprintf(path, "/usr/lib/debug/.build-id/%02hhx/", (unsigned char) build_id[0]);
     for (int i = 1; i < build_id_len; i++) {
-        p += sprintf(p, "%02hhx", build_id[i]);
+        p += sprintf(p, "%02hhx", (unsigned char) build_id[i]);
     }
     strcpy(p, ".debug");
 

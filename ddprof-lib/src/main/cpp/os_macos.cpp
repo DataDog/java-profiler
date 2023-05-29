@@ -48,9 +48,7 @@ class MacThreadList : public ThreadList {
     }
 
   public:
-    MacThreadList() {
-        _task = mach_task_self();
-        _thread_array = NULL;
+    MacThreadList() : _task(mach_task_self()), _thread_array(NULL), _thread_count(0), _thread_index(0) {
     }
 
     ~MacThreadList() {

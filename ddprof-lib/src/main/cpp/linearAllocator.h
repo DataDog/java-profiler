@@ -39,7 +39,7 @@ class LinearAllocator {
     Chunk* getNextChunk(Chunk* current);
 
   public:
-    LinearAllocator(size_t chunk_size);
+    explicit LinearAllocator(size_t chunk_size);
     ~LinearAllocator();
 
     void clear();
