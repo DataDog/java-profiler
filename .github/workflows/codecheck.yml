@@ -67,7 +67,7 @@ jobs:
       - name: Run Cppcheck
         id: run-cppcheck
         run: |
-          cppcheck --quiet --force --enable=all --std=c++11 --language=c++ --xml --output-file=report.xml ddprof-lib/src/main/cpp/*
+          cppcheck --quiet --force --enable=all --std=c++11 --language=c++ --inline-suppr --suppressions-list=.github/scripts/cppcheck-suppressions.txt --xml --output-file=report.xml ddprof-lib/src/main/cpp/*
           xsltproc --output report.html .github/scripts/cppcheck-html.xslt report.xml
           xsltproc --output report-gh.html .github/scripts/cppcheck-gh.xslt report.xml
           sed -i "s#target_branch#${{ github.head_ref }}#g" report.html

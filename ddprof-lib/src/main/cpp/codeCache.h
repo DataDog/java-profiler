@@ -18,6 +18,7 @@
 #define _CODECACHE_H
 
 #include <jvmti.h>
+#include <string.h>
 #include <vector>
 
 
@@ -106,10 +107,14 @@ class CodeCache {
     void makeGotPatchable();
 
   public:
-    CodeCache(const char* name,
+    explicit CodeCache(const char* name,
               short lib_index = -1,
               const void* min_address = NO_MIN_ADDRESS,
               const void* max_address = NO_MAX_ADDRESS);
+    // Copy constructor
+    CodeCache(const CodeCache& other);
+    // Copy assignment operator
+    CodeCache& operator=(const CodeCache& other);
 
     ~CodeCache();
 
@@ -162,6 +167,7 @@ class CodeCacheArray {
 
   public:
     CodeCacheArray() : _count(0) {
+        memset(_libs, 0, MAX_NATIVE_LIBS * sizeof(CodeCache*));
     }
 
     CodeCache* operator[](int index) {

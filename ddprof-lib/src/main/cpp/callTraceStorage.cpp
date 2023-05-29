@@ -40,6 +40,11 @@ class LongHashTable {
     }
 
   public:
+    LongHashTable() : _prev(NULL), _padding0(NULL), _capacity(0), _size(0) {
+        memset(_padding1, 0, sizeof(_padding1));
+        memset(_padding2, 0, sizeof(_padding2));
+    }
+
     static LongHashTable* allocate(LongHashTable* prev, u32 capacity) {
         LongHashTable* table = (LongHashTable*)OS::safeAlloc(getSize(capacity));
         if (table != NULL) {

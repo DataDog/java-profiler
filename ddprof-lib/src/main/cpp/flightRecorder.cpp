@@ -1361,6 +1361,7 @@ void FlightRecorder::recordLog(LogLevel level, const char* message, size_t len) 
     }
 
     if (len > MAX_STRING_LENGTH) len = MAX_STRING_LENGTH;
+    // cppcheck-suppress obsoleteFunctions
     Buffer* buf = (Buffer*)alloca(len + 40);
     buf->reset();
 

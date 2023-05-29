@@ -33,7 +33,7 @@ class StackFrame {
     }
 
   public:
-    StackFrame(void* ucontext) {
+    explicit StackFrame(void* ucontext) {
         _ucontext = (ucontext_t*)ucontext;
     }
 

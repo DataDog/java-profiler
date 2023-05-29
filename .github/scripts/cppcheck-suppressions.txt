@@ -1,0 +1,4 @@
+cstyleCast
+constParameter
+obsoleteFunctions:flightRecorder.cpp
+obsoleteFunctionsalloca:flightRecorder.cpp
