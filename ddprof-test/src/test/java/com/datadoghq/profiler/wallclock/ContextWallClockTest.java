@@ -105,6 +105,15 @@ public class ContextWallClockTest extends AbstractProfilerTest {
                 }
             }
         }
+        // set manually (i.e. by instrumentation)
+        assertTrue(states.contains(Thread.State.WAITING), "no WAITING samples");
+        // monitor waits
+        assertTrue(states.contains(Thread.State.TIMED_WAITING), "no TIMED_WAITING samples");
+        // contended monitor enter
+        assertTrue(states.contains(Thread.State.BLOCKED), "no BLOCKED samples");
+        // context filtering should prevent these
+        assertFalse(states.contains(Thread.State.NEW));
+        assertFalse(states.contains(Thread.State.TERMINATED));
         double totalWeight = method1Weight + method2Weight + method3Weight + unattributedWeight;
         // method1 has ~50% self time, 50% calling method2
         assertWeight("method1Impl", totalWeight, method1Weight, 0.33);
@@ -136,26 +145,38 @@ public class ContextWallClockTest extends AbstractProfilerTest {
 
     public void method1Impl(int id, Tracing.Context context) throws ExecutionException, InterruptedException {
         sleep(10);
-        Future<?> wait = executor.submit(() -> method3(id));
-        method2(id);
+        Object monitor = new Object();
+        Future<?> wait = executor.submit(() -> method3(id, monitor));
+        method2(id, monitor);
+        synchronized (monitor) {
+            monitor.wait(10);
+        }
         wait.get();
         record("method1Impl", context);
     }
 
-    public void method2(long id) {
-        try (Tracing.Context context = Tracing.newContext(() -> id + 1, profiler)) {
-            method2Impl(context);
+    public void method2(long id, Object monitor) {
+        synchronized (monitor) {
+            try (Tracing.Context context = Tracing.newContext(() -> id + 1, profiler)) {
+                method2Impl(context);
+                monitor.notify();
+            }
         }
     }
 
     public void method2Impl(Tracing.Context context) {
+        profiler.setThreadState(Thread.State.WAITING);
         sleep(10);
+        profiler.setThreadState(Thread.State.RUNNABLE);
         record("method2Impl", context);
     }
 
-    public void method3(long id) {
-        try (Tracing.Context context = Tracing.newContext(() -> id + 2, profiler)) {
-            method3Impl(context);
+    public void method3(long id, Object monitor) {
+        synchronized (monitor) {
+            try (Tracing.Context context = Tracing.newContext(() -> id + 2, profiler)) {
+                method3Impl(context);
+                monitor.notify();
+            }
         }
     }
 

@@ -5,11 +5,11 @@
 
 enum JavaThreadState : int {
     JAVA_THREAD_NEW = 0,
-    JAVA_THREAD_TERMINATED = 1,
-    JAVA_THREAD_RUNNABLE = 2,
-    JAVA_THREAD_BLOCKED = 3,
-    JAVA_THREAD_WAITING = 4,
-    JAVA_THREAD_TIMED_WAITING = 5
+    JAVA_THREAD_RUNNABLE = 1,
+    JAVA_THREAD_BLOCKED = 2,
+    JAVA_THREAD_WAITING = 3,
+    JAVA_THREAD_TIMED_WAITING = 4,
+    JAVA_THREAD_TERMINATED = 5
 };
 
 static JavaThreadState convertThreadState(int jvmtiThreadState) {

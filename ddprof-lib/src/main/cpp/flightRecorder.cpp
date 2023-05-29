@@ -907,8 +907,6 @@ class Recording {
         buf->put8(6);
         buf->put8(JAVA_THREAD_NEW);
         buf->putUtf8("NEW");
-        buf->put8(JAVA_THREAD_TERMINATED);
-        buf->putUtf8("TERMINATED");
         buf->put8(JAVA_THREAD_RUNNABLE);
         buf->putUtf8("RUNNABLE");
         buf->put8(JAVA_THREAD_BLOCKED);
@@ -917,6 +915,8 @@ class Recording {
         buf->putUtf8("WAITING");
         buf->put8(JAVA_THREAD_TIMED_WAITING);
         buf->putUtf8("TIMED_WAITING");
+        buf->put8(JAVA_THREAD_TERMINATED);
+        buf->putUtf8("TERMINATED");
         flushIfNeeded(buf);
     }
 

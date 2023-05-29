@@ -192,3 +192,31 @@ void ProfiledThread::signalHandler(int signo, siginfo_t* siginfo, void* ucontext
         initCurrentThreadWithBuffer();
     }
 }
+
+void JNICALL ProfiledThread::MonitorContendedEnter(jvmtiEnv* jvmti, JNIEnv* env, jthread thread, jobject object) {
+    ProfiledThread* current = ProfiledThread::current();
+    if (current) {
+        current->setThreadState(JAVA_THREAD_BLOCKED);
+    }
+}
+
+void JNICALL ProfiledThread::MonitorContendedEntered(jvmtiEnv* jvmti, JNIEnv* env, jthread thread, jobject object) {
+    ProfiledThread* current = ProfiledThread::current();
+    if (current) {
+        current->setThreadState(JAVA_THREAD_RUNNABLE);
+    }
+}
+
+void JNICALL ProfiledThread::MonitorWait(jvmtiEnv* jvmti, JNIEnv* env, jthread thread, jobject object, jlong timeout) {
+    ProfiledThread* current = ProfiledThread::current();
+    if (current) {
+        current->setThreadState(timeout == 0 ? JAVA_THREAD_WAITING : JAVA_THREAD_TIMED_WAITING);
+    }
+}
+
+void JNICALL ProfiledThread::MonitorWaited(jvmtiEnv* jvmti, JNIEnv* env, jthread thread, jobject object, jboolean timed_out) {
+    ProfiledThread* current = ProfiledThread::current();
+    if (current) {
+        current->setThreadState(JAVA_THREAD_RUNNABLE);
+    }
+}

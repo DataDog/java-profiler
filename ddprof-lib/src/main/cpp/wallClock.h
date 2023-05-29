@@ -46,7 +46,7 @@ class WallClock : public Engine {
         return NULL;
     }
 
-    static JavaThreadState getThreadState(void* ucontext);
+    static bool inSyscall(void* ucontext);
 
     static void sharedSignalHandler(int signo, siginfo_t* siginfo, void* ucontext);
     void signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64 last_sample);
