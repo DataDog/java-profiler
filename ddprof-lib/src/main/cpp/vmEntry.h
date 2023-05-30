@@ -119,6 +119,7 @@ class VM {
     static bool _hotspot;
     static bool _zing;
     static bool _can_sample_objects;
+    static bool _can_intercept_binding;
 
     static jvmtiError (JNICALL *_orig_RedefineClasses)(jvmtiEnv*, jint, const jvmtiClassDefinition*);
     static jvmtiError (JNICALL *_orig_RetransformClasses)(jvmtiEnv*, jint, const jclass* classes);

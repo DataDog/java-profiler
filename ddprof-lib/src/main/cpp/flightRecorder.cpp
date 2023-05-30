@@ -755,6 +755,16 @@ class Recording {
         buf->putVar32(start, buf->offset() - start);
     }
 
+    void writeHeapUsage(Buffer* buf, long value, bool live) {
+        int start = buf->skip(1);
+        buf->putVar64(T_HEAP_USAGE);
+        buf->putVar64(TSC::ticks());
+        buf->putVar64(value);
+        buf->put8(live);
+        writeEventSizePrefix(buf, start);
+        flushIfNeeded(buf);
+    }
+
     void writeOsCpuInfo(Buffer* buf) {
         struct utsname u;
         if (uname(&u) != 0) {
@@ -1322,6 +1332,13 @@ void FlightRecorder::recordDatadogSetting(int lock_index, int length,
     if (_rec != NULL) {
         Buffer *buf = _rec->buffer(lock_index);
         _rec->writeDatadogSetting(buf, length, name, value, unit);
+    }
+}
+
+void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
+    if (_rec != NULL) {
+        Buffer *buf = _rec->buffer(lock_index);
+        _rec->writeHeapUsage(buf, value, live);
     }
 }
 

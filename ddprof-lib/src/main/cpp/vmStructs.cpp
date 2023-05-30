@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
+#include <cstdlib>
 #include <pthread.h>
 #include <unistd.h>
+#include "spinLock.h"
 #include "vmStructs.h"
-#include "vmEntry.h"
 #include "j9Ext.h"
 #include "vector"
 
@@ -88,6 +89,11 @@ VMStructs::GetStackTraceFunc VMStructs::_get_stack_trace = NULL;
 VMStructs::LockFunc VMStructs::_lock_func;
 VMStructs::LockFunc VMStructs::_unlock_func;
 
+VMStructs::HeapUsageFunc VMStructs::_heap_usage_func = NULL;
+VMStructs::MemoryUsageFunc VMStructs::_memory_usage_func = NULL;
+VMStructs::GCHeapSummaryFunc VMStructs::_gc_heap_summary_func = NULL;
+
+void** VMStructs::_collected_heap_addr = NULL;
 
 uintptr_t VMStructs::readSymbol(const char* symbol_name) {
     const void* symbol = _libjvm->findSymbol(symbol_name);
@@ -113,9 +119,8 @@ void VMStructs::ready() {
     JNIEnv* env = VM::jni();
     initThreadBridge(env);
     initLogging(env);
-    #ifdef TRACE
+    initMemoryUsage(env);
     _libjvm->dump();
-    #endif // TRACE
 }
 
 void VMStructs::initOffsets() {
@@ -261,6 +266,10 @@ void VMStructs::initOffsets() {
             }
         } else if (strcmp(type, "PermGen") == 0) {
             _has_perm_gen = true;
+        } else if (strcmp(type, "Universe") == 0) {
+            if (strcmp(field, "_collectedHeap") == 0) {
+                _collected_heap_addr = *(void***)(entry + address_offset);
+            }
         }
     }
 
@@ -363,6 +372,8 @@ void VMStructs::initJvmFunctions() {
         _lock_func = (LockFunc)_libjvm->findSymbol("_ZN7Monitor28lock_without_safepoint_checkEv");
         _unlock_func = (LockFunc)_libjvm->findSymbol("_ZN7Monitor6unlockEv");
     }
+    _heap_usage_func = (HeapUsageFunc)_libjvm->findSymbol("_ZN13CollectedHeap12memory_usageEv");
+    _gc_heap_summary_func = (GCHeapSummaryFunc)_libjvm->findSymbol("_ZN13CollectedHeap19create_heap_summaryEv");
     initUnsafeFunctions();
 }
 
@@ -429,6 +440,15 @@ void VMStructs::initLogging(JNIEnv* env) {
     }
 }
 
+void VMStructs::initMemoryUsage(JNIEnv* env) {
+    jclass factory = env->FindClass("java/lang/management/ManagementFactory");
+    jclass memoryBeanClass = env->FindClass("java/lang/management/MemoryMXBean");
+    jmethodID get_memory = env->GetStaticMethodID(factory, "getMemoryMXBean", "()Ljava/lang/management/MemoryMXBean;");
+    jobject memoryBean = env->CallStaticObjectMethod(factory, get_memory);
+    jmethodID get_heap = env->GetMethodID(memoryBeanClass, "getHeapMemoryUsage", "()Ljava/lang/management/MemoryUsage;");
+    env->CallObjectMethod(memoryBean, get_heap);
+}
+
 VMThread* VMThread::current() {
     return (VMThread*)pthread_getspecific((pthread_key_t)_tls_index);
 }
@@ -486,4 +506,58 @@ void* JVMFlag::find(const char* name) {
 
 bool VMStructs::isSafeToWalk(uintptr_t pc) {
     return !(_unsafe_to_walk.contains((const void*) pc) && _unsafe_to_walk.findFrameDesc((const void*) pc));
+}
+
+void VMStructs::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread, jmethodID method, void *address, void **new_address_ptr) {
+    static SpinLock _lock;
+    static int delayedCounter = 0;
+    static void** delayed = (void**)malloc(512 * sizeof(void*) * 2);
+
+    if (_memory_usage_func == NULL) {
+        if (jvmti != NULL && jni != NULL) {
+            checkNativeBinding(jvmti, jni, method, address);
+            void** tmpDelayed = NULL;
+            int tmpCounter = 0;
+            _lock.lock();
+            if (delayed != NULL && delayedCounter > 0) {
+                // in order to minimize the lock time, we copy the delayed list, free it and release the lock
+                tmpCounter = delayedCounter;
+                tmpDelayed = (void**)malloc(tmpCounter * sizeof(void*) * 2);
+                memcpy(tmpDelayed, delayed, tmpCounter * sizeof(void*) * 2);
+                delayedCounter = 0;
+                delayed = NULL;
+                free(delayed);
+            }
+            _lock.unlock();
+            // if there was a delayed list, we check it now, not blocking on the lock
+            if (tmpDelayed != NULL) {
+                for (int i = 0; i < tmpCounter; i += 2) {
+                    checkNativeBinding(jvmti, jni, (jmethodID)tmpDelayed[i], tmpDelayed[i + 1]);
+                }
+                // don't forget to free the tmp list
+                free(tmpDelayed);
+            }
+        } else {
+            _lock.lock();
+            if (delayed != NULL) {
+                delayed[delayedCounter] = method;
+                delayed[delayedCounter + 1] = address;
+                delayedCounter += 2;
+            }
+            _lock.unlock();
+        }
+    }
+}
+
+void VMStructs::checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni, jmethodID method, void *address) {
+    char* method_name;
+    char* method_sig;
+    int error = 0;
+    if ((error = jvmti->GetMethodName(method, &method_name, &method_sig, NULL)) == 0) {
+        if (strcmp(method_name, "getMemoryUsage0") == 0 && strcmp(method_sig, "(Z)Ljava/lang/management/MemoryUsage;") == 0) {
+            _memory_usage_func = (MemoryUsageFunc) address;
+        }
+    }
+    jvmti->Deallocate((unsigned char*)method_sig);
+    jvmti->Deallocate((unsigned char*)method_name);
 }
