@@ -755,6 +755,16 @@ class Recording {
         buf->putVar32(start, buf->offset() - start);
     }
 
+    void writeHeapUsage(Buffer* buf, long value, bool live) {
+        int start = buf->skip(1);
+        buf->putVar64(T_HEAP_USAGE);
+        buf->putVar64(TSC::ticks());
+        buf->putVar64(value);
+        buf->put8(live);
+        writeEventSizePrefix(buf, start);
+        flushIfNeeded(buf);
+    }
+
     void writeOsCpuInfo(Buffer* buf) {
         struct utsname u;
         if (uname(&u) != 0) {
@@ -907,8 +917,6 @@ class Recording {
         buf->put8(6);
         buf->put8(JAVA_THREAD_NEW);
         buf->putUtf8("NEW");
-        buf->put8(JAVA_THREAD_TERMINATED);
-        buf->putUtf8("TERMINATED");
         buf->put8(JAVA_THREAD_RUNNABLE);
         buf->putUtf8("RUNNABLE");
         buf->put8(JAVA_THREAD_BLOCKED);
@@ -917,6 +925,8 @@ class Recording {
         buf->putUtf8("WAITING");
         buf->put8(JAVA_THREAD_TIMED_WAITING);
         buf->putUtf8("TIMED_WAITING");
+        buf->put8(JAVA_THREAD_TERMINATED);
+        buf->putUtf8("TERMINATED");
         flushIfNeeded(buf);
     }
 
@@ -1325,6 +1335,13 @@ void FlightRecorder::recordDatadogSetting(int lock_index, int length,
     }
 }
 
+void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
+    if (_rec != NULL) {
+        Buffer *buf = _rec->buffer(lock_index);
+        _rec->writeHeapUsage(buf, value, live);
+    }
+}
+
 void FlightRecorder::recordEvent(int lock_index, int tid, u32 call_trace_id,
                                  int event_type, Event* event, u64 counter) {
     if (_rec != NULL) {
@@ -1361,6 +1378,7 @@ void FlightRecorder::recordLog(LogLevel level, const char* message, size_t len) 
     }
 
     if (len > MAX_STRING_LENGTH) len = MAX_STRING_LENGTH;
+    // cppcheck-suppress obsoleteFunctions
     Buffer* buf = (Buffer*)alloca(len + 40);
     buf->reset();
 

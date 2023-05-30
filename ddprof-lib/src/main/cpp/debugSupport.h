@@ -6,7 +6,7 @@ typedef void (*SetSigHandlerTidRef)(int tid);
 class Shims {
   private:
     static Shims _instance;
-    SetSigHandlerTidRef _tid_setter_ref;
+    volatile SetSigHandlerTidRef _tid_setter_ref;
     Shims();
 
   public:

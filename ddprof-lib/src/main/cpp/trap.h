@@ -38,7 +38,7 @@ class Trap {
     static uintptr_t _page_start[TRAP_COUNT];
 
   public:
-    Trap(int id) : _id(id), _unprotect(true), _protect(WX_MEMORY), _entry(0), _breakpoint_insn(BREAKPOINT) {
+    explicit Trap(int id) : _id(id), _unprotect(true), _protect(WX_MEMORY), _entry(0), _breakpoint_insn(BREAKPOINT), _saved_insn(0) {
     }
 
     uintptr_t entry() {

@@ -322,6 +322,14 @@ public final class JavaProfiler {
         page.putInt(addressOf(tid, offset), value);
     }
 
+    /**
+     * Sets the current thread state for labeling wallclock samples
+     * @param state the thread state - must not be null
+     */
+    public void setThreadState(Thread.State state) {
+        setCurrentThreadState0(state.ordinal());
+    }
+
     void copyTags(int[] snapshot) {
         int tid = TID.get();
         if (UNSAFE != null) {
@@ -493,4 +501,6 @@ public final class JavaProfiler {
     private static native String[] describeDebugCounters0();
 
     private static native void recordSettingEvent0(String name, String value, String unit);
+
+    private static native void setCurrentThreadState0(int state);
 }

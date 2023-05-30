@@ -24,28 +24,30 @@
 #include "log.h"
 #include "thread.h"
 #include "tsc.h"
+#include "jvmti.h"
+#include "vmStructs.h"
 
 volatile bool WallClock::_enabled = false;
 
-JavaThreadState WallClock::getThreadState(void* ucontext) {
+bool WallClock::inSyscall(void *ucontext) {
     StackFrame frame(ucontext);
     uintptr_t pc = frame.pc();
 
     // Consider a thread sleeping, if it has been interrupted in the middle of syscall execution,
     // either when PC points to the syscall instruction, or if syscall has just returned with EINTR
     if (StackFrame::isSyscall((instruction_t*)pc)) {
-        return JAVA_THREAD_BLOCKED;
+        return true;
     }
 
     // Make sure the previous instruction address is readable
     uintptr_t prev_pc = pc - SYSCALL_SIZE;
     if ((pc & 0xfff) >= SYSCALL_SIZE || Profiler::instance()->findLibraryByAddress((instruction_t*)prev_pc) != NULL) {
         if (StackFrame::isSyscall((instruction_t*)prev_pc) && frame.checkInterruptedSyscall()) {
-            return JAVA_THREAD_BLOCKED;
+            return true;
         }
     }
 
-    return JAVA_THREAD_RUNNABLE;
+    return false;
 }
 
 void WallClock::sharedSignalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
@@ -68,7 +70,13 @@ void WallClock::signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64
     }
 
     ExecutionEvent event;
-    JavaThreadState state = getThreadState(ucontext);
+    // if we're in the NEW or RUNNABLE state we might have missed some instrumentation, so we inspect the frame
+    // to check if we're in a syscall or not
+    JavaThreadState state = current ? current->getThreadState() : JAVA_THREAD_RUNNABLE;
+    if (state == JAVA_THREAD_RUNNABLE && inSyscall(ucontext)) {
+        // this is a lie, but we don't know any better
+        state = JAVA_THREAD_BLOCKED;
+    }
     event._thread_state = state;
     event._weight = skipped + 1;
     Profiler::instance()->recordSample(ucontext, last_sample, tid, BCI_WALL, &event);
@@ -89,6 +97,13 @@ Error WallClock::start(Arguments &args) {
             args._wall_threads_per_tick :
             DEFAULT_WALL_THREADS_PER_TICK;
 
+    // Enable Java Monitor events
+    jvmtiEnv* jvmti = VM::jvmti();
+    jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTER, NULL);
+    jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTERED, NULL);
+    jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAIT, NULL);
+    jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAITED, NULL);
+
     OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
 
     _running = true;
@@ -102,6 +117,11 @@ Error WallClock::start(Arguments &args) {
 
 void WallClock::stop() {
     _running = false;
+    jvmtiEnv* jvmti = VM::jvmti();
+    jvmti->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTER, NULL);
+    jvmti->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTERED, NULL);
+    jvmti->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_MONITOR_WAIT, NULL);
+    jvmti->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_MONITOR_WAITED, NULL);
     pthread_kill(_thread, WAKEUP_SIGNAL);
     pthread_join(_thread, NULL);
 }

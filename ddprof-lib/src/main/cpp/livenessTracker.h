@@ -57,16 +57,14 @@ class LivenessTracker  {
 
     jclass _Class;
     jmethodID _Class_getName;
-    jclass _MemLeak;
-    jmethodID _MemLeak_process;
-    jclass _MemLeakEntry;
-    jmethodID _MemLeakEntry_init;
 
     pthread_t _cleanup_thread;
     pthread_mutex_t _cleanup_mutex;
     pthread_cond_t _cleanup_cond;
     u32 _cleanup_round;
     bool _cleanup_run;
+
+    size_t _used_after_last_gc;
 
     Error initialize(Arguments& args);
     Error initialize_table(int sampling_interval);
@@ -78,6 +76,8 @@ class LivenessTracker  {
     void onGC();
     void runCleanup();
 
+    jlong getMaxMemory(JNIEnv* env);
+
     static void* cleanup_thread(void *arg);
     static LivenessTracker* const _instance;
 
@@ -86,7 +86,7 @@ class LivenessTracker  {
         return _instance;
     }
 
-    LivenessTracker() : _initialized(false), _stored_error(Error::OK), _table_size(0), _table_cap(0), _table(NULL), _table_max_cap(0), _Class(NULL), _Class_getName(0), _MemLeak(NULL), _MemLeak_process(0), _MemLeakEntry(NULL), _MemLeakEntry_init(0), _cleanup_round(0), _cleanup_run(false) {}
+    LivenessTracker() : _initialized(false), _stored_error(Error::OK), _table_size(0), _table_cap(0), _table(NULL), _table_max_cap(0), _Class(NULL), _Class_getName(0), _cleanup_round(0), _cleanup_run(false), _used_after_last_gc(0) {}
 
     Error start(Arguments& args);
     void stop();

@@ -2,6 +2,7 @@
 #define _BUFFERS_H
 
 #include <cassert>
+#include <string.h>
 #include <unistd.h>
 
 #include <arpa/inet.h>
@@ -23,7 +24,9 @@ class Buffer {
     char _data[_limit];
 
   public:
-    Buffer() : _offset(0) {}
+    Buffer() : _offset(0) {
+        memset(_data, 0, _limit);
+    }
 
     virtual int limit() const {
         return _limit;
@@ -47,11 +50,12 @@ class Buffer {
         return _offset;
     }
 
+    // ! This method returns the position *before* skipping !
     int skip(int delta) {
         assert(_offset + delta < limit());
-        int offset = _offset;
-        _offset = offset + delta;
-        return offset;
+        int here = _offset;
+        _offset = here + delta;
+        return here;
     }
 
     void reset() {
@@ -157,9 +161,10 @@ class RecordingBuffer : public Buffer {
 
   public:
     RecordingBuffer() : Buffer() {
+        memset(_buf, 0, _limit);
     }
 
-    virtual int limit() const {
+    int limit() const override {
         return _limit;
     }
 

@@ -46,7 +46,7 @@ class JitWriteProtection {
     bool _restore;
 
   public:
-    JitWriteProtection(bool enable);
+    explicit JitWriteProtection(bool enable);
     ~JitWriteProtection();
 };
 

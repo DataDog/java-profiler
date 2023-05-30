@@ -30,6 +30,7 @@ public class MemleakProfilerTest extends AbstractProfilerTest {
         MemLeakTarget target2 = new MemLeakTarget();
         runTests(target1, target2);
         IItemCollection allocations = verifyEvents("datadog.HeapLiveObject");
+        IItemCollection heapUsage = verifyEvents("datadog.HeapUsage");
 //        assertAllocations(allocations, int[].class, target1, target2);
 //        assertAllocations(allocations, Integer[].class, target1, target2);
     }
