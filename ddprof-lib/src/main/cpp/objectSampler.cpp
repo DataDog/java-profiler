@@ -101,7 +101,7 @@ void ObjectSampler::recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread threa
 
 Error ObjectSampler::check(Arguments& args) {
     if (!VM::canSampleObjects()) {
-        return Error("SampledObjectAlloc is not supported on this JVM");
+        return Error("Allocation Sampling is not supported on this JVM");
     }
     
     _interval = args._memory;

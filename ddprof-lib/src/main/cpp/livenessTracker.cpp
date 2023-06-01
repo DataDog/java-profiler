@@ -140,7 +140,7 @@ Error LivenessTracker::initialize_table(int sampling_interval) {
     _table_max_cap = 0;
     jlong max_heap = HeapUsage::get()._maxSize;;
     if (max_heap == -1) {
-        return Error("Unable to retrieve the max heap value");
+        return Error("Can not track liveness for allocation samples without heap size information.");
     }
 
     int required_table_capacity = sampling_interval > 0 ? max_heap / sampling_interval : max_heap;
@@ -193,15 +193,23 @@ Error LivenessTracker::initialize(Arguments& args) {
 
     Error err = initialize_table(args._memory);
     if (err) {
-        return _stored_error = err;
+        Log::warn("Liveness tracking requires heap size information");
+        // disable liveness tracking
+        _table_max_cap = 0;
+        return _stored_error = Error::OK;
     }
     if (!(_Class = env->FindClass("java/lang/Class"))) {
         env->ExceptionDescribe();
-        return _stored_error = Error("Unable to find java/lang/Class");
-    }
-    if (!(_Class_getName = env->GetMethodID(_Class, "getName", "()Ljava/lang/String;"))) {
+        err = Error("Unable to find java/lang/Class");
+    } else if (!(_Class_getName = env->GetMethodID(_Class, "getName", "()Ljava/lang/String;"))) {
         env->ExceptionDescribe();
-        return _stored_error = Error("Unable to find java/lang/Class.getName");
+        err = Error("Unable to find java/lang/Class.getName");
+    }
+    if (err) {
+        Log::warn("Liveness tracking requires access to java.lang.Class#getName()");
+        // disable liveness tracking
+        _table_max_cap = 0;
+        return _stored_error = Error::OK;
     }
 
     _table_size = 0;
@@ -215,7 +223,10 @@ Error LivenessTracker::initialize(Arguments& args) {
         pthread_create(&_cleanup_thread, NULL, cleanup_thread, NULL) != 0) {
         _cleanup_run = false;
         free(_table);
-        return _stored_error = Error("Unable to create Liveness tracker cleanup thread");
+        Log::warn("Unable to create Liveness tracker cleanup thread");
+        // disable liveness tracking
+        _table_max_cap = 0;
+        return _stored_error = Error::OK;
     }
 
     env->ExceptionClear();
