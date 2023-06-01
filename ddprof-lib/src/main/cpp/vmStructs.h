@@ -451,23 +451,52 @@ class HeapUsage : VMStructs {
         if (usage._maxSize == -1  && _memory_usage_func != NULL) {
             // this path is for non-hotspot JVMs
             // we need to patch the native method binding for JMX GetMemoryUsage to capture the native method pointer first
-           JNIEnv* env = VM::jni();
-           if (env == NULL) {
+            JNIEnv* env = VM::jni();
+            if (env == NULL) {
                 return usage;
-           }
-           jobject m_usage = (jobject) _memory_usage_func(env, (jobject) NULL, (jboolean) true);
-           jclass cls = env->GetObjectClass(m_usage);
-           jfieldID init_fid = env->GetFieldID(cls, "init", "J");
-           jfieldID max_fid = env->GetFieldID(cls, "max", "J");
-           jfieldID used_fid = env->GetFieldID(cls, "used", "J");
-           jfieldID committed_fid = env->GetFieldID(cls, "committed", "J");
-           if (init_fid == NULL || max_fid == NULL || used_fid == NULL || committed_fid == NULL) {
-               return usage;
-           }
-           usage._initSize = env->GetLongField(m_usage, init_fid);
-           usage._maxSize = env->GetLongField(m_usage, max_fid);
-           usage._used = env->GetLongField(m_usage, used_fid);
-           usage._committed = env->GetLongField(m_usage, committed_fid);
+            }
+            jobject m_usage = (jobject) _memory_usage_func(env, (jobject) NULL, (jboolean) true);
+            jclass cls = env->GetObjectClass(m_usage);
+            jfieldID init_fid = env->GetFieldID(cls, "init", "J");
+            jfieldID max_fid = env->GetFieldID(cls, "max", "J");
+            jfieldID used_fid = env->GetFieldID(cls, "used", "J");
+            jfieldID committed_fid = env->GetFieldID(cls, "committed", "J");
+            if (init_fid == NULL || max_fid == NULL || used_fid == NULL || committed_fid == NULL) {
+                return usage;
+            }
+            usage._initSize = env->GetLongField(m_usage, init_fid);
+            usage._maxSize = env->GetLongField(m_usage, max_fid);
+            usage._used = env->GetLongField(m_usage, used_fid);
+            usage._committed = env->GetLongField(m_usage, committed_fid);
+        }
+        if (usage._maxSize == -1) {
+            JNIEnv* env = VM::jni();
+            if (env == NULL) {
+                    return usage;
+            }
+            // seems like we are not able to retrieve the heap usage at all
+            // let's at least get the top limit
+            static jclass _rt;
+            static jmethodID _get_rt;
+            static jmethodID _max_memory;
+
+            if (!(_rt = env->FindClass("java/lang/Runtime"))) {
+                env->ExceptionDescribe();
+                return usage;
+            }
+
+            if (!(_get_rt = env->GetStaticMethodID(_rt, "getRuntime", "()Ljava/lang/Runtime;"))) {
+                env->ExceptionDescribe();
+                return usage;
+            }
+
+            if (!(_max_memory = env->GetMethodID(_rt, "maxMemory", "()J"))) {
+                env->ExceptionDescribe();
+                return usage;
+            }
+
+            jobject rt = (jobject)env->CallStaticObjectMethod(_rt, _get_rt);
+            usage._maxSize = (jlong)env->CallLongMethod(rt, _max_memory);
         }
         return usage;
     }

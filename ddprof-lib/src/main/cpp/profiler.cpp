@@ -941,7 +941,7 @@ Engine* Profiler::selectWallEngine(Arguments& args) {
 }
 
 Engine* Profiler::selectAllocEngine(Arguments& args) {
-    if (!VM::isOpenJ9() && VM::canSampleObjects()) {
+    if (VM::canSampleObjects()) {
         return static_cast<Engine*>(ObjectSampler::instance());
     } else {
         Log::info("Not enabling the alloc profiler, SampledObjectAlloc is not supported on this JVM");
