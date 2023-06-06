@@ -150,6 +150,8 @@ void JfrMetadata::initialize(const std::vector<std::string>& contextAttributes) 
                 << field("age", T_LONG, "Age", F_UNSIGNED)
                 << field("size", T_LONG, "Original Size", F_BYTES)
                 << field("weight", T_FLOAT, "Sample weight")
+                << field("spanId", T_LONG, "Span ID")
+                << field("localRootSpanId", T_LONG, "Local Root Span ID")
                 || contextAttributes)
 
             << (type("datadog.JavaMonitorEnter", T_MONITOR_ENTER, "Java Monitor Blocked")
