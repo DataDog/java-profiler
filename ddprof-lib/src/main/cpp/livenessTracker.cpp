@@ -16,6 +16,7 @@
 
 #include <jni.h>
 #include <string.h>
+#include "arch.h"
 #include "context.h"
 #include "incbin.h"
 #include "livenessTracker.h"
@@ -29,17 +30,25 @@
 LivenessTracker* const LivenessTracker::_instance = new LivenessTracker();
 
 void LivenessTracker::cleanup_table() {
+    u64 current = loadAcquire(_last_gc_epoch);
+    u64 target_gc_epoch = loadAcquire(_gc_epoch);
+
+    if (target_gc_epoch == _last_gc_epoch || !__sync_bool_compare_and_swap(&_last_gc_epoch, current, target_gc_epoch)) {
+        // if the last processed GC epoch hasn't changed, or if we failed to update it, there's nothing to do
+        return;
+    }
+
     JNIEnv *env = VM::jni();
 
     u64 start = OS::nanotime(), end;
 
     _table_lock.lock();
-
+    int epoch_diff = (int) (target_gc_epoch - current);
     u32 sz, newsz = 0;
     for (u32 i = 0; i < (sz = _table_size); i++) {
         if (!env->IsSameObject(_table[i].ref, NULL)) {
             // it survived one more GarbageCollectionFinish event
-            _table[i].age += 1;
+            _table[i].age += epoch_diff;
             _table[newsz++] = _table[i];
             _table[i].ref = NULL;
         } else {
@@ -68,13 +77,14 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
     JNIEnv *env = VM::jni();
     u64 start = OS::nanotime(), end;
 
+    // make sure that the tracking table is cleaned up before we start flushing it
+    // this is to make sure we are including as few false 'live' objects as possible
+    cleanup_table();
+
     _table_lock.lockShared();
 
     u32 sz;
     for (int i = 0; i < (sz = _table_size); i++) {
-        if (env->IsSameObject(_table[i].ref, NULL)) {
-            continue;
-        }
         jobject ref = env->NewLocalRef(_table[i].ref);
         if (ref != NULL) {
             if (tracked_thread_ids != NULL) {
@@ -110,34 +120,6 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
     end = OS::nanotime();
     Log::debug("Liveness tracker flush took %.2fms (%.2fus/element)",
                 1.0f * (end - start) / 1000 / 1000, 1.0f * (end - start) / 1000 / sz);
-}
-
-void* LivenessTracker::cleanup_thread(void *arg) {
-    LivenessTracker::instance()->runCleanup();
-    return NULL;
-}
-
-void LivenessTracker::runCleanup() {
-    VM::attachThread("java-profiler Liveness tracker cleanup");
-
-    while (true) {
-        pthread_mutex_lock(&_cleanup_mutex);
-        while (_cleanup_round == 0) {
-            if (!_cleanup_run) {
-                goto exit;
-            }
-            pthread_cond_wait(&_cleanup_cond, &_cleanup_mutex);
-        }
-        _cleanup_round -= 1;
-        pthread_mutex_unlock(&_cleanup_mutex);
-
-        jint nentries = 0;
-
-        cleanup_table();
-    }
-
-exit:
-    VM::detachThread();
 }
 
 Error LivenessTracker::initialize_table(int sampling_interval) {
@@ -220,18 +202,8 @@ Error LivenessTracker::initialize(Arguments& args) {
     _table_cap = __min(2048, _table_max_cap); // with default 512k sampling interval, it's enough for 1G of heap
     _table = (TrackingEntry*)malloc(sizeof(TrackingEntry) * _table_cap);
 
-    _cleanup_round = 0;
-    _cleanup_run = true;
-    if (pthread_mutex_init(&_cleanup_mutex, NULL) != 0 ||
-        pthread_cond_init(&_cleanup_cond, NULL) != 0 ||
-        pthread_create(&_cleanup_thread, NULL, cleanup_thread, NULL) != 0) {
-        _cleanup_run = false;
-        free(_table);
-        Log::warn("Unable to create Liveness tracker cleanup thread");
-        // disable liveness tracking
-        _table_max_cap = 0;
-        return _stored_error = Error::OK;
-    }
+    _gc_epoch = 0;
+    _last_gc_epoch = 0;
 
     env->ExceptionClear();
 
@@ -279,33 +251,39 @@ retry:
     _table_lock.unlockShared();
 
     if (idx == _table_cap) {
-        if (!retried && _table_cap < _table_max_cap) {
+        if (!retried) {
             // guarantees we don't busy loop until memory exhaustion
             retried = true;
 
-            // Let's increase the size of the table
-            // This should only ever happen when sampling interval * size of table
-            // is smaller than maximum heap size. So we only support increasing
-            // the size of the table, not decreasing it.
-            _table_lock.lock();
+            // try cleanup before resizing - there is a good chance it will free some space
+            cleanup_table();
 
-            // Only increase the size of the table to 8k elements
-            int newcap = __min(_table_cap * 2, _table_max_cap);
-            if (_table_cap != newcap) {
-                TrackingEntry* tmp = (TrackingEntry*)realloc(_table, sizeof(TrackingEntry) * (_table_cap = newcap));
-                if (tmp != NULL) {
-                    _table = tmp;
-                    Log::debug("Increased size of Liveness tracking table to %d entries", _table_cap);
-                } else {
-                    Log::debug("Cannot add sampled object to Liveness tracking table, resize attempt failed, the table is overflowing");        
+            if (_table_cap < _table_max_cap) {
+
+                // Let's increase the size of the table
+                // This should only ever happen when sampling interval * size of table
+                // is smaller than maximum heap size. So we only support increasing
+                // the size of the table, not decreasing it.
+                _table_lock.lock();
+
+                // Only increase the size of the table to _table_max_cap elements
+                int newcap = __min(_table_cap * 2, _table_max_cap);
+                if (_table_cap != newcap) {
+                    TrackingEntry* tmp = (TrackingEntry*)realloc(_table, sizeof(TrackingEntry) * (_table_cap = newcap));
+                    if (tmp != NULL) {
+                        _table = tmp;
+                        Log::debug("Increased size of Liveness tracking table to %d entries", _table_cap);
+                    } else {
+                        Log::debug("Cannot add sampled object to Liveness tracking table, resize attempt failed, the table is overflowing");
+                    }
                 }
+
+                _table_lock.unlock();
+
+                goto retry;
+            } else {
+                Log::debug("Cannot add sampled object to Liveness tracking table, it's overflowing");
             }
-
-            _table_lock.unlock();
-
-            goto retry;
-        } else {
-            Log::debug("Cannot add sampled object to Liveness tracking table, it's overflowing");
         }
     }
 
@@ -321,11 +299,6 @@ void LivenessTracker::onGC() {
         return;
     }
 
-    if (pthread_mutex_lock(&_cleanup_mutex) != 0) {
-        Log::debug("[LivenessTracker] Unable to lock for cleanup");
-        return;
-    }
-    _cleanup_round += 1;
-    pthread_cond_signal(&_cleanup_cond);
-    pthread_mutex_unlock(&_cleanup_mutex);
+    // just increment the epoch
+   atomicInc(_gc_epoch, 1);
 }
