@@ -958,13 +958,18 @@ class Recording {
                 thread_id = 0;
             }
 
+            int length = strlen(thread_name);
+            int required = RECORDING_BUFFER_LIMIT
+                    - (thread_id == 0 ? length + 1 : 2 * length)
+                    - 3 * 10; // 3x max varint length
+            flushIfNeeded(buf, required);
             buf->putVar64(threads[i]);
-            buf->putUtf8(thread_name);
+            buf->putUtf8(thread_name, length);
             buf->putVar64(threads[i]);
             if (thread_id == 0) {
                 buf->put8(0);
             } else {
-                buf->putUtf8(thread_name);
+                buf->putUtf8(thread_name, length);
             }
             buf->putVar64(thread_id);
             flushIfNeeded(buf);
