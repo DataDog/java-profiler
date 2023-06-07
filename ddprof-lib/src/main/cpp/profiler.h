@@ -225,6 +225,9 @@ class Profiler {
     void writeLog(LogLevel level, const char* message, size_t len);
     void writeDatadogProfilerSetting(int tid, int length, const char* name, const char* value, const char* unit);
     void writeHeapUsage(long value, bool live);
+    int eventMask() const {
+        return _event_mask;
+    }
 
     void updateSymbols(bool kernel_symbols);
     const void* resolveSymbol(const char* name);

@@ -39,6 +39,10 @@ class ITimer : public Engine {
         return "ITimer";
     }
 
+    long interval() const {
+        return _interval;
+    }
+
     Error check(Arguments& args);
     Error start(Arguments& args);
     void stop();
