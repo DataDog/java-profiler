@@ -1030,7 +1030,7 @@ Error Profiler::start(Arguments& args, bool reset) {
     }
 
     _safe_mode = args._safe_mode;
-    if (VM::java_version() < 8) {
+    if (VM::java_version() < 8 || VM::isZing()) {
         _safe_mode |= GC_TRACES | LAST_JAVA_PC;
     }
 
