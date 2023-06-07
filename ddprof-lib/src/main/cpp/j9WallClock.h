@@ -48,6 +48,10 @@ class J9WallClock : public Engine {
         return _sample_idle_threads ? "J9WallClock" : "J9Execution";
     }
 
+    virtual long interval() const {
+        return _interval;
+    }
+
     inline void sampleIdleThreads() {
       _sample_idle_threads = true;
     }

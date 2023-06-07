@@ -64,6 +64,8 @@ tasks.withType(CppCompile).configureEach {
 
     if (it.name.contains('Debug')) {
         taskArgs.addAll(["-DDEBUG", "-DCOUNTERS"])
+    } else {
+        taskArgs.add("-DNEDBUG")
     }
 
     // TODO for Clang we would use scan-build utility instead but it needs to be installed first

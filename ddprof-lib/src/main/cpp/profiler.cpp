@@ -941,7 +941,7 @@ Engine* Profiler::selectWallEngine(Arguments& args) {
 }
 
 Engine* Profiler::selectAllocEngine(Arguments& args) {
-    if (!VM::isOpenJ9() && VM::canSampleObjects()) {
+    if (VM::canSampleObjects()) {
         return static_cast<Engine*>(ObjectSampler::instance());
     } else {
         Log::info("Not enabling the alloc profiler, SampledObjectAlloc is not supported on this JVM");
@@ -1030,7 +1030,7 @@ Error Profiler::start(Arguments& args, bool reset) {
     }
 
     _safe_mode = args._safe_mode;
-    if (VM::java_version() < 8) {
+    if (VM::java_version() < 8 || VM::isZing()) {
         _safe_mode |= GC_TRACES | LAST_JAVA_PC;
     }
 
@@ -1064,44 +1064,46 @@ Error Profiler::start(Arguments& args, bool reset) {
         return error;
     }
 
+    int activated = 0;
     if (_event_mask & EM_CPU) {
         error = _cpu_engine->start(args);
         if (error) {
-            goto error0;
+            Log::warn("%s", error.message());
+            error = Error::OK; // recoverable
+        } else {
+            activated |= EM_CPU;
         }
     }
     if (_event_mask & EM_WALL) {
         error = _wall_engine->start(args);
         if (error) {
-            goto error1;
+            Log::warn("%s", error.message());
+            error = Error::OK; // recoverable
+        } else {
+            activated |= EM_WALL;
         }
     }
     if (_event_mask & EM_ALLOC) {
         _alloc_engine = selectAllocEngine(args);
         error = _alloc_engine->start(args);
         if (error) {
-            goto error2;
+            Log::warn("%s", error.message());
+            error = Error::OK; // recoverable
+        } else {
+            activated |= EM_ALLOC;
         }
     }
 
-    switchThreadEvents(JVMTI_ENABLE);
+    if (activated) {
+        switchThreadEvents(JVMTI_ENABLE);
 
-    _state = RUNNING;
-    _start_time = time(NULL);
-    _epoch++;
+        _state = RUNNING;
+        _start_time = time(NULL);
+        _epoch++;
 
-    return Error::OK;
-
-error3:
-    if (_event_mask & EM_ALLOC) _alloc_engine->stop();
-
-error2:
-    if (_event_mask & EM_WALL) _wall_engine->stop();
-
-error1:
-    if (_event_mask & EM_CPU) _cpu_engine->stop();
-
-error0:
+        return Error::OK;
+    }
+    // no engine was activated; perform cleanup
     uninstallTraps();
     switchLibraryTrap(false);
 
@@ -1109,7 +1111,7 @@ error0:
     _jfr.stop();
     unlockAll();
 
-    return error;
+    return Error("Neither CPU, wallclock nor allocation profiling could be started");
 }
 
 Error Profiler::stop() {
