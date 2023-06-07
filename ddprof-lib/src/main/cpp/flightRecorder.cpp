@@ -48,6 +48,8 @@ const u64 MAX_JLONG = 0x7fffffffffffffffULL;
 const u64 MIN_JLONG = 0x8000000000000000ULL;
 const int MAX_JFR_EVENT_SIZE = 256;
 const int JFR_EVENT_FLUSH_THRESHOLD = RECORDING_BUFFER_LIMIT;
+const int MAX_VAR64_LENGTH = 10;
+const int MAX_VAR32_LENGTH = 5;
 
 
 static SpinLock _rec_lock(1);
@@ -408,6 +410,13 @@ class Recording {
             writeIntSetting(_buf, T_HEAP_LIVE_OBJECT, "capacity", LivenessTracker::instance()->_table_cap);
             writeIntSetting(_buf, T_HEAP_LIVE_OBJECT, "maximum capacity", LivenessTracker::instance()->_table_max_cap);
         }
+        writeDatadogProfilerConfig(_buf,
+                                   Profiler::instance()->cpuEngine()->interval(),
+                                   Profiler::instance()->wallEngine()->interval(),
+                                   oSampler->_record_allocations ? oSampler->_interval : 0L,
+                                   oSampler->_record_liveness ? oSampler->_interval : 0L,
+                                   oSampler->_record_liveness ? LivenessTracker::instance()->_table_cap : 0L,
+                                   Profiler::instance()->eventMask());
 
         _stop_time = OS::micros();
         _stop_ticks = TSC::ticks();
@@ -743,7 +752,7 @@ class Recording {
 
     void writeDatadogSetting(Buffer* buf, int length, const char* name, const char* value, const char* unit) {
         flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - length);
-        int start = buf->skip(5);
+        int start = buf->skip(MAX_VAR32_LENGTH);
         buf->putVar64(T_DATADOG_SETTING);
         buf->putVar64(_start_ticks);
         buf->put8(0); // no duration, but required for compatibility with equivalent Java event
@@ -753,6 +762,28 @@ class Recording {
         buf->putUtf8(value);
         buf->putUtf8(unit);
         buf->putVar32(start, buf->offset() - start);
+    }
+
+    void writeDatadogProfilerConfig(Buffer* buf,
+                                    long cpuInterval,
+                                    long wallInterval,
+                                    long allocInterval,
+                                    long memleakInterval,
+                                    long memleakCapacity,
+                                    int modeMask) {
+        flushIfNeeded(buf, RECORDING_BUFFER_LIMIT
+        - (1 + 5 * MAX_VAR64_LENGTH + MAX_VAR32_LENGTH + 2 * MAX_STRING_LENGTH));
+        int start = buf->skip(1);
+        buf->putVar64(T_DATADOG_PROFILER_CONFIG);
+        buf->putVar64(cpuInterval);
+        buf->putVar64(wallInterval);
+        buf->putVar64(allocInterval);
+        buf->putVar64(memleakInterval);
+        buf->putVar64(memleakCapacity);
+        buf->putVar32(modeMask);
+        buf->putUtf8(PROFILER_VERSION);
+        writeEventSizePrefix(buf, start);
+        flushIfNeeded(buf);
     }
 
     void writeHeapUsage(Buffer* buf, long value, bool live) {

@@ -50,6 +50,9 @@ class PerfEvents : public Engine {
 
     virtual int registerThread(int tid);
     virtual void unregisterThread(int tid);
+    long interval() const {
+        return _interval;
+    }
 
     const char* name() {
       return "PerfEvents";

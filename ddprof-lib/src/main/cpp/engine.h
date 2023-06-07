@@ -51,6 +51,9 @@ class Engine {
     virtual Error check(Arguments& args);
     virtual Error start(Arguments& args);
     virtual void stop();
+    virtual long interval() const {
+        return 0L;
+    }
 
     virtual int registerThread(int tid) { return -1; }
     virtual void unregisterThread(int tid) {}

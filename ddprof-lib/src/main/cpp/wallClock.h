@@ -67,6 +67,10 @@ class WallClock : public Engine {
         return "WallClock";
     }
 
+    long interval() const {
+        return _interval;
+    }
+
     Error start(Arguments& args);
     void stop();
 

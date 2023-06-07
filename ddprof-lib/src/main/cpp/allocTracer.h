@@ -41,6 +41,10 @@ class AllocTracer : public Engine {
     Error start(Arguments& args);
     void stop();
 
+    long interval() const {
+        return static_cast<long>(_interval);
+    }
+
     static void trapHandler(int signo, siginfo_t* siginfo, void* ucontext);
 };
 
