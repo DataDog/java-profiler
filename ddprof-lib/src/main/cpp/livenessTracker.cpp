@@ -40,10 +40,11 @@ void LivenessTracker::cleanup_table() {
         if (!env->IsSameObject(_table[i].ref, NULL)) {
             // it survived one more GarbageCollectionFinish event
             _table[i].age += 1;
-
             _table[newsz++] = _table[i];
+            _table[i].ref = NULL;
         } else {
             env->DeleteWeakGlobalRef(_table[i].ref);
+            _table[i].ref = NULL;
             delete[] _table[i].frames;
         }
     }
@@ -71,6 +72,9 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
 
     u32 sz;
     for (int i = 0; i < (sz = _table_size); i++) {
+        if (env->IsSameObject(_table[i].ref, NULL)) {
+            continue;
+        }
         jobject ref = env->NewLocalRef(_table[i].ref);
         if (ref != NULL) {
             if (tracked_thread_ids != NULL) {
