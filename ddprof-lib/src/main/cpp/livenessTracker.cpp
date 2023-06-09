@@ -123,6 +123,23 @@ Error LivenessTracker::initialize_table(int sampling_interval) {
     _table_max_cap = 0;
     jlong max_heap = HeapUsage::get()._maxSize;;
     if (max_heap == -1) {
+        JNIEnv *env = VM::jni();
+        static jclass _rt;
+        static jmethodID _get_rt;
+        static jmethodID _max_memory;
+
+        if (!(_rt = env->FindClass("java/lang/Runtime"))) {
+            env->ExceptionDescribe();
+        } else if (!(_get_rt = env->GetStaticMethodID(_rt, "getRuntime", "()Ljava/lang/Runtime;"))) {
+            env->ExceptionDescribe();
+        } else if (!(_max_memory = env->GetMethodID(_rt, "maxMemory", "()J"))) {
+            env->ExceptionDescribe();
+        } else {
+            jobject rt = (jobject)env->CallStaticObjectMethod(_rt, _get_rt);
+            max_heap = (jlong)env->CallLongMethod(rt, _max_memory);
+        }
+    }
+    if (max_heap == -1) {
         return Error("Can not track liveness for allocation samples without heap size information.");
     }
 
