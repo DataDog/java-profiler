@@ -2,6 +2,8 @@ package com.datadoghq.profiler.context;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.ContextSetter;
+import com.datadoghq.profiler.Platform;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
@@ -25,6 +27,7 @@ public class TagContextTest extends AbstractProfilerTest {
 
     @Test
     public void test() throws InterruptedException {
+        Assumptions.assumeTrue(!Platform.isJ9() || (Platform.isJ9() && Platform.isJavaVersion(8)));
         registerCurrentThreadForWallClockProfiling();
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2", "tag1"));
 

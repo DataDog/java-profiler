@@ -57,9 +57,10 @@ class J9Ext {
 
   public:
     static bool can_use_ASGCT() {
-        return (VM::java_version() == 8 && VM::java_update_version() >= 361) ||
-                (VM::java_version() == 11 && VM::java_update_version() >= 18) ||
-                (VM::java_version() == 17 && VM::java_update_version() >= 6);
+        return (VM::java_version() == 8 && VM::java_update_version() >= 361);
+        //  ASGCT with concurrent class loading in JDK 11+ is inherently unstable and leads to JVM crashes
+        //        (VM::java_version() == 11 && VM::java_update_version() >= 18) ||
+        //        (VM::java_version() == 17 && VM::java_update_version() >= 6);
     }
 
     static bool initialize(jvmtiEnv* jvmti, const void* j9thread_self);
