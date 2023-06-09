@@ -65,7 +65,7 @@ tasks.withType(CppCompile).configureEach {
     if (it.name.contains('Debug')) {
         taskArgs.addAll(["-DDEBUG", "-DCOUNTERS"])
     } else {
-        taskArgs.add("-DNEDBUG")
+        taskArgs.add("-DNDEBUG")
     }
 
     // TODO for Clang we would use scan-build utility instead but it needs to be installed first
@@ -88,9 +88,6 @@ tasks.withType(LinkSharedLibrary) {
     linkerArgs.addAll(["-ldl", "-lpthread"])
     if (os().isLinux()) {
         linkerArgs.addAll(["-Wl,-z,defs", "-Wl,-z,nodelete", "-lrt"])
-        if (isMusl()) {
-            linkerArgs.add("-static-libstdc++")
-        }
     }
     linkerArgs.add '-v'
 }
