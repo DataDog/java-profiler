@@ -61,6 +61,9 @@ void LivenessTracker::cleanup_table() {
     _table_size = newsz;
 
     _table_lock.unlock();
+    if (!HeapUsage::isLastGCUsageSupported()) {
+        _used_after_last_gc = HeapUsage::get()._used;
+    }
     end = OS::nanotime();
     Log::debug("Liveness tracker cleanup took %.2fms (%.2fus/element)",
                 1.0f * (end - start) / 1000 / 1000, 1.0f * (end - start) / 1000 / sz);
@@ -107,7 +110,7 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
     _table_lock.unlockShared();
 
     bool isLastGc = HeapUsage::isLastGCUsageSupported();
-    size_t used = isLastGc ? HeapUsage::get()._used_at_last_gc : loadAcquire(_used_after_last_gc);
+    size_t used = isLastGc ? HeapUsage::get()._used_at_last_gc : _used_after_last_gc;
     if (used == 0) {
         used = HeapUsage::get()._used;
         isLastGc = false;
@@ -298,8 +301,4 @@ void LivenessTracker::onGC() {
 
     // just increment the epoch
    atomicInc(_gc_epoch, 1);
-
-   if (!HeapUsage::isLastGCUsageSupported()) {
-       storeRelease(_used_after_last_gc, HeapUsage::get()._used);
-   }
 }
