@@ -3,18 +3,22 @@ package com.datadoghq.profiler;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.openjdk.jmc.common.IMCStackTrace;
 import org.openjdk.jmc.common.item.Attribute;
+
+import static org.junit.jupiter.api.Assertions.*;
 import static org.openjdk.jmc.common.item.Attribute.attr;
+import static org.openjdk.jmc.common.unit.UnitLookup.*;
+
 import org.openjdk.jmc.common.IMCType;
 import org.openjdk.jmc.common.item.IAttribute;
 import org.openjdk.jmc.common.item.IItem;
@@ -25,10 +29,8 @@ import org.openjdk.jmc.common.item.IItemFilter;
 import org.openjdk.jmc.common.item.ItemFilters;
 import org.openjdk.jmc.common.item.IType;
 import org.openjdk.jmc.common.unit.IQuantity;
+import org.openjdk.jmc.common.unit.QuantityConversionException;
 import org.openjdk.jmc.common.unit.UnitLookup;
-import static org.openjdk.jmc.common.unit.UnitLookup.BYTE;
-import static org.openjdk.jmc.common.unit.UnitLookup.NUMBER;
-import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
 import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
@@ -70,14 +72,65 @@ public abstract class AbstractProfilerTest {
 
   public static final IAttribute<IMCStackTrace> STACK_TRACE = attr("stackTrace", "stackTrace", "", UnitLookup.STACKTRACE);
 
+  public static final IAttribute<IQuantity> CPU_INTERVAL = attr("cpuInterval", "cpuInterval", "", TIMESPAN);
+
+  public static final IAttribute<IQuantity> WALL_INTERVAL = attr("wallInterval", "wallInterval", "", TIMESPAN);
+
   protected JavaProfiler profiler;
   private Path jfrDump;
+
+  private Duration cpuInterval;
+  private Duration wallInterval;
+
+  private static Duration parseInterval(String command, String part) {
+    String prefix = part + "=";
+    int start = command.indexOf(prefix);
+    if (start >= 0) {
+      start += prefix.length();
+      int end = command.indexOf(",", start);
+      if (end < 0) {
+        end = command.length();
+      }
+      String interval = command.substring(start, end);
+      int unitFirstChar = 0;
+      int durationFirstChar = interval.charAt(0) == '~' ? 1 : 0;
+      for (int i = 0; i < interval.length(); i++) {
+        if (Character.isAlphabetic(interval.charAt(i))) {
+          unitFirstChar = i;
+          break;
+        }
+      }
+      long duration = Long.parseLong(interval.substring(durationFirstChar, unitFirstChar));
+      String unit = interval.substring(unitFirstChar).toLowerCase();
+      switch (unit) {
+        case "s":
+          return Duration.ofSeconds(duration);
+        case "ms":
+          return Duration.ofMillis(duration);
+        // backend assumes we report duration in millis,
+        // so we can't express these more accurately than 0
+        case "us":
+        case "ns":
+        default:
+      }
+    }
+    return Duration.ofMillis(0);
+  }
 
   @BeforeEach
   public void setupProfiler() throws Exception {
     jfrDump = Files.createTempFile(Paths.get("/tmp"), getClass().getName() + UUID.randomUUID(), ".jfr");
     profiler = JavaProfiler.getInstance();
-    profiler.execute("start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath());
+    String command = "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
+    // FIXME cpu interval argument not respected and is sometimes hardcoded to 10ms if cpu is active at all
+    boolean isSafeJ9Engine = (Platform.isJ9() && Platform.isJavaVersionAtLeast(11));
+    cpuInterval = isSafeJ9Engine
+            // respected for the safe J9 engine
+            ? command.contains("cpu") ? parseInterval(command, "cpu") : Duration.ZERO
+            // hardcoded for itimer and perfevents
+            : command.contains("cpu") ? Duration.ofMillis(10) : Duration.ZERO;
+    wallInterval = parseInterval(command, "wall");
+    profiler.execute(command);
     stopped = false;
     before();
   }
@@ -93,6 +146,27 @@ public abstract class AbstractProfilerTest {
   }
 
   protected void after() throws Exception {
+  }
+
+  private void checkConfig() {
+    try {
+      IItemCollection profilerConfig = verifyEvents("datadog.DatadogProfilerConfig");
+      for (IItemIterable items : profilerConfig) {
+        IMemberAccessor<IQuantity, IItem> cpuIntervalAccessor = CPU_INTERVAL.getAccessor(items.getType());
+        IMemberAccessor<IQuantity, IItem> wallIntervalAccessor = WALL_INTERVAL.getAccessor(items.getType());
+        for (IItem item : items) {
+          long cpuIntervalMillis = cpuIntervalAccessor.getMember(item).longValueIn(MILLISECOND);
+          long wallIntervalMillis = wallIntervalAccessor.getMember(item).longValueIn(MILLISECOND);
+          if (!Platform.isJ9() && Platform.isJavaVersionAtLeast(11)) {
+            // fixme J9 engine have weird defaults and need fixing
+            assertEquals(cpuInterval.toMillis(), cpuIntervalMillis);
+            assertEquals(wallInterval.toMillis(), wallIntervalMillis);
+          }
+        }
+      }
+    } catch (QuantityConversionException e) {
+      Assertions.fail(e.getMessage());
+    }
   }
 
   protected static IItemFilter allocatedTypeFilter(String className) {
@@ -123,6 +197,7 @@ public abstract class AbstractProfilerTest {
     if (!stopped) {
       profiler.stop();
       stopped = true;
+      checkConfig();
     }
   }
 
