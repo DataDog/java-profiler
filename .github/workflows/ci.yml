@@ -196,6 +196,64 @@ jobs:
           name: x64-glibc-j9
           path: build/
 
+  test-linux-glibc-oracle8:
+    needs: check-for-pr
+    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v3
+      - name: Prepare build JDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: "11"
+      - name: Prepare JDK ${{ matrix.java_version }}
+        run: |
+          sudo apt-get -y update && sudo apt-get -y install curl
+          set -eux;
+          sudo mkdir -p /usr/lib/jvm/oracle8;
+          # https://gist.github.com/wavezhang/ba8425f24a968ec9b2a8619d7c2d86a6?permalink_comment_id=4444663#gistcomment-4444663
+          # jdk1.8.0_361
+          curl -L --fail "https://javadl.oracle.com/webapps/download/AutoDL?BundleId=247926_0ae14417abb444ebb02b9815e2103550" | sudo tar -xvzf - -C /usr/lib/jvm/oracle8 --strip-components 1
+          uname -r
+      - name: Test
+        run: |
+          export TEST_COMMIT=${{ github.sha }}
+          export TEST_CONFIGURATION=glibc/8
+          export LIBC=glibc
+          export JAVA_TEST_HOME=/usr/lib/jvm/oracle8
+          export JAVA_HOME=$JAVA_HOME
+          export PATH=$JAVA_HOME/bin:$PATH
+          export BUILD_TYPE=SanitizedDebug
+          ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
+      - name: Post or update PR comment
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: ./.github/actions/pr_comment
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          commenter: "pr-comment-stresstests"
+          comment-id: "stress-oracle_8_glibc"
+          comment-file: 'ddprof-stresstest/jmh-comment.html'
+      - name: Upload logs
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: reports-linux-oracle-jdk-8.zip
+          path: |
+            ddprof-test/hs_err_*
+            ddprof-test/build/reports/tests
+            ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
+            ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
+            stresstest.html
+      - uses: actions/upload-artifact@v3
+        if: success()
+        with:
+          name: x64-oracle-jdk8
+          path: build/
+
+
   test-linux-musl:
     needs: check-for-pr
     if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip

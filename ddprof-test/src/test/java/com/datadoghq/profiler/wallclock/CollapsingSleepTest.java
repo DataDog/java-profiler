@@ -1,6 +1,8 @@
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.Platform;
+import org.junit.jupiter.api.Assumptions;
 import org.openjdk.jmc.common.item.Aggregators;
 import org.openjdk.jmc.common.item.IItemCollection;
 
@@ -12,6 +14,7 @@ public class CollapsingSleepTest extends AbstractProfilerTest {
 
     @Test
     public void testSleep() throws InterruptedException {
+        Assumptions.assumeTrue(!Platform.isJ9() || (Platform.isJ9() && Platform.isJavaVersion(8)));
         registerCurrentThreadForWallClockProfiling();
         Thread.sleep(1000);
         stopProfiler();

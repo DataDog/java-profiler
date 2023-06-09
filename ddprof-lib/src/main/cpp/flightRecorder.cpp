@@ -411,8 +411,8 @@ class Recording {
             writeIntSetting(_buf, T_HEAP_LIVE_OBJECT, "maximum capacity", LivenessTracker::instance()->_table_max_cap);
         }
         writeDatadogProfilerConfig(_buf,
-                                   Profiler::instance()->cpuEngine()->interval(),
-                                   Profiler::instance()->wallEngine()->interval(),
+                                   Profiler::instance()->cpuEngine()->interval() / 1000000,
+                                   Profiler::instance()->wallEngine()->interval() / 1000000,
                                    oSampler->_record_allocations ? oSampler->_interval : 0L,
                                    oSampler->_record_liveness ? oSampler->_interval : 0L,
                                    oSampler->_record_liveness ? LivenessTracker::instance()->_table_cap : 0L,

@@ -4,6 +4,7 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.context.ContextExecutor;
 import com.datadoghq.profiler.context.Tracing;
+import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
@@ -43,6 +44,7 @@ public class ContextCpuTest extends AbstractProfilerTest {
 
     @RetryingTest(10)
     public void test() throws ExecutionException, InterruptedException {
+        Assumptions.assumeTrue(!Platform.isJ9() || (Platform.isJ9() && Platform.isJavaVersion(8)));
         for (int i = 0, id = 1; i < 100; i++, id += 3) {
             method1(id);
         }

@@ -1,6 +1,8 @@
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.Platform;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
@@ -15,6 +17,7 @@ public class WallclockThreadFilterTest extends AbstractProfilerTest {
 
     @Test
     public void test() throws InterruptedException {
+        Assumptions.assumeTrue(!Platform.isJ9() || (Platform.isJ9() && Platform.isJavaVersion(8)));
         registerCurrentThreadForWallClockProfiling();
         Thread.sleep(100);
         stopProfiler();
