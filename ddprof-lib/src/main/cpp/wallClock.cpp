@@ -24,7 +24,6 @@
 #include "log.h"
 #include "thread.h"
 #include "tsc.h"
-#include "jvmti.h"
 #include "vmStructs.h"
 
 volatile bool WallClock::_enabled = false;
@@ -70,12 +69,16 @@ void WallClock::signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64
     }
 
     ExecutionEvent event;
-    // if we're in the NEW or RUNNABLE state we might have missed some instrumentation, so we inspect the frame
-    // to check if we're in a syscall or not
-    JavaThreadState state = current ? current->getThreadState() : JAVA_THREAD_RUNNABLE;
-    if (state == JAVA_THREAD_RUNNABLE && inSyscall(ucontext)) {
-        // this is a lie, but we don't know any better
-        state = JAVA_THREAD_BLOCKED;
+    VMThread* vm_thread = VMThread::current();
+    ThreadState state = ThreadState::UNKNOWN;
+    if (vm_thread) {
+        ThreadState os_state = vm_thread->osThreadState();
+        if (os_state != ThreadState::UNKNOWN) {
+            state = os_state;
+        }
+    }
+    if (state == ThreadState::UNKNOWN) {
+        state = inSyscall(ucontext) ? ThreadState::SLEEPING : ThreadState::RUNNABLE;
     }
     event._thread_state = state;
     event._weight = skipped + 1;
@@ -97,13 +100,6 @@ Error WallClock::start(Arguments &args) {
             args._wall_threads_per_tick :
             DEFAULT_WALL_THREADS_PER_TICK;
 
-    // Enable Java Monitor events
-    jvmtiEnv* jvmti = VM::jvmti();
-    jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTER, NULL);
-    jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTERED, NULL);
-    jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAIT, NULL);
-    jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAITED, NULL);
-
     OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
 
     _running = true;
@@ -117,11 +113,6 @@ Error WallClock::start(Arguments &args) {
 
 void WallClock::stop() {
     _running = false;
-    jvmtiEnv* jvmti = VM::jvmti();
-    jvmti->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTER, NULL);
-    jvmti->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTERED, NULL);
-    jvmti->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_MONITOR_WAIT, NULL);
-    jvmti->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_MONITOR_WAITED, NULL);
     pthread_kill(_thread, WAKEUP_SIGNAL);
     pthread_join(_thread, NULL);
 }

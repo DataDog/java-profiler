@@ -23,6 +23,7 @@
 #include "codeCache.h"
 #include "jvmHeap.h"
 #include "vmEntry.h"
+#include "threadState.h"
 
 class HeapUsage;
 
@@ -49,6 +50,7 @@ class VMStructs {
     static int _thread_anchor_offset;
     static int _thread_state_offset;
     static int _osthread_id_offset;
+    static int _osthread_state_offset;
     static int _anchor_sp_offset;
     static int _anchor_pc_offset;
     static int _frame_size_offset;
@@ -284,6 +286,14 @@ class VMThread : VMStructs {
 
     int state() {
         return _thread_state_offset >= 0 ? *(int*) at(_thread_state_offset) : 0;
+    }
+
+    ThreadState osThreadState() {
+        if (_thread_osthread_offset >= 0 && _osthread_state_offset >= 0) {
+            const char* osthread = *(const char**) at(_thread_osthread_offset);
+            return static_cast<ThreadState>(*(int*)(osthread + _osthread_state_offset));
+        }
+        return ThreadState::UNKNOWN;
     }
 
     uintptr_t& lastJavaSP() {

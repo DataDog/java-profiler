@@ -775,6 +775,9 @@ class Recording {
         - (1 + 5 * MAX_VAR64_LENGTH + MAX_VAR32_LENGTH + 2 * MAX_STRING_LENGTH));
         int start = buf->skip(1);
         buf->putVar64(T_DATADOG_PROFILER_CONFIG);
+        buf->putVar64(_start_ticks);
+        buf->put8(0);
+        buf->putVar64(_tid);
         buf->putVar64(cpuInterval);
         buf->putVar64(wallInterval);
         buf->putVar64(allocInterval);
@@ -945,18 +948,24 @@ class Recording {
 
     void writeThreadStates(Buffer* buf) {
         buf->putVar64(T_THREAD_STATE);
-        buf->put8(6);
-        buf->put8(JAVA_THREAD_NEW);
+        buf->put8(9);
+        buf->put8(static_cast<int>(ThreadState::UNKNOWN));
+        buf->putUtf8("UNKNOWN");
+        buf->put8(static_cast<int>(ThreadState::NEW));
         buf->putUtf8("NEW");
-        buf->put8(JAVA_THREAD_RUNNABLE);
+        buf->put8(static_cast<int>(ThreadState::RUNNABLE));
         buf->putUtf8("RUNNABLE");
-        buf->put8(JAVA_THREAD_BLOCKED);
+        buf->put8(static_cast<int>(ThreadState::MONITOR_WAIT));
         buf->putUtf8("BLOCKED");
-        buf->put8(JAVA_THREAD_WAITING);
+        buf->put8(static_cast<int>(ThreadState::CONDVAR_WAIT));
+        buf->putUtf8("PARKED");
+        buf->put8(static_cast<int>(ThreadState::OBJECT_WAIT));
         buf->putUtf8("WAITING");
-        buf->put8(JAVA_THREAD_TIMED_WAITING);
-        buf->putUtf8("TIMED_WAITING");
-        buf->put8(JAVA_THREAD_TERMINATED);
+        buf->put8(static_cast<int>(ThreadState::BREAKPOINTED));
+        buf->putUtf8("BREAKPOINT");
+        buf->put8(static_cast<int>(ThreadState::SLEEPING));
+        buf->putUtf8("SLEEPING");
+        buf->put8(static_cast<int>(ThreadState::TERMINATED));
         buf->putUtf8("TERMINATED");
         flushIfNeeded(buf);
     }
@@ -1154,7 +1163,7 @@ class Recording {
         buf->putVar64(TSC::ticks());
         buf->putVar64(tid);
         buf->putVar64(call_trace_id);
-        buf->putVar64(event->_thread_state);
+        buf->putVar64(static_cast<int>(event->_thread_state));
         buf->putVar64(event->_weight);
         writeContext(buf, Contexts::get(tid));
         writeEventSizePrefix(buf, start);
@@ -1167,7 +1176,7 @@ class Recording {
         buf->putVar64(TSC::ticks());
         buf->putVar64(tid);
         buf->putVar64(call_trace_id);
-        buf->putVar64(event->_thread_state);
+        buf->putVar64(static_cast<int>(event->_thread_state));
         buf->putVar64(event->_weight);
         writeContext(buf, Contexts::get(tid));
         writeEventSizePrefix(buf, start);

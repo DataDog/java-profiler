@@ -189,11 +189,3 @@ Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(JNIEnv *env, jobjec
     env->ReleaseStringUTFChars(value, value_str);
     env->ReleaseStringUTFChars(unit, unit_str);
 }
-
-extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_setCurrentThreadState0(JNIEnv* env, jobject unused, jint state) {
-    ProfiledThread* thread = ProfiledThread::current();
-    if (thread) {
-        thread->setThreadState(static_cast<JavaThreadState>(state));
-    }
-}
