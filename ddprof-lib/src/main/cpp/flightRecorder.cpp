@@ -775,6 +775,9 @@ class Recording {
         - (1 + 5 * MAX_VAR64_LENGTH + MAX_VAR32_LENGTH + 2 * MAX_STRING_LENGTH));
         int start = buf->skip(1);
         buf->putVar64(T_DATADOG_PROFILER_CONFIG);
+        buf->putVar64(_start_ticks);
+        buf->put8(0);
+        buf->putVar64(_tid);
         buf->putVar64(cpuInterval);
         buf->putVar64(wallInterval);
         buf->putVar64(allocInterval);
