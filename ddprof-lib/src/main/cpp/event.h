@@ -37,10 +37,10 @@ class Event {
 
 class ExecutionEvent : public Event {
   public:
-    JavaThreadState _thread_state;
+    ThreadState _thread_state;
     u64 _weight;
 
-    ExecutionEvent() : Event(), _thread_state(JAVA_THREAD_RUNNABLE), _weight(1) {}
+    ExecutionEvent() : Event(), _thread_state(ThreadState::RUNNABLE), _weight(1) {}
 };
 
 class AllocEvent : public Event {

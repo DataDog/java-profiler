@@ -8,7 +8,6 @@
 #include <vector>
 #include "os.h"
 #include <jvmti.h>
-#include "threadState.h"
 
 class ProfiledThread {
   private:
@@ -31,7 +30,6 @@ class ProfiledThread {
     u64 _wall_epoch;
     u64 _skipped_samples;
     u64 _context_key;
-    JavaThreadState _thread_state;
 
     ProfiledThread(int buffer_pos, int tid) :
         _buffer_pos(buffer_pos),
@@ -39,8 +37,7 @@ class ProfiledThread {
         _cpu_epoch(0),
         _wall_epoch(0),
         _skipped_samples(0),
-        _context_key(0),
-        _thread_state(JAVA_THREAD_RUNNABLE){};
+        _context_key(0){};
 
     void releaseFromBuffer();
   public:
@@ -68,20 +65,7 @@ class ProfiledThread {
     }
     bool noteWallSample(u64 context_key, u64* skipped_samples);
 
-    JavaThreadState getThreadState() {
-        return _thread_state;
-    }
-
-    void setThreadState(JavaThreadState state) {
-        _thread_state = state;
-    }
-
     static void signalHandler(int signo, siginfo_t* siginfo, void* ucontext);
-
-    static void JNICALL MonitorContendedEnter(jvmtiEnv* jvmti, JNIEnv* env, jthread thread, jobject object);
-    static void JNICALL MonitorContendedEntered(jvmtiEnv* jvmti, JNIEnv* env, jthread thread, jobject object);
-    static void JNICALL MonitorWait(jvmtiEnv* jvmti, JNIEnv* env, jthread thread, jobject object, jlong timeout);
-    static void JNICALL MonitorWaited(jvmtiEnv* jvmti, JNIEnv* env, jthread thread, jobject object, jboolean timed_out);
 };
 
 #endif // _THREAD_H

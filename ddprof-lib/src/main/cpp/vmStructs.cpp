@@ -22,7 +22,6 @@
 #include "j9Ext.h"
 #include "vector"
 
-
 CodeCache* VMStructs::_libjvm = NULL;
 CodeCache VMStructs::_unsafe_to_walk("unwalkable code");
 
@@ -44,6 +43,7 @@ int VMStructs::_thread_osthread_offset = -1;
 int VMStructs::_thread_anchor_offset = -1;
 int VMStructs::_thread_state_offset = -1;
 int VMStructs::_osthread_id_offset = -1;
+int VMStructs::_osthread_state_offset = -1;
 int VMStructs::_anchor_sp_offset = -1;
 int VMStructs::_anchor_pc_offset = -1;
 int VMStructs::_frame_size_offset = -1;
@@ -207,6 +207,8 @@ void VMStructs::initOffsets() {
         } else if (strcmp(type, "OSThread") == 0) {
             if (strcmp(field, "_thread_id") == 0) {
                 _osthread_id_offset = *(int*)(entry + offset_offset);
+            } else if (strcmp(field, "_state") == 0) {
+                _osthread_state_offset = *(int*)(entry + offset_offset);
             }
         } else if (strcmp(type, "JavaFrameAnchor") == 0) {
             if (strcmp(field, "_last_Java_sp") == 0) {
