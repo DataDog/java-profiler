@@ -268,10 +268,6 @@ bool VM::init(JavaVM* vm, bool attach) {
     // callbacks.VMObjectAlloc = J9ObjectSampler::VMObjectAlloc;
     callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
     callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;
-    callbacks.MonitorContendedEnter = ProfiledThread::MonitorContendedEnter;
-    callbacks.MonitorContendedEntered = ProfiledThread::MonitorContendedEntered;
-    callbacks.MonitorWait = ProfiledThread::MonitorWait;
-    callbacks.MonitorWaited = ProfiledThread::MonitorWaited;
     callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
     _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 

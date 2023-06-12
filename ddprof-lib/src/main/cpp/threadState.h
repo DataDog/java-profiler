@@ -3,28 +3,16 @@
 
 #include "jvmti.h"
 
-enum JavaThreadState : int {
-    JAVA_THREAD_NEW = 0,
-    JAVA_THREAD_RUNNABLE = 1,
-    JAVA_THREAD_BLOCKED = 2,
-    JAVA_THREAD_WAITING = 3,
-    JAVA_THREAD_TIMED_WAITING = 4,
-    JAVA_THREAD_TERMINATED = 5
+enum class ThreadState : int {
+    UNKNOWN = 0,
+    NEW = 1,                          // The thread has been initialized but yet started
+    RUNNABLE = 2,                     // Has been started and is runnable, but not necessarily running
+    MONITOR_WAIT = 3,                 // Waiting on a contended monitor lock
+    CONDVAR_WAIT = 4,                 // Waiting on a condition variable
+    OBJECT_WAIT = 5,                  // Waiting on an Object.wait() call
+    BREAKPOINTED = 6,                 // Suspended at breakpoint
+    SLEEPING = 7,                     // Thread.sleep()
+    TERMINATED = 8,                   // All done, but not reclaimed yet
 };
-
-static JavaThreadState convertThreadState(int jvmtiThreadState) {
-    if ((JVMTI_THREAD_STATE_WAITING | JVMTI_THREAD_STATE_WAITING_WITH_TIMEOUT) & jvmtiThreadState) {
-        return JAVA_THREAD_TIMED_WAITING;
-    } else if ((JVMTI_THREAD_STATE_WAITING | JVMTI_THREAD_STATE_WAITING_INDEFINITELY) & jvmtiThreadState) {
-        return JAVA_THREAD_WAITING;
-    } else if ((JVMTI_THREAD_STATE_BLOCKED_ON_MONITOR_ENTER) & jvmtiThreadState) {
-        return JAVA_THREAD_BLOCKED;
-    } else if ((JVMTI_THREAD_STATE_RUNNABLE) & jvmtiThreadState) {
-        return JAVA_THREAD_RUNNABLE;
-    } else if (JVMTI_THREAD_STATE_TERMINATED & jvmtiThreadState) {
-        return JAVA_THREAD_TERMINATED;
-    }
-    return JAVA_THREAD_NEW;
-}
 
 #endif //JAVA_PROFILER_LIBRARY_THREAD_STATE_H

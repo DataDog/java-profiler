@@ -11,7 +11,6 @@ import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.unit.IQuantity;
 import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
-import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -25,10 +24,7 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Assumptions;
 
 import static com.datadoghq.profiler.MoreAssertions.assertInRange;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import org.junit.jupiter.api.Test;
 
@@ -57,7 +53,7 @@ public class ContextWallClockTest extends AbstractProfilerTest {
         Set<Long> method2SpanIds = new HashSet<>(methodsToSpanIds.get("method2Impl"));
         Set<Long> method3SpanIds = new HashSet<>(methodsToSpanIds.get("method3Impl"));
         IItemCollection events = verifyEvents("datadog.MethodSample");
-        Set<Thread.State> states = EnumSet.noneOf(Thread.State.class);
+        Set<String> states = new HashSet<>();
         // we have 100 method1, method2, and method3 calls, but can't guarantee we sampled them all
         long method1Weight = 0;
         long method2Weight = 0;
@@ -75,8 +71,8 @@ public class ContextWallClockTest extends AbstractProfilerTest {
                 long rootSpanId = rootSpanIdAccessor.getMember(sample).longValue();
                 long weight = weightAccessor.getMember(sample).longValue();
                 String state = stateAccessor.getMember(sample);
-                Thread.State threadState = assertDoesNotThrow(() -> Thread.State.valueOf(state));
-                states.add(threadState);
+                assertNotNull(state);
+                states.add(state);
                 // a lot fo care needs to be taken here with samples that fall between a context activation and
                 // a method call. E.g. not finding method2Impl in the stack trace doesn't mean the sample wasn't
                 // taken in the part of method2 between activation and invoking method2Impl, which complicates
@@ -105,15 +101,17 @@ public class ContextWallClockTest extends AbstractProfilerTest {
                 }
             }
         }
-        // set manually (i.e. by instrumentation)
-        assertTrue(states.contains(Thread.State.WAITING), "no WAITING samples");
-        // monitor waits
-        assertTrue(states.contains(Thread.State.TIMED_WAITING), "no TIMED_WAITING samples");
-        // contended monitor enter
-        assertTrue(states.contains(Thread.State.BLOCKED), "no BLOCKED samples");
+        if (!Platform.isJ9() && Platform.isJavaVersionAtLeast(11)) {
+            assertTrue(states.contains("WAITING"), "no WAITING samples");
+            assertTrue(states.contains("PARKED"), "no PARKED samples");
+            assertTrue(states.contains("BLOCKED"), "no BLOCKED samples");
+        } else {
+            assertTrue(states.contains("SLEEPING"), "no SLEEPING samples");
+        }
+
         // context filtering should prevent these
-        assertFalse(states.contains(Thread.State.NEW));
-        assertFalse(states.contains(Thread.State.TERMINATED));
+        assertFalse(states.contains("NEW"));
+        assertFalse(states.contains("TERMINATED"));
         double totalWeight = method1Weight + method2Weight + method3Weight + unattributedWeight;
         // method1 has ~50% self time, 50% calling method2
         assertWeight("method1Impl", totalWeight, method1Weight, 0.33);
@@ -165,9 +163,7 @@ public class ContextWallClockTest extends AbstractProfilerTest {
     }
 
     public void method2Impl(Tracing.Context context) {
-        profiler.setThreadState(Thread.State.WAITING);
         sleep(10);
-        profiler.setThreadState(Thread.State.RUNNABLE);
         record("method2Impl", context);
     }
 
