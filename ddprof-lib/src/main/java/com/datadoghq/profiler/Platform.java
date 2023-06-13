@@ -304,6 +304,10 @@ public final class Platform {
     return System.getProperty("java.vm.name").contains("J9");
   }
 
+  public static boolean isZing() {
+    return System.getProperty("java.vm.name").contains("Zing");
+  }
+
   public static String getLangVersion() {
     return String.valueOf(JAVA_VERSION.major);
   }
