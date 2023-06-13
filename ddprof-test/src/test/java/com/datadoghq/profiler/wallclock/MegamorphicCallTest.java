@@ -1,8 +1,9 @@
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.Platform;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.DisabledIfSystemProperty;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
@@ -16,8 +17,6 @@ import java.util.concurrent.ThreadLocalRandom;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@DisabledIfSystemProperty(named = "java.vm.name", matches = ".*J9.*",
-        disabledReason = "Assumes HotSpot inlining heuristics")
 public class MegamorphicCallTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
@@ -74,6 +73,7 @@ public class MegamorphicCallTest extends AbstractProfilerTest {
 
     @Test
     public void testITableStubs() {
+        Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         int result = profiledWork(new Calculator1(), new Calculator2(), new Calculator3());
         System.err.println(result);
