@@ -104,7 +104,7 @@ public class ContextWallClockTest extends AbstractProfilerTest {
         if (!Platform.isJ9() && Platform.isJavaVersionAtLeast(11)) {
             assertTrue(states.contains("WAITING"), "no WAITING samples");
             assertTrue(states.contains("PARKED"), "no PARKED samples");
-            assertTrue(states.contains("BLOCKED"), "no BLOCKED samples");
+            assertTrue(states.contains("CONTENDED"), "no CONTENDED samples");
         } else {
             assertTrue(states.contains("SLEEPING"), "no SLEEPING samples");
         }

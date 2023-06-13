@@ -956,7 +956,7 @@ class Recording {
         buf->put8(static_cast<int>(ThreadState::RUNNABLE));
         buf->putUtf8("RUNNABLE");
         buf->put8(static_cast<int>(ThreadState::MONITOR_WAIT));
-        buf->putUtf8("BLOCKED");
+        buf->putUtf8("CONTENDED");
         buf->put8(static_cast<int>(ThreadState::CONDVAR_WAIT));
         buf->putUtf8("PARKED");
         buf->put8(static_cast<int>(ThreadState::OBJECT_WAIT));
