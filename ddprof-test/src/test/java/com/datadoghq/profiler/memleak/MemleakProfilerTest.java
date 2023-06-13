@@ -25,7 +25,7 @@ public class MemleakProfilerTest extends AbstractProfilerTest {
 
     @RetryingTest(5)
     public void shouldGetLiveObjectSamples() throws InterruptedException {
-        Assumptions.assumeFalse(System.getProperty("java.version").contains("1.8") || Platform.isJ9());
+        Assumptions.assumeFalse(System.getProperty("java.version").contains("1.8") || Platform.isJ9() || Platform.isZing());
         MemLeakTarget target1 = new MemLeakTarget();
         MemLeakTarget target2 = new MemLeakTarget();
         runTests(target1, target2);
