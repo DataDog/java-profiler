@@ -253,7 +253,6 @@ jobs:
           name: x64-oracle-jdk8
           path: build/
 
-
   test-linux-musl:
     needs: check-for-pr
     if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
@@ -314,6 +313,76 @@ jobs:
         if: success()
         with:
           name: x64-musl
+          path: build/
+
+  test-linux-glibc-zing:
+    needs: check-for-pr
+    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
+    strategy:
+      matrix:
+        java_version: [ 8, 11, 17 ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v3
+      - name: Prepare build JDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: "11"
+      - name: Prepare JDK ${{ matrix.java_version }}
+        run: |
+          sudo apt-get -y update && sudo apt-get -y install curl g++-9 gcc-9
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 100 --slave /usr/bin/g++ g++ /usr/bin/g++-9
+          sudo update-alternatives --set gcc /usr/bin/gcc-9
+          set -eux
+          sudo mkdir -p /usr/lib/jvm/zing
+          if [ "${{ matrix.java_version }}" = "8" ]; then
+            # jdk1.8.0_372
+            curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk8.0.372-linux_x64.tar.gz" | sudo tar -xvzf - -C /usr/lib/jvm/zing --strip-components 1
+          elif [ "${{ matrix.java_version }}" = "11" ]; then
+            # jdk 11.0.19
+            curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk11.0.19-linux_x64.tar.gz" | sudo tar -xvzf - -C /usr/lib/jvm/zing --strip-components 1
+          elif [ "${{ matrix.java_version }}" = "17" ]; then
+            # jdk 17.0.7
+            curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk17.0.7-linux_x64.tar.gz" | sudo tar -xvzf - -C /usr/lib/jvm/zing --strip-components 1
+          fi
+          # rename the bundled libstdc++.so to avoid conflicts with the system one
+          sudo mv /usr/lib/jvm/zing/etc/libc++/libstdc++.so.6 /usr/lib/jvm/zing/etc/libc++/libstdc++.so.6.bak
+      - name: Test
+        run: |
+          export TEST_COMMIT=${{ github.sha }}
+          export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
+          export LIBC=glibc
+          export JAVA_TEST_HOME=/usr/lib/jvm/zing
+          export JAVA_HOME=$JAVA_HOME
+          export PATH=$JAVA_HOME/bin:$PATH
+          export BUILD_TYPE=SanitizedDebug
+          ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
+      - name: Post or update PR comment
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: ./.github/actions/pr_comment
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          commenter: "pr-comment-stresstests"
+          comment-id: "stress-zing_${{ matrix.java_version }}_glibc"
+          comment-file: 'ddprof-stresstest/jmh-comment.html'
+      - name: Upload logs
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: reports-linux-zing-jdk-${{ matrix.java_version }}.zip
+          path: |
+            ddprof-test/hs_err_*
+            ddprof-test/build/reports/tests
+            ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
+            ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
+            stresstest.html
+      - uses: actions/upload-artifact@v3
+        if: success()
+        with:
+          name: x64-glibc-zing-${{ matrix.java_version }}
           path: build/
 
   merge-upstream:

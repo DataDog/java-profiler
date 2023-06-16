@@ -42,7 +42,10 @@ public class ContextWallClockTest extends AbstractProfilerTest {
 
     @Test
     public void test() throws ExecutionException, InterruptedException {
-        Assumptions.assumeTrue(!Platform.isJ9() || (Platform.isJ9() && Platform.isJavaVersion(8)));
+        Assumptions.assumeTrue(
+                (!Platform.isJ9() || (Platform.isJ9() && Platform.isJavaVersion(8))) &&
+                !Platform.isZing()
+        );
 
         registerCurrentThreadForWallClockProfiling();
         for (int i = 0, id = 1; i < 100; i++, id += 3) {

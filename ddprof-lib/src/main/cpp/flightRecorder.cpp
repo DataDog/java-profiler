@@ -1353,7 +1353,21 @@ Error FlightRecorder::dump(const char* filename, const int length) {
 void FlightRecorder::flush() {
     if (_rec != NULL) {
         _rec_lock.lock();
+        jvmtiEnv* jvmti = VM::jvmti();
+        JNIEnv* env = VM::jni();
+
+        jclass** classes = NULL;
+        jint count = 0;
+        // obtaining the class list will create local refs to all loaded classes, effectively preventing them from being unloaded while flushing
+        jvmtiError err = jvmti->GetLoadedClasses(&count, classes);
         _rec->switchChunk(-1);
+        if (!err) {
+            // deallocate all loaded classes
+            for (int i = 0; i < count; i++) {
+                env->DeleteLocalRef((jobject)classes[i]);
+                jvmti->Deallocate((unsigned char*)classes[i]);
+            }
+        }
         _rec_lock.unlock();
     }
 }
