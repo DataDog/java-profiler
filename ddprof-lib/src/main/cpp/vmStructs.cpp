@@ -92,6 +92,7 @@ VMStructs::LockFunc VMStructs::_unlock_func;
 VMStructs::HeapUsageFunc VMStructs::_heap_usage_func = NULL;
 VMStructs::MemoryUsageFunc VMStructs::_memory_usage_func = NULL;
 VMStructs::GCHeapSummaryFunc VMStructs::_gc_heap_summary_func = NULL;
+VMStructs::FindFlagFunc VMStructs::_find_flag_func = NULL;
 
 void** VMStructs::_collected_heap_addr = NULL;
 
@@ -367,6 +368,33 @@ void VMStructs::initUnsafeFunctions() {
     }
 }
 
+bool VMStructs::isFlagTrue(const char* name) {
+    // ! This is only valid for boolean flags !
+    // The memory layout of JVMFlag puts the pointer to the value at the beginning of the flag structure
+    // so we can just dereference and cast it properly.
+    bool** ptr = (bool**)_find_flag_func(name, strlen(name), true, true);
+    if (ptr != NULL) {
+        return **ptr;
+    }
+    return false;
+}
+
+const void* VMStructs::findHeapUsageFunc() {
+    if (_find_flag_func != NULL) {
+        // The CollectedHeap::memory_usage function is a virtual one -
+        // G1, Shenandoah and ZGC are overriding it and calling the base class method results
+        // in asserts triggering. Therefore, we try to locate the concrete overridden method form.
+        if (isFlagTrue("UseG1GC")) {
+            return _libjvm->findSymbol("_ZN15G1CollectedHeap12memory_usageEv");
+        } else if (isFlagTrue("UseShenandoahGC")) {
+            return _libjvm->findSymbol("_ZN14ShenandoahHeap12memory_usageEv");
+        } else if (isFlagTrue("UseZGC")) {
+            return _libjvm->findSymbol("_ZN14ZCollectedHeap12memory_usageEv");
+        }
+    }
+    return _libjvm->findSymbol("_ZN13CollectedHeap12memory_usageEv");
+}
+
 void VMStructs::initJvmFunctions() {
     _get_stack_trace = (GetStackTraceFunc)_libjvm->findSymbolByPrefix("_ZN8JvmtiEnv13GetStackTraceEP10JavaThreadiiP");
 
@@ -374,7 +402,9 @@ void VMStructs::initJvmFunctions() {
         _lock_func = (LockFunc)_libjvm->findSymbol("_ZN7Monitor28lock_without_safepoint_checkEv");
         _unlock_func = (LockFunc)_libjvm->findSymbol("_ZN7Monitor6unlockEv");
     }
-    _heap_usage_func = (HeapUsageFunc)_libjvm->findSymbol("_ZN13CollectedHeap12memory_usageEv");
+
+    _find_flag_func =(FindFlagFunc) _libjvm->findSymbol("_ZN7JVMFlag9find_flagEPKcmbb");
+    _heap_usage_func = (HeapUsageFunc) findHeapUsageFunc();
     _gc_heap_summary_func = (GCHeapSummaryFunc)_libjvm->findSymbol("_ZN13CollectedHeap19create_heap_summaryEv");
     initUnsafeFunctions();
 }
