@@ -106,6 +106,9 @@ class VMStructs {
     typedef GCHeapSummary (*GCHeapSummaryFunc)(void*);
     static GCHeapSummaryFunc _gc_heap_summary_func;
 
+    typedef void* (*FindFlagFunc)(const char*, size_t, bool, bool);
+    static FindFlagFunc _find_flag_func;
+
     static uintptr_t readSymbol(const char* symbol_name);
     static void initOffsets();
     static void resolveOffsets();
@@ -121,6 +124,9 @@ class VMStructs {
     }
 
     static void checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni, jmethodID method, void *address);
+  private:
+    static const void* findHeapUsageFunc();
+    static bool isFlagTrue(const char* name);
 
   public:
     static void init(CodeCache* libjvm);
