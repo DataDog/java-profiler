@@ -710,6 +710,17 @@ void Profiler::recordTraceRoot(int tid, TraceRootEvent *event) {
     _locks[lock_index].unlock();
 }
 
+void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
+    u32 lock_index = getLockIndex(tid);
+    if (!_locks[lock_index].tryLock() &&
+        !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+        !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+        return;
+    }
+    _jfr.recordQueueTime(lock_index, tid, event);
+    _locks[lock_index].unlock();
+}
+
 void Profiler::recordExternalSample(u64 counter, int tid, int num_frames, ASGCT_CallFrame* frames, bool truncated, jint event_type, Event* event) {
     atomicInc(_total_samples);
 

@@ -29,6 +29,7 @@
 #include "thread.h"
 #include "wallClock.h"
 #include "counters.h"
+#include "tsc.h"
 
 static void throwNew(JNIEnv* env, const char* exception_class, const char* message) {
     jclass cls = env->FindClass(exception_class);
@@ -188,4 +189,38 @@ Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(JNIEnv *env, jobjec
     env->ReleaseStringUTFChars(name, name_str);
     env->ReleaseStringUTFChars(value, value_str);
     env->ReleaseStringUTFChars(unit, unit_str);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(JNIEnv* env, jobject unused, jlong rootSpanId, jlong spanId,
+                                                         jlong startTime, jlong endTime, jstring task, jstring scheduler, jthread origin) {
+    int tid = ProfiledThread::currentTid();
+    if (tid < 0) {
+        return;
+    }
+    int origin_tid = VMThread::nativeThreadId(env, origin);
+    if (origin_tid < 0) {
+        return;
+    }
+    const char* task_str = env->GetStringUTFChars(task, NULL);
+    const char* scheduler_str = env->GetStringUTFChars(scheduler, NULL);
+    int task_offset = Profiler::instance()->lookupClass(task_str, env->GetStringUTFLength(task));
+    int scheduler_offset = Profiler::instance()->lookupClass(scheduler_str, env->GetStringUTFLength(scheduler));
+    env->ReleaseStringUTFChars(task, task_str);
+    env->ReleaseStringUTFChars(scheduler, scheduler_str);
+    QueueTimeEvent event;
+    event._local_root_span_id = rootSpanId;
+    event._span_id = spanId;
+    event._start = startTime;
+    event._end = endTime;
+    event._task = task_offset;
+    event._scheduler = scheduler_offset;
+    event._origin = origin_tid;
+    event._destination = tid;
+    Profiler::instance()->recordQueueTime(tid, &event);
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_currentTicks0(JNIEnv* env, jobject unused) {
+    return TSC::ticks();
 }
