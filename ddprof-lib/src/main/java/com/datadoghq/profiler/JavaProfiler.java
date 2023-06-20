@@ -401,6 +401,27 @@ public final class JavaProfiler {
     }
 
     /**
+     * Records when queueing ended
+     * @param rootSpanId the span id of the root span, or zero if there is no active trace
+     * @param spanId the span id of the active span, or zero if there is no active trace
+     * @param task the name of the enqueue task
+     * @param scheduler the name of the thread-pool or executor scheduling the task
+     * @param origin the thread the task was submitted on
+     */
+    public void recordQueueTime(long rootSpanId, long spanId, long startTicks, long endTicks, Class<?> task, Class<?> scheduler,
+                               Thread origin) {
+        recordQueueEnd0(rootSpanId, spanId, startTicks, endTicks, task.getName(), scheduler.getName(), origin);
+    }
+
+    /**
+     * Get the ticks for the current thread.
+     * @return ticks
+     */
+    public long getCurrentTicks() {
+        return currentTicks0();
+    }
+
+    /**
      * If the profiler is built in debug mode, returns counters recorded during profile execution.
      * These are for whitebox testing and not intended for production use.
      * @return a map of counters
@@ -494,5 +515,8 @@ public final class JavaProfiler {
 
     private static native void recordSettingEvent0(String name, String value, String unit);
 
-    private static native void setCurrentThreadState0(int state);
+    private static native void recordQueueEnd0(long rootSpanId, long spanId, long startTicks,
+                                               long endTicks, String task, String scheduler, Thread origin);
+
+    private static native long currentTicks0();
 }
