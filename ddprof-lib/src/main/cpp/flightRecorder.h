@@ -43,6 +43,7 @@ class FlightRecorder {
     void flush();
     void wallClockEpoch(int lock_index, WallClockEpochEvent* event);
     void recordTraceRoot(int lock_index, int tid, TraceRootEvent* event);
+    void recordQueueTime(int lock_index, int tid, QueueTimeEvent* event);
 
     bool active() const {
         return _rec != NULL;

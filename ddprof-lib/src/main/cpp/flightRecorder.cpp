@@ -198,7 +198,13 @@ class Lookup {
         char* method_sig = NULL;
 
         jint class_modifiers = 0;
-        if (JVM::is_readable_pointer((void*)method) && jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
+        // Try to assert the jmethodID validity - jmethodID values from the previously unloaded classes should
+        // either be NULL or 'unreadable' (the readability check is possible only on Hotspot JDK 11+).
+        // The 'jmethodID' is a pointer to pointer to 'Method' so we do two-level check, just to be sure.
+        bool isJmethodIdValid = method != NULL && JVM::is_readable_pointer((void*)method) &&
+                                  (*(void**)method) != NULL && JVM::is_readable_pointer((void*)*((void**)method));
+        if (isJmethodIdValid &&
+            jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
             jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
             jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
             mi->_class = _classes->lookup(class_name + 1, strlen(class_name) - 2);
@@ -396,6 +402,14 @@ class Recording {
     }
 
     off_t finishChunk(bool end_recording) {
+        jvmtiEnv* jvmti = VM::jvmti();
+        JNIEnv* env = VM::jni();
+
+        jclass* classes;
+        jint count = 0;
+        // obtaining the class list will create local refs to all loaded classes, effectively preventing them from being unloaded while flushing
+        jvmtiError err = jvmti->GetLoadedClasses(&count, &classes);
+
         flush(&_cpu_monitor_buf);
 
         writeNativeLibraries(_buf);
@@ -460,6 +474,15 @@ class Recording {
         OS::freePageCache(_fd, _chunk_start);
 
         _buf->reset();
+        
+        if (!err) {
+            // delete all local references
+            for (int i = 0; i < count; i++) {
+                env->DeleteLocalRef((jobject)classes[i]);
+            }
+            // deallocate the class array
+            jvmti->Deallocate((unsigned char*)classes);
+        }
         return chunk_end;
     }
 
@@ -1210,6 +1233,21 @@ class Recording {
         flushIfNeeded(buf);
     }
 
+    void recordQueueTime(Buffer* buf, QueueTimeEvent* event) {
+        int start = buf->skip(1);
+        buf->putVar64(T_QUEUE_TIME);
+        buf->putVar64(event->_start);
+        buf->putVar64(event->_end);
+        buf->putVar64(event->_destination);
+        buf->putVar64(event->_origin);
+        buf->putVar64(event->_task);
+        buf->putVar64(event->_scheduler);
+        buf->putVar64(event->_span_id);
+        buf->putVar64(event->_local_root_span_id);
+        writeEventSizePrefix(buf, start);
+        flushIfNeeded(buf);
+    }
+
     void recordAllocation(RecordingBuffer* buf, int tid, u32 call_trace_id, AllocEvent* event) {
         int start = buf->skip(1);
         buf->putVar64(T_ALLOC);
@@ -1383,6 +1421,13 @@ void FlightRecorder::recordTraceRoot(int lock_index, int tid, TraceRootEvent* ev
     if (_rec != NULL) {
         Buffer* buf = _rec->buffer(lock_index);
         _rec->recordTraceRoot(buf, tid, event);
+    }
+}
+
+void FlightRecorder::recordQueueTime(int lock_index, int tid, QueueTimeEvent* event) {
+    if (_rec != NULL) {
+        Buffer* buf = _rec->buffer(lock_index);
+        _rec->recordQueueTime(buf, event);
     }
 }
 

@@ -221,6 +221,7 @@ class Profiler {
     void recordExternalSample(u64 counter, int tid, int num_frames, ASGCT_CallFrame* frames, bool truncated, jint event_type, Event* event);
     void recordWallClockEpoch(int tid, WallClockEpochEvent* event);
     void recordTraceRoot(int tid, TraceRootEvent* event);
+    void recordQueueTime(int tid, QueueTimeEvent* event);
     void writeLog(LogLevel level, const char* message);
     void writeLog(LogLevel level, const char* message, size_t len);
     void writeDatadogProfilerSetting(int tid, int length, const char* name, const char* value, const char* unit);
