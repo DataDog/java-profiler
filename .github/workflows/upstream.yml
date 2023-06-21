@@ -73,7 +73,7 @@ jobs:
           git push --atomic upstream HEAD:main v_${VERSION}
 
   release-from-upstream:
-    if: startsWith(github.event.ref, 'refs/tags/v_') && endsWith(github.repository, 'java-profiler')
+    if: startsWith(github.event.ref, 'refs/tags/v_') && !endsWith(github.event.ref, '-SNAPSHOT') && endsWith(github.repository, 'java-profiler')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
