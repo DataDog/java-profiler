@@ -43,4 +43,9 @@ tasks.withType(Test) {
 
 tasks.withType(JavaCompile).configureEach {
     options.compilerArgs.addAll(['--release', '8'])
+
+    if (name == "compileTestJava") {
+        sourceCompatibility = '8'
+        targetCompatibility = '8'
+    }
 }
