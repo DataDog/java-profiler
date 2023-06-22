@@ -658,7 +658,10 @@ class Recording {
         std::vector<std::string>& strings = JfrMetadata::strings();
         buf->putVar64(strings.size());
         for (int i = 0; i < strings.size(); i++) {
-            buf->putUtf8(strings[i].c_str());
+            const char* string = strings[i].c_str();
+            int length = strlen(string);
+            flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - length);
+            buf->putUtf8(string, length);
         }
 
         writeElement(buf, JfrMetadata::root());
@@ -672,12 +675,14 @@ class Recording {
 
         buf->putVar64(e->_attributes.size());
         for (int i = 0; i < e->_attributes.size(); i++) {
+            flushIfNeeded(buf);
             buf->putVar64(e->_attributes[i]._key);
             buf->putVar64(e->_attributes[i]._value);
         }
 
         buf->putVar64(e->_children.size());
         for (int i = 0; i < e->_children.size(); i++) {
+            flushIfNeeded(buf);
             writeElement(buf, e->_children[i]);
         }
         flushIfNeeded(buf);
@@ -742,6 +747,7 @@ class Recording {
     }
 
     void writeStringSetting(Buffer* buf, int category, const char* key, const char* value) {
+        flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - (2 * MAX_STRING_LENGTH + MAX_JFR_EVENT_SIZE));
         int start = buf->skip(5);
         buf->putVar64(T_ACTIVE_SETTING);
         buf->putVar64(_start_ticks);
@@ -831,6 +837,8 @@ class Recording {
         char str[512];
         snprintf(str, sizeof(str) - 1, "uname: %s %s %s %s", u.sysname, u.release, u.version, u.machine);
         str[sizeof(str) - 1] = 0;
+
+        flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - (2 * strlen(str) + strlen(u.machine)));
 
         int start = buf->skip(5);
         buf->putVar64(T_OS_INFORMATION);
@@ -1476,23 +1484,24 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u32 call_trace_id,
 }
 
 void FlightRecorder::recordLog(LogLevel level, const char* message, size_t len) {
-    if (!_rec_lock.tryLockShared()) {
-        // No active recording
-        return;
-    }
-
-    if (len > MAX_STRING_LENGTH) len = MAX_STRING_LENGTH;
-    // cppcheck-suppress obsoleteFunctions
-    Buffer* buf = (Buffer*)alloca(len + 40);
-    buf->reset();
-
-    int start = buf->skip(5);
-    buf->putVar64(T_LOG);
-    buf->putVar64(TSC::ticks());
-    buf->putVar64(level);
-    buf->putUtf8(message, len);
-    buf->putVar32(start, buf->offset() - start);
-    _rec->flush(buf);
-
-    _rec_lock.unlockShared();
+    return;
+//    if (!_rec_lock.tryLockShared()) {
+//        // No active recording
+//        return;
+//    }
+//
+//    if (len > MAX_STRING_LENGTH) len = MAX_STRING_LENGTH;
+//    // cppcheck-suppress obsoleteFunctions
+//    Buffer* buf = (Buffer*)alloca(len + 40);
+//    buf->reset();
+//
+//    int start = buf->skip(5);
+//    buf->putVar64(T_LOG);
+//    buf->putVar64(TSC::ticks());
+//    buf->putVar64(level);
+//    buf->putUtf8(message, len);
+//    buf->putVar32(start, buf->offset() - start);
+//    _rec->flush(buf);
+//
+//    _rec_lock.unlockShared();
 }
