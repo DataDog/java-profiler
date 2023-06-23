@@ -64,4 +64,5 @@ jobs:
           fi
           CURRENT_VERSION=$(./gradlew createRelease | grep 'Creating tag' | cut -f2 -d'_')
           git checkout -b release/$CURRENT_VERSION
-          git push $DRY_RUN --atomic --set-upstream origin release/$CURRENT_VERSION v_${CURRENT_VERSION}
+          git push $DRY_RUN --atomic --set-upstream origin release/$CURRENT_VERSION
+          git push $DRY_RUN --atomic --tags
