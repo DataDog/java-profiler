@@ -791,6 +791,7 @@ class Recording {
         buf->putUtf8(value);
         buf->putUtf8(unit);
         buf->putVar32(start, buf->offset() - start);
+        flushIfNeeded(buf);
     }
 
     void writeDatadogProfilerConfig(Buffer* buf,
@@ -1229,6 +1230,7 @@ class Recording {
     }
 
     void recordTraceRoot(Buffer* buf, int tid, TraceRootEvent* event) {
+        flushIfNeeded(buf);
         int start = buf->skip(1);
         buf->putVar64(T_ENDPOINT);
         buf->putVar64(TSC::ticks());
