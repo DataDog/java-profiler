@@ -201,6 +201,9 @@ Error Arguments::parse(const char* args) {
                         }
                         if (strchr(config, 'l')) {
                             _record_liveness = true;
+                        } else if (strchr(config, 'L')) {
+                            _record_liveness = true;
+                            _record_heap_usage = true;
                         }
                     } else {
                         // enable both allocations and liveness tracking

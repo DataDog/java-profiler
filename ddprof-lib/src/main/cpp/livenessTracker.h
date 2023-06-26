@@ -55,6 +55,8 @@ class LivenessTracker  {
     int _table_max_cap;
     TrackingEntry *_table;
 
+    bool _record_heap_usage;
+
     jclass _Class;
     jmethodID _Class_getName;
 
@@ -82,7 +84,7 @@ class LivenessTracker  {
         return _instance;
     }
 
-    LivenessTracker() : _initialized(false), _stored_error(Error::OK), _table_size(0), _table_cap(0), _table(NULL), _table_max_cap(0), _Class(NULL), _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0), _used_after_last_gc(0) {}
+    LivenessTracker() : _initialized(false), _stored_error(Error::OK), _table_size(0), _table_cap(0), _table(NULL), _table_max_cap(0), _record_heap_usage(false), _Class(NULL), _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0), _used_after_last_gc(0) {}
 
     Error start(Arguments& args);
     void stop();

@@ -106,13 +106,15 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
 
     _table_lock.unlockShared();
 
-    bool isLastGc = HeapUsage::isLastGCUsageSupported();
-    size_t used = isLastGc ? HeapUsage::get()._used_at_last_gc : loadAcquire(_used_after_last_gc);
-    if (used == 0) {
-        used = HeapUsage::get()._used;
-        isLastGc = false;
+    if (_record_heap_usage) {
+        bool isLastGc = HeapUsage::isLastGCUsageSupported();
+        size_t used = isLastGc ? HeapUsage::get()._used_at_last_gc : loadAcquire(_used_after_last_gc);
+        if (used == 0) {
+            used = HeapUsage::get()._used;
+            isLastGc = false;
+        }
+        Profiler::instance()->writeHeapUsage(used, isLastGc);
     }
-    Profiler::instance()->writeHeapUsage(used, isLastGc);
 
     end = OS::nanotime();
     Log::debug("Liveness tracker flush took %.2fms (%.2fus/element)",
@@ -215,6 +217,8 @@ Error LivenessTracker::initialize(Arguments& args) {
     _table_size = 0;
     _table_cap = __min(2048, _table_max_cap); // with default 512k sampling interval, it's enough for 1G of heap
     _table = (TrackingEntry*)malloc(sizeof(TrackingEntry) * _table_cap);
+
+    _record_heap_usage = args._record_heap_usage;
 
     _gc_epoch = 0;
     _last_gc_epoch = 0;
