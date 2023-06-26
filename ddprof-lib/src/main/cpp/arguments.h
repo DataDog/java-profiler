@@ -130,6 +130,7 @@ class Arguments {
     long _memory;
     bool _record_allocations;
     bool _record_liveness;
+    bool _record_heap_usage;
     int  _jstackdepth;
     int _safe_mode;
     const char* _file;
@@ -157,6 +158,7 @@ class Arguments {
         _memory(-1),
         _record_allocations(false),
         _record_liveness(false),
+        _record_heap_usage(false),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),
         _file(NULL),
