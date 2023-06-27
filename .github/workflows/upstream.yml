@@ -1,5 +1,5 @@
 name: Upstream
-run-name: Release ${{ inputs.release_branch }} ${{ github.event.ref_name }}
+run-name: Release ${{ inputs.release_tag }} ${{ github.event.ref_name }}
 on: 
   workflow_dispatch:
     inputs:
@@ -56,7 +56,6 @@ jobs:
           else
             VERSION=$(echo "${{ inputs.release_tag }}" | sed 's#v_##g')
           fi
-          echo "-> ${VERSION}"
           git config --global user.email "java-profiler@datadoghq.com"
           git config --global user.name "Datadog Java Profiler"
           # force checkout of the branch to merge upstream

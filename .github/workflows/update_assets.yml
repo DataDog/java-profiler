@@ -1,0 +1,58 @@
+name: Update assets
+run-name: Update assets for ${{ inputs.release_tag }}
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        type: string
+        description: "Release tag"
+        required: true
+  push:
+    tags:
+      - v_*.*.*
+
+jobs:
+  update-assets:
+    if: (startsWith(github.event.ref, 'refs/tags/v_') || inputs.release_tag != '') && !endsWith(github.event.ref, '-SNAPSHOT')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Assets
+        id: download-assets
+        timeout-minutes: 30
+        run: |
+          sudo apt update && apt install -y wget unzip
+          TAG=${{ inputs.release_tag }}
+          if [ -z "$TAG" ]; then
+            TAG="$GITHUB_REF_NAME"
+          fi
+          VERSION=$(echo "${TAG}" | sed -e 's/v_//g')
+          ASSET_URL="https://oss.sonatype.org/service/local/repositories/releases/content/com/datadoghq/ddprof/${VERSION}/ddprof-${VERSION}.jar"
+          RESULT=1
+          while [ $RESULT -ne 0 ]; do
+            wget -q $ASSET_URL
+            RESULT=$?
+            if [ $RESULT -ne 0 ]; then
+              echo "Artifact not available. Retrying in 30 seconds."
+              sleep 30
+            fi
+          done
+      - name: Prepare Assets
+        id: prepare-assets
+        run: |
+          LIB_BASE_DIR="ddprof-${VERSION}/META-INF/native-libs"
+          mkdir assets
+          cp ddprof-${VERSION}.jar assets/ddprof.jar
+          cp ddprof-${VERSION}.jar assets/ddprof-${VERSION}.jar
+          unzip ddprof-${VERSION}.jar
+          mv ${LIB_BASE_DIR}/linux-arm64/libjavaProfiler.so assets/libjavaProfiler_linux-arm64.so
+          mv ${LIB_BASE_DIR}/linux-x64/libjavaProfiler.so assets/libjavaProfiler_linux-x64.so
+          mv ${LIB_BASE_DIR}/linux-arm64-musl/libjavaProfiler.so assets/libjavaProfiler_linux-arm64-musl.so
+          mv ${LIB_BASE_DIR}/linux-x64-musl/libjavaProfiler.so assets/libjavaProfiler_linux-x64-musl.so
+      - name: Update release ${{ inputs.release_tag }}
+        id: update-release
+        uses: ncipollo/release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ inputs.release_tag}}
+          allowUpdates: true
+          artifacts: assets/ddprof*.jar,assets/*.so
