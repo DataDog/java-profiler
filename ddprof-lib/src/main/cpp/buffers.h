@@ -144,6 +144,7 @@ class Buffer {
     }
 
     void putUtf8(const char* v, u32 len) {
+        len = len < MAX_STRING_LENGTH ? len : MAX_STRING_LENGTH;
         put8(3);
         putVar32(len);
         put(v, len);
