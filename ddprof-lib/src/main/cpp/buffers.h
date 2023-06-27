@@ -139,7 +139,7 @@ class Buffer {
             put8(0);
         } else {
             size_t len = strlen(v);
-            putUtf8(v, len < MAX_STRING_LENGTH ? len : MAX_STRING_LENGTH);
+            putUtf8(v, len);
         }
     }
 

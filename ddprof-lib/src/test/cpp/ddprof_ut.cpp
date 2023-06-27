@@ -60,6 +60,23 @@
         free(str);
     }
 
+    TEST(Buffer, writeStringWithLength) {
+        int clen = 1 << 16;
+        char* str = (char*)malloc(clen + 1);
+        memset(str, 'a', clen);
+        str[clen] = 0;
+
+        RecordingBuffer buf[2];
+
+        buf[0].putUtf8(str, clen);
+        // should be able to write to the adjacent buffer unaffected
+        buf[1].put8(1);
+        EXPECT_EQ(1, buf[1].data()[0]);
+        // long string should have been truncated to 8191 characters
+        int prefix = 1 + (31 - __builtin_clz(8191)) / 7 + 1;
+        EXPECT_EQ(0, buf[0].data()[prefix + 8191]);
+    }
+
     TEST(OS, threadId_sanity) {
         EXPECT_FALSE(OS::getMaxThreadId() < 0);
     }
