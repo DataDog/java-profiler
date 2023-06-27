@@ -11,6 +11,14 @@
 
 const int BUFFER_SIZE = 1024;
 const int BUFFER_LIMIT = BUFFER_SIZE - 128;
+// we use this space, which is larger than the longest string we will store,
+// as a temporary defence against overflow. If we ever write into this space
+// we may produce a corrupt recording, which is sad, but we can't overwrite
+// offsets in the adjacent buffer, which has been a frequent cause of hard to
+// diagnose crashes. Ultimately, the entire FlightRecorder implementation needs
+// to be reworked for the sake of safety, but this small change derisks the legacy
+// implementation at a runtime cost of 16 * 8KiB = 128KiB
+const int RECORDING_BUFFER_OVERFLOW = 8192;
 const int RECORDING_BUFFER_SIZE = 65536;
 const int RECORDING_BUFFER_LIMIT = RECORDING_BUFFER_SIZE - 4096;
 const int MAX_STRING_LENGTH = 8191;
@@ -157,7 +165,12 @@ class Buffer {
 class RecordingBuffer : public Buffer {
   private:
     static const int _limit = RECORDING_BUFFER_SIZE - sizeof(Buffer);
-    char _buf[_limit];
+    // we reserve 8KiB to overflow in to in case event serialisers in
+    // the flight recorder are buggy. If we ever use the overflow,
+    // which is sized to accomodate the largest possible string, we
+    // will truncate and may produce a corrupt recording, but we will
+    // not write into arbitrary memory.
+    char _buf[_limit + RECORDING_BUFFER_OVERFLOW];
 
   public:
     RecordingBuffer() : Buffer() {

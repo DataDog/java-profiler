@@ -244,8 +244,10 @@ configurations {
 
 artifacts {
     assembled(assembleJar)
+    assembled(assembleDebugJar)
     assembled(sourcesJar)
     assembled(javadocJar)
+    assembled(assembleDebugJar)
     debug(assembleDebugJar)
 }
 
@@ -253,6 +255,7 @@ publishing {
     publications {
         assembled(MavenPublication) { publication ->
             publication.artifact project.tasks.assembleJar
+            publication.artifact project.tasks.assembleDebugJar
             publication.artifact sourcesJar
             publication.artifact javadocJar
 
