@@ -47,6 +47,7 @@ file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/../main/cpp/os_${OS_SUFFIX}.cpp"
     "${PROJECT_SOURCE_DIR}/../main/cpp/context.cpp"
     "${PROJECT_SOURCE_DIR}/../main/cpp/counters.cpp"
+    "${PROJECT_SOURCE_DIR}/../main/cpp/threadFilter.cpp"
 )
 
 ## Declare unit tests with add_unit_test / add_java_unit_test

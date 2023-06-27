@@ -33,16 +33,16 @@ const u32 MAX_BITMAPS = (1U << 31) / BITMAP_CAPACITY;
 // update operations are mostly lock-free, except rare bitmap allocations
 class ThreadFilter {
   private:
-    u32* _bitmap[MAX_BITMAPS];
+    u64* _bitmap[MAX_BITMAPS];
     bool _enabled;
     volatile int _size;
 
-    u32* bitmap(int thread_id) {
+    u64* bitmap(int thread_id) {
         return _bitmap[(u32)thread_id / BITMAP_CAPACITY];
     }
 
-    u32& word(u32* bitmap, int thread_id) {
-        return bitmap[((u32)thread_id % BITMAP_CAPACITY) >> 5];
+    u64& word(u64* bitmap, int thread_id) {
+        return bitmap[((u32)thread_id % BITMAP_CAPACITY) >> 6];
     }
 
   public:

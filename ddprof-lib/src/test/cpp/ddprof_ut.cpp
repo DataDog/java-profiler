@@ -3,6 +3,8 @@
     #include "buffers.h"
     #include "context.h"
     #include "os.h"
+    #include "threadFilter.h"
+    #include <vector>
 
     ssize_t callback(char* ptr, int len) {
         fprintf(stderr, "here\n");
@@ -99,6 +101,34 @@
         EXPECT_EQ(1, Contexts::getMaxPages(DD_CONTEXT_PAGE_SIZE));
         EXPECT_EQ(2, Contexts::getMaxPages(DD_CONTEXT_PAGE_SIZE + 1));
         EXPECT_EQ(2048, Contexts::getMaxPages(2097152));
+    }
+
+    TEST(ThreadFilter, testThreadFilter) {
+        int maxTid = OS::getMaxThreadId();
+        ThreadFilter filter;
+        filter.init("");
+        ASSERT_TRUE(filter.enabled());
+        EXPECT_EQ(0, filter.size());
+        // increase step gradually to create different bit densities
+        int step = 1;
+        int size = 0;
+        for (int tid = 0; tid < maxTid - step - 1; tid += step, size++) {
+            EXPECT_FALSE(filter.accept(tid));
+            filter.add(tid);
+            EXPECT_TRUE(filter.accept(tid));
+            step++;
+        }
+        ASSERT_EQ(size, filter.size());
+        std::vector<int> tids;
+        tids.reserve(size);
+        filter.collect(tids);
+        ASSERT_EQ(size, tids.size());
+        for (int tid : tids) {
+            ASSERT_TRUE(filter.accept(tid));
+            filter.remove(tid);
+            ASSERT_FALSE(filter.accept(tid));
+        }
+        EXPECT_EQ(0, filter.size());
     }
 
     int main(int argc, char **argv) {
