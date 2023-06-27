@@ -1,4 +1,4 @@
-name: Update assets
+name: Update Release Assets
 run-name: Update assets for ${{ inputs.release_tag }}
 on:
   workflow_dispatch:
@@ -16,11 +16,14 @@ jobs:
     if: (startsWith(github.event.ref, 'refs/tags/v_') || inputs.release_tag != '') && !endsWith(github.event.ref, '-SNAPSHOT')
     runs-on: ubuntu-latest
     steps:
+      - name: Setup System
+        id: setup-system
+        run: |
+          sudo apt update && sudo apt install -y wget unzip
       - name: Download Assets
         id: download-assets
         timeout-minutes: 30
         run: |
-          sudo apt update && apt install -y wget unzip
           TAG=${{ inputs.release_tag }}
           if [ -z "$TAG" ]; then
             TAG="$GITHUB_REF_NAME"
@@ -36,10 +39,11 @@ jobs:
               sleep 30
             fi
           done
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
       - name: Prepare Assets
         id: prepare-assets
         run: |
-          LIB_BASE_DIR="ddprof-${VERSION}/META-INF/native-libs"
+          LIB_BASE_DIR="META-INF/native-libs"
           mkdir assets
           cp ddprof-${VERSION}.jar assets/ddprof.jar
           cp ddprof-${VERSION}.jar assets/ddprof-${VERSION}.jar
@@ -53,6 +57,8 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ inputs.release_tag}}
+          tag: "v_${{ env.VERSION }}"
           allowUpdates: true
+          generateReleaseNotes: true
+          omitBodyDuringUpdate: true
           artifacts: assets/ddprof*.jar,assets/*.so
