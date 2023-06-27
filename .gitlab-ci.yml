@@ -18,3 +18,5 @@ trigger_internal_build:
     project: DataDog/apm-reliability/async-profiler-build
     strategy: depend
     branch: $DOWNSTREAM_BRANCH
+    forward:
+      pipeline_variables: true
