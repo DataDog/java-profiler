@@ -247,6 +247,7 @@ artifacts {
     assembled(assembleDebugJar)
     assembled(sourcesJar)
     assembled(javadocJar)
+    assembled(assembleDebugJar)
     debug(assembleDebugJar)
 }
 
@@ -257,12 +258,6 @@ publishing {
             publication.artifact project.tasks.assembleDebugJar
             publication.artifact sourcesJar
             publication.artifact javadocJar
-
-            publication.groupId = 'com.datadoghq'
-            publication.artifactId = 'ddprof'
-        }
-        debug(MavenPublication) { publication ->
-            publication.artifact project.tasks.assembleDebugJar
 
             publication.groupId = 'com.datadoghq'
             publication.artifactId = 'ddprof'
