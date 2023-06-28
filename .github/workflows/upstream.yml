@@ -59,7 +59,8 @@ jobs:
           git config --global user.email "java-profiler@datadoghq.com"
           git config --global user.name "Datadog Java Profiler"
           # force checkout of the branch to merge upstream
-          git checkout release/${VERSION}
+          git checkout v_${VERSION}
+          git checkout -b release/${VERSION}
           git remote add upstream git@github.com:DataDog/java-profiler.git
           git remote update
           git checkout upstream/main
