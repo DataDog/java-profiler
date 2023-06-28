@@ -40,7 +40,7 @@ if [ "$BRANCH" != "$RELEASE_BRANCH" ]; then
     git add build.gradle
     git commit -m "[Automated] Release ${BASE}"
   fi
-  git push $DRYRUN --set-upstream origin $RELEASE_BRANCH
+  git push $DRYRUN --atomic --set-upstream origin $RELEASE_BRANCH
   git checkout $BRANCH
 else
   git tag -f v_$BASE
@@ -57,5 +57,5 @@ CANDIDATE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 
 git add build.gradle
 git commit -m "[Automated] Bump dev version to ${CANDIDATE}"
 
-git push $DRYRUN --set-upstream origin $BRANCH
-git push $DRYRUN --tags
+git push $DRYRUN --atomic --set-upstream origin $BRANCH
+git push $DRYRUN --atomic --tags
