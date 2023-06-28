@@ -14,7 +14,9 @@ plugins {
   id "com.diffplug.spotless" version "6.11.0"
 }
 
-version = "0.58.0"
+version = "0.59.0"
+version = project.hasProperty("ddprof_version") ? project.ddprof_version : version;
+
 apply plugin: "com.dipien.semantic-version"
 
 repositories {
