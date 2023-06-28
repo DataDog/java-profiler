@@ -48,24 +48,15 @@ jobs:
             echo "::error::A patch release can be performed only from a release branch"
             exit 1
           fi
+          if [ "${{ inputs.release_type }}" != "patch" ]&& [[ ! ${GITHUB_REF_NAME} =~ main ]]; then
+            echo "::error::A major or minor release can be performed only from 'main' branch"
+            exit 1
+          fi
           if [ "${{ inputs.dry_run }}" == "true" ]; then
             DRY_RUN="--dry-run"
           fi
 
+          TYPE="${{ inputs.release_type }}"
           cd java-profiler
           git checkout $GITHUB_REF_NAME
-          CURRENT_VERSION=$(./gradlew createRelease | grep 'Creating tag' | cut -f2 -d'_')
-          # version = 0.1.0-SNAPSHOT
-          if [ "${{ inputs.release_type }}" == "major" ]; then
-            ./gradlew markNextVersion -Prelease.incrementer=incrementMajor
-            # version = 1.0.0-SNAPSHOT
-          elif [ "${{ inputs.release_type }}" == "minor" ]; then
-            ./gradlew markNextVersion -Prelease.incrementer=incrementMinor
-            # version = 0.2.0-SNAPSHOT
-          elif [ "${{ inputs.release_type }}" == "patch" ]; then
-            ./gradlew markNextVersion -Prelease.incrementer=incrementPatch
-            # version = 0.1.1-SNAPSHOT
-          fi
-          git checkout -b release/$CURRENT_VERSION
-          git push $DRY_RUN --atomic --set-upstream origin release/$CURRENT_VERSION
-          git push $DRY_RUN --atomic --tags
+          ./.github/scripts/release.sh ${TYPE^^} $DRY_RUN

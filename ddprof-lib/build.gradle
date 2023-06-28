@@ -12,6 +12,8 @@ def libraryName = "ddprof"
 
 description = "Datadog Java Profiler Library"
 
+def component_version = project.hasProperty("ddprof_version") ? project.ddprof_version : project.version
+
 // this feels weird but it is the only way invoking `./gradlew :ddprof-lib:*` tasks will work
 if (rootDir.toString().endsWith("ddprof-lib")) {
     apply from: rootProject.file('../common.gradle')
@@ -168,14 +170,14 @@ task sourcesJar(type: Jar) {
     from sourceSets.main.allJava
     archiveBaseName = libraryName
     archiveClassifier = "sources"
-    archiveVersion = version
+    archiveVersion = component_version
 }
 
 task javadocJar(type: Jar) {
     dependsOn javadoc
     archiveBaseName = libraryName
     archiveClassifier = 'javadoc'
-    archiveVersion = version
+    archiveVersion = component_version
     from javadoc.destinationDir
 }
 
@@ -188,7 +190,7 @@ task assembleJar(type: Jar) {
     }
     archiveBaseName = libraryName
     archiveClassifier = ""
-    archiveVersion = version
+    archiveVersion = component_version
     from sourceSets.main.output.classesDirs
 }
 
@@ -198,7 +200,7 @@ task assembleDebugJar(type: Jar) {
     }
     archiveBaseName = libraryName
     archiveClassifier = "debug"
-    archiveVersion = version
+    archiveVersion = component_version
     from sourceSets.main.output.classesDirs
 }
 
@@ -269,7 +271,7 @@ tasks.withType(GenerateMavenPom).configureEach {
     doFirst {
         MavenPom pom = it.pom
         pom.name = project.name
-        pom.description = "${project.description} (${project.version})"
+        pom.description = "${project.description} (${component_version})"
         pom.packaging = "jar"
         pom.url = "https://github.com/datadog/java-profiler"
         pom.licenses {

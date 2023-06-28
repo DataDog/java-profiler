@@ -1,6 +1,6 @@
 buildscript {
   dependencies {
-    classpath "pl.allegro.tech.build:axion-release-plugin:1.15.0"
+    classpath("com.dipien:semantic-version-gradle-plugin:2.0.0")
   }
   repositories {
     mavenLocal()
@@ -10,10 +10,12 @@ buildscript {
 }
 
 plugins {
-  id 'pl.allegro.tech.build.axion-release' version '1.15.0'
   id 'io.github.gradle-nexus.publish-plugin' version '1.1.0'
   id "com.diffplug.spotless" version "6.11.0"
 }
+
+version = "0.58.0"
+apply plugin: "com.dipien.semantic-version"
 
 repositories {
   mavenLocal()
@@ -31,14 +33,16 @@ repositories {
   }
 }
 
-apply from: "$rootDir/gradle/scm.gradle"
 apply from: "$rootDir/gradle/spotless.gradle"
 
 allprojects {
   group = 'com.datadoghq'
-  version = scmVersion.version
 
   apply from: rootProject.file('common.gradle')
+}
+
+subprojects {
+  version = rootProject.version
 }
 
 apply from: rootProject.file('common.gradle')

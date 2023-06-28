@@ -24,6 +24,8 @@ jobs:
         id: download-assets
         timeout-minutes: 30
         run: |
+          # ignore errors to allow reattempted downloads
+          set +e
           TAG=${{ inputs.release_tag }}
           if [ -z "$TAG" ]; then
             TAG="$GITHUB_REF_NAME"
