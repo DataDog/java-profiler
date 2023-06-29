@@ -14,10 +14,10 @@ plugins {
   id "com.diffplug.spotless" version "6.11.0"
 }
 
-version = "0.59.0"
-version = project.hasProperty("ddprof_version") ? project.ddprof_version : version;
+version = "0.60.0"
 
 apply plugin: "com.dipien.semantic-version"
+version = project.hasProperty("ddprof_version") ? project.ddprof_version : version;
 
 repositories {
   mavenLocal()
