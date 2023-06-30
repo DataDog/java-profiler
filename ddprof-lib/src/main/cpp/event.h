@@ -149,15 +149,11 @@ class TraceRootEvent {
 };
 
 typedef struct QueueTimeEvent {
-    u64 _local_root_span_id;
-    u64 _span_id;
     u64 _start;
     u64 _end;
     u32 _task;
     u32 _scheduler;
     u32 _origin;
-    u32 _destination;
-
 } QueueTimeEvent;
 
 #endif // _EVENT_H

@@ -402,15 +402,14 @@ public final class JavaProfiler {
 
     /**
      * Records when queueing ended
-     * @param rootSpanId the span id of the root span, or zero if there is no active trace
-     * @param spanId the span id of the active span, or zero if there is no active trace
+     * @param thresholdMillis threshold for emitting an event
      * @param task the name of the enqueue task
      * @param scheduler the name of the thread-pool or executor scheduling the task
      * @param origin the thread the task was submitted on
      */
-    public void recordQueueTime(long rootSpanId, long spanId, long startTicks, long endTicks, Class<?> task, Class<?> scheduler,
+    public void recordQueueTime(long thresholdMillis, long startTicks, long endTicks, Class<?> task, Class<?> scheduler,
                                Thread origin) {
-        recordQueueEnd0(rootSpanId, spanId, startTicks, endTicks, task.getName(), scheduler.getName(), origin);
+        recordQueueEnd0(thresholdMillis, startTicks, endTicks, task.getName(), scheduler.getName(), origin);
     }
 
     /**
@@ -515,8 +514,7 @@ public final class JavaProfiler {
 
     private static native void recordSettingEvent0(String name, String value, String unit);
 
-    private static native void recordQueueEnd0(long rootSpanId, long spanId, long startTicks,
-                                               long endTicks, String task, String scheduler, Thread origin);
+    private static native void recordQueueEnd0(long thresholdMillis, long startTicks, long endTicks, String task, String scheduler, Thread origin);
 
     private static native long currentTicks0();
 }

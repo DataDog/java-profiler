@@ -187,8 +187,8 @@ void WallClock::timerLoop() {
         epoch.updateNumSuccessfulSamples(reservoir.size() - num_failures);
         epoch.updateNumExitedThreads(threads_already_exited);
         epoch.updateNumPermissionDenied(permission_denied);
-        auto endTime = TSC::ticks();
-        auto duration = (1000 * (endTime - startTime)) / TSC::frequency();
+        u64 endTime = TSC::ticks();
+        u64 duration = TSC::ticks_to_millis(endTime - startTime);
         if (epoch.hasChanged() || duration >= 1000) {
             epoch.endEpoch(duration);
             Profiler::instance()->recordWallClockEpoch(self, &epoch);
