@@ -192,14 +192,18 @@ Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(JNIEnv *env, jobjec
 }
 
 extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(JNIEnv* env, jobject unused, jlong rootSpanId, jlong spanId,
-                                                         jlong startTime, jlong endTime, jstring task, jstring scheduler, jthread origin) {
+Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(JNIEnv* env, jobject unused, jlong thresholdMillis,
+                                                         jlong startTime, jlong endTime, jstring task,
+                                                         jstring scheduler, jthread origin) {
     int tid = ProfiledThread::currentTid();
     if (tid < 0) {
         return;
     }
     int origin_tid = VMThread::nativeThreadId(env, origin);
     if (origin_tid < 0) {
+        return;
+    }
+    if (TSC::is_within_threshold(thresholdMillis, endTime - startTime)) {
         return;
     }
     const char* task_str = env->GetStringUTFChars(task, NULL);
@@ -209,14 +213,11 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(JNIEnv* env, jobject un
     env->ReleaseStringUTFChars(task, task_str);
     env->ReleaseStringUTFChars(scheduler, scheduler_str);
     QueueTimeEvent event;
-    event._local_root_span_id = rootSpanId;
-    event._span_id = spanId;
     event._start = startTime;
     event._end = endTime;
     event._task = task_offset;
     event._scheduler = scheduler_offset;
     event._origin = origin_tid;
-    event._destination = tid;
     Profiler::instance()->recordQueueTime(tid, &event);
 }
 

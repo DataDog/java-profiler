@@ -39,7 +39,9 @@ public class QueueTimeTest extends AbstractProfilerTest {
 
         @Override
         public void run() {
-            profiler.recordQueueTime(2, 1, start, profiler.getCurrentTicks(), getClass(), QueueTimeTest.class, origin);
+            profiler.setContext(1, 2);
+            profiler.recordQueueTime(0, start, profiler.getCurrentTicks(), getClass(), QueueTimeTest.class, origin);
+            profiler.clearContext();
         }
     }
 
