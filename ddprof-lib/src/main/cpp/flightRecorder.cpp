@@ -1243,17 +1243,16 @@ class Recording {
         flushIfNeeded(buf);
     }
 
-    void recordQueueTime(Buffer* buf, QueueTimeEvent* event) {
+    void recordQueueTime(Buffer* buf, int tid, QueueTimeEvent* event) {
         int start = buf->skip(1);
         buf->putVar64(T_QUEUE_TIME);
         buf->putVar64(event->_start);
         buf->putVar64(event->_end);
-        buf->putVar64(event->_destination);
+        buf->putVar64(tid);
         buf->putVar64(event->_origin);
         buf->putVar64(event->_task);
         buf->putVar64(event->_scheduler);
-        buf->putVar64(event->_span_id);
-        buf->putVar64(event->_local_root_span_id);
+        writeContext(buf, Contexts::get(tid));
         writeEventSizePrefix(buf, start);
         flushIfNeeded(buf);
     }
@@ -1437,7 +1436,7 @@ void FlightRecorder::recordTraceRoot(int lock_index, int tid, TraceRootEvent* ev
 void FlightRecorder::recordQueueTime(int lock_index, int tid, QueueTimeEvent* event) {
     if (_rec != NULL) {
         Buffer* buf = _rec->buffer(lock_index);
-        _rec->recordQueueTime(buf, event);
+        _rec->recordQueueTime(buf, tid, event);
     }
 }
 
