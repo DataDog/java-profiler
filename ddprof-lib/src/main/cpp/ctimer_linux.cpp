@@ -64,7 +64,7 @@ static void** lookupThreadEntry() {
     if (VM::isZing()) {
         CodeCache* libazsys = Profiler::instance()->findLibraryByName("libazsys");
         if (libazsys != NULL) {
-            void** entry = libazsys->findGlobalOffsetEntry((void*)&pthread_setspecific);
+            void** entry = libazsys->findImport(im_pthread_setspecific);
             if (entry != NULL) {
                 return entry;
             }
@@ -72,7 +72,7 @@ static void** lookupThreadEntry() {
     }
 
     CodeCache* lib = Profiler::instance()->findJvmLibrary("libj9thr");
-    return lib != NULL ? lib->findGlobalOffsetEntry((void*)&pthread_setspecific) : NULL;
+    return lib != NULL ? lib->findImport(im_pthread_setspecific) : NULL;
 }
 
 long CTimer::_interval;

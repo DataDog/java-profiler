@@ -36,16 +36,16 @@ void NativeFunc::destroy(char* name) {
 }
 
 
-CodeCache::CodeCache(const char* name, short lib_index, const void* min_address, const void* max_address) {
+CodeCache::CodeCache(const char* name, short lib_index, bool imports_patchable,
+                     const void* min_address, const void* max_address) {
     _name = NativeFunc::create(name, -1);
     _lib_index = lib_index;
     _min_address = min_address;
     _max_address = max_address;
     _text_base = NULL;
 
-    _got_start = NULL;
-    _got_end = NULL;
-    _got_patchable = false;
+    memset(_imports, 0, sizeof(_imports));
+    _imports_patchable = imports_patchable;
 
     _dwarf_table = NULL;
     _dwarf_table_length = 0;
@@ -62,8 +62,7 @@ CodeCache::CodeCache(const CodeCache& other) {
     _max_address = other._max_address;
     _text_base = other._text_base;
 
-    _got_start = NULL;
-    _got_end = NULL;
+    _imports_patchable = other._imports_patchable;
 
     _dwarf_table_length = other._dwarf_table_length;
     _dwarf_table = new FrameDesc[_dwarf_table_length];
@@ -89,8 +88,7 @@ CodeCache& CodeCache::operator=(const CodeCache& other) {
         _max_address = other._max_address;
         _text_base = other._text_base;
 
-        _got_start = other._got_start;
-        _got_end = other._got_end;
+        _imports_patchable = other._imports_patchable;
 
         _dwarf_table = NULL;
         _dwarf_table_length = 0;
@@ -252,28 +250,52 @@ void CodeCache::findSymbolsByPrefix(std::vector<const char*>& prefixes, std::vec
     }
 }
 
-void CodeCache::setGlobalOffsetTable(void** start, void** end, bool patchable) {
-    _got_start = start;
-    _got_end = end;
-    _got_patchable = patchable;
-}
-
-void** CodeCache::findGlobalOffsetEntry(void* address) {
-    for (void** entry = _got_start; entry < _got_end; entry++) {
-        if (*entry == address) {
-            makeGotPatchable();
-            return entry;
-        }
+void CodeCache::addImport(void** entry, const char* name) {
+    switch (name[0]) {
+        case 'd':
+            if (strcmp(name, "dlopen") == 0) {
+                _imports[im_dlopen] = entry;
+            }
+            break;
+        case 'p':
+            if (strcmp(name, "pthread_create") == 0) {
+                _imports[im_pthread_create] = entry;
+            } else if (strcmp(name, "pthread_exit") == 0) {
+                _imports[im_pthread_exit] = entry;
+            } else if (strcmp(name, "pthread_setspecific") == 0) {
+                _imports[im_pthread_setspecific] = entry;
+            }
+            break;
     }
-    return NULL;
 }
 
-void CodeCache::makeGotPatchable() {
-    if (!_got_patchable) {
-        uintptr_t got_start = (uintptr_t)_got_start & ~OS::page_mask;
-        uintptr_t got_size = ((uintptr_t)_got_end - got_start + OS::page_mask) & ~OS::page_mask;
-        mprotect((void*)got_start, got_size, PROT_READ | PROT_WRITE);
-        _got_patchable = true;
+void** CodeCache::findImport(ImportId id) {
+    if (!_imports_patchable) {
+        makeImportsPatchable();
+        _imports_patchable = true;
+    }
+    return _imports[id];
+}
+
+void CodeCache::patchImport(ImportId id, void* hook_func) {
+    void** entry = findImport(id);
+    if (entry != NULL) {
+        *entry = hook_func;
+    }
+}
+
+void CodeCache::makeImportsPatchable() {
+    void** min_import = (void**)-1;
+    void** max_import = NULL;
+    for (int i = 0; i < NUM_IMPORTS; i++) {
+        if (_imports[i] != NULL && _imports[i] < min_import) min_import = _imports[i];
+        if (_imports[i] != NULL && _imports[i] > max_import) max_import = _imports[i];
+    }
+
+    if (max_import != NULL) {
+        uintptr_t patch_start = (uintptr_t)min_import & ~OS::page_mask;
+        uintptr_t patch_end = (uintptr_t)max_import & ~OS::page_mask;
+        mprotect((void*)patch_start, patch_end - patch_start + OS::page_size, PROT_READ | PROT_WRITE);
     }
 }
 

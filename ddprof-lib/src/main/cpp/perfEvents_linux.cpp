@@ -181,7 +181,7 @@ static void** lookupThreadEntry() {
     if (VM::isZing()) {
         CodeCache* libazsys = Profiler::instance()->findLibraryByName("libazsys");
         if (libazsys != NULL) {
-            void** entry = libazsys->findGlobalOffsetEntry((void*)&pthread_setspecific);
+            void** entry = libazsys->findImport(im_pthread_setspecific);
             if (entry != NULL) {
                 return entry;
             }
@@ -189,7 +189,7 @@ static void** lookupThreadEntry() {
     }
 
     CodeCache* lib = Profiler::instance()->findJvmLibrary("libj9thr");
-    return lib != NULL ? lib->findGlobalOffsetEntry((void*)&pthread_setspecific) : NULL;
+    return lib != NULL ? lib->findImport(im_pthread_setspecific) : NULL;
 }
 
 
@@ -889,7 +889,7 @@ Error PerfEvents::start(Arguments& args) {
     free(threads);
 
     if (err != 0) {
-        __atomic_store_n(_pthread_entry, (void*)pthread_setspecific, __ATOMIC_RELEASE);
+        *_pthread_entry = (void*)pthread_setspecific;
         Profiler::instance()->switchThreadEvents(JVMTI_DISABLE);
         if (err == EACCES || err == EPERM) {
             return Error("No access to perf events. Try --all-user option or 'sysctl kernel.perf_event_paranoid=1'");
