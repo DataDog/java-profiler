@@ -38,9 +38,10 @@ class Event {
 class ExecutionEvent : public Event {
   public:
     ThreadState _thread_state;
+    ExecutionMode _execution_mode;
     u64 _weight;
 
-    ExecutionEvent() : Event(), _thread_state(ThreadState::RUNNABLE), _weight(1) {}
+    ExecutionEvent() : Event(), _thread_state(ThreadState::RUNNABLE), _weight(1), _execution_mode(ExecutionMode::UNKNOWN) {}
 };
 
 class AllocEvent : public Event {

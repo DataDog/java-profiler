@@ -42,6 +42,7 @@
 #include "stackWalker.h"
 #include "symbols.h"
 #include "thread.h"
+#include "threadState.h"
 #include "vmStructs.h"
 #include "context.h"
 
@@ -708,11 +709,14 @@ void PerfEvents::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     }
     int tid = current != NULL ? current->tid() : OS::threadId();
     if (_enabled) {
-        int tid = OS::threadId();
         Shims::instance().setSighandlerTid(tid);
 
         u64 counter = readCounter(siginfo, ucontext);
         ExecutionEvent event;
+        VMThread* vm_thread = VMThread::current();
+        if (vm_thread) {
+            event._execution_mode = convertJvmExecutionState(vm_thread->state());
+        }
         Profiler::instance()->recordSample(ucontext, counter, tid, BCI_CPU, &event);
         Shims::instance().setSighandlerTid(-1);
     } else {
