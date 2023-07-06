@@ -2,8 +2,6 @@ package com.datadoghq.profiler.cpu;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
-import com.datadoghq.profiler.context.ContextExecutor;
-import com.datadoghq.profiler.context.Tracing;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
 import org.openjdk.jmc.common.item.IItem;
@@ -13,16 +11,9 @@ import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.unit.IQuantity;
 import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
-import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.TimeUnit;
 
 import static com.datadoghq.profiler.MoreAssertions.assertInRange;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -31,27 +22,23 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ContextCpuTest extends AbstractProfilerTest {
 
-    private static volatile long sink;
-    private ContextExecutor executor;
-
-    private Map<String, List<Long>> methodsToSpanIds;
+    private ProfiledCode profiledCode;
 
     @Override
     protected void before() {
-        executor = new ContextExecutor(1, profiler);
-        methodsToSpanIds = new ConcurrentHashMap<>();
+        profiledCode = new ProfiledCode(profiler);
     }
 
     @RetryingTest(10)
     public void test() throws ExecutionException, InterruptedException {
         Assumptions.assumeTrue(!Platform.isJ9() || (Platform.isJ9() && Platform.isJavaVersion(8)));
         for (int i = 0, id = 1; i < 100; i++, id += 3) {
-            method1(id);
+            profiledCode.method1(id);
         }
         stopProfiler();
-        Set<Long> method1SpanIds = new HashSet<>(methodsToSpanIds.get("method1Impl"));
-        Set<Long> method2SpanIds = new HashSet<>(methodsToSpanIds.get("method2Impl"));
-        Set<Long> method3SpanIds = new HashSet<>(methodsToSpanIds.get("method3Impl"));
+        Set<Long> method1SpanIds = profiledCode.spanIdsForMethod("method1Impl");
+        Set<Long> method2SpanIds = profiledCode.spanIdsForMethod("method2Impl");
+        Set<Long> method3SpanIds = profiledCode.spanIdsForMethod("method3Impl");
         IItemCollection events = verifyEvents("datadog.ExecutionSample");
 
         // on mac the usage of itimer to drive the sampling provides very unreliable outputs
@@ -112,60 +99,11 @@ public class ContextCpuTest extends AbstractProfilerTest {
         assertEquals(1, debugCounters.get("linear_allocator_chunks"));
     }
 
-    public void method1(int id) throws ExecutionException, InterruptedException {
-        try (Tracing.Context context = Tracing.newContext(() -> id, profiler)) {
-            method1Impl(id, context);
-        }
-    }
 
-    public void method1Impl(int id, Tracing.Context context) throws ExecutionException, InterruptedException {
-        burnCycles();
-        Future<?> wait = executor.submit(() -> method3(id));
-        method2(id);
-        wait.get();
-        record("method1Impl", context);
-    }
-
-    public void method2(long id) {
-        try (Tracing.Context context = Tracing.newContext(() -> id + 1, profiler)) {
-            method2Impl(context);
-        }
-    }
-
-    public void method2Impl(Tracing.Context context) {
-        burnCycles();
-        record("method2Impl", context);
-    }
-
-    public void method3(long id) {
-        try (Tracing.Context context = Tracing.newContext(() -> id + 2, profiler)) {
-            method3Impl(context);
-        }
-    }
-
-    public void method3Impl(Tracing.Context context) {
-        burnCycles();
-        record("method3Impl", context);
-    }
-
-
-    private void record(String methodName, Tracing.Context context) {
-        methodsToSpanIds.computeIfAbsent(methodName, k -> new CopyOnWriteArrayList<>())
-                .add(context.getSpanId());
-    }
-
-    private void burnCycles() {
-        long blackhole = sink;
-        for (int i = 0; i < 1_000_000; i++) {
-            blackhole ^= ThreadLocalRandom.current().nextLong();
-        }
-        sink = blackhole;
-    }
 
     @Override
-    protected void after() throws InterruptedException {
-        executor.shutdownNow();
-        executor.awaitTermination(30, TimeUnit.SECONDS);
+    protected void after() throws Exception {
+        profiledCode.close();
     }
 
     @Override

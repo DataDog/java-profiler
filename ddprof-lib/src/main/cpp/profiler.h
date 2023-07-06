@@ -110,6 +110,7 @@ class Profiler {
     const void* _call_stub_begin;
     const void* _call_stub_end;
     u32 _num_context_attributes;
+    bool _omit_stacktraces;
 
     // dlopen() hook support
     void** _dlopen_entry;
@@ -179,7 +180,8 @@ class Profiler {
         _stop_time(),
         _total_samples(0),
         _failures(),
-        _cstack(CSTACK_NO)
+        _cstack(CSTACK_NO),
+        _omit_stacktraces(false)
         {
 
         for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
@@ -204,6 +206,11 @@ class Profiler {
     ThreadFilter* threadFilter() { return &_thread_filter; }
 
     int lookupClass(const char* key, size_t length);
+    void collectCallTraces(std::map<u32, CallTrace*>& traces) {
+        if (!_omit_stacktraces) {
+            _call_trace_storage.collectTraces(traces);
+        }
+    }
 
     Error run(Arguments& args);
     Error runInternal(Arguments& args, std::ostream& out);
