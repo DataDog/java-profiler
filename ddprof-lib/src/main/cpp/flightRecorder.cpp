@@ -946,13 +946,14 @@ class Recording {
         buf->put8(0);
         buf->put8(1);
         // constant pool count - bump each time a new pool is added
-        buf->put8(11);
+        buf->put8(12);
 
         // Profiler::instance()->classMap() provides access to non-locked _class_map instance
         // The non-locked access is ok here as this code will never run concurrently to _class_map.clear()
         Lookup lookup(&_method_map, Profiler::instance()->classMap());
         writeFrameTypes(buf);
         writeThreadStates(buf);
+        writeExecutionModes(buf);
         writeThreads(buf);
         writeStackTraces(buf, &lookup);
         writeMethods(buf, &lookup);
@@ -980,7 +981,7 @@ class Recording {
 
     void writeThreadStates(Buffer* buf) {
         buf->putVar64(T_THREAD_STATE);
-        buf->put8(9);
+        buf->put8(10);
         buf->put8(static_cast<int>(ThreadState::UNKNOWN));
         buf->putUtf8("UNKNOWN");
         buf->put8(static_cast<int>(ThreadState::NEW));
@@ -999,6 +1000,26 @@ class Recording {
         buf->putUtf8("SLEEPING");
         buf->put8(static_cast<int>(ThreadState::TERMINATED));
         buf->putUtf8("TERMINATED");
+        buf->put8(static_cast<int>(ThreadState::SYSCALL));
+        buf->putUtf8("SYSCALL");
+        flushIfNeeded(buf);
+    }
+
+    void writeExecutionModes(Buffer* buf) {
+        buf->putVar64(T_EXECUTION_MODE);
+        buf->put8(6);
+        buf->put8(static_cast<int>(ExecutionMode::UNKNOWN));
+        buf->putUtf8("UNKNOWN");
+        buf->put8(static_cast<int>(ExecutionMode::JAVA));
+        buf->putUtf8("JAVA");
+        buf->put8(static_cast<int>(ExecutionMode::JVM));
+        buf->putUtf8("JVM");
+        buf->put8(static_cast<int>(ExecutionMode::NATIVE));
+        buf->putUtf8("NATIVE");
+        buf->put8(static_cast<int>(ExecutionMode::SAFEPOINT));
+        buf->putUtf8("SAFEPOINT");
+        buf->put8(static_cast<int>(ExecutionMode::SYSCALL));
+        buf->putUtf8("SYSCALL");
         flushIfNeeded(buf);
     }
 
@@ -1195,7 +1216,8 @@ class Recording {
         buf->putVar64(TSC::ticks());
         buf->putVar64(tid);
         buf->putVar64(call_trace_id);
-        buf->putVar64(static_cast<int>(event->_thread_state));
+        buf->put8(static_cast<int>(event->_thread_state));
+        buf->put8(static_cast<int>(event->_execution_mode));
         buf->putVar64(event->_weight);
         writeContext(buf, Contexts::get(tid));
         writeEventSizePrefix(buf, start);
@@ -1208,7 +1230,8 @@ class Recording {
         buf->putVar64(TSC::ticks());
         buf->putVar64(tid);
         buf->putVar64(call_trace_id);
-        buf->putVar64(static_cast<int>(event->_thread_state));
+        buf->put8(static_cast<int>(event->_thread_state));
+        buf->put8(static_cast<int>(event->_execution_mode));
         buf->putVar64(event->_weight);
         writeContext(buf, Contexts::get(tid));
         writeEventSizePrefix(buf, start);

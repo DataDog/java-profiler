@@ -57,6 +57,7 @@ public class ContextWallClockTest extends AbstractProfilerTest {
         Set<Long> method3SpanIds = new HashSet<>(methodsToSpanIds.get("method3Impl"));
         IItemCollection events = verifyEvents("datadog.MethodSample");
         Set<String> states = new HashSet<>();
+        Set<String> modes = new HashSet<>();
         // we have 100 method1, method2, and method3 calls, but can't guarantee we sampled them all
         long method1Weight = 0;
         long method2Weight = 0;
@@ -68,11 +69,13 @@ public class ContextWallClockTest extends AbstractProfilerTest {
             IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(wallclockSamples.getType());
             IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT.getAccessor(wallclockSamples.getType());
             IMemberAccessor<String, IItem> stateAccessor = THREAD_STATE.getAccessor(wallclockSamples.getType());
+            IMemberAccessor<String, IItem> modeAccessor = THREAD_EXECUTION_MODE.getAccessor(wallclockSamples.getType());
             for (IItem sample : wallclockSamples) {
                 String stackTrace = frameAccessor.getMember(sample);
                 long spanId = spanIdAccessor.getMember(sample).longValue();
                 long rootSpanId = rootSpanIdAccessor.getMember(sample).longValue();
                 long weight = weightAccessor.getMember(sample).longValue();
+                modes.add(modeAccessor.getMember(sample));
                 String state = stateAccessor.getMember(sample);
                 assertNotNull(state);
                 states.add(state);
@@ -109,7 +112,14 @@ public class ContextWallClockTest extends AbstractProfilerTest {
             assertTrue(states.contains("PARKED"), "no PARKED samples");
             assertTrue(states.contains("CONTENDED"), "no CONTENDED samples");
         } else {
-            assertTrue(states.contains("SLEEPING"), "no SLEEPING samples");
+            assertTrue(states.contains("SYSCALL"), "no SYSCALL samples");
+        }
+
+        if (!Platform.isZing() && !Platform.isJ9()) {
+            assertTrue(modes.contains("SYSCALL"), "no SYSCALL samples");
+            assertFalse(modes.contains("UNKNOWN"), "UNKNOWN wallclock samples on HotSpot");
+        } else {
+            assertTrue(modes.contains("UNKNOWN"), "no UNKNOWN samples");
         }
 
         // context filtering should prevent these

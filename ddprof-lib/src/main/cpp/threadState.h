@@ -13,6 +13,36 @@ enum class ThreadState : int {
     BREAKPOINTED = 6,                 // Suspended at breakpoint
     SLEEPING = 7,                     // Thread.sleep()
     TERMINATED = 8,                   // All done, but not reclaimed yet
+    SYSCALL = 9                       // does not originate in the JVM, used when the current frame is known to be a syscall
 };
+
+
+enum class ExecutionMode : int {
+    UNKNOWN = 0,
+    JAVA = 1,
+    JVM = 2,
+    NATIVE = 3,
+    SAFEPOINT = 4,
+    SYSCALL = 5
+};
+
+static ExecutionMode convertJvmExecutionState(int state) {
+    switch (state) {
+        case 4:
+        case 5:
+            return ExecutionMode::NATIVE;
+        case 6:
+        case 7:
+            return ExecutionMode::JVM;
+        case 8:
+        case 9:
+            return ExecutionMode::JAVA;
+        case 10:
+        case 11:
+            return ExecutionMode::SAFEPOINT;
+        default:
+            return ExecutionMode::UNKNOWN;
+    }
+}
 
 #endif //JAVA_PROFILER_LIBRARY_THREAD_STATE_H
