@@ -36,6 +36,8 @@ Context& Contexts::get(int tid) {
                 return context;
             }
         }
+    } else {
+        Counters::increment(CounterId::CONTEXT_BOUNDS_MISS_GETS);
     }
     return empty();
 }
@@ -46,6 +48,7 @@ Context& Contexts::empty() {
 
 void Contexts::initialize(int pageIndex) {
     if (pageIndex >= _max_pages) {
+        Counters::increment(CounterId::CONTEXT_BOUNDS_MISS_INITS);
         // extreme edge case: pageIndex >= _max_pages if pid_max was increased during the process's runtime
         return;
     }

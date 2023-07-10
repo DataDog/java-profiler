@@ -37,7 +37,9 @@
     X(DICTIONARY_ENDPOINTS_KEYS_BYTES, "dictionary_endpoints_keys_bytes") \
     X(DICTIONARY_CONTEXT_KEYS_BYTES, "dictionary_context_keys_bytes") \
     X(CONTEXT_STORAGE_BYTES, "context_storage_bytes") \
-    X(CONTEXT_STORAGE_PAGES, "context_storage_pages") \
+    X(CONTEXT_STORAGE_PAGES, "context_storage_pages")       \
+    X(CONTEXT_BOUNDS_MISS_INITS, "context_bounds_miss_inits")   \
+    X(CONTEXT_BOUNDS_MISS_GETS, "context_bounds_miss_gets") \
     X(CALLTRACE_STORAGE_BYTES, "calltrace_storage_bytes") \
     X(CALLTRACE_STORAGE_TRACES, "calltrace_storage_traces") \
     X(LINEAR_ALLOCATOR_BYTES, "linear_allocator_bytes") \
