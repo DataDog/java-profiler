@@ -1071,7 +1071,7 @@ class Recording {
 
     void writeStackTraces(Buffer* buf, Lookup* lookup) {
         std::map<u32, CallTrace*> traces;
-        Profiler::instance()->_call_trace_storage.collectTraces(traces);
+        Profiler::instance()->collectCallTraces(traces);
 
         buf->putVar64(T_STACK_TRACE);
         buf->putVar64(traces.size());

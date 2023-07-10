@@ -142,6 +142,7 @@ class Arguments {
     CStack _cstack;
     int _jfr_options;
     std::vector<std::string> _context_attributes;
+    bool _lightweight;
 
     Arguments(bool persistent = false) :
         _buf(NULL),
@@ -169,7 +170,8 @@ class Arguments {
         _mcache(0),
         _cstack(CSTACK_DEFAULT),
         _jfr_options(0),
-        _context_attributes({}) {
+        _context_attributes({}),
+        _lightweight(false) {
     }
 
     ~Arguments();
