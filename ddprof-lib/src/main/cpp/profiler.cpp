@@ -613,17 +613,19 @@ void Profiler::recordExternalSample(u64 counter, int tid, jvmtiFrameInfo *jvmti_
         }
         return;
     }
+    u32 call_trace_id = 0;
+    if (!_omit_stacktraces) {
+        ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
 
-    ASGCT_CallFrame* frames = _calltrace_buffer[lock_index]->_asgct_frames;
+        int num_frames = 0;
+        if (!_jfr.active() && BCI_ALLOC >= event_type && event_type >= BCI_PARK && event->_id) {
+            num_frames = makeFrame(frames, event_type, event->_id);
+        }
 
-    int num_frames = 0;
-    if (!_jfr.active() && BCI_ALLOC >= event_type && event_type >= BCI_PARK && event->_id) {
-        num_frames = makeFrame(frames, event_type, event->_id);
+        num_frames += convertFrames(jvmti_frames, frames + num_frames, num_jvmti_frames);
+
+        call_trace_id = _call_trace_storage.put(num_frames, frames, truncated, counter);
     }
-
-    num_frames += convertFrames(jvmti_frames, frames + num_frames, num_jvmti_frames);
-
-    u32 call_trace_id = _call_trace_storage.put(num_frames, frames, truncated, counter);
     _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event, counter);
 
     _locks[lock_index].unlock();
@@ -648,41 +650,46 @@ void Profiler::recordSample(void* ucontext, u64 counter, int tid, jint event_typ
     }
 
     bool truncated = false;
-    ASGCT_CallFrame* frames = _calltrace_buffer[lock_index]->_asgct_frames;
-    jvmtiFrameInfo* jvmti_frames = _calltrace_buffer[lock_index]->_jvmti_frames;
+    // in lightweight mode we're just sampling the the context associated with the passage of CPU or wall time,
+    // we use the same event definitions but we record a null stacktrace
+    u32 call_trace_id = 0;
+    if (!_omit_stacktraces) {
+        ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
+        jvmtiFrameInfo *jvmti_frames = _calltrace_buffer[lock_index]->_jvmti_frames;
 
-    int num_frames = 0;
+        int num_frames = 0;
 
-    StackContext java_ctx = {0};
-    ASGCT_CallFrame* native_stop = frames + num_frames;
-    num_frames += getNativeTrace(ucontext, native_stop, event_type, tid, &java_ctx, &truncated);
+        StackContext java_ctx = {0};
+        ASGCT_CallFrame *native_stop = frames + num_frames;
+        num_frames += getNativeTrace(ucontext, native_stop, event_type, tid, &java_ctx, &truncated);
 
-    if (event_type == BCI_CPU || event_type == BCI_WALL) {
-        // Async events
-        int java_frames = getJavaTraceAsync(ucontext, frames + num_frames, _max_stack_depth, &java_ctx, &truncated);
-        if (java_frames > 0 && java_ctx.pc != NULL) {
-            NMethod* nmethod = CodeHeap::findNMethod(java_ctx.pc);
-            if (nmethod != NULL) {
-                fillFrameTypes(frames + num_frames, java_frames, nmethod);
+        if (event_type == BCI_CPU || event_type == BCI_WALL) {
+            // Async events
+            int java_frames = getJavaTraceAsync(ucontext, frames + num_frames, _max_stack_depth, &java_ctx, &truncated);
+            if (java_frames > 0 && java_ctx.pc != NULL) {
+                NMethod *nmethod = CodeHeap::findNMethod(java_ctx.pc);
+                if (nmethod != NULL) {
+                    fillFrameTypes(frames + num_frames, java_frames, nmethod);
+                }
             }
+            num_frames += java_frames;
+        } else if (event_type >= BCI_ALLOC_OUTSIDE_TLAB && VMStructs::_get_stack_trace != NULL) {
+            // Object allocation in HotSpot happens at known places where it is safe to call JVM TI,
+            // but not directly, since the thread is in_vm rather than in_native
+            num_frames += getJavaTraceInternal(jvmti_frames + num_frames, frames + num_frames, _max_stack_depth);
+        } else if (event_type >= BCI_ALLOC_OUTSIDE_TLAB && !VM::isOpenJ9()) {
+            num_frames += getJavaTraceAsync(ucontext, frames + num_frames, _max_stack_depth, &java_ctx, &truncated);
+        } else {
+            // Lock events can safely call synchronous JVM TI stack walker.
+            num_frames += getJavaTraceJvmti(jvmti_frames + num_frames, frames + num_frames, 0, _max_stack_depth);
         }
-        num_frames += java_frames;
-    } else if (event_type >= BCI_ALLOC_OUTSIDE_TLAB && VMStructs::_get_stack_trace != NULL) {
-        // Object allocation in HotSpot happens at known places where it is safe to call JVM TI,
-        // but not directly, since the thread is in_vm rather than in_native
-        num_frames += getJavaTraceInternal(jvmti_frames + num_frames, frames + num_frames, _max_stack_depth);
-    } else if (event_type >= BCI_ALLOC_OUTSIDE_TLAB && !VM::isOpenJ9()) {
-        num_frames += getJavaTraceAsync(ucontext, frames + num_frames, _max_stack_depth, &java_ctx, &truncated);
-    } else {
-        // Lock events can safely call synchronous JVM TI stack walker.
-        num_frames += getJavaTraceJvmti(jvmti_frames + num_frames, frames + num_frames, 0, _max_stack_depth);
-    }
 
-    if (num_frames == 0) {
-        num_frames += makeFrame(frames + num_frames, BCI_ERROR, "no_Java_frame");
-    }
+        if (num_frames == 0) {
+            num_frames += makeFrame(frames + num_frames, BCI_ERROR, "no_Java_frame");
+        }
 
-    u32 call_trace_id = _call_trace_storage.put(num_frames, frames, truncated, counter);
+        call_trace_id = _call_trace_storage.put(num_frames, frames, truncated, counter);
+    }
     _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event, counter);
 
     _locks[lock_index].unlock();
@@ -995,6 +1002,7 @@ Error Profiler::start(Arguments& args, bool reset) {
     }
 
     ProfiledThread::initExistingThreads();
+    _omit_stacktraces = args._lightweight;
     _event_mask = ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU : 0) |
                   (args._cpu >= 0 ? EM_CPU : 0) |
                   (args._wall >= 0 ? EM_WALL : 0) |
@@ -1015,9 +1023,11 @@ Error Profiler::start(Arguments& args, bool reset) {
         _class_map_lock.unlock();
 
         // Reset call trace storage
-        lockAll();
-        _call_trace_storage.clear();
-        unlockAll();
+        if (!_omit_stacktraces) {
+            lockAll();
+            _call_trace_storage.clear();
+            unlockAll();
+        }
 
         // Reset thread names and IDs
         MutexLocker ml(_thread_names_lock);
@@ -1212,7 +1222,9 @@ Error Profiler::dump(const char* path, const int length) {
         Error err = _jfr.dump(path, length);
         
         // Reset calltrace storage
-        _call_trace_storage.clear();
+        if (!_omit_stacktraces) {
+            _call_trace_storage.clear();
+        }
         unlockAll();
         // Reset classmap
         _class_map_lock.lock();

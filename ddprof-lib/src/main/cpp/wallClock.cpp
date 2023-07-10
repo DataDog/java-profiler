@@ -71,16 +71,23 @@ void WallClock::signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64
     ExecutionEvent event;
     VMThread* vm_thread = VMThread::current();
     ThreadState state = ThreadState::UNKNOWN;
+    ExecutionMode mode = ExecutionMode::UNKNOWN;
     if (vm_thread) {
         ThreadState os_state = vm_thread->osThreadState();
         if (os_state != ThreadState::UNKNOWN) {
             state = os_state;
         }
+        mode = convertJvmExecutionState(vm_thread->state());
     }
+    bool isInSyscall = inSyscall(ucontext);
     if (state == ThreadState::UNKNOWN) {
-        state = inSyscall(ucontext) ? ThreadState::SLEEPING : ThreadState::RUNNABLE;
+        state = isInSyscall ? ThreadState::SYSCALL : ThreadState::RUNNABLE;
+    }
+    if (isInSyscall) {
+        mode = ExecutionMode::SYSCALL;
     }
     event._thread_state = state;
+    event._execution_mode = mode;
     event._weight = skipped + 1;
     Profiler::instance()->recordSample(ucontext, last_sample, tid, BCI_WALL, &event);
     Shims::instance().setSighandlerTid(-1);

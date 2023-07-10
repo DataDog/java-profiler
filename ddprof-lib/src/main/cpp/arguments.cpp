@@ -277,6 +277,18 @@ Error Arguments::parse(const char* args) {
                     _context_attributes.push_back(input.substr(start));
                 }
 
+            CASE("lightweight")
+                if (value != NULL) {
+                    switch (value[0]) {
+                        case 'y': // yes
+                        case 't': // true
+                            _lightweight = true;
+                            break;
+                        default:
+                            _lightweight = false;
+                    }
+                }
+
             DEFAULT()
                 if (_unknown_arg == NULL) _unknown_arg = arg;
         }

@@ -22,6 +22,7 @@
 #include "stackWalker.h"
 #include "context.h"
 #include "thread.h"
+#include "vmStructs.h"
 
 volatile bool ITimer::_enabled = false;
 long ITimer::_interval;
@@ -41,6 +42,10 @@ void ITimer::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     Shims::instance().setSighandlerTid(tid);
 
     ExecutionEvent event;
+    VMThread* vm_thread = VMThread::current();
+    if (vm_thread) {
+        event._execution_mode = convertJvmExecutionState(vm_thread->state());
+    }
     Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, &event);
     Shims::instance().setSighandlerTid(-1);
 }

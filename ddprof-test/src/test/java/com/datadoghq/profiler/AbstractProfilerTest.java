@@ -66,6 +66,9 @@ public abstract class AbstractProfilerTest {
   public static final IAttribute<String> THREAD_STATE =
           attr("state", "state", "Thread State", PLAIN_TEXT);
 
+  public static final IAttribute<String> THREAD_EXECUTION_MODE =
+          attr("mode", "mode", "Execution Mode", PLAIN_TEXT);
+
   public static final IAttribute<String> TAG_1 = attr("tag1", "", "", PLAIN_TEXT);
   public static final IAttribute<String> TAG_2 = attr("tag2", "", "", PLAIN_TEXT);
   public static final IAttribute<String> TAG_3 = attr("tag3", "", "", PLAIN_TEXT);
