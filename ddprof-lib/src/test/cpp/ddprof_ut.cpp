@@ -95,11 +95,19 @@
     }
 
     TEST(Context, maxpages) {
-        EXPECT_EQ(0, Contexts::getMaxPages(0));
-        EXPECT_EQ(1, Contexts::getMaxPages(1) == 1);
-        EXPECT_EQ(1, Contexts::getMaxPages(DD_CONTEXT_PAGE_SIZE / 2));
-        EXPECT_EQ(1, Contexts::getMaxPages(DD_CONTEXT_PAGE_SIZE));
-        EXPECT_EQ(2, Contexts::getMaxPages(DD_CONTEXT_PAGE_SIZE + 1));
+        // floored at 128 to mitigate unusual pid_max settings
+        int minMaxPages = 128;
+        EXPECT_EQ(minMaxPages, Contexts::getMaxPages(0));
+        EXPECT_EQ(minMaxPages, Contexts::getMaxPages(1));
+        EXPECT_EQ(minMaxPages, Contexts::getMaxPages(DD_CONTEXT_PAGE_SIZE / 2));
+        EXPECT_EQ(minMaxPages, Contexts::getMaxPages(DD_CONTEXT_PAGE_SIZE));
+        EXPECT_EQ(minMaxPages, Contexts::getMaxPages(DD_CONTEXT_PAGE_SIZE + 1));
+        int floor = minMaxPages * DD_CONTEXT_PAGE_SIZE;
+        EXPECT_EQ(minMaxPages, Contexts::getMaxPages(floor + 0));
+        EXPECT_EQ(minMaxPages + 1, Contexts::getMaxPages(floor + 1));
+        EXPECT_EQ(minMaxPages + 1, Contexts::getMaxPages(floor + DD_CONTEXT_PAGE_SIZE / 2));
+        EXPECT_EQ(minMaxPages + 1, Contexts::getMaxPages(floor + DD_CONTEXT_PAGE_SIZE));
+        EXPECT_EQ(minMaxPages + 2, Contexts::getMaxPages(floor + DD_CONTEXT_PAGE_SIZE + 1));
         EXPECT_EQ(2048, Contexts::getMaxPages(2097152));
     }
 
