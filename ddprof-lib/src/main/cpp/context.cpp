@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
-#include <assert.h>
 #include <cstring>
 #include "context.h"
 #include "counters.h"
 #include "os.h"
+
 
 int Contexts::_max_pages = Contexts::getMaxPages();
 Context** Contexts::_pages = new Context *[_max_pages]();
@@ -27,12 +27,14 @@ static Context DD_EMPTY_CONTEXT = {};
 
 Context& Contexts::get(int tid) {
     int pageIndex = tid >> DD_CONTEXT_PAGE_SHIFT;
-    assert(pageIndex < _max_pages);
-    Context* page = _pages[pageIndex];
-    if (page != NULL) {
-        Context& context = page[tid & DD_CONTEXT_PAGE_MASK];
-        if ((context.spanId ^ context.rootSpanId) == context.checksum) {
-            return context;
+    // extreme edge case: pageIndex >= _max_pages if pid_max was increased during the process's runtime
+    if (pageIndex < _max_pages) {
+        Context *page = _pages[pageIndex];
+        if (page != NULL) {
+            Context &context = page[tid & DD_CONTEXT_PAGE_MASK];
+            if ((context.spanId ^ context.rootSpanId) == context.checksum) {
+                return context;
+            }
         }
     }
     return empty();
@@ -43,6 +45,10 @@ Context& Contexts::empty() {
 }
 
 void Contexts::initialize(int pageIndex) {
+    if (pageIndex >= _max_pages) {
+        // extreme edge case: pageIndex >= _max_pages if pid_max was increased during the process's runtime
+        return;
+    }
     if (__atomic_load_n(&_pages[pageIndex], __ATOMIC_ACQUIRE) == NULL) {
         u32 capacity = DD_CONTEXT_PAGE_SIZE * sizeof(Context);
         Context *page = (Context*) aligned_alloc(sizeof(Context), capacity);
@@ -72,5 +78,10 @@ int Contexts::getMaxPages(int maxTid) {
     //! the next sequence of computation and static cast to int needs to be split into two statements
     //  - otherwise the gtest will crash and burn while linking
     long ret = ((long)maxTid + DD_CONTEXT_PAGE_SIZE - 1) / DD_CONTEXT_PAGE_SIZE;
-    return (int)ret;
+    int maxPages = (int)ret;
+    // extreme edge case: in one reported issue, pid_max has been known to be increased from a very conservative
+    // value at runtime. In case this has happened, we will reserve some space for surplus pages on a best effort
+    // basis. If this surplus is insufficient for the application, samples from some threads will not have context
+    // associated with them.
+    return maxPages < 128 ? 128 : maxPages;
 }
