@@ -66,6 +66,10 @@ class OS {
     static u64 ntoh64(u64 x);
 
     static int getMaxThreadId();
+    static int getMaxThreadId(int floor) {
+        int maxThreadId = getMaxThreadId();
+        return maxThreadId < floor ? floor : maxThreadId;
+    }
     static int processId();
     static int threadId();
     static const char* schedPolicy(int thread_id);
