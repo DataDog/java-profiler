@@ -69,6 +69,12 @@ class Profiler {
   private:
     Mutex _state_lock;
     State _state;
+    // class unload hook
+    Trap _class_unload_hook_trap;
+    typedef void (*NotifyClassUnloadedFunc)(void*);
+    NotifyClassUnloadedFunc _notify_class_unloaded_func;
+    // --
+
     Mutex _thread_names_lock;
     // TODO: single map?
     std::map<int, std::string> _thread_names;
@@ -117,6 +123,8 @@ class Profiler {
 
     void enableEngines();
     void disableEngines();
+    Error installTraps();
+    void uninstallTraps();
 
     void addJavaMethod(const void* address, int length, jmethodID method);
     void addRuntimeStub(const void* address, int length, const char* name);
@@ -151,6 +159,8 @@ class Profiler {
   public:
     Profiler() :
         _state(NEW),
+        _class_unload_hook_trap(2),
+        _notify_class_unloaded_func(NULL),
         _call_trace_storage(),
         _thread_filter(),
         _jfr(),
@@ -241,6 +251,8 @@ class Profiler {
     CodeCache* findLibraryByAddress(const void* address);
     const char* findNativeMethod(const void* address);
 
+    static void trapHandlerEntry(int signo, siginfo_t* siginfo, void* ucontext);
+    void trapHandler(int signo, siginfo_t* siginfo, void* ucontext);
     static void segvHandler(int signo, siginfo_t* siginfo, void* ucontext);
     static void setupSignalHandlers();
 
