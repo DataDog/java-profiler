@@ -69,8 +69,6 @@ class Profiler {
   private:
     Mutex _state_lock;
     State _state;
-    Trap _begin_trap;
-    Trap _end_trap;
     Mutex _thread_names_lock;
     // TODO: single map?
     std::map<int, std::string> _thread_names;
@@ -117,8 +115,8 @@ class Profiler {
     static void* dlopen_hook(const char* filename, int flags);
     void switchLibraryTrap(bool enable);
 
-    Error installTraps(const char* begin, const char* end);
-    void uninstallTraps();
+    void enableEngines();
+    void disableEngines();
 
     void addJavaMethod(const void* address, int length, jmethodID method);
     void addRuntimeStub(const void* address, int length, const char* name);
@@ -153,8 +151,6 @@ class Profiler {
   public:
     Profiler() :
         _state(NEW),
-        _begin_trap(2),
-        _end_trap(3),
         _call_trace_storage(),
         _thread_filter(),
         _jfr(),
