@@ -20,6 +20,11 @@ dependencies {
     // https://mvnrepository.com/artifact/org.junit-pioneer/junit-pioneer
     testImplementation group: 'org.junit-pioneer', name: 'junit-pioneer', version: '1.9.1'
 
+    testImplementation group: 'org.lz4', name: 'lz4-java', version: '1.8.0'
+    testImplementation group: 'org.xerial.snappy', name: 'snappy-java', version: '1.1.10.1'
+    testImplementation group: 'com.github.luben', name: 'zstd-jni', version: '1.5.5-4'
+
+
 }
 
 test {
