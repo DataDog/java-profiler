@@ -26,7 +26,6 @@
 #include <sys/param.h>
 #include "profiler.h"
 #include "perfEvents.h"
-#include "allocTracer.h"
 #include "objectSampler.h"
 #include "wallClock.h"
 #include "j9Ext.h"
@@ -50,7 +49,6 @@
 // can be still accessed concurrently during VM termination
 Profiler* const Profiler::_instance = new Profiler();
 
-static void (*orig_trapHandler)(int signo, siginfo_t* siginfo, void* ucontext);
 static void (*orig_segvHandler)(int signo, siginfo_t* siginfo, void* ucontext);
 
 static Engine noop_engine;
@@ -795,59 +793,14 @@ void Profiler::switchLibraryTrap(bool enable) {
     __atomic_store_n(_dlopen_entry, impl, __ATOMIC_RELEASE);
 }
 
-Error Profiler::installTraps(const char* begin, const char* end) {
-    const void* begin_addr = NULL;
-    if (begin != NULL && (begin_addr = resolveSymbol(begin)) == NULL) {
-        return Error("Begin address not found");
-    }
-
-    const void* end_addr = NULL;
-    if (end != NULL && (end_addr = resolveSymbol(end)) == NULL) {
-        return Error("End address not found");
-    }
-
-    _begin_trap.assign(begin_addr);
-    _end_trap.assign(end_addr);
-
-    if (_begin_trap.entry() == 0) {
-        _cpu_engine->enableEvents(true);
-        _wall_engine->enableEvents(true);
-    } else {
-        _cpu_engine->enableEvents(false);
-        _wall_engine->enableEvents(false);
-        if (!_begin_trap.install()) {
-            return Error("Cannot install begin breakpoint");
-        }
-    }
-
-    return Error::OK;
+void Profiler::enableEngines() {
+    _cpu_engine->enableEvents(true);
+    _wall_engine->enableEvents(true);
 }
 
-void Profiler::uninstallTraps() {
-    _begin_trap.uninstall();
-    _end_trap.uninstall();
+void Profiler::disableEngines() {
     _cpu_engine->enableEvents(false);
     _wall_engine->enableEvents(false);
-}
-
-void Profiler::trapHandler(int signo, siginfo_t* siginfo, void* ucontext) {
-    StackFrame frame(ucontext);
-
-    if (_begin_trap.covers(frame.pc())) {
-        _cpu_engine->enableEvents(true);
-        _wall_engine->enableEvents(true);
-        _begin_trap.uninstall();
-        _end_trap.install();
-        frame.pc() = _begin_trap.entry();
-    } else if (_end_trap.covers(frame.pc())) {
-        _cpu_engine->enableEvents(false);
-        _wall_engine->enableEvents(false);
-        _end_trap.uninstall();
-        _begin_trap.install();
-        frame.pc() = _end_trap.entry();
-    } else if (orig_trapHandler != NULL) {
-        orig_trapHandler(signo, siginfo, ucontext);
-    }
 }
 
 void Profiler::segvHandler(int signo, siginfo_t* siginfo, void* ucontext) {
@@ -869,10 +822,6 @@ void Profiler::segvHandler(int signo, siginfo_t* siginfo, void* ucontext) {
 }
 
 void Profiler::setupSignalHandlers() {
-    orig_trapHandler = OS::installSignalHandler(SIGTRAP, AllocTracer::trapHandler);
-    if (orig_trapHandler == (void*)SIG_DFL || orig_trapHandler == (void*)SIG_IGN) {
-        orig_trapHandler = NULL;
-    }
     if (VM::java_version() > 0) {
         // HotSpot tolerates interposed SIGSEGV/SIGBUS handler; other JVMs probably not
         orig_segvHandler = OS::replaceCrashHandler(segvHandler);
@@ -1069,10 +1018,7 @@ Error Profiler::start(Arguments& args, bool reset) {
     // Kernel symbols are useful only for perf_events without --all-user
     updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
 
-    error = installTraps(NULL, NULL);
-    if (error) {
-        return error;
-    }
+    enableEngines();
 
     switchLibraryTrap(_cstack == CSTACK_DWARF);
 
@@ -1080,7 +1026,7 @@ Error Profiler::start(Arguments& args, bool reset) {
     _num_context_attributes = args._context_attributes.size();
     error = _jfr.start(args, reset);
     if (error) {
-        uninstallTraps();
+        disableEngines();
         switchLibraryTrap(false);
         return error;
     }
@@ -1125,7 +1071,7 @@ Error Profiler::start(Arguments& args, bool reset) {
         return Error::OK;
     }
     // no engine was activated; perform cleanup
-    uninstallTraps();
+    disableEngines();
     switchLibraryTrap(false);
 
     lockAll();
@@ -1141,7 +1087,7 @@ Error Profiler::stop() {
         return Error("Profiler is not active");
     }
 
-    uninstallTraps();
+    disableEngines();
 
     if (_event_mask & EM_ALLOC) _alloc_engine->stop();
     if (_event_mask & EM_WALL) _wall_engine->stop();
