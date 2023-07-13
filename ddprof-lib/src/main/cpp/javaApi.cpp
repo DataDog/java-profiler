@@ -38,6 +38,31 @@ static void throwNew(JNIEnv* env, const char* exception_class, const char* messa
     }
 }
 
+class JniString {
+private:
+    JNIEnv* _env;
+    const char* _c_string;
+    jstring _java_string;
+    int _length;
+public:
+    JniString(JNIEnv* env, jstring java_string) {
+        _env = env;
+        _c_string = _env->GetStringUTFChars(java_string, NULL);
+        _length = _env->GetStringUTFLength(java_string);
+        _java_string = java_string;
+    }
+    JniString(JniString& jniString) = delete;
+    ~JniString() {
+        _env->ReleaseStringUTFChars(_java_string, _c_string);
+    }
+    const char* c_str() const {
+        return _c_string;
+    }
+    int length() const {
+        return _length;
+    }
+};
+
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_stop0(JNIEnv* env, jobject unused) {
     Error error = Profiler::instance()->stop();
@@ -55,9 +80,8 @@ Java_com_datadoghq_profiler_JavaProfiler_getTid0(JNIEnv* env, jobject unused) {
 extern "C" DLLEXPORT jstring JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_execute0(JNIEnv* env, jobject unused, jstring command) {
     Arguments args;
-    const char* command_str = env->GetStringUTFChars(command, NULL);
-    Error error = args.parse(command_str);
-    env->ReleaseStringUTFChars(command, command_str);
+    JniString command_str(env, command);
+    Error error = args.parse(command_str.c_str());
 
     if (error) {
         throwNew(env, "java/lang/IllegalArgumentException", error.message());
@@ -119,33 +143,28 @@ Java_com_datadoghq_profiler_JavaProfiler_getMaxContextPages0(JNIEnv* env, jobjec
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(JNIEnv* env, jobject unused, jlong rootSpanId, jstring endpoint,
                                                       jint sizeLimit) {
-    const char* endpoint_str = env->GetStringUTFChars(endpoint, NULL);
-    jint length = env->GetStringUTFLength(endpoint);
-    u32 label = Profiler::instance()->stringLabelMap()->bounded_lookup(endpoint_str, length, sizeLimit);
+    JniString endpoint_str(env, endpoint);
+    u32 label = Profiler::instance()->stringLabelMap()->bounded_lookup(endpoint_str.c_str(), endpoint_str.length(), sizeLimit);
     bool acceptValue = label != INT_MAX;
     if (acceptValue) {
         TraceRootEvent event(rootSpanId, label);
         int tid = ProfiledThread::currentTid();
         Profiler::instance()->recordTraceRoot(tid, &event);
     }
-    env->ReleaseStringUTFChars(endpoint, endpoint_str);
     return acceptValue;
 }
 
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_registerConstant0(JNIEnv* env, jobject unused, jstring value) {
-    const char* value_str = env->GetStringUTFChars(value, NULL);
-    jint length = env->GetStringUTFLength(value);
-    u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(value_str, length, 1 << 16);
-    env->ReleaseStringUTFChars(value, value_str);
+    JniString value_str(env, value);
+    u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(value_str.c_str(), value_str.length(), 1 << 16);
     return encoding == INT_MAX ? -1 : encoding;
 }
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_dump0(JNIEnv* env, jobject unused, jstring path) {
-    const char* path_str = env->GetStringUTFChars(path, NULL);
-    Profiler::instance()->dump(path_str, env->GetStringUTFLength(path));
-    env->ReleaseStringUTFChars(path, path_str);
+    JniString path_str(env, path);
+    Profiler::instance()->dump(path_str.c_str(), path_str.length());
 }
 
 extern "C" DLLEXPORT jobject JNICALL
@@ -179,16 +198,13 @@ Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(JNIEnv *env, jobjec
         return;
     }
     int length = 0;
-    const char* name_str = env->GetStringUTFChars(name, NULL);
-    length += env->GetStringUTFLength(name);
-    const char* value_str = env->GetStringUTFChars(value, NULL);
-    length += env->GetStringUTFLength(value);
-    const char* unit_str = env->GetStringUTFChars(unit, NULL);
-    length += env->GetStringUTFLength(unit);
-    Profiler::instance()->writeDatadogProfilerSetting(tid, length, name_str, value_str, unit_str);
-    env->ReleaseStringUTFChars(name, name_str);
-    env->ReleaseStringUTFChars(value, value_str);
-    env->ReleaseStringUTFChars(unit, unit_str);
+    JniString name_str(env, name);
+    length += name_str.length();
+    JniString value_str(env, value);
+    length += value_str.length();
+    JniString unit_str(env, unit);
+    length += unit_str.length();
+    Profiler::instance()->writeDatadogProfilerSetting(tid, length, name_str.c_str(), value_str.c_str(), unit_str.c_str());
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -206,12 +222,10 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(JNIEnv* env, jobject un
     if (TSC::is_within_threshold(thresholdMillis, endTime - startTime)) {
         return;
     }
-    const char* task_str = env->GetStringUTFChars(task, NULL);
-    const char* scheduler_str = env->GetStringUTFChars(scheduler, NULL);
-    int task_offset = Profiler::instance()->lookupClass(task_str, env->GetStringUTFLength(task));
-    int scheduler_offset = Profiler::instance()->lookupClass(scheduler_str, env->GetStringUTFLength(scheduler));
-    env->ReleaseStringUTFChars(task, task_str);
-    env->ReleaseStringUTFChars(scheduler, scheduler_str);
+    JniString task_str(env, task);
+    JniString scheduler_str(env, scheduler);
+    int task_offset = Profiler::instance()->lookupClass(task_str.c_str(), task_str.length());
+    int scheduler_offset = Profiler::instance()->lookupClass(scheduler_str.c_str(), scheduler_str.length());
     QueueTimeEvent event;
     event._start = startTime;
     event._end = endTime;
