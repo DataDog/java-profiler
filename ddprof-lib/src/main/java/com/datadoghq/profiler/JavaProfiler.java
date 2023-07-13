@@ -102,14 +102,16 @@ public final class JavaProfiler {
         }
 
         JavaProfiler profiler = new JavaProfiler();
+        Path libraryPath = null;
         if (libLocation == null) {
             OperatingSystem os = OperatingSystem.current();
             String qualifier = (os == OperatingSystem.linux && isMusl()) ? "musl" : null;
 
-            Path libraryPath = libraryFromClasspath(os, Arch.current(), qualifier, Paths.get(scratchDir != null ? scratchDir : System.getProperty("java.io.tmpdir")));
+            libraryPath = libraryFromClasspath(os, Arch.current(), qualifier, Paths.get(scratchDir != null ? scratchDir : System.getProperty("java.io.tmpdir")));
             libLocation = libraryPath.toString();
         }
         System.load(libLocation);
+        Files.deleteIfExists(libraryPath == null ? Paths.get(libLocation) : libraryPath);
         profiler.initializeContextStorage();
         instance = profiler;
         return profiler;

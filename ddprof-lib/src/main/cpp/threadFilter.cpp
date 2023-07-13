@@ -26,16 +26,19 @@ void trackPage() {
 }
     
 ThreadFilter::ThreadFilter() {
-    memset(_bitmap, 0, sizeof(_bitmap));
+    _max_thread_id = OS::getMaxThreadId(128 * 1024);
+    _max_bitmaps = (_max_thread_id + BITMAP_SIZE - 1) / BITMAP_SIZE;
+    u32 capacity = _max_bitmaps * sizeof(u64*);
+    _bitmap = (u64**)OS::safeAlloc(capacity);
+    memset(_bitmap, 0, capacity);
     _bitmap[0] = (u64*)OS::safeAlloc(BITMAP_SIZE);
     trackPage();
-
     _enabled = false;
     _size = 0;
 }
 
 ThreadFilter::~ThreadFilter() {
-    for (int i = 0; i < MAX_BITMAPS; i++) {
+    for (int i = 0; i < _max_bitmaps; i++) {
         if (_bitmap[i] != NULL) {
             OS::safeFree(_bitmap[i], BITMAP_SIZE);
         }
@@ -71,7 +74,7 @@ void ThreadFilter::init(const char* filter) {
 }
 
 void ThreadFilter::clear() {
-    for (int i = 0; i < MAX_BITMAPS; i++) {
+    for (int i = 0; i < _max_bitmaps; i++) {
         if (_bitmap[i] != NULL) {
             memset(_bitmap[i], 0, BITMAP_SIZE);
         }
@@ -116,7 +119,7 @@ void ThreadFilter::remove(int thread_id) {
 }
 
 void ThreadFilter::collect(std::vector<int>& v) {
-    for (int i = 0; i < MAX_BITMAPS; i++) {
+    for (int i = 0; i < _max_bitmaps; i++) {
         u64* b = _bitmap[i];
         if (b != NULL) {
             int start_id = i * BITMAP_CAPACITY;
