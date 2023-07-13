@@ -26,7 +26,6 @@
 #include <sys/param.h>
 #include "profiler.h"
 #include "perfEvents.h"
-#include "allocTracer.h"
 #include "objectSampler.h"
 #include "wallClock.h"
 #include "j9Ext.h"
@@ -50,7 +49,6 @@
 // can be still accessed concurrently during VM termination
 Profiler* const Profiler::_instance = new Profiler();
 
-static void (*orig_trapHandler)(int signo, siginfo_t* siginfo, void* ucontext);
 static void (*orig_segvHandler)(int signo, siginfo_t* siginfo, void* ucontext);
 
 static Engine noop_engine;
@@ -830,26 +828,6 @@ void Profiler::uninstallTraps() {
     _wall_engine->enableEvents(false);
 }
 
-void Profiler::trapHandler(int signo, siginfo_t* siginfo, void* ucontext) {
-    StackFrame frame(ucontext);
-
-    if (_begin_trap.covers(frame.pc())) {
-        _cpu_engine->enableEvents(true);
-        _wall_engine->enableEvents(true);
-        _begin_trap.uninstall();
-        _end_trap.install();
-        frame.pc() = _begin_trap.entry();
-    } else if (_end_trap.covers(frame.pc())) {
-        _cpu_engine->enableEvents(false);
-        _wall_engine->enableEvents(false);
-        _end_trap.uninstall();
-        _begin_trap.install();
-        frame.pc() = _end_trap.entry();
-    } else if (orig_trapHandler != NULL) {
-        orig_trapHandler(signo, siginfo, ucontext);
-    }
-}
-
 void Profiler::segvHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     StackFrame frame(ucontext);
 
@@ -869,10 +847,6 @@ void Profiler::segvHandler(int signo, siginfo_t* siginfo, void* ucontext) {
 }
 
 void Profiler::setupSignalHandlers() {
-    orig_trapHandler = OS::installSignalHandler(SIGTRAP, AllocTracer::trapHandler);
-    if (orig_trapHandler == (void*)SIG_DFL || orig_trapHandler == (void*)SIG_IGN) {
-        orig_trapHandler = NULL;
-    }
     if (VM::java_version() > 0) {
         // HotSpot tolerates interposed SIGSEGV/SIGBUS handler; other JVMs probably not
         orig_segvHandler = OS::replaceCrashHandler(segvHandler);

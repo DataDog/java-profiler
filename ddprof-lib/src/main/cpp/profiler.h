@@ -245,7 +245,6 @@ class Profiler {
     CodeCache* findLibraryByAddress(const void* address);
     const char* findNativeMethod(const void* address);
 
-    void trapHandler(int signo, siginfo_t* siginfo, void* ucontext);
     static void segvHandler(int signo, siginfo_t* siginfo, void* ucontext);
     static void setupSignalHandlers();
 
