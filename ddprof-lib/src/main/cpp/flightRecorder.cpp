@@ -1270,7 +1270,7 @@ class Recording {
         int start = buf->skip(1);
         buf->putVar64(T_QUEUE_TIME);
         buf->putVar64(event->_start);
-        buf->putVar64(event->_end);
+        buf->putVar64(event->_end - event->_start);
         buf->putVar64(tid);
         buf->putVar64(event->_origin);
         buf->putVar64(event->_task);

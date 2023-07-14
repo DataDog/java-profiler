@@ -10,11 +10,14 @@ import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.unit.IQuantity;
+import org.openjdk.jmc.common.unit.IRange;
+import org.openjdk.jmc.flightrecorder.JfrAttributes;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
 import static org.openjdk.jmc.common.unit.UnitLookup.CLASS;
+import static org.openjdk.jmc.common.unit.UnitLookup.EPOCH_MS;
 import static org.openjdk.jmc.common.unit.UnitLookup.EPOCH_NS;
 import static org.openjdk.jmc.common.unit.UnitLookup.THREAD;
 import static org.openjdk.jmc.common.unit.UnitLookup.TIMESTAMP;
@@ -40,7 +43,10 @@ public class QueueTimeTest extends AbstractProfilerTest {
         @Override
         public void run() {
             profiler.setContext(1, 2);
-            profiler.recordQueueTime(0, start, profiler.getCurrentTicks(), getClass(), QueueTimeTest.class, origin);
+            long now = profiler.getCurrentTicks();
+            if (profiler.isThresholdExceeded(1, start, now)) {
+                profiler.recordQueueTime(start, now, getClass(), QueueTimeTest.class, origin);
+            }
             profiler.clearContext();
         }
     }
@@ -57,7 +63,6 @@ public class QueueTimeTest extends AbstractProfilerTest {
         stopProfiler();
 
         IAttribute<IQuantity> startTimeAttr = attr("startTime", "", "", TIMESTAMP);
-        IAttribute<IQuantity> endTimeAttr = attr("endTime", "", "", TIMESTAMP);
         IAttribute<IMCThread> originAttr = attr("origin", "", "", THREAD);
         IAttribute<IMCType> taskAttr = attr("task", "", "", CLASS);
         IAttribute<IMCType> schedulerAttr = attr("scheduler", "", "", CLASS);
@@ -65,7 +70,10 @@ public class QueueTimeTest extends AbstractProfilerTest {
         IItemCollection events = verifyEvents("datadog.QueueTime");
         for (IItemIterable it : events) {
             for (IItem item : it) {
-                assertTrue(endTimeAttr.getAccessor(it.getType()).getMember(item).longValueIn(EPOCH_NS) > startTimeAttr.getAccessor(it.getType()).getMember(item).longValueIn(EPOCH_NS));
+                assertTrue(startTimeAttr.getAccessor(it.getType()).getMember(item).longValueIn(EPOCH_NS) > 0);
+                IRange<IQuantity> lifetime = JfrAttributes.LIFETIME.getAccessor(it.getType()).getMember(item);
+                long duration = lifetime.getEnd().longValueIn(EPOCH_MS) - lifetime.getStart().longValueIn(EPOCH_MS);
+                assertTrue(duration >= 1);
                 assertEquals(task.getClass().getName(), taskAttr.getAccessor(it.getType()).getMember(item).getTypeName());
                 assertEquals(getClass().getName(), schedulerAttr.getAccessor(it.getType()).getMember(item).getTypeName());
                 assertEquals(1, SPAN_ID.getAccessor(it.getType()).getMember(item).longValue());

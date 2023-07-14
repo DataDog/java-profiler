@@ -208,18 +208,15 @@ Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(JNIEnv *env, jobjec
 }
 
 extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(JNIEnv* env, jobject unused, jlong thresholdMillis,
-                                                         jlong startTime, jlong endTime, jstring task,
-                                                         jstring scheduler, jthread origin) {
+Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(JNIEnv* env, jobject unused, jlong startTime,
+                                                         jlong endTime, jstring task, jstring scheduler,
+                                                         jthread origin) {
     int tid = ProfiledThread::currentTid();
     if (tid < 0) {
         return;
     }
     int origin_tid = VMThread::nativeThreadId(env, origin);
     if (origin_tid < 0) {
-        return;
-    }
-    if (TSC::is_within_threshold(thresholdMillis, endTime - startTime)) {
         return;
     }
     JniString task_str(env, task);
@@ -238,4 +235,9 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(JNIEnv* env, jobject un
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_currentTicks0(JNIEnv* env, jobject unused) {
     return TSC::ticks();
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_tscFrequency0(JNIEnv* env, jobject unused) {
+    return TSC::frequency();
 }
