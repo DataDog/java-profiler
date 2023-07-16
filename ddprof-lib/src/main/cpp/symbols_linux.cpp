@@ -145,14 +145,16 @@ class ElfParser {
     CodeCache* _cc;
     const char* _base;
     const char* _file_name;
+    bool _relocate_dyn;
     ElfHeader* _header;
     const char* _sections;
     const char* _vaddr_diff;
 
-    ElfParser(CodeCache* cc, const char* base, const void* addr, const char* file_name = NULL) {
+    ElfParser(CodeCache* cc, const char* base, const void* addr, const char* file_name, bool relocate_dyn) {
         _cc = cc;
         _base = base;
         _file_name = file_name;
+        _relocate_dyn = relocate_dyn;
         _header = (ElfHeader*)addr;
         _sections = (const char*)addr + _header->e_shoff;
     }
@@ -176,6 +178,16 @@ class ElfParser {
         return _header->e_type == ET_EXEC ? (const char*)pheader->p_vaddr : _vaddr_diff + pheader->p_vaddr;
     }
 
+    char* dyn_ptr(ElfDyn* dyn) {
+        // GNU dynamic linker relocates pointers in the dynamic section, while musl doesn't.
+        // Also, [vdso] is not relocated, and its vaddr may differ from the load address.
+        if (_relocate_dyn || (char*)dyn->d_un.d_ptr < _base) {
+            return (char*)_vaddr_diff + dyn->d_un.d_ptr;
+        } else {
+            return (char*)dyn->d_un.d_ptr;
+        }
+    }
+
     ElfSection* findSection(uint32_t type, const char* name);
     ElfProgramHeader* findProgramHeader(uint32_t type);
 
@@ -190,7 +202,7 @@ class ElfParser {
     void addRelocationSymbols(ElfSection* reltab, const char* plt);
 
   public:
-    static void parseProgramHeaders(CodeCache* cc, const char* base, const char* end);
+    static void parseProgramHeaders(CodeCache* cc, const char* base, const char* end, bool relocate_dyn);
     static bool parseFile(CodeCache* cc, const char* base, const char* file_name, bool use_debug);
 };
 
@@ -243,7 +255,7 @@ bool ElfParser::parseFile(CodeCache* cc, const char* base, const char* file_name
     if (addr == MAP_FAILED) {
         Log::warn("Could not parse symbols from %s: %s", file_name, strerror(errno));
     } else {
-        ElfParser elf(cc, base, addr, file_name);
+        ElfParser elf(cc, base, addr, file_name, false);
         if (elf.validHeader()) {
             elf.loadSymbols(use_debug);
         }
@@ -252,8 +264,8 @@ bool ElfParser::parseFile(CodeCache* cc, const char* base, const char* file_name
     return true;
 }
 
-void ElfParser::parseProgramHeaders(CodeCache* cc, const char* base, const char* end) {
-    ElfParser elf(cc, base, base);
+void ElfParser::parseProgramHeaders(CodeCache* cc, const char* base, const char* end, bool relocate_dyn) {
+    ElfParser elf(cc, base, base, NULL, relocate_dyn);
     if (elf.validHeader() && base + elf._header->e_phoff < end) {
         cc->setTextBase(base);
         elf.calcVirtualLoadAddress();
@@ -643,7 +655,7 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
                     if (inode == last_inode) {
                         // If last_inode is set, image_base is known to be valid and readable
                         ElfParser::parseFile(cc, image_base, map.file(), true);
-                        ElfParser::parseProgramHeaders(cc, image_base, map_end);
+                        ElfParser::parseProgramHeaders(cc, image_base, map_end, musl);
                     } else if ((unsigned long)map_start > map_offs) {
                         // Unlikely case when image_base has not been found.
                         // Be careful: executable file is not always ELF, e.g. classes.jsa
@@ -651,7 +663,7 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
                     }
                 }
             } else if (strcmp(map.file(), "[vdso]") == 0) {
-                ElfParser::parseProgramHeaders(cc, map_start, map_end);
+                ElfParser::parseProgramHeaders(cc, map_start, map_end, true);
             }
         }
 
