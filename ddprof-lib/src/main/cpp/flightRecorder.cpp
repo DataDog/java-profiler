@@ -718,6 +718,7 @@ class Recording {
         writeIntSetting(buf, T_ACTIVE_RECORDING, "jstackdepth", args._jstackdepth);
         writeIntSetting(buf, T_ACTIVE_RECORDING, "safemode", args._safe_mode);
         writeIntSetting(buf, T_ACTIVE_RECORDING, "jfropts", args._jfr_options);
+        writeIntSetting(buf, T_ACTIVE_RECORDING, "tscfrequency", TSC::frequency());
         writeStringSetting(buf, T_ACTIVE_RECORDING, "loglevel", Log::LEVEL_NAME[Log::level()]);
         writeBoolSetting(buf, T_ACTIVE_RECORDING, "hotspot", VM::isHotspot());
         writeBoolSetting(buf, T_ACTIVE_RECORDING, "openj9", VM::isOpenJ9());
