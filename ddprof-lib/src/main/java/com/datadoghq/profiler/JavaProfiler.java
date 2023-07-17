@@ -54,6 +54,13 @@ public final class JavaProfiler {
         }
         UNSAFE = unsafe;
     }
+
+    static final class TSCFrequencyHolder {
+        /**
+         * TSC frequency required to convert ticks into seconds
+         */
+        static final long FREQUENCY = tscFrequency0();
+    }
     private static JavaProfiler instance;
     private static final int CONTEXT_SIZE = 64;
     // must be kept in sync with PAGE_SIZE in context.h
@@ -402,16 +409,23 @@ public final class JavaProfiler {
         recordSettingEvent0(name, value, unit);
     }
 
+
+    /**
+     * Scales the ticks to milliseconds and applies a threshold
+     */
+    public boolean isThresholdExceeded(long thresholdMillis, long startTicks, long endTicks) {
+        return (1000 * (endTicks - startTicks)) / TSCFrequencyHolder.FREQUENCY > thresholdMillis;
+    }
+
     /**
      * Records when queueing ended
-     * @param thresholdMillis threshold for emitting an event
      * @param task the name of the enqueue task
      * @param scheduler the name of the thread-pool or executor scheduling the task
      * @param origin the thread the task was submitted on
      */
-    public void recordQueueTime(long thresholdMillis, long startTicks, long endTicks, Class<?> task, Class<?> scheduler,
+    public void recordQueueTime(long startTicks, long endTicks, Class<?> task, Class<?> scheduler,
                                Thread origin) {
-        recordQueueEnd0(thresholdMillis, startTicks, endTicks, task.getName(), scheduler.getName(), origin);
+        recordQueueEnd0(startTicks, endTicks, task.getName(), scheduler.getName(), origin);
     }
 
     /**
@@ -516,7 +530,9 @@ public final class JavaProfiler {
 
     private static native void recordSettingEvent0(String name, String value, String unit);
 
-    private static native void recordQueueEnd0(long thresholdMillis, long startTicks, long endTicks, String task, String scheduler, Thread origin);
+    private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin);
 
     private static native long currentTicks0();
+
+    private static native long tscFrequency0();
 }
