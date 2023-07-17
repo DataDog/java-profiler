@@ -56,8 +56,10 @@ public class ContendedWallclockSamplesTest extends AbstractProfilerTest {
                 String state = stateAccessor.getMember(sample);
                 if ("CONTENDED".equals(state)) {
                     String stackTrace = frameAccessor.getMember(sample);
-                    assertTrue(stackTrace.contains(lambdaStateName), () -> stackTrace + " missing " + lambdaStateName);
-                    assertTrue(stackTrace.contains(lambdaName), () -> stackTrace + " missing " + lambdaName);
+                    if (!stackTrace.endsWith(".GC_active()")) {
+                        assertTrue(stackTrace.contains(lambdaStateName), () -> stackTrace + " missing " + lambdaStateName);
+                        assertTrue(stackTrace.contains(lambdaName), () -> stackTrace + " missing " + lambdaName);
+                    }
                 }
             }
         }
