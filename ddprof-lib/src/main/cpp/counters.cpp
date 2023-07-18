@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 #include "counters.h"
-#include <cstring>
 #include <stdlib.h>
 
 long long* Counters::init() {

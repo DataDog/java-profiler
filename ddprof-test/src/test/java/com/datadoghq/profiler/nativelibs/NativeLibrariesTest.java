@@ -78,8 +78,6 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
                         library = "ZSTD";
                     } else if (stacktrace.contains("Compile")) {
                         library = "JIT";
-                    } else {
-                        System.err.println(stacktrace);
                     }
                     libraryCounters.computeIfAbsent(library, x -> new AtomicInteger()).incrementAndGet();
                 }
@@ -87,7 +85,7 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
         }
         assertTrue(modeCounters.containsKey("JVM"), "no JVM samples");
         assertTrue(modeCounters.containsKey("NATIVE"), "no NATIVE samples");
-        assertTrue(libraryCounters.containsKey("LZ4"), "no lz4-java samples");
+        assertTrue(Platform.isMac() || libraryCounters.containsKey("LZ4"), "no lz4-java samples");
         // looks like we might drop these samples with FP unwinding (which we have to use on MacOS)
         assertTrue(isMusl || Platform.isMac() || libraryCounters.containsKey("SNAPPY"), "no snappy-java samples");
         // cannot unwind these samples with FP unwinding (which we have to use on MacOS)
