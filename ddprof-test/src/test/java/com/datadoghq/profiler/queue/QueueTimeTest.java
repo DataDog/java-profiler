@@ -9,9 +9,11 @@ import org.openjdk.jmc.common.item.IAttribute;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
+import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.unit.IQuantity;
 import org.openjdk.jmc.common.unit.IRange;
 import org.openjdk.jmc.flightrecorder.JfrAttributes;
+import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -44,7 +46,7 @@ public class QueueTimeTest extends AbstractProfilerTest {
         public void run() {
             profiler.setContext(1, 2);
             long now = profiler.getCurrentTicks();
-            if (profiler.isThresholdExceeded(1, start, now)) {
+            if (profiler.isThresholdExceeded(9, start, now)) {
                 profiler.recordQueueTime(start, now, getClass(), QueueTimeTest.class, origin);
             }
             profiler.clearContext();
@@ -67,13 +69,26 @@ public class QueueTimeTest extends AbstractProfilerTest {
         IAttribute<IMCType> taskAttr = attr("task", "", "", CLASS);
         IAttribute<IMCType> schedulerAttr = attr("scheduler", "", "", CLASS);
 
+        IItemCollection activeSettings = verifyEvents("jdk.ActiveSetting");
+        for (IItemIterable activeSetting : activeSettings) {
+            IMemberAccessor<String, IItem> nameAccessor = JdkAttributes.REC_SETTING_NAME.getAccessor(activeSetting.getType());
+            IMemberAccessor<String, IItem> valueAccessor = JdkAttributes.REC_SETTING_VALUE.getAccessor(activeSetting.getType());
+            for (IItem item : activeSetting) {
+                String name = nameAccessor.getMember(item);
+                if ("tscfrequency".equals(name)) {
+                    String frequency = valueAccessor.getMember(item);
+                    assertTrue(Long.valueOf(frequency) > 0, frequency);
+                }
+            }
+        }
+
         IItemCollection events = verifyEvents("datadog.QueueTime");
         for (IItemIterable it : events) {
             for (IItem item : it) {
                 assertTrue(startTimeAttr.getAccessor(it.getType()).getMember(item).longValueIn(EPOCH_NS) > 0);
                 IRange<IQuantity> lifetime = JfrAttributes.LIFETIME.getAccessor(it.getType()).getMember(item);
                 long duration = lifetime.getEnd().longValueIn(EPOCH_MS) - lifetime.getStart().longValueIn(EPOCH_MS);
-                assertTrue(duration >= 1);
+                assertTrue(duration >= 9);
                 assertEquals(task.getClass().getName(), taskAttr.getAccessor(it.getType()).getMember(item).getTypeName());
                 assertEquals(getClass().getName(), schedulerAttr.getAccessor(it.getType()).getMember(item).getTypeName());
                 assertEquals(1, SPAN_ID.getAccessor(it.getType()).getMember(item).longValue());

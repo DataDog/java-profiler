@@ -414,7 +414,7 @@ public final class JavaProfiler {
      * Scales the ticks to milliseconds and applies a threshold
      */
     public boolean isThresholdExceeded(long thresholdMillis, long startTicks, long endTicks) {
-        return (1000 * (endTicks - startTicks)) / TSCFrequencyHolder.FREQUENCY > thresholdMillis;
+        return endTicks - startTicks > thresholdMillis * TSCFrequencyHolder.FREQUENCY / 1000;
     }
 
     /**
