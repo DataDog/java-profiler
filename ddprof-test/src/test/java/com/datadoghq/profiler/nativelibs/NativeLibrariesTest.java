@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
@@ -42,7 +43,7 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
     @Test
     public void test() {
         Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
-        boolean isMusl = System.getenv("TEST_CONFIGURATION").startsWith("musl");
+        boolean isMusl = Optional.ofNullable(System.getenv("TEST_CONFIGURATION")).orElse("").startsWith("musl");
         int blackhole = 0;
         for (int i = 0; i < 100; i++) {
             blackhole ^= lz4Java();
