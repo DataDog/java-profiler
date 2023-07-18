@@ -441,6 +441,10 @@ class HeapUsage : VMStructs {
     }
 
     static HeapUsage get() {
+        return get(true);
+    }
+
+    static HeapUsage get(bool allow_jmx) {
         HeapUsage usage;
         if (_collected_heap_addr != NULL) {
             if (_heap_usage_func != NULL) {
@@ -457,9 +461,10 @@ class HeapUsage : VMStructs {
                 usage._maxSize = summary.maxSize();
             }
         }
-        if (usage._maxSize == -1  && _memory_usage_func != NULL) {
+        if (usage._maxSize == -1  && _memory_usage_func != NULL && allow_jmx) {
             // this path is for non-hotspot JVMs
             // we need to patch the native method binding for JMX GetMemoryUsage to capture the native method pointer first
+            // also, it requires JMX and allocating new objects so it really should not be used in a GC callback
             JNIEnv* env = VM::jni();
             if (env == NULL) {
                 return usage;
