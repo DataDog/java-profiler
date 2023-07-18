@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
@@ -42,7 +43,7 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
     @Test
     public void test() {
         Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
-        boolean isMusl = System.getenv("TEST_CONFIGURATION").startsWith("musl");
+        boolean isMusl = Optional.ofNullable(System.getenv("TEST_CONFIGURATION")).orElse("").startsWith("musl");
         int blackhole = 0;
         for (int i = 0; i < 100; i++) {
             blackhole ^= lz4Java();
@@ -77,8 +78,6 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
                         library = "ZSTD";
                     } else if (stacktrace.contains("Compile")) {
                         library = "JIT";
-                    } else {
-                        System.err.println(stacktrace);
                     }
                     libraryCounters.computeIfAbsent(library, x -> new AtomicInteger()).incrementAndGet();
                 }
@@ -86,7 +85,7 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
         }
         assertTrue(modeCounters.containsKey("JVM"), "no JVM samples");
         assertTrue(modeCounters.containsKey("NATIVE"), "no NATIVE samples");
-        assertTrue(libraryCounters.containsKey("LZ4"), "no lz4-java samples");
+        assertTrue(Platform.isMac() || libraryCounters.containsKey("LZ4"), "no lz4-java samples");
         // looks like we might drop these samples with FP unwinding (which we have to use on MacOS)
         assertTrue(isMusl || Platform.isMac() || libraryCounters.containsKey("SNAPPY"), "no snappy-java samples");
         // cannot unwind these samples with FP unwinding (which we have to use on MacOS)

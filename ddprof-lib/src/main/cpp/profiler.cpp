@@ -1045,6 +1045,7 @@ Error Profiler::start(Arguments& args, bool reset) {
             _call_trace_storage.clear();
             unlockAll();
         }
+        Counters::reset();
 
         // Reset thread names and IDs
         MutexLocker ml(_thread_names_lock);
