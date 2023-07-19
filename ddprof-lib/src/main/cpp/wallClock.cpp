@@ -79,12 +79,13 @@ void WallClock::signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64
         }
         mode = convertJvmExecutionState(vm_thread->state());
     }
-    bool isInSyscall = inSyscall(ucontext);
     if (state == ThreadState::UNKNOWN) {
-        state = isInSyscall ? ThreadState::SYSCALL : ThreadState::RUNNABLE;
-    }
-    if (isInSyscall) {
-        mode = ExecutionMode::SYSCALL;
+        if (inSyscall(ucontext)) {
+            state = ThreadState::SYSCALL;
+            mode = ExecutionMode::SYSCALL;
+        } else {
+            state = ThreadState::RUNNABLE;
+        }
     }
     event._thread_state = state;
     event._execution_mode = mode;

@@ -116,7 +116,7 @@ public class ContextWallClockTest extends AbstractProfilerTest {
         }
 
         if (!Platform.isZing() && !Platform.isJ9()) {
-            assertTrue(modes.contains("SYSCALL"), "no SYSCALL samples");
+            assertTrue(modes.contains("JAVA") || modes.contains("JVM"), "no JAVA|JVM samples");
             assertFalse(modes.contains("UNKNOWN"), "UNKNOWN wallclock samples on HotSpot");
         } else {
             assertTrue(modes.contains("UNKNOWN"), "no UNKNOWN samples");
