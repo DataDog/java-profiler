@@ -23,6 +23,7 @@
 #include "context.h"
 #include "thread.h"
 #include "vmStructs.h"
+#include <math.h>
 
 
 ObjectSampler* const ObjectSampler::_instance = new ObjectSampler();
@@ -43,7 +44,7 @@ void ObjectSampler::recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread threa
     AllocEvent event;
 
     event._size = size;
-    event._weight =  (float)((size == 0 || _interval == 0) ? 1 : 1 / (1 - std::exp(-size / (double)_interval)));
+    event._weight =  (float)((size == 0 || _interval == 0) ? 1 : 1 / (1 - exp(-size / (double)_interval)));
 
     char* class_name;
     if (jvmti->GetClassSignature(object_klass, &class_name, NULL) == 0) {
