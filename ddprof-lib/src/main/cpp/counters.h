@@ -17,6 +17,7 @@
 #define JAVA_PROFILER_LIBRARY_COUNTERS_H
 
 #include "arch.h"
+#include <cstring>
 #include <vector>
 
 #define DD_COUNTER_TABLE(X) \
@@ -107,6 +108,12 @@ public:
         #undef X_NAME
         #else
         return {};
+        #endif // COUNTERS
+    }
+
+    static void reset() {
+        #ifdef COUNTERS
+        memset((void*) Counters::instance()._counters, 0, size());
         #endif // COUNTERS
     }
 

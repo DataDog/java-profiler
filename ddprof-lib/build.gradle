@@ -87,7 +87,7 @@ tasks.withType(LinkSharedLibrary) {
     onlyIf {
         !project.hasProperty('skip-native')
     }
-    linkerArgs.addAll(["-ldl", "-lpthread"])
+    linkerArgs.addAll(["-ldl", "-lpthread", "-lm"])
     if (os().isLinux()) {
         linkerArgs.addAll(["-Wl,-z,defs", "-Wl,-z,nodelete", "-lrt"])
         if (isMusl()) {

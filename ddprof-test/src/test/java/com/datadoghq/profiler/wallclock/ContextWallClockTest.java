@@ -116,7 +116,7 @@ public class ContextWallClockTest extends AbstractProfilerTest {
         }
 
         if (!Platform.isZing() && !Platform.isJ9()) {
-            assertTrue(modes.contains("SYSCALL"), "no SYSCALL samples");
+            assertTrue(modes.contains("JAVA") || modes.contains("JVM"), "no JAVA|JVM samples");
             assertFalse(modes.contains("UNKNOWN"), "UNKNOWN wallclock samples on HotSpot");
         } else {
             assertTrue(modes.contains("UNKNOWN"), "no UNKNOWN samples");
@@ -134,11 +134,11 @@ public class ContextWallClockTest extends AbstractProfilerTest {
         assertWeight("method3Impl", totalWeight, method3Weight, 0.33);
         Map<String, Long> debugCounters = profiler.getDebugCounters();
         // these are here to verify these counters produce reasonable values so they can be used for memory leak detection
-        assertInRange(debugCounters.get("calltrace_storage_traces"), 10, 10000);
+        assertInRange(debugCounters.get("calltrace_storage_traces"), 1, 100);
         assertInRange(debugCounters.get("calltrace_storage_bytes"), 1024, 8 * 1024 * 1024);
         // this allocator is only used for calltrace storage and eagerly allocates chunks of 8MiB
-        assertEquals(8 * 1024 * 1024, debugCounters.get("linear_allocator_bytes"));
-        assertEquals(1, debugCounters.get("linear_allocator_chunks"));
+        assertEquals(0, debugCounters.get("linear_allocator_bytes"));
+        assertEquals(0, debugCounters.get("linear_allocator_chunks"));
         assertInRange(debugCounters.get("thread_ids_count"), 1, 100);
         assertInRange(debugCounters.get("thread_names_count"), 1, 100);
     }

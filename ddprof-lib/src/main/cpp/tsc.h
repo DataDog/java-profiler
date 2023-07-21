@@ -77,10 +77,6 @@ class TSC {
     static u64 ticks_to_millis(u64 ticks) {
         return TSC_SUPPORTED ? 1000 * ticks / _frequency : ticks / 1000 / 1000;
     }
-
-    static bool is_within_threshold(u64 thresholdMillis, u64 ticks) {
-        return ticks_to_millis(ticks) < thresholdMillis;
-    }
 };
 
 #endif // _TSC_H

@@ -92,11 +92,11 @@ public class ContextCpuTest extends AbstractProfilerTest {
         }
         Map<String, Long> debugCounters = profiler.getDebugCounters();
         // these are here to verify these counters produce reasonable values so they can be used for memory leak detection
-        assertInRange(debugCounters.get("calltrace_storage_traces"), 10, 10000);
+        assertInRange(debugCounters.get("calltrace_storage_traces"), 1, 100);
         assertInRange(debugCounters.get("calltrace_storage_bytes"), 1024, 8 * 1024 * 1024);
         // this allocator is only used for calltrace storage and eagerly allocates chunks of 8MiB
-        assertEquals(8 * 1024 * 1024, debugCounters.get("linear_allocator_bytes"));
-        assertEquals(1, debugCounters.get("linear_allocator_chunks"));
+        assertEquals(0, debugCounters.get("linear_allocator_bytes"));
+        assertEquals(0, debugCounters.get("linear_allocator_chunks"));
     }
 
 

@@ -37,6 +37,14 @@
 #include "objectSampler.h"
 #include "thread.h"
 
+// avoid linking against newer symbols here for wide compatibility
+#ifdef __GLIBC__
+#ifdef __aarch64__
+    __asm__(".symver log,log@GLIBC_2.17");
+    __asm__(".symver exp,exp@GLIBC_2.17");
+    #endif
+#endif
+
 const int MAX_NATIVE_FRAMES = 128;
 const int RESERVED_FRAMES   = 4;
 const int CONCURRENCY_LEVEL = 16;
