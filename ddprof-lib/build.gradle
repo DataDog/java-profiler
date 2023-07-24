@@ -89,10 +89,7 @@ tasks.withType(LinkSharedLibrary) {
     }
     linkerArgs.addAll(["-ldl", "-lpthread", "-lm"])
     if (os().isLinux()) {
-        linkerArgs.addAll(["-Wl,-z,defs", "-Wl,-z,nodelete", "-lrt"])
-        if (isMusl()) {
-            linkerArgs.addAll(["-static-libstdc++", "-static-libgcc"])
-        }
+        linkerArgs.addAll(["-Wl,-z,defs", "-Wl,-z,nodelete", "-lrt", "-static-libstdc++", "-static-libgcc"])
     }
     linkerArgs.add '-v'
 }
