@@ -10,9 +10,16 @@ If you need a full-fledged Java profiler head back to [async-profiler](https://g
 
 
 ## Build
-As simple as `./gradlew build`. The resulting artifact is located in `ddprof-lib/build/libs/ddprof-<version>.jar`
 
-If building and testing on Apple Silicon (M1+), be sure to install an aarch64 OpenJDK distribution, otherwise the architecture used for compilation and the JVM based test suite will not match, which means the tests will not be able to load the dynamic library at runtime.
+### Prerequisites
+1. This project contains Java code and is built by gradle, as such, you need to install a JDK in order to build it. Run `brew install openjdk` to install it on MacOS.
+   If building and testing on Apple Silicon (M1+), be sure to install an aarch64 OpenJDK distribution, otherwise the architecture used for compilation and the JVM based test suite will not match, which means the tests will not be able to load the dynamic library at runtime.
+2. The build requires cmake, which is included in XCode, but can also be installed by running `brew install cmake`
+
+
+Once prerequisites have been installed simple as `./gradlew build`. The resulting artifact is located in `ddprof-lib/build/libs/ddprof-<version>.jar`
+
+
 
 ### Consuming the artifact
 For dd-trace-java you just need to set the `java.profiler.jar` project property.
