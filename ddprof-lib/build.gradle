@@ -52,7 +52,8 @@ tasks.withType(CppCompile).configureEach {
         !project.hasProperty('skip-native')
     }
     def taskIncludes = ["${javaHome()}/include"]
-    def taskArgs = ["-fno-omit-frame-pointer", "-momit-leaf-frame-pointer", "-fvisibility=hidden", "-std=c++11", "-DPROFILER_VERSION=\"${version}\""]
+    def taskArgs = ["-fno-omit-frame-pointer", "-momit-leaf-frame-pointer", "-fvisibility=hidden",
+    "-fdata-sections", "-ffunction-sections", "-std=c++11", "-DPROFILER_VERSION=\"${version}\""]
 
     if (os().isMacOsX()) {
         taskIncludes.add "${javaHome()}/include/darwin"
@@ -89,7 +90,8 @@ tasks.withType(LinkSharedLibrary) {
     }
     linkerArgs.addAll(["-ldl", "-lpthread", "-lm"])
     if (os().isLinux()) {
-        linkerArgs.addAll(["-Wl,-z,defs", "-Wl,-z,nodelete", "-lrt", "-static-libstdc++", "-static-libgcc", "-Wl,--exclude-libs,ALL"])
+        linkerArgs.addAll(["-Wl,-z,defs", "-Wl,-z,nodelete", "-lrt", "-static-libstdc++", "-static-libgcc",
+        "-Wl,--exclude-libs,ALL", "-Wl,--gc-sections"])
     }
     linkerArgs.add '-v'
 }
