@@ -17,9 +17,6 @@
 #ifndef _FLIGHTRECORDER_H
 #define _FLIGHTRECORDER_H
 
-#include <map>
-
-#include <limits.h>
 #include <string.h>
 
 #include "jvmti.h"
@@ -27,12 +24,10 @@
 #include "arch.h"
 #include "arguments.h"
 #include "buffers.h"
-#include "counters.h"
 #include "dictionary.h"
 #include "event.h"
 #include "log.h"
 #include "jfrMetadata.h"
-#include "mutex.h"
 #include "objectSampler.h"
 #include "threadFilter.h"
 #include "vmEntry.h"
@@ -78,17 +73,7 @@ class MethodInfo {
     jvmtiLineNumberEntry* _line_number_table;
     FrameTypeId _type;
 
-    jint getLineNumber(jint bci) {
-        if (_line_number_table_size == 0) {
-            return 0;
-        }
-
-        int i = 1;
-        while (i < _line_number_table_size && bci >= _line_number_table[i].start_location) {
-            i++;
-        }
-        return _line_number_table[i - 1].line_number;
-    }
+    jint getLineNumber(jint bci);
 
     bool isHidden() {
         // 0x1400 = ACC_SYNTHETIC(0x1000) | ACC_BRIDGE(0x0040)
@@ -100,15 +85,7 @@ class MethodMap : public std::map<jmethodID, MethodInfo> {
   public:
     MethodMap() {
     }
-    ~MethodMap() {
-        jvmtiEnv* jvmti = VM::jvmti();
-        for (const_iterator it = begin(); it != end(); ++it) {
-            jvmtiLineNumberEntry* line_number_table = it->second._line_number_table;
-            if (line_number_table != NULL) {
-                jvmti->Deallocate((unsigned char*)line_number_table);
-            }
-        }
-    }
+    ~MethodMap();
 };
 
 class Recording {

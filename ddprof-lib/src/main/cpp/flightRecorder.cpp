@@ -49,6 +49,28 @@ static SpinLock _rec_lock(1);
 static const char* const SETTING_RING[] = {NULL, "kernel", "user", "any"};
 static const char* const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 
+jint MethodInfo::getLineNumber(jint bci) {
+    if (_line_number_table_size == 0) {
+        return 0;
+    }
+
+    int i = 1;
+    while (i < _line_number_table_size && bci >= _line_number_table[i].start_location) {
+        i++;
+    }
+    return _line_number_table[i - 1].line_number;
+}
+
+MethodMap::~MethodMap() {
+    jvmtiEnv* jvmti = VM::jvmti();
+    for (const_iterator it = begin(); it != end(); ++it) {
+        jvmtiLineNumberEntry* line_number_table = it->second._line_number_table;
+        if (line_number_table != NULL) {
+            jvmti->Deallocate((unsigned char*)line_number_table);
+        }
+    }
+}
+
 void Lookup::fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* lib_name) {
     mi->_class = _classes->lookup("");
     // TODO return the library name once we figured out how to cooperate with the backend
@@ -510,6 +532,21 @@ void Recording::flushIfNeeded(Buffer* buf, int limit) {
     }
 }
 
+void Recording::writeHeader(Buffer* buf) {
+    buf->put("FLR\0", 4);            // magic
+    buf->put16(2);                   // major
+    buf->put16(0);                   // minor
+    buf->put64(1024 * 1024 * 1024);  // chunk size (initially large, for JMC to skip incomplete chunk)
+    buf->put64(0);                   // cpool offset
+    buf->put64(0);                   // meta offset
+    buf->put64(_start_time * 1000);  // start time, ns
+    buf->put64(0);                   // duration, ns
+    buf->put64(_start_ticks);        // start ticks
+    buf->put64(TSC::frequency());    // ticks per sec
+    buf->put32(1);                   // features
+    flushIfNeeded(buf);
+}
+
 void Recording::writeMetadata(Buffer* buf) {
     int metadata_start = buf->skip(5);  // size will be patched later
     buf->putVar64(T_METADATA);
@@ -529,21 +566,6 @@ void Recording::writeMetadata(Buffer* buf) {
     writeElement(buf, JfrMetadata::root());
 
     buf->putVar32(metadata_start, buf->offset() - metadata_start);
-    flushIfNeeded(buf);
-}
-
-void Recording::writeHeader(Buffer* buf) {
-    buf->put("FLR\0", 4);            // magic
-    buf->put16(2);                   // major
-    buf->put16(0);                   // minor
-    buf->put64(1024 * 1024 * 1024);  // chunk size (initially large, for JMC to skip incomplete chunk)
-    buf->put64(0);                   // cpool offset
-    buf->put64(0);                   // meta offset
-    buf->put64(_start_time * 1000);  // start time, ns
-    buf->put64(0);                   // duration, ns
-    buf->put64(_start_ticks);        // start ticks
-    buf->put64(TSC::frequency());    // ticks per sec
-    buf->put32(1);                   // features
     flushIfNeeded(buf);
 }
 
