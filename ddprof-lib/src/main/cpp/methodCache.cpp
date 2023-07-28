@@ -101,9 +101,10 @@ size_t MethodInfoCache::itemSize(CachedItem& item) {
 }
 
 u32 MethodInfoCache::getOrAddStringIdx(char* str) {
+    static const char* nullStr = "<null>";
     assert(str != nullptr);
     if (str == nullptr) {
-        str = "<null>";
+        str = (char*)nullStr;
     }
     u32 idx = _dictionary.lookup(str);
     _string_map_ptr.get()->set(idx, str);
