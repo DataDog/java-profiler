@@ -10,35 +10,35 @@ std::string AbstractMethodInfo::_error_signature = "()L;";
 std::shared_ptr<AbstractMethodInfo> MethodInfoCache::get(const u64& id, bool markUsage) {
     _lock.lockShared();
     auto it(_map.find(id));
+    std::shared_ptr<AbstractMethodInfo> retValue = nullptr;
     if (it == _map.end()) {
         Counters::increment(JMETHODID_MAP_MISS, 1);
-        _lock.unlockShared();
-        return emptyInfo();
-    }
-    CachedItem& item = it->second;
-    if (item._value_ptr) {
-        if (markUsage) {
-            item._value_ptr.get()->_used_epoch = _epoch;
-        }
+        retValue = emptyInfo();
     } else {
-        Counters::increment(JMETHODID_MAP_MISS, 1);
+        CachedItem& item = it->second;
+        if (item._value_ptr) {
+            if (markUsage) {
+                item._value_ptr.get()->_used_epoch = _epoch;
+            }
+        } else {
+            Counters::increment(JMETHODID_MAP_MISS, 1);
+        }
+        retValue = item._value_ptr;
     }
     _lock.unlockShared();
 
-    return item._value_ptr;
+    return retValue;
 }
 
 void MethodInfoCache::markUnloaded(u64 id) {
     _lock.lockShared();
 
     auto it(_map.find(id));
-    if (it == _map.end()) {
-        _lock.unlockShared();
-        return; // not found
-    }
-    CachedMethodInfo* value_ptr = it->second._value_ptr.get();
-    if (value_ptr != nullptr) {
-        value_ptr->markUnloaded();
+    if (it != _map.end()) {
+        CachedMethodInfo* value_ptr = it->second._value_ptr.get();
+        if (value_ptr != nullptr) {
+            value_ptr->markUnloaded();
+        }
     }
     _lock.unlockShared();
 }
@@ -126,6 +126,7 @@ std::shared_ptr<AbstractMethodInfo> MethodInfoCache::newMethodInfo(FrameTypeId f
 std::shared_ptr<AbstractMethodInfo> MethodInfoCache::getOrAdd(u64 id, MethodInfoFunc func) {
     _lock.lock();
     auto it(_map.find(id));
+    std::shared_ptr<AbstractMethodInfo> retValue = nullptr;
     if (it == _map.end()) {    // not found
         std::shared_ptr<AbstractMethodInfo> ami_ptr = func(id, this);
         AbstractMethodInfo* ami = ami_ptr.get();
@@ -137,17 +138,18 @@ std::shared_ptr<AbstractMethodInfo> MethodInfoCache::getOrAdd(u64 id, MethodInfo
             // update the deep size
             Counters::increment(JMETHODID_MAP_BYTES, itemSize(item));
         }
-        _lock.unlock();
-        return ami_ptr;
+        retValue = ami_ptr;
+    } else {
+        retValue = it->second._value_ptr;
     }
-
     _lock.unlock();
-    return it->second._value_ptr;
+    return retValue;
 }
 
 bool MethodInfoCache::add(u64 id, std::shared_ptr<CachedMethodInfo> cmi_ptr) {
     _lock.lock();
     auto it(_map.find(id));
+    bool added = false;
     if (it == _map.end()) {    // not found
         CachedMethodInfo* cmi = cmi_ptr.get();
         cmi->_used_epoch = _epoch;
@@ -155,19 +157,18 @@ bool MethodInfoCache::add(u64 id, std::shared_ptr<CachedMethodInfo> cmi_ptr) {
         _map.emplace(id, item); //std::make_pair(id, item));
         // update the deep size
         Counters::increment(JMETHODID_MAP_BYTES, itemSize(item));
-        _lock.unlock();
-        return true;
+        added = true;
+    } else {
+
+        #ifndef DEBUG
+        Log::warn("Attempted duplicate load of jmethodID[%llu] in epoch %llu", id, _epoch);
+        #else
+        // can not use Log::warn because it pulls in JVMTI transitively and will break unit tests
+        fprintf(stdout, "[WARN] Attempted duplicate load of jmethodID[%llu] in epoch %llu", id, _epoch);
+        #endif
     }
-
-    #ifndef DEBUG
-    Log::warn("Attempted duplicate load of jmethodID[%llu] in epoch %llu", id, _epoch);
-    #else
-    // can not use Log::warn because it pulls in JVMTI transitively and will break unit tests
-    fprintf(stdout, "[WARN] Attempted duplicate load of jmethodID[%llu] in epoch %llu", id, _epoch);
-    #endif
-
     _lock.unlock();
-    return false;
+    return added;
 }
 
 void MethodInfoCache::incEpoch() {
