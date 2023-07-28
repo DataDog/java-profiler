@@ -1204,7 +1204,7 @@ void Recording::addThread(int tid) {
     }
 }
 
-std::shared_ptr<AbstractMethodInfo> Recording::miFromJvmti(u64 mid, MethodInfoCache* cache) {
+std::shared_ptr<AbstractMethodInfo> Recording::methodInfoFromJvmti(u64 mid, MethodInfoCache* cache) {
     JNIEnv* jni = VM::jni();
     jvmtiEnv* jvmti = VM::jvmti();
 
@@ -1287,7 +1287,7 @@ void Recording::addJmethodIDs(jmethodID* ids, int count) {
 }
 
 std::shared_ptr<AbstractMethodInfo> Recording::getOrAdd(jmethodID id) {
-    return _method_cache.getOrAdd((u64)id, Recording::miFromJvmti);
+    return _method_cache.getOrAdd((u64)id, Recording::methodInfoFromJvmti);
 }
 
 void Recording::removeJmethodID(jmethodID id) {

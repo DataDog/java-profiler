@@ -244,7 +244,7 @@ class Recording {
     void addJmethodIDs(jmethodID* ids, int count);
     void removeJmethodID(jmethodID id);
 
-    static std::shared_ptr<AbstractMethodInfo> miFromJvmti(u64 id, MethodInfoCache* cache);
+    static std::shared_ptr<AbstractMethodInfo> methodInfoFromJvmti(u64 id, MethodInfoCache* cache);
 };
 
 class Lookup {
