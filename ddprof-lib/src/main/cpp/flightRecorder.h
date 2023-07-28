@@ -17,17 +17,22 @@
 #ifndef _FLIGHTRECORDER_H
 #define _FLIGHTRECORDER_H
 
-#include <string.h>
+#include <map>
 
-#include "jvmti.h"
+#include <limits.h>
+#include <string.h>
 
 #include "arch.h"
 #include "arguments.h"
 #include "buffers.h"
+#include "counters.h"
 #include "dictionary.h"
 #include "event.h"
+#include "frame.h"
 #include "log.h"
 #include "jfrMetadata.h"
+#include "methodCache.h"
+#include "mutex.h"
 #include "objectSampler.h"
 #include "threadFilter.h"
 #include "vmEntry.h"
@@ -59,8 +64,7 @@ struct CpuTimes {
 class MethodInfo {
   public:
     MethodInfo() : _mark(false), _is_entry(false), _key(0), _modifiers(0),
-     _class(0), _name(0), _sig(0), _line_number_table_size(0), _line_number_table(),
-     _type() {}
+     _class(0), _name(0), _sig(0), _line_number_table(nullptr), _type() {}
 
     bool _mark;
     bool _is_entry;
@@ -69,11 +73,21 @@ class MethodInfo {
     u32 _name;
     u32 _sig;
     jint _modifiers;
-    jint _line_number_table_size;
-    jvmtiLineNumberEntry* _line_number_table;
+    std::shared_ptr<SharedLineNumberTable> _line_number_table;
     FrameTypeId _type;
 
-    jint getLineNumber(jint bci);
+    jint getLineNumber(jint bci) {
+        // if the shared pointer is not pointing to the line number table, consider size 0
+        if (!_line_number_table || _line_number_table->_size == 0) {
+            return 0;
+        }
+
+        int i = 1;
+        while (i < _line_number_table->_size && bci >= ((jvmtiLineNumberEntry*)_line_number_table->_ptr)[i].start_location) {
+            i++;
+        }
+        return ((jvmtiLineNumberEntry*)_line_number_table->_ptr)[i - 1].line_number;
+    }
 
     bool isHidden() {
         // 0x1400 = ACC_SYNTHETIC(0x1000) | ACC_BRIDGE(0x0040)
@@ -85,7 +99,6 @@ class MethodMap : public std::map<jmethodID, MethodInfo> {
   public:
     MethodMap() {
     }
-    ~MethodMap();
 };
 
 class Recording {
@@ -124,6 +137,8 @@ class Recording {
     Buffer _cpu_monitor_buf;
     CpuTimes _last_times;
 
+    MethodInfoCache _method_cache;
+
     static float ratio(float value) {
         return value < 0 ? 0 : value > 1 ? 1 : value;
     }
@@ -131,7 +146,7 @@ class Recording {
   public:
     Recording(int fd, Arguments& args);
     ~Recording();
-
+    
     void copyTo(int target_fd);
     off_t finishChunk();
 
@@ -176,6 +191,12 @@ class Recording {
                                     long memleakCapacity,
                                     int modeMask);
 
+    void writeDatadogMethodInfoCacheStats(Buffer* buf,
+                                          long long cacheItems,
+                                          long long cacheByteSize,
+                                          long long dictionaryByteSize,
+                                          long long missed,
+                                          long long purged);
     void writeHeapUsage(Buffer* buf, long value, bool live);
     void writeOsCpuInfo(Buffer* buf);
     void writeJvmInfo(Buffer* buf);
@@ -217,10 +238,19 @@ class Recording {
     void recordThreadPark(Buffer* buf, int tid, u32 call_trace_id, LockEvent* event);
     void recordCpuLoad(Buffer* buf, float proc_user, float proc_system, float machine_total);
     void addThread(int tid);
+
+    std::shared_ptr<AbstractMethodInfo> getOrAdd(jmethodID id);
+
+    void addJmethodIDs(jmethodID* ids, int count);
+    void removeJmethodID(jmethodID id);
+
+    static std::shared_ptr<AbstractMethodInfo> methodInfoFromJvmti(u64 id, MethodInfoCache* cache);
 };
 
 class Lookup {
   public:
+    Recording* _rec;
+    // MethodInfoCache* _method_cache;
     MethodMap* _method_map;
     Dictionary* _classes;
     Dictionary _packages;
@@ -230,10 +260,11 @@ class Lookup {
     void fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* lib_name);
     void cutArguments(char* func);
     void fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_time);
+    void fillMethodInfo(MethodInfo* mi, std::shared_ptr<AbstractMethodInfo> cmi_ptr);
 
   public:
-    Lookup(MethodMap* method_map, Dictionary* classes) :
-        _method_map(method_map), _classes(classes), _packages(), _symbols() {}
+    Lookup(Recording* rec, MethodMap* method_map, Dictionary* classes) :
+        _rec(rec), _method_map(method_map), _classes(classes), _packages(), _symbols() {}
 
     MethodInfo* resolveMethod(ASGCT_CallFrame& frame);
     u32 getPackage(const char* class_name);
@@ -241,16 +272,18 @@ class Lookup {
 };
 
 class FlightRecorder {
+  friend Profiler;
   private:
     std::string _filename;
     Arguments _args;
     Recording* _rec;
 
     Error newRecording(bool reset);
+    void addJmethodIDs(jmethodID* ids, int count);
+    void removeJmethodID(jmethodID id);
 
   public:
     FlightRecorder() : _rec(NULL) {}
-
     Error start(Arguments& args, bool reset);
     void stop();
     Error dump(const char* filename, const int length);
