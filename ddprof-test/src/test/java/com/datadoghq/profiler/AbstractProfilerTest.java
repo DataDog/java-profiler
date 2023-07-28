@@ -133,6 +133,7 @@ public abstract class AbstractProfilerTest {
             // hardcoded for itimer and perfevents
             : command.contains("cpu") ? Duration.ofMillis(10) : Duration.ZERO;
     wallInterval = parseInterval(command, "wall");
+    System.out.println("===> command: " + command);
     profiler.execute(command);
     stopped = false;
     before();
@@ -215,7 +216,23 @@ public abstract class AbstractProfilerTest {
   }
 
   private String getAmendedProfilerCommand() {
-    String profilerCommand = getProfilerCommand();
+    String methodInfoCacheArgKey = System.getProperty("ddprof.minfocache", "none");
+    String methodInfoCacheArg = null;
+    switch (methodInfoCacheArgKey.toLowerCase()) {
+      case "":
+      case "none":
+        methodInfoCacheArg = "";
+        break;
+      case "transient":
+        methodInfoCacheArg = ",minfocache=0:0";
+        break;
+      case "full":
+        methodInfoCacheArg = ",minfocache=30:10000";
+        break;
+      default:
+        throw new IllegalArgumentException("Unknown method info cache configuration: " + methodInfoCacheArgKey);
+    }
+    String profilerCommand = getProfilerCommand() + methodInfoCacheArg;
     return (ALLOW_NATIVE_CSTACKS || profilerCommand.contains("cstack=")
             ? profilerCommand
             : profilerCommand + ",cstack=fp")

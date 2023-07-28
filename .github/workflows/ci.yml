@@ -43,6 +43,7 @@ jobs:
     strategy:
       matrix:
         java_version: [8u362+9, 11.0.18+10, 17.0.6+10, 20.0.1+10]
+        minfo_cache: ['none', 'transient', 'full']
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -65,7 +66,7 @@ jobs:
           export JAVA_TEST_HOME=$(pwd)/test_jdk
           export BUILD_TYPE=SanitizedDebug
           chmod a+x ddprof-lib/test.sh
-          ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-test:test -Pddprof.minfocache=${{ matrix.minfo_cache }} --info
           ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
       - name: Post or update PR comment
         if: ${{ github.event_name == 'pull_request' }}
@@ -98,6 +99,7 @@ jobs:
     strategy:
       matrix:
         java_version: [11, 17]
+        minfo_cache: ['none', 'transient', 'full']
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     steps:
@@ -121,7 +123,7 @@ jobs:
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
           export BUILD_TYPE=SanitizedDebug
-          ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-test:test -Pddprof.minfocache=${{ matrix.minfo_cache }} --info
           ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
       - name: Post or update PR comment
         if: ${{ github.event_name == 'pull_request' }}
@@ -154,6 +156,7 @@ jobs:
     strategy:
       matrix:
         java_version: [8, 11, 17]
+        minfo_cache: ['none', 'transient', 'full']
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -178,7 +181,7 @@ jobs:
           export BUILD_TYPE=SanitizedDebug
           chmod a+x gradlew
           chmod a+x ddprof-lib/test.sh
-          ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-test:test -Pddprof.minfocache=${{ matrix.minfo_cache }} --info
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -199,6 +202,9 @@ jobs:
   test-linux-glibc-oracle8:
     needs: check-for-pr
     if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
+    strategy:
+      matrix:
+        minfo_cache: [ 'none', 'transient', 'full' ]
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     steps:
@@ -226,7 +232,7 @@ jobs:
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
           export BUILD_TYPE=SanitizedDebug
-          ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-test:test -Pddprof.minfocache=${{ matrix.minfo_cache }} --info
           ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
       - name: Post or update PR comment
         if: ${{ github.event_name == 'pull_request' }}
@@ -259,6 +265,7 @@ jobs:
     strategy:
       matrix:
         java_version: [8u362+9, 11.0.18+10, 17.0.6+10, 20.0.1+10]
+        minfo_cache: ['none', 'transient', 'full']
     runs-on: ubuntu-latest
     timeout-minutes: 10
     container:
@@ -288,7 +295,7 @@ jobs:
           export LIBC=musl
           export JAVA_TEST_HOME=$(pwd)/test_jdk
           chmod a+x ddprof-lib/test.sh
-          ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-test:test -Pddprof.minfocache=${{ matrix.minfo_cache }} --info
           ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
       - name: Post or update PR comment
         if: ${{ github.event_name == 'pull_request' }}
@@ -321,6 +328,7 @@ jobs:
     strategy:
       matrix:
         java_version: [ 8, 11, 17 ]
+        minfo_cache: ['none', 'transient', 'full']
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -358,7 +366,7 @@ jobs:
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
           export BUILD_TYPE=SanitizedDebug
-          ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-test:test -Pddprof.minfocache=${{ matrix.minfo_cache }} --info
           ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
       - name: Post or update PR comment
         if: ${{ github.event_name == 'pull_request' }}
