@@ -207,10 +207,7 @@ class MethodInfoCache {
         return _pass_through;
     }
 
-    std::shared_ptr<AbstractMethodInfo> get(const u64& id) {
-        return get(id, true);
-    }
-    std::shared_ptr<AbstractMethodInfo> get(const u64& id, bool markUsage);
+    std::shared_ptr<AbstractMethodInfo> get(const u64& id, bool markUsage = true);
     std::shared_ptr<AbstractMethodInfo> getOrAdd(u64 id, MethodInfoFunc func);
 
     // used only from gtests

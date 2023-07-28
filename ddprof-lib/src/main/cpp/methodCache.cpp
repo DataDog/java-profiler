@@ -7,6 +7,12 @@ std::string AbstractMethodInfo::_error_klass = "L;";
 std::string AbstractMethodInfo::_error_name = "jvmtiError";
 std::string AbstractMethodInfo::_error_signature = "()L;";
 
+/**
+ * Usually, retrieving a cache item will make its usage to be set to the current epoch.
+ * The last used epoch is used to calculate the eviction candidates, based on retention.
+ * Sometimes, however, it is required to inspect a cache item without updating its usage -
+ * and that is possible by providing 'false' to the markUsage argument.
+ */
 std::shared_ptr<AbstractMethodInfo> MethodInfoCache::get(const u64& id, bool markUsage) {
     _lock.lockShared();
     auto it(_map.find(id));
@@ -84,7 +90,9 @@ size_t MethodInfoCache::itemSize(CachedItem& item) {
     total_size += sizeof(unsigned int); // name idx
     total_size += sizeof(unsigned int); // signature idx
     total_size += sizeof(int); // _line_number_table_size
-    total_size += mi._line_number_table.get()->_size * 96;
+    // 12 is the size of jvmtiLineNumberEntry struct (https://github.com/openjdk-mirror/jdk7u-jdk/blob/f4d80957e89a19a29bb9f9807d2a28351ed7f7df/src/share/javavm/export/jvmti.h#L617)
+    // we can not rely on jvmti.h as that would break the gtests
+    total_size += mi._line_number_table.get()->_size * 12;
     total_size += sizeof(u64); // _used_epoch
     total_size += sizeof(char); // _attributes
     total_size += sizeof(u64); // the map key
