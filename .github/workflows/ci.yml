@@ -375,7 +375,7 @@ jobs:
           name: reports-linux-zing-jdk-${{ matrix.java_version }}.zip
           path: |
             ddprof-test/hs_err_*
-            ddprof-test/build/reports/tests
+            ddprof-test/build/reports/tests/test
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
             stresstest.html

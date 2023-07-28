@@ -23,4 +23,6 @@ if [ -z "${BUILD_TYPE}" ]; then
   BUILD_TYPE="Debug"
 fi
 
+# disable core files
+ulimit -c 0
 build_and_test ${BUILD_TYPE}
