@@ -81,11 +81,19 @@ public:
     void operator=(Counters const&) = delete;
 
     static long long* getCounters() {
+        #ifdef COUNTERS
         return const_cast<long long*>(Counters::instance()._counters);
+        #else
+        return nullptr;
+        #endif // COUNTERS
     }
 
     static long long getCounter(CounterId counter, int offset = 0) {
+        #ifdef COUNTERS
         return Counters::instance()._counters[(static_cast<int>(counter) + offset) * 8];
+        #else
+        return 0;
+        #endif // COUNTERS
     }
 
     static constexpr int size() {

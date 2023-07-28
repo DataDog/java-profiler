@@ -285,10 +285,9 @@ off_t Recording::finishChunk(bool end_recording) {
 
     _method_cache.incEpoch();
     #ifdef COUNTERS
-    long long* counters = Counters::getCounters();
-    writeDatadogMethodInfoCacheStats(_buf, _method_cache.size(), Counters::getCounter(JMETHODID_MAP_BYTES), Counters::getCounter(DICTIONARY_BYTES, 5), Counters::getCounter(JMETHODID_MAP_MISS), Counters::getCounter(JMETHODID_MAP_PURGED_ITEMS));
+    writeDatadogMethodInfoCacheStats(_buf, _method_cache.size(), Counters::getCounter(JMETHODID_MAP_BYTES), Counters::getCounter(DICTIONARY_MICACHE_STRINGS_BYTES), Counters::getCounter(JMETHODID_MAP_MISS), Counters::getCounter(JMETHODID_MAP_PURGED_ITEMS));
     flush(_buf);
-    #endif
+    #endif // COUNTERS
 
     off_t chunk_end = lseek(_fd, 0, SEEK_CUR);
 
