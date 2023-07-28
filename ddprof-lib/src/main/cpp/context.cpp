@@ -66,6 +66,13 @@ void Contexts::initialize(int pageIndex) {
     }
 }
 
+void Contexts::reset() {
+    for (int i = 0; i < _max_pages; i++) {
+        Context* page = (Context*)__atomic_exchange_n(&_pages[i], NULL, __ATOMIC_SEQ_CST);
+        free(page);
+    }
+}
+
 ContextPage Contexts::getPage(int tid) {
     int pageIndex = tid >> DD_CONTEXT_PAGE_SHIFT;
     initialize(pageIndex);
