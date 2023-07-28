@@ -185,7 +185,7 @@ jobs:
         with:
           name: reports-linux-glibc-j9-${{ matrix.java_version }}.zip
           path: |
-            ddprof-test/hs_err_*
+            ddprof-test/javacore*
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt

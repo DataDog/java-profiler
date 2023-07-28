@@ -47,7 +47,6 @@
 
 const int MAX_NATIVE_FRAMES = 128;
 const int RESERVED_FRAMES   = 4;
-const int CONCURRENCY_LEVEL = 16;
 
 enum EventMask {
     EM_CPU     = 1 << 0,
