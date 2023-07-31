@@ -1045,8 +1045,6 @@ Error Profiler::start(Arguments& args, bool reset) {
         _class_map_lock.lock();
         _class_map.clear();
         _class_map_lock.unlock();
-        _string_label_map.clear();
-        _context_value_map.clear();
 
         // Reset call trace storage
         if (!_omit_stacktraces) {
