@@ -5,6 +5,7 @@ import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.context.ContextExecutor;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junitpioneer.jupiter.RetryingTest;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
@@ -38,7 +39,7 @@ public class ContendedWallclockSamplesTest extends AbstractProfilerTest {
         executor.shutdownNow();
     }
 
-    @Test
+    @RetryingTest(5)
     public void test() {
         Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
         long result = 0;

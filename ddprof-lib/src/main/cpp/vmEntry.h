@@ -19,34 +19,14 @@
 
 #include <jvmti.h>
 
+#include "frame.h"
+
 
 #ifdef __clang__
 #  define DLLEXPORT __attribute__((visibility("default")))
 #else
 #  define DLLEXPORT __attribute__((visibility("default"),externally_visible))
 #endif
-
-
-enum FrameTypeId {
-    FRAME_INTERPRETED  = 0,
-    FRAME_JIT_COMPILED = 1,
-    FRAME_INLINED      = 2,
-    FRAME_NATIVE       = 3,
-    FRAME_CPP          = 4,
-    FRAME_KERNEL       = 5,
-    FRAME_C1_COMPILED  = 6,
-};
-
-class FrameType {
-  public:
-    static inline int encode(int type, int bci) {
-        return (1 << 24) | (type << 25) | (bci & 0xffffff);
-    }
-
-    static inline FrameTypeId decode(int bci) {
-        return (bci >> 24) > 0 ? (FrameTypeId)(bci >> 25) : FRAME_JIT_COMPILED;
-    }
-};
 
 
 // Denotes ASGCT_CallFrame where method_id has special meaning (not jmethodID)
@@ -121,10 +101,14 @@ class VM {
     static bool _can_sample_objects;
     static bool _can_intercept_binding;
 
+    static jobject _global_system_classloader;
+    static jobject _global_platform_classloader;
+
+
     static jvmtiError (JNICALL *_orig_RedefineClasses)(jvmtiEnv*, jint, const jvmtiClassDefinition*);
     static jvmtiError (JNICALL *_orig_RetransformClasses)(jvmtiEnv*, jint, const jclass* classes);
 
-    static void ready();
+    static void ready(jvmtiEnv* jvmti, JNIEnv* jni);
     static void applyPatch(char* func, const char* patch, const char* end_patch);
     static void* getLibraryHandle(const char* name);
     static void loadMethodIDs(jvmtiEnv* jvmti, JNIEnv* jni, jclass klass);
@@ -185,6 +169,8 @@ class VM {
     static bool isZing() {
         return _zing;
     }
+
+    static bool isSystemClassLoader(JNIEnv* jni, jobject& cl);
 
     static void JNICALL VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread);
     static void JNICALL VMDeath(jvmtiEnv* jvmti, JNIEnv* jni);

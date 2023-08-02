@@ -47,7 +47,6 @@
 
 const int MAX_NATIVE_FRAMES = 128;
 const int RESERVED_FRAMES   = 4;
-const int CONCURRENCY_LEVEL = 16;
 
 enum EventMask {
     EM_CPU     = 1 << 0,
@@ -64,6 +63,7 @@ union CallTraceBuffer {
 class FrameName;
 class NMethod;
 class StackContext;
+class VM;
 
 enum State {
     NEW,
@@ -74,6 +74,8 @@ enum State {
 
 
 class Profiler {
+  friend VM;
+
   private:
     Mutex _state_lock;
     State _state;
@@ -161,6 +163,8 @@ class Profiler {
 
     void lockAll();
     void unlockAll();
+
+    void trackMethodIds(jmethodID* methods, int count);
 
     static Profiler* const _instance;
 

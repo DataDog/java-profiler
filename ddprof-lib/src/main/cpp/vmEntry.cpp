@@ -45,6 +45,8 @@ bool VM::_hotspot = false;
 bool VM::_zing = false;
 bool VM::_can_sample_objects = false;
 bool VM::_can_intercept_binding = false;
+jobject VM::_global_system_classloader = nullptr;
+jobject VM::_global_platform_classloader = nullptr;
 
 jvmtiError (JNICALL *VM::_orig_RedefineClasses)(jvmtiEnv*, jint, const jvmtiClassDefinition*);
 jvmtiError (JNICALL *VM::_orig_RetransformClasses)(jvmtiEnv*, jint, const jclass* classes);
@@ -226,7 +228,7 @@ bool VM::init(JavaVM* vm, bool attach) {
     }
 
     if (attach) {
-        ready();
+        ready(jvmti(), jni());
     }
 
     jvmtiCapabilities potential_capabilities = {0};
@@ -303,7 +305,7 @@ bool VM::init(JavaVM* vm, bool attach) {
 }
 
 // Run late initialization when JVM is ready
-void VM::ready() {
+void VM::ready(jvmtiEnv* jvmti, JNIEnv* jni) {
     {
         JitWriteProtection jit(true);
         VMStructs::ready();
@@ -319,6 +321,23 @@ void VM::ready() {
     _orig_RetransformClasses = functions->RetransformClasses;
     functions->RedefineClasses = RedefineClassesHook;
     functions->RetransformClasses = RetransformClassesHook;
+
+    // capture the 'stable' classloaders (calssloaders which will stay present for the duration of the process)
+    jclass clClass = jni->FindClass("java/lang/ClassLoader");
+
+    jmethodID getSystemClassLoaderMethod = jni->GetStaticMethodID(clClass, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
+    jobject localSystemClassLoader = jni->CallStaticObjectMethod(clClass, getSystemClassLoaderMethod);
+
+    jmethodID getPlatformClassLoaderMethod = jni->GetStaticMethodID(clClass, "getPlatformClassLoader", "()Ljava/lang/ClassLoader;");
+    if (jni->ExceptionCheck()) { // check if an exception occurred
+        jni->ExceptionClear(); // clear the exception
+        getPlatformClassLoaderMethod = NULL;
+    }
+    _global_system_classloader = jni->NewGlobalRef(localSystemClassLoader);
+    if (getPlatformClassLoaderMethod != nullptr) {
+        jobject localPlatformClassLoader = jni->CallStaticObjectMethod(clClass, getPlatformClassLoaderMethod);
+        _global_platform_classloader = jni->NewGlobalRef(localPlatformClassLoader);
+    }
 }
 
 void VM::applyPatch(char* func, const char* patch, const char* end_patch) {
@@ -361,9 +380,24 @@ void VM::loadMethodIDs(jvmtiEnv* jvmti, JNIEnv* jni, jclass klass) {
         }
     }
 
+    bool is_tracking = true;
+    jobject class_loader = nullptr;
+    if (jvmti->GetClassLoader(klass, &class_loader) == JVMTI_ERROR_NONE) {
+        if (isSystemClassLoader(jni, class_loader)) {
+            // do not cache classes from the bootstrap classloader
+            char* class_name = nullptr;
+            jvmti->GetClassSignature(klass, &class_name, NULL);
+            jvmti->Deallocate((unsigned char*)class_name);
+            is_tracking = false;
+        }
+    }
+
     jint method_count;
     jmethodID* methods;
     if (jvmti->GetClassMethods(klass, &method_count, &methods) == 0) {
+        if (is_tracking) {
+            Profiler::instance()->trackMethodIds(methods, method_count);
+        }
         jvmti->Deallocate((unsigned char*)methods);
     }
 }
@@ -383,8 +417,19 @@ void VM::restartProfiler() {
     Profiler::instance()->restart(_agent_args);
 }
 
+bool VM::isSystemClassLoader(JNIEnv* jni, jobject& cl) {
+    if (!cl) {
+        // bootstrap classloader
+        return true;
+    }
+    if (jni->IsSameObject(cl, _global_system_classloader) || (_global_platform_classloader && jni->IsSameObject(cl, _global_platform_classloader))) {
+        return true;
+    }
+    return false;
+}
+
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
-    ready();
+    ready(jvmti, jni);
     loadAllMethodIDs(jvmti, jni);
 
     // Delayed start of profiler if agent has been loaded at VM bootstrap
@@ -396,6 +441,10 @@ void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
 
 void JNICALL VM::VMDeath(jvmtiEnv* jvmti, JNIEnv* jni) {
     Profiler::instance()->shutdown(_agent_args);
+    jni->DeleteGlobalRef(_global_system_classloader);
+    if (_global_platform_classloader) {
+        jni->DeleteGlobalRef(_global_platform_classloader);
+    }
 }
 
 jvmtiError VM::RedefineClassesHook(jvmtiEnv* jvmti, jint class_count, const jvmtiClassDefinition* class_definitions) {

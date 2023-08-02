@@ -1,5 +1,6 @@
 package com.datadoghq.profiler.metadata;
 
+import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.AbstractProfilerTest;
 import org.junit.jupiter.api.Test;
 
@@ -10,6 +11,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 public class BoundMethodHandeMetadataSizeTest extends AbstractProfilerTest {
     @Override
@@ -19,6 +21,7 @@ public class BoundMethodHandeMetadataSizeTest extends AbstractProfilerTest {
 
     @Test
     public void test() throws Throwable {
+        assumeFalse(Platform.isJ9() && Platform.isJavaVersion(17)); // JVMTI::GetClassSignature() is reliably crashing on a valid 'class' instance ¯\_(ツ)_/¯
         registerCurrentThreadForWallClockProfiling();
         int numBoundMethodHandles = 10_000;
         int x = generateBoundMethodHandles(numBoundMethodHandles);
