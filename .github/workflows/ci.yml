@@ -393,12 +393,12 @@ jobs:
           name: x64-glibc-zing-${{ matrix.java_version }}
           path: build/
 
-  merge-upstream:
-    if: startsWith(github.event.ref, 'refs/heads/release/') && endsWith(github.repository, 'java-profiler-library')
+  gh-release:
+    if: startsWith(github.event.ref, 'refs/heads/release/')
     runs-on: ubuntu-latest
     needs: [test-linux-musl, test-linux-glibc, test-linux-glibc-j9]
     steps:
-      - name: Upstream release
-        uses: ./.github/workflows/upstream.yml@merge-upstream
+      - name: Create Github Release
+        uses: ./.github/workflows/gh_release.yml@gh-release
         with:
           release_branch: ${GITHUB_REF_NAME}

@@ -1,0 +1,51 @@
+name: Github Release
+run-name: Release ${{ inputs.release_tag }} ${{ github.event.ref_name }}
+on: 
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        type: string
+        description: "Release tag"
+        required: true
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        description: "Release tag"
+        required: false
+  push:
+    tags:
+      - v_*.*.*
+
+jobs:
+  gh-release:
+    if: (startsWith(github.event.ref, 'refs/tags/v_') || inputs.release_tag != '') && !endsWith(github.event.ref, '-SNAPSHOT')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - uses: webfactory/ssh-agent@v0.7.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_DEPLOY_PRIVATE }}
+      - name: Create Release [automatic]
+        id: create_release_auto
+        uses: ncipollo/release-action@v1
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        with:
+          generateReleaseNotes: true
+          allowUpdates: true
+          draft: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create Release [manual]
+        id: create_release_manual
+        uses: ncipollo/release-action@v1
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        with:
+          generateReleaseNotes: true
+          allowUpdates: true
+          tag: ${{ inputs.release_tag}}
+          draft: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

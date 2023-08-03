@@ -64,3 +64,4 @@ jobs:
           generateReleaseNotes: true
           omitBodyDuringUpdate: true
           artifacts: assets/ddprof*.jar,assets/*.so
+          draft: true
