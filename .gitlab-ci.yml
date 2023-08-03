@@ -1,8 +1,6 @@
 # Triggers a build within the Datadog infrastructure in the ddprof-build repository
 trigger_internal_build:
   rules:
-    - if: $CI_PROJECT_NAME =~ /java-profiler$/
-      when: never
     - if: $CI_COMMIT_BRANCH =~ /release\/.*/
       when: never
     - when: always
