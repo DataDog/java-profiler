@@ -77,7 +77,7 @@ void WallClock::signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64
         if (os_state != ThreadState::UNKNOWN) {
             state = os_state;
         }
-        mode = convertJvmExecutionState(vm_thread->state());
+        mode = VM::jni() != NULL ? convertJvmExecutionState(vm_thread->state()) : ExecutionMode::JVM;
     }
     if (state == ThreadState::UNKNOWN) {
         if (inSyscall(ucontext)) {
