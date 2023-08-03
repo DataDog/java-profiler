@@ -15,7 +15,6 @@ on:
 jobs:
   check-for-pr:
     runs-on: ubuntu-latest
-    if: endsWith(github.repository, 'java-profiler-library')
     outputs:
       skip: ${{ steps.check.outputs.skip }}
     steps:
@@ -39,7 +38,7 @@ jobs:
 
   test-linux-glibc:
     needs: check-for-pr
-    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
+    if: needs.check-for-pr.outputs.skip != 'true'
     strategy:
       matrix:
         java_version: [8u362+9, 11.0.18+10, 17.0.6+10, 20.0.1+10]
@@ -95,7 +94,7 @@ jobs:
 
   test-ubuntu-jdk:
     needs: check-for-pr
-    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
+    if: needs.check-for-pr.outputs.skip != 'true'
     strategy:
       matrix:
         java_version: [11, 17]
@@ -152,7 +151,7 @@ jobs:
 
   test-linux-glibc-j9:
     needs: check-for-pr
-    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
+    if: needs.check-for-pr.outputs.skip != 'true'
     strategy:
       matrix:
         java_version: [8, 11, 17]
@@ -201,7 +200,7 @@ jobs:
 
   test-linux-glibc-oracle8:
     needs: check-for-pr
-    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
+    if: needs.check-for-pr.outputs.skip != 'true'
     strategy:
       matrix:
         minfo_cache: [ 'none', 'transient', 'full' ]
@@ -261,7 +260,7 @@ jobs:
 
   test-linux-musl:
     needs: check-for-pr
-    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
+    if: needs.check-for-pr.outputs.skip != 'true'
     strategy:
       matrix:
         java_version: [8u362+9, 11.0.18+10, 17.0.6+10, 20.0.1+10]
@@ -324,7 +323,7 @@ jobs:
 
   test-linux-glibc-zing:
     needs: check-for-pr
-    if: endsWith(github.repository, 'java-profiler-library') && !needs.check-for-pr.outputs.skip
+    if: needs.check-for-pr.outputs.skip != 'true'
     strategy:
       matrix:
         java_version: [ 8, 11, 17 ]
