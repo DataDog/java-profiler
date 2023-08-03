@@ -58,4 +58,4 @@ git add build.gradle
 git commit -m "[Automated] Bump dev version to ${CANDIDATE}"
 
 git push $DRYRUN --atomic --set-upstream origin $BRANCH
-git push $DRYRUN --atomic --tags
+git push $DRYRUN -f --atomic --tags
