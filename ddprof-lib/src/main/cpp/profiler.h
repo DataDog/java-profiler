@@ -254,6 +254,8 @@ class Profiler {
     int eventMask() const {
         return _event_mask;
     }
+    void cacheJvmtiStackTraceMetadata(int num_frames, jvmtiFrameInfo* frames, bool as_pinned = false);
+    void releaseJvmtiStackTraceMetadata(int num_frames, jvmtiFrameInfo* frames);
 
     void updateSymbols(bool kernel_symbols);
     const void* resolveSymbol(const char* name);

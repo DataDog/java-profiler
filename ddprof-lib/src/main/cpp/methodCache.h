@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/types.h>
 
+#include "arch.h"
 #include "arguments.h"
 #include "dictionary.h"
 #include "frame.h"
@@ -20,7 +21,7 @@ class AbstractMethodInfo;
 class MethodInfoCache;
 
 typedef void (*SharedLineNumberTableDeallocator)(void*);
-typedef std::shared_ptr<AbstractMethodInfo> (*MethodInfoFunc)(u64 id, MethodInfoCache* cache);
+typedef std::shared_ptr<AbstractMethodInfo> (*MethodInfoFunc)(u64 id, MethodInfoCache* cache, bool with_cache);
 
 class SharedLineNumberTable {
   public:
@@ -34,25 +35,40 @@ class SharedLineNumberTable {
 
 class StringMap {
   private:
-    SpinLock _lock;
     std::map<u32, std::string> _map;
   public:
     std::string operator[](u32 index) {
-        _lock.lockShared();
-        std::string ret = _map[index];
-        _lock.unlockShared();
-        return ret;
+        return _map[index];
     }
 
     void set(u32 index, std::string value) {
-        _lock.lock();
         _map[index] = value;
-        _lock.unlock();
+    }
+
+    void clear() {
+        _map.clear();
+    }
+
+    u64 size() {
+        return _map.size();
+    }
+
+    u64 deepSize() {
+        u64 size = 0;
+        for (const auto &pair : _map) {
+            size += pair.second.size();
+        }
+        return size;
     }
 };
 class MethodInfoCache;
 
+class TestCachedMethodInfo;
+
 class AbstractMethodInfo {
+  friend MethodInfoCache;
+  friend TestCachedMethodInfo;
+
   public:
     static std::string _error_klass;
     static std::string _error_name;
@@ -60,23 +76,46 @@ class AbstractMethodInfo {
 
   protected:
     const static char ATTRIBUTE_EMPTY = 1;
-    const static char ATTRIBUTE_UNLOADED = 2;
-    const static char ATTRIBUTE_ENTRY = 4;
-    const static char ATTRIBUTE_CACHEABLE = 8;
+    const static char ATTRIBUTE_ENTRY = 2;
+    const static char ATTRIBUTE_CACHEABLE = 4;
 
     char _attributes;
+
+    volatile u64 _pinned_epoch;
+
+    virtual void pin(u64 epoch) {
+        u64 prev;
+
+        do {
+            prev = _pinned_epoch;
+            if (epoch <= prev) {
+              return;
+            }
+        } while (!__sync_bool_compare_and_swap(&_pinned_epoch, prev, epoch));
+    }
+
+    virtual void unpin(u64 epoch) {
+        u64 prev;
+
+        do {
+            prev = _pinned_epoch;
+            if (epoch < prev) {
+              return;
+            }
+        } while (!__sync_bool_compare_and_swap(&_pinned_epoch, prev, 0));
+    }
 
   public:
     int _modifiers;
     std::shared_ptr<SharedLineNumberTable> _line_number_table;
     FrameTypeId _type;
 
-    AbstractMethodInfo(FrameTypeId frame_type, const int modifiers, std::shared_ptr<SharedLineNumberTable> line_number_table, bool is_entry, bool is_empty) : _type(frame_type), _modifiers(modifiers), _line_number_table(line_number_table) {
+    AbstractMethodInfo(FrameTypeId frame_type, const int modifiers, std::shared_ptr<SharedLineNumberTable> line_number_table, bool is_entry, bool is_empty) : _type(frame_type), _modifiers(modifiers), _line_number_table(line_number_table), _pinned_epoch(0) {
         _attributes = is_empty ? ATTRIBUTE_EMPTY : 0;
         _attributes |= is_entry ? ATTRIBUTE_ENTRY : 0;
     }
 
-    bool empty() {
+    bool isEmpty() {
         return _attributes & ATTRIBUTE_EMPTY;
     }
 
@@ -84,16 +123,12 @@ class AbstractMethodInfo {
         return _attributes & ATTRIBUTE_ENTRY;
     }
 
-    virtual bool isUnloaded() {
-        return _attributes & ATTRIBUTE_UNLOADED;
+    bool isPinned() {
+        return loadAcquire(_pinned_epoch) > 0;
     }
 
     virtual bool isCacheable() {
         return _attributes & ATTRIBUTE_CACHEABLE;
-    }
-
-    virtual void markUnloaded() {
-        _attributes |= ATTRIBUTE_UNLOADED;
     }
 
     bool isHidden() {
@@ -125,15 +160,15 @@ class CachedMethodInfo : public AbstractMethodInfo {
     }
 
     virtual std::string className() {
-        return empty() ? _error_klass : (*_string_map_ptr.get())[_klass];
+        return isEmpty() ? _error_klass : (*_string_map_ptr.get())[_klass];
     }
 
     virtual std::string methodName() {
-        return empty() ? _error_name : (*_string_map_ptr.get())[_name];
+        return isEmpty() ? _error_name : (*_string_map_ptr.get())[_name];
     }
 
     virtual std::string methodSignature() {
-        return empty() ? _error_signature : (*_string_map_ptr.get())[_signature];
+        return isEmpty() ? _error_signature : (*_string_map_ptr.get())[_signature];
     }
 };
 
@@ -166,62 +201,54 @@ class UncachedMethodInfo : public AbstractMethodInfo {
         return false;
     }
 
-    virtual void markUnloaded() {}
+    virtual void pin() {}
+
+    virtual void unpin() {}
 };
 
-class CachedItem {
-  public:
-    std::shared_ptr<CachedMethodInfo> _value_ptr;
+struct MethodInfoCacheStats {
+    u64 _string_count;
+    u64 _string_bytes;
+    u64 _map_size;
+    u64 _map_bytes;
+    int _map_limit;
 
-    CachedItem(CachedMethodInfo& value) : _value_ptr(std::make_shared<CachedMethodInfo>(value)) {};
-    CachedItem(std::shared_ptr<CachedMethodInfo> value_ptr) : _value_ptr(value_ptr) {}
-
-    void evict() {
-        _value_ptr.reset();
-    }
+    MethodInfoCacheStats(u64 string_count, u64 string_bytes, u64 map_size, u64 map_bytes, int map_limit) : _string_count(string_count), _string_bytes(string_bytes), _map_size(map_size), _map_bytes(map_bytes), _map_limit(map_limit) {};
+    MethodInfoCacheStats(const MethodInfoCacheStats& other) : _string_count(other._string_count), _string_bytes(other._string_bytes), _map_size(other._map_size), _map_bytes(other._map_bytes), _map_limit(other._map_limit) {};
 };
 
 class MethodInfoCache {
   private:
-    std::unordered_map<u64, CachedItem> _map;
+    std::unordered_map<u64, std::shared_ptr<CachedMethodInfo>> _map;
     Dictionary _dictionary;
     std::shared_ptr<StringMap> _string_map_ptr = std::make_shared<StringMap>();
 
     SpinLock _lock;
-    size_t _unloaded;
     u64 _epoch;
-    const int _threshold;
-    const int _retention;
+    u64 _size;
+
     const bool _pass_through;
+    const int _limit;
 
-    void cleanup();
-    size_t itemSize(CachedItem& item);
-    bool shouldCleanup(CachedItem& item);
-    u32 getOrAddStringIdx(char* str);
+    size_t infoSize(CachedMethodInfo& info);
+    u32 getOrAddStringIdx(const char* str);
   public:
-    MethodInfoCache(int threshold, int retention) : _dictionary(), _unloaded(0), _epoch(0), _threshold(threshold), _retention(retention), _pass_through(retention < 0 || threshold < 0) {}
+    MethodInfoCache(int limit, bool pass_through = true) : _dictionary(), _pass_through(pass_through), _epoch(1), _size(0), _limit(limit) {}
 
-    MethodInfoCache(Arguments& args) : MethodInfoCache(args._method_info_cache_threshold, args._method_info_cache_retention) {}
+    MethodInfoCache(Arguments& args) : MethodInfoCache(10000, false) {}
 
     inline bool passThrough() {
         return _pass_through;
     }
 
-    std::shared_ptr<AbstractMethodInfo> get(const u64& id, bool markUsage = true);
-    std::shared_ptr<AbstractMethodInfo> getOrAdd(u64 id, MethodInfoFunc func);
-
-    // used only from gtests
-    bool add(u64 id, std::shared_ptr<CachedMethodInfo> cmi_ptr);
+    std::shared_ptr<AbstractMethodInfo> get(const u64& id, bool pin = false);
+    std::shared_ptr<AbstractMethodInfo> getOrAdd(u64 id, MethodInfoFunc func, bool sticky = false);
 
     std::shared_ptr<AbstractMethodInfo> newMethodInfo(FrameTypeId frame_type, char* klass, char* name, char* signature, const int modifiers, int line_number_table_size, void* line_number_table, bool is_entry, SharedLineNumberTableDeallocator line_number_table_deallocator, bool cached = true);
 
     inline std::shared_ptr<AbstractMethodInfo> newMethodInfo(char* klass, char* name, char* signature, const int modifiers, int line_number_table_size, void* line_number_table, SharedLineNumberTableDeallocator line_number_table_deallocator, bool cached = true) {
         return newMethodInfo(FRAME_INTERPRETED, klass, name, signature, modifiers, line_number_table_size, line_number_table, false, line_number_table_deallocator, cached);
     }
-
-    void incEpoch();
-
-    void markUnloaded(u64 id);
 
     size_t size() {
         _lock.lockShared();
@@ -235,6 +262,27 @@ class MethodInfoCache {
     std::shared_ptr<AbstractMethodInfo> emptyInfo() {
         static std::shared_ptr<AbstractMethodInfo> empty= std::make_shared<UncachedMethodInfo>();
         return empty;
+    }
+
+    MethodInfoCacheStats stats() {
+        _lock.lockShared();
+        StringMap string_map = *_string_map_ptr.get();
+        MethodInfoCacheStats stats(string_map.size(), string_map.deepSize(), _map.size(), _size, _limit);
+        _lock.unlockShared();
+        return stats;
+    }
+
+    void pin(const u64& id);
+    void unpin(const u64& id);
+    void release(const u64& epoch);
+    inline u64 incrementEpoch() {
+        return atomicInc(_epoch);
+    }
+    inline MethodInfoCacheStats newEpoch() {
+        MethodInfoCacheStats cache_stats = stats();
+        const u64 prev = incrementEpoch();
+        release(prev);
+        return cache_stats;
     }
 };
 

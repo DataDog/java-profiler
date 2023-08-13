@@ -53,6 +53,10 @@ static inline void storeRelease(volatile size_t& var, size_t value) {
     return __atomic_store_n(&var, value, __ATOMIC_RELEASE);
 }
 
+static inline void storeRelease(volatile u64& var, u64 value) {
+    return __atomic_store_n(&var, value, __ATOMIC_RELEASE);
+}
+
 
 #if defined(__x86_64__) || defined(__i386__)
 

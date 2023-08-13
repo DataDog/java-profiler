@@ -25,6 +25,7 @@
 #include "arch.h"
 #include "arguments.h"
 #include "buffers.h"
+#include "callTraceStorage.h"
 #include "counters.h"
 #include "dictionary.h"
 #include "event.h"
@@ -192,11 +193,11 @@ class Recording {
                                     int modeMask);
 
     void writeDatadogMethodInfoCacheStats(Buffer* buf,
-                                          long long cacheItems,
-                                          long long cacheByteSize,
-                                          long long dictionaryByteSize,
-                                          long long missed,
-                                          long long purged);
+                                          long long stringCount,
+                                          long long stringBytes,
+                                          long long cacheSize,
+                                          long long cacheBytes,
+                                          int limit);
     void writeHeapUsage(Buffer* buf, long value, bool live);
     void writeOsCpuInfo(Buffer* buf);
     void writeJvmInfo(Buffer* buf);
@@ -239,12 +240,15 @@ class Recording {
     void recordCpuLoad(Buffer* buf, float proc_user, float proc_system, float machine_total);
     void addThread(int tid);
 
-    std::shared_ptr<AbstractMethodInfo> getOrAdd(jmethodID id);
+    std::shared_ptr<AbstractMethodInfo> getOrAdd(jmethodID id, bool sticky = false);
+    std::shared_ptr<AbstractMethodInfo> get(jmethodID id);
 
     void addJmethodIDs(jmethodID* ids, int count);
-    void removeJmethodID(jmethodID id);
 
-    static std::shared_ptr<AbstractMethodInfo> methodInfoFromJvmti(u64 id, MethodInfoCache* cache);
+    static std::shared_ptr<AbstractMethodInfo> methodInfoFromJvmti(u64 id, MethodInfoCache* cache, bool with_cache);
+
+    void cacheJvmtiStackTraceMetadata(int num_frames, jvmtiFrameInfo* frames, bool sticky);
+    void releaseJvmtiStackTraceMetadata(int num_frames, jvmtiFrameInfo* frames);
 };
 
 class Lookup {
@@ -259,7 +263,7 @@ class Lookup {
   private:
     void fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* lib_name);
     void cutArguments(char* func);
-    void fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_time);
+    void fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool skip_cache);
     void fillMethodInfo(MethodInfo* mi, std::shared_ptr<AbstractMethodInfo> cmi_ptr);
 
   public:
@@ -280,7 +284,6 @@ class FlightRecorder {
 
     Error newRecording(bool reset);
     void addJmethodIDs(jmethodID* ids, int count);
-    void removeJmethodID(jmethodID id);
 
   public:
     FlightRecorder() : _rec(NULL) {}
@@ -295,6 +298,9 @@ class FlightRecorder {
     bool active() const {
         return _rec != NULL;
     }
+
+    void cacheJvmtiStackTraceMetadata(int num_frames, jvmtiFrameInfo* frames, bool sticky = false);
+    void releaseJvmtiStackTraceMetadata(int num_frames, jvmtiFrameInfo* frames);
 
     void recordEvent(int lock_index, int tid, u32 call_trace_id,
                      int event_type, Event* event, u64 counter);

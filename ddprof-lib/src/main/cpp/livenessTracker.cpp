@@ -52,6 +52,7 @@ void LivenessTracker::cleanup_table() {
             _table[newsz++] = _table[i];
             _table[i].ref = NULL;
         } else {
+            Profiler::instance()->releaseJvmtiStackTraceMetadata(_table[i].frames_size, _table[i].frames);
             env->DeleteWeakGlobalRef(_table[i].ref);
             _table[i].ref = NULL;
             delete[] _table[i].frames;

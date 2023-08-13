@@ -143,13 +143,11 @@
     }
 
     TEST(MethodInfoCache, testSanity) {
-        MethodInfoCache cache1(-1, -1);
-        MethodInfoCache cache2(0, 0);
-        MethodInfoCache cache3(1, 1);
+        MethodInfoCache cache1(0, true);
+        MethodInfoCache cache2(10, false);
 
         ASSERT_TRUE(cache1.passThrough());
         ASSERT_FALSE(cache2.passThrough());
-        ASSERT_FALSE(cache3.passThrough());
     }
 
     static size_t empty_cache_slot_size = sizeof(void*) + sizeof(u64);
@@ -159,13 +157,13 @@
     }
 
     TEST(MethodInfoCache, testEmptyCache) {
-        MethodInfoCache cache(10, 2);
+        MethodInfoCache cache(0, true);
 
-        ASSERT_TRUE(cache.get(1)->empty());
+        ASSERT_TRUE(cache.get(1)->isEmpty());
     }
 
     TEST(MethodInfoCache, testNewMethodInfo) {
-        MethodInfoCache cache(0, 0); // a non pass-through cache must have either retention or threshold or both >=0
+        MethodInfoCache cache(10, false);
 
 
         ASSERT_FALSE(cache.passThrough());
@@ -198,7 +196,7 @@
     }
 
     TEST(MethodInfoCache, testNewMethodInfoPassThrough) {
-        MethodInfoCache cache(-1, -1); // a pass-through cache must have either retention or threshold or both <0
+        MethodInfoCache cache(0, true); // a pass-through cache must have either retention or threshold or both <0
 
         ASSERT_TRUE(cache.passThrough());
 
@@ -229,183 +227,9 @@
         ASSERT_EQ(ptr_callback_cnt, 2); // both created instances should have been released by now
     }
 
-    TEST(MethodInfoCache, testCacheRetention) {
-        MethodInfoCache cache(0, 0);
-
-        Counters::set(JMETHODID_MAP_BYTES, 0);
-
-        char class_name[] = "klass";
-        char method_name[] = "method";
-        char method_sig[] = "()V";
-        int modifiers = 11;
-        int line_number_table_size = 0;
-        void* line_number_table = (void*) new char[5];
-        bool is_entry = true;
-        SharedLineNumberTableDeallocator deallocateLineNumberTable = ptr_callback;
-
-        ptr_callback_cnt = 0;
-        {
-            // make sure cmi will go out of scope so it does not prevent deleting the line number table
-            std::shared_ptr<CachedMethodInfo> cmi_ptr = std::static_pointer_cast<CachedMethodInfo>(cache.newMethodInfo(class_name, method_name, method_sig, modifiers, line_number_table_size, line_number_table, deallocateLineNumberTable, true));
-
-            if (!cache.add(1, cmi_ptr)) {
-                FAIL();
-            }
-
-            CachedMethodInfo cmi = *cmi_ptr.get();
-
-            AbstractMethodInfo* cached = cache.get(1).get();
-            ASSERT_NE(nullptr, cached);
-            ASSERT_FALSE(cached->empty());
-
-            ASSERT_EQ(cmi.className(), cached->className());
-            ASSERT_EQ(cmi.methodName(), cached->methodName());
-            ASSERT_EQ(cmi.methodSignature(), cached->methodSignature());
-        }
-        // method info is still cached - the line number table must not have been deallocated yet
-        ASSERT_EQ(0, ptr_callback_cnt);
-
-        // bump to epoch 1
-        cache.incEpoch();
-
-        // with the threshold == 0 and retention == 0 the cached entry should have been removed
-        ASSERT_EQ(cache.get(1), nullptr);
-        // the line number table should have been deallocated as well
-        ASSERT_EQ(1, ptr_callback_cnt);
-
-        // cache should be completely empty at this point; the key and the value pointer is still there, though
-        ASSERT_EQ(1 * empty_cache_slot_size, Counters::getCounter(JMETHODID_MAP_BYTES));
-    }
-
-    TEST(MethodInfoCache, testCacheRetention2) {
-        MethodInfoCache cache(0, 2);
-        
-        Counters::set(JMETHODID_MAP_BYTES, 0);
-
-        char class_name[] = "klass";
-        char method_name[] = "method";
-        char method_sig[] = "()V";
-        int modifiers = 11;
-        int line_number_table_size = 0;
-        void* line_number_table = (void*) new char[5];
-        bool is_entry = true;
-        SharedLineNumberTableDeallocator deallocateLineNumberTable = ptr_callback;
-
-        ptr_callback_cnt = 0;
-        {
-            // make sure cmi will go out of scope so it does not prevent deleting the line number table
-            std::shared_ptr<CachedMethodInfo> cmi_ptr = std::static_pointer_cast<CachedMethodInfo>(cache.newMethodInfo(class_name, method_name, method_sig, modifiers, line_number_table_size, line_number_table, deallocateLineNumberTable, true));
-            cache.add(1, cmi_ptr);
-        }
-
-        // method info is still cached - the line number table must not have been deallocated yet
-        ASSERT_EQ(0, ptr_callback_cnt);
-
-        // bump to epoch 1
-        cache.incEpoch();
-
-        // epoch diff = 1, retention == 2; entry should still be there
-        ASSERT_FALSE(cache.get(1, false)->empty());
-
-        // bump to epoch 2
-        cache.incEpoch();
-        // epoch diff = 2, retention == 2; entry should still be there
-        ASSERT_FALSE(cache.get(1, false)->empty());
-
-        // bump to epoch 3
-        cache.incEpoch();
-        // epoch diff = 3, retention == 2; entry should be removed
-        ASSERT_EQ(cache.get(1, false), nullptr);
-
-        // the line number table should have been deallocated as well
-        ASSERT_EQ(1, ptr_callback_cnt);
-
-        // cache should be completely empty at this point; the key and the value pointer is still there, though
-        ASSERT_EQ(1 * empty_cache_slot_size, Counters::getCounter(JMETHODID_MAP_BYTES));
-    }
-
-    TEST(MethodInfoCache, testCacheThreshold) {
-        MethodInfoCache cache(1, 0);
-
-        Counters::set(JMETHODID_MAP_BYTES, 0);
-
-        char class_name[] = "klass";
-        char method_name[] = "method";
-        char method_sig[] = "()V";
-        int modifiers = 11;
-        int line_number_table_size = 0;
-        void* line_number_table = (void*) new char[5];
-        bool is_entry = true;
-        SharedLineNumberTableDeallocator deallocateLineNumberTable = ptr_callback;
-
-        u64 id1 = 1;
-        u64 id2 = 2;
-        ptr_callback_cnt = 0;
-        {
-            // make sure cmi will go out of scope so it does not prevent deleting the line number table
-            std::shared_ptr<CachedMethodInfo> cmi_ptr = std::static_pointer_cast<CachedMethodInfo>(cache.newMethodInfo(class_name, method_name, method_sig, modifiers, line_number_table_size, line_number_table, deallocateLineNumberTable, true));
-            if (!cache.add(id1, cmi_ptr)) {
-                FAIL();
-            }
-
-            CachedMethodInfo cmi = *cmi_ptr.get();
-
-            AbstractMethodInfo* cached = cache.get(id1).get();
-            ASSERT_NE(cached, nullptr);
-
-            ASSERT_EQ(cmi.className(), cached->className());
-            ASSERT_EQ(cmi.methodName(), cached->methodName());
-            ASSERT_EQ(cmi.methodSignature(), cached->methodSignature());
-        }
-        AbstractMethodInfo* cached = cache.get(id1).get();
-        ASSERT_FALSE(cached->empty());
-
-        // method info is still cached - the line number table must not have been deallocated yet
-        ASSERT_EQ(ptr_callback_cnt, 0);
-
-        // bump to epoch 1
-        cache.incEpoch();
-
-        // with the threshold == 1 and retention == 0 the cached entry should still be there
-        ASSERT_FALSE(cache.get(id1)->empty());
-
-        // the line number table should not have been deallocated as well
-        ASSERT_EQ(ptr_callback_cnt, 0);
-
-        {
-            // add second method info
-            // make sure cmi will go out of scope so it does not prevent deleting the line number table
-            std::shared_ptr<CachedMethodInfo> cmi_ptr = std::static_pointer_cast<CachedMethodInfo>(cache.newMethodInfo(class_name, method_name, method_sig, modifiers, line_number_table_size, line_number_table, deallocateLineNumberTable, true));
-            if (!cache.add(id2, cmi_ptr)) {
-                FAIL();
-            }
-
-            CachedMethodInfo cmi = *cmi_ptr.get();
-
-            AbstractMethodInfo* cached = cache.get(id2).get();
-            ASSERT_FALSE(cached->empty());
-
-            ASSERT_EQ(cmi.className(), cached->className());
-            ASSERT_EQ(cmi.methodName(), cached->methodName());
-            ASSERT_EQ(cmi.methodSignature(), cached->methodSignature());
-        }
-
-        // bump to epoch 2
-        cache.incEpoch();
-
-        // the threshold has been crossed; the cache should have been cleaned up
-        ASSERT_EQ(cache.get(id1), nullptr);
-        ASSERT_EQ(cache.get(id2), nullptr);
-        ASSERT_EQ(ptr_callback_cnt, 2);
-        
-        // cache should be completely empty at this point; the key and the value pointer is still there, though
-        ASSERT_EQ(2 * empty_cache_slot_size, Counters::getCounter(JMETHODID_MAP_BYTES));
-    }
-
-
     static int cached_method_info_func_cnt = 0;
     static int uncached_method_info_func_cnt = 0;
-    static std::shared_ptr<AbstractMethodInfo> cached_method_info_func_callback(u64 id, MethodInfoCache* cache) {
+    static std::shared_ptr<AbstractMethodInfo> cached_method_info_func_callback(u64 id, MethodInfoCache* cache, bool with_cache) {
         char class_name[] = "cached_klass";
         char method_name[] = "method";
         char method_sig[] = "()V";
@@ -420,7 +244,22 @@
         return cache->newMethodInfo(class_name, method_name, method_sig, modifiers, line_number_table_size, line_number_table, deallocateLineNumberTable, true);
     }
 
-    static std::shared_ptr<AbstractMethodInfo> uncached_method_info_func_callback(u64 id, MethodInfoCache* cache) {
+    static std::shared_ptr<AbstractMethodInfo> cached_method_info_func_callback_1(u64 id, MethodInfoCache* cache, bool with_cache) {
+        char class_name[] = "cached_klass_1";
+        char method_name[] = "method_1";
+        char method_sig[] = "()V";
+        int modifiers = 11;
+        int line_number_table_size = 0;
+        void* line_number_table = (void*) new char[5];
+        bool is_entry = true;
+        SharedLineNumberTableDeallocator deallocateLineNumberTable = ptr_callback;
+
+        cached_method_info_func_cnt++;
+
+        return cache->newMethodInfo(class_name, method_name, method_sig, modifiers, line_number_table_size, line_number_table, deallocateLineNumberTable, true);
+    }
+
+    static std::shared_ptr<AbstractMethodInfo> uncached_method_info_func_callback(u64 id, MethodInfoCache* cache, bool with_cache) {
         char class_name[] = "uncached_klass";
         char method_name[] = "method";
         char method_sig[] = "()V";
@@ -435,10 +274,10 @@
         return cache->newMethodInfo(class_name, method_name, method_sig, modifiers, line_number_table_size, line_number_table, deallocateLineNumberTable, false);
     }
 
-    TEST(MethodInfoCache, testCacheReuse) {
-        MethodInfoCache cache(0, 0);
+    TEST(MethodInfoCachet, testCacheReuse) {
+        MethodInfoCache cache(10, false);
 
-        Counters::set(JMETHODID_MAP_BYTES, 0);
+//        Counters::set(JMETHODID_MAP_BYTES, 0);
 
         ptr_callback_cnt = 0;
         cached_method_info_func_cnt = 0;
@@ -458,48 +297,12 @@
 
         ASSERT_EQ(cmi_ptr_1.get(), cmi_ptr_2.get());
 
-        // cache is containing one element; at least the key and the value pointer is still there
-        ASSERT_GT(Counters::getCounter(JMETHODID_MAP_BYTES), 1 * empty_cache_slot_size);
-    }
-
-    TEST(MethodInfoCache, testCacheReuseWithExpiration) {
-        MethodInfoCache cache(0, 0);
-
-        Counters::set(JMETHODID_MAP_BYTES, 0);
-
-        ptr_callback_cnt = 0;
-        cached_method_info_func_cnt = 0;
-        uncached_method_info_func_cnt = 0;
-
-        {
-            // create a cached method info
-            std::shared_ptr<AbstractMethodInfo> cmi_ptr_1 = cache.getOrAdd(1, cached_method_info_func_callback);
-            ASSERT_EQ(cached_method_info_func_cnt, 1);
-            ASSERT_TRUE(cmi_ptr_1);
-            ASSERT_TRUE(cmi_ptr_1.get()->isCacheable());
-
-            // second attempt should retrieve it from the cache
-            std::shared_ptr<AbstractMethodInfo> cmi_ptr_2 = cache.getOrAdd(1, cached_method_info_func_callback);
-            // the method info creation callback should not have been called
-            ASSERT_EQ(cached_method_info_func_cnt, 1);
-            ASSERT_TRUE(cmi_ptr_2);
-
-            ASSERT_EQ(cmi_ptr_1.get(), cmi_ptr_2.get());
-        }
-
-
-        cache.incEpoch(); // force eviction
-        std::shared_ptr<AbstractMethodInfo> cmi_ptr = cache.getOrAdd(1, cached_method_info_func_callback);
-        // the evicted entry should not be re-resolved and re-added
-        ASSERT_EQ(cached_method_info_func_cnt, 1);
-        ASSERT_FALSE(cmi_ptr);
-
-        // cache should be completely empty at this point; the key and the value pointer is still there, though
-        ASSERT_EQ(1 * empty_cache_slot_size, Counters::getCounter(JMETHODID_MAP_BYTES));
+//        // cache is containing one element; at least the key and the value pointer is still there
+//        ASSERT_GT(Counters::getCounter(JMETHODID_MAP_BYTES), 1 * empty_cache_slot_size);
     }
 
     TEST(MethodInfoCache, testCacheUncacheable) {
-        MethodInfoCache cache(0, 0);
+        MethodInfoCache cache(10, false);
 
         Counters::set(JMETHODID_MAP_BYTES, 0);
 
@@ -523,6 +326,105 @@
         
         // nothing was added to the cache
         ASSERT_EQ(0, Counters::getCounter(JMETHODID_MAP_BYTES));
+    }
+
+    TEST(MethodInfoCache, testCacheRelease) {
+        MethodInfoCache cache(10, false);
+
+        std::shared_ptr<AbstractMethodInfo> cmi_ptr_1 = cache.getOrAdd(1, cached_method_info_func_callback);
+        MethodInfoCacheStats stats1 = cache.stats(); // record the cache stats after the first item has been added
+
+        std::shared_ptr<AbstractMethodInfo> cmi_ptr_2 = cache.getOrAdd(2, cached_method_info_func_callback_1);
+        MethodInfoCacheStats stats2 = cache.stats();
+
+        // make sure that adding two different items affects the string map and dictionary
+        ASSERT_NE(stats1._string_count, stats2._string_count);
+        ASSERT_NE(stats1._map_size, stats2._map_size);
+
+        cache.pin(1);
+        cache.newEpoch();
+        MethodInfoCacheStats stats3 = cache.stats();
+
+        ASSERT_EQ(cache.size(), 1);
+        // Item 1 was marked sticky so the internal cache stats must correspond to the ones
+        // captured when only item 1 was added to the cache
+        ASSERT_EQ(stats1._string_count, stats3._string_count);
+        ASSERT_EQ(stats1._string_bytes, stats3._string_bytes);
+        ASSERT_EQ(stats1._map_size, stats3._map_size);
+        ASSERT_EQ(stats1._map_bytes, stats3._map_bytes);
+    }
+
+    TEST(MethodInfoCache, testPinUnpinAcrossEpochs) {
+        MethodInfoCache cache(10, false);
+
+        std::shared_ptr<AbstractMethodInfo> cmi_ptr = cache.getOrAdd(1, cached_method_info_func_callback);
+        // first, let's pin the first item in the current epoch
+        cache.pin(1);
+        // proceed to new epoch; the item is still pinned
+        cache.newEpoch();
+        // now unpin the item
+        cache.unpin(1);
+        // and increment the epoch to simulate items being pinned while the cache is being cleared at the end of the epoch
+        u64 previous = cache.incrementEpoch();
+        // pin the item in the next epoch
+        cache.pin(1);
+        // and release the cache for the previous epoch
+        cache.release(previous);
+        ASSERT_TRUE(cache.get(1).get()->isPinned());
+    }
+
+    TEST(MethodInfoCache, testCacheLimit) {
+        MethodInfoCache cache(1, false); // only 1 element can be cached
+
+        std::shared_ptr<AbstractMethodInfo> cmi_ptr1 = cache.getOrAdd(1, cached_method_info_func_callback);
+        ASSERT_TRUE(cmi_ptr1.get()->isCacheable());
+
+        std::shared_ptr<AbstractMethodInfo> cmi_ptr2 = cache.getOrAdd(2, cached_method_info_func_callback);
+        ASSERT_FALSE(cmi_ptr2.get()->isCacheable());
+        ASSERT_TRUE(cmi_ptr2.get()->isEmpty());
+    }
+
+    class TestCachedMethodInfo {
+      private:
+        AbstractMethodInfo* _delegate;
+
+      public:
+        TestCachedMethodInfo(AbstractMethodInfo* delegate) : _delegate(delegate) {}
+        void pin(u64 epoch) {
+            _delegate->pin(epoch);
+        }
+
+        void unpin(u64 epoch) {
+            _delegate->unpin(epoch);
+        }
+
+        bool isPinned() {
+            return _delegate->isPinned();
+        }
+    };
+
+    TEST(CachedMethodInfo, testPinSimple) {
+        MethodInfoCache cache(10, false);
+
+        TestCachedMethodInfo mi(cache.getOrAdd(1, cached_method_info_func_callback).get());
+
+        mi.pin(1);
+        ASSERT_TRUE(mi.isPinned());
+        mi.unpin(1);
+        ASSERT_FALSE(mi.isPinned());
+    }
+
+    TEST(CachedMethodInfo, testPinUnpinOutOfOrder) {
+        MethodInfoCache cache(10, false);
+
+        TestCachedMethodInfo mi(static_cast<CachedMethodInfo*>(cache.getOrAdd(1, cached_method_info_func_callback).get()));
+
+        mi.pin(2);
+        ASSERT_TRUE(mi.isPinned());
+        mi.unpin(1);
+        ASSERT_TRUE(mi.isPinned());
+        mi.unpin(3);
+        ASSERT_FALSE(mi.isPinned());
     }
 
     int main(int argc, char **argv) {

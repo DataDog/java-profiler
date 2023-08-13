@@ -109,12 +109,8 @@ void Lookup::cutArguments(char* func) {
     }
 }
 
-void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_time) {
-    std::shared_ptr<AbstractMethodInfo> cmi_ptr = _rec->getOrAdd(method);
-    if (!cmi_ptr) {
-        Counters::increment(JMETHODID_MAP_MISS);
-    }
-    fillMethodInfo(mi, cmi_ptr ? cmi_ptr : _rec->_method_cache.emptyInfo());
+void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool skip_cache) {
+    fillMethodInfo(mi, skip_cache ? Recording::methodInfoFromJvmti((u64)method, &(_rec->_method_cache), false) : _rec->get(method));
 }
 
 void Lookup::fillMethodInfo(MethodInfo* mi, std::shared_ptr<AbstractMethodInfo> cmi_ptr) {
@@ -123,8 +119,10 @@ void Lookup::fillMethodInfo(MethodInfo* mi, std::shared_ptr<AbstractMethodInfo> 
     std::string method_name = cmi->methodName();
     std::string method_sig = cmi->methodSignature();
 
+    fprintf(stderr, "===> minfo: %d, %s %s %s \n", mi->_key, class_name.c_str(), method_name.c_str(), method_sig.c_str());
+
     const char* klass_name = class_name.c_str();
-    mi->_class = _classes->lookup(klass_name + 1, strlen(klass_name) - 2);
+    mi->_class = class_name.empty() ? _classes->lookup("", 0) : _classes->lookup(klass_name + 1, strlen(klass_name) - 2);
     mi->_name = _symbols.lookup(method_name.c_str());
     mi->_sig = _symbols.lookup(method_sig.c_str());
     mi->_modifiers = cmi->_modifiers;
@@ -140,10 +138,9 @@ MethodInfo* Lookup::resolveMethod(ASGCT_CallFrame& frame) {
     bool first_time = mi->_key == 0;
     if (first_time) {
         mi->_key = _method_map->size();
-    }
-
-    if (!mi->_mark) {
-        mi->_mark = true;
+//    }
+//
+//    if (!mi->_mark) {
         if (method == NULL) {
             fillNativeMethodInfo(mi, "unknown", NULL);
         } else if (frame.bci == BCI_ERROR) {
@@ -152,9 +149,12 @@ MethodInfo* Lookup::resolveMethod(ASGCT_CallFrame& frame) {
             const char* name = (const char*)method;
             fillNativeMethodInfo(mi, name, Profiler::instance()->getLibraryName(name));
         } else {
-            fillJavaMethodInfo(mi, method, first_time);
+            fillJavaMethodInfo(mi, method, frame.bci & FRAME_UNRESOLVED);
         }
+    } else {
+        fprintf(stderr, "====> Cached MethodInfo: %d,  %u, %u, %u\n", mi->_key, mi->_class, mi->_name, mi->_sig);
     }
+    mi->_mark = true;
 
     return mi;
 }
@@ -283,11 +283,11 @@ off_t Recording::finishChunk(bool end_recording) {
     ssize_t result = pwrite(_fd, _buf->data(), 5, cpool_offset);
     (void)result;
 
-    _method_cache.incEpoch();
-    #ifdef COUNTERS
-    writeDatadogMethodInfoCacheStats(_buf, _method_cache.size(), Counters::getCounter(JMETHODID_MAP_BYTES), Counters::getCounter(DICTIONARY_MICACHE_STRINGS_BYTES), Counters::getCounter(JMETHODID_MAP_MISS), Counters::getCounter(JMETHODID_MAP_PURGED_ITEMS));
+    // release all cached JVMTI metadata unless it is pinned for the liveness tracking
+    MethodInfoCacheStats stats = _method_cache.newEpoch();
+
+    writeDatadogMethodInfoCacheStats(_buf, stats._string_count, stats._string_bytes, stats._map_size, stats._map_bytes, stats._map_limit);
     flush(_buf);
-    #endif // COUNTERS
 
     off_t chunk_end = lseek(_fd, 0, SEEK_CUR);
 
@@ -650,19 +650,19 @@ void Recording::writeDatadogProfilerConfig(Buffer* buf,
 }
 
 void Recording::writeDatadogMethodInfoCacheStats(Buffer* buf,
-                                        long long cachedItems,
-                                        long long cacheByteSize,
-                                        long long dictionaryByteSize,
-                                        long long missed,
-                                        long long purged) {
+                                                   long long stringCount,
+                                                   long long stringBytes,
+                                                   long long cacheSize,
+                                                   long long cacheBytes,
+                                                   int limit) {
     int start = buf->skip(1);
     buf->putVar64(T_DATADOG_METHODINFO_CACHE);
     buf->putVar64(_start_ticks);
-    buf->putVar64(cachedItems);
-    buf->putVar64(cacheByteSize);
-    buf->putVar64(dictionaryByteSize);
-    buf->putVar64(missed);
-    buf->putVar64(purged);
+    buf->putVar64(stringCount);
+    buf->putVar64(stringBytes);
+    buf->putVar64(cacheSize);
+    buf->putVar64(cacheBytes);
+    buf->putVar64(limit);
     writeEventSizePrefix(buf, start);
     flushIfNeeded(buf);
 }
@@ -974,8 +974,8 @@ void Recording::writeMethods(Buffer* buf, Lookup* lookup) {
             mi._mark = false;
             buf->putVar64(mi._key);
             buf->putVar64(mi._class);
-            buf->putVar64(mi._name | _base_id);
-            buf->putVar64(mi._sig | _base_id);
+            buf->putVar64(mi._name);
+            buf->putVar64(mi._sig);
             buf->putVar64(mi._modifiers);
             buf->putVar64(mi.isHidden());
             flushIfNeeded(buf);
@@ -994,8 +994,8 @@ void Recording::writeClasses(Buffer* buf, Lookup* lookup) {
         const char* name = it->second;
         buf->putVar64(it->first);
         buf->putVar64(0);  // classLoader
-        buf->putVar64(lookup->getSymbol(name) | _base_id);
-        buf->putVar64(lookup->getPackage(name) | _base_id);
+        buf->putVar64(lookup->getSymbol(name));
+        buf->putVar64(lookup->getPackage(name));
         buf->putVar64(0);  // access flags
         flushIfNeeded(buf);
     }
@@ -1009,7 +1009,7 @@ void Recording::writePackages(Buffer* buf, Lookup* lookup) {
     buf->putVar32(packages.size());
     for (std::map<u32, const char*>::const_iterator it = packages.begin(); it != packages.end(); ++it) {
         buf->putVar64(it->first | _base_id);
-        buf->putVar64(lookup->getSymbol(it->second) | _base_id);
+        buf->putVar64(lookup->getSymbol(it->second));
         flushIfNeeded(buf);
     }
 }
@@ -1022,7 +1022,7 @@ void Recording::writeConstantPoolSection(Buffer* buf, JfrType type, std::map<u32
         int length = strlen(it->second);
         // 5 is max varint length
         flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - length - 5);
-        buf->putVar64(it->first | _base_id);
+        buf->putVar64(it->first);
         buf->putUtf8(it->second, length);
     }
 }
@@ -1204,10 +1204,9 @@ void Recording::addThread(int tid) {
     }
 }
 
-std::shared_ptr<AbstractMethodInfo> Recording::methodInfoFromJvmti(u64 mid, MethodInfoCache* cache) {
+std::shared_ptr<AbstractMethodInfo> Recording::methodInfoFromJvmti(u64 mid, MethodInfoCache* cache, bool with_cache) {
     JNIEnv* jni = VM::jni();
     jvmtiEnv* jvmti = VM::jvmti();
-
 
     jmethodID id = (jmethodID)mid;
     jvmtiPhase phase;
@@ -1227,7 +1226,7 @@ std::shared_ptr<AbstractMethodInfo> Recording::methodInfoFromJvmti(u64 mid, Meth
     }
 
     bool entry = false;
-    bool should_cache = true;
+    bool should_cache = with_cache;
     if (jvmti->GetMethodDeclaringClass(id, &method_class) == 0 &&
             jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
             jvmti->GetMethodName(id, &method_name, &method_sig, NULL) == 0) {
@@ -1242,16 +1241,6 @@ std::shared_ptr<AbstractMethodInfo> Recording::methodInfoFromJvmti(u64 mid, Meth
                 modifiers |= 0x0040;
             }
         }
-
-        jobject class_loader = nullptr;
-        if (jvmti->GetClassLoader(method_class, &class_loader) == JVMTI_ERROR_NONE) {
-            if (VM::isSystemClassLoader(jni, class_loader)) {
-                // do not cache classes from the system class loaders
-                should_cache = false;
-            }
-        }
-        VM::jni()->DeleteLocalRef(class_loader);
-
 
         jvmti->GetLineNumberTable(id, &line_number_table_size, &line_number_table);
 
@@ -1286,12 +1275,24 @@ void Recording::addJmethodIDs(jmethodID* ids, int count) {
     }
 }
 
-std::shared_ptr<AbstractMethodInfo> Recording::getOrAdd(jmethodID id) {
-    return _method_cache.getOrAdd((u64)id, Recording::methodInfoFromJvmti);
+std::shared_ptr<AbstractMethodInfo> Recording::getOrAdd(jmethodID id, bool sticky) {
+    return _method_cache.getOrAdd((u64)id, Recording::methodInfoFromJvmti, sticky);
 }
 
-void Recording::removeJmethodID(jmethodID id) {
-    _method_cache.markUnloaded(reinterpret_cast<u64>(id));
+std::shared_ptr<AbstractMethodInfo> Recording::get(jmethodID id) {
+    return _method_cache.get((u64)id);
+}
+
+void Recording::cacheJvmtiStackTraceMetadata(int num_frames, jvmtiFrameInfo* frames, bool sticky) {
+    for (int i = 0; i < num_frames; i++) {
+        std::shared_ptr<AbstractMethodInfo> minfo_ptr = getOrAdd(frames[i].method, sticky);
+    }
+}
+
+void Recording::releaseJvmtiStackTraceMetadata(int num_frames, jvmtiFrameInfo* frames) {
+    for (int i = 0; i < num_frames; i++) {
+        _method_cache.unpin((const u64)frames[i].method);
+    }
 }
 
 Error FlightRecorder::start(Arguments& args, bool reset) {
@@ -1399,7 +1400,7 @@ void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
 }
 
 void FlightRecorder::recordEvent(int lock_index, int tid, u32 call_trace_id,
-                                 int event_type, Event* event, u64 counter) {
+                                int event_type, Event* event, u64 counter) {
     if (_rec != NULL) {
         RecordingBuffer* buf = _rec->buffer(lock_index);
         switch (event_type) {
@@ -1456,8 +1457,14 @@ void FlightRecorder::addJmethodIDs(jmethodID* ids, int count) {
     }
 }
 
-void FlightRecorder::removeJmethodID(jmethodID id) {
+void FlightRecorder::cacheJvmtiStackTraceMetadata(int num_frames, jvmtiFrameInfo* frames, bool sticky) {
     if (_rec != NULL) {
-        _rec->removeJmethodID(id);
+        _rec->cacheJvmtiStackTraceMetadata(num_frames, frames, sticky);
     }
+}
+
+void FlightRecorder::releaseJvmtiStackTraceMetadata(int num_frames, jvmtiFrameInfo* frames) {
+  if (_rec != NULL) {
+    _rec->releaseJvmtiStackTraceMetadata(num_frames, frames);
+  }
 }

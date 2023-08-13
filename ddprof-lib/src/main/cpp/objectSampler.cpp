@@ -69,6 +69,7 @@ void ObjectSampler::recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread threa
         return;
     }
 
+    Profiler::instance()->cacheJvmtiStackTraceMetadata(frames_size, frames, _record_liveness);
     if (_record_allocations) {
         Profiler::instance()->recordExternalSample(size, tid, frames, frames_size, /*truncated=*/false, BCI_ALLOC, &event);
         

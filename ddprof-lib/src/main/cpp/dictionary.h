@@ -71,6 +71,10 @@ class Dictionary {
     }
     ~Dictionary();
 
+    int size() {
+        return _size;
+    }
+
     void clear();
 
     unsigned int lookup(const char* key);

@@ -505,6 +505,10 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
 
     frame.restore(saved_pc, saved_sp, saved_fp);
 
+    for (int i = 0; i < trace.num_frames; i++) {
+        trace.frames[i].bci |= FRAME_UNRESOLVED;
+    }
+
     if (trace.num_frames > 0) {
         return trace.num_frames + (trace.frames - frames);
     }
@@ -624,10 +628,19 @@ void Profiler::recordExternalSample(u64 counter, int tid, jvmtiFrameInfo *jvmti_
         num_frames += convertFrames(jvmti_frames, frames + num_frames, num_jvmti_frames);
 
         call_trace_id = _call_trace_storage.put(num_frames, frames, truncated, counter);
+//        _jfr.cacheJvmtiStackTraceMetadata(num_frames, jvmti_frames, event_type == BCI_LIVENESS);
     }
     _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event, counter);
 
     _locks[lock_index].unlock();
+}
+
+void Profiler::cacheJvmtiStackTraceMetadata(int num_frames, jvmtiFrameInfo* frames, bool as_pinned) {
+    _jfr.cacheJvmtiStackTraceMetadata(num_frames, frames, as_pinned);
+}
+
+void Profiler::releaseJvmtiStackTraceMetadata(int num_frames, jvmtiFrameInfo* frames) {
+    _jfr.releaseJvmtiStackTraceMetadata(num_frames, frames);
 }
 
 void Profiler::recordSample(void* ucontext, u64 counter, int tid, jint event_type, Event* event) {
@@ -849,26 +862,26 @@ void Profiler::trapHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     StackFrame frame(ucontext);
 
     if (_class_unload_hook_trap.covers(frame.pc())) {
-        uintptr_t klass_ptr = frame.arg0();
-        VMKlass* klass = VMKlass::fromHandle(klass_ptr);
-        jmethodID* ids = klass->jmethodIDs();
-        size_t method_cnt = (size_t) ids[0];
-        if (method_cnt > 0) {
-            for (size_t i = 0; i < method_cnt; i++) {
-                jmethodID method = ids[i + 1];
-                _jfr.removeJmethodID(method);
-            }
-        }
-        // Force return from the trapped method to avoid leaving stack in inconsistent state.
-        // This will effectively ignore the body of the trapped method so we must be extremely
-        // cautious about which methods we are trapping.
-        frame.ret();
-
-        if (_notify_class_unloaded_func != NULL) {
-            // In OpenJDK 11 we need to forward to ClassLoadingService::notify_class_unloaded(ik)
-            // because it does all the logging
-            _notify_class_unloaded_func((void*) klass_ptr);
-        }
+//        uintptr_t klass_ptr = frame.arg0();
+//        VMKlass* klass = VMKlass::fromHandle(klass_ptr);
+//        jmethodID* ids = klass->jmethodIDs();
+//        size_t method_cnt = (size_t) ids[0];
+//        if (method_cnt > 0) {
+//            for (size_t i = 0; i < method_cnt; i++) {
+//                jmethodID method = ids[i + 1];
+//                _jfr.removeJmethodID(method);
+//            }
+//        }
+//        // Force return from the trapped method to avoid leaving stack in inconsistent state.
+//        // This will effectively ignore the body of the trapped method so we must be extremely
+//        // cautious about which methods we are trapping.
+//        frame.ret();
+//
+//        if (_notify_class_unloaded_func != NULL) {
+//            // In OpenJDK 11 we need to forward to ClassLoadingService::notify_class_unloaded(ik)
+//            // because it does all the logging
+//            _notify_class_unloaded_func((void*) klass_ptr);
+//        }
     } else if (orig_trapHandler != NULL) {
         orig_trapHandler(signo, siginfo, ucontext);
     }

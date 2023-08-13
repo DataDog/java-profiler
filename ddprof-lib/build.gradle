@@ -181,6 +181,7 @@ task javadocJar(type: Jar) {
 }
 
 javadoc.dependsOn copyLibs
+javadoc.dependsOn copyDebugLibs
 
 task assembleJar(type: Jar) {
     dependsOn copyExternalLibs
@@ -192,6 +193,8 @@ task assembleJar(type: Jar) {
     archiveVersion = component_version
     from sourceSets.main.output.classesDirs
 }
+
+assembleJar.dependsOn copyDebugLibs
 
 task assembleDebugJar(type: Jar) {
     if (!project.hasProperty('skip-native')) {

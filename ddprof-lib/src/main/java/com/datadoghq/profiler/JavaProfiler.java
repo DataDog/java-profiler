@@ -21,6 +21,7 @@ import sun.misc.Unsafe;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Field;
+import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
@@ -28,6 +29,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.Arrays;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -118,7 +120,9 @@ public final class JavaProfiler {
             libLocation = libraryPath.toString();
         }
         System.load(libLocation);
-        Files.deleteIfExists(libraryPath == null ? Paths.get(libLocation) : libraryPath);
+        if (libraryPath != null) {
+            Files.deleteIfExists(libraryPath);
+        }
         profiler.initializeContextStorage();
         instance = profiler;
         return profiler;
@@ -138,7 +142,7 @@ public final class JavaProfiler {
      */
     private static Path libraryFromClasspath(OperatingSystem os, Arch arch, String qualifier, Path tempDir) throws IOException {
         String resourcePath = NATIVE_LIBS + "/" + os.name().toLowerCase() + "-" + arch.name().toLowerCase() + ((qualifier != null && !qualifier.isEmpty()) ? "-" + qualifier : "") + "/" + LIBRARY_NAME;
-        
+
         InputStream libraryData =  JavaProfiler.class.getResourceAsStream(resourcePath);
 
         if (libraryData != null) {
