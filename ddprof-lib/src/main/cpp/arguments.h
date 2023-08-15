@@ -133,8 +133,7 @@ class Arguments {
     bool _record_heap_usage;
     int  _jstackdepth;
     int _safe_mode;
-    int _method_info_cache_threshold;
-    int _method_info_cache_retention;
+    int _method_info_cache_limit;
     bool _track_class_unload;
     const char* _file;
     const char* _log;
@@ -164,8 +163,7 @@ class Arguments {
         _record_heap_usage(false),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),
-        _method_info_cache_threshold(-1),
-        _method_info_cache_retention(-1), // set the method info cache to pass-through by default
+        _method_info_cache_limit(-1), // set the method info cache to pass-through by default
         _track_class_unload(false),
         _file(NULL),
         _log(NULL),

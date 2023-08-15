@@ -101,7 +101,6 @@ void JfrMetadata::initialize(const std::vector<std::string>& contextAttributes) 
             << (type("profiler.types.AttributeValue", T_ATTRIBUTE_VALUE, "Value", true)
                 << field("value", T_STRING, "Value"))
 
-            #ifdef COUNTERS
             // debug only events backed by the debug counters
             << (type("datadog.MethodInfoCache", T_DATADOG_METHODINFO_CACHE, "Datadog MethodInfo Cache Metrics")
                 << category("Datadog")
@@ -110,8 +109,8 @@ void JfrMetadata::initialize(const std::vector<std::string>& contextAttributes) 
                 << field("stringBytes", T_LONG, "The amount of bytes occupied by the cached strings", F_BYTES)
                 << field("mapSize", T_LONG, "The number of unique method info items kept by cache")
                 << field("mapBytes", T_LONG, "The amount of bytes occupied by the cached method info items", F_BYTES)
-                << field("limit", T_LONG, "The maximum number of method info items kept by cache"))
-            #endif
+                << field("allBytes", T_LONG, "Cumulative cache memory usage", F_BYTES)
+                << field("limit", T_LONG, "The maximum memory to be used by the cache", F_BYTES))
 
             << (type("datadog.ExecutionSample", T_EXECUTION_SAMPLE, "Method CPU Profiling Sample")
                 << category("Datadog", "Profiling")
@@ -252,6 +251,7 @@ void JfrMetadata::initialize(const std::vector<std::string>& contextAttributes) 
                 << field("memleakInterval", T_LONG, "MemLeak Sampling Interval", F_BYTES)
                 << field("memleakCapacity", T_LONG, "MemLeak Sampling Capacity")
                 << field("modeMask", T_INT, "Profiling mode bitmask")
+                << field("jmethodIdCacheSize", T_LONG, "JmethodID Cache Size", F_BYTES)
                 << field("version", T_STRING, "Version"))
 
             << (type("jdk.OSInformation", T_OS_INFORMATION, "OS Information")

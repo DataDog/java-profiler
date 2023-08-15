@@ -20,7 +20,6 @@ std::shared_ptr<AbstractMethodInfo> MethodInfoCache::get(const u64& id, bool pin
     auto it(_map.find(id));
     std::shared_ptr<AbstractMethodInfo> retValue = nullptr;
     if (it == _map.end()) {
-        fprintf(stderr, "===> cache miss for %llu\n", id);
         retValue = emptyInfo();
     } else {
         std::shared_ptr<AbstractMethodInfo> method_info_ptr = std::static_pointer_cast<AbstractMethodInfo>(it->second);
@@ -72,16 +71,6 @@ u32 MethodInfoCache::getOrAddStringIdx(const char* str) {
 
 std::shared_ptr<AbstractMethodInfo> MethodInfoCache::newMethodInfo(FrameTypeId frame_type, char* klass, char* name, char* signature, const int modifiers, int line_number_table_size, void* line_number_table, bool is_entry, SharedLineNumberTableDeallocator line_number_table_deallocator, bool cached) {
     if (klass == nullptr || name == nullptr || signature == nullptr) {
-        if (klass == nullptr) {
-            klass = "<null>";
-        }
-        if (name == nullptr) {
-            name = "<null>";
-        }
-        if (signature == nullptr) {
-            signature = "<null>";
-        }
-        fprintf(stderr, "===> empty info: %s %s %s\n", klass, name, signature);
         return MethodInfoCache::emptyInfo();
     }
 
@@ -106,7 +95,11 @@ std::shared_ptr<AbstractMethodInfo> MethodInfoCache::newMethodInfo(FrameTypeId f
 */
 std::shared_ptr<AbstractMethodInfo> MethodInfoCache::getOrAdd(u64 id, MethodInfoFunc func, bool sticky) {
     _lock.lock();
-    if (_map.size() >= _limit) {
+    if (_pass_through) {
+        _lock.unlock();
+        return func(id, this, false);
+    }
+    if (_deep_size >= _limit) {
         fprintf(stderr, "===> Hitting limit!\n");
         _lock.unlock();
         return emptyInfo();
@@ -124,7 +117,7 @@ std::shared_ptr<AbstractMethodInfo> MethodInfoCache::getOrAdd(u64 id, MethodInfo
             std::shared_ptr<CachedMethodInfo> cached_ptr = std::static_pointer_cast<CachedMethodInfo>(ami_ptr);
             _map[id] = cached_ptr;
             // update the deep size
-            _size += infoSize(*cached_ptr.get());
+            _deep_size += infoSize(*cached_ptr.get());
         }
         retValue = ami_ptr;
     } else {
@@ -146,11 +139,11 @@ void MethodInfoCache::release(const u64& epoch) {
             strings.insert((*_string_map_ptr.get())[it->second.get()->_signature]);
             it++;
         } else {
-            _size -= infoSize(*(it->second.get()));
+            _deep_size -= infoSize(*(it->second.get()));
             it = _map.erase(it);
         }
     }
-    _dictionary.clear();
+//    _dictionary.clear();
     _string_map_ptr.get()->clear();
     for (const auto& string : strings) {
         getOrAddStringIdx(string.c_str());

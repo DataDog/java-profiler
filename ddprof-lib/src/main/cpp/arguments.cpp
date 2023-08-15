@@ -184,14 +184,11 @@ Error Arguments::parse(const char* args) {
 
             CASE("minfocache")
                 if (value == NULL || value[0] == 0) {
-                    msg = "expecting 'minfocache=<threshold>:<retention>";
+                    msg = "expecting 'minfocache=<limit>' where 'limit' is the maximum amount of memory in MiB to be used for the cache; when set to -1 the cache will be pass-through" ;
                 } else {
-                    char* retention = value ? strchr(value, ':') : NULL;
-                    if (retention) {
-                        *(retention++) = 0; // terminate the 'value' string and update the pointer to the 'retention' section
-                        _method_info_cache_retention = (int)strtol(retention, NULL, 0);
-                    }
-                    _method_info_cache_threshold = (int)strtol(value, NULL, 0);
+                    fprintf(stdout, "===> minfocache=%s\n", value);
+                    _method_info_cache_limit = atoi(value);
+                    fprintf(stdout, "===> cache limit = %d\n", _method_info_cache_limit);
                 }
             CASE("event")
                 if (value == NULL || value[0] == 0) {

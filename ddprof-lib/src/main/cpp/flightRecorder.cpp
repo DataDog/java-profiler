@@ -110,7 +110,7 @@ void Lookup::cutArguments(char* func) {
 }
 
 void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool skip_cache) {
-    fillMethodInfo(mi, skip_cache ? Recording::methodInfoFromJvmti((u64)method, &(_rec->_method_cache), false) : _rec->get(method));
+    fillMethodInfo(mi, _rec->getOrAdd(method, false));
 }
 
 void Lookup::fillMethodInfo(MethodInfo* mi, std::shared_ptr<AbstractMethodInfo> cmi_ptr) {
@@ -119,7 +119,7 @@ void Lookup::fillMethodInfo(MethodInfo* mi, std::shared_ptr<AbstractMethodInfo> 
     std::string method_name = cmi->methodName();
     std::string method_sig = cmi->methodSignature();
 
-    fprintf(stderr, "===> minfo: %d, %s %s %s \n", mi->_key, class_name.c_str(), method_name.c_str(), method_sig.c_str());
+//    fprintf(stderr, "===> minfo: %d, %s %s %s \n", mi->_key, class_name.c_str(), method_name.c_str(), method_sig.c_str());
 
     const char* klass_name = class_name.c_str();
     mi->_class = class_name.empty() ? _classes->lookup("", 0) : _classes->lookup(klass_name + 1, strlen(klass_name) - 2);
@@ -138,9 +138,9 @@ MethodInfo* Lookup::resolveMethod(ASGCT_CallFrame& frame) {
     bool first_time = mi->_key == 0;
     if (first_time) {
         mi->_key = _method_map->size();
-//    }
-//
-//    if (!mi->_mark) {
+    }
+
+    if (!mi->_mark) {
         if (method == NULL) {
             fillNativeMethodInfo(mi, "unknown", NULL);
         } else if (frame.bci == BCI_ERROR) {
@@ -149,10 +149,10 @@ MethodInfo* Lookup::resolveMethod(ASGCT_CallFrame& frame) {
             const char* name = (const char*)method;
             fillNativeMethodInfo(mi, name, Profiler::instance()->getLibraryName(name));
         } else {
-            fillJavaMethodInfo(mi, method, frame.bci & FRAME_UNRESOLVED);
+            fillJavaMethodInfo(mi, method, _rec->_method_cache.passThrough() || (frame.bci & FRAME_UNRESOLVED));
         }
     } else {
-        fprintf(stderr, "====> Cached MethodInfo: %d,  %u, %u, %u\n", mi->_key, mi->_class, mi->_name, mi->_sig);
+//        fprintf(stderr, "====> Cached MethodInfo: %d,  %u, %u, %u\n", mi->_key, mi->_class, mi->_name, mi->_sig);
     }
     mi->_mark = true;
 
@@ -259,7 +259,7 @@ off_t Recording::finishChunk(bool end_recording) {
                                 oSampler->_record_allocations ? oSampler->_interval : 0L,
                                 oSampler->_record_liveness ? oSampler->_interval : 0L,
                                 oSampler->_record_liveness ? LivenessTracker::instance()->_table_cap : 0L,
-                                Profiler::instance()->eventMask());
+                                Profiler::instance()->eventMask(), _method_cache.limit());
 
     _stop_time = OS::micros();
     _stop_ticks = TSC::ticks();
@@ -271,6 +271,8 @@ off_t Recording::finishChunk(bool end_recording) {
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
         flush(&_buf[i]);
     }
+
+    MethodInfoCacheStats stats = _method_cache.incrementEpoch();
 
     off_t cpool_offset = lseek(_fd, 0, SEEK_CUR);
     writeCpool(_buf);
@@ -284,9 +286,9 @@ off_t Recording::finishChunk(bool end_recording) {
     (void)result;
 
     // release all cached JVMTI metadata unless it is pinned for the liveness tracking
-    MethodInfoCacheStats stats = _method_cache.newEpoch();
+    _method_cache.release(stats._epoch);
 
-    writeDatadogMethodInfoCacheStats(_buf, stats._string_count, stats._string_bytes, stats._map_size, stats._map_bytes, stats._map_limit);
+    writeDatadogMethodInfoCacheStats(_buf, stats._string_count, stats._string_bytes, stats._map_size, stats._map_bytes, stats._string_bytes + stats._map_bytes, stats._map_limit);
     flush(_buf);
 
     off_t chunk_end = lseek(_fd, 0, SEEK_CUR);
@@ -316,6 +318,7 @@ off_t Recording::finishChunk(bool end_recording) {
 }
 
 void Recording::switchChunk(int fd) {
+    fprintf(stderr, "====> Switch Chunk\n");
     _chunk_start = finishChunk(fd > -1);
     _start_time = _stop_time;
     _start_ticks = _stop_ticks;
@@ -630,7 +633,8 @@ void Recording::writeDatadogProfilerConfig(Buffer* buf,
                                 long allocInterval,
                                 long memleakInterval,
                                 long memleakCapacity,
-                                int modeMask) {
+                                int modeMask,
+                                int jmethodIdCacheSize) {
     flushIfNeeded(buf, RECORDING_BUFFER_LIMIT
     - (1 + 5 * MAX_VAR64_LENGTH + MAX_VAR32_LENGTH + 2 * MAX_STRING_LENGTH));
     int start = buf->skip(1);
@@ -644,6 +648,7 @@ void Recording::writeDatadogProfilerConfig(Buffer* buf,
     buf->putVar64(memleakInterval);
     buf->putVar64(memleakCapacity);
     buf->putVar32(modeMask);
+    buf->putVar32(jmethodIdCacheSize),
     buf->putUtf8(PROFILER_VERSION);
     writeEventSizePrefix(buf, start);
     flushIfNeeded(buf);
@@ -654,7 +659,8 @@ void Recording::writeDatadogMethodInfoCacheStats(Buffer* buf,
                                                    long long stringBytes,
                                                    long long cacheSize,
                                                    long long cacheBytes,
-                                                   int limit) {
+                                                   long long allBytes,
+                                                   long long limit) {
     int start = buf->skip(1);
     buf->putVar64(T_DATADOG_METHODINFO_CACHE);
     buf->putVar64(_start_ticks);
@@ -662,6 +668,7 @@ void Recording::writeDatadogMethodInfoCacheStats(Buffer* buf,
     buf->putVar64(stringBytes);
     buf->putVar64(cacheSize);
     buf->putVar64(cacheBytes);
+    buf->putVar64(allBytes);
     buf->putVar64(limit);
     writeEventSizePrefix(buf, start);
     flushIfNeeded(buf);
@@ -1020,6 +1027,7 @@ void Recording::writeConstantPoolSection(Buffer* buf, JfrType type, std::map<u32
     buf->putVar64(constants.size());
     for (std::map<u32, const char*>::const_iterator it = constants.begin(); it != constants.end(); ++it) {
         int length = strlen(it->second);
+//        fprintf(stderr, "===> type: %d, id: %u, string: %s\n", type, it->first, it->second);
         // 5 is max varint length
         flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - length - 5);
         buf->putVar64(it->first);

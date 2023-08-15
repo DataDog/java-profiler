@@ -143,8 +143,8 @@
     }
 
     TEST(MethodInfoCache, testSanity) {
-        MethodInfoCache cache1(0, true);
-        MethodInfoCache cache2(10, false);
+        MethodInfoCache cache1(-1);
+        MethodInfoCache cache2(1);
 
         ASSERT_TRUE(cache1.passThrough());
         ASSERT_FALSE(cache2.passThrough());
@@ -157,13 +157,13 @@
     }
 
     TEST(MethodInfoCache, testEmptyCache) {
-        MethodInfoCache cache(0, true);
+        MethodInfoCache cache(-1);
 
         ASSERT_TRUE(cache.get(1)->isEmpty());
     }
 
     TEST(MethodInfoCache, testNewMethodInfo) {
-        MethodInfoCache cache(10, false);
+        MethodInfoCache cache(1);
 
 
         ASSERT_FALSE(cache.passThrough());
@@ -196,7 +196,7 @@
     }
 
     TEST(MethodInfoCache, testNewMethodInfoPassThrough) {
-        MethodInfoCache cache(0, true); // a pass-through cache must have either retention or threshold or both <0
+        MethodInfoCache cache(-1); // a pass-through cache must have either retention or threshold or both <0
 
         ASSERT_TRUE(cache.passThrough());
 
@@ -275,7 +275,7 @@
     }
 
     TEST(MethodInfoCachet, testCacheReuse) {
-        MethodInfoCache cache(10, false);
+        MethodInfoCache cache(1);
 
 //        Counters::set(JMETHODID_MAP_BYTES, 0);
 
@@ -302,7 +302,7 @@
     }
 
     TEST(MethodInfoCache, testCacheUncacheable) {
-        MethodInfoCache cache(10, false);
+        MethodInfoCache cache(1);
 
         Counters::set(JMETHODID_MAP_BYTES, 0);
 
@@ -329,7 +329,7 @@
     }
 
     TEST(MethodInfoCache, testCacheRelease) {
-        MethodInfoCache cache(10, false);
+        MethodInfoCache cache(1);
 
         std::shared_ptr<AbstractMethodInfo> cmi_ptr_1 = cache.getOrAdd(1, cached_method_info_func_callback);
         MethodInfoCacheStats stats1 = cache.stats(); // record the cache stats after the first item has been added
@@ -355,7 +355,7 @@
     }
 
     TEST(MethodInfoCache, testPinUnpinAcrossEpochs) {
-        MethodInfoCache cache(10, false);
+        MethodInfoCache cache(1);
 
         std::shared_ptr<AbstractMethodInfo> cmi_ptr = cache.getOrAdd(1, cached_method_info_func_callback);
         // first, let's pin the first item in the current epoch
@@ -365,23 +365,20 @@
         // now unpin the item
         cache.unpin(1);
         // and increment the epoch to simulate items being pinned while the cache is being cleared at the end of the epoch
-        u64 previous = cache.incrementEpoch();
+        MethodInfoCacheStats stats = cache.incrementEpoch();
         // pin the item in the next epoch
         cache.pin(1);
         // and release the cache for the previous epoch
-        cache.release(previous);
+        cache.release(stats._epoch);
         ASSERT_TRUE(cache.get(1).get()->isPinned());
     }
 
     TEST(MethodInfoCache, testCacheLimit) {
-        MethodInfoCache cache(1, false); // only 1 element can be cached
+        MethodInfoCache cache(0); // no element can be cached
 
         std::shared_ptr<AbstractMethodInfo> cmi_ptr1 = cache.getOrAdd(1, cached_method_info_func_callback);
-        ASSERT_TRUE(cmi_ptr1.get()->isCacheable());
-
-        std::shared_ptr<AbstractMethodInfo> cmi_ptr2 = cache.getOrAdd(2, cached_method_info_func_callback);
-        ASSERT_FALSE(cmi_ptr2.get()->isCacheable());
-        ASSERT_TRUE(cmi_ptr2.get()->isEmpty());
+        ASSERT_FALSE(cmi_ptr1.get()->isCacheable());
+        ASSERT_TRUE(cmi_ptr1.get()->isEmpty());
     }
 
     class TestCachedMethodInfo {
@@ -404,7 +401,7 @@
     };
 
     TEST(CachedMethodInfo, testPinSimple) {
-        MethodInfoCache cache(10, false);
+        MethodInfoCache cache(1);
 
         TestCachedMethodInfo mi(cache.getOrAdd(1, cached_method_info_func_callback).get());
 
@@ -415,7 +412,7 @@
     }
 
     TEST(CachedMethodInfo, testPinUnpinOutOfOrder) {
-        MethodInfoCache cache(10, false);
+        MethodInfoCache cache(1);
 
         TestCachedMethodInfo mi(static_cast<CachedMethodInfo*>(cache.getOrAdd(1, cached_method_info_func_callback).get()));
 

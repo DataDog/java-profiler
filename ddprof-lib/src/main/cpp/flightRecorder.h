@@ -190,14 +190,16 @@ class Recording {
                                     long allocInterval,
                                     long memleakInterval,
                                     long memleakCapacity,
-                                    int modeMask);
+                                    int modeMask,
+                                    int jmethodIdCacheSize);
 
     void writeDatadogMethodInfoCacheStats(Buffer* buf,
                                           long long stringCount,
                                           long long stringBytes,
                                           long long cacheSize,
                                           long long cacheBytes,
-                                          int limit);
+                                          long long allBytes,
+                                          long long limit);
     void writeHeapUsage(Buffer* buf, long value, bool live);
     void writeOsCpuInfo(Buffer* buf);
     void writeJvmInfo(Buffer* buf);

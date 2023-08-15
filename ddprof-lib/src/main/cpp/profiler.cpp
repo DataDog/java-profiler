@@ -628,7 +628,7 @@ void Profiler::recordExternalSample(u64 counter, int tid, jvmtiFrameInfo *jvmti_
         num_frames += convertFrames(jvmti_frames, frames + num_frames, num_jvmti_frames);
 
         call_trace_id = _call_trace_storage.put(num_frames, frames, truncated, counter);
-//        _jfr.cacheJvmtiStackTraceMetadata(num_frames, jvmti_frames, event_type == BCI_LIVENESS);
+        cacheJvmtiStackTraceMetadata(num_jvmti_frames, jvmti_frames, event_type == BCI_LIVENESS);
     }
     _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event, counter);
 

@@ -36,17 +36,22 @@ class SharedLineNumberTable {
 class StringMap {
   private:
     std::map<u32, std::string> _map;
+    size_t _deep_size;
   public:
+    StringMap() : _deep_size(0) {}
     std::string operator[](u32 index) {
         return _map[index];
     }
 
     void set(u32 index, std::string value) {
-        _map[index] = value;
+        if (_map.insert(std::make_pair(index, value)).second) {
+            _deep_size += value.length();
+        }
     }
 
     void clear() {
         _map.clear();
+        _deep_size = 0;
     }
 
     u64 size() {
@@ -54,11 +59,7 @@ class StringMap {
     }
 
     u64 deepSize() {
-        u64 size = 0;
-        for (const auto &pair : _map) {
-            size += pair.second.size();
-        }
-        return size;
+        return _deep_size;
     }
 };
 class MethodInfoCache;
@@ -207,14 +208,15 @@ class UncachedMethodInfo : public AbstractMethodInfo {
 };
 
 struct MethodInfoCacheStats {
+    u64 _epoch;
     u64 _string_count;
     u64 _string_bytes;
     u64 _map_size;
     u64 _map_bytes;
     int _map_limit;
 
-    MethodInfoCacheStats(u64 string_count, u64 string_bytes, u64 map_size, u64 map_bytes, int map_limit) : _string_count(string_count), _string_bytes(string_bytes), _map_size(map_size), _map_bytes(map_bytes), _map_limit(map_limit) {};
-    MethodInfoCacheStats(const MethodInfoCacheStats& other) : _string_count(other._string_count), _string_bytes(other._string_bytes), _map_size(other._map_size), _map_bytes(other._map_bytes), _map_limit(other._map_limit) {};
+    MethodInfoCacheStats(u64 epoch, u64 string_count, u64 string_bytes, u64 map_size, u64 map_bytes, int map_limit) : _epoch(epoch), _string_count(string_count), _string_bytes(string_bytes), _map_size(map_size), _map_bytes(map_bytes), _map_limit(map_limit) {};
+    MethodInfoCacheStats(const MethodInfoCacheStats& other) : _epoch(other._epoch), _string_count(other._string_count), _string_bytes(other._string_bytes), _map_size(other._map_size), _map_bytes(other._map_bytes), _map_limit(other._map_limit) {};
 };
 
 class MethodInfoCache {
@@ -225,20 +227,24 @@ class MethodInfoCache {
 
     SpinLock _lock;
     u64 _epoch;
-    u64 _size;
+    u64 _deep_size;
 
     const bool _pass_through;
-    const int _limit;
+    const u32 _limit;
 
     size_t infoSize(CachedMethodInfo& info);
     u32 getOrAddStringIdx(const char* str);
   public:
-    MethodInfoCache(int limit, bool pass_through = true) : _dictionary(), _pass_through(pass_through), _epoch(1), _size(0), _limit(limit) {}
+    MethodInfoCache(int limit) : _dictionary(), _pass_through(limit < 0), _epoch(1), _deep_size(0), _limit(limit > 0 ? limit * 1024 * 1024 : 0) {}
 
-    MethodInfoCache(Arguments& args) : MethodInfoCache(10000, false) {}
+    MethodInfoCache(Arguments& args) : MethodInfoCache(args._method_info_cache_limit) {}
 
     inline bool passThrough() {
         return _pass_through;
+    }
+
+    inline int limit() {
+        return _limit;
     }
 
     std::shared_ptr<AbstractMethodInfo> get(const u64& id, bool pin = false);
@@ -257,8 +263,6 @@ class MethodInfoCache {
         return ret;
     }
 
-    size_t deepSize();
-
     std::shared_ptr<AbstractMethodInfo> emptyInfo() {
         static std::shared_ptr<AbstractMethodInfo> empty= std::make_shared<UncachedMethodInfo>();
         return empty;
@@ -267,7 +271,7 @@ class MethodInfoCache {
     MethodInfoCacheStats stats() {
         _lock.lockShared();
         StringMap string_map = *_string_map_ptr.get();
-        MethodInfoCacheStats stats(string_map.size(), string_map.deepSize(), _map.size(), _size, _limit);
+        MethodInfoCacheStats stats(_epoch, string_map.size(), string_map.deepSize(), _map.size(), _deep_size, _limit);
         _lock.unlockShared();
         return stats;
     }
@@ -275,13 +279,18 @@ class MethodInfoCache {
     void pin(const u64& id);
     void unpin(const u64& id);
     void release(const u64& epoch);
-    inline u64 incrementEpoch() {
-        return atomicInc(_epoch);
+    inline MethodInfoCacheStats incrementEpoch() {
+        while (true) {
+            MethodInfoCacheStats cache_stats = stats();
+            const u64 prev = atomicInc(_epoch);
+            if (prev == cache_stats._epoch) {
+                return cache_stats;
+            }
+        }
     }
     inline MethodInfoCacheStats newEpoch() {
-        MethodInfoCacheStats cache_stats = stats();
-        const u64 prev = incrementEpoch();
-        release(prev);
+        MethodInfoCacheStats cache_stats = incrementEpoch();
+        release(cache_stats._epoch);
         return cache_stats;
     }
 };
