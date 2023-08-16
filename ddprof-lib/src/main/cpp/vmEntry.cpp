@@ -380,24 +380,9 @@ void VM::loadMethodIDs(jvmtiEnv* jvmti, JNIEnv* jni, jclass klass) {
         }
     }
 
-    bool is_tracking = true;
-    jobject class_loader = nullptr;
-    if (jvmti->GetClassLoader(klass, &class_loader) == JVMTI_ERROR_NONE) {
-        if (isSystemClassLoader(jni, class_loader)) {
-            // do not cache classes from the bootstrap classloader
-            char* class_name = nullptr;
-            jvmti->GetClassSignature(klass, &class_name, NULL);
-            jvmti->Deallocate((unsigned char*)class_name);
-            is_tracking = false;
-        }
-    }
-
     jint method_count;
     jmethodID* methods;
     if (jvmti->GetClassMethods(klass, &method_count, &methods) == 0) {
-        if (is_tracking) {
-            Profiler::instance()->trackMethodIds(methods, method_count);
-        }
         jvmti->Deallocate((unsigned char*)methods);
     }
 }

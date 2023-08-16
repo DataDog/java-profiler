@@ -164,8 +164,6 @@ class Profiler {
     void lockAll();
     void unlockAll();
 
-    void trackMethodIds(jmethodID* methods, int count);
-
     static Profiler* const _instance;
 
   public:

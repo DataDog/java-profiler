@@ -35,7 +35,6 @@
 #include "incbin.h"
 #include "jfrMetadata.h"
 #include "jvm.h"
-#include "methodCache.h"
 #include "dictionary.h"
 #include "os.h"
 #include "profiler.h"
@@ -52,7 +51,11 @@ static const char* const SETTING_RING[] = {NULL, "kernel", "user", "any"};
 static const char* const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 
 static void deallocateLineNumberTable(void* ptr) {
-    VM::jvmti()->Deallocate((unsigned char*)ptr);
+
+}
+
+SharedLineNumberTable::~SharedLineNumberTable() {
+    VM::jvmti()->Deallocate((unsigned char*)_ptr);
 }
 
 void Lookup::fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* lib_name) {
@@ -110,27 +113,81 @@ void Lookup::cutArguments(char* func) {
 }
 
 void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_time) {
-    std::shared_ptr<AbstractMethodInfo> cmi_ptr = _rec->getOrAdd(method);
-    if (!cmi_ptr) {
-        Counters::increment(JMETHODID_MAP_MISS);
+    JNIEnv* jni = VM::jni();
+    jvmtiEnv* jvmti = VM::jvmti();
+
+
+    jvmtiPhase phase;
+    jclass method_class;
+    char* class_name = nullptr;
+    char* method_name = nullptr;
+    char* method_sig = nullptr;
+    jint modifiers = 0;
+
+    jint class_modifiers = 0;
+    jint line_number_table_size = 0;
+    jvmtiLineNumberEntry* line_number_table = NULL;
+
+    jvmti->GetPhase(&phase);
+    if ((phase & (JVMTI_PHASE_START | JVMTI_PHASE_LIVE)) == 0) {
+        return;
     }
-    fillMethodInfo(mi, cmi_ptr ? cmi_ptr : _rec->_method_cache.emptyInfo());
-}
 
-void Lookup::fillMethodInfo(MethodInfo* mi, std::shared_ptr<AbstractMethodInfo> cmi_ptr) {
-    AbstractMethodInfo* cmi = cmi_ptr.get();
-    std::string class_name = cmi->className();
-    std::string method_name = cmi->methodName();
-    std::string method_sig = cmi->methodSignature();
+    bool entry = false;
+    bool deallocateStrings = false;
+    if (jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
+            jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
+            jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
 
-    const char* klass_name = class_name.c_str();
-    mi->_class = _classes->lookup(klass_name + 1, strlen(klass_name) - 2);
-    mi->_name = _symbols.lookup(method_name.c_str());
-    mi->_sig = _symbols.lookup(method_sig.c_str());
-    mi->_modifiers = cmi->_modifiers;
-    mi->_line_number_table = cmi->_line_number_table;
-    mi->_type = cmi->_type;
-    mi->_is_entry = cmi->isEntry();
+        if (jvmti->GetClassModifiers(method_class, &class_modifiers) == 0 && jvmti->GetMethodModifiers(method, &modifiers) == 0) {
+            // class constants are written without the modifiers info
+            // in order to be able to identify 'hidden' frames the "SYNTHETIC" and "BRIDGE" modifiers will be propagated to methods
+            if (class_modifiers & 0x1000) {
+                modifiers |= 0x1000;
+            }
+            if (class_modifiers & 0x0040) {
+                modifiers |= 0x0040;
+            }
+        }
+
+        jvmti->GetLineNumberTable(method, &line_number_table_size, &line_number_table);
+
+        // Check if the frame is Thread.run or inherits from it
+        if (strncmp(method_name, "run", 3) == 0 && strncmp(method_sig, "()V", 3) == 0) {
+            jclass Thread_class = jni->FindClass("java/lang/Thread");
+            jmethodID equals =
+                jni->GetMethodID(jni->FindClass("java/lang/Class"), "equals", "(Ljava/lang/Object;)Z");
+            jclass klass = method_class;
+            do {
+                if (jni->CallBooleanMethod(Thread_class, equals, klass)) {
+                    entry = true;
+                    break;
+                }
+            } while ((klass = jni->GetSuperclass(klass)) != NULL);
+        } else if ((modifiers & 9) != 0 && strncmp(method_name, "main", 4) == 0 && strncmp(method_sig, "(Ljava/lang/String;)V", 21)) {
+            // public static void main(String[] args) - 'public static' translates to modifier bits 0 and 3, hence check for '9'
+            entry = true;
+        }
+        deallocateStrings = true;
+    } else {
+        class_name = (char*)"L;";
+        method_name = (char*)"jvmtiError";
+        method_sig = (char*)"()L;";
+    }
+
+    mi->_class = _classes->lookup(class_name + 1, strlen(class_name) - 2);
+    mi->_name = _symbols.lookup(method_name);
+    mi->_sig = _symbols.lookup(method_sig);
+    mi->_modifiers = modifiers;
+    mi->_line_number_table = std::make_shared<SharedLineNumberTable>(line_number_table_size, line_number_table);
+    mi->_type = FRAME_INTERPRETED;
+    mi->_is_entry = entry;
+
+    if (deallocateStrings) {
+        jvmti->Deallocate((unsigned char*)method_name);
+        jvmti->Deallocate((unsigned char*)method_sig);
+        jvmti->Deallocate((unsigned char*)class_name);
+    }
 }
 
 MethodInfo* Lookup::resolveMethod(ASGCT_CallFrame& frame) {
@@ -186,7 +243,7 @@ char* Recording::_jvm_args = NULL;
 char* Recording::_jvm_flags = NULL;
 char* Recording::_java_command = NULL;
 
-Recording::Recording(int fd, Arguments& args) : _fd(fd), _thread_set(), _method_map(), _method_cache(args) {
+Recording::Recording(int fd, Arguments& args) : _fd(fd), _thread_set(), _method_map() {
         
     args.save(_args);
     _chunk_start = lseek(_fd, 0, SEEK_END);
@@ -282,12 +339,6 @@ off_t Recording::finishChunk(bool end_recording) {
     _buf->putVar32(0, cpool_end - cpool_offset);
     ssize_t result = pwrite(_fd, _buf->data(), 5, cpool_offset);
     (void)result;
-
-    _method_cache.incEpoch();
-    #ifdef COUNTERS
-    writeDatadogMethodInfoCacheStats(_buf, _method_cache.size(), Counters::getCounter(JMETHODID_MAP_BYTES), Counters::getCounter(DICTIONARY_MICACHE_STRINGS_BYTES), Counters::getCounter(JMETHODID_MAP_MISS), Counters::getCounter(JMETHODID_MAP_PURGED_ITEMS));
-    flush(_buf);
-    #endif // COUNTERS
 
     off_t chunk_end = lseek(_fd, 0, SEEK_CUR);
 
@@ -645,24 +696,6 @@ void Recording::writeDatadogProfilerConfig(Buffer* buf,
     buf->putVar64(memleakCapacity);
     buf->putVar32(modeMask);
     buf->putUtf8(PROFILER_VERSION);
-    writeEventSizePrefix(buf, start);
-    flushIfNeeded(buf);
-}
-
-void Recording::writeDatadogMethodInfoCacheStats(Buffer* buf,
-                                        long long cachedItems,
-                                        long long cacheByteSize,
-                                        long long dictionaryByteSize,
-                                        long long missed,
-                                        long long purged) {
-    int start = buf->skip(1);
-    buf->putVar64(T_DATADOG_METHODINFO_CACHE);
-    buf->putVar64(_start_ticks);
-    buf->putVar64(cachedItems);
-    buf->putVar64(cacheByteSize);
-    buf->putVar64(dictionaryByteSize);
-    buf->putVar64(missed);
-    buf->putVar64(purged);
     writeEventSizePrefix(buf, start);
     flushIfNeeded(buf);
 }
@@ -1204,96 +1237,6 @@ void Recording::addThread(int tid) {
     }
 }
 
-std::shared_ptr<AbstractMethodInfo> Recording::methodInfoFromJvmti(u64 mid, MethodInfoCache* cache) {
-    JNIEnv* jni = VM::jni();
-    jvmtiEnv* jvmti = VM::jvmti();
-
-
-    jmethodID id = (jmethodID)mid;
-    jvmtiPhase phase;
-    jclass method_class;
-    char* class_name = nullptr;
-    char* method_name = nullptr;
-    char* method_sig = nullptr;
-    jint modifiers = 0;
-
-    jint class_modifiers = 0;
-    jint line_number_table_size = 0;
-    jvmtiLineNumberEntry* line_number_table = NULL;
-
-    jvmti->GetPhase(&phase);
-    if ((phase & (JVMTI_PHASE_START | JVMTI_PHASE_LIVE)) == 0) {
-        return cache->emptyInfo();
-    }
-
-    bool entry = false;
-    bool should_cache = true;
-    if (jvmti->GetMethodDeclaringClass(id, &method_class) == 0 &&
-            jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
-            jvmti->GetMethodName(id, &method_name, &method_sig, NULL) == 0) {
-
-        if (jvmti->GetClassModifiers(method_class, &class_modifiers) == 0 && jvmti->GetMethodModifiers(id, &modifiers) == 0) {
-            // class constants are written without the modifiers info
-            // in order to be able to identify 'hidden' frames the "SYNTHETIC" and "BRIDGE" modifiers will be propagated to methods
-            if (class_modifiers & 0x1000) {
-                modifiers |= 0x1000;
-            }
-            if (class_modifiers & 0x0040) {
-                modifiers |= 0x0040;
-            }
-        }
-
-        jobject class_loader = nullptr;
-        if (jvmti->GetClassLoader(method_class, &class_loader) == JVMTI_ERROR_NONE) {
-            if (VM::isSystemClassLoader(jni, class_loader)) {
-                // do not cache classes from the system class loaders
-                should_cache = false;
-            }
-        }
-        VM::jni()->DeleteLocalRef(class_loader);
-
-
-        jvmti->GetLineNumberTable(id, &line_number_table_size, &line_number_table);
-
-        // Check if the frame is Thread.run or inherits from it
-        if (strncmp(method_name, "run", 3) == 0 && strncmp(method_sig, "()V", 3) == 0) {
-            jclass Thread_class = jni->FindClass("java/lang/Thread");
-            jmethodID equals =
-                jni->GetMethodID(jni->FindClass("java/lang/Class"), "equals", "(Ljava/lang/Object;)Z");
-            jclass klass = method_class;
-            do {
-                if (jni->CallBooleanMethod(Thread_class, equals, klass)) {
-                    entry = true;
-                    break;
-                }
-            } while ((klass = jni->GetSuperclass(klass)) != NULL);
-        } else if ((modifiers & 9) != 0 && strncmp(method_name, "main", 4) == 0 && strncmp(method_sig, "(Ljava/lang/String;)V", 21)) {
-            // public static void main(String[] args) - 'public static' translates to modifier bits 0 and 3, hence check for '9'
-            entry = true;
-        }
-    }
-
-    std::shared_ptr<AbstractMethodInfo> ret = cache->newMethodInfo(FRAME_INTERPRETED, class_name, method_name, method_sig, modifiers, line_number_table_size, line_number_table, entry, deallocateLineNumberTable, should_cache);
-    jvmti->Deallocate((unsigned char*)method_name);
-    jvmti->Deallocate((unsigned char*)class_name);
-
-    return ret;
-}
-
-void Recording::addJmethodIDs(jmethodID* ids, int count) {
-    for (int i = 0; i < count; i++) {
-        getOrAdd(ids[i]);
-    }
-}
-
-std::shared_ptr<AbstractMethodInfo> Recording::getOrAdd(jmethodID id) {
-    return _method_cache.getOrAdd((u64)id, Recording::methodInfoFromJvmti);
-}
-
-void Recording::removeJmethodID(jmethodID id) {
-    _method_cache.markUnloaded(reinterpret_cast<u64>(id));
-}
-
 Error FlightRecorder::start(Arguments& args, bool reset) {
     const char* file = args.file();
     if (file == NULL || file[0] == 0) {
@@ -1450,14 +1393,3 @@ void FlightRecorder::recordLog(LogLevel level, const char* message, size_t len) 
 //    _rec_lock.unlockShared();
 }
 
-void FlightRecorder::addJmethodIDs(jmethodID* ids, int count) {
-    if (_rec != NULL) {
-        _rec->addJmethodIDs(ids, count);
-    }
-}
-
-void FlightRecorder::removeJmethodID(jmethodID id) {
-    if (_rec != NULL) {
-        _rec->removeJmethodID(id);
-    }
-}

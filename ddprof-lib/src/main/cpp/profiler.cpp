@@ -846,30 +846,7 @@ void Profiler::trapHandlerEntry(int signo, siginfo_t* siginfo, void* ucontext) {
 }
 
 void Profiler::trapHandler(int signo, siginfo_t* siginfo, void* ucontext) {
-    StackFrame frame(ucontext);
-
-    if (_class_unload_hook_trap.covers(frame.pc())) {
-        uintptr_t klass_ptr = frame.arg0();
-        VMKlass* klass = VMKlass::fromHandle(klass_ptr);
-        jmethodID* ids = klass->jmethodIDs();
-        size_t method_cnt = (size_t) ids[0];
-        if (method_cnt > 0) {
-            for (size_t i = 0; i < method_cnt; i++) {
-                jmethodID method = ids[i + 1];
-                _jfr.removeJmethodID(method);
-            }
-        }
-        // Force return from the trapped method to avoid leaving stack in inconsistent state.
-        // This will effectively ignore the body of the trapped method so we must be extremely
-        // cautious about which methods we are trapping.
-        frame.ret();
-
-        if (_notify_class_unloaded_func != NULL) {
-            // In OpenJDK 11 we need to forward to ClassLoadingService::notify_class_unloaded(ik)
-            // because it does all the logging
-            _notify_class_unloaded_func((void*) klass_ptr);
-        }
-    } else if (orig_trapHandler != NULL) {
+    if (orig_trapHandler != NULL) {
         orig_trapHandler(signo, siginfo, ucontext);
     }
 }
@@ -1413,8 +1390,4 @@ int Profiler::lookupClass(const char* key, size_t length) {
     }
     // unable to lookup the class
     return -1;
-}
-
-void Profiler::trackMethodIds(jmethodID* methods, int count) {
-    _jfr.addJmethodIDs(methods, count);
 }
