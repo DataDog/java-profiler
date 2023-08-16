@@ -163,7 +163,7 @@ bool VM::init(JavaVM* vm, bool attach) {
             if (prop != NULL) {
                 _jvmti->Deallocate((unsigned char*)prop);
                     prop = NULL;
-            } 
+            }
         }
     }
     if (prop != NULL) {
@@ -257,7 +257,7 @@ bool VM::init(JavaVM* vm, bool attach) {
     capabilities.can_generate_compiled_method_load_events = 1;
     capabilities.can_generate_monitor_events = 1;
     capabilities.can_tag_objects = 1;
-    
+
     _jvmti->AddCapabilities(&capabilities);
 
     jvmtiEventCallbacks callbacks = {0};
@@ -315,13 +315,11 @@ bool VM::init(JavaVM* vm, bool attach) {
 
 // Run late initialization when JVM is ready
 void VM::ready(jvmtiEnv* jvmti, JNIEnv* jni) {
+    Profiler::setupSignalHandlers();
     {
         JitWriteProtection jit(true);
         VMStructs::ready();
     }
-
-    Profiler::setupSignalHandlers();
-
     _libjava = getLibraryHandle("libjava.so");
 
     // Make sure we reload method IDs upon class retransformation

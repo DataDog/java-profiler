@@ -82,7 +82,7 @@ static const Multiplier UNIVERSAL[] = {{'n', 1}, {'u', 1000}, {'m', 1000000}, {'
 //     threads          - profile different threads separately
 //     sched            - group threads by scheduling policy
 //     cstack=MODE      - how to collect C stack frames in addition to Java stack
-//                        MODE is 'fp' (Frame Pointer), 'dwarf', 'lbr' (Last Branch Record) or 'no'
+//                        MODE is 'fp', 'dwarf', 'lbr', 'vm' or 'no'
 //     allkernel        - include only kernel-mode events
 //     alluser          - include only user-mode events
 //     simple           - simple class names instead of FQN
@@ -253,14 +253,12 @@ Error Arguments::parse(const char* args) {
 
             CASE("cstack")
                 if (value != NULL) {
-                    if (value[0] == 'n') {
-                        _cstack = CSTACK_NO;
-                    } else if (value[0] == 'd') {
-                        _cstack = CSTACK_DWARF;
-                    } else if (value[0] == 'l') {
-                        _cstack = CSTACK_LBR;
-                    } else {
-                        _cstack = CSTACK_FP;
+                    switch (value[0]) {
+                        case 'n': _cstack = CSTACK_NO;    break;
+                        case 'd': _cstack = CSTACK_DWARF; break;
+                        case 'l': _cstack = CSTACK_LBR;   break;
+                        case 'v': _cstack = CSTACK_VM;    break;
+                        default:  _cstack = CSTACK_FP;
                     }
                 }
 
