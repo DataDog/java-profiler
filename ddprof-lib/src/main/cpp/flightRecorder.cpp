@@ -29,6 +29,7 @@
 #include <sys/utsname.h>
 #include <unistd.h>
 #include "buffers.h"
+#include "classRefCache.h"
 #include "context.h"
 #include "counters.h"
 #include "flightRecorder.h"
@@ -367,6 +368,8 @@ off_t Recording::finishChunk(bool end_recording) {
 }
 
 void Recording::switchChunk(int fd) {
+    // ClearTask is a RAAI that will switch the epoch immediately and release the cached references when going out of scope
+    ClearTask cc = ClassRefCache::instance()->clear();
     _chunk_start = finishChunk(fd > -1);
     _start_time = _stop_time;
     _start_ticks = _stop_ticks;
@@ -1273,6 +1276,7 @@ void FlightRecorder::stop() {
         // NULL first, deallocate later
         _rec = NULL;
         delete tmp;
+        ClassRefCache::instance()->destroy();
     }
 }
 

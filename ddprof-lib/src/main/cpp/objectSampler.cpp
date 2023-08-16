@@ -15,8 +15,11 @@
  */
 
 #include <cmath>
+#include <set>
+
 #include <jni.h>
 #include <string.h>
+#include "classRefCache.h"
 #include "objectSampler.h"
 #include "pidController.h"
 #include "profiler.h"
@@ -68,6 +71,19 @@ void ObjectSampler::recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread threa
         delete[] frames;
         return;
     }
+
+    if (_record_allocations || _record_liveness) {
+        std::set<jclass> classes;
+        jclass method_class;
+        for (int i = 0; i < frames_size; i++) {
+            if (jvmti->GetMethodDeclaringClass(frames[i].method, &method_class) == 0) {
+                classes.insert(method_class);
+            }
+        }
+
+        ClassRefCache::instance()->store(jni, classes);
+    }
+
 
     if (_record_allocations) {
         Profiler::instance()->recordExternalSample(size, tid, frames, frames_size, /*truncated=*/false, BCI_ALLOC, &event);

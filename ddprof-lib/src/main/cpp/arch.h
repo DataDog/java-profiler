@@ -37,6 +37,10 @@ static inline int atomicInc(volatile int& var, int increment = 1) {
     return __sync_fetch_and_add(&var, increment);
 }
 
+static inline int loadAcquire(volatile int& var) {
+    return __atomic_load_n(&var, __ATOMIC_ACQUIRE);
+}
+
 static inline u64 loadAcquire(volatile u64& var) {
     return __atomic_load_n(&var, __ATOMIC_ACQUIRE);
 }
