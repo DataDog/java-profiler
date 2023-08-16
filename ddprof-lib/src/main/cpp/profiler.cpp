@@ -287,8 +287,11 @@ const char* Profiler::findNativeMethod(const void* address) {
     return lib == NULL ? NULL : lib->binarySearch(address);
 }
 
-bool Profiler::isAddressInCode(uintptr_t addr) {
-    const void* pc = (const void*)addr;
+CodeBlob* Profiler::findRuntimeStub(const void* address) {
+    return _runtime_stubs.find(address);
+}
+
+bool Profiler::isAddressInCode(const void* pc) {
     if (CodeHeap::contains(pc)) {
         return CodeHeap::findNMethod(pc) != NULL && !(pc >= _call_stub_begin && pc < _call_stub_end);
     } else {
@@ -307,8 +310,9 @@ int Profiler::getNativeTrace(void* ucontext, ASGCT_CallFrame* frames, int event_
 
     if (event_type == BCI_CPU && _cpu_engine == &perf_events) {
         native_frames += PerfEvents::walkKernel(tid, callchain + native_frames, MAX_NATIVE_FRAMES - native_frames, java_ctx);
-    }
-    if (_cstack == CSTACK_DWARF) {
+    } else if (_cstack == CSTACK_VM) {
+        return 0;
+    } else if (_cstack == CSTACK_DWARF) {
         native_frames += StackWalker::walkDwarf(ucontext, callchain + native_frames, MAX_NATIVE_FRAMES - native_frames, java_ctx, truncated);
     } else {
         native_frames += StackWalker::walkFP(ucontext, callchain + native_frames, MAX_NATIVE_FRAMES - native_frames, java_ctx, truncated);
@@ -383,6 +387,14 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
             }
             return 1;
         }
+        int state = vm_thread->state();
+        if (state == 8 || state == 9) {
+             if (DWARF_SUPPORTED && java_ctx->sp != 0) {
+                // If a thread is in Java state, unwind manually to the last known Java frame,
+                // since JVM does not always correctly unwind native frames
+                frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);
+            }
+        }
     } else {
         return 0;
     }
@@ -449,8 +461,8 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
             if (_cstack != CSTACK_NO) {
                 max_depth -= makeFrame(trace.frames++, BCI_NATIVE_FRAME, stub->_name);
             }
-            if (!(_safe_mode & POP_STUB) && frame.popStub((instruction_t*)stub->_start, stub->_name)
-                    && isAddressInCode(frame.pc() -= ADJUST_RET)) {
+            if (!(_safe_mode & POP_STUB) && frame.unwindStub((instruction_t*)stub->_start, stub->_name)
+                    && isAddressInCode((const void*)frame.pc())) {
                 VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
             }
         } else if (VMStructs::hasMethodStructs()) {
@@ -462,8 +474,8 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
                     if (method_id != NULL) {
                         max_depth -= makeFrame(trace.frames++, 0, method_id);
                     }
-                    if (!(_safe_mode & POP_METHOD) && frame.popMethod((instruction_t*)nmethod->entry())
-                            && isAddressInCode(frame.pc() -= ADJUST_RET)) {
+                    if (!(_safe_mode & POP_METHOD) && frame.unwindCompiled((instruction_t*)nmethod->entry())
+                            && isAddressInCode((const void*)frame.pc())) {
                         VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
                     }
                 }
@@ -471,8 +483,8 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
                 if (_cstack != CSTACK_NO) {
                     max_depth -= makeFrame(trace.frames++, BCI_NATIVE_FRAME, nmethod->name());
                 }
-                if (!(_safe_mode & POP_STUB) && frame.popStub(NULL, nmethod->name())
-                        && isAddressInCode(frame.pc() -= ADJUST_RET)) {
+                if (!(_safe_mode & POP_STUB) && frame.unwindStub(NULL, nmethod->name())
+                        && isAddressInCode((const void*)frame.pc())) {
                     VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
                 }
             }
@@ -676,8 +688,9 @@ void Profiler::recordSample(void* ucontext, u64 counter, int tid, jint event_typ
         StackContext java_ctx = {0};
         ASGCT_CallFrame *native_stop = frames + num_frames;
         num_frames += getNativeTrace(ucontext, native_stop, event_type, tid, &java_ctx, &truncated);
-
-        if (event_type == BCI_CPU || event_type == BCI_WALL) {
+        if (_cstack == CSTACK_VM) {
+            num_frames += StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth);
+        } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
             int java_frames = 0;
             {
                 // Async events
@@ -845,6 +858,8 @@ void Profiler::segvHandler(int signo, siginfo_t* siginfo, void* ucontext) {
         frame.retval() = frame.arg1();
         return;
     }
+
+    StackWalker::checkFault();
 
     if (WX_MEMORY && Trap::isFaultInstruction(frame.pc())) {
         return;
@@ -1058,6 +1073,11 @@ Error Profiler::start(Arguments& args, bool reset) {
     } else if (_cstack == CSTACK_LBR && _cpu_engine != &perf_events) {
         _cstack = CSTACK_NO;
         Log::warn("Branch stack is supported only with PMU events");
+    } else if (_cstack == CSTACK_VM) {
+        if (!VMStructs::hasStackStructs()) {
+            return Error("VMStructs stack walking is not supported on this JVM/platform");
+        }
+        Log::info("cstack=vm is an experimental option, use with care");
     }
 
     // Kernel symbols are useful only for perf_events without --all-user
@@ -1175,6 +1195,15 @@ Error Profiler::check(Arguments& args) {
     if (!error && args._memory >= 0) {
         _alloc_engine = selectAllocEngine(args);
         error = _alloc_engine->check(args);
+    }
+    if (!error) {
+        if (args._cstack == CSTACK_DWARF && !DWARF_SUPPORTED) {
+            return Error("DWARF unwinding is not supported on this platform");
+        } else if (args._cstack == CSTACK_LBR && _cpu_engine != &perf_events) {
+            return Error("Branch stack is supported only with PMU events");
+        } else if (args._cstack == CSTACK_VM && !VMStructs::hasStackStructs()) {
+            return Error("VMStructs stack walking is not supported on this JVM/platform");
+        }
     }
 
     return error;

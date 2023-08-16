@@ -285,6 +285,8 @@ class Profiler {
     CodeCache* findLibraryByName(const char* lib_name);
     CodeCache* findLibraryByAddress(const void* address);
     const char* findNativeMethod(const void* address);
+    CodeBlob* findRuntimeStub(const void* address);
+    bool isAddressInCode(const void* pc);
 
     static void trapHandlerEntry(int signo, siginfo_t* siginfo, void* ucontext);
     void trapHandler(int signo, siginfo_t* siginfo, void* ucontext);

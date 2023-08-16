@@ -66,7 +66,8 @@ enum CStack {
     CSTACK_NO,
     CSTACK_FP,
     CSTACK_DWARF,
-    CSTACK_LBR
+    CSTACK_LBR,
+    CSTACK_VM
 };
 
 enum Output {

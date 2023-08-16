@@ -150,6 +150,10 @@ class VM {
         return _java_version;
     }
 
+    static int hotspot_version() {
+        return isHotspot ? _java_version : -1;
+    }
+
     static int java_update_version() {
         return _java_update_version;
     }
