@@ -319,6 +319,8 @@ class VMMethod : VMStructs {
 
     jmethodID id();
 
+    static bool check_jmethodID(jmethodID id);
+
     NMethod* code() {
         return *(NMethod**) at(_method_code_offset);
     }

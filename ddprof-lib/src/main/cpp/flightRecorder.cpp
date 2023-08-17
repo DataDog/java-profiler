@@ -136,7 +136,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_tim
 
     bool entry = false;
     bool deallocateStrings = false;
-    if (jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
+    if (VMMethod::check_jmethodID(method) && jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
             jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
             jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
 

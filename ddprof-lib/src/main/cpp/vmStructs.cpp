@@ -516,6 +516,45 @@ jmethodID VMMethod::id() {
     return NULL;
 }
 
+/**
+ * jmethodIDs are unreliable, even if the profiler has created strong global JNI references to the classes
+ * containing methods with those jmethodIDs. This is affecting particularly hard the 'record-on-shutdown' feature
+ * when the VM class structures seem to be aggressively cleaned-up despite JNI global references pointing to them
+ * are still there.
+ * This check is attempting to validate that all data structures required to reconstruct the method metadata
+ * from a jmethodID are still readable at this point.
+ */
+bool VMMethod::check_jmethodID(jmethodID id) {
+    if (id == NULL) {
+        return false;
+    }
+    const char* method_ptr = (const char*) SafeAccess::load((void**) id);
+    if (method_ptr == NULL) {
+        return false;
+    }
+    if (_has_class_loader_data) {
+        // we can only perform the extended validity check if there are expected vmStructs in place
+        const char* const_method = (const char*) SafeAccess::load((void**) (method_ptr + _method_constmethod_offset));
+        if (const_method == NULL) {
+            return false;
+        }
+        const char* cpool = (const char*) SafeAccess::load((void**) (const_method + _constmethod_constants_offset));
+        if (cpool == NULL) {
+            return false;
+        }
+        unsigned short num = *(unsigned short*) (const_method + _constmethod_idnum_offset);
+        const char* cpool_holder = (const char*) SafeAccess::load((void**) (cpool + _pool_holder_offset));
+        if (cpool_holder == NULL) {
+            return false;
+        }
+        const char* cl_data = (const char*) SafeAccess::load((void**) (cpool_holder + _class_loader_data_offset));
+        if (cl_data == NULL) {
+            return false;
+        }
+    }
+    return true;
+}
+
 NMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
     unsigned char* heap_start = *(unsigned char**)(heap + _code_heap_memory_offset + _vs_low_offset);
     unsigned char* segmap = *(unsigned char**)(heap + _code_heap_segmap_offset + _vs_low_offset);
