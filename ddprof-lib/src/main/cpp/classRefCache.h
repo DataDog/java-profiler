@@ -96,8 +96,13 @@ class ClearTask {
   private:
     const int _epoch;
     const bool _forced;
-    ClearTask(int epoch, bool forced) : _epoch(epoch), _forced(forced) {}
+    const u64 _cache_size;
+    ClearTask(int epoch, bool forced, u64 size) : _epoch(epoch), _forced(forced), _cache_size(size) {}
   public:
+    inline u64 size() {
+        return _cache_size;
+    }
+
     ~ClearTask();
 };
 

@@ -242,6 +242,11 @@ void JfrMetadata::initialize(const std::vector<std::string>& contextAttributes) 
                 << field("modeMask", T_INT, "Profiling mode bitmask")
                 << field("version", T_STRING, "Version"))
 
+            << (type("datadog.DatadogProfilerClassRefCache", T_DATADOG_CLASSREF_CACHE, "Datadog ClassRef Cache Stats")
+                << category("Datadog")
+                << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+                << field("size", T_LONG, "Cache Size", F_BYTES))
+
             << (type("jdk.OSInformation", T_OS_INFORMATION, "OS Information")
                 << category("Operating System")
                 << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)

@@ -78,7 +78,7 @@ ClearTask ClassRefCache::clear(bool force) {
         epoch = _epoch;
     } while (!__sync_bool_compare_and_swap(&_epoch, epoch, epoch == 0 ? 1 : 0));
 
-    return ClearTask(epoch, force);
+    return ClearTask(epoch, force, _data[epoch].size() + _persistent.size());
 }
 
 ClearTask::~ClearTask() {

@@ -371,6 +371,7 @@ off_t Recording::finishChunk(bool end_recording) {
 void Recording::switchChunk(int fd) {
     // ClearTask is a RAAI that will switch the epoch immediately and release the cached references when going out of scope
     ClearTask cc = ClassRefCache::instance()->clear();
+    writeClassRefCacheStats(_buf, cc.size());
     _chunk_start = finishChunk(fd > -1);
     _start_time = _stop_time;
     _start_ticks = _stop_ticks;
@@ -700,6 +701,15 @@ void Recording::writeDatadogProfilerConfig(Buffer* buf,
     buf->putVar64(memleakCapacity);
     buf->putVar32(modeMask);
     buf->putUtf8(PROFILER_VERSION);
+    writeEventSizePrefix(buf, start);
+    flushIfNeeded(buf);
+}
+
+void Recording::writeClassRefCacheStats(Buffer* buf, u64 size) {
+    int start = buf->skip(1);
+    buf->putVar64(T_DATADOG_CLASSREF_CACHE);
+    buf->putVar64(_start_ticks);
+    buf->putVar64(size * sizeof(void*)); // the size in bytes is the amount of items * the reference size
     writeEventSizePrefix(buf, start);
     flushIfNeeded(buf);
 }
