@@ -176,12 +176,6 @@ Error Arguments::parse(const char* args) {
                     msg = "walltpt must be > 0";
                 }
 
-            // Basic options
-            CASE("options")
-                if (value != NULL && strstr("tcu", value)) {
-                    _track_class_unload = true;
-                }
-
             CASE("event")
                 if (value == NULL || value[0] == 0) {
                     msg = "event must not be empty";

@@ -804,43 +804,6 @@ void Profiler::disableEngines() {
     _wall_engine->enableEvents(false);
 }
 
-Error Profiler::installTraps() {
-    const void* class_unload_hook_addr = resolveSymbol("_ZN13InstanceKlass19notify_unload_classEPS_");
-    if (class_unload_hook_addr != NULL) {
-        // OpenJDK 11
-        _notify_class_unloaded_func = (NotifyClassUnloadedFunc)resolveSymbol("_ZN19ClassLoadingService21notify_class_unloadedEP13InstanceKlass");
-        if (_notify_class_unloaded_func == NULL) {
-            Log::debug("Unable to resolve symbol `ClassLoadingService::notify_class_unloaded'. Disabling class unload hook.");
-            class_unload_hook_addr = NULL;
-        }
-    } else {
-        class_unload_hook_addr = resolveSymbol("_ZN19ClassLoadingService21notify_class_unloadedEP13InstanceKlass");
-        if (class_unload_hook_addr == NULL) {
-            Log::debug("Unable to resolve symbol 'ClassLoadingService::notify_class_unloaded'. Disabling class unload hook.");
-        }
-        _notify_class_unloaded_func = NULL;
-    }
-
-    if (class_unload_hook_addr != NULL) {
-        _class_unload_hook_trap.assign(class_unload_hook_addr);
-
-        if (_class_unload_hook_trap.entry() != 0) {
-            if (!_class_unload_hook_trap.install()) {
-                Log::warn("Can not install class unload hook");
-            }
-        }
-    } else {
-        Log::warn("Unable to track class unloading.");
-    }
-
-    return Error::OK;
-}
-
-void Profiler::uninstallTraps() {
-    _class_unload_hook_trap.uninstall();
-    disableEngines();
-}
-
 void Profiler::trapHandlerEntry(int signo, siginfo_t* siginfo, void* ucontext) {
     Profiler::instance()->trapHandler(signo, siginfo, ucontext);
 }
@@ -1071,12 +1034,6 @@ Error Profiler::start(Arguments& args, bool reset) {
     // Kernel symbols are useful only for perf_events without --all-user
     updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
 
-    if (args._track_class_unload) {
-        error = installTraps();
-        if (error) {
-            return error;
-        }
-    }
     enableEngines();
 
     switchLibraryTrap(_cstack == CSTACK_DWARF);

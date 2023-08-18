@@ -133,7 +133,6 @@ class Arguments {
     bool _record_heap_usage;
     int  _jstackdepth;
     int _safe_mode;
-    bool _track_class_unload;
     const char* _file;
     const char* _log;
     const char* _loglevel;
@@ -162,7 +161,6 @@ class Arguments {
         _record_heap_usage(false),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),
-        _track_class_unload(false),
         _file(NULL),
         _log(NULL),
         _loglevel(NULL),
