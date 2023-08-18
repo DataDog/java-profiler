@@ -33,8 +33,7 @@ test {
     }
     useJUnitPlatform()
 
-    def minfoCacheArg = project.hasProperty("minfocache") ? "-Dddprof.minfocache=${project.minfocache}" : "-Dddprof.minfocache="
-    jvmArgs '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true', minfoCacheArg
+    jvmArgs '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true'
 }
 
 tasks.withType(Test) {

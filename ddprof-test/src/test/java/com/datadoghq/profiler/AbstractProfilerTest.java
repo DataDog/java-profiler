@@ -216,23 +216,7 @@ public abstract class AbstractProfilerTest {
   }
 
   private String getAmendedProfilerCommand() {
-    String methodInfoCacheArgKey = System.getProperty("ddprof.minfocache", "none");
-    String methodInfoCacheArg = null;
-    switch (methodInfoCacheArgKey.toLowerCase()) {
-      case "":
-      case "none":
-        methodInfoCacheArg = "";
-        break;
-      case "transient":
-        methodInfoCacheArg = ",minfocache=0:0";
-        break;
-      case "full":
-        methodInfoCacheArg = ",minfocache=30:10000";
-        break;
-      default:
-        throw new IllegalArgumentException("Unknown method info cache configuration: " + methodInfoCacheArgKey);
-    }
-    String profilerCommand = getProfilerCommand() + methodInfoCacheArg;
+    String profilerCommand = getProfilerCommand();
     return (ALLOW_NATIVE_CSTACKS || profilerCommand.contains("cstack=")
             ? profilerCommand
             : profilerCommand + ",cstack=fp")
