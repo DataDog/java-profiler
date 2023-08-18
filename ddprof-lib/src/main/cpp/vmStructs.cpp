@@ -543,7 +543,6 @@ bool VMMethod::check_jmethodID(jmethodID id) {
         if (cpool == NULL) {
             return false;
         }
-        unsigned short num = *(unsigned short*) (const_method + _constmethod_idnum_offset);
         const char* cpool_holder = (const char*) SafeAccess::load((void**) (cpool + _pool_holder_offset));
         if (cpool_holder == NULL) {
             return false;
