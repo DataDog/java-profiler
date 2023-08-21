@@ -29,7 +29,7 @@ class Cleaner;
 /**
  The JVMTI jmethodID has a crucial weakness - it is reliably valid only while the current thread is suspended (eg. executing our native code)
  or a global strong reference to the declaring class is present. Therefore, capturing stacktrace in one method and processing
- it in another can and will lead to undefined behaviours as the declaring classes of the methods referenced from the captured\
+ it in another can and will lead to undefined behaviours as the declaring classes of the methods referenced from the captured
  stacktrace frames can get unloaded at any time, causing SIGSEGV.
  This cache is a workaround for this - it will keep the classes around by holding to the global strong references and also
  make sure that once requested all such references will get released in order not to hinder GC.
