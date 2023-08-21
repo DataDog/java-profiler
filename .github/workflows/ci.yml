@@ -317,7 +317,6 @@ jobs:
           export PATH=$JAVA_HOME/bin:$PATH
           export BUILD_TYPE=SanitizedDebug
           ./gradlew :ddprof-test:test --info
-          comment-file: 'ddprof-stresstest/jmh-comment.html'
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
