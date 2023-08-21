@@ -133,8 +133,6 @@ class Profiler {
 
     void enableEngines();
     void disableEngines();
-    Error installTraps();
-    void uninstallTraps();
 
     void addJavaMethod(const void* address, int length, jmethodID method);
     void addRuntimeStub(const void* address, int length, const char* name);
@@ -163,8 +161,6 @@ class Profiler {
 
     void lockAll();
     void unlockAll();
-
-    void trackMethodIds(jmethodID* methods, int count);
 
     static Profiler* const _instance;
 

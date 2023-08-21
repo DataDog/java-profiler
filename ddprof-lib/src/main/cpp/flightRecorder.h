@@ -31,7 +31,6 @@
 #include "frame.h"
 #include "log.h"
 #include "jfrMetadata.h"
-#include "methodCache.h"
 #include "mutex.h"
 #include "objectSampler.h"
 #include "threadFilter.h"
@@ -45,7 +44,9 @@ const int MAX_VAR64_LENGTH = 10;
 const int MAX_VAR32_LENGTH = 5;
 
 const int CONCURRENCY_LEVEL = 16;
-
+const u16 ACC_SYNTHETIC = 0x1000;
+const u16 ACC_BRIDGE = 0x0040;
+const u16 ACC_HIDDEN = ACC_SYNTHETIC | ACC_BRIDGE;
 
 class Profiler;
 class Lookup;
@@ -59,6 +60,15 @@ struct CpuTime {
 struct CpuTimes {
     CpuTime proc;
     CpuTime total;
+};
+
+class SharedLineNumberTable {
+  public:
+    int _size;
+    void* _ptr;
+
+    SharedLineNumberTable(int size, void* ptr) : _size(size), _ptr(ptr) {}
+    ~SharedLineNumberTable();
 };
 
 class MethodInfo {
@@ -137,8 +147,6 @@ class Recording {
     Buffer _cpu_monitor_buf;
     CpuTimes _last_times;
 
-    MethodInfoCache _method_cache;
-
     static float ratio(float value) {
         return value < 0 ? 0 : value > 1 ? 1 : value;
     }
@@ -190,13 +198,8 @@ class Recording {
                                     long memleakInterval,
                                     long memleakCapacity,
                                     int modeMask);
+    void writeClassRefCacheStats(Buffer* buf, u64 size);
 
-    void writeDatadogMethodInfoCacheStats(Buffer* buf,
-                                          long long cacheItems,
-                                          long long cacheByteSize,
-                                          long long dictionaryByteSize,
-                                          long long missed,
-                                          long long purged);
     void writeHeapUsage(Buffer* buf, long value, bool live);
     void writeOsCpuInfo(Buffer* buf);
     void writeJvmInfo(Buffer* buf);
@@ -238,19 +241,11 @@ class Recording {
     void recordThreadPark(Buffer* buf, int tid, u32 call_trace_id, LockEvent* event);
     void recordCpuLoad(Buffer* buf, float proc_user, float proc_system, float machine_total);
     void addThread(int tid);
-
-    std::shared_ptr<AbstractMethodInfo> getOrAdd(jmethodID id);
-
-    void addJmethodIDs(jmethodID* ids, int count);
-    void removeJmethodID(jmethodID id);
-
-    static std::shared_ptr<AbstractMethodInfo> methodInfoFromJvmti(u64 id, MethodInfoCache* cache);
 };
 
 class Lookup {
   public:
     Recording* _rec;
-    // MethodInfoCache* _method_cache;
     MethodMap* _method_map;
     Dictionary* _classes;
     Dictionary _packages;
@@ -260,7 +255,6 @@ class Lookup {
     void fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* lib_name);
     void cutArguments(char* func);
     void fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_time);
-    void fillMethodInfo(MethodInfo* mi, std::shared_ptr<AbstractMethodInfo> cmi_ptr);
 
   public:
     Lookup(Recording* rec, MethodMap* method_map, Dictionary* classes) :
@@ -279,8 +273,6 @@ class FlightRecorder {
     Recording* _rec;
 
     Error newRecording(bool reset);
-    void addJmethodIDs(jmethodID* ids, int count);
-    void removeJmethodID(jmethodID id);
 
   public:
     FlightRecorder() : _rec(NULL) {}

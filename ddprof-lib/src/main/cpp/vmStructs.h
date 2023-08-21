@@ -1,5 +1,6 @@
 /*
  * Copyright 2017 Andrei Pangin
+ * Copyright 2022, 2023 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -318,6 +319,8 @@ class VMMethod : VMStructs {
     }
 
     jmethodID id();
+
+    static bool check_jmethodID(jmethodID id);
 
     NMethod* code() {
         return *(NMethod**) at(_method_code_offset);

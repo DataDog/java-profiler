@@ -1,5 +1,5 @@
 /*
- * Copyright 2021 Datadog, Inc
+ * Copyright 2021, 2023 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -68,7 +68,7 @@ class LivenessTracker  {
     Error initialize(Arguments& args);
     Error initialize_table(int sampling_interval);
 
-    void cleanup_table();
+    void cleanup_table(bool update_class_ref_cache);
 
     void flush_table(std::set<int> *tracked_thread_ids);
 
