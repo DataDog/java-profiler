@@ -155,7 +155,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_tim
         jvmti->GetLineNumberTable(method, &line_number_table_size, &line_number_table);
 
         // Check if the frame is Thread.run or inherits from it
-        if (strncmp(method_name, "run", 3) == 0 && strncmp(method_sig, "()V", 3) == 0) {
+        if (strncmp(method_name, "run", 4) == 0 && strncmp(method_sig, "()V", 3) == 0) {
             jclass Thread_class = jni->FindClass("java/lang/Thread");
             jmethodID equals =
                 jni->GetMethodID(jni->FindClass("java/lang/Class"), "equals", "(Ljava/lang/Object;)Z");
