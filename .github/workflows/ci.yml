@@ -66,15 +66,6 @@ jobs:
           export BUILD_TYPE=SanitizedDebug
           chmod a+x ddprof-lib/test.sh
           ./gradlew :ddprof-test:test -Pddprof.minfocache=${{ matrix.minfo_cache }} --info
-          ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
-      - name: Post or update PR comment
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: ./.github/actions/pr_comment
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          commenter: "pr-comment-stresstests"
-          comment-id: "stress-bellsoft_${{ matrix.java_version }}_glibc"
-          comment-file: 'ddprof-stresstest/jmh-comment.html'
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -85,7 +76,6 @@ jobs:
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
-            ddprof-stresstest/jmh-result.html
       - uses: actions/upload-artifact@v3
         if: success()
         with:
@@ -123,15 +113,6 @@ jobs:
           export PATH=$JAVA_HOME/bin:$PATH
           export BUILD_TYPE=SanitizedDebug
           ./gradlew :ddprof-test:test -Pddprof.minfocache=${{ matrix.minfo_cache }} --info
-          ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
-      - name: Post or update PR comment
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: ./.github/actions/pr_comment
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          commenter: "pr-comment-stresstests"
-          comment-id: "stress-ubuntu_${{ matrix.java_version }}_glibc"
-          comment-file: 'ddprof-stresstest/jmh-comment.html'
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -142,7 +123,6 @@ jobs:
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
-            stresstest.html
       - uses: actions/upload-artifact@v3
         if: success()
         with:
@@ -191,7 +171,6 @@ jobs:
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
-            ddprof-stresstest/jmh-result.html
       - uses: actions/upload-artifact@v3
         if: success()
         with:
@@ -232,15 +211,6 @@ jobs:
           export PATH=$JAVA_HOME/bin:$PATH
           export BUILD_TYPE=SanitizedDebug
           ./gradlew :ddprof-test:test -Pddprof.minfocache=${{ matrix.minfo_cache }} --info
-          ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
-      - name: Post or update PR comment
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: ./.github/actions/pr_comment
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          commenter: "pr-comment-stresstests"
-          comment-id: "stress-oracle_8_glibc"
-          comment-file: 'ddprof-stresstest/jmh-comment.html'
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -251,7 +221,6 @@ jobs:
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
-            stresstest.html
       - uses: actions/upload-artifact@v3
         if: success()
         with:
@@ -295,15 +264,6 @@ jobs:
           export JAVA_TEST_HOME=$(pwd)/test_jdk
           chmod a+x ddprof-lib/test.sh
           ./gradlew :ddprof-test:test -Pddprof.minfocache=${{ matrix.minfo_cache }} --info
-          ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
-      - name: Post or update PR comment
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: ./.github/actions/pr_comment
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          commenter: "pr-comment-stresstests"
-          search-text: "stress-bellsoft_${{ matrix.java_version }}_musl"
-          comment-file: 'ddprof-stresstest/jmh-comment.html'
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -314,7 +274,6 @@ jobs:
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
-            ./stresstest.html
       - uses: actions/upload-artifact@v3
         if: success()
         with:
@@ -366,14 +325,6 @@ jobs:
           export PATH=$JAVA_HOME/bin:$PATH
           export BUILD_TYPE=SanitizedDebug
           ./gradlew :ddprof-test:test -Pddprof.minfocache=${{ matrix.minfo_cache }} --info
-          ./gradlew :ddprof-stresstest:runStressTests -x cppTest --info
-      - name: Post or update PR comment
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: ./.github/actions/pr_comment
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          commenter: "pr-comment-stresstests"
-          comment-id: "stress-zing_${{ matrix.java_version }}_glibc"
           comment-file: 'ddprof-stresstest/jmh-comment.html'
       - name: Upload logs
         uses: actions/upload-artifact@v3
@@ -385,7 +336,6 @@ jobs:
             ddprof-test/build/reports/tests/test
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
-            stresstest.html
       - uses: actions/upload-artifact@v3
         if: success()
         with:
