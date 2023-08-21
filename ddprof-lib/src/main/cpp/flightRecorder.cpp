@@ -166,7 +166,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_tim
                     break;
                 }
             } while ((klass = jni->GetSuperclass(klass)) != NULL);
-        } else if ((modifiers & 9) != 0 && strncmp(method_name, "main", 4) == 0 && strncmp(method_sig, "(Ljava/lang/String;)V", 21)) {
+        } else if ((modifiers & 9) != 0 && strncmp(method_name, "main", 5) == 0 && strncmp(method_sig, "(Ljava/lang/String;)V", 21)) {
             // public static void main(String[] args) - 'public static' translates to modifier bits 0 and 3, hence check for '9'
             entry = true;
         }
