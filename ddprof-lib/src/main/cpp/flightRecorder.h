@@ -44,7 +44,9 @@ const int MAX_VAR64_LENGTH = 10;
 const int MAX_VAR32_LENGTH = 5;
 
 const int CONCURRENCY_LEVEL = 16;
-
+const u16 ACC_SYNTHETIC = 0x1000;
+const u16 ACC_BRIDGE = 0x0040;
+const u16 ACC_HIDDEN = ACC_SYNTHETIC | ACC_BRIDGE;
 
 class Profiler;
 class Lookup;

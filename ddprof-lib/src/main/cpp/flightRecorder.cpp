@@ -143,8 +143,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_tim
 
         if (jvmti->GetClassModifiers(method_class, &class_modifiers) == 0 && jvmti->GetMethodModifiers(method, &modifiers) == 0) {
             // class constants are written without the modifiers info
-            // in order to be able to identify 'hidden' frames the "SYNTHETIC" (0x1000) and "BRIDGE" (0x0040) modifiers will be propagated to methods
-            modifiers |= class_modifiers & (0x1000 | 0x0040);
+            // in order to be able to identify 'hidden' frames the relevant modifiers will be propagated to methods
+            modifiers |= class_modifiers & ACC_HIDDEN;
         }
 
         jvmti->GetLineNumberTable(method, &line_number_table_size, &line_number_table);
