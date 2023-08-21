@@ -24,6 +24,7 @@
 #include "spinLock.h"
 
 class ClearTask;
+class Cleaner;
 
 /**
  The JVMTI jmethodID has a crucial weakness - it is reliably valid only while the current thread is suspended (eg. executing our native code)
@@ -41,7 +42,7 @@ class ClearTask;
  executed concurrently, therefore we don't need to deal with locking there.
  */
 class ClassRefCache {
-  friend ClearTask;
+  friend Cleaner;
 
   private:
     static ClassRefCache* const _instance;
@@ -73,7 +74,7 @@ class ClassRefCache {
 
     /**
      * Initiate cache cleanup.
-     * This will return a (RAAI) task instance which will automatically release all relevant global strong
+     * This will return a task instance which can be wrapped in Cleaner RAII to automatically release all relevant global strong
      * references on destruction.
      * This pattern is used in order to have 2-phased cleanup where we first switch the cache epoch such that
      * all new class references are recorded in the 'other' copy while we are still processing the current copy.
@@ -102,8 +103,17 @@ class ClearTask {
     inline u64 size() {
         return _cache_size;
     }
+};
 
-    ~ClearTask();
+/**
+ * RAII to wrap ClearTask
+ */
+class Cleaner {
+  private:
+    ClearTask _task;
+  public:
+    Cleaner(ClearTask task) : _task(task) {}
+    ~Cleaner();
 };
 
 #endif // _CLASS_REF_CACHE_H

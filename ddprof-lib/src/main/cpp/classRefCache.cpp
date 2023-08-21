@@ -81,7 +81,7 @@ ClearTask ClassRefCache::clear(bool force) {
     return ClearTask(epoch, force, _data[epoch].size() + _persistent.size());
 }
 
-ClearTask::~ClearTask() {
-    ClassRefCache::instance()->doClean(this);
+Cleaner::~Cleaner() {
+    ClassRefCache::instance()->doClean(&_task);
 }
 

@@ -369,8 +369,10 @@ off_t Recording::finishChunk(bool end_recording) {
 }
 
 void Recording::switchChunk(int fd) {
-    // ClearTask is a RAAI that will switch the epoch immediately and release the cached references when going out of scope
+    // This will switch the epoch immediately ...
     ClearTask cc = ClassRefCache::instance()->clear();
+    // ... and release the cached references when the Cleaner RAII is going out of scope
+    Cleaner cleaner(cc);
     writeClassRefCacheStats(_buf, cc.size());
     _chunk_start = finishChunk(fd > -1);
     _start_time = _stop_time;
