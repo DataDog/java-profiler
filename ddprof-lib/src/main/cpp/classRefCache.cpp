@@ -67,8 +67,8 @@ void ClassRefCache::doClean(ClearTask* cleanable) {
 }
 
 void ClassRefCache::destroy() {
-    ClearTask task1 = clear(true);
-    ClearTask task2 = clear(true);
+    Cleaner task1(clear(true));
+    Cleaner task2(clear(true));
     _persistent.clear();
 }
 
