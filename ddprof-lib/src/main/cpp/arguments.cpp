@@ -182,17 +182,6 @@ Error Arguments::parse(const char* args) {
                     _track_class_unload = true;
                 }
 
-            CASE("minfocache")
-                if (value == NULL || value[0] == 0) {
-                    msg = "expecting 'minfocache=<threshold>:<retention>";
-                } else {
-                    char* retention = value ? strchr(value, ':') : NULL;
-                    if (retention) {
-                        *(retention++) = 0; // terminate the 'value' string and update the pointer to the 'retention' section
-                        _method_info_cache_retention = (int)strtol(retention, NULL, 0);
-                    }
-                    _method_info_cache_threshold = (int)strtol(value, NULL, 0);
-                }
             CASE("event")
                 if (value == NULL || value[0] == 0) {
                     msg = "event must not be empty";

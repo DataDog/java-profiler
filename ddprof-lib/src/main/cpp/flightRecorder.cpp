@@ -30,12 +30,10 @@
 #include <unistd.h>
 #include "buffers.h"
 #include "context.h"
-#include "counters.h"
 #include "flightRecorder.h"
 #include "incbin.h"
 #include "jfrMetadata.h"
 #include "jvm.h"
-#include "methodCache.h"
 #include "dictionary.h"
 #include "os.h"
 #include "profiler.h"
@@ -51,8 +49,26 @@ static SpinLock _rec_lock(1);
 static const char* const SETTING_RING[] = {NULL, "kernel", "user", "any"};
 static const char* const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 
-static void deallocateLineNumberTable(void* ptr) {
-    VM::jvmti()->Deallocate((unsigned char*)ptr);
+jint MethodInfo::getLineNumber(jint bci) {
+    if (_line_number_table_size == 0) {
+        return 0;
+    }
+
+    int i = 1;
+    while (i < _line_number_table_size && bci >= _line_number_table[i].start_location) {
+        i++;
+    }
+    return _line_number_table[i - 1].line_number;
+}
+
+MethodMap::~MethodMap() {
+    jvmtiEnv* jvmti = VM::jvmti();
+    for (const_iterator it = begin(); it != end(); ++it) {
+        jvmtiLineNumberEntry* line_number_table = it->second._line_number_table;
+        if (line_number_table != NULL) {
+            jvmti->Deallocate((unsigned char*)line_number_table);
+        }
+    }
 }
 
 void Lookup::fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* lib_name) {
@@ -67,6 +83,7 @@ void Lookup::fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* 
 //        }
 
     mi->_modifiers = 0x100;
+    mi->_line_number_table_size = 0;
     mi->_line_number_table = nullptr;
 
     if (name[0] == '_' && name[1] == 'Z') {
@@ -110,27 +127,72 @@ void Lookup::cutArguments(char* func) {
 }
 
 void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_time) {
-    std::shared_ptr<AbstractMethodInfo> cmi_ptr = _rec->getOrAdd(method);
-    if (!cmi_ptr) {
-        Counters::increment(JMETHODID_MAP_MISS);
+    jvmtiEnv* jvmti = VM::jvmti();
+    JNIEnv* jni = VM::jni();
+
+    jclass method_class;
+    char* class_name = NULL;
+    char* method_name = NULL;
+    char* method_sig = NULL;
+
+    jint class_modifiers = 0;
+    // Try to assert the jmethodID validity - jmethodID values from the previously unloaded classes should
+    // either be NULL or 'unreadable' (the readability check is possible only on Hotspot JDK 11+).
+    // The 'jmethodID' is a pointer to pointer to 'Method' so we do two-level check, just to be sure.
+    bool isJmethodIdValid = method != NULL && JVM::is_readable_pointer((void*)method) &&
+                              (*(void**)method) != NULL && JVM::is_readable_pointer((void*)*((void**)method));
+    if (isJmethodIdValid &&
+        jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
+        jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
+        jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
+        mi->_class = _classes->lookup(class_name + 1, strlen(class_name) - 2);
+        mi->_name = _symbols.lookup(method_name);
+        mi->_sig = _symbols.lookup(method_sig);
+
+        if (first_time) {
+            if (jvmti->GetClassModifiers(method_class, &class_modifiers) == 0 && jvmti->GetMethodModifiers(method, &mi->_modifiers) == 0) {
+                // class constants are written without the modifiers info
+                // in order to be able to identify 'hidden' frames the "SYNTHETIC" and "BRIDGE" modifiers will be propagated to methods
+                if (class_modifiers & 0x1000) {
+                    mi->_modifiers |= 0x1000;
+                }
+                if (class_modifiers & 0x0040) {
+                    mi->_modifiers |= 0x0040;
+                }
+            }
+            // Check if the frame is Thread.run or inherits from it
+            if (strncmp(method_name, "run", 3) == 0 && strncmp(method_sig, "()V", 3) == 0) {
+                jclass Thread_class = jni->FindClass("java/lang/Thread");
+                jmethodID equals =
+                    jni->GetMethodID(jni->FindClass("java/lang/Class"), "equals", "(Ljava/lang/Object;)Z");
+                jclass klass = method_class;
+                do {
+                    if (jni->CallBooleanMethod(Thread_class, equals, klass)) {
+                        mi->_is_entry = true;
+                        break;
+                    }
+                } while ((klass = jni->GetSuperclass(klass)) != NULL);
+            } else if ((mi->_modifiers & 9) != 0 && strncmp(method_name, "main", 4) == 0 && strncmp(method_sig, "(Ljava/lang/String;)V", 21)) {
+                // public static void main(String[] args) - 'public static' translates to modifier bits 0 and 3, hence check for '9'
+                mi->_is_entry = true;
+            }
+        }
+    } else {
+        mi->_class = _classes->lookup("");
+        mi->_name = _symbols.lookup("jvmtiError");
+        mi->_sig = _symbols.lookup("()L;");
     }
-    fillMethodInfo(mi, cmi_ptr ? cmi_ptr : _rec->_method_cache.emptyInfo());
-}
 
-void Lookup::fillMethodInfo(MethodInfo* mi, std::shared_ptr<AbstractMethodInfo> cmi_ptr) {
-    AbstractMethodInfo* cmi = cmi_ptr.get();
-    std::string class_name = cmi->className();
-    std::string method_name = cmi->methodName();
-    std::string method_sig = cmi->methodSignature();
+    jvmti->Deallocate((unsigned char*)method_sig);
+    jvmti->Deallocate((unsigned char*)method_name);
+    jvmti->Deallocate((unsigned char*)class_name);
 
-    const char* klass_name = class_name.c_str();
-    mi->_class = _classes->lookup(klass_name + 1, strlen(klass_name) - 2);
-    mi->_name = _symbols.lookup(method_name.c_str());
-    mi->_sig = _symbols.lookup(method_sig.c_str());
-    mi->_modifiers = cmi->_modifiers;
-    mi->_line_number_table = cmi->_line_number_table;
-    mi->_type = cmi->_type;
-    mi->_is_entry = cmi->isEntry();
+    if (first_time && jvmti->GetLineNumberTable(method, &mi->_line_number_table_size, &mi->_line_number_table) != 0) {
+        mi->_line_number_table_size = 0;
+        mi->_line_number_table = NULL;
+    }
+
+    mi->_type = FRAME_INTERPRETED;
 }
 
 MethodInfo* Lookup::resolveMethod(ASGCT_CallFrame& frame) {
@@ -186,8 +248,8 @@ char* Recording::_jvm_args = NULL;
 char* Recording::_jvm_flags = NULL;
 char* Recording::_java_command = NULL;
 
-Recording::Recording(int fd, Arguments& args) : _fd(fd), _thread_set(), _method_map(), _method_cache(args) {
-        
+Recording::Recording(int fd, Arguments& args) : _fd(fd), _thread_set(), _method_map() {
+
     args.save(_args);
     _chunk_start = lseek(_fd, 0, SEEK_END);
     _start_time = OS::micros();
@@ -239,6 +301,14 @@ off_t Recording::finishChunk() {
 }
 
 off_t Recording::finishChunk(bool end_recording) {
+    jvmtiEnv* jvmti = VM::jvmti();
+    JNIEnv* env = VM::jni();
+
+    jclass* classes;
+    jint count = 0;
+    // obtaining the class list will create local refs to all loaded classes, effectively preventing them from being unloaded while flushing
+    jvmtiError err = jvmti->GetLoadedClasses(&count, &classes);
+
     flush(&_cpu_monitor_buf);
 
     writeNativeLibraries(_buf);
@@ -264,9 +334,9 @@ off_t Recording::finishChunk(bool end_recording) {
     _stop_time = OS::micros();
     _stop_ticks = TSC::ticks();
 
-    if (end_recording) {
-        writeRecordingInfo(_buf);
-    }
+        if (end_recording) {
+            writeRecordingInfo(_buf);
+        }
 
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
         flush(&_buf[i]);
@@ -276,20 +346,12 @@ off_t Recording::finishChunk(bool end_recording) {
     writeCpool(_buf);
     flush(_buf);
 
-    off_t cpool_end = lseek(_fd, 0, SEEK_CUR);
+    off_t chunk_end = lseek(_fd, 0, SEEK_CUR);
 
     // Patch cpool size field
-    _buf->putVar32(0, cpool_end - cpool_offset);
+    _buf->putVar32(0, chunk_end - cpool_offset);
     ssize_t result = pwrite(_fd, _buf->data(), 5, cpool_offset);
     (void)result;
-
-    _method_cache.incEpoch();
-    #ifdef COUNTERS
-    writeDatadogMethodInfoCacheStats(_buf, _method_cache.size(), Counters::getCounter(JMETHODID_MAP_BYTES), Counters::getCounter(DICTIONARY_MICACHE_STRINGS_BYTES), Counters::getCounter(JMETHODID_MAP_MISS), Counters::getCounter(JMETHODID_MAP_PURGED_ITEMS));
-    flush(_buf);
-    #endif // COUNTERS
-
-    off_t chunk_end = lseek(_fd, 0, SEEK_CUR);
 
     // // Workaround for JDK-8191415: compute actual TSC frequency, in case JFR is wrong
     u64 tsc_frequency = TSC::frequency();
@@ -310,10 +372,18 @@ off_t Recording::finishChunk(bool end_recording) {
 
     OS::freePageCache(_fd, _chunk_start);
 
-    _buf->reset();
+        _buf->reset();
 
-    return chunk_end;
-}
+        if (!err) {
+            // delete all local references
+            for (int i = 0; i < count; i++) {
+                env->DeleteLocalRef((jobject)classes[i]);
+            }
+            // deallocate the class array
+            jvmti->Deallocate((unsigned char*)classes);
+        }
+        return chunk_end;
+    }
 
 void Recording::switchChunk(int fd) {
     _chunk_start = finishChunk(fd > -1);
@@ -462,6 +532,21 @@ void Recording::flushIfNeeded(Buffer* buf, int limit) {
     }
 }
 
+void Recording::writeHeader(Buffer* buf) {
+    buf->put("FLR\0", 4);            // magic
+    buf->put16(2);                   // major
+    buf->put16(0);                   // minor
+    buf->put64(1024 * 1024 * 1024);  // chunk size (initially large, for JMC to skip incomplete chunk)
+    buf->put64(0);                   // cpool offset
+    buf->put64(0);                   // meta offset
+    buf->put64(_start_time * 1000);  // start time, ns
+    buf->put64(0);                   // duration, ns
+    buf->put64(_start_ticks);        // start ticks
+    buf->put64(TSC::frequency());    // ticks per sec
+    buf->put32(1);                   // features
+    flushIfNeeded(buf);
+}
+
 void Recording::writeMetadata(Buffer* buf) {
     int metadata_start = buf->skip(5);  // size will be patched later
     buf->putVar64(T_METADATA);
@@ -481,21 +566,6 @@ void Recording::writeMetadata(Buffer* buf) {
     writeElement(buf, JfrMetadata::root());
 
     buf->putVar32(metadata_start, buf->offset() - metadata_start);
-    flushIfNeeded(buf);
-}
-
-void Recording::writeHeader(Buffer* buf) {
-    buf->put("FLR\0", 4);            // magic
-    buf->put16(2);                   // major
-    buf->put16(0);                   // minor
-    buf->put64(1024 * 1024 * 1024);  // chunk size (initially large, for JMC to skip incomplete chunk)
-    buf->put64(0);                   // cpool offset
-    buf->put64(0);                   // meta offset
-    buf->put64(_start_time * 1000);  // start time, ns
-    buf->put64(0);                   // duration, ns
-    buf->put64(_start_ticks);        // start ticks
-    buf->put64(TSC::frequency());    // ticks per sec
-    buf->put32(1);                   // features
     flushIfNeeded(buf);
 }
 
@@ -649,24 +719,6 @@ void Recording::writeDatadogProfilerConfig(Buffer* buf,
     flushIfNeeded(buf);
 }
 
-void Recording::writeDatadogMethodInfoCacheStats(Buffer* buf,
-                                        long long cachedItems,
-                                        long long cacheByteSize,
-                                        long long dictionaryByteSize,
-                                        long long missed,
-                                        long long purged) {
-    int start = buf->skip(1);
-    buf->putVar64(T_DATADOG_METHODINFO_CACHE);
-    buf->putVar64(_start_ticks);
-    buf->putVar64(cachedItems);
-    buf->putVar64(cacheByteSize);
-    buf->putVar64(dictionaryByteSize);
-    buf->putVar64(missed);
-    buf->putVar64(purged);
-    writeEventSizePrefix(buf, start);
-    flushIfNeeded(buf);
-}
-
 void Recording::writeHeapUsage(Buffer* buf, long value, bool live) {
     int start = buf->skip(1);
     buf->putVar64(T_HEAP_USAGE);
@@ -796,23 +848,23 @@ void Recording::writeCpool(Buffer* buf) {
     // constant pool count - bump each time a new pool is added
     buf->put8(12);
 
-    // Profiler::instance()->classMap() provides access to non-locked _class_map instance
-    // The non-locked access is ok here as this code will never run concurrently to _class_map.clear()
-    Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
-    writeFrameTypes(buf);
-    writeThreadStates(buf);
-    writeExecutionModes(buf);
-    writeThreads(buf);
-    writeStackTraces(buf, &lookup);
-    writeMethods(buf, &lookup);
-    writeClasses(buf, &lookup);
-    writePackages(buf, &lookup);
-    writeConstantPoolSection(buf, T_SYMBOL, &lookup._symbols);
-    writeConstantPoolSection(buf, T_STRING, Profiler::instance()->stringLabelMap());
-    writeConstantPoolSection(buf, T_ATTRIBUTE_VALUE, Profiler::instance()->contextValueMap());
-    writeLogLevels(buf);
-    flushIfNeeded(buf);
-}
+        // Profiler::instance()->classMap() provides access to non-locked _class_map instance
+        // The non-locked access is ok here as this code will never run concurrently to _class_map.clear()
+        Lookup lookup(&_method_map, Profiler::instance()->classMap());
+        writeFrameTypes(buf);
+        writeThreadStates(buf);
+        writeExecutionModes(buf);
+        writeThreads(buf);
+        writeStackTraces(buf, &lookup);
+        writeMethods(buf, &lookup);
+        writeClasses(buf, &lookup);
+        writePackages(buf, &lookup);
+        writeConstantPoolSection(buf, T_SYMBOL, &lookup._symbols);
+        writeConstantPoolSection(buf, T_STRING, Profiler::instance()->stringLabelMap());
+        writeConstantPoolSection(buf, T_ATTRIBUTE_VALUE, Profiler::instance()->contextValueMap());
+        writeLogLevels(buf);
+        flushIfNeeded(buf);
+    }
 
 void Recording::writeFrameTypes(Buffer* buf) {
     buf->putVar32(T_FRAME_TYPE);
@@ -1204,96 +1256,6 @@ void Recording::addThread(int tid) {
     }
 }
 
-std::shared_ptr<AbstractMethodInfo> Recording::methodInfoFromJvmti(u64 mid, MethodInfoCache* cache) {
-    JNIEnv* jni = VM::jni();
-    jvmtiEnv* jvmti = VM::jvmti();
-
-
-    jmethodID id = (jmethodID)mid;
-    jvmtiPhase phase;
-    jclass method_class;
-    char* class_name = nullptr;
-    char* method_name = nullptr;
-    char* method_sig = nullptr;
-    jint modifiers = 0;
-
-    jint class_modifiers = 0;
-    jint line_number_table_size = 0;
-    jvmtiLineNumberEntry* line_number_table = NULL;
-
-    jvmti->GetPhase(&phase);
-    if ((phase & (JVMTI_PHASE_START | JVMTI_PHASE_LIVE)) == 0) {
-        return cache->emptyInfo();
-    }
-
-    bool entry = false;
-    bool should_cache = true;
-    if (jvmti->GetMethodDeclaringClass(id, &method_class) == 0 &&
-            jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
-            jvmti->GetMethodName(id, &method_name, &method_sig, NULL) == 0) {
-
-        if (jvmti->GetClassModifiers(method_class, &class_modifiers) == 0 && jvmti->GetMethodModifiers(id, &modifiers) == 0) {
-            // class constants are written without the modifiers info
-            // in order to be able to identify 'hidden' frames the "SYNTHETIC" and "BRIDGE" modifiers will be propagated to methods
-            if (class_modifiers & 0x1000) {
-                modifiers |= 0x1000;
-            }
-            if (class_modifiers & 0x0040) {
-                modifiers |= 0x0040;
-            }
-        }
-
-        jobject class_loader = nullptr;
-        if (jvmti->GetClassLoader(method_class, &class_loader) == JVMTI_ERROR_NONE) {
-            if (VM::isSystemClassLoader(jni, class_loader)) {
-                // do not cache classes from the system class loaders
-                should_cache = false;
-            }
-        }
-        VM::jni()->DeleteLocalRef(class_loader);
-
-
-        jvmti->GetLineNumberTable(id, &line_number_table_size, &line_number_table);
-
-        // Check if the frame is Thread.run or inherits from it
-        if (strncmp(method_name, "run", 3) == 0 && strncmp(method_sig, "()V", 3) == 0) {
-            jclass Thread_class = jni->FindClass("java/lang/Thread");
-            jmethodID equals =
-                jni->GetMethodID(jni->FindClass("java/lang/Class"), "equals", "(Ljava/lang/Object;)Z");
-            jclass klass = method_class;
-            do {
-                if (jni->CallBooleanMethod(Thread_class, equals, klass)) {
-                    entry = true;
-                    break;
-                }
-            } while ((klass = jni->GetSuperclass(klass)) != NULL);
-        } else if ((modifiers & 9) != 0 && strncmp(method_name, "main", 4) == 0 && strncmp(method_sig, "(Ljava/lang/String;)V", 21)) {
-            // public static void main(String[] args) - 'public static' translates to modifier bits 0 and 3, hence check for '9'
-            entry = true;
-        }
-    }
-
-    std::shared_ptr<AbstractMethodInfo> ret = cache->newMethodInfo(FRAME_INTERPRETED, class_name, method_name, method_sig, modifiers, line_number_table_size, line_number_table, entry, deallocateLineNumberTable, should_cache);
-    jvmti->Deallocate((unsigned char*)method_name);
-    jvmti->Deallocate((unsigned char*)class_name);
-
-    return ret;
-}
-
-void Recording::addJmethodIDs(jmethodID* ids, int count) {
-    for (int i = 0; i < count; i++) {
-        getOrAdd(ids[i]);
-    }
-}
-
-std::shared_ptr<AbstractMethodInfo> Recording::getOrAdd(jmethodID id) {
-    return _method_cache.getOrAdd((u64)id, Recording::methodInfoFromJvmti);
-}
-
-void Recording::removeJmethodID(jmethodID id) {
-    _method_cache.markUnloaded(reinterpret_cast<u64>(id));
-}
-
 Error FlightRecorder::start(Arguments& args, bool reset) {
     const char* file = args.file();
     if (file == NULL || file[0] == 0) {
@@ -1326,10 +1288,8 @@ void FlightRecorder::stop() {
     if (_rec != NULL) {
         _rec_lock.lock();
 
-        Recording *tmp = _rec;
-        // NULL first, deallocate later
+        delete _rec;
         _rec = NULL;
-        delete tmp;
     }
 }
 
@@ -1343,6 +1303,7 @@ Error FlightRecorder::dump(const char* filename, const int length) {
             close(copy_fd);
             _rec_lock.unlock();
         } else {
+            // need to unlock in the exceptional path as well
             _rec_lock.unlock();
             return Error("Can not dump recording to itself. Provide a different file name!");
         }
@@ -1356,8 +1317,21 @@ Error FlightRecorder::dump(const char* filename, const int length) {
 void FlightRecorder::flush() {
     if (_rec != NULL) {
         _rec_lock.lock();
+        jvmtiEnv* jvmti = VM::jvmti();
+        JNIEnv* env = VM::jni();
 
+        jclass** classes = NULL;
+        jint count = 0;
+        // obtaining the class list will create local refs to all loaded classes, effectively preventing them from being unloaded while flushing
+        jvmtiError err = jvmti->GetLoadedClasses(&count, classes);
         _rec->switchChunk(-1);
+        if (!err) {
+            // deallocate all loaded classes
+            for (int i = 0; i < count; i++) {
+                env->DeleteLocalRef((jobject)classes[i]);
+                jvmti->Deallocate((unsigned char*)classes[i]);
+            }
+        }
         _rec_lock.unlock();
     }
 }
@@ -1448,16 +1422,4 @@ void FlightRecorder::recordLog(LogLevel level, const char* message, size_t len) 
 //    _rec->flush(buf);
 //
 //    _rec_lock.unlockShared();
-}
-
-void FlightRecorder::addJmethodIDs(jmethodID* ids, int count) {
-    if (_rec != NULL) {
-        _rec->addJmethodIDs(ids, count);
-    }
-}
-
-void FlightRecorder::removeJmethodID(jmethodID id) {
-    if (_rec != NULL) {
-        _rec->removeJmethodID(id);
-    }
 }

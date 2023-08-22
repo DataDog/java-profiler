@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include "counters.h"
 #include "jfrMetadata.h"
 #include "vmEntry.h"
 
@@ -100,18 +99,6 @@ void JfrMetadata::initialize(const std::vector<std::string>& contextAttributes) 
 
             << (type("profiler.types.AttributeValue", T_ATTRIBUTE_VALUE, "Value", true)
                 << field("value", T_STRING, "Value"))
-
-            #ifdef COUNTERS
-            // debug only events backed by the debug counters
-            << (type("datadog.MethodInfoCache", T_DATADOG_METHODINFO_CACHE, "Datadog MethodInfo Cache Metrics")
-                << category("Datadog")
-                << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
-                << field("cacheSize", T_LONG, "Current Cache Size In Items")
-                << field("cacheSizeBytes", T_LONG, "Current Cache Size In Bytes", F_BYTES)
-                << field("dictionarySize", T_LONG, "Cache String Dictionary Size In Bytes", F_BYTES)
-                << field("purgedCount", T_LONG, "Evicted Cache Items Since Application Start")
-                << field("missCount", T_LONG, "Cache Misses Since Application Start"))
-            #endif
 
             << (type("datadog.ExecutionSample", T_EXECUTION_SAMPLE, "Method CPU Profiling Sample")
                 << category("Datadog", "Profiling")
