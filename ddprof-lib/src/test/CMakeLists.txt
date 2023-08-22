@@ -48,13 +48,7 @@ file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/../main/cpp/context.cpp"
     "${PROJECT_SOURCE_DIR}/../main/cpp/counters.cpp"
     "${PROJECT_SOURCE_DIR}/../main/cpp/threadFilter.cpp"
-    "${PROJECT_SOURCE_DIR}/../main/cpp/dictionary.cpp"
-    "${PROJECT_SOURCE_DIR}/../main/cpp/methodCache.cpp"
-    "${PROJECT_SOURCE_DIR}/../main/cpp/counters.cpp"
 )
-
-add_compile_definitions(DEBUG)
-add_compile_definitions(COUNTERS)
 
 ## Declare unit tests with add_unit_test / add_java_unit_test
 add_unit_test(ddprof-lib-test

@@ -133,14 +133,13 @@ class Arguments {
     bool _record_heap_usage;
     int  _jstackdepth;
     int _safe_mode;
-    int _method_info_cache_threshold;
-    int _method_info_cache_retention;
     bool _track_class_unload;
     const char* _file;
     const char* _log;
     const char* _loglevel;
     const char* _unknown_arg;
     const char* _filter;
+    unsigned char _mcache;
     CStack _cstack;
     int _jfr_options;
     std::vector<std::string> _context_attributes;
@@ -164,14 +163,13 @@ class Arguments {
         _record_heap_usage(false),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),
-        _method_info_cache_threshold(-1),
-        _method_info_cache_retention(-1), // set the method info cache to pass-through by default
         _track_class_unload(false),
         _file(NULL),
         _log(NULL),
         _loglevel(NULL),
         _unknown_arg(NULL),
         _filter(NULL),
+        _mcache(0),
         _cstack(CSTACK_DEFAULT),
         _jfr_options(0),
         _context_attributes({}),

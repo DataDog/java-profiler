@@ -809,15 +809,8 @@ Error Profiler::installTraps() {
     if (class_unload_hook_addr != NULL) {
         // OpenJDK 11
         _notify_class_unloaded_func = (NotifyClassUnloadedFunc)resolveSymbol("_ZN19ClassLoadingService21notify_class_unloadedEP13InstanceKlass");
-        if (_notify_class_unloaded_func == NULL) {
-            Log::debug("Unable to resolve symbol `ClassLoadingService::notify_class_unloaded'. Disabling class unload hook.");
-            class_unload_hook_addr = NULL;
-        }
     } else {
         class_unload_hook_addr = resolveSymbol("_ZN19ClassLoadingService21notify_class_unloadedEP13InstanceKlass");
-        if (class_unload_hook_addr == NULL) {
-            Log::debug("Unable to resolve symbol 'ClassLoadingService::notify_class_unloaded'. Disabling class unload hook.");
-        }
         _notify_class_unloaded_func = NULL;
     }
 
@@ -856,7 +849,7 @@ void Profiler::trapHandler(int signo, siginfo_t* siginfo, void* ucontext) {
         if (method_cnt > 0) {
             for (size_t i = 0; i < method_cnt; i++) {
                 jmethodID method = ids[i + 1];
-                _jfr.removeJmethodID(method);
+                fprintf(stderr, "===> unloading: %p\n", method);
             }
         }
         // Force return from the trapped method to avoid leaving stack in inconsistent state.
@@ -1413,8 +1406,4 @@ int Profiler::lookupClass(const char* key, size_t length) {
     }
     // unable to lookup the class
     return -1;
-}
-
-void Profiler::trackMethodIds(jmethodID* methods, int count) {
-    _jfr.addJmethodIDs(methods, count);
 }

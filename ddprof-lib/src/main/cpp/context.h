@@ -63,9 +63,6 @@ class Contexts {
     // not to be called except to share with Java callers as a DirectByteBuffer
     static ContextPage getPage(int tid);
     static int getMaxPages(int maxTid = OS::getMaxThreadId());
-
-    // this *MUST* be called only when the profiler is completely stopped
-    static void reset();
 };
 
 #endif /* _CONTEXT_H */
