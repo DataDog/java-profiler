@@ -46,6 +46,7 @@ bool VM::_hotspot = false;
 bool VM::_zing = false;
 bool VM::_can_sample_objects = false;
 bool VM::_can_intercept_binding = false;
+bool VM::_is_adaptive_gc_boundary_flag_set = false;
 jobject VM::_global_system_classloader = nullptr;
 jobject VM::_global_platform_classloader = nullptr;
 
@@ -290,6 +291,13 @@ bool VM::init(JavaVM* vm, bool attach) {
         if (flag_addr != NULL) {
             *flag_addr = 1;
         }
+    }
+
+    // if the user sets -XX:+UseAdaptiveGCBoundary we will just disable the profiler to avoid the risk of crashing
+    // flag was made obsolete (inert) in 15 (see JDK-8228991) and removed in 16 (see JDK-8231560)
+    if (java_version() < 15) {
+        char* flag_addr = (char*)JVMFlag::find("UseAdaptiveGCBoundary");
+        _is_adaptive_gc_boundary_flag_set = flag_addr != NULL && *flag_addr == 1;
     }
 
     if (attach) {

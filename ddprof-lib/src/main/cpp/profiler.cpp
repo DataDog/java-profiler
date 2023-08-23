@@ -940,6 +940,10 @@ Error Profiler::checkJvmCapabilities() {
         return Error("Could not find VMThread bridge. Unsupported JVM?");
     }
 
+    if (VM::isUseAdaptiveGCBoundarySet()) {
+        return Error("The user has explicitly set -XX:+UseAdaptiveGCBoundary so the profiler has been disabled to avoid the risk of crashing.");
+    }
+
     if (_dlopen_entry == NULL) {
         CodeCache* lib = findJvmLibrary("libj9prt");
         if (lib == NULL || (_dlopen_entry = lib->findGlobalOffsetEntry((void*)dlopen)) == NULL) {
