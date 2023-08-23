@@ -4,11 +4,17 @@ set -e
 
 HERE="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 
+if [ ! -z "$SKIP_TESTS" ]; then
+  echo "Skipping CPP tests"
+  exit 0
+fi
+
 CMAKE=$(which cmake)
 if [ -z "$CMAKE" ]; then
   echo "[ERROR] Please, install cmake"
   exit 1
 fi
+
 
 function build_and_test() {
   BUILD_TYPE=$1

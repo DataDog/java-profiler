@@ -124,8 +124,8 @@ dependencies {
 // the bridge between the gradle build and gtests
 // the gradle gtest plugin(s) are quite unusable at this moment - using a shell script seems to be the only sane option
 task cppTest(type: Exec) {
-    onlyIf {
-        !project.hasProperty('skip-tests')
+    if (project.hasProperty('skip-tests')) {
+        environment 'SKIP_TESTS', 'true'
     }
     workingDir "$projectDir"
     commandLine './test.sh'
