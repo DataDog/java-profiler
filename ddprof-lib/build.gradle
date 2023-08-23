@@ -194,6 +194,7 @@ task assembleJar(type: Jar) {
 }
 
 task assembleDebugJar(type: Jar) {
+    dependsOn copyExternalLibs
     if (!project.hasProperty('skip-native')) {
         dependsOn copyDebugLibs
     }

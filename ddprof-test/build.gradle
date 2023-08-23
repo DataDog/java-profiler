@@ -55,3 +55,7 @@ tasks.withType(JavaCompile).configureEach {
         targetCompatibility = '8'
     }
 }
+
+test.doLast {
+    println "Test classpath for ${name}: ${classpath.asPath}"
+}
