@@ -80,6 +80,14 @@ public:
     Counters(Counters const&) = delete;
     void operator=(Counters const&) = delete;
 
+    static constexpr int address(int index) {
+        return index * 8;
+    }
+
+    static constexpr int size() {
+        return address(DD_NUM_COUNTERS * sizeof(long long));
+    }
+
     static long long* getCounters() {
         #ifdef COUNTERS
         return const_cast<long long*>(Counters::instance()._counters);
@@ -90,25 +98,21 @@ public:
 
     static long long getCounter(CounterId counter, int offset = 0) {
         #ifdef COUNTERS
-        return Counters::instance()._counters[(static_cast<int>(counter) + offset) * 8];
+        return Counters::instance()._counters[address(static_cast<int>(counter) + offset)];
         #else
         return 0;
         #endif // COUNTERS
     }
 
-    static constexpr int size() {
-        return DD_NUM_COUNTERS * sizeof(long long) * 8;
-    }
-
     static void set(CounterId counter, long long value, int offset = 0) {
         #ifdef COUNTERS
-        storeRelease(Counters::instance()._counters[(static_cast<int>(counter) + offset) * 8], value);
+        storeRelease(Counters::instance()._counters[address(static_cast<int>(counter) + offset)], value);
         #endif // COUNTERS
     }
 
     static void increment(CounterId counter, long long delta = 1, int offset = 0) {
         #ifdef COUNTERS
-        atomicInc(Counters::instance()._counters[(static_cast<int>(counter) + offset) * 8], delta);
+        atomicInc(Counters::instance()._counters[address(static_cast<int>(counter) + offset)], delta);
         #endif // COUNTERS
     }
 

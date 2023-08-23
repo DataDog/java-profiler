@@ -1118,13 +1118,14 @@ Error Profiler::stop() {
     updateJavaThreadNames();
     updateNativeThreadNames();
 
+    // writing these out before stopping the JFR recording allows to report the correct counts in the recording
+    Counters::set(THREAD_IDS_COUNT, _thread_ids.size());
+    Counters::set(THREAD_NAMES_COUNT, _thread_names.size());
+
     // Acquire all spinlocks to avoid race with remaining signals
     lockAll();
     _jfr.stop();
     unlockAll();
-
-    Counters::set(THREAD_IDS_COUNT, _thread_ids.size());
-    Counters::set(THREAD_NAMES_COUNT, _thread_names.size());
 
     _state = IDLE;
     return Error::OK;
