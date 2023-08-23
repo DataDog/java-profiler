@@ -149,6 +149,8 @@ void VMStructs::initOffsets() {
         if (strcmp(type, "Klass") == 0) {
             if (strcmp(field, "_name") == 0) {
                 _klass_name_offset = *(int*)(entry + offset_offset);
+            } else if (strcmp(field, "_class_loader_data") == 0) {
+                _class_loader_data_offset = *(int*)(entry + offset_offset);
             }
         } else if (strcmp(type, "Symbol") == 0) {
             if (strcmp(field, "_length") == 0) {
@@ -533,21 +535,33 @@ bool VMMethod::check_jmethodID(jmethodID id) {
     if (method_ptr == NULL) {
         return false;
     }
-    if (_has_class_loader_data) {
-        // we can only perform the extended validity check if there are expected vmStructs in place
-        const char* const_method = (const char*) SafeAccess::load((void**) (method_ptr + _method_constmethod_offset));
+    // we can only perform the extended validity check if there are expected vmStructs in place
+
+    const char* const_method = NULL;
+    const char* cpool = NULL;
+    const char* cpool_holder = NULL;
+    const char* cl_data = NULL;
+
+    if (_method_constmethod_offset >= 0) {
+        const_method = (const char*) SafeAccess::load((void**) (method_ptr + _method_constmethod_offset));
         if (const_method == NULL) {
             return false;
         }
-        const char* cpool = (const char*) SafeAccess::load((void**) (const_method + _constmethod_constants_offset));
+    }
+    if (_constmethod_constants_offset >= 0) {
+        cpool = (const char*) SafeAccess::load((void**) (const_method + _constmethod_constants_offset));
         if (cpool == NULL) {
             return false;
         }
-        const char* cpool_holder = (const char*) SafeAccess::load((void**) (cpool + _pool_holder_offset));
+    }
+    if (_pool_holder_offset >= 0) {
+        cpool_holder = (const char*) SafeAccess::load((void**) (cpool + _pool_holder_offset));
         if (cpool_holder == NULL) {
             return false;
         }
-        const char* cl_data = (const char*) SafeAccess::load((void**) (cpool_holder + _class_loader_data_offset));
+    }
+    if (_class_loader_data_offset >= 0) {
+        cl_data = (const char*) SafeAccess::load((void**) (cpool_holder + _class_loader_data_offset));
         if (cl_data == NULL) {
             return false;
         }
