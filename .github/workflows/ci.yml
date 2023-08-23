@@ -42,8 +42,9 @@ jobs:
     strategy:
       matrix:
         java_version: [8u362+9, 11.0.18+10, 17.0.6+10, 20.0.1+10]
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
+    runs-on:
+      group: "APM Larger Runners"
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v3
       - name: Prepare build JDK
@@ -88,7 +89,7 @@ jobs:
       matrix:
         java_version: [11, 17]
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v3
       - name: Prepare build JDK
@@ -133,8 +134,9 @@ jobs:
     strategy:
       matrix:
         java_version: [8, 11, 17]
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
+    runs-on:
+      group: "APM Larger Runners"
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v3
       - name: Prepare test JDK
@@ -177,8 +179,9 @@ jobs:
   test-linux-glibc-oracle8:
     needs: check-for-pr
     if: needs.check-for-pr.outputs.skip != 'true'
-    runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    runs-on:
+      group: "APM Larger Runners"
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v3
       - name: Prepare build JDK
@@ -227,8 +230,9 @@ jobs:
     strategy:
       matrix:
         java_version: [8u362+9, 11.0.18+10, 17.0.6+10, 20.0.1+10]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on:
+      group: "APM Larger Runners"
+    timeout-minutes: 30
     container:
       image: "bellsoft/liberica-openjdk-alpine-musl:11.0.17"
       options: --cpus 2
@@ -279,8 +283,9 @@ jobs:
     strategy:
       matrix:
         java_version: [ 8, 11, 17 ]
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
+    runs-on:
+      group: "APM Larger Runners"
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v3
       - name: Prepare build JDK
