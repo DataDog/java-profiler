@@ -20,7 +20,6 @@
 
 #include <jni.h>
 #include <string.h>
-#include "classRefCache.h"
 #include "objectSampler.h"
 #include "pidController.h"
 #include "profiler.h"
@@ -81,8 +80,6 @@ void ObjectSampler::recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread threa
                 classes.insert(method_class);
             }
         }
-
-        ClassRefCache::instance()->store(jni, classes);
     }
 
 

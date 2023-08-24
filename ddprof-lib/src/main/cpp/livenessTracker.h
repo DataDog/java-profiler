@@ -68,7 +68,7 @@ class LivenessTracker  {
     Error initialize(Arguments& args);
     Error initialize_table(int sampling_interval);
 
-    void cleanup_table(bool update_class_ref_cache);
+    void cleanup_table();
 
     void flush_table(std::set<int> *tracked_thread_ids);
 

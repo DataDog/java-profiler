@@ -19,7 +19,6 @@
 #include <jni.h>
 #include <string.h>
 #include "arch.h"
-#include "classRefCache.h"
 #include "context.h"
 #include "incbin.h"
 #include "livenessTracker.h"
@@ -32,7 +31,7 @@
 
 LivenessTracker* const LivenessTracker::_instance = new LivenessTracker();
 
-void LivenessTracker::cleanup_table(bool update_class_ref_cache) {
+void LivenessTracker::cleanup_table() {
     u64 current = loadAcquire(_last_gc_epoch);
     u64 target_gc_epoch = loadAcquire(_gc_epoch);
 
@@ -52,15 +51,6 @@ void LivenessTracker::cleanup_table(bool update_class_ref_cache) {
     std::set<jclass> kept_classes;
     for (u32 i = 0; i < (sz = _table_size); i++) {
         if (!env->IsSameObject(_table[i].ref, NULL)) {
-            if (update_class_ref_cache) {
-                // collect referenced classes
-                jclass klass;
-                for (int f_idx = 0; f_idx < _table[i].frames_size; f_idx++) {
-                    if (jvmti->GetMethodDeclaringClass(_table[i].frames[f_idx].method, &klass) == 0) {
-                        kept_classes.insert(klass);
-                    }
-                }
-            }
             // it survived one more GarbageCollectionFinish event
             _table[i].age += epoch_diff;
             _table[newsz++] = _table[i];
@@ -73,10 +63,6 @@ void LivenessTracker::cleanup_table(bool update_class_ref_cache) {
     }
 
     _table_size = newsz;
-
-    if (update_class_ref_cache) {
-        ClassRefCache::instance()->keep(env, kept_classes);
-    }
 
     _table_lock.unlock();
     end = OS::nanotime();
@@ -94,7 +80,7 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
 
     // make sure that the tracking table is cleaned up before we start flushing it
     // this is to make sure we are including as few false 'live' objects as possible
-    cleanup_table(true);
+    cleanup_table();
 
     _table_lock.lockShared();
 
@@ -185,7 +171,7 @@ Error LivenessTracker::start(Arguments& args) {
 }
 
 void LivenessTracker::stop() {
-    cleanup_table(false);
+    cleanup_table();
     flush_table(NULL);
 
     // do not disable GC notifications here - the tracker is supposed to survive multiple recordings
@@ -292,7 +278,7 @@ retry:
             retried = true;
 
             // try cleanup before resizing - there is a good chance it will free some space
-            cleanup_table(false);
+            cleanup_table();
 
             if (_table_cap < _table_max_cap) {
 
