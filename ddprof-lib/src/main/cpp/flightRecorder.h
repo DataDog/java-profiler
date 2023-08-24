@@ -228,6 +228,8 @@ class Recording {
 
     void writeLogLevels(Buffer* buf);
 
+    void writeCounters(Buffer* buf);
+
     void writeContext(Buffer* buf, Context& context);
 
     void recordExecutionSample(Buffer* buf, int tid, u32 call_trace_id, ExecutionEvent* event);

@@ -46,6 +46,7 @@
 #include "threadState.h"
 #include "tsc.h"
 #include "vmStructs.h"
+#include "counters.h"
 
 static SpinLock _rec_lock(1);
 
@@ -321,6 +322,14 @@ off_t Recording::finishChunk(bool end_recording) {
     if (end_recording) {
         writeRecordingInfo(_buf);
     }
+
+    // this will not report correct counts for any counters updated during writing the constant pool
+    // because it just isn't worth the complexity and cost of being able to account for the resources
+    // used in serialization during serialization. Some counters we verify to balance (e.g. the anonymous
+    // dictionaries) will be reported as positive, others (e.g. the classes dictionary) will reflect the
+    // previous serialization. That is, some level of familiarity with the code base will be required to
+    // use this diagnostic information for now.
+    writeCounters(_buf);
 
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
         flush(&_buf[i]);
@@ -1084,6 +1093,21 @@ void Recording::writeLogLevels(Buffer* buf) {
         buf->putVar32(i);
         buf->putUtf8(Log::LEVEL_NAME[i]);
         flushIfNeeded(buf);
+    }
+}
+
+void Recording::writeCounters(Buffer* buf) {
+    long long* counters = Counters::getCounters();
+    if (counters) {
+        std::vector<const char*> names = Counters::describeCounters();
+        for (int i = 0; i < names.size(); i++) {
+            int start = buf->skip(1);
+            buf->putVar64(T_DATADOG_COUNTER);
+            buf->putUtf8(names[i]);
+            buf->putVar64(counters[Counters::address(i)]);
+            writeEventSizePrefix(buf, start);
+            flushIfNeeded(buf);
+        }
     }
 }
 

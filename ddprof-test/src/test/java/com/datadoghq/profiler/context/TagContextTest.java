@@ -96,6 +96,30 @@ public class TagContextTest extends AbstractProfilerTest {
         assertEquals(Arrays.stream(strings).mapToInt(s -> s.length() + 1).sum(), debugCounters.get("dictionary_context_keys_bytes"));
         assertBoundedBy(debugCounters.get("dictionary_context_pages"), strings.length, "context storage too many pages");
         assertBoundedBy(debugCounters.get("dictionary_context_bytes"), strings.length * DICTIONARY_PAGE_SIZE, "context storage too many pages");
+
+        for (IItemIterable counterEvent : verifyEvents("datadog.ProfilerCounter")) {
+            IMemberAccessor<String, IItem> nameAccessor = NAME.getAccessor(counterEvent.getType());
+            IMemberAccessor<IQuantity, IItem> countAccessor = COUNT.getAccessor(counterEvent.getType());
+            for (IItem item : counterEvent) {
+                String name = nameAccessor.getMember(item);
+                switch (name) {
+                    // debug counters currently include data for temporary dictionaries during serialization which get
+                    // cleaned up, and the counter event reflects the size at the point the counters are written out.
+                    case "dictionary_bytes":
+                    case "dictionary_pages":
+                    case "dictionary_keys":
+                    case "dictionary_keys_bytes":
+                    // these counters reflect the previous reporting epoch
+                    case "dictionary_classes_bytes":
+                    case "dictionary_classes_pages":
+                    case "dictionary_classes_keys":
+                    case "dictionary_classes_keys_bytes":
+                        break;
+                    default:
+                        assertEquals(debugCounters.get(name), countAccessor.getMember(item).longValue(), name);
+                }
+            }
+        }
     }
 
     private void work(ContextSetter contextSetter, String contextAttribute, String contextValue)

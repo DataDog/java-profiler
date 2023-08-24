@@ -101,6 +101,9 @@ void JfrMetadata::initialize(const std::vector<std::string>& contextAttributes) 
             << (type("profiler.types.AttributeValue", T_ATTRIBUTE_VALUE, "Value", true)
                 << field("value", T_STRING, "Value"))
 
+            << (type("profiler.types.CounterName", T_COUNTER_NAME, "Value", true)
+                << field("value", T_STRING, "Value"))
+
             << (type("datadog.ExecutionSample", T_EXECUTION_SAMPLE, "Method CPU Profiling Sample")
                 << category("Datadog", "Profiling")
                 << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
@@ -246,6 +249,11 @@ void JfrMetadata::initialize(const std::vector<std::string>& contextAttributes) 
                 << category("Datadog")
                 << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
                 << field("size", T_LONG, "Cache Size", F_BYTES))
+
+            << (type("datadog.ProfilerCounter", T_DATADOG_COUNTER, "Datadog Profiler Internal Counter")
+                << category("Datadog")
+                << field("name", T_COUNTER_NAME, "Name")
+                << field("count", T_LONG, "Count"))
 
             << (type("jdk.OSInformation", T_OS_INFORMATION, "OS Information")
                 << category("Operating System")

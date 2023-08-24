@@ -79,6 +79,10 @@ public abstract class AbstractProfilerTest {
 
   public static final IAttribute<IQuantity> WALL_INTERVAL = attr("wallInterval", "wallInterval", "", TIMESPAN);
 
+  public static final IAttribute<String> NAME = attr("name", "", "", PLAIN_TEXT);
+
+  public static final IAttribute<IQuantity> COUNT = attr("count", "", "", NUMBER);
+
   protected JavaProfiler profiler;
   private Path jfrDump;
 
