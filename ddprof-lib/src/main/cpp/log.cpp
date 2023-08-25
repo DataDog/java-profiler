@@ -86,11 +86,16 @@ void Log::log(LogLevel level, const char* msg, va_list args) {
         buf[len] = 0;
     }
 
-    if (level < LOG_ERROR) {
+    // all warnings get logged to the JFR, logging anything else requires config override
+    // errors cannot be logged to the JFR because the JFR may not be ready
+    // this means all logging we want to be able to find in JFR files must be done at WARN level,
+    // and any logging done which prevents creation of the JFR should be done at ERROR level
+    if (level == LOG_WARN || (level >= _level && level < LOG_ERROR)) {
         Profiler::instance()->writeLog(level, buf, len);
     }
 
-    if (level >= _level) {
+    // always log errors, but only errors
+    if (level == LOG_ERROR) {
         fprintf(_file, "{\"@version\":\"1\",\"message\":\"%s\",\"logger_name\":\"java-profiler\",\"level\":\"%s\"}\n", buf, LEVEL_NAME[level]);
         fflush(_file);
     }
