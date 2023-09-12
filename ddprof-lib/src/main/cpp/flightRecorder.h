@@ -256,6 +256,9 @@ class Lookup {
     void fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* lib_name);
     void cutArguments(char* func);
     void fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_time);
+    bool has_prefix(const char* str, const char* prefix) const {
+        return strncmp(str, prefix, strlen(prefix)) == 0;
+    }
 
   public:
     Lookup(Recording* rec, MethodMap* method_map, Dictionary* classes) :
