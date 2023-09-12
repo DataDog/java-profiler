@@ -531,6 +531,13 @@ bool VMMethod::check_jmethodID(jmethodID id) {
     if (id == NULL) {
         return false;
     }
+    if (VM::isOpenJ9()) {
+        return check_jmethodID_J9(id);
+    }
+    return check_jmethodID_hotspot(id);
+}
+
+bool VMMethod::check_jmethodID_hotspot(jmethodID id) {
     const char* method_ptr = (const char*) SafeAccess::load((void**) id);
     if (method_ptr == NULL) {
         return false;
@@ -565,6 +572,47 @@ bool VMMethod::check_jmethodID(jmethodID id) {
         if (cl_data == NULL) {
             return false;
         }
+    }
+    return true;
+}
+
+bool VMMethod::check_jmethodID_J9(jmethodID id) {
+    /*
+    The id can be cast to J9JNIMethodID*
+    The J9JNIMethodID structure is:
+    - J9Method* method
+    - UDATA vTableIndex
+    */
+    void* j9methodIDPtr = SafeAccess::load((void**) id); //*(void**)id;
+    if (j9methodIDPtr == nullptr) {
+        return false;
+    }
+
+    void* j9methodPtr = SafeAccess::load((void**) j9methodIDPtr); //*(void**)j9methodIDPtr;
+
+    if (j9methodPtr == nullptr) {
+        return false;
+    }
+
+    /*
+    The J9Method structure:
+    - U_8* bytecodes
+	- J9ConstantPool* constantPool
+	- void* methodRunAddress
+    */
+    void* constantPoolPtr = SafeAccess::load((void**) j9methodPtr + 1);
+    if (constantPoolPtr == nullptr) {
+        return false;
+    }
+
+    /*
+    The J9ConstantPool structure:
+    - J9Class* ramClass;
+	- J9ROMConstantPoolItem* romConstantPool;
+    */
+    void* ramClassPtr = SafeAccess::load((void**) constantPoolPtr);
+    if (ramClassPtr == nullptr) {
+        return false;
     }
     return true;
 }

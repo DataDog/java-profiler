@@ -53,6 +53,7 @@
     X(THREAD_NAMES_COUNT, "thread_names_count") \
     X(THREAD_FILTER_PAGES, "thread_filter_pages") \
     X(THREAD_FILTER_BYTES, "thread_filter_bytes") \
+    X(JMETHODID_SKIPPED, "jmethodid_skipped_count") \
     X(JMETHODID_MAP_BYTES, "jmethodid_map_bytes") \
     X(JMETHODID_MAP_MISS, "jmethodid_map_miss") \
     X(JMETHODID_MAP_PURGED_ITEMS, "jmethodid_map_purged_items")
