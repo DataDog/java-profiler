@@ -25,22 +25,18 @@
     X(DICTIONARY_CLASSES_BYTES, "dictionary_classes_bytes") \
     X(DICTIONARY_ENDPOINTS_BYTES, "dictionary_endpoints_bytes") \
     X(DICTIONARY_CONTEXT_BYTES, "dictionary_context_bytes") \
-    X(DICTIONARY_MICACHE_STRINGS_BYTES, "dictionary_micache_strings_bytes") \
     X(DICTIONARY_PAGES, "dictionary_pages") \
     X(DICTIONARY_CLASSES_PAGES, "dictionary_classes_pages") \
     X(DICTIONARY_ENDPOINTS_PAGES, "dictionary_endpoints_pages") \
     X(DICTIONARY_CONTEXT_PAGES, "dictionary_context_pages") \
-    X(DICTIONARY_MICACHE_STRINGS_PAGES, "dictionary_micache_strings_pages") \
     X(DICTIONARY_KEYS, "dictionary_keys") \
     X(DICTIONARY_CLASSES_KEYS, "dictionary_classes_keys") \
     X(DICTIONARY_ENDPOINTS_KEYS, "dictionary_endpoints_keys") \
     X(DICTIONARY_CONTEXT_KEYS, "dictionary_context_keys") \
-    X(DICTIONARY_MICACHE_STRINGS_KEYS, "dictionary_micache_strings_keys") \
     X(DICTIONARY_KEYS_BYTES, "dictionary_keys_bytes") \
     X(DICTIONARY_CLASSES_KEYS_BYTES, "dictionary_classes_keys_bytes") \
     X(DICTIONARY_ENDPOINTS_KEYS_BYTES, "dictionary_endpoints_keys_bytes") \
     X(DICTIONARY_CONTEXT_KEYS_BYTES, "dictionary_context_keys_bytes") \
-    X(DICTIONARY_MICACHE_STRINGS_KEYS_BYTES, "dictionary_micache_strings_keys_bytes") \
     X(CONTEXT_STORAGE_BYTES, "context_storage_bytes") \
     X(CONTEXT_STORAGE_PAGES, "context_storage_pages")       \
     X(CONTEXT_BOUNDS_MISS_INITS, "context_bounds_miss_inits")   \
@@ -52,10 +48,7 @@
     X(THREAD_IDS_COUNT, "thread_ids_count")  \
     X(THREAD_NAMES_COUNT, "thread_names_count") \
     X(THREAD_FILTER_PAGES, "thread_filter_pages") \
-    X(THREAD_FILTER_BYTES, "thread_filter_bytes") \
-    X(JMETHODID_MAP_BYTES, "jmethodid_map_bytes") \
-    X(JMETHODID_MAP_MISS, "jmethodid_map_miss") \
-    X(JMETHODID_MAP_PURGED_ITEMS, "jmethodid_map_purged_items")
+    X(THREAD_FILTER_BYTES, "thread_filter_bytes")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
     DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS

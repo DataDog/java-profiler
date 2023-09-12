@@ -48,14 +48,14 @@ void Dictionary::clear() {
 void Dictionary::clear(DictTable* table, int id) {
     for (int i = 0; i < ROWS; i++) {
         DictRow* row = &table->rows[i];
+        long long size = 0;
         for (int j = 0; j < CELLS; j++) {
-            #ifdef COUNTERS
             if (row->keys[j]) {
-                Counters::decrement(DICTIONARY_KEYS_BYTES, strlen(row->keys[j]), id);
+                size += strlen(row->keys[j]) + 1;
+                free(row->keys[j]); // content is zeroed en-mass in the clear() function
             }
-            #endif // COUNTERS
-            free(row->keys[j]); // content is zeroed en-mass in the clear() function
         }
+        Counters::decrement(DICTIONARY_KEYS_BYTES, size, id);
         if (row->next != NULL) {
             clear(row->next, id);
             DictTable* tmp = row->next;
