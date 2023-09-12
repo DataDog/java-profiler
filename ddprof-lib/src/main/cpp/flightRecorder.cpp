@@ -136,7 +136,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_tim
     }
 
     bool entry = false;
-    bool deallocateStrings = false;
+    bool deallocateStrings = true;
     if (VMMethod::check_jmethodID(method) && jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
             jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
             jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
@@ -165,8 +165,15 @@ void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_tim
             // public static void main(String[] args) - 'public static' translates to modifier bits 0 and 3, hence check for '9'
             entry = true;
         }
-        deallocateStrings = true;
     } else {
+        // make sure any JNI allocated string is also deallocated here
+        jvmti->Deallocate((unsigned char*)method_name);
+        jvmti->Deallocate((unsigned char*)method_sig);
+        jvmti->Deallocate((unsigned char*)class_name);
+
+        // the strings are not JNI allocated any more; do not attempt to deallocate them when exiting this function
+        deallocateStrings = false;
+
         class_name = (char*)"L;";
         method_name = (char*)"jvmtiError";
         method_sig = (char*)"()L;";
