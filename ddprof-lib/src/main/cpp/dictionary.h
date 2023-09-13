@@ -64,8 +64,8 @@ class Dictionary {
     Dictionary() : Dictionary(0) {}
     Dictionary(int id) : _id(id) {
         _table = (DictTable*)calloc(1, sizeof(DictTable));
-        Counters::increment(DICTIONARY_PAGES, 1, id);
-        Counters::increment(DICTIONARY_BYTES, sizeof(DictTable), id);
+        Counters::set(DICTIONARY_PAGES, 1, id);
+        Counters::set(DICTIONARY_BYTES, sizeof(DictTable), id);
         _table->base_index = _base_index = 1;
         _size = 0;
     }
