@@ -157,6 +157,10 @@ class CodeCache {
 
     void setDwarfTable(FrameDesc* table, int length);
     FrameDesc* findFrameDesc(const void* pc);
+
+    long long memoryUsage() {
+        return _capacity * sizeof(CodeBlob*) + _count * sizeof(NativeFunc);
+    }
 };
 
 
@@ -182,6 +186,15 @@ class CodeCacheArray {
         int index = __atomic_load_n(&_count, __ATOMIC_ACQUIRE);
         _libs[index] = lib;
         __atomic_store_n(&_count, index + 1, __ATOMIC_RELEASE);
+    }
+
+    long long memoryUsage() {
+        int count = __atomic_load_n(&_count, __ATOMIC_ACQUIRE);
+        long long totalUsage = 0;
+        for (int i = 0; i < count; i++) {
+            totalUsage += _libs[i]->memoryUsage();
+        }
+        return totalUsage;
     }
 };
 
