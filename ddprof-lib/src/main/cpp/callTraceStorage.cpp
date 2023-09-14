@@ -113,6 +113,8 @@ void CallTraceStorage::clear() {
     _current_table->clear();
     _allocator.clear();
     _overflow = 0;
+    Counters::set(CALLTRACE_STORAGE_BYTES, 0);
+    Counters::set(CALLTRACE_STORAGE_TRACES, 0);
     _lock.unlock();
 }
 

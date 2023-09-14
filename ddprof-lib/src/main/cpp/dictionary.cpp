@@ -35,13 +35,18 @@ static inline bool keyEquals(const char* candidate, const char* key, size_t leng
 Dictionary::~Dictionary() {
     clear(_table, _id);
     free(_table);
+    Counters::set(DICTIONARY_KEYS, 0, _id);
+    Counters::set(DICTIONARY_BYTES, 0, _id);
+    Counters::set(DICTIONARY_PAGES, 0, _id);
 }
 
 void Dictionary::clear() {
     clear(_table, _id);
     memset(_table, 0, sizeof(DictTable));
     _table->base_index = _base_index = 1;
-    Counters::decrement(DICTIONARY_KEYS, _size, _id);
+    Counters::set(DICTIONARY_KEYS, 0, _id);
+    Counters::set(DICTIONARY_BYTES, sizeof(DictTable), _id);
+    Counters::set(DICTIONARY_PAGES, 1, _id);
     _size = 0;
 }
 
@@ -49,12 +54,9 @@ void Dictionary::clear(DictTable* table, int id) {
     for (int i = 0; i < ROWS; i++) {
         DictRow* row = &table->rows[i];
         for (int j = 0; j < CELLS; j++) {
-            #ifdef COUNTERS
             if (row->keys[j]) {
-                Counters::decrement(DICTIONARY_KEYS_BYTES, strlen(row->keys[j]), id);
+                free(row->keys[j]); // content is zeroed en-mass in the clear() function
             }
-            #endif // COUNTERS
-            free(row->keys[j]); // content is zeroed en-mass in the clear() function
         }
         if (row->next != NULL) {
             clear(row->next, id);
@@ -63,8 +65,6 @@ void Dictionary::clear(DictTable* table, int id) {
             free(tmp);
         }
     }
-    Counters::decrement(DICTIONARY_PAGES, 1, id);
-    Counters::decrement(DICTIONARY_BYTES, sizeof(DictTable), id);
 }
 
 // Many popular symbols are quite short, e.g. "[B", "()V" etc.
