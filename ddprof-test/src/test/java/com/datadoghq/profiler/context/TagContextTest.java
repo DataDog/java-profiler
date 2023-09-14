@@ -1,8 +1,19 @@
 package com.datadoghq.profiler.context;
 
-import com.datadoghq.profiler.AbstractProfilerTest;
-import com.datadoghq.profiler.ContextSetter;
-import com.datadoghq.profiler.Platform;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.IntStream;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItem;
@@ -12,22 +23,17 @@ import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.unit.IQuantity;
 import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.IntStream;
-
-import static com.datadoghq.profiler.MoreAssertions.*;
-import static org.junit.jupiter.api.Assertions.*;
+import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.ContextSetter;
+import static com.datadoghq.profiler.MoreAssertions.DICTIONARY_PAGE_SIZE;
+import static com.datadoghq.profiler.MoreAssertions.assertBoundedBy;
+import com.datadoghq.profiler.Platform;
 
 public class TagContextTest extends AbstractProfilerTest {
 
     @Test
     public void test() throws InterruptedException {
-        Assumptions.assumeTrue(!Platform.isJ9() || (Platform.isJ9() && Platform.isJavaVersion(8)));
+        Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2", "tag1"));
 

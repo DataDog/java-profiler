@@ -1,16 +1,5 @@
 package com.datadoghq.profiler.wallclock;
 
-import com.datadoghq.profiler.Platform;
-import com.datadoghq.profiler.AbstractProfilerTest;
-import com.datadoghq.profiler.context.ContextExecutor;
-import com.datadoghq.profiler.context.Tracing;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.unit.IQuantity;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
-
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -21,12 +10,24 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Assumptions;
-
-import static com.datadoghq.profiler.MoreAssertions.assertInRange;
-import static org.junit.jupiter.api.Assertions.*;
-
 import org.junit.jupiter.api.Test;
+import org.openjdk.jmc.common.item.IItem;
+import org.openjdk.jmc.common.item.IItemCollection;
+import org.openjdk.jmc.common.item.IItemIterable;
+import org.openjdk.jmc.common.item.IMemberAccessor;
+import org.openjdk.jmc.common.unit.IQuantity;
+import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
+
+import com.datadoghq.profiler.AbstractProfilerTest;
+import static com.datadoghq.profiler.MoreAssertions.assertInRange;
+import com.datadoghq.profiler.Platform;
+import com.datadoghq.profiler.context.ContextExecutor;
+import com.datadoghq.profiler.context.Tracing;
 
 public class ContextWallClockTest extends AbstractProfilerTest {
 
@@ -42,10 +43,7 @@ public class ContextWallClockTest extends AbstractProfilerTest {
 
     @Test
     public void test() throws ExecutionException, InterruptedException {
-        Assumptions.assumeTrue(
-                (!Platform.isJ9() || (Platform.isJ9() && Platform.isJavaVersion(8))) &&
-                !Platform.isZing()
-        );
+        Assumptions.assumeTrue(!Platform.isJ9() && !Platform.isZing());
 
         registerCurrentThreadForWallClockProfiling();
         for (int i = 0, id = 1; i < 100; i++, id += 3) {
