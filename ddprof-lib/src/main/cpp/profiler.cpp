@@ -1184,6 +1184,10 @@ Error Profiler::dump(const char* path, const int length) {
 
         updateJavaThreadNames();
         updateNativeThreadNames();
+
+        Counters::set(CODECACHE_NATIVE_COUNT, _native_libs.count());
+        Counters::set(CODECACHE_NATIVE_SIZE_BYTES, _native_libs.memoryUsage());
+        Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES, _native_libs.memoryUsage());
         
         lockAll();
         Error err = _jfr.dump(path, length);
