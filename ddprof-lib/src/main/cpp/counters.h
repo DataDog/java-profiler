@@ -48,6 +48,7 @@
     X(THREAD_IDS_COUNT, "thread_ids_count")  \
     X(THREAD_NAMES_COUNT, "thread_names_count") \
     X(THREAD_FILTER_PAGES, "thread_filter_pages") \
+    X(JMETHODID_SKIPPED, "jmethodid_skipped_count") \
     X(THREAD_FILTER_BYTES, "thread_filter_bytes")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {

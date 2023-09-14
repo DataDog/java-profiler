@@ -1,7 +1,12 @@
 package com.datadoghq.profiler.cpu;
 
-import com.datadoghq.profiler.AbstractProfilerTest;
-import com.datadoghq.profiler.Platform;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutionException;
+
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
 import org.openjdk.jmc.common.item.IItem;
@@ -11,14 +16,9 @@ import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.unit.IQuantity;
 import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ExecutionException;
-
+import com.datadoghq.profiler.AbstractProfilerTest;
 import static com.datadoghq.profiler.MoreAssertions.assertInRange;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.datadoghq.profiler.Platform;
 
 public class ContextCpuTest extends AbstractProfilerTest {
 
@@ -31,7 +31,7 @@ public class ContextCpuTest extends AbstractProfilerTest {
 
     @RetryingTest(10)
     public void test() throws ExecutionException, InterruptedException {
-        Assumptions.assumeTrue(!Platform.isJ9() || (Platform.isJ9() && Platform.isJavaVersion(8)));
+        Assumptions.assumeTrue(!Platform.isJ9());
         for (int i = 0, id = 1; i < 100; i++, id += 3) {
             profiledCode.method1(id);
         }

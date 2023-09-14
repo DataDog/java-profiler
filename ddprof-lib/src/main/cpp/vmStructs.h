@@ -313,6 +313,9 @@ class VMThread : VMStructs {
 };
 
 class VMMethod : VMStructs {
+  private:
+    static bool check_jmethodID_J9(jmethodID id);
+    static bool check_jmethodID_hotspot(jmethodID id);
   public:
     static VMMethod* fromMethodID(jmethodID id) {
         return *(VMMethod**)id;

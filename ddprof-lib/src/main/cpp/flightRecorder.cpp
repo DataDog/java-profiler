@@ -207,6 +207,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_tim
             method_sig_id = _symbols.lookup(method_sig);
         }
     } else {
+        Counters::increment(JMETHODID_SKIPPED);
         class_name_id = _classes->lookup("");
         method_name_id = _symbols.lookup("jvmtiError");
         method_sig_id = _symbols.lookup("()L;");
