@@ -445,8 +445,8 @@ public final class JavaProfiler {
         ByteBuffer buffer = getDebugCounters0().order(ByteOrder.LITTLE_ENDIAN);
         if (buffer.hasRemaining()) {
             String[] names = describeDebugCounters0();
-            for (int i = 0; i < names.length && i * 64 < buffer.capacity(); i++) {
-                counters.put(names[i], buffer.getLong(i * 64));
+            for (int i = 0; i < names.length && i * 128 < buffer.capacity(); i++) {
+                counters.put(names[i], buffer.getLong(i * 128));
             }
         }
         return counters;
