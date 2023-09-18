@@ -61,6 +61,7 @@ typedef enum CounterId : int {
 
 class Counters {
 private:
+    static const u32 ALIGNMENT = 16;
     volatile long long* _counters;
     static long long* init();
     Counters() : _counters() {
@@ -78,7 +79,7 @@ public:
     void operator=(Counters const&) = delete;
 
     static constexpr int address(int index) {
-        return index * 8;
+        return index * ALIGNMENT;
     }
 
     static constexpr int size() {
