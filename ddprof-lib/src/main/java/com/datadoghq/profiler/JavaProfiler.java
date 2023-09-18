@@ -118,7 +118,6 @@ public final class JavaProfiler {
             libLocation = libraryPath.toString();
         }
         System.load(libLocation);
-        Files.deleteIfExists(libraryPath == null ? Paths.get(libLocation) : libraryPath);
         profiler.initializeContextStorage();
         instance = profiler;
         return profiler;
