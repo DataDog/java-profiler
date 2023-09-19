@@ -355,6 +355,12 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
         return 0;
     }
 
+    if (VM::isHotspot() && vm_thread->lastJavaSP() == 0 && vm_thread->lastJavaPC() != 0) {
+        // lastJavaSP set to NULL when stack is in unparseable state, see:
+        // https://github.com/openjdk/jdk/blob/2e2d49c76d7bb43a431b5c4f2552beef8798258b/src/hotspot/share/runtime/deoptimization.cpp#L870
+        return  0;
+    }
+
     StackFrame frame(ucontext);
     uintptr_t saved_pc, saved_sp, saved_fp;
     if (ucontext != NULL) {
