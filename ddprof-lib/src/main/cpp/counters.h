@@ -52,7 +52,11 @@
     X(JMETHODID_SKIPPED, "jmethodid_skipped_count") \
     X(CODECACHE_NATIVE_SIZE_BYTES, "codecache_native_size_bytes") \
     X(CODECACHE_NATIVE_COUNT, "native_codecache_count") \
-    X(CODECACHE_RUNTIME_STUBS_SIZE_BYTES, "codecache_runtime_stubs_size_bytes")
+    X(CODECACHE_RUNTIME_STUBS_SIZE_BYTES, "codecache_runtime_stubs_size_bytes") \
+    X(AGCT_NOT_REGISTERED_IN_TLS, "agct_not_registered_in_tls") \
+    X(AGCT_NULL_SP, "agct_null_sp") \
+    X(AGCT_NOT_JAVA, "agct_not_java") \
+    X(AGCT_NATIVE_NO_JAVA_CONTEXT, "agct_native_no_java_context")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
     DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS
