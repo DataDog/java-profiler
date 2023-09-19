@@ -346,18 +346,21 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
     // since JDK 9, so we do it only for threads already registered in ThreadLocalStorage
     VMThread* vm_thread = VMThread::current();
     if (vm_thread == NULL) {
+        Counters::increment(AGCT_NOT_REGISTERED_IN_TLS);
         return 0;
     }
 
     JNIEnv* jni = VM::jni();
     if (jni == NULL) {
         // Not a Java thread
+        Counters::increment(AGCT_NOT_JAVA);
         return 0;
     }
 
     if (VM::isHotspot() && vm_thread->lastJavaSP() == 0 && vm_thread->lastJavaPC() != 0) {
         // lastJavaSP set to NULL when stack is in unparseable state, see:
         // https://github.com/openjdk/jdk/blob/2e2d49c76d7bb43a431b5c4f2552beef8798258b/src/hotspot/share/runtime/deoptimization.cpp#L870
+        Counters::increment(AGCT_NULL_SP);
         return  0;
     }
 
@@ -414,6 +417,7 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
         } else {
             // we've tried to unwind some native code without frame pointers,
             // and we don't know where the top Java frame is, so we don't want to call AGCT
+            Counters::increment(AGCT_NATIVE_NO_JAVA_CONTEXT);
             return 0;
         }
     }
