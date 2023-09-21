@@ -150,7 +150,9 @@ void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_tim
             modifiers |= class_modifiers & ACC_HIDDEN;
         }
 
-        jvmti->GetLineNumberTable(method, &line_number_table_size, &line_number_table);
+        if (first_time) {
+            jvmti->GetLineNumberTable(method, &line_number_table_size, &line_number_table);
+        }
 
         // Check if the frame is Thread.run or inherits from it
         if (strncmp(method_name, "run", 4) == 0 && strncmp(method_sig, "()V", 3) == 0) {
@@ -217,9 +219,11 @@ void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_tim
     mi->_name = method_name_id;
     mi->_sig = method_sig_id;
     mi->_modifiers = modifiers;
-    mi->_line_number_table = std::make_shared<SharedLineNumberTable>(line_number_table_size, line_number_table);
     mi->_type = FRAME_INTERPRETED;
     mi->_is_entry = entry;
+    if (line_number_table != nullptr) {
+        mi->_line_number_table = std::make_shared<SharedLineNumberTable>(line_number_table_size, line_number_table);
+    }
 
     // strings are null or came from JVMTI
     if (method_name) {
@@ -237,13 +241,12 @@ MethodInfo* Lookup::resolveMethod(ASGCT_CallFrame& frame) {
     jmethodID method = frame.method_id;
     MethodInfo* mi = &(*_method_map)[method];
 
-    bool first_time = mi->_key == 0;
-    if (first_time) {
-        mi->_key = _method_map->size();
-    }
-
     if (!mi->_mark) {
         mi->_mark = true;
+        bool first_time = mi->_key == 0;
+        if (first_time) {
+            mi->_key = _method_map->size();
+        }
         if (method == NULL) {
             fillNativeMethodInfo(mi, "unknown", NULL);
         } else if (frame.bci == BCI_ERROR) {
