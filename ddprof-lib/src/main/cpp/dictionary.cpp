@@ -35,7 +35,6 @@ static inline bool keyEquals(const char* candidate, const char* key, size_t leng
 Dictionary::~Dictionary() {
     clear(_table, _id);
     free(_table);
-    Counters::set(DICTIONARY_KEYS, 0, _id);
     Counters::set(DICTIONARY_BYTES, 0, _id);
     Counters::set(DICTIONARY_PAGES, 0, _id);
 }
@@ -45,6 +44,7 @@ void Dictionary::clear() {
     memset(_table, 0, sizeof(DictTable));
     _table->base_index = _base_index = 1;
     Counters::set(DICTIONARY_KEYS, 0, _id);
+    Counters::set(DICTIONARY_KEYS_BYTES, 0, _id);
     Counters::set(DICTIONARY_BYTES, sizeof(DictTable), _id);
     Counters::set(DICTIONARY_PAGES, 1, _id);
     _size = 0;
