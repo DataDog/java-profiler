@@ -1468,25 +1468,24 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u32 call_trace_id,
 }
 
 void FlightRecorder::recordLog(LogLevel level, const char* message, size_t len) {
-    return;
-//    if (!_rec_lock.tryLockShared()) {
-//        // No active recording
-//        return;
-//    }
-//
-//    if (len > MAX_STRING_LENGTH) len = MAX_STRING_LENGTH;
-//    // cppcheck-suppress obsoleteFunctions
-//    Buffer* buf = (Buffer*)alloca(len + 40);
-//    buf->reset();
-//
-//    int start = buf->skip(5);
-//    buf->putVar64(T_LOG);
-//    buf->putVar64(TSC::ticks());
-//    buf->putVar64(level);
-//    buf->putUtf8(message, len);
-//    buf->putVar32(start, buf->offset() - start);
-//    _rec->flush(buf);
-//
-//    _rec_lock.unlockShared();
+    if (!_rec_lock.tryLockShared()) {
+        // No active recording
+        return;
+    }
+
+    if (len > MAX_STRING_LENGTH) len = MAX_STRING_LENGTH;
+    // cppcheck-suppress obsoleteFunctions
+    Buffer* buf = (Buffer*)alloca(len + 40);
+    buf->reset();
+
+    int start = buf->skip(5);
+    buf->putVar64(T_LOG);
+    buf->putVar64(TSC::ticks());
+    buf->putVar64(level);
+    buf->putUtf8(message, len);
+    buf->putVar32(start, buf->offset() - start);
+    _rec->flush(buf);
+
+    _rec_lock.unlockShared();
 }
 
