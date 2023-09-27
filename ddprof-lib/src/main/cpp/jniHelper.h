@@ -3,8 +3,11 @@
 
 #include <jni.h>
 
-static void jniExceptionCheck(JNIEnv* jni) {
+static void jniExceptionCheck(JNIEnv* jni, bool describe = false) {
     if(jni->ExceptionCheck()) {
+        if (describe) {
+            jni->ExceptionDescribe();
+        }
         jni->ExceptionClear();
     }
 }

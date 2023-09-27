@@ -137,11 +137,11 @@ Error LivenessTracker::initialize_table(int sampling_interval) {
         static jmethodID _max_memory;
 
         if (!(_rt = env->FindClass("java/lang/Runtime"))) {
-            env->ExceptionDescribe();
+            jniExceptionCheck(env, true);
         } else if (!(_get_rt = env->GetStaticMethodID(_rt, "getRuntime", "()Ljava/lang/Runtime;"))) {
-            env->ExceptionDescribe();
+            jniExceptionCheck(env, true);
         } else if (!(_max_memory = env->GetMethodID(_rt, "maxMemory", "()J"))) {
-            env->ExceptionDescribe();
+            jniExceptionCheck(env, true);
         } else {
             jobject rt = (jobject)env->CallStaticObjectMethod(_rt, _get_rt);
             jniExceptionCheck(env);
@@ -208,10 +208,10 @@ Error LivenessTracker::initialize(Arguments& args) {
         return _stored_error = Error::OK;
     }
     if (!(_Class = env->FindClass("java/lang/Class"))) {
-        env->ExceptionDescribe();
+        jniExceptionCheck(env, true);
         err = Error("Unable to find java/lang/Class");
     } else if (!(_Class_getName = env->GetMethodID(_Class, "getName", "()Ljava/lang/String;"))) {
-        env->ExceptionDescribe();
+        jniExceptionCheck(env, true);
         err = Error("Unable to find java/lang/Class.getName");
     }
     if (err) {
@@ -229,8 +229,6 @@ Error LivenessTracker::initialize(Arguments& args) {
 
     _gc_epoch = 0;
     _last_gc_epoch = 0;
-
-    env->ExceptionClear();
 
     return _stored_error = Error::OK;
 }
