@@ -28,6 +28,7 @@
 #include "profiler.h"
 #include "log.h"
 #include "vmStructs.h"
+#include "jniHelper.h"
 
 
 // JVM TI agent return codes
@@ -336,6 +337,7 @@ void VM::ready(jvmtiEnv* jvmti, JNIEnv* jni) {
 
     jmethodID getSystemClassLoaderMethod = jni->GetStaticMethodID(clClass, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
     jobject localSystemClassLoader = jni->CallStaticObjectMethod(clClass, getSystemClassLoaderMethod);
+    jniExceptionCheck(jni);
 
     jmethodID getPlatformClassLoaderMethod = jni->GetStaticMethodID(clClass, "getPlatformClassLoader", "()Ljava/lang/ClassLoader;");
     if (jni->ExceptionCheck()) { // check if an exception occurred
@@ -345,6 +347,7 @@ void VM::ready(jvmtiEnv* jvmti, JNIEnv* jni) {
     _global_system_classloader = jni->NewGlobalRef(localSystemClassLoader);
     if (getPlatformClassLoaderMethod != nullptr) {
         jobject localPlatformClassLoader = jni->CallStaticObjectMethod(clClass, getPlatformClassLoaderMethod);
+        jniExceptionCheck(jni);
         _global_platform_classloader = jni->NewGlobalRef(localPlatformClassLoader);
     }
 }

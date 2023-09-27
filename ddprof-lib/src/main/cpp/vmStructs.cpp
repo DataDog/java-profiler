@@ -23,6 +23,7 @@
 #include "j9Ext.h"
 #include "vector"
 #include "safeAccess.h"
+#include "jniHelper.h"
 
 
 CodeCache* VMStructs::_libjvm = NULL;
@@ -482,8 +483,10 @@ void VMStructs::initMemoryUsage(JNIEnv* env) {
     jclass memoryBeanClass = env->FindClass("java/lang/management/MemoryMXBean");
     jmethodID get_memory = env->GetStaticMethodID(factory, "getMemoryMXBean", "()Ljava/lang/management/MemoryMXBean;");
     jobject memoryBean = env->CallStaticObjectMethod(factory, get_memory);
+    jniExceptionCheck(env);
     jmethodID get_heap = env->GetMethodID(memoryBeanClass, "getHeapMemoryUsage", "()Ljava/lang/management/MemoryUsage;");
     env->CallObjectMethod(memoryBean, get_heap);
+    jniExceptionCheck(env);
 }
 
 VMThread* VMThread::current() {

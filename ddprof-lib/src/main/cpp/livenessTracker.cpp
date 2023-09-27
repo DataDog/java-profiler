@@ -28,6 +28,7 @@
 #include "thread.h"
 #include "tsc.h"
 #include "vmStructs.h"
+#include "jniHelper.h"
 
 LivenessTracker* const LivenessTracker::_instance = new LivenessTracker();
 
@@ -98,6 +99,7 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
             event._ctx = _table[i].ctx;
 
             jstring name_str = (jstring)env->CallObjectMethod(env->GetObjectClass(ref), _Class_getName);
+            jniExceptionCheck(env);
             const char *name = env->GetStringUTFChars(name_str, NULL);
             event._id = name != NULL ? Profiler::instance()->lookupClass(name, strlen(name)) : 0;
             env->ReleaseStringUTFChars(name_str, name);
@@ -142,6 +144,7 @@ Error LivenessTracker::initialize_table(int sampling_interval) {
             env->ExceptionDescribe();
         } else {
             jobject rt = (jobject)env->CallStaticObjectMethod(_rt, _get_rt);
+            jniExceptionCheck(env);
             max_heap = (jlong)env->CallLongMethod(rt, _max_memory);
         }
     }
