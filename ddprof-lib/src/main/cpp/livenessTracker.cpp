@@ -248,6 +248,8 @@ void LivenessTracker::track(JNIEnv* env, AllocEvent &event, jint tid, jobject ob
 
 retry:
     if (!_table_lock.tryLockShared()) {
+        // we failed to add the weak reference to the table so it won't get cleaned up otherwise
+        env->DeleteWeakGlobalRef(ref);
         return;
     }
 
