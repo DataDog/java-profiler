@@ -46,6 +46,7 @@
 #include "tsc.h"
 #include "vmStructs.h"
 #include "counters.h"
+#include "jniHelper.h"
 
 static SpinLock _rec_lock(1);
 
@@ -161,8 +162,9 @@ void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_tim
                 jni->GetMethodID(jni->FindClass("java/lang/Class"), "equals", "(Ljava/lang/Object;)Z");
             jclass klass = method_class;
             do {
-                if (jni->CallBooleanMethod(Thread_class, equals, klass)) {
-                    entry = true;
+                entry = jni->CallBooleanMethod(Thread_class, equals, klass);
+                jniExceptionCheck(jni);
+                if (entry) {
                     break;
                 }
             } while ((klass = jni->GetSuperclass(klass)) != NULL);
@@ -532,8 +534,10 @@ bool Recording::parseAgentProperties() {
         jmethodID to_string = env->GetMethodID(env->FindClass("java/lang/Object"), "toString", "()Ljava/lang/String;");
         if (get_agent_props != NULL && to_string != NULL) {
             jobject props = env->CallStaticObjectMethod(vm_support, get_agent_props);
+            jniExceptionCheck(env);
             if (props != NULL) {
                 jstring str = (jstring)env->CallObjectMethod(props, to_string);
+                jniExceptionCheck(env);
                 if (str != NULL) {
                     _agent_properties = (char*)env->GetStringUTFChars(str, NULL);
                 }

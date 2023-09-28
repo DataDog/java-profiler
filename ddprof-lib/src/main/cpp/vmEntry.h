@@ -103,9 +103,6 @@ class VM {
     static bool _can_intercept_binding;
     static bool _is_adaptive_gc_boundary_flag_set;
 
-    static jobject _global_system_classloader;
-    static jobject _global_platform_classloader;
-
 
     static jvmtiError (JNICALL *_orig_RedefineClasses)(jvmtiEnv*, jint, const jvmtiClassDefinition*);
     static jvmtiError (JNICALL *_orig_RetransformClasses)(jvmtiEnv*, jint, const jclass* classes);
@@ -175,8 +172,6 @@ class VM {
     static bool isUseAdaptiveGCBoundarySet() {
         return _is_adaptive_gc_boundary_flag_set;
     }
-
-    static bool isSystemClassLoader(JNIEnv* jni, jobject& cl);
 
     static void JNICALL VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread);
     static void JNICALL VMDeath(jvmtiEnv* jvmti, JNIEnv* jni);
