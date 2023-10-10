@@ -54,9 +54,8 @@ enum EventMask {
     EM_ALLOC   = 1 << 2
 };
 
-union CallTraceBuffer {
+struct CallTraceBuffer {
     ASGCT_CallFrame _asgct_frames[1];
-    jvmtiFrameInfo _jvmti_frames[1];
 };
 
 
@@ -125,6 +124,7 @@ class Profiler {
     const void* _call_stub_end;
     u32 _num_context_attributes;
     bool _omit_stacktraces;
+    bool _line_numbers;
 
     // dlopen() hook support
     void** _dlopen_entry;
@@ -149,6 +149,20 @@ class Profiler {
     int getJavaTraceInternal(jvmtiFrameInfo* jvmti_frames, ASGCT_CallFrame* frames, int max_depth);
     int convertFrames(jvmtiFrameInfo* jvmti_frames, ASGCT_CallFrame* frames, int num_frames);
     void fillFrameTypes(ASGCT_CallFrame* frames, int num_frames, NMethod* nmethod);
+    u32 putCallTrace(ASGCT_CallFrame* frames, int num_frames, bool truncated, u64 counter) {
+        // the user may opt out of recording line numbers which results in calltraces which differ only in line number
+        // (so have the same methods) being conflated. This reduces overhead in two ways:
+        // 1) in-memory calltrace storage is smaller so needs less memory
+        // 2) fewer stack traces results in fewer JVMTI calls during JFR reporting, reducing CPU overhead
+        if (!_line_numbers) {
+            for (size_t i = 0; i < num_frames; i++) {
+                if (frames[i].bci >= 0) {
+                    frames[i].bci = BCI_OMITTED;
+                }
+            }
+        }
+        return _call_trace_storage.put(num_frames, frames, truncated, counter);
+    }
     void setThreadInfo(int tid, const char* name, jlong java_thread_id);
     void updateThreadName(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread);
     void updateJavaThreadNames();
@@ -195,7 +209,8 @@ class Profiler {
         _total_samples(0),
         _failures(),
         _cstack(CSTACK_NO),
-        _omit_stacktraces(false)
+        _omit_stacktraces(false),
+        _line_numbers(true)
         {
 
         for (int i = 0; i < CONCURRENCY_LEVEL; i++) {

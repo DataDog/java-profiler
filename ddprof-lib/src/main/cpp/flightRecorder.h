@@ -251,6 +251,7 @@ class Lookup {
     Dictionary* _classes;
     Dictionary _packages;
     Dictionary _symbols;
+    bool _line_numbers;
 
   private:
     void fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* lib_name);
@@ -261,8 +262,8 @@ class Lookup {
     }
 
   public:
-    Lookup(Recording* rec, MethodMap* method_map, Dictionary* classes) :
-        _rec(rec), _method_map(method_map), _classes(classes), _packages(), _symbols() {}
+    Lookup(Recording* rec, MethodMap* method_map, Dictionary* classes, bool line_numbers) :
+        _rec(rec), _method_map(method_map), _classes(classes), _packages(), _symbols(), _line_numbers(line_numbers) {}
 
     MethodInfo* resolveMethod(ASGCT_CallFrame& frame);
     u32 getPackage(const char* class_name);

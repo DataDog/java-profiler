@@ -33,6 +33,7 @@
 // Denotes ASGCT_CallFrame where method_id has special meaning (not jmethodID)
 enum ASGCT_CallFrameType {
     BCI_CPU                 =   0,  // cpu time
+    BCI_OMITTED             =  -1,  // intentionally omitted
     BCI_WALL                = -10,  // wall time
     BCI_NATIVE_FRAME        = -11,  // native function name (char*)
     BCI_ALLOC               = -12,  // name of the allocated class

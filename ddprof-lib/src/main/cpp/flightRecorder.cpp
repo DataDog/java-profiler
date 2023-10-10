@@ -143,7 +143,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_tim
             jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
             jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
 
-            if (first_time) {
+            if (first_time && _line_numbers) {
                 jvmti->GetLineNumberTable(method, &line_number_table_size, &line_number_table);
             }
 
@@ -899,7 +899,7 @@ void Recording::writeCpool(Buffer* buf) {
 
     // Profiler::instance()->classMap() provides access to non-locked _class_map instance
     // The non-locked access is ok here as this code will never run concurrently to _class_map.clear()
-    Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
+    Lookup lookup(this, &_method_map, Profiler::instance()->classMap(), _args._record_line_numbers);
     writeFrameTypes(buf);
     writeThreadStates(buf);
     writeExecutionModes(buf);

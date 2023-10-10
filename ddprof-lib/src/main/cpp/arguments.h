@@ -118,6 +118,13 @@ class Arguments {
     static long long hash(const char* arg);
     static long parseUnits(const char* str, const Multiplier* multipliers);
 
+    bool parseBool(const char* arg) {
+        if (arg) {
+            return arg[0] == 'y' || arg[0] == 't';
+        }
+        return false;
+    }
+
   public:
     Action _action;
     Ring _ring;
@@ -142,6 +149,8 @@ class Arguments {
     int _jfr_options;
     std::vector<std::string> _context_attributes;
     bool _lightweight;
+    bool _record_line_numbers;
+    bool _record_modifiers;
 
     Arguments(bool persistent = false) :
         _buf(NULL),
@@ -169,7 +178,8 @@ class Arguments {
         _cstack(CSTACK_DEFAULT),
         _jfr_options(0),
         _context_attributes({}),
-        _lightweight(false) {
+        _lightweight(false),
+        _record_line_numbers (true) {
     }
 
     ~Arguments();

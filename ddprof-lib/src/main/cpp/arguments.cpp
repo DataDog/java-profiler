@@ -277,16 +277,10 @@ Error Arguments::parse(const char* args) {
                 }
 
             CASE("lightweight")
-                if (value != NULL) {
-                    switch (value[0]) {
-                        case 'y': // yes
-                        case 't': // true
-                            _lightweight = true;
-                            break;
-                        default:
-                            _lightweight = false;
-                    }
-                }
+                _lightweight = parseBool(value);
+
+            CASE("linenumbers")
+                _record_line_numbers = parseBool(value);
 
             DEFAULT()
                 if (_unknown_arg == NULL) _unknown_arg = arg;

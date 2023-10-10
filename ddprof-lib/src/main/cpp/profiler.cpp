@@ -626,7 +626,7 @@ void Profiler::recordExternalSample(u64 counter, int tid, jvmtiFrameInfo *jvmti_
 
         num_frames += convertFrames(jvmti_frames, frames + num_frames, num_jvmti_frames);
 
-        call_trace_id = _call_trace_storage.put(num_frames, frames, truncated, counter);
+        call_trace_id = putCallTrace(frames, num_frames, truncated, counter);
     }
     _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event, counter);
 
@@ -657,7 +657,6 @@ void Profiler::recordSample(void* ucontext, u64 counter, int tid, jint event_typ
     u32 call_trace_id = 0;
     if (!_omit_stacktraces) {
         ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
-        jvmtiFrameInfo *jvmti_frames = _calltrace_buffer[lock_index]->_jvmti_frames;
 
         int num_frames = 0;
 
@@ -675,22 +674,13 @@ void Profiler::recordSample(void* ucontext, u64 counter, int tid, jint event_typ
                 }
             }
             num_frames += java_frames;
-        } else if (event_type >= BCI_ALLOC_OUTSIDE_TLAB && VMStructs::_get_stack_trace != NULL) {
-            // Object allocation in HotSpot happens at known places where it is safe to call JVM TI,
-            // but not directly, since the thread is in_vm rather than in_native
-            num_frames += getJavaTraceInternal(jvmti_frames + num_frames, frames + num_frames, _max_stack_depth);
-        } else if (event_type >= BCI_ALLOC_OUTSIDE_TLAB && !VM::isOpenJ9()) {
-            num_frames += getJavaTraceAsync(ucontext, frames + num_frames, _max_stack_depth, &java_ctx, &truncated);
-        } else {
-            // Lock events can safely call synchronous JVM TI stack walker.
-            num_frames += getJavaTraceJvmti(jvmti_frames + num_frames, frames + num_frames, 0, _max_stack_depth);
         }
 
         if (num_frames == 0) {
             num_frames += makeFrame(frames + num_frames, BCI_ERROR, "no_Java_frame");
         }
 
-        call_trace_id = _call_trace_storage.put(num_frames, frames, truncated, counter);
+        call_trace_id = putCallTrace(frames, num_frames, truncated, counter);
     }
     _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event, counter);
 
@@ -733,7 +723,7 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
 void Profiler::recordExternalSample(u64 counter, int tid, int num_frames, ASGCT_CallFrame* frames, bool truncated, jint event_type, Event* event) {
     atomicInc(_total_samples);
 
-    u32 call_trace_id = _call_trace_storage.put(num_frames, frames, truncated, counter);
+    u32 call_trace_id = putCallTrace(frames, num_frames, truncated, counter);
 
     u32 lock_index = getLockIndex(tid);
     if (!_locks[lock_index].tryLock() &&
@@ -974,6 +964,7 @@ Error Profiler::start(Arguments& args, bool reset) {
 
     ProfiledThread::initExistingThreads();
     _omit_stacktraces = args._lightweight;
+    _line_numbers = args._record_line_numbers;
     _event_mask = ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU : 0) |
                   (args._cpu >= 0 ? EM_CPU : 0) |
                   (args._wall >= 0 ? EM_WALL : 0) |
