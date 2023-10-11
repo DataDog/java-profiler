@@ -54,9 +54,8 @@ enum EventMask {
     EM_ALLOC   = 1 << 2
 };
 
-union CallTraceBuffer {
+struct CallTraceBuffer {
     ASGCT_CallFrame _asgct_frames[1];
-    jvmtiFrameInfo _jvmti_frames[1];
 };
 
 
