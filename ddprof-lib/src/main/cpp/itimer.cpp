@@ -67,10 +67,7 @@ Error ITimer::check(Arguments& args) {
 }
 
 Error ITimer::start(Arguments& args) {
-    if (args._interval < 0) {
-        return Error("interval must be positive");
-    }
-    _interval = args._interval ? args._interval : DEFAULT_CPU_INTERVAL;
+    _interval = args._cpu > 0 ? args._cpu : DEFAULT_CPU_INTERVAL;
     _cstack = args._cstack;
 
     OS::installSignalHandler(SIGPROF, signalHandler);

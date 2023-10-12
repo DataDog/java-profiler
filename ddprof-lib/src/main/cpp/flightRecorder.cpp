@@ -365,7 +365,8 @@ off_t Recording::finishChunk(bool end_recording) {
                                 oSampler->_record_allocations ? oSampler->_interval : 0L,
                                 oSampler->_record_liveness ? oSampler->_interval : 0L,
                                 oSampler->_record_liveness ? LivenessTracker::instance()->_table_cap : 0L,
-                                Profiler::instance()->eventMask());
+                                Profiler::instance()->eventMask(),
+                                Profiler::instance()->cpuEngine()->name());
 
     _stop_time = OS::micros();
     _stop_ticks = TSC::ticks();
@@ -748,9 +749,10 @@ void Recording::writeDatadogProfilerConfig(Buffer* buf,
                                 long allocInterval,
                                 long memleakInterval,
                                 long memleakCapacity,
-                                int modeMask) {
+                                int modeMask,
+                                const char* cpuEngine) {
     flushIfNeeded(buf, RECORDING_BUFFER_LIMIT
-    - (1 + 5 * MAX_VAR64_LENGTH + MAX_VAR32_LENGTH + 2 * MAX_STRING_LENGTH));
+    - (1 + 5 * MAX_VAR64_LENGTH + MAX_VAR32_LENGTH + 3 * MAX_STRING_LENGTH));
     int start = buf->skip(1);
     buf->putVar64(T_DATADOG_PROFILER_CONFIG);
     buf->putVar64(_start_ticks);
@@ -763,6 +765,7 @@ void Recording::writeDatadogProfilerConfig(Buffer* buf,
     buf->putVar64(memleakCapacity);
     buf->putVar32(modeMask);
     buf->putUtf8(PROFILER_VERSION);
+    buf->putUtf8(cpuEngine);
     writeEventSizePrefix(buf, start);
     flushIfNeeded(buf);
 }

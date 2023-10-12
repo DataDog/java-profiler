@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
 public class BoundMethodHandeMetadataSizeTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
-        return "wall=1us";
+        return "wall=100us";
     }
 
     @Test

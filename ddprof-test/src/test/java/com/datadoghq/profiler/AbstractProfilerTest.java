@@ -76,6 +76,7 @@ public abstract class AbstractProfilerTest {
   public static final IAttribute<IMCStackTrace> STACK_TRACE = attr("stackTrace", "stackTrace", "", UnitLookup.STACKTRACE);
 
   public static final IAttribute<IQuantity> CPU_INTERVAL = attr("cpuInterval", "cpuInterval", "", TIMESPAN);
+  public static final IAttribute<String> CPU_ENGINE = attr("cpuEngine", "", "", PLAIN_TEXT);
 
   public static final IAttribute<IQuantity> WALL_INTERVAL = attr("wallInterval", "wallInterval", "", TIMESPAN);
 
@@ -129,13 +130,7 @@ public abstract class AbstractProfilerTest {
     jfrDump = Files.createTempFile(Paths.get("/tmp"), getClass().getName() + UUID.randomUUID(), ".jfr");
     profiler = JavaProfiler.getInstance();
     String command = "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
-    // FIXME cpu interval argument not respected and is sometimes hardcoded to 10ms if cpu is active at all
-    boolean isSafeJ9Engine = (Platform.isJ9() && Platform.isJavaVersionAtLeast(11));
-    cpuInterval = isSafeJ9Engine
-            // respected for the safe J9 engine
-            ? command.contains("cpu") ? parseInterval(command, "cpu") : Duration.ZERO
-            // hardcoded for itimer and perfevents
-            : command.contains("cpu") ? Duration.ofMillis(10) : Duration.ZERO;
+    cpuInterval = command.contains("cpu") ? parseInterval(command, "cpu") : Duration.ZERO;
     wallInterval = parseInterval(command, "wall");
     System.out.println("===> command: " + command);
     profiler.execute(command);
@@ -160,9 +155,11 @@ public abstract class AbstractProfilerTest {
     try {
       IItemCollection profilerConfig = verifyEvents("datadog.DatadogProfilerConfig");
       for (IItemIterable items : profilerConfig) {
+        IMemberAccessor<String, IItem> cpuEngineAccessor = CPU_ENGINE.getAccessor(items.getType());
         IMemberAccessor<IQuantity, IItem> cpuIntervalAccessor = CPU_INTERVAL.getAccessor(items.getType());
         IMemberAccessor<IQuantity, IItem> wallIntervalAccessor = WALL_INTERVAL.getAccessor(items.getType());
         for (IItem item : items) {
+          System.err.println(cpuEngineAccessor.getMember(item));
           long cpuIntervalMillis = cpuIntervalAccessor.getMember(item).longValueIn(MILLISECOND);
           long wallIntervalMillis = wallIntervalAccessor.getMember(item).longValueIn(MILLISECOND);
           if (!Platform.isJ9() && Platform.isJavaVersionAtLeast(11)) {
