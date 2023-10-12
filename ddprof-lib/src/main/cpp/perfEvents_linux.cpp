@@ -812,7 +812,7 @@ Error PerfEvents::start(Arguments& args) {
         return Error("Could not set pthread hook");
     }
 
-    int interval = args._event != NULL ? args._interval : args._cpu;
+    int interval = args._cpu > 0 ? args._cpu : (args._event != NULL && args._event != EVENT_CPU) ? args._interval : 0;
     if (interval < 0) {
         return Error("interval must be positive");
     }
