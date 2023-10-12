@@ -79,6 +79,6 @@ public class LightweightContextCpuTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "cpu=1us,lightweight=yes";
+        return "cpu=100us,lightweight=yes";
     }
 }

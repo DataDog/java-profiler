@@ -63,6 +63,6 @@ public class MetadataNormalisationTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "cpu=1us";
+        return "cpu=100us";
     }
 }

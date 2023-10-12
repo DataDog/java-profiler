@@ -108,6 +108,6 @@ public class ContextCpuTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "cpu=1us";
+        return "cpu=10ms";
     }
 }

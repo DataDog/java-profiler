@@ -45,7 +45,7 @@ class Engine {
   public:
 
     virtual const char* name() {
-        return "Engine";
+        return "None";
     }
 
     virtual Error check(Arguments& args);

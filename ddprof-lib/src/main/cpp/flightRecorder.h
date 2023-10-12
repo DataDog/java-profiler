@@ -197,7 +197,8 @@ class Recording {
                                     long allocInterval,
                                     long memleakInterval,
                                     long memleakCapacity,
-                                    int modeMask);
+                                    int modeMask,
+                                    const char* cpuEngine);
 
     void writeHeapUsage(Buffer* buf, long value, bool live);
     void writeOsCpuInfo(Buffer* buf);
