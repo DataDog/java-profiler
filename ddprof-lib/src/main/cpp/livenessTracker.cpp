@@ -32,11 +32,11 @@
 
 LivenessTracker* const LivenessTracker::_instance = new LivenessTracker();
 
-void LivenessTracker::cleanup_table() {
+void LivenessTracker::cleanup_table(bool forced) {
     u64 current = loadAcquire(_last_gc_epoch);
     u64 target_gc_epoch = loadAcquire(_gc_epoch);
 
-    if (target_gc_epoch == _last_gc_epoch || !__sync_bool_compare_and_swap(&_last_gc_epoch, current, target_gc_epoch)) {
+    if ((target_gc_epoch == _last_gc_epoch || !__sync_bool_compare_and_swap(&_last_gc_epoch, current, target_gc_epoch)) && !forced) {
         // if the last processed GC epoch hasn't changed, or if we failed to update it, there's nothing to do
         return;
     }
@@ -51,11 +51,14 @@ void LivenessTracker::cleanup_table() {
     u32 sz, newsz = 0;
     std::set<jclass> kept_classes;
     for (u32 i = 0; i < (sz = _table_size); i++) {
-        if (!env->IsSameObject(_table[i].ref, NULL)) {
+        if (_table[i].ref != NULL && !env->IsSameObject(_table[i].ref, NULL)) {
             // it survived one more GarbageCollectionFinish event
-            _table[i].age += epoch_diff;
-            _table[newsz++] = _table[i];
-            _table[i].ref = NULL;
+            u32 target = newsz++;
+            if (target != i) {
+                _table[target] = _table[i];
+                _table[i].ref = NULL;
+            }
+            _table[target].age += epoch_diff;
         } else {
             env->DeleteWeakGlobalRef(_table[i].ref);
             _table[i].ref = NULL;
@@ -281,7 +284,7 @@ retry:
             retried = true;
 
             // try cleanup before resizing - there is a good chance it will free some space
-            cleanup_table();
+            cleanup_table(true);
 
             if (_table_cap < _table_max_cap) {
 
