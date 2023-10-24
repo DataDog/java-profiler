@@ -56,6 +56,11 @@ jobs:
           wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-amd64.tar.gz -O jdk.tar.gz
           tar xzf *.tar.gz
           find . -type d -name 'jdk*' -maxdepth 1| xargs -I {} mv {} test_jdk
+      - name: Install CloudHSM
+        run: |
+          wget https://s3.amazonaws.com/cloudhsmv2-software/CloudHsmClient/Focal/cloudhsm-jce_latest_u20.04_amd64.deb
+          sudo apt install ./cloudhsm-jce_latest_u20.04_amd64.deb
+          find . -name libcaviumjca.so
       - name: Test
         run: |
           export TEST_COMMIT=${{ github.sha }}
