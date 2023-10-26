@@ -1260,7 +1260,7 @@ Error Profiler::runInternal(Arguments& args, std::ostream& out) {
         }
         case ACTION_STOP: {
             Error error = stop();
-            // Fall through
+            break;
         }
 
         case ACTION_CHECK: {
