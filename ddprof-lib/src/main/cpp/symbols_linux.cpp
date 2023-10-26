@@ -145,6 +145,7 @@ class ElfParser {
     const char* _file_name;
     ElfHeader* _header;
     const char* _sections;
+    const char* _vaddr_diff;
 
     ElfParser(CodeCache* cc, const char* base, const void* addr, const char* file_name = NULL) {
         _cc = cc;
@@ -170,12 +171,13 @@ class ElfParser {
     }
 
     const char* at(ElfProgramHeader* pheader) {
-        return _header->e_type == ET_EXEC ? (const char*)pheader->p_vaddr : (const char*)_header + pheader->p_vaddr;
+        return _header->e_type == ET_EXEC ? (const char*)pheader->p_vaddr : _vaddr_diff + pheader->p_vaddr;
     }
 
     ElfSection* findSection(uint32_t type, const char* name);
     ElfProgramHeader* findProgramHeader(uint32_t type);
 
+    void calcVirtualLoadAddress();
     void parseDynamicSection();
     void parseDwarfInfo();
     void loadSymbols(bool use_debug);
@@ -185,7 +187,7 @@ class ElfParser {
     void addRelocationSymbols(ElfSection* reltab, const char* plt);
 
   public:
-    static void parseProgramHeaders(CodeCache* cc, const char* base);
+    static void parseProgramHeaders(CodeCache* cc, const char* base, const char* end);
     static bool parseFile(CodeCache* cc, const char* base, const char* file_name, bool use_debug);
     static void parseMem(CodeCache* cc, const char* base);
 };
@@ -248,13 +250,27 @@ void ElfParser::parseMem(CodeCache* cc, const char* base) {
     }
 }
 
-void ElfParser::parseProgramHeaders(CodeCache* cc, const char* base) {
+void ElfParser::parseProgramHeaders(CodeCache* cc, const char* base, const char* end) {
     ElfParser elf(cc, base, base);
-    if (elf.validHeader()) {
+    if (elf.validHeader() && base + elf._header->e_phoff < end) {
         cc->setTextBase(base);
+        elf.calcVirtualLoadAddress();
         elf.parseDynamicSection();
         elf.parseDwarfInfo();
     }
+}
+
+void ElfParser::calcVirtualLoadAddress() {
+    // Find a difference between the virtual load address (often zero) and the actual DSO base
+    const char* pheaders = (const char*)_header + _header->e_phoff;
+    for (int i = 0; i < _header->e_phnum; i++) {
+        ElfProgramHeader* pheader = (ElfProgramHeader*)(pheaders + i * _header->e_phentsize);
+        if (pheader->p_type == PT_LOAD) {
+            _vaddr_diff = _base - pheader->p_vaddr;
+            return;
+        }
+    }
+    _vaddr_diff = _base;
 }
 
 void ElfParser::parseDynamicSection() {
@@ -366,7 +382,7 @@ loaded:
             reltab = findSection(SHT_REL, ".rel.plt");
         }
         if (plt != NULL && reltab != NULL) {
-            addRelocationSymbols(reltab, _base + plt->sh_offset + PLT_HEADER_SIZE);
+            addRelocationSymbols(reltab, _base + plt->sh_addr + PLT_HEADER_SIZE);
         }
     }
 }
@@ -547,8 +563,8 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
         return;
     }
 
-    const char* last_readable_base = NULL;
-    const char* image_end = NULL;
+    const char* image_base = NULL;
+    u64 last_inode = 0;
     char* str = NULL;
     size_t str_size = 0;
     ssize_t len;
@@ -565,40 +581,50 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
             continue;
         }
 
-        const char* image_base = map.addr();
-        if (image_base != image_end) last_readable_base = image_base;
-        image_end = map.end();
+        const char* map_start = map.addr();
+        unsigned long map_offs = map.offs();
 
-        if (map.isExecutable()) {
-            if (!_parsed_libraries.insert(image_base).second) {
-                continue;  // the library was already parsed
-            }
+        if (map_offs == 0) {
+            image_base = map_start;
+            last_inode = u64(map.dev()) << 32 | map.inode();
+        }
 
-            int count = array->count();
-            if (count >= MAX_NATIVE_LIBS) {
-                break;
-            }
+        if (!map.isExecutable() || !_parsed_libraries.insert(map_start).second) {
+            // Not an executable segment or it has been already parsed
+            continue;
+        }
 
-            CodeCache* cc = new CodeCache(map.file(), count, image_base, image_end);
+        int count = array->count();
+        if (count >= MAX_NATIVE_LIBS) {
+            break;
+        }
 
-            unsigned long inode = map.inode();
+        const char* map_end = map.end();
+        CodeCache* cc = new CodeCache(map.file(), count, map_start, map_end);
+
+        // Do not try to parse pseudofiles like anon_inode:name, /memfd:name
+        if (strchr(map.file(), ':') == NULL) {
+            u64 inode = u64(map.dev()) << 32 | map.inode();
             if (inode != 0) {
                 // Do not parse the same executable twice, e.g. on Alpine Linux
-                if (_parsed_inodes.insert(u64(map.dev()) << 32 | inode).second) {
-                    // Be careful: executable file is not always ELF, e.g. classes.jsa
-                    unsigned long offs = map.offs();
-                    if ((unsigned long)image_base > offs && (image_base -= offs) >= last_readable_base) {
-                        ElfParser::parseProgramHeaders(cc, image_base);
+                if (_parsed_inodes.insert(inode).second) {
+                    if (inode == last_inode) {
+                        // If last_inode is set, image_base is known to be valid and readable
+                        ElfParser::parseProgramHeaders(cc, image_base, map_end);
+                        ElfParser::parseFile(cc, image_base, map.file(), true);
+                    } else if ((unsigned long)map_start > map_offs) {
+                        // Unlikely case when image_base has not been found.
+                        // Be careful: executable file is not always ELF, e.g. classes.jsa
+                        ElfParser::parseFile(cc, map_start - map_offs, map.file(), true);
                     }
-                    ElfParser::parseFile(cc, image_base, map.file(), true);
                 }
             } else if (strcmp(map.file(), "[vdso]") == 0) {
-                ElfParser::parseMem(cc, image_base);
+                ElfParser::parseMem(cc, map_start);
             }
-
-            cc->sort();
-            array->add(cc);
         }
+
+        cc->sort();
+        array->add(cc);
     }
 
     free(str);
