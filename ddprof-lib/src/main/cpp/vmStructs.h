@@ -110,6 +110,9 @@ class VMStructs {
     typedef void* (*FindFlagFunc)(const char*, size_t, bool, bool);
     static FindFlagFunc _find_flag_func;
 
+    typedef bool (*IsValidMethodFunc)(void*);
+    static IsValidMethodFunc _is_valid_method_func;
+
     static uintptr_t readSymbol(const char* symbol_name);
     static void initOffsets();
     static void resolveOffsets();
