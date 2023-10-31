@@ -130,27 +130,9 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
                 1.0f * (end - start) / 1000 / 1000, 1.0f * (end - start) / 1000 / sz);
 }
 
-Error LivenessTracker::initialize_table(int sampling_interval) {
+Error LivenessTracker::initialize_table(JNIEnv* jni, int sampling_interval) {
     _table_max_cap = 0;
-    jlong max_heap = HeapUsage::get()._maxSize;;
-    if (max_heap == -1) {
-        JNIEnv *env = VM::jni();
-        static jclass _rt;
-        static jmethodID _get_rt;
-        static jmethodID _max_memory;
-
-        if (!(_rt = env->FindClass("java/lang/Runtime"))) {
-            jniExceptionCheck(env, true);
-        } else if (!(_get_rt = env->GetStaticMethodID(_rt, "getRuntime", "()Ljava/lang/Runtime;"))) {
-            jniExceptionCheck(env, true);
-        } else if (!(_max_memory = env->GetMethodID(_rt, "maxMemory", "()J"))) {
-            jniExceptionCheck(env, true);
-        } else {
-            jobject rt = (jobject)env->CallStaticObjectMethod(_rt, _get_rt);
-            jniExceptionCheck(env);
-            max_heap = (jlong)env->CallLongMethod(rt, _max_memory);
-        }
-    }
+    jlong max_heap = HeapUsage::getMaxHeap(jni);
     if (max_heap == -1) {
         return Error("Can not track liveness for allocation samples without heap size information.");
     }
@@ -203,7 +185,7 @@ Error LivenessTracker::initialize(Arguments& args) {
 
     JNIEnv* env = VM::jni();
 
-    Error err = initialize_table(args._memory);
+    Error err = initialize_table(env, args._memory);
     if (err) {
         Log::warn("Liveness tracking requires heap size information");
         // disable liveness tracking

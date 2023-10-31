@@ -395,7 +395,8 @@ const void* VMStructs::findHeapUsageFunc() {
             return _libjvm->findSymbol("_ZN15G1CollectedHeap12memory_usageEv");
         } else if (isFlagTrue("UseShenandoahGC")) {
             return _libjvm->findSymbol("_ZN14ShenandoahHeap12memory_usageEv");
-        } else if (isFlagTrue("UseZGC")) {
+        } else if (isFlagTrue("UseZGC") && VM::java_version() < 21) {
+            // acessing this method in JDK 21 (generational ZGC) wil cause SIGSEGV 
             return _libjvm->findSymbol("_ZN14ZCollectedHeap12memory_usageEv");
         }
     }

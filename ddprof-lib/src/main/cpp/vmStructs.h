@@ -449,6 +449,30 @@ class HeapUsage : VMStructs {
         return _collected_heap_addr == NULL || (_heap_usage_func == NULL && _gc_heap_summary_func == NULL);
     }
 
+    static jlong getMaxHeap(JNIEnv* env) {      
+        static jclass _rt;
+        static jmethodID _get_rt;
+        static jmethodID _max_memory;
+
+        if (!(_rt = env->FindClass("java/lang/Runtime"))) {
+            env->ExceptionDescribe();
+            return -1;
+        }
+
+        if (!(_get_rt = env->GetStaticMethodID(_rt, "getRuntime", "()Ljava/lang/Runtime;"))) {
+            env->ExceptionDescribe();
+            return -1;
+        }
+
+        if (!(_max_memory = env->GetMethodID(_rt, "maxMemory", "()J"))) {
+            env->ExceptionDescribe();
+            return -1;
+        }
+
+        jobject rt = (jobject)env->CallStaticObjectMethod(_rt, _get_rt);
+        return (jlong)env->CallLongMethod(rt, _max_memory);
+    }
+
     static HeapUsage get() {
         return get(true);
     }
