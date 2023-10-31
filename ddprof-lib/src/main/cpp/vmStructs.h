@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "codeCache.h"
+#include "jniHelper.h"
 #include "jvmHeap.h"
 #include "vmEntry.h"
 #include "threadState.h"
@@ -455,22 +456,26 @@ class HeapUsage : VMStructs {
         static jmethodID _max_memory;
 
         if (!(_rt = env->FindClass("java/lang/Runtime"))) {
-            env->ExceptionDescribe();
+            jniExceptionCheck(env);
             return -1;
         }
 
         if (!(_get_rt = env->GetStaticMethodID(_rt, "getRuntime", "()Ljava/lang/Runtime;"))) {
-            env->ExceptionDescribe();
+            jniExceptionCheck(env);
             return -1;
         }
 
         if (!(_max_memory = env->GetMethodID(_rt, "maxMemory", "()J"))) {
-            env->ExceptionDescribe();
+            jniExceptionCheck(env);
             return -1;
         }
 
         jobject rt = (jobject)env->CallStaticObjectMethod(_rt, _get_rt);
-        return (jlong)env->CallLongMethod(rt, _max_memory);
+        jlong ret = (jlong)env->CallLongMethod(rt, _max_memory);
+        if (jniExceptionCheck(env)) {
+            return -1;
+        }
+        return ret;
     }
 
     static HeapUsage get() {

@@ -23,7 +23,6 @@
 #include "j9Ext.h"
 #include "vector"
 #include "safeAccess.h"
-#include "jniHelper.h"
 
 
 CodeCache* VMStructs::_libjvm = NULL;

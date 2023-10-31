@@ -15,6 +15,7 @@
  */
 
 #include <jvmti.h>
+#include "jniHelper.h"
 #include "tsc.h"
 #include "vmEntry.h"
 
@@ -37,6 +38,9 @@ void TSC::initialize() {
             && ((counterTime = env->GetStaticMethodID(cls, "counterTime", "()J")) != NULL)) {
 
         u64 frequency = env->CallLongMethod(env->GetStaticObjectField(cls, jvm), getTicksFrequency);
+        if (jniExceptionCheck(env, true)) {
+            frequency = 0;
+        }
         if (frequency > 1000000000) {
             // Default 1GHz frequency might mean that rdtsc is not available
             u64 jvm_ticks = env->CallStaticLongMethod(cls, counterTime);
