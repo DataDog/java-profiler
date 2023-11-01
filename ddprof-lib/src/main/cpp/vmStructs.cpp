@@ -23,7 +23,6 @@
 #include "j9Ext.h"
 #include "vector"
 #include "safeAccess.h"
-#include "jniHelper.h"
 
 
 CodeCache* VMStructs::_libjvm = NULL;
@@ -97,6 +96,7 @@ VMStructs::HeapUsageFunc VMStructs::_heap_usage_func = NULL;
 VMStructs::MemoryUsageFunc VMStructs::_memory_usage_func = NULL;
 VMStructs::GCHeapSummaryFunc VMStructs::_gc_heap_summary_func = NULL;
 VMStructs::FindFlagFunc VMStructs::_find_flag_func = NULL;
+VMStructs::IsValidMethodFunc VMStructs::_is_valid_method_func = NULL;
 
 void** VMStructs::_collected_heap_addr = NULL;
 
@@ -394,7 +394,8 @@ const void* VMStructs::findHeapUsageFunc() {
             return _libjvm->findSymbol("_ZN15G1CollectedHeap12memory_usageEv");
         } else if (isFlagTrue("UseShenandoahGC")) {
             return _libjvm->findSymbol("_ZN14ShenandoahHeap12memory_usageEv");
-        } else if (isFlagTrue("UseZGC")) {
+        } else if (isFlagTrue("UseZGC") && VM::java_version() < 21) {
+            // acessing this method in JDK 21 (generational ZGC) wil cause SIGSEGV 
             return _libjvm->findSymbol("_ZN14ZCollectedHeap12memory_usageEv");
         }
     }
@@ -412,6 +413,7 @@ void VMStructs::initJvmFunctions() {
     _find_flag_func =(FindFlagFunc) _libjvm->findSymbol("_ZN7JVMFlag9find_flagEPKcmbb");
     _heap_usage_func = (HeapUsageFunc) findHeapUsageFunc();
     _gc_heap_summary_func = (GCHeapSummaryFunc)_libjvm->findSymbol("_ZN13CollectedHeap19create_heap_summaryEv");
+    _is_valid_method_func = (IsValidMethodFunc)_libjvm->findSymbol("_ZN6Method15is_valid_methodEPKS_");
     initUnsafeFunctions();
 }
 
@@ -542,8 +544,14 @@ bool VMMethod::check_jmethodID(jmethodID id) {
 
 bool VMMethod::check_jmethodID_hotspot(jmethodID id) {
     const char* method_ptr = (const char*) SafeAccess::load((void**) id);
-    if (method_ptr == NULL) {
+    // check for NULL ptr and 'empty' ptr (JNIMethodBlock::_free_method)
+    if (method_ptr == NULL || (size_t)method_ptr == 55) {
         return false;
+    }
+    if (_is_valid_method_func != NULL) {
+        if (!_is_valid_method_func((void*)method_ptr)) {
+            return false;
+        }
     }
     // we can only perform the extended validity check if there are expected vmStructs in place
 

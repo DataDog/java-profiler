@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "codeCache.h"
+#include "jniHelper.h"
 #include "jvmHeap.h"
 #include "vmEntry.h"
 #include "threadState.h"
@@ -109,6 +110,9 @@ class VMStructs {
 
     typedef void* (*FindFlagFunc)(const char*, size_t, bool, bool);
     static FindFlagFunc _find_flag_func;
+
+    typedef bool (*IsValidMethodFunc)(void*);
+    static IsValidMethodFunc _is_valid_method_func;
 
     static uintptr_t readSymbol(const char* symbol_name);
     static void initOffsets();
@@ -444,6 +448,34 @@ class HeapUsage : VMStructs {
 
     static bool needsNativeBindingInterception() {
         return _collected_heap_addr == NULL || (_heap_usage_func == NULL && _gc_heap_summary_func == NULL);
+    }
+
+    static jlong getMaxHeap(JNIEnv* env) {      
+        static jclass _rt;
+        static jmethodID _get_rt;
+        static jmethodID _max_memory;
+
+        if (!(_rt = env->FindClass("java/lang/Runtime"))) {
+            jniExceptionCheck(env);
+            return -1;
+        }
+
+        if (!(_get_rt = env->GetStaticMethodID(_rt, "getRuntime", "()Ljava/lang/Runtime;"))) {
+            jniExceptionCheck(env);
+            return -1;
+        }
+
+        if (!(_max_memory = env->GetMethodID(_rt, "maxMemory", "()J"))) {
+            jniExceptionCheck(env);
+            return -1;
+        }
+
+        jobject rt = (jobject)env->CallStaticObjectMethod(_rt, _get_rt);
+        jlong ret = (jlong)env->CallLongMethod(rt, _max_memory);
+        if (jniExceptionCheck(env)) {
+            return -1;
+        }
+        return ret;
     }
 
     static HeapUsage get() {

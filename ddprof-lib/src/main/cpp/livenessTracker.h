@@ -66,7 +66,7 @@ class LivenessTracker  {
     size_t _used_after_last_gc;
 
     Error initialize(Arguments& args);
-    Error initialize_table(int sampling_interval);
+    Error initialize_table(JNIEnv* jni, int sampling_interval);
 
     void cleanup_table(bool force = false);
 
