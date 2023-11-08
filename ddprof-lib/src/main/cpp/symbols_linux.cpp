@@ -31,6 +31,7 @@
 #include "symbols.h"
 #include "dwarf.h"
 #include "log.h"
+#include "safeAccess.h"
 
 
 class SymbolDesc {
@@ -212,9 +213,16 @@ ElfProgramHeader* ElfParser::findProgramHeader(uint32_t type) {
     const char* pheaders = (const char*)_header + _header->e_phoff;
 
     for (int i = 0; i < _header->e_phnum; i++) {
-        ElfProgramHeader* pheader = (ElfProgramHeader*)(pheaders + i * _header->e_phentsize);
-        if (pheader->p_type == type) {
-            return pheader;
+        const char* unvalidated_pheader = pheaders + i * _header->e_phentsize;
+        // check we can load the pointer
+        void* checked = SafeAccess::load((void**) unvalidated_pheader);
+        if (checked == NULL) {
+            return NULL;
+        } else {
+            ElfProgramHeader* pheader = (ElfProgramHeader*) unvalidated_pheader;
+            if (pheader->p_type == type) {
+                return pheader;
+            }
         }
     }
 
