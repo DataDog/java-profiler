@@ -30,6 +30,7 @@ class ProfiledThread {
     u64 _wall_epoch;
     u64 _skipped_samples;
     u64 _context_key;
+    bool _unwinding_java;
 
     ProfiledThread(int buffer_pos, int tid) :
         _buffer_pos(buffer_pos),
@@ -37,7 +38,8 @@ class ProfiledThread {
         _cpu_epoch(0),
         _wall_epoch(0),
         _skipped_samples(0),
-        _context_key(0){};
+        _context_key(0),
+        _unwinding_java(false){};
 
     void releaseFromBuffer();
   public:
@@ -55,6 +57,12 @@ class ProfiledThread {
     
     static ProfiledThread* current();
     static int currentTid();
+    bool is_unwinding_Java() {
+        return _unwinding_java;
+    }
+    void set_unwinding_Java(bool flag) {
+        _unwinding_java = flag;
+    }
 
     inline int tid() {
         return _tid;

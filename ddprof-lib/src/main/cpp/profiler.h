@@ -58,6 +58,32 @@ struct CallTraceBuffer {
     ASGCT_CallFrame _asgct_frames[1];
 };
 
+// controls access to AGCT
+class AsyncSampleMutex {
+private:
+    bool _acquired;
+    bool try_set(bool flag) {
+        ProfiledThread* current = ProfiledThread::current();
+        if (current != NULL) {
+            bool was_set = current->is_unwinding_Java();
+            current->set_unwinding_Java(flag);
+            return !was_set;
+        }
+        return false;
+    }
+public:
+    AsyncSampleMutex() {
+        _acquired = try_set(true);
+    }
+    AsyncSampleMutex(AsyncSampleMutex& other) = delete;
+    ~AsyncSampleMutex() {
+        try_set(false);
+    }
+    bool acquired() {
+        return _acquired;
+    }
+};
+
 
 class FrameName;
 class NMethod;
