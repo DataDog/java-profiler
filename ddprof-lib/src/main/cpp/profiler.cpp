@@ -341,6 +341,58 @@ int Profiler::convertNativeTrace(int native_frames, const void** callchain, ASGC
     return depth;
 }
 
+NOINLINE void Profiler::getJavaTraceAsyncRetryPopStub(void* ucontext, ASGCT_CallTrace* trace, int max_depth, CodeBlob* stub, StackFrame& frame) {
+    if (!(_safe_mode & POP_STUB) && frame.popStub((instruction_t*)stub->_start, stub->_name)
+        && isAddressInCode(frame.pc() -= ADJUST_RET)) {
+        VM::_asyncGetCallTrace(trace, max_depth, ucontext);
+    }
+}
+
+NOINLINE void Profiler::getJavaTraceAsyncRetryPopMethod(void* ucontext, ASGCT_CallTrace* trace, int max_depth, CodeBlob* stub, StackFrame& frame, NMethod* nmethod) {
+    if (!(_safe_mode & POP_METHOD) && frame.popMethod((instruction_t*)nmethod->entry())
+        && isAddressInCode(frame.pc() -= ADJUST_RET)) {
+        VM::_asyncGetCallTrace(trace, max_depth, ucontext);
+    }
+}
+
+NOINLINE void Profiler::getJavaTraceAsyncRetryMakeFrameWalkable(void* ucontext, ASGCT_CallTrace* trace, int max_depth, VMThread* vm_thread) {
+    uintptr_t& sp = vm_thread->lastJavaSP();
+    uintptr_t& pc = vm_thread->lastJavaPC();
+    if (sp != 0 && pc == 0) {
+        // We have the last Java frame anchor, but it is not marked as walkable.
+        // Make it walkable here
+        pc = ((uintptr_t*)sp)[-1];
+
+        NMethod* m = CodeHeap::findNMethod((const void*)pc);
+        if (m != NULL) {
+            // AGCT fails if the last Java frame is a Runtime Stub with an invalid _frame_complete_offset.
+            // In this case we patch _frame_complete_offset manually
+            if (!m->isNMethod() && m->frameSize() > 0 && m->frameCompleteOffset() == -1) {
+                m->setFrameCompleteOffset(0);
+            }
+            VM::_asyncGetCallTrace(trace, max_depth, ucontext);
+        } else if (findLibraryByAddress((const void*)pc) != NULL) {
+            VM::_asyncGetCallTrace(trace, max_depth, ucontext);
+        }
+
+        pc = 0;
+    }
+}
+
+NOINLINE void Profiler::getJavaTraceAsyncRetryInvalidRuntimeStubFrameCompleteOffset(void* ucontext, ASGCT_CallTrace* trace, int max_depth, VMThread* vm_thread) {
+    uintptr_t& sp = vm_thread->lastJavaSP();
+    uintptr_t& pc = vm_thread->lastJavaPC();
+    if (sp != 0 && pc != 0) {
+        // Similar to the above: last Java frame is set,
+        // but points to a Runtime Stub with an invalid _frame_complete_offset
+        NMethod* m = CodeHeap::findNMethod((const void*)pc);
+        if (m != NULL && !m->isNMethod() && m->frameSize() > 0 && m->frameCompleteOffset() == -1) {
+            m->setFrameCompleteOffset(0);
+            VM::_asyncGetCallTrace(trace, max_depth, ucontext);
+        }
+    }
+}
+
 int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max_depth, StackContext* java_ctx, bool *truncated) {
     // Workaround for JDK-8132510: it's not safe to call GetEnv() inside a signal handler
     // since JDK 9, so we do it only for threads already registered in ThreadLocalStorage
@@ -436,10 +488,7 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
             if (_cstack != CSTACK_NO) {
                 max_depth -= makeFrame(trace.frames++, BCI_NATIVE_FRAME, stub->_name);
             }
-            if (!(_safe_mode & POP_STUB) && frame.popStub((instruction_t*)stub->_start, stub->_name)
-                    && isAddressInCode(frame.pc() -= ADJUST_RET)) {
-                VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
-            }
+            getJavaTraceAsyncRetryPopStub(ucontext, &trace, max_depth, stub, frame);
         } else if (VMStructs::hasMethodStructs()) {
             NMethod* nmethod = CodeHeap::findNMethod((const void*)frame.pc());
             if (nmethod != NULL && nmethod->isNMethod() && nmethod->isAlive()) {
@@ -449,55 +498,19 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
                     if (method_id != NULL) {
                         max_depth -= makeFrame(trace.frames++, 0, method_id);
                     }
-                    if (!(_safe_mode & POP_METHOD) && frame.popMethod((instruction_t*)nmethod->entry())
-                            && isAddressInCode(frame.pc() -= ADJUST_RET)) {
-                        VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
-                    }
+                    getJavaTraceAsyncRetryPopMethod(ucontext, &trace, max_depth, stub, frame, nmethod);
                 }
             } else if (nmethod != NULL) {
                 if (_cstack != CSTACK_NO) {
                     max_depth -= makeFrame(trace.frames++, BCI_NATIVE_FRAME, nmethod->name());
                 }
-                if (!(_safe_mode & POP_STUB) && frame.popStub(NULL, nmethod->name())
-                        && isAddressInCode(frame.pc() -= ADJUST_RET)) {
-                    VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
-                }
+                getJavaTraceAsyncRetryPopStub(ucontext, &trace, max_depth, stub, frame);
             }
         }
     } else if (trace.num_frames == ticks_unknown_not_Java && !(_safe_mode & LAST_JAVA_PC)) {
-        uintptr_t& sp = vm_thread->lastJavaSP();
-        uintptr_t& pc = vm_thread->lastJavaPC();
-        if (sp != 0 && pc == 0) {
-            // We have the last Java frame anchor, but it is not marked as walkable.
-            // Make it walkable here
-            pc = ((uintptr_t*)sp)[-1];
-
-            NMethod* m = CodeHeap::findNMethod((const void*)pc);
-            if (m != NULL) {
-                // AGCT fails if the last Java frame is a Runtime Stub with an invalid _frame_complete_offset.
-                // In this case we patch _frame_complete_offset manually
-                if (!m->isNMethod() && m->frameSize() > 0 && m->frameCompleteOffset() == -1) {
-                    m->setFrameCompleteOffset(0);
-                }
-                VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
-            } else if (findLibraryByAddress((const void*)pc) != NULL) {
-                VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
-            }
-
-            pc = 0;
-        }
+        getJavaTraceAsyncRetryMakeFrameWalkable(ucontext, &trace, max_depth, vm_thread);
     } else if (trace.num_frames == ticks_not_walkable_not_Java && !(_safe_mode & LAST_JAVA_PC)) {
-        uintptr_t& sp = vm_thread->lastJavaSP();
-        uintptr_t& pc = vm_thread->lastJavaPC();
-        if (sp != 0 && pc != 0) {
-            // Similar to the above: last Java frame is set,
-            // but points to a Runtime Stub with an invalid _frame_complete_offset
-            NMethod* m = CodeHeap::findNMethod((const void*)pc);
-            if (m != NULL && !m->isNMethod() && m->frameSize() > 0 && m->frameCompleteOffset() == -1) {
-                m->setFrameCompleteOffset(0);
-                VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
-            }
-        }
+        getJavaTraceAsyncRetryInvalidRuntimeStubFrameCompleteOffset(ucontext, &trace, max_depth, vm_thread);
     } else if (trace.num_frames == ticks_GC_active && !(_safe_mode & GC_TRACES)) {
         if (vm_thread->lastJavaSP() == 0) {
             // Do not add 'GC_active' for threads with no Java frames, e.g. Compiler threads

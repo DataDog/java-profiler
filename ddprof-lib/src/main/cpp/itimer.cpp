@@ -20,7 +20,6 @@
 #include "os.h"
 #include "profiler.h"
 #include "stackWalker.h"
-#include "context.h"
 #include "thread.h"
 #include "vmStructs.h"
 
@@ -30,7 +29,10 @@ CStack ITimer::_cstack;
 
 void ITimer::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     if (!_enabled) return;
-
+    AsyncSampleMutex mutex;
+    if (!mutex.acquired()) {
+        return;
+    }
     int tid = 0;
     ProfiledThread* current = ProfiledThread::current();
     if (current != NULL) {
