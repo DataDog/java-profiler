@@ -36,8 +36,6 @@
 #include "vmEntry.h"
 #include "objectSampler.h"
 #include "thread.h"
-#include "vmStructs.h"
-#include "stackFrame.h"
 
 // avoid linking against newer symbols here for wide compatibility
 #ifdef __GLIBC__
@@ -45,12 +43,6 @@
     __asm__(".symver log,log@GLIBC_2.17");
     __asm__(".symver exp,exp@GLIBC_2.17");
     #endif
-#endif
-
-#ifdef __clang__
-#  define NOINLINE __attribute__((noinline))
-#else
-#  define NOINLINE __attribute__((noinline,noclone))
 #endif
 
 const int MAX_NATIVE_FRAMES = 128;
@@ -193,10 +185,6 @@ class Profiler {
     Engine* selectWallEngine(Arguments& args);
     Engine* selectAllocEngine(Arguments& args);
     Error checkJvmCapabilities();
-    NOINLINE void getJavaTraceAsyncRetryPopStub(void* ucontext, ASGCT_CallTrace* trace, int max_depth, CodeBlob* stub, StackFrame& frame);
-    NOINLINE void getJavaTraceAsyncRetryPopMethod(void* ucontext, ASGCT_CallTrace* trace, int max_depth, CodeBlob* stub, StackFrame& frame, NMethod* nmethod);
-    NOINLINE void getJavaTraceAsyncRetryMakeFrameWalkable(void* ucontext, ASGCT_CallTrace* trace, int max_depth, VMThread* vm_thread);
-    NOINLINE void getJavaTraceAsyncRetryInvalidRuntimeStubFrameCompleteOffset(void* ucontext, ASGCT_CallTrace* trace, int max_depth, VMThread* vm_thread);
 
     void lockAll();
     void unlockAll();
