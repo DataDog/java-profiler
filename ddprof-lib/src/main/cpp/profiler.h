@@ -85,7 +85,9 @@ public:
     }
     AsyncSampleMutex(AsyncSampleMutex& other) = delete;
     ~AsyncSampleMutex() {
-        try_set(false);
+        if (_acquired) {
+            try_set(false);
+        }
     }
     bool acquired() {
         return _acquired;
