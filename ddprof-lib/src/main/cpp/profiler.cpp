@@ -665,8 +665,15 @@ void Profiler::recordSample(void* ucontext, u64 counter, int tid, jint event_typ
         num_frames += getNativeTrace(ucontext, native_stop, event_type, tid, &java_ctx, &truncated);
 
         if (event_type == BCI_CPU || event_type == BCI_WALL) {
-            // Async events
-            int java_frames = getJavaTraceAsync(ucontext, frames + num_frames, _max_stack_depth, &java_ctx, &truncated);
+            int java_frames = 0;
+            {
+                // Async events
+                AsyncSampleMutex mutex;
+                if (mutex.acquired()) {
+                    java_frames = getJavaTraceAsync(ucontext, frames + num_frames, _max_stack_depth, &java_ctx,
+                                                    &truncated);
+                }
+            }
             if (java_frames > 0 && java_ctx.pc != NULL) {
                 NMethod *nmethod = CodeHeap::findNMethod(java_ctx.pc);
                 if (nmethod != NULL) {
