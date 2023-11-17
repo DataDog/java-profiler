@@ -702,10 +702,6 @@ void PerfEvents::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
         // Looks like an external signal; don't treat as a profiling event
         return;
     }
-    AsyncSampleMutex mutex;
-    if (!mutex.acquired()) {
-        return;
-    }
 
     ProfiledThread* current = ProfiledThread::current();
     if (current != NULL) {

@@ -57,10 +57,6 @@ void WallClock::sharedSignalHandler(int signo, siginfo_t* siginfo, void* ucontex
 }
 
 void WallClock::signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64 last_sample) {
-    AsyncSampleMutex mutex;
-    if (!mutex.acquired()) {
-        return;
-    }
     ProfiledThread* current = ProfiledThread::current();
     int tid = current != NULL ? current->tid() : OS::threadId();
     Shims::instance().setSighandlerTid(tid);
