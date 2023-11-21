@@ -364,6 +364,13 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
         saved_sp = frame.sp();
         saved_fp = frame.fp();
 
+        if (saved_pc >= (uintptr_t)_call_stub_begin && saved_pc < (uintptr_t)_call_stub_end) {
+            // call_stub is unsafe to walk
+            frames->bci = BCI_ERROR;
+            frames->method_id = (jmethodID)"call_stub";
+            return 1;
+        }
+
         if (!VMStructs::isSafeToWalk(saved_pc)) {
             frames->bci = BCI_NATIVE_FRAME;
             CodeBlob* codeBlob = VMStructs::libjvm()->find((const void*) saved_pc);
@@ -397,14 +404,14 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
     };
      */
     bool in_java = (state == 8 || state == 9);
-    if (in_java && java_ctx->sp) {
+    if (in_java && java_ctx->sp != 0) {
         // skip ahead to the Java frames before calling AGCT
         frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);
     }
     // do not attempt to unwind
     bool in_native = (state == 4 || state == 5);
     if (in_native) {
-        if (java_ctx->sp) {
+        if (java_ctx->sp != 0) {
             // skip ahead to the Java frames before calling AGCT
             frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);
         } else {
