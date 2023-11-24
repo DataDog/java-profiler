@@ -403,6 +403,10 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
         _thread_max_state         = 12  // maximum thread state+1 - used for statistics allocation
     };
      */
+    // avoid unwinding during deoptimization
+    if (_state == 10 || _state == 11) {
+        return 0;
+    }
     bool in_java = (state == 8 || state == 9);
     if (in_java && java_ctx->sp != 0) {
         // skip ahead to the Java frames before calling AGCT
