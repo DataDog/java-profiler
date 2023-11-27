@@ -404,7 +404,7 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
     };
      */
     // avoid unwinding during deoptimization
-    if (_state == 10 || _state == 11) {
+    if (vm_thread->osThreadState() == ThreadState::RUNNABLE && (_state == 10 || _state == 11)) {
         return 0;
     }
     bool in_java = (state == 8 || state == 9);
