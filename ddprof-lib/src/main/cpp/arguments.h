@@ -18,6 +18,7 @@
 #define _ARGUMENTS_H
 
 #include <stddef.h>
+#include <cstring>
 #include <vector>
 #include <string>
 
@@ -33,6 +34,7 @@ const char* const EVENT_CPU    = "cpu";
 const char* const EVENT_ALLOC  = "alloc";
 const char* const EVENT_WALL   = "wall";
 const char* const EVENT_ITIMER = "itimer";
+const char* const EVENT_CTIMER = "ctimer";
 
 enum Action {
     ACTION_NONE,
@@ -117,6 +119,10 @@ class Arguments {
     const char* expandFilePattern(const char* pattern);
     static long long hash(const char* arg);
     static long parseUnits(const char* str, const Multiplier* multipliers);
+    static bool isCpuEvent(const char* event) {
+        // event == NULL will default to EVENT_CPU
+        return event == NULL || strcmp(event, EVENT_CPU) == 0 || strcmp(event, EVENT_ITIMER) == 0 || strcmp(event, EVENT_CTIMER) == 0;
+    }
 
   public:
     Action _action;
@@ -182,6 +188,10 @@ class Arguments {
 
     bool hasOption(JfrOption option) const {
         return (_jfr_options & option) != 0;
+    }
+
+    long cpuSamplerInterval() const {
+        return isCpuEvent(_event) ? (_cpu > 0 ? _cpu : _interval > 0 ? _interval : DEFAULT_CPU_INTERVAL) : 0;
     }
 
     friend class FrameName;

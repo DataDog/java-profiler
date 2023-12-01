@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 Andrei Pangin
+ * Copyright 2017 Andrei Pangin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,29 +14,39 @@
  * limitations under the License.
  */
 
-#ifndef _ITIMER_H
-#define _ITIMER_H
+#ifndef _CTIMER_H
+#define _CTIMER_H
 
-#include <signal.h>
 #include "engine.h"
 
+#ifdef __linux__
 
-class ITimer : public Engine {
+#include <signal.h>
+#include "arch.h"
+
+class CTimer : public Engine {
   private:
     static volatile bool _enabled;
     static long _interval;
     static CStack _cstack;
+    static int _signal;
 
+    static int _max_timers;
+    static int* _timers;
+
+    int registerThread(int tid);
+    void unregisterThread(int tid);
+
+    // cppcheck-suppress unusedPrivateFunction
     static void signalHandler(int signo, siginfo_t* siginfo, void* ucontext);
 
   public:
-
     const char* units() {
         return "ns";
     }
 
     const char* name() {
-        return "ITimer";
+        return "CTimer";
     }
 
     long interval() const {
@@ -52,4 +62,23 @@ class ITimer : public Engine {
     }
 };
 
-#endif // _ITIMER_H
+#else
+
+class CTimer : public Engine {
+  public:
+    Error check(Arguments& args) {
+        return Error("CTimer is not supported on this platform");
+    }
+
+    Error start(Arguments& args) {
+        return Error("CTimer is not supported on this platform");
+    }
+
+    static bool supported() {
+        return false;
+    }
+};
+
+#endif // __linux__
+
+#endif // _CTIMER_H
