@@ -120,6 +120,7 @@ void VMStructs::init(CodeCache* libjvm) {
 // Run when VM is initialized and JNI is available
 void VMStructs::ready() {
     resolveOffsets();
+    patchSafeFetch();
 
     JNIEnv* env = VM::jni();
     initThreadBridge(env);
@@ -415,6 +416,21 @@ void VMStructs::initJvmFunctions() {
     _gc_heap_summary_func = (GCHeapSummaryFunc)_libjvm->findSymbol("_ZN13CollectedHeap19create_heap_summaryEv");
     _is_valid_method_func = (IsValidMethodFunc)_libjvm->findSymbol("_ZN6Method15is_valid_methodEPKS_");
     initUnsafeFunctions();
+}
+
+void VMStructs::patchSafeFetch() {
+    // Workarounds for JDK-8307549 and JDK-8321116
+    if (WX_MEMORY && VM::isHotspot() && VM::java_version() == 17) {
+        void** entry = (void**)_libjvm->findSymbol("_ZN12StubRoutines18_safefetch32_entryE");
+        if (entry != NULL) {
+            *entry = (void*)SafeAccess::load32;
+        }
+    } else if (WX_MEMORY && VM::isHotspot() && VM::java_version() == 11) {
+        void** entry = (void**)_libjvm->findSymbol("_ZN12StubRoutines17_safefetchN_entryE");
+        if (entry != NULL) {
+            *entry = (void*)SafeAccess::loadPtr;
+        }
+    }
 }
 
 void VMStructs::initTLS(void* vm_thread) {

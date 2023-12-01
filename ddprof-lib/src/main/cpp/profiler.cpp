@@ -836,7 +836,7 @@ void Profiler::segvHandler(int signo, siginfo_t* siginfo, void* ucontext) {
         return;
     }
 
-    length = SafeAccess::skipLoad32(frame.pc());
+    length = SafeAccess::skipLoadArg(frame.pc());
     if (length > 0) {
         // Act as if the load returned default_value argument
         frame.pc() += length;
