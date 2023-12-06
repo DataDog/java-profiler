@@ -26,6 +26,7 @@
 #include "j9ObjectSampler.h"
 #include "os.h"
 #include "profiler.h"
+#include "safeAccess.h"
 #include "log.h"
 #include "vmStructs.h"
 #include "jniHelper.h"
@@ -320,6 +321,14 @@ void VM::ready(jvmtiEnv* jvmti, JNIEnv* jni) {
     }
 
     Profiler::setupSignalHandlers();
+
+    if (WX_MEMORY && isHotspot() && java_version() == 17) {
+        // Workaround for JDK-8307549
+        void** entry = (void**)VMStructs::libjvm()->findSymbol("_ZN12StubRoutines18_safefetch32_entryE");
+        if (entry != NULL) {
+            *entry = (void*)SafeAccess::load32;
+        }
+    }
 
     _libjava = getLibraryHandle("libjava.so");
 
