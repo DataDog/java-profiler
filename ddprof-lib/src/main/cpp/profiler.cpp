@@ -828,11 +828,19 @@ void Profiler::trapHandler(int signo, siginfo_t* siginfo, void* ucontext) {
 void Profiler::segvHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     StackFrame frame(ucontext);
 
-    uintptr_t length = SafeAccess::skipFaultInstruction(frame.pc());
+    uintptr_t length = SafeAccess::skipLoad(frame.pc());
     if (length > 0) {
         // Skip the fault instruction, as if it successfully loaded NULL
         frame.pc() += length;
         frame.retval() = 0;
+        return;
+    }
+
+    length = SafeAccess::skipLoad32(frame.pc());
+    if (length > 0) {
+        // Act as if the load returned default_value argument
+        frame.pc() += length;
+        frame.retval() = frame.arg1();
         return;
     }
 
@@ -1201,10 +1209,10 @@ Error Profiler::dump(const char* path, const int length) {
         Counters::set(CODECACHE_NATIVE_COUNT, _native_libs.count());
         Counters::set(CODECACHE_NATIVE_SIZE_BYTES, _native_libs.memoryUsage());
         Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES, _native_libs.memoryUsage());
-        
+
         lockAll();
         Error err = _jfr.dump(path, length);
-        
+
         // Reset calltrace storage
         if (!_omit_stacktraces) {
             _call_trace_storage.clear();
