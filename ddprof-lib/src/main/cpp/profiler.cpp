@@ -1041,9 +1041,11 @@ Error Profiler::start(Arguments& args, bool reset) {
     _wall_engine = selectWallEngine(args);
     _cstack = args._cstack;
     if (_cstack == CSTACK_DWARF && !DWARF_SUPPORTED) {
-        return Error("DWARF unwinding is not supported on this platform");
+        _cstack = CSTACK_NO;
+        Log::warn("DWARF unwinding is not supported on this platform. Defaulting to no native call stack unwinding.");
     } else if (_cstack == CSTACK_LBR && _cpu_engine != &perf_events) {
-        return Error("Branch stack is supported only with PMU events");
+        _cstack = CSTACK_NO;
+        Log::warn("Branch stack is supported only with PMU events");
     }
 
     // Kernel symbols are useful only for perf_events without --all-user
