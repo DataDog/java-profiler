@@ -620,6 +620,18 @@ void* JVMFlag::find(const char* name) {
     return NULL;
 }
 
+JVMFlag* JVMFlag::findFlag(const char* name) {
+    if (_flags_addr != NULL && _flag_size > 0) {
+        for (int i = 0; i < _flag_count; i++) {
+            JVMFlag* f = (JVMFlag*)(_flags_addr + i * _flag_size);
+            if (f->name() != NULL && strcmp(f->name(), name) == 0) {
+                return f;
+            }
+        }
+    }
+    return NULL;
+}
+
 bool VMStructs::isSafeToWalk(uintptr_t pc) {
     return !(_unsafe_to_walk.contains((const void*) pc) && _unsafe_to_walk.findFrameDesc((const void*) pc));
 }

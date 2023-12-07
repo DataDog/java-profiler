@@ -299,6 +299,35 @@ bool VM::init(JavaVM* vm, bool attach) {
         _is_adaptive_gc_boundary_flag_set = flag_addr != NULL && *flag_addr == 1;
     }
 
+    // Set the JFR stacktrace depth to 256
+    JVMFlag* flag = JVMFlag::findFlag("FlightRecorderOptions");
+    if (flag != NULL && flag->addr() != NULL) {
+        char* flag_addr = (char*)flag->addr();
+        int depth = 256; // our default depth
+        bool is_set = false;
+        char* end = strstr(flag_addr, "stackdepth=");
+        if (end != NULL) {
+            is_set = true;
+            end += 11;
+            char* next = strchr(end, ',');
+            if (next == NULL) {
+                next = end + strlen(end);
+            }
+            depth = atoi(end);
+        }
+        if (!is_set || depth > 256) {
+            char* buf = (char*)malloc(strlen(flag_addr) + 256);
+            if (buf != NULL) {
+                memcpy(buf, flag_addr, end - flag_addr);
+                memcpy(buf + (end - flag_addr), "256", 3);
+                memcpy(buf + (end - flag_addr) + 3, next, strlen(next) + 1);
+                *flag_addr = 0;
+                flag->set(buf);
+                free(flag_addr);
+            }
+        }
+    }
+
     if (attach) {
         loadAllMethodIDs(jvmti(), jni());
         _jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);

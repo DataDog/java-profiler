@@ -422,6 +422,7 @@ class CodeHeap : VMStructs {
 class JVMFlag : VMStructs {
   public:
     static void* find(const char* name);
+    static JVMFlag* findFlag(const char* name);
 
     const char* name() {
         return *(const char**) at(_flag_name_offset);
@@ -429,6 +430,10 @@ class JVMFlag : VMStructs {
 
     void* addr() {
         return *(void**) at(_flag_addr_offset);
+    }
+
+    void set(void* value) {
+        (*(void**) at(_flag_addr_offset)) = value;
     }
 };
 
