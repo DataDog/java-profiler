@@ -15,7 +15,7 @@ def create_scanbuild_code_links(soup, target_branch):
             target = element
         elif 'Q' in clz and target is not None and target.text != 'Function/Method':
             line = element.text
-            link = soup.new_tag('a', href=f'https://github.com/DataDog/java-profiler-library/blob/{target_branch}/ddprof-lib/src/main/cpp/{src}#L{line}')
+            link = soup.new_tag('a', href=f'https://github.com/DataDog/java-profiler/blob/{target_branch}/ddprof-lib/src/main/cpp/{src}#L{line}')
             link.string = src
             target.clear()
             target.append(link)

@@ -36,7 +36,7 @@
                                             <xsl:value-of select="concat(location/@file, '#L', location/@line)"/>
                                         </xsl:variable>
                                         <li>
-                                            <a href="https://github.com/DataDog/java-profiler-library/blob/target_branch/{$source}">
+                                            <a href="https://github.com/DataDog/java-profiler/blob/target_branch/{$source}">
                                                 <xsl:value-of select="@msg"/>
                                             </a>
                                         </li>
@@ -55,7 +55,7 @@
                                             <xsl:value-of select="concat(location/@file, '#L', location/@line)"/>
                                         </xsl:variable>
                                         <li>
-                                            <a href="https://github.com/DataDog/java-profiler-library/blob/target_branch/{$source}">
+                                            <a href="https://github.com/DataDog/java-profiler/blob/target_branch/{$source}">
                                                 <xsl:value-of select="@msg"/>
                                             </a>
                                         </li>
@@ -74,7 +74,7 @@
                                             <xsl:value-of select="concat(location/@file, '#L', location/@line)"/>
                                         </xsl:variable>
                                         <li>
-                                            <a href="https://github.com/DataDog/java-profiler-library/blob/target_branch/{$source}">
+                                            <a href="https://github.com/DataDog/java-profiler/blob/target_branch/{$source}">
                                                 <xsl:value-of select="@msg"/>
                                             </a>
                                         </li>
@@ -99,7 +99,7 @@
         <tr>
             <td>
                 <div class="title"><xsl:value-of select="@msg"/></div>
-                <a href="https://github.com/DataDog/java-profiler-library/blob/target_branch/{$source}">
+                <a href="https://github.com/DataDog/java-profiler/blob/target_branch/{$source}">
                     <xsl:value-of select="$source"/>
                 </a>
             </td>
