@@ -19,7 +19,7 @@
 
 #include <array>
 
-using namespace RustDemangler;
+namespace RustDemangler {
 
 // With some exceptions we don't handle here, v0 Rust symbols can end in a
 // prefix followed by a 16-hexdigit hash, which must be removed
@@ -163,3 +163,4 @@ std::string demangle(const std::string &str) {
 
   return ret;
 }
+} // namespace RustDemangler

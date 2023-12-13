@@ -85,8 +85,8 @@ void Lookup::fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* 
             mi->_type = FRAME_CPP;
 
             // Rust legacy demangling
-            if (rustDemangler::is_probably_rust_legacy(demangled)) {
-                std::string rust_demangled = rustDemangler::demangle(demangled);
+            if (RustDemangler::is_probably_rust_legacy(demangled)) {
+                std::string rust_demangled = RustDemangler::demangle(demangled);
                 mi->_name = _symbols.lookup(rust_demangled.c_str());
             } else {
                 mi->_name = _symbols.lookup(demangled);
