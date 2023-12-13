@@ -39,6 +39,7 @@
 #include "dictionary.h"
 #include "os.h"
 #include "profiler.h"
+#include "rustDemangler.h"
 #include "spinLock.h"
 #include "symbols.h"
 #include "threadFilter.h"
@@ -80,9 +81,16 @@ void Lookup::fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* 
         char* demangled = abi::__cxa_demangle(name, NULL, NULL, &status);
         if (demangled != NULL) {
             cutArguments(demangled);
-            mi->_name = _symbols.lookup(demangled);
             mi->_sig = _symbols.lookup("()L;");
             mi->_type = FRAME_CPP;
+
+            // Rust legacy demangling
+            if (rustDemangler::is_probably_rust_legacy(demangled)) {
+                std::string rust_demangled = rustDemangler::demangle(demangled);
+                mi->_name = _symbols.lookup(rust_demangled.c_str());
+            } else {
+                mi->_name = _symbols.lookup(demangled);
+            }
             free(demangled);
             return;
         }
