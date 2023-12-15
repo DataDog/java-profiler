@@ -19,8 +19,9 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/syscall.h>
-#include "safeAccess.h"
 #include "stackFrame.h"
+#include "safeAccess.h"
+#include "vmStructs.h"
 
 
 #ifdef __APPLE__
@@ -97,6 +98,21 @@ bool StackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& p
     {
         pc = link();
         return true;
+    } else if (strcmp(name, "forward_copy_longs") == 0
+            || strcmp(name, "backward_copy_longs") == 0
+            // There is a typo in JDK 8
+            || strcmp(name, "foward_copy_longs") == 0) {
+        // These are called from arraycopy stub that maintains the regular frame link
+        if (&pc == &this->pc() && withinCurrentStack(fp)) {
+            // Unwind both stub frames for AsyncGetCallTrace
+            sp = fp + 16;
+            fp = ((uintptr_t*)sp)[-2];
+            pc = ((uintptr_t*)sp)[-1] - sizeof(instruction_t);
+        } else {
+            // When cstack=vm, unwind stub frames one by one
+            pc = link();
+        }
+        return true;
     } else if (entry != NULL && entry[0] == 0xa9bf7bfd) {
         // The stub begins with
         //   stp  x29, x30, [sp, #-16]!
@@ -115,15 +131,36 @@ bool StackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& p
     return false;
 }
 
-bool StackFrame::unwindCompiled(instruction_t* entry, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+static inline bool isEntryBarrier(instruction_t* ip) {
+    // ldr  w9, [x28, #32]
+    // cmp  x8, x9
+    return ip[0] == 0xb9402389 && ip[1] == 0xeb09011f;
+}
+
+bool StackFrame::unwindCompiled(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     instruction_t* ip = (instruction_t*)pc;
+    instruction_t* entry = (instruction_t*)nm->entry();
     if ((*ip & 0xffe07fff) == 0xa9007bfd) {
-        // stp x29, x30, [sp, #offset]
+        // stp  x29, x30, [sp, #offset]
         // SP has been adjusted, but FP not yet stored in a new frame
         unsigned int offset = (*ip >> 12) & 0x1f8;
         sp += offset + 16;
+        pc = link();
+    } else if (ip > entry && ip[0] == 0x910003fd && ip[-1] == 0xa9bf7bfd) {
+        // stp  x29, x30, [sp, #-16]!
+        // mov  x29, sp
+        sp += 16;
+        pc = ((uintptr_t*)sp)[-1];
+    } else if (ip > entry + 3 && !nm->isFrameCompleteAt(ip) &&
+               (isEntryBarrier(ip) || isEntryBarrier(ip + 1))) {
+        // Frame should be complete at this point
+        sp += nm->frameSize() * sizeof(void*);
+        fp = ((uintptr_t*)sp)[-2];
+        pc = ((uintptr_t*)sp)[-1];
+    } else {
+        // Just try
+        pc = link();
     }
-    pc = link();
     return true;
 }
 
