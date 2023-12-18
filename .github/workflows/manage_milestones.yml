@@ -1,4 +1,4 @@
-name: Manage Milestone
+name: Manage Milestones
 
 on:
   release:
