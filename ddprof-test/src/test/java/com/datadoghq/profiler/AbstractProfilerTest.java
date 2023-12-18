@@ -40,6 +40,7 @@ public abstract class AbstractProfilerTest {
 
   private boolean stopped = true;
 
+  public static final String LAMBDA_QUALIFIER = Platform.isJavaVersionAtLeast(21) ? "$$Lambda." : "$$Lambda$";
   public static final IQuantity ZERO_BYTES = BYTE.quantity(0);
   public static final IAttribute<IQuantity> SIZE = attr("size", "size", "", BYTE.getContentType());
   public static final IAttribute<IQuantity> WEIGHT = attr("weight", "weight", "weight", NUMBER);

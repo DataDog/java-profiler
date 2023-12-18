@@ -48,7 +48,7 @@ public class ContendedWallclockSamplesTest extends AbstractProfilerTest {
         }
         assertTrue(result != 0);
         stopProfiler();
-        String lambdaName = getClass().getName() + "$$Lambda$";
+        String lambdaName = getClass().getName() + LAMBDA_QUALIFIER;
         String lambdaStateName = getClass().getName() + ".lambda$pingPong$";
         for (IItemIterable wallclockSamples : verifyEvents("datadog.MethodSample")) {
             IMemberAccessor<String, IItem> frameAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(wallclockSamples.getType());

@@ -41,7 +41,7 @@ jobs:
     if: needs.check-for-pr.outputs.skip != 'true'
     strategy:
       matrix:
-        java_version: [8u362+9, 11.0.18+10, 17.0.6+10, 20.0.1+10]
+        java_version: [8u362+9, 11.0.18+10, 17.0.6+10, 21.0.1+12]
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -86,7 +86,7 @@ jobs:
     if: needs.check-for-pr.outputs.skip != 'true'
     strategy:
       matrix:
-        java_version: [11, 17]
+        java_version: [11, 17, 21]
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     steps:
@@ -226,7 +226,7 @@ jobs:
     if: needs.check-for-pr.outputs.skip != 'true'
     strategy:
       matrix:
-        java_version: [8u362+9, 11.0.18+10, 17.0.6+10, 20.0.1+10]
+        java_version: [8u362+9, 11.0.18+10, 17.0.6+10, 21.0.1+12]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     container:
@@ -278,7 +278,7 @@ jobs:
     if: needs.check-for-pr.outputs.skip != 'true'
     strategy:
       matrix:
-        java_version: [ 8, 11, 17 ]
+        java_version: [ 8, 11, 17, 21 ]
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -304,6 +304,9 @@ jobs:
           elif [ "${{ matrix.java_version }}" = "17" ]; then
             # jdk 17.0.7
             curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk17.0.7-linux_x64.tar.gz" | sudo tar -xvzf - -C /usr/lib/jvm/zing --strip-components 1
+          elif [ "${{ matrix.java_version }}" = "21" ]; then
+            # jdk 21.0.2
+            curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.10.0.0/zing23.10.0.0-3-jdk21.0.1-linux_x64.tar.gz" | sudo tar -xvzf - -C /usr/lib/jvm/zing --strip-components 1
           fi
           # rename the bundled libstdc++.so to avoid conflicts with the system one
           sudo mv /usr/lib/jvm/zing/etc/libc++/libstdc++.so.6 /usr/lib/jvm/zing/etc/libc++/libstdc++.so.6.bak
