@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/syscall.h>
+#include "safeAccess.h"
 #include "stackFrame.h"
 
 
