@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -x
+set -e
 
 TYPE=$1
 DRYRUN=$2
@@ -8,11 +9,12 @@ DRYRUN=$2
 BRANCH=$(git branch --show-current)
 RELEASE_BRANCH=
 
+LAST_VERSION=$(git tag | grep v_ | sort -V | tail -n 1 | cut -f2 -d_)
 BASE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
 # BASE == 0.0.1
 
 if [ "$TYPE" == "MINOR" ] || [ "$TYPE" == "MAJOR" ]; then
-  if [ "$BRANCH" != "main" ]; then
+  if [ "$BRANCH" != "main" ] && [ -z "$DRYRUN" ]; then
     echo "Major or minor release can be performed only from 'main' branch."
     exit 1
   fi
@@ -27,7 +29,7 @@ if [ "$TYPE" == "MINOR" ] || [ "$TYPE" == "MAJOR" ]; then
 fi
 
 if [ "$TYPE" == "PATCH" ]; then
-  if [[ ! $BRANCH =~ ^release\/[0-9]+\.[0-9]+\._$ ]]; then
+  if [[ ! $BRANCH =~ ^release\/[0-9]+\.[0-9]+\._$ ]] && [ -z "$DRYRUN" ]; then
     echo "Patch release can be created only for 'release/*' branch."
     exit 1
   fi
@@ -54,8 +56,11 @@ fi
 
 CANDIDATE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
 
+python ./.github/scripts/manage_milestones.py "$LAST_VERSION" "$BASE"
+
 git add build.gradle
 git commit -m "[Automated] Bump dev version to ${CANDIDATE}"
 
 git push $DRYRUN --atomic --set-upstream origin $BRANCH
 git push $DRYRUN -f --atomic --tags
+

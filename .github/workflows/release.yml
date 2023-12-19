@@ -23,6 +23,13 @@ jobs:
   release-branch:
     runs-on: ubuntu-latest
     steps:
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+      - name: Install Dependencies
+        run: |
+          pip install PyGithub
       - name: Output Inputs
         run: |
           echo "${{ toJSON(github.event.inputs) }}"
@@ -38,20 +45,23 @@ jobs:
           git config --global user.email "java-profiler@datadoghq.com"
           git config --global user.name "Datadog Java Profiler"
       - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ "${{ inputs.release_type }}" != "patch" ]&& [[ ${GITHUB_REF_NAME} =~ release/.* ]]; then
-            echo "::error Only patch release can be performed from a release branch"
-            exit 1
-          fi
-          if [ "${{ inputs.release_type }}" == "patch" ]&& [[ ! ${GITHUB_REF_NAME} =~ release/.* ]]; then
-            echo "::error::A patch release can be performed only from a release branch"
-            exit 1
-          fi
-          if [ "${{ inputs.release_type }}" != "patch" ]&& [[ ! ${GITHUB_REF_NAME} =~ main ]]; then
-            echo "::error::A major or minor release can be performed only from 'main' branch"
-            exit 1
-          fi
-          if [ "${{ inputs.dry_run }}" == "true" ]; then
+          if [ "${{ inputs.dry_run }}" != "true" ]; then
+            if [ "${{ inputs.release_type }}" != "patch" ]&& [[ ${GITHUB_REF_NAME} =~ release/.* ]]; then
+              echo "::error Only patch release can be performed from a release branch"
+              exit 1
+            fi
+            if [ "${{ inputs.release_type }}" == "patch" ]&& [[ ! ${GITHUB_REF_NAME} =~ release/.* ]]; then
+              echo "::error::A patch release can be performed only from a release branch"
+              exit 1
+            fi
+            if [ "${{ inputs.release_type }}" != "patch" ]&& [[ ! ${GITHUB_REF_NAME} =~ main ]]; then
+              echo "::error::A major or minor release can be performed only from 'main' branch"
+              exit 1
+            fi
+          else
             DRY_RUN="--dry-run"
           fi
 
