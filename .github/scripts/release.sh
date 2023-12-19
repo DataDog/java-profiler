@@ -9,7 +9,6 @@ DRYRUN=$2
 BRANCH=$(git branch --show-current)
 RELEASE_BRANCH=
 
-LAST_VERSION=$(git tag | grep v_ | sort -V | tail -n 1 | cut -f2 -d_)
 BASE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
 # BASE == 0.0.1
 
@@ -55,8 +54,6 @@ else
 fi
 
 CANDIDATE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
-
-python ./.github/scripts/manage_milestones.py release "$BASE" "$LAST_VERSION"
 
 git add build.gradle
 git commit -m "[Automated] Bump dev version to ${CANDIDATE}"
