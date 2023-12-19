@@ -1,0 +1,67 @@
+name: Milestone Maintenance
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        description: The maintenance action
+        options:
+          - "close"
+          - "create"
+          - "assign"
+        default: "assign"
+      milestone:
+        description: The milestone title
+        required: true
+        type: string
+
+jobs:
+  close:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'close'
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+      - name: Install Dependencies
+        run: |
+          pip install PyGithub
+      - name: Close Milestone
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .github/milestone_maintenance.py close "${{ github.event.inputs.milestone }}"
+  open:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'create'
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+      - name: Install Dependencies
+        run: |
+          pip install PyGithub
+      - name: Open Milestone
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .github/milestone_maintenance.py create "${{ github.event.inputs.milestone }}"
+  assign:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'assign'
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+      - name: Install Dependencies
+        run: |
+          pip install PyGithub
+      - name: Assign Milestone
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .github/milestone_maintenance.py assign "${{ github.event.inputs.milestone }}"

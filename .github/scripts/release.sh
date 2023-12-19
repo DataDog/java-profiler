@@ -56,7 +56,7 @@ fi
 
 CANDIDATE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
 
-python ./.github/scripts/manage_milestones.py "$LAST_VERSION" "$BASE"
+python ./.github/scripts/manage_milestones.py release "$BASE" "$LAST_VERSION"
 
 git add build.gradle
 git commit -m "[Automated] Bump dev version to ${CANDIDATE}"

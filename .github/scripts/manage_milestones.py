@@ -4,15 +4,17 @@ import os
 
 # Parsing command line arguments
 parser = argparse.ArgumentParser(description="Manage GitHub Milestones")
-parser.add_argument("previous_version", help="Previous version for the milestone")
-parser.add_argument("current_version", help="Current version for the milestone")
+parser.add_argume("action", help="Action to perform on the milestone", choices=["create", "close", "assign", "release"])
+parser.add_argument("version", help="Version for the milestone")
+parser.add_argument("previous_version", optional=True, help="Previous version for the milestone. Only for 'release' action")
 args = parser.parse_args()
 
 # Initialize GitHub client
 g = Github(os.environ['GITHUB_TOKEN'])
 repo = g.get_repo(os.environ['GITHUB_REPOSITORY'])
 
-current_version = args.current_version
+action = args.action
+version = args.version
 previous_version = args.previous_version
 
 def get_milestone_by_title(title):
@@ -22,23 +24,34 @@ def get_milestone_by_title(title):
     return None
 
 def create_milestone(title):
-    repo.create_milestone(title=title)
+    new_milestone = get_milestone_by_title(title)
+    if not new_milestone:
+        repo.create_milestone(title=title)
 
-def close_milestone(title, milestone):
-    milestone.edit(title=title, state="closed")
+def close_milestone(title):
+    milestone = get_milestone_by_title(title)
+    if milestone:
+        milestone.edit(title=title, state="closed")
 
-def assign_prs_to_milestone(milestone):
-    prs = repo.get_pulls(state='all')
-    for pr in prs:
-        if pr.merged and previous_version <= pr.merge_commit_sha < current_version:
-            if not pr.milestone:
-                pr.edit(title=previous_version, milestone=milestone)
+def assign_prs_to_milestone(title):
+    milestone = get_milestone_by_title(title)
+    if milestone:
+        prs = repo.get_pulls(state='all')
+        for pr in prs:
+            if pr.merged and version <= pr.merge_commit_sha:
+                if not pr.milestone:
+                    pr.edit(title=version, milestone=milestone)
 
-previous_milestone = get_milestone_by_title(previous_version)
-if previous_milestone:
-    assign_prs_to_milestone(previous_milestone)
-    close_milestone(previous_version, previous_milestone)
-
-new_milestone = get_milestone_by_title(current_version)
-if not new_milestone:
-    create_milestone(current_version)
+if action == "create":
+    create_milestone(version)
+elif action == "close":
+    close_milestone(version)
+elif action == "assign":
+    assign_prs_to_milestone(version)
+elif action == "release":
+    create_milestone(version)
+    close_milestone(previous_version)
+    assign_prs_to_milestone(version)
+else:
+    print("Invalid action:", action)
+    exit(1)
