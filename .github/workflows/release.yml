@@ -23,13 +23,6 @@ jobs:
   release-branch:
     runs-on: ubuntu-latest
     steps:
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.x'
-      - name: Install Dependencies
-        run: |
-          pip install PyGithub
       - name: Output Inputs
         run: |
           echo "${{ toJSON(github.event.inputs) }}"
