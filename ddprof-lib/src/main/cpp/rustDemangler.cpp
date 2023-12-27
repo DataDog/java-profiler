@@ -148,8 +148,8 @@ std::string demangle(const std::string &str) {
           ret += static_cast<unsigned char>(lo + hexa_base * hi);
           i += k_nb_read_chars - 1; // - 1 because iterator inc
         } else {
-          // We didn't have valid unicode values, but we should still skip
-          // the $u??$ sequence
+          // We didn't have valid unicode values.  No further processing is
+          // done, reinsert the `$u...$` sequence into the output string.
           ret += str.substr(i, k_nb_read_chars);
           i += k_nb_read_chars - 1; // -1 because iterator inc
         }
