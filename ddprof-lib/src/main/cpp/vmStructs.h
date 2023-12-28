@@ -24,8 +24,9 @@
 #include "codeCache.h"
 #include "jniHelper.h"
 #include "jvmHeap.h"
-#include "vmEntry.h"
+#include "safeAccess.h"
 #include "threadState.h"
+#include "vmEntry.h"
 
 class HeapUsage;
 
@@ -303,7 +304,8 @@ class VMThread : VMStructs {
     ThreadState osThreadState() {
         if (_thread_osthread_offset >= 0 && _osthread_state_offset >= 0) {
             const char* osthread = *(const char**) at(_thread_osthread_offset);
-            return static_cast<ThreadState>(*(int*)(osthread + _osthread_state_offset));
+            // an attempt to read the state from an invalid memory location will yield ThreadState::UNKNOWN(0) state
+            return static_cast<ThreadState>(SafeAccess::load32((u32*)(osthread + _osthread_state_offset), 0));
         }
         return ThreadState::UNKNOWN;
     }
