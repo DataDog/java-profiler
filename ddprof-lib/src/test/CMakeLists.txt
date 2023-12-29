@@ -46,6 +46,7 @@ file(GLOB_RECURSE TEST_FILES CONFIGURE_DEPENDS
 file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/../main/cpp/os_${OS_SUFFIX}.cpp"
     "${PROJECT_SOURCE_DIR}/../main/cpp/context.cpp"
+    "${PROJECT_SOURCE_DIR}/../main/cpp/rustDemangler.cpp"
     "${PROJECT_SOURCE_DIR}/../main/cpp/counters.cpp"
     "${PROJECT_SOURCE_DIR}/../main/cpp/threadFilter.cpp"
     "${PROJECT_SOURCE_DIR}/../main/cpp/dictionary.cpp"
