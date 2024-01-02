@@ -65,7 +65,7 @@ Error ITimer::check(Arguments& args) {
 }
 
 Error ITimer::start(Arguments& args) {
-    _interval = args._cpu > 0 ? args._cpu : DEFAULT_CPU_INTERVAL;
+    _interval = args.cpuSamplerInterval();
     _cstack = args._cstack;
 
     OS::installSignalHandler(SIGPROF, signalHandler);

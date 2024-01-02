@@ -31,6 +31,7 @@
 #include "j9Ext.h"
 #include "j9ObjectSampler.h"
 #include "j9WallClock.h"
+#include "ctimer.h"
 #include "itimer.h"
 #include "dwarf.h"
 #include "flightRecorder.h"
@@ -59,6 +60,7 @@ static PerfEvents perf_events;
 static WallClock wall_engine;
 static J9WallClock j9_engine;
 static ITimer itimer;
+static CTimer ctimer;
 
 
 // Stack recovery techniques used to workaround AsyncGetCallTrace flaws.
@@ -920,11 +922,13 @@ Engine* Profiler::selectCpuEngine(Arguments& args) {
             // signal based samplers are unstable on J9 before 8.0.362, 11.0.18 and 17.0.6
             return (Engine*)&j9_engine;
         }
-        return !perf_events.check(args) ? (Engine*)&perf_events : &itimer;
+        return !perf_events.check(args) ? (Engine*)&perf_events : (!ctimer.check(args) ? (Engine*)&ctimer : (Engine*)&itimer);
     } else if (strcmp(args._event, EVENT_WALL) == 0) {
-        return (Engine*)&noop_engine;
+        return &noop_engine;
     } else if (strcmp(args._event, EVENT_ITIMER) == 0) {
         return &itimer;
+    } else if (strcmp(args._event, EVENT_CTIMER) == 0) {
+        return &ctimer;
     } else {
         return &perf_events;
     }

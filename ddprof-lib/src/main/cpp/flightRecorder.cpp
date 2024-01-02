@@ -686,7 +686,7 @@ void Recording::writeSettings(Buffer* buf, Arguments& args) {
         writeBoolSetting(buf, T_EXECUTION_SAMPLE, "enabled", false);
     } else {
         writeBoolSetting(buf, T_EXECUTION_SAMPLE, "enabled", true);
-        writeIntSetting(buf, T_EXECUTION_SAMPLE, "interval", args._event != NULL ? args._interval : args._cpu);
+        writeIntSetting(buf, T_EXECUTION_SAMPLE, "interval", args.cpuSamplerInterval());
     }
     writeBoolSetting(buf, T_METHOD_SAMPLE, "enabled", args._wall >= 0);
     if (args._wall >= 0) {

@@ -9,7 +9,6 @@
     #include <vector>
 
     ssize_t callback(char* ptr, int len) {
-        fprintf(stderr, "here\n");
         return len;
     }
 

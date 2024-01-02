@@ -808,14 +808,17 @@ Error PerfEvents::start(Arguments& args) {
         return Error("Only arguments 1-4 can be counted");
     }
 
+    // if an arbitrary perf event type is specified pick the interval from args._interval directly
+    // otherwise ask for the effective CPU sampler interval
+    int interval = args._event != NULL && args._event != EVENT_CPU ? args._interval : args.cpuSamplerInterval();
+    if (interval < 0) {
+        return Error("interval must be positive");
+    }
+
     if (_pthread_entry == NULL && (_pthread_entry = lookupThreadEntry()) == NULL) {
         return Error("Could not set pthread hook");
     }
 
-    int interval = args._cpu > 0 ? args._cpu : (args._event != NULL && args._event != EVENT_CPU) ? args._interval : 0;
-    if (interval < 0) {
-        return Error("interval must be positive");
-    }
     _interval = interval ? interval : _event_type->default_interval;
 
     _ring = args._ring;

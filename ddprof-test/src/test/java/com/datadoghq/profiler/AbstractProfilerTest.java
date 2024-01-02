@@ -131,7 +131,7 @@ public abstract class AbstractProfilerTest {
     jfrDump = Files.createTempFile(Paths.get("/tmp"), getClass().getName() + UUID.randomUUID(), ".jfr");
     profiler = JavaProfiler.getInstance();
     String command = "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
-    cpuInterval = command.contains("cpu") ? parseInterval(command, "cpu") : Duration.ZERO;
+    cpuInterval = command.contains("cpu") ? parseInterval(command, "cpu") : (command.contains("interval") ? parseInterval(command, "interval") : Duration.ZERO);
     wallInterval = parseInterval(command, "wall");
     System.out.println("===> command: " + command);
     profiler.execute(command);
@@ -143,7 +143,7 @@ public abstract class AbstractProfilerTest {
   public void cleanup() throws Exception {
     after();
     stopProfiler();
-    Files.deleteIfExists(jfrDump);
+    // Files.deleteIfExists(jfrDump);
   }
 
   protected void before() throws Exception {
@@ -160,9 +160,9 @@ public abstract class AbstractProfilerTest {
         IMemberAccessor<IQuantity, IItem> cpuIntervalAccessor = CPU_INTERVAL.getAccessor(items.getType());
         IMemberAccessor<IQuantity, IItem> wallIntervalAccessor = WALL_INTERVAL.getAccessor(items.getType());
         for (IItem item : items) {
-          System.err.println(cpuEngineAccessor.getMember(item));
           long cpuIntervalMillis = cpuIntervalAccessor.getMember(item).longValueIn(MILLISECOND);
           long wallIntervalMillis = wallIntervalAccessor.getMember(item).longValueIn(MILLISECOND);
+          System.out.println("===> cpu interval: " + cpuIntervalMillis);
           if (!Platform.isJ9() && Platform.isJavaVersionAtLeast(11)) {
             // fixme J9 engine have weird defaults and need fixing
             assertEquals(cpuInterval.toMillis(), cpuIntervalMillis);
@@ -258,10 +258,10 @@ public abstract class AbstractProfilerTest {
       IItemCollection events = JfrLoaderToolkit.loadEvents(Files.newInputStream(recording));
       assertTrue(events.hasItems());
       IItemCollection collection = events.apply(ItemFilters.type(eventType));
-        assertTrue(collection.hasItems(),
-            eventType + " was empty for " + getAmendedProfilerCommand());
-        System.out.println(eventType + " count: " + collection.stream().flatMap(IItemIterable::stream).count());
-        return collection;
+      System.out.println(eventType + " count: " + collection.stream().flatMap(IItemIterable::stream).count());
+      assertTrue(collection.hasItems(),
+          eventType + " was empty for " + getAmendedProfilerCommand());
+      return collection;
     } catch (Throwable t) {
       fail(getProfilerCommand() + " " + t);
       return null;
