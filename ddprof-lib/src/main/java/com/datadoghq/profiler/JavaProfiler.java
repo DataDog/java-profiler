@@ -212,8 +212,16 @@ public final class JavaProfiler {
     /**
      * Records the completion of the trace root
      */
+    public boolean recordTraceRoot(long rootSpanId, String endpoint, String operation, int sizeLimit) {
+        return recordTrace0(rootSpanId, endpoint, operation, sizeLimit);
+    }
+
+    /**
+     * Records the completion of the trace root
+     */
+    @Deprecated
     public boolean recordTraceRoot(long rootSpanId, String endpoint, int sizeLimit) {
-        return recordTrace0(rootSpanId, endpoint, sizeLimit);
+        return recordTrace0(rootSpanId, endpoint, null, sizeLimit);
     }
 
     /**
@@ -517,7 +525,7 @@ public final class JavaProfiler {
     private static native long getContextPageOffset0(int tid);
     private static native int getMaxContextPages0();
 
-    private static native boolean recordTrace0(long rootSpanId, String endpoint, int sizeLimit);
+    private static native boolean recordTrace0(long rootSpanId, String endpoint, String operation, int sizeLimit);
 
     private static native int registerConstant0(String value);
 

@@ -1236,6 +1236,7 @@ void Recording::recordTraceRoot(Buffer* buf, int tid, TraceRootEvent* event) {
     buf->putVar32(tid);
     buf->put8(0);
     buf->putVar32(event->_label);
+    buf->putVar32(event->_operation);
     buf->putVar64(event->_local_root_span_id);
     writeEventSizePrefix(buf, start);
     flushIfNeeded(buf);
