@@ -142,12 +142,19 @@ Java_com_datadoghq_profiler_JavaProfiler_getMaxContextPages0(JNIEnv* env, jobjec
 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(JNIEnv* env, jobject unused, jlong rootSpanId, jstring endpoint,
-                                                      jint sizeLimit) {
+                                                      jstring operation, jint sizeLimit) {
     JniString endpoint_str(env, endpoint);
-    u32 label = Profiler::instance()->stringLabelMap()->bounded_lookup(endpoint_str.c_str(), endpoint_str.length(), sizeLimit);
-    bool acceptValue = label != INT_MAX;
+    u32 endpointLabel = Profiler::instance()->stringLabelMap()->bounded_lookup(
+            endpoint_str.c_str(), endpoint_str.length(), sizeLimit);
+    bool acceptValue = endpointLabel != INT_MAX;
     if (acceptValue) {
-        TraceRootEvent event(rootSpanId, label);
+        u32 operationLabel = 0;
+        if (operation != NULL) {
+            JniString operation_str(env, operation);
+            operationLabel = Profiler::instance()->contextValueMap()->bounded_lookup(
+                    operation_str.c_str(), operation_str.length(), 1 << 16);
+        }
+        TraceRootEvent event(rootSpanId, endpointLabel, operationLabel);
         int tid = ProfiledThread::currentTid();
         Profiler::instance()->recordTraceRoot(tid, &event);
     }

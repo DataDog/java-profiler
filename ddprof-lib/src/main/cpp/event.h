@@ -144,9 +144,10 @@ class TraceRootEvent {
   public:
     u64 _local_root_span_id;
     u32 _label;
+    u32 _operation;
 
-    TraceRootEvent(u64 local_root_span_id, u32 label) :
-        _local_root_span_id(local_root_span_id), _label(label) {};
+    TraceRootEvent(u64 local_root_span_id, u32 label, u32 operation) :
+        _local_root_span_id(local_root_span_id), _label(label), _operation(operation) {};
 };
 
 typedef struct QueueTimeEvent {

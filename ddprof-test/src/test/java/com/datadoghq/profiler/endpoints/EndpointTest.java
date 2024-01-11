@@ -26,7 +26,7 @@ public class EndpointTest extends AbstractProfilerTest {
     @Test
     public void testEndpoints() {
         Endpoint[] endpoints = IntStream.range(0, 1000)
-                .mapToObj(i -> new Endpoint(i, i + ""))
+                .mapToObj(i -> new Endpoint(i, i + "", i % 2 == 0 ? "op" + i : null))
                 .toArray(Endpoint[]::new);
         int sizeLimit = endpoints.length;
         // insert up to limit
@@ -38,7 +38,7 @@ public class EndpointTest extends AbstractProfilerTest {
             record(endpoint, true, sizeLimit);
         }
         // reject above size limit
-        record(new Endpoint(0, UUID.randomUUID().toString()), false, sizeLimit);
+        record(new Endpoint(0, UUID.randomUUID().toString(), UUID.randomUUID().toString()), false, sizeLimit);
 
         stopProfiler();
         IItemCollection events = verifyEvents("datadog.Endpoint");
@@ -48,14 +48,17 @@ public class EndpointTest extends AbstractProfilerTest {
         for (IItemIterable it : events) {
             IMemberAccessor<String, IItem> endpointAccessor = endpointAttribute.getAccessor(it.getType());
             IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(it.getType());
+            IMemberAccessor<String, IItem> operationAccessor = OPERATION.getAccessor(it.getType());
             for (IItem event : it) {
                 long rootSpanId = rootSpanIdAccessor.getMember(event).longValue();
+                String operation = operationAccessor.getMember(event);
                 Endpoint endpoint = endpoints[(int) rootSpanId];
                 recovered.set((int) rootSpanId);
                 String message = endpoint.toString();
                 String recordedEndpoint = endpointAccessor.getMember(event);
                 assertEquals(endpoint.endpoint, recordedEndpoint, message);
                 assertEquals(endpoint.rootSpanId, rootSpanId, message);
+                assertEquals(endpoint.operation, operation, message);
             }
         }
         for (int i = 0; i < endpoints.length; i++) {
@@ -69,7 +72,7 @@ public class EndpointTest extends AbstractProfilerTest {
     }
 
     private void record(Endpoint endpoint, boolean shouldAccept, int sizeLimit) {
-        assertEquals(shouldAccept, profiler.recordTraceRoot(endpoint.rootSpanId, endpoint.endpoint, sizeLimit));
+        assertEquals(shouldAccept, profiler.recordTraceRoot(endpoint.rootSpanId, endpoint.endpoint, endpoint.operation, sizeLimit));
     }
 
     @Override
@@ -80,10 +83,12 @@ public class EndpointTest extends AbstractProfilerTest {
     static class Endpoint {
         private final long rootSpanId;
         private final String endpoint;
+        private final String operation;
 
-        Endpoint(long rootSpanId, String endpoint) {
+        Endpoint(long rootSpanId, String endpoint, String operation) {
             this.rootSpanId = rootSpanId;
             this.endpoint = endpoint;
+            this.operation = operation;
         }
 
         @Override
@@ -91,6 +96,7 @@ public class EndpointTest extends AbstractProfilerTest {
             return "Endpoint{" +
                     "rootSpanId=" + rootSpanId +
                     ", endpoint='" + endpoint + '\'' +
+                    ", operation='" + operation + '\'' +
                     '}';
         }
     }

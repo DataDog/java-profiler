@@ -4,6 +4,8 @@
 
 #include <cxxabi.h>
 
+#ifndef __APPLE__
+
 struct DemangleTestContent {
   std::string test;
   std::string answer;
@@ -181,3 +183,4 @@ TEST(DemangleTest, Positive) {
     free(demangled);
   }
 }
+#endif

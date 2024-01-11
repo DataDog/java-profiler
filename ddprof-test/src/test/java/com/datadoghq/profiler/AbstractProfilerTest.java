@@ -62,6 +62,9 @@ public abstract class AbstractProfilerTest {
   public static final IAttribute<IQuantity> SPAN_ID = attr("spanId", "spanId",
           "spanId", NUMBER);
 
+  public static final IAttribute<String> OPERATION = attr("operation", "operation",
+          "operation", PLAIN_TEXT);
+
 
 
   public static final IAttribute<String> THREAD_STATE =

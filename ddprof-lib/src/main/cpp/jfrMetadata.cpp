@@ -170,6 +170,7 @@ void JfrMetadata::initialize(const std::vector<std::string>& contextAttributes) 
                 << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
                 << field("stackTrace", T_STACK_TRACE, "Stack Trace", F_CPOOL)
                 << field("endpoint", T_STRING, "Endpoint", F_CPOOL)
+                << field("operation", T_ATTRIBUTE_VALUE, "Operation", F_CPOOL)
                 << field("localRootSpanId", T_LONG, "Local Root Span ID"))
 
             << (type("datadog.QueueTime", T_QUEUE_TIME, "Queue Time")
