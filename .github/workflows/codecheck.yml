@@ -11,6 +11,8 @@ jobs:
   scan-build:
     if: needs.check-for-pr.outputs.skip != 'true'
     runs-on: ubuntu-latest
+    env:
+      HEAD_REF: ${{ github.head_ref }}
     steps:
       - uses: actions/checkout@v3
       - name: System setup
@@ -38,7 +40,7 @@ jobs:
       - name: Read Report
         id: read-report
         run: |
-          find ddprof-lib/build/reports/scan-build -name 'index.html' | xargs -I {} python .github/scripts/python_utils.py scanbuild_cleanup {} ${{ github.head_ref }} > comment.html
+          find ddprof-lib/build/reports/scan-build -name 'index.html' | xargs -I {} python .github/scripts/python_utils.py scanbuild_cleanup {} ${HEAD_REF} > comment.html
       - name: Post or update PR comment
         uses: ./.github/actions/pr_comment
         with:
