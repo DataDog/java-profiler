@@ -159,11 +159,8 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         callchain[depth++] = pc;
         prev_sp = sp;
 
-        FrameDesc* f;
         CodeCache* cc = profiler->findLibraryByAddress(pc);
-        if (cc == NULL || (f = cc->findFrameDesc(pc)) == NULL) {
-            f = &FrameDesc::default_frame;
-        }
+        FrameDesc* f = cc != NULL ? cc->findFrameDesc(pc) : &FrameDesc::default_frame;
 
         u8 cfa_reg = (u8)f->cfa;
         int cfa_off = f->cfa >> 8;
@@ -282,6 +279,9 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth) 
                         } while (scope_offset > 0 && depth < max_depth);
                     }
 
+                    // Handle situations when sp is temporarily changed in the compiled code
+                    frame.adjustCompiled(nm, pc, sp);
+
                     sp += nm->frameSize() * sizeof(void*);
                     fp = ((uintptr_t*)sp)[-FRAME_PC_SLOT - 1];
                     pc = ((const void**)sp)[-FRAME_PC_SLOT];
@@ -359,13 +359,14 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth) 
             fillFrame(frames[depth++], BCI_NATIVE_FRAME, profiler->findNativeMethod(pc));
         }
 
-        FrameDesc* f;
-        CodeCache* cc = profiler->findLibraryByAddress(pc);
-        if (cc == NULL || (f = cc->findFrameDesc(pc)) == NULL) {
-            f = &FrameDesc::default_frame;
+        uintptr_t prev_sp = sp;
+        if (prev_sp == 0) {
+            // Reached the initial frame
+            break;
         }
 
-        uintptr_t prev_sp = sp;
+        CodeCache* cc = profiler->findLibraryByAddress(pc);
+        FrameDesc* f = cc != NULL ? cc->findFrameDesc(pc) : &FrameDesc::default_frame;
 
         u8 cfa_reg = (u8)f->cfa;
         int cfa_off = f->cfa >> 8;
