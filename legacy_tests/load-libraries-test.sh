@@ -29,7 +29,7 @@ if [ -f ${HERE}/../build/libjavaProfielr.so ]; then
   SKIP_NATIVE_ARG="-Dskip-native"
 fi
 
-CLASSPATH=$(find ${HERE}/../target -name 'ddprof-*.jar')
+  ${JAVA_HOME}/bin/java -agentpath:$(ls ../build/lib/libasyncProfiler.*) LoadLibraryTest &
 
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:.
 $JAVA_HOME/bin/javac -cp $CLASSPATH com/datadoghq/loader/DynamicLibraryLoader.java

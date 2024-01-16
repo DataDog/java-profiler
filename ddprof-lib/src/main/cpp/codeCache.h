@@ -31,6 +31,15 @@ const int INITIAL_CODE_CACHE_CAPACITY = 1000;
 const int MAX_NATIVE_LIBS = 2048;
 
 
+enum ImportId {
+    im_dlopen,
+    im_pthread_create,
+    im_pthread_exit,
+    im_pthread_setspecific,
+    NUM_IMPORTS
+};
+
+
 class NativeFunc {
   private:
     short _lib_index;
@@ -85,16 +94,15 @@ class CodeBlob {
 class FrameDesc;
 
 class CodeCache {
-  protected:
+  private:
     char* _name;
     short _lib_index;
     const void* _min_address;
     const void* _max_address;
     const char* _text_base;
 
-    void** _got_start;
-    void** _got_end;
-    bool _got_patchable;
+    void** _imports[NUM_IMPORTS];
+    bool _imports_patchable;
 
     FrameDesc* _dwarf_table;
     int _dwarf_table_length;
@@ -105,10 +113,12 @@ class CodeCache {
 
     void expand();
     void makeGotPatchable();
+    void makeImportsPatchable();
 
   public:
     explicit CodeCache(const char* name,
               short lib_index = -1,
+              bool imports_patchable = false,
               const void* min_address = NO_MIN_ADDRESS,
               const void* max_address = NO_MAX_ADDRESS);
     // Copy constructor
@@ -139,11 +149,23 @@ class CodeCache {
     void setTextBase(const char* text_base) {
         _text_base = text_base;
     }
+//
+//    bool hasDebugSymbols() const {
+//        return _debug_symbols;
+//    }
+//
+//    void setDebugSymbols(bool debug_symbols) {
+//        _debug_symbols = debug_symbols;
+//    }
 
     void add(const void* start, int length, const char* name, bool update_bounds = false);
     void updateBounds(const void* start, const void* end);
     void sort();
     void mark(NamePredicate predicate);
+
+    void addImport(void** entry, const char* name);
+    void** findImport(ImportId id);
+    void patchImport(ImportId, void* hook_func);
 
     CodeBlob* find(const void* address);
     const char* binarySearch(const void* address);
@@ -151,9 +173,6 @@ class CodeCache {
     const void* findSymbolByPrefix(const char* prefix);
     const void* findSymbolByPrefix(const char* prefix, int prefix_len);
     void findSymbolsByPrefix(std::vector<const char*>& prefixes, std::vector<const void*>& symbols);
-
-    void setGlobalOffsetTable(void** start, void** end, bool patchable);
-    void** findGlobalOffsetEntry(void* address);
 
     void setDwarfTable(FrameDesc* table, int length);
     FrameDesc* findFrameDesc(const void* pc);
