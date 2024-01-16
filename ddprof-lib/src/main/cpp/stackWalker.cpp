@@ -155,6 +155,8 @@ int StackWalker::walkDwarf(void *ucontext, const void **callchain,
       break;
     }
     if (CodeHeap::contains(pc)) {
+      const void* page_start = (const void*)((uintptr_t)pc & ~0xfffUL);
+      frame.adjustSP(page_start, pc, sp);
       java_ctx->set(pc, sp, fp);
       break;
     }
@@ -302,7 +304,7 @@ int StackWalker::walkVM(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
 
           // Handle situations when sp is temporarily changed in the compiled
           // code
-          frame.adjustCompiled(nm, pc, sp);
+          frame.adjustSP(nm->entry(), pc, sp);
 
           sp += nm->frameSize() * sizeof(void *);
           fp = ((uintptr_t *)sp)[-FRAME_PC_SLOT - 1];

@@ -115,7 +115,7 @@ bool StackFrame::unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp,
   return false;
 }
 
-void StackFrame::adjustCompiled(NMethod *nm, const void *pc, uintptr_t &sp) {
+void StackFrame::adjustSP(const void *entry, const void *pc, uintptr_t &sp) {
   // Not needed
 }
 
