@@ -75,7 +75,7 @@ public:
                   uintptr_t &sp, uintptr_t &fp);
   bool unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp, uintptr_t &fp);
 
-  void adjustCompiled(NMethod *nm, const void *pc, uintptr_t &sp);
+  void adjustSP(const void *entry, const void *pc, uintptr_t &sp);
 
   bool skipFaultInstruction();
 
