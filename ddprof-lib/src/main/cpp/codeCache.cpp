@@ -103,9 +103,10 @@ CodeCache& CodeCache::operator=(const CodeCache& other) {
         _dwarf_table = new FrameDesc[_dwarf_table_length];
         memcpy(_dwarf_table, other._dwarf_table, _dwarf_table_length * sizeof(FrameDesc));
 
-        _capacity = INITIAL_CODE_CACHE_CAPACITY;
-        _count = 0;
+        _capacity = other._capacity;
+        _count = other._count;
         _blobs = new CodeBlob[_capacity];
+        memcpy(_blobs, other._blobs, _count * sizeof(CodeBlob));
 
         return *this;
     }
@@ -117,7 +118,7 @@ CodeCache::~CodeCache() {
     }
     NativeFunc::destroy(_name);
     delete[] _blobs;
-    free(_dwarf_table);
+    delete _dwarf_table;
 }
 
 void CodeCache::expand() {
