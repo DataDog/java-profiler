@@ -46,6 +46,7 @@ CodeCache::CodeCache(const char* name, short lib_index, bool imports_patchable,
 
     _plt_offset = 0;
     _plt_size = 0;
+    _debug_symbols = false;
 
     memset(_imports, 0, sizeof(_imports));
     _imports_patchable = imports_patchable;
@@ -66,6 +67,8 @@ CodeCache::CodeCache(const CodeCache& other) {
     _text_base = other._text_base;
 
     _imports_patchable = other._imports_patchable;
+    _plt_offset = other._plt_offset;
+    _plt_size = other._plt_size;
 
     _dwarf_table_length = other._dwarf_table_length;
     _dwarf_table = new FrameDesc[_dwarf_table_length];
@@ -93,8 +96,12 @@ CodeCache& CodeCache::operator=(const CodeCache& other) {
 
         _imports_patchable = other._imports_patchable;
 
-        _dwarf_table = NULL;
-        _dwarf_table_length = 0;
+        _plt_offset = other._plt_offset;
+        _plt_size = other._plt_size;
+
+        _dwarf_table_length = other._dwarf_table_length;
+        _dwarf_table = new FrameDesc[_dwarf_table_length];
+        memcpy(_dwarf_table, other._dwarf_table, _dwarf_table_length * sizeof(FrameDesc));
 
         _capacity = INITIAL_CODE_CACHE_CAPACITY;
         _count = 0;
