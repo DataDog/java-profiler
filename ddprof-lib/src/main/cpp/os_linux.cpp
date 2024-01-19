@@ -244,12 +244,21 @@ SigAction OS::installSignalHandler(int signo, SigAction action, SigHandler handl
     return oldsa.sa_sigaction;
 }
 
-SigAction OS::replaceCrashHandler(SigAction action) {
+SigAction OS::replaceSigsegvHandler(SigAction action) {
     struct sigaction sa;
     sigaction(SIGSEGV, NULL, &sa);
     SigAction old_action = sa.sa_sigaction;
     sa.sa_sigaction = action;
     sigaction(SIGSEGV, &sa, NULL);
+    return old_action;
+}
+
+SigAction OS::replaceSigbusHandler(SigAction action) {
+    struct sigaction sa;
+    sigaction(SIGBUS, NULL, &sa);
+    SigAction old_action = sa.sa_sigaction;
+    sa.sa_sigaction = action;
+    sigaction(SIGBUS, &sa, NULL);
     return old_action;
 }
 

@@ -52,6 +52,7 @@ Profiler* const Profiler::_instance = new Profiler();
 
 static void (*orig_trapHandler)(int signo, siginfo_t* siginfo, void* ucontext);
 static void (*orig_segvHandler)(int signo, siginfo_t* siginfo, void* ucontext);
+static void (*orig_busHandler)(int signo, siginfo_t* siginfo, void* ucontext);
 
 static Engine noop_engine;
 static PerfEvents perf_events;
@@ -841,6 +842,18 @@ void Profiler::trapHandler(int signo, siginfo_t* siginfo, void* ucontext) {
 }
 
 void Profiler::segvHandler(int signo, siginfo_t* siginfo, void* ucontext) {
+    if (!crashHandler(signo, siginfo, ucontext)) {
+        orig_segvHandler(signo, siginfo, ucontext);
+    }
+}
+
+void Profiler::busHandler(int signo, siginfo_t* siginfo, void* ucontext) {
+    if (!crashHandler(signo, siginfo, ucontext)) {
+        orig_busHandler(signo, siginfo, ucontext);
+    }
+}
+
+bool Profiler::crashHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     StackFrame frame(ucontext);
     uintptr_t pc = frame.pc();
 
@@ -850,7 +863,7 @@ void Profiler::segvHandler(int signo, siginfo_t* siginfo, void* ucontext) {
         frame.pc() += length;
         frame.retval() = 0;
         Counters::increment(HANDLED_SIGSEGV_SAFEFETCH);
-        return;
+        return true;
     }
 
     length = SafeAccess::skipLoadArg(pc);
@@ -859,21 +872,21 @@ void Profiler::segvHandler(int signo, siginfo_t* siginfo, void* ucontext) {
         frame.pc() += length;
         frame.retval() = frame.arg1();
         Counters::increment(HANDLED_SIGSEGV_SAFEFETCH);
-        return;
+        return true;
     }
 
     StackWalker::checkFault();
 
     // Workaround for JDK-8313796. Setting cstack=dwarf also helps
     if (VMStructs::isInterpretedFrameValidFunc((const void*)pc) && frame.skipFaultInstruction()) {
-        return;
+        return true;
     }
 
     if (WX_MEMORY && Trap::isFaultInstruction(pc)) {
-        return;
+        return true;
     }
 
-    orig_segvHandler(signo, siginfo, ucontext);
+    return false;
 }
 
 void Profiler::setupSignalHandlers() {
@@ -883,7 +896,8 @@ void Profiler::setupSignalHandlers() {
     }
     if (VM::java_version() > 0) {
         // HotSpot and J9 tolerate interposed SIGSEGV/SIGBUS handler; other JVMs probably not
-        orig_segvHandler = OS::replaceCrashHandler(segvHandler);
+        orig_segvHandler = OS::replaceSigsegvHandler(segvHandler);
+        orig_busHandler = OS::replaceSigbusHandler(busHandler);
     }
 }
 

@@ -189,6 +189,8 @@ class Profiler {
     void lockAll();
     void unlockAll();
 
+    static bool crashHandler(int signo, siginfo_t* siginfo, void* ucontext);
+
     static Profiler* const _instance;
 
   public:
@@ -291,6 +293,7 @@ class Profiler {
     static void trapHandlerEntry(int signo, siginfo_t* siginfo, void* ucontext);
     void trapHandler(int signo, siginfo_t* siginfo, void* ucontext);
     static void segvHandler(int signo, siginfo_t* siginfo, void* ucontext);
+    static void busHandler(int signo, siginfo_t* siginfo, void* ucontext);
     static void setupSignalHandlers();
 
     static int registerThread(int tid);
