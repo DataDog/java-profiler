@@ -131,6 +131,11 @@ public abstract class AbstractProfilerTest {
 
   @BeforeEach
   public void setupProfiler() throws Exception {
+    System.err.println(System.getProperty("java.vm.version"));
+    System.err.println(System.getProperty("java.runtime.version"));
+    System.err.println(System.getProperty("java.vm.vendor"));
+    System.err.println(System.getProperty("java.vm.name"));
+    System.err.println(System.getProperty("java.runtime.name"));
     jfrDump = Files.createTempFile(Paths.get("/tmp"), getClass().getName() + UUID.randomUUID(), ".jfr");
     profiler = JavaProfiler.getInstance();
     String command = "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
