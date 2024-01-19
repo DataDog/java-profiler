@@ -217,7 +217,8 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
     return depth;
 }
 
-int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth) {
+int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
+                        const void* _termination_frame_begin, const void* _termination_frame_end) {
     const void* pc;
     uintptr_t fp;
     uintptr_t sp;
@@ -257,6 +258,9 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth) 
 
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < max_depth) {
+        if (pc >= _termination_frame_begin && pc < _termination_frame_end) {
+            break;
+        }
         if (CodeHeap::contains(pc)) {
             NMethod* nm = CodeHeap::findNMethod(pc);
             if (nm == NULL) {
