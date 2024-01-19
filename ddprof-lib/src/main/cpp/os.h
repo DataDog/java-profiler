@@ -50,7 +50,6 @@ class JitWriteProtection {
     ~JitWriteProtection();
 };
 
-
 class OS {
   public:
     static const size_t page_size;
@@ -79,7 +78,8 @@ class OS {
     static bool isLinux();
 
     static SigAction installSignalHandler(int signo, SigAction action, SigHandler handler = NULL);
-    static SigAction replaceCrashHandler(SigAction action);
+    static SigAction replaceSigsegvHandler(SigAction action);
+    static SigAction replaceSigbusHandler(SigAction action);
     static bool sendSignalToThread(int thread_id, int signo);
 
     static void* safeAlloc(size_t size);
