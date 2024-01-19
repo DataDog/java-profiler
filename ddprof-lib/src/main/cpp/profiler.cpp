@@ -690,7 +690,7 @@ void Profiler::recordSample(void* ucontext, u64 counter, int tid, jint event_typ
         ASGCT_CallFrame *native_stop = frames + num_frames;
         num_frames += getNativeTrace(ucontext, native_stop, event_type, tid, &java_ctx, &truncated);
         if (_cstack == CSTACK_VM) {
-            num_frames += StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth);
+            num_frames += StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, _call_stub_begin, _call_stub_end);
         } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
             int java_frames = 0;
             {
