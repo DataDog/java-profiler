@@ -255,6 +255,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
             return depth;
         }
     }
+    CodeCache* cc = NULL;
 
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < max_depth) {
@@ -262,6 +263,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
             break;
         }
         if (CodeHeap::contains(pc)) {
+            // constant time
             NMethod* nm = CodeHeap::findNMethod(pc);
             if (nm == NULL) {
                 fillFrame(frames[depth++], BCI_ERROR, "unknown_nmethod");
@@ -343,6 +345,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                 fillFrame(frames[depth++], BCI_ERROR, "break_interpreted");
                 break;
             } else {
+                // linear time in number of runtime stubs
                 CodeBlob* stub = profiler->findRuntimeStub(pc);
                 const void* start = stub != NULL ? stub->_start : nm->code();
                 const char* name = stub != NULL ? stub->_name : nm->name();
@@ -360,7 +363,11 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                 }
             }
         } else {
-            fillFrame(frames[depth++], BCI_NATIVE_FRAME, profiler->findNativeMethod(pc));
+            if (cc == NULL || !cc->contains(pc)) {
+                cc = profiler->findLibraryByAddress(pc);
+            }
+            const char* name = cc == NULL ? NULL : cc->binarySearch(pc);
+            fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
         }
 
         uintptr_t prev_sp = sp;
@@ -368,8 +375,9 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
             // Reached the initial frame
             break;
         }
-
-        CodeCache* cc = profiler->findLibraryByAddress(pc);
+        if (cc == NULL || !cc->contains(pc)) {
+            cc = profiler->findLibraryByAddress(pc);
+        }
         FrameDesc* f = cc != NULL ? cc->findFrameDesc(pc) : &FrameDesc::default_frame;
 
         u8 cfa_reg = (u8)f->cfa;
