@@ -311,7 +311,8 @@ int Profiler::getNativeTrace(void* ucontext, ASGCT_CallFrame* frames, int event_
 
     if (event_type == BCI_CPU && _cpu_engine == &perf_events) {
         native_frames += PerfEvents::walkKernel(tid, callchain + native_frames, MAX_NATIVE_FRAMES - native_frames, java_ctx);
-    } else if (_cstack == CSTACK_VM) {
+    }
+    if (_cstack == CSTACK_VM) {
         return 0;
     } else if (_cstack == CSTACK_DWARF) {
         native_frames += StackWalker::walkDwarf(ucontext, callchain + native_frames, MAX_NATIVE_FRAMES - native_frames, java_ctx, truncated);
