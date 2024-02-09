@@ -960,7 +960,7 @@ Engine* Profiler::selectCpuEngine(Arguments& args) {
             // signal based samplers are unstable on J9 before 8.0.362, 11.0.18 and 17.0.6
             return (Engine*)&j9_engine;
         }
-        return !perf_events.check(args) ? (Engine*)&perf_events : (!ctimer.check(args) ? (Engine*)&ctimer : (Engine*)&itimer);
+        return !ctimer.check(args) ? (Engine*)&ctimer : (!perf_events.check(args) ? (Engine*)&perf_events : (Engine*)&itimer);
     } else if (strcmp(args._event, EVENT_WALL) == 0) {
         return &noop_engine;
     } else if (strcmp(args._event, EVENT_ITIMER) == 0) {
