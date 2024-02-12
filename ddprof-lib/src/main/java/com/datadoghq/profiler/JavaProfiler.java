@@ -83,7 +83,7 @@ public final class JavaProfiler {
      * before linking.
      */
     public static JavaProfiler getInstance() throws IOException {
-        return getInstance(null, null);
+        return getInstance(null, null, null);
     }
 
     /**
@@ -96,14 +96,19 @@ public final class JavaProfiler {
         return getInstance(null, scratchDir);
     }
 
+    public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir) throws IOException {
+        return getInstance(libLocation, scratchDir, null);
+    }
+
     /**
      * Get a {@linkplain JavaProfiler} instance backed by the given native library and using
      * the given directory as the scratch where the bundled library will be exploded
      * before linking.
      * @param libLocation the path to the native library to be used instead of the bundled one
      * @param scratchDir directory where the bundled library will be exploded before linking; ignored when 'libLocation' is {@literal null}
+     * @param isMusl true to load the musl binary, false for glibc, null for unknown (we'll try to figure it out by parsing the java executable)
      */
-    public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir) throws IOException {
+    public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir, Boolean isMusl) throws IOException {
         if (instance != null) {
             return instance;
         }
@@ -112,7 +117,7 @@ public final class JavaProfiler {
         Path libraryPath = null;
         if (libLocation == null) {
             OperatingSystem os = OperatingSystem.current();
-            String qualifier = (os == OperatingSystem.linux && isMusl()) ? "musl" : null;
+            String qualifier = (os == OperatingSystem.linux && (isMusl == null ? isMusl() : isMusl)) ? "musl" : null;
 
             libraryPath = libraryFromClasspath(os, Arch.current(), qualifier, Paths.get(scratchDir != null ? scratchDir : System.getProperty("java.io.tmpdir")));
             libLocation = libraryPath.toString();
