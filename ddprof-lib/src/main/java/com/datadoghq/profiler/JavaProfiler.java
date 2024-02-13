@@ -18,6 +18,8 @@ package com.datadoghq.profiler;
 
 import sun.misc.Unsafe;
 
+import java.io.BufferedReader;
+import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Field;
@@ -460,6 +462,35 @@ public final class JavaProfiler {
         return counters;
     }
 
+    static boolean isMusl() throws IOException {
+        // check the Java exe then fall back to proc/self maps
+        try {
+            return isMuslJavaExecutable();
+        } catch (IOException e) {
+            try {
+                return isMuslProcSelfMaps();
+            } catch (IOException ignore) {
+                // not finding the Java exe is more interesting than failing to parse /proc/self/maps
+                throw e;
+            }
+        }
+    }
+
+    static boolean isMuslProcSelfMaps() throws IOException {
+        try (BufferedReader reader = new BufferedReader(new FileReader("/proc/self/maps"))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.contains("-musl-")) {
+                    return true;
+                }
+                if (line.contains("/libc.")) {
+                    return false;
+                }
+            }
+        }
+        return false;
+    }
+
     /**
      * There is information about the linking in the ELF file. Since properly parsing ELF is not
      * trivial this code will attempt a brute-force approach and will scan the first 4096 bytes
@@ -467,7 +498,7 @@ public final class JavaProfiler {
      * `/ld-musl` for musl systems and probably something else for non-musl systems (eg. `/ld-linux-...`).
      * However, if such string is missing should indicate that the system is not a musl one.
      */
-    private static boolean isMusl() throws IOException {
+    static boolean isMuslJavaExecutable() throws IOException {
         
         byte[] magic = new byte[]{(byte)0x7f, (byte)'E', (byte)'L', (byte)'F'};
         byte[] prefix = new byte[]{(byte)'/', (byte)'l', (byte)'d', (byte)'-'}; // '/ld-*'
