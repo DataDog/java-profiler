@@ -389,14 +389,6 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
             }
             return 1;
         }
-        int state = vm_thread->state();
-        if (state == 8 || state == 9) {
-             if (DWARF_SUPPORTED && java_ctx->sp != 0) {
-                // If a thread is in Java state, unwind manually to the last known Java frame,
-                // since JVM does not always correctly unwind native frames
-                frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);
-            }
-        }
     } else {
         return 0;
     }
@@ -419,27 +411,21 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
         _thread_max_state         = 12  // maximum thread state+1 - used for statistics allocation
     };
      */
-    // avoid unwinding during deoptimization
-    if (vm_thread->osThreadState() == ThreadState::RUNNABLE && (state == 10 || state == 11)) {
-        return 0;
-    }
     bool in_java = (state == 8 || state == 9);
     if (in_java && java_ctx->sp != 0) {
         // skip ahead to the Java frames before calling AGCT
         frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);
+    } else if (state != 0 && vm_thread->lastJavaSP() == 0) {
+        // we haven't found the top Java frame ourselves, and the lastJavaSP wasn't recorded either
+        // when not in the Java state, lastJava ucontext will be used by AGCT
+        Counters::increment(AGCT_NATIVE_NO_JAVA_CONTEXT);
+        return 0;
     }
-    // do not attempt to unwind
-    bool in_native = (state == 4 || state == 5);
-    if (in_native) {
-        if (java_ctx->sp != 0) {
-            // skip ahead to the Java frames before calling AGCT
-            frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);
-        } else {
-            // we've tried to unwind some native code without frame pointers,
-            // and we don't know where the top Java frame is, so we don't want to call AGCT
-            Counters::increment(AGCT_NATIVE_NO_JAVA_CONTEXT);
-            return 0;
-        }
+    bool blocked_in_vm = (state == 10 || state == 11);
+    // avoid unwinding during deoptimization
+    if (blocked_in_vm && vm_thread->osThreadState() == ThreadState::RUNNABLE) {
+        Counters::increment(AGCT_BLOCKED_IN_VM);
+        return 0;
     }
 
     JitWriteProtection jit(false);
