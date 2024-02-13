@@ -70,7 +70,7 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
                 modeCounters.computeIfAbsent(mode, x -> new AtomicInteger()).incrementAndGet();
                 if ("NATIVE".equals(mode)) {
                     String library = "";
-                    if (stacktrace.contains("net_jpountz_lz4_LZ4JNI")) {
+                    if (stacktrace.contains("LZ4JNI")) {
                         library = "LZ4";
                     } else if (stacktrace.contains("Java_org_xerial_snappy_SnappyNative")) {
                         library = "SNAPPY";
@@ -85,7 +85,7 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
         }
         assertTrue(modeCounters.containsKey("JVM"), "no JVM samples");
         assertTrue(modeCounters.containsKey("NATIVE"), "no NATIVE samples");
-        assertTrue(Platform.isMac() || libraryCounters.containsKey("LZ4"), "no lz4-java samples");
+        assertTrue(libraryCounters.containsKey("LZ4"), "no lz4-java samples");
         // looks like we might drop these samples with FP unwinding (which we have to use on MacOS)
         // flaky
         // assertTrue(isMusl || Platform.isMac() || libraryCounters.containsKey("SNAPPY"), "no snappy-java samples");
