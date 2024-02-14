@@ -870,6 +870,7 @@ void Recording::writeSystemProperties(Buffer* buf) {
             buf->putVar32(start, buf->offset() - start);
             jvmti->Deallocate((unsigned char*)value);
         }
+        jvmti->Deallocate((unsigned char*)key);
     }
     flushIfNeeded(buf);
 
