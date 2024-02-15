@@ -22,13 +22,14 @@ jobs:
         id: check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           if [ -z "${{ github.base_ref }}" ]; then
             prs=$(gh pr list \
                 --repo "$GITHUB_REPOSITORY" \
                 --json baseRefName,headRefName \
                 --jq '
-                    map(select(.baseRefName == "${{ github.base_ref }}" and .headRefName == "${{ github.head_ref }}"))
+                    map(select(.baseRefName == "${{ github.base_ref }}" and .headRefName == "$HEAD_REF}"))
                     | length
                 ')
             if ((prs > 0)); then
