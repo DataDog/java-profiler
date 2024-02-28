@@ -463,8 +463,9 @@ class VMThread : VMStructs {
     ThreadState osThreadState() {
         if (_thread_osthread_offset >= 0 && _osthread_state_offset >= 0) {
             const char* osthread = *(const char**) at(_thread_osthread_offset);
-            // an attempt to read the state from an invalid memory location will yield ThreadState::UNKNOWN(0) state
-            return static_cast<ThreadState>(SafeAccess::load32((u32*)(osthread + _osthread_state_offset), 0));
+            if (osthread != nullptr) {
+                return static_cast<ThreadState>(*(int *) (osthread + _osthread_state_offset));
+            }
         }
         return ThreadState::UNKNOWN;
     }
