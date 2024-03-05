@@ -141,6 +141,9 @@ void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_tim
     u32 method_name_id = 0;
     u32 method_sig_id = 0;
 
+    jint modifiers;
+    jint class_modifiers;
+
     jint line_number_table_size = 0;
     jvmtiLineNumberEntry* line_number_table = NULL;
 
@@ -152,6 +155,11 @@ void Lookup::fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_tim
             jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
 
             if (first_time) {
+                if (jvmti->GetClassModifiers(method_class, &class_modifiers) == 0 && jvmti->GetMethodModifiers(method, &modifiers) == 0) {
+                    // class constants are written without the modifiers info
+                    // in order to be able to identify 'hidden' frames the relevant modifiers will be propagated to methods
+                    mi->_modifiers = modifiers | (class_modifiers & ACC_HIDDEN);
+                }
                 jvmti->GetLineNumberTable(method, &line_number_table_size, &line_number_table);
             }
 
