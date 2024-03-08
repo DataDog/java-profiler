@@ -35,6 +35,9 @@ Context& Contexts::get(int tid) {
             if ((context.spanId ^ context.rootSpanId) == context.checksum) {
                 return context;
             }
+            Counters::increment(CounterId::CONTEXT_CHECKSUM_REJECT_GETS);
+        } else {
+            Counters::increment(CounterId::CONTEXT_NULL_PAGE_GETS);
         }
     } else {
         Counters::increment(CounterId::CONTEXT_BOUNDS_MISS_GETS);
