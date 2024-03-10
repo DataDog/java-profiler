@@ -147,6 +147,11 @@ void StackFrame::adjustSP(const void *entry, const void *pc, uintptr_t &sp) {
   // Not needed
 }
 
+bool StackFrame::unwindAtomicStub(const void*& pc) {
+  // Not needed
+  return false;
+}
+
 bool StackFrame::skipFaultInstruction() { return false; }
 
 bool StackFrame::checkInterruptedSyscall() {
