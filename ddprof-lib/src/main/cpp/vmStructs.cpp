@@ -60,6 +60,7 @@ int VMStructs::_anchor_fp_offset = -1;
 int VMStructs::_frame_size_offset = -1;
 int VMStructs::_frame_complete_offset = -1;
 int VMStructs::_code_begin_offset = -1;
+int VMStructs::_code_end_offset = -1;
 int VMStructs::_scopes_begin_offset = -1;
 int VMStructs::_nmethod_name_offset = -1;
 int VMStructs::_nmethod_method_offset = -1;
@@ -273,7 +274,10 @@ void VMStructs::initOffsets() {
                 _code_begin_offset = - *(int*)(entry + offset_offset);
             } else if (strcmp(field, "_name") == 0) {
                 _nmethod_name_offset = *(int*)(entry + offset_offset);
+            } else if (strcmp(field, "_code_end") == 0) {
+                _code_end_offset = - *(int*)(entry + offset_offset);
             }
+            // TODO find older aliases for _code_end (what is the counterpart for _code_offset?)
         } else if (strcmp(type, "CodeCache") == 0) {
             if (strcmp(field, "_heap") == 0) {
                 _code_heap_addr = *(char***)(entry + address_offset);

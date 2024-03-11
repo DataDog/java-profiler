@@ -67,6 +67,7 @@ class VMStructs {
     static int _frame_size_offset;
     static int _frame_complete_offset;
     static int _code_begin_offset;
+    static int _code_end_offset;
     static int _scopes_begin_offset;
     static int _nmethod_name_offset;
     static int _nmethod_method_offset;
@@ -358,6 +359,20 @@ class NMethod : VMStructs {
         } else {
             return at(*(int*) at(-_code_begin_offset));
         }
+    }
+
+    const int codeSize() {
+        if (_code_begin_offset >= 0 && _code_end_offset >= 0) {
+            const char* begin = *(const char**) at(_code_begin_offset);
+            const char* end = *(const char**) at(_code_end_offset);
+            return (int)(end - begin);
+        } else if (_code_end_offset != -1) {
+            // TODO suspect
+            const char* begin = at(*(int*) at(-_code_begin_offset));
+            const char* end = at(*(int*) at(-_code_end_offset));
+            return (int)(end - begin);
+        }
+        return -1;
     }
 
     const char* scopes() {

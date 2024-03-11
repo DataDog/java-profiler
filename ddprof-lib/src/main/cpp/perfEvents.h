@@ -37,6 +37,7 @@ class PerfEvents : public Engine {
     static Ring _ring;
     static CStack _cstack;
     static bool _use_mmap_page;
+    static bool _frame_samples;
 
     // cppcheck-suppress unusedPrivateFunction
     static u64 readCounter(siginfo_t* siginfo, void* ucontext);

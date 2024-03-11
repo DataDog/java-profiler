@@ -129,6 +129,7 @@ class Arguments {
     Action _action;
     Ring _ring;
     const char* _event;
+    bool _frame_samples;
     long _interval;
     long _cpu;
     long _wall;
@@ -176,7 +177,8 @@ class Arguments {
         _cstack(CSTACK_DEFAULT),
         _jfr_options(0),
         _context_attributes({}),
-        _lightweight(false) {
+        _lightweight(false),
+        _frame_samples(false) {
     }
 
     ~Arguments();

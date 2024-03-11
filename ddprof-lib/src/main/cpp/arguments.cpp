@@ -23,7 +23,6 @@
 #include <unistd.h>
 #include "arguments.h"
 
-
 // Predefined value that denotes successful operation
 const Error Error::OK(NULL);
 
@@ -187,6 +186,18 @@ Error Arguments::parse(const char* args) {
                     _event = value;
                 }
 
+            CASE("frames")
+                if (value != NULL && value[0] != 0) {
+                    switch (value[0]) {
+                        case 'y':
+                        case 't':
+                            _frame_samples = true;
+                            break;
+                        default:
+                            _frame_samples = false;
+                    }
+                }
+
             CASE("memory")
                 char* config = value ? strchr(value, ':') : NULL;
                 if (config) {
@@ -212,6 +223,7 @@ Error Arguments::parse(const char* args) {
                 } else {
                     msg = "memory sampling interval must be >= 0";
                 }
+
 
             CASE("interval")
                 if (value == NULL || (_interval = parseUnits(value, UNIVERSAL)) <= 0) {

@@ -44,6 +44,18 @@ class ExecutionEvent : public Event {
     ExecutionEvent() : Event(), _thread_state(ThreadState::RUNNABLE), _weight(1), _execution_mode(ExecutionMode::UNKNOWN) {}
 };
 
+class FrameEvent : public Event {
+public:
+    jmethodID _methodID; // link to method
+    u64 _pcRelative; // to get the pc, link to the nmethod and add its offset
+    u8 _compilationTier;
+
+    FrameEvent(jmethodID methodID, u64 pcRelative, u8 compilationTier) : Event(),
+        _methodID(methodID),
+        _pcRelative(pcRelative),
+        _compilationTier(compilationTier) {}
+};
+
 class AllocEvent : public Event {
   public:
     u64 _size;
@@ -157,5 +169,12 @@ typedef struct QueueTimeEvent {
     u32 _scheduler;
     u32 _origin;
 } QueueTimeEvent;
+
+typedef struct CodeEvent {
+    u64 _id;
+    u32 _name;
+    u32 _code_size;
+    const char* _code;
+} CodeEvent;
 
 #endif // _EVENT_H

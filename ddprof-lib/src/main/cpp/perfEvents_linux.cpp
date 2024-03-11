@@ -45,6 +45,7 @@
 #include "threadState.h"
 #include "vmStructs.h"
 #include "context.h"
+#include "FrameSampler.h"
 
 // Ancient fcntl.h does not define F_SETOWN_EX constants and structures
 #ifndef F_SETOWN_EX
@@ -548,6 +549,7 @@ long PerfEvents::_interval;
 Ring PerfEvents::_ring;
 CStack PerfEvents::_cstack;
 bool PerfEvents::_use_mmap_page;
+bool PerfEvents::_frame_samples;
 
 static int __intsort(const void *a, const void *b) {
     return *(const int*)a > *(const int*)b;
@@ -711,6 +713,10 @@ void PerfEvents::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     if (_enabled) {
         Shims::instance().setSighandlerTid(tid);
 
+        if (_frame_samples) {
+            FrameSampler::sample(tid, _interval, ucontext);
+        }
+
         u64 counter = readCounter(siginfo, ucontext);
         ExecutionEvent event;
         VMThread* vm_thread = VMThread::current();
@@ -819,6 +825,7 @@ Error PerfEvents::start(Arguments& args) {
     }
 
     _interval = interval ? interval : _event_type->default_interval;
+    _frame_samples = args._frame_samples;
 
     _ring = args._ring;
     if ((_ring & RING_KERNEL) && !Symbols::haveKernelSymbols()) {

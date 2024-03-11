@@ -1214,6 +1214,33 @@ void Recording::recordMethodSample(Buffer* buf, int tid, u32 call_trace_id, Exec
     flushIfNeeded(buf);
 }
 
+void Recording::recordFrameSample(Buffer* buf, int tid, FrameEvent* event) {
+    int start = buf->skip(1);
+    buf->putVar64(T_DATADOG_FRAME_SAMPLE);
+    buf->putVar64(TSC::ticks());
+    buf->putVar64(tid);
+    buf->putVar64((u64) event->_methodID);
+    buf->putVar64(event->_pcRelative);
+    buf->put8(event->_compilationTier);
+    writeContext(buf, Contexts::get(tid));
+    writeEventSizePrefix(buf, start);
+    flushIfNeeded(buf);
+    std::cout << "recorded frame sample" << std::endl;
+}
+
+void Recording::recordCodeSample(Buffer *buf, CodeEvent* event) {
+    int length = 1 + MAX_VAR64_LENGTH + MAX_VAR32_LENGTH + event->_code_size;
+    // ensure the code does not get truncated, because we won't be able to disassemble it if it is
+    flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - length);
+    int start = buf->skip(1);
+    buf->putVar64(T_DATADOG_CODE_SAMPLE);
+    buf->putVar64((u64) event->_id);
+    buf->putVar64(event->_name);
+    buf->putUtf8(event->_code, event->_code_size);
+    writeEventSizePrefix(buf, start);
+    flushIfNeeded(buf);
+}
+
 void Recording::recordWallClockEpoch(Buffer* buf, WallClockEpochEvent* event) {
     int start = buf->skip(1);
     buf->putVar64(T_WALLCLOCK_SAMPLE_EPOCH);
@@ -1451,6 +1478,13 @@ void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
     }
 }
 
+void FlightRecorder::recordCode(int lock_index, CodeEvent *code) {
+    if (_rec != NULL) {
+        Buffer *buf = _rec->buffer(lock_index);
+        _rec->recordCodeSample(buf, code);
+    }
+}
+
 void FlightRecorder::recordEvent(int lock_index, int tid, u32 call_trace_id,
                                  int event_type, Event* event, u64 counter) {
     if (_rec != NULL) {
@@ -1473,6 +1507,10 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u32 call_trace_id,
                 break;
             case BCI_PARK:
                 _rec->recordThreadPark(buf, tid, call_trace_id, (LockEvent*)event);
+                break;
+            case BCI_FRAME:
+                std::cout << "recording frame sample" << std::endl;
+                _rec->recordFrameSample(buf, tid, (FrameEvent*)event);
                 break;
         }
         _rec->flushIfNeeded(buf);

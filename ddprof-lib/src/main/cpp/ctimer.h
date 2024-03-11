@@ -30,6 +30,7 @@ class CTimer : public Engine {
     static long _interval;
     static CStack _cstack;
     static int _signal;
+    static bool _frame_samples;
 
     static int _max_timers;
     static int* _timers;
