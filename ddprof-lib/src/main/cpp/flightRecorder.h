@@ -234,6 +234,8 @@ class Recording {
 
     void recordExecutionSample(Buffer* buf, int tid, u32 call_trace_id, ExecutionEvent* event);
     void recordMethodSample(Buffer* buf, int tid, u32 call_trace_id, ExecutionEvent* event);
+    void recordFrameSample(Buffer* buf, int tid, FrameEvent* event);
+    void recordCodeSample(Buffer* buf, CodeEvent* event);
     void recordWallClockEpoch(Buffer* buf, WallClockEpochEvent* event);
     void recordTraceRoot(Buffer* buf, int tid, TraceRootEvent* event);
     void recordQueueTime(Buffer* buf, int tid, QueueTimeEvent* event);
@@ -301,6 +303,8 @@ class FlightRecorder {
     void recordDatadogSetting(int lock_index, int length, const char* name, const char* value, const char* unit);
 
     void recordHeapUsage(int lock_index, long value, bool live);
+
+    void recordCode(int lock_index, CodeEvent* code);
 };
 
 #endif // _FLIGHTRECORDER_H

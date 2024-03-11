@@ -24,6 +24,7 @@
 #include "debugSupport.h"
 #include "profiler.h"
 #include "vmStructs.h"
+#include "FrameSampler.h"
 
 
 #ifndef SIGEV_THREAD_ID
@@ -81,6 +82,7 @@ int* CTimer::_timers = NULL;
 CStack CTimer::_cstack;
 volatile bool CTimer::_enabled = false;
 int CTimer::_signal;
+bool CTimer::_frame_samples;
 
 int CTimer::registerThread(int tid) {
     if (tid >= _max_timers) {
@@ -153,6 +155,7 @@ Error CTimer::start(Arguments& args) {
     _interval = args.cpuSamplerInterval();
     _cstack = args._cstack;
     _signal = SIGPROF;
+    _frame_samples = args._frame_samples;
 
     int max_timers = OS::getMaxThreadId();
     if (max_timers != _max_timers) {
@@ -199,6 +202,10 @@ void CTimer::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
         tid = OS::threadId();
     }
     Shims::instance().setSighandlerTid(tid);
+
+    if (_frame_samples) {
+        FrameSampler::sample(tid, _interval, ucontext);
+    }
 
     ExecutionEvent event;
     VMThread* vm_thread = VMThread::current();

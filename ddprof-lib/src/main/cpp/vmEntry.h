@@ -32,6 +32,7 @@
 
 // Denotes ASGCT_CallFrame where method_id has special meaning (not jmethodID)
 enum ASGCT_CallFrameType {
+    BCI_FRAME               =   1,  // frame sample
     BCI_CPU                 =   0,  // cpu time
     BCI_WALL                = -10,  // wall time
     BCI_NATIVE_FRAME        = -11,  // native function name (char*)

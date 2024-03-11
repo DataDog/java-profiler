@@ -26,6 +26,7 @@ class ITimer : public Engine {
     static volatile bool _enabled;
     static long _interval;
     static CStack _cstack;
+    static bool _frame_samples;
 
     static void signalHandler(int signo, siginfo_t* siginfo, void* ucontext);
 

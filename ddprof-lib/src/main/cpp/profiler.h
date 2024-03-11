@@ -267,6 +267,8 @@ class Profiler {
     void switchThreadEvents(jvmtiEventMode mode);
     int convertNativeTrace(int native_frames, const void** callchain, ASGCT_CallFrame* frames);
     void recordSample(void* ucontext, u64 counter, int tid, jint event_type, Event* event);
+    void recordFrameSample(u64 counter, int tid, FrameEvent* event);
+    void recordCode(int tid, CodeEvent* event);
     void recordExternalSample(u64 counter, int tid, jvmtiFrameInfo *jvmti_frames, jint num_jvmti_frames, bool truncated, jint event_type, Event* event);
     void recordExternalSample(u64 counter, int tid, int num_frames, ASGCT_CallFrame* frames, bool truncated, jint event_type, Event* event);
     void recordWallClockEpoch(int tid, WallClockEpochEvent* event);

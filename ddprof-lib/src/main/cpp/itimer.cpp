@@ -16,6 +16,7 @@
 
 #include <sys/time.h>
 #include "debugSupport.h"
+#include "FrameSampler.h"
 #include "itimer.h"
 #include "os.h"
 #include "profiler.h"
@@ -23,9 +24,12 @@
 #include "thread.h"
 #include "vmStructs.h"
 
+#include <iostream>
+
 volatile bool ITimer::_enabled = false;
 long ITimer::_interval;
 CStack ITimer::_cstack;
+bool ITimer::_frame_samples;
 
 void ITimer::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     if (!_enabled) return;
@@ -38,6 +42,10 @@ void ITimer::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
         tid = OS::threadId();
     }
     Shims::instance().setSighandlerTid(tid);
+
+    if (_frame_samples) {
+        FrameSampler::sample(tid, _interval, ucontext);
+    }
 
     ExecutionEvent event;
     VMThread* vm_thread = VMThread::current();
@@ -67,6 +75,7 @@ Error ITimer::check(Arguments& args) {
 Error ITimer::start(Arguments& args) {
     _interval = args.cpuSamplerInterval();
     _cstack = args._cstack;
+    _frame_samples = args._frame_samples;
 
     OS::installSignalHandler(SIGPROF, signalHandler);
 

@@ -44,6 +44,9 @@
 #include "vmStructs.h"
 #include "context.h"
 #include "counters.h"
+#include "FrameSampler.h"
+
+#include <iostream>
 
 
 // The instance is not deleted on purpose, since profiler structures
@@ -646,6 +649,30 @@ void Profiler::recordExternalSample(u64 counter, int tid, jvmtiFrameInfo *jvmti_
     _locks[lock_index].unlock();
 }
 
+
+void Profiler::recordFrameSample(u64 counter, int tid, FrameEvent* event) {
+    u32 lock_index = getLockIndex(tid);
+    if (!_locks[lock_index].tryLock() &&
+        !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+        !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+        std::cout << "flight recording" << std::endl;
+        _jfr.recordEvent(lock_index, tid, 0, BCI_FRAME, event, counter);
+    } else {
+        std::cout << "dropped frame sample" << std::endl;
+    }
+    _locks[lock_index].unlock();
+}
+
+void Profiler::recordCode(int tid, CodeEvent* event) {
+    u32 lock_index = getLockIndex(tid);
+    if (!_locks[lock_index].tryLock() &&
+        !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+        !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+        _jfr.recordCode(lock_index, event);
+    }
+    _locks[lock_index].unlock();
+}
+
 void Profiler::recordSample(void* ucontext, u64 counter, int tid, jint event_type, Event* event) {
     atomicInc(_total_samples);
 
@@ -1179,6 +1206,7 @@ Error Profiler::stop() {
     // Acquire all spinlocks to avoid race with remaining signals
     lockAll();
     _jfr.stop();
+    FrameSampler::clear();
     unlockAll();
 
     _state = IDLE;
@@ -1229,6 +1257,7 @@ Error Profiler::flushJfr() {
 
     lockAll();
     _jfr.flush();
+    FrameSampler::clear();
     unlockAll();
 
     return Error::OK;
@@ -1259,6 +1288,9 @@ Error Profiler::dump(const char* path, const int length) {
         if (!_omit_stacktraces) {
             _call_trace_storage.clear();
         }
+
+        FrameSampler::clear();
+
         unlockAll();
         // Reset classmap
         _class_map_lock.lock();
