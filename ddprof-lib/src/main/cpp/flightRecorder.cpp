@@ -1163,6 +1163,7 @@ void Recording::writeCounters(Buffer* buf) {
         for (int i = 0; i < names.size(); i++) {
             int start = buf->skip(1);
             buf->putVar64(T_DATADOG_COUNTER);
+            buf->putVar64(_start_ticks);
             buf->putUtf8(names[i]);
             buf->putVar64(counters[Counters::address(i)]);
             writeEventSizePrefix(buf, start);

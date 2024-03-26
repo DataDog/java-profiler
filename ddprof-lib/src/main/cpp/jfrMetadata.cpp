@@ -254,6 +254,7 @@ void JfrMetadata::initialize(const std::vector<std::string>& contextAttributes) 
 
             << (type("datadog.ProfilerCounter", T_DATADOG_COUNTER, "Datadog Profiler Internal Counter")
                 << category("Datadog")
+                << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
                 << field("name", T_COUNTER_NAME, "Name")
                 << field("count", T_LONG, "Count"))
 
