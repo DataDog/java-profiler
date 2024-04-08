@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <memory>
 #include <set>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -888,19 +889,13 @@ void Profiler::setupSignalHandlers() {
     }
 }
 
-void Profiler::setThreadInfo(int tid, const char* name, jlong java_thread_id) {
-    MutexLocker ml(_thread_names_lock);
-    _thread_names[tid] = name;
-    _thread_ids[tid] = java_thread_id;
-}
-
 void Profiler::updateThreadName(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     JitWriteProtection jit(true);  // workaround for JDK-8262896
     jvmtiThreadInfo thread_info;
     int native_thread_id = VMThread::nativeThreadId(jni, thread);
     if (native_thread_id >= 0 && jvmti->GetThreadInfo(thread, &thread_info) == 0) {
         jlong java_thread_id = VMThread::javaThreadId(jni, thread);
-        setThreadInfo(native_thread_id, thread_info.name, java_thread_id);
+        _thread_info.set(native_thread_id, thread_info.name, java_thread_id);
         jvmti->Deallocate((unsigned char*)thread_info.name);
     }
 }
@@ -923,16 +918,15 @@ void Profiler::updateJavaThreadNames() {
 
 void Profiler::updateNativeThreadNames() {
     ThreadList* thread_list = OS::listThreads();
-    char name_buf[64];
-
     for (int tid; (tid = thread_list->next()) != -1; ) {
-        MutexLocker ml(_thread_names_lock);
-        std::map<int, std::string>::iterator it = _thread_names.lower_bound(tid);
-        if (it == _thread_names.end() || it->first != tid) {
+        _thread_info.updateThreadName(tid, [](int tid) -> std::unique_ptr<char[]> {
+            char *name_buf = new char[64];
             if (OS::threadName(tid, name_buf, sizeof(name_buf))) {
-                _thread_names.insert(it, std::map<int, std::string>::value_type(tid, name_buf));
+                return std::unique_ptr<char[]>(name_buf);
             }
-        }
+            delete[] name_buf;
+            return nullptr;
+        });
     }
 
     delete thread_list;
@@ -1046,9 +1040,7 @@ Error Profiler::start(Arguments& args, bool reset) {
         Counters::reset();
 
         // Reset thread names and IDs
-        MutexLocker ml(_thread_names_lock);
-        _thread_names.clear();
-        _thread_ids.clear();
+        _thread_info.clearAll();
     }
 
     // (Re-)allocate calltrace buffers
@@ -1173,8 +1165,7 @@ Error Profiler::stop() {
     updateNativeThreadNames();
 
     // writing these out before stopping the JFR recording allows to report the correct counts in the recording
-    Counters::set(THREAD_IDS_COUNT, _thread_ids.size());
-    Counters::set(THREAD_NAMES_COUNT, _thread_names.size());
+    _thread_info.reportCounters();
 
     // Acquire all spinlocks to avoid race with remaining signals
     lockAll();
@@ -1265,35 +1256,8 @@ Error Profiler::dump(const char* path, const int length) {
         _class_map.clear();
         _class_map_lock.unlock();
 
-        // // Reset thread names and IDs
-        MutexLocker ml(_thread_names_lock);
-        if (thread_ids.empty()) {
-            // take the fast path
-            _thread_names.clear();
-            _thread_ids.clear();
-        } else {
-            // we need to honor the thread referenced from th liveness tracker
-            std::map<int, std::string>::iterator name_itr = _thread_names.begin();
-            while (name_itr != _thread_names.end()) {
-                if (thread_ids.find(name_itr->first) != thread_ids.end()) {
-                    name_itr = _thread_names.erase(name_itr);
-                } else {
-                    ++name_itr;
-                }
-            }
-            std::map<int, jlong>::iterator id_itr = _thread_ids.begin();
-            while (id_itr != _thread_ids.end()) {
-                if (thread_ids.find(name_itr->first) != thread_ids.end()) {
-                    id_itr = _thread_ids.erase(id_itr);
-                } else {
-                    ++id_itr;
-                }
-            }
-        }
-
-        Counters::set(THREAD_IDS_COUNT, _thread_ids.size());
-        Counters::set(THREAD_NAMES_COUNT, _thread_names.size());
-
+        _thread_info.clearAll(thread_ids);
+        _thread_info.reportCounters();
         return err;
     }
 
