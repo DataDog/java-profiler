@@ -106,12 +106,11 @@ void ObjectSampler::recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread threa
     }
 
     if (_record_liveness) {
-        // 'frames' will be released by the tracker
         LivenessTracker::instance()->track(jni, event, tid, object, frames_size, frames);
-    } else {
-        // otherwise the 'frames' need to be deleted here
-        delete[] frames;
     }
+
+    // it's safe to delete frames - the liveness tracker keeps a full copy of the frames and manages its own memory
+    delete[] frames;
 }
 
 Error ObjectSampler::check(Arguments& args) {

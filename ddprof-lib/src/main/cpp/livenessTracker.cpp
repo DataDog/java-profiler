@@ -51,18 +51,21 @@ void LivenessTracker::cleanup_table(bool forced) {
     u32 sz, newsz = 0;
     std::set<jclass> kept_classes;
     for (u32 i = 0; i < (sz = _table_size); i++) {
-        if (_table[i].ref != NULL && !env->IsSameObject(_table[i].ref, NULL)) {
+        if (_table[i].ref != nullptr && !env->IsSameObject(_table[i].ref, nullptr)) {
             // it survived one more GarbageCollectionFinish event
             u32 target = newsz++;
             if (target != i) {
                 _table[target] = _table[i];
-                _table[i].ref = NULL;
+                _table[i].ref = nullptr;
+                assert(_table[i].frames == _table[target].frames);
+                _table[i].frames = nullptr;
             }
             _table[target].age += epoch_diff;
         } else {
             env->DeleteWeakGlobalRef(_table[i].ref);
-            _table[i].ref = NULL;
+            _table[i].ref = nullptr;
             delete[] _table[i].frames;
+            _table[i].frames = nullptr;
         }
     }
 
@@ -296,8 +299,6 @@ retry:
             }
         }
     }
-
-    delete[] frames;
 }
 
 void JNICALL LivenessTracker::GarbageCollectionFinish(jvmtiEnv *jvmti_env) {
