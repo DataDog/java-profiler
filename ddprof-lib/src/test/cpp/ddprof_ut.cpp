@@ -6,6 +6,7 @@
     #include "mutex.h"
     #include "os.h"
     #include "threadFilter.h"
+    #include "threadInfo.h"
     #include <vector>
 
     ssize_t callback(char* ptr, int len) {
@@ -138,6 +139,37 @@
             ASSERT_FALSE(filter.accept(tid));
         }
         EXPECT_EQ(0, filter.size());
+    }
+
+    TEST(ThreadInfoTest, testThreadInfoCleanupAllDead) {
+        ThreadInfo info;
+        info.set(1, "main", 1);
+        info.set(2, "ephemeral", 2);
+        ASSERT_EQ(2, info.size());
+
+        std::set<int> live_thread_ids;
+        live_thread_ids.insert(1);
+
+        // make sure only the non-live threads are removed
+        info.clearAll(live_thread_ids);
+        ASSERT_EQ(1, info.size());
+        ASSERT_EQ(-1, info.getThreadId(2));
+
+        // sanity check that all threads are removed when no live threads are provided
+        std::set<int> empty_set;
+        info.set(2, "ephemeral-1", 2);
+        info.clearAll(empty_set);
+        ASSERT_EQ(0, info.size());
+    }
+
+    TEST(ThreadInfoTest, testThreadInfoCleanupAll) {
+        ThreadInfo info;
+        info.set(1, "main", 1);
+        info.set(2, "ephemeral", 2);
+        ASSERT_EQ(2, info.size());
+
+        info.clearAll();
+        ASSERT_EQ(0, info.size());
     }
 
     int main(int argc, char **argv) {

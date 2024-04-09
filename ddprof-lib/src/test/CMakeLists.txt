@@ -51,7 +51,8 @@ file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/../main/cpp/threadFilter.cpp"
     "${PROJECT_SOURCE_DIR}/../main/cpp/dictionary.cpp"
     "${PROJECT_SOURCE_DIR}/../main/cpp/methodCache.cpp"
-    "${PROJECT_SOURCE_DIR}/../main/cpp/counters.cpp"
+    "${PROJECT_SOURCE_DIR}/../main/cpp/mutex.cpp"
+    "${PROJECT_SOURCE_DIR}/../main/cpp/threadInfo.cpp"
 )
 
 add_compile_definitions(DEBUG)

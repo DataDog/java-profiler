@@ -32,6 +32,7 @@
 #include "mutex.h"
 #include "spinLock.h"
 #include "threadFilter.h"
+#include "threadInfo.h"
 #include "trap.h"
 #include "vmEntry.h"
 #include "objectSampler.h"
@@ -112,10 +113,7 @@ class Profiler {
     NotifyClassUnloadedFunc _notify_class_unloaded_func;
     // --
 
-    Mutex _thread_names_lock;
-    // TODO: single map?
-    std::map<int, std::string> _thread_names;
-    std::map<int, jlong> _thread_ids;
+    ThreadInfo _thread_info;
     Dictionary _class_map;
     Dictionary _string_label_map;
     Dictionary _context_value_map;
@@ -176,7 +174,6 @@ class Profiler {
     int getJavaTraceInternal(jvmtiFrameInfo* jvmti_frames, ASGCT_CallFrame* frames, int max_depth);
     int convertFrames(jvmtiFrameInfo* jvmti_frames, ASGCT_CallFrame* frames, int num_frames);
     void fillFrameTypes(ASGCT_CallFrame* frames, int num_frames, NMethod* nmethod);
-    void setThreadInfo(int tid, const char* name, jlong java_thread_id);
     void updateThreadName(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread);
     void updateJavaThreadNames();
     void updateNativeThreadNames();
