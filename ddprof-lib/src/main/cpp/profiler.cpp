@@ -116,7 +116,7 @@ void Profiler::onThreadStart(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     if (_thread_filter.enabled()) {
         _thread_filter.remove(tid);
     }
-    updateThreadName(jvmti, jni, thread);
+    updateThreadName(jvmti, jni, thread, true);
 
     _cpu_engine->registerThread(tid);
     _wall_engine->registerThread(tid);
@@ -127,7 +127,7 @@ void Profiler::onThreadEnd(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     if (_thread_filter.enabled()) {
         _thread_filter.remove(tid);
     }
-    updateThreadName(jvmti, jni, thread);
+    updateThreadName(jvmti, jni, thread, true);
 
     _cpu_engine->unregisterThread(tid);
     // unregister here because JNI callers generally don't know about thread exits
@@ -889,10 +889,17 @@ void Profiler::setupSignalHandlers() {
     }
 }
 
-void Profiler::updateThreadName(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
+/**
+ * Update thread name for the given thread
+ */
+void Profiler::updateThreadName(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread, bool self) {
     JitWriteProtection jit(true);  // workaround for JDK-8262896
     jvmtiThreadInfo thread_info;
     int native_thread_id = VMThread::nativeThreadId(jni, thread);
+    if (native_thread_id < 0 && self) {
+        // if updating the current thread, use the native thread id from the ProfilerThread
+        native_thread_id = ProfiledThread::currentTid();
+    }
     if (native_thread_id >= 0 && jvmti->GetThreadInfo(thread, &thread_info) == 0) {
         jlong java_thread_id = VMThread::javaThreadId(jni, thread);
         _thread_info.set(native_thread_id, thread_info.name, java_thread_id);

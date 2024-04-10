@@ -174,7 +174,7 @@ class Profiler {
     int getJavaTraceInternal(jvmtiFrameInfo* jvmti_frames, ASGCT_CallFrame* frames, int max_depth);
     int convertFrames(jvmtiFrameInfo* jvmti_frames, ASGCT_CallFrame* frames, int num_frames);
     void fillFrameTypes(ASGCT_CallFrame* frames, int num_frames, NMethod* nmethod);
-    void updateThreadName(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread);
+    void updateThreadName(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread, bool self = false);
     void updateJavaThreadNames();
     void updateNativeThreadNames();
     void mangle(const char* name, char* buf, size_t size);
