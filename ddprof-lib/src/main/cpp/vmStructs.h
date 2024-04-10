@@ -426,7 +426,7 @@ class VMThread : VMStructs {
     }
 
     static VMThread* fromJavaThread(JNIEnv* env, jthread thread) {
-        return (VMThread*)(uintptr_t)env->GetLongField(thread, _eetop);
+        return _eetop != NULL && thread != NULL ? (VMThread*)(uintptr_t)env->GetLongField(thread, _eetop) : NULL;
     }
 
     static VMThread* fromEnv(JNIEnv* env) {
