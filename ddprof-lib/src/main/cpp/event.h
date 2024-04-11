@@ -150,12 +150,20 @@ class TraceRootEvent {
         _local_root_span_id(local_root_span_id), _label(label), _operation(operation) {};
 };
 
-typedef struct QueueTimeEvent {
+typedef struct {
     u64 _start;
     u64 _end;
     u32 _task;
     u32 _scheduler;
     u32 _origin;
 } QueueTimeEvent;
+
+typedef struct {
+    u64 _start;
+    u64 _end;
+    u32 _task;
+    u32 _barrier;
+    u32 _generation;
+} CyclicBarrierTimeEvent;
 
 #endif // _EVENT_H

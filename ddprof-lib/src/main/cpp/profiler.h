@@ -269,6 +269,7 @@ class Profiler {
     void recordWallClockEpoch(int tid, WallClockEpochEvent* event);
     void recordTraceRoot(int tid, TraceRootEvent* event);
     void recordQueueTime(int tid, QueueTimeEvent* event);
+    void recordCyclicBarrierTime(int tid, CyclicBarrierTimeEvent* event);
     void writeLog(LogLevel level, const char* message);
     void writeLog(LogLevel level, const char* message, size_t len);
     void writeDatadogProfilerSetting(int tid, int length, const char* name, const char* value, const char* unit);

@@ -63,6 +63,16 @@ public:
     }
 };
 
+static jstring getStringField(JNIEnv* env, jobject obj, const char* fieldName) {
+    jfieldID fid = env->GetFieldID(env->GetObjectClass(obj), fieldName, "Ljava/lang/String;");
+    return (jstring) env->GetObjectField(obj, fid);
+}
+
+static jint getIntField(JNIEnv* env, jobject obj, const char* fieldName) {
+    jfieldID fid = env->GetFieldID(env->GetObjectClass(obj), fieldName, "I");
+    return env->GetIntField(obj, fid);
+}
+
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_stop0(JNIEnv* env, jobject unused) {
     Error error = Profiler::instance()->stop();
@@ -74,7 +84,7 @@ Java_com_datadoghq_profiler_JavaProfiler_stop0(JNIEnv* env, jobject unused) {
 
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getTid0(JNIEnv* env, jobject unused) {
-    return OS::threadId();
+    return ProfiledThread::currentTid();
 }
 
 extern "C" DLLEXPORT jstring JNICALL
@@ -214,38 +224,66 @@ Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(JNIEnv *env, jobjec
     Profiler::instance()->writeDatadogProfilerSetting(tid, length, name_str.c_str(), value_str.c_str(), unit_str.c_str());
 }
 
+typedef struct {
+  u64 ticks;
+  u32 tid;
+} Origin;
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_events_Origin_createTimer0(JNIEnv* env, jobject invalid, jint type) {
+    Origin* event = new Origin();
+    return (jlong) event;
+}
+
 extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(JNIEnv* env, jobject unused, jlong startTime,
-                                                         jlong endTime, jstring task, jstring scheduler,
-                                                         jthread origin) {
+Java_com_datadoghq_profiler_events_Origin_init0(JNIEnv* env, jobject invalid, jlong handle) {
+    Origin* event = (Origin*) handle;
+    event->ticks = TSC::ticks();
+    event->tid = ProfiledThread::currentTid();
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_events_Origin_free0(JNIEnv* env, jobject invalid, jlong handle) {
+    delete (Origin*) handle;
+}
+
+// instance method
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_events_Origin_commit0(JNIEnv* env, jobject event, jint type, jlong handle) {
     int tid = ProfiledThread::currentTid();
     if (tid < 0) {
         return;
     }
-    int origin_tid = VMThread::nativeThreadId(env, origin);
-    if (origin_tid < 0) {
+    Origin* origin = (Origin*) handle;
+    if (origin->tid < 0) {
         return;
     }
-    JniString task_str(env, task);
-    JniString scheduler_str(env, scheduler);
-    int task_offset = Profiler::instance()->lookupClass(task_str.c_str(), task_str.length());
-    int scheduler_offset = Profiler::instance()->lookupClass(scheduler_str.c_str(), scheduler_str.length());
-    u64 now = TSC::ticks();
-    QueueTimeEvent event;
-    event._start = now - endTime + startTime;
-    event._end = now;
-    event._task = task_offset;
-    event._scheduler = scheduler_offset;
-    event._origin = origin_tid;
-    Profiler::instance()->recordQueueTime(tid, &event);
-}
-
-extern "C" DLLEXPORT jlong JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_currentTicks0(JNIEnv* env, jobject unused) {
-    return TSC::ticks();
-}
-
-extern "C" DLLEXPORT jlong JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_tscFrequency0(JNIEnv* env, jobject unused) {
-    return TSC::frequency();
+    switch (type) {
+        case 0: { // QUEUE
+            JniString task_str(env, getStringField(env, event, "task"));
+            int task_offset = Profiler::instance()->lookupClass(task_str.c_str(), task_str.length());
+            JniString scheduler_str(env, getStringField(env, event, "scheduler"));
+            int scheduler_offset = Profiler::instance()->lookupClass(scheduler_str.c_str(), scheduler_str.length());
+            QueueTimeEvent qte;
+            qte._start = origin->ticks;
+            qte._end = TSC::ticks();
+            qte._task = task_offset;
+            qte._scheduler = scheduler_offset;
+            qte._origin = origin->tid;
+            Profiler::instance()->recordQueueTime(tid, &qte);
+            break;
+        }
+        case 1: { // BARRIER
+            JniString task_str(env, getStringField(env, event, "task"));
+            int task_offset = Profiler::instance()->lookupClass(task_str.c_str(), task_str.length());
+            CyclicBarrierTimeEvent cbte;
+            cbte._start = origin->ticks;
+            cbte._end = TSC::ticks();
+            cbte._task = task_offset;
+            cbte._barrier = getIntField(env, event, "barrier");
+            cbte._generation = getIntField(env, event, "generation");
+            Profiler::instance()->recordCyclicBarrierTime(tid, &cbte);
+            break;
+        }
+    }
 }

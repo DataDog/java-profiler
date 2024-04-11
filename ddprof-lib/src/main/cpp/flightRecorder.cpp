@@ -1257,6 +1257,20 @@ void Recording::recordQueueTime(Buffer* buf, int tid, QueueTimeEvent* event) {
     flushIfNeeded(buf);
 }
 
+void Recording::recordCyclicBarrierTime(Buffer* buf, int tid, CyclicBarrierTimeEvent* event) {
+    int start = buf->skip(1);
+    buf->putVar64(T_CYCLIC_BARRIER_TIME);
+    buf->putVar64(event->_start);
+    buf->putVar64(event->_end - event->_start);
+    buf->putVar64(tid);
+    buf->putVar64(event->_task);
+    buf->putVar32(event->_barrier);
+    buf->putVar32(event->_generation);
+    writeContext(buf, Contexts::get(tid));
+    writeEventSizePrefix(buf, start);
+    flushIfNeeded(buf);
+}
+
 void Recording::recordAllocation(RecordingBuffer* buf, int tid, u32 call_trace_id, AllocEvent* event) {
     int start = buf->skip(1);
     buf->putVar64(T_ALLOC);
@@ -1433,6 +1447,13 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid, QueueTimeEvent* ev
     if (_rec != NULL) {
         Buffer* buf = _rec->buffer(lock_index);
         _rec->recordQueueTime(buf, tid, event);
+    }
+}
+
+void FlightRecorder::recordCyclicBarrierTime(int lock_index, int tid, CyclicBarrierTimeEvent *event) {
+    if (_rec != NULL) {
+        Buffer* buf = _rec->buffer(lock_index);
+        _rec->recordCyclicBarrierTime(buf, tid, event);
     }
 }
 

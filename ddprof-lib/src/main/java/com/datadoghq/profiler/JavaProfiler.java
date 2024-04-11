@@ -16,6 +16,9 @@
 
 package com.datadoghq.profiler;
 
+import com.datadoghq.profiler.events.CyclicBarrierTime;
+import com.datadoghq.profiler.events.EventType;
+import com.datadoghq.profiler.events.QueueTime;
 import sun.misc.Unsafe;
 
 import java.io.BufferedReader;
@@ -30,8 +33,10 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.Arrays;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
 
 /**
  * Java API for in-process profiling. Serves as a wrapper around
@@ -57,12 +62,6 @@ public final class JavaProfiler {
         UNSAFE = unsafe;
     }
 
-    static final class TSCFrequencyHolder {
-        /**
-         * TSC frequency required to convert ticks into seconds
-         */
-        static final long FREQUENCY = tscFrequency0();
-    }
     private static JavaProfiler instance;
     private static final int CONTEXT_SIZE = 64;
     // must be kept in sync with PAGE_SIZE in context.h
@@ -76,7 +75,20 @@ public final class JavaProfiler {
     private ByteBuffer[] contextStorage;
     private long[] contextBaseOffsets;
 
+    private final EnumMap<EventType, QueuePool> eventPools = new EnumMap<>(EventType.class);
+
     private JavaProfiler() {
+        for (EventType eventType : EventType.values()) {
+            eventPools.put(eventType, new QueuePool(new ArrayBlockingQueue<>(1024)));
+        }
+    }
+
+    public static void ensureLoaded() {
+        try {
+            getInstance();
+        } catch (IOException e) {
+            throw new IllegalStateException("profiler not loaded");
+        }
     }
 
     /**
@@ -418,31 +430,22 @@ public final class JavaProfiler {
         recordSettingEvent0(name, value, unit);
     }
 
-
-    /**
-     * Scales the ticks to milliseconds and applies a threshold
-     */
-    public boolean isThresholdExceeded(long thresholdMillis, long startTicks, long endTicks) {
-        return endTicks - startTicks > thresholdMillis * TSCFrequencyHolder.FREQUENCY / 1000;
-    }
-
-    /**
-     * Records when queueing ended
-     * @param task the name of the enqueue task
-     * @param scheduler the name of the thread-pool or executor scheduling the task
-     * @param origin the thread the task was submitted on
-     */
-    public void recordQueueTime(long startTicks, long endTicks, Class<?> task, Class<?> scheduler,
-                               Thread origin) {
-        recordQueueEnd0(startTicks, endTicks, task.getName(), scheduler.getName(), origin);
-    }
-
-    /**
-     * Get the ticks for the current thread.
-     * @return ticks
-     */
-    public long getCurrentTicks() {
-        return currentTicks0();
+    public TraceEvent startTrace(EventType eventType) {
+        Pool pool = eventPools.get(eventType);
+        TraceEvent event = null;
+        switch (eventType) {
+            case QUEUE:
+                event = pool.get(QueueTime::new);
+                break;
+            case CYCLIC_BARRIER:
+                event = pool.get(CyclicBarrierTime::new);
+                break;
+            default:
+        }
+        if (event != null) {
+            event.reset();
+        }
+        return event;
     }
 
     /**
@@ -567,10 +570,4 @@ public final class JavaProfiler {
     private static native String[] describeDebugCounters0();
 
     private static native void recordSettingEvent0(String name, String value, String unit);
-
-    private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin);
-
-    private static native long currentTicks0();
-
-    private static native long tscFrequency0();
 }

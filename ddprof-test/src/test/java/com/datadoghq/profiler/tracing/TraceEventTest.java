@@ -1,7 +1,11 @@
-package com.datadoghq.profiler.queue;
+package com.datadoghq.profiler.tracing;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JavaProfiler;
+import com.datadoghq.profiler.TraceEvent;
+import com.datadoghq.profiler.events.CyclicBarrierTime;
+import com.datadoghq.profiler.events.EventType;
+import com.datadoghq.profiler.events.QueueTime;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.IMCThread;
 import org.openjdk.jmc.common.IMCType;
@@ -15,16 +19,14 @@ import org.openjdk.jmc.common.unit.IRange;
 import org.openjdk.jmc.flightrecorder.JfrAttributes;
 import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
+import java.util.concurrent.TimeUnit;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
-import static org.openjdk.jmc.common.unit.UnitLookup.CLASS;
-import static org.openjdk.jmc.common.unit.UnitLookup.EPOCH_MS;
-import static org.openjdk.jmc.common.unit.UnitLookup.EPOCH_NS;
-import static org.openjdk.jmc.common.unit.UnitLookup.THREAD;
-import static org.openjdk.jmc.common.unit.UnitLookup.TIMESTAMP;
+import static org.openjdk.jmc.common.unit.UnitLookup.*;
 
-public class QueueTimeTest extends AbstractProfilerTest {
+public class TraceEventTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
         return "cpu=10ms";
@@ -33,22 +35,22 @@ public class QueueTimeTest extends AbstractProfilerTest {
     private static final class Task implements Runnable {
 
         private final JavaProfiler profiler;
-        private final long start;
-        private final Thread origin;
+        private final TraceEvent traceEvent;
 
         private Task(JavaProfiler profiler) {
             this.profiler = profiler;
-            this.start = profiler.getCurrentTicks();
-            this.origin = Thread.currentThread();
+            this.traceEvent = profiler.startTrace(EventType.QUEUE);
+            ((QueueTime) traceEvent).setTask(Task.class.getName());
+            ((QueueTime) traceEvent).setScheduler("scheduler");
         }
 
         @Override
         public void run() {
             profiler.setContext(1, 2);
-            long now = profiler.getCurrentTicks();
-            if (profiler.isThresholdExceeded(9, start, now)) {
-                profiler.recordQueueTime(start, now, getClass(), QueueTimeTest.class, origin);
+            if (traceEvent.shouldCommit(9, TimeUnit.MILLISECONDS)) {
+                traceEvent.commit();
             }
+            traceEvent.free();
             profiler.clearContext();
         }
     }
@@ -62,12 +64,34 @@ public class QueueTimeTest extends AbstractProfilerTest {
         Thread.sleep(10);
         thread.start();
         thread.join();
+        {
+            profiler.setContext(10, 20);
+            CyclicBarrierTime cbt = (CyclicBarrierTime) profiler.startTrace(EventType.CYCLIC_BARRIER);
+            Thread.sleep(20);
+            cbt.setTask(Task.class.getName());
+            cbt.setBarrier(1, 0);
+            if (cbt.shouldCommit(10, TimeUnit.MILLISECONDS)) {
+                cbt.commit();
+            }
+            cbt.reset();
+            cbt.setTask(Task.class.getName());
+            cbt.setBarrier(1, 1);
+            Thread.sleep(25);
+            if (cbt.shouldCommit(20, TimeUnit.MILLISECONDS)) {
+                cbt.commit();
+            }
+            cbt.free();
+            profiler.clearContext();
+        }
+
         stopProfiler();
 
         IAttribute<IQuantity> startTimeAttr = attr("startTime", "", "", TIMESTAMP);
         IAttribute<IMCThread> originAttr = attr("origin", "", "", THREAD);
         IAttribute<IMCType> taskAttr = attr("task", "", "", CLASS);
         IAttribute<IMCType> schedulerAttr = attr("scheduler", "", "", CLASS);
+        IAttribute<IQuantity> barrierAttr = attr("barrier", "", "", NUMBER);
+        IAttribute<IQuantity> generationAttr = attr("generation", "", "", NUMBER);
 
         IItemCollection activeSettings = verifyEvents("jdk.ActiveSetting");
         for (IItemIterable activeSetting : activeSettings) {
@@ -82,18 +106,34 @@ public class QueueTimeTest extends AbstractProfilerTest {
             }
         }
 
-        IItemCollection events = verifyEvents("datadog.QueueTime");
-        for (IItemIterable it : events) {
+        IItemCollection queueTimeEvents = verifyEvents("datadog.QueueTime");
+        for (IItemIterable it : queueTimeEvents) {
+            for (IItem item : it) {
+                assertTrue(startTimeAttr.getAccessor(it.getType()).getMember(item).longValueIn(EPOCH_NS) > 0);
+                IRange<IQuantity> lifetime = JfrAttributes.LIFETIME.getAccessor(it.getType()).getMember(item);
+                long duration = lifetime.getEnd().longValueIn(EPOCH_MS) - lifetime.getStart().longValueIn(EPOCH_MS);
+                assertTrue(duration >= 10);
+                assertEquals(task.getClass().getName(), taskAttr.getAccessor(it.getType()).getMember(item).getTypeName());
+                assertEquals("scheduler", schedulerAttr.getAccessor(it.getType()).getMember(item).getTypeName());
+                assertEquals(1, SPAN_ID.getAccessor(it.getType()).getMember(item).longValue());
+                assertEquals(2, LOCAL_ROOT_SPAN_ID.getAccessor(it.getType()).getMember(item).longValue());
+                assertEquals("origin", originAttr.getAccessor(it.getType()).getMember(item).getThreadName());
+            }
+        }
+
+        IItemCollection barrierEvents = verifyEvents("datadog.CyclicBarrierTime");
+        for (IItemIterable it : barrierEvents) {
             for (IItem item : it) {
                 assertTrue(startTimeAttr.getAccessor(it.getType()).getMember(item).longValueIn(EPOCH_NS) > 0);
                 IRange<IQuantity> lifetime = JfrAttributes.LIFETIME.getAccessor(it.getType()).getMember(item);
                 long duration = lifetime.getEnd().longValueIn(EPOCH_MS) - lifetime.getStart().longValueIn(EPOCH_MS);
                 assertTrue(duration >= 9);
                 assertEquals(task.getClass().getName(), taskAttr.getAccessor(it.getType()).getMember(item).getTypeName());
-                assertEquals(getClass().getName(), schedulerAttr.getAccessor(it.getType()).getMember(item).getTypeName());
-                assertEquals(1, SPAN_ID.getAccessor(it.getType()).getMember(item).longValue());
-                assertEquals(2, LOCAL_ROOT_SPAN_ID.getAccessor(it.getType()).getMember(item).longValue());
-                assertEquals("origin", originAttr.getAccessor(it.getType()).getMember(item).getThreadName());
+                assertEquals(1, barrierAttr.getAccessor(it.getType()).getMember(item).longValue());
+                assertEquals(10, SPAN_ID.getAccessor(it.getType()).getMember(item).longValue());
+                assertEquals(20, LOCAL_ROOT_SPAN_ID.getAccessor(it.getType()).getMember(item).longValue());
+                int generation = (int) generationAttr.getAccessor(it.getType()).getMember(item).longValue();
+                assertTrue(generation == 0 || generation == 1);
             }
         }
     }
