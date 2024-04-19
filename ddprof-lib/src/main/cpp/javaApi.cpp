@@ -231,6 +231,7 @@ typedef struct {
 
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_events_Origin_createTimer0(JNIEnv* env, jobject invalid, jint type) {
+    Counters::increment(TRACE_EVENT);
     Origin* event = new Origin();
     return (jlong) event;
 }
@@ -244,6 +245,7 @@ Java_com_datadoghq_profiler_events_Origin_init0(JNIEnv* env, jobject invalid, jl
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_events_Origin_free0(JNIEnv* env, jobject invalid, jlong handle) {
+    Counters::decrement(TRACE_EVENT);
     delete (Origin*) handle;
 }
 
