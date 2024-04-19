@@ -1,18 +1,6 @@
 /*
- * Copyright 2017 Andrei Pangin
- * Copyright 2022, 2023 Datadog, Inc
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright The async-profiler authors
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _VMSTRUCTS_H
@@ -98,7 +86,8 @@ protected:
   static int _flag_type_offset;
   static int _flag_name_offset;
   static int _flag_addr_offset;
-  static const char *_flags_addr;
+  static int _flag_origin_offset;
+    static const char *_flags_addr;
   static int _flag_count;
   static int _flag_size;
   static char *_code_heap[3];
@@ -558,7 +547,7 @@ public:
 
 class JVMFlag : VMStructs {
 private:
-  static void *find(const char *name, int type_mask);
+  static JVMFlag* find(const char *name, int type_mask);
 public:
   enum Type {
     Bool = 0,
@@ -574,13 +563,24 @@ public:
     Unknown = -1
   };
 
-  static void *find(const char *name);
-  static void *find(const char *name, std::initializer_list<Type> types);
+  static JVMFlag* find(const char *name);
+  static JVMFlag *find(const char *name, std::initializer_list<Type> types);
 
   const char *name() { return *(const char **)at(_flag_name_offset); }
   int type();
 
   void *addr() { return *(void **)at(_flag_addr_offset); }
+  char origin() {
+      return _flag_origin_offset >= 0 ? (*(char*) at(_flag_origin_offset)) & 15 : 0;
+  }
+
+  char get() {
+      return *addr();
+  }
+
+  void set(char value) {
+      *addr() = value;
+  }
 };
 
 class HeapUsage : VMStructs {
