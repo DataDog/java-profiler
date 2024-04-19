@@ -1,18 +1,6 @@
 /*
- * Copyright 2016 Andrei Pangin
- * Copyright 2021, 2024 Datadog, Inc
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright The async-profiler authors
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "common.h"
@@ -383,9 +371,9 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   } else {
     // DebugNonSafepoints is automatically enabled with CompiledMethodLoad,
     // otherwise we set the flag manually
-    char *flag_addr = (char *)JVMFlag::find("DebugNonSafepoints", {JVMFlag::Type::Bool});
-    if (flag_addr != NULL) {
-      *flag_addr = 1;
+    JVMFlag* f = JVMFlag::find("DebugNonSafepoints", {JVMFlag::Type::Bool});
+    if (f != NULL && f->origin() == 0) {
+      f->set(1);
     }
   }
 
@@ -393,8 +381,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   // profiler to avoid the risk of crashing flag was made obsolete (inert) in 15
   // (see JDK-8228991) and removed in 16 (see JDK-8231560)
   if (hotspot_version() < 15) {
-    char *flag_addr = (char *)JVMFlag::find("UseAdaptiveGCBoundary", {JVMFlag::Type::Bool});
-    _is_adaptive_gc_boundary_flag_set = flag_addr != NULL && *flag_addr == 1;
+    JVMFlag *f = JVMFlag::find("UseAdaptiveGCBoundary", {JVMFlag::Type::Bool});
+    _is_adaptive_gc_boundary_flag_set = f != NULL && f->get();
   }
 
   // Make sure we reload method IDs upon class retransformation

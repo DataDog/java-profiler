@@ -1,18 +1,6 @@
 /*
- * Copyright 2017 Andrei Pangin
- * Copyright 2022, 2023 Datadog, Inc
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright The async-profiler authors
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "vmStructs.h"
@@ -89,6 +77,7 @@ int VMStructs::_vs_high_offset = -1;
 int VMStructs::_flag_type_offset = -1;
 int VMStructs::_flag_name_offset = -1;
 int VMStructs::_flag_addr_offset = -1;
+int VMStructs::_flag_origin_offset = -1;
 const char *VMStructs::_flags_addr = NULL;
 int VMStructs::_flag_count = 0;
 int VMStructs::_flag_size = 0;
@@ -338,7 +327,9 @@ void VMStructs::initOffsets() {
         _flag_name_offset = *(int *)(entry + offset_offset);
       } else if (strcmp(field, "_addr") == 0 || strcmp(field, "addr") == 0) {
         _flag_addr_offset = *(int *)(entry + offset_offset);
-      } else if (strcmp(field, "flags") == 0) {
+      } else if (strcmp(field, "_flags") == 0 || strcmp(field, "origin") == 0) {
+                    _flag_origin_offset = *(int*)(entry + offset_offset);
+                } else if (strcmp(field, "flags") == 0) {
         _flags_addr = **(char ***)(entry + address_offset);
       } else if (strcmp(field, "numFlags") == 0) {
         _flag_count = **(int **)(entry + address_offset);
@@ -400,6 +391,17 @@ void VMStructs::initOffsets() {
 void VMStructs::resolveOffsets() {
   if (_klass_offset_addr != NULL) {
     _klass = (jfieldID)(uintptr_t)(*_klass_offset_addr << 2 | 2);
+  }
+
+  JVMFlag* ccp = JVMFlag::find("UseCompressedClassPointers");
+  if (ccp != NULL && ccp->get() && _narrow_klass_base_addr != NULL && _narrow_klass_shift_addr != NULL) {
+    _narrow_klass_base = *_narrow_klass_base_addr;
+    _narrow_klass_shift = *_narrow_klass_shift_addr;
+  }
+
+  JVMFlag* coh = JVMFlag::find("UseCompactObjectHeaders");
+  if (coh != NULL && coh->get()) {
+    _compact_object_headers = true;
   }
 
   _has_class_names =
@@ -840,12 +842,12 @@ CodeHeap::findNMethod(char *heap, const void *pc) {
   return *block ? align<NMethod *>(block + sizeof(uintptr_t)) : NULL;
 }
 
-void *JVMFlag::find(const char *name) {
+JVMFlag *JVMFlag::find(const char *name) {
   if (_flags_addr != NULL && _flag_size > 0) {
     for (int i = 0; i < _flag_count; i++) {
       JVMFlag *f = (JVMFlag *)(_flags_addr + i * _flag_size);
-      if (f->name() != NULL && strcmp(f->name(), name) == 0) {
-        return f->addr();
+      if (f->name() != NULL && strcmp(f->name(), name) == 0&& f->addr() != NULL) {
+        return f;
       }
     }
   }
