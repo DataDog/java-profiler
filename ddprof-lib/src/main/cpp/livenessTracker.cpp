@@ -55,17 +55,24 @@ void LivenessTracker::cleanup_table(bool forced) {
             // it survived one more GarbageCollectionFinish event
             u32 target = newsz++;
             if (target != i) {
-                _table[target] = _table[i];
-                _table[i].ref = nullptr;
+                _table[target] = _table[i]; // will clone TrackingEntry at 'i'
+                _table[i].ref = nullptr; // will nullify the original ref
                 assert(_table[i].frames == _table[target].frames);
-                _table[i].frames = nullptr;
+                _table[i].frames = nullptr; // will nullify the original frames
+                assert(_table[target].frames != nullptr);
             }
+            assert(_table[target].ref != nullptr && _table[target].frames != nullptr);
             _table[target].age += epoch_diff;
         } else {
-            env->DeleteWeakGlobalRef(_table[i].ref);
+            jweak tmpRef = _table[i].ref;
             _table[i].ref = nullptr;
-            delete[] _table[i].frames;
+            env->DeleteWeakGlobalRef(tmpRef);
+
+            jvmtiFrameInfo* tmpFrames = _table[i].frames;
             _table[i].frames = nullptr;
+            assert(_table[i].ref == nullptr && _table[i].frames == nullptr);
+            delete[] tmpFrames;
+
         }
     }
 
@@ -89,13 +96,15 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
     // this is to make sure we are including as few false 'live' objects as possible
     cleanup_table();
 
-    _table_lock.lockShared();
+    _table_lock.lock();
 
     u32 sz;
     for (int i = 0; i < (sz = _table_size); i++) {
         jobject ref = env->NewLocalRef(_table[i].ref);
-        if (ref != NULL) {
-            if (tracked_thread_ids != NULL) {
+        if (ref != nullptr) {
+            assert(_table[i].frames != nullptr);
+
+            if (tracked_thread_ids != nullptr) {
                 tracked_thread_ids->insert(_table[i].tid);
             }
             ObjectLivenessEvent event;
@@ -106,8 +115,8 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
 
             jstring name_str = (jstring)env->CallObjectMethod(env->GetObjectClass(ref), _Class_getName);
             jniExceptionCheck(env);
-            const char *name = env->GetStringUTFChars(name_str, NULL);
-            event._id = name != NULL ? Profiler::instance()->lookupClass(name, strlen(name)) : 0;
+            const char *name = env->GetStringUTFChars(name_str, nullptr);
+            event._id = name != nullptr ? Profiler::instance()->lookupClass(name, strlen(name)) : 0;
             env->ReleaseStringUTFChars(name_str, name);
 
             Profiler::instance()->recordExternalSample(1, _table[i].tid, _table[i].frames, _table[i].frames_size, /*truncated=*/false, BCI_LIVENESS, &event);
@@ -116,7 +125,7 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
         env->DeleteLocalRef(ref);
     }
 
-    _table_lock.unlockShared();
+    _table_lock.unlock();
 
     if (_record_heap_usage) {
         bool isLastGc = HeapUsage::isLastGCUsageSupported();
@@ -141,7 +150,7 @@ Error LivenessTracker::initialize_table(JNIEnv* jni, int sampling_interval) {
     }
 
     int required_table_capacity = sampling_interval > 0 ? max_heap / sampling_interval : max_heap;
-    
+
     if (required_table_capacity > MAX_TRACKING_TABLE_SIZE) {
         Log::warn("Tracking liveness for allocation samples with interval %d can not cover full heap.", sampling_interval);
     }
@@ -156,14 +165,14 @@ Error LivenessTracker::start(Arguments& args) {
     if (err) { return err; }
     // Enable Java Object Sample events
     jvmtiEnv* jvmti = VM::jvmti();
-    jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_GARBAGE_COLLECTION_FINISH, NULL);
+    jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_GARBAGE_COLLECTION_FINISH, nullptr);
 
     return Error::OK;
 }
 
 void LivenessTracker::stop() {
     cleanup_table();
-    flush_table(NULL);
+    flush_table(nullptr);
 
     // do not disable GC notifications here - the tracker is supposed to survive multiple recordings
 }
@@ -228,7 +237,7 @@ void LivenessTracker::track(JNIEnv* env, AllocEvent &event, jint tid, jobject ob
     }
 
     jweak ref = env->NewWeakGlobalRef(object);
-    if (ref == NULL) {
+    if (ref == nullptr) {
         return;
     }
 
@@ -283,7 +292,7 @@ retry:
                 int newcap = __min(_table_cap * 2, _table_max_cap);
                 if (_table_cap != newcap) {
                     TrackingEntry* tmp = (TrackingEntry*)realloc(_table, sizeof(TrackingEntry) * (_table_cap = newcap));
-                    if (tmp != NULL) {
+                    if (tmp != nullptr) {
                         _table = tmp;
                         Log::debug("Increased size of Liveness tracking table to %d entries", _table_cap);
                     } else {
