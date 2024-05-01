@@ -26,10 +26,12 @@ class ProfiledThread {
 
     int _buffer_pos;
     int _tid;
-    u64 _cpu_epoch;
-    u64 _wall_epoch;
-    u64 _skipped_samples;
-    u64 _context_key;
+    u32 _cpu_epoch;
+    u32 _wall_epoch;
+    u64 _pc;
+    u32 _call_trace_id;
+    u32 _recording_epoch;
+    u64 _span_id;
     bool _unwinding_java;
 
     ProfiledThread(int buffer_pos, int tid) :
@@ -37,8 +39,10 @@ class ProfiledThread {
         _tid(tid),
         _cpu_epoch(0),
         _wall_epoch(0),
-        _skipped_samples(0),
-        _context_key(0),
+        _pc(0),
+        _call_trace_id(0),
+        _recording_epoch(0),
+        _span_id(0),
         _unwinding_java(false){};
 
     void releaseFromBuffer();
@@ -68,10 +72,28 @@ class ProfiledThread {
         return _tid;
     }
 
-    inline u64 noteCPUSample() {
+    inline u64 noteCPUSample(u32 recording_epoch) {
+        _recording_epoch = recording_epoch;
         return ++_cpu_epoch;
     }
-    bool noteWallSample(u64 context_key, u64* skipped_samples);
+
+    u32 lookupWallclockCallTraceId(u64 pc, u32 recording_epoch, u64 span_id) {
+        if (_wall_epoch == _cpu_epoch
+        && _pc == pc
+        && _span_id == span_id
+        && _recording_epoch == recording_epoch
+        && _call_trace_id != 0) {
+            return _call_trace_id;
+        }
+        _wall_epoch = _cpu_epoch;
+        _pc = pc;
+        _recording_epoch = recording_epoch;
+        return 0;
+    }
+
+    inline void recordCallTraceId(u32 call_trace_id) {
+        _call_trace_id = call_trace_id;
+    }
 
     static void signalHandler(int signo, siginfo_t* siginfo, void* ucontext);
 };

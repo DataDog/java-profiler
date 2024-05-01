@@ -705,7 +705,7 @@ void PerfEvents::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
 
     ProfiledThread* current = ProfiledThread::current();
     if (current != NULL) {
-        current->noteCPUSample();
+        current->noteCPUSample(Profiler::instance()->recordingEpoch());
     }
     int tid = current != NULL ? current->tid() : OS::threadId();
     if (_enabled) {
@@ -719,7 +719,7 @@ void PerfEvents::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
                 ? convertJvmExecutionState(vm_thread->state())
                 : ExecutionMode::JVM;
         }
-        Profiler::instance()->recordSample(ucontext, counter, tid, BCI_CPU, &event);
+        Profiler::instance()->recordSample(ucontext, counter, tid, BCI_CPU, 0, &event);
         Shims::instance().setSighandlerTid(-1);
     } else {
         resetBuffer(tid);
