@@ -647,7 +647,7 @@ void Profiler::recordExternalSample(u64 counter, int tid, jvmtiFrameInfo *jvmti_
     _locks[lock_index].unlock();
 }
 
-void Profiler::recordSample(void* ucontext, u64 counter, int tid, jint event_type, Event* event) {
+void Profiler::recordSample(void* ucontext, u64 counter, int tid, jint event_type, u32 call_trace_id, Event* event) {
     atomicInc(_total_samples);
 
     u32 lock_index = getLockIndex(tid);
@@ -668,8 +668,8 @@ void Profiler::recordSample(void* ucontext, u64 counter, int tid, jint event_typ
     bool truncated = false;
     // in lightweight mode we're just sampling the the context associated with the passage of CPU or wall time,
     // we use the same event definitions but we record a null stacktrace
-    u32 call_trace_id = 0;
-    if (!_omit_stacktraces) {
+    // we can skip the unwind if we've got a call_trace_id determined to be reusable at a higher level
+    if (!_omit_stacktraces && call_trace_id == 0) {
         ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
 
         int num_frames = 0;
@@ -703,6 +703,10 @@ void Profiler::recordSample(void* ucontext, u64 counter, int tid, jint event_typ
         }
 
         call_trace_id = _call_trace_storage.put(num_frames, frames, truncated, counter);
+        ProfiledThread* thread = ProfiledThread::current();
+        if (thread != nullptr) {
+            thread->recordCallTraceId(call_trace_id);
+        }
     }
     _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event, counter);
 
@@ -1252,6 +1256,7 @@ Error Profiler::dump(const char* path, const int length) {
 
         lockAll();
         Error err = _jfr.dump(path, length);
+        _epoch++;
 
         // Reset calltrace storage
         if (!_omit_stacktraces) {

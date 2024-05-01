@@ -40,8 +40,9 @@ class ExecutionEvent : public Event {
     ThreadState _thread_state;
     ExecutionMode _execution_mode;
     u64 _weight;
+    u32 _call_trace_id;
 
-    ExecutionEvent() : Event(), _thread_state(ThreadState::RUNNABLE), _weight(1), _execution_mode(ExecutionMode::UNKNOWN) {}
+    ExecutionEvent() : Event(), _thread_state(ThreadState::RUNNABLE), _weight(1), _execution_mode(ExecutionMode::UNKNOWN), _call_trace_id(0) {}
 };
 
 class AllocEvent : public Event {

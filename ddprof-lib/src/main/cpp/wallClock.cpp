@@ -60,11 +60,14 @@ void WallClock::signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64
     ProfiledThread* current = ProfiledThread::current();
     int tid = current != NULL ? current->tid() : OS::threadId();
     Shims::instance().setSighandlerTid(tid);
-    Context& ctx = Contexts::get(tid);
-    u64 skipped = 0;
-    if (current != NULL) {
-        if (_collapsing && !current->noteWallSample(ctx.spanId, &skipped)) {
-            return;
+    u32 call_trace_id = 0;
+    if (current != NULL && _collapsing) {
+        StackFrame frame(ucontext);
+        Context& context = Contexts::get(tid);
+        call_trace_id = current->lookupWallclockCallTraceId((u64) frame.pc(), Profiler::instance()->recordingEpoch(),
+                                                            context.spanId);
+        if (call_trace_id != 0) {
+            Counters::increment(SKIPPED_WALLCLOCK_UNWINDS);
         }
     }
 
@@ -91,8 +94,8 @@ void WallClock::signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64
     }
     event._thread_state = state;
     event._execution_mode = mode;
-    event._weight = skipped + 1;
-    Profiler::instance()->recordSample(ucontext, last_sample, tid, BCI_WALL, &event);
+    event._weight =  1;
+    Profiler::instance()->recordSample(ucontext, last_sample, tid, BCI_WALL, call_trace_id, &event);
     Shims::instance().setSighandlerTid(-1);
 }
 

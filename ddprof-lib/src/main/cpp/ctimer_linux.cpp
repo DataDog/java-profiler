@@ -193,7 +193,7 @@ void CTimer::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     int tid = 0;
     ProfiledThread* current = ProfiledThread::current();
     if (current != NULL) {
-        current->noteCPUSample();
+        current->noteCPUSample(Profiler::instance()->recordingEpoch());
         tid = current->tid();
     } else {
         tid = OS::threadId();
@@ -207,7 +207,7 @@ void CTimer::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
                 ? convertJvmExecutionState(vm_thread->state())
                 : ExecutionMode::JVM;
     }
-    Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, &event);
+    Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0, &event);
     Shims::instance().setSighandlerTid(-1);
 }
 

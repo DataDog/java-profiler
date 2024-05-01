@@ -158,22 +158,6 @@ void ProfiledThread::releaseFromBuffer() {
     }
 }
 
-bool ProfiledThread::noteWallSample(u64 context_key, u64* skipped_samples) {
-    if (_wall_epoch == _cpu_epoch && _context_key == context_key) {
-        *skipped_samples = ++_skipped_samples;
-        if (_skipped_samples % 10 != 0) {
-            _skipped_samples = 0;
-            return true;
-        }
-        return false;
-    }
-    _context_key = context_key;
-    _wall_epoch = _cpu_epoch;
-    *skipped_samples = _skipped_samples;
-    _skipped_samples = 0;
-    return true;
-}
-
 int ProfiledThread::currentTid() {
     ProfiledThread* tls = current();
     if (tls != NULL) {
