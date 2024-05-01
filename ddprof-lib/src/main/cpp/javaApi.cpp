@@ -236,10 +236,9 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(JNIEnv* env, jobject un
     if (scheduler_offset < 0) {
         return;
     }
-    u64 now = TSC::ticks();
     QueueTimeEvent event;
-    event._start = now - endTime + startTime;
-    event._end = now;
+    event._start = startTime;
+    event._end = endTime;
     event._task = task_offset;
     event._scheduler = scheduler_offset;
     event._origin = origin_tid;
