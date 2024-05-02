@@ -58,7 +58,7 @@ void LivenessTracker::cleanup_table(bool forced) {
                 _table[target] = _table[i]; // will clone TrackingEntry at 'i'
                 _table[i].ref = nullptr; // will nullify the original ref
                 assert(_table[i].frames == _table[target].frames);
-                _table[i].frames = nullptr; // will nullify the original frames
+                _table[i].frames_size = 0; // will nullify the original frames
                 assert(_table[target].frames != nullptr);
             }
             assert(_table[target].ref != nullptr && _table[target].frames != nullptr);
@@ -68,11 +68,7 @@ void LivenessTracker::cleanup_table(bool forced) {
             _table[i].ref = nullptr;
             env->DeleteWeakGlobalRef(tmpRef);
 
-            jvmtiFrameInfo* tmpFrames = _table[i].frames;
-            _table[i].frames = nullptr;
-            assert(_table[i].ref == nullptr && _table[i].frames == nullptr);
-            delete[] tmpFrames;
-
+            _table[i].frames_size = 0;
         }
     }
 
@@ -102,7 +98,7 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
     for (int i = 0; i < (sz = _table_size); i++) {
         jobject ref = env->NewLocalRef(_table[i].ref);
         if (ref != nullptr) {
-            assert(_table[i].frames != nullptr);
+            assert(_table[i].frames_size > 0);
 
             if (tracked_thread_ids != nullptr) {
                 tracked_thread_ids->insert(_table[i].tid);
@@ -221,6 +217,10 @@ Error LivenessTracker::initialize(Arguments& args) {
     _table_size = 0;
     _table_cap = __min(2048, _table_max_cap); // with default 512k sampling interval, it's enough for 1G of heap
     _table = (TrackingEntry*)malloc(sizeof(TrackingEntry) * _table_cap);
+    int max_stack_depth = Profiler::instance()->max_stack_depth();
+    for (int i = 0; i < _table_cap; i++) {
+        _table[i].frames = new jvmtiFrameInfo[max_stack_depth];
+    }
 
     _record_heap_usage = args._record_heap_usage;
 
@@ -265,7 +265,6 @@ retry:
         _table[idx].alloc = event;
         _table[idx].age = 0;
         _table[idx].frames_size = num_frames;
-        _table[idx].frames = new jvmtiFrameInfo[_table[idx].frames_size];
         memcpy(_table[idx].frames, frames, sizeof(jvmtiFrameInfo) * _table[idx].frames_size);
         _table[idx].ctx = Contexts::get(tid);
     }
@@ -293,6 +292,9 @@ retry:
                 if (_table_cap != newcap) {
                     TrackingEntry* tmp = (TrackingEntry*)realloc(_table, sizeof(TrackingEntry) * (_table_cap = newcap));
                     if (tmp != nullptr) {
+                        for (int i = _table_cap; i < newcap; i++) {
+                            _table[i].frames = new jvmtiFrameInfo[Profiler::instance()->max_stack_depth()];
+                        }
                         _table = tmp;
                         Log::debug("Increased size of Liveness tracking table to %d entries", _table_cap);
                     } else {
