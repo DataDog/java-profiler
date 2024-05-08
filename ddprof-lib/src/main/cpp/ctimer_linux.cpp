@@ -143,11 +143,9 @@ Error CTimer::check(Arguments& args) {
 
 Error CTimer::start(Arguments& args) {
     if (args._interval < 0) {
-        fprintf(stderr, "===> interval must be positive\n");
         return Error("interval must be positive");
     }
     if (_pthread_entry == NULL && (_pthread_entry = lookupThreadEntry()) == NULL) {
-        fprintf(stderr, "===> Could not set pthread hook\n");
         return Error("Could not set pthread hook");
     }
     _interval = args.cpuSamplerInterval();
@@ -172,7 +170,6 @@ Error CTimer::start(Arguments& args) {
     for (int tid; (tid = thread_list->next()) != -1; ) {
         int err = registerThread(tid);
         if (err != 0) {
-            fprintf(stderr, "===> Failed to register thread %d => %d\n", tid, err);
             result = Error("Failed to register thread");
         }
     }

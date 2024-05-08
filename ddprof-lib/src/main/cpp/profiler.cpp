@@ -630,7 +630,7 @@ void Profiler::recordExternalSample(u64 counter, int tid, jvmtiFrameInfo *jvmti_
         return;
     }
     u32 call_trace_id = 0;
-    if (!_omit_stacktraces) {
+    if (!_omit_stacktraces && jvmti_frames != nullptr) {
         ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
 
         int num_frames = 0;
@@ -1026,7 +1026,7 @@ Error Profiler::start(Arguments& args, bool reset) {
     _event_mask = ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU : 0) |
                   (args._cpu >= 0 ? EM_CPU : 0) |
                   (args._wall >= 0 ? EM_WALL : 0) |
-                  (args._memory >= 0 ? EM_ALLOC : 0);
+                  (args._record_allocations || args._record_liveness || args._gc_generations ? EM_ALLOC : 0);
     if (_event_mask == 0) {
         return Error("No profiling events specified");
     }

@@ -47,6 +47,7 @@ class LivenessTracker  {
     const static int MIN_SAMPLING_INTERVAL = 524288; // 512kiB
 
     bool _initialized;
+    bool _enabled;
     Error _stored_error;
 
     SpinLock _table_lock;
@@ -84,7 +85,7 @@ class LivenessTracker  {
         return _instance;
     }
 
-    LivenessTracker() : _initialized(false), _stored_error(Error::OK), _table_size(0), _table_cap(0), _table(NULL), _table_max_cap(0), _record_heap_usage(false), _Class(NULL), _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0), _used_after_last_gc(0) {}
+    LivenessTracker() : _initialized(false), _enabled(false), _stored_error(Error::OK), _table_size(0), _table_cap(0), _table(NULL), _table_max_cap(0), _record_heap_usage(false), _Class(NULL), _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0), _used_after_last_gc(0) {}
 
     Error start(Arguments& args);
     void stop();

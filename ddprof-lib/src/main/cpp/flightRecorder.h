@@ -197,6 +197,7 @@ class Recording {
                                     long allocInterval,
                                     long memleakInterval,
                                     long memleakCapacity,
+                                    bool gcGenerations,
                                     int modeMask,
                                     const char* cpuEngine);
 

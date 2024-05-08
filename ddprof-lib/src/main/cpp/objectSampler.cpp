@@ -37,7 +37,7 @@ void ObjectSampler::SampledObjectAlloc(jvmtiEnv* jvmti, JNIEnv* jni, jthread thr
 }
 
 void ObjectSampler::recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread, int event_type, jobject object, jclass object_klass, jlong size) {
-    if (!(_record_allocations || _record_liveness)) {
+    if (!(_gc_generations || _record_allocations || _record_liveness)) {
         // nothing to do here, bail out
         return;
     }
@@ -45,9 +45,6 @@ void ObjectSampler::recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread threa
     int tid = ProfiledThread::currentTid();
 
     AllocEvent event;
-
-    event._size = size;
-    event._weight =  (float)((size == 0 || _interval == 0) ? 1 : 1 / (1 - exp(-size / (double)_interval)));
 
     char* class_name;
     if (jvmti->GetClassSignature(object_klass, &class_name, NULL) == 0) {
@@ -64,24 +61,32 @@ void ObjectSampler::recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread threa
         event._id = id;
     }
 
-    jvmtiFrameInfo *frames = new jvmtiFrameInfo[_max_stack_depth];
     jint frames_size = 0;
-    if (jvmti->GetStackTrace(thread, 0, _max_stack_depth,
-                                frames, &frames_size) != JVMTI_ERROR_NONE || frames_size <= 0) {
-        delete[] frames;
-        return;
-    }
-
+    jvmtiFrameInfo *frames = nullptr;
+    
+    // we do record the details and stacktraces only for when recording allocations or liveness
     if (_record_allocations || _record_liveness) {
-        std::set<jclass> classes;
-        jclass method_class;
-        for (int i = 0; i < frames_size; i++) {
-            if (jvmti->GetMethodDeclaringClass(frames[i].method, &method_class) == 0) {
-                classes.insert(method_class);
+        event._size = size;
+        event._weight =  (float)((size == 0 || _interval == 0) ? 1 : 1 / (1 - exp(-size / (double)_interval)));
+
+        frames = new jvmtiFrameInfo[_max_stack_depth];
+
+        if (jvmti->GetStackTrace(thread, 0, _max_stack_depth,
+                                    frames, &frames_size) != JVMTI_ERROR_NONE || frames_size <= 0) {
+            delete[] frames;
+            return;
+        }
+
+        if (frames_size > 0) {
+            std::set<jclass> classes;
+            jclass method_class;
+            for (int i = 0; i < frames_size; i++) {
+                if (jvmti->GetMethodDeclaringClass(frames[i].method, &method_class) == 0) {
+                    classes.insert(method_class);
+                }
             }
         }
     }
-
 
     if (_record_allocations) {
         Profiler::instance()->recordExternalSample(size, tid, frames, frames_size, /*truncated=*/false, BCI_ALLOC, &event);
@@ -105,7 +110,8 @@ void ObjectSampler::recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread threa
         }
     }
 
-    if (_record_liveness) {
+    // Either we are recording liveness or tracking GC generations (lightweight livenss samples)
+    if (_gc_generations || _record_liveness) {
         LivenessTracker::instance()->track(jni, event, tid, object, frames_size, frames);
     }
 
@@ -122,6 +128,7 @@ Error ObjectSampler::check(Arguments& args) {
     _configured_interval = _interval;
     _record_allocations = args._record_allocations;
     _record_liveness = args._record_liveness;
+    _gc_generations = args._gc_generations;
 
     _max_stack_depth = Profiler::instance()->max_stack_depth();
 
@@ -133,10 +140,8 @@ Error ObjectSampler::start(Arguments& args) {
     if (error) {
         return error;
     }
-    
     if (_interval > 0) {
-        if (_record_liveness) {
-            // TODO all this '_record_liveness' checks should be done in LivenessTracker but that would require massive refactoring
+        if (_record_liveness || _gc_generations) {
             error = LivenessTracker::instance()->start(args);
             if (error) {
                 return error;
@@ -160,7 +165,7 @@ void ObjectSampler::stop() {
     jvmtiEnv* jvmti = VM::jvmti();
     jvmti->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
 
-    if (_record_liveness) {
+    if (_record_liveness || _gc_generations) {
         LivenessTracker::instance()->stop();
     }
 }
