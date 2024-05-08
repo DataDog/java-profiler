@@ -39,6 +39,7 @@ class ObjectSampler : public Engine {
     int _configured_interval;
     bool _record_allocations;
     bool _record_liveness;
+    bool _gc_generations;
     int _max_stack_depth;
 
     u64 _last_config_update_ts;
@@ -47,6 +48,9 @@ class ObjectSampler : public Engine {
     const static int CONFIG_UPDATE_CHECK_PERIOD_SECS = 1;
 
     Error updateConfiguration(u64 events, double time_coefficient);
+
+    ObjectSampler() : _interval(0), _configured_interval(0), _record_allocations(false), _record_liveness(false), _gc_generations(false), _max_stack_depth(0), _last_config_update_ts(0), _alloc_event_count(0) {
+    }
 
   protected:
     void recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread, int event_type, jobject object, jclass object_klass, jlong size);

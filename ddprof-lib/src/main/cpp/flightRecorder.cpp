@@ -373,6 +373,7 @@ off_t Recording::finishChunk(bool end_recording) {
                                 oSampler->_record_allocations ? oSampler->_interval : 0L,
                                 oSampler->_record_liveness ? oSampler->_interval : 0L,
                                 oSampler->_record_liveness ? LivenessTracker::instance()->_table_cap : 0L,
+                                oSampler->_gc_generations,
                                 Profiler::instance()->eventMask(),
                                 Profiler::instance()->cpuEngine()->name());
 
@@ -757,6 +758,7 @@ void Recording::writeDatadogProfilerConfig(Buffer* buf,
                                 long allocInterval,
                                 long memleakInterval,
                                 long memleakCapacity,
+                                bool gcGenerations,
                                 int modeMask,
                                 const char* cpuEngine) {
     flushIfNeeded(buf, RECORDING_BUFFER_LIMIT
@@ -771,6 +773,7 @@ void Recording::writeDatadogProfilerConfig(Buffer* buf,
     buf->putVar64(allocInterval);
     buf->putVar64(memleakInterval);
     buf->putVar64(memleakCapacity);
+    buf->put8(gcGenerations);
     buf->putVar32(modeMask);
     buf->putUtf8(PROFILER_VERSION);
     buf->putUtf8(cpuEngine);

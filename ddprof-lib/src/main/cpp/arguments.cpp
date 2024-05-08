@@ -192,7 +192,7 @@ Error Arguments::parse(const char* args) {
                 if (config) {
                     *(config++) = 0; // terminate the 'value' string and update the pointer to the 'config' section
                 }
-                _memory = value == NULL ? 0 : parseUnits(value, BYTES);
+                _memory = value == NULL ? DEFAULT_ALLOC_INTERVAL : parseUnits(value, BYTES);
                 if (_memory >= 0) {
                     if (config) {
                         if (strchr(config, 'a')) {
@@ -209,8 +209,12 @@ Error Arguments::parse(const char* args) {
                         _record_allocations = true;
                         _record_liveness = true;
                     }
-                } else {
-                    msg = "memory sampling interval must be >= 0";
+                }
+
+            CASE("generations")
+                _gc_generations = value != NULL && strcmp(value, "true") == 0;
+                if (_gc_generations && _memory <= 0) {
+                    _memory = 4 * 1024 * 1024; // very conservative sampling interval to reduce overhead
                 }
 
             CASE("interval")
