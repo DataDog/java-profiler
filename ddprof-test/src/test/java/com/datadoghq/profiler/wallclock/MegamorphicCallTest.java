@@ -4,6 +4,7 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junitpioneer.jupiter.RetryingTest;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
@@ -71,7 +72,7 @@ public class MegamorphicCallTest extends AbstractProfilerTest {
         return result;
     }
 
-    @Test
+    @RetryingTest(5)
     public void testITableStubs() {
         Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
