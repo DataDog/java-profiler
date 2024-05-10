@@ -130,15 +130,11 @@ typedef Elf32_Dyn  ElfDyn;
 #  error "Compiling on unsupported arch"
 #endif
 
-// GNU dynamic linker relocates pointers in the dynamic section, while musl doesn't.
-// A tricky case is when we attach to a musl container from a glibc host.
 #ifdef __musl__
-#  define DYN_PTR(ptr)  (_base + (ptr))
+static const bool MUSL = true;
 #else
-#  define DYN_PTR(ptr)  ((char*)(ptr) >= _base ? (char*)(ptr) : _base + (ptr))
+static const bool MUSL = false;
 #endif // __musl__
-
-static bool musl = false;
 
 class ElfParser {
   private:
@@ -591,11 +587,6 @@ void Symbols::parseKernelSymbols(CodeCache* cc) {
 void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
     MutexLocker ml(_parse_lock);
 
-    if (array->count() == 0) {
-        // _CS_GNU_LIBC_VERSION is not defined on musl
-        musl = confstr(_CS_GNU_LIBC_VERSION, NULL, 0) == 0 && errno != 0;
-    }
-
     if (kernel_symbols && !haveKernelSymbols()) {
         CodeCache* cc = new CodeCache("[kernel]");
         parseKernelSymbols(cc);
@@ -662,7 +653,7 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
                         // If last_inode is set, image_base is known to be valid and readable
                         ElfParser::parseFile(cc, image_base, map.file(), true);
                         // Parse program headers after the file to ensure debug symbols are parsed first
-                        ElfParser::parseProgramHeaders(cc, image_base, map_end, musl);
+                        ElfParser::parseProgramHeaders(cc, image_base, map_end, MUSL);
                     } else if ((unsigned long)map_start > map_offs) {
                         // Unlikely case when image_base has not been found.
                         // Be careful: executable file is not always ELF, e.g. classes.jsa
