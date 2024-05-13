@@ -66,16 +66,17 @@ class VMStructs {
     static int _anchor_fp_offset;
     static int _frame_size_offset;
     static int _frame_complete_offset;
-    static int _code_begin_offset;
-    static int _scopes_begin_offset;
+    static int _code_offset;
+    static int _data_offset;
+    static int _scopes_pcs_offset;
+    static int _scopes_data_offset;
     static int _nmethod_name_offset;
     static int _nmethod_method_offset;
     static int _nmethod_entry_offset;
     static int _nmethod_state_offset;
     static int _nmethod_level_offset;
     static int _nmethod_metadata_offset;
-    static int _nmethod_pcs_begin_offset;
-    static int _nmethod_pcs_end_offset;
+    static int _nmethod_immutable_offset;
     static int _method_constmethod_offset;
     static int _method_code_offset;
     static int _constmethod_constants_offset;
@@ -86,6 +87,7 @@ class VMStructs {
     static int _code_heap_memory_offset;
     static int _code_heap_segmap_offset;
     static int _code_heap_segment_shift;
+    static int _heap_block_used_offset;
     static int _vs_low_bound_offset;
     static int _vs_high_bound_offset;
     static int _vs_low_offset;
@@ -162,6 +164,11 @@ class VMStructs {
 
     static bool aligned(const void* ptr) {
         return ((uintptr_t)ptr & (sizeof(uintptr_t) - 1)) == 0;
+    }
+
+    template<typename T>
+    static T align(const void* ptr) {
+        return (T)((uintptr_t)ptr & ~(sizeof(T) - 1));
     }
 
     static void checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni, jmethodID method, void *address);
@@ -344,27 +351,36 @@ class NMethod : VMStructs {
         return *(int*) at(_frame_size_offset);
     }
 
-    int frameCompleteOffset() {
-        return *(int*) at(_frame_complete_offset);
+    short frameCompleteOffset() {
+        return *(short*) at(_frame_complete_offset);
     }
 
+    // TODO: offset is short on JDK 23+
     void setFrameCompleteOffset(int offset) {
         *(int*) at(_frame_complete_offset) = offset;
     }
 
     const char* code() {
-        if (_code_begin_offset >= 0) {
-            return *(const char**) at(_code_begin_offset);
+        if (_code_offset > 0) {
+            return at(*(int*) at(_code_offset));
         } else {
-            return at(*(int*) at(-_code_begin_offset));
+            return *(const char**) at(-_code_offset);
         }
     }
 
     const char* scopes() {
-        if (_scopes_begin_offset >= 0) {
-            return *(const char**) at(_scopes_begin_offset);
+        if (_scopes_data_offset > 0) {
+            return at(*(int*) at(_scopes_data_offset));
         } else {
-            return at(*(int*) at(-_scopes_begin_offset));
+            return *(const char**) at(-_scopes_data_offset);
+        }
+    }
+
+    const void* entry() {
+        if (_nmethod_entry_offset > 0) {
+            return at(*(int*) at(_code_offset) + *(unsigned short*) at(_nmethod_entry_offset));
+        } else {
+            return *(void**) at(-_nmethod_entry_offset);
         }
     }
 
@@ -392,10 +408,6 @@ class NMethod : VMStructs {
 
     VMMethod* method() {
         return *(VMMethod**) at(_nmethod_method_offset);
-    }
-
-    void* entry() {
-        return *(void**) at(_nmethod_entry_offset);
     }
 
     char state() {
