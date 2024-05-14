@@ -26,14 +26,19 @@
 #define ATTR_FORMAT
 #endif
 
-enum LogLevel {
-    LOG_TRACE,
-    LOG_DEBUG,
-    LOG_INFO,
-    LOG_WARN,
-    LOG_ERROR,
-    LOG_NONE
-};
+#define DD_LOG_LEVELS(X) \
+    X(LOG_TRACE, "TRACE") \
+    X(LOG_DEBUG, "DEBUG") \
+    X(LOG_INFO, "INFO")  \
+    X(LOG_WARN, "WARN")  \
+    X(LOG_ERROR, "ERROR") \
+    X(LOG_NONE, "NONE")
+
+#define X_ENUM(a, b) a,
+typedef enum LogLevel : int {
+    DD_LOG_LEVELS(X_ENUM) DD_NUM_LOG_LEVELS
+} LogLevel;
+#undef X_ENUM
 
 class Arguments;
 
@@ -43,7 +48,11 @@ class Log {
     static LogLevel _level;
 
   public:
-    static const char* const LEVEL_NAME[];
+    #define X_NAME(a, b) b,
+        static constexpr const char* LEVEL_NAME[] = {
+                DD_LOG_LEVELS(X_NAME)
+        };
+    #undef X_NAME
 
     static void open(Arguments& args);
     static void open(const char* file_name, const char* level);
@@ -57,7 +66,12 @@ class Log {
     static void ATTR_FORMAT warn(const char* msg, ...);
     static void ATTR_FORMAT error(const char* msg, ...);
 
-    static LogLevel level() { return _level; }
+    static const char* level() {
+        if (_level >= 0 && _level < DD_NUM_LOG_LEVELS) {
+            return LEVEL_NAME[_level];
+        }
+        return "INVALID";
+    }
 };
 
 #endif // _LOG_H

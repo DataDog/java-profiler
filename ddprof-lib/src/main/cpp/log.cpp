@@ -18,16 +18,6 @@
 #include "log.h"
 #include "profiler.h"
 
-
-const char* const Log::LEVEL_NAME[] = {
-    "TRACE",
-    "DEBUG",
-    "INFO",
-    "WARN",
-    "ERROR",
-    "NONE"
-};
-
 FILE* Log::_file = stdout;
 LogLevel Log::_level = LOG_NONE;
 
@@ -94,8 +84,8 @@ void Log::log(LogLevel level, const char* msg, va_list args) {
         Profiler::instance()->writeLog(level, buf, len);
     }
 
-    // always log errors, but only errors
-    if (level == LOG_ERROR) {
+    // always log errors unless explicitly disabled
+    if (level == LOG_ERROR && _level <= LOG_ERROR) {
         fprintf(_file, "{\"@version\":\"1\",\"message\":\"%s\",\"logger_name\":\"java-profiler\",\"level\":\"%s\"}\n", buf, LEVEL_NAME[level]);
         fflush(_file);
     }
