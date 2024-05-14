@@ -122,6 +122,8 @@ jobs:
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
+            ddprof-lib/build/tmp/linkDebugLinux/output.txt
+            ddprof-lib/build/tmp/*/output.txt
       - uses: actions/upload-artifact@v3
         if: success()
         with:
@@ -169,6 +171,8 @@ jobs:
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
+            ddprof-lib/build/tmp/linkDebugLinux/output.txt
+            ddprof-lib/build/tmp/*/output.txt
       - uses: actions/upload-artifact@v3
         if: success()
         with:
