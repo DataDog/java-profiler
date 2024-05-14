@@ -127,6 +127,8 @@ tasks.withType(CppCompile).configureEach {
     }
 
     if (it.name.contains("Release")) {
+        // need to configure the compile tasks for other configurations here -
+        //   the 'compileReleaseLinuxCpp' task is configured on-the-fly and as such we need to wait till it is fully configured
         def sanitized = tasks.named('compileSanitized').get()
         sanitized.toolChain = it.toolChain
         sanitized.targetPlatform = it.targetPlatform
@@ -164,6 +166,8 @@ tasks.withType(LinkSharedLibrary) {
                     "-Wl,--exclude-libs,ALL",
                     "-Wl,--gc-sections"
             ])
+            // need to configure the link tasks for other configurations here -
+            //   the 'linkReleaseLinux' task is configured on-the-fly and as such we need to wait till it is fully configured
             def sanitized = tasks.named('linkSanitized').get()
             sanitized.toolChain = it.toolChain
             sanitized.targetPlatform = it.targetPlatform
