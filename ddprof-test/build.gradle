@@ -6,47 +6,118 @@ repositories {
     mavenCentral()
 }
 
-dependencies {
-    testImplementation project(path: ":ddprof-lib", configuration: 'debug')
-    testImplementation project(path: ":ddprof-test-tracer")
+def locateLibasan() {
+    if (os().isLinux()) {
+        def locateCommand = 'locate libasan.so'
+        def process = locateCommand.execute()
+        process.waitFor()
 
-    // https://mvnrepository.com/artifact/org.junit.jupiter/junit-jupiter-api
-    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.9.2'
-    testImplementation 'org.junit.jupiter:junit-jupiter-engine:5.9.2'
-    testImplementation 'org.junit.jupiter:junit-jupiter-params:5.9.2'
-    testImplementation 'org.slf4j:slf4j-simple:1.7.32'
-    testImplementation 'org.openjdk.jmc:flightrecorder:8.1.0'
-    testImplementation 'org.openjdk.jol:jol-core:0.16'
-    // https://mvnrepository.com/artifact/org.junit-pioneer/junit-pioneer
-    testImplementation group: 'org.junit-pioneer', name: 'junit-pioneer', version: '1.9.1'
+        if (process.exitValue() == 0) {
+            def output = process.in.text
+            def lines = output.readLines()
+            def exactMatch = lines.find { it ==~ /.*libasan\.so$/ }
 
-    testImplementation group: 'org.lz4', name: 'lz4-java', version: '1.8.0'
-    testImplementation group: 'org.xerial.snappy', name: 'snappy-java', version: '1.1.10.1'
-    testImplementation group: 'com.github.luben', name: 'zstd-jni', version: '1.5.5-4'
-
-
-}
-
-test {
-    onlyIf {
-        !project.hasProperty('skip-tests')
+            if (exactMatch) {
+                return exactMatch
+            }
+        }
     }
-    useJUnitPlatform()
-
-    jvmArgs '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true'
+    return null
 }
 
-tasks.withType(Test) {
-    environment "LD_PRELOAD", "/usr/lib/gcc/x86_64-linux-gnu/11/libasan.so"
+ext {
+    locateLibasan = this.&locateLibasan
+}
+
+configurations {
+    testCommon {
+        canBeConsumed = true
+        canBeResolved = true
+    }
+    testDebugImplementation {
+        canBeConsumed = true
+        canBeResolved = true
+        extendsFrom testCommon
+    }
+    testSanitizedImplementation{
+        canBeConsumed = true
+        canBeResolved = true
+        extendsFrom testCommon
+    }
+}
+
+def addCommonTestDependencies(Configuration configuration) {
+    configuration.dependencies.add(project.dependencies.create('org.junit.jupiter:junit-jupiter-api:5.9.2'))
+    configuration.dependencies.add(project.dependencies.create('org.junit.jupiter:junit-jupiter-engine:5.9.2'))
+    configuration.dependencies.add(project.dependencies.create('org.junit.jupiter:junit-jupiter-params:5.9.2'))
+    configuration.dependencies.add(project.dependencies.create('org.slf4j:slf4j-simple:1.7.32'))
+    configuration.dependencies.add(project.dependencies.create('org.openjdk.jmc:flightrecorder:8.1.0'))
+    configuration.dependencies.add(project.dependencies.create('org.openjdk.jol:jol-core:0.16'))
+    configuration.dependencies.add(project.dependencies.create('org.junit-pioneer:junit-pioneer:1.9.1'))
+    configuration.dependencies.add(project.dependencies.create('org.lz4:lz4-java:1.8.0'))
+    configuration.dependencies.add(project.dependencies.create('org.xerial.snappy:snappy-java:1.1.10.1'))
+    configuration.dependencies.add(project.dependencies.create('com.github.luben:zstd-jni:1.5.5-4'))
+    configuration.dependencies.add(project.dependencies.project(path: ":ddprof-test-tracer"))
+}
+
+addCommonTestDependencies(configurations.testImplementation)
+addCommonTestDependencies(configurations.testDebugImplementation)
+addCommonTestDependencies(configurations.testSanitizedImplementation)
+
+dependencies {
+    testSanitizedImplementation project(path: ":ddprof-lib", configuration: 'sanitized')
+    testDebugImplementation project(path: ":ddprof-lib", configuration: 'debug')
+
+    testImplementation project(path: ":ddprof-lib", configuration: 'release')
+}
+
+task testDebug(type: Test) {
+    dependsOn compileTestJava
+    description = 'Runs the unit tests with the debug library'
+    group = 'verification'
+    // Filter classpath to include only necessary dependencies for testSanitized
+    classpath = sourceSets.test.runtimeClasspath.filter { file ->
+        // Replace the condition with your actual filtering logic
+        !file.name.contains('ddprof-') || file.name.contains('test-tracer')
+    } + configurations.testDebugImplementation
+
+}
+
+task testSanitized(type: Test) {
+    dependsOn compileTestJava
+    def libasan = locateLibasan()
+    onlyIf {
+        libasan != null
+    }
+
+    environment "LD_PRELOAD", libasan
     environment "ASAN_OPTIONS", "detect_leaks=0,suppressions=${projectDir}/asan.supp"
     environment "UBSAN_OPTIONS", "detect_leaks=0,suppressions=${projectDir}/ubsan.supp"
+
+    description = 'Runs the unit tests with the sanitized library'
+    group = 'verification'
+    // Filter classpath to include only necessary dependencies for testSanitized
+    classpath = sourceSets.test.runtimeClasspath.filter { file ->
+        // Replace the condition with your actual filtering logic
+        !file.name.contains('ddprof-') || file.name.contains('test-tracer')
+    } + configurations.testSanitizedImplementation
+}
+
+test.dependsOn testDebug
+
+tasks.withType(Test) {
+    // this is a shared configuration for all test tasks
     onlyIf {
         !project.hasProperty('skip-tests')
     }
+
+    jvmArgs '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true'
+
     def javaHome = System.getenv("JAVA_TEST_HOME")
     if (javaHome == null) {
         javaHome = System.getenv("JAVA_HOME")
     }
+    useJUnitPlatform()
     executable = new File("${javaHome}", 'bin/java')
 }
 
