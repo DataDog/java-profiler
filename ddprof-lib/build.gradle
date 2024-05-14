@@ -67,9 +67,17 @@ tasks.withType(CppCompile).configureEach {
 
     if (it.name.contains('Debug')) {
         taskArgs.add("-DDEBUG")
+
+        if (os().isLinux()) {
+            taskArgs.add "-g"
+            taskArgs.add "-fsanitize=address"
+            taskArgs.add "-fno-sanitize-recover=all"
+        }
     } else {
         taskArgs.add("-DNDEBUG")
     }
+
+    println "Compiler args: ${taskArgs}"
 
     // TODO for Clang we would use scan-build utility instead but it needs to be installed first
     
@@ -88,12 +96,18 @@ tasks.withType(LinkSharedLibrary) {
     onlyIf {
         !project.hasProperty('skip-native')
     }
-    linkerArgs.addAll(["-ldl", "-lpthread", "-lm"])
+    def taskArgs = ["-ldl", "-lpthread", "-lm", "-v"]
     if (os().isLinux()) {
-        linkerArgs.addAll(["-Wl,-z,defs", "-Wl,-z,nodelete", "-lrt", "-static-libstdc++", "-static-libgcc",
-        "-Wl,--exclude-libs,ALL", "-Wl,--gc-sections"])
+        if (it.name.contains('Debug')) {
+            println "Adding address sanitizer"
+            taskArgs.add "-fsanitize=address"
+        } else {
+            taskArgs.addAll(["-Wl,-z,defs", "-Wl,-z,nodelete", "-lrt", "-static-libstdc++", "-static-libgcc",
+            "-Wl,--exclude-libs,ALL", "-Wl,--gc-sections"])
+        }
     }
-    linkerArgs.add '-v'
+    println "Linker args: ${taskArgs}"
+    linkerArgs.addAll(taskArgs)
 }
 
 tasks.withType(StripSymbols) {
