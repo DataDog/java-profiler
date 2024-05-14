@@ -1372,11 +1372,12 @@ Error Profiler::restart(Arguments& args) {
     return Error::OK;
 }
 
-void Profiler::shutdown(Arguments& args) {
+void Profiler::shutdown() {
     MutexLocker ml(_state_lock);
 
     // The last chance to dump profile before VM terminates
     if (_state == RUNNING) {
+        Arguments args;
         args._action = ACTION_STOP;
         Error error = run(args);
         if (error) {

@@ -179,6 +179,35 @@ class Arguments {
         _lightweight(false) {
     }
 
+    Arguments(Arguments& arguments) :
+        _buf(NULL),
+        _shared(false),
+        _persistent(false),
+        _action(arguments._action),
+        _ring(arguments._ring),
+        _event(arguments._event),
+        _interval(arguments._interval),
+        _cpu(arguments._cpu),
+        _wall(arguments._wall),
+        _wall_collapsing(arguments._wall_collapsing),
+        _wall_threads_per_tick(arguments._wall_threads_per_tick),
+        _memory(arguments._memory),
+        _record_allocations(arguments._record_allocations),
+        _record_liveness(arguments._record_liveness),
+        _record_heap_usage(arguments._record_heap_usage),
+        _jstackdepth(arguments._jstackdepth),
+        _safe_mode(arguments._safe_mode),
+        _file(arguments._file),
+        _log(arguments._log),
+        _loglevel(arguments._loglevel),
+        _unknown_arg(arguments._unknown_arg),
+        _filter(arguments._filter),
+        _cstack(arguments._cstack),
+        _jfr_options(arguments._jfr_options),
+        _context_attributes(arguments._context_attributes),
+        _lightweight(arguments._lightweight) {
+    }
+
     ~Arguments();
 
     void save(Arguments& other);

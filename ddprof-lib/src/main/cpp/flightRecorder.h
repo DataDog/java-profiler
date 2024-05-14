@@ -274,13 +274,13 @@ class FlightRecorder {
   friend Profiler;
   private:
     std::string _filename;
-    Arguments _args;
+    Arguments* _args;
     Recording* _rec;
 
     Error newRecording(bool reset);
 
   public:
-    FlightRecorder() : _rec(NULL) {}
+    FlightRecorder() : _rec(nullptr), _args(nullptr) {}
     Error start(Arguments& args, bool reset);
     void stop();
     Error dump(const char* filename, const int length);

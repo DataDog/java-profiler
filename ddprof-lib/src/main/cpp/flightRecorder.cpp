@@ -1340,7 +1340,7 @@ Error FlightRecorder::start(Arguments& args, bool reset) {
         return Error("Flight Recorder output file is not specified");
     }
     _filename = file;
-    _args = args;
+    _args = new Arguments(args);
 
     if (!TSC::initialized()) {
         TSC::initialize();
@@ -1357,18 +1357,21 @@ Error FlightRecorder::newRecording(bool reset) {
         return Error("Could not open Flight Recorder output file");
     }
 
-    _rec = new Recording(fd, _args);
+    _rec = new Recording(fd, *_args);
     return Error::OK;
 }
 
 void FlightRecorder::stop() {
-    if (_rec != NULL) {
+    if (_rec != nullptr) {
         _rec_lock.lock();
 
         Recording *tmp = _rec;
         // NULL first, deallocate later
         _rec = NULL;
         delete tmp;
+    }
+    if (_args != nullptr) {
+        delete _args;
     }
 }
 

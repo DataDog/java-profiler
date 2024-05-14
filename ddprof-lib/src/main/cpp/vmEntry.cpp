@@ -36,8 +36,6 @@
 const int ARGUMENTS_ERROR = 100;
 const int COMMAND_ERROR = 200;
 
-static Arguments _agent_args(true);
-
 JavaVM* VM::_vm;
 jvmtiEnv* VM::_jvmti = NULL;
 
@@ -388,7 +386,7 @@ void VM::loadAllMethodIDs(jvmtiEnv* jvmti, JNIEnv* jni) {
 }
 
 void JNICALL VM::VMDeath(jvmtiEnv* jvmti, JNIEnv* jni) {
-    Profiler::instance()->shutdown(_agent_args);
+    Profiler::instance()->shutdown();
 }
 
 jvmtiError VM::RedefineClassesHook(jvmtiEnv* jvmti, jint class_count, const jvmtiClassDefinition* class_definitions) {
