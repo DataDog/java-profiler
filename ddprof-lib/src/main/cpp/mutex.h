@@ -22,11 +22,14 @@
 
 
 class Mutex {
+  private:
+   pthread_mutexattr_t _attr;
   protected:
     pthread_mutex_t _mutex;
 
   public:
     Mutex();
+    ~Mutex();
 
     void lock();
     void unlock();
