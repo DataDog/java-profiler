@@ -259,7 +259,7 @@ class Profiler {
     Error run(Arguments& args);
     Error runInternal(Arguments& args, std::ostream& out);
     Error restart(Arguments& args);
-    void shutdown(Arguments& args);
+    void shutdown();
     Error check(Arguments& args);
     Error start(Arguments& args, bool reset);
     Error stop();
