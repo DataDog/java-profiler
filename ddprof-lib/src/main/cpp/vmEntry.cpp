@@ -261,7 +261,6 @@ bool VM::init(JavaVM* vm, bool attach) {
     _jvmti->AddCapabilities(&capabilities);
 
     jvmtiEventCallbacks callbacks = {0};
-    callbacks.VMInit = VMInit;
     callbacks.VMDeath = VMDeath;
     callbacks.ClassLoad = ClassLoad;
     callbacks.ClassPrepare = ClassPrepare;
@@ -388,21 +387,6 @@ void VM::loadAllMethodIDs(jvmtiEnv* jvmti, JNIEnv* jni) {
     }
 }
 
-void VM::restartProfiler() {
-    Profiler::instance()->restart(_agent_args);
-}
-
-void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
-    ready(jvmti, jni);
-    loadAllMethodIDs(jvmti, jni);
-
-    // Delayed start of profiler if agent has been loaded at VM bootstrap
-    Error error = Profiler::instance()->run(_agent_args);
-    if (error) {
-        Log::error("%s", error.message());
-    }
-}
-
 void JNICALL VM::VMDeath(jvmtiEnv* jvmti, JNIEnv* jni) {
     Profiler::instance()->shutdown(_agent_args);
 }
@@ -437,57 +421,6 @@ jvmtiError VM::RetransformClassesHook(jvmtiEnv* jvmti, jint class_count, const j
     }
 
     return result;
-}
-
-
-extern "C" DLLEXPORT jint JNICALL
-Agent_OnLoad(JavaVM* vm, char* options, void* reserved) {
-    Error error = _agent_args.parse(options);
-
-    Log::open(_agent_args);
-
-    if (error) {
-        Log::error("%s", error.message());
-        return ARGUMENTS_ERROR;
-    }
-
-    if (!VM::init(vm, false)) {
-        Log::error("JVM does not support Tool Interface");
-        return COMMAND_ERROR;
-    }
-
-    return 0;
-}
-
-extern "C" DLLEXPORT jint JNICALL
-Agent_OnAttach(JavaVM* vm, char* options, void* reserved) {
-    Arguments args(true);
-    Error error = args.parse(options);
-
-    Log::open(args);
-
-    if (error) {
-        Log::error("%s", error.message());
-        return ARGUMENTS_ERROR;
-    }
-
-    if (!VM::init(vm, true)) {
-        Log::error("JVM does not support Tool Interface");
-        return COMMAND_ERROR;
-    }
-
-    // Save the arguments in case of shutdown
-    if (args._action == ACTION_START || args._action == ACTION_RESUME) {
-        _agent_args.save(args);
-    }
-
-    error = Profiler::instance()->run(args);
-    if (error) {
-        Log::error("%s", error.message());
-        return COMMAND_ERROR;
-    }
-
-    return 0;
 }
 
 extern "C" DLLEXPORT jint JNICALL
