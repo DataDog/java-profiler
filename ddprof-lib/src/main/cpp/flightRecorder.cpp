@@ -668,12 +668,6 @@ void Recording::writeRecordingInfo(Buffer* buf) {
 void Recording::writeSettings(Buffer* buf, Arguments& args) {
     writeBoolSetting(buf, T_ACTIVE_RECORDING, "asyncprofiler", true);
     writeStringSetting(buf, T_ACTIVE_RECORDING, "version", PROFILER_VERSION);
-    writeStringSetting(buf, T_ACTIVE_RECORDING, "ring", SETTING_RING[args._ring]);
-    writeStringSetting(buf, T_ACTIVE_RECORDING, "cstack", SETTING_CSTACK[args._cstack]);
-    writeStringSetting(buf, T_ACTIVE_RECORDING, "filter", args._filter);
-    writeIntSetting(buf, T_ACTIVE_RECORDING, "jstackdepth", args._jstackdepth);
-    writeIntSetting(buf, T_ACTIVE_RECORDING, "safemode", args._safe_mode);
-    writeIntSetting(buf, T_ACTIVE_RECORDING, "jfropts", args._jfr_options);
     writeIntSetting(buf, T_ACTIVE_RECORDING, "tscfrequency", TSC::frequency());
     writeStringSetting(buf, T_ACTIVE_RECORDING, "loglevel", Log::LEVEL_NAME[Log::level()]);
     writeBoolSetting(buf, T_ACTIVE_RECORDING, "hotspot", VM::isHotspot());
