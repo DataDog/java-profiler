@@ -121,8 +121,6 @@ class VM {
 
     static bool init(JavaVM* vm, bool attach);
 
-    static void restartProfiler();
-
     static jvmtiEnv* jvmti() {
         return _jvmti;
     }
