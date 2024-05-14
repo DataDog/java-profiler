@@ -15,13 +15,18 @@
  */
 
 #include "mutex.h"
-
+#include <stdio.h>
+#include <stdlib.h>
 
 Mutex::Mutex() {
-    pthread_mutexattr_t attr;
-    pthread_mutexattr_init(&attr);
-    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
-    pthread_mutex_init(&_mutex, &attr);
+    pthread_mutexattr_init(&_attr);
+    pthread_mutexattr_settype(&_attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&_mutex, &_attr);
+}
+
+Mutex::~Mutex() {
+    pthread_mutex_destroy(&_mutex);
+    pthread_mutexattr_destroy(&_attr);
 }
 
 void Mutex::lock() {

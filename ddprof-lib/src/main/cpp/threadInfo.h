@@ -13,6 +13,12 @@ class ThreadInfo {
     std::map<int, u64> _thread_ids;
 
   public:
+    // disallow copy and assign to avoid issues with the mutex
+    ThreadInfo(const ThreadInfo&) = delete;
+    ThreadInfo& operator=(const ThreadInfo&) = delete;
+
+    ThreadInfo() {}
+
     void set(int tid, const char* name, u64 java_thread_id);
     std::pair<std::shared_ptr<std::string>, u64> get(int tid);
 

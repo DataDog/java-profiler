@@ -992,7 +992,7 @@ void Recording::writeThreads(Buffer* buf) {
     _thread_set.clear();
 
     Profiler* profiler = Profiler::instance();
-    ThreadInfo t_info = profiler->_thread_info;
+    ThreadInfo* t_info = &profiler->_thread_info;
 
     char name_buf[32];
 
@@ -1001,7 +1001,7 @@ void Recording::writeThreads(Buffer* buf) {
     for (int i = 0; i < threads.size(); i++) {
         const char* thread_name;
         jlong thread_id;
-        std::pair<std::shared_ptr<std::string>, u64> info = t_info.get(threads[i]);
+        std::pair<std::shared_ptr<std::string>, u64> info = t_info->get(threads[i]);
         if (info.first) {
             thread_name = info.first->c_str();
             thread_id = info.second;
