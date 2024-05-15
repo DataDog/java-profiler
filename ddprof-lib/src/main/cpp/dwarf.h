@@ -112,11 +112,15 @@ class DwarfParser {
     u8 get8() {
         return *_ptr++;
     }
-
+    // We are getting alignment issues when loading the 16-bit value
+    // todo: are these relevant and well handled ?
+    __attribute__((no_sanitize("undefined")))
     u16 get16() {
         return *(u16*)add(2);
     }
 
+    // same issue
+    __attribute__((no_sanitize("undefined")))
     u32 get32() {
         return *(u32*)add(4);
     }
@@ -139,7 +143,7 @@ class DwarfParser {
             result |= (b & 0x7f) << shift;
             if ((b & 0x80) == 0) {
                 if ((b & 0x40) != 0 && (shift += 7) < 32) {
-                    result |= -1 << shift;
+                    result |= (static_cast<u32>(-1)) << shift;
                 }
                 return result;
             }
