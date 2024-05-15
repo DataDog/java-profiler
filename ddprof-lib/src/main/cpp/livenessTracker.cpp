@@ -142,8 +142,10 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
     }
 
     end = OS::nanotime();
-    Log::debug("Liveness tracker flush took %.2fms (%.2fus/element)",
-                1.0f * (end - start) / 1000 / 1000, 1.0f * (end - start) / 1000 / sz);
+    if (sz) {
+        Log::debug("Liveness tracker flush took %.2fms (%.2fus/element)",
+                    1.0f * (end - start) / 1000 / 1000, 1.0f * (end - start) / 1000 / sz);
+    }
 }
 
 Error LivenessTracker::initialize_table(JNIEnv* jni, int sampling_interval) {
