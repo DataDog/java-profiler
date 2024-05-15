@@ -7,12 +7,12 @@ plugins {
     id 'com.github.ben-manes.versions' version '0.27.0'
     id "com.diffplug.spotless" version "6.11.0"
 }
-
 def libraryName = "ddprof"
 
 description = "Datadog Java Profiler Library"
 
 def component_version = project.hasProperty("ddprof_version") ? project.ddprof_version : project.version
+
 
 // this feels weird but it is the only way invoking `./gradlew :ddprof-lib:*` tasks will work
 if (rootDir.toString().endsWith("ddprof-lib")) {
@@ -68,11 +68,18 @@ tasks.withType(CppCompile).configureEach {
     if (it.name.contains('Debug')) {
         taskArgs.add("-DDEBUG")
 
-        if (os().isLinux()) {
-            taskArgs.add "-g"
-            taskArgs.add "-fsanitize=address"
-            taskArgs.add "-fno-sanitize-recover=all"
-        }
+// /usr/bin/c++   -fsanitize=undefined -fsanitize=float-divide-by-zero -fno-sanitize-recover -fsanitize=address -fstack-protector-all -std=gnu++20 -MD -MT CMakeFiles/test.dir/main.o -MF CMakeFiles/test.dir/main.o.d -o CMakeFiles/test.dir/main.o -c /home/r1viollet/dd/system-experiments/segvs/main.cpp
+
+    if (os().isLinux()) {
+        taskArgs.add "-g"
+        taskArgs.add "-fsanitize=address"
+        // taskArgs.add "-static-libasan"
+        // taskArgs.add "-fno-sanitize-recover=all"
+        // taskArgs.add "-fsanitize=undefined"
+        // taskArgs.add "-fsanitize=float-divide-by-zero"
+        // taskArgs.add "-fstack-protector-all"
+
+    }
     } else {
         taskArgs.add("-DNDEBUG")
     }
@@ -96,14 +103,26 @@ tasks.withType(LinkSharedLibrary) {
     onlyIf {
         !project.hasProperty('skip-native')
     }
-    def taskArgs = ["-ldl", "-lpthread", "-lm", "-v"]
+    def taskArgs = []
     if (os().isLinux()) {
+        taskArgs.addAll(["-ldl", "-Wl,-z,defs", "--verbose", "-lpthread", "-lm", "-v"])  // Common flags
         if (it.name.contains('Debug')) {
-            println "Adding address sanitizer"
-            taskArgs.add "-fsanitize=address"
+            println "Adding debug-specific linker args"
+            taskArgs.addAll([
+                "-fsanitize=address",
+                // "-static-libasan",   // Ensure the ASan runtime is linked statically
+                "-fno-omit-frame-pointer"  // Often recommended with sanitizers
+            ])
         } else {
-            taskArgs.addAll(["-Wl,-z,defs", "-Wl,-z,nodelete", "-lrt", "-static-libstdc++", "-static-libgcc",
-            "-Wl,--exclude-libs,ALL", "-Wl,--gc-sections"])
+            println "Adding release-specific linker args"
+            taskArgs.addAll([
+                "-Wl,-z,nodelete",
+                "-lrt",
+                "-static-libstdc++",
+                "-static-libgcc",
+                "-Wl,--exclude-libs,ALL",
+                "-Wl,--gc-sections"
+            ])
         }
     }
     println "Linker args: ${taskArgs}"
