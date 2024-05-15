@@ -38,8 +38,8 @@ test {
 
 tasks.withType(Test) {
     environment "LD_PRELOAD", "/usr/lib/gcc/x86_64-linux-gnu/11/libasan.so"
-    environment "ASAN_OPTIONS", "detect_leaks=0"
-
+    environment "ASAN_OPTIONS", "detect_leaks=0,suppressions=${projectDir}/asan.supp"
+    environment "UBSAN_OPTIONS", "detect_leaks=0,suppressions=${projectDir}/ubsan.supp"
     onlyIf {
         !project.hasProperty('skip-tests')
     }

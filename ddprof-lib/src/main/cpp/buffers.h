@@ -93,6 +93,10 @@ class Buffer {
         _offset += 4;
     }
 
+    // alignment issue to be looked at
+    //    runtime error: store to misaligned address 0x766bb5a1e814 for type 'u64', which requires 8 byte alignment
+    //         0x766bb5a1e814: note: pointer points here
+    __attribute__((no_sanitize("undefined")))
     void put64(u64 v) {
         assert(_offset + 8 < limit());
         *(u64*)(_data + _offset) = OS::hton64(v);

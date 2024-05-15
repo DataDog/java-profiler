@@ -73,11 +73,14 @@ tasks.withType(CppCompile).configureEach {
     if (os().isLinux()) {
         taskArgs.add "-g"
         taskArgs.add "-fsanitize=address"
+        taskArgs.add "-fsanitize=undefined"
+        // static could be interesting
         // taskArgs.add "-static-libasan"
-        // taskArgs.add "-fno-sanitize-recover=all"
-        // taskArgs.add "-fsanitize=undefined"
-        // taskArgs.add "-fsanitize=float-divide-by-zero"
-        // taskArgs.add "-fstack-protector-all"
+        // This one we should test
+        // -fsanitize-address-use-after-return=always
+        taskArgs.add "-fno-sanitize-recover=all"
+        taskArgs.add "-fsanitize=float-divide-by-zero"
+        taskArgs.add "-fstack-protector-all"
 
     }
     } else {
@@ -110,6 +113,7 @@ tasks.withType(LinkSharedLibrary) {
             println "Adding debug-specific linker args"
             taskArgs.addAll([
                 "-fsanitize=address",
+                "-fsanitize=undefined",
                 // "-static-libasan",   // Ensure the ASan runtime is linked statically
                 "-fno-omit-frame-pointer"  // Often recommended with sanitizers
             ])
