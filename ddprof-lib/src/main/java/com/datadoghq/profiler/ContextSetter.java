@@ -4,12 +4,15 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ContextSetter {
 
     private static final int TAGS_STORAGE_LIMIT = 10;
     private final List<String> attributes;
     private final JavaProfiler profiler;
+
+    private final ConcurrentHashMap<String, Integer> jniCache = new ConcurrentHashMap<>();
 
     public ContextSetter(JavaProfiler profiler, List<String> attributes) {
         this.profiler = profiler;
@@ -24,7 +27,18 @@ public class ContextSetter {
     }
 
     public int encode(String key) {
-        return key == null ? 0 : profiler.registerConstant(key);
+        if (key != null) {
+            Integer encoding = jniCache.get(key);
+            if (encoding != null) {
+                return encoding;
+            } else if (jniCache.size() <= 1 << 16) {
+                int e = profiler.registerConstant(key);
+                if (e > 0 && jniCache.putIfAbsent(key, e) == null) {
+                    return e;
+                }
+            }
+        }
+        return 0;
     }
 
     public int[] snapshotTags() {
