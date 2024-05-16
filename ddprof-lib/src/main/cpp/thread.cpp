@@ -102,27 +102,29 @@ void* ProfiledThread::delayedUninstallUSR1(void* unused) {
 void ProfiledThread::doInitExistingThreads() {
     pthread_t thrd;
     if (pthread_create(&thrd, NULL, delayedUninstallUSR1, NULL) == 0) {
-        std::unique_ptr<ThreadList> tlist{OS::listThreads()};
-        /*
-        Here is a bit of trickery - we need the TLS variable initialized for all existing threads but we can not do this
-        from outside. Therefore, we need to install signal handler to perform the initialization. However, the signal handler
-        can not allocate - in order to work around that limitation we pre-allocate an array of ProfiledThread instances
-        for all existing threads. This array will be used by the threads when handling the signal to pick the pre-allocated instance
-        which can be stored in the TLS slot.
+        OS::withThreadList([](ThreadList* thread_list) {
+            /*
+            Here is a bit of trickery - we need the TLS variable initialized for all existing threads but we can not do this
+            from outside. Therefore, we need to install signal handler to perform the initialization. However, the signal handler
+            can not allocate - in order to work around that limitation we pre-allocate an array of ProfiledThread instances
+            for all existing threads. This array will be used by the threads when handling the signal to pick the pre-allocated instance
+            which can be stored in the TLS slot.
 
-        Any newly started threads will be handled by the JVMTI callback so we need to worry only about the existing threads here.
-        */
-        prepareBuffer(tlist->size());
-    
-        old_handler = OS::installSignalHandler(SIGUSR1, ProfiledThread::signalHandler);
-        int cntr = 0;
-        int tid = -1;
-        while ((tid = tlist->next()) != -1) {
-            if (tlist->size() <= cntr++) {
-                break;
+            Any newly started threads will be handled by the JVMTI callback so we need to worry only about the existing threads here.
+            */
+            prepareBuffer(thread_list->size());
+        
+            old_handler = OS::installSignalHandler(SIGUSR1, ProfiledThread::signalHandler);
+            int cntr = 0;
+            int tid = -1;
+            while ((tid = thread_list->next()) != -1) {
+                if (thread_list->size() <= cntr++) {
+                    break;
+                }
+                OS::sendSignalToThread(tid, SIGUSR1);
             }
-            OS::sendSignalToThread(tid, SIGUSR1);
-        }
+            return Error::OK;
+        });
         pthread_detach(thrd);
     }
 }

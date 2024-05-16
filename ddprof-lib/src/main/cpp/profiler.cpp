@@ -928,19 +928,19 @@ void Profiler::updateJavaThreadNames() {
 }
 
 void Profiler::updateNativeThreadNames() {
-    ThreadList* thread_list = OS::listThreads();
-    for (int tid; (tid = thread_list->next()) != -1; ) {
-        _thread_info.updateThreadName(tid, [](int tid) -> std::unique_ptr<char[]> {
-            char *name_buf = new char[64];
-            if (OS::threadName(tid, name_buf, sizeof(name_buf))) {
-                return std::unique_ptr<char[]>(name_buf);
-            }
-            delete[] name_buf;
-            return nullptr;
-        });
-    }
-
-    delete thread_list;
+    OS::withThreadList([this](ThreadList* thread_list) {
+        for (int tid; (tid = thread_list->next()) != -1; ) {
+            _thread_info.updateThreadName(tid, [](int tid) -> std::unique_ptr<char[]> {
+                char *name_buf = new char[64];
+                if (OS::threadName(tid, name_buf, sizeof(name_buf))) {
+                    return std::unique_ptr<char[]>(name_buf);
+                }
+                delete[] name_buf;
+                return nullptr;
+            });
+        }
+        return Error::OK;
+    });
 }
 
 Engine* Profiler::selectCpuEngine(Arguments& args) {

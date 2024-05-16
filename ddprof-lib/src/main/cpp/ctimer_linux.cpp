@@ -167,16 +167,16 @@ Error CTimer::start(Arguments& args) {
     __atomic_store_n(_pthread_entry, (void*)pthread_setspecific_hook, __ATOMIC_RELEASE);
 
     // Register all existing threads
-    Error result = Error::OK;
-    ThreadList* thread_list = OS::listThreads();
-    for (int tid; (tid = thread_list->next()) != -1; ) {
-        int err = registerThread(tid);
-        if (err != 0) {
-            fprintf(stderr, "===> Failed to register thread %d => %d\n", tid, err);
-            result = Error("Failed to register thread");
+    Error result = OS::withThreadList([this](ThreadList* thread_list) {
+        for (int tid; (tid = thread_list->next()) != -1; ) {
+            int err = registerThread(tid);
+            if (err != 0) {
+                fprintf(stderr, "===> Failed to register thread %d => %d\n", tid, err);
+                return Error("Failed to register thread");
+            }
         }
-    }
-    delete thread_list;
+        return Error::OK;
+    });
 
     return Error::OK;
 }

@@ -17,10 +17,13 @@
 #ifndef _OS_H
 #define _OS_H
 
+#include <functional>
 #include <signal.h>
 #include <stddef.h>
 #include <sys/types.h>
 #include "arch.h"
+#include "arguments.h"
+#include "mutex.h"
 
 
 typedef void (*SigAction)(int, siginfo_t*, void*);
@@ -51,6 +54,10 @@ class JitWriteProtection {
 };
 
 class OS {
+  private:
+    static Mutex _thread_list_lock;
+  protected:
+    static ThreadList* listThreads();
   public:
     static const size_t page_size;
     static const size_t page_mask;
@@ -73,7 +80,12 @@ class OS {
     static int threadId();
     static const char* schedPolicy(int thread_id);
     static bool threadName(int thread_id, char* name_buf, size_t name_len);
-    static ThreadList* listThreads();
+    static Error withThreadList(std::function<Error(ThreadList*)> action) {
+        MutexLocker ml(_thread_list_lock);
+        ThreadList* thread_list = listThreads();
+        thread_list->rewind();
+        return action(thread_list);
+    }
 
     static bool isLinux();
 

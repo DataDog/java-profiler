@@ -153,15 +153,16 @@ void WallClock::timerLoop() {
         if (thread_filter->enabled()) {
             thread_filter->collect(tids);
         } else {
-            ThreadList* thread_list = OS::listThreads();
-            int tid = thread_list->next();
-            while (tid != -1) {
-                if (tid != self) {
-                    tids.push_back(tid);
+            OS::withThreadList([self, this, &tids](ThreadList* thread_list) {
+                int tid = thread_list->next();
+                while (tid != -1) {
+                    if (tid != self) {
+                        tids.push_back(tid);
+                    }
+                    tid = thread_list->next();
                 }
-                tid = thread_list->next();
-            }
-            delete thread_list;
+                return Error::OK;
+            });
         }
         for (int i = 0; i < _reservoir_size && i < tids.size(); i++) {
             reservoir.push_back(tids[i]);

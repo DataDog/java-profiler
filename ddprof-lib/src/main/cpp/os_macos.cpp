@@ -31,6 +31,7 @@
 #include <unistd.h>
 #include "os.h"
 
+Mutex OS::_thread_list_lock;
 
 class MacThreadList : public ThreadList {
   private:
@@ -190,7 +191,8 @@ bool OS::threadName(int thread_id, char* name_buf, size_t name_len) {
 }
 
 ThreadList* OS::listThreads() {
-    return new MacThreadList();
+    static ThreadList* thread_list = new MacThreadList();
+    return thread_list;
 }
 
 bool OS::isLinux() {

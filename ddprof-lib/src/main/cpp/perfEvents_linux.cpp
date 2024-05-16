@@ -847,62 +847,63 @@ Error PerfEvents::start(Arguments& args) {
     __atomic_store_n(_pthread_entry, (void*)pthread_setspecific_hook, __ATOMIC_RELEASE);
 
     // Create perf_events for all existing threads
-    int threads_sz = 0, threads_cap;
-    int *threads = (int*)malloc((threads_cap = 1024)  * sizeof(int));
-    ThreadList* thread_list = OS::listThreads();
-    // get a fixed list of all the threads
-    for (int tid; (tid = thread_list->next()) != -1; ) {
-        if (threads_sz == threads_cap) {
-            threads = (int*)realloc(threads, (threads_cap += 1024)  * sizeof(int));
-        }
-        threads[threads_sz++] = tid;
-    }
-    delete thread_list;
+    return OS::withThreadList([=](ThreadList* thread_list) {
+        int threads_sz = 0, threads_cap;
+        int *threads = (int*)malloc((threads_cap = 1024)  * sizeof(int));
 
-    qsort(threads, threads_sz, sizeof(int), __intsort);
-
-    int err = 0;
-    int threads_idx = 0;
-    for (int tid = 0; tid < _max_events; tid++) {
-        // if we didn't go over all existing threads and the tid matches an existing thread
-        if (threads_idx < threads_sz && tid == threads[threads_idx]) {
-            // create the timer
-            if ((err = registerThread(tid)) != 0) {
-                if (err == ESRCH) {
-                    // ignore because the thread doesn't exist anymore
-                    err = 0;
-                } else {
-                    // if we fail, stop creating more perf_events
-                    break;
-                }
+        // get a fixed list of all the threads
+        for (int tid; (tid = thread_list->next()) != -1; ) {
+            if (threads_sz == threads_cap) {
+                threads = (int*)realloc(threads, (threads_cap += 1024)  * sizeof(int));
             }
-            // finally, increase threads_idx
-            threads_idx += 1;
+            threads[threads_sz++] = tid;
         }
-        // if the tid doesn't matches an existing thread
-        else {
-            // destroy the timer
-            unregisterThread(tid);
+
+        qsort(threads, threads_sz, sizeof(int), __intsort);
+
+        int err = 0;
+        int threads_idx = 0;
+        for (int tid = 0; tid < _max_events; tid++) {
+            // if we didn't go over all existing threads and the tid matches an existing thread
+            if (threads_idx < threads_sz && tid == threads[threads_idx]) {
+                // create the timer
+                if ((err = registerThread(tid)) != 0) {
+                    if (err == ESRCH) {
+                        // ignore because the thread doesn't exist anymore
+                        err = 0;
+                    } else {
+                        // if we fail, stop creating more perf_events
+                        break;
+                    }
+                }
+                // finally, increase threads_idx
+                threads_idx += 1;
+            }
+            // if the tid doesn't matches an existing thread
+            else {
+                // destroy the timer
+                unregisterThread(tid);
+            }
         }
-    }
 
-    free(threads);
+        free(threads);
 
-    if (err != 0) {
-        *_pthread_entry = (void*)pthread_setspecific;
-        Profiler::instance()->switchThreadEvents(JVMTI_DISABLE);
-        if (err == EACCES || err == EPERM) {
-            return Error("No access to perf events. Try --all-user option or 'sysctl kernel.perf_event_paranoid=1'");
-        } else {
-            return Error("Perf events unavailable");
+        if (err != 0) {
+            *_pthread_entry = (void*)pthread_setspecific;
+            Profiler::instance()->switchThreadEvents(JVMTI_DISABLE);
+            if (err == EACCES || err == EPERM) {
+                return Error("No access to perf events. Try --all-user option or 'sysctl kernel.perf_event_paranoid=1'");
+            } else {
+                return Error("Perf events unavailable");
+            }
         }
-    }
 
-    if (threads_idx != threads_sz) {
-        Log::error("perfEvents: we didn't go over all events, threads_idx = %d, threads_sz = %d", threads_idx, threads_sz);
-    }
+        if (threads_idx != threads_sz) {
+            Log::error("perfEvents: we didn't go over all events, threads_idx = %d, threads_sz = %d", threads_idx, threads_sz);
+        }
 
-    return Error::OK;
+        return Error::OK;
+    });
 }
 
 void PerfEvents::stop() {
