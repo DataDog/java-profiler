@@ -7,7 +7,7 @@ repositories {
 }
 
 dependencies {
-    implementation project(path: ":ddprof-lib", configuration: 'debug')
+    implementation project(path: ":ddprof-lib", configuration: 'sanitized')
 }
 
 tasks.withType(JavaCompile).configureEach {

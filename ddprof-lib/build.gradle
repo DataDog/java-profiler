@@ -19,11 +19,15 @@ if (rootDir.toString().endsWith("ddprof-lib")) {
     apply from: rootProject.file('../common.gradle')
 }
 
-def libraryTargetPath() {
-    return "${projectDir}/build/classes/java/main/META-INF/native-libs/${osIdentifier()}-${archIdentifier()}${isMusl() ? '-musl' : ''}"
+def libraryTargetBase(type) {
+    return "${projectDir}/build/native/${type}"
 }
 
-def librarySourcePath(boolean debug = false) {
+def libraryTargetPath(type) {
+    return "${libraryTargetBase(type)}/META-INF/native-libs/${osIdentifier()}-${archIdentifier()}${isMusl() ? '-musl' : ''}"
+}
+
+def librarySourcePath(type, qualifier = "") {
     def osarchext = ""
     if (osIdentifier() == 'linux' && archIdentifier() != 'x64') {
         // when built on aarch64 the location the library is built in is 'x86-64' ¯\_(ツ)_/¯
@@ -31,12 +35,11 @@ def librarySourcePath(boolean debug = false) {
     } else if (osIdentifier() == 'macos') {
         osarchext = archIdentifier() == 'x64' ? 'x86-64' : 'aarch64'
     }
-    def libsDir = debug ? "debug" : "release"
-    def qualifier = debug ? "" : "stripped"
-    return "${projectDir}/build/lib/main/${libsDir}/${osIdentifier()}/${osarchext}/${qualifier}/libjavaProfiler.${osIdentifier() == 'macos' ? 'dylib' : 'so'}"
+    return "${projectDir}/build/lib/main/${type}/${osIdentifier()}/${osarchext}/${qualifier}/libjavaProfiler.${osIdentifier() == 'macos' ? 'dylib' : 'so'}"
 }
 
 ext {
+    libraryTargetBase = this.&libraryTargetBase
     libraryTargetPath = this.&libraryTargetPath
     librarySourcePath = this.&librarySourcePath
 }
@@ -46,11 +49,51 @@ targetCompatibility = JavaVersion.VERSION_1_8
 
 def isGitlabCI = System.getenv("GITLAB_CI") != null
 
+// if a new configuraion is added and it is meant to be published to maven registry don't forget to update the 'artifacts' block
+configurations {
+    assembled {
+        canBeConsumed = true
+        canBeResolved = false
+        extendsFrom implementation
+    }
+    release {
+        canBeConsumed = true
+        canBeResolved = false
+        extendsFrom implementation
+    }
+    debug {
+        canBeConsumed = true
+        canBeResolved = false
+        extendsFrom implementation
+    }
+    sanitized {
+        canBeConsumed = true
+        canBeResolved = false
+        extendsFrom implementation
+    }
+}
+
+// Configure sanitized build type
+tasks.register('compileSanitized', CppCompile) {
+    group = 'build'
+    description = 'Compile the sanitized build of the library'
+    objectFileDir = file("$buildDir/obj/main/sanitized")
+}
+
+tasks.register('linkSanitized', LinkSharedLibrary) {
+    group = 'build'
+    description = 'Link the sanitized build of the library'
+    source = fileTree("$buildDir/obj/main/sanitized")
+    linkedFile = file("$buildDir/lib/main/sanitized/${osIdentifier()}/libjavaProfiler.so")
+    dependsOn compileSanitized
+}
+
 // configure the compiler here
 tasks.withType(CppCompile).configureEach {
     onlyIf {
         !project.hasProperty('skip-native')
     }
+
     def taskIncludes = ["${javaHome()}/include"]
     def taskArgs = ["-fno-omit-frame-pointer", "-momit-leaf-frame-pointer", "-fvisibility=hidden",
     "-fdata-sections", "-ffunction-sections", "-std=c++11", "-DPROFILER_VERSION=\"${version}\"", "-DCOUNTERS"]
@@ -66,28 +109,14 @@ tasks.withType(CppCompile).configureEach {
     }
 
     if (it.name.contains('Debug')) {
-        taskArgs.add("-DDEBUG")
-
-// /usr/bin/c++   -fsanitize=undefined -fsanitize=float-divide-by-zero -fno-sanitize-recover -fsanitize=address -fstack-protector-all -std=gnu++20 -MD -MT CMakeFiles/test.dir/main.o -MF CMakeFiles/test.dir/main.o.d -o CMakeFiles/test.dir/main.o -c /home/r1viollet/dd/system-experiments/segvs/main.cpp
-
-    if (os().isLinux()) {
-        taskArgs.add "-g"
-        taskArgs.add "-fsanitize=address"
-        taskArgs.add "-fsanitize=undefined"
-        // static could be interesting
-        // taskArgs.add "-static-libasan"
-        // This one we should test
-        // -fsanitize-address-use-after-return=always
-        taskArgs.add "-fno-sanitize-recover=all"
-        taskArgs.add "-fsanitize=float-divide-by-zero"
-        taskArgs.add "-fstack-protector-all"
-
+        taskArgs.addAll(["-g", "-DDEBUG"])
     }
-    } else {
-        taskArgs.add("-DNDEBUG")
+    if (it.name.contains("Sanitized")) {
+        if (os().isLinux()) {
+            // TODO: This one we should test: -fsanitize-address-use-after-return=always
+            taskArgs.addAll(['-g', '-DDEBUG', '-fPIC', '-fsanitize=address', '-fsanitize=undefined', '-fno-sanitize-recover=all', '-fsanitize=float-divide-by-zero', '-fstack-protector-all'])
+        }
     }
-
-    println "Compiler args: ${taskArgs}"
 
     // TODO for Clang we would use scan-build utility instead but it needs to be installed first
     
@@ -95,6 +124,16 @@ tasks.withType(CppCompile).configureEach {
 
     includes {
         taskIncludes
+    }
+
+    if (it.name.contains("Release")) {
+        def sanitized = tasks.named('compileSanitized').get()
+        sanitized.toolChain = it.toolChain
+        sanitized.targetPlatform = it.targetPlatform
+        sanitized.includes = it.includes
+        sanitized.systemIncludes = it.systemIncludes
+        sanitized.source = it.source
+        taskArgs.add("-DNDEBUG")
     }
 
     compilerArgs.addAll(taskArgs)
@@ -108,28 +147,29 @@ tasks.withType(LinkSharedLibrary) {
     }
     def taskArgs = []
     if (os().isLinux()) {
-        taskArgs.addAll(["-ldl", "-Wl,-z,defs", "--verbose", "-lpthread", "-lm", "-v"])  // Common flags
-        if (it.name.contains('Debug')) {
-            println "Adding debug-specific linker args"
+        taskArgs.addAll(["-ldl", "-Wl,-z,defs", "--verbose", "-lpthread", "-lm", "-lrt", "-v"])  // Common flags
+        if (it.name.contains('Sanitized')) {
             taskArgs.addAll([
                 "-fsanitize=address",
                 "-fsanitize=undefined",
                 // "-static-libasan",   // Ensure the ASan runtime is linked statically
                 "-fno-omit-frame-pointer"  // Often recommended with sanitizers
             ])
-        } else {
-            println "Adding release-specific linker args"
+        } 
+        if (it.name.contains("Release")) {
             taskArgs.addAll([
                 "-Wl,-z,nodelete",
-                "-lrt",
                 "-static-libstdc++",
                 "-static-libgcc",
                 "-Wl,--exclude-libs,ALL",
                 "-Wl,--gc-sections"
             ])
+            def sanitized = tasks.named('linkSanitized').get()
+            sanitized.toolChain = it.toolChain
+            sanitized.targetPlatform = it.targetPlatform
+            sanitized.libs = it.libs
         }
     }
-    println "Linker args: ${taskArgs}"
     linkerArgs.addAll(taskArgs)
 }
 
@@ -149,7 +189,6 @@ library {
     targetMachines = [machines.macOS, machines.linux.x86_64]
     linkage = [Linkage.SHARED]
 }
-
 
 dependencies {
     if (os().isLinux()) {
@@ -173,8 +212,8 @@ task cppTest(type: Exec) {
 task copyLibs(type: Copy) {
     dependsOn cppTest
     if (!project.hasProperty("with-libs")) {
-        from file(librarySourcePath())
-        into file(libraryTargetPath())
+        from file(librarySourcePath("release", "stripped"))
+        into file(libraryTargetPath("release"))
     }
 }
 
@@ -183,8 +222,19 @@ task copyDebugLibs(type: Copy) {
     // and keeps on complaining about undeclared inputs
     dependsOn copyLibs
 
-    from file(librarySourcePath(true))
-    into file(libraryTargetPath())
+    from file(librarySourcePath("debug"))
+    into file(libraryTargetPath("debug"))
+}
+
+task copySanitizedLibs(type: Copy) {
+    // This must depend on copyLibs as Gradle detects that this task is using the same target path
+    // and keeps on complaining about undeclared inputs
+    dependsOn copyLibs
+
+    dependsOn linkSanitized
+
+    from file(librarySourcePath("sanitized"))
+    into file(libraryTargetPath("sanitized"))
 }
 
 // Allow specifying the external location for the native libraries
@@ -227,7 +277,7 @@ task assembleJar(type: Jar) {
     archiveBaseName = libraryName
     archiveClassifier = ""
     archiveVersion = component_version
-    from sourceSets.main.output.classesDirs
+    from sourceSets.main.output.classesDirs + file(libraryTargetBase("release"))
 }
 
 task assembleDebugJar(type: Jar) {
@@ -237,7 +287,17 @@ task assembleDebugJar(type: Jar) {
     archiveBaseName = libraryName
     archiveClassifier = "debug"
     archiveVersion = component_version
-    from sourceSets.main.output.classesDirs
+    from sourceSets.main.output.classesDirs + file(libraryTargetBase("debug"))
+}
+
+task assembleSanitizedJar(type: Jar) {
+    if (!project.hasProperty('skip-native')) {
+        dependsOn copySanitizedLibs
+    }
+    archiveBaseName = libraryName
+    archiveClassifier = "sanitized"
+    archiveVersion = component_version
+    from sourceSets.main.output.classesDirs + file(libraryTargetBase("sanitized"))
 }
 
 task scanBuild(type: Exec) {
@@ -267,26 +327,15 @@ tasks.withType(Test) {
     executable = new File("${javaHome}", 'bin/java')
 }
 
-configurations {
-    assembled {
-        canBeConsumed = true
-        canBeResolved = false
-        extendsFrom implementation
-    }
-    debug {
-        canBeConsumed = true
-        canBeResolved = false
-        extendsFrom implementation
-    }
-}
-
 artifacts {
     assembled(assembleJar)
     assembled(assembleDebugJar)
+    assembled(assembleSanitizedJar)
     assembled(sourcesJar)
     assembled(javadocJar)
-    assembled(assembleDebugJar)
+    release(assembleJar)
     debug(assembleDebugJar)
+    sanitized(assembleSanitizedJar)
 }
 
 publishing {
@@ -294,6 +343,7 @@ publishing {
         assembled(MavenPublication) { publication ->
             publication.artifact project.tasks.assembleJar
             publication.artifact project.tasks.assembleDebugJar
+            publication.artifact project.tasks.assembleSanitizedJar
             publication.artifact sourcesJar
             publication.artifact javadocJar
 
@@ -361,6 +411,9 @@ gradle.taskGraph.whenReady { TaskExecutionGraph taskGraph ->
 
 afterEvaluate {
     assert description: "Project $project.path is published, must have a description"
+    // apparently, the compile/link tasks are a bit special and the dependency can be only added at the very end
+    tasks.named('compileSanitized').get().dependsOn  tasks.named('compileReleaseLinuxCpp').get()
+    tasks.named('linkSanitized').get().dependsOn tasks.named('linkReleaseLinux').get()
 }
 
 // we are publishing very customized artifacts - we are attaching the native library to the resulting JAR artifact
