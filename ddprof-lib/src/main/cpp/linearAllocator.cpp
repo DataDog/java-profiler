@@ -43,11 +43,11 @@ void LinearAllocator::clear() {
 }
 
 void* LinearAllocator::alloc(size_t size) {
-    Chunk* chunk = _tail;
-
+    Chunk* chunk = __atomic_load_n(&_tail, __ATOMIC_ACQUIRE);
     do {
         // Fast path: bump a pointer with CAS
-        for (size_t offs = chunk->offs; offs + size <= _chunk_size; offs = chunk->offs) {
+        for (size_t offs = __atomic_load_n(&chunk->offs, __ATOMIC_ACQUIRE); offs + size <= _chunk_size;
+                offs = __atomic_load_n(&chunk->offs, __ATOMIC_ACQUIRE)) {
             if (__sync_bool_compare_and_swap(&chunk->offs, offs, offs + size)) {
                 if (_chunk_size / 2 - offs < size) {
                     // Stepped over a middle of the chunk - it's time to prepare a new one

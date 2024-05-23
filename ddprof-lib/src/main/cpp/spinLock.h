@@ -53,7 +53,7 @@ class SpinLock {
 
     bool tryLockShared() {
         int value;
-        while ((value = _lock) <= 0) {
+        while ((value = __atomic_load_n(&_lock, __ATOMIC_ACQUIRE)) <= 0) {
             if (__sync_bool_compare_and_swap(&_lock, value, value - 1)) {
                 return true;
             }

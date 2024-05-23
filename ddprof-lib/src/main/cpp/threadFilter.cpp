@@ -24,7 +24,7 @@ void trackPage() {
     Counters::increment(THREAD_FILTER_PAGES, 1);
     Counters::increment(THREAD_FILTER_BYTES, BITMAP_SIZE);
 }
-    
+
 ThreadFilter::ThreadFilter() {
     _max_thread_id = OS::getMaxThreadId(128 * 1024);
     _max_bitmaps = (_max_thread_id + BITMAP_SIZE - 1) / BITMAP_SIZE;
@@ -124,7 +124,8 @@ void ThreadFilter::collect(std::vector<int>& v) {
         if (b != NULL) {
             int start_id = i * BITMAP_CAPACITY;
             for (int j = 0; j < BITMAP_SIZE / sizeof(u64); j++) {
-                u64 word = b[j];
+                // Considering the functional impact, relaxed could be a reasonable order here
+                u64 word = __atomic_load_n(&b[j], __ATOMIC_ACQUIRE);
                 while (word != 0) {
                     v.push_back(start_id + j * 64 + __builtin_ctzl(word));
                     word &= (word - 1);

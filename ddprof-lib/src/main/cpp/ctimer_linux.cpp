@@ -186,6 +186,9 @@ void CTimer::stop() {
 }
 
 void CTimer::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
+    // Save the current errno value
+    int saved_errno = errno;
+
     if (!_enabled) return;
     int tid = 0;
     ProfiledThread* current = ProfiledThread::current();
@@ -206,6 +209,8 @@ void CTimer::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     }
     Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0, &event);
     Shims::instance().setSighandlerTid(-1);
+    // we need to avoid spoiling the value of errno (tsan report)
+    errno = saved_errno;
 }
 
 #endif // __linux__

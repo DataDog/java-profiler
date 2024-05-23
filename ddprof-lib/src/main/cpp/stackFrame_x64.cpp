@@ -86,6 +86,7 @@ void StackFrame::ret() {
 
 
 bool StackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+
     instruction_t* ip = (instruction_t*)pc;
     if (ip == entry || *ip == 0xc3
         || strncmp(name, "itable", 6) == 0
@@ -95,7 +96,14 @@ bool StackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& p
         pc = ((uintptr_t*)sp)[0] - 1;
         sp += 8;
         return true;
-    } else if (entry != NULL && *(unsigned int*)entry == 0xec8b4855) {
+    }
+    if(entry == nullptr) {
+        return false;
+    }
+    if (reinterpret_cast<uintptr_t>(entry) % alignof(unsigned int) != 0) {
+        return false;
+    }
+    if (*(unsigned int*)entry == 0xec8b4855) {
         // The stub begins with
         //   push rbp
         //   mov  rbp, rsp

@@ -700,6 +700,10 @@ bool VMMethod::check_jmethodID_J9(jmethodID id) {
     return id != NULL && *((void**)id) != NULL;
 }
 
+// We know that there is a race here.
+// CodeHeap::allocate(unsigned long) can change the structure while we are accessing
+// We can be defensive on the data we get from the map
+__attribute__((no_sanitize("thread")))
 NMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
     unsigned char* heap_start = *(unsigned char**)(heap + _code_heap_memory_offset + _vs_low_offset);
     unsigned char* segmap = *(unsigned char**)(heap + _code_heap_segmap_offset + _vs_low_offset);

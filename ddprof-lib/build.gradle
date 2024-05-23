@@ -118,6 +118,8 @@ tasks.withType(CppCompile).configureEach {
         }
     }
 
+    println "Compiler args: ${taskArgs}"
+
     // TODO for Clang we would use scan-build utility instead but it needs to be installed first
     
     taskIncludes.add "${projectDir}/../malloc-shim/src/main/public"

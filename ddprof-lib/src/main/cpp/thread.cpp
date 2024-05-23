@@ -42,6 +42,10 @@ void ProfiledThread::initExistingThreads() {
     pthread_once(&initialized, doInitExistingThreads);
 }
 
+// The lifetime of this vector requires stronger guarantees.
+// We need to ensure that the vector is not removed at the end of the process while threads are accessing it.
+// This is to silence the sanitizer but should not be considered as a fix
+__attribute__((no_sanitize("thread")))
 void ProfiledThread::initCurrentThreadWithBuffer() {
     initTLSKey();
 
