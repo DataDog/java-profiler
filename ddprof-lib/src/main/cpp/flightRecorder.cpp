@@ -1322,9 +1322,7 @@ void Recording::recordCpuLoad(Buffer* buf, float proc_user, float proc_system, f
 }
 
 void Recording::addThread(int tid) {
-    if (!_thread_set.accept(tid)) {
-        _thread_set.add(tid);
-    }
+    _thread_set.add(tid);
 }
 
 Error FlightRecorder::start(Arguments& args, bool reset) {
