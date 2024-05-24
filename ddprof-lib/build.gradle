@@ -113,8 +113,24 @@ tasks.withType(CppCompile).configureEach {
     }
     if (it.name.contains("Sanitized")) {
         if (os().isLinux()) {
-            // TODO: This one we should test: -fsanitize-address-use-after-return=always
-            taskArgs.addAll(['-g', '-DDEBUG', '-fPIC', '-fsanitize=address', '-fsanitize=undefined', '-fno-sanitize-recover=all', '-fsanitize=float-divide-by-zero', '-fstack-protector-all'])
+        taskArgs.addAll([
+            '-g',                          // Generate debug information
+            '-DDEBUG',                     // Enable debug mode
+            '-fPIC',                       // Position-independent code
+            '-fsanitize=address',          // AddressSanitizer for memory errors
+            '-fsanitize=undefined',        // UndefinedBehaviorSanitizer for undefined behavior
+            '-fno-sanitize-recover=all',   // Disable recovery to ensure program halts on error
+            '-fsanitize=float-divide-by-zero', // Catch floating point division by zero
+            '-fstack-protector-all',       // Protect against stack buffer overflows
+            '-fsanitize=leak',             // LeakSanitizer to detect memory leaks
+            '-fsanitize=pointer-overflow', // Catch pointer overflows
+            '-fsanitize=return',           // Check for uninitialized return values
+            '-fsanitize=bounds',           // BoundsSanitizer for array bounds
+            '-fsanitize=alignment',        // Catch misaligned pointer access
+            '-fsanitize=object-size',      // Catch accesses that are likely out of bounds
+            '-fno-omit-frame-pointer',     // Keep frame pointer for better debugging
+            '-fno-optimize-sibling-calls'  // Disable tail call optimization for better stack traces
+        ])
         }
     }
 
@@ -154,7 +170,6 @@ tasks.withType(LinkSharedLibrary) {
             taskArgs.addAll([
                     "-fsanitize=address",
                     "-fsanitize=undefined",
-                    // "-static-libasan",   // Ensure the ASan runtime is linked statically
                     "-fno-omit-frame-pointer"  // Often recommended with sanitizers
             ])
         }

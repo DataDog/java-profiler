@@ -119,7 +119,7 @@ class DwarfParser {
         return *(u16*)add(2);
     }
 
-    // same issue
+    // same issue as in get16
     __attribute__((no_sanitize("undefined")))
     u32 get32() {
         return *(u32*)add(4);

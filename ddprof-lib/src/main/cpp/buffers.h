@@ -87,6 +87,9 @@ class Buffer {
         _offset += 2;
     }
 
+    //    java-profiler/ddprof-lib/src/main/cpp/buffers.h:92:34: runtime error: store to misaligned address 0x7f3c446ec81e for type 'int', which requires 4 byte alignment
+    //    0x7f3c446ec81e: note: pointer points here
+    __attribute__((no_sanitize("undefined")))
     void put32(int v) {
         assert(_offset + 4 < limit());
         *(int*)(_data + _offset) = htonl(v);
