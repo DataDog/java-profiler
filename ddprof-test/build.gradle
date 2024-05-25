@@ -49,9 +49,7 @@ buildConfigurations.each { config ->
 
 
         if (!config.testEnv.empty) {
-            println "applying env for test task test${capitalizeFirstLetter(name)}"
             config.testEnv.each { key, value ->
-                println "setting env $key=$value for test task test${capitalizeFirstLetter(name)}"
                 environment key, value
             }
         }
