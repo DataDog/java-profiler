@@ -6,47 +6,6 @@ repositories {
     mavenCentral()
 }
 
-def locateLibasan() {
-    if (os().isLinux()) {
-        // Locate libasan.so
-        def locateCommand = 'gcc -print-file-name=libasan.so'
-        def process = locateCommand.execute()
-        process.waitFor()
-
-        if (process.exitValue() == 0) {
-            def output = process.in.text
-            def lines = output.readLines()
-            def exactMatch = lines.find { it ==~ /.*libasan\.so$/ }
-
-            if (exactMatch) {
-                return exactMatch
-            }
-        }
-    }
-    return null
-}
-
-ext {
-    locateLibasan = this.&locateLibasan
-}
-
-configurations {
-    testCommon {
-        canBeConsumed = true
-        canBeResolved = true
-    }
-    testDebugImplementation {
-        canBeConsumed = true
-        canBeResolved = true
-        extendsFrom testCommon
-    }
-    testSanitizedImplementation{
-        canBeConsumed = true
-        canBeResolved = true
-        extendsFrom testCommon
-    }
-}
-
 def addCommonTestDependencies(Configuration configuration) {
     configuration.dependencies.add(project.dependencies.create('org.junit.jupiter:junit-jupiter-api:5.9.2'))
     configuration.dependencies.add(project.dependencies.create('org.junit.jupiter:junit-jupiter-engine:5.9.2'))
@@ -61,55 +20,49 @@ def addCommonTestDependencies(Configuration configuration) {
     configuration.dependencies.add(project.dependencies.project(path: ":ddprof-test-tracer"))
 }
 
-addCommonTestDependencies(configurations.testImplementation)
-addCommonTestDependencies(configurations.testDebugImplementation)
-addCommonTestDependencies(configurations.testSanitizedImplementation)
-
-dependencies {
-    testSanitizedImplementation project(path: ":ddprof-lib", configuration: 'sanitized')
-    testDebugImplementation project(path: ":ddprof-lib", configuration: 'debug')
-
-    testImplementation project(path: ":ddprof-lib", configuration: 'release')
+configurations.create('testCommon') {
+    canBeConsumed = true
+    canBeResolved = true
 }
 
-task testDebug(type: Test) {
-    dependsOn compileTestJava
-    description = 'Runs the unit tests with the debug library'
-    group = 'verification'
-    // Filter classpath to include only necessary dependencies for testSanitized
-    classpath = sourceSets.test.runtimeClasspath.filter { file ->
-        // Replace the condition with your actual filtering logic
-        !file.name.contains('ddprof-') || file.name.contains('test-tracer')
-    } + configurations.testDebugImplementation
-
-}
-
-task testSanitized(type: Test) {
-    dependsOn compileTestJava
-    def libasan = locateLibasan()
-    onlyIf {
-        libasan != null
+buildConfigurations.each { config ->
+    def name = config.name
+    if (config.os != osIdentifier() || config.arch != archIdentifier()) {
+        return
     }
+    def cfg = configurations.create("test${capitalizeFirstLetter(name)}Implementation") {
+        canBeConsumed = true
+        canBeResolved = true
+        extendsFrom configurations.testCommon
+    }
+    addCommonTestDependencies(cfg)
+    cfg.dependencies.add(project.dependencies.project(path: ":ddprof-lib", configuration: name))
 
-    environment "LD_PRELOAD", libasan
-    // warning: stack use after return can cause slowness on arm64
-    environment "ASAN_OPTIONS", "detect_stack_use_after_return=1 suppressions=${projectDir}/asan.supp"
-    environment "UBSAN_OPTIONS", "halt_on_error=1 abort_on_error=1 print_stacktrace=1 suppressions=${projectDir}/ubsan.supp"
-    // lsan still does not run for all tests - manually trigger on some tests
-    environment "LSAN_OPTIONS", "detect_leaks=0"
+    def task = tasks.register("test${name}", Test) {
+        dependsOn compileTestJava
+        description = "Runs the unit tests with the ${name} library variant"
+        group = 'verification'
+        // Filter classpath to include only necessary dependencies for this test task
+        classpath = sourceSets.test.runtimeClasspath.filter { file ->
+            !file.name.contains('ddprof-') || file.name.contains('test-tracer')
+        } + cfg
 
-    description = 'Runs the unit tests with the sanitized library'
-    group = 'verification'
-    // Filter classpath to include only necessary dependencies for testSanitized
-    classpath = sourceSets.test.runtimeClasspath.filter { file ->
-        // Replace the condition with your actual filtering logic
-        !file.name.contains('ddprof-') || file.name.contains('test-tracer')
-    } + configurations.testSanitizedImplementation
+
+        if (!config.testEnv.empty) {
+            println "applying env for test task test${capitalizeFirstLetter(name)}"
+            config.testEnv.each { key, value ->
+                println "setting env $key=$value for test task test${capitalizeFirstLetter(name)}"
+                environment key, value
+            }
+        }
+    }
+    if (name == 'debug') {
+        // redirect the default test task to the debug test task
+        tasks.test.dependsOn task.get()
+    }
 }
 
-test.dependsOn testDebug
-
-tasks.withType(Test) {
+tasks.withType(Test).configureEach {
     // this is a shared configuration for all test tasks
     onlyIf {
         !project.hasProperty('skip-tests')
@@ -123,6 +76,18 @@ tasks.withType(Test) {
     }
     useJUnitPlatform()
     executable = new File("${javaHome}", 'bin/java')
+
+    if (name.contains("Asan")) {
+        onlyIf {
+            hasAsan()
+        }
+    }
+}
+
+test {
+    onlyIf {
+        false // disable the default test task
+    }
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -132,4 +97,5 @@ tasks.withType(JavaCompile).configureEach {
         sourceCompatibility = '8'
         targetCompatibility = '8'
     }
+    classpath += configurations.testReleaseImplementation
 }
