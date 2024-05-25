@@ -24,26 +24,23 @@ def libraryTargetBase(type) {
     return "${projectDir}/build/native/${type}"
 }
 
-def libraryTargetPath(type) {
-    def osarchext = ""
+def osarchext() {
     if (osIdentifier() == 'linux' && archIdentifier() != 'x64') {
         // when built on aarch64 the location the library is built in is 'x86-64' ¯\_(ツ)_/¯
-        osarchext = "x86-64"
+        return "x86-64"
     } else if (osIdentifier() == 'macos') {
-        osarchext = archIdentifier() == 'x64' ? 'x86-64' : 'arm64'
+        return archIdentifier() == 'x64' ? 'x86-64' : 'arm64'
+    } else {
+        return archIdentifier()
     }
-    return "${libraryTargetBase(type)}/META-INF/native-libs/${osIdentifier()}-${osarchext}${isMusl() ? '-musl' : ''}"
+}
+
+def libraryTargetPath(type) {
+    return "${libraryTargetBase(type)}/META-INF/native-libs/${osIdentifier()}-${osarchext()}${isMusl() ? '-musl' : ''}"
 }
 
 def librarySourcePath(type, qualifier = "") {
-    def osarchext = ""
-    if (osIdentifier() == 'linux' && archIdentifier() != 'x64') {
-        // when built on aarch64 the location the library is built in is 'x86-64' ¯\_(ツ)_/¯
-        osarchext = "x86-64"
-    } else if (osIdentifier() == 'macos') {
-        osarchext = archIdentifier() == 'x64' ? 'x86-64' : 'arm64'
-    }
-    return "${projectDir}/build/lib/main/${type}/${osIdentifier()}/${osarchext}/${qualifier}/libjavaProfiler.${osIdentifier() == 'macos' ? 'dylib' : 'so'}"
+    return "${projectDir}/build/lib/main/${type}/${osIdentifier()}/${osarchext()}/${qualifier}/libjavaProfiler.${osIdentifier() == 'macos' ? 'dylib' : 'so'}"
 }
 
 ext {
@@ -194,23 +191,6 @@ gradle.projectsEvaluated {
             }
         }
     }
-//    // We need to introduce dependencies between generated linker and copy tasks
-//    // Find all tasks named 'copy*Libs'
-//    def copyLibsTasks = tasks.matching {
-//        it.name.startsWith('copy') && it.name.endsWith('Libs') && !it.name.contains('Release')
-//    }
-//    // Find all tasks named 'linkLib*'
-//    def linkLibTasks = tasks.matching { it.name == 'linkLib') }
-//
-//    // For each 'copy*Libs' task, set dependencies on 'linkLib*' tasks
-//    copyLibsTasks.all { copyTask ->
-//        linkLibTasks.matching {
-//
-//        }.all { linkTask ->
-//            copyTask.dependsOn(linkTask)
-//            println "Configured ${copyTask.name} to depend on ${linkTask.name}"
-//        }
-//    }
 }
 
 // configure the compiler here
@@ -221,19 +201,16 @@ tasks.withType(CppCompile).configureEach {
         }
     } else {
         onlyIf {
-            // enable the built-in compiler task only for release; required by the stripsymbols task
-//            name.contains("Release")
+            // disable the built-in compiler task for release; we are using the custom compiler task
             false
         }
     }
 
     def taskIncludes = ["${javaHome()}/include"]
-    def taskArgs = ["-fno-omit-frame-pointer", "-momit-leaf-frame-pointer", "-fvisibility=hidden",
-                    "-fdata-sections", "-ffunction-sections", "-std=c++11", "-DPROFILER_VERSION=\"${version}\"", "-DCOUNTERS"]
+    def taskArgs = []
 
     if (os().isMacOsX()) {
         taskIncludes.add "${javaHome()}/include/darwin"
-        taskArgs.addAll(["-D_XOPEN_SOURCE", "-D_DARWIN_C_SOURCE"])
     } else if (os().isLinux()) {
         taskIncludes.add "${javaHome()}/include/linux"
         if (isMusl()) {
@@ -261,8 +238,7 @@ tasks.withType(LinkSharedLibrary).configureEach {
         }
     } else {
         onlyIf {
-            // enable the built-in linker task only for release; required by the stripsymbols task
-//            name.contains("Release")
+            // disable the built-in linker task for release; we are using the custom linker task
             false
         }
     }
