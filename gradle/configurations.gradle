@@ -18,7 +18,8 @@ def buildConfigNames() {
 def locateLibasan() {
   if (os().isLinux()) {
     try {
-      def locateCommand = 'locate libasan.so'
+      // alternatively we could use `locate libasan.so` but it requires `locate` installed
+      def locateCommand = 'gcc -print-file-name=libasan.so'
       def process = locateCommand.execute()
       process.waitFor()
 
