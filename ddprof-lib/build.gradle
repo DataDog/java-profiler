@@ -6,6 +6,7 @@ plugins {
 
     id 'com.github.ben-manes.versions' version '0.27.0'
     id "com.diffplug.spotless" version "6.11.0"
+    id 'de.undercouch.download' version '4.1.1'
 }
 
 def libraryName = "ddprof"
@@ -53,6 +54,40 @@ sourceCompatibility = JavaVersion.VERSION_1_8
 targetCompatibility = JavaVersion.VERSION_1_8
 
 def isGitlabCI = System.getenv("GITLAB_CI") != null
+def buildTempDir = "${projectDir}/build/tmp"
+def gtestVersion = "release-1.12.1"
+def gtestDir = "${buildTempDir}/gtest"
+def gtestLib = "${gtestDir}/build/lib/libgtest.a"
+
+tasks.register('downloadGTest', Download) {
+    src "https://github.com/google/googletest/archive/refs/tags/${gtestVersion}.zip"
+    dest "${projectDir}/build/tmp/gtest.zip"
+    overwrite false
+}
+
+tasks.register('unzipGTest', Copy) {
+    dependsOn downloadGTest
+    from zipTree(tasks.downloadGTest.dest)
+    into "${gtestDir}"
+    eachFile { FileCopyDetails details ->
+        def pathSegments = details.relativePath.segments
+        if (pathSegments.length > 1) {
+            details.relativePath = new RelativePath(true, *pathSegments.drop(1))
+        } else {
+            details.exclude()
+        }
+    }
+    doLast {
+        // take care of the dangling original top-level dir
+        file("${projectDir}/build/tmp/gtest/googletest-${gtestVersion}").deleteDir()
+    }
+}
+
+tasks.register('prepareGTest', Exec) {
+    dependsOn unzipGTest
+    workingDir gtestDir
+    commandLine "sh", "-c", "cmake . -DCMAKE_CXX_STANDARD=11 -DCMAKE_OSX_DEPLOYMENT_TARGET=10.10 && make"
+}
 
 // Allow specifying the external location for the native libraries
 // The libraries should be properly sorted into subfolders corresponding to the `libraryTargetPath` value for each
@@ -67,18 +102,6 @@ tasks.register('copyExternalLibs', Copy) {
     }
 }
 
-// the bridge between the gradle build and gtests
-// the gradle gtest plugin(s) are quite unusable at this moment - using a shell script seems to be the only sane option
-tasks.register('cppTest', Exec) {
-    if (project.hasProperty('skip-tests') || project.hasProperty('skip-cpp-tests')) {
-        environment 'SKIP_TESTS', 'true'
-    }
-    workingDir "$projectDir"
-    commandLine './test.sh'
-
-    dependsOn assemble
-}
-
 tasks.register('assembleAll') {}
 
 // use the build config names to create configurations, copy lib and asemble jar tasks
@@ -89,12 +112,19 @@ buildConfigNames().each { name ->
         canBeResolved = false
         extendsFrom configurations.implementation
     }
+
+    def gtestTask = tasks.register("gtest${capitalizeFirstLetter(name)}", Exec) {
+        onlyIf {
+            !project.hasProperty('skip-tests') && !project.hasProperty('skip-cpp-tests')
+        }
+        dependsOn prepareGTest
+        workingDir projectDir
+        commandLine "./src/test/run_tests.sh", projectDir, name, gtestDir
+    }
     def copyTask = tasks.register("copy${capitalizeFirstLetter(name)}Libs", Copy) {
-        dependsOn cppTest
         from file(librarySourcePath(name, name == 'release' ? 'stripped' : '')).parent  // the release build is stripped
         into file(libraryTargetPath(name))
     }
-
     def assembleTask = tasks.register("assemble${capitalizeFirstLetter(name)}Jar", Jar) {
         group = 'build'
         description = "Assemble the ${name} build of the library"
@@ -183,12 +213,20 @@ gradle.projectsEvaluated {
     tasks.copyReleaseLibs.dependsOn tasks.stripLibRelease
 
     buildConfigNames().each {
-        if (it != 'release') {
-            def linkTask = tasks.findByName("linkLib${capitalizeFirstLetter(it)}")
-            def copyTask = tasks.findByName("copy${capitalizeFirstLetter(it)}Libs")
-            if (linkTask != null) {
-                copyTask.dependsOn linkTask
+        def compileTask = tasks.findByName("compileLib${capitalizeFirstLetter(it)}")
+        def gtestTask = tasks.findByName("gtest${capitalizeFirstLetter(it)}")
+        if (compileTask != null && gtestTask != null) {
+            gtestTask.dependsOn compileTask
+        }
+        def linkTask = tasks.findByName("linkLib${capitalizeFirstLetter(it)}")
+        if (linkTask != null) {
+            if (it != 'release') {
+                def copyTask = tasks.findByName("copy${capitalizeFirstLetter(it)}Libs")
+                if (copyTask != null) {
+                    copyTask.dependsOn linkTask
+                }
             }
+            linkTask.dependsOn gtestTask
         }
     }
 }
