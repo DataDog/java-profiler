@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -x
+
 PROJECT_DIR=$1
 CONFIG_NAME=$2
 GTEST_DIR=$3
