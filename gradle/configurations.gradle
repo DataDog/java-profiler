@@ -15,32 +15,39 @@ def buildConfigNames() {
   }.collect { it.name }.toSet()
 }
 
-def locateLibasan() {
-  if (os().isLinux()) {
-    try {
-      // alternatively we could use `locate libasan.so` but it requires `locate` installed
-      def locateCommand = 'gcc -print-file-name=libasan.so'
-      def process = locateCommand.execute()
-      process.waitFor()
+def locateLibrary(String libName) {
+    if (os().isLinux()) {
+        try {
+            def locateCommand = "gcc -print-file-name=${libName}.so"
+            def process = locateCommand.execute()
+            process.waitFor()
 
-      if (process.exitValue() == 0) {
-        def output = process.in.text
-        def lines = output.readLines()
-        def exactMatch = lines.find { it ==~ /.*libasan\.so$/ }
-
-        if (exactMatch) {
-          return exactMatch
+            if (process.exitValue() == 0) {
+                def output = process.in.text.trim()
+                if (output.endsWith("${libName}.so")) {
+                    return output
+                }
+            }
+        } catch (Exception e) {
+            log.lifecycle("Exception when locating ${libName} library: ${e.message}")
         }
-      }
-    } catch (Throwable t) {
-      // ignored
     }
-  }
-  return null
+    return null
+}
+
+def locateLibasan() {
+    return locateLibrary('libasan')
+}
+
+def locateLibtsan() {
+    return locateLibrary('libtsan')
 }
 
 def libasan = locateLibasan()
+def libtsan = locateLibtsan()
 
+logger.lifecycle("Found ASAN library: ${libasan}")
+logger.lifecycle("Found TSAN library: ${libtsan}")
 def hasAsan() {
   return libasan != null
 }
@@ -113,6 +120,30 @@ def asanLinkerArgs = [
         "-fno-omit-frame-pointer"  // Often recommended with sanitizers
 ]
 
+def tsanCompilerArgs = [
+        '-g',
+        // Generate debug information
+        '-DDEBUG',
+        // Enable debug mode
+        '-fPIC',
+        // Position-independent code
+        '-fsanitize=thread',
+        // ThreadSanitizer for
+        '-fno-omit-frame-pointer',
+        // Keep frame pointer for better debugging
+        '-fno-optimize-sibling-calls'  // Disable tail call optimization for better stack traces
+]
+
+def tsanLinkerArgs = [
+        "-fsanitize=thread",
+        "-fno-omit-frame-pointer"  // Often recommended with sanitizers
+]
+
+def tsanEnv = libtsan != null ?
+        ['LD_PRELOAD': libtsan,
+         "TSAN_OPTIONS" : "suppressions=${projectDir}/tsan.supp"
+        ] : [:]
+
 // Linux
 addBuildConfiguration 'release', 'linux', 'x64',
         ['-O3', '-DNDEBUG'] + commonLinuxCompilerArgs,
@@ -126,10 +157,16 @@ addBuildConfiguration 'release', 'linux', 'x64',
 addBuildConfiguration 'debug', 'linux', 'x64',
         ['-O0', '-g', '-DDEBUG'] + commonLinuxCompilerArgs,
         commonLinuxLinkerArgs
+
 addBuildConfiguration 'asan', 'linux', 'x64',
-        asanCompilerArgs,
+        asanCompilerArgs + commonLinuxCompilerArgs,
         commonLinuxLinkerArgs + asanLinkerArgs,
         asanEnv
+
+addBuildConfiguration 'tsan', 'linux', 'x64',
+        tsanCompilerArgs + commonLinuxCompilerArgs,
+        commonLinuxLinkerArgs + tsanLinkerArgs,
+        tsanEnv
 
 // MacOS
 addBuildConfiguration 'release', 'macos', 'arm64',
