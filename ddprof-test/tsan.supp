@@ -3,8 +3,17 @@ race:libzip.so
 # Suppress data race in G1Allocator::survivor_attempt_allocation
 race:G1Allocator::survivor_attempt_allocation
 race:G1CollectedHeap::allocate_new_tlab
+race:G1CollectedHeap::mem_allocate
 race:OopMapCache::lookup
 race:G1CodeRootSet::clear
 race:Metaspace::allocate
 race:FilterQueue
 race:PlatformParker::~PlatformParker
+race:ObjAllocator::initialize
+# Todo: jvmti could be interesting
+race:JvmtiExport::post_sampled_object_alloc
+race:SymbolTable::do_add_if_needed
+race:SymbolTable::do_lookup
+race:G1ParScanThreadState::copy_to_survivor_space
+race:G1RemSetScanState::G1ClearCardTableTask
+race:ObjArrayAllocator::initialize

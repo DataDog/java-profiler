@@ -49,19 +49,11 @@ buildConfigurations.each { config ->
             !file.name.contains('ddprof-') || file.name.contains('test-tracer')
         } + cfg
 
-
         if (!config.testEnv.empty) {
             config.testEnv.each { key, value ->
                 environment key, value
             }
             logger.lifecycle("Setting environment variables for ${name}: ${config.testEnv}")
-        }
-        // Exclude patterns for ASAN and TSAN tests
-        if (name.contains('asan')) {
-            exclude '**/endpoints*'
-        }
-        if (name.contains('tsan')) {
-            exclude '**/cpu*'
         }
     }
     if (name == 'debug') {

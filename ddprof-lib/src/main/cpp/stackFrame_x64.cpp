@@ -201,6 +201,9 @@ bool StackFrame::skipFaultInstruction() {
     return false;
 }
 
+// when accessing the immediate value to read the syscal value, we do not check for alignment issue
+// This can have performance penalties, though it is OK on x86_64
+__attribute__((no_sanitize("address")))
 bool StackFrame::checkInterruptedSyscall() {
 #ifdef __APPLE__
     // We are not interested in syscalls that do not check error code, e.g. semaphore_wait_trap
