@@ -120,6 +120,6 @@ jobs:
           # By default, queries listed here will override any specified in a config file.
           # Prefix the list here with "+" to use these queries and those in the config file.
           # queries: ./path/to/local/query, your-org/your-repo/queries@main
-      - run: ./gradlew -x test assembleJar
+      - run: ./gradlew -x test assembleReleaseJar
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v2
