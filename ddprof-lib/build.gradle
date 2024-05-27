@@ -53,6 +53,12 @@ ext {
 sourceCompatibility = JavaVersion.VERSION_1_8
 targetCompatibility = JavaVersion.VERSION_1_8
 
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(11)
+    }
+}
+
 def isGitlabCI = System.getenv("GITLAB_CI") != null
 def buildTempDir = "${projectDir}/build/tmp"
 def gtestVersion = "release-1.12.1"
@@ -127,7 +133,7 @@ buildConfigs().each { cfg ->
         }
         dependsOn prepareGTestTask
         workingDir projectDir
-        commandLine "${projectDir}/src/test/run_tests.sh", name, projectDir, gtestDir, compilerFlags
+        commandLine "${projectDir}/src/test/run_tests.sh", name, projectDir, gtestDir, compilerFlags, osIdentifier() == 'linux' ? '-lrt -Wl,--no-as-needed' : ''
     }
 }
 
@@ -367,7 +373,10 @@ tasks.withType(Test) {
     if (javaHome == null) {
         javaHome = System.getenv("JAVA_HOME")
     }
-    executable = new File("${javaHome}", 'bin/java')
+    executable = file("${javaHome}/bin/java")
+    javaLauncher.set(javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(11)
+    })
 }
 
 artifacts {
