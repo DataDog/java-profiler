@@ -6,7 +6,7 @@ PROJECT_DIR=$1
 CONFIG_NAME=$2
 GTEST_DIR=$3
 
-TMPDIR="{${TMPDIR:-$(dirname $(mktemp))/}"
+TMPDIR="${TMPDIR:-$(dirname $(mktemp))}"
 
 function build_test() {
   NAME=$1
