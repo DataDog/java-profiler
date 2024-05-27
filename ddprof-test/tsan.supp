@@ -1,0 +1,10 @@
+# Suppress data race in libzip.so
+race:libzip.so
+# Suppress data race in G1Allocator::survivor_attempt_allocation
+race:G1Allocator::survivor_attempt_allocation
+race:G1CollectedHeap::allocate_new_tlab
+race:OopMapCache::lookup
+race:G1CodeRootSet::clear
+race:Metaspace::allocate
+race:FilterQueue
+race:PlatformParker::~PlatformParker
