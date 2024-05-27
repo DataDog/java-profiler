@@ -125,9 +125,13 @@ Error WallClock::start(Arguments &args) {
 }
 
 void WallClock::stop() {
-    _running = false;
+    _running.store(false);
+    // the thread join ensures we wait for the thread to finish before returning (and possibly removing the object)
     pthread_kill(_thread, WAKEUP_SIGNAL);
-    pthread_join(_thread, NULL);
+    int res = pthread_join(_thread, NULL);
+    if(res != 0) {
+        Log::warn("Unable to join WallClock thread on stop %d", res);
+    }
 }
 
 void WallClock::timerLoop() {
@@ -149,7 +153,7 @@ void WallClock::timerLoop() {
     u64 startTime = TSC::ticks();
     WallClockEpochEvent epoch(startTime);
 
-    while (_running) {
+    while (_running.load(std::memory_order_relaxed)) {
         if (thread_filter->enabled()) {
             thread_filter->collect(tids);
         } else {

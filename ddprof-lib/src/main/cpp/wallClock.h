@@ -17,6 +17,7 @@
 #ifndef _WALLCLOCK_H
 #define _WALLCLOCK_H
 
+#include <atomic>
 #include <climits>
 #include <signal.h>
 #include <pthread.h>
@@ -36,7 +37,7 @@ class WallClock : public Engine {
     // to avoid contention on a spin lock inside Profiler::recordSample().
     int _reservoir_size;
 
-    volatile bool _running;
+    std::atomic<bool> _running;
     pthread_t _thread;
 
     void timerLoop();
