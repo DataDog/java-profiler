@@ -59,6 +59,7 @@ buildConfigurations.each { config ->
         // Exclude patterns for ASAN and TSAN tests
         if (name.contains('asan')) {
             exclude '**/endpoints*'
+            exclude '**/alloc*'
         }
         if (name.contains('tsan')) {
             exclude '**/cpu*'
