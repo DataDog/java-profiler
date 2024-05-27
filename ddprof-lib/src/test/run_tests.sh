@@ -20,7 +20,7 @@ function build_test() {
         -I${GTEST_DIR}/googletest/include -I${GTEST_DIR}/googlemock/include \
         -I${PROJECT_DIR}/src/main/cpp ${libdir}/libgtest.a \
         ${libdir}/libgtest_main.a ${libdir}/libgmock.a \
-        ${libdir}/libgmock_main.a $files -lpthread -lm -lz -lrt -Wl,--no-as-needed -ldl -pthread
+        ${libdir}/libgmock_main.a $files -lpthread -lm -lrt -Wl,--no-as-needed -ldl -pthread
 }
 
 function build_and_run() {
