@@ -16,31 +16,31 @@ def buildConfigNames() {
 }
 
 def locateLibrary(String libName) {
-    if (os().isLinux()) {
-        try {
-            def locateCommand = "gcc -print-file-name=${libName}.so"
-            def process = locateCommand.execute()
-            process.waitFor()
+  if (os().isLinux()) {
+    try {
+      def locateCommand = "gcc -print-file-name=${libName}.so"
+      def process = locateCommand.execute()
+      process.waitFor()
 
-            if (process.exitValue() == 0) {
-                def output = process.in.text.trim()
-                if (output.endsWith("${libName}.so")) {
-                    return output
-                }
-            }
-        } catch (Exception e) {
-            log.lifecycle("Exception when locating ${libName} library: ${e.message}")
+      if (process.exitValue() == 0) {
+        def output = process.in.text.trim()
+        if (output.endsWith("${libName}.so")) {
+          return output
         }
+      }
+    } catch (Exception e) {
+      log.lifecycle("Exception when locating ${libName} library: ${e.message}")
     }
-    return null
+  }
+  return null
 }
 
 def locateLibasan() {
-    return locateLibrary('libasan')
+  return locateLibrary('libasan')
 }
 
 def locateLibtsan() {
-    return locateLibrary('libtsan')
+  return locateLibrary('libtsan')
 }
 
 def libasan = locateLibasan()
@@ -68,114 +68,121 @@ ext {
 
 // ======= Define build configurations below ========
 
-def commonLinuxCompilerArgs = ["-fPIC", "-fno-omit-frame-pointer", "-momit-leaf-frame-pointer", "-fvisibility=hidden",
-                               "-fdata-sections", "-ffunction-sections", "-std=c++11", "-DPROFILER_VERSION=\"${version}\"", "-DCOUNTERS"]
+def commonLinuxCompilerArgs = [
+  "-fPIC",
+  "-fno-omit-frame-pointer",
+  "-momit-leaf-frame-pointer",
+  "-fvisibility=hidden",
+  "-fdata-sections",
+  "-ffunction-sections",
+  "-std=c++11",
+  "-DPROFILER_VERSION=\"${version}\"",
+  "-DCOUNTERS"
+]
 
 def commonLinuxLinkerArgs = ["-ldl", "-Wl,-z,defs", "--verbose", "-lpthread", "-lm", "-lrt", "-v"]
 
-def commonMacosCompilerArgs = ["-D_XOPEN_SOURCE", "-D_DARWIN_C_SOURCE"]
+def commonMacosCompilerArgs = commonLinuxCompilerArgs + ["-D_XOPEN_SOURCE", "-D_DARWIN_C_SOURCE"]
 
 def asanEnv = libasan != null ?
-        ['LD_PRELOAD': libasan,
-         // warning: stack use after return can cause slowness on arm64
-         "ASAN_OPTIONS" : "detect_stack_use_after_return=1 suppressions=${projectDir}/asan.supp",
-         "UBSAN_OPTIONS" : "halt_on_error=1 abort_on_error=1 print_stacktrace=1 suppressions=${projectDir}/ubsan.supp",
-         // lsan still does not run for all tests - manually trigger on some tests
-         "LSAN_OPTIONS" :  "detect_leaks=0"
-        ] : [:]
+  ['LD_PRELOAD': libasan,
+    // warning: stack use after return can cause slowness on arm64
+    "ASAN_OPTIONS" : "detect_stack_use_after_return=1 suppressions=${projectDir}/asan.supp",
+    "UBSAN_OPTIONS" : "halt_on_error=1 abort_on_error=1 print_stacktrace=1 suppressions=${projectDir}/ubsan.supp",
+    // lsan still does not run for all tests - manually trigger on some tests
+    "LSAN_OPTIONS" :  "detect_leaks=0"
+  ] : [:]
 
 def asanCompilerArgs = [
-        '-g',
-        // Generate debug information
-        '-DDEBUG',
-        // Enable debug mode
-        '-fPIC',
-        // Position-independent code
-        '-fsanitize=address',
-        // AddressSanitizer for memory errors
-        '-fsanitize=undefined',
-        // UndefinedBehaviorSanitizer for undefined behavior
-        '-fno-sanitize-recover=all',
-        // Disable recovery to ensure program halts on error
-        '-fsanitize=float-divide-by-zero',
-        // Catch floating point division by zero
-        '-fstack-protector-all',
-        // Protect against stack buffer overflows
-        '-fsanitize=leak',
-        // LeakSanitizer to detect memory leaks
-        '-fsanitize=pointer-overflow',
-        // Catch pointer overflows
-        '-fsanitize=return',
-        // Check for uninitialized return values
-        '-fsanitize=bounds',
-        // BoundsSanitizer for array bounds
-        '-fsanitize=alignment',
-        // Catch misaligned pointer access
-        '-fsanitize=object-size',
-        // Catch accesses that are likely out of bounds
-        '-fno-omit-frame-pointer',
-        // Keep frame pointer for better debugging
-        '-fno-optimize-sibling-calls'  // Disable tail call optimization for better stack traces
+  '-g',
+  // Generate debug information
+  '-DDEBUG',
+  // Enable debug mode
+  '-fPIC',
+  // Position-independent code
+  '-fsanitize=address',
+  // AddressSanitizer for memory errors
+  '-fsanitize=undefined',
+  // UndefinedBehaviorSanitizer for undefined behavior
+  '-fno-sanitize-recover=all',
+  // Disable recovery to ensure program halts on error
+  '-fsanitize=float-divide-by-zero',
+  // Catch floating point division by zero
+  '-fstack-protector-all',
+  // Protect against stack buffer overflows
+  '-fsanitize=leak',
+  // LeakSanitizer to detect memory leaks
+  '-fsanitize=pointer-overflow',
+  // Catch pointer overflows
+  '-fsanitize=return',
+  // Check for uninitialized return values
+  '-fsanitize=bounds',
+  // BoundsSanitizer for array bounds
+  '-fsanitize=alignment',
+  // Catch misaligned pointer access
+  '-fsanitize=object-size',
+  // Catch accesses that are likely out of bounds
+  '-fno-omit-frame-pointer',
+  // Keep frame pointer for better debugging
+  '-fno-optimize-sibling-calls'  // Disable tail call optimization for better stack traces
 ]
 
 def asanLinkerArgs = [
-        "-fsanitize=address",
-        "-fsanitize=undefined",
-        "-fno-omit-frame-pointer"  // Often recommended with sanitizers
+  "-fsanitize=address",
+  "-fsanitize=undefined",
+  "-fno-omit-frame-pointer"  // Often recommended with sanitizers
 ]
 
 def tsanCompilerArgs = [
-        '-g',
-        // Generate debug information
-        '-DDEBUG',
-        // Enable debug mode
-        '-fPIC',
-        // Position-independent code
-        '-fsanitize=thread',
-        // ThreadSanitizer for
-        '-fno-omit-frame-pointer',
-        // Keep frame pointer for better debugging
-        '-fno-optimize-sibling-calls'  // Disable tail call optimization for better stack traces
+  '-g',
+  // Generate debug information
+  '-DDEBUG',
+  // Enable debug mode
+  '-fPIC',
+  // Position-independent code
+  '-fsanitize=thread',
+  // ThreadSanitizer for
+  '-fno-omit-frame-pointer',
+  // Keep frame pointer for better debugging
+  '-fno-optimize-sibling-calls'  // Disable tail call optimization for better stack traces
 ]
 
-def tsanLinkerArgs = [
-        "-fsanitize=thread",
-        "-fno-omit-frame-pointer"  // Often recommended with sanitizers
+def tsanLinkerArgs = ["-fsanitize=thread", "-fno-omit-frame-pointer"  // Often recommended with sanitizers
 ]
 
 def tsanEnv = libtsan != null ?
-        ['LD_PRELOAD': libtsan,
-         "TSAN_OPTIONS" : "suppressions=${projectDir}/tsan.supp"
-        ] : [:]
+  ['LD_PRELOAD': libtsan,
+    "TSAN_OPTIONS" : "suppressions=${projectDir}/tsan.supp"
+  ] : [:]
 
 // Linux
 addBuildConfiguration 'release', 'linux', 'x64',
-        ['-O3', '-DNDEBUG'] + commonLinuxCompilerArgs,
-        commonLinuxLinkerArgs + [
-                "-Wl,-z,nodelete",
-                "-static-libstdc++",
-                "-static-libgcc",
-                "-Wl,--exclude-libs,ALL",
-                "-Wl,--gc-sections"
-        ]
+  ['-O3', '-DNDEBUG'] + commonLinuxCompilerArgs,
+  commonLinuxLinkerArgs + [
+    "-Wl,-z,nodelete",
+    "-static-libstdc++",
+    "-static-libgcc",
+    "-Wl,--exclude-libs,ALL",
+    "-Wl,--gc-sections"
+  ]
 addBuildConfiguration 'debug', 'linux', 'x64',
-        ['-O0', '-g', '-DDEBUG'] + commonLinuxCompilerArgs,
-        commonLinuxLinkerArgs
+  ['-O0', '-g', '-DDEBUG'] + commonLinuxCompilerArgs,
+  commonLinuxLinkerArgs
 
 addBuildConfiguration 'asan', 'linux', 'x64',
-        asanCompilerArgs + commonLinuxCompilerArgs,
-        commonLinuxLinkerArgs + asanLinkerArgs,
-        asanEnv
+  asanCompilerArgs + commonLinuxCompilerArgs,
+  commonLinuxLinkerArgs + asanLinkerArgs,
+  asanEnv
 
 addBuildConfiguration 'tsan', 'linux', 'x64',
-        tsanCompilerArgs + commonLinuxCompilerArgs,
-        commonLinuxLinkerArgs + tsanLinkerArgs,
-        tsanEnv
+  tsanCompilerArgs + commonLinuxCompilerArgs,
+  commonLinuxLinkerArgs + tsanLinkerArgs,
+  tsanEnv
 
 // MacOS
 addBuildConfiguration 'release', 'macos', 'arm64',
-        ['-O3', '-DNDEBUG'],
-        []
+  commonMacosCompilerArgs + ['-O3', '-DNDEBUG'],
+  []
 addBuildConfiguration 'debug', 'macos', 'arm64',
-        ['-O0', '-g', '-DDEBUG'],
-        []
+  commonMacosCompilerArgs + ['-O0', '-g', '-DDEBUG'],
+  []
