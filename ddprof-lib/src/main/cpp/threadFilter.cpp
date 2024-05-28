@@ -16,8 +16,6 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <cstdio>
-
 #include "threadFilter.h"
 #include "os.h"
 #include "counters.h"

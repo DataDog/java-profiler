@@ -53,6 +53,12 @@ ext {
 sourceCompatibility = JavaVersion.VERSION_1_8
 targetCompatibility = JavaVersion.VERSION_1_8
 
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(11)
+    }
+}
+
 def isGitlabCI = System.getenv("GITLAB_CI") != null
 def buildTempDir = "${projectDir}/build/tmp"
 def gtestVersion = "release-1.12.1"
@@ -83,12 +89,6 @@ tasks.register('unzipGTest', Copy) {
     }
 }
 
-tasks.register('prepareGTest', Exec) {
-    dependsOn unzipGTest
-    workingDir gtestDir
-    commandLine "sh", "-c", "cmake . -DCMAKE_CXX_STANDARD=11 -DCMAKE_OSX_DEPLOYMENT_TARGET=10.10 && make"
-}
-
 // Allow specifying the external location for the native libraries
 // The libraries should be properly sorted into subfolders corresponding to the `libraryTargetPath` value for each
 // os/arch/libc combination
@@ -104,23 +104,47 @@ tasks.register('copyExternalLibs', Copy) {
 
 tasks.register('assembleAll') {}
 
+// gtest is 'specific' - we need to prepare it for each build configuration becuase it must be compiled with the same flags
+buildConfigs().each { cfg ->
+    def name = cfg.name
+    def compilerFlags = cfg.compilerArgs.findAll {
+        return it.contains('sanitize')
+    }?.join(' ')
+
+    def prepareGTestTask = tasks.register("prepareGTest${capitalizeFirstLetter(name)}", Exec) {
+        environment 'CMAKE_CXX_STANDARD', '11'
+        if (osIdentifier() == 'macos') {
+            environment "CMAKE_OSX_DEPLOYMENT_TARGET", "10.10"
+        }
+        if (!compilerFlags.isEmpty()) {
+            environment "CMAKE_CXX_FLAGS", compilerFlags
+            environment "CMAKE_C_FLAGS", compilerFlags
+            environment "CMAKE_EXE_LINKER_FLAGS", compilerFlags
+            environment "CMAKE_SHARED_LINKER_FLAGS", compilerFlags
+        }
+
+        dependsOn unzipGTest
+        workingDir gtestDir
+        commandLine "${projectDir}/src/test/prepare_gtest.sh", name, gtestDir
+    }
+    def gtestTask = tasks.register("gtest${capitalizeFirstLetter(name)}", Exec) {
+        onlyIf {
+            !project.hasProperty('skip-tests') && !project.hasProperty('skip-cpp-tests')
+        }
+        dependsOn prepareGTestTask
+        workingDir projectDir
+        commandLine "${projectDir}/src/test/run_tests.sh", name, projectDir, gtestDir, compilerFlags, osIdentifier() == 'linux' ? '-lrt -Wl,--no-as-needed' : ''
+    }
+}
+
 // use the build config names to create configurations, copy lib and asemble jar tasks
 
 buildConfigNames().each { name ->
     configurations.create(name) {
         canBeConsumed = true
         canBeResolved = false
-        extendsFrom configurations.implementation
-    }
+        extendsFrom configurations.implementation    }
 
-    def gtestTask = tasks.register("gtest${capitalizeFirstLetter(name)}", Exec) {
-        onlyIf {
-            !project.hasProperty('skip-tests') && !project.hasProperty('skip-cpp-tests')
-        }
-        dependsOn prepareGTest
-        workingDir projectDir
-        commandLine "./src/test/run_tests.sh", projectDir, name, gtestDir
-    }
     def copyTask = tasks.register("copy${capitalizeFirstLetter(name)}Libs", Copy) {
         from file(librarySourcePath(name, name == 'release' ? 'stripped' : '')).parent  // the release build is stripped
         into file(libraryTargetPath(name))
@@ -130,7 +154,7 @@ buildConfigNames().each { name ->
         description = "Assemble the ${name} build of the library"
         dependsOn copyExternalLibs
         if (!project.hasProperty('skip-native')) {
-            dependsOn copyTask // tasks.named("copy${capitalizeFirstLetter(name)}Libs")
+            dependsOn copyTask
         }
         from sourceSets.main.output.classesDirs
         from files(libraryTargetBase(name)) {
@@ -349,7 +373,10 @@ tasks.withType(Test) {
     if (javaHome == null) {
         javaHome = System.getenv("JAVA_HOME")
     }
-    executable = new File("${javaHome}", 'bin/java')
+    executable = file("${javaHome}/bin/java")
+    javaLauncher.set(javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(11)
+    })
 }
 
 artifacts {

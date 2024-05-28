@@ -15,6 +15,12 @@ def buildConfigNames() {
   }.collect { it.name }.toSet()
 }
 
+def buildConfigs() {
+  return buildConfigurations.findAll {
+    it.os == osIdentifier() && it.arch == archIdentifier()
+  }
+}
+
 def locateLibrary(String libName) {
   if (os().isLinux()) {
     try {
@@ -64,6 +70,7 @@ ext {
   hasAsan = this.&hasAsan
   capitalizeFirstLetter = this.&capitalizeFirstLetter
   buildConfigNames = this.&buildConfigNames
+  buildConfigs = this.&buildConfigs
 }
 
 // ======= Define build configurations below ========
