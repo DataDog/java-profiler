@@ -53,10 +53,10 @@ def libasan = locateLibasan()
 def libtsan = locateLibtsan()
 
 if (libasan == null) {
-    logger.lifecycle("Asan library not found")
+  logger.lifecycle("Asan library not found")
 }
 if (libtsan == null) {
-    logger.lifecycle("Tsan library not found")
+  logger.lifecycle("Tsan library not found")
 }
 def hasAsan() {
   return libasan != null
