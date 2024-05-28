@@ -253,7 +253,7 @@ jobs:
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=musl/${{ matrix.java_version }}
           export LIBC=musl
-          export JAVA_TEST_HOME=$(pwd)/test_jdkTry 
+          export JAVA_TEST_HOME=$(pwd)/test_jdk 
           ./gradlew :ddprof-test:test --info
       - name: Upload logs
         uses: actions/upload-artifact@v3
