@@ -11,7 +11,7 @@ jobs:
     strategy:
       matrix:
         java_version: [ 8u362+9, 11.0.18+10, 17.0.6+10, 21.0.1+12 ]
-        config: ${{ inputs.configuration }}
+        config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -53,11 +53,9 @@ jobs:
     strategy:
       matrix:
         java_version: [ 11, 17, 21 ]
-        config: ${{ inputs.configuration }}
+        config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 180
-    variables:
-      CONFIG: ${{ matrix.config }}
     steps:
       - uses: actions/checkout@v3
       - name: Prepare build JDK
@@ -99,11 +97,9 @@ jobs:
     strategy:
       matrix:
         java_version: [ 8, 11, 17 ]
-        config: ${{ inputs.configuration }}
+        config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    variables:
-      CONFIG: ${{ matrix.config }}
     steps:
       - uses: actions/checkout@v3
       - name: Prepare test JDK
@@ -144,11 +140,9 @@ jobs:
   test-linux-glibc-oracle8:
     strategy:
       matrix:
-        config: ${{ inputs.configuration }}
+        config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 180
-    variables:
-      CONFIG: ${{ matrix.config }}
     steps:
       - uses: actions/checkout@v3
       - name: Prepare build JDK
@@ -194,11 +188,9 @@ jobs:
     strategy:
       matrix:
         java_version: [ 8u362+9, 11.0.18+10, 17.0.6+10, 21.0.1+12 ]
-        config: ${{ inputs.configuration }}
+        config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    variables:
-      CONFIG: ${{ matrix.config }}
 
     container:
       image: "bellsoft/liberica-openjdk-alpine-musl:11.0.17"
@@ -247,11 +239,9 @@ jobs:
     strategy:
       matrix:
         java_version: [ 8, 11, 17, 21 ]
-        config: ${{ inputs.configuration }}
+        config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    variables:
-      CONFIG: ${{ matrix.config }}
 
     steps:
       - uses: actions/checkout@v3
