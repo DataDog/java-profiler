@@ -53,10 +53,10 @@ def libasan = locateLibasan()
 def libtsan = locateLibtsan()
 
 if (libasan == null) {
-  logger.lifecycle("Asan library not found")
+  logger.debug("Asan library not found")
 }
 if (libtsan == null) {
-  logger.lifecycle("Tsan library not found")
+  logger.debug("Tsan library not found")
 }
 def hasAsan() {
   return libasan != null
@@ -94,8 +94,8 @@ def commonMacosCompilerArgs = commonLinuxCompilerArgs + ["-D_XOPEN_SOURCE", "-D_
 def asanEnv = libasan != null ?
   ['LD_PRELOAD': libasan,
     // warning: stack use after return can cause slowness on arm64
-    "ASAN_OPTIONS" : "detect_stack_use_after_return=1 suppressions=${projectDir}/asan.supp",
-    "UBSAN_OPTIONS" : "halt_on_error=1 abort_on_error=1 print_stacktrace=1 suppressions=${projectDir}/ubsan.supp",
+    "ASAN_OPTIONS" : "detect_stack_use_after_return=1 suppressions=${rootDir}/gradle/sanitizers/asan.supp",
+    "UBSAN_OPTIONS" : "halt_on_error=1 abort_on_error=1 print_stacktrace=1 suppressions=${rootDir}/gradle/sanitizers/ubsan.supp",
     // lsan still does not run for all tests - manually trigger on some tests
     "LSAN_OPTIONS" :  "detect_leaks=0"
   ] : [:]
@@ -159,7 +159,7 @@ def tsanLinkerArgs = ["-fsanitize=thread", "-fno-omit-frame-pointer"  // Often r
 
 def tsanEnv = libtsan != null ?
   ['LD_PRELOAD': libtsan,
-    "TSAN_OPTIONS" : "suppressions=${projectDir}/tsan.supp"
+    "TSAN_OPTIONS" : "suppressions=${rootDir}/gradle/sanitizers/tsan.supp"
   ] : [:]
 
 // Linux

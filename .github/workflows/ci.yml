@@ -64,7 +64,7 @@ jobs:
           export LIBC=glibc
           export JAVA_TEST_HOME=$(pwd)/test_jdk
           export BUILD_TYPE=SanitizedDebug
-          ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-test:testDebug --info
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -110,7 +110,7 @@ jobs:
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
           export BUILD_TYPE=SanitizedDebug
-          ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-test:testDebug --info
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -156,7 +156,7 @@ jobs:
           export LIBC=glibc
           export BUILD_TYPE=SanitizedDebug
           chmod a+x gradlew
-          ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-test:testDebug --info
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -203,7 +203,7 @@ jobs:
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
           export BUILD_TYPE=SanitizedDebug
-          ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-test:testDebug --info
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -254,7 +254,7 @@ jobs:
           export TEST_CONFIGURATION=musl/${{ matrix.java_version }}
           export LIBC=musl
           export JAVA_TEST_HOME=$(pwd)/test_jdk 
-          ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-test:testDebug --info
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -317,7 +317,7 @@ jobs:
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
           export BUILD_TYPE=SanitizedDebug
-          ./gradlew :ddprof-test:test --info
+          ./gradlew :ddprof-test:testDebug --info
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
