@@ -224,7 +224,9 @@ bool StackFrame::checkInterruptedSyscall() {
         // mov eax, SYS_ppoll with any timeout (ppoll adjusts timeout automatically)
         uintptr_t pc = this->pc();
         if ((pc & 0xfff) >= 7 && *(instruction_t*)(pc - 7) == 0xb8) {
-            int nr = *(int*)(pc - 6);
+            // mainly to satisfy sanitizer complaints around alignment issue: we rely on memcpy
+            int nr = 0;
+            memcpy(&nr, (void*)(pc - 6), sizeof(nr));
             if (nr == SYS_ppoll
                 || (nr == SYS_poll && (int)REG(RDX, rdx) == -1)
                 || (nr == SYS_epoll_wait && (int)REG(R10, r10) == -1)
