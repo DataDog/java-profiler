@@ -112,6 +112,15 @@ buildConfigs().each { cfg ->
     }?.join(' ')
 
     def prepareGTestTask = tasks.register("prepareGTest${capitalizeFirstLetter(name)}", Exec) {
+        if (cfg.name == "asan") {
+            onlyIf {
+                locateLibasan() != null
+            }
+        } else if (cfg.name == "tsan") {
+            onlyIf {
+                locateLibtsan() != null
+            }
+        }
         def args = []
         environment 'CMAKE_CXX_STANDARD', '11'
         if (osIdentifier() == 'macos') {
@@ -131,8 +140,17 @@ buildConfigs().each { cfg ->
         outputs.dir file("${gtestDir}/configs/${name}")
     }
     def gtestTask = tasks.register("gtest${capitalizeFirstLetter(name)}", Exec) {
+        if (cfg.name == "asan") {
+            onlyIf {
+                locateLibasan() != null
+            }
+        } else if (cfg.name == "tsan") {
+            onlyIf {
+                locateLibtsan() != null
+            }
+        }
         onlyIf {
-            !project.hasProperty('skip-tests') && !project.hasProperty('skip-cpp-tests')
+            !project.hasProperty('skip-tests') && !project.hasProperty('skip-cpp-tests') && enabled
         }
         cfg.testEnv.each { key, value ->
             environment key, value
@@ -141,6 +159,16 @@ buildConfigs().each { cfg ->
         workingDir projectDir
         commandLine "${projectDir}/src/test/run_tests.sh", name, projectDir, gtestDir, compilerFlags, osIdentifier() == 'linux' ? '-lrt -Wl,--no-as-needed' : ''
         outputs.upToDateWhen {true}
+
+        // Capture the standard output and error if needed
+        standardOutput = new ByteArrayOutputStream()
+        errorOutput = new ByteArrayOutputStream()
+
+        // Log the output for debugging purposes
+        doLast {
+            println "Standard Output: ${standardOutput.toString()}"
+            println "Error Output: ${errorOutput.toString()}"
+        }
     }
 }
 

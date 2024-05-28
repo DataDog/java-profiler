@@ -55,6 +55,15 @@ buildConfigurations.each { config ->
             }
             logger.debug("Setting environment variables for ${name}: ${config.testEnv}")
         }
+        if (config.name == "asan") {
+            onlyIf {
+                locateLibasan() != null
+            }
+        } else if (config.name == "tsan") {
+            onlyIf {
+                locateLibtsan() != null
+            }
+        }
     }
 }
 
@@ -72,12 +81,6 @@ tasks.withType(Test).configureEach {
     }
     useJUnitPlatform()
     executable = new File("${javaHome}", 'bin/java')
-
-    if (name.contains("Asan")) {
-        onlyIf {
-            hasAsan()
-        }
-    }
 }
 
 test {
