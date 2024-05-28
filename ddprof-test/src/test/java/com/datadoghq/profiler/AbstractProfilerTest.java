@@ -129,6 +129,14 @@ public abstract class AbstractProfilerTest {
     return Duration.ofMillis(0);
   }
 
+  protected final boolean isAsan() {
+    return System.getenv("ASAN_OPTIONS") != null;
+  }
+
+  protected final boolean isTsan() {
+    return System.getenv("TSAN_OPTIONS") != null;
+  }
+
   @BeforeEach
   public void setupProfiler() throws Exception {
     jfrDump = Files.createTempFile(Paths.get("/tmp"), getClass().getName() + UUID.randomUUID(), ".jfr");
