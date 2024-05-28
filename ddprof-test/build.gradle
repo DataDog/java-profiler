@@ -55,10 +55,9 @@ buildConfigurations.each { config ->
             }
             logger.lifecycle("Setting environment variables for ${name}: ${config.testEnv}")
         }
-    }
-    if (name == 'debug') {
-        // redirect the default test task to the debug test task
-        tasks.test.dependsOn task.get()
+        systemProperties = tasks.test.systemProperties
+        jvmArgs = tasks.test.jvmArgs
+        environment = tasks.test.environment
     }
 }
 
@@ -86,7 +85,7 @@ tasks.withType(Test).configureEach {
 
 test {
     onlyIf {
-        false // disable the default test task
+        false
     }
 }
 
