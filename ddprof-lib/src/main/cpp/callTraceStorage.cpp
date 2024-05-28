@@ -226,9 +226,8 @@ u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
     u32 capacity = table->capacity();
     u32 slot = hash & (capacity - 1);
     u32 step = 0;
-
     while (true) {
-        int key_value = __atomic_load_n(&keys[slot], __ATOMIC_RELAXED);
+        u64 key_value = __atomic_load_n(&keys[slot], __ATOMIC_RELAXED);
         if (key_value == hash) { // Hash matches, exit the loop
             break;
         }
