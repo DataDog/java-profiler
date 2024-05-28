@@ -134,6 +134,9 @@ buildConfigs().each { cfg ->
         onlyIf {
             !project.hasProperty('skip-tests') && !project.hasProperty('skip-cpp-tests')
         }
+        cfg.testEnv.each { key, value ->
+            environment key, value
+        }
         dependsOn prepareGTestTask
         workingDir projectDir
         commandLine "${projectDir}/src/test/run_tests.sh", name, projectDir, gtestDir, compilerFlags, osIdentifier() == 'linux' ? '-lrt -Wl,--no-as-needed' : ''
