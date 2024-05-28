@@ -77,6 +77,10 @@ tasks.withType(Test).configureEach {
         onlyIf {
             hasAsan()
         }
+    } else if (name.contains("Tsan")) {
+        onlyIf {
+            hasTsan()
+        }
     }
 }
 

@@ -11,6 +11,7 @@ jobs:
   report-failures:
     runs-on: ubuntu-latest
     needs: run-test
+    if: failure()
     steps:
       - name: Download failed tests artifact
         uses: actions/download-artifact@v2
@@ -19,8 +20,11 @@ jobs:
           path: ./artifacts
       - name: Report failures
         run: |
+          find ./artifacts -name 'failures_*' -exec cat {} \; > ./artifacts/failures.txt
           scenarios=$(cat ./artifacts/failures.txt | tr '\n' ',')
-          curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
-             -H 'Content-Type: application/json' \
-             -d "{'scenarios': '${scenarios}', 'failed_run_url': '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'}"
+          echo "Failed scenarios: $scenarios"
+
+          #curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+          #   -H 'Content-Type: application/json' \
+          #   -d "{'scenarios': '${scenarios}', 'failed_run_url': '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'}"
 
