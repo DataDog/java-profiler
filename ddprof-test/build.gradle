@@ -55,9 +55,6 @@ buildConfigurations.each { config ->
             }
             logger.debug("Setting environment variables for ${name}: ${config.testEnv}")
         }
-        systemProperties = tasks.test.systemProperties
-        jvmArgs = tasks.test.jvmArgs
-        environment = tasks.test.environment
     }
 }
 
