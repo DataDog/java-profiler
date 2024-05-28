@@ -32,7 +32,7 @@ jobs:
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
           export LIBC=glibc
           export JAVA_TEST_HOME=$(pwd)/test_jdk
-          ./gradlew :ddprof-test:test${{ matrix.config }} --info
+          ./gradlew :ddprof-test:test${{ matrix.config }} --info || echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}" >> failures.txt
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -48,6 +48,11 @@ jobs:
         with:
           name: x64-glibc-${{ matrix.java_version }}-${{ matrix.config }}
           path: build/
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: failures
+          path: failures.txt
 
   test-ubuntu-jdk:
     strategy:
@@ -76,7 +81,7 @@ jobs:
           export JAVA_TEST_HOME=/usr/lib/jvm/java-${{ matrix.java_version }}-openjdk-amd64
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
-          ./gradlew :ddprof-test:test${{ matrix.config }} --info
+          ./gradlew :ddprof-test:test${{ matrix.config }} --info || echo "ubuntu-jdk-${{ matrix.java_version }}-${{ matrix.config }}" >> failures.txt
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -92,6 +97,11 @@ jobs:
         with:
           name: x64-ubuntu-jdk-${{ matrix.java_version }}-${{ matrix.config }}
           path: build/
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: failures
+          path: failures.txt
 
   test-linux-glibc-j9:
     strategy:
@@ -120,7 +130,7 @@ jobs:
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
           export LIBC=glibc
           chmod a+x gradlew
-          ./gradlew :ddprof-test:test${{ matrix.config }} --info
+          ./gradlew :ddprof-test:test${{ matrix.config }} --info || echo "glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}" >> failures.txt
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -136,6 +146,11 @@ jobs:
         with:
           name: x64-glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}
           path: build/
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: failures
+          path: failures.txt
 
   test-linux-glibc-oracle8:
     strategy:
@@ -167,7 +182,7 @@ jobs:
           export JAVA_TEST_HOME=/usr/lib/jvm/oracle8
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
-          ./gradlew :ddprof-test:test${{ matrix.config }} --info
+          ./gradlew :ddprof-test:test${{ matrix.config }} --info || echo "glibc-oracle8-${{ matrix.config }}" >> failures.txt
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -183,6 +198,11 @@ jobs:
         with:
           name: x64-oracle-jdk8-${{ matrix.config }}
           path: build/
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: failures
+          path: failures.txt
 
   test-linux-musl:
     strategy:
@@ -218,7 +238,7 @@ jobs:
           export TEST_CONFIGURATION=musl/${{ matrix.java_version }}
           export LIBC=musl
           export JAVA_TEST_HOME=$(pwd)/test_jdk 
-          ./gradlew :ddprof-test:test${{ matrix.config }} --info
+          ./gradlew :ddprof-test:test${{ matrix.config }} --info || echo "musl-${{ matrix.java_version }}-${{ matrix.config }}" >> failures.txt
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -234,6 +254,11 @@ jobs:
         with:
           name: x64-musl-${{ matrix.java_version }}-${{ matrix.config }}
           path: build/
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: failures
+          path: failures.txt
 
   test-linux-glibc-zing:
     strategy:
@@ -280,7 +305,7 @@ jobs:
           export JAVA_TEST_HOME=/usr/lib/jvm/zing
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
-          ./gradlew :ddprof-test:test${{ matrix.config }} --info
+          ./gradlew :ddprof-test:test${{ matrix.config }} --info || echo "glibc-zing-${{ matrix.java_version }}-${{ matrix.config }}" >> failures.txt
       - name: Upload logs
         uses: actions/upload-artifact@v3
         if: always()
@@ -296,3 +321,8 @@ jobs:
         with:
           name: x64-glibc-zing-${{ matrix.java_version }}-${{ matrix.config }}
           path: build/
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: failures
+          path: failures.txt
