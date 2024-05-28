@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+set -euo pipefail
+set -x
+
 CONFIG_NAME=$1
 PROJECT_DIR=$2
 GTEST_DIR=$3
@@ -30,6 +33,6 @@ function build_and_run() {
     ${TMPDIR}/${NAME}_${CONFIG_NAME}
 }
 
-build_and_run ddprof_ut
-build_and_run demangle_ut
+build_test ddprof_ut
+build_test demangle_ut
 
