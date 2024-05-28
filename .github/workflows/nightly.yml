@@ -10,7 +10,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v2
       - name: Run All Tests
-        uses: ./.github/workflows/test_workflow.yml@main
+        uses: ./.github/workflows/test_workflow.yml
         with:
           configuration: |
             asan
