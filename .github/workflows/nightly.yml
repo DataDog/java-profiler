@@ -1,0 +1,19 @@
+name: Nightly Sanitized Run
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v2
+      - name: Set GITHUB_REF environment variable
+        run: echo "GITHUB_REF=${{ github.ref }}" >> $GITHUB_ENV
+      - name: Run All Tests
+        uses: ./.github/workflows/test_workflow.yml@${{ env.GITHUB_REF }}
+        with:
+          configuration: |
+            asan
+            tsan
