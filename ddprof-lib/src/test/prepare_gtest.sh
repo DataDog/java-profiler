@@ -3,6 +3,8 @@ set -eo pipefail
 
 CONFIG_NAME=$1
 GTEST_DIR=$2
+shift
+ARGS=$@
 
 CFG_DIR="${GTEST_DIR}/configs/${CONFIG_NAME}"
 
@@ -13,7 +15,7 @@ if [ ! -d "${CFG_DIR}" ]; then
 fi
 cd "${CFG_DIR}"
 echo "Running cmake in ${CFG_DIR}"
-cmake ${GTEST_DIR}/../../../src/test -DCMAKE_BUILD_TYPE=${CONFIG_NAME}
+cmake ../.. ${ARGS[@]} -DCMAKE_BUILD_TYPE=${CONFIG_NAME}
 if [ $? -ne 0 ]; then
     echo "cmake failed"
     exit 1

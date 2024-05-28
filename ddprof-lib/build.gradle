@@ -112,9 +112,10 @@ buildConfigs().each { cfg ->
     }?.join(' ')
 
     def prepareGTestTask = tasks.register("prepareGTest${capitalizeFirstLetter(name)}", Exec) {
+        def args = []
         environment 'CMAKE_CXX_STANDARD', '11'
         if (osIdentifier() == 'macos') {
-            environment "CMAKE_OSX_DEPLOYMENT_TARGET", "10.10"
+            args += "-DCMAKE_OSX_DEPLOYMENT_TARGET=10.10"
         }
         if (!compilerFlags.isEmpty()) {
             environment "CMAKE_CXX_FLAGS", compilerFlags
@@ -125,7 +126,7 @@ buildConfigs().each { cfg ->
 
         dependsOn unzipGTest
         workingDir gtestDir
-        commandLine "${projectDir}/src/test/prepare_gtest.sh", name, gtestDir
+        commandLine "${projectDir}/src/test/prepare_gtest.sh", name, gtestDir, args.join(' ')
     }
     def gtestTask = tasks.register("gtest${capitalizeFirstLetter(name)}", Exec) {
         onlyIf {
