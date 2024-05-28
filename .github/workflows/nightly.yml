@@ -1,0 +1,11 @@
+name: Nightly Sanitized Run
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-test:
+    uses: ./.github/workflows/test_workflow.yml
+    with:
+      configuration: '["asan", "tsan"]'
+

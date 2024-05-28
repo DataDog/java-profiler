@@ -85,6 +85,10 @@ void LivenessTracker::cleanup_table(bool forced) {
 }
 
 void LivenessTracker::flush(std::set<int> &tracked_thread_ids) {
+    if (!_enabled) {
+        // disabled
+        return;
+    }
     flush_table(&tracked_thread_ids);
 }
 
@@ -165,6 +169,10 @@ Error LivenessTracker::initialize_table(JNIEnv* jni, int sampling_interval) {
 Error LivenessTracker::start(Arguments& args) {
     Error err = initialize(args);
     if (err) { return err; }
+    if (!_enabled) {
+        // disabled
+        return Error::OK;
+    }
     // Enable Java Object Sample events
     jvmtiEnv* jvmti = VM::jvmti();
     jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_GARBAGE_COLLECTION_FINISH, nullptr);
@@ -173,6 +181,10 @@ Error LivenessTracker::start(Arguments& args) {
 }
 
 void LivenessTracker::stop() {
+    if (!_enabled) {
+        // disabled
+        return;
+    }
     cleanup_table();
     flush_table(nullptr);
 
@@ -182,6 +194,12 @@ void LivenessTracker::stop() {
 static int _min(int a, int b) { return a < b ? a : b; }
 
 Error LivenessTracker::initialize(Arguments& args) {
+    _enabled = args._gc_generations || args._record_liveness;
+
+    if (!_enabled) {
+        return Error::OK;
+    }
+
     if (_initialized) {
         // if the tracker was previously initialized return the stored result for consistency
         // this hack also means that if the profiler is started with different arguments for liveness tracking those will be ignored
@@ -233,6 +251,10 @@ Error LivenessTracker::initialize(Arguments& args) {
 }
 
 void LivenessTracker::track(JNIEnv* env, AllocEvent &event, jint tid, jobject object, int num_frames, jvmtiFrameInfo* frames) {
+    if (!_enabled) {
+        // disabled
+        return;
+    }
     if (_table_max_cap == 0) {
         // we are not to store any objects
         return;
