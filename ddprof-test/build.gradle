@@ -30,7 +30,7 @@ buildConfigurations.each { config ->
     if (config.os != osIdentifier() || config.arch != archIdentifier()) {
         return
     }
-    logger.lifecycle("Creating configuration for ${name}")
+    logger.debug("Creating configuration for ${name}")
 
     def cfg = configurations.create("test${capitalizeFirstLetter(name)}Implementation") {
         canBeConsumed = true
@@ -53,7 +53,7 @@ buildConfigurations.each { config ->
             config.testEnv.each { key, value ->
                 environment key, value
             }
-            logger.lifecycle("Setting environment variables for ${name}: ${config.testEnv}")
+            logger.debug("Setting environment variables for ${name}: ${config.testEnv}")
         }
         systemProperties = tasks.test.systemProperties
         jvmArgs = tasks.test.jvmArgs

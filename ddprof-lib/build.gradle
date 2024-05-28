@@ -67,7 +67,7 @@ def gtestLib = "${gtestDir}/build/lib/libgtest.a"
 
 tasks.register('downloadGTest', Download) {
     src "https://github.com/google/googletest/archive/refs/tags/${gtestVersion}.zip"
-    dest "${projectDir}/build/tmp/gtest.zip"
+    dest "${buildTempDir}/gtest.zip"
     overwrite false
 }
 
@@ -127,6 +127,8 @@ buildConfigs().each { cfg ->
         dependsOn unzipGTest
         workingDir gtestDir
         commandLine "${projectDir}/src/test/prepare_gtest.sh", name, gtestDir, args.join(' ')
+        inputs.file file("${buildTempDir}/gtest.zip")
+        outputs.dir file("${gtestDir}/configs/${name}")
     }
     def gtestTask = tasks.register("gtest${capitalizeFirstLetter(name)}", Exec) {
         onlyIf {
@@ -135,6 +137,7 @@ buildConfigs().each { cfg ->
         dependsOn prepareGTestTask
         workingDir projectDir
         commandLine "${projectDir}/src/test/run_tests.sh", name, projectDir, gtestDir, compilerFlags, osIdentifier() == 'linux' ? '-lrt -Wl,--no-as-needed' : ''
+        outputs.upToDateWhen {true}
     }
 }
 
@@ -193,10 +196,17 @@ tasks.whenTaskAdded { task ->
                         includes = task.includes
                         systemIncludes = task.systemIncludes
                         source = task.source
+                        inputs.files source
+                        outputs.dir objectFileDir
                     }
                     def linkTask = tasks.findByName("linkLib${capitalizeFirstLetter(config.name)}".toString())
                     if (linkTask != null) {
                         linkTask.dependsOn thisTask
+                    }
+                    def gtestTask = tasks.findByName("gtest${capitalizeFirstLetter(config.name)}".toString())
+                    if (gtestTask != null) {
+                        gtestTask.dependsOn thisTask.get()
+                        gtestTask.inputs.dir thisTask.get().objectFileDir
                     }
                 }
             }
@@ -218,6 +228,8 @@ tasks.whenTaskAdded { task ->
                         toolChain = task.toolChain
                         targetPlatform = task.targetPlatform
                         libs = task.libs
+                        inputs.files source
+                        outputs.file linkedFile
                     }
                     if (config.name == 'release') {
                         tasks.register('stripLibRelease', StripSymbols) {
@@ -226,6 +238,8 @@ tasks.whenTaskAdded { task ->
                             toolChain = tasks.linkLibRelease.toolChain
                             binaryFile = tasks.linkLibRelease.linkedFile.get()
                             outputFile = file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/stripped/libjavaProfiler.${os().isLinux() ? 'so' : 'dylib'}")
+                            inputs.file binaryFile
+                            outputs.file outputFile
                         }
                     }
                 }
