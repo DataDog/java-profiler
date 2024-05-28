@@ -29,6 +29,8 @@ class Buffer {
   private:
     int _offset;
     static const int _limit = BUFFER_SIZE - sizeof(int);
+    // this array is 'extended' by the RecordingBuffer
+    // this will confuse sanitizers and most of the sane people but it seems to work
     char _data[_limit];
 
   public:
