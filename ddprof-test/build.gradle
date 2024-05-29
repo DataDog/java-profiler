@@ -41,6 +41,9 @@ buildConfigurations.each { config ->
     cfg.dependencies.add(project.dependencies.project(path: ":ddprof-lib", configuration: name))
 
     def task = tasks.register("test${name}", Test) {
+        onlyIf {
+            config.active
+        }
         dependsOn compileTestJava
         description = "Runs the unit tests with the ${name} library variant"
         group = 'verification'

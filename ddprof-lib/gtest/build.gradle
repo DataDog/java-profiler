@@ -1,0 +1,144 @@
+plugins {
+    id 'cpp-application'
+}
+
+// this feels weird but it is the only way invoking `./gradlew :ddprof-lib:*` tasks will work
+if (rootDir.toString().endsWith("ddprof-lib/gradle")) {
+    apply from: rootProject.file('../../common.gradle')
+}
+
+// disable the default compile and link tasks not to interfere with our custom ones
+tasks.withType(CppCompile).configureEach { task ->
+    if (task.name.startsWith('compileRelease') || task.name.startsWith('compileDebug')) {
+        task.onlyIf {
+            false
+        }
+    } else {
+        onlyIf {
+            !project.hasProperty('skip-native')
+        }
+    }
+}
+
+tasks.withType(LinkExecutable).configureEach { task ->
+    if (task.name.startsWith('linkRelease') || task.name.startsWith('linkDebug')) {
+        task.onlyIf {
+            false
+        }
+    } else {
+        onlyIf {
+            !project.hasProperty('skip-native')
+        }
+    }
+}
+
+def gtestAll = tasks.register("gtest") {
+    group = 'verification'
+    description = "Run all Google Tests for all build configurations of the library"
+}
+
+// we need this trickery to reuse the toolchain and system config from tasks created by the cpp-application plugin
+tasks.whenTaskAdded { task ->
+    if (task instanceof CppCompile) {
+        if (!task.name.startsWith('compileGtest') && task.name.contains('Release')) {
+            buildConfigurations.each { config ->
+                if (config.os == osIdentifier() && config.arch == archIdentifier()) {
+                    project(':ddprof-lib').file("src/test/cpp/").eachFile {
+                        onlyIf {
+                            config.active
+                        }
+                        def testFile = it
+                        def testName = it.name.substring(0, it.name.lastIndexOf('.'))
+                        def gtestCompileTask = tasks.register("compileGtest${capitalizeFirstLetter(config.name)}_${testName}", CppCompile) {
+                            group = 'build'
+                            description = "Compile the Google Test ${testName} for the ${config.name} build of the library"
+                            objectFileDir = file("$buildDir/obj/gtest/${config.name}/${testName}")
+                            compilerArgs.addAll(config.compilerArgs)
+                            if (os().isLinux() && isMusl()) {
+                                compilerArgs.add('-D__musl__')
+                            }
+                            toolChain = task.toolChain
+                            targetPlatform = task.targetPlatform
+                            includes task.includes
+                            includes project(':ddprof-lib').file('src/main/cpp').toString()
+                            includes "${javaHome()}/include"
+                            includes project(':malloc-shim').file('src/main/public').toString()
+                            if (os().isMacOsX()) {
+                                includes "${javaHome()}/include/darwin"
+                            } else if (os().isLinux()) {
+                                includes "${javaHome()}/include/linux"
+                            }
+                            systemIncludes = task.systemIncludes
+                            source project(':ddprof-lib').fileTree('src/main/cpp') {
+                                include '**/*'
+                            }
+                            source testFile
+
+                            inputs.files source
+                            outputs.dir objectFileDir
+                        }
+                        def linkTask = tasks.findByName("linkGtest${capitalizeFirstLetter(config.name)}_${testName}")
+                        if (linkTask != null) {
+                            linkTask.dependsOn gtestCompileTask
+                        }   
+                    }
+                }
+            }
+        }
+    } else if (task instanceof LinkExecutable) {
+        if (!task.name.startsWith('linkGtest') && task.name.contains('Release')) {
+            buildConfigurations.each { config ->
+                if (config.os == osIdentifier() && config.arch == archIdentifier()) {
+                    def gtestTask = tasks.register("gtest${capitalizeFirstLetter(config.name)}") {
+                        group = 'verification'
+                        description = "Run all Google Tests for the ${config.name} build of the library"
+                    }
+                    project(':ddprof-lib').file("src/test/cpp/").eachFile {
+                        onlyIf {
+                            config.active
+                        }
+                        def testFile = it
+                        def testName = it.name.substring(0, it.name.lastIndexOf('.'))
+                        def binary = file("$buildDir/bin/gtest/${config.name}_${testName}/${testName}")
+                        def gtestLinkTask = tasks.register("linkGtest${capitalizeFirstLetter(config.name)}_${testName}", LinkExecutable) {
+                            group = 'build'
+                            description = "Link the Google Test for the ${config.name} build of the library"
+                            source = fileTree("$buildDir/obj/gtest/${config.name}/${testName}")
+                            linkedFile = binary
+                            linkerArgs.addAll(config.linkerArgs)
+                            linkerArgs.addAll("-lgtest", "-lgtest_main", "-lgmock", "-lgmock_main")
+                            toolChain = task.toolChain
+                            targetPlatform = task.targetPlatform
+                            libs = task.libs
+                            inputs.files source
+                            outputs.file linkedFile
+                        }
+                        def gtestExecuteTask = tasks.register("gtest${capitalizeFirstLetter(config.name)}_${testName}", Exec) {
+                            onlyIf {
+                                config.active
+                            }
+                            group = 'verification'
+                            description = "Run the Google Test ${testName} for the ${config.name} build of the library"
+                            dependsOn gtestLinkTask
+                            executable binary
+
+                            config.testEnv.each { key, value ->
+                                environment key, value
+                            }
+
+                            inputs.files binary
+                            outputs.upToDateWhen {true}
+                        }
+
+                        def compileTask = tasks.findByName("compileGtest${capitalizeFirstLetter(config.name)}_${testName}")
+                        if (compileTask != null) {
+                            gtestLinkTask.dependsOn compileTask
+                        }
+                        gtestTask.get().dependsOn gtestExecuteTask.get()
+                        gtestAll.get().dependsOn gtestExecuteTask.get()
+                    }
+                }
+            }
+        }
+    }
+}

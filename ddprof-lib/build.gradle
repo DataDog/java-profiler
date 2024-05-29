@@ -61,33 +61,6 @@ java {
 
 def isGitlabCI = System.getenv("GITLAB_CI") != null
 def buildTempDir = "${projectDir}/build/tmp"
-def gtestVersion = "release-1.12.1"
-def gtestDir = "${buildTempDir}/gtest"
-def gtestLib = "${gtestDir}/build/lib/libgtest.a"
-
-tasks.register('downloadGTest', Download) {
-    src "https://github.com/google/googletest/archive/refs/tags/${gtestVersion}.zip"
-    dest "${buildTempDir}/gtest.zip"
-    overwrite false
-}
-
-tasks.register('unzipGTest', Copy) {
-    dependsOn downloadGTest
-    from zipTree(tasks.downloadGTest.dest)
-    into "${gtestDir}"
-    eachFile { FileCopyDetails details ->
-        def pathSegments = details.relativePath.segments
-        if (pathSegments.length > 1) {
-            details.relativePath = new RelativePath(true, *pathSegments.drop(1))
-        } else {
-            details.exclude()
-        }
-    }
-    doLast {
-        // take care of the dangling original top-level dir
-        file("${projectDir}/build/tmp/gtest/googletest-${gtestVersion}").deleteDir()
-    }
-}
 
 // Allow specifying the external location for the native libraries
 // The libraries should be properly sorted into subfolders corresponding to the `libraryTargetPath` value for each
@@ -104,76 +77,7 @@ tasks.register('copyExternalLibs', Copy) {
 
 tasks.register('assembleAll') {}
 
-// gtest is 'specific' - we need to prepare it for each build configuration becuase it must be compiled with the same flags
-buildConfigs().each { cfg ->
-    def name = cfg.name
-    def compilerFlags = cfg.compilerArgs.findAll {
-        return it.contains('sanitize')
-    }?.join(' ')
-
-    def prepareGTestTask = tasks.register("prepareGTest${capitalizeFirstLetter(name)}", Exec) {
-        if (cfg.name == "asan") {
-            onlyIf {
-                locateLibasan() != null
-            }
-        } else if (cfg.name == "tsan") {
-            onlyIf {
-                locateLibtsan() != null
-            }
-        }
-        def args = []
-        environment 'CMAKE_CXX_STANDARD', '11'
-        if (osIdentifier() == 'macos') {
-            args += "-DCMAKE_OSX_DEPLOYMENT_TARGET=10.10"
-        }
-        if (!compilerFlags.isEmpty()) {
-            environment "CMAKE_CXX_FLAGS", compilerFlags
-            environment "CMAKE_C_FLAGS", compilerFlags
-            environment "CMAKE_EXE_LINKER_FLAGS", compilerFlags
-            environment "CMAKE_SHARED_LINKER_FLAGS", compilerFlags
-        }
-
-        dependsOn unzipGTest
-        workingDir gtestDir
-        commandLine "${projectDir}/src/test/prepare_gtest.sh", name, gtestDir, args.join(' ')
-        inputs.file file("${buildTempDir}/gtest.zip")
-        outputs.dir file("${gtestDir}/configs/${name}")
-    }
-    def gtestTask = tasks.register("gtest${capitalizeFirstLetter(name)}", Exec) {
-        if (cfg.name == "asan") {
-            onlyIf {
-                locateLibasan() != null
-            }
-        } else if (cfg.name == "tsan") {
-            onlyIf {
-                locateLibtsan() != null
-            }
-        }
-        onlyIf {
-            !project.hasProperty('skip-tests') && !project.hasProperty('skip-cpp-tests') && enabled
-        }
-        cfg.testEnv.each { key, value ->
-            environment key, value
-        }
-        dependsOn prepareGTestTask
-        workingDir projectDir
-        commandLine "${projectDir}/src/test/run_tests.sh", name, projectDir, gtestDir, compilerFlags, osIdentifier() == 'linux' ? '-lrt -Wl,--no-as-needed' : ''
-        outputs.upToDateWhen {true}
-
-        // Capture the standard output and error if needed
-        standardOutput = new ByteArrayOutputStream()
-        errorOutput = new ByteArrayOutputStream()
-
-        // Log the output for debugging purposes
-        doLast {
-            println "Standard Output: ${standardOutput.toString()}"
-            println "Error Output: ${errorOutput.toString()}"
-        }
-    }
-}
-
 // use the build config names to create configurations, copy lib and asemble jar tasks
-
 buildConfigNames().each { name ->
     configurations.create(name) {
         canBeConsumed = true
@@ -211,33 +115,45 @@ configurations {
     }
 }
 
-// we need this trickery to reuse the toolchain and system config from tasks created by the cpp-library plugin
+// We need this trickery to reuse the toolchain and system config from tasks created by the cpp-library plugin
+// Basically, we are listening when the default 'comile' and 'link' (eg. 'compileReleaseCpp') is added and then
+// we are adding our own tasks for each build configuration, inheriting the part of the configuration which was
+// added by the cpp-library plugin
 tasks.whenTaskAdded { task ->
     if (task instanceof CppCompile) {
         if (!task.name.startsWith('compileLib') && task.name.contains('Release')) {
             buildConfigurations.each { config ->
                 if (config.os == osIdentifier() && config.arch == archIdentifier()) {
-                    def thisTask = tasks.register("compileLib${capitalizeFirstLetter(config.name)}", CppCompile) {
+                    def cppTask = tasks.register("compileLib${capitalizeFirstLetter(config.name)}", CppCompile) {
+                        onlyIf {
+                            config.active
+                        }
                         group = 'build'
                         description = "Compile the ${config.name} build of the library"
                         objectFileDir = file("$buildDir/obj/main/${config.name}")
                         compilerArgs.addAll(config.compilerArgs)
+                        if (os().isLinux() && isMusl()) {
+                            compilerArgs.add('-D__musl__')
+                        }
                         toolChain = task.toolChain
                         targetPlatform = task.targetPlatform
-                        includes = task.includes
+                        includes task.includes
+                        includes project(':ddprof-lib').file('src/main/cpp').toString()
+                        includes "${javaHome()}/include"
+                        includes project(':malloc-shim').file('src/main/public').toString()
+                        if (os().isMacOsX()) {
+                            includes "${javaHome()}/include/darwin"
+                        } else if (os().isLinux()) {
+                            includes "${javaHome()}/include/linux"
+                        }
                         systemIncludes = task.systemIncludes
-                        source = task.source
+                        source task.source
                         inputs.files source
                         outputs.dir objectFileDir
                     }
                     def linkTask = tasks.findByName("linkLib${capitalizeFirstLetter(config.name)}".toString())
                     if (linkTask != null) {
-                        linkTask.dependsOn thisTask
-                    }
-                    def gtestTask = tasks.findByName("gtest${capitalizeFirstLetter(config.name)}".toString())
-                    if (gtestTask != null) {
-                        gtestTask.dependsOn thisTask.get()
-                        gtestTask.inputs.dir thisTask.get().objectFileDir
+                        linkTask.dependsOn cppTask
                     }
                 }
             }
@@ -246,7 +162,10 @@ tasks.whenTaskAdded { task ->
         if (!task.name.startsWith('linkLib') && task.name.contains('Release')) {
             buildConfigurations.each { config ->
                 if (config.os == osIdentifier() && config.arch == archIdentifier()) {
-                    def thisTask = tasks.register("linkLib${capitalizeFirstLetter(config.name)}", LinkSharedLibrary) {
+                    def linkTask = tasks.register("linkLib${capitalizeFirstLetter(config.name)}", LinkSharedLibrary) {
+                        onlyIf {
+                            config.active
+                        }
                         group = 'build'
                         description = "Link the ${config.name} build of the library"
                         source = fileTree("$buildDir/obj/main/${config.name}")
@@ -264,7 +183,7 @@ tasks.whenTaskAdded { task ->
                     }
                     if (config.name == 'release') {
                         tasks.register('stripLibRelease', StripSymbols) {
-                            dependsOn thisTask
+                            dependsOn linkTask
                             targetPlatform = tasks.linkLibRelease.targetPlatform
                             toolChain = tasks.linkLibRelease.toolChain
                             binaryFile = tasks.linkLibRelease.linkedFile.get()
@@ -284,10 +203,6 @@ gradle.projectsEvaluated {
 
     buildConfigNames().each {
         def compileTask = tasks.findByName("compileLib${capitalizeFirstLetter(it)}")
-        def gtestTask = tasks.findByName("gtest${capitalizeFirstLetter(it)}")
-        if (compileTask != null && gtestTask != null) {
-            gtestTask.dependsOn compileTask
-        }
         def linkTask = tasks.findByName("linkLib${capitalizeFirstLetter(it)}")
         if (linkTask != null) {
             if (it != 'release') {
@@ -296,58 +211,38 @@ gradle.projectsEvaluated {
                     copyTask.dependsOn linkTask
                 }
             }
-            linkTask.dependsOn gtestTask
+            def gtestTask = project(':ddprof-lib:gtest').tasks.findByName("gtest${capitalizeFirstLetter(it)}")
+            if (gtestTask != null) {
+                linkTask.dependsOn gtestTask
+            }
         }
     }
 }
 
 // configure the compiler here
 tasks.withType(CppCompile).configureEach {
-    if (name.startsWith('compileLib')) {
-        onlyIf {
-            !project.hasProperty('skip-native')
-        }
-    } else {
+    if (name.startsWith('compileRelease') || name.startsWith('compileDebug')) {
         onlyIf {
             // disable the built-in compiler task for release; we are using the custom compiler task
             false
         }
-    }
-
-    def taskIncludes = ["${javaHome()}/include"]
-    def taskArgs = []
-
-    if (os().isMacOsX()) {
-        taskIncludes.add "${javaHome()}/include/darwin"
-    } else if (os().isLinux()) {
-        taskIncludes.add "${javaHome()}/include/linux"
-        if (isMusl()) {
-            taskArgs.add '-D__musl__'
+    } else {
+        onlyIf {
+            !project.hasProperty('skip-native')
         }
     }
-
-    // TODO for Clang we would use scan-build utility instead but it needs to be installed first
-
-    taskIncludes.add "${projectDir}/../malloc-shim/src/main/public"
-
-    includes {
-        taskIncludes
-    }
-
-    compilerArgs.addAll(taskArgs)
-
 }
 
 // configure linker
 tasks.withType(LinkSharedLibrary).configureEach {
-    if (name.startsWith('linkLib')) {
-        onlyIf {
-            !project.hasProperty('skip-native')
-        }
-    } else {
+    if (name.startsWith('linkRelease') || name.startsWith('linkDebug')) {
         onlyIf {
             // disable the built-in linker task for release; we are using the custom linker task
             false
+        }
+    } else {
+        onlyIf {
+            !project.hasProperty('skip-native')
         }
     }
 }
@@ -374,6 +269,7 @@ dependencies {
         // the malloc shim works only on linux
         project(':malloc-shim')
     }
+    project(':ddprof-lib:gtest')
 }
 
 jar.dependsOn copyExternalLibs
