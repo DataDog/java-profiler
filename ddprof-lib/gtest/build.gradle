@@ -24,6 +24,18 @@ tasks.withType(LinkExecutable).configureEach { task ->
     }
 }
 
+tasks.withType(ExtractSymbols).configureEach { task ->
+    task.onlyIf {
+        false
+    }
+}
+
+tasks.withType(StripSymbols).configureEach { task ->
+    task.onlyIf {
+        false
+    }
+}
+
 def gtestAll = tasks.register("gtest") {
     onlyIf {
         hasGtest && !project.hasProperty('skip-native')
@@ -72,7 +84,7 @@ tasks.whenTaskAdded { task ->
                             } else if (os().isLinux()) {
                                 includes "${javaHome()}/include/linux"
                             }
-                            systemIncludes = task.systemIncludes
+                            includes task.systemIncludes
                             source project(':ddprof-lib').fileTree('src/main/cpp') {
                                 include '**/*'
                             }

@@ -140,7 +140,7 @@ tasks.whenTaskAdded { task ->
                         } else if (os().isLinux()) {
                             includes "${javaHome()}/include/linux"
                         }
-                        systemIncludes = task.systemIncludes
+                        includes task.systemIncludes
                         source task.source
                         inputs.files source
                         outputs.dir objectFileDir
