@@ -21,6 +21,21 @@ if (rootDir.toString().endsWith("ddprof-lib")) {
     apply from: rootProject.file('../common.gradle')
 }
 
+dependencies {
+    if (os().isLinux()) {
+        // the malloc shim works only on linux
+        project(':malloc-shim')
+    }
+    project(':ddprof-lib:gtest')
+}
+
+test {
+    onlyIf {
+        !project.hasProperty('skip-tests')
+    }
+    useJUnitPlatform()
+}
+
 def libraryTargetBase(type) {
     return "${projectDir}/build/native/${type}"
 }
@@ -204,27 +219,6 @@ tasks.whenTaskAdded { task ->
     }
 }
 
-gradle.projectsEvaluated {
-    tasks.copyReleaseLibs.dependsOn tasks.stripLibRelease
-
-    buildConfigNames().each {
-        def compileTask = tasks.findByName("compileLib${it.capitalize()}")
-        def linkTask = tasks.findByName("linkLib${it.capitalize()}")
-        if (linkTask != null) {
-            if (it != 'release') {
-                def copyTask = tasks.findByName("copy${it.capitalize()}Libs")
-                if (copyTask != null) {
-                    copyTask.dependsOn linkTask
-                }
-            }
-            def gtestTask = project(':ddprof-lib:gtest').tasks.findByName("gtest${it.capitalize()}")
-            if (gtestTask != null) {
-                linkTask.dependsOn gtestTask
-            }
-        }
-    }
-}
-
 // configure the compiler here
 tasks.withType(CppCompile).configureEach {
     if (name.startsWith('compileRelease') || name.startsWith('compileDebug')) {
@@ -270,14 +264,6 @@ tasks.withType(StripSymbols).configureEach {
     }
 }
 
-dependencies {
-    if (os().isLinux()) {
-        // the malloc shim works only on linux
-        project(':malloc-shim')
-    }
-    project(':ddprof-lib:gtest')
-}
-
 jar.dependsOn copyExternalLibs
 
 tasks.register('sourcesJar', Jar) {
@@ -295,8 +281,6 @@ tasks.register('javadocJar', Jar) {
     from javadoc.destinationDir
 }
 
-javadoc.dependsOn copyReleaseLibs
-
 tasks.register('scanBuild', Exec) {
     workingDir "${projectDir}/src/test/make"
     commandLine 'scan-build'
@@ -304,13 +288,6 @@ tasks.register('scanBuild', Exec) {
             "--force-analyze-debug-code",
             "--use-analyzer", "/usr/bin/clang++",
             "make", "-j4",  "clean", "all"
-}
-
-test {
-    onlyIf {
-        !project.hasProperty('skip-tests')
-    }
-    useJUnitPlatform()
 }
 
 tasks.withType(Test) {
@@ -325,6 +302,33 @@ tasks.withType(Test) {
     javaLauncher.set(javaToolchains.launcherFor {
         languageVersion = JavaLanguageVersion.of(11)
     })
+}
+
+// relink the tasks when all are created
+gradle.projectsEvaluated {
+    tasks.copyReleaseLibs.dependsOn tasks.stripLibRelease
+
+    buildConfigNames().each {
+        def compileTask = tasks.findByName("compileLib${it.capitalize()}")
+        def linkTask = tasks.findByName("linkLib${it.capitalize()}")
+        if (linkTask != null) {
+            if (it != 'release') {
+                def copyTask = tasks.findByName("copy${it.capitalize()}Libs")
+                if (copyTask != null) {
+                    copyTask.dependsOn linkTask
+                }
+            }
+            def gtestTask = project(':ddprof-lib:gtest').tasks.findByName("gtest${it.capitalize()}")
+            if (gtestTask != null) {
+                linkTask.dependsOn gtestTask
+            }
+        }
+        def javadocTask = tasks.findByName("javadoc")
+        def copyReleaseLibs = tasks.findByName("copyReleaseLibs")
+        if (javadocTask != null && copyReleaseLibs != null) {
+            javadocTask.dependsOn copyReleaseLibs
+        }
+    }
 }
 
 artifacts {

@@ -216,6 +216,29 @@ addBuildConfiguration 'tsan', 'linux', 'x64',
   commonLinuxLinkerArgs + tsanLinkerArgs,
   tsanEnv
 
+addBuildConfiguration 'release', 'linux', 'arm64',
+  ['-O3', '-DNDEBUG'] + commonLinuxCompilerArgs,
+  commonLinuxLinkerArgs + [
+    "-Wl,-z,nodelete",
+    "-static-libstdc++",
+    "-static-libgcc",
+    "-Wl,--exclude-libs,ALL",
+    "-Wl,--gc-sections"
+  ]
+addBuildConfiguration 'debug', 'linux', 'arm64',
+  ['-O0', '-g', '-DDEBUG'] + commonLinuxCompilerArgs,
+  commonLinuxLinkerArgs
+
+addBuildConfiguration 'asan', 'linux', 'arm64',
+  asanCompilerArgs + commonLinuxCompilerArgs,
+  commonLinuxLinkerArgs + asanLinkerArgs,
+  asanEnv
+
+addBuildConfiguration 'tsan', 'linux', 'arm64',
+  tsanCompilerArgs + commonLinuxCompilerArgs,
+  commonLinuxLinkerArgs + tsanLinkerArgs,
+  tsanEnv
+
 // MacOS
 addBuildConfiguration 'release', 'macos', 'arm64',
   commonMacosCompilerArgs + ['-O3', '-DNDEBUG'],
