@@ -17,6 +17,8 @@
  #ifndef _JVMHEAP_H
  #define _JVMHEAP_H
 
+#include <cstddef>
+
  /**
   * This class only defines a layout compatible with the JDKs VirtualSpaceSummary class and particularly its subclasses
   */

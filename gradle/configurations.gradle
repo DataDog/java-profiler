@@ -69,24 +69,35 @@ def locateLibtsan() {
   }
 }
 
-def libasan = locateLibasan()
-def libtsan = locateLibtsan()
+ext.libasan = locateLibasan()
+ext.libtsan = locateLibtsan()
 
-if (libasan == null) {
+if (ext.libasan == null) {
   logger.debug("Asan library not found")
 }
-if (libtsan == null) {
+if (ext.libtsan == null) {
   logger.debug("Tsan library not found")
 }
+
 def hasAsan() {
-  return libasan != null
+  return ext.libasan != null
 }
 def hasTsan() {
-  return libtsan != null
+  return ext.libtsan != null
+}
+
+def isActive(def name) {
+  def methodName = "has${name.capitalize()}"
+  if (this.metaClass.respondsTo(this, methodName)) {
+    this."${methodName}"()
+  } else {
+    // no activation method defined; default to 'true'
+    true
+  }
 }
 
 ext.addBuildConfiguration = { String name, String os, String arch, List<String> compilerArgs, List<String> linkerArgs, Map<String, String> testEnv = [:] ->
-  buildConfigurations << [name: name, os: os, arch: arch, compilerArgs: compilerArgs, linkerArgs: linkerArgs, testEnv: testEnv]
+  buildConfigurations << [active: isActive(name), name: name, os: os, arch: arch, compilerArgs: compilerArgs, linkerArgs: linkerArgs, testEnv: testEnv]
 }
 
 ext {

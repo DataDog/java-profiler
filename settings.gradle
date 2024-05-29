@@ -1,6 +1,6 @@
 include ':ddprof-lib'
+include ':ddprof-lib:gtest'
 include ':ddprof-test-tracer'
 include ':ddprof-test'
 include ':malloc-shim'
 include ':ddprof-stresstest'
-
