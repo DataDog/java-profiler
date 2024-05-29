@@ -13,10 +13,6 @@ tasks.withType(CppCompile).configureEach { task ->
         task.onlyIf {
             false
         }
-    } else {
-        onlyIf {
-            !project.hasProperty('skip-native')
-        }
     }
 }
 
@@ -25,16 +21,19 @@ tasks.withType(LinkExecutable).configureEach { task ->
         task.onlyIf {
             false
         }
-    } else {
-        onlyIf {
-            !project.hasProperty('skip-native')
-        }
     }
 }
 
 def gtestAll = tasks.register("gtest") {
+    onlyIf {
+        hasGtest && !project.hasProperty('skip-native')
+    }
     group = 'verification'
     description = "Run all Google Tests for all build configurations of the library"
+
+    if (!hasGtest) {
+        logger.warn("WARNING: Google Test not found - skipping native tests")
+    }
 }
 
 // we need this trickery to reuse the toolchain and system config from tasks created by the cpp-application plugin
@@ -44,12 +43,12 @@ tasks.whenTaskAdded { task ->
             buildConfigurations.each { config ->
                 if (config.os == osIdentifier() && config.arch == archIdentifier()) {
                     project(':ddprof-lib').file("src/test/cpp/").eachFile {
-                        onlyIf {
-                            config.active
-                        }
                         def testFile = it
                         def testName = it.name.substring(0, it.name.lastIndexOf('.'))
-                        def gtestCompileTask = tasks.register("compileGtest${capitalizeFirstLetter(config.name)}_${testName}", CppCompile) {
+                        def gtestCompileTask = tasks.register("compileGtest${config.name.capitalize()}_${testName}", CppCompile) {
+                            onlyIf {
+                                config.active && hasGtest && !project.hasProperty('skip-native')
+                            }
                             group = 'build'
                             description = "Compile the Google Test ${testName} for the ${config.name} build of the library"
                             objectFileDir = file("$buildDir/obj/gtest/${config.name}/${testName}")
@@ -57,6 +56,7 @@ tasks.whenTaskAdded { task ->
                             if (os().isLinux() && isMusl()) {
                                 compilerArgs.add('-D__musl__')
                             }
+                            compilerArgs.addAll('-std=c++14', '-fPIC')
                             toolChain = task.toolChain
                             targetPlatform = task.targetPlatform
                             includes task.includes
@@ -65,6 +65,7 @@ tasks.whenTaskAdded { task ->
                             includes project(':malloc-shim').file('src/main/public').toString()
                             if (os().isMacOsX()) {
                                 includes "${javaHome()}/include/darwin"
+                                includes "/opt/homebrew/opt/googletest/include/"
                             } else if (os().isLinux()) {
                                 includes "${javaHome()}/include/linux"
                             }
@@ -77,9 +78,9 @@ tasks.whenTaskAdded { task ->
                             inputs.files source
                             outputs.dir objectFileDir
                         }
-                        def linkTask = tasks.findByName("linkGtest${capitalizeFirstLetter(config.name)}_${testName}")
+                        def linkTask = tasks.named("linkGtest${config.name.capitalize()}_${testName}")
                         if (linkTask != null) {
-                            linkTask.dependsOn gtestCompileTask
+                            linkTask.get().dependsOn gtestCompileTask
                         }   
                     }
                 }
@@ -89,33 +90,37 @@ tasks.whenTaskAdded { task ->
         if (!task.name.startsWith('linkGtest') && task.name.contains('Release')) {
             buildConfigurations.each { config ->
                 if (config.os == osIdentifier() && config.arch == archIdentifier()) {
-                    def gtestTask = tasks.register("gtest${capitalizeFirstLetter(config.name)}") {
+                    def gtestTask = tasks.register("gtest${config.name.capitalize()}") {
                         group = 'verification'
                         description = "Run all Google Tests for the ${config.name} build of the library"
                     }
                     project(':ddprof-lib').file("src/test/cpp/").eachFile {
-                        onlyIf {
-                            config.active
-                        }
+
                         def testFile = it
                         def testName = it.name.substring(0, it.name.lastIndexOf('.'))
                         def binary = file("$buildDir/bin/gtest/${config.name}_${testName}/${testName}")
-                        def gtestLinkTask = tasks.register("linkGtest${capitalizeFirstLetter(config.name)}_${testName}", LinkExecutable) {
+                        def gtestLinkTask = tasks.register("linkGtest${config.name.capitalize()}_${testName}", LinkExecutable) {
+                            onlyIf {
+                                config.active && hasGtest && !project.hasProperty('skip-native')
+                            }
                             group = 'build'
                             description = "Link the Google Test for the ${config.name} build of the library"
                             source = fileTree("$buildDir/obj/gtest/${config.name}/${testName}")
                             linkedFile = binary
                             linkerArgs.addAll(config.linkerArgs)
                             linkerArgs.addAll("-lgtest", "-lgtest_main", "-lgmock", "-lgmock_main")
+                            if (os().isMacOsX()) {
+                                linkerArgs.addAll("-L/opt/homebrew/opt/googletest/lib")
+                            }
                             toolChain = task.toolChain
                             targetPlatform = task.targetPlatform
                             libs = task.libs
                             inputs.files source
                             outputs.file linkedFile
                         }
-                        def gtestExecuteTask = tasks.register("gtest${capitalizeFirstLetter(config.name)}_${testName}", Exec) {
+                        def gtestExecuteTask = tasks.register("gtest${config.name.capitalize()}_${testName}", Exec) {
                             onlyIf {
-                                config.active
+                                config.active && hasGtest && !project.hasProperty('skip-native')
                             }
                             group = 'verification'
                             description = "Run the Google Test ${testName} for the ${config.name} build of the library"
@@ -130,7 +135,7 @@ tasks.whenTaskAdded { task ->
                             outputs.upToDateWhen {true}
                         }
 
-                        def compileTask = tasks.findByName("compileGtest${capitalizeFirstLetter(config.name)}_${testName}")
+                        def compileTask = tasks.findByName("compileGtest${config.name.capitalize()}_${testName}")
                         if (compileTask != null) {
                             gtestLinkTask.dependsOn compileTask
                         }

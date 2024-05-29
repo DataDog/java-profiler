@@ -53,12 +53,6 @@ ext {
 sourceCompatibility = JavaVersion.VERSION_1_8
 targetCompatibility = JavaVersion.VERSION_1_8
 
-java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(11)
-    }
-}
-
 def isGitlabCI = System.getenv("GITLAB_CI") != null
 def buildTempDir = "${projectDir}/build/tmp"
 
@@ -84,11 +78,11 @@ buildConfigNames().each { name ->
         canBeResolved = false
         extendsFrom configurations.implementation    }
 
-    def copyTask = tasks.register("copy${capitalizeFirstLetter(name)}Libs", Copy) {
+    def copyTask = tasks.register("copy${name.capitalize()}Libs", Copy) {
         from file(librarySourcePath(name, name == 'release' ? 'stripped' : '')).parent  // the release build is stripped
         into file(libraryTargetPath(name))
     }
-    def assembleTask = tasks.register("assemble${capitalizeFirstLetter(name)}Jar", Jar) {
+    def assembleTask = tasks.register("assemble${name.capitalize()}Jar", Jar) {
         group = 'build'
         description = "Assemble the ${name} build of the library"
         dependsOn copyExternalLibs
@@ -124,7 +118,7 @@ tasks.whenTaskAdded { task ->
         if (!task.name.startsWith('compileLib') && task.name.contains('Release')) {
             buildConfigurations.each { config ->
                 if (config.os == osIdentifier() && config.arch == archIdentifier()) {
-                    def cppTask = tasks.register("compileLib${capitalizeFirstLetter(config.name)}", CppCompile) {
+                    def cppTask = tasks.register("compileLib${config.name.capitalize()}", CppCompile) {
                         onlyIf {
                             config.active
                         }
@@ -151,7 +145,7 @@ tasks.whenTaskAdded { task ->
                         inputs.files source
                         outputs.dir objectFileDir
                     }
-                    def linkTask = tasks.findByName("linkLib${capitalizeFirstLetter(config.name)}".toString())
+                    def linkTask = tasks.findByName("linkLib${config.name.capitalize()}".toString())
                     if (linkTask != null) {
                         linkTask.dependsOn cppTask
                     }
@@ -162,7 +156,7 @@ tasks.whenTaskAdded { task ->
         if (!task.name.startsWith('linkLib') && task.name.contains('Release')) {
             buildConfigurations.each { config ->
                 if (config.os == osIdentifier() && config.arch == archIdentifier()) {
-                    def linkTask = tasks.register("linkLib${capitalizeFirstLetter(config.name)}", LinkSharedLibrary) {
+                    def linkTask = tasks.register("linkLib${config.name.capitalize()}", LinkSharedLibrary) {
                         onlyIf {
                             config.active
                         }
@@ -170,7 +164,7 @@ tasks.whenTaskAdded { task ->
                         description = "Link the ${config.name} build of the library"
                         source = fileTree("$buildDir/obj/main/${config.name}")
                         linkedFile = file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/libjavaProfiler.${os().isLinux() ? 'so' : 'dylib'}")
-                        def compileTask = tasks.findByName("compileLib${capitalizeFirstLetter(config.name)}".toString())
+                        def compileTask = tasks.findByName("compileLib${config.name.capitalize()}".toString())
                         if (compileTask != null) {
                             dependsOn compileTask
                         }
@@ -202,16 +196,16 @@ gradle.projectsEvaluated {
     tasks.copyReleaseLibs.dependsOn tasks.stripLibRelease
 
     buildConfigNames().each {
-        def compileTask = tasks.findByName("compileLib${capitalizeFirstLetter(it)}")
-        def linkTask = tasks.findByName("linkLib${capitalizeFirstLetter(it)}")
+        def compileTask = tasks.findByName("compileLib${it.capitalize()}")
+        def linkTask = tasks.findByName("linkLib${it.capitalize()}")
         if (linkTask != null) {
             if (it != 'release') {
-                def copyTask = tasks.findByName("copy${capitalizeFirstLetter(it)}Libs")
+                def copyTask = tasks.findByName("copy${it.capitalize()}Libs")
                 if (copyTask != null) {
                     copyTask.dependsOn linkTask
                 }
             }
-            def gtestTask = project(':ddprof-lib:gtest').tasks.findByName("gtest${capitalizeFirstLetter(it)}")
+            def gtestTask = project(':ddprof-lib:gtest').tasks.findByName("gtest${it.capitalize()}")
             if (gtestTask != null) {
                 linkTask.dependsOn gtestTask
             }
@@ -324,7 +318,7 @@ tasks.withType(Test) {
 artifacts {
     // create artifacts for all configures build config names
     buildConfigNames().each {
-        def task = tasks.named("assemble${capitalizeFirstLetter(it)}Jar")
+        def task = tasks.named("assemble${it.capitalize()}Jar")
         artifacts.add('assembled', task)
         artifacts.add(it, task)
     }
@@ -334,7 +328,7 @@ publishing {
     publications {
         assembled(MavenPublication) { publication ->
             buildConfigNames().each {
-                publication.artifact tasks.named("assemble${capitalizeFirstLetter(it)}Jar")
+                publication.artifact tasks.named("assemble${it.capitalize()}Jar")
             }
             publication.artifact sourcesJar
             publication.artifact javadocJar

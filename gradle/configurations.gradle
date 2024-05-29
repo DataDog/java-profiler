@@ -2,13 +2,6 @@ apply from: rootProject.file('common.gradle')
 
 ext.buildConfigurations = []
 
-def static capitalizeFirstLetter(str) {
-  if (str == null || str.isEmpty()) {
-    return str
-  }
-  return str.substring(0, 1).toUpperCase() + str.substring(1)
-}
-
 def buildConfigNames() {
   buildConfigurations.findAll {
     it.os == osIdentifier() && it.arch == archIdentifier()
@@ -104,7 +97,6 @@ ext.addBuildConfiguration = { String name, String os, String arch, List<String> 
 ext {
   hasAsan = this.&hasAsan
   hasTsan = this.&hasTsan
-  capitalizeFirstLetter = this.&capitalizeFirstLetter
   buildConfigNames = this.&buildConfigNames
   buildConfigs = this.&buildConfigs
   locateLibasan = this.&locateLibasan

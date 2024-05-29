@@ -32,7 +32,7 @@ buildConfigurations.each { config ->
     }
     logger.debug("Creating configuration for ${name}")
 
-    def cfg = configurations.create("test${capitalizeFirstLetter(name)}Implementation") {
+    def cfg = configurations.create("test${name.capitalize()}Implementation") {
         canBeConsumed = true
         canBeResolved = true
         extendsFrom configurations.testCommon
