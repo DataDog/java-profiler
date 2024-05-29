@@ -52,11 +52,14 @@ tasks.whenTaskAdded { task ->
                             group = 'build'
                             description = "Compile the Google Test ${testName} for the ${config.name} build of the library"
                             objectFileDir = file("$buildDir/obj/gtest/${config.name}/${testName}")
-                            compilerArgs.addAll(config.compilerArgs)
+                            compilerArgs.addAll(config.compilerArgs.findAll {
+                                // need to drop the -std and -DNDEBUG flags because we need a different standard and assertions enabled
+                                it != '-std=c++11' && it != '-DNDEBUG'
+                            })
                             if (os().isLinux() && isMusl()) {
                                 compilerArgs.add('-D__musl__')
                             }
-                            compilerArgs.addAll('-std=c++14', '-fPIC')
+                            compilerArgs.add('-std=c++14')
                             toolChain = task.toolChain
                             targetPlatform = task.targetPlatform
                             includes task.includes
