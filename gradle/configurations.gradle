@@ -75,11 +75,11 @@ if (ext.libtsan == null) {
 }
 
 def hasAsan() {
-  return ext.libasan != null
+  return isMusl() ? false : ext.libasan != null
 }
 
 def hasTsan() {
-  return ext.libtsan != null
+  return isMusl() ? false : ext.libtsan != null
 }
 
 def isActive(def name) {
@@ -189,7 +189,7 @@ def tsanCompilerArgs = hasTsan() ? [
   '-fno-optimize-sibling-calls'  // Disable tail call optimization for better stack traces
 ] : []
 
-def tsanLinkerArgs = hasTsan() ? [
+def tsanLinkerArgs = hasTsan() ?  [
   "-L${file(libtsan).parent}",
   "-ltsan",
   "-fsanitize=thread",
