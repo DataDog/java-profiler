@@ -162,21 +162,7 @@ tasks.whenTaskAdded { task ->
                         } else if (os().isLinux()) {
                             includes "${javaHome()}/include/linux"
                         }
-                        // if (os().isLinux() && archIdentifier() == 'arm64') {
-                        //     // aarch64 build is done in clang
-                        //     // the clang binding for the non-built-in tasks is somehow messing up system includes
-                        //     // so we need to add them manually
-                        //     // this ties the build to clang 11 but there is nothing we can do about it
-                        //     systemIncludes.from '/usr/include/c++/10'
-                        //     systemIncludes.from '/usr/include/aarch64-linux-gnu/c++/10'
-                        //     systemIncludes.from '/usr/include/c++/10/backward'
-                        //     systemIncludes.from '/usr/local/include'
-                        //     systemIncludes.from '/usr/lib/llvm-11/lib/clang/11.0.1/include'
-                        //     systemIncludes.from '/usr/include/aarch64-linux-gnu'
-                        //     systemIncludes.from '/usr/include'
-                        // } else {
                         systemIncludes.from task.systemIncludes
-                        // }
                         source task.source
                         inputs.files source
                         outputs.dir objectFileDir
