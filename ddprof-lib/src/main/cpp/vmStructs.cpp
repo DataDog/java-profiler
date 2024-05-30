@@ -464,20 +464,25 @@ bool VMStructs::isFlagTrue(const char* name) {
 }
 
 const void* VMStructs::findHeapUsageFunc() {
-    if (_find_flag_func != NULL) {
-        // The CollectedHeap::memory_usage function is a virtual one -
-        // G1, Shenandoah and ZGC are overriding it and calling the base class method results
-        // in asserts triggering. Therefore, we try to locate the concrete overridden method form.
-        if (isFlagTrue("UseG1GC")) {
-            return _libjvm->findSymbol("_ZN15G1CollectedHeap12memory_usageEv");
-        } else if (isFlagTrue("UseShenandoahGC")) {
-            return _libjvm->findSymbol("_ZN14ShenandoahHeap12memory_usageEv");
-        } else if (isFlagTrue("UseZGC") && VM::java_version() < 21) {
-            // acessing this method in JDK 21 (generational ZGC) wil cause SIGSEGV 
-            return _libjvm->findSymbol("_ZN14ZCollectedHeap12memory_usageEv");
+    if (VM::hotspot_version() < 17) {
+        // For JDK 11 it is really unreliable to find the memory_usage function - just disable it
+        return nullptr;
+    } else {
+        if (_find_flag_func != NULL) {
+            // The CollectedHeap::memory_usage function is a virtual one -
+            // G1, Shenandoah and ZGC are overriding it and calling the base class method results
+            // in asserts triggering. Therefore, we try to locate the concrete overridden method form.
+            if (isFlagTrue("UseG1GC")) {
+                return _libjvm->findSymbol("_ZN15G1CollectedHeap12memory_usageEv");
+            } else if (isFlagTrue("UseShenandoahGC")) {
+                return _libjvm->findSymbol("_ZN14ShenandoahHeap12memory_usageEv");
+            } else if (isFlagTrue("UseZGC") && VM::java_version() < 21) {
+                // acessing this method in JDK 21 (generational ZGC) wil cause SIGSEGV
+                return _libjvm->findSymbol("_ZN14ZCollectedHeap12memory_usageEv");
+            }
         }
+        return _libjvm->findSymbol("_ZN13CollectedHeap12memory_usageEv");
     }
-    return _libjvm->findSymbol("_ZN13CollectedHeap12memory_usageEv");
 }
 
 void VMStructs::initJvmFunctions() {
