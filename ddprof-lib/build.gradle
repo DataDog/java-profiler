@@ -96,6 +96,13 @@ buildConfigNames().each { name ->
     def copyTask = tasks.register("copy${name.capitalize()}Libs", Copy) {
         from file(librarySourcePath(name, name == 'release' ? 'stripped' : '')).parent  // the release build is stripped
         into file(libraryTargetPath(name))
+
+        if (name == 'release') {
+            def stripTask = tasks.findByName('stripLibRelease')
+            if (stripTask != null) {
+                dependsOn stripTask
+            }
+        }
     }
     def assembleTask = tasks.register("assemble${name.capitalize()}Jar", Jar) {
         group = 'build'
@@ -203,7 +210,7 @@ tasks.whenTaskAdded { task ->
                         outputs.file linkedFile
                     }
                     if (config.name == 'release') {
-                        tasks.register('stripLibRelease', StripSymbols) {
+                        def stripTask = tasks.register('stripLibRelease', StripSymbols) {
                             dependsOn linkTask
                             targetPlatform = tasks.linkLibRelease.targetPlatform
                             toolChain = tasks.linkLibRelease.toolChain
@@ -211,6 +218,10 @@ tasks.whenTaskAdded { task ->
                             outputFile = file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/stripped/libjavaProfiler.${os().isLinux() ? 'so' : 'dylib'}")
                             inputs.file binaryFile
                             outputs.file outputFile
+                        }
+                        def copyTask = tasks.findByName("copyReleaseLibs")
+                        if (copyTask != null) {
+                            copyTask.dependsOn stripTask
                         }
                     }
                 }
@@ -306,7 +317,7 @@ tasks.withType(Test) {
 
 // relink the tasks when all are created
 gradle.projectsEvaluated {
-    tasks.copyReleaseLibs.dependsOn tasks.stripLibRelease
+//    tasks.copyReleaseLibs.dependsOn tasks.stripLibRelease
 
     buildConfigNames().each {
         def compileTask = tasks.findByName("compileLib${it.capitalize()}")
