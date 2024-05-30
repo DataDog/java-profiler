@@ -213,6 +213,9 @@ tasks.whenTaskAdded { task ->
                     }
                     if (config.name == 'release') {
                         def stripTask = tasks.register('stripLibRelease', StripSymbols) {
+                            onlyIf {
+                                config.active
+                            }
                             dependsOn linkTask
                             targetPlatform = tasks.linkLibRelease.targetPlatform
                             toolChain = tasks.linkLibRelease.toolChain
@@ -274,7 +277,7 @@ library {
 
 tasks.withType(StripSymbols).configureEach {
     onlyIf {
-        name == ("stripLibRelease")
+        name == ("stripLibRelease") && !project.hasProperty('skip-native')
     }
 }
 
