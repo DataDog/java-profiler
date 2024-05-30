@@ -290,7 +290,9 @@ retry:
         _table[idx].age = 0;
         _table[idx].frames_size = num_frames;
         _table[idx].frames = new jvmtiFrameInfo[_table[idx].frames_size];
-        memcpy(_table[idx].frames, frames, sizeof(jvmtiFrameInfo) * _table[idx].frames_size);
+        if (frames != nullptr) {
+            memcpy(_table[idx].frames, frames, sizeof(jvmtiFrameInfo) * _table[idx].frames_size);
+        }
         _table[idx].ctx = Contexts::get(tid);
     }
 
