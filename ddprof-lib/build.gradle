@@ -52,11 +52,11 @@ def osarchext() {
 }
 
 def libraryTargetPath(type) {
-    return "${libraryTargetBase(type)}/META-INF/native-libs/${osIdentifier()}-${osarchext()}${isMusl() ? '-musl' : ''}"
+    return "${libraryTargetBase(type)}/META-INF/native-libs/${osIdentifier()}-${archIdentifier()}${isMusl() ? '-musl' : ''}"
 }
 
 def librarySourcePath(type, qualifier = "") {
-    return "${projectDir}/build/lib/main/${type}/${osIdentifier()}/${osarchext()}/${qualifier}/libjavaProfiler.${osIdentifier() == 'macos' ? 'dylib' : 'so'}"
+    return "${projectDir}/build/lib/main/${type}/${osIdentifier()}/${archIdentifier()}/${qualifier}/libjavaProfiler.${osIdentifier() == 'macos' ? 'dylib' : 'so'}"
 }
 
 ext {
@@ -222,6 +222,7 @@ tasks.whenTaskAdded { task ->
                         def copyTask = tasks.findByName("copyReleaseLibs")
                         if (copyTask != null) {
                             copyTask.dependsOn stripTask
+                            copyTask.inputs.files stripTask.get().outputs.files
                         }
                     }
                 }
