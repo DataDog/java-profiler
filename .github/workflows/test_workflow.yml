@@ -10,7 +10,7 @@ jobs:
   test-linux-glibc:
     strategy:
       matrix:
-        java_version: [ 8u362+9, 11.0.18+10, 17.0.6+10, 21.0.1+12 ]
+        java_version: [ 8u412+9, 11.0.23+12, 17.0.11+12, 21.0.3+12, 22.0.1+12 ]
         config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -28,6 +28,8 @@ jobs:
           find . -type d -name 'jdk*' -maxdepth 1| xargs -I {} mv {} test_jdk
       - name: Test
         run: |
+          sudo sysctl vm.mmap_rnd_bits=28
+
           set +e
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
@@ -62,7 +64,7 @@ jobs:
   test-ubuntu-jdk:
     strategy:
       matrix:
-        java_version: [ 11, 17, 21 ]
+        java_version: [ '11.0.23-librca', '17.0.11-librca', '21.0.3-librca', '22.0.1-librca' ]
         config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 180
@@ -76,16 +78,20 @@ jobs:
       - name: Prepare JDK ${{ matrix.java_version }}
         run: |
           sudo apt-get update
-          sudo apt-get install openjdk-${{ matrix.java_version }}-jdk
-          uname -r
+          sudo apt-get install -y curl zip unzip 
+          curl -s "https://get.sdkman.io" | bash
+          source "$HOME/.sdkman/bin/sdkman-init.sh"
+          echo 'n' | sdk install java ${{ matrix.java_version }}
       - name: Test
         run: |
+          sudo sysctl vm.mmap_rnd_bits=28
+          source "$HOME/.sdkman/bin/sdkman-init.sh"
+          
           set +e
-          locate libtsan_preinit.o
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
           export LIBC=glibc
-          export JAVA_TEST_HOME=/usr/lib/jvm/java-${{ matrix.java_version }}-openjdk-amd64
+          export JAVA_TEST_HOME=${SDKMAN_DIR}/candidates/java/${{ matrix.java_version }}
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
           ./gradlew :ddprof-test:test${{ matrix.config }}
@@ -137,6 +143,8 @@ jobs:
           java-version: "11"
       - name: Test
         run: |
+          sudo sysctl vm.mmap_rnd_bits=28
+
           set +e
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
@@ -183,6 +191,7 @@ jobs:
           java-version: "11"
       - name: Prepare JDK ${{ matrix.java_version }}
         run: |
+          sudo sysctl vm.mmap_rnd_bits=28
           sudo apt-get -y update && sudo apt-get -y install curl
           set -eux;
           sudo mkdir -p /usr/lib/jvm/oracle8;
@@ -228,7 +237,7 @@ jobs:
   test-linux-musl:
     strategy:
       matrix:
-        java_version: [ 8u362+9, 11.0.18+10, 17.0.6+10, 21.0.1+12 ]
+        java_version: [ 8u412+9, 11.0.23+12, 17.0.11+12, 21.0.3+12, 22.0.1+12 ]
         config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -292,6 +301,7 @@ jobs:
         config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    if: matrix.config == 'release' || matrix.config == 'debug'
 
     steps:
       - uses: actions/checkout@v3
