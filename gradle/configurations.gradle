@@ -2,12 +2,14 @@ apply from: rootProject.file('common.gradle')
 
 ext.buildConfigurations = []
 
+@SuppressWarnings('GrMethodMayBeStatic')
 def buildConfigNames() {
   buildConfigurations.findAll {
     it.os == osIdentifier() && it.arch == archIdentifier()
   }.collect { it.name }.toSet()
 }
 
+@SuppressWarnings('GrMethodMayBeStatic')
 def buildConfigs() {
   return buildConfigurations.findAll {
     it.os == osIdentifier() && it.arch == archIdentifier()
@@ -121,7 +123,7 @@ def commonLinuxLinkerArgs = ["-ldl", "-Wl,-z,defs", "--verbose", "-lpthread", "-
 
 def commonMacosCompilerArgs = commonLinuxCompilerArgs + ["-D_XOPEN_SOURCE", "-D_DARWIN_C_SOURCE"]
 
-def asanEnv = libasan != null ?
+def asanEnv = hasAsan() ?
   ['LD_PRELOAD': libasan,
     // warning: stack use after return can cause slowness on arm64
     "ASAN_OPTIONS" : "detect_stack_use_after_return=1 suppressions=${rootDir}/gradle/sanitizers/asan.supp",
@@ -130,7 +132,7 @@ def asanEnv = libasan != null ?
     "LSAN_OPTIONS" :  "detect_leaks=0"
   ] : [:]
 
-def asanCompilerArgs = [
+def asanCompilerArgs = hasAsan() ? [
   '-g',
   // Generate debug information
   '-DDEBUG',
@@ -162,15 +164,18 @@ def asanCompilerArgs = [
   '-fno-omit-frame-pointer',
   // Keep frame pointer for better debugging
   '-fno-optimize-sibling-calls'  // Disable tail call optimization for better stack traces
-]
+] : []
 
-def asanLinkerArgs = [
+def asanLinkerArgs = hasAsan() ? [
+  "-L${file(libasan).parent}",
+  "-lasan",
+  "-lubsan",
   "-fsanitize=address",
   "-fsanitize=undefined",
   "-fno-omit-frame-pointer"  // Often recommended with sanitizers
-]
+] : []
 
-def tsanCompilerArgs = [
+def tsanCompilerArgs = hasTsan() ? [
   '-g',
   // Generate debug information
   '-DDEBUG',
@@ -182,12 +187,16 @@ def tsanCompilerArgs = [
   '-fno-omit-frame-pointer',
   // Keep frame pointer for better debugging
   '-fno-optimize-sibling-calls'  // Disable tail call optimization for better stack traces
-]
+] : []
 
-def tsanLinkerArgs = ["-fsanitize=thread", "-fno-omit-frame-pointer"  // Often recommended with sanitizers
-]
+def tsanLinkerArgs = hasTsan() ? [
+  "-L${file(libtsan).parent}",
+  "-ltsan",
+  "-fsanitize=thread",
+  "-fno-omit-frame-pointer"  // Often recommended with sanitizers
+] : []
 
-def tsanEnv = libtsan != null ?
+def tsanEnv = hasTsan() ?
   ['LD_PRELOAD': libtsan,
     "TSAN_OPTIONS" : "suppressions=${rootDir}/gradle/sanitizers/tsan.supp"
   ] : [:]
