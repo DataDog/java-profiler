@@ -301,16 +301,21 @@ jobs:
         config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    if: matrix.config == 'release' || matrix.config == 'debug'
 
     steps:
+      - name: Set config output
+        id: set_config
+        run: echo "::set-output name=config::${{ matrix.config }}"
       - uses: actions/checkout@v3
+        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
       - name: Prepare build JDK
+        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
         uses: actions/setup-java@v3
         with:
           distribution: 'temurin'
           java-version: "11"
       - name: Prepare JDK ${{ matrix.java_version }}
+        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
         run: |
           sudo apt-get -y update && sudo apt-get -y install curl g++-9 gcc-9
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 100 --slave /usr/bin/g++ g++ /usr/bin/g++-9
@@ -333,6 +338,7 @@ jobs:
           # rename the bundled libstdc++.so to avoid conflicts with the system one
           sudo mv /usr/lib/jvm/zing/etc/libc++/libstdc++.so.6 /usr/lib/jvm/zing/etc/libc++/libstdc++.so.6.bak
       - name: Test
+        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
         run: |
           set +e
           export TEST_COMMIT=${{ github.sha }}
