@@ -117,6 +117,7 @@ VMStructs::MemoryUsageFunc VMStructs::_memory_usage_func = NULL;
 VMStructs::GCHeapSummaryFunc VMStructs::_gc_heap_summary_func = NULL;
 VMStructs::FindFlagFunc VMStructs::_find_flag_func = NULL;
 VMStructs::IsValidMethodFunc VMStructs::_is_valid_method_func = NULL;
+VMStructs::GetCurrentThreadOrNullFunc VMStructs::_get_current_thread_or_null_func = NULL;
 
 char** VMStructs::_collected_heap_addr = NULL;
 
@@ -500,6 +501,7 @@ void VMStructs::initJvmFunctions() {
     _heap_usage_func = (HeapUsageFunc) findHeapUsageFunc();
     _gc_heap_summary_func = (GCHeapSummaryFunc)_libjvm->findSymbol("_ZN13CollectedHeap19create_heap_summaryEv");
     _is_valid_method_func = (IsValidMethodFunc)_libjvm->findSymbol("_ZN6Method15is_valid_methodEPKS_");
+    _get_current_thread_or_null_func = (GetCurrentThreadOrNullFunc)_libjvm->findSymbol("_ZN6Thread15current_or_nullEv");
     initUnsafeFunctions();
 }
 
@@ -600,6 +602,9 @@ void VMStructs::initMemoryUsage(JNIEnv* env) {
 }
 
 VMThread* VMThread::current() {
+    if (_get_current_thread_or_null_func != nullptr) {
+        return (VMThread*)_get_current_thread_or_null_func();
+    }
     return (VMThread*)pthread_getspecific((pthread_key_t)_tls_index);
 }
 

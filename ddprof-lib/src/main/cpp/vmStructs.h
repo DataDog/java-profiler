@@ -145,6 +145,9 @@ class VMStructs {
     typedef bool (*IsValidMethodFunc)(void*);
     static IsValidMethodFunc _is_valid_method_func;
 
+    typedef void* (*GetCurrentThreadOrNullFunc)();
+    static GetCurrentThreadOrNullFunc _get_current_thread_or_null_func;
+
     static uintptr_t readSymbol(const char* symbol_name);
     static void initOffsets();
     static void resolveOffsets();
