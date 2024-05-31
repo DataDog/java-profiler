@@ -613,6 +613,9 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
     while ((len = getline(&str, &str_size, f)) > 0) {
         str[len - 1] = 0;
 
+        if (strstr(str, "libj9jit")) {
+            continue;
+        }
         MemoryMapDesc map(str);
         if (!map.isReadable() || map.file() == NULL || map.file()[0] == 0) {
             continue;

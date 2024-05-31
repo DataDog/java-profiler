@@ -1012,6 +1012,7 @@ Error Profiler::checkJvmCapabilities() {
 
 Error Profiler::start(Arguments& args, bool reset) {
     MutexLocker ml(_state_lock);
+    fprintf(stdout, "===> Profiler start\n");
     if (_state > IDLE) {
         return Error("Profiler already started");
     }
