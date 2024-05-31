@@ -73,7 +73,8 @@ void WallClock::signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64
 
     ExecutionEvent event;
     VMThread* vm_thread = VMThread::current();
-    int raw_thread_state = vm_thread ? vm_thread->state() : 0;
+    bool is_java_thread = vm_thread && VM::jni();
+    int raw_thread_state = vm_thread && is_java_thread ? vm_thread->state() : 0;
     bool is_initialized = raw_thread_state >= 4 && raw_thread_state < 12;
     ThreadState state = ThreadState::UNKNOWN;
     ExecutionMode mode = ExecutionMode::UNKNOWN;
@@ -82,7 +83,7 @@ void WallClock::signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64
         if (os_state != ThreadState::UNKNOWN) {
             state = os_state;
         }
-        mode = VM::jni() != NULL ? convertJvmExecutionState(raw_thread_state) : ExecutionMode::JVM;
+        mode = is_java_thread ? convertJvmExecutionState(raw_thread_state) : ExecutionMode::JVM;
     }
     if (state == ThreadState::UNKNOWN) {
         if (inSyscall(ucontext)) {
