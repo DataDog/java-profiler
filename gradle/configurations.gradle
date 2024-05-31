@@ -203,7 +203,7 @@ def tsanEnv = hasTsan() ?
 
 // Linux
 addBuildConfiguration 'release', 'linux', 'x64',
-  ['-O3', '-DNDEBUG'] + commonLinuxCompilerArgs,
+  ['-O3', '-DNDEBUG', '-g'] + commonLinuxCompilerArgs,
   commonLinuxLinkerArgs + [
     "-Wl,-z,nodelete",
     "-static-libstdc++",
@@ -226,7 +226,7 @@ addBuildConfiguration 'tsan', 'linux', 'x64',
   tsanEnv
 
 addBuildConfiguration 'release', 'linux', 'arm64',
-  ['-O3', '-DNDEBUG'] + commonLinuxCompilerArgs,
+  ['-O3', '-DNDEBUG', '-g'] + commonLinuxCompilerArgs,
   commonLinuxLinkerArgs + [
     "-Wl,-z,nodelete",
     "-static-libstdc++",

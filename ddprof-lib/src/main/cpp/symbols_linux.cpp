@@ -29,179 +29,10 @@
 #include <fcntl.h>
 #include <linux/limits.h>
 #include "symbols.h"
+#include "symbols_linux.h"
 #include "dwarf.h"
 #include "log.h"
 #include "safeAccess.h"
-
-
-class SymbolDesc {
-  private:
-    const char* _addr;
-    const char* _desc;
-
-  public:
-      SymbolDesc(const char* s) {
-          _addr = s;
-          _desc = strchr(_addr, ' ');
-      }
-
-      const char* addr() { return (const char*)strtoul(_addr, NULL, 16); }
-      char type()        { return _desc != NULL ? _desc[1] : 0; }
-      const char* name() { return _desc + 3; }
-};
-
-class MemoryMapDesc {
-  private:
-    const char* _addr;
-    const char* _end;
-    const char* _perm;
-    const char* _offs;
-    const char* _dev;
-    const char* _inode;
-    const char* _file;
-
-  public:
-      MemoryMapDesc(const char* s) {
-          _addr = s;
-          _end = strchr(_addr, '-') + 1;
-          _perm = strchr(_end, ' ') + 1;
-          _offs = strchr(_perm, ' ') + 1;
-          _dev = strchr(_offs, ' ') + 1;
-          _inode = strchr(_dev, ' ') + 1;
-          _file = strchr(_inode, ' ');
-
-          if (_file != NULL) {
-              while (*_file == ' ') _file++;
-          }
-      }
-
-      const char* file()    { return _file; }
-      bool isReadable()     { return _perm[0] == 'r'; }
-      bool isExecutable()   { return _perm[2] == 'x'; }
-      const char* addr()    { return (const char*)strtoul(_addr, NULL, 16); }
-      const char* end()     { return (const char*)strtoul(_end, NULL, 16); }
-      unsigned long offs()  { return strtoul(_offs, NULL, 16); }
-      unsigned long inode() { return strtoul(_inode, NULL, 10); }
-
-      unsigned long dev() {
-          char* colon;
-          unsigned long major = strtoul(_dev, &colon, 16);
-          unsigned long minor = strtoul(colon + 1, NULL, 16);
-          return major << 8 | minor;
-      }
-};
-
-
-#ifdef __LP64__
-const unsigned char ELFCLASS_SUPPORTED = ELFCLASS64;
-typedef Elf64_Ehdr ElfHeader;
-typedef Elf64_Shdr ElfSection;
-typedef Elf64_Phdr ElfProgramHeader;
-typedef Elf64_Nhdr ElfNote;
-typedef Elf64_Sym  ElfSymbol;
-typedef Elf64_Rel  ElfRelocation;
-typedef Elf64_Dyn  ElfDyn;
-#define ELF_R_TYPE ELF64_R_TYPE
-#define ELF_R_SYM  ELF64_R_SYM
-#else
-const unsigned char ELFCLASS_SUPPORTED = ELFCLASS32;
-typedef Elf32_Ehdr ElfHeader;
-typedef Elf32_Shdr ElfSection;
-typedef Elf32_Phdr ElfProgramHeader;
-typedef Elf32_Nhdr ElfNote;
-typedef Elf32_Sym  ElfSymbol;
-typedef Elf32_Rel  ElfRelocation;
-typedef Elf32_Dyn  ElfDyn;
-#define ELF_R_TYPE ELF32_R_TYPE
-#define ELF_R_SYM  ELF32_R_SYM
-#endif // __LP64__
-
-#if defined(__x86_64__)
-#  define R_GLOB_DAT R_X86_64_GLOB_DAT
-#elif defined(__i386__)
-#  define R_GLOB_DAT R_386_GLOB_DAT
-#elif defined(__arm__) || defined(__thumb__)
-#  define R_GLOB_DAT R_ARM_GLOB_DAT
-#elif defined(__aarch64__)
-#  define R_GLOB_DAT R_AARCH64_GLOB_DAT
-#elif defined(__PPC64__)
-#  define R_GLOB_DAT R_PPC64_GLOB_DAT
-#else
-#  error "Compiling on unsupported arch"
-#endif
-
-#ifdef __musl__
-static const bool MUSL = true;
-#else
-static const bool MUSL = false;
-#endif // __musl__
-
-class ElfParser {
-  private:
-    CodeCache* _cc;
-    const char* _base;
-    const char* _file_name;
-    bool _relocate_dyn;
-    ElfHeader* _header;
-    const char* _sections;
-    const char* _vaddr_diff;
-
-    ElfParser(CodeCache* cc, const char* base, const void* addr, const char* file_name, bool relocate_dyn) {
-        _cc = cc;
-        _base = base;
-        _file_name = file_name;
-        _relocate_dyn = relocate_dyn;
-        _header = (ElfHeader*)addr;
-        _sections = (const char*)addr + _header->e_shoff;
-    }
-
-    bool validHeader() {
-        unsigned char* ident = _header->e_ident;
-        return ident[0] == 0x7f && ident[1] == 'E' && ident[2] == 'L' && ident[3] == 'F'
-            && ident[4] == ELFCLASS_SUPPORTED && ident[5] == ELFDATA2LSB && ident[6] == EV_CURRENT
-            && _header->e_shstrndx != SHN_UNDEF;
-    }
-
-    ElfSection* section(int index) {
-        return (ElfSection*)(_sections + index * _header->e_shentsize);
-    }
-
-    const char* at(ElfSection* section) {
-        return (const char*)_header + section->sh_offset;
-    }
-
-    const char* at(ElfProgramHeader* pheader) {
-        return _header->e_type == ET_EXEC ? (const char*)pheader->p_vaddr : _vaddr_diff + pheader->p_vaddr;
-    }
-
-    char* dyn_ptr(ElfDyn* dyn) {
-        // GNU dynamic linker relocates pointers in the dynamic section, while musl doesn't.
-        // Also, [vdso] is not relocated, and its vaddr may differ from the load address.
-        if (_relocate_dyn || (char*)dyn->d_un.d_ptr < _base) {
-            return (char*)_vaddr_diff + dyn->d_un.d_ptr;
-        } else {
-            return (char*)dyn->d_un.d_ptr;
-        }
-    }
-
-    ElfSection* findSection(uint32_t type, const char* name);
-    ElfProgramHeader* findProgramHeader(uint32_t type);
-
-    void calcVirtualLoadAddress();
-    void parseDynamicSection();
-    void parseDwarfInfo();
-    uint32_t getSymbolCount(uint32_t* gnu_hash);
-    void loadSymbols(bool use_debug);
-    bool loadSymbolsUsingBuildId();
-    bool loadSymbolsUsingDebugLink();
-    void loadSymbolTable(const char* symbols, size_t total_size, size_t ent_size, const char* strings);
-    void addRelocationSymbols(ElfSection* reltab, const char* plt);
-
-  public:
-    static void parseProgramHeaders(CodeCache* cc, const char* base, const char* end, bool relocate_dyn);
-    static bool parseFile(CodeCache* cc, const char* base, const char* file_name, bool use_debug);
-};
-
 
 ElfSection* ElfParser::findSection(uint32_t type, const char* name) {
     const char* strtab = at(section(_header->e_shstrndx));
@@ -245,14 +76,16 @@ bool ElfParser::parseFile(CodeCache* cc, const char* base, const char* file_name
     }
 
     size_t length = (size_t)lseek64(fd, 0, SEEK_END);
+    fprintf(stdout, "===> Parsing file: %s, length=%lu\n", file_name, length);
     void* addr = mmap(NULL, length, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
 
     if (addr == MAP_FAILED) {
         Log::warn("Could not parse symbols from %s: %s", file_name, strerror(errno));
     } else {
-        ElfParser elf(cc, base, addr, file_name, false);
+        ElfParser elf(cc, base != nullptr ? base : (const char*)addr, addr, file_name, length, false);
         if (elf.validHeader()) {
+            fprintf(stdout, "===> Loading symbols for: %s (%lu)\n", file_name, length);
             elf.loadSymbols(use_debug);
         }
         munmap(addr, length);
@@ -261,7 +94,7 @@ bool ElfParser::parseFile(CodeCache* cc, const char* base, const char* file_name
 }
 
 void ElfParser::parseProgramHeaders(CodeCache* cc, const char* base, const char* end, bool relocate_dyn) {
-    ElfParser elf(cc, base, base, NULL, relocate_dyn);
+    ElfParser elf(cc, base, base, NULL, 0, relocate_dyn);
     if (elf.validHeader() && base + elf._header->e_phoff < end) {
         cc->setTextBase(base);
         elf.calcVirtualLoadAddress();
@@ -500,12 +333,17 @@ bool ElfParser::loadSymbolsUsingDebugLink() {
 }
 
 void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t ent_size, const char* strings) {
+    fprintf(stdout, "===> Loading symbol table at %p, base=%p, size=%lu, entry_size=%lu\n", symbols, _base, total_size, ent_size);
     for (const char* symbols_end = symbols + total_size; symbols < symbols_end; symbols += ent_size) {
         ElfSymbol* sym = (ElfSymbol*)symbols;
         if (sym->st_name != 0 && sym->st_value != 0) {
-            // Skip special AArch64 mapping symbols: $x and $d
-            if (sym->st_size != 0 || sym->st_info != 0 || strings[sym->st_name] != '$') {
-                _cc->add(_base + sym->st_value, (int)sym->st_size, strings + sym->st_name);
+            if (_length == 0 || (sym->st_name < _length && sym->st_value < _length)) {
+                // Skip special AArch64 mapping symbols: $x and $d
+                if (sym->st_size != 0 || sym->st_info != 0 || strings[sym->st_name] != '$') {
+                    _cc->add(_base + sym->st_value, (int)sym->st_size, strings + sym->st_name);
+                }
+            } else {
+                fprintf(stdout, "===> Skipping symbol: value=%lu, name=%u, stt=%d\n", sym->st_value, sym->st_name, sym->st_info & 0xf);
             }
         }
     }
@@ -612,7 +450,7 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
 
     while ((len = getline(&str, &str_size, f)) > 0) {
         str[len - 1] = 0;
-
+        fprintf(stdout, "===> Parsing library: %s\n", str);
         MemoryMapDesc map(str);
         if (!map.isReadable() || map.file() == NULL || map.file()[0] == 0) {
             continue;
@@ -647,7 +485,7 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
         if (strchr(map.file(), ':') == NULL) {
             u64 inode = u64(map.dev()) << 32 | map.inode();
             if (inode != 0) {
-                // Do not parse the same executable twice, e.g. on Alpine Linux
+                // Do not parse the same executable twice, e.g. on Alpine Linux 
                 if (_parsed_inodes.insert(inode).second) {
                     if (inode == last_inode) {
                         // If last_inode is set, image_base is known to be valid and readable
