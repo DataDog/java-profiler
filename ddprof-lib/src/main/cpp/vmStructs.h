@@ -444,9 +444,6 @@ class VMThread : VMStructs {
         return *(int*)(osthread + _osthread_id_offset);
     }
 
-    // This triggers in the test suite due to the absence of robust thread filters.
-    // We will address this as a separate ticket.
-    __attribute__((no_sanitize("address")))
     int state() {
         return _thread_state_offset >= 0 ? *(int*) at(_thread_state_offset) : 0;
     }
