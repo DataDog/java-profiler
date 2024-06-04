@@ -309,8 +309,6 @@ tasks.withType(Test) {
 
 // relink the tasks when all are created
 gradle.projectsEvaluated {
-//    tasks.copyReleaseLibs.dependsOn tasks.stripLibRelease
-
     buildConfigNames().each {
         def compileTask = tasks.findByName("compileLib${it.capitalize()}")
         def linkTask = tasks.findByName("linkLib${it.capitalize()}")

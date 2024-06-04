@@ -37,6 +37,22 @@ tasks.withType(StripSymbols).configureEach { task ->
     }
 }
 
+def buildResourcesTask = tasks.register("buildResources", Exec) {
+    group = 'build'
+    description = "Build the resources for the Google Tests"
+
+    onlyIf {
+        hasGtest && !project.hasProperty('skip-native') && os().isLinux()
+    }
+
+    def targetDir = project(':ddprof-lib').file('build/test/resources/unresolved-functions')
+
+    commandLine "sh", "-c", "cd ${project(':ddprof-lib').projectDir}/src/test/resources/unresolved-functions && make TARGET_DIR=${targetDir}"
+
+    inputs.files project(':ddprof-lib').files('src/test/resources/unresolved-functions')
+    outputs.file "${targetDir}/main"
+}
+
 def gtestAll = tasks.register("gtest") {
     onlyIf {
         hasGtest && !project.hasProperty('skip-native')
@@ -123,7 +139,10 @@ tasks.whenTaskAdded { task ->
                             description = "Link the Google Test for the ${config.name} build of the library"
                             source = fileTree("$buildDir/obj/gtest/${config.name}/${testName}")
                             linkedFile = binary
-                            linkerArgs.addAll(config.linkerArgs)
+                            if (config.name != 'release') {
+                                // linking the gtests using the minimizing release flags is making gtest unhappy
+                                linkerArgs.addAll(config.linkerArgs)
+                            }
                             linkerArgs.addAll("-lgtest", "-lgtest_main", "-lgmock", "-lgmock_main")
                             if (os().isMacOsX()) {
                                 linkerArgs.addAll("-L/opt/homebrew/opt/googletest/lib")
@@ -156,6 +175,10 @@ tasks.whenTaskAdded { task ->
                             gtestLinkTask.dependsOn compileTask
                         }
                         gtestTask.get().dependsOn gtestExecuteTask.get()
+                        if (os().isLinux()) {
+                            // custom binaries for tests are built only on linux
+                            gtestExecuteTask.get().dependsOn buildResourcesTask
+                        }
                         gtestAll.get().dependsOn gtestExecuteTask.get()
                     }
                 }

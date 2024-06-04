@@ -331,10 +331,10 @@ bool ElfParser::loadSymbolsUsingDebugLink() {
 }
 
 void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t ent_size, const char* strings) {
-    fprintf(stdout, "===> Loading symbol table at %p, base=%p, size=%lu, entry_size=%lu\n", symbols, _base, total_size, ent_size);
     for (const char* symbols_end = symbols + total_size; symbols < symbols_end; symbols += ent_size) {
         ElfSymbol* sym = (ElfSymbol*)symbols;
         if (sym->st_name != 0 && sym->st_value != 0) {
+            // sanity check the offsets not to exceed the file size
             if (_length == 0 || (sym->st_name < _length && sym->st_value < _length)) {
                 // Skip special AArch64 mapping symbols: $x and $d
                 if (sym->st_size != 0 || sym->st_info != 0 || strings[sym->st_name] != '$') {
