@@ -26,7 +26,7 @@
 #include "tsc.h"
 #include "vmStructs.h"
 
-volatile bool WallClock::_enabled = false;
+std::atomic<bool> WallClock::_enabled{false};
 
 bool WallClock::inSyscall(void *ucontext) {
     StackFrame frame(ucontext);
@@ -136,7 +136,7 @@ void WallClock::stop() {
 }
 
 void WallClock::timerLoop() {
-    if (!_enabled) {
+    if (!_enabled.load(std::memory_order_relaxed)) {
         return;
     }
     std::vector<int> tids;

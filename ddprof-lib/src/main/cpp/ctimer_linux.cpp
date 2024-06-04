@@ -79,7 +79,7 @@ long CTimer::_interval;
 int CTimer::_max_timers = 0;
 int* CTimer::_timers = NULL;
 CStack CTimer::_cstack;
-volatile bool CTimer::_enabled = false;
+std::atomic<bool> CTimer::_enabled{false};
 int CTimer::_signal;
 
 int CTimer::registerThread(int tid) {
@@ -191,7 +191,7 @@ void CTimer::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     // Save the current errno value
     int saved_errno = errno;
 
-    if (!_enabled) return;
+    if (!_enabled.load(std::memory_order_relaxed)) return;
     int tid = 0;
     ProfiledThread* current = ProfiledThread::current();
     if (current != NULL) {

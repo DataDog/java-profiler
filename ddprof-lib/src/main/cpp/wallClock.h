@@ -27,7 +27,8 @@
 
 class WallClock : public Engine {
   private:
-    static volatile bool _enabled;
+    static std::atomic<bool> _enabled;
+
     bool _collapsing;
     long _interval;
 
@@ -76,7 +77,7 @@ class WallClock : public Engine {
     void stop();
 
     inline void enableEvents(bool enabled) {
-        _enabled = enabled;
+        _enabled.store(enabled, std::memory_order_seq_cst);
     }
 };
 

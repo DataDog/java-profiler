@@ -18,7 +18,7 @@
 #define _CTIMER_H
 
 #include "engine.h"
-
+#include <atomic>
 #ifdef __linux__
 
 #include <signal.h>
@@ -26,7 +26,7 @@
 
 class CTimer : public Engine {
   private:
-    static volatile bool _enabled;
+    static std::atomic<bool> _enabled;
     static long _interval;
     static CStack _cstack;
     static int _signal;
@@ -58,7 +58,7 @@ class CTimer : public Engine {
     void stop();
 
     inline void enableEvents(bool enabled) {
-        _enabled = enabled;
+        _enabled.store(enabled, std::memory_order_seq_cst);
     }
 };
 
