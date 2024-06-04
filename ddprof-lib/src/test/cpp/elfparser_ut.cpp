@@ -13,9 +13,8 @@ TEST(Elf, readSymTable) {
     if (getcwd(cwd, sizeof(cwd)) == nullptr) {
         exit(1);
     }
-    fprintf(stdout, "Current working directory: %s\n", cwd);
     char path[PATH_MAX];
-    snprintf(path, sizeof(path) - 1, "%s/../src/test/resources/libj9jit.so", cwd);
+    snprintf(path, sizeof(path) - 1, "%s/../build/test/resources/unresolved-functions/main", cwd);
     if (access(path, R_OK) != 0) {
         fprintf(stdout, "Missing test resource %s. Skipping the test\n", path);
         exit(0);
