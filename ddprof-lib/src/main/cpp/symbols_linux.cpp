@@ -76,7 +76,6 @@ bool ElfParser::parseFile(CodeCache* cc, const char* base, const char* file_name
     }
 
     size_t length = (size_t)lseek64(fd, 0, SEEK_END);
-    fprintf(stdout, "===> Parsing file: %s, length=%lu\n", file_name, length);
     void* addr = mmap(NULL, length, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
 
@@ -450,7 +449,6 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
 
     while ((len = getline(&str, &str_size, f)) > 0) {
         str[len - 1] = 0;
-        fprintf(stdout, "===> Parsing library: %s\n", str);
         MemoryMapDesc map(str);
         if (!map.isReadable() || map.file() == NULL || map.file()[0] == 0) {
             continue;
