@@ -136,7 +136,7 @@ void WallClock::stop() {
 }
 
 void WallClock::timerLoop() {
-    if (!_enabled.load(std::memory_order_relaxed)) {
+    if (!_enabled.load(std::memory_order_acquire)) {
         return;
     }
     std::vector<int> tids;

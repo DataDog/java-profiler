@@ -58,7 +58,7 @@ class CTimer : public Engine {
     void stop();
 
     inline void enableEvents(bool enabled) {
-        _enabled.store(enabled, std::memory_order_seq_cst);
+        _enabled.store(enabled, std::memory_order_release);
     }
 };
 

@@ -190,8 +190,8 @@ void CTimer::stop() {
 void CTimer::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     // Save the current errno value
     int saved_errno = errno;
-
-    if (!_enabled.load(std::memory_order_relaxed)) return;
+    // we want to ensure memory order because of the possibility the instance gets cleared
+    if (!_enabled.load(std::memory_order_acquire)) return;
     int tid = 0;
     ProfiledThread* current = ProfiledThread::current();
     if (current != NULL) {
