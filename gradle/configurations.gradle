@@ -58,10 +58,7 @@ def locateLibasan() {
 }
 
 def locateLibtsan() {
-  def libtsan_preinit = locate('libtsan_preinit.o')
-  if (libtsan_preinit != null && file(libtsan_preinit).exists()) {
     return locateLibrary('libtsan')
-  }
 }
 
 ext.libasan = locateLibasan()

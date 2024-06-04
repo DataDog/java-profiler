@@ -139,7 +139,10 @@ tasks.whenTaskAdded { task ->
                             description = "Link the Google Test for the ${config.name} build of the library"
                             source = fileTree("$buildDir/obj/gtest/${config.name}/${testName}")
                             linkedFile = binary
-                            linkerArgs.addAll(config.linkerArgs)
+                            if (config.name != 'release') {
+                                // linking the gtests using the minimizing release flags is making gtest unhappy
+                                linkerArgs.addAll(config.linkerArgs)
+                            }
                             linkerArgs.addAll("-lgtest", "-lgtest_main", "-lgmock", "-lgmock_main")
                             if (os().isMacOsX()) {
                                 linkerArgs.addAll("-L/opt/homebrew/opt/googletest/lib")

@@ -20,6 +20,7 @@
 #include "counters.h"
 #include <map>
 #include <stddef.h>
+#include <stdlib.h>
 
 
 #define ROW_BITS        7
