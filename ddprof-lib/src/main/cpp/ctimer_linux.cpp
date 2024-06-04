@@ -120,8 +120,10 @@ void CTimer::unregisterThread(int tid) {
     if (tid >= _max_timers) {
         return;
     }
-
-    int timer = _timers[tid];
+    // Atomic acquire to avoid possible leak when unregistering
+    // This was raised by tsan, with registers and unregisters done in separate
+    // threads.
+    int timer = __atomic_load_n(&_timers[tid], __ATOMIC_ACQUIRE);
     if (timer != 0 && __sync_bool_compare_and_swap(&_timers[tid], timer--, 0)) {
         syscall(__NR_timer_delete, timer);
     }

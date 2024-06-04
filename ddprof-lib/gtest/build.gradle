@@ -7,6 +7,7 @@ if (rootDir.toString().endsWith("ddprof-lib/gradle")) {
     apply from: rootProject.file('../../common.gradle')
 }
 
+
 // disable the default compile and link tasks not to interfere with our custom ones
 tasks.withType(CppCompile).configureEach { task ->
     if (task.name.startsWith('compileRelease') || task.name.startsWith('compileDebug')) {

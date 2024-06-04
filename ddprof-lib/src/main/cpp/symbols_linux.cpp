@@ -76,7 +76,6 @@ bool ElfParser::parseFile(CodeCache* cc, const char* base, const char* file_name
     }
 
     size_t length = (size_t)lseek64(fd, 0, SEEK_END);
-    fprintf(stdout, "===> Parsing file: %s, length=%lu\n", file_name, length);
     void* addr = mmap(NULL, length, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
 
@@ -85,7 +84,6 @@ bool ElfParser::parseFile(CodeCache* cc, const char* base, const char* file_name
     } else {
         ElfParser elf(cc, base != nullptr ? base : (const char*)addr, addr, file_name, length, false);
         if (elf.validHeader()) {
-            fprintf(stdout, "===> Loading symbols for: %s (%lu)\n", file_name, length);
             elf.loadSymbols(use_debug);
         }
         munmap(addr, length);
@@ -342,8 +340,6 @@ void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t e
                 if (sym->st_size != 0 || sym->st_info != 0 || strings[sym->st_name] != '$') {
                     _cc->add(_base + sym->st_value, (int)sym->st_size, strings + sym->st_name);
                 }
-            } else {
-                fprintf(stdout, "===> Skipping symbol: value=%lu, name=%u, stt=%d\n", sym->st_value, sym->st_name, sym->st_info & 0xf);
             }
         }
     }
@@ -450,7 +446,6 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
 
     while ((len = getline(&str, &str_size, f)) > 0) {
         str[len - 1] = 0;
-        fprintf(stdout, "===> Parsing library: %s\n", str);
         MemoryMapDesc map(str);
         if (!map.isReadable() || map.file() == NULL || map.file()[0] == 0) {
             continue;

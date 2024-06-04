@@ -53,7 +53,8 @@ class SpinLock {
 
     bool tryLockShared() {
         int value;
-        while ((value = __atomic_load_n(&_lock, __ATOMIC_ACQUIRE)) <= 0) {
+        // we use relaxed as the compare already offers the guarantees we need
+        while ((value = __atomic_load_n(&_lock, __ATOMIC_RELAXED)) <= 0) {
             if (__sync_bool_compare_and_swap(&_lock, value, value - 1)) {
                 return true;
             }
@@ -63,7 +64,8 @@ class SpinLock {
 
     void lockShared() {
         int value;
-        while ((value = _lock) > 0 || !__sync_bool_compare_and_swap(&_lock, value, value - 1)) {
+        while ((value = __atomic_load_n(&_lock, __ATOMIC_RELAXED)) > 0
+            || !__sync_bool_compare_and_swap(&_lock, value, value - 1)) {
             spinPause();
         }
     }
