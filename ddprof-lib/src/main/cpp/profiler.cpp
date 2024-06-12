@@ -414,6 +414,28 @@ int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max
      */
     bool in_java = (state == 8 || state == 9);
     if (in_java && java_ctx->sp != 0) {
+        // check the frame is alive if we have access to vmstructs
+        int hsversion = VM::hotspot_version();
+        if (hsversion >= 0 && hsversion < 21 && VMStructs::hasMethodStructs()) {
+            NMethod* nmethod = CodeHeap::findNMethod(java_ctx->pc);
+            bool produceErrorFrame = true;
+            if (nmethod != nullptr && nmethod->isNMethod()) {
+                if (nmethod->isAlive()) {
+                    // normal case
+                    produceErrorFrame = false;
+                } else if (!(_safe_mode & POP_METHOD)) {
+                    // try to remove the zombie frame
+                    bool removedFrameSuccessfully = frame.unwindCompiled(nmethod)
+                            && isAddressInCode((const void*)frame.pc());
+                    produceErrorFrame = !removedFrameSuccessfully;
+                }
+            }
+            if (produceErrorFrame) {
+                frames->bci = BCI_ERROR;
+                frames->method_id = (jmethodID)"zombie";
+                return 1;
+            }
+        }
         // skip ahead to the Java frames before calling AGCT
         frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);
     } else if (state != 0 && vm_thread->lastJavaSP() == 0) {
