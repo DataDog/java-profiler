@@ -22,7 +22,7 @@ function build_and_test() {
   cd ${HERE}/src/test
   cmake -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -Wno-dev -S . -B ${TARGET}
   cmake --build ${TARGET}
-  cd ${TARGET} && ctest
+  cd ${TARGET} && ctest --output-on-failure
 }
 
 if [ -z "${BUILD_TYPE}" ]; then
