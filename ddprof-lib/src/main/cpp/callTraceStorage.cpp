@@ -50,7 +50,9 @@ class LongHashTable {
         if (table != NULL) {
             table->_prev = prev;
             table->_capacity = capacity;
-            table->_size = 0;
+            // The reset is not useful with the anon mmap setting the memory is zeroed.
+            // However this silences a false positive and should not have a performance impact.
+            table->clear();
         }
         return table;
     }
