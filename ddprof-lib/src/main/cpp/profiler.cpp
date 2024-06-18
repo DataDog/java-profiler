@@ -1143,7 +1143,7 @@ Error Profiler::start(Arguments& args, bool reset) {
 
         _state = RUNNING;
         _start_time = time(NULL);
-        __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
+        __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
 
         return Error::OK;
     }
