@@ -50,7 +50,9 @@ class LongHashTable {
         if (table != NULL) {
             table->_prev = prev;
             table->_capacity = capacity;
-            table->_size = 0;
+            // The reset is not useful with the anon mmap setting the memory is zeroed.
+            // However this silences a false positive and should not have a performance impact.
+            table->clear();
         }
         return table;
     }
@@ -226,13 +228,15 @@ u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
     u32 capacity = table->capacity();
     u32 slot = hash & (capacity - 1);
     u32 step = 0;
-
-    while (keys[slot] != hash) {
-        if (keys[slot] == 0) {
+    while (true) {
+        u64 key_value = __atomic_load_n(&keys[slot], __ATOMIC_RELAXED);
+        if (key_value == hash) { // Hash matches, exit the loop
+            break;
+        }
+        if (key_value == 0) {
             if (!__sync_bool_compare_and_swap(&keys[slot], 0, hash)) {
-                continue;
+                continue; // another thread claimed it, go to next slot
             }
-
             // Increment the table size, and if the load factor exceeds 0.75, reserve a new table
             if (table->incSize() == capacity * 3 / 4) {
                 LongHashTable* new_table = LongHashTable::allocate(table, capacity * 2);

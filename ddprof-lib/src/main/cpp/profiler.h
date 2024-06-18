@@ -225,7 +225,8 @@ class Profiler {
     }
 
     inline u32 recordingEpoch() {
-        return _epoch;
+        // no thread reordering constraints
+        return __atomic_load_n(&_epoch, __ATOMIC_RELAXED);
     }
 
     Error run(Arguments& args);

@@ -40,10 +40,11 @@ class ThreadFilter {
         if (thread_id >= _max_thread_id) {
             return NULL;
         }
-        return _bitmap[(u32)thread_id / BITMAP_CAPACITY];
+        return __atomic_load_n(&(_bitmap[static_cast<u32>(thread_id) / BITMAP_CAPACITY]), __ATOMIC_ACQUIRE);
     }
 
     u64& word(u64* bitmap, int thread_id) {
+        // todo: add thread safe APIs
         return bitmap[((u32)thread_id % BITMAP_CAPACITY) >> 6];
     }
 

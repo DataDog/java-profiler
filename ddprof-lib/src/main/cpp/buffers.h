@@ -29,6 +29,8 @@ class Buffer {
   private:
     int _offset;
     static const int _limit = BUFFER_SIZE - sizeof(int);
+    // this array is 'extended' by the RecordingBuffer
+    // this will confuse sanitizers and most of the sane people but it seems to work
     char _data[_limit];
 
   public:
@@ -87,12 +89,19 @@ class Buffer {
         _offset += 2;
     }
 
+    //    java-profiler/ddprof-lib/src/main/cpp/buffers.h:92:34: runtime error: store to misaligned address 0x7f3c446ec81e for type 'int', which requires 4 byte alignment
+    //    0x7f3c446ec81e: note: pointer points here
+    __attribute__((no_sanitize("undefined")))
     void put32(int v) {
         assert(_offset + 4 < limit());
         *(int*)(_data + _offset) = htonl(v);
         _offset += 4;
     }
 
+    // alignment issue to be looked at
+    //    runtime error: store to misaligned address 0x766bb5a1e814 for type 'u64', which requires 8 byte alignment
+    //         0x766bb5a1e814: note: pointer points here
+    __attribute__((no_sanitize("undefined")))
     void put64(u64 v) {
         assert(_offset + 8 < limit());
         *(u64*)(_data + _offset) = OS::hton64(v);

@@ -86,6 +86,7 @@ void StackFrame::ret() {
 
 
 bool StackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+
     instruction_t* ip = (instruction_t*)pc;
     if (ip == entry || *ip == 0xc3
         || strncmp(name, "itable", 6) == 0
@@ -95,7 +96,14 @@ bool StackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& p
         pc = ((uintptr_t*)sp)[0] - 1;
         sp += 8;
         return true;
-    } else if (entry != NULL && *(unsigned int*)entry == 0xec8b4855) {
+    }
+    if(entry == nullptr) {
+        return false;
+    }
+    if (reinterpret_cast<uintptr_t>(entry) % alignof(unsigned int) != 0) {
+        return false;
+    }
+    if (*(unsigned int*)entry == 0xec8b4855) {
         // The stub begins with
         //   push rbp
         //   mov  rbp, rsp
@@ -193,6 +201,9 @@ bool StackFrame::skipFaultInstruction() {
     return false;
 }
 
+// when accessing the immediate value to read the syscal value, we do not check for alignment issue
+// This can have performance penalties, though it is OK on x86_64
+__attribute__((no_sanitize("address")))
 bool StackFrame::checkInterruptedSyscall() {
 #ifdef __APPLE__
     // We are not interested in syscalls that do not check error code, e.g. semaphore_wait_trap
@@ -213,7 +224,9 @@ bool StackFrame::checkInterruptedSyscall() {
         // mov eax, SYS_ppoll with any timeout (ppoll adjusts timeout automatically)
         uintptr_t pc = this->pc();
         if ((pc & 0xfff) >= 7 && *(instruction_t*)(pc - 7) == 0xb8) {
-            int nr = *(int*)(pc - 6);
+            // mainly to satisfy sanitizer complaints around alignment issue: we rely on memcpy
+            int nr = 0;
+            memcpy(&nr, (void*)(pc - 6), sizeof(nr));
             if (nr == SYS_ppoll
                 || (nr == SYS_poll && (int)REG(RDX, rdx) == -1)
                 || (nr == SYS_epoll_wait && (int)REG(R10, r10) == -1)

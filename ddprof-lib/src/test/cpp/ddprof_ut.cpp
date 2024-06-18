@@ -81,6 +81,7 @@
         // long string should have been truncated to 8191 characters
         int prefix = 1 + (31 - __builtin_clz(8191)) / 7 + 1;
         EXPECT_EQ(0, buf[0].data()[prefix + 8191]);
+        free(str);
     }
 
     TEST(OS, threadId_sanity) {

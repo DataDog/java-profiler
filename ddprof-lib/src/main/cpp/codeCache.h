@@ -189,6 +189,10 @@ class CodeCache {
     long long memoryUsage() {
         return _capacity * sizeof(CodeBlob*) + _count * sizeof(NativeFunc);
     }
+
+    int count() {
+        return _count;
+    }
 };
 
 

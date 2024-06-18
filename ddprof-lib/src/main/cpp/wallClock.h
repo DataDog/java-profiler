@@ -17,6 +17,7 @@
 #ifndef _WALLCLOCK_H
 #define _WALLCLOCK_H
 
+#include <atomic>
 #include <climits>
 #include <signal.h>
 #include <pthread.h>
@@ -26,7 +27,8 @@
 
 class WallClock : public Engine {
   private:
-    static volatile bool _enabled;
+    static std::atomic<bool> _enabled;
+
     bool _collapsing;
     long _interval;
 
@@ -36,7 +38,7 @@ class WallClock : public Engine {
     // to avoid contention on a spin lock inside Profiler::recordSample().
     int _reservoir_size;
 
-    volatile bool _running;
+    std::atomic<bool> _running;
     pthread_t _thread;
 
     void timerLoop();
@@ -75,7 +77,7 @@ class WallClock : public Engine {
     void stop();
 
     inline void enableEvents(bool enabled) {
-        _enabled = enabled;
+        _enabled.store(enabled, std::memory_order_release);
     }
 };
 

@@ -26,7 +26,7 @@
 #include "tsc.h"
 #include "vmStructs.h"
 
-volatile bool WallClock::_enabled = false;
+std::atomic<bool> WallClock::_enabled{false};
 
 bool WallClock::inSyscall(void *ucontext) {
     StackFrame frame(ucontext);
@@ -73,7 +73,8 @@ void WallClock::signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64
 
     ExecutionEvent event;
     VMThread* vm_thread = VMThread::current();
-    int raw_thread_state = vm_thread ? vm_thread->state() : 0;
+    bool is_java_thread = vm_thread && VM::jni();
+    int raw_thread_state = vm_thread && is_java_thread ? vm_thread->state() : 0;
     bool is_initialized = raw_thread_state >= 4 && raw_thread_state < 12;
     ThreadState state = ThreadState::UNKNOWN;
     ExecutionMode mode = ExecutionMode::UNKNOWN;
@@ -82,7 +83,7 @@ void WallClock::signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64
         if (os_state != ThreadState::UNKNOWN) {
             state = os_state;
         }
-        mode = VM::jni() != NULL ? convertJvmExecutionState(raw_thread_state) : ExecutionMode::JVM;
+        mode = is_java_thread ? convertJvmExecutionState(raw_thread_state) : ExecutionMode::JVM;
     }
     if (state == ThreadState::UNKNOWN) {
         if (inSyscall(ucontext)) {
@@ -125,13 +126,17 @@ Error WallClock::start(Arguments &args) {
 }
 
 void WallClock::stop() {
-    _running = false;
+    _running.store(false);
+    // the thread join ensures we wait for the thread to finish before returning (and possibly removing the object)
     pthread_kill(_thread, WAKEUP_SIGNAL);
-    pthread_join(_thread, NULL);
+    int res = pthread_join(_thread, NULL);
+    if(res != 0) {
+        Log::warn("Unable to join WallClock thread on stop %d", res);
+    }
 }
 
 void WallClock::timerLoop() {
-    if (!_enabled) {
+    if (!_enabled.load(std::memory_order_acquire)) {
         return;
     }
     std::vector<int> tids;
@@ -149,7 +154,7 @@ void WallClock::timerLoop() {
     u64 startTime = TSC::ticks();
     WallClockEpochEvent epoch(startTime);
 
-    while (_running) {
+    while (_running.load(std::memory_order_relaxed)) {
         if (thread_filter->enabled()) {
             thread_filter->collect(tids);
         } else {

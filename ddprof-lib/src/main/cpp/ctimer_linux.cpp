@@ -79,7 +79,7 @@ long CTimer::_interval;
 int CTimer::_max_timers = 0;
 int* CTimer::_timers = NULL;
 CStack CTimer::_cstack;
-volatile bool CTimer::_enabled = false;
+std::atomic<bool> CTimer::_enabled{false};
 int CTimer::_signal;
 
 int CTimer::registerThread(int tid) {
@@ -120,8 +120,10 @@ void CTimer::unregisterThread(int tid) {
     if (tid >= _max_timers) {
         return;
     }
-
-    int timer = _timers[tid];
+    // Atomic acquire to avoid possible leak when unregistering
+    // This was raised by tsan, with registers and unregisters done in separate
+    // threads.
+    int timer = __atomic_load_n(&_timers[tid], __ATOMIC_ACQUIRE);
     if (timer != 0 && __sync_bool_compare_and_swap(&_timers[tid], timer--, 0)) {
         syscall(__NR_timer_delete, timer);
     }
@@ -186,7 +188,10 @@ void CTimer::stop() {
 }
 
 void CTimer::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
-    if (!_enabled) return;
+    // Save the current errno value
+    int saved_errno = errno;
+    // we want to ensure memory order because of the possibility the instance gets cleared
+    if (!_enabled.load(std::memory_order_acquire)) return;
     int tid = 0;
     ProfiledThread* current = ProfiledThread::current();
     if (current != NULL) {
@@ -206,6 +211,8 @@ void CTimer::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
     }
     Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0, &event);
     Shims::instance().setSighandlerTid(-1);
+    // we need to avoid spoiling the value of errno (tsan report)
+    errno = saved_errno;
 }
 
 #endif // __linux__

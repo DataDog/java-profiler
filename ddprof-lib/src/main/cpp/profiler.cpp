@@ -1144,7 +1144,7 @@ Error Profiler::start(Arguments& args, bool reset) {
 
         _state = RUNNING;
         _start_time = time(NULL);
-        _epoch++;
+        __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
 
         return Error::OK;
     }
@@ -1257,7 +1257,7 @@ Error Profiler::dump(const char* path, const int length) {
 
         lockAll();
         Error err = _jfr.dump(path, length);
-        _epoch++;
+        __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
 
         // Reset calltrace storage
         if (!_omit_stacktraces) {

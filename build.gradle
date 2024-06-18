@@ -41,6 +41,7 @@ allprojects {
   group = 'com.datadoghq'
 
   apply from: rootProject.file('common.gradle')
+  apply from: rootProject.file('gradle/configurations.gradle')
 }
 
 subprojects {
@@ -48,6 +49,7 @@ subprojects {
 }
 
 apply from: rootProject.file('common.gradle')
+apply from: rootProject.file('gradle/configurations.gradle')
 
 def isCI = System.getenv("CI") != null
 
