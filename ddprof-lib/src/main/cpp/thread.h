@@ -8,8 +8,9 @@
 #include <vector>
 #include "os.h"
 #include <jvmti.h>
+#include "threadLocalData.h"
 
-class ProfiledThread {
+class ProfiledThread : public ThreadLocalData {
   private:
     static pthread_key_t _tls_key;
     static int _buffer_size;
@@ -32,9 +33,9 @@ class ProfiledThread {
     u32 _call_trace_id;
     u32 _recording_epoch;
     u64 _span_id;
-    bool _unwinding_java;
 
     ProfiledThread(int buffer_pos, int tid) :
+        ThreadLocalData(),
         _buffer_pos(buffer_pos),
         _tid(tid),
         _cpu_epoch(0),
@@ -42,8 +43,7 @@ class ProfiledThread {
         _pc(0),
         _call_trace_id(0),
         _recording_epoch(0),
-        _span_id(0),
-        _unwinding_java(false){};
+        _span_id(0) {};
 
     void releaseFromBuffer();
   public:
@@ -61,12 +61,6 @@ class ProfiledThread {
     
     static ProfiledThread* current();
     static int currentTid();
-    bool is_unwinding_Java() {
-        return _unwinding_java;
-    }
-    void set_unwinding_Java(bool flag) {
-        _unwinding_java = flag;
-    }
 
     inline int tid() {
         return _tid;

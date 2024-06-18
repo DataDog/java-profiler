@@ -45,6 +45,7 @@
 #include "vmStructs.h"
 #include "context.h"
 #include "counters.h"
+#include "asyncSampleMutex.h"
 
 
 // The instance is not deleted on purpose, since profiler structures
@@ -683,7 +684,7 @@ void Profiler::recordSample(void* ucontext, u64 counter, int tid, jint event_typ
             int java_frames = 0;
             {
                 // Async events
-                AsyncSampleMutex mutex;
+                AsyncSampleMutex mutex(ProfiledThread::current());
                 if (mutex.acquired()) {
                     java_frames = getJavaTraceAsync(ucontext, frames + num_frames, _max_stack_depth, &java_ctx,
                                                     &truncated);

@@ -1,5 +1,6 @@
     #include <gtest/gtest.h>
 
+    #include "asyncSampleMutex.h"
     #include "buffers.h"
     #include "context.h"
     #include "counters.h"
@@ -7,6 +8,7 @@
     #include "os.h"
     #include "threadFilter.h"
     #include "threadInfo.h"
+    #include "threadLocalData.h"
     #include <vector>
 
     ssize_t callback(char* ptr, int len) {
@@ -171,6 +173,24 @@
 
         info.clearAll();
         ASSERT_EQ(0, info.size());
+    }
+
+    TEST(AsyncSampleMutex, testAsyncSampleMutexInterleaving) {
+        ThreadLocalData data;
+        EXPECT_FALSE(data.is_unwinding_Java());
+        {
+            AsyncSampleMutex first(&data);
+            EXPECT_TRUE(first.acquired());
+            EXPECT_TRUE(data.is_unwinding_Java());
+            {
+                AsyncSampleMutex second(&data);
+                EXPECT_FALSE(second.acquired());
+                EXPECT_TRUE(first.acquired());
+                EXPECT_TRUE(data.is_unwinding_Java());
+            }
+            EXPECT_TRUE(first.acquired());
+        }
+        EXPECT_FALSE(data.is_unwinding_Java());
     }
 
     int main(int argc, char **argv) {
