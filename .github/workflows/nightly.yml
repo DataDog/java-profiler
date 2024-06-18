@@ -27,7 +27,6 @@ jobs:
           scenarios=$(cat ./artifacts/failures.txt | tr '\n' ',')
           echo "Failed scenarios: $scenarios"
 
-#          curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
-#             -H 'Content-Type: application/json' \
-#             -d "{'scenarios': '${scenarios}', 'failed_run_url': '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'}"
-
+          curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+               -H 'Content-Type: application/json' \
+               -d "{'scenarios': '${scenarios}', 'failed_run_url': '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'}"
