@@ -342,4 +342,8 @@ void OS::freePageCache(int fd, off_t start_offset) {
     // Not supported on macOS
 }
 
+void OS::mallocArenaMax(int arena_max) {
+    // Not supported on macOS
+}
+
 #endif // __APPLE__

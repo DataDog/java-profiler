@@ -42,7 +42,7 @@ import java.util.Map;
 public final class JavaProfiler {
     private static final String NATIVE_LIBS = "/META-INF/native-libs";
     private static final String LIBRARY_NAME = "libjavaProfiler." + (OperatingSystem.current() == OperatingSystem.macos ? "dylib" : "so");
-    
+
     private static final Unsafe UNSAFE;
     static {
         Unsafe unsafe = null;
@@ -122,6 +122,16 @@ public final class JavaProfiler {
         System.load(libLocation);
         profiler.initializeContextStorage();
         instance = profiler;
+
+        String maxArenaValue = System.getProperty("ddprof.debug.malloc_arena_max");
+        if (maxArenaValue != null) {
+            try {
+                mallocArenaMax0(Integer.parseInt(maxArenaValue));
+            } catch (NumberFormatException e) {
+                System.out.println("[WARN] Invalid value for ddprof.debug.malloc_arena_max: " + maxArenaValue + ". Expecting an integer.");
+            }
+        }
+
         return profiler;
     }
 
@@ -139,7 +149,7 @@ public final class JavaProfiler {
      */
     private static Path libraryFromClasspath(OperatingSystem os, Arch arch, String qualifier, Path tempDir) throws IOException {
         String resourcePath = NATIVE_LIBS + "/" + os.name().toLowerCase() + "-" + arch.name().toLowerCase() + ((qualifier != null && !qualifier.isEmpty()) ? "-" + qualifier : "") + "/" + LIBRARY_NAME;
-        
+
         InputStream libraryData =  JavaProfiler.class.getResourceAsStream(resourcePath);
 
         if (libraryData != null) {
@@ -433,7 +443,7 @@ public final class JavaProfiler {
      * @param origin the thread the task was submitted on
      */
     public void recordQueueTime(long startTicks, long endTicks, Class<?> task, Class<?> scheduler,
-                               Thread origin) {
+                                Thread origin) {
         recordQueueEnd0(startTicks, endTicks, task.getName(), scheduler.getName(), origin);
     }
 
@@ -499,7 +509,7 @@ public final class JavaProfiler {
      * However, if such string is missing should indicate that the system is not a musl one.
      */
     static boolean isMuslJavaExecutable() throws IOException {
-        
+
         byte[] magic = new byte[]{(byte)0x7f, (byte)'E', (byte)'L', (byte)'F'};
         byte[] prefix = new byte[]{(byte)'/', (byte)'l', (byte)'d', (byte)'-'}; // '/ld-*'
         byte[] musl = new byte[]{(byte)'m', (byte)'u', (byte)'s', (byte)'l'}; // 'musl'
@@ -573,4 +583,6 @@ public final class JavaProfiler {
     private static native long currentTicks0();
 
     private static native long tscFrequency0();
+
+    private static native void mallocArenaMax0(int max);
 }

@@ -254,3 +254,8 @@ extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_tscFrequency0(JNIEnv* env, jobject unused) {
     return TSC::frequency();
 }
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_mallocArenaMax0(JNIEnv* env, jobject unused, jint maxArenas) {
+    OS::mallocArenaMax(maxArenas);
+}

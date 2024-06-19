@@ -93,6 +93,8 @@ class OS {
     static int fileSize(int fd);
     static int truncateFile(int fd);
     static void freePageCache(int fd, off_t start_offset);
+
+    static void mallocArenaMax(int arena_max);
 };
 
 #endif // _OS_H
