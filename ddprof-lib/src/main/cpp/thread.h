@@ -2,6 +2,7 @@
 #define _THREAD_H
 
 #include <atomic>
+#include <deque>
 #include <pthread.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -9,6 +10,61 @@
 #include "os.h"
 #include <jvmti.h>
 #include "threadLocalData.h"
+
+typedef void (*StackWalkerFunc)(std::deque<u64>::iterator stack_iterator_start, std::deque<u64>::iterator stack_iterator_end);
+
+class ShadowStack {
+  private:
+    static const int STACK_LIMIT = 4096;
+    std::deque<u64> _stack;
+    u8 _state = 0;
+    StackWalkerFunc _stackWalker;
+
+  public:
+    ShadowStack() : _state(0), _stackWalker(nullptr) {}
+
+    void pushFrame(u64 id) {
+        _state |= 1;
+        if (_stack.size() == STACK_LIMIT) {
+            _stack.pop_front();
+        }
+        _stack.push_back(id);
+        if (_state & 2) {
+            // collect sample
+            if (_stackWalker != nullptr) {
+                _stackWalker(_stack.begin(), _stack.end());
+            }
+        }
+        _state = 0;
+    }
+
+    u64 popFrame() {
+        _state |= 1;
+        u64 id = 0;
+        if (!_stack.empty()) {
+            id = _stack.back();
+            _stack.pop_back();
+        }
+        if (_state & 2) {
+            // collect sample
+            if (_stackWalker != nullptr) {
+                _stackWalker(_stack.begin(), _stack.end());
+            }
+        }
+        _state = 0;
+        return id;
+    }
+
+    void getStack(StackWalkerFunc stackWalker) {
+        if (_state == 1) {
+            // trying to collect sample while the stack is modified; postpone
+            _state |= 2;
+            _stackWalker = stackWalker;
+        } else {
+            stackWalker(_stack.begin(), _stack.end());
+        }
+    }
+};
 
 class ProfiledThread : public ThreadLocalData {
   private:
@@ -33,6 +89,7 @@ class ProfiledThread : public ThreadLocalData {
     u32 _call_trace_id;
     u32 _recording_epoch;
     u64 _span_id;
+    ShadowStack _stack;
 
     ProfiledThread(int buffer_pos, int tid) :
         ThreadLocalData(),
@@ -90,6 +147,10 @@ class ProfiledThread : public ThreadLocalData {
     }
 
     static void signalHandler(int signo, siginfo_t* siginfo, void* ucontext);
+
+    ShadowStack& shadowStack() {
+        return _stack;
+    }
 };
 
 #endif // _THREAD_H

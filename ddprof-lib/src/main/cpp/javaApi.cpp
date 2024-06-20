@@ -254,3 +254,24 @@ extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_tscFrequency0(JNIEnv* env, jobject unused) {
     return TSC::frequency();
 }
+
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_methodEnter0(JNIEnv* env, jobject unused, jlong methodId) {
+    ProfiledThread* thrd = ProfiledThread::current();
+    if (thrd == nullptr) {
+        return false;
+    }
+    thrd->shadowStack().pushFrame((u64) methodId);
+    return true;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_methodExit0(JNIEnv* env, jobject unused, jlong methodId) {
+    ProfiledThread* thrd = ProfiledThread::current();
+    if (thrd == nullptr) {
+        return false;
+    }
+    u64 id = thrd->shadowStack().popFrame();
+    return id == methodId;
+}

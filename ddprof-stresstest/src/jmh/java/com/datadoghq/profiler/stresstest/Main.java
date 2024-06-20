@@ -8,6 +8,7 @@ import org.openjdk.jmh.runner.options.Options;
 import org.openjdk.jmh.runner.options.OptionsBuilder;
 import org.openjdk.jmh.runner.options.TimeValue;
 
+import java.sql.SQLOutput;
 import java.util.Collection;
 import java.util.concurrent.TimeUnit;
 

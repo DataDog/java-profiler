@@ -462,6 +462,14 @@ public final class JavaProfiler {
         return counters;
     }
 
+    public boolean pushFrame(long methodId) {
+        return methodEnter0(methodId);
+    }
+
+    public boolean popFrame(long methodId) {
+        return methodExit0(methodId);
+    }
+
     static boolean isMusl() throws IOException {
         // check the Java exe then fall back to proc/self maps
         try {
@@ -573,4 +581,7 @@ public final class JavaProfiler {
     private static native long currentTicks0();
 
     private static native long tscFrequency0();
+
+    private static native boolean methodEnter0(long methodId);
+    private static native boolean methodExit0(long methodId);
 }

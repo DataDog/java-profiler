@@ -31,6 +31,12 @@ jmhJar {
     archiveFileName = "stresstests.jar"
 }
 
+jmh {
+    includes = [".*?Shadow.*"]
+    benchmarkMode = ['avgt']
+    timeUnit = 'ns'
+}
+
 task runStressTests(type: Exec) {
     dependsOn jmhJar
     def javaHome = System.getenv("JAVA_TEST_HOME")
