@@ -68,6 +68,8 @@ public class TagContextTest extends AbstractProfilerTest {
         long sum = 0;
         long[] weights = new long[strings.length];
         for (int i = 0; i < strings.length; i++) {
+            AtomicLong weight = weightsByTagValue.get(strings[i]);
+            assertNotNull(weight, "Weight for " + strings[i] + " not found");
             weights[i] = weightsByTagValue.get(strings[i]).get();
             sum += weights[i];
         }
