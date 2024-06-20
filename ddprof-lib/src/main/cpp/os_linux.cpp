@@ -35,6 +35,9 @@
 #include <unistd.h>
 #include "os.h"
 
+#ifndef __musl__
+#include <malloc.h>
+#endif
 
 #ifdef __LP64__
 #  define MMAP_SYSCALL __NR_mmap
@@ -358,6 +361,12 @@ int OS::fileSize(int fd) {
 
 void OS::freePageCache(int fd, off_t start_offset) {
     posix_fadvise(fd, start_offset & ~page_mask, 0, POSIX_FADV_DONTNEED);
+}
+
+void OS::mallocArenaMax(int arena_max) {
+#ifndef __musl__
+    mallopt(M_ARENA_MAX, arena_max);
+#endif
 }
 
 #endif // __linux__
