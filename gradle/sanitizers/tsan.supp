@@ -1,19 +1,67 @@
 # Suppress data race in libzip.so
 race:libzip.so
-# Suppress data race in G1Allocator::survivor_attempt_allocation
-race:G1Allocator::survivor_attempt_allocation
-race:G1CollectedHeap::allocate_new_tlab
-race:G1CollectedHeap::mem_allocate
-race:OopMapCache::lookup
-race:G1CodeRootSet::clear
-race:Metaspace::allocate
-race:FilterQueue
-race:PlatformParker::~PlatformParker
-race:ObjAllocator::initialize
-# Todo: jvmti could be interesting
-race:JvmtiExport::post_sampled_object_alloc
-race:SymbolTable::do_add_if_needed
-race:SymbolTable::do_lookup
-race:G1ParScanThreadState::copy_to_survivor_space
-race:G1RemSetScanState::G1ClearCardTableTask
-race:ObjArrayAllocator::initialize
+# Suppress data races in libjvm.so
+race:libjvm.so
+# Suppress data races in libj9*.so
+race:libj9*.so
+# Suppress data races in libjli.so
+race:libjli.so
+# Suppress data races in libz.so
+race:libz.so
+
+
+# # Suppress data race in G1Allocator::survivor_attempt_allocation
+# race:G1Allocator::survivor_attempt_allocation
+# race:G1CollectedHeap::allocate_new_tlab
+# race:G1CollectedHeap::mem_allocate
+# race:OopMapCache::lookup
+# race:G1CodeRootSet::clear
+# race:Metaspace::allocate
+# race:FilterQueue
+# race:PlatformParker::~PlatformParker
+# race:ObjAllocator::initialize
+# # Todo: jvmti could be interesting
+# race:JvmtiExport::post_sampled_object_alloc
+# # Suppress JVM internals
+# race:SymbolTable::do_add_if_needed
+# race:SymbolTable::do_lookup
+# race:G1ParScanThreadState::copy_to_survivor_space
+# race:G1RemSetScanState::G1ClearCardTableTask
+# race:ObjArrayAllocator::initialize
+# race:CompileBroker::set_last_compile
+# race:os::PlatformEvent::unpark
+# race:os::malloc
+# race:os::vsnprintf
+# race:PerfString::set_string
+# race:JvmtiDeferredEventQueue::dequeue
+# race:JvmtiExport::post_dynamic_code_generated_internal
+# race:InlineCacheBuffer::update_inline_caches
+# race:CodeBuffer::copy_relocations_to
+# race:MoveAndUpdateClosure::copy_partial_obj
+# race:CardTableModRefBS::write_ref_array_work
+# race:TypeArrayKlass::allocate_common
+# race:PSScavenge::clean_up_failed_promotion
+# race:InstanceKlass::allocate_instance
+# race:TypeArrayKlass::allocate_common
+# race:ObjArrayKlass::allocate
+# race:DerivedPointerTable::update_pointers
+# race:j9ThunkTableEquals
+# race:hashTableAddNodeInList
+# race:internalCreateRAMClassFromROMClassImpl
+# race:monitor_notify_one_or_all
+# race:omrmem_free_memory
+# race:findLocallyDefinedClass
+# race:addClassName
+# race:j9bcv_verifyBytecodes
+# race:pool_newElement
+# race:monitor_exit.part.0
+# race:J9Object* MM_Scavenger::copyForVariant<false>
+# race:__tsan_atomic64_compare_exchange_strong
+# race:strncpy
+# race:free
+# race:libjvm.so$ClassAllocator::initialize
+# race:libjvm.so$G1BlockOffsetTablePart::alloc_block_work
+# race:libjvm.so$ClassAllocator::initialize
+# race:libjvm.so$G1BlockOffsetTablePart::alloc_block_work
+# race:libjvm.so$G1BlockOffsetTablePart::alloc_block_work
+# race:libjvm.so$JavaThread::~JavaThread

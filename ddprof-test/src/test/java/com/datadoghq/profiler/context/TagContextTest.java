@@ -16,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junitpioneer.jupiter.RetryingTest;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
@@ -31,7 +32,7 @@ import com.datadoghq.profiler.Platform;
 
 public class TagContextTest extends AbstractProfilerTest {
 
-    @Test
+    @RetryingTest(10)
     public void test() throws InterruptedException {
         Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();

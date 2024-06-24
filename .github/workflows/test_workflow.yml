@@ -9,6 +9,7 @@ on:
 jobs:
   test-linux-glibc:
     strategy:
+      fail-fast: false
       matrix:
         java_version: [ 8u412+9, 11.0.23+12, 17.0.11+12, 21.0.3+12, 22.0.1+12 ]
         config: ${{ fromJson(inputs.configuration) }}
@@ -39,6 +40,7 @@ jobs:
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
           export LIBC=glibc
           export JAVA_TEST_HOME=$(pwd)/test_jdk
+          export SANITIZER=${{ matrix.config }}
           ./gradlew :ddprof-test:test${{ matrix.config }}  
           if [ $? -ne 0 ]; then 
             echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}.txt
@@ -67,6 +69,7 @@ jobs:
 
   test-ubuntu-jdk:
     strategy:
+      fail-fast: false
       matrix:
         java_version: [ '11.0.23-librca', '17.0.11-librca', '21.0.3-librca', '22.0.1-librca' ]
         config: ${{ fromJson(inputs.configuration) }}
@@ -100,6 +103,7 @@ jobs:
           export JAVA_TEST_HOME=${SDKMAN_DIR}/candidates/java/${{ matrix.java_version }}
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
+          export SANITIZER=${{ matrix.config }}
           ./gradlew :ddprof-test:test${{ matrix.config }}
           if [ $? -ne 0 ]; then 
             echo "ubuntu-jdk-${{ matrix.java_version }}-${{ matrix.config }}" >> failures_ubuntu-jdk-${{ matrix.java_version }}-${{ matrix.config }}.txt
@@ -128,6 +132,7 @@ jobs:
 
   test-linux-glibc-j9:
     strategy:
+      fail-fast: false
       matrix:
         java_version: [ 8, 11, 17 ]
         config: ${{ fromJson(inputs.configuration) }}
@@ -158,6 +163,7 @@ jobs:
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
           export LIBC=glibc
+          export SANITIZER=${{ matrix.config }}
           chmod a+x gradlew
           ./gradlew :ddprof-test:test${{ matrix.config }}
           if [ $? -ne 0 ]; then 
@@ -187,6 +193,7 @@ jobs:
 
   test-linux-glibc-oracle8:
     strategy:
+      fail-fast: false
       matrix:
         config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
@@ -220,6 +227,7 @@ jobs:
           export JAVA_TEST_HOME=/usr/lib/jvm/oracle8
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
+          export SANITIZER=${{ matrix.config }}
           ./gradlew :ddprof-test:test${{ matrix.config }}
           if [ $? -ne 0 ]; then 
             echo "glibc-oracle8-${{ matrix.config }}" >> failures_glibc-oracle8-${{ matrix.config }}.txt
@@ -248,6 +256,7 @@ jobs:
 
   test-linux-musl:
     strategy:
+      fail-fast: false
       matrix:
         java_version: [ 8u412+9, 11.0.23+12, 17.0.11+12, 21.0.3+12, 22.0.1+12 ]
         config: ${{ fromJson(inputs.configuration) }}
@@ -279,7 +288,8 @@ jobs:
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=musl/${{ matrix.java_version }}
           export LIBC=musl
-          export JAVA_TEST_HOME=$(pwd)/test_jdk 
+          export JAVA_TEST_HOME=$(pwd)/test_jdk
+          export SANITIZER=${{ matrix.config }}
           ./gradlew :ddprof-test:test${{ matrix.config }}
           if [ $? -ne 0 ]; then 
             echo "musl-${{ matrix.java_version }}-${{ matrix.config }}" >> failures_musl-${{ matrix.java_version }}-${{ matrix.config }}.txt
@@ -308,6 +318,7 @@ jobs:
 
   test-linux-glibc-zing:
     strategy:
+      fail-fast: false
       matrix:
         java_version: [ 8, 11, 17, 21 ]
         config: ${{ fromJson(inputs.configuration) }}
@@ -363,6 +374,7 @@ jobs:
           export JAVA_TEST_HOME=/usr/lib/jvm/zing
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
+          export SANITIZER=${{ matrix.config }}
           ./gradlew :ddprof-test:test${{ matrix.config }}
           if [ $? -ne 0 ]; then 
             echo "glibc-zing-${{ matrix.java_version }}-${{ matrix.config }}" >> failures_zing-${{ matrix.java_version }}-${{ matrix.config }}.txt
