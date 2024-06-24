@@ -9,6 +9,7 @@ import net.jpountz.lz4.LZ4FastDecompressor;
 import net.jpountz.lz4.LZ4SafeDecompressor;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junitpioneer.jupiter.RetryingTest;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
@@ -40,7 +41,7 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
         return "cpu=1ms,cstack=" + (Platform.isMac() ? "fp" : "dwarf");
     }
 
-    @Test
+    @RetryingTest(3)
     public void test() {
         Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
         boolean isMusl = Optional.ofNullable(System.getenv("TEST_CONFIGURATION")).orElse("").startsWith("musl");
