@@ -44,44 +44,47 @@ void LivenessTracker::cleanup_table(bool forced) {
     JNIEnv* env = VM::jni();
     jvmtiEnv* jvmti = VM::jvmti();
 
-    u64 start = OS::nanotime(), end;
+    int epoch_diff = (int) (target_gc_epoch - current);
 
     _table_lock.lock();
-    int epoch_diff = (int) (target_gc_epoch - current);
-    u32 sz, newsz = 0;
-    std::set<jclass> kept_classes;
-    for (u32 i = 0; i < (sz = _table_size); i++) {
-        if (_table[i].ref != nullptr && !env->IsSameObject(_table[i].ref, nullptr)) {
-            // it survived one more GarbageCollectionFinish event
-            u32 target = newsz++;
-            if (target != i) {
-                _table[target] = _table[i]; // will clone TrackingEntry at 'i'
-                _table[i].ref = nullptr; // will nullify the original ref
-                assert(_table[i].frames == _table[target].frames);
-                _table[i].frames = nullptr; // will nullify the original frames
-                assert(_table[target].frames != nullptr);
+    u32 sz = _table_size;
+    if (sz > 0) {
+        u64 start = OS::nanotime(), end;
+        u32 newsz = 0;
+        std::set<jclass> kept_classes;
+        for (u32 i = 0; i < sz; i++) {
+            if (_table[i].ref != nullptr && !env->IsSameObject(_table[i].ref, nullptr)) {
+                // it survived one more GarbageCollectionFinish event
+                u32 target = newsz++;
+                if (target != i) {
+                    _table[target] = _table[i]; // will clone TrackingEntry at 'i'
+                    _table[i].ref = nullptr; // will nullify the original ref
+                    assert(_table[i].frames == _table[target].frames);
+                    _table[i].frames = nullptr; // will nullify the original frames
+                    assert(_table[target].frames != nullptr);
+                }
+                assert(_table[target].ref != nullptr && _table[target].frames != nullptr);
+                _table[target].age += epoch_diff;
+            } else {
+                jweak tmpRef = _table[i].ref;
+                _table[i].ref = nullptr;
+                env->DeleteWeakGlobalRef(tmpRef);
+
+                jvmtiFrameInfo* tmpFrames = _table[i].frames;
+                _table[i].frames = nullptr;
+                assert(_table[i].ref == nullptr && _table[i].frames == nullptr);
+                delete[] tmpFrames;
+
             }
-            assert(_table[target].ref != nullptr && _table[target].frames != nullptr);
-            _table[target].age += epoch_diff;
-        } else {
-            jweak tmpRef = _table[i].ref;
-            _table[i].ref = nullptr;
-            env->DeleteWeakGlobalRef(tmpRef);
-
-            jvmtiFrameInfo* tmpFrames = _table[i].frames;
-            _table[i].frames = nullptr;
-            assert(_table[i].ref == nullptr && _table[i].frames == nullptr);
-            delete[] tmpFrames;
-
         }
+
+        _table_size = newsz;
+
+        _table_lock.unlock();
+        end = OS::nanotime();
+        Log::debug("Liveness tracker cleanup took %.2fms (%.2fus/element)",
+                    1.0f * (end - start) / 1000 / 1000, 1.0f * (end - start) / 1000 / sz);
     }
-
-    _table_size = newsz;
-
-    _table_lock.unlock();
-    end = OS::nanotime();
-    Log::debug("Liveness tracker cleanup took %.2fms (%.2fus/element)",
-                1.0f * (end - start) / 1000 / 1000, 1.0f * (end - start) / 1000 / sz);
 }
 
 void LivenessTracker::flush(std::set<int> &tracked_thread_ids) {
