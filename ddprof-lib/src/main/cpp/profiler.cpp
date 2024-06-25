@@ -932,8 +932,9 @@ void Profiler::updateNativeThreadNames() {
     ThreadList* thread_list = OS::listThreads();
     for (int tid; (tid = thread_list->next()) != -1; ) {
         _thread_info.updateThreadName(tid, [](int tid) -> std::unique_ptr<char[]> {
-            char *name_buf = new char[64];
-            if (OS::threadName(tid, name_buf, sizeof(name_buf))) {
+            const size_t buffer_size = 64;
+            char *name_buf = new char[buffer_size];
+            if (OS::threadName(tid, name_buf, buffer_size)) {
                 return std::unique_ptr<char[]>(name_buf);
             }
             delete[] name_buf;
