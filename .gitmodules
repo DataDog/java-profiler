@@ -1,0 +1,3 @@
+[submodule "ddprof-statsd/dogfood-statsd"]
+	path = ddprof-statsd/dogfood-statsd
+	url = git@github.com:garrettsickles/DogFood.git
