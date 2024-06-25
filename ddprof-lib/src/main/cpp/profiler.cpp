@@ -47,6 +47,7 @@
 #include "counters.h"
 #include "asyncSampleMutex.h"
 
+#include "DogFood.hpp" // statsd library header
 
 // The instance is not deleted on purpose, since profiler structures
 // can be still accessed concurrently during VM termination
@@ -134,6 +135,26 @@ void Profiler::onThreadEnd(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     // unregister here because JNI callers generally don't know about thread exits
     _wall_engine->unregisterThread(tid);
     ProfiledThread::release();
+}
+
+void Profiler::onException(jvmtiEnv* jvmti, JNIEnv* jni, jobject exception) {
+    if (_outOfMemoryErrorClass == nullptr) {
+        return;
+    }
+    jclass exceptionClass = jni->GetObjectClass(exception);
+    if (jni->IsSameObject(exceptionClass, _outOfMemoryErrorClass)) {
+        jmethodID getMessageMethod = jni->GetMethodID(exceptionClass, "getMessage", "()Ljava/lang/String;");
+        if (getMessageMethod != nullptr) {
+            jstring message = (jstring)jni->CallObjectMethod(exception, getMessageMethod);
+            if (message != nullptr) {
+                const char *messageChars = jni->GetStringUTFChars(message, nullptr);
+                if (messageChars != nullptr) {
+                    fprintf(stdout, "Exception message: %s\n", messageChars);
+                    jni->ReleaseStringUTFChars(message, messageChars);
+                }
+            }
+        }
+    }
 }
 
 int Profiler::registerThread(int tid) {
@@ -1021,6 +1042,9 @@ Error Profiler::start(Arguments& args, bool reset) {
     if (error) {
         return error;
     }
+
+    JNIEnv* jni = VM::jni();
+    _outOfMemoryErrorClass = jni->FindClass("java/lang/OutOfMemoryError");
 
     ProfiledThread::initExistingThreads();
     _omit_stacktraces = args._lightweight;

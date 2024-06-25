@@ -137,6 +137,9 @@ class Profiler {
     void onThreadStart(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread);
     void onThreadEnd(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread);
 
+    jclass _outOfMemoryErrorClass = nullptr;
+    void onException(jvmtiEnv* jvmti, JNIEnv* jni, jobject exception);
+
     const char* asgctError(int code);
     u32 getLockIndex(int tid);
     bool isAddressInCode(uintptr_t addr);
@@ -292,6 +295,10 @@ class Profiler {
 
     static void JNICALL ThreadEnd(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
         instance()->onThreadEnd(jvmti, jni, thread);
+    }
+
+    static void JNICALL Exception(jvmtiEnv *jvmti, JNIEnv* jni, jthread thread, jmethodID method, jlocation location, jobject exception, jmethodID catch_method, jlocation catch_location) {
+        instance()->onException(jvmti, jni, exception);
     }
 
     friend class Recording;

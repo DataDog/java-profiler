@@ -95,6 +95,7 @@ tasks.whenTaskAdded { task ->
                             includes project(':ddprof-lib').file('src/main/cpp').toString()
                             includes "${javaHome()}/include"
                             includes project(':malloc-shim').file('src/main/public').toString()
+                            includes project(':ddprof-statsd').file('dogfood-statsd').toString()
                             if (os().isMacOsX()) {
                                 includes "${javaHome()}/include/darwin"
                                 includes "/opt/homebrew/opt/googletest/include/"
@@ -143,9 +144,11 @@ tasks.whenTaskAdded { task ->
                                 // linking the gtests using the minimizing release flags is making gtest unhappy
                                 linkerArgs.addAll(config.linkerArgs)
                             }
-                            linkerArgs.addAll("-lgtest", "-lgtest_main", "-lgmock", "-lgmock_main", "-ldl", "-lpthread", "-lm", "-lrt")
+                            linkerArgs.addAll("-lgtest", "-lgtest_main", "-lgmock", "-lgmock_main", "-ldl", "-lpthread", "-lm")
                             if (os().isMacOsX()) {
                                 linkerArgs.addAll("-L/opt/homebrew/opt/googletest/lib")
+                            } else {
+                                linkerArgs.add("-lrt")
                             }
                             toolChain = task.toolChain
                             targetPlatform = task.targetPlatform
