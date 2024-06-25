@@ -79,6 +79,18 @@ public final class JavaProfiler {
     private JavaProfiler() {
     }
 
+    private void registerOomeHandler() {
+        Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+            if (e instanceof OutOfMemoryError) {
+                sendOomeEvent0(e);
+            }
+            if (previous != null) {
+                previous.uncaughtException(t, e);
+            }
+        });
+    }
+
     /**
      * Get a {@linkplain JavaProfiler} instance backed by the bundled native library and using
      * the default temp directory as the scratch where the bundled library will be exploded
@@ -131,6 +143,8 @@ public final class JavaProfiler {
                 System.out.println("[WARN] Invalid value for ddprof.debug.malloc_arena_max: " + maxArenaValue + ". Expecting an integer.");
             }
         }
+
+        profiler.registerOomeHandler();
 
         return profiler;
     }
@@ -585,4 +599,6 @@ public final class JavaProfiler {
     private static native long tscFrequency0();
 
     private static native void mallocArenaMax0(int max);
+
+    private static native void sendOomeEvent0(Throwable e);
 }

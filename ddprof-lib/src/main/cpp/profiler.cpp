@@ -47,7 +47,6 @@
 #include "counters.h"
 #include "asyncSampleMutex.h"
 
-
 // The instance is not deleted on purpose, since profiler structures
 // can be still accessed concurrently during VM termination
 Profiler* const Profiler::_instance = new Profiler();

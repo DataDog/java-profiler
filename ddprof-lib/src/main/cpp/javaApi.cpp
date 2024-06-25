@@ -31,6 +31,8 @@
 #include "counters.h"
 #include "tsc.h"
 
+#include "DogFood.hpp" // statsd library header
+
 static void throwNew(JNIEnv* env, const char* exception_class, const char* message) {
     jclass cls = env->FindClass(exception_class);
     if (cls != NULL) {
@@ -258,4 +260,21 @@ Java_com_datadoghq_profiler_JavaProfiler_tscFrequency0(JNIEnv* env, jobject unus
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_mallocArenaMax0(JNIEnv* env, jobject unused, jint maxArenas) {
     OS::mallocArenaMax(maxArenas);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_sendOomeEvent0(JNIEnv* env, jobject unused, jobject oome) {
+    JNIEnv* jni = VM::jni();
+    jclass exceptionClass = jni->GetObjectClass(oome);
+    jmethodID getMessageMethod = jni->GetMethodID(exceptionClass, "getMessage", "()Ljava/lang/String;");
+    if (getMessageMethod != NULL) {
+        jstring message = (jstring)jni->CallObjectMethod(oome, getMessageMethod);
+        if (message != NULL) {
+            const char *messageChars = jni->GetStringUTFChars(message, NULL);
+            if (messageChars != NULL) {
+                printf("Exception message: %s\n", messageChars);
+                jni->ReleaseStringUTFChars(message, messageChars);
+            }
+        }
+    }
 }
