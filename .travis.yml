@@ -1,0 +1,14 @@
+language: c++
+sudo: false
+os: linux
+
+compiler:
+  - g++
+
+script:
+  - cd test
+  - make clean
+  - make test
+  - cd ../example
+  - make clean
+  - make

@@ -1,0 +1,21 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{F78A011B-0EFD-4C18-8AE1-B41C00DD5C4E}</ProjectGuid>
+    <ProjectName>SimpleExample</ProjectName>
+    <RootNamespace>DogFood</RootNamespace>
+  </PropertyGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="build.props" />
+    <Import Project="config.props" />
+  </ImportGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\DogFood.hpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\simple_example.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>
