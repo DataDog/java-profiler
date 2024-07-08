@@ -1097,6 +1097,10 @@ Error Profiler::start(Arguments& args, bool reset) {
     // Kernel symbols are useful only for perf_events without --all-user
     updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
 
+    if (VM::isOpenJ9()) {
+        J9Ext::tryForceKeepJMethodIDs();
+    }
+
     enableEngines();
 
     switchLibraryTrap(_cstack == CSTACK_DWARF);
