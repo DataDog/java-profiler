@@ -1,5 +1,6 @@
 /*
  * Copyright 2016 Andrei Pangin
+ * Copyright 2024 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,7 +31,6 @@
 #include "objectSampler.h"
 #include "wallClock.h"
 #include "j9Ext.h"
-#include "j9ObjectSampler.h"
 #include "j9WallClock.h"
 #include "ctimer.h"
 #include "itimer.h"
@@ -58,8 +58,6 @@ static void (*orig_busHandler)(int signo, siginfo_t* siginfo, void* ucontext);
 
 static Engine noop_engine;
 static PerfEvents perf_events;
-// static AllocTracer alloc_tracer;
-// static J9ObjectSampler j9_object_sampler;
 static WallClock wall_engine;
 static J9WallClock j9_engine;
 static ITimer itimer;

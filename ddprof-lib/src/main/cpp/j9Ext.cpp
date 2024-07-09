@@ -1,5 +1,6 @@
 /*
  * Copyright 2022 Andrei Pangin
+ * Copyright 2024 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +17,6 @@
 
 #include <string.h>
 #include "j9Ext.h"
-#include "j9ObjectSampler.h"
 #include "os.h"
 
 
@@ -52,20 +52,6 @@ bool J9Ext::initialize(jvmtiEnv* jvmti, const void* j9thread_self) {
             }
         }
        jvmti->Deallocate((unsigned char*)ext_functions);
-    }
-
-    jvmtiExtensionEventInfo* ext_events;
-    if (jvmti->GetExtensionEvents(&ext_count, &ext_events) == 0) {
-        for (int i = 0; i < ext_count; i++) {
-            if (strcmp(ext_events[i].id, "com.ibm.InstrumentableObjectAlloc") == 0) {
-                InstrumentableObjectAlloc_id = ext_events[i].extension_event_index;
-                // If we don't set a callback now, we won't be able to enable it later in runtime
-                jvmti->SetExtensionEventCallback(InstrumentableObjectAlloc_id, (jvmtiExtensionEvent)J9ObjectSampler::JavaObjectAlloc);
-                jvmti->SetExtensionEventCallback(InstrumentableObjectAlloc_id, NULL);
-                break;
-            }
-        }
-       jvmti->Deallocate((unsigned char*)ext_events);
     }
 
     return _GetOSThreadID != NULL && _GetStackTraceExtended != NULL && _GetAllStackTracesExtended != NULL;

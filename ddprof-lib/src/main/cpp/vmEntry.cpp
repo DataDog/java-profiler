@@ -1,6 +1,6 @@
 /*
  * Copyright 2016 Andrei Pangin
- * Copyright 2021, 2023 Datadog, Inc
+ * Copyright 2021, 2024 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,6 @@
 #include "arguments.h"
 #include "context.h"
 #include "j9Ext.h"
-#include "j9ObjectSampler.h"
 #include "os.h"
 #include "profiler.h"
 #include "safeAccess.h"
@@ -268,7 +267,6 @@ bool VM::init(JavaVM* vm, bool attach) {
     callbacks.DynamicCodeGenerated = Profiler::DynamicCodeGenerated;
     callbacks.ThreadStart = Profiler::ThreadStart;
     callbacks.ThreadEnd = Profiler::ThreadEnd;
-    // callbacks.VMObjectAlloc = J9ObjectSampler::VMObjectAlloc;
     callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
     callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;
     callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
