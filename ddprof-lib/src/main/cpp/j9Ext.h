@@ -62,7 +62,6 @@ class J9Ext {
     }
 
     static bool initialize(jvmtiEnv* jvmti, const void* j9thread_self);
-    static void tryForceKeepJMethodIDs();
 
     static int GetOSThreadID(jthread thread) {
         jlong thread_id;
