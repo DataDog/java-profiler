@@ -57,8 +57,23 @@ class J9Ext {
 
   public:
     static bool can_use_ASGCT() {
-        // ASGCT usage on J9 is inherently unstable
-        return false;
+        return (VM::java_version() == 8 && VM::java_update_version() >= 362) ||
+               (VM::java_version() == 11 && VM::java_update_version() >= 18) ||
+               (VM::java_version() == 17 && VM::java_update_version() >= 6) ||
+               (VM::java_version() >= 18);
+    }
+
+    static bool is_jmethodid_safe() {
+        return VM::java_version() == 8 ||
+                (VM::java_version() == 11 && VM::java_update_version() >= 23) ||
+               (VM::java_version() == 17 && VM::java_update_version() >= 11) ||
+               (VM::java_version() == 21 && VM::java_update_version() >= 3) ||
+               (VM::java_version() >= 22);
+    }
+
+    static bool is_jvmti_jmethodid_safe() {
+        // only JDK 8 is safe to use jmethodID in JVMTI for deferred resolution
+        return VM::java_version() == 8;
     }
 
     static bool initialize(jvmtiEnv* jvmti, const void* j9thread_self);

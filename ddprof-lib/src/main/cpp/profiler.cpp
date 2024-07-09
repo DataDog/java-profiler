@@ -949,9 +949,15 @@ Engine* Profiler::selectCpuEngine(Arguments& args) {
     if (args._cpu < 0 && (args._event == NULL || strcmp(args._event, EVENT_NOOP) == 0)) {
         return &noop_engine;
     } else if (args._cpu >= 0 || strcmp(args._event, EVENT_CPU) == 0) {
-        if (VM::isOpenJ9() && !J9Ext::can_use_ASGCT()) {
-            // signal based samplers are unstable on J9 before 8.0.362, 11.0.18 and 17.0.6
-            return (Engine*)&j9_engine;
+        if (VM::isOpenJ9()) {
+            if (!J9Ext::can_use_ASGCT()) {
+                if (!J9Ext::is_jvmti_jmethodid_safe()) {
+                    Log::warn("Safe jmethodID access is not available on this JVM. Using CPU profiler on your own risk.");
+                }
+                return &j9_engine;
+            } else if (!J9Ext::is_jmethodid_safe()) {
+                Log::warn("Safe jmethodID access is not available on this JVM. Using CPU profiler on your own risk.");
+            }
         }
         return !ctimer.check(args) ? (Engine*)&ctimer : (!perf_events.check(args) ? (Engine*)&perf_events : (Engine*)&itimer);
     } else if (strcmp(args._event, EVENT_WALL) == 0) {
@@ -969,9 +975,16 @@ Engine* Profiler::selectWallEngine(Arguments& args) {
     if (args._wall < 0 && (args._event == NULL || strcmp(args._event, EVENT_WALL) != 0)) {
         return &noop_engine;
     }
-    if (VM::isOpenJ9() && !J9Ext::can_use_ASGCT()) {
-        j9_engine.sampleIdleThreads();
-        return (Engine*)&j9_engine;
+    if (VM::isOpenJ9()) {
+        if (!J9Ext::can_use_ASGCT()) {
+            if (!J9Ext::is_jvmti_jmethodid_safe()) {
+                Log::warn("Safe jmethodID access is not available on this JVM. Using wallclock profiler on your own risk.");
+            }
+            j9_engine.sampleIdleThreads();
+            return (Engine*)&j9_engine;
+        } else if (!J9Ext::is_jmethodid_safe()) {
+            Log::warn("Safe jmethodID access is not available on this JVM. Using wallclock profiler on your own risk.");
+        }
     }
     return (Engine*)&wall_engine;
 }
@@ -1111,7 +1124,7 @@ Error Profiler::start(Arguments& args, bool reset) {
     }
 
     int activated = 0;
-    if (_event_mask & EM_CPU) {
+    if ((_event_mask & EM_CPU) && _cpu_engine != &noop_engine) {
         error = _cpu_engine->start(args);
         if (error) {
             Log::warn("%s", error.message());
@@ -1120,7 +1133,7 @@ Error Profiler::start(Arguments& args, bool reset) {
             activated |= EM_CPU;
         }
     }
-    if (_event_mask & EM_WALL) {
+    if ((_event_mask & EM_WALL) && _wall_engine != &noop_engine){
         error = _wall_engine->start(args);
         if (error) {
             Log::warn("%s", error.message());
@@ -1131,12 +1144,14 @@ Error Profiler::start(Arguments& args, bool reset) {
     }
     if (_event_mask & EM_ALLOC) {
         _alloc_engine = selectAllocEngine(args);
-        error = _alloc_engine->start(args);
-        if (error) {
-            Log::warn("%s", error.message());
-            error = Error::OK; // recoverable
-        } else {
-            activated |= EM_ALLOC;
+        if (_alloc_engine != &noop_engine) {
+            error = _alloc_engine->start(args);
+            if (error) {
+                Log::warn("%s", error.message());
+                error = Error::OK; // recoverable
+            } else {
+                activated |= EM_ALLOC;
+            }
         }
     }
 
