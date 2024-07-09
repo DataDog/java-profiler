@@ -71,10 +71,3 @@ bool J9Ext::initialize(jvmtiEnv* jvmti, const void* j9thread_self) {
     return _GetOSThreadID != NULL && _GetStackTraceExtended != NULL && _GetAllStackTracesExtended != NULL;
 }
 
-void J9Ext::tryForceKeepJMethodIDs() {
-    // try to force keeping jmethodIDs around by calling ASGCT at least once
-    JitWriteProtection jit(false);
-    ASGCT_CallFrame frames[1];
-    ASGCT_CallTrace trace = {VM::jni(), 0, frames};
-    VM::_asyncGetCallTrace(&trace, 0, nullptr);
-}
