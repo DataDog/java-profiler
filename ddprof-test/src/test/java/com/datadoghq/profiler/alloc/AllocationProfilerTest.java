@@ -15,10 +15,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class AllocationProfilerTest extends AbstractProfilerTest {
 
+  @Override
+  protected boolean isPlatformSupported() {
+    return !(Platform.isJ9() || Platform.isZing()) && Platform.isJavaVersionAtLeast(11);
+  }
+
   @RetryingTest(5)
   public void shouldGetObjectAllocationSamples() throws InterruptedException {
-    Assumptions.assumeFalse(Platform.isJ9() || Platform.isZing());
-    Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
     Assumptions.assumeFalse(isAsan() || isTsan());
 
     AllocatingTarget target1 = new AllocatingTarget();

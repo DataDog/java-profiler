@@ -23,9 +23,13 @@ public class GCGenerationsTest extends AbstractProfilerTest {
         return "generations=true,cstack=fp";
     }
 
+    @Override
+    protected boolean isPlatformSupported() {
+        return !(Platform.isJavaVersion(8) || Platform.isJ9() || Platform.isZing());
+    }
+
     @RetryingTest(5)
     public void shouldGetLiveObjectSamples() throws InterruptedException {
-        Assumptions.assumeFalse(System.getProperty("java.version").contains("1.8") || Platform.isJ9() || Platform.isZing());
         MemLeakTarget target1 = new MemLeakTarget();
         MemLeakTarget target2 = new MemLeakTarget();
         runTests(target1, target2);

@@ -11,6 +11,7 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.openjdk.jmc.common.IMCStackTrace;
 import org.openjdk.jmc.common.item.Attribute;
@@ -137,8 +138,14 @@ public abstract class AbstractProfilerTest {
     return System.getenv("TSAN_OPTIONS") != null;
   }
 
+  protected boolean isPlatformSupported() {
+    return true;
+  }
+
   @BeforeEach
   public void setupProfiler() throws Exception {
+    Assumptions.assumeTrue(isPlatformSupported());
+
     jfrDump = Files.createTempFile(Paths.get("/tmp"), getClass().getName() + UUID.randomUUID(), ".jfr");
     profiler = JavaProfiler.getInstance();
     String command = "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
