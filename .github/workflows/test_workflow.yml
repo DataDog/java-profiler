@@ -134,7 +134,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        java_version: [ 8, 11, 17 ]
+        java_version: [ 8, 11, 17, 21 ]
         config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180

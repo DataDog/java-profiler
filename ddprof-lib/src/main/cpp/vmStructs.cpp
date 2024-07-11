@@ -540,8 +540,11 @@ void VMStructs::initThreadBridge(JNIEnv* env) {
 
     // Get eetop field - a bridge from Java Thread to VMThread
     jclass thread_class = env->GetObjectClass(thread);
-    if ((_tid = env->GetFieldID(thread_class, "tid", "J")) == NULL ||
-        (_eetop = env->GetFieldID(thread_class, "eetop", "J")) == NULL) {
+    _tid = env->GetFieldID(thread_class, "tid", "J");
+    _eetop = env->GetFieldID(thread_class, "eetop", "J");
+    env->ExceptionClear();
+
+    if (VM::isOpenJ9() || _tid == NULL || _eetop == NULL) {
         // No such field - probably not a HotSpot JVM
         env->ExceptionClear();
 
