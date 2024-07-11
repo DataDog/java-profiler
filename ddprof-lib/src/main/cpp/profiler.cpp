@@ -866,15 +866,18 @@ bool Profiler::crashHandler(int signo, siginfo_t* siginfo, void* ucontext) {
         return true;
     }
 
-    StackWalker::checkFault();
-
-    // Workaround for JDK-8313796. Setting cstack=dwarf also helps
-    if (VMStructs::isInterpretedFrameValidFunc((const void*)pc) && frame.skipFaultInstruction()) {
+    if (WX_MEMORY && Trap::isFaultInstruction(pc)) {
         return true;
     }
 
-    if (WX_MEMORY && Trap::isFaultInstruction(pc)) {
-        return true;
+    if (VM::isHotspot()) {
+        // the following checks require vmstructs and therefore HotSpot
+        StackWalker::checkFault();
+
+        // Workaround for JDK-8313796. Setting cstack=dwarf also helps
+        if (VMStructs::isInterpretedFrameValidFunc((const void*)pc) && frame.skipFaultInstruction()) {
+            return true;
+        }
     }
 
     return false;
