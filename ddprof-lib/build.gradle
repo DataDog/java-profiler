@@ -104,7 +104,7 @@ buildConfigNames().each { name ->
             }
         }
     }
-    def assembleTask = tasks.register("assemble${name.capitalize()}Jar", Jar) {
+    def assembleJarTask = tasks.register("assemble${name.capitalize()}Jar", Jar) {
         group = 'build'
         description = "Assemble the ${name} build of the library"
         dependsOn copyExternalLibs
@@ -118,6 +118,11 @@ buildConfigNames().each { name ->
         archiveBaseName = libraryName
         archiveClassifier = name == 'release' ? '' : name // the release qualifier is empty
         archiveVersion = component_version
+    }
+    // We need this second level indirection such that we can make the assembling dependent on the tests
+    // The catch is that the test tasks depend on the assembled jar so we need a wrapper assemble task instead
+    def assembleTask = tasks.register("assemble${name.capitalize()}", Task) {
+        dependsOn assembleJarTask
     }
 
     tasks.assembleAll.dependsOn assembleTask
