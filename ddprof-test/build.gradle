@@ -101,3 +101,14 @@ tasks.withType(JavaCompile).configureEach {
     }
     classpath += configurations.testReleaseImplementation
 }
+
+// Make the assemble* tasks depend on the test* tasks
+gradle.projectsEvaluated {
+  buildConfigNames().each {
+    def testTask = tasks.findByName("test${it}")
+    def assembleTask = project(':ddprof-lib').tasks.findByName("assemble${it.capitalize()}")
+    if (testTask && assembleTask) {
+        assembleTask.dependsOn testTask
+    }
+  }
+}
