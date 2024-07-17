@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 Andrei Pangin
+ * Copyright 2024 Datadog
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef _WALLCLOCK_H
-#define _WALLCLOCK_H
+#ifndef _WALLCLOCK_JVMTI_H
+#define _WALLCLOCK_JVMTI_H
 
 #include <atomic>
 #include <climits>
@@ -25,11 +25,10 @@
 #include "os.h"
 #include "threadState.h"
 
-class WallClock : public Engine {
+class JvmtiWallClockSampler : public Engine {
   private:
     static std::atomic<bool> _enabled;
 
-    bool _collapsing;
     long _interval;
 
     // Maximum number of threads sampled in one iteration. This limit serves as a throttle
@@ -44,18 +43,12 @@ class WallClock : public Engine {
     void timerLoop();
 
     static void* threadEntry(void* wall_clock) {
-        ((WallClock*)wall_clock)->timerLoop();
+        ((JvmtiWallClockSampler*)wall_clock)->timerLoop();
         return NULL;
     }
 
-    static bool inSyscall(void* ucontext);
-
-    static void sharedSignalHandler(int signo, siginfo_t* siginfo, void* ucontext);
-    void signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64 last_sample);
-
   public:
-    WallClock() :
-        _collapsing(false),
+    JvmtiWallClockSampler() :
         _interval(LONG_MAX),
         _reservoir_size(0),
         _running(false),
@@ -66,7 +59,7 @@ class WallClock : public Engine {
     }
 
     const char* name() {
-        return "WallClock - AsyncGetCallTrace";
+        return "WallClock - JVMTI";
     }
 
     long interval() const {
@@ -81,4 +74,4 @@ class WallClock : public Engine {
     }
 };
 
-#endif // _WALLCLOCK_H
+#endif // _WALLCLOCK_JVMTI_H

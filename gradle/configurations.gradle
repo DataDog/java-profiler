@@ -58,7 +58,7 @@ def locateLibasan() {
 }
 
 def locateLibtsan() {
-    return locateLibrary('libtsan')
+  return locateLibrary('libtsan')
 }
 
 ext.libasan = locateLibasan()
@@ -116,7 +116,7 @@ def commonLinuxCompilerArgs = [
   "-DCOUNTERS"
 ]
 
-def commonLinuxLinkerArgs = ["-ldl", "-Wl,-z,defs", "--verbose", "-lpthread", "-lm", "-lrt", "-v"]
+def commonLinuxLinkerArgs = ["-ldl", "-Wl,-z,defs", "--verbose", "-lpthread", "-lm", "-lrt"]
 
 def commonMacosCompilerArgs = commonLinuxCompilerArgs + ["-D_XOPEN_SOURCE", "-D_DARWIN_C_SOURCE"]
 
@@ -206,7 +206,8 @@ addBuildConfiguration 'release', 'linux', 'x64',
     "-static-libstdc++",
     "-static-libgcc",
     "-Wl,--exclude-libs,ALL",
-    "-Wl,--gc-sections"
+    "-Wl,--gc-sections",
+    "-v"
   ]
 addBuildConfiguration 'debug', 'linux', 'x64',
   ['-O0', '-g', '-DDEBUG'] + commonLinuxCompilerArgs,

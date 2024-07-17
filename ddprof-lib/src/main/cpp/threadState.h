@@ -16,6 +16,30 @@ enum class ThreadState : int {
     SYSCALL = 9                       // does not originate in the JVM, used when the current frame is known to be a syscall
 };
 
+static ThreadState convertJvmtiThreadState(int state) {
+    switch (state & 0xFFFF) {
+        case JVMTI_THREAD_STATE_ALIVE:
+            return ThreadState::NEW;
+        case JVMTI_THREAD_STATE_TERMINATED:
+            return ThreadState::TERMINATED;
+        case JVMTI_THREAD_STATE_RUNNABLE:
+            return ThreadState::RUNNABLE;
+        case JVMTI_THREAD_STATE_BLOCKED_ON_MONITOR_ENTER:
+            return ThreadState::MONITOR_WAIT;
+        case JVMTI_THREAD_STATE_WAITING:
+        case JVMTI_THREAD_STATE_WAITING_INDEFINITELY:
+        case JVMTI_THREAD_STATE_WAITING_WITH_TIMEOUT:
+        case JVMTI_THREAD_STATE_PARKED:
+            return ThreadState::CONDVAR_WAIT;
+        case JVMTI_THREAD_STATE_SLEEPING:
+            return ThreadState::SLEEPING;
+        case JVMTI_THREAD_STATE_IN_OBJECT_WAIT:
+            return ThreadState::OBJECT_WAIT;
+        default:
+            return ThreadState::UNKNOWN;
+    }
+}
+
 
 enum class ExecutionMode : int {
     UNKNOWN = 0,
@@ -43,6 +67,10 @@ static ExecutionMode convertJvmExecutionState(int state) {
         default:
             return ExecutionMode::UNKNOWN;
     }
+}
+
+static ExecutionMode getExecutionModeFromJvmtiThreadState(int state) {
+    return (state & 0x400000) == 0x400000 ? ExecutionMode::NATIVE : ExecutionMode::JAVA;
 }
 
 #endif //JAVA_PROFILER_LIBRARY_THREAD_STATE_H

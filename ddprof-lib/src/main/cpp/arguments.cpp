@@ -290,6 +290,18 @@ Error Arguments::parse(const char* args) {
                     }
                 }
 
+            CASE("wallsampler")
+                if (value != NULL) {
+                    switch (value[0]) {
+                        case 'j':
+                            _wallclock_sampler = JVMTI;
+                            break;
+                        case 'a':
+                        default:
+                            _wallclock_sampler = ASGCT;
+                    }
+                }
+
             DEFAULT()
                 if (_unknown_arg == NULL) _unknown_arg = arg;
         }

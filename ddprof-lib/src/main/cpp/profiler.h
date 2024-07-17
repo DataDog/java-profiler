@@ -37,6 +37,7 @@
 #include "vmEntry.h"
 #include "objectSampler.h"
 #include "thread.h"
+#include <vector>
 
 // avoid linking against newer symbols here for wide compatibility
 #ifdef __GLIBC__
@@ -112,6 +113,9 @@ class Profiler {
     int _max_stack_depth;
     int _safe_mode;
     CStack _cstack;
+
+    Mutex _jthread_mutex;
+    map<int, jthread> _jthreads;
 
     volatile jvmtiEventMode _thread_events_state;
 
@@ -272,6 +276,7 @@ class Profiler {
 
     static int registerThread(int tid);
     static void unregisterThread(int tid);
+    void getThreads(const vector<int>& tids, std::vector<jthread>& threads);
 
     // CompiledMethodLoad is also needed to enable DebugNonSafepoints info by default
     static void JNICALL CompiledMethodLoad(jvmtiEnv* jvmti, jmethodID method,

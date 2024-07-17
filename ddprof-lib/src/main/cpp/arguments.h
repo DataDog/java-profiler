@@ -85,6 +85,11 @@ enum JfrOption {
     JFR_SYNC_OPTS   = NO_SYSTEM_INFO | NO_SYSTEM_PROPS | NO_NATIVE_LIBS | NO_CPU_LOAD
 };
 
+enum WallclockSampler {
+    ASGCT,
+    JVMTI
+};
+
 
 struct Multiplier {
     char symbol;
@@ -134,6 +139,7 @@ class Arguments {
     long _wall;
     bool _wall_collapsing;
     int _wall_threads_per_tick;
+    WallclockSampler _wallclock_sampler;
     long _memory;
     bool _record_allocations;
     bool _record_liveness;
@@ -178,7 +184,8 @@ class Arguments {
         _cstack(CSTACK_DEFAULT),
         _jfr_options(0),
         _context_attributes({}),
-        _lightweight(false) {
+        _lightweight(false),
+        _wallclock_sampler(ASGCT){
     }
 
     ~Arguments();
