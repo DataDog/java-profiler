@@ -14,7 +14,9 @@
  * limitations under the License.
  */
 
+#include <random>
 #include <set>
+#include <thread>
 
 #include <jni.h>
 #include <string.h>
@@ -80,11 +82,11 @@ void LivenessTracker::cleanup_table(bool forced) {
 
         _table_size = newsz;
 
-        _table_lock.unlock();
         end = OS::nanotime();
         Log::debug("Liveness tracker cleanup took %.2fms (%.2fus/element)",
                     1.0f * (end - start) / 1000 / 1000, 1.0f * (end - start) / 1000 / sz);
     }
+    _table_lock.unlock();
 }
 
 void LivenessTracker::flush(std::set<int> &tracked_thread_ids) {
@@ -118,9 +120,12 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
             event._start_time = _table[i].time;
             event._age = _table[i].age;
             event._alloc = _table[i].alloc;
+            event._skipped = _table[i].skipped;
             event._ctx = _table[i].ctx;
 
-            jstring name_str = (jstring)env->CallObjectMethod(env->GetObjectClass(ref), _Class_getName);
+            jclass clz = env->GetObjectClass(ref);
+            jstring name_str = (jstring)env->CallObjectMethod(clz, _Class_getName);
+            env->DeleteLocalRef(clz);
             jniExceptionCheck(env);
             const char *name = env->GetStringUTFChars(name_str, nullptr);
             event._id = name != nullptr ? Profiler::instance()->lookupClass(name, strlen(name)) : 0;
@@ -166,6 +171,8 @@ Error LivenessTracker::initialize_table(JNIEnv* jni, int sampling_interval) {
     _table_max_cap = __min(MAX_TRACKING_TABLE_SIZE, required_table_capacity);
 
     _table_cap = std::max(2048, _table_max_cap / 8); // the table will grow at most 3 times before fully covering heap
+
+    fprintf(stdout, "===> heap: %ld, sampling interval: %d, max: %d, cap: %d\n", max_heap, sampling_interval, _table_max_cap, _table_cap);
     return Error::OK;
 }
 
@@ -241,11 +248,13 @@ Error LivenessTracker::initialize(Arguments& args) {
         return _stored_error = Error::OK;
     }
 
+    _subsample_ratio = args._live_samples_ratio;
+
     _table_size = 0;
     _table_cap = __min(2048, _table_max_cap); // with default 512k sampling interval, it's enough for 1G of heap
     _table = (TrackingEntry*)malloc(sizeof(TrackingEntry) * _table_cap);
 
-    _record_heap_usage = args._record_heap_usage;
+    _record_heap_usage = false; // args._record_heap_usage;
 
     _gc_epoch = 0;
     _last_gc_epoch = 0;
@@ -270,6 +279,14 @@ void LivenessTracker::track(JNIEnv* env, AllocEvent &event, jint tid, jobject ob
 
     bool retried = false;
 
+    static thread_local std::mt19937 gen(std::random_device{}());
+    static thread_local std::uniform_real_distribution<> dis(0, 1.0);
+    static thread_local double skipped = 0;
+
+    if (dis(gen) > _subsample_ratio) {
+        skipped += event._weight * event._size;
+        return;
+    }
 retry:
     if (!_table_lock.tryLockShared()) {
         // we failed to add the weak reference to the table so it won't get cleaned up otherwise
@@ -281,7 +298,7 @@ retry:
     // It bails out if _table_size would overflow _table_cap
     int idx;
     do {
-        idx = _table_size;
+        idx = __atomic_load_n(&_table_size, __ATOMIC_RELAXED);
     } while (idx < _table_cap &&
                 !__sync_bool_compare_and_swap(&_table_size, idx, idx + 1));
 
@@ -290,6 +307,7 @@ retry:
         _table[idx].time = TSC::ticks();
         _table[idx].ref = ref;
         _table[idx].alloc = event;
+        _table[idx].skipped = skipped;
         _table[idx].age = 0;
         _table[idx].frames_size = num_frames;
         _table[idx].frames = new jvmtiFrameInfo[_table[idx].frames_size];
@@ -337,6 +355,7 @@ retry:
             }
         }
     }
+    skipped = 0; // reset the subsampling skipped bytes
 }
 
 void JNICALL LivenessTracker::GarbageCollectionFinish(jvmtiEnv *jvmti_env) {
@@ -351,7 +370,7 @@ void LivenessTracker::onGC() {
     // just increment the epoch
    atomicInc(_gc_epoch, 1);
 
-   if (!HeapUsage::isLastGCUsageSupported()) {
-       storeRelease(_used_after_last_gc, HeapUsage::get(false)._used);
-   }
+//    if (!HeapUsage::isLastGCUsageSupported()) {
+//        storeRelease(_used_after_last_gc, HeapUsage::get(false)._used);
+//    }
 }

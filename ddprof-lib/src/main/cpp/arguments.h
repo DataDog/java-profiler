@@ -137,6 +137,7 @@ class Arguments {
     long _memory;
     bool _record_allocations;
     bool _record_liveness;
+    double _live_samples_ratio;
     bool _record_heap_usage;
     bool _gc_generations;
     int  _jstackdepth;
@@ -166,6 +167,7 @@ class Arguments {
         _memory(-1),
         _record_allocations(false),
         _record_liveness(false),
+        _live_samples_ratio(0.1), // default to liveness-tracking 10% of the allocation samples
         _record_heap_usage(false),
         _gc_generations(false),
         _jstackdepth(DEFAULT_JSTACKDEPTH),

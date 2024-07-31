@@ -33,7 +33,7 @@ class PidController {
         double _alpha;
 
         double _avg_error;
-        long long _integral_value;
+        double _integral_value;
 
         inline static double computeAlpha(float cutoff) {
             if (cutoff <= 0)

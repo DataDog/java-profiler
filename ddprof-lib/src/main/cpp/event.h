@@ -64,6 +64,7 @@ class LockEvent : public Event {
 class ObjectLivenessEvent : public Event {
   public:
     AllocEvent _alloc;
+    u64 _skipped;
     u64 _start_time;
     u64 _age;
     Context _ctx;

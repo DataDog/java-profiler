@@ -46,6 +46,7 @@ class ObjectSampler : public Engine {
     u64 _alloc_event_count;
 
     const static int CONFIG_UPDATE_CHECK_PERIOD_SECS = 1;
+    int _target_samples_per_window = 100; // ~6k samples per minute by default
 
     Error updateConfiguration(u64 events, double time_coefficient);
 

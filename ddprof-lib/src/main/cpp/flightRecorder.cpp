@@ -1277,7 +1277,7 @@ void Recording::recordHeapLiveObject(Buffer* buf, int tid, u32 call_trace_id, Ob
     buf->putVar32(event->_id);
     buf->putVar64(event->_age);
     buf->putVar64(event->_alloc._size);
-    buf->putFloat(event->_alloc._weight);
+    buf->putFloat(((event->_alloc._weight * event->_alloc._size) + event->_skipped) / event->_alloc._size);
     writeContext(buf, event->_ctx);
     writeEventSizePrefix(buf, start);
     flushIfNeeded(buf);
