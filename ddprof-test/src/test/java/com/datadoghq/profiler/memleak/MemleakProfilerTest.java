@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Assumptions;
 public class MemleakProfilerTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
-        return "memory=524288:L:0.99,cstack=fp";
+        return "memory=524288:L:0.5,cstack=fp";
     }
 
     @Override

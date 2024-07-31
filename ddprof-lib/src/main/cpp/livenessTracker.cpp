@@ -172,7 +172,6 @@ Error LivenessTracker::initialize_table(JNIEnv* jni, int sampling_interval) {
 
     _table_cap = std::max(2048, _table_max_cap / 8); // the table will grow at most 3 times before fully covering heap
 
-    fprintf(stdout, "===> heap: %ld, sampling interval: %d, max: %d, cap: %d\n", max_heap, sampling_interval, _table_max_cap, _table_cap);
     return Error::OK;
 }
 
@@ -254,7 +253,7 @@ Error LivenessTracker::initialize(Arguments& args) {
     _table_cap = __min(2048, _table_max_cap); // with default 512k sampling interval, it's enough for 1G of heap
     _table = (TrackingEntry*)malloc(sizeof(TrackingEntry) * _table_cap);
 
-    _record_heap_usage = false; // args._record_heap_usage;
+    _record_heap_usage = args._record_heap_usage;
 
     _gc_epoch = 0;
     _last_gc_epoch = 0;
@@ -283,7 +282,7 @@ void LivenessTracker::track(JNIEnv* env, AllocEvent &event, jint tid, jobject ob
     static thread_local std::uniform_real_distribution<> dis(0, 1.0);
     static thread_local double skipped = 0;
 
-    if (dis(gen) > _subsample_ratio) {
+    if (_subsample_ratio < 1.0 && dis(gen) > _subsample_ratio) {
         skipped += event._weight * event._size;
         return;
     }

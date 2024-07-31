@@ -177,7 +177,7 @@ Error Arguments::parse(const char* args) {
                 char* ratio = nullptr;
                 if (config) {
                     *(config++) = 0; // terminate the 'value' string and update the pointer to the 'config' section
-                    char* ratio = strchr(config, ':');
+                    ratio = strchr(config, ':');
                     if (ratio) {
                         *(ratio++) = 0; // terminate the preceding 'config' string and update the pointer to the 'ratio' section
                     }

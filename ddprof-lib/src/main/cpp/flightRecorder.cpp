@@ -373,6 +373,7 @@ off_t Recording::finishChunk(bool end_recording) {
                                 oSampler->_record_allocations ? oSampler->_interval : 0L,
                                 oSampler->_record_liveness ? oSampler->_interval : 0L,
                                 oSampler->_record_liveness ? LivenessTracker::instance()->_table_cap : 0L,
+                                oSampler->_record_liveness ? LivenessTracker::instance()->_subsample_ratio : 0.0,
                                 oSampler->_gc_generations,
                                 Profiler::instance()->eventMask(),
                                 Profiler::instance()->cpuEngine()->name());
@@ -752,11 +753,12 @@ void Recording::writeDatadogProfilerConfig(Buffer* buf,
                                 long allocInterval,
                                 long memleakInterval,
                                 long memleakCapacity,
+                                double memleakRatio,
                                 bool gcGenerations,
                                 int modeMask,
                                 const char* cpuEngine) {
     flushIfNeeded(buf, RECORDING_BUFFER_LIMIT
-    - (1 + 5 * MAX_VAR64_LENGTH + MAX_VAR32_LENGTH + 3 * MAX_STRING_LENGTH));
+    - (1 + 6 * MAX_VAR64_LENGTH + MAX_VAR32_LENGTH + 3 * MAX_STRING_LENGTH));
     int start = buf->skip(1);
     buf->putVar64(T_DATADOG_PROFILER_CONFIG);
     buf->putVar64(_start_ticks);
@@ -767,6 +769,7 @@ void Recording::writeDatadogProfilerConfig(Buffer* buf,
     buf->putVar64(allocInterval);
     buf->putVar64(memleakInterval);
     buf->putVar64(memleakCapacity);
+    buf->put8(static_cast<int>(memleakRatio * 100));
     buf->put8(gcGenerations);
     buf->putVar32(modeMask);
     buf->putUtf8(PROFILER_VERSION);

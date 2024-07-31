@@ -124,7 +124,7 @@ Error ObjectSampler::check(Arguments& args) {
         return Error("Allocation Sampling is not supported on this JVM");
     }
     
-    _interval = std::max(args._memory, static_cast<long>(4 * 1024 * 1024));
+    _interval = std::max(args._memory, static_cast<long>(256 * 1024)); // do not allow shorter interval than 256kiB
     _configured_interval = args._memory;
     _record_allocations = args._record_allocations;
     _record_liveness = args._record_liveness;
