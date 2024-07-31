@@ -44,7 +44,6 @@ void LivenessTracker::cleanup_table(bool forced) {
     }
 
     JNIEnv* env = VM::jni();
-    jvmtiEnv* jvmti = VM::jvmti();
 
     int epoch_diff = (int) (target_gc_epoch - current);
 
