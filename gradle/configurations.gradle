@@ -58,7 +58,7 @@ def locateLibasan() {
 }
 
 def locateLibtsan() {
-    return locateLibrary('libtsan')
+  return locateLibrary('libtsan')
 }
 
 ext.libasan = locateLibasan()
