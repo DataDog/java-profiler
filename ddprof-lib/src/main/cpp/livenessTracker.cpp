@@ -283,7 +283,7 @@ void LivenessTracker::track(JNIEnv* env, AllocEvent &event, jint tid, jobject ob
     static thread_local double skipped = 0;
 
     if (_subsample_ratio < 1.0 && dis(gen) > _subsample_ratio) {
-        skipped += event._weight * event._size;
+        skipped += static_cast<double>(event._weight) * event._size;
         return;
     }
 retry:
