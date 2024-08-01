@@ -270,13 +270,6 @@ void LivenessTracker::track(JNIEnv* env, AllocEvent &event, jint tid, jobject ob
         return;
     }
 
-    jweak ref = env->NewWeakGlobalRef(object);
-    if (ref == nullptr) {
-        return;
-    }
-
-    bool retried = false;
-
     static thread_local std::mt19937 gen(std::random_device{}());
     static thread_local std::uniform_real_distribution<> dis(0, 1.0);
     static thread_local double skipped = 0;
@@ -285,6 +278,12 @@ void LivenessTracker::track(JNIEnv* env, AllocEvent &event, jint tid, jobject ob
         skipped += static_cast<double>(event._weight) * event._size;
         return;
     }
+
+    jweak ref = env->NewWeakGlobalRef(object);
+    if (ref == nullptr) {
+        return;
+    }
+    bool retried = false;
 retry:
     if (!_table_lock.tryLockShared()) {
         // we failed to add the weak reference to the table so it won't get cleaned up otherwise
