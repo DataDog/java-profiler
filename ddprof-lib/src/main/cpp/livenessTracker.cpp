@@ -368,7 +368,7 @@ void LivenessTracker::onGC() {
     // just increment the epoch
    atomicInc(_gc_epoch, 1);
 
-//    if (!HeapUsage::isLastGCUsageSupported()) {
-//        storeRelease(_used_after_last_gc, HeapUsage::get(false)._used);
-//    }
+    if (!HeapUsage::isLastGCUsageSupported()) {
+        storeRelease(_used_after_last_gc, HeapUsage::get(false)._used);
+    }
 }
