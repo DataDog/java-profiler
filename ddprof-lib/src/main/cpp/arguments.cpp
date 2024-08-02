@@ -53,53 +53,38 @@ static const Multiplier UNIVERSAL[] = {{'n', 1}, {'u', 1000}, {'m', 1000000}, {'
 // The format of the string is:
 //     arg[,arg...]
 // where arg is one of the following options:
-//     start            - start profiling
-//     resume           - start or resume profiling without resetting collected data
-//     stop             - stop profiling
-//     dump             - dump collected data without stopping profiling session
-//     check            - check if the specified profiling event is available
-//     status           - print profiling status (inactive / running for X seconds)
-//     list             - show the list of available profiling events
-//     version[=full]   - display the agent version
-//     event=EVENT      - which event to trace (cpu, wall, cache-misses, etc.)
-//     alloc[=BYTES]    - profile allocations with BYTES interval
-//     jfr              - dump events in Java Flight Recorder format
-//     traces[=N]       - dump top N call traces
-//     samples          - count the number of samples (default)
-//     total            - count the total value (time, bytes, etc.) instead of samples
-//     chunksize=N      - approximate size of JFR chunk in bytes (default: 100 MB)
-//     chunktime=N      - duration of JFR chunk in seconds (default: 1 hour)
-//     timeout=TIME     - automatically stop profiler at TIME (absolute or relative)
-//     loop=TIME        - run profiler in a loop (continuous profiling)
-//     interval=N       - sampling interval in ns (default: 10'000'000, i.e. 10 ms)
-//     jstackdepth=N    - maximum Java stack depth (default: 2048)
-//     safemode=BITS    - disable stack recovery techniques (default: 0, i.e. everything enabled)
-//     file=FILENAME    - output file name for dumping
-//     log=FILENAME     - log warnings and errors to the given dedicated stream
-//     loglevel=LEVEL   - logging level: TRACE, DEBUG, INFO, WARN, ERROR, or NONE
-//     server=ADDRESS   - start insecure HTTP server at ADDRESS/PORT
-//     filter=FILTER    - thread filter
-//     threads          - profile different threads separately
-//     sched            - group threads by scheduling policy
-//     cstack=MODE      - how to collect C stack frames in addition to Java stack
-//                        MODE is 'fp', 'dwarf', 'lbr', 'vm' or 'no'
-//     allkernel        - include only kernel-mode events
-//     alluser          - include only user-mode events
-//     simple           - simple class names instead of FQN
-//     dot              - dotted class names
-//     sig              - print method signatures
-//     ann              - annotate Java methods
-//     lib              - prepend library names
-//     mcache           - max age of jmethodID cache (default: 0 = disabled)
-//     include=PATTERN  - include stack traces containing PATTERN
-//     exclude=PATTERN  - exclude stack traces containing PATTERN
-//     begin=FUNCTION   - begin profiling when FUNCTION is executed
-//     end=FUNCTION     - end profiling when FUNCTION is executed
-//     title=TITLE      - FlameGraph title
-//     minwidth=PCT     - FlameGraph minimum frame width in percent
-//     reverse          - generate stack-reversed FlameGraph / Call tree
+//     start              - start profiling
+//     resume             - start or resume profiling without resetting collected data
+//     stop               - stop profiling
+//     check              - check if the specified profiling event is available
+//     status             - print profiling status (inactive / running for X seconds)
+//     list               - show the list of available profiling events
+//     version[=full]     - display the agent version
+//     event=EVENT        - which event to trace (cpu, wall, cache-misses, etc.)
+//     cpu[=INTERVAL]     - enable CPU profiling with the specified sampling interval
+//     wall[=INTERVAL]    - enable wall-clock profiling with the specified sampling interval
+//     walltpt=THREADS    - sample THREADS threads per tick in wall-clock profiling
+//     memory[=BYTES[:[a|[l|L[:RATIO]]]]]
+//                        - memory profiling with suggested interval in bytes
+//                        - 'a'=record allocation,'l'=record liveness,'L'=record liveness and heap usage
+//                        - RATIO is a floating point number between 0.01 and 1.0 to subsample live samples
+//                        - eg. 'memory=1048576:a:L:0.1' to sample every 1MB with allocation, liveness and heap usage tracking,
+//                          and keep the liveness track of 10% of the allocation samples
+//     generations        - track surviving generations
+//     lightweight[=BOOL] - enable lightweight profiling - events without stacktraces (default: true)
+//     jfr                - dump events in Java Flight Recorder format
+//     interval=N         - sampling interval in ns (default: 10'000'000, i.e. 10 ms)
+//     jstackdepth=N      - maximum Java stack depth (default: 2048)
+//     safemode=BITS      - disable stack recovery techniques (default: 0, i.e. everything enabled)
+//     file=FILENAME      - output file name for dumping
+//     log=FILENAME       - log warnings and errors to the given dedicated stream
+//     loglevel=LEVEL     - logging level: TRACE, DEBUG, INFO, WARN, ERROR, or NONE
+//     filter=FILTER      - thread filter
+//     cstack=MODE        - how to collect C stack frames in addition to Java stack
+//                          MODE is 'fp', 'dwarf', 'lbr', 'vm' or 'no'
+//     allkernel          - include only kernel-mode events
+//     alluser            - include only user-mode events
 //
-// It is possible to specify multiple dump options at the same time
 
 Error Arguments::parse(const char* args) {
     if (args == NULL) {
@@ -188,11 +173,16 @@ Error Arguments::parse(const char* args) {
                 }
 
             CASE("memory")
-                char* config = value ? strchr(value, ':') : NULL;
+                char* config = value ? strchr(value, ':') : nullptr;
+                char* ratio = nullptr;
                 if (config) {
                     *(config++) = 0; // terminate the 'value' string and update the pointer to the 'config' section
+                    ratio = strchr(config, ':');
+                    if (ratio) {
+                        *(ratio++) = 0; // terminate the preceding 'config' string and update the pointer to the 'ratio' section
+                    }
                 }
-                _memory = value == NULL ? DEFAULT_ALLOC_INTERVAL : parseUnits(value, BYTES);
+                _memory = value == nullptr ? DEFAULT_ALLOC_INTERVAL : parseUnits(value, BYTES);
                 if (_memory >= 0) {
                     if (config) {
                         if (strchr(config, 'a')) {
@@ -203,6 +193,10 @@ Error Arguments::parse(const char* args) {
                         } else if (strchr(config, 'L')) {
                             _record_liveness = true;
                             _record_heap_usage = true;
+                        }
+                        if (_record_liveness && ratio) { // live-sample ratio is only applicable when tracking liveness
+                            char* endptr;
+                            _live_samples_ratio = std::max(std::min(strtod(ratio, &endptr), 1.0), 0.01); // subsample at least 1% but not more than 100%
                         }
                     } else {
                         // enable both allocations and liveness tracking

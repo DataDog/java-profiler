@@ -143,9 +143,11 @@ tasks.whenTaskAdded { task ->
                                 // linking the gtests using the minimizing release flags is making gtest unhappy
                                 linkerArgs.addAll(config.linkerArgs)
                             }
-                            linkerArgs.addAll("-lgtest", "-lgtest_main", "-lgmock", "-lgmock_main", "-ldl", "-lpthread", "-lm", "-lrt")
+                            linkerArgs.addAll("-lgtest", "-lgtest_main", "-lgmock", "-lgmock_main", "-ldl", "-lpthread", "-lm")
                             if (os().isMacOsX()) {
                                 linkerArgs.addAll("-L/opt/homebrew/opt/googletest/lib")
+                            } else {
+                                linkerArgs.add("-lrt")
                             }
                             toolChain = task.toolChain
                             targetPlatform = task.targetPlatform

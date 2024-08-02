@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+#include <algorithm>
 #include <cmath>
 #include <set>
 
@@ -92,9 +93,8 @@ void ObjectSampler::recordAllocation(jvmtiEnv* jvmti, JNIEnv* jni, jthread threa
         Profiler::instance()->recordExternalSample(size, tid, frames, frames_size, /*truncated=*/false, BCI_ALLOC, &event);
         
         u64 current_samples = __sync_add_and_fetch(&_alloc_event_count, 1);
-        // in order to lower the number of atomic reads from the timestamp variable the check will be performed only each 1024 samples
-        // the number 1024 is chosen arbitrarily to +- match the expected number of samples per sampling window (1000)
-        if ((current_samples & 1023) == 0) { // effectively 'current_samples % 1024 == 0'
+        // in order to lower the number of atomic reads from the timestamp variable the check will be performed only each N samples
+        if ((current_samples % _target_samples_per_window) == 0) { 
             static u64 check_period_ns = static_cast<u64>(CONFIG_UPDATE_CHECK_PERIOD_SECS) * 1000 * 1000 * 1000;
             u64 now = OS::nanotime();
             u64 prev = __atomic_load_n(&_last_config_update_ts, __ATOMIC_RELAXED);
@@ -124,8 +124,8 @@ Error ObjectSampler::check(Arguments& args) {
         return Error("Allocation Sampling is not supported on this JVM");
     }
     
-    _interval = args._memory;
-    _configured_interval = _interval;
+    _interval = std::max(args._memory, static_cast<long>(256 * 1024)); // do not allow shorter interval than 256kiB
+    _configured_interval = args._memory;
     _record_allocations = args._record_allocations;
     _record_liveness = args._record_liveness;
     _gc_generations = args._gc_generations;
@@ -172,16 +172,16 @@ void ObjectSampler::stop() {
 
 Error ObjectSampler::updateConfiguration(u64 events, double time_coefficient) {
     static PidController pid_controller(
-        1000, // target 60k events per minute or 1k per second
-        16, // use a rather strong proportional gain in order to react quickly to bursts
-        23, // emphasize the integration based gain to focus on long-term rate limiting rather than on fair distribution
-        3,  // the derivational gain is rather small because the allocation rate can change abruptly (low impact of the predicted allocation rate)
+        _target_samples_per_window, // target 6k events per minute or 1k per second
+        31,  // use a rather strong proportional gain in order to react quickly to bursts
+        511, // emphasize the integration based gain to focus on long-term rate limiting rather than on fair distribution
+        3,   // the derivational gain is rather small because the allocation rate can change abruptly (low impact of the predicted allocation rate)
         CONFIG_UPDATE_CHECK_PERIOD_SECS, 
         15
     );
 
     float signal = pid_controller.compute(events, time_coefficient);
-    int required_interval = _interval - signal;
+    int required_interval = _interval - static_cast<int>(signal);
     required_interval = required_interval >= _configured_interval ? required_interval : _configured_interval; // do not dip below the manually configured sampling interval
     if (required_interval != _interval) {
         _interval = required_interval;
