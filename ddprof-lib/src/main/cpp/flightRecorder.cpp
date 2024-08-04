@@ -1280,7 +1280,8 @@ void Recording::recordHeapLiveObject(Buffer* buf, int tid, u32 call_trace_id, Ob
     buf->putVar32(event->_id);
     buf->putVar64(event->_age);
     buf->putVar64(event->_alloc._size);
-    buf->putFloat(((event->_alloc._weight * event->_alloc._size) + event->_skipped) / event->_alloc._size);
+    // the _alloc._size is 0 only when running in the lightweight mode, only tracking surviving generations
+    buf->putFloat(event->_alloc._size > 0 ? ((event->_alloc._weight * event->_alloc._size) + event->_skipped) / event->_alloc._size : 0);
     writeContext(buf, event->_ctx);
     writeEventSizePrefix(buf, start);
     flushIfNeeded(buf);
