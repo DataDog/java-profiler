@@ -30,6 +30,7 @@
 #include "perfEvents.h"
 #include "objectSampler.h"
 #include "wallClock.h"
+#include "wallClock_jvmti.h"
 #include "j9Ext.h"
 #include "j9WallClock.h"
 #include "ctimer.h"
@@ -60,6 +61,7 @@ static Engine noop_engine;
 static PerfEvents perf_events;
 static WallClock wall_engine;
 static J9WallClock j9_engine;
+static WallClock jvmti_wall_engine;
 static ITimer itimer;
 static CTimer ctimer;
 
@@ -117,6 +119,9 @@ void Profiler::onThreadStart(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     }
     updateThreadName(jvmti, jni, thread, true);
 
+    MutexLocker jtm(_jthread_mutex);
+    _jthreads.insert(std::make_pair(tid, thread));
+
     _cpu_engine->registerThread(tid);
     _wall_engine->registerThread(tid);
 }
@@ -127,6 +132,9 @@ void Profiler::onThreadEnd(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
         _thread_filter.remove(tid);
     }
     updateThreadName(jvmti, jni, thread, true);
+
+    MutexLocker jtm(_jthread_mutex);
+    _jthreads.erase(tid);
 
     _cpu_engine->unregisterThread(tid);
     // unregister here because JNI callers generally don't know about thread exits
@@ -141,6 +149,16 @@ int Profiler::registerThread(int tid) {
 void Profiler::unregisterThread(int tid) {
     _instance->_cpu_engine->unregisterThread(tid);
     _instance->_wall_engine->unregisterThread(tid);
+}
+
+void Profiler::getThreads(const vector<int>& tids, std::vector<jthread>& threads) {
+    MutexLocker ml(_jthread_mutex);
+    for (int tid : tids) {
+        const auto& it = _jthreads.find(tid);
+        if (it != _jthreads.end()) {
+            threads.push_back(it->second);
+        }
+    }
 }
 
 const char* Profiler::asgctError(int code) {
@@ -987,7 +1005,14 @@ Engine* Profiler::selectWallEngine(Arguments& args) {
             Log::warn("Safe jmethodID access is not available on this JVM. Using wallclock profiler on your own risk.");
         }
     }
-    return (Engine*)&wall_engine;
+    switch (args._wallclock_sampler) {
+        case JVMTI:
+            return (Engine*)&jvmti_wall_engine;
+        case ASGCT:
+        default:
+            return (Engine*)&wall_engine;
+    }
+
 }
 
 Engine* Profiler::selectAllocEngine(Arguments& args) {

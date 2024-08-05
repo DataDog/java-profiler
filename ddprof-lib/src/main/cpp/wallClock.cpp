@@ -25,6 +25,7 @@
 #include "thread.h"
 #include "tsc.h"
 #include "vmStructs.h"
+#include "reservoir_sampler.h"
 
 std::atomic<bool> WallClock::_enabled{false};
 
@@ -139,10 +140,9 @@ void WallClock::timerLoop() {
     if (!_enabled.load(std::memory_order_acquire)) {
         return;
     }
+    ReservoirSampler<int> reservoir(_reservoir_size);
     std::vector<int> tids;
     tids.reserve(_reservoir_size);
-    std::vector<int> reservoir;
-    reservoir.reserve(_reservoir_size);
     int self = OS::threadId();
     ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
     thread_filter->remove(self);
@@ -168,21 +168,12 @@ void WallClock::timerLoop() {
             }
             delete thread_list;
         }
-        for (int i = 0; i < _reservoir_size && i < tids.size(); i++) {
-            reservoir.push_back(tids[i]);
-        }
-        double weight = exp(log(uniform(generator)) / _reservoir_size);
-        int target = _reservoir_size + (int) (log(uniform(generator)) / log(1 - weight));
-        while (target < tids.size()) {
-            reservoir[random_index(generator)] = tids[target];
-            weight *= exp(log(uniform(generator)) / _reservoir_size);
-            target += (int) (log(uniform(generator)) / log(1 - weight));
-        }
 
         int num_failures = 0;
         int threads_already_exited = 0;
         int permission_denied = 0;
-        for (int tid : reservoir) {
+        std::vector<int> sample = reservoir.sample(tids);
+        for (int tid : sample) {
             if (!OS::sendSignalToThread(tid, SIGVTALRM)) {
                 num_failures++;
                 if (errno != 0) {
@@ -202,7 +193,7 @@ void WallClock::timerLoop() {
 
         epoch.updateNumSamplableThreads(tids.size());
         epoch.updateNumFailedSamples(num_failures);
-        epoch.updateNumSuccessfulSamples(reservoir.size() - num_failures);
+        epoch.updateNumSuccessfulSamples(sample.size() - num_failures);
         epoch.updateNumExitedThreads(threads_already_exited);
         epoch.updateNumPermissionDenied(permission_denied);
         u64 endTime = TSC::ticks();
@@ -216,7 +207,6 @@ void WallClock::timerLoop() {
             epoch.clean();
         }
 
-        reservoir.clear();
         tids.clear();
         OS::sleep(_interval);
     }
