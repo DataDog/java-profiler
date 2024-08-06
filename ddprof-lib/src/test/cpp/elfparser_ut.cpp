@@ -4,6 +4,7 @@
 
 #include "codeCache.h"
 #include "symbols_linux.h"
+#include "log.h"
 
 #include <unistd.h>
 #include <limits.h> // For PATH_MAX
@@ -38,7 +39,7 @@ protected:
     }
 
     void TearDown() override {
-        // Clean up if necessary
+        // probably some free of the array cache to be done
     }
 
 };
@@ -172,17 +173,30 @@ TEST_F(ElfTest, nonElfFileSmallMapping) {
     Symbols::clear_parsed_caches();
 }
 
-TEST_F(ElfTest, invalidElfSmallMappingAfterUnmap) {
-    // Create an invalid ELF mapping
+class ElfTestParam : public ::testing::TestWithParam<int> {
+protected:
+    void SetUp() override {
+        // Reset global or static state
+        Symbols::clear_parsed_caches();
+    }
+
+    void TearDown() override {
+        // probably some free of the array cache to be done
+    }
+};
+
+// This test does not repro 100% of the time.
+// However over a few runs, I get it to reproduce the race condition.
+TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
+    // This does not work as expected. There is a follow up to improve logging.
+    Log::open("stderr", "WARN");
+    // Create an invalid ELF mapping (it could be valid for this case, it is not relevant)
     const size_t headerSize = sizeof(invalidElfHeader);
     int fd = open("/tmp/invalid_elf_small_unmap", O_RDWR | O_CREAT | O_TRUNC, 0700); // Make the file executable
     ASSERT_NE(fd, -1) << "Failed to open temporary file";
-
-    // Write the invalid ELF header to the file
     ssize_t written = write(fd, invalidElfHeader, headerSize);
     ASSERT_EQ(written, headerSize) << "Failed to write invalid ELF header";
-
-    // Memory map the file with a size smaller than the ELF header
+    // Memory map the file
     void* addr = mmap(NULL, 16, PROT_READ | PROT_EXEC, MAP_PRIVATE, fd, 0); // Map only 16 bytes
     ASSERT_NE(addr, MAP_FAILED) << "Failed to memory map the file";
 
@@ -193,11 +207,11 @@ TEST_F(ElfTest, invalidElfSmallMappingAfterUnmap) {
 
     // Set up the CodeCacheArray and other required structures
     CodeCacheArray cc_array;
-    CodeCache* cc = new CodeCache("/tmp/invalid_elf_small_unmap", 0, false, base, end);
 
-#ifdef MANUAL
-    // Call the parsing function
-    Symbols::parseLibraries(&cc_array, false);
+#ifdef MANUAL_CRASH_ON_UNMAP
+    // This code path will crash, as the protection was added within 
+    // the parse library function (not parseProgramHeaders)
+    CodeCache* cc = new CodeCache("/tmp/invalid_elf_small_unmap", 0, false, base, end);
 
     // Unmap the memory
     munmap(addr, 16);
@@ -205,24 +219,32 @@ TEST_F(ElfTest, invalidElfSmallMappingAfterUnmap) {
 
     // Manually call parseProgramHeaders after unmapping to force a crash
     ElfParser::parseProgramHeaders(cc, base, end, true);
+    delete cc;
 #else
-    // Create a thread that will unmap the memory after 1 milliseconds
-    // this is hard, because we need a timing that allows us to read the 
+    int delay = GetParam();
+    fprintf(stderr, "-- Test Delay = %d ms\n", delay);
+    // Create a thread that will unmap the memory after X milliseconds
+    // We need a timing that allows us to read the 
     // mapping, but not loop over them in the parsing function
-    // I was able to reproduce with 15 ms.
-    // maybe this should range from 5 to 20ms.
-    std::thread unmapper([addr]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(15));
+    // I was able to reproduce with ~15 ms in asan mode.
+    std::thread unmapper([addr, delay]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay));
         munmap(addr, 16);
         unlink("/tmp/invalid_elf_small_unmap");
     });
+
     // Call the parsing function in the main thread
     Symbols::parseLibraries(&cc_array, false);
 
     // Join the unmapper thread to ensure it has finished
     unmapper.join();
 #endif
-    delete cc;
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    DelayedUnmapTest,
+    ElfTestParam,
+    ::testing::Range(3, 21) // This will test delays from 5 to 20 milliseconds inclusive
+);
 
 #endif //__linux__

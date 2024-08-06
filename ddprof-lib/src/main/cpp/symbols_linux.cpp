@@ -427,58 +427,74 @@ void Symbols::parseKernelSymbols(CodeCache* cc) {
     fclose(f);
 }
 
-
-// Signal handler safety
+namespace {
+// Signal handler safe read mechanism
 // This is added to secure concurrent unloading of mappings
 // This should not happen in a pure Java environment,
 // however, with other native agents, we could have mappings
 // that unload while we are processing the mappings
 
 // Global variable to hold the jump buffer for signal handling
-sigjmp_buf jump_buffer;
+static sigjmp_buf jump_buffer;
 
 // Original SIGSEGV handler
-struct sigaction original_sa;
+static struct sigaction original_sa;
 
 // Signal handler for SIGSEGV
 void sigsegv_handler(int sig) {
     siglongjmp(jump_buffer, 1);
 }
 
-static void register_segv_handler() {
+static int register_segv_handler() {
     struct sigaction sa;
     sa.sa_handler = sigsegv_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     // Save the current handler
-    sigaction(SIGSEGV, &sa, &original_sa);
+    return sigaction(SIGSEGV, &sa, &original_sa);
 }
 
-static void restore_segv_handler() {
+static int restore_segv_handler() {
     // Restore the original handler
-    sigaction(SIGSEGV, &original_sa, NULL);
+    return sigaction(SIGSEGV, &original_sa, NULL);
 }
 
-#include "symbols_linux.h"
+// Imported from ddprof (native profiler)
+// This should live in some tooling lib
+template <class Tp> inline void DoNotOptimize(Tp &value) {
+    // minor: the inline flag could be ignored
+#ifndef __clang_analyzer__
+#  if defined(__clang__)
+  asm volatile("" : "+r,m"(value) : : "memory");
+#  else
+  asm volatile("" : "+m,r"(value) : : "memory");
+#  endif
+#endif
+}
 
 // Function to check if memory is accessible
 static bool is_memory_accessible(const char* addr) {
-
     // Try to access the memory
     if (sigsetjmp(jump_buffer, 1) == 0) {
-        char access_start = addr[0]; // Attempt to read the memory
-        char access_end = addr[sizeof(ElfHeader)]; // Attempt to read the memory
-        fprintf(stderr, "%x -- %x ", access_start, access_end);
+        char access_start = addr[0];
+        // We will at least access the elf header before figuring out
+        // that this is an invalid elf structure
+        char access_end = addr[sizeof(ElfHeader)];
+        // avoid compiler optimizations
+        DoNotOptimize(access_start);
+        DoNotOptimize(access_end);
         return true; // Memory is accessible
     } else {
-        fprintf(stderr, "Memory is not accessible\n");
         return false; // Memory is not accessible
     }
 }
+} // annon namespace
 
 void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
     MutexLocker ml(_parse_lock);
-    register_segv_handler();
+    if (register_segv_handler() != 0) {
+        Log::warn("Could not register SIGSEGV handler");
+    }
 
     if (kernel_symbols && !haveKernelSymbols()) {
         CodeCache* cc = new CodeCache("[kernel]");
@@ -537,26 +553,27 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
 
         // Do not try to parse pseudofiles like anon_inode:name, /memfd:name
         if (strchr(map.file(), ':') == NULL) {
-            fprintf(stderr, "parsing file %s ", map.file());
             u64 inode = u64(map.dev()) << 32 | map.inode();
             if (inode != 0) {
                 // Do not parse the same executable twice, e.g. on Alpine Linux 
                 if (_parsed_inodes.insert(inode).second) {
                     if (inode == last_inode) {
                         // If last_inode is set, image_base is known to be valid and readable
-                        bool res = ElfParser::parseFile(cc, image_base, map.file(), true);
+                        ElfParser::parseFile(cc, image_base, map.file(), true);
                         if (is_memory_accessible(image_base)) {
                             // Parse program headers after the file to ensure debug symbols are parsed first
                             ElfParser::parseProgramHeaders(cc, image_base, map_end, MUSL);
                         }
-                        fprintf(stderr, "parseProgHeaders ");
+                        else {
+                            // mapping was unmapped before we got to read it
+                            Log::warn("Could not parse program headers for %s (at 0x%p)", map.file(), image_base);
+                        }
                     } else if ((unsigned long)map_start > map_offs) {
                         // Unlikely case when image_base has not been found.
                         // Be careful: executable file is not always ELF, e.g. classes.jsa
                         ElfParser::parseFile(cc, map_start - map_offs, map.file(), true);
                     }
                 }
-                fprintf(stderr, " ---\n");
             } else if (strcmp(map.file(), "[vdso]") == 0) {
                 ElfParser::parseProgramHeaders(cc, map_start, map_end, true);
             }
@@ -568,7 +585,9 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
 
     free(str);
     fclose(f);
-    restore_segv_handler();
+    if (restore_segv_handler() != 0) {
+        Log::warn("Could not restore SIGSEGV handler");
+    }
 }
 
 #endif // __linux__
