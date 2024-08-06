@@ -1,4 +1,7 @@
 #ifdef __linux__
+
+#pragma once
+
 #include "symbols.h"
 
 #include <elf.h>

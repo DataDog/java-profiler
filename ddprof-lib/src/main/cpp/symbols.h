@@ -29,7 +29,7 @@ class Symbols {
   public:
     static void parseKernelSymbols(CodeCache* cc);
     static void parseLibraries(CodeCacheArray* array, bool kernel_symbols);
-
+    static void clear_parsed_caches();
     static bool haveKernelSymbols() {
         return _have_kernel_symbols;
     }
