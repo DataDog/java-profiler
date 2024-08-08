@@ -18,6 +18,7 @@
 #define _SAFEACCESS_H
 
 #include <stdint.h>
+
 #include "arch.h"
 
 
@@ -46,7 +47,14 @@ class SafeAccess {
     }
 
     static uintptr_t skipLoad(uintptr_t pc) {
+#ifndef __SANITIZE_ADDRESS__
         if (pc - (uintptr_t)load < 16) {
+#else
+        // asan significantly increases the size of the load function
+        // checking disassembled code can help adjust the value
+        // gdb --batch -ex 'disas _ZN10SafeAccess4loadEPPv' ./elfparser_ut
+        if (pc - (uintptr_t)load < 132) {
+#endif
 #if defined(__x86_64__)
             return *(u16*)pc == 0x8b48 ? 3 : 0;  // mov rax, [reg]
 #elif defined(__i386__)

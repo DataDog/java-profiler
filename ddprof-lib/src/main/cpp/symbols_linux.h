@@ -121,17 +121,10 @@ class ElfParser {
     const char* _sections;
     const char* _vaddr_diff;
 
-    ElfParser(CodeCache* cc, const char* base, const void* addr, const char* file_name, size_t length, bool relocate_dyn) {
-        _cc = cc;
-        _base = base;
-        _file_name = file_name;
-        _length = length;
-        _relocate_dyn = relocate_dyn && base != nullptr;
-        _header = (ElfHeader*)addr;
-        _sections = (const char*)addr + _header->e_shoff;
-    }
-
+    ElfParser(CodeCache* cc, const char* base, const void* addr, const char* file_name, size_t length, bool relocate_dyn);
     bool validHeader() {
+        if (!_header) return false;
+        if (!_sections) return false;
         unsigned char* ident = _header->e_ident;
         return ident[0] == 0x7f && ident[1] == 'E' && ident[2] == 'L' && ident[3] == 'F'
             && ident[4] == ELFCLASS_SUPPORTED && ident[5] == ELFDATA2LSB && ident[6] == EV_CURRENT

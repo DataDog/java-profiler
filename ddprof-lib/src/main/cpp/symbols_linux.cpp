@@ -28,14 +28,16 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <linux/limits.h>
-#include <signal.h>
 #include <setjmp.h>
+#include <signal.h>
 
 #include "symbols.h"
 #include "symbols_linux.h"
 #include "dwarf.h"
 #include "log.h"
+#include "os.h"
 #include "safeAccess.h"
+#include "stackFrame.h"
 
 
 ElfSection* ElfParser::findSection(uint32_t type, const char* name) {
@@ -51,6 +53,33 @@ ElfSection* ElfParser::findSection(uint32_t type, const char* name) {
     }
 
     return NULL;
+}
+
+
+ElfParser::ElfParser(CodeCache* cc, 
+                const char* base,
+                const void* addr,
+                const char* file_name,
+                size_t length,
+                bool relocate_dyn) {
+    _cc = cc;
+    _base = base;
+    _file_name = file_name;
+    _length = length;
+    _relocate_dyn = relocate_dyn && base != nullptr;
+    _header = (ElfHeader*)addr;
+    // Safe access on the header
+    void *addr_shoff = (void*)(reinterpret_cast<char*>(_header) + offsetof(Elf64_Ehdr, e_shoff));
+    // Ensure accessing the header's memory is guarded against unloaded mappings
+    uintptr_t section_offset = (uintptr_t)SafeAccess::load((void**)(addr_shoff));
+    if (section_offset == 0) { // invalid mapping - likely it was unloaded
+        Log::warn("Could not access elf header for %s", file_name);
+        _sections = NULL;
+        _header = NULL; 
+    }
+    else {
+        _sections = (const char*)addr + section_offset;
+    }
 }
 
 ElfProgramHeader* ElfParser::findProgramHeader(uint32_t type) {
@@ -427,74 +456,76 @@ void Symbols::parseKernelSymbols(CodeCache* cc) {
     fclose(f);
 }
 
-namespace {
+
 // Signal handler safe read mechanism
 // This is added to secure concurrent unloading of mappings
 // This should not happen in a pure Java environment,
 // however, with other native agents, we could have mappings
 // that unload while we are processing the mappings
+namespace {
+// Original SIGSEGV handlers to call after the crashHandler
+static void (*orig_segvHandler)(int signo, siginfo_t* siginfo, void* ucontext) = nullptr;
+static void (*orig_busHandler)(int signo, siginfo_t* siginfo, void* ucontext) = nullptr;
 
-// Global variable to hold the jump buffer for signal handling
-static sigjmp_buf jump_buffer;
+// Simplified version of the unwinding's crash handler defined in profilers.cpp
+bool crashHandler(int signo, siginfo_t* siginfo, void* ucontext) {
+    StackFrame frame(ucontext);
+    uintptr_t pc = frame.pc();
 
-// Original SIGSEGV handler
-static struct sigaction original_sa;
+    uintptr_t length = SafeAccess::skipLoad(pc);
+    if (length > 0) {
+        // Skip the fault instruction, as if it successfully loaded NULL
+        frame.pc() += length;
+        frame.retval() = 0;
+        return true;
+    }
 
-// Signal handler for SIGSEGV
-void sigsegv_handler(int sig) {
-    siglongjmp(jump_buffer, 1);
+    length = SafeAccess::skipLoadArg(pc);
+    if (length > 0) {
+        // Act as if the load returned default_value argument
+        frame.pc() += length;
+        frame.retval() = frame.arg1();
+        return true;
+    }
+
+    return false;
 }
 
-static int register_segv_handler() {
-    struct sigaction sa;
-    sa.sa_handler = sigsegv_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    // Save the current handler
-    return sigaction(SIGSEGV, &sa, &original_sa);
-}
-
-static int restore_segv_handler() {
-    // Restore the original handler
-    return sigaction(SIGSEGV, &original_sa, NULL);
-}
-
-// Imported from ddprof (native profiler)
-// This should live in some tooling lib
-template <class Tp> inline void DoNotOptimize(Tp &value) {
-    // minor: the inline flag could be ignored
-#ifndef __clang_analyzer__
-#  if defined(__clang__)
-  asm volatile("" : "+r,m"(value) : : "memory");
-#  else
-  asm volatile("" : "+m,r"(value) : : "memory");
-#  endif
-#endif
-}
-
-// Function to check if memory is accessible
-static bool is_memory_accessible(const char* addr) {
-    // Try to access the memory
-    if (sigsetjmp(jump_buffer, 1) == 0) {
-        char access_start = addr[0];
-        // We will at least access the elf header before figuring out
-        // that this is an invalid elf structure
-        char access_end = addr[sizeof(ElfHeader)];
-        // avoid compiler optimizations
-        DoNotOptimize(access_start);
-        DoNotOptimize(access_end);
-        return true; // Memory is accessible
-    } else {
-        return false; // Memory is not accessible
+void segvHandler(int signo, siginfo_t* siginfo, void* ucontext) {
+    if (!crashHandler(signo, siginfo, ucontext) && orig_segvHandler) {
+        orig_segvHandler(signo, siginfo, ucontext);
     }
 }
-} // annon namespace
+
+void busHandler(int signo, siginfo_t* siginfo, void* ucontext) {
+    if (!crashHandler(signo, siginfo, ucontext)) {
+        orig_busHandler(signo, siginfo, ucontext);
+    }
+}
+}
+
+void Symbols::setupSignalHandlers() {
+    // Replacing the segvhandler only while parsing the libraries
+    // It can be unsafe to touch signal handlers in some Java distributions
+    // The assumption is that doing so for a short time is safe
+    // TODO: verify this assumption
+    orig_segvHandler = OS::replaceSigsegvHandler(segvHandler);
+    orig_busHandler = OS::replaceSigbusHandler(busHandler);
+}
+
+void Symbols::restoreSignalHandlers() {
+    if (orig_segvHandler) {
+        OS::replaceSigsegvHandler(orig_segvHandler);
+    }
+    orig_segvHandler = nullptr;
+    if (orig_busHandler) {
+        OS::replaceSigbusHandler(orig_busHandler);
+    }
+    orig_busHandler = nullptr;
+}
 
 void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
     MutexLocker ml(_parse_lock);
-    if (register_segv_handler() != 0) {
-        Log::warn("Could not register SIGSEGV handler");
-    }
 
     if (kernel_symbols && !haveKernelSymbols()) {
         CodeCache* cc = new CodeCache("[kernel]");
@@ -560,14 +591,8 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
                     if (inode == last_inode) {
                         // If last_inode is set, image_base is known to be valid and readable
                         ElfParser::parseFile(cc, image_base, map.file(), true);
-                        if (is_memory_accessible(image_base)) {
-                            // Parse program headers after the file to ensure debug symbols are parsed first
-                            ElfParser::parseProgramHeaders(cc, image_base, map_end, MUSL);
-                        }
-                        else {
-                            // mapping was unmapped before we got to read it
-                            Log::warn("Could not parse program headers for %s (at 0x%p)", map.file(), image_base);
-                        }
+                        // Parse program headers after the file to ensure debug symbols are parsed first
+                        ElfParser::parseProgramHeaders(cc, image_base, map_end, MUSL);
                     } else if ((unsigned long)map_start > map_offs) {
                         // Unlikely case when image_base has not been found.
                         // Be careful: executable file is not always ELF, e.g. classes.jsa
@@ -585,9 +610,6 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
 
     free(str);
     fclose(f);
-    if (restore_segv_handler() != 0) {
-        Log::warn("Could not restore SIGSEGV handler");
-    }
 }
 
 #endif // __linux__

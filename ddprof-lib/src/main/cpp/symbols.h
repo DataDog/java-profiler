@@ -27,6 +27,10 @@ class Symbols {
     static bool _have_kernel_symbols;
 
   public:
+    // Ensures we can parse mappings even with concurrent unloading
+    static void setupSignalHandlers();
+    static void restoreSignalHandlers();
+
     static void parseKernelSymbols(CodeCache* cc);
     static void parseLibraries(CodeCacheArray* array, bool kernel_symbols);
     // The clear function is mainly for test purposes

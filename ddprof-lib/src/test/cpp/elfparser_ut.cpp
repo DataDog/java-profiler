@@ -28,7 +28,6 @@ TEST(Elf, readSymTable) {
     }
     CodeCache cc("test");
     ElfParser::parseFile(&cc, nullptr, path, false);
-    fprintf(stdout, "CodeCache size: %d\n", cc.count());
 }
 
 class ElfTest : public ::testing::Test {
@@ -185,6 +184,35 @@ protected:
     }
 };
 
+TEST_F(ElfTest, singleParseAfterUnmapping) {
+    // Create an invalid ELF mapping (it could be valid for this case, it is not relevant)
+    const size_t headerSize = sizeof(invalidElfHeader);
+    int fd = open("/tmp/invalid_elf_small_unmap", O_RDWR | O_CREAT | O_TRUNC, 0700); // Make the file executable
+    ASSERT_NE(fd, -1) << "Failed to open temporary file";
+    ssize_t written = write(fd, invalidElfHeader, headerSize);
+    ASSERT_EQ(written, headerSize) << "Failed to write invalid ELF header";
+    // Memory map the file
+    void* addr = mmap(NULL, 16, PROT_READ | PROT_EXEC, MAP_PRIVATE, fd, 0); // Map only 16 bytes
+    ASSERT_NE(addr, MAP_FAILED) << "Failed to memory map the file";
+    close(fd);
+    const char* base = static_cast<const char*>(addr);
+    const char* end = base + 16;
+
+    Symbols::setupSignalHandlers();
+    // This code path will crash, as the protection was added within 
+    // the parse library function (not parseProgramHeaders)
+    CodeCache* cc = new CodeCache("/tmp/invalid_elf_small_unmap", 0, false, base, end);
+
+    // Unmap the memory
+    munmap(addr, 16);
+    unlink("/tmp/invalid_elf_small_unmap");
+
+    // Manually call parseProgramHeaders after unmapping to force a crash
+    ElfParser::parseProgramHeaders(cc, base, end, true);
+    delete cc;
+    Symbols::restoreSignalHandlers();
+}
+
 // This test does not repro 100% of the time.
 // However over a few runs, I get it to reproduce the race condition.
 TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
@@ -207,20 +235,7 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
 
     // Set up the CodeCacheArray and other required structures
     CodeCacheArray cc_array;
-
-#ifdef MANUAL_CRASH_ON_UNMAP
-    // This code path will crash, as the protection was added within 
-    // the parse library function (not parseProgramHeaders)
-    CodeCache* cc = new CodeCache("/tmp/invalid_elf_small_unmap", 0, false, base, end);
-
-    // Unmap the memory
-    munmap(addr, 16);
-    unlink("/tmp/invalid_elf_small_unmap");
-
-    // Manually call parseProgramHeaders after unmapping to force a crash
-    ElfParser::parseProgramHeaders(cc, base, end, true);
-    delete cc;
-#else
+    Symbols::setupSignalHandlers();
     int delay = GetParam();
     fprintf(stderr, "-- Test Delay = %d ms\n", delay);
     // Create a thread that will unmap the memory after X milliseconds
@@ -238,7 +253,7 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
 
     // Join the unmapper thread to ensure it has finished
     unmapper.join();
-#endif
+    Symbols::restoreSignalHandlers();
 }
 
 INSTANTIATE_TEST_SUITE_P(
