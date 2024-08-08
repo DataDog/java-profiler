@@ -135,8 +135,17 @@ Mutex Symbols::_parse_lock;
 bool Symbols::_have_kernel_symbols = false;
 static std::set<const void*> _parsed_libraries;
 
+void Symbols::clear_parsed_caches() {
+    _parsed_libraries.clear();
+}
+
 void Symbols::parseKernelSymbols(CodeCache* cc) {
 }
+
+// On macOS, we need to check if there are risks of concurrent unloading
+// for now the signal handlers are not configured 
+void Symbols::setupSignalHandlers() {}
+void Symbols::restoreSignalHandlers() {}
 
 void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
     MutexLocker ml(_parse_lock);
