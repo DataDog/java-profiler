@@ -23,5 +23,5 @@ Once prerequisites have been installed simple as `./gradlew assembleAll`. The re
 
 
 ### Consuming the artifact
-For dd-trace-java you just need to set the `java.profiler.jar` project property.
-Eg. you can run the gradle build like this - ./gradlew clean -Pjava.profiler.jar=file://<path-to-artifact.jar> :dd-java-agent:shadowJar` - which will result in a custom `dd-java-agent.jar` build containing your test version of Java profiler.
+For dd-trace-java you just need to set the `ddprof.jar` project property.
+Eg. you can run the gradle build like this - ./gradlew clean -Pddprof.jar=file://<path-to-artifact.jar> :dd-java-agent:shadowJar` - which will result in a custom `dd-java-agent.jar` build containing your test version of Java profiler.
