@@ -379,6 +379,11 @@ bool Symbols::_have_kernel_symbols = false;
 static std::set<const void*> _parsed_libraries;
 static std::set<u64> _parsed_inodes;
 
+void Symbols::clearParsingCaches() {
+    _parsed_libraries.clear();
+    _parsed_inodes.clear();
+}
+
 void Symbols::parseKernelSymbols(CodeCache* cc) {
     int fd = open("/proc/kallsyms", O_RDONLY);
 
@@ -425,7 +430,7 @@ static int parseLibrariesCallback(struct dl_phdr_info* info, size_t size, void* 
     if (f == NULL) {
         return 1;
     }
-    
+
     CodeCacheArray* array = (CodeCacheArray*)data;
     const char* image_base = NULL;
     u64 last_inode = 0;

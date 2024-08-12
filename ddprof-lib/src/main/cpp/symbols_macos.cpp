@@ -135,6 +135,9 @@ Mutex Symbols::_parse_lock;
 bool Symbols::_have_kernel_symbols = false;
 static std::set<const void*> _parsed_libraries;
 
+void Symbols::clearParsingCaches() {
+    _parsed_libraries.clear();
+}
 void Symbols::parseKernelSymbols(CodeCache* cc) {
 }
 

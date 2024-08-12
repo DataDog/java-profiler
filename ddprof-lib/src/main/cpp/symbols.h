@@ -29,7 +29,9 @@ class Symbols {
   public:
     static void parseKernelSymbols(CodeCache* cc);
     static void parseLibraries(CodeCacheArray* array, bool kernel_symbols);
-
+    // The clear function is mainly for test purposes
+    // There are internal caches that are not associated to the array
+    static void clearParsingCaches();
     static bool haveKernelSymbols() {
         return _have_kernel_symbols;
     }
