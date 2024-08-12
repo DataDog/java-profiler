@@ -9,6 +9,14 @@ plugins {
     id 'de.undercouch.download' version '4.1.1'
 }
 
+// ensure we run clang-format on the cpp files
+spotless {
+    cpp {
+        target '**/*.cpp', '**/*.h'  // Adjust the glob pattern according to your project's structure
+        clangFormat('16.0.6').pathToExe('clang-format-16') // requires a version and path
+    }
+}
+
 def libraryName = "ddprof"
 
 description = "Datadog Java Profiler Library"
