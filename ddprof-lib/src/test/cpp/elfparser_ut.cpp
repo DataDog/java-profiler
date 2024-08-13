@@ -15,6 +15,12 @@
 #include <chrono>
 #include <thread>
 
+#include <dlfcn.h>
+#include <link.h>
+#include <signal.h>
+#include <unistd.h>
+#include <cstdio>
+
 TEST(Elf, readSymTable) {
     char cwd[PATH_MAX - 64];
     if (getcwd(cwd, sizeof(cwd)) == nullptr) {
@@ -40,7 +46,6 @@ protected:
     void TearDown() override {
         // probably some free of the array cache to be done
     }
-
 };
 
 
@@ -68,7 +73,8 @@ TEST_F(ElfTest, invalidElf) {
     ASSERT_EQ(written, headerSize) << "Failed to write invalid ELF header";
 
     // Extend the file to a reasonable size
-    ftruncate(fd, 4096);
+    int res = ftruncate(fd, 4096);
+    ASSERT_EQ(res, 0) << "Failed to extend the file";
 
     // Memory map the file with PROT_EXEC
     void* addr = mmap(NULL, 4096, PROT_READ | PROT_EXEC, MAP_PRIVATE, fd, 0);
@@ -180,6 +186,8 @@ protected:
     }
 };
 
+
+#ifdef UNMAP_DOES_NOT_CRASH // for now we only have a lock on dl_close. unmapping will still crash
 // This test does not repro 100% of the time.
 // However over a few runs, I get it to reproduce the race condition.
 TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
@@ -227,4 +235,49 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Range(3, 21) // This will test delays from 5 to 20 milliseconds inclusive
 );
 
+#else
+TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
+    char cwd[PATH_MAX - 64];
+    if (getcwd(cwd, sizeof(cwd)) == nullptr) {
+        exit(1);
+    }
+
+    // Configure logging (assuming Log is defined elsewhere)
+    Log::open("stderr", "WARN");
+
+    // Construct the path to the test resource
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path) - 1, "%s/../build/test/resources/small-lib/libsmall-lib.so", cwd);
+    if (access(path, R_OK) != 0) {
+        fprintf(stdout, "Missing test resource %s. Skipping the test\n", path);
+        exit(1);
+    }
+    void* handle = dlopen(path, RTLD_NOW);
+    if (!handle) {
+        fprintf(stderr, "dlopen failed: %s\n", dlerror());
+        exit(1);
+    }
+
+    CodeCacheArray cc_array;
+    int delay = GetParam();
+    fprintf(stderr, "-- Test Delay = %d ms\n", delay);
+
+    // Create a thread that will unmap (close) the shared library after a delay
+    std::thread unmapper([handle, delay]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+        // Unload the shared library using dlclose
+        dlclose(handle);
+    });
+
+    // Call the parsing function in the main thread, this is where we can crash
+    Symbols::parseLibraries(&cc_array, false);
+    unmapper.join();
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    DelayedUnmapTest,
+    ElfTestParam,
+    ::testing::Range(3, 21) // This will test delays from 5 to 20 milliseconds inclusive
+);
+#endif
 #endif //__linux__

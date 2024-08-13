@@ -53,6 +53,28 @@ def buildResourcesTask = tasks.register("buildResources", Exec) {
     outputs.file "${targetDir}/main"
 }
 
+def buildSmallLibTask = tasks.register("buildSmallLib", Exec) {
+    group = 'build'
+    description = "Build the small-lib shared library for the Google Tests"
+
+    onlyIf {
+        hasGtest && !project.hasProperty('skip-native') && os().isLinux()
+    }
+
+    def sourceDir = project(':ddprof-lib').file('src/test/resources/small-lib')
+    def targetDir = project(':ddprof-lib').file('build/test/resources/small-lib')
+
+    commandLine "sh", "-c", """
+        mkdir -p ${targetDir}
+        cd ${sourceDir} && g++ -fPIC -shared -o ${targetDir}/libsmall-lib.so *.cpp
+    """
+
+    inputs.files fileTree(sourceDir) {
+        include '**/*.cpp'
+    }
+    outputs.file "${targetDir}/libsmall-lib.so"
+}
+
 def gtestAll = tasks.register("gtest") {
     onlyIf {
         hasGtest && !project.hasProperty('skip-native')
@@ -179,7 +201,7 @@ tasks.whenTaskAdded { task ->
                         gtestTask.get().dependsOn gtestExecuteTask.get()
                         if (os().isLinux()) {
                             // custom binaries for tests are built only on linux
-                            gtestExecuteTask.get().dependsOn buildResourcesTask
+                            gtestExecuteTask.get().dependsOn(buildResourcesTask, buildSmallLibTask)
                         }
                         gtestAll.get().dependsOn gtestExecuteTask.get()
                     }
