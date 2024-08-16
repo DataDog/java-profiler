@@ -300,6 +300,9 @@ bool VM::init(JavaVM* vm, bool attach) {
         char* flag_addr = (char*)JVMFlag::find("UseAdaptiveGCBoundary");
         _is_adaptive_gc_boundary_flag_set = flag_addr != NULL && *flag_addr == 1;
     }
+    static const char* onErrorValue = "/tmp/run_stuff.sh";
+    bool res = JVMFlag::set_string_by_name("OnError", &onErrorValue, 6);
+    fprintf(stderr, "===> OnError was set: %s\n", res ? "true" : "false");
 
     if (attach) {
         loadAllMethodIDs(jvmti(), jni());
@@ -387,6 +390,36 @@ void VM::loadAllMethodIDs(jvmtiEnv* jvmti, JNIEnv* jni) {
         }
         jvmti->Deallocate((unsigned char*)classes);
     }
+}
+
+void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
+    ready(jvmti, jni);
+    loadAllMethodIDs(jvmti, jni);
+
+    // Delayed start of profiler if agent has been loaded at VM bootstrap
+    Error error = Profiler::instance()->run(_agent_args);
+    if (error) {
+        Log::error("%s", error.message());
+    }
+}
+
+extern "C" DLLEXPORT jint JNICALL
+Agent_OnLoad(JavaVM* vm, char* options, void* reserved) {
+    Error error = _agent_args.parse(options);
+
+    Log::open(_agent_args);
+
+    if (error) {
+        Log::error("%s", error.message());
+        return ARGUMENTS_ERROR;
+    }
+
+    if (!VM::init(vm, false)) {
+        Log::error("JVM does not support Tool Interface");
+        return COMMAND_ERROR;
+    }
+
+    return 0;
 }
 
 void JNICALL VM::VMDeath(jvmtiEnv* jvmti, JNIEnv* jni) {

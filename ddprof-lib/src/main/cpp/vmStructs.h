@@ -538,6 +538,8 @@ class JVMFlag : VMStructs {
         return *(const char**) at(_flag_name_offset);
     }
 
+    static bool set_string_by_name(char* name, const char** value, int origin);
+
     void* addr() {
         return *(void**) at(_flag_addr_offset);
     }

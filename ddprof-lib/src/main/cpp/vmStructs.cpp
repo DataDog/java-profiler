@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+#include <assert.h>
 #include <cstdlib>
 #include <pthread.h>
 #include <unistd.h>
@@ -735,6 +736,17 @@ void* JVMFlag::find(const char* name) {
         }
     }
     return NULL;
+}
+
+bool JVMFlag::set_string_by_name(char* name, const char** value, int origin) {
+    assert(name != nullptr);
+    assert(value != nullptr);
+    void* val_ptr = find(name);
+    if (val_ptr) {
+        *((const char**)(val_ptr)) = *value;
+        return true;
+    }
+    return false;
 }
 
 int NMethod::findScopeOffset(const void* pc) {
