@@ -46,7 +46,7 @@ class SafeAccess {
     }
 
     static uintptr_t skipLoad(uintptr_t pc) {
-        if (pc - (uintptr_t)load < 16) {
+    if (pc - (uintptr_t)load < sizeSafeLoadFunc) {
 #if defined(__x86_64__)
             return *(u16*)pc == 0x8b48 ? 3 : 0;  // mov rax, [reg]
 #elif defined(__i386__)
@@ -64,12 +64,23 @@ class SafeAccess {
 
     static uintptr_t skipLoadArg(uintptr_t pc) {
 #if defined(__aarch64__)
-        if ((pc - (uintptr_t)load32) < 16 || (pc - (uintptr_t)loadPtr) < 16) {
+        if ((pc - (uintptr_t)load32) < sizeSafeLoadFunc
+            || (pc - (uintptr_t)loadPtr) < sizeSafeLoadFunc) {
             return 4;
         }
 #endif
         return 0;
     }
+#ifndef __SANITIZE_ADDRESS__
+    constexpr static inline size_t sizeSafeLoadFunc = 16;
+#else
+    // asan significantly increases the size of the load function
+    // checking disassembled code can help adjust the value
+    // gdb --batch -ex 'disas _ZN10SafeAccess4loadEPPv' ./elfparser_ut
+    // I see that the functions can also have a 156 bytes size for the load32
+    // and 136 for the loadPtr functions
+    constexpr static inline size_t sizeSafeLoadFunc = 132;
+#endif
 };
 
 #endif // _SAFEACCESS_H
