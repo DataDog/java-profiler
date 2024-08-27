@@ -17,6 +17,10 @@ on:
     tags:
       - v_*.*.*
 
+permissions:
+  contents: write
+  actions: read
+
 jobs:
   gh-release:
     if: (startsWith(github.event.ref, 'refs/tags/v_') || inputs.release_tag != '') && !endsWith(github.event.ref, '-SNAPSHOT')

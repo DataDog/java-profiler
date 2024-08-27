@@ -6,6 +6,11 @@ on:
       configuration:
         required: true
         type: string
+
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   test-linux-glibc:
     strategy:
