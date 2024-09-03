@@ -1550,7 +1550,7 @@ void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
 }
 
 void FlightRecorder::recordEvent(int lock_index, int tid, u32 call_trace_id,
-                                 int event_type, Event *event, u64 counter) {
+                                 int event_type, Event *event) {
   if (_rec != NULL) {
     RecordingBuffer *buf = _rec->buffer(lock_index);
     switch (event_type) {

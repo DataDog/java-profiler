@@ -13,7 +13,7 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 
-public class WallclockThreadFilterTest extends AbstractProfilerTest {
+public class WallClockThreadFilterTest extends AbstractProfilerTest {
 
     @Test
     public void test() throws InterruptedException {
