@@ -106,7 +106,7 @@ class BaseWallClock : public Engine {
             threads.clear();
             // Get a random sleep duration
             double sampleInterval = distribution(generator);
-            OS::sleep(static_cast<int>(sampleInterval));
+            OS::sleep(std::max(1, static_cast<int>(sampleInterval)));
         }
     }
 
