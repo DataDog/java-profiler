@@ -446,6 +446,7 @@ spotless {
             clangVersion = "11.0.0" // default to 11.0.0
         }
     }
+    logger.warn("Clang formatter version: ${clangVersion}")
 
     target 'src/main/cpp/**'
 
