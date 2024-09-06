@@ -289,10 +289,9 @@ int StackWalker::walkVM(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
                 fillFrame(frames[depth++], BCI_ERROR, "unknown_scope");
                 break;
               }
-              type = scope_offset > 0
-                         ? FRAME_INLINED
-                         : level >= 1 && level <= 3 ? FRAME_C1_COMPILED
-                                                    : FRAME_JIT_COMPILED;
+              type = scope_offset > 0           ? FRAME_INLINED
+                     : level >= 1 && level <= 3 ? FRAME_C1_COMPILED
+                                                : FRAME_JIT_COMPILED;
               fillFrame(frames[depth++], type, scope.bci(),
                         scope.method()->id());
             } while (scope_offset > 0 && depth < max_depth);

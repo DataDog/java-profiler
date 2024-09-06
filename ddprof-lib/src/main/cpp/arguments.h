@@ -168,10 +168,10 @@ public:
   }
 
   long cpuSamplerInterval() const {
-    return isCpuEvent(_event)
-               ? (_cpu > 0 ? _cpu
-                           : _interval > 0 ? _interval : DEFAULT_CPU_INTERVAL)
-               : 0;
+    return isCpuEvent(_event) ? (_cpu > 0        ? _cpu
+                                 : _interval > 0 ? _interval
+                                                 : DEFAULT_CPU_INTERVAL)
+                              : 0;
   }
 
   friend class FrameName;

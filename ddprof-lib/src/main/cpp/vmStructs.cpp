@@ -389,11 +389,13 @@ void VMStructs::resolveOffsets() {
       _unlock_func != NULL;
 
 #if defined(__x86_64__)
-  _interpreter_frame_bcp_offset =
-      VM::hotspot_version() >= 11 ? -8 : VM::hotspot_version() == 8 ? -7 : 0;
+  _interpreter_frame_bcp_offset = VM::hotspot_version() >= 11  ? -8
+                                  : VM::hotspot_version() == 8 ? -7
+                                                               : 0;
 #elif defined(__aarch64__)
-  _interpreter_frame_bcp_offset =
-      VM::hotspot_version() >= 11 ? -9 : VM::hotspot_version() == 8 ? -7 : 0;
+  _interpreter_frame_bcp_offset = VM::hotspot_version() >= 11  ? -9
+                                  : VM::hotspot_version() == 8 ? -7
+                                                               : 0;
 #endif
 
   // JDK-8292758 has slightly changed ScopeDesc encoding
