@@ -57,7 +57,7 @@ class BaseWallClock : public Engine {
         }
 
         // Dither the sampling interval to introduce some randomness and prevent step-locking
-        const double stddev = 20.0;  // Standard deviation for random intervals
+        const double stddev = ((double)_interval) / 10.0;  // 10% standard deviation
         // Set up random engine and normal distribution
         std::random_device rd;
         std::mt19937 generator(rd());
@@ -105,8 +105,9 @@ class BaseWallClock : public Engine {
 
             threads.clear();
             // Get a random sleep duration
-            double sampleInterval = distribution(generator);
-            OS::sleep(std::max(1, static_cast<int>(sampleInterval)));
+            // clamp the random interval to <1,2N-1>
+            // the probability of clamping is extremely small, close to zero
+            OS::sleep(std::min(std::max((long int)1, static_cast<long int>(distribution(generator))), ((_interval * 2) - 1)));
         }
     }
 
