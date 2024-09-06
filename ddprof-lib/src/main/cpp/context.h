@@ -24,19 +24,17 @@
 static const u32 DD_TAGS_CAPACITY = 10;
 
 typedef struct {
-    u32 value;
+  u32 value;
 } Tag;
 
 class Context {
-  public:
-    u64 spanId;
-    u64 rootSpanId;
-    u64 checksum;
-    Tag tags[DD_TAGS_CAPACITY];
+public:
+  u64 spanId;
+  u64 rootSpanId;
+  u64 checksum;
+  Tag tags[DD_TAGS_CAPACITY];
 
-    Tag get_tag(int i) {
-        return tags[i];
-    }
+  Tag get_tag(int i) { return tags[i]; }
 };
 
 // must be kept in sync with PAGE_SIZE in JavaProfiler.java
@@ -45,27 +43,27 @@ const int DD_CONTEXT_PAGE_MASK = DD_CONTEXT_PAGE_SIZE - 1;
 const int DD_CONTEXT_PAGE_SHIFT = __builtin_popcount(DD_CONTEXT_PAGE_MASK);
 
 typedef struct {
-    const int capacity;
-    const Context* storage;
+  const int capacity;
+  const Context *storage;
 } ContextPage;
 
 class Contexts {
 
-  private:
-    static int _max_pages;
-    static Context** _pages;
-    static void initialize(int pageIndex);
+private:
+  static int _max_pages;
+  static Context **_pages;
+  static void initialize(int pageIndex);
 
-  public:
-    // get must not allocate
-    static Context& get(int tid);
-    static Context& empty();
-    // not to be called except to share with Java callers as a DirectByteBuffer
-    static ContextPage getPage(int tid);
-    static int getMaxPages(int maxTid = OS::getMaxThreadId());
+public:
+  // get must not allocate
+  static Context &get(int tid);
+  static Context &empty();
+  // not to be called except to share with Java callers as a DirectByteBuffer
+  static ContextPage getPage(int tid);
+  static int getMaxPages(int maxTid = OS::getMaxThreadId());
 
-    // this *MUST* be called only when the profiler is completely stopped
-    static void reset();
+  // this *MUST* be called only when the profiler is completely stopped
+  static void reset();
 };
 
 #endif /* _CONTEXT_H */

@@ -19,33 +19,26 @@
 #include <stdlib.h>
 
 Mutex::Mutex() {
-    pthread_mutexattr_init(&_attr);
-    pthread_mutexattr_settype(&_attr, PTHREAD_MUTEX_RECURSIVE);
-    pthread_mutex_init(&_mutex, &_attr);
+  pthread_mutexattr_init(&_attr);
+  pthread_mutexattr_settype(&_attr, PTHREAD_MUTEX_RECURSIVE);
+  pthread_mutex_init(&_mutex, &_attr);
 }
 
 Mutex::~Mutex() {
-    pthread_mutex_destroy(&_mutex);
-    pthread_mutexattr_destroy(&_attr);
+  pthread_mutex_destroy(&_mutex);
+  pthread_mutexattr_destroy(&_attr);
 }
 
-void Mutex::lock() {
-    pthread_mutex_lock(&_mutex);
-}
+void Mutex::lock() { pthread_mutex_lock(&_mutex); }
 
-void Mutex::unlock() {
-    pthread_mutex_unlock(&_mutex);
-}
+void Mutex::unlock() { pthread_mutex_unlock(&_mutex); }
 
-WaitableMutex::WaitableMutex() : Mutex() {
-    pthread_cond_init(&_cond, NULL);
-}
+WaitableMutex::WaitableMutex() : Mutex() { pthread_cond_init(&_cond, NULL); }
 
 bool WaitableMutex::waitUntil(u64 wall_time) {
-    struct timespec ts = {(time_t)(wall_time / 1000000), (long)(wall_time % 1000000) * 1000};
-    return pthread_cond_timedwait(&_cond, &_mutex, &ts) != 0;
+  struct timespec ts = {(time_t)(wall_time / 1000000),
+                        (long)(wall_time % 1000000) * 1000};
+  return pthread_cond_timedwait(&_cond, &_mutex, &ts) != 0;
 }
 
-void WaitableMutex::notify() {
-    pthread_cond_signal(&_cond);
-}
+void WaitableMutex::notify() { pthread_cond_signal(&_cond); }

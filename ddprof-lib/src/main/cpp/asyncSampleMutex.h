@@ -6,33 +6,32 @@
 // controls access to AGCT
 class AsyncSampleMutex {
 private:
-    ThreadLocalData* _threadLocalData;
-    bool _acquired;
+  ThreadLocalData *_threadLocalData;
+  bool _acquired;
 
-    bool try_acquire() {
-        if (_threadLocalData != nullptr && !_threadLocalData->is_unwinding_Java()) {
-            _threadLocalData->set_unwinding_Java(true);
-            return true;
-        }
-        return false;
+  bool try_acquire() {
+    if (_threadLocalData != nullptr && !_threadLocalData->is_unwinding_Java()) {
+      _threadLocalData->set_unwinding_Java(true);
+      return true;
     }
+    return false;
+  }
 
 public:
-    AsyncSampleMutex(ThreadLocalData* threadLocalData) : _threadLocalData(threadLocalData) {
-        _acquired = try_acquire();
-    }
+  AsyncSampleMutex(ThreadLocalData *threadLocalData)
+      : _threadLocalData(threadLocalData) {
+    _acquired = try_acquire();
+  }
 
-    AsyncSampleMutex(AsyncSampleMutex& other) = delete;
+  AsyncSampleMutex(AsyncSampleMutex &other) = delete;
 
-    ~AsyncSampleMutex() {
-        if (_acquired) {
-            _threadLocalData->set_unwinding_Java(false);
-        }
+  ~AsyncSampleMutex() {
+    if (_acquired) {
+      _threadLocalData->set_unwinding_Java(false);
     }
+  }
 
-    bool acquired() {
-        return _acquired;
-    }
+  bool acquired() { return _acquired; }
 };
 
-#endif //ASYNCSAMPLEMUTEX_H
+#endif // ASYNCSAMPLEMUTEX_H

@@ -17,39 +17,29 @@
 #ifndef _ITIMER_H
 #define _ITIMER_H
 
-#include <signal.h>
 #include "engine.h"
-
+#include <signal.h>
 
 class ITimer : public Engine {
-  private:
-    static volatile bool _enabled;
-    static long _interval;
-    static CStack _cstack;
+private:
+  static volatile bool _enabled;
+  static long _interval;
+  static CStack _cstack;
 
-    static void signalHandler(int signo, siginfo_t* siginfo, void* ucontext);
+  static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
 
-  public:
+public:
+  const char *units() { return "ns"; }
 
-    const char* units() {
-        return "ns";
-    }
+  const char *name() { return "ITimer"; }
 
-    const char* name() {
-        return "ITimer";
-    }
+  long interval() const { return _interval; }
 
-    long interval() const {
-        return _interval;
-    }
+  Error check(Arguments &args);
+  Error start(Arguments &args);
+  void stop();
 
-    Error check(Arguments& args);
-    Error start(Arguments& args);
-    void stop();
-
-    inline void enableEvents(bool enabled) {
-        _enabled = enabled;
-    }
+  inline void enableEvents(bool enabled) { _enabled = enabled; }
 };
 
 #endif // _ITIMER_H

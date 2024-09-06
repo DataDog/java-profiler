@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-
 #include "rustDemangler.h"
 
 #include <array>
@@ -97,7 +96,7 @@ bool is_probably_rust_legacy(const std::string &str) {
     }
     if (*ptr == '.') {
       return '.' != ptr[1] ||
-          '.' != ptr[2]; // '.' and '..' are fine, '...' is not
+             '.' != ptr[2]; // '.' and '..' are fine, '...' is not
     }
   }
   return true;
