@@ -1,15 +1,15 @@
 plugins {
-    id 'java'
+  id 'java'
 }
 
 repositories {
-    mavenCentral()
+  mavenCentral()
 }
 
 dependencies {
-    implementation project(path: ":ddprof-lib", configuration: 'release')
+  implementation project(path: ":ddprof-lib", configuration: 'release')
 }
 
 tasks.withType(JavaCompile).configureEach {
-    options.compilerArgs.addAll(['--release', '8'])
+  options.compilerArgs.addAll(['--release', '8'])
 }

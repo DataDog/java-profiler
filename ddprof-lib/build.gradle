@@ -1,11 +1,11 @@
 plugins {
-    id 'cpp-library'
-    id 'java'
-    id 'maven-publish'
-    id 'signing'
+  id 'cpp-library'
+  id 'java'
+  id 'maven-publish'
+  id 'signing'
 
-    id 'com.github.ben-manes.versions' version '0.27.0'
-    id 'de.undercouch.download' version '4.1.1'
+  id 'com.github.ben-manes.versions' version '0.27.0'
+  id 'de.undercouch.download' version '4.1.1'
 }
 
 def libraryName = "ddprof"
@@ -17,51 +17,51 @@ def component_version = project.hasProperty("ddprof_version") ? project.ddprof_v
 
 // this feels weird but it is the only way invoking `./gradlew :ddprof-lib:*` tasks will work
 if (rootDir.toString().endsWith("ddprof-lib")) {
-    apply from: rootProject.file('../common.gradle')
+  apply from: rootProject.file('../common.gradle')
 }
 
 dependencies {
-    if (os().isLinux()) {
-        // the malloc shim works only on linux
-        project(':malloc-shim')
-    }
-    project(':ddprof-lib:gtest')
+  if (os().isLinux()) {
+    // the malloc shim works only on linux
+    project(':malloc-shim')
+  }
+  project(':ddprof-lib:gtest')
 }
 
 test {
-    onlyIf {
-        !project.hasProperty('skip-tests')
-    }
-    useJUnitPlatform()
+  onlyIf {
+    !project.hasProperty('skip-tests')
+  }
+  useJUnitPlatform()
 }
 
 def libraryTargetBase(type) {
-    return "${projectDir}/build/native/${type}"
+  return "${projectDir}/build/native/${type}"
 }
 
 def osarchext() {
-    if (osIdentifier() == 'linux' && archIdentifier() != 'x64') {
-        // when built on aarch64 the location the library is built in is 'x86-64' ¯\_(ツ)_/¯
-        return "x86-64"
-    } else if (osIdentifier() == 'macos') {
-        return archIdentifier() == 'x64' ? 'x86-64' : 'arm64'
-    } else {
-        return archIdentifier()
-    }
+  if (osIdentifier() == 'linux' && archIdentifier() != 'x64') {
+    // when built on aarch64 the location the library is built in is 'x86-64' ¯\_(ツ)_/¯
+    return "x86-64"
+  } else if (osIdentifier() == 'macos') {
+    return archIdentifier() == 'x64' ? 'x86-64' : 'arm64'
+  } else {
+    return archIdentifier()
+  }
 }
 
 def libraryTargetPath(type) {
-    return "${libraryTargetBase(type)}/META-INF/native-libs/${osIdentifier()}-${archIdentifier()}${isMusl() ? '-musl' : ''}"
+  return "${libraryTargetBase(type)}/META-INF/native-libs/${osIdentifier()}-${archIdentifier()}${isMusl() ? '-musl' : ''}"
 }
 
 def librarySourcePath(type, qualifier = "") {
-    return "${projectDir}/build/lib/main/${type}/${osIdentifier()}/${archIdentifier()}/${qualifier}/libjavaProfiler.${osIdentifier() == 'macos' ? 'dylib' : 'so'}"
+  return "${projectDir}/build/lib/main/${type}/${osIdentifier()}/${archIdentifier()}/${qualifier}/libjavaProfiler.${osIdentifier() == 'macos' ? 'dylib' : 'so'}"
 }
 
 ext {
-    libraryTargetBase = this.&libraryTargetBase
-    libraryTargetPath = this.&libraryTargetPath
-    librarySourcePath = this.&librarySourcePath
+  libraryTargetBase = this.&libraryTargetBase
+  libraryTargetPath = this.&libraryTargetPath
+  librarySourcePath = this.&librarySourcePath
 }
 
 sourceCompatibility = JavaVersion.VERSION_1_8
@@ -74,65 +74,65 @@ def buildTempDir = "${projectDir}/build/tmp"
 // The libraries should be properly sorted into subfolders corresponding to the `libraryTargetPath` value for each
 // os/arch/libc combination
 tasks.register('copyExternalLibs', Copy) {
-    if (project.hasProperty("with-libs")) {
-        from(project.getProperty("with-libs")) {
-            include "**/*.so"
-            include "**/*.dylib"
-        }
-        into "${projectDir}/build/classes/java/main/META-INF/native-libs"
+  if (project.hasProperty("with-libs")) {
+    from(project.getProperty("with-libs")) {
+      include "**/*.so"
+      include "**/*.dylib"
     }
+    into "${projectDir}/build/classes/java/main/META-INF/native-libs"
+  }
 }
 
 tasks.register('assembleAll') {}
 
 // use the build config names to create configurations, copy lib and asemble jar tasks
 buildConfigNames().each { name ->
-    configurations.create(name) {
-        canBeConsumed = true
-        canBeResolved = false
-        extendsFrom configurations.implementation    }
+  configurations.create(name) {
+    canBeConsumed = true
+    canBeResolved = false
+    extendsFrom configurations.implementation    }
 
-    def copyTask = tasks.register("copy${name.capitalize()}Libs", Copy) {
-        from file(librarySourcePath(name, name == 'release' ? 'stripped' : '')).parent  // the release build is stripped
-        into file(libraryTargetPath(name))
+  def copyTask = tasks.register("copy${name.capitalize()}Libs", Copy) {
+    from file(librarySourcePath(name, name == 'release' ? 'stripped' : '')).parent  // the release build is stripped
+    into file(libraryTargetPath(name))
 
-        if (name == 'release') {
-            def stripTask = tasks.findByName('stripLibRelease')
-            if (stripTask != null) {
-                dependsOn stripTask
-            }
-        }
+    if (name == 'release') {
+      def stripTask = tasks.findByName('stripLibRelease')
+      if (stripTask != null) {
+        dependsOn stripTask
+      }
     }
-    def assembleJarTask = tasks.register("assemble${name.capitalize()}Jar", Jar) {
-        group = 'build'
-        description = "Assemble the ${name} build of the library"
-        dependsOn copyExternalLibs
-        if (!project.hasProperty('skip-native')) {
-            dependsOn copyTask
-        }
-        from sourceSets.main.output.classesDirs
-        from files(libraryTargetBase(name)) {
-            include "**/*"
-        }
-        archiveBaseName = libraryName
-        archiveClassifier = name == 'release' ? '' : name // the release qualifier is empty
-        archiveVersion = component_version
+  }
+  def assembleJarTask = tasks.register("assemble${name.capitalize()}Jar", Jar) {
+    group = 'build'
+    description = "Assemble the ${name} build of the library"
+    dependsOn copyExternalLibs
+    if (!project.hasProperty('skip-native')) {
+      dependsOn copyTask
     }
-    // We need this second level indirection such that we can make the assembling dependent on the tests
-    // The catch is that the test tasks depend on the assembled jar so we need a wrapper assemble task instead
-    def assembleTask = tasks.register("assemble${name.capitalize()}", Task) {
-        dependsOn assembleJarTask
+    from sourceSets.main.output.classesDirs
+    from files(libraryTargetBase(name)) {
+      include "**/*"
     }
+    archiveBaseName = libraryName
+    archiveClassifier = name == 'release' ? '' : name // the release qualifier is empty
+    archiveVersion = component_version
+  }
+  // We need this second level indirection such that we can make the assembling dependent on the tests
+  // The catch is that the test tasks depend on the assembled jar so we need a wrapper assemble task instead
+  def assembleTask = tasks.register("assemble${name.capitalize()}", Task) {
+    dependsOn assembleJarTask
+  }
 
-    tasks.assembleAll.dependsOn assembleTask
+  tasks.assembleAll.dependsOn assembleTask
 }
 configurations {
-    // the 'all' configuration is used to aggregate all the build configurations
-    assembled {
-        canBeConsumed = true
-        canBeResolved = false
-        extendsFrom implementation
-    }
+  // the 'all' configuration is used to aggregate all the build configurations
+  assembled {
+    canBeConsumed = true
+    canBeResolved = false
+    extendsFrom implementation
+  }
 }
 
 // We need this trickery to reuse the toolchain and system config from tasks created by the cpp-library plugin
@@ -140,262 +140,262 @@ configurations {
 // we are adding our own tasks for each build configuration, inheriting the part of the configuration which was
 // added by the cpp-library plugin
 tasks.whenTaskAdded { task ->
-    if (task instanceof CppCompile) {
-        if (!task.name.startsWith('compileLib') && task.name.contains('Release')) {
-            buildConfigurations.each { config ->
-                if (config.os == osIdentifier() && config.arch == archIdentifier()) {
-                    def cppTask = tasks.register("compileLib${config.name.capitalize()}", CppCompile) {
-                        onlyIf {
-                            config.active
-                        }
-                        group = 'build'
-                        description = "Compile the ${config.name} build of the library"
-                        objectFileDir = file("$buildDir/obj/main/${config.name}")
-                        compilerArgs.addAll(config.compilerArgs)
-                        if (os().isLinux() && isMusl()) {
-                            compilerArgs.add('-D__musl__')
-                        }
-                        toolChain = task.toolChain
-                        targetPlatform = task.targetPlatform
-                        includes task.includes
-                        includes project(':ddprof-lib').file('src/main/cpp').toString()
-                        includes "${javaHome()}/include"
-                        includes project(':malloc-shim').file('src/main/public').toString()
-                        if (os().isMacOsX()) {
-                            includes "${javaHome()}/include/darwin"
-                        } else if (os().isLinux()) {
-                            includes "${javaHome()}/include/linux"
-                        }
-                        systemIncludes.from task.systemIncludes
-                        source task.source
-                        inputs.files source
-                        outputs.dir objectFileDir
-                    }
-                    def linkTask = tasks.findByName("linkLib${config.name.capitalize()}".toString())
-                    if (linkTask != null) {
-                        linkTask.dependsOn cppTask
-                    }
-                }
+  if (task instanceof CppCompile) {
+    if (!task.name.startsWith('compileLib') && task.name.contains('Release')) {
+      buildConfigurations.each { config ->
+        if (config.os == osIdentifier() && config.arch == archIdentifier()) {
+          def cppTask = tasks.register("compileLib${config.name.capitalize()}", CppCompile) {
+            onlyIf {
+              config.active
             }
-        }
-    } else if (task instanceof LinkSharedLibrary) {
-        if (!task.name.startsWith('linkLib') && task.name.contains('Release')) {
-            buildConfigurations.each { config ->
-                if (config.os == osIdentifier() && config.arch == archIdentifier()) {
-                    def linkTask = tasks.register("linkLib${config.name.capitalize()}", LinkSharedLibrary) {
-                        onlyIf {
-                            config.active
-                        }
-                        group = 'build'
-                        description = "Link the ${config.name} build of the library"
-                        source = fileTree("$buildDir/obj/main/${config.name}")
-                        linkedFile = file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/libjavaProfiler.${os().isLinux() ? 'so' : 'dylib'}")
-                        def compileTask = tasks.findByName("compileLib${config.name.capitalize()}".toString())
-                        if (compileTask != null) {
-                            dependsOn compileTask
-                        }
-                        linkerArgs.addAll(config.linkerArgs)
-                        toolChain = task.toolChain
-                        targetPlatform = task.targetPlatform
-                        libs = task.libs
-                        inputs.files source
-                        outputs.file linkedFile
-                    }
-                    if (config.name == 'release') {
-                        def stripTask = tasks.register('stripLibRelease', StripSymbols) {
-                            onlyIf {
-                                config.active
-                            }
-                            dependsOn linkTask
-                            targetPlatform = tasks.linkLibRelease.targetPlatform
-                            toolChain = tasks.linkLibRelease.toolChain
-                            binaryFile = tasks.linkLibRelease.linkedFile.get()
-                            outputFile = file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/stripped/libjavaProfiler.${os().isLinux() ? 'so' : 'dylib'}")
-                            inputs.file binaryFile
-                            outputs.file outputFile
-                        }
-                        def copyTask = tasks.findByName("copyReleaseLibs")
-                        if (copyTask != null) {
-                            copyTask.dependsOn stripTask
-                            copyTask.inputs.files stripTask.get().outputs.files
-                        }
-                    }
-                }
+            group = 'build'
+            description = "Compile the ${config.name} build of the library"
+            objectFileDir = file("$buildDir/obj/main/${config.name}")
+            compilerArgs.addAll(config.compilerArgs)
+            if (os().isLinux() && isMusl()) {
+              compilerArgs.add('-D__musl__')
             }
+            toolChain = task.toolChain
+            targetPlatform = task.targetPlatform
+            includes task.includes
+            includes project(':ddprof-lib').file('src/main/cpp').toString()
+            includes "${javaHome()}/include"
+            includes project(':malloc-shim').file('src/main/public').toString()
+            if (os().isMacOsX()) {
+              includes "${javaHome()}/include/darwin"
+            } else if (os().isLinux()) {
+              includes "${javaHome()}/include/linux"
+            }
+            systemIncludes.from task.systemIncludes
+            source task.source
+            inputs.files source
+            outputs.dir objectFileDir
+          }
+          def linkTask = tasks.findByName("linkLib${config.name.capitalize()}".toString())
+          if (linkTask != null) {
+            linkTask.dependsOn cppTask
+          }
         }
+      }
     }
+  } else if (task instanceof LinkSharedLibrary) {
+    if (!task.name.startsWith('linkLib') && task.name.contains('Release')) {
+      buildConfigurations.each { config ->
+        if (config.os == osIdentifier() && config.arch == archIdentifier()) {
+          def linkTask = tasks.register("linkLib${config.name.capitalize()}", LinkSharedLibrary) {
+            onlyIf {
+              config.active
+            }
+            group = 'build'
+            description = "Link the ${config.name} build of the library"
+            source = fileTree("$buildDir/obj/main/${config.name}")
+            linkedFile = file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/libjavaProfiler.${os().isLinux() ? 'so' : 'dylib'}")
+            def compileTask = tasks.findByName("compileLib${config.name.capitalize()}".toString())
+            if (compileTask != null) {
+              dependsOn compileTask
+            }
+            linkerArgs.addAll(config.linkerArgs)
+            toolChain = task.toolChain
+            targetPlatform = task.targetPlatform
+            libs = task.libs
+            inputs.files source
+            outputs.file linkedFile
+          }
+          if (config.name == 'release') {
+            def stripTask = tasks.register('stripLibRelease', StripSymbols) {
+              onlyIf {
+                config.active
+              }
+              dependsOn linkTask
+              targetPlatform = tasks.linkLibRelease.targetPlatform
+              toolChain = tasks.linkLibRelease.toolChain
+              binaryFile = tasks.linkLibRelease.linkedFile.get()
+              outputFile = file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/stripped/libjavaProfiler.${os().isLinux() ? 'so' : 'dylib'}")
+              inputs.file binaryFile
+              outputs.file outputFile
+            }
+            def copyTask = tasks.findByName("copyReleaseLibs")
+            if (copyTask != null) {
+              copyTask.dependsOn stripTask
+              copyTask.inputs.files stripTask.get().outputs.files
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 // configure the compiler here
 tasks.withType(CppCompile).configureEach {
-    if (name.startsWith('compileRelease') || name.startsWith('compileDebug')) {
-        onlyIf {
-            // disable the built-in compiler task for release; we are using the custom compiler task
-            false
-        }
-    } else {
-        onlyIf {
-            !project.hasProperty('skip-native')
-        }
+  if (name.startsWith('compileRelease') || name.startsWith('compileDebug')) {
+    onlyIf {
+      // disable the built-in compiler task for release; we are using the custom compiler task
+      false
     }
+  } else {
+    onlyIf {
+      !project.hasProperty('skip-native')
+    }
+  }
 }
 
 // configure linker
 tasks.withType(LinkSharedLibrary).configureEach {
-    if (name.startsWith('linkRelease') || name.startsWith('linkDebug')) {
-        onlyIf {
-            // disable the built-in linker task for release; we are using the custom linker task
-            false
-        }
-    } else {
-        onlyIf {
-            !project.hasProperty('skip-native')
-        }
+  if (name.startsWith('linkRelease') || name.startsWith('linkDebug')) {
+    onlyIf {
+      // disable the built-in linker task for release; we are using the custom linker task
+      false
     }
+  } else {
+    onlyIf {
+      !project.hasProperty('skip-native')
+    }
+  }
 }
 
 library {
-    baseName = "javaProfiler"
-    source.from file('src/main/cpp')
-    privateHeaders.from file('src/main/cpp')
+  baseName = "javaProfiler"
+  source.from file('src/main/cpp')
+  privateHeaders.from file('src/main/cpp')
 
-    // aarch64 support is still incubating
-    // for the time being an aarch64 linux machine will match 'machines.linux.x86_64'
-    targetMachines = [machines.macOS, machines.linux.x86_64]
-    linkage = [Linkage.SHARED]
+  // aarch64 support is still incubating
+  // for the time being an aarch64 linux machine will match 'machines.linux.x86_64'
+  targetMachines = [machines.macOS, machines.linux.x86_64]
+  linkage = [Linkage.SHARED]
 }
 
 tasks.withType(StripSymbols).configureEach {
-    onlyIf {
-        name == ("stripLibRelease") && !project.hasProperty('skip-native')
-    }
+  onlyIf {
+    name == ("stripLibRelease") && !project.hasProperty('skip-native')
+  }
 }
 
 jar.dependsOn copyExternalLibs
 
 tasks.register('sourcesJar', Jar) {
-    from sourceSets.main.allJava
-    archiveBaseName = libraryName
-    archiveClassifier = "sources"
-    archiveVersion = component_version
+  from sourceSets.main.allJava
+  archiveBaseName = libraryName
+  archiveClassifier = "sources"
+  archiveVersion = component_version
 }
 
 tasks.register('javadocJar', Jar) {
-    dependsOn javadoc
-    archiveBaseName = libraryName
-    archiveClassifier = 'javadoc'
-    archiveVersion = component_version
-    from javadoc.destinationDir
+  dependsOn javadoc
+  archiveBaseName = libraryName
+  archiveClassifier = 'javadoc'
+  archiveVersion = component_version
+  from javadoc.destinationDir
 }
 
 tasks.register('scanBuild', Exec) {
-    workingDir "${projectDir}/src/test/make"
-    commandLine 'scan-build'
-    args "-o", "${projectDir}/build/reports/scan-build",
-            "--force-analyze-debug-code",
-            "--use-analyzer", "/usr/bin/clang++",
-            "make", "-j4",  "clean", "all"
+  workingDir "${projectDir}/src/test/make"
+  commandLine 'scan-build'
+  args "-o", "${projectDir}/build/reports/scan-build",
+    "--force-analyze-debug-code",
+    "--use-analyzer", "/usr/bin/clang++",
+    "make", "-j4",  "clean", "all"
 }
 
 tasks.withType(Test) {
-    onlyIf {
-        !project.hasProperty('skip-tests')
-    }
-    def javaHome = System.getenv("JAVA_TEST_HOME")
-    if (javaHome == null) {
-        javaHome = System.getenv("JAVA_HOME")
-    }
-    executable = file("${javaHome}/bin/java")
-    javaLauncher.set(javaToolchains.launcherFor {
-        languageVersion = JavaLanguageVersion.of(11)
-    })
+  onlyIf {
+    !project.hasProperty('skip-tests')
+  }
+  def javaHome = System.getenv("JAVA_TEST_HOME")
+  if (javaHome == null) {
+    javaHome = System.getenv("JAVA_HOME")
+  }
+  executable = file("${javaHome}/bin/java")
+  javaLauncher.set(javaToolchains.launcherFor {
+    languageVersion = JavaLanguageVersion.of(11)
+  })
 }
 
 // relink the tasks when all are created
 gradle.projectsEvaluated {
-    buildConfigNames().each {
-        def compileTask = tasks.findByName("compileLib${it.capitalize()}")
-        def linkTask = tasks.findByName("linkLib${it.capitalize()}")
-        if (linkTask != null) {
-            if (it != 'release') {
-                def copyTask = tasks.findByName("copy${it.capitalize()}Libs")
-                if (copyTask != null) {
-                    copyTask.dependsOn linkTask
-                }
-            }
-            def gtestTask = project(':ddprof-lib:gtest').tasks.findByName("gtest${it.capitalize()}")
-            if (gtestTask != null) {
-                linkTask.dependsOn gtestTask
-            }
+  buildConfigNames().each {
+    def compileTask = tasks.findByName("compileLib${it.capitalize()}")
+    def linkTask = tasks.findByName("linkLib${it.capitalize()}")
+    if (linkTask != null) {
+      if (it != 'release') {
+        def copyTask = tasks.findByName("copy${it.capitalize()}Libs")
+        if (copyTask != null) {
+          copyTask.dependsOn linkTask
         }
-        def javadocTask = tasks.findByName("javadoc")
-        def copyReleaseLibs = tasks.findByName("copyReleaseLibs")
-        if (javadocTask != null && copyReleaseLibs != null) {
-            javadocTask.dependsOn copyReleaseLibs
-        }
+      }
+      def gtestTask = project(':ddprof-lib:gtest').tasks.findByName("gtest${it.capitalize()}")
+      if (gtestTask != null) {
+        linkTask.dependsOn gtestTask
+      }
     }
+    def javadocTask = tasks.findByName("javadoc")
+    def copyReleaseLibs = tasks.findByName("copyReleaseLibs")
+    if (javadocTask != null && copyReleaseLibs != null) {
+      javadocTask.dependsOn copyReleaseLibs
+    }
+  }
 }
 
 artifacts {
-    // create artifacts for all configures build config names
-    buildConfigNames().each {
-        def task = tasks.named("assemble${it.capitalize()}Jar")
-        artifacts.add('assembled', task)
-        artifacts.add(it, task)
-    }
+  // create artifacts for all configures build config names
+  buildConfigNames().each {
+    def task = tasks.named("assemble${it.capitalize()}Jar")
+    artifacts.add('assembled', task)
+    artifacts.add(it, task)
+  }
 }
 
 publishing {
-    publications {
-        assembled(MavenPublication) { publication ->
-            buildConfigNames().each {
-                publication.artifact tasks.named("assemble${it.capitalize()}Jar")
-            }
-            publication.artifact sourcesJar
-            publication.artifact javadocJar
+  publications {
+    assembled(MavenPublication) { publication ->
+      buildConfigNames().each {
+        publication.artifact tasks.named("assemble${it.capitalize()}Jar")
+      }
+      publication.artifact sourcesJar
+      publication.artifact javadocJar
 
-            publication.groupId = 'com.datadoghq'
-            publication.artifactId = 'ddprof'
-        }
+      publication.groupId = 'com.datadoghq'
+      publication.artifactId = 'ddprof'
     }
+  }
 }
 
 tasks.withType(GenerateMavenPom).configureEach {
-    doFirst {
-        MavenPom pom = it.pom
-        pom.name = project.name
-        pom.description = "${project.description} (${component_version})"
-        pom.packaging = "jar"
-        pom.url = "https://github.com/datadog/java-profiler"
-        pom.licenses {
-            license {
-                name = "The Apache Software License, Version 2.0"
-                url = "http://www.apache.org/licenses/LICENSE-2.0.txt"
-                distribution = "repo"
-            }
-        }
-        pom.scm {
-            connection = "scm:https://datadog@github.com/datadog/java-profiler"
-            developerConnection = "scm:git@github.com:datadog/java-profiler"
-            url = "https://github.com/datadog/java-profiler"
-        }
-        pom.developers {
-            developer {
-                id = "datadog"
-                name = "Datadog"
-            }
-        }
+  doFirst {
+    MavenPom pom = it.pom
+    pom.name = project.name
+    pom.description = "${project.description} (${component_version})"
+    pom.packaging = "jar"
+    pom.url = "https://github.com/datadog/java-profiler"
+    pom.licenses {
+      license {
+        name = "The Apache Software License, Version 2.0"
+        url = "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        distribution = "repo"
+      }
     }
+    pom.scm {
+      connection = "scm:https://datadog@github.com/datadog/java-profiler"
+      developerConnection = "scm:git@github.com:datadog/java-profiler"
+      url = "https://github.com/datadog/java-profiler"
+    }
+    pom.developers {
+      developer {
+        id = "datadog"
+        name = "Datadog"
+      }
+    }
+  }
 }
 
 signing {
-    useInMemoryPgpKeys(System.getenv("GPG_PRIVATE_KEY"), System.getenv("GPG_PASSWORD"))
-    sign publishing.publications.assembled
+  useInMemoryPgpKeys(System.getenv("GPG_PRIVATE_KEY"), System.getenv("GPG_PASSWORD"))
+  sign publishing.publications.assembled
 }
 
 tasks.withType(Sign).configureEach {
-    // Only sign in Gitlab CI
-    onlyIf { isGitlabCI || (System.getenv("GPG_PRIVATE_KEY") != null && System.getenv("GPG_PASSWORD") != null) }
+  // Only sign in Gitlab CI
+  onlyIf { isGitlabCI || (System.getenv("GPG_PRIVATE_KEY") != null && System.getenv("GPG_PASSWORD") != null) }
 }
 
 /**
@@ -403,29 +403,29 @@ tasks.withType(Sign).configureEach {
  */
 
 gradle.taskGraph.whenReady { TaskExecutionGraph taskGraph ->
-    if (taskGraph.hasTask(publish) || taskGraph.hasTask("publishToSonatype")) {
-        assert project.findProperty("removeJarVersionNumbers") != true
-        if (taskGraph.hasTask("publishToSonatype")) {
-            assert System.getenv("SONATYPE_USERNAME") != null
-            assert System.getenv("SONATYPE_PASSWORD") != null
-            if (isCI) {
-                assert System.getenv("GPG_PRIVATE_KEY") != null
-                assert System.getenv("GPG_PASSWORD") != null
-            }
-        }
+  if (taskGraph.hasTask(publish) || taskGraph.hasTask("publishToSonatype")) {
+    assert project.findProperty("removeJarVersionNumbers") != true
+    if (taskGraph.hasTask("publishToSonatype")) {
+      assert System.getenv("SONATYPE_USERNAME") != null
+      assert System.getenv("SONATYPE_PASSWORD") != null
+      if (isCI) {
+        assert System.getenv("GPG_PRIVATE_KEY") != null
+        assert System.getenv("GPG_PASSWORD") != null
+      }
     }
+  }
 }
 
 afterEvaluate {
-    assert description: "Project $project.path is published, must have a description"
+  assert description: "Project $project.path is published, must have a description"
 }
 
 // we are publishing very customized artifacts - we are attaching the native library to the resulting JAR artifact
 tasks.withType(AbstractPublishToMaven).configureEach {
-    if (it.name.contains('AssembledPublication')) {
-        it.dependsOn assembleReleaseJar
-    }
-    rootProject.subprojects {
-        mustRunAfter tasks.matching { it instanceof VerificationTask }
-    }
+  if (it.name.contains('AssembledPublication')) {
+    it.dependsOn assembleReleaseJar
+  }
+  rootProject.subprojects {
+    mustRunAfter tasks.matching { it instanceof VerificationTask }
+  }
 }
