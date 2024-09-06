@@ -52,8 +52,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang-format-11
-          which clang-format
-          which clang-format-11
+          # we need this to make sure we are actually using clang-format v. 11 
+          sudo mv /usr/bin/clang-format /usr/bin/clang-format-14
+          sudo mv /usr/bin/clang-format-11 /usr/bin/clang-format
       - name: Prepare test JDK
         uses: actions/setup-java@v3
         with:
