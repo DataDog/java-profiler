@@ -51,6 +51,7 @@ jobs:
       - name: Setup OS
         run: |
           sudo apt-get update
+          sudo apt remove -y clang-format
           sudo apt-get install -y clang-format-11
       - name: Prepare test JDK
         uses: actions/setup-java@v3
