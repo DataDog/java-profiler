@@ -30,7 +30,7 @@ jobs:
       - name: Setup OS
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
+          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev clang-format
       - name: Prepare JDK ${{ matrix.java_version }}
         run: |
           wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-amd64.tar.gz -O jdk.tar.gz
@@ -46,7 +46,7 @@ jobs:
           export LIBC=glibc
           export JAVA_TEST_HOME=$(pwd)/test_jdk
           export SANITIZER=${{ matrix.config }}
-          ./gradlew :ddprof-test:test${{ matrix.config }}  
+          ./gradlew spotlessCheck :ddprof-test:test${{ matrix.config }}  
           if [ $? -ne 0 ]; then 
             echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}.txt
             exit 1
@@ -90,7 +90,7 @@ jobs:
       - name: Prepare OS
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
+          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev clang-format
       - name: Prepare JDK ${{ matrix.java_version }}
         run: |
           curl -s "https://get.sdkman.io" | bash
@@ -109,7 +109,7 @@ jobs:
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
           export SANITIZER=${{ matrix.config }}
-          ./gradlew :ddprof-test:test${{ matrix.config }}
+          ./gradlew spotlessCheck :ddprof-test:test${{ matrix.config }}
           if [ $? -ne 0 ]; then 
             echo "ubuntu-jdk-${{ matrix.java_version }}-${{ matrix.config }}" >> failures_ubuntu-jdk-${{ matrix.java_version }}-${{ matrix.config }}.txt
             exit 1
@@ -148,7 +148,7 @@ jobs:
       - name: Setup OS
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
+          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev clang-format
 #          sudo sysctl vm.mmap_rnd_bits=28
       - name: Prepare test JDK
         uses: actions/setup-java@v3
@@ -170,7 +170,7 @@ jobs:
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
           chmod a+x gradlew
-          ./gradlew :ddprof-test:test${{ matrix.config }}
+          ./gradlew spotlessCheck :ddprof-test:test${{ matrix.config }}
           if [ $? -ne 0 ]; then 
             echo "glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}" >> failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}.txt
             exit 1
@@ -208,7 +208,7 @@ jobs:
       - name: Setup OS
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
+          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev clang-format
       - name: Prepare build JDK
         uses: actions/setup-java@v3
         with:
@@ -233,7 +233,7 @@ jobs:
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
           export SANITIZER=${{ matrix.config }}
-          ./gradlew :ddprof-test:test${{ matrix.config }}
+          ./gradlew spotlessCheck :ddprof-test:test${{ matrix.config }}
           if [ $? -ne 0 ]; then 
             echo "glibc-oracle8-${{ matrix.config }}" >> failures_glibc-oracle8-${{ matrix.config }}.txt
             exit 1
@@ -274,7 +274,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Setup OS
-        run: apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock >/dev/null
+        run: apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock clang-format >/dev/null
       - name: Prepare build JDK
         run: |
           wget -nv https://download.bell-sw.com/java/11.0.18+10/bellsoft-jdk11.0.18+10-linux-x64-musl.tar.gz -O jdk.tar.gz
@@ -295,7 +295,7 @@ jobs:
           export LIBC=musl
           export JAVA_TEST_HOME=$(pwd)/test_jdk
           export SANITIZER=${{ matrix.config }}
-          ./gradlew :ddprof-test:test${{ matrix.config }}
+          ./gradlew spotlessCheck :ddprof-test:test${{ matrix.config }}
           if [ $? -ne 0 ]; then 
             echo "musl-${{ matrix.java_version }}-${{ matrix.config }}" >> failures_musl-${{ matrix.java_version }}-${{ matrix.config }}.txt
             exit 1
@@ -339,7 +339,7 @@ jobs:
       - name: Setup OS
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
+          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev clang-format
       - name: Prepare build JDK
         if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
         uses: actions/setup-java@v3
@@ -380,7 +380,7 @@ jobs:
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
           export SANITIZER=${{ matrix.config }}
-          ./gradlew :ddprof-test:test${{ matrix.config }}
+          ./gradlew spotlessCheck :ddprof-test:test${{ matrix.config }}
           if [ $? -ne 0 ]; then 
             echo "glibc-zing-${{ matrix.java_version }}-${{ matrix.config }}" >> failures_zing-${{ matrix.java_version }}-${{ matrix.config }}.txt
             exit 1

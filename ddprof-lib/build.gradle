@@ -430,3 +430,25 @@ tasks.withType(AbstractPublishToMaven).configureEach {
         mustRunAfter tasks.matching { it instanceof VerificationTask }
     }
 }
+
+spotless {
+  cpp {
+    def clangVersion = null
+    def checkClangFormat = ['clang-format', '--version'].execute()
+    checkClangFormat.waitFor()
+    if (checkClangFormat.exitValue() == 0) {
+        def versionOutput = checkClangFormat.text.trim() 
+        // Extract the version number from the output using regex
+        def versionMatcher = (versionOutput =~ /clang-format version (\d+\.\d+\.\d+.*)/)
+        if (versionMatcher) {
+            clangVersion = versionMatcher[0][1]  // The version is captured in group 1
+        } else {
+            clangVersion = "10.0.1" // default to 10.0.1
+        }
+    }
+
+    target 'src/main/cpp/**'
+
+    clangFormat(clangVersion)
+  }
+}
