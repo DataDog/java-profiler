@@ -55,7 +55,7 @@ jobs:
       - name: Prepare test JDK
         uses: actions/setup-java@v3
         with:
-          distribution: 'adopt-openj9'
+          distribution: 'temurin'
           java-version: "21.0.3"
       - name: Check
         run: |

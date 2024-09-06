@@ -443,7 +443,7 @@ spotless {
         if (versionMatcher) {
             clangVersion = versionMatcher[0][1]  // The version is captured in group 1
         } else {
-            clangVersion = "10.0.1" // default to 10.0.1
+            clangVersion = "11.0.0" // default to 11.0.0
         }
     }
 
