@@ -14,123 +14,125 @@
  * limitations under the License.
  */
 
+#include "threadFilter.h"
+#include "counters.h"
+#include "os.h"
 #include <stdlib.h>
 #include <string.h>
-#include "threadFilter.h"
-#include "os.h"
-#include "counters.h"
 
 void trackPage() {
-    Counters::increment(THREAD_FILTER_PAGES, 1);
-    Counters::increment(THREAD_FILTER_BYTES, BITMAP_SIZE);
+  Counters::increment(THREAD_FILTER_PAGES, 1);
+  Counters::increment(THREAD_FILTER_BYTES, BITMAP_SIZE);
 }
 
 ThreadFilter::ThreadFilter() {
-    _max_thread_id = OS::getMaxThreadId(128 * 1024);
-    _max_bitmaps = (_max_thread_id + BITMAP_SIZE - 1) / BITMAP_SIZE;
-    u32 capacity = _max_bitmaps * sizeof(u64*);
-    _bitmap = (u64**)OS::safeAlloc(capacity);
-    memset(_bitmap, 0, capacity);
-    _bitmap[0] = (u64*)OS::safeAlloc(BITMAP_SIZE);
-    trackPage();
-    _enabled = false;
-    _size = 0;
+  _max_thread_id = OS::getMaxThreadId(128 * 1024);
+  _max_bitmaps = (_max_thread_id + BITMAP_SIZE - 1) / BITMAP_SIZE;
+  u32 capacity = _max_bitmaps * sizeof(u64 *);
+  _bitmap = (u64 **)OS::safeAlloc(capacity);
+  memset(_bitmap, 0, capacity);
+  _bitmap[0] = (u64 *)OS::safeAlloc(BITMAP_SIZE);
+  trackPage();
+  _enabled = false;
+  _size = 0;
 }
 
 ThreadFilter::~ThreadFilter() {
-    for (int i = 0; i < _max_bitmaps; i++) {
-        if (_bitmap[i] != NULL) {
-            OS::safeFree(_bitmap[i], BITMAP_SIZE);
-        }
+  for (int i = 0; i < _max_bitmaps; i++) {
+    if (_bitmap[i] != NULL) {
+      OS::safeFree(_bitmap[i], BITMAP_SIZE);
     }
+  }
 }
 
-void ThreadFilter::init(const char* filter) {
-    if (filter == NULL) {
-        _enabled = false;
-        return;
+void ThreadFilter::init(const char *filter) {
+  if (filter == NULL) {
+    _enabled = false;
+    return;
+  }
+
+  char *end;
+  do {
+    int id = strtol(filter, &end, 0);
+    if (id <= 0) {
+      break;
     }
 
-    char* end;
-    do {
-        int id = strtol(filter, &end, 0);
-        if (id <= 0) {
-            break;
-        }
+    if (*end == '-') {
+      int to = strtol(end + 1, &end, 0);
+      while (id <= to) {
+        add(id++);
+      }
+    } else {
+      add(id);
+    }
 
-        if (*end == '-') {
-            int to = strtol(end + 1, &end, 0);
-            while (id <= to) {
-                add(id++);
-            }
-        } else {
-            add(id);
-        }
+    filter = end + 1;
+  } while (*end);
 
-        filter = end + 1;
-    } while (*end);
-
-    _enabled = true;
+  _enabled = true;
 }
 
 void ThreadFilter::clear() {
-    for (int i = 0; i < _max_bitmaps; i++) {
-        if (_bitmap[i] != NULL) {
-            memset(_bitmap[i], 0, BITMAP_SIZE);
-        }
+  for (int i = 0; i < _max_bitmaps; i++) {
+    if (_bitmap[i] != NULL) {
+      memset(_bitmap[i], 0, BITMAP_SIZE);
     }
-    _size = 0;
+  }
+  _size = 0;
 }
 
 bool ThreadFilter::accept(int thread_id) {
-    u64* b = bitmap(thread_id);
-    return b != NULL && (word(b, thread_id) & (1ULL << (thread_id & 0x3f)));
+  u64 *b = bitmap(thread_id);
+  return b != NULL && (word(b, thread_id) & (1ULL << (thread_id & 0x3f)));
 }
 
 void ThreadFilter::add(int thread_id) {
-    u64* b = bitmap(thread_id);
-    if (b == NULL) {
-        b = (u64*)OS::safeAlloc(BITMAP_SIZE);
-        u64* oldb = __sync_val_compare_and_swap(&_bitmap[(u32)thread_id / BITMAP_CAPACITY], NULL, b);
-        if (oldb != NULL) {
-            OS::safeFree(b, BITMAP_SIZE);
-            b = oldb;
-        } else {
-            trackPage();
-        }
+  u64 *b = bitmap(thread_id);
+  if (b == NULL) {
+    b = (u64 *)OS::safeAlloc(BITMAP_SIZE);
+    u64 *oldb = __sync_val_compare_and_swap(
+        &_bitmap[(u32)thread_id / BITMAP_CAPACITY], NULL, b);
+    if (oldb != NULL) {
+      OS::safeFree(b, BITMAP_SIZE);
+      b = oldb;
+    } else {
+      trackPage();
     }
+  }
 
-    u64 bit = 1ULL << (thread_id & 0x3f);
-    if (!(__sync_fetch_and_or(&word(b, thread_id), bit) & bit)) {
-        atomicInc(_size);
-    }
+  u64 bit = 1ULL << (thread_id & 0x3f);
+  if (!(__sync_fetch_and_or(&word(b, thread_id), bit) & bit)) {
+    atomicInc(_size);
+  }
 }
 
 void ThreadFilter::remove(int thread_id) {
-    u64* b = bitmap(thread_id);
-    if (b == NULL) {
-        return;
-    }
+  u64 *b = bitmap(thread_id);
+  if (b == NULL) {
+    return;
+  }
 
-    u64 bit = 1ULL << (thread_id & 0x3f);
-    if (__sync_fetch_and_and(&word(b, thread_id), ~bit) & bit) {
-        atomicInc(_size, -1);
-    }
+  u64 bit = 1ULL << (thread_id & 0x3f);
+  if (__sync_fetch_and_and(&word(b, thread_id), ~bit) & bit) {
+    atomicInc(_size, -1);
+  }
 }
 
-void ThreadFilter::collect(std::vector<int>& v) {
-    for (int i = 0; i < _max_bitmaps; i++) {
-        u64* b = _bitmap[i];
-        if (b != NULL) {
-            int start_id = i * BITMAP_CAPACITY;
-            for (int j = 0; j < BITMAP_SIZE / sizeof(u64); j++) {
-                // Considering the functional impact, relaxed could be a reasonable order here
-                u64 word = __atomic_load_n(&b[j], __ATOMIC_ACQUIRE);
-                while (word != 0) {
-                    v.push_back(start_id + j * 64 + __builtin_ctzl(word));
-                    word &= (word - 1);
-                }
-            }
+void ThreadFilter::collect(std::vector<int> &v) {
+  for (int i = 0; i < _max_bitmaps; i++) {
+    u64 *b = _bitmap[i];
+    if (b != NULL) {
+      int start_id = i * BITMAP_CAPACITY;
+      for (int j = 0; j < BITMAP_SIZE / sizeof(u64); j++) {
+        // Considering the functional impact, relaxed could be a reasonable
+        // order here
+        u64 word = __atomic_load_n(&b[j], __ATOMIC_ACQUIRE);
+        while (word != 0) {
+          v.push_back(start_id + j * 64 + __builtin_ctzl(word));
+          word &= (word - 1);
         }
+      }
     }
+  }
 }

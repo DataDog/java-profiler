@@ -22,63 +22,63 @@
 #include <stddef.h>
 #include <stdlib.h>
 
-
-#define ROW_BITS        7
-#define ROWS            (1 << ROW_BITS)
-#define CELLS           3
-#define TABLE_CAPACITY  (ROWS * CELLS)
-
+#define ROW_BITS 7
+#define ROWS (1 << ROW_BITS)
+#define CELLS 3
+#define TABLE_CAPACITY (ROWS * CELLS)
 
 struct DictTable;
 
 struct DictRow {
-    char* keys[CELLS];
-    DictTable* next;
+  char *keys[CELLS];
+  DictTable *next;
 };
 
 struct DictTable {
-    DictRow rows[ROWS];
-    unsigned int base_index;
+  DictRow rows[ROWS];
+  unsigned int base_index;
 
-    unsigned int index(int row, int col) {
-        return base_index + (col << ROW_BITS) + row;
-    }
+  unsigned int index(int row, int col) {
+    return base_index + (col << ROW_BITS) + row;
+  }
 };
 
 // Append-only concurrent hash table based on multi-level arrays
 class Dictionary {
-  private:
-    DictTable* _table;
-    const int _id;
-    volatile unsigned int _base_index;
-    volatile int _size;
+private:
+  DictTable *_table;
+  const int _id;
+  volatile unsigned int _base_index;
+  volatile int _size;
 
-    static void clear(DictTable* table, int id);
+  static void clear(DictTable *table, int id);
 
-    static unsigned int hash(const char* key, size_t length);
+  static unsigned int hash(const char *key, size_t length);
 
-    static void collect(std::map<unsigned int, const char*>& map, DictTable* table);
+  static void collect(std::map<unsigned int, const char *> &map,
+                      DictTable *table);
 
-    unsigned int lookup(const char* key, size_t length, bool for_insert, unsigned int sentinel);
+  unsigned int lookup(const char *key, size_t length, bool for_insert,
+                      unsigned int sentinel);
 
-  public:
-    Dictionary() : Dictionary(0) {}
-    Dictionary(int id) : _id(id) {
-        _table = (DictTable*)calloc(1, sizeof(DictTable));
-        Counters::set(DICTIONARY_PAGES, 1, id);
-        Counters::set(DICTIONARY_BYTES, sizeof(DictTable), id);
-        _table->base_index = _base_index = 1;
-        _size = 0;
-    }
-    ~Dictionary();
+public:
+  Dictionary() : Dictionary(0) {}
+  Dictionary(int id) : _id(id) {
+    _table = (DictTable *)calloc(1, sizeof(DictTable));
+    Counters::set(DICTIONARY_PAGES, 1, id);
+    Counters::set(DICTIONARY_BYTES, sizeof(DictTable), id);
+    _table->base_index = _base_index = 1;
+    _size = 0;
+  }
+  ~Dictionary();
 
-    void clear();
+  void clear();
 
-    unsigned int lookup(const char* key);
-    unsigned int lookup(const char* key, size_t length);
-    unsigned int bounded_lookup(const char* key, size_t length, int size_limit);
+  unsigned int lookup(const char *key);
+  unsigned int lookup(const char *key, size_t length);
+  unsigned int bounded_lookup(const char *key, size_t length, int size_limit);
 
-    void collect(std::map<unsigned int, const char*>& map);
+  void collect(std::map<unsigned int, const char *> &map);
 };
 
 #endif // _DICTIONARY_H

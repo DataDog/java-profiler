@@ -19,55 +19,49 @@
 
 #ifdef __linux__
 
-#include <signal.h>
 #include "arch.h"
 #include "engine.h"
+#include <signal.h>
 
 class PerfEvent;
 class PerfEventType;
 class StackContext;
 
 class PerfEvents : public Engine {
-  private:
-    static volatile bool _enabled;
-    static int _max_events;
-    static PerfEvent* _events;
-    static PerfEventType* _event_type;
-    static long _interval;
-    static Ring _ring;
-    static CStack _cstack;
-    static bool _use_mmap_page;
+private:
+  static volatile bool _enabled;
+  static int _max_events;
+  static PerfEvent *_events;
+  static PerfEventType *_event_type;
+  static long _interval;
+  static Ring _ring;
+  static CStack _cstack;
+  static bool _use_mmap_page;
 
-    // cppcheck-suppress unusedPrivateFunction
-    static u64 readCounter(siginfo_t* siginfo, void* ucontext);
-    // cppcheck-suppress unusedPrivateFunction
-    static void signalHandler(int signo, siginfo_t* siginfo, void* ucontext);
+  // cppcheck-suppress unusedPrivateFunction
+  static u64 readCounter(siginfo_t *siginfo, void *ucontext);
+  // cppcheck-suppress unusedPrivateFunction
+  static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
 
-  public:
-    Error check(Arguments& args);
-    Error start(Arguments& args);
-    void stop();
+public:
+  Error check(Arguments &args);
+  Error start(Arguments &args);
+  void stop();
 
+  virtual int registerThread(int tid);
+  virtual void unregisterThread(int tid);
+  long interval() const { return _interval; }
 
-    virtual int registerThread(int tid);
-    virtual void unregisterThread(int tid);
-    long interval() const {
-        return _interval;
-    }
+  const char *name() { return "PerfEvents"; }
 
-    const char* name() {
-      return "PerfEvents";
-    }
+  static int walkKernel(int tid, const void **callchain, int max_depth,
+                        StackContext *java_ctx);
 
-    static int walkKernel(int tid, const void** callchain, int max_depth, StackContext* java_ctx);
+  static void resetBuffer(int tid);
 
-    static void resetBuffer(int tid);
+  static const char *getEventName(int event_id);
 
-    static const char* getEventName(int event_id);
-
-    inline void enableEvents(bool enabled) {
-      _enabled = enabled;
-    }
+  inline void enableEvents(bool enabled) { _enabled = enabled; }
 };
 
 #else
@@ -77,36 +71,30 @@ class PerfEvents : public Engine {
 class StackContext;
 
 class PerfEvents : public Engine {
-  public:
-    Error check(Arguments& args) {
-        return Error("PerfEvents are unsupported on this platform");
-    }
+public:
+  Error check(Arguments &args) {
+    return Error("PerfEvents are unsupported on this platform");
+  }
 
-    Error start(Arguments& args) {
-        return Error("PerfEvents are unsupported on this platform");
-    }
+  Error start(Arguments &args) {
+    return Error("PerfEvents are unsupported on this platform");
+  }
 
-    static int walkKernel(int tid, const void** callchain, int max_depth, StackContext* java_ctx) {
-        return 0;
-    }
+  static int walkKernel(int tid, const void **callchain, int max_depth,
+                        StackContext *java_ctx) {
+    return 0;
+  }
 
-    inline void enableEvents(bool enabled) {}
+  inline void enableEvents(bool enabled) {}
 
-    static void resetBuffer(int tid) {
-    }
+  static void resetBuffer(int tid) {}
 
-    static const char* getEventName(int event_id) {
-        return NULL;
-    }
+  static const char *getEventName(int event_id) { return NULL; }
 
-    virtual int registerThread(int tid) {
-        return -1;
-    }
-    virtual void unregisterThread(int tid) {}
+  virtual int registerThread(int tid) { return -1; }
+  virtual void unregisterThread(int tid) {}
 
-    long interval() const {
-        return -1;
-    }
+  long interval() const { return -1; }
 };
 
 #endif // __linux__

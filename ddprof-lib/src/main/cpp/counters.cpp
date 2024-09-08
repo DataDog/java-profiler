@@ -16,9 +16,10 @@
 #include "counters.h"
 #include <stdlib.h>
 
-long long* Counters::init() {
-    u32 alignment = sizeof(long long) * ALIGNMENT;
-    long long* counters = (long long*) aligned_alloc(alignment, DD_NUM_COUNTERS * alignment);
-    memset(counters, 0, DD_NUM_COUNTERS * alignment);
-    return counters;
+long long *Counters::init() {
+  u32 alignment = sizeof(long long) * ALIGNMENT;
+  long long *counters =
+      (long long *)aligned_alloc(alignment, DD_NUM_COUNTERS * alignment);
+  memset(counters, 0, DD_NUM_COUNTERS * alignment);
+  return counters;
 }

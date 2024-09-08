@@ -15,7 +15,8 @@ If you need a full-fledged Java profiler head back to [async-profiler](https://g
 1. This project contains Java code and is built by gradle, as such, you need to install a JDK in order to build it. Run `brew install openjdk` to install it on MacOS.
    If building and testing on Apple Silicon (M1+), be sure to install an aarch64 OpenJDK distribution, otherwise the architecture used for compilation and the JVM based test suite will not match, which means the tests will not be able to load the dynamic library at runtime.
 2. The build requires make, which is included in XCode, but can also be installed by running `brew install make`
-4. The build supports googletest for unit testing. To install it, run `brew install googletest` or `sudo apt install libgtest-dev` or `apk add gtest-dev` depending on your platform.
+3. The build supports googletest for unit testing. To install it, run `brew install googletest` or `sudo apt install libgtest-dev` or `apk add gtest-dev` depending on your platform.
+4. The build is applying consistent formatting using 'spotless' Gradle plugin. For C/C++ files it will use `clang-format` version 11. To install it, run `brew install clang-format-11` or `sudo apt install clang-format-11` or `apk add clang-format-11` depending on your platform. If the installed version does not provide `/usr/bin/clang-format` executable create a link like `sudo ln -s /usr/bin/clang-format-11 /usr/bin/clang-format` in order for the 'spotles' pluging to function correctly.
 
 
 Once prerequisites have been installed simple as `./gradlew assembleAll`. The resulting artifact is located in `ddprof-lib/build/libs/ddprof-<version>.jar`

@@ -17,68 +17,62 @@
 #ifndef _WALLCLOCK_H
 #define _WALLCLOCK_H
 
-#include <atomic>
-#include <climits>
-#include <signal.h>
-#include <pthread.h>
 #include "engine.h"
 #include "os.h"
 #include "threadState.h"
+#include <atomic>
+#include <climits>
+#include <pthread.h>
+#include <signal.h>
 
 class WallClock : public Engine {
-  private:
-    static std::atomic<bool> _enabled;
+private:
+  static std::atomic<bool> _enabled;
 
-    bool _collapsing;
-    long _interval;
+  bool _collapsing;
+  long _interval;
 
-    // Maximum number of threads sampled in one iteration. This limit serves as a throttle
-    // when generating profiling signals. Otherwise applications with too many threads may
-    // suffer from a big profiling overhead. Also, keeping this limit low enough helps
-    // to avoid contention on a spin lock inside Profiler::recordSample().
-    int _reservoir_size;
+  // Maximum number of threads sampled in one iteration. This limit serves as a
+  // throttle when generating profiling signals. Otherwise applications with too
+  // many threads may suffer from a big profiling overhead. Also, keeping this
+  // limit low enough helps to avoid contention on a spin lock inside
+  // Profiler::recordSample().
+  int _reservoir_size;
 
-    std::atomic<bool> _running;
-    pthread_t _thread;
+  std::atomic<bool> _running;
+  pthread_t _thread;
 
-    void timerLoop();
+  void timerLoop();
 
-    static void* threadEntry(void* wall_clock) {
-        ((WallClock*)wall_clock)->timerLoop();
-        return NULL;
-    }
+  static void *threadEntry(void *wall_clock) {
+    ((WallClock *)wall_clock)->timerLoop();
+    return NULL;
+  }
 
-    static bool inSyscall(void* ucontext);
+  static bool inSyscall(void *ucontext);
 
-    static void sharedSignalHandler(int signo, siginfo_t* siginfo, void* ucontext);
-    void signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64 last_sample);
+  static void sharedSignalHandler(int signo, siginfo_t *siginfo,
+                                  void *ucontext);
+  void signalHandler(int signo, siginfo_t *siginfo, void *ucontext,
+                     u64 last_sample);
 
-  public:
-    WallClock() :
-        _collapsing(false),
-        _interval(LONG_MAX),
-        _reservoir_size(0),
-        _running(false),
-        _thread(0) {}
+public:
+  WallClock()
+      : _collapsing(false), _interval(LONG_MAX), _reservoir_size(0),
+        _running(false), _thread(0) {}
 
-    const char* units() {
-        return "ns";
-    }
+  const char *units() { return "ns"; }
 
-    const char* name() {
-        return "WallClock";
-    }
+  const char *name() { return "WallClock"; }
 
-    long interval() const {
-        return _interval;
-    }
+  long interval() const { return _interval; }
 
-    Error start(Arguments& args);
-    void stop();
+  Error start(Arguments &args);
+  void stop();
 
-    inline void enableEvents(bool enabled) {
-        _enabled.store(enabled, std::memory_order_release);
-    }
+  inline void enableEvents(bool enabled) {
+    _enabled.store(enabled, std::memory_order_release);
+  }
 };
 
 #endif // _WALLCLOCK_H

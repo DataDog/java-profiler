@@ -4,16 +4,14 @@
 typedef void (*SetSigHandlerTidRef)(int tid);
 
 class Shims {
-  private:
-    static Shims _instance;
-    volatile SetSigHandlerTidRef _tid_setter_ref;
-    Shims();
+private:
+  static Shims _instance;
+  volatile SetSigHandlerTidRef _tid_setter_ref;
+  Shims();
 
-  public:
-    void setSighandlerTid(int tid);
-    inline static Shims instance() {
-        return _instance;
-    }
+public:
+  void setSighandlerTid(int tid);
+  inline static Shims instance() { return _instance; }
 };
 
 #endif //_DEBUGSUPPORT_H

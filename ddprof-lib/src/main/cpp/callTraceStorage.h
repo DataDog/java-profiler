@@ -17,69 +17,69 @@
 #ifndef _CALLTRACESTORAGE_H
 #define _CALLTRACESTORAGE_H
 
-#include <map>
-#include <vector>
 #include "arch.h"
 #include "linearAllocator.h"
-#include "vmEntry.h"
 #include "spinLock.h"
-
+#include "vmEntry.h"
+#include <map>
+#include <vector>
 
 class LongHashTable;
 
 struct CallTrace {
-    bool truncated;
-    int num_frames;
-    ASGCT_CallFrame frames[1];
+  bool truncated;
+  int num_frames;
+  ASGCT_CallFrame frames[1];
 };
 
 struct CallTraceSample {
-    CallTrace* trace;
-    u64 samples;
-    u64 counter;
+  CallTrace *trace;
+  u64 samples;
+  u64 counter;
 
-    CallTrace* acquireTrace() {
-        return __atomic_load_n(&trace, __ATOMIC_ACQUIRE);
-    }
+  CallTrace *acquireTrace() {
+    return __atomic_load_n(&trace, __ATOMIC_ACQUIRE);
+  }
 
-    void setTrace(CallTrace* value) {
-        return __atomic_store_n(&trace, value, __ATOMIC_RELEASE);
-    }
+  void setTrace(CallTrace *value) {
+    return __atomic_store_n(&trace, value, __ATOMIC_RELEASE);
+  }
 
-    CallTraceSample& operator+=(const CallTraceSample& s) {
-        trace = s.trace;
-        samples += s.samples;
-        counter += s.counter;
-        return *this;
-    }
+  CallTraceSample &operator+=(const CallTraceSample &s) {
+    trace = s.trace;
+    samples += s.samples;
+    counter += s.counter;
+    return *this;
+  }
 
-    bool operator<(const CallTraceSample& other) const {
-        return counter > other.counter;
-    }
+  bool operator<(const CallTraceSample &other) const {
+    return counter > other.counter;
+  }
 };
 
 class CallTraceStorage {
-  private:
-    static CallTrace _overflow_trace;
+private:
+  static CallTrace _overflow_trace;
 
-    LinearAllocator _allocator;
-    LongHashTable* _current_table;
-    u64 _overflow;
+  LinearAllocator _allocator;
+  LongHashTable *_current_table;
+  u64 _overflow;
 
-    SpinLock _lock;
+  SpinLock _lock;
 
-    u64 calcHash(int num_frames, ASGCT_CallFrame* frames, bool truncated);
-    CallTrace* storeCallTrace(int num_frames, ASGCT_CallFrame* frames, bool truncated);
-    CallTrace* findCallTrace(LongHashTable* table, u64 hash);
+  u64 calcHash(int num_frames, ASGCT_CallFrame *frames, bool truncated);
+  CallTrace *storeCallTrace(int num_frames, ASGCT_CallFrame *frames,
+                            bool truncated);
+  CallTrace *findCallTrace(LongHashTable *table, u64 hash);
 
-  public:
-    CallTraceStorage();
-    ~CallTraceStorage();
+public:
+  CallTraceStorage();
+  ~CallTraceStorage();
 
-    void clear();
-    void collectTraces(std::map<u32, CallTrace*>& map);
+  void clear();
+  void collectTraces(std::map<u32, CallTrace *> &map);
 
-    u32 put(int num_frames, ASGCT_CallFrame* frames, bool truncated, u64 counter);
+  u32 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 counter);
 };
 
 #endif // _CALLTRACESTORAGE
