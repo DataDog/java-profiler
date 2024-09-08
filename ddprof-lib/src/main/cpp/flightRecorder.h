@@ -268,6 +268,7 @@ public:
   Dictionary _symbols;
 
 private:
+  JNIEnv* _jni;
   void fillNativeMethodInfo(MethodInfo *mi, const char *name,
                             const char *lib_name);
   void cutArguments(char *func);
@@ -279,7 +280,7 @@ private:
 public:
   Lookup(Recording *rec, MethodMap *method_map, Dictionary *classes)
       : _rec(rec), _method_map(method_map), _classes(classes), _packages(),
-        _symbols() {}
+        _symbols(), _jni(VM::jni()) {}
 
   MethodInfo *resolveMethod(ASGCT_CallFrame &frame);
   u32 getPackage(const char *class_name);

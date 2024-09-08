@@ -133,7 +133,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   jvmtiEnv *jvmti = VM::jvmti();
 
   jvmtiPhase phase;
-  jclass method_class;
+  jclass method_class = nullptr;
   // invariant: these strings must remain null, or be assigned by JVMTI
   char *class_name = nullptr;
   char *method_name = nullptr;
@@ -243,6 +243,10 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       class_name_id = _classes->lookup("");
       method_name_id = _symbols.lookup("jvmtiError");
       method_sig_id = _symbols.lookup("()L;");
+    }
+
+    if (method_class) {
+      _jni->DeleteLocalRef(method_class);
     }
 
     mi->_class = class_name_id;
