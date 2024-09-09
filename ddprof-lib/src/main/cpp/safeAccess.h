@@ -73,7 +73,7 @@ public:
     return 0;
   }
 #ifndef __SANITIZE_ADDRESS__
-  constexpr static inline size_t sizeSafeLoadFunc = 16;
+  constexpr static size_t sizeSafeLoadFunc = 16;
 #else
   // asan significantly increases the size of the load function
   // checking disassembled code can help adjust the value
