@@ -267,6 +267,7 @@ bool VM::init(JavaVM *vm, bool attach) {
   _jvmti->AddCapabilities(&capabilities);
 
   jvmtiEventCallbacks callbacks = {0};
+  callbacks.VMInit = VMInit;
   callbacks.VMDeath = VMDeath;
   callbacks.ClassLoad = ClassLoad;
   callbacks.ClassPrepare = ClassPrepare;
@@ -403,6 +404,17 @@ void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
   }
 }
 
+void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
+    ready(jvmti, jni);
+    loadAllMethodIDs(jvmti, jni);
+
+    // Delayed start of profiler if agent has been loaded at VM bootstrap
+    Error error = Profiler::instance()->run(_agent_args);
+    if (error) {
+        Log::error("%s", error.message());
+    }
+}
+
 void JNICALL VM::VMDeath(jvmtiEnv *jvmti, JNIEnv *jni) {
   Profiler::instance()->shutdown(_agent_args);
 }
@@ -441,6 +453,25 @@ jvmtiError VM::RetransformClassesHook(jvmtiEnv *jvmti, jint class_count,
   }
 
   return result;
+}
+
+extern "C" DLLEXPORT jint JNICALL
+Agent_OnLoad(JavaVM* vm, char* options, void* reserved) {
+    Error error = _agent_args.parse(options);
+
+    Log::open(_agent_args);
+
+    if (error) {
+        Log::error("%s", error.message());
+        return ARGUMENTS_ERROR;
+    }
+
+    if (!VM::init(vm, false)) {
+        Log::error("JVM does not support Tool Interface");
+        return COMMAND_ERROR;
+    }
+
+    return 0;
 }
 
 extern "C" DLLEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
