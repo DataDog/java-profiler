@@ -359,4 +359,10 @@ void OS::mallocArenaMax(int arena_max) {
 #endif
 }
 
+void OS::mallocTrim() {
+#ifndef __musl__
+  malloc_trim(0);
+#endif
+}
+
 #endif // __linux__

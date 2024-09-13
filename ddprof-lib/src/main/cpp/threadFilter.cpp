@@ -31,7 +31,10 @@ ThreadFilter::ThreadFilter() {
   u32 capacity = _max_bitmaps * sizeof(u64 *);
   _bitmap = (u64 **)OS::safeAlloc(capacity);
   memset(_bitmap, 0, capacity);
-  _bitmap[0] = (u64 *)OS::safeAlloc(BITMAP_SIZE);
+  // preallocate 64 slots -> 8MiB of memory
+  for (int i = 0; i < 64; i++) {
+    _bitmap[i] = (u64 *)OS::safeAlloc(BITMAP_SIZE);
+  } 
   trackPage();
   _enabled = false;
   _size = 0;
@@ -42,6 +45,9 @@ ThreadFilter::~ThreadFilter() {
     if (_bitmap[i] != NULL) {
       OS::safeFree(_bitmap[i], BITMAP_SIZE);
     }
+  }
+  if (_bitmap) {
+    OS::safeFree(_bitmap, _max_bitmaps * sizeof(u64 *));
   }
 }
 
@@ -90,14 +96,17 @@ bool ThreadFilter::accept(int thread_id) {
 void ThreadFilter::add(int thread_id) {
   u64 *b = bitmap(thread_id);
   if (b == NULL) {
-    b = (u64 *)OS::safeAlloc(BITMAP_SIZE);
-    u64 *oldb = __sync_val_compare_and_swap(
-        &_bitmap[(u32)thread_id / BITMAP_CAPACITY], NULL, b);
-    if (oldb != NULL) {
-      OS::safeFree(b, BITMAP_SIZE);
-      b = oldb;
-    } else {
-      trackPage();
+    int cntr = thread_id;
+    for (int cntr = thread_id; cntr < thread_id + 64 && cntr < _max_bitmaps; cntr++) {
+      b = (u64 *)OS::safeAlloc(BITMAP_SIZE);
+      u64 *oldb = __sync_val_compare_and_swap(
+          &_bitmap[(u32)cntr / BITMAP_CAPACITY], NULL, b);
+      if (oldb != NULL) {
+        OS::safeFree(b, BITMAP_SIZE);
+        b = oldb;
+      } else {
+        trackPage();
+      }
     }
   }
 

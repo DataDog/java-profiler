@@ -345,4 +345,8 @@ void OS::mallocArenaMax(int arena_max) {
   // Not supported on macOS
 }
 
+void OS::mallocTrim() {
+  // Not supported on macOS
+}
+
 #endif // __APPLE__

@@ -95,6 +95,7 @@ public:
   static void freePageCache(int fd, off_t start_offset);
 
   static void mallocArenaMax(int arena_max);
+  static void mallocTrim();
 };
 
 #endif // _OS_H

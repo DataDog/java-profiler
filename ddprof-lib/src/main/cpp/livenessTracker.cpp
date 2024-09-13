@@ -166,6 +166,7 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
                1.0f * (end - start) / 1000 / 1000,
                1.0f * (end - start) / 1000 / sz);
   }
+  // OS::mallocTrim();
 }
 
 Error LivenessTracker::initialize_table(JNIEnv *jni, int sampling_interval) {
