@@ -129,23 +129,23 @@ public:
   bool _wall_collapsing;
   int _wall_threads_per_tick;
   WallclockSampler _wallclock_sampler;
-    long _memory;
-    bool _record_allocations;
-    bool _record_liveness;
-    double _live_samples_ratio;
-    bool _record_heap_usage;
-    bool _gc_generations;
-    int  _jstackdepth;
-    int _safe_mode;
-    const char* _file;
-    const char* _log;
-    const char* _loglevel;
-    const char* _unknown_arg;
-    const char* _filter;
-    CStack _cstack;
-    int _jfr_options;
-    std::vector<std::string> _context_attributes;
-    bool _lightweight;
+  long _memory;
+  bool _record_allocations;
+  bool _record_liveness;
+  double _live_samples_ratio;
+  bool _record_heap_usage;
+  bool _gc_generations;
+  int  _jstackdepth;
+  int _safe_mode;
+  const char* _file;
+  const char* _log;
+  const char* _loglevel;
+  const char* _unknown_arg;
+  const char* _filter;
+  CStack _cstack;
+  int _jfr_options;
+  std::vector<std::string> _context_attributes;
+  bool _lightweight;
 
   Arguments(bool persistent = false)
       : _buf(NULL),
