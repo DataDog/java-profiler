@@ -34,7 +34,11 @@ private:
 public:
     ReservoirSampler(const int size) :
         size(size),
-        generator((std::random_device())()),
+        generator([]() {
+            std::random_device rd;
+            std::seed_seq seed_seq{rd(), rd(), rd(), rd()};
+            return std::mt19937(seed_seq);
+        }()),
         uniform(1e-16, 1.0),
         random_index(0, size - 1) {
         reservoir.reserve(size);
