@@ -43,6 +43,9 @@ ThreadFilter::~ThreadFilter() {
       OS::safeFree(_bitmap[i], BITMAP_SIZE);
     }
   }
+  if (_bitmap) {
+    OS::safeFree(_bitmap, _max_bitmaps * sizeof(u64 *));
+  }
 }
 
 void ThreadFilter::init(const char *filter) {
