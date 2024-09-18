@@ -25,24 +25,25 @@
 #else
 #define NOINLINE __attribute__((noinline, noclone))
 #endif
+#define NOADDRSANITIZE __attribute__((no_sanitize("address")))
 
 class SafeAccess {
 public:
-  NOINLINE __attribute__((aligned(16))) static void *load(void **ptr) {
+  NOINLINE NOADDRSANITIZE __attribute__((aligned(16))) static void *load(void **ptr) {
     return *ptr;
   }
 
-  NOINLINE __attribute__((aligned(16))) static u32 load32(u32 *ptr,
+  NOINLINE NOADDRSANITIZE __attribute__((aligned(16))) static u32 load32(u32 *ptr,
                                                           u32 default_value) {
     return *ptr;
   }
 
-  NOINLINE __attribute__((aligned(16))) static void *
+  NOINLINE NOADDRSANITIZE __attribute__((aligned(16))) static void *
   loadPtr(void **ptr, void *default_value) {
     return *ptr;
   }
 
-  static uintptr_t skipLoad(uintptr_t pc) {
+  NOADDRSANITIZE static uintptr_t skipLoad(uintptr_t pc) {
     if (pc - (uintptr_t)load < sizeSafeLoadFunc) {
 #if defined(__x86_64__)
       return *(u16 *)pc == 0x8b48 ? 3 : 0; // mov rax, [reg]
