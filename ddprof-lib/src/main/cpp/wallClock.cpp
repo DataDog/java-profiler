@@ -206,7 +206,8 @@ void WallClockJVMTI::timerLoop() {
         ExecutionEvent event;
         VMThread* vm_thread = thread_entry.native;
         int raw_thread_state = vm_thread->state();
-        bool is_initialized = raw_thread_state >= 4 && raw_thread_state < 12;
+        bool is_initialized = raw_thread_state >= JVMJavaThreadState::_thread_in_native && 
+                              raw_thread_state < JVMJavaThreadState::_thread_max_state;
         ThreadState state = ThreadState::UNKNOWN;
         ExecutionMode mode = ExecutionMode::UNKNOWN;
         if (vm_thread && is_initialized) {
