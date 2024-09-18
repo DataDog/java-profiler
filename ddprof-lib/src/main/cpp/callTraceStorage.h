@@ -79,7 +79,7 @@ public:
   void clear();
   void collectTraces(std::map<u32, CallTrace *> &map);
 
-  u32 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 counter);
+  u32 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);
 };
 
 #endif // _CALLTRACESTORAGE

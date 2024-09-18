@@ -203,7 +203,7 @@ CallTrace *CallTraceStorage::findCallTrace(LongHashTable *table, u64 hash) {
 }
 
 u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame *frames,
-                          bool truncated, u64 counter) {
+                          bool truncated, u64 weight) {
   // Currently, CallTraceStorage is a singleton used globally in Profiler and
   // therefore start-stop operation requires data structures cleanup. This
   // cleanup may and will race this method and the racing can cause all sorts of
@@ -268,7 +268,7 @@ u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame *frames,
 
   CallTraceSample &s = table->values()[slot];
   atomicInc(s.samples);
-  atomicInc(s.counter, counter);
+  atomicInc(s.counter, weight);
 
   _lock.unlockShared();
   return capacity - (INITIAL_CAPACITY - 1) + slot;

@@ -57,7 +57,8 @@ static void (*orig_busHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 
 static Engine noop_engine;
 static PerfEvents perf_events;
-static WallClock wall_engine;
+static WallClockASGCT wall_asgct_engine;
+static WallClockJVMTI wall_jvmti_engine;
 static J9WallClock j9_engine;
 static ITimer itimer;
 static CTimer ctimer;
@@ -690,7 +691,7 @@ void Profiler::recordExternalSample(u64 counter, int tid,
     call_trace_id =
         _call_trace_storage.put(num_frames, frames, truncated, counter);
   }
-  _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event, counter);
+  _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
 
   _locks[lock_index].unlock();
 }
@@ -763,7 +764,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
       thread->recordCallTraceId(call_trace_id);
     }
   }
-  _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event, counter);
+  _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
 
   _locks[lock_index].unlock();
 }
@@ -801,13 +802,13 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
   _locks[lock_index].unlock();
 }
 
-void Profiler::recordExternalSample(u64 counter, int tid, int num_frames,
+void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
                                     ASGCT_CallFrame *frames, bool truncated,
                                     jint event_type, Event *event) {
   atomicInc(_total_samples);
 
   u32 call_trace_id =
-      _call_trace_storage.put(num_frames, frames, truncated, counter);
+      _call_trace_storage.put(num_frames, frames, truncated, weight);
 
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
@@ -818,7 +819,7 @@ void Profiler::recordExternalSample(u64 counter, int tid, int num_frames,
     return;
   }
 
-  _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event, counter);
+  _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
 
   _locks[lock_index].unlock();
 }
@@ -1064,7 +1065,13 @@ Engine *Profiler::selectWallEngine(Arguments &args) {
                 "wallclock profiler on your own risk.");
     }
   }
-  return (Engine *)&wall_engine;
+  switch (args._wallclock_sampler) {
+        case JVMTI:
+            return (Engine*)&wall_jvmti_engine;
+        case ASGCT:
+        default:
+            return (Engine*)&wall_asgct_engine;
+    }
 }
 
 Engine *Profiler::selectAllocEngine(Arguments &args) {

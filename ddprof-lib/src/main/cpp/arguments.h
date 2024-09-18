@@ -81,6 +81,11 @@ enum JfrOption {
       NO_SYSTEM_INFO | NO_SYSTEM_PROPS | NO_NATIVE_LIBS | NO_CPU_LOAD
 };
 
+enum WallclockSampler {
+    ASGCT,
+    JVMTI
+};
+
 struct Multiplier {
   char symbol;
   long multiplier;
@@ -123,37 +128,55 @@ public:
   long _wall;
   bool _wall_collapsing;
   int _wall_threads_per_tick;
+  WallclockSampler _wallclock_sampler;
   long _memory;
   bool _record_allocations;
   bool _record_liveness;
   double _live_samples_ratio;
   bool _record_heap_usage;
   bool _gc_generations;
-  int _jstackdepth;
+  int  _jstackdepth;
   int _safe_mode;
-  const char *_file;
-  const char *_log;
-  const char *_loglevel;
-  const char *_unknown_arg;
-  const char *_filter;
+  const char* _file;
+  const char* _log;
+  const char* _loglevel;
+  const char* _unknown_arg;
+  const char* _filter;
   CStack _cstack;
   int _jfr_options;
   std::vector<std::string> _context_attributes;
   bool _lightweight;
 
   Arguments(bool persistent = false)
-      : _buf(NULL), _shared(false), _persistent(persistent),
-        _action(ACTION_NONE), _ring(RING_ANY), _event(NULL), _interval(0),
-        _cpu(-1), _wall(-1), _wall_collapsing(false),
-        _wall_threads_per_tick(DEFAULT_WALL_THREADS_PER_TICK), _memory(-1),
-        _record_allocations(false), _record_liveness(false),
-        _live_samples_ratio(
-            0.1), // default to liveness-tracking 10% of the allocation samples
-        _record_heap_usage(false), _gc_generations(false),
-        _jstackdepth(DEFAULT_JSTACKDEPTH), _safe_mode(0), _file(NULL),
-        _log(NULL), _loglevel(NULL), _unknown_arg(NULL), _filter(NULL),
-        _cstack(CSTACK_DEFAULT), _jfr_options(0), _context_attributes({}),
-        _lightweight(false) {}
+      : _buf(NULL),
+        _shared(false),
+        _persistent(persistent),
+        _action(ACTION_NONE),
+        _ring(RING_ANY),
+        _event(NULL),
+        _interval(0),
+        _cpu(-1),
+        _wall(-1),
+        _wall_collapsing(false),
+        _wall_threads_per_tick(DEFAULT_WALL_THREADS_PER_TICK),
+        _memory(-1),
+        _record_allocations(false),
+        _record_liveness(false),
+        _live_samples_ratio(0.1), // default to liveness-tracking 10% of the allocation samples
+        _record_heap_usage(false),
+        _gc_generations(false),
+        _jstackdepth(DEFAULT_JSTACKDEPTH),
+        _safe_mode(0),
+        _file(NULL),
+        _log(NULL),
+        _loglevel(NULL),
+        _unknown_arg(NULL),
+        _filter(NULL),
+        _cstack(CSTACK_DEFAULT),
+        _jfr_options(0),
+        _context_attributes({}),
+        _lightweight(false),
+        _wallclock_sampler(ASGCT) {}
 
   ~Arguments();
 
