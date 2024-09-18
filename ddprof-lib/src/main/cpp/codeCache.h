@@ -18,6 +18,7 @@
 #define _CODECACHE_H
 
 #include <jvmti.h>
+#include <stdlib.h>
 #include <string.h>
 #include <vector>
 
@@ -52,7 +53,13 @@ public:
   static char *create(const char *name, short lib_index);
   static void destroy(char *name);
 
-  static short libIndex(const char *name) { return from(name)->_lib_index; }
+  static short libIndex(const char *name) {
+    NativeFunc* func = from(name);
+    if (posix_memalign((void**)(&func), sizeof(NativeFunc*), sizeof(NativeFunc)) != 0) {
+      return -1;
+    }
+    return func->_lib_index; 
+  }
 
   static bool isMarked(const char *name) { return from(name)->_mark != 0; }
 
