@@ -914,7 +914,6 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     // Skip the fault instruction, as if it successfully loaded NULL
     frame.pc() += length;
     frame.retval() = 0;
-    Counters::increment(HANDLED_SIGSEGV_SAFEFETCH);
     return true;
   }
 
@@ -923,7 +922,6 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     // Act as if the load returned default_value argument
     frame.pc() += length;
     frame.retval() = frame.arg1();
-    Counters::increment(HANDLED_SIGSEGV_SAFEFETCH);
     return true;
   }
 

@@ -59,8 +59,6 @@
   X(AGCT_NOT_JAVA, "agct_not_java")                                            \
   X(AGCT_NATIVE_NO_JAVA_CONTEXT, "agct_native_no_java_context")                \
   X(AGCT_BLOCKED_IN_VM, "agct_blocked_in_vm")                                  \
-  X(HANDLED_SIGSEGV_SAFEFETCH, "handled_sigsegv_safefetch")                    \
-  X(HANDLED_SIGSEGV_WALKVM, "handled_sigsegv_walkvm")                          \
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
