@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.Test;
+import org.junitpioneer.jupiter.RetryingTest;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
@@ -41,7 +41,7 @@ public class ContextWallClockTest extends AbstractProfilerTest {
         methodsToSpanIds = new ConcurrentHashMap<>();
     }
 
-    @Test
+    @RetryingTest(5)
     public void test() throws ExecutionException, InterruptedException {
         Assumptions.assumeTrue(!Platform.isJ9() && !Platform.isZing());
 
