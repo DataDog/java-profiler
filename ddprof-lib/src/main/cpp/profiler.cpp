@@ -38,8 +38,10 @@
 #include <algorithm>
 #include <dlfcn.h>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <set>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -883,16 +885,6 @@ void Profiler::disableEngines() {
   _wall_engine->enableEvents(false);
 }
 
-void Profiler::trapHandlerEntry(int signo, siginfo_t *siginfo, void *ucontext) {
-  Profiler::instance()->trapHandler(signo, siginfo, ucontext);
-}
-
-void Profiler::trapHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  if (orig_trapHandler != NULL) {
-    orig_trapHandler(signo, siginfo, ucontext);
-  }
-}
-
 void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (!crashHandler(signo, siginfo, ucontext)) {
     orig_segvHandler(signo, siginfo, ucontext);
@@ -906,14 +898,30 @@ void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 }
 
 bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd != nullptr && !thrd->enterCrashHandler()) {
+    // we are already in a crash handler; don't recurse!
+    return false;
+  }
+  uintptr_t fault_address = (uintptr_t)siginfo->si_addr;
   StackFrame frame(ucontext);
   uintptr_t pc = frame.pc();
+  if (pc == fault_address) {
+    // it is 'pc' that is causing the fault; can not access it safely
+    if (thrd != nullptr) {
+      thrd->exitCrashHandler();
+    }
+    return false;
+  }
 
   uintptr_t length = SafeAccess::skipLoad(pc);
   if (length > 0) {
     // Skip the fault instruction, as if it successfully loaded NULL
     frame.pc() += length;
     frame.retval() = 0;
+    if (thrd != nullptr) {
+      thrd->exitCrashHandler();
+    }
     return true;
   }
 
@@ -922,35 +930,61 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     // Act as if the load returned default_value argument
     frame.pc() += length;
     frame.retval() = frame.arg1();
+    if (thrd != nullptr) {
+      thrd->exitCrashHandler();
+    }
     return true;
   }
 
   if (WX_MEMORY && Trap::isFaultInstruction(pc)) {
+    if (thrd != nullptr) {
+      thrd->exitCrashHandler();
+    }
     return true;
   }
 
   if (VM::isHotspot()) {
     // the following checks require vmstructs and therefore HotSpot
-    StackWalker::checkFault();
+
+    // this check can longjmp to a completely different location - need to call exitCrashHandler() before
+    StackWalker::checkFault(std::bind(&ProfiledThread::exitCrashHandler, thrd));
 
     // Workaround for JDK-8313796. Setting cstack=dwarf also helps
     if (VMStructs::isInterpretedFrameValidFunc((const void *)pc) &&
         frame.skipFaultInstruction()) {
+      if (thrd != nullptr) {
+        thrd->exitCrashHandler();
+      }
       return true;
     }
   }
 
+  if (thrd != nullptr) {
+    thrd->exitCrashHandler();
+  }
   return false;
 }
 
 void Profiler::setupSignalHandlers() {
-  orig_trapHandler =
-      OS::installSignalHandler(SIGTRAP, Profiler::trapHandlerEntry);
-  if (orig_trapHandler == (void *)SIG_DFL ||
-      orig_trapHandler == (void *)SIG_IGN) {
-    orig_trapHandler = NULL;
-  }
-  if (VM::java_version() > 0) {
+  // do not re-run the signal setup (run only when VM has not been loaded yet)
+  if (VM::java_version() > 0 && !VM::loaded()) {
+    // register alternative stack for sighandlers
+    int ALT_STACK_SIZE = SIGSTKSZ * 4;
+    stack_t ss;
+    memset(&ss, 0, sizeof(ss));
+    ss.ss_sp = malloc(ALT_STACK_SIZE);
+    if (ss.ss_sp == NULL) {
+        perror("malloc");
+        exit(EXIT_FAILURE);
+    }
+    ss.ss_size = ALT_STACK_SIZE;
+    ss.ss_flags = 0;
+
+    if (sigaltstack(&ss, NULL) == -1) {
+        perror("sigaltstack");
+        exit(EXIT_FAILURE);
+    }
+
     // HotSpot and J9 tolerate interposed SIGSEGV/SIGBUS handler; other JVMs
     // probably not
     orig_segvHandler = OS::replaceSigsegvHandler(segvHandler);

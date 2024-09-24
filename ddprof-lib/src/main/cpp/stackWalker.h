@@ -18,6 +18,7 @@
 #define _STACKWALKER_H
 
 #include "vmEntry.h"
+#include <functional>
 #include <stdint.h>
 
 struct StackContext {
@@ -42,7 +43,7 @@ public:
                     const void *_termination_frame_begin,
                     const void *_termination_frame_end);
 
-  static void checkFault();
+  static void checkFault(std::function<void()> cleanup);
 };
 
 #endif // _STACKWALKER_H
