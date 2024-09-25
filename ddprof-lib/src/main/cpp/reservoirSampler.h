@@ -25,38 +25,38 @@
 template <class T>
 class ReservoirSampler {
 private:
-    const int size;
-    std::mt19937 generator;
-    std::uniform_real_distribution<double> uniform;
-    std::uniform_int_distribution<int> random_index;
-    std::vector<T> reservoir;
+    const int _size;
+    std::mt19937 _generator;
+    std::uniform_real_distribution<double> _uniform;
+    std::uniform_int_distribution<int> _random_index;
+    std::vector<T> _reservoir;
 
 public:
     ReservoirSampler(const int size) :
-        size(size),
-        generator([]() {
+        _size(size),
+        _generator([]() {
             std::random_device rd;
             std::seed_seq seed_seq{rd(), rd(), rd(), rd()};
             return std::mt19937(seed_seq);
         }()),
-        uniform(1e-16, 1.0),
-        random_index(0, size - 1) {
-        reservoir.reserve(size);
+        _uniform(1e-16, 1.0),
+        _random_index(0, size - 1) {
+        _reservoir.reserve(size);
     }
 
     std::vector<T>& sample(const std::vector<T> &input) {
-        reservoir.clear();
-        for (int i = 0; i < size && i < input.size(); i++) {
-            reservoir.push_back(input[i]);
+        _reservoir.clear();
+        for (int i = 0; i < _size && i < input.size(); i++) {
+            _reservoir.push_back(input[i]);
         }
-        double weight = exp(log(uniform(generator)) / size);
-        int target = size + (int) (log(uniform(generator)) / log(1 - weight));
+        double weight = exp(log(_uniform(_generator)) / _size);
+        int target = _size + (int) (log(_uniform(_generator)) / log(1 - weight));
         while (target < input.size()) {
-            reservoir[random_index(generator)] = input[target];
-            weight *= exp(log(uniform(generator)) / size);
-            target += (int) (log(uniform(generator)) / log(1 - weight));
+            _reservoir[_random_index(_generator)] = input[target];
+            weight *= exp(log(_uniform(_generator)) / _size);
+            target += (int) (log(_uniform(_generator)) / log(1 - weight));
         }
-        return reservoir;
+        return _reservoir;
     }
 };
 
