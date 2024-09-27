@@ -269,7 +269,7 @@ jobs:
     timeout-minutes: 180
 
     container:
-      image: "bellsoft/liberica-openjdk-alpine-musl:11.0.17"
+      image: "alpine:3.14"
       options: --cpus 2
     steps:
       - uses: actions/checkout@v3
