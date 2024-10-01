@@ -67,17 +67,17 @@ int ThreadInfo::size() {
 }
 
 void ThreadInfo::updateThreadName(
-    int tid, std::function<std::unique_ptr<char[]>(int)> resolver) {
-  MutexLocker ml(_ti_lock);
+        int tid, std::function<std::string(int)> resolver) {
+    MutexLocker ml(_ti_lock);
 
-  std::map<int, std::string>::iterator it = _thread_names.lower_bound(tid);
-  if (it == _thread_names.end() || it->first != tid) {
-    std::unique_ptr<char[]> namePtr = resolver(tid);
-    if (namePtr.get() != nullptr) {
-      _thread_names.insert(it, std::map<int, std::string>::value_type(
-                                   tid, static_cast<char *>(namePtr.get())));
+    std::map<int, std::string>::iterator it = _thread_names.lower_bound(tid);
+    if (it == _thread_names.end() || it->first != tid) {
+        std::string name = resolver(tid);
+        if (!name.empty()) {
+            _thread_names.insert(it, std::map<int, std::string>::value_type(
+                    tid, std::move(name)));  // Move the string
+        }
     }
-  }
 }
 
 void ThreadInfo::reportCounters() {
