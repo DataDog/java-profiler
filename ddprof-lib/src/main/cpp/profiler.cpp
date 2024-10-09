@@ -38,7 +38,6 @@
 #include <algorithm>
 #include <dlfcn.h>
 #include <fstream>
-#include <functional>
 #include <memory>
 #include <set>
 #include <signal.h>
@@ -947,7 +946,7 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     // the following checks require vmstructs and therefore HotSpot
 
     // this check can longjmp to a completely different location - need to call exitCrashHandler() before
-    StackWalker::checkFault(std::bind(&ProfiledThread::exitCrashHandler, thrd));
+    StackWalker::checkFault(thrd);
 
     // Workaround for JDK-8313796. Setting cstack=dwarf also helps
     if (VMStructs::isInterpretedFrameValidFunc((const void *)pc) &&
