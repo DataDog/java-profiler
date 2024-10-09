@@ -36,7 +36,6 @@
 #include "vmStructs.h"
 #include "wallClock.h"
 #include <algorithm>
-#include <array>
 #include <dlfcn.h>
 #include <fstream>
 #include <memory>

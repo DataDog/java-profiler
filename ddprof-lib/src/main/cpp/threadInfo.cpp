@@ -69,13 +69,12 @@ int ThreadInfo::size() {
 void ThreadInfo::updateThreadName(
         int tid, std::function<std::string(int)> resolver) {
     MutexLocker ml(_ti_lock);
-
-    std::map<int, std::string>::iterator it = _thread_names.lower_bound(tid);
-    if (it == _thread_names.end() || it->first != tid) {
+    auto it = _thread_names.find(tid);
+    if (it == _thread_names.end()) {
+        // Thread ID not found, insert new entry
         std::string name = resolver(tid);
         if (!name.empty()) {
-            _thread_names.insert(it, std::map<int, std::string>::value_type(
-                    tid, std::move(name)));  // Move the string
+            _thread_names.emplace(tid, std::move(name));
         }
     }
 }
