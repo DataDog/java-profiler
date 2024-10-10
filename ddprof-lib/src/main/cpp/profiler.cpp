@@ -967,23 +967,6 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 void Profiler::setupSignalHandlers() {
   // do not re-run the signal setup (run only when VM has not been loaded yet)
   if (VM::java_version() > 0 && !VM::loaded()) {
-    // register alternative stack for sighandlers
-    int ALT_STACK_SIZE = SIGSTKSZ * 4;
-    stack_t ss;
-    memset(&ss, 0, sizeof(ss));
-    ss.ss_sp = malloc(ALT_STACK_SIZE);
-    if (ss.ss_sp == NULL) {
-        perror("malloc");
-        exit(EXIT_FAILURE);
-    }
-    ss.ss_size = ALT_STACK_SIZE;
-    ss.ss_flags = 0;
-
-    if (sigaltstack(&ss, NULL) == -1) {
-        perror("sigaltstack");
-        exit(EXIT_FAILURE);
-    }
-
     // HotSpot and J9 tolerate interposed SIGSEGV/SIGBUS handler; other JVMs
     // probably not
     orig_segvHandler = OS::replaceSigsegvHandler(segvHandler);

@@ -242,7 +242,7 @@ SigAction OS::replaceSigsegvHandler(SigAction action) {
   sigaction(SIGSEGV, NULL, &sa);
   SigAction old_action = sa.sa_sigaction;
   sa.sa_sigaction = action;
-  sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  sa.sa_flags = SA_SIGINFO;
   sigaction(SIGSEGV, &sa, NULL);
   return old_action;
 }
