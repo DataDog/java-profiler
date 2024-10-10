@@ -242,8 +242,6 @@ public:
   CodeBlob *findRuntimeStub(const void *address);
   bool isAddressInCode(const void *pc);
 
-  static void trapHandlerEntry(int signo, siginfo_t *siginfo, void *ucontext);
-  void trapHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void segvHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void busHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void setupSignalHandlers();

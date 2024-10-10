@@ -122,6 +122,8 @@ public:
 
   static jvmtiEnv *jvmti() { return _jvmti; }
 
+  static bool loaded() { return _jvmti != nullptr; }
+
   static JNIEnv *jni() {
     JNIEnv *jni;
     return _vm->GetEnv((void **)&jni, JNI_VERSION_1_6) == 0 ? jni : NULL;

@@ -454,9 +454,12 @@ int StackWalker::walkVM(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
   return depth;
 }
 
-void StackWalker::checkFault() {
+void StackWalker::checkFault(ProfiledThread* thrd) {
   VMThread *vm_thread = VMThread::current();
   if (vm_thread != NULL && sameStack(vm_thread->exception(), &vm_thread)) {
+    if (thrd) {
+      thrd->exitCrashHandler();
+    }
     longjmp(*(jmp_buf *)vm_thread->exception(), 1);
   }
 }
