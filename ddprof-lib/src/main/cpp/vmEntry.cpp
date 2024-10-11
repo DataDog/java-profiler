@@ -41,6 +41,7 @@ jvmtiEnv *VM::_jvmti = NULL;
 
 int VM::_java_version = 0;
 int VM::_java_update_version = 0;
+int VM::_hotspot_version = 0;
 bool VM::_openj9 = false;
 bool VM::_hotspot = false;
 bool VM::_zing = false;
@@ -157,7 +158,7 @@ bool VM::init(JavaVM *vm, bool attach) {
     }
   }
   if (prop == NULL) {
-    if (_jvmti->GetSystemProperty("java.vm.version", &prop) == 0) {
+    if (_jvmti->GetSystemProperty("java.runtime.version", &prop) == 0) {
       // insert debug output here
     } else {
       if (prop != NULL) {
@@ -201,7 +202,26 @@ bool VM::init(JavaVM *vm, bool attach) {
     }
     _jvmti->Deallocate((unsigned char *)prop);
   }
-  _can_sample_objects = !_hotspot || java_version() >= 11;
+  prop = NULL;
+  if (_jvmti->GetSystemProperty("java.vm.version", &prop) == 0) {
+    if (strncmp(prop, "25.", 3) == 0 && prop[3] > '0') {
+      _hotspot_version = 8;
+    } else if (strncmp(prop, "24.", 3) == 0 && prop[3] > '0') {
+      _hotspot_version = 7;
+    } else if (strncmp(prop, "20.", 3) == 0 && prop[3] > '0') {
+      _hotspot_version = 6;
+    } else if ((_hotspot_version = atoi(prop)) < 9) {
+      _hotspot_version = 9;
+    }
+  } else {
+    if (prop != NULL) {
+      _jvmti->Deallocate((unsigned char *)prop);
+      prop = NULL;
+    }
+  }
+
+  _jvmti->Deallocate((unsigned char*)prop);
+  _can_sample_objects = !_hotspot || hotspot_version() >= 11;
 
   CodeCache *lib =
       isOpenJ9()
@@ -222,7 +242,7 @@ bool VM::init(JavaVM *vm, bool attach) {
     }
   }
 
-  if (!attach && java_version() == 8 && OS::isLinux()) {
+  if (!attach && hotspot_version() == 8 && OS::isLinux()) {
     // Workaround for JDK-8185348
     char *func = (char *)lib->findSymbol(
         "_ZN6Method26checked_resolve_jmethod_idEP10_jmethodID");
@@ -241,7 +261,7 @@ bool VM::init(JavaVM *vm, bool attach) {
 
   _can_sample_objects =
       potential_capabilities.can_generate_sampled_object_alloc_events &&
-      (!_hotspot || java_version() >= 11);
+      (!_hotspot || hotspot_version() >= 11);
   _can_intercept_binding =
       potential_capabilities.can_generate_native_method_bind_events &&
       HeapUsage::needsNativeBindingInterception();
@@ -289,7 +309,7 @@ bool VM::init(JavaVM *vm, bool attach) {
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND,
                                    NULL);
 
-  if (java_version() == 0 || !CodeHeap::available()) {
+  if (hotspot_version() == 0 || !CodeHeap::available()) {
     // Workaround for JDK-8173361: avoid CompiledMethodLoad events when possible
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE,
                                      JVMTI_EVENT_COMPILED_METHOD_LOAD, NULL);
@@ -309,7 +329,7 @@ bool VM::init(JavaVM *vm, bool attach) {
   // if the user sets -XX:+UseAdaptiveGCBoundary we will just disable the
   // profiler to avoid the risk of crashing flag was made obsolete (inert) in 15
   // (see JDK-8228991) and removed in 16 (see JDK-8231560)
-  if (java_version() < 15) {
+  if (hotspot_version() < 15) {
     char *flag_addr = (char *)JVMFlag::find("UseAdaptiveGCBoundary");
     _is_adaptive_gc_boundary_flag_set = flag_addr != NULL && *flag_addr == 1;
   }

@@ -94,6 +94,7 @@ private:
 
   static int _java_version;
   static int _java_update_version;
+  static int _hotspot_version;
   static bool _openj9;
   static bool _hotspot;
   static bool _zing;
@@ -144,7 +145,7 @@ public:
 
   static int java_version() { return _java_version; }
 
-  static int hotspot_version() { return isHotspot() ? _java_version : -1; }
+  static int hotspot_version() { return isHotspot() ? _hotspot_version : -1; }
 
   static int java_update_version() { return _java_update_version; }
 

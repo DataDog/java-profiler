@@ -214,7 +214,7 @@ void JfrMetadata::initialize(
               << field("destination", T_STRING, "Destination")
               << field("maxAge", T_LONG, "Max Age", F_DURATION_MILLIS)
               << field("flushInterval", T_LONG, "Flush Interval",
-                       F_DURATION_MILLIS, VM::java_version() >= 14)
+                       F_DURATION_MILLIS, VM::hotspot_version() >= 14)
               << field("maxSize", T_LONG, "Max Size", F_BYTES)
               << field("recordingStart", T_LONG, "Start Time", F_TIME_MILLIS)
               << field("recordingDuration", T_LONG, "Recording Duration",
