@@ -1012,21 +1012,21 @@ void Profiler::updateJavaThreadNames() {
 }
 
 void Profiler::updateNativeThreadNames() {
-  ThreadList *thread_list = OS::listThreads();
-  for (int tid; (tid = thread_list->next()) != -1;) {
-    _thread_info.updateThreadName(
-        tid, [](int tid) -> std::unique_ptr<char[]> {
-          const size_t buffer_size = 64;
-          char *name_buf = new char[buffer_size];
-          if (OS::threadName(tid, name_buf, buffer_size)) {
-            return std::unique_ptr<char[]>(name_buf);
-          }
-          delete[] name_buf;
-          return nullptr;
-        });
-  }
+    ThreadList *thread_list = OS::listThreads();
+    constexpr size_t buffer_size = 64;
+    char name_buf[buffer_size];  // Stack-allocated buffer
 
-  delete thread_list;
+    for (int tid; (tid = thread_list->next()) != -1;) {
+        _thread_info.updateThreadName(
+                tid, [&](int tid) -> std::string {
+                    if (OS::threadName(tid, name_buf, buffer_size)) {
+                        return std::string(name_buf, buffer_size);
+                    }
+                    return std::string();
+                });
+    }
+
+    delete thread_list;
 }
 
 Engine *Profiler::selectCpuEngine(Arguments &args) {
