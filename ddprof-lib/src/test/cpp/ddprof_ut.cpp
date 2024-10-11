@@ -9,6 +9,7 @@
     #include "threadFilter.h"
     #include "threadInfo.h"
     #include "threadLocalData.h"
+    #include "vmEntry.h"
     #include <vector>
 
     ssize_t callback(char* ptr, int len) {
@@ -191,6 +192,47 @@
             EXPECT_TRUE(first.acquired());
         }
         EXPECT_FALSE(data.is_unwinding_Java());
+    }
+
+    TEST(JavaVersionAccess, testJavaVersionAccess_hs_8) {
+        char runtime_prop_value_1[] = "1.8.0_292";
+        char vm_prop_value_1[] = "25.292-b10";
+        char runtime_prop_value_2[] = "8.0.292";
+        char vm_prop_value_2[] = "25.292-b10";
+
+        JavaFullVersion java_version1 = JavaVersionAccess::get_java_version(runtime_prop_value_1);
+        int hs_version1 = JavaVersionAccess::get_hotspot_version(vm_prop_value_1);
+        EXPECT_EQ(8, java_version1.major);
+        EXPECT_EQ(292, java_version1.update);
+        EXPECT_EQ(8, hs_version1);
+
+        JavaFullVersion java_version2 = JavaVersionAccess::get_java_version(runtime_prop_value_2);
+        int hs_version2 = JavaVersionAccess::get_hotspot_version(vm_prop_value_2);
+        EXPECT_EQ(8, java_version2.major);
+        EXPECT_EQ(292, java_version2.update);
+        EXPECT_EQ(8, hs_version2);
+    }
+
+    TEST(JavaVersionAccess, testJavaVersionAccess_hs_11) {
+        char runtime_prop_value_1[] = "11.0.25";
+        char vm_prop_value_1[] = "11.0.25+10";
+
+        JavaFullVersion java_version1 = JavaVersionAccess::get_java_version(runtime_prop_value_1);
+        int hs_version1 = JavaVersionAccess::get_hotspot_version(vm_prop_value_1);
+        EXPECT_EQ(11, java_version1.major);
+        EXPECT_EQ(25, java_version1.update);
+        EXPECT_EQ(11, hs_version1);
+    }
+
+    TEST(JavaVersionAccess, testJavaVersionAccess_hs_default) {
+        char runtime_prop_value_1[] = "3.11.25x_10";
+        char vm_prop_value_1[] = "3.11.25x_10";
+
+        JavaFullVersion java_version1 = JavaVersionAccess::get_java_version(runtime_prop_value_1);
+        int hs_version1 = JavaVersionAccess::get_hotspot_version(vm_prop_value_1);
+        EXPECT_EQ(9, java_version1.major);
+        EXPECT_EQ(25, java_version1.update);
+        EXPECT_EQ(9, hs_version1);
     }
 
     int main(int argc, char **argv) {

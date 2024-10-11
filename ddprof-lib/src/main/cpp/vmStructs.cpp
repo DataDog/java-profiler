@@ -493,7 +493,7 @@ const void *VMStructs::findHeapUsageFunc() {
         return _libjvm->findSymbol("_ZN15G1CollectedHeap12memory_usageEv");
       } else if (isFlagTrue("UseShenandoahGC")) {
         return _libjvm->findSymbol("_ZN14ShenandoahHeap12memory_usageEv");
-      } else if (isFlagTrue("UseZGC") && VM::java_version() < 21) {
+      } else if (isFlagTrue("UseZGC") && VM::hotspot_version() < 21) {
         // acessing this method in JDK 21 (generational ZGC) wil cause SIGSEGV
         return _libjvm->findSymbol("_ZN14ZCollectedHeap12memory_usageEv");
       }
@@ -506,7 +506,7 @@ void VMStructs::initJvmFunctions() {
   _get_stack_trace = (GetStackTraceFunc)_libjvm->findSymbolByPrefix(
       "_ZN8JvmtiEnv13GetStackTraceEP10JavaThreadiiP");
 
-  if (VM::java_version() == 8) {
+  if (VM::hotspot_version() == 8) {
     _lock_func = (LockFunc)_libjvm->findSymbol(
         "_ZN7Monitor28lock_without_safepoint_checkEv");
     _unlock_func = (LockFunc)_libjvm->findSymbol("_ZN7Monitor6unlockEv");
@@ -589,7 +589,7 @@ void VMStructs::initThreadBridge(JNIEnv *env) {
 void VMStructs::initLogging(JNIEnv *env) {
   // Workaround for JDK-8238460
   // Can not be used for OpenJ9 because it will crash the VM
-  if (VM::java_version() >= 15 && !VM::isOpenJ9()) {
+  if (VM::java_version() >= 15 && VM::hotspot_version() >= 15 && !VM::isOpenJ9()) {
     VMManagement *management = VM::management();
     if (management != NULL) {
       jstring vm_log_str = env->NewStringUTF("VM.log list");

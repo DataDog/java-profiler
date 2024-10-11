@@ -41,6 +41,7 @@ jvmtiEnv *VM::_jvmti = NULL;
 
 int VM::_java_version = 0;
 int VM::_java_update_version = 0;
+int VM::_hotspot_version = 0;
 bool VM::_openj9 = false;
 bool VM::_hotspot = false;
 bool VM::_zing = false;
@@ -89,6 +90,58 @@ static void *resolveMethodId(void **mid) {
 }
 
 static void resolveMethodIdEnd() {}
+
+JavaFullVersion JavaVersionAccess::get_java_version(char* prop_value) {
+  JavaFullVersion version = {8, 362}; // initial value is 8u362; an arbitrary java version
+  if (strncmp(prop_value, "1.8.0", 5) == 0) {
+    version.major = 8;
+    version.update = atoi(prop_value + 6);
+  } else if (strncmp(prop_value, "8.0.", 4) == 0) {
+    version.major = 8;
+    version.update = atoi(prop_value + 4);
+  } else if (strncmp(prop_value, "JRE 1.8.0", 9) == 0) {
+    // IBM JDK 8 does not report the 'real' version in any property accessible
+    // from JVMTI The only piece of info we can use has the following format
+    // `JRE 1.8.0 <some text> 20230313_47323 <some more text>`
+    // Considering that JDK 8.0.361 is the only release in 2023 we can use
+    // that part of the version string to pretend anything after year 2023
+    // inclusive is 8.0.361. Not perfect, but this is the only thing we have.
+    JavaFullVersion version;
+    version.major = 8;
+    char *idx = strstr(prop_value, " 202");
+    if (idx != NULL) {
+      int year = atol(idx + 1);
+      if (year >= 2023) {
+        version.update = 361;
+      } else {
+        version.update = 351;
+      }
+    }
+  } else {
+    version.major = atoi(prop_value);
+    if (version.major < 9) {
+      version.major = 9;
+    }
+    // format is 11.0.17+8
+    // this shortcut for parsing the update version should hold till Java 99
+    version.update = atoi(prop_value + 5);
+  }
+  return version;
+}
+
+int JavaVersionAccess::get_hotspot_version(char* prop_value) {
+  int hs_version = 0;
+  if (strncmp(prop_value, "25.", 3) == 0 && prop_value[3] > '0') {
+    hs_version = 8;
+  } else if (strncmp(prop_value, "24.", 3) == 0 && prop_value[3] > '0') {
+    hs_version = 7;
+  } else if (strncmp(prop_value, "20.", 3) == 0 && prop_value[3] > '0') {
+    hs_version = 6;
+  } else if ((hs_version = atoi(prop_value)) < 9) {
+    hs_version = 9;
+  }
+  return hs_version;
+}
 
 bool VM::init(JavaVM *vm, bool attach) {
   if (_jvmti != NULL)
@@ -157,7 +210,7 @@ bool VM::init(JavaVM *vm, bool attach) {
     }
   }
   if (prop == NULL) {
-    if (_jvmti->GetSystemProperty("java.vm.version", &prop) == 0) {
+    if (_jvmti->GetSystemProperty("java.runtime.version", &prop) == 0) {
       // insert debug output here
     } else {
       if (prop != NULL) {
@@ -167,41 +220,23 @@ bool VM::init(JavaVM *vm, bool attach) {
     }
   }
   if (prop != NULL) {
-    if (strncmp(prop, "1.8.0", 5) == 0) {
-      _java_version = 8;
-      _java_update_version = atoi(prop + 5);
-    } else if (strncmp(prop, "8.0.", 4) == 0) {
-      _java_version = 8;
-      _java_update_version = atoi(prop + 4);
-    } else if (strncmp(prop, "JRE 1.8.0", 9) == 0) {
-      // IBM JDK 8 does not report the 'real' version in any property accessible
-      // from JVMTI The only piece of info we can use has the following format
-      // `JRE 1.8.0 <some text> 20230313_47323 <some more text>`
-      // Considering that JDK 8.0.361 is the only release in 2023 we can use
-      // that part of the version string to pretend anything after year 2023
-      // inclusive is 8.0.361. Not perfect, but this is the only thing we have.
-      _java_version = 8;
-      char *idx = strstr(prop, " 202");
-      if (idx != NULL) {
-        int year = atol(idx + 1);
-        if (year >= 2023) {
-          _java_update_version = 361;
-        } else {
-          _java_update_version = 351;
-        }
-      }
-    } else {
-      _java_version = atoi(prop);
-      if (_java_version < 9) {
-        _java_version = 9;
-      }
-      // format is 11.0.17+8
-      // this shortcut for parsing the update version should hold till Java 99
-      _java_update_version = atoi(prop + 5);
-    }
+    JavaFullVersion version = JavaVersionAccess::get_java_version(prop);
+    _java_version = version.major;
+    _java_update_version = version.update;
+    _jvmti->Deallocate((unsigned char *)prop);
+    prop = NULL;
+  }
+  if (_jvmti->GetSystemProperty("java.vm.version", &prop) == 0) {
+    _hotspot_version = JavaVersionAccess::get_hotspot_version(prop);
+    _jvmti->Deallocate((unsigned char *)prop);
+    prop = NULL;
+  }
+
+  if (prop != NULL) {
     _jvmti->Deallocate((unsigned char *)prop);
   }
-  _can_sample_objects = !_hotspot || java_version() >= 11;
+
+  _can_sample_objects = !_hotspot || hotspot_version() >= 11;
 
   CodeCache *lib =
       isOpenJ9()
@@ -222,7 +257,7 @@ bool VM::init(JavaVM *vm, bool attach) {
     }
   }
 
-  if (!attach && java_version() == 8 && OS::isLinux()) {
+  if (!attach && hotspot_version() == 8 && OS::isLinux()) {
     // Workaround for JDK-8185348
     char *func = (char *)lib->findSymbol(
         "_ZN6Method26checked_resolve_jmethod_idEP10_jmethodID");
@@ -241,7 +276,7 @@ bool VM::init(JavaVM *vm, bool attach) {
 
   _can_sample_objects =
       potential_capabilities.can_generate_sampled_object_alloc_events &&
-      (!_hotspot || java_version() >= 11);
+      (!_hotspot || hotspot_version() >= 11);
   _can_intercept_binding =
       potential_capabilities.can_generate_native_method_bind_events &&
       HeapUsage::needsNativeBindingInterception();
@@ -289,7 +324,7 @@ bool VM::init(JavaVM *vm, bool attach) {
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND,
                                    NULL);
 
-  if (java_version() == 0 || !CodeHeap::available()) {
+  if (hotspot_version() == 0 || !CodeHeap::available()) {
     // Workaround for JDK-8173361: avoid CompiledMethodLoad events when possible
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE,
                                      JVMTI_EVENT_COMPILED_METHOD_LOAD, NULL);
@@ -309,7 +344,7 @@ bool VM::init(JavaVM *vm, bool attach) {
   // if the user sets -XX:+UseAdaptiveGCBoundary we will just disable the
   // profiler to avoid the risk of crashing flag was made obsolete (inert) in 15
   // (see JDK-8228991) and removed in 16 (see JDK-8231560)
-  if (java_version() < 15) {
+  if (hotspot_version() < 15) {
     char *flag_addr = (char *)JVMFlag::find("UseAdaptiveGCBoundary");
     _is_adaptive_gc_boundary_flag_set = flag_addr != NULL && *flag_addr == 1;
   }
