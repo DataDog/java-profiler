@@ -23,6 +23,12 @@ public class VMStructsBasedCpuTest extends AbstractProfilerTest {
         profiledCode = new ProfiledCode(profiler);
     }
 
+    @Override
+    protected boolean isPlatformSupported() {
+        // Java 23 does not support VMStructs unwinder yet
+        return !Platform.isJavaVersionAtLeast(23);
+    }
+
     @Test
     public void test() throws ExecutionException, InterruptedException {
         for (int i = 0, id = 1; i < 100; i++, id += 3) {
