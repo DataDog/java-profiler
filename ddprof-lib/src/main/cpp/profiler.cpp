@@ -900,6 +900,7 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   ProfiledThread* thrd = ProfiledThread::current();
   if (thrd != nullptr && !thrd->enterCrashHandler()) {
     // we are already in a crash handler; don't recurse!
+    fprintf(stdout, "===> disabling crash handler due to recursion\n");
     return false;
   }
   uintptr_t fault_address = (uintptr_t)siginfo->si_addr;
