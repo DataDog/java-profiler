@@ -17,9 +17,7 @@
 #ifndef _STACKWALKER_H
 #define _STACKWALKER_H
 
-#include "thread.h"
 #include "vmEntry.h"
-#include <functional>
 #include <stdint.h>
 
 struct StackContext {
@@ -44,7 +42,7 @@ public:
                     const void *_termination_frame_begin,
                     const void *_termination_frame_end);
 
-  static void checkFault(ProfiledThread* thrd);
+  static void checkFault();
 };
 
 #endif // _STACKWALKER_H

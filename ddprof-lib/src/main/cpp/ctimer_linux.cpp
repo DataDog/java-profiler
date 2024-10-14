@@ -20,7 +20,6 @@
 #include "debugSupport.h"
 #include "profiler.h"
 #include "vmStructs.h"
-#include <assert.h>
 #include <stdlib.h>
 #include <sys/syscall.h>
 #include <time.h>
@@ -203,7 +202,6 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return;
   int tid = 0;
   ProfiledThread *current = ProfiledThread::current();
-  assert(current == nullptr || !current->isDeepCrashHandler());
   if (current != NULL) {
     current->noteCPUSample(Profiler::instance()->recordingEpoch());
     tid = current->tid();
