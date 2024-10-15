@@ -99,7 +99,8 @@ public:
 
   // needs to be called when the crash handler exits
   void exitCrashHandler() {
-    _crash_depth--;
+    // failsafe check - do not attempt to decrement if there are no crash handlers on stack
+    if (_crash_depth > 0) _crash_depth--;
   }
 
   bool isDeepCrashHandler() {
