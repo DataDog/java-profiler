@@ -161,8 +161,8 @@ private:
 public:
   Profiler()
       : _state(NEW), _class_unload_hook_trap(2),
-        _notify_class_unloaded_func(NULL), _call_trace_storage(),
-        _thread_filter(), _jfr(), _start_time(0), _epoch(0), _timer_id(NULL),
+        _notify_class_unloaded_func(NULL), _thread_filter(), _call_trace_storage(), _jfr(),
+        _start_time(0), _epoch(0), _timer_id(NULL),
         _max_stack_depth(0), _safe_mode(0), _thread_events_state(JVMTI_DISABLE),
         _stubs_lock(), _runtime_stubs("[stubs]"), _native_libs(),
         _call_stub_begin(NULL), _call_stub_end(NULL), _dlopen_entry(NULL),

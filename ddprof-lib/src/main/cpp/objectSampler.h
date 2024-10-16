@@ -25,7 +25,6 @@
 #include <time.h>
 
 typedef int (*get_sampling_interval)();
-static int __min(int a, int b) { return a < b ? a : b; }
 
 class ObjectSampler : public Engine {
   friend Recording;

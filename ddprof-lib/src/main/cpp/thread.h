@@ -44,9 +44,8 @@ private:
   u32 _recording_epoch;
 
   ProfiledThread(int buffer_pos, int tid)
-      : ThreadLocalData(), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
-        _wall_epoch(0), _pc(0), _call_trace_id(0), _recording_epoch(0),
-        _span_id(0){};
+      : ThreadLocalData(), _pc(0), _span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
+        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0) {};
 
   void releaseFromBuffer();
 
@@ -101,6 +100,10 @@ public:
   void exitCrashHandler() {
     // failsafe check - do not attempt to decrement if there are no crash handlers on stack
     if (_crash_depth > 0) _crash_depth--;
+  }
+
+  void resetCrashHandler() {
+    _crash_depth = 0;
   }
 
   bool isDeepCrashHandler() {

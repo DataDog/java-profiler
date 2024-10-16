@@ -64,7 +64,7 @@ public:
   void reset() { _offset = 0; }
 
   void put(const char *v, u32 len) {
-    assert(_offset + len < limit());
+    assert(static_cast<int>(_offset + len) < limit());
     memcpy(_data + _offset, v, len);
     _offset += (int)len;
   }

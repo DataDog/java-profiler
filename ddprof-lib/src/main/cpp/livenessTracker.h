@@ -44,8 +44,9 @@ class LivenessTracker {
   friend Recording;
 
 private:
-  const static int MAX_TRACKING_TABLE_SIZE = 262144;
-  const static int MIN_SAMPLING_INTERVAL = 524288; // 512kiB
+  // pre-c++17 we should mark these inline(or out of class)
+  inline constexpr static int MAX_TRACKING_TABLE_SIZE = 262144;
+  inline constexpr static int MIN_SAMPLING_INTERVAL = 524288; // 512kiB
 
   bool _initialized;
   bool _enabled;
@@ -88,7 +89,7 @@ public:
 
   LivenessTracker()
       : _initialized(false), _enabled(false), _stored_error(Error::OK),
-        _table_size(0), _table_cap(0), _table(NULL), _table_max_cap(0),
+        _table_size(0), _table_cap(0), _table_max_cap(0), _table(NULL),
         _subsample_ratio(0.1), _record_heap_usage(false), _Class(NULL),
         _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0),
         _used_after_last_gc(0) {}

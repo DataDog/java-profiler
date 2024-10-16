@@ -175,8 +175,8 @@ public:
         _cstack(CSTACK_DEFAULT),
         _jfr_options(0),
         _context_attributes({}),
-        _lightweight(false),
-        _wallclock_sampler(ASGCT) {}
+        _wallclock_sampler(ASGCT),
+        _lightweight(false) {}
 
   ~Arguments();
 

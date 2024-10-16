@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <algorithm>
 #include <random>
 #include <set>
 #include <thread>
@@ -184,7 +185,7 @@ Error LivenessTracker::initialize_table(JNIEnv *jni, int sampling_interval) {
               "not cover full heap.",
               sampling_interval);
   }
-  _table_max_cap = __min(MAX_TRACKING_TABLE_SIZE, required_table_capacity);
+  _table_max_cap = std::min(MAX_TRACKING_TABLE_SIZE, required_table_capacity);
 
   _table_cap = std::max(
       2048,
@@ -277,7 +278,7 @@ Error LivenessTracker::initialize(Arguments &args) {
 
   _table_size = 0;
   _table_cap =
-      __min(2048, _table_max_cap); // with default 512k sampling interval, it's
+      std::min(2048, _table_max_cap); // with default 512k sampling interval, it's
                                    // enough for 1G of heap
   _table = (TrackingEntry *)malloc(sizeof(TrackingEntry) * _table_cap);
 
@@ -367,7 +368,7 @@ retry:
         _table_lock.lock();
 
         // Only increase the size of the table to _table_max_cap elements
-        int newcap = __min(_table_cap * 2, _table_max_cap);
+        int newcap = std::min(_table_cap * 2, _table_max_cap);
         if (_table_cap != newcap) {
           TrackingEntry *tmp = (TrackingEntry *)realloc(
               _table, sizeof(TrackingEntry) * (_table_cap = newcap));
