@@ -458,7 +458,7 @@ void StackWalker::checkFault(ProfiledThread* thrd) {
   VMThread *vm_thread = VMThread::current();
   if (vm_thread != NULL && sameStack(vm_thread->exception(), &vm_thread)) {
     if (thrd) {
-      thrd->exitCrashHandler();
+      thrd->resetCrashHandler();
     }
     longjmp(*(jmp_buf *)vm_thread->exception(), 1);
   }

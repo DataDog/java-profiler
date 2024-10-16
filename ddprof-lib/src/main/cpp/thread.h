@@ -103,6 +103,10 @@ public:
     if (_crash_depth > 0) _crash_depth--;
   }
 
+  void resetCrashHandler() {
+    _crash_depth = 0;
+  }
+
   bool isDeepCrashHandler() {
     return _crash_depth > CRASH_HANDLER_NESTING_LIMIT;
   }
