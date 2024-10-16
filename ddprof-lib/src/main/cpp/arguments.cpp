@@ -393,7 +393,7 @@ const char *Arguments::expandFilePattern(const char *pattern) {
       } else if (c == '{') {
         char env_key[128];
         const char *p = strchr(pattern, '}');
-        if (p != NULL && p - pattern < sizeof(env_key)) {
+        if (p != NULL && p - pattern < static_cast<int>(sizeof(env_key))) {
           memcpy(env_key, pattern, p - pattern);
           env_key[p - pattern] = 0;
           const char *env_value = getenv(env_key);

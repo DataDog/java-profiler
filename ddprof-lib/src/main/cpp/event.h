@@ -42,8 +42,8 @@ public:
   u32 _call_trace_id;
 
   ExecutionEvent()
-      : Event(), _thread_state(ThreadState::RUNNABLE), _weight(1),
-        _execution_mode(ExecutionMode::UNKNOWN), _call_trace_id(0) {}
+      : Event(), _thread_state(ThreadState::RUNNABLE), _execution_mode(ExecutionMode::UNKNOWN),
+        _weight(1), _call_trace_id(0) {}
 };
 
 class AllocEvent : public Event {
