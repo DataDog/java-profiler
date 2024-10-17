@@ -53,12 +53,15 @@ public class TagContextTest extends AbstractProfilerTest {
             IMemberAccessor<String, IItem> tag2Accessor = TAG_2.getAccessor(wallclockSamples.getType());
             assertNotNull(tag2Accessor);
             IMemberAccessor<String, IItem> stacktraceAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(wallclockSamples.getType());
+            IMemberAccessor<String, IItem> stateAccessor = THREAD_STATE.getAccessor(wallclockSamples.getType());
             for (IItem sample : wallclockSamples) {
                 String stacktrace = stacktraceAccessor.getMember(sample);
                 if (!stacktrace.contains("sleep")) {
                     // we don't know the context has been set for sure until the sleep has started
                     continue;
                 }
+                String state = stateAccessor.getMember(sample);
+                assertEquals("SLEEPING", state);
                 long weight = weightAccessor.getMember(sample).longValue();
                 String tag = tag1Accessor.getMember(sample);
                 weightsByTagValue.computeIfAbsent(tag, v -> new AtomicLong())

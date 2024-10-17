@@ -22,6 +22,7 @@
 #include "profiler.h"
 #include "stackFrame.h"
 #include "thread.h"
+#include "threadStateTracker.h"
 #include "vmStructs.h"
 #include <math.h>
 #include <random>
@@ -83,9 +84,9 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   bool is_java_thread = vm_thread && VM::jni();
   int raw_thread_state = vm_thread && is_java_thread ? vm_thread->state() : 0;
   bool is_initialized = raw_thread_state >= 4 && raw_thread_state < 12;
-  ThreadState state = ThreadState::UNKNOWN;
+  ThreadState state = current == nullptr ? ThreadState::UNKNOWN : current->get_thread_state();
   ExecutionMode mode = ExecutionMode::UNKNOWN;
-  if (vm_thread && is_initialized) {
+  if (state == ThreadState::UNKNOWN && vm_thread && is_initialized) {
     ThreadState os_state = vm_thread->osThreadState();
     if (os_state != ThreadState::UNKNOWN) {
       state = os_state;
@@ -149,6 +150,7 @@ bool BaseWallClock::isEnabled() const {
 
 void WallClockASGCT::initialize(Arguments& args) {
     _collapsing = args._wall_collapsing;
+    ThreadStateTracker::initialize();
     OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
 }
 

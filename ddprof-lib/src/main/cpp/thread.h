@@ -3,6 +3,7 @@
 
 #include "os.h"
 #include "threadLocalData.h"
+#include "threadState.h"
 #include <atomic>
 #include <cstdint>
 #include <jvmti.h>
@@ -33,6 +34,7 @@ private:
   static void prepareBuffer(int size);
   static void *delayedUninstallUSR1(void *unused);
 
+  ThreadState _state;
   u64 _pc;
   u64 _span_id;
   volatile u32 _crash_depth;
@@ -44,7 +46,7 @@ private:
   u32 _recording_epoch;
 
   ProfiledThread(int buffer_pos, int tid)
-      : ThreadLocalData(), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
+      : ThreadLocalData(), _state(ThreadState::UNKNOWN), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _pc(0), _call_trace_id(0), _recording_epoch(0),
         _span_id(0){};
 
@@ -70,6 +72,14 @@ public:
     _recording_epoch = recording_epoch;
     return ++_cpu_epoch;
   }
+
+    void set_thread_state(ThreadState state) {
+        _state = state;
+    }
+
+    ThreadState get_thread_state() {
+        return _state;
+    }
 
   u32 lookupWallclockCallTraceId(u64 pc, u32 recording_epoch, u64 span_id) {
     if (_wall_epoch == _cpu_epoch && _pc == pc && _span_id == span_id &&
