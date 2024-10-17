@@ -70,7 +70,8 @@ public final class JavaProfiler {
     private static final int SPAN_OFFSET = 0;
     private static final int ROOT_SPAN_OFFSET = 8;
     private static final int CHECKSUM_OFFSET = 16;
-    private static final int DYNAMIC_TAGS_OFFSET = 24;
+    // private static final int THREAD_STATE_OFFSET = 24; cannot be set from Java
+    private static final int DYNAMIC_TAGS_OFFSET = 28;
     private static final ThreadLocal<Integer> TID = ThreadLocal.withInitial(JavaProfiler::getTid0);
 
     private ByteBuffer[] contextStorage;
