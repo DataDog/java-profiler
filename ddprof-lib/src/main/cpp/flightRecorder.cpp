@@ -122,7 +122,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   jvmtiEnv *jvmti = VM::jvmti();
 
   jvmtiPhase phase;
-  jclass method_class;
+  jclass method_class = NULL;
   // invariant: these strings must remain null, or be assigned by JVMTI
   char *class_name = nullptr;
   char *method_name = nullptr;
