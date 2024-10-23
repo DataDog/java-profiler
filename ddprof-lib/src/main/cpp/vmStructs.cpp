@@ -808,17 +808,22 @@ int NMethod::findScopeOffset(const void *pc) {
 }
 
 int ScopeDesc::readInt() {
-  unsigned char c = *_stream++;
-  unsigned int n = c - _unsigned5_base;
-  if (c >= 192) {
-    for (int shift = 6;; shift += 6) {
-      c = *_stream++;
-      n += (c - _unsigned5_base) << shift;
-      if (c < 192 || shift >= 24)
-        break;
+    unsigned char c = *_stream++;
+    if (c < _unsigned5_base) {
+        return 0;
     }
-  }
-  return n;
+    unsigned int n = c - _unsigned5_base;
+    if (c >= 192) {
+        for (int shift = 6; ; shift += 6) {
+            c = *_stream++;
+            if (c < _unsigned5_base) {
+                break;
+            }
+            n += (c - _unsigned5_base) << shift;
+            if (c < 192 || shift >= 24) break;
+        }
+    }
+    return n;
 }
 
 bool VMStructs::isSafeToWalk(uintptr_t pc) {
