@@ -703,7 +703,7 @@ void Recording::writeRecordingInfo(Buffer *buf) {
   buf->putUtf8("java-profiler " PROFILER_VERSION);
   buf->putUtf8("java-profiler.jfr");
   buf->putVar64(MAX_JLONG);
-  if (VM::java_version() >= 14) {
+  if (VM::hotspot_version() >= 14) {
     buf->put8(0);
   }
   buf->put8(0);
