@@ -40,7 +40,7 @@ static void **_pthread_entry = NULL;
 // pthread_setspecific(). HotSpot puts VMThread into TLS on thread start, and
 // resets on thread end.
 static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
-  if (key != VMThread::key()) {
+  if (key != static_cast<pthread_key_t>(VMThread::key())) {
     return pthread_setspecific(key, value);
   }
   if (pthread_getspecific(key) == value) {
