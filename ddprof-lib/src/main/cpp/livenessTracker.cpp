@@ -34,6 +34,8 @@
 #include <string.h>
 
 LivenessTracker *const LivenessTracker::_instance = new LivenessTracker();
+constexpr int LivenessTracker::MAX_TRACKING_TABLE_SIZE;
+constexpr int LivenessTracker::MIN_SAMPLING_INTERVAL;
 
 void LivenessTracker::cleanup_table(bool forced) {
   u64 current = loadAcquire(_last_gc_epoch);

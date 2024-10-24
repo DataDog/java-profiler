@@ -45,8 +45,8 @@ class LivenessTracker {
 
 private:
   // pre-c++17 we should mark these inline(or out of class)
-  inline constexpr static int MAX_TRACKING_TABLE_SIZE = 262144;
-  inline constexpr static int MIN_SAMPLING_INTERVAL = 524288; // 512kiB
+  constexpr static int MAX_TRACKING_TABLE_SIZE = 262144;
+  constexpr static int MIN_SAMPLING_INTERVAL = 524288; // 512kiB
 
   bool _initialized;
   bool _enabled;
