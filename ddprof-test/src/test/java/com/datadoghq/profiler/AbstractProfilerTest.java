@@ -268,17 +268,23 @@ public abstract class AbstractProfilerTest {
   }
 
   protected IItemCollection verifyEvents(String eventType) {
-    return verifyEvents(jfrDump, eventType);
+    return verifyEvents(eventType, true);
   }
 
-  protected IItemCollection verifyEvents(Path recording, String eventType) {
+  protected IItemCollection verifyEvents(String eventType, boolean failOnEmpty) {
+    return verifyEvents(jfrDump, eventType, failOnEmpty);
+  }
+
+  protected IItemCollection verifyEvents(Path recording, String eventType, boolean failOnEmpty) {
     try {
       IItemCollection events = JfrLoaderToolkit.loadEvents(Files.newInputStream(recording));
       assertTrue(events.hasItems());
       IItemCollection collection = events.apply(ItemFilters.type(eventType));
       System.out.println(eventType + " count: " + collection.stream().flatMap(IItemIterable::stream).count());
-      assertTrue(collection.hasItems(),
-          eventType + " was empty for " + getAmendedProfilerCommand());
+      if (failOnEmpty) {
+        assertTrue(collection.hasItems(),
+                eventType + " was empty for " + getAmendedProfilerCommand());
+      }
       return collection;
     } catch (Throwable t) {
       fail(getProfilerCommand() + " " + t);
@@ -292,7 +298,9 @@ public abstract class AbstractProfilerTest {
 
   protected void verifyStackTraces(Path recording, String eventType, String... patterns) {
     Set<String> unmatched = new HashSet<>(Arrays.asList(patterns));
-    outer: for (IItemIterable sample : verifyEvents(recording, eventType)) {
+    long cumulatedEvents = 0;
+    outer: for (IItemIterable sample : verifyEvents(recording, eventType, false)) {
+      cumulatedEvents += sample.getItemCount();
       IMemberAccessor<String, IItem> stackTraceAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(sample.getType());
       for (IItem item : sample) {
         String stackTrace = stackTraceAccessor.getMember(item);
@@ -304,6 +312,7 @@ public abstract class AbstractProfilerTest {
         }
       }
     }
-    assertTrue(unmatched.isEmpty(), "couldn't find datadog.ExecutionSample with " + unmatched);
+    assertNotEquals(0, cumulatedEvents, "no events found for " + eventType);
+    assertTrue(unmatched.isEmpty(), "couldn't find " + eventType + " with " + unmatched);
   }
 }
