@@ -232,10 +232,15 @@ Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(
       tid, length, name_str.c_str(), value_str.c_str(), unit_str.c_str());
 }
 
+static int dictionarizeClassName(JNIEnv* env, jstring className) {
+    JniString str(env, className);
+    return Profiler::instance()->lookupClass(str.c_str(), str.length());
+}
+
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
     JNIEnv *env, jobject unused, jlong startTime, jlong endTime, jstring task,
-    jstring scheduler, jthread origin) {
+    jstring scheduler, jthread origin, jstring queueType, jint queueLength) {
   int tid = ProfiledThread::currentTid();
   if (tid < 0) {
     return;
@@ -244,16 +249,17 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   if (origin_tid < 0) {
     return;
   }
-  JniString task_str(env, task);
-  JniString scheduler_str(env, scheduler);
-  int task_offset =
-      Profiler::instance()->lookupClass(task_str.c_str(), task_str.length());
+  JniString queue_type_str(env, queueType);
+  int task_offset = dictionarizeClassName(env, task);
   if (task_offset < 0) {
     return;
   }
-  int scheduler_offset = Profiler::instance()->lookupClass(
-      scheduler_str.c_str(), scheduler_str.length());
+  int scheduler_offset = dictionarizeClassName(env, scheduler);
   if (scheduler_offset < 0) {
+    return;
+  }
+  int queue_type_offset = dictionarizeClassName(env, queueType);
+  if (queue_type_offset < 0) {
     return;
   }
   QueueTimeEvent event;
@@ -262,6 +268,8 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   event._task = task_offset;
   event._scheduler = scheduler_offset;
   event._origin = origin_tid;
+  event._queueType = queue_type_offset;
+  event._queueLength = queueLength;
   Profiler::instance()->recordQueueTime(tid, &event);
 }
 

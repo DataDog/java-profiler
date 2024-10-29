@@ -442,9 +442,14 @@ public final class JavaProfiler {
      * @param scheduler the name of the thread-pool or executor scheduling the task
      * @param origin the thread the task was submitted on
      */
-    public void recordQueueTime(long startTicks, long endTicks, Class<?> task, Class<?> scheduler,
+    public void recordQueueTime(long startTicks,
+                                long endTicks,
+                                Class<?> task,
+                                Class<?> scheduler,
+                                Class<?> queueType,
+                                int queueLength,
                                 Thread origin) {
-        recordQueueEnd0(startTicks, endTicks, task.getName(), scheduler.getName(), origin);
+        recordQueueEnd0(startTicks, endTicks, task.getName(), scheduler.getName(), origin, queueType.getName(), queueLength);
     }
 
     /**
@@ -578,7 +583,7 @@ public final class JavaProfiler {
 
     private static native void recordSettingEvent0(String name, String value, String unit);
 
-    private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin);
+    private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin, String queueType, int queueLength);
 
     private static native long currentTicks0();
 

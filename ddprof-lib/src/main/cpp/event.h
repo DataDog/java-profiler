@@ -152,6 +152,8 @@ typedef struct QueueTimeEvent {
   u32 _task;
   u32 _scheduler;
   u32 _origin;
+  u32 _queueType;
+  u32 _queueLength;
 } QueueTimeEvent;
 
 #endif // _EVENT_H
