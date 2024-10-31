@@ -406,18 +406,22 @@ void *VM::getLibraryHandle(const char *name) {
 }
 
 void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-  if (VMStructs::hasClassLoaderData()) {
-    VMKlass *vmklass = VMKlass::fromJavaClass(jni, klass);
-    int method_count = vmklass->methodCount();
-    if (method_count > 0) {
-      ClassLoaderData *cld = vmklass->classLoaderData();
-      cld->lock();
-      // Workaround for JVM bug: preallocate space for jmethodIDs
-      // at the beginning of the list (rather than at the end)
-      for (int i = 0; i < method_count; i += MethodList::SIZE) {
-        *cld->methodList() = new MethodList(*cld->methodList());
+  bool needs_patch = VM::hotspot_version() == 8;
+  if (needs_patch) {
+    // Workaround for JVM bug https://bugs.openjdk.org/browse/JDK-8062116
+    // Preallocate space for jmethodIDs at the beginning of the list (rather than at the end)
+    // This is relevant only for JDK 8 - later versions do not have this bug
+    if (VMStructs::hasClassLoaderData()) {
+      VMKlass *vmklass = VMKlass::fromJavaClass(jni, klass);
+      int method_count = vmklass->methodCount();
+      if (method_count > 0) {
+        ClassLoaderData *cld = vmklass->classLoaderData();
+        cld->lock();
+        for (int i = 0; i < method_count; i += MethodList::SIZE) {
+          *cld->methodList() = new MethodList(*cld->methodList());
+        }
+        cld->unlock();
       }
-      cld->unlock();
     }
   }
 
