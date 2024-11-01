@@ -66,7 +66,7 @@ void JfrMetadata::initialize(
               << field("name", T_STRING, "Name"))
 
           << (type("datadog.types.ExecutionMode", T_EXECUTION_MODE,
-                   "Exeuction Mode", true)
+                   "Execution Mode", true)
               << field("name", T_STRING, "Name"))
 
           << (type("jdk.types.StackTrace", T_STACK_TRACE, "Stacktrace")
