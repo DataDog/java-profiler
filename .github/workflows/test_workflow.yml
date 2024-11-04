@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        java_version: [ 8u412+9, 11.0.23+12, 17.0.11+12, 21.0.3+12, 22.0.1+12 ]
+        java_version: [ 8u412+9, 11.0.23+12, 17.0.11+12, 21.0.3+12, 23.0.1+13 ]
         config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -76,7 +76,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        java_version: [ '11.0.23-librca', '17.0.11-librca', '21.0.3-librca', '22.0.1-librca' ]
+        java_version: [ '11.0.23-librca', '17.0.11-librca', '21.0.3-librca', '23-librca' ]
         config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -151,14 +151,14 @@ jobs:
           sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
 #          sudo sysctl vm.mmap_rnd_bits=28
       - name: Prepare test JDK
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v4
         with:
           distribution: 'adopt-openj9'
           java-version: "${{ matrix.java_version }}"
       - name: Store JAVA_TEST_HOME
         run: JAVA_PATH=$(which java) && echo "JAVA_TEST_HOME=${JAVA_PATH/\/bin\/java/\/}" >> $GITHUB_ENV
       - name: Prepare build JDK
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v4
         with:
           distribution: 'adopt-openj9'
           java-version: "11"
@@ -210,7 +210,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
       - name: Prepare build JDK
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: "11"
@@ -263,7 +263,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        java_version: [ 8u412+9, 11.0.23+12, 17.0.11+12, 21.0.3+12, 22.0.1+12 ]
+        java_version: [ 8u412+9, 11.0.23+12, 17.0.11+12, 21.0.3+12, 23.0.1+13 ]
         config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -325,7 +325,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        java_version: [ 8, 11, 17, 21 ]
+        java_version: [ 8, 11, 17, 21, 23 ]
         config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -342,7 +342,7 @@ jobs:
           sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
       - name: Prepare build JDK
         if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: "11"
