@@ -76,7 +76,9 @@ tasks.withType(Test).configureEach {
     !project.hasProperty('skip-tests')
   }
 
-  jvmArgs '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true'
+  jvmArgs '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true',
+    '-XX:ErrorFile=build/hs_err_pid%p.log', '-XX:+ResizeTLAB',
+    '-Xmx512m'
 
   def javaHome = System.getenv("JAVA_TEST_HOME")
   if (javaHome == null) {

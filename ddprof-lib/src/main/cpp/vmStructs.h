@@ -92,6 +92,7 @@ protected:
   static int _vs_high_bound_offset;
   static int _vs_low_offset;
   static int _vs_high_offset;
+  static int _flag_type_offset;
   static int _flag_name_offset;
   static int _flag_addr_offset;
   static const char *_flags_addr;
@@ -528,8 +529,10 @@ public:
 class JVMFlag : VMStructs {
 public:
   static void *find(const char *name);
+  static void *find(const char *name, int type_mask);
 
   const char *name() { return *(const char **)at(_flag_name_offset); }
+  int type() { return *(int *)at(_flag_type_offset); }
 
   void *addr() { return *(void **)at(_flag_addr_offset); }
 };
