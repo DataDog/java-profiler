@@ -120,7 +120,7 @@ public final class LibraryLoader {
             state.set(LoadingState.UNAVAILABLE);
             return new Result(false, t);
         } finally {
-            state.compareAndSet(LoadingState.LOADED, LoadingState.LOADED);
+            state.compareAndSet(LoadingState.LOADING, LoadingState.LOADED);
         }
     }
 
