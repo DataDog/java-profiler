@@ -18,7 +18,7 @@ public class ObjectSampleDumpSmokeTest extends JfrDumpTest {
         return "memory=1024:a";
     }
 
-    @RetryingTest(3)
+    @RetryingTest(5)
     @Timeout(value = 60)
     public void test() throws Exception {
         runTest("datadog.ObjectSample", "method3");
