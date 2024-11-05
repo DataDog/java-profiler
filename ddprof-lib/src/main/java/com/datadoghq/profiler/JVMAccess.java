@@ -88,6 +88,11 @@ public final class JVMAccess {
         }
     }
 
+    /**
+     * Get the JVM access instance.
+     *
+     * @return the JVM access instance
+     */
     public static JVMAccess getInstance() {
         return SingletonHolder.INSTANCE;
     }
@@ -114,6 +119,12 @@ public final class JVMAccess {
         libraryLoadResult = result;
     }
 
+    /**
+     * Create a JVM access instance.
+     * @param libLocation the library location or {@literal null}
+     * @param scratchDir the scratch directory or {@literal null}
+     * @param errorHandler the error handler or {@literal null}
+     */
     public JVMAccess(String libLocation, String scratchDir, Consumer<Throwable> errorHandler) {
         LibraryLoader.Result result = LibraryLoader.builder().withLibraryLocation(libLocation).withScratchDir(scratchDir).load();
         if (result.success) {
@@ -137,10 +148,20 @@ public final class JVMAccess {
         libraryLoadResult = result;
     }
 
+    /**
+     * Get the JVM flags.
+     *
+     * @return the JVM flags
+     */
     public Flags flags() {
         return flags;
     }
 
+    /**
+     * Check if the JVM access is active.
+     *
+     * @return {@literal true} if the JVM access is active, {@literal false} otherwise
+     */
     public boolean isActive() {
         return libraryLoadResult.success;
     }

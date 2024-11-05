@@ -37,7 +37,7 @@ enum OperatingSystem {
       return OperatingSystem.of(System.getProperty("os.name"));
     }
 
-    boolean isMusl() throws IOException {
+    public boolean isMusl() throws IOException {
         // check the Java exe then fall back to proc/self maps
         try {
             return isMuslJavaExecutable();
@@ -51,6 +51,7 @@ enum OperatingSystem {
         }
     }
 
+    // package-private access for testing only
     boolean isMuslProcSelfMaps() throws IOException {
         try (BufferedReader reader = new BufferedReader(new FileReader("/proc/self/maps"))) {
             String line;
@@ -73,6 +74,7 @@ enum OperatingSystem {
      * `/ld-musl` for musl systems and probably something else for non-musl systems (eg. `/ld-linux-...`).
      * However, if such string is missing should indicate that the system is not a musl one.
      */
+    // package-private access for testing only
     boolean isMuslJavaExecutable() throws IOException {
 
         byte[] magic = new byte[]{(byte)0x7f, (byte)'E', (byte)'L', (byte)'F'};
