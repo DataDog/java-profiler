@@ -11,7 +11,7 @@ public class JVMAccessTest {
 
     @BeforeAll
     static void setUp() {
-        Assumptions.assumeFalse(Platform.isJ9()); // J9 does not support vmstructs
+        Assumptions.assumeFalse(Platform.isJ9() || Platform.isZing()); // J9 and Zing do not support vmstructs
         jvmAccess = JVMAccess.getInstance();
     }
 
