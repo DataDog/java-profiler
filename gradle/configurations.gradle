@@ -116,7 +116,7 @@ def commonLinuxCompilerArgs = [
   "-DCOUNTERS"
 ]
 
-def commonLinuxLinkerArgs = ["-ldl", "-Wl,-z,defs", "--verbose", "-lpthread", "-lm", "-lrt", "-v"]
+def commonLinuxLinkerArgs = ["-Wl,-Bstatic", "-ljemalloc", "-Wl,-Bdynamic", "-ldl", "-Wl,-z,defs", "--verbose", "-lpthread", "-lm", "-lrt", "-v", ]
 
 def commonMacosCompilerArgs = commonLinuxCompilerArgs + ["-D_XOPEN_SOURCE", "-D_DARWIN_C_SOURCE"]
 
