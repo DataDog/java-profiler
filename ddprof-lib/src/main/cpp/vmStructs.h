@@ -528,11 +528,25 @@ public:
 
 class JVMFlag : VMStructs {
 public:
+  enum Type {
+    Bool = 0,
+    Int = 1,
+    Uint = 2,
+    Intx = 3,
+    Uintx = 4,
+    Uint64_t = 5,
+    Size_t = 6,
+    Double = 7,
+    String = 8,
+    Stringlist = 9,
+    Unknown = -1
+  };
+
   static void *find(const char *name);
   static void *find(const char *name, int type_mask);
 
   const char *name() { return *(const char **)at(_flag_name_offset); }
-  int type() { return *(int *)at(_flag_type_offset); }
+  int type();
 
   void *addr() { return *(void **)at(_flag_addr_offset); }
 };

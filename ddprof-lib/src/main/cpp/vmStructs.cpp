@@ -784,6 +784,40 @@ void *JVMFlag::find(const char *name) {
   return NULL;
 }
 
+int JVMFlag::type() {
+  if (VM::hotspot_version() < 16) { // in JDK 16 the JVM flag implementation has changed
+    char* type_name = *(char **)at(_flag_type_offset);
+    if (type_name == NULL) {
+      return JVMFlag::Type::Unknown;
+    }
+    if (strcmp(type_name, "bool") == 0) {
+      return JVMFlag::Type::Bool;
+    } else if (strcmp(type_name, "int") == 0) {
+      return JVMFlag::Type::Int;
+    } else if (strcmp(type_name, "uint") == 0) {
+      return JVMFlag::Type::Uint;
+    } else if (strcmp(type_name, "intx") == 0) {
+      return JVMFlag::Type::Intx;
+    } else if (strcmp(type_name, "uintx") == 0) {
+      return JVMFlag::Type::Uintx;
+    } else if (strcmp(type_name, "uint64_t") == 0) {
+      return JVMFlag::Type::Uint64_t;
+    } else if (strcmp(type_name, "size_t") == 0) {
+      return JVMFlag::Type::Size_t;
+    } else if (strcmp(type_name, "double") == 0) {
+        return JVMFlag::Type::Double;
+    } else if (strcmp(type_name, "ccstr") == 0) {
+      return JVMFlag::Type::String;
+    } else if (strcmp(type_name, "ccstrlist") == 0) {
+      return JVMFlag::Type::Stringlist;
+    } else {
+      return JVMFlag::Type::Unknown;
+    }
+  } else {
+    return *(int *)at(_flag_type_offset);
+  }
+}
+
 void *JVMFlag::find(const char *name, int type_mask) {
   if (_flags_addr != NULL && _flag_size > 0) {
     for (int i = 0; i < _flag_count; i++) {
