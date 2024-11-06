@@ -24,6 +24,7 @@
 #include "profiler.h"
 #include "thread.h"
 #include "tsc.h"
+#include "vmEntry.h"
 #include "vmStructs.h"
 #include "wallClock.h"
 #include <errno.h>
@@ -58,6 +59,12 @@ public:
   const char *c_str() const { return _c_string; }
   int length() const { return _length; }
 };
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_init0(JNIEnv *env, jclass unused) {
+  // JavaVM* has already been stored when the native library was loaded so we can pass nullptr here
+  return VM::initProfilerBridge(nullptr, true);
+}
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_stop0(JNIEnv *env, jobject unused) {

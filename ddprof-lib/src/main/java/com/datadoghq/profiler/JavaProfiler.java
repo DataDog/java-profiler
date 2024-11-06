@@ -112,6 +112,8 @@ public final class JavaProfiler {
         if (!result.success) {
             throw new IOException("Failed to load Datadog Java profiler library", result.error);
         }
+        init0();
+
         profiler.initializeContextStorage();
         instance = profiler;
 
@@ -438,6 +440,7 @@ public final class JavaProfiler {
         return counters;
     }
 
+    private static native boolean init0();
     private native void stop0() throws IllegalStateException;
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
     private native void filterThread0(boolean enable);

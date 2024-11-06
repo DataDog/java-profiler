@@ -85,7 +85,7 @@ void Log::log(LogLevel level, const char *msg, va_list args) {
   // be done at WARN level, and any logging done which prevents creation of the
   // JFR should be done at ERROR level
   if (level == LOG_WARN || (level >= _level && level < LOG_ERROR)) {
-    Profiler::instance()->writeLog(level, buf, len);
+//    Profiler::instance()->writeLog(level, buf, len);
   }
 
   // always log errors, but only errors

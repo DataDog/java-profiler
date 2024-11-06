@@ -179,7 +179,9 @@ public:
     }
   }
 
-  static Profiler *instance() { return _instance; }
+  static Profiler *instance() {
+    return _instance;
+  }
 
   u64 total_samples() { return _total_samples; }
   int max_stack_depth() { return _max_stack_depth; }
