@@ -227,6 +227,12 @@ bool VM::init(JavaVM *vm, bool attach) {
     prop = NULL;
   }
   if (_jvmti->GetSystemProperty("java.vm.version", &prop) == 0) {
+    if (_java_version == 0) {
+      // java.runtime.version was not found; try using java.vm.version to extract the information
+      JavaFullVersion version = JavaVersionAccess::get_java_version(prop);
+      _java_version = version.major;
+      _java_update_version = version.update;
+    }
     _hotspot_version = JavaVersionAccess::get_hotspot_version(prop);
     _jvmti->Deallocate((unsigned char *)prop);
     prop = NULL;
@@ -234,6 +240,12 @@ bool VM::init(JavaVM *vm, bool attach) {
 
   if (prop != NULL) {
     _jvmti->Deallocate((unsigned char *)prop);
+  }
+
+  if (_java_version == 0 && _hotspot_version > 0) {
+    // sanity fallback:
+    // - if we failed to resolve the _java_version but have _hotspot_version, let's use the hotspot version as java version
+    _java_version = _hotspot_version;
   }
 
   _can_sample_objects = !_hotspot || hotspot_version() >= 11;
