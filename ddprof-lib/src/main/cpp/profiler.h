@@ -66,6 +66,9 @@ class Profiler {
   friend VM;
 
 private:
+  // signal handlers
+  static volatile bool _signals_initialized;
+
   Mutex _state_lock;
   State _state;
   // class unload hook

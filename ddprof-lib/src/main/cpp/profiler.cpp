@@ -51,6 +51,7 @@
 // The instance is not deleted on purpose, since profiler structures
 // can be still accessed concurrently during VM termination
 Profiler *const Profiler::_instance = new Profiler();
+volatile bool Profiler::_signals_initialized = false;
 
 static void (*orig_trapHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 static void (*orig_segvHandler)(int signo, siginfo_t *siginfo, void *ucontext);
@@ -975,11 +976,13 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 
 void Profiler::setupSignalHandlers() {
   // do not re-run the signal setup (run only when VM has not been loaded yet)
-  if (VM::java_version() > 0 && !VM::loaded()) {
-    // HotSpot and J9 tolerate interposed SIGSEGV/SIGBUS handler; other JVMs
-    // probably not
-    orig_segvHandler = OS::replaceSigsegvHandler(segvHandler);
-    orig_busHandler = OS::replaceSigbusHandler(busHandler);
+  if (__sync_bool_compare_and_swap(&_signals_initialized, false, true)) {
+      if (VM::isHotspot() || VM::isOpenJ9()) {
+        // HotSpot and J9 tolerate interposed SIGSEGV/SIGBUS handler; other JVMs
+        // probably not
+        orig_segvHandler = OS::replaceSigsegvHandler(segvHandler);
+        orig_busHandler = OS::replaceSigbusHandler(busHandler);
+      }
   }
 }
 
