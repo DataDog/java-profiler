@@ -19,7 +19,7 @@ public class JVMAccessTest {
     @Test
     void sanityInitailizationTest() throws Exception {
         String config = System.getProperty("ddprof_test.config");
-        assumeTrue(config != null && config.equals("debug"));
+        assumeTrue(config != null && "debug".equals(config));
 
         String javaHome = System.getenv("JAVA_TEST_HOME");
         if (javaHome == null) {
