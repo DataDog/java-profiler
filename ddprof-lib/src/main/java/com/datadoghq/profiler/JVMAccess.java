@@ -102,7 +102,7 @@ public final class JVMAccess {
 
     private JVMAccess() {
         LibraryLoader.Result result = LibraryLoader.builder().load();;
-        if (result.success) {
+        if (result.succeeded) {
             // library loaded successfully, check if we can access JVM
             try {
                 healthCheck0();
@@ -112,10 +112,10 @@ public final class JVMAccess {
             }
 
         }
-        if (!result.success && result.error != null) {
+        if (!result.succeeded && result.error != null) {
             System.out.println("[WARNING] Failed to obtain JVM access.\n" + result.error);
         }
-        flags = result.success ? new FlagsImpl() : Flags.NONE;
+        flags = result.succeeded ? new FlagsImpl() : Flags.NONE;
         libraryLoadResult = result;
     }
 
@@ -127,7 +127,7 @@ public final class JVMAccess {
      */
     public JVMAccess(String libLocation, String scratchDir, Consumer<Throwable> errorHandler) {
         LibraryLoader.Result result = LibraryLoader.builder().withLibraryLocation(libLocation).withScratchDir(scratchDir).load();
-        if (result.success) {
+        if (result.succeeded) {
             // library loaded successfully, check if we can access JVM
             try {
                 healthCheck0();
@@ -137,14 +137,14 @@ public final class JVMAccess {
             }
 
         }
-        if (!result.success && result.error != null) {
+        if (!result.succeeded && result.error != null) {
             if (errorHandler != null) {
                 errorHandler.accept(result.error);
             } else {
                 System.out.println("[WARNING] Failed to obtain JVM access.\n" + result.error);
             }
         }
-        flags = result.success ? new FlagsImpl() : Flags.NONE;
+        flags = result.succeeded ? new FlagsImpl() : Flags.NONE;
         libraryLoadResult = result;
     }
 
@@ -163,7 +163,7 @@ public final class JVMAccess {
      * @return {@literal true} if the JVM access is active, {@literal false} otherwise
      */
     public boolean isActive() {
-        return libraryLoadResult.success;
+        return libraryLoadResult.succeeded;
     }
 
     // a dummy method to check if the library has loaded properly

@@ -32,11 +32,11 @@ public final class LibraryLoader {
         public static final Result SUCCESS = new Result(true, null);
         public static final Result UNAVAILABLE = new Result(false, null);
 
-        public final boolean success;
+        public final boolean succeeded;
         public final Throwable error;
 
-        public Result(boolean success, Throwable error) {
-            this.success = success;
+        public Result(boolean succeeded, Throwable error) {
+            this.succeeded = succeeded;
             this.error = error;
         }
     }
