@@ -357,7 +357,7 @@ Java_com_datadoghq_profiler_JVMAccess_findFloatJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
   JniString flag_str(env, flagName);
-  double* value = static_cast<double*>(JVMFlag::find(flag_str.c_str(), JVMFlag::Type::Double));
+  double* value = static_cast<double*>(JVMFlag::find(flag_str.c_str(),{ JVMFlag::Type::Double}));
   if (value != NULL) {
     return *value;
   }

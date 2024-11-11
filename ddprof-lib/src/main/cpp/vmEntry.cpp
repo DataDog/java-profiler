@@ -365,12 +365,12 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   } else {
     // DebugNonSafepoints is automatically enabled with CompiledMethodLoad,
     // otherwise we set the flag manually
-    char *flag_addr = (char *)JVMFlag::find("DebugNonSafepoints", JVMFlag::Type::Bool);
+    char *flag_addr = (char *)JVMFlag::find("DebugNonSafepoints", {JVMFlag::Type::Bool});
     if (flag_addr != NULL) {
       *flag_addr = 1;
     }
   }
-  char *flag_addr = (char *)JVMFlag::find("KeepJNIIDs", JVMFlag::Type::Bool);
+  char *flag_addr = (char *)JVMFlag::find("KeepJNIIDs", {JVMFlag::Type::Bool});
   if (flag_addr != NULL) {
     *flag_addr = 1;
   }
@@ -379,7 +379,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   // profiler to avoid the risk of crashing flag was made obsolete (inert) in 15
   // (see JDK-8228991) and removed in 16 (see JDK-8231560)
   if (hotspot_version() < 15) {
-    char *flag_addr = (char *)JVMFlag::find("UseAdaptiveGCBoundary", JVMFlag::Type::Bool);
+    char *flag_addr = (char *)JVMFlag::find("UseAdaptiveGCBoundary", {JVMFlag::Type::Bool});
     _is_adaptive_gc_boundary_flag_set = flag_addr != NULL && *flag_addr == 1;
   }
 
@@ -467,8 +467,6 @@ void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
 }
 
 void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
-  bool needs_patch = VM::hotspot_version() == 8;
-  if (needs_patch) {
     jint class_count;
     jclass *classes;
     if (jvmti->GetLoadedClasses(&class_count, &classes) == 0) {
@@ -477,7 +475,6 @@ void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
       }
       jvmti->Deallocate((unsigned char *)classes);
     }
-  }
 }
 
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {

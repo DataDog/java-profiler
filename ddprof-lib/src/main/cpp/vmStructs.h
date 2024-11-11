@@ -529,6 +529,8 @@ public:
 };
 
 class JVMFlag : VMStructs {
+private:
+  static void *find(const char *name, int type_mask);
 public:
   enum Type {
     Bool = 0,
@@ -546,7 +548,6 @@ public:
 
   static void *find(const char *name);
   static void *find(const char *name, std::initializer_list<Type> types);
-  static void *find(const char *name, int type_mask);
 
   const char *name() { return *(const char **)at(_flag_name_offset); }
   int type();
