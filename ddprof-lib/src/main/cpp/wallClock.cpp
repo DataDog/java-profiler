@@ -18,6 +18,7 @@
 #include "stackFrame.h"
 #include "context.h"
 #include "debugSupport.h"
+#include "libraries.h"
 #include "log.h"
 #include "profiler.h"
 #include "stackFrame.h"
@@ -42,7 +43,7 @@ bool WallClockASGCT::inSyscall(void *ucontext) {
   // Make sure the previous instruction address is readable
   uintptr_t prev_pc = pc - SYSCALL_SIZE;
   if ((pc & 0xfff) >= SYSCALL_SIZE ||
-      Profiler::instance()->findLibraryByAddress((instruction_t *)prev_pc) !=
+      Libraries::instance()->findLibraryByAddress((instruction_t *)prev_pc) !=
           NULL) {
     if (StackFrame::isSyscall((instruction_t *)prev_pc) &&
         frame.checkInterruptedSyscall()) {

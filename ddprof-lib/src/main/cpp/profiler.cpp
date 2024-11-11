@@ -185,10 +185,6 @@ inline u32 Profiler::getLockIndex(int tid) {
   return lock_index % CONCURRENCY_LEVEL;
 }
 
-void Profiler::updateSymbols(bool kernel_symbols) {
-  Symbols::parseLibraries(&_native_libs, kernel_symbols);
-}
-
 void Profiler::mangle(const char *name, char *buf, size_t size) {
   char *buf_end = buf + size;
   strcpy(buf, "_ZN");
@@ -257,37 +253,8 @@ const char *Profiler::getLibraryName(const char *native_symbol) {
   return NULL;
 }
 
-CodeCache *Profiler::findJvmLibrary(const char *lib_name) {
-  return VM::isOpenJ9() ? findLibraryByName(lib_name) : VMStructs::libjvm();
-}
-
-CodeCache *Profiler::findLibraryByName(const char *lib_name) {
-  const size_t lib_name_len = strlen(lib_name);
-  const int native_lib_count = _native_libs.count();
-  for (int i = 0; i < native_lib_count; i++) {
-    const char *s = _native_libs[i]->name();
-    if (s != NULL) {
-      const char *p = strrchr(s, '/');
-      if (p != NULL && strncmp(p + 1, lib_name, lib_name_len) == 0) {
-        return _native_libs[i];
-      }
-    }
-  }
-  return NULL;
-}
-
-CodeCache *Profiler::findLibraryByAddress(const void *address) {
-  const int native_lib_count = _native_libs.count();
-  for (int i = 0; i < native_lib_count; i++) {
-    if (_native_libs[i]->contains(address)) {
-      return _native_libs[i];
-    }
-  }
-  return NULL;
-}
-
 const char *Profiler::findNativeMethod(const void *address) {
-  CodeCache *lib = findLibraryByAddress(address);
+  CodeCache *lib = _libs->findLibraryByAddress(address);
   return lib == NULL ? NULL : lib->binarySearch(address);
 }
 
@@ -300,7 +267,7 @@ bool Profiler::isAddressInCode(const void *pc) {
     return CodeHeap::findNMethod(pc) != NULL &&
            !(pc >= _call_stub_begin && pc < _call_stub_end);
   } else {
-    return findLibraryByAddress(pc) != NULL;
+    return _libs->findLibraryByAddress(pc) != NULL;
   }
 }
 
@@ -534,7 +501,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
           m->setFrameCompleteOffset(0);
         }
         VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
-      } else if (findLibraryByAddress((const void *)pc) != NULL) {
+      } else if (_libs->findLibraryByAddress((const void *)pc) != NULL) {
         VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
       }
 
@@ -875,7 +842,9 @@ void Profiler::writeHeapUsage(long value, bool live) {
 void *Profiler::dlopen_hook(const char *filename, int flags) {
   void *result = dlopen(filename, flags);
   if (result != NULL) {
-    instance()->updateSymbols(false);
+    // Static function of Profiler -> can not use the instance variable _libs
+    // Since Libraries is a singleton, this does not matter
+    Libraries::instance()->updateSymbols(false);
   }
   return result;
 }
@@ -1126,7 +1095,7 @@ Error Profiler::checkJvmCapabilities() {
   }
 
   if (_dlopen_entry == NULL) {
-    CodeCache *lib = findJvmLibrary("libj9prt");
+    CodeCache *lib = _libs->findJvmLibrary("libj9prt");
     if (lib == NULL || (_dlopen_entry = lib->findImport(im_dlopen)) == NULL) {
       return Error("Could not set dlopen hook. Unsupported JVM?");
     }
@@ -1231,7 +1200,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   // Kernel symbols are useful only for perf_events without --all-user
-  updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
+  _libs->updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
 
   enableEngines();
 

@@ -33,20 +33,20 @@ class BaseWallClock : public Engine {
   protected:
     long _interval;
     // Maximum number of threads sampled in one iteration. This limit serves as a
-  // throttle when generating profiling signals. Otherwise applications with too
-  // many threads may suffer from a big profiling overhead. Also, keeping this
-  // limit low enough helps to avoid contention on a spin lock inside
-  // Profiler::recordSample().
-  int _reservoir_size;
+    // throttle when generating profiling signals. Otherwise applications with too
+    // many threads may suffer from a big profiling overhead. Also, keeping this
+    // limit low enough helps to avoid contention on a spin lock inside
+    // Profiler::recordSample().
+    int _reservoir_size;
 
-    pthread_t _thread;
-    virtual void timerLoop() = 0;
-    virtual void initialize(Arguments& args) {};
+      pthread_t _thread;
+      virtual void timerLoop() = 0;
+      virtual void initialize(Arguments& args) {};
 
-  static void *threadEntry(void *wall_clock) {
-    ((BaseWallClock *)wall_clock)->timerLoop();
-    return NULL;
-  }
+    static void *threadEntry(void *wall_clock) {
+      ((BaseWallClock *)wall_clock)->timerLoop();
+      return NULL;
+    }
 
     bool isEnabled() const;
 

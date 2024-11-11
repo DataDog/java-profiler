@@ -16,6 +16,7 @@
 
 #include "stackWalker.h"
 #include "dwarf.h"
+#include "libraries.h"
 #include "profiler.h"
 #include "safeAccess.h"
 #include "stackFrame.h"
@@ -143,7 +144,7 @@ int StackWalker::walkDwarf(void *ucontext, const void **callchain,
   }
 
   int depth = 0;
-  Profiler *profiler = Profiler::instance();
+  Libraries *libraries = Libraries::instance();
 
   *truncated = false;
 
@@ -161,7 +162,7 @@ int StackWalker::walkDwarf(void *ucontext, const void **callchain,
     callchain[depth++] = pc;
     prev_sp = sp;
 
-    CodeCache *cc = profiler->findLibraryByAddress(pc);
+    CodeCache *cc = libraries->findLibraryByAddress(pc);
     FrameDesc *f =
         cc != NULL ? cc->findFrameDesc(pc) : &FrameDesc::default_frame;
 
@@ -241,6 +242,8 @@ int StackWalker::walkVM(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
   }
 
   Profiler *profiler = Profiler::instance();
+  Libraries *libraries = Libraries::instance();
+
   int bcp_offset = InterpreterFrame::bcp_offset();
 
   jmp_buf crash_protection_ctx;
@@ -382,7 +385,7 @@ int StackWalker::walkVM(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
       }
     } else {
       if (cc == NULL || !cc->contains(pc)) {
-        cc = profiler->findLibraryByAddress(pc);
+        cc = libraries->findLibraryByAddress(pc);
       }
       const char *name = cc == NULL ? NULL : cc->binarySearch(pc);
       fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
@@ -394,7 +397,7 @@ int StackWalker::walkVM(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
       break;
     }
     if (cc == NULL || !cc->contains(pc)) {
-      cc = profiler->findLibraryByAddress(pc);
+      cc = libraries->findLibraryByAddress(pc);
     }
     FrameDesc *f =
         cc != NULL ? cc->findFrameDesc(pc) : &FrameDesc::default_frame;

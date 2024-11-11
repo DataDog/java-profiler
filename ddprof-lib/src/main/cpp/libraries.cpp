@@ -66,8 +66,8 @@ const void *Libraries::resolveSymbol(const char *name) {
   return NULL;
 }
 
-CodeCache *Libraries::findJvmLibrary(const char *lib_name) {
-  return VM::isOpenJ9() ? findLibraryByName(lib_name) : VMStructs::libjvm();
+CodeCache *Libraries::findJvmLibrary(const char *j9_lib_name) {
+  return VM::isOpenJ9() ? findLibraryByName(j9_lib_name) : VMStructs::libjvm();
 }
 
 CodeCache *Libraries::findLibraryByName(const char *lib_name) {
