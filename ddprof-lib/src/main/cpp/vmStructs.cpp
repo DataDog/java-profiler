@@ -784,6 +784,14 @@ void *JVMFlag::find(const char *name) {
   return NULL;
 }
 
+void *JVMFlag::find(const char *name, std::initializer_list<Type> types) {
+  int mask = 0;
+  for (int type : types) {
+    mask |= 0x1 << type;
+  }
+  return find(name, mask);
+}
+
 int JVMFlag::type() {
   if (VM::hotspot_version() < 16) { // in JDK 16 the JVM flag implementation has changed
     char* type_name = *(char **)at(_flag_type_offset);

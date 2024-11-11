@@ -291,25 +291,12 @@ Java_com_datadoghq_profiler_JavaProfiler_mallocArenaMax0(JNIEnv *env,
   OS::mallocArenaMax(maxArenas);
 }
 
-
-// JVM Flags
-// The flag type is encoded as:
-// 0 - boolean
-// 1 - int
-// 2 - uint
-// 3 - intx
-// 4 - uintx
-// 5 - uint64_t
-// 6 - size_t
-// 7 - double
-// 8 - string
-// 9 - string list
 extern "C" DLLEXPORT jstring JNICALL
 Java_com_datadoghq_profiler_JVMAccess_findStringJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
   JniString flag_str(env, flagName);
-  char** value = static_cast<char**>(JVMFlag::find(flag_str.c_str(), 256)); // types: 2 ^ [8]
+  char** value = static_cast<char**>(JVMFlag::find(flag_str.c_str(), JVMFlag::Type::String));
   if (value != NULL && *value != NULL) {
     return env->NewStringUTF(*value);
   }
@@ -323,7 +310,7 @@ Java_com_datadoghq_profiler_JVMAccess_setStringJVMFlag0(JNIEnv *env,
                                                          jstring flagValue) {
   JniString flag_str(env, flagName);
   JniString value_str(env, flagValue);
-  char** value = static_cast<char**>(JVMFlag::find(flag_str.c_str(), 256)); // types: 2 ^ [8]
+  char** value = static_cast<char**>(JVMFlag::find(flag_str.c_str(), JVMFlag::Type::String));
   if (value != NULL) {
     *value = strdup(value_str.c_str());
   }
@@ -334,7 +321,7 @@ Java_com_datadoghq_profiler_JVMAccess_findBooleanJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
   JniString flag_str(env, flagName);
-  char* value = static_cast<char*>(JVMFlag::find(flag_str.c_str(), 1)); // types: 2 ^ [0]
+  char* value = static_cast<char*>(JVMFlag::find(flag_str.c_str(), JVMFlag::Type::Bool));
   if (value != NULL) {
     return *value == 1;
   }
@@ -347,9 +334,9 @@ Java_com_datadoghq_profiler_JVMAccess_setBooleanJVMFlag0(JNIEnv *env,
                                                          jstring flagName,
                                                          jboolean flagValue) {
   JniString flag_str(env, flagName);
-  char* value = static_cast<char*>(JVMFlag::find(flag_str.c_str(), 1)); // types: 2 ^ [0]
+  char* value = static_cast<char*>(JVMFlag::find(flag_str.c_str(), JVMFlag::Type::Bool));
   if (value != NULL) {
-    *value == flagValue ? 1 : 0;
+    *value = flagValue ? 1 : 0;
   }
 }
 
@@ -358,7 +345,7 @@ Java_com_datadoghq_profiler_JVMAccess_findIntJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
   JniString flag_str(env, flagName);
-  long* value = static_cast<long*>(JVMFlag::find(flag_str.c_str(), 126)); // types: 2 ^ [1, 2, 3, 4, 5, 6]
+  long* value = static_cast<long*>(JVMFlag::find(flag_str.c_str(), {JVMFlag::Type::Int, JVMFlag::Type::Uint, JVMFlag::Type::Intx, JVMFlag::Type::Uintx, JVMFlag::Type::Uint64_t, JVMFlag::Type::Size_t}));
   if (value != NULL) {
     return *value;
   }
@@ -370,7 +357,7 @@ Java_com_datadoghq_profiler_JVMAccess_findFloatJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
   JniString flag_str(env, flagName);
-  double* value = static_cast<double*>(JVMFlag::find(flag_str.c_str(), 128)); // types: 2 ^ [7]
+  double* value = static_cast<double*>(JVMFlag::find(flag_str.c_str(), JVMFlag::Type::Double));
   if (value != NULL) {
     return *value;
   }

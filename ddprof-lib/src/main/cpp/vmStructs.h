@@ -24,6 +24,8 @@
 #include "safeAccess.h"
 #include "threadState.h"
 #include "vmEntry.h"
+
+#include <initializer_list>
 #include <jvmti.h>
 #include <stdint.h>
 #include <string.h>
@@ -543,6 +545,7 @@ public:
   };
 
   static void *find(const char *name);
+  static void *find(const char *name, std::initializer_list<Type> types);
   static void *find(const char *name, int type_mask);
 
   const char *name() { return *(const char **)at(_flag_name_offset); }

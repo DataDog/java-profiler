@@ -287,7 +287,7 @@ bool VM::initLibrary(JavaVM *vm) {
 bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   TEST_LOG("VM::initProfilerBridge");
   if (!initShared(vm)) {
-    return true;
+    return false;
   }
 
   CodeCache *lib = openJvmLibrary();
@@ -365,12 +365,12 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   } else {
     // DebugNonSafepoints is automatically enabled with CompiledMethodLoad,
     // otherwise we set the flag manually
-    char *flag_addr = (char *)JVMFlag::find("DebugNonSafepoints");
+    char *flag_addr = (char *)JVMFlag::find("DebugNonSafepoints", JVMFlag::Type::Bool);
     if (flag_addr != NULL) {
       *flag_addr = 1;
     }
   }
-  char *flag_addr = (char *)JVMFlag::find("KeepJNIIDs");
+  char *flag_addr = (char *)JVMFlag::find("KeepJNIIDs", JVMFlag::Type::Bool);
   if (flag_addr != NULL) {
     *flag_addr = 1;
   }
@@ -379,12 +379,19 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   // profiler to avoid the risk of crashing flag was made obsolete (inert) in 15
   // (see JDK-8228991) and removed in 16 (see JDK-8231560)
   if (hotspot_version() < 15) {
-    char *flag_addr = (char *)JVMFlag::find("UseAdaptiveGCBoundary");
+    char *flag_addr = (char *)JVMFlag::find("UseAdaptiveGCBoundary", JVMFlag::Type::Bool);
     _is_adaptive_gc_boundary_flag_set = flag_addr != NULL && *flag_addr == 1;
   }
 
+  // Make sure we reload method IDs upon class retransformation
+  JVMTIFunctions *functions = *(JVMTIFunctions **)_jvmti;
+  _orig_RedefineClasses = functions->RedefineClasses;
+  _orig_RetransformClasses = functions->RetransformClasses;
+  functions->RedefineClasses = RedefineClassesHook;
+  functions->RetransformClasses = RetransformClassesHook;
+
   if (attach) {
-    loadAllMethodIDs(jvmti(), jni());
+    loadAllMethodIDs(_jvmti, jni());
     _jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);
     _jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD);
   } else {
@@ -404,13 +411,6 @@ void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
     VMStructs::ready();
   }
   _libjava = getLibraryHandle("libjava.so");
-
-  // Make sure we reload method IDs upon class retransformation
-  JVMTIFunctions *functions = *(JVMTIFunctions **)_jvmti;
-  _orig_RedefineClasses = functions->RedefineClasses;
-  _orig_RetransformClasses = functions->RetransformClasses;
-  functions->RedefineClasses = RedefineClassesHook;
-  functions->RetransformClasses = RetransformClassesHook;
 }
 
 void VM::applyPatch(char *func, const char *patch, const char *end_patch) {
@@ -467,13 +467,16 @@ void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
 }
 
 void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
-  jint class_count;
-  jclass *classes;
-  if (jvmti->GetLoadedClasses(&class_count, &classes) == 0) {
-    for (int i = 0; i < class_count; i++) {
-      loadMethodIDs(jvmti, jni, classes[i]);
+  bool needs_patch = VM::hotspot_version() == 8;
+  if (needs_patch) {
+    jint class_count;
+    jclass *classes;
+    if (jvmti->GetLoadedClasses(&class_count, &classes) == 0) {
+      for (int i = 0; i < class_count; i++) {
+        loadMethodIDs(jvmti, jni, classes[i]);
+      }
+      jvmti->Deallocate((unsigned char *)classes);
     }
-    jvmti->Deallocate((unsigned char *)classes);
   }
 }
 
