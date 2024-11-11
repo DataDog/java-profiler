@@ -296,7 +296,7 @@ Java_com_datadoghq_profiler_JVMAccess_findStringJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
   JniString flag_str(env, flagName);
-  char** value = static_cast<char**>(JVMFlag::find(flag_str.c_str(), JVMFlag::Type::String));
+  char** value = static_cast<char**>(JVMFlag::find(flag_str.c_str(), {JVMFlag::Type::String}));
   if (value != NULL && *value != NULL) {
     return env->NewStringUTF(*value);
   }
@@ -310,7 +310,7 @@ Java_com_datadoghq_profiler_JVMAccess_setStringJVMFlag0(JNIEnv *env,
                                                          jstring flagValue) {
   JniString flag_str(env, flagName);
   JniString value_str(env, flagValue);
-  char** value = static_cast<char**>(JVMFlag::find(flag_str.c_str(), JVMFlag::Type::String));
+  char** value = static_cast<char**>(JVMFlag::find(flag_str.c_str(), {JVMFlag::Type::String}));
   if (value != NULL) {
     *value = strdup(value_str.c_str());
   }
@@ -321,9 +321,9 @@ Java_com_datadoghq_profiler_JVMAccess_findBooleanJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
   JniString flag_str(env, flagName);
-  char* value = static_cast<char*>(JVMFlag::find(flag_str.c_str(), JVMFlag::Type::Bool));
+  char* value = static_cast<char*>(JVMFlag::find(flag_str.c_str(), {JVMFlag::Type::Bool}));
   if (value != NULL) {
-    return *value == 1;
+    return ((*value) & 0xff) == 1;
   }
   return false;
 }
@@ -334,7 +334,7 @@ Java_com_datadoghq_profiler_JVMAccess_setBooleanJVMFlag0(JNIEnv *env,
                                                          jstring flagName,
                                                          jboolean flagValue) {
   JniString flag_str(env, flagName);
-  char* value = static_cast<char*>(JVMFlag::find(flag_str.c_str(), JVMFlag::Type::Bool));
+  char* value = static_cast<char*>(JVMFlag::find(flag_str.c_str(), {JVMFlag::Type::Bool}));
   if (value != NULL) {
     *value = flagValue ? 1 : 0;
   }

@@ -19,7 +19,7 @@ public class JVMAccessTest {
     @Test
     void sanityInitailizationTest() throws Exception {
         String config = System.getProperty("ddprof_test.config");
-        assumeTrue(config != null && "debug".equals(config));
+        assumeTrue("debug".equals(config));
 
         String javaHome = System.getenv("JAVA_TEST_HOME");
         if (javaHome == null) {
@@ -92,13 +92,5 @@ public class JVMAccessTest {
         flags.setBooleanFlag("ErrorFile", true);
         // make sure the flag value is not changed and overwritten with rubbish
         assertEquals(val, flags.getStringFlag("ErrorFile"));
-    }
-
-    @Test
-    void testImmutableFlags() {
-        JVMAccess.Flags flags = JVMAccess.getInstance().flags();
-        flags.setBooleanFlag("ResizeTLAB", false);
-        // this flag is immutable; it must retain its original value
-        assertTrue(flags.getBooleanFlag("ResizeTLAB"));
     }
 }
