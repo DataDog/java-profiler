@@ -142,9 +142,12 @@ public abstract class AbstractProfilerTest {
     return true;
   }
 
+  protected void withTestAssumptions() {}
+
   @BeforeEach
   public void setupProfiler() throws Exception {
     Assumptions.assumeTrue(isPlatformSupported());
+    withTestAssumptions();
 
     jfrDump = Files.createTempFile(Paths.get("/tmp"), getClass().getName() + UUID.randomUUID(), ".jfr");
     profiler = JavaProfiler.getInstance();
