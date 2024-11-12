@@ -1016,16 +1016,11 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
     return &noop_engine;
   } else if (args._cpu >= 0 || strcmp(args._event, EVENT_CPU) == 0) {
     if (VM::isOpenJ9()) {
-      if (!J9Ext::can_use_ASGCT()) {
-        if (!J9Ext::is_jvmti_jmethodid_safe()) {
-          Log::warn("Safe jmethodID access is not available on this JVM. Using "
-                    "CPU profiler on your own risk.");
-        }
-        return &j9_engine;
-      } else if (!J9Ext::is_jmethodid_safe()) {
+      if (!J9Ext::is_jvmti_jmethodid_safe()) {
         Log::warn("Safe jmethodID access is not available on this JVM. Using "
                   "CPU profiler on your own risk.");
       }
+      return &j9_engine;
     }
     return !ctimer.check(args)
                ? (Engine *)&ctimer
