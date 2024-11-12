@@ -24,6 +24,8 @@
 #include "safeAccess.h"
 #include "threadState.h"
 #include "vmEntry.h"
+
+#include <initializer_list>
 #include <jvmti.h>
 #include <stdint.h>
 #include <string.h>
@@ -92,6 +94,7 @@ protected:
   static int _vs_high_bound_offset;
   static int _vs_low_offset;
   static int _vs_high_offset;
+  static int _flag_type_offset;
   static int _flag_name_offset;
   static int _flag_addr_offset;
   static const char *_flags_addr;
@@ -526,10 +529,28 @@ public:
 };
 
 class JVMFlag : VMStructs {
+private:
+  static void *find(const char *name, int type_mask);
 public:
+  enum Type {
+    Bool = 0,
+    Int = 1,
+    Uint = 2,
+    Intx = 3,
+    Uintx = 4,
+    Uint64_t = 5,
+    Size_t = 6,
+    Double = 7,
+    String = 8,
+    Stringlist = 9,
+    Unknown = -1
+  };
+
   static void *find(const char *name);
+  static void *find(const char *name, std::initializer_list<Type> types);
 
   const char *name() { return *(const char **)at(_flag_name_offset); }
+  int type();
 
   void *addr() { return *(void **)at(_flag_addr_offset); }
 };

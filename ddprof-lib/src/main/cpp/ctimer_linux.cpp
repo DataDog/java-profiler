@@ -18,6 +18,7 @@
 
 #include "ctimer.h"
 #include "debugSupport.h"
+#include "libraries.h"
 #include "profiler.h"
 #include "vmStructs.h"
 #include <assert.h>
@@ -64,7 +65,7 @@ static void **lookupThreadEntry() {
   // Depending on Zing version, pthread_setspecific is called either from
   // libazsys.so or from libjvm.so
   if (VM::isZing()) {
-    CodeCache *libazsys = Profiler::instance()->findLibraryByName("libazsys");
+    CodeCache *libazsys = Libraries::instance()->findLibraryByName("libazsys");
     if (libazsys != NULL) {
       void **entry = libazsys->findImport(im_pthread_setspecific);
       if (entry != NULL) {
@@ -73,7 +74,7 @@ static void **lookupThreadEntry() {
     }
   }
 
-  CodeCache *lib = Profiler::instance()->findJvmLibrary("libj9thr");
+  CodeCache *lib = Libraries::instance()->findJvmLibrary("libj9thr");
   return lib != NULL ? lib->findImport(im_pthread_setspecific) : NULL;
 }
 

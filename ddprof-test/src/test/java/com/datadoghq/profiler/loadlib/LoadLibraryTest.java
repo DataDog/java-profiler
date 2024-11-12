@@ -3,7 +3,6 @@ package com.datadoghq.profiler.loadlib;
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.AbstractProfilerTest;
 import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.Test;
 import org.junitpioneer.jupiter.RetryingTest;
 
 import java.lang.management.ClassLoadingMXBean;

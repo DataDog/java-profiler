@@ -20,6 +20,7 @@
 
 #include <jvmti.h>
 
+#include "codeCache.h"
 #include "frame.h"
 
 #ifdef __clang__
@@ -124,13 +125,18 @@ private:
   static void loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
   static void loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni);
 
+  static bool initShared(JavaVM *vm);
+
+  static CodeCache* openJvmLibrary();
+
 public:
   static void *_libjvm;
   static void *_libjava;
   static AsyncGetCallTrace _asyncGetCallTrace;
   static JVM_GetManagement _getManagement;
 
-  static bool init(JavaVM *vm, bool attach);
+  static bool initLibrary(JavaVM *vm);
+  static bool initProfilerBridge(JavaVM *vm, bool attach);
 
   static jvmtiEnv *jvmti() { return _jvmti; }
 

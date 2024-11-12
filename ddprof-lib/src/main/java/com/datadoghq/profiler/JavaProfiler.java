@@ -18,17 +18,11 @@ package com.datadoghq.profiler;
 
 import sun.misc.Unsafe;
 
-import java.io.BufferedReader;
-import java.io.FileReader;
 import java.io.IOException;
-import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
@@ -40,9 +34,6 @@ import java.util.Map;
  * libjavaProfiler.so.
  */
 public final class JavaProfiler {
-    private static final String NATIVE_LIBS = "/META-INF/native-libs";
-    private static final String LIBRARY_NAME = "libjavaProfiler." + (OperatingSystem.current() == OperatingSystem.macos ? "dylib" : "so");
-
     private static final Unsafe UNSAFE;
     static {
         Unsafe unsafe = null;
@@ -111,15 +102,12 @@ public final class JavaProfiler {
         }
 
         JavaProfiler profiler = new JavaProfiler();
-        Path libraryPath = null;
-        if (libLocation == null) {
-            OperatingSystem os = OperatingSystem.current();
-            String qualifier = (os == OperatingSystem.linux && isMusl()) ? "musl" : null;
-
-            libraryPath = libraryFromClasspath(os, Arch.current(), qualifier, Paths.get(scratchDir != null ? scratchDir : System.getProperty("java.io.tmpdir")));
-            libLocation = libraryPath.toString();
+        LibraryLoader.Result result = LibraryLoader.builder().withLibraryLocation(libLocation).withScratchDir(scratchDir).load();
+        if (!result.succeeded) {
+            throw new IOException("Failed to load Datadog Java profiler library", result.error);
         }
-        System.load(libLocation);
+        init0();
+
         profiler.initializeContextStorage();
         instance = profiler;
 
@@ -133,32 +121,6 @@ public final class JavaProfiler {
         }
 
         return profiler;
-    }
-
-    /**
-     * Locates a library on class-path (eg. in a JAR) and creates a publicly accessible temporary copy
-     * of the library which can then be used by the application by its absolute path.
-     *
-     * @param os The operating system
-     * @param arch The architecture
-     * @param qualifier An optional qualifier (eg. musl)
-     * @param tempDir The working scratch dir where to store the temp library file
-     * @return The library absolute path. The caller should properly dispose of the file once it is
-     *     not needed. The file is marked for 'delete-on-exit' so it won't survive a JVM restart.
-     * @throws IOException, IllegalStateException if the resource is not found on the classpath
-     */
-    private static Path libraryFromClasspath(OperatingSystem os, Arch arch, String qualifier, Path tempDir) throws IOException {
-        String resourcePath = NATIVE_LIBS + "/" + os.name().toLowerCase() + "-" + arch.name().toLowerCase() + ((qualifier != null && !qualifier.isEmpty()) ? "-" + qualifier : "") + "/" + LIBRARY_NAME;
-
-        InputStream libraryData =  JavaProfiler.class.getResourceAsStream(resourcePath);
-
-        if (libraryData != null) {
-            Path libFile = Files.createTempFile(tempDir, "libjavaProfiler", ".so");
-            Files.copy(libraryData, libFile, StandardCopyOption.REPLACE_EXISTING);
-            libFile.toFile().deleteOnExit();
-            return libFile;
-        }
-        throw new IllegalStateException(resourcePath + " not found on classpath");
     }
 
     private void initializeContextStorage() {
@@ -472,87 +434,7 @@ public final class JavaProfiler {
         return counters;
     }
 
-    static boolean isMusl() throws IOException {
-        // check the Java exe then fall back to proc/self maps
-        try {
-            return isMuslJavaExecutable();
-        } catch (IOException e) {
-            try {
-                return isMuslProcSelfMaps();
-            } catch (IOException ignore) {
-                // not finding the Java exe is more interesting than failing to parse /proc/self/maps
-                throw e;
-            }
-        }
-    }
-
-    static boolean isMuslProcSelfMaps() throws IOException {
-        try (BufferedReader reader = new BufferedReader(new FileReader("/proc/self/maps"))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.contains("-musl-")) {
-                    return true;
-                }
-                if (line.contains("/libc.")) {
-                    return false;
-                }
-            }
-        }
-        return false;
-    }
-
-    /**
-     * There is information about the linking in the ELF file. Since properly parsing ELF is not
-     * trivial this code will attempt a brute-force approach and will scan the first 4096 bytes
-     * of the 'java' program image for anything prefixed with `/ld-` - in practice this will contain
-     * `/ld-musl` for musl systems and probably something else for non-musl systems (eg. `/ld-linux-...`).
-     * However, if such string is missing should indicate that the system is not a musl one.
-     */
-    static boolean isMuslJavaExecutable() throws IOException {
-
-        byte[] magic = new byte[]{(byte)0x7f, (byte)'E', (byte)'L', (byte)'F'};
-        byte[] prefix = new byte[]{(byte)'/', (byte)'l', (byte)'d', (byte)'-'}; // '/ld-*'
-        byte[] musl = new byte[]{(byte)'m', (byte)'u', (byte)'s', (byte)'l'}; // 'musl'
-
-        Path binary = Paths.get(System.getProperty("java.home"), "bin", "java");
-        byte[] buffer = new byte[4096];
-
-        try (InputStream  is = Files.newInputStream(binary)) {
-            int read = is.read(buffer, 0, 4);
-            if (read != 4 || !containsArray(buffer, 0, magic)) {
-                throw new IOException(Arrays.toString(buffer));
-            }
-            read = is.read(buffer);
-            if (read <= 0) {
-                throw new IOException();
-            }
-            int prefixPos = 0;
-            for (int i = 0; i < read; i++) {
-                if (buffer[i] == prefix[prefixPos]) {
-                    if (++prefixPos == prefix.length) {
-                        return containsArray(buffer, i + 1, musl);
-                    }
-                } else {
-                    prefixPos = 0;
-                }
-            }
-        }
-        return false;
-    }
-
-    private static boolean containsArray(byte[] container, int offset, byte[] contained) {
-        for (int i = 0; i < contained.length; i++) {
-            int leftPos = offset + i;
-            if (leftPos >= container.length) {
-                return false;
-            }
-            if (container[leftPos] != contained[i]) {
-                return false;
-            }
-        }
-        return true;
-    }
-
+    private static native boolean init0();
     private native void stop0() throws IllegalStateException;
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
     private native void filterThread0(boolean enable);

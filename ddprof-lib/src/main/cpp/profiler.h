@@ -25,6 +25,7 @@
 #include "engine.h"
 #include "event.h"
 #include "flightRecorder.h"
+#include "libraries.h"
 #include "log.h"
 #include "mutex.h"
 #include "objectSampler.h"
@@ -107,6 +108,7 @@ private:
 
   volatile jvmtiEventMode _thread_events_state;
 
+  Libraries* _libs;
   SpinLock _stubs_lock;
   CodeCache _runtime_stubs;
   CodeCacheArray _native_libs;
@@ -167,7 +169,7 @@ public:
         _notify_class_unloaded_func(NULL), _thread_filter(), _call_trace_storage(), _jfr(),
         _start_time(0), _epoch(0), _timer_id(NULL),
         _max_stack_depth(0), _safe_mode(0), _thread_events_state(JVMTI_DISABLE),
-        _stubs_lock(), _runtime_stubs("[stubs]"), _native_libs(),
+        _libs(Libraries::instance()), _stubs_lock(), _runtime_stubs("[stubs]"), _native_libs(),
         _call_stub_begin(NULL), _call_stub_end(NULL), _dlopen_entry(NULL),
         _num_context_attributes(0), _class_map(1), _string_label_map(2),
         _context_value_map(3), _cpu_engine(), _alloc_engine(), _event_mask(0),
@@ -179,7 +181,9 @@ public:
     }
   }
 
-  static Profiler *instance() { return _instance; }
+  static Profiler *instance() {
+    return _instance;
+  }
 
   u64 total_samples() { return _total_samples; }
   int max_stack_depth() { return _max_stack_depth; }
@@ -235,12 +239,8 @@ public:
   void writeHeapUsage(long value, bool live);
   int eventMask() const { return _event_mask; }
 
-  void updateSymbols(bool kernel_symbols);
   const void *resolveSymbol(const char *name);
   const char *getLibraryName(const char *native_symbol);
-  CodeCache *findJvmLibrary(const char *lib_name);
-  CodeCache *findLibraryByName(const char *lib_name);
-  CodeCache *findLibraryByAddress(const void *address);
   const char *findNativeMethod(const void *address);
   CodeBlob *findRuntimeStub(const void *address);
   bool isAddressInCode(const void *pc);

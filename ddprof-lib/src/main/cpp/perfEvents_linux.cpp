@@ -19,6 +19,7 @@
 #include "arch.h"
 #include "context.h"
 #include "debugSupport.h"
+#include "libraries.h"
 #include "log.h"
 #include "os.h"
 #include "perfEvents.h"
@@ -188,7 +189,7 @@ static void **lookupThreadEntry() {
   // Depending on Zing version, pthread_setspecific is called either from
   // libazsys.so or from libjvm.so
   if (VM::isZing()) {
-    CodeCache *libazsys = Profiler::instance()->findLibraryByName("libazsys");
+    CodeCache *libazsys = Libraries::instance()->findLibraryByName("libazsys");
     if (libazsys != NULL) {
       void **entry = libazsys->findImport(im_pthread_setspecific);
       if (entry != NULL) {
@@ -197,7 +198,7 @@ static void **lookupThreadEntry() {
     }
   }
 
-  CodeCache *lib = Profiler::instance()->findJvmLibrary("libj9thr");
+  CodeCache *lib = Libraries::instance()->findJvmLibrary("libj9thr");
   return lib != NULL ? lib->findImport(im_pthread_setspecific) : NULL;
 }
 
@@ -295,7 +296,7 @@ struct PerfEventType {
     } else {
       addr = (__u64)(uintptr_t)dlsym(RTLD_DEFAULT, buf);
       if (addr == 0) {
-        addr = (__u64)(uintptr_t)Profiler::instance()->resolveSymbol(buf);
+        addr = (__u64)(uintptr_t)Libraries::instance()->resolveSymbol(buf);
       }
       if (c == NULL) {
         // If offset is not specified explicitly, add the default breakpoint
@@ -794,7 +795,7 @@ Error PerfEvents::check(Arguments &args) {
   if (!(_ring & RING_KERNEL)) {
     attr.exclude_kernel = 1;
   } else if (!Symbols::haveKernelSymbols()) {
-    Profiler::instance()->updateSymbols(true);
+    Libraries::instance()->updateSymbols(true);
     attr.exclude_kernel = Symbols::haveKernelSymbols() ? 0 : 1;
   }
   if (!(_ring & RING_USER)) {

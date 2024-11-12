@@ -15,11 +15,13 @@
  * limitations under the License.
  */
 
+#include "common.h"
 #include "vmEntry.h"
 #include "arguments.h"
 #include "context.h"
 #include "j9Ext.h"
 #include "jniHelper.h"
+#include "libraries.h"
 #include "log.h"
 #include "os.h"
 #include "profiler.h"
@@ -143,7 +145,20 @@ int JavaVersionAccess::get_hotspot_version(char* prop_value) {
   return hs_version;
 }
 
-bool VM::init(JavaVM *vm, bool attach) {
+CodeCache* VM::openJvmLibrary() {
+  if ((void*)_asyncGetCallTrace == nullptr) {
+    return nullptr;
+  }
+
+  Libraries* libraries = Libraries::instance();
+  CodeCache *lib =
+    isOpenJ9()
+        ? libraries->findJvmLibrary("libj9vm")
+        : libraries->findLibraryByAddress((const void *)_asyncGetCallTrace);
+  return lib;
+}
+
+bool VM::initShared(JavaVM* vm) {
   if (_jvmti != NULL)
     return true;
 
@@ -181,11 +196,11 @@ bool VM::init(JavaVM *vm, bool attach) {
   _asyncGetCallTrace = (AsyncGetCallTrace)dlsym(_libjvm, "AsyncGetCallTrace");
   _getManagement = (JVM_GetManagement)dlsym(_libjvm, "JVM_GetManagement");
 
-  Profiler *profiler = Profiler::instance();
-  profiler->updateSymbols(false);
+  Libraries *libraries = Libraries::instance();
+  libraries->updateSymbols(false);
 
   _openj9 = !_hotspot && J9Ext::initialize(
-                             _jvmti, profiler->resolveSymbol("j9thread_self*"));
+                             _jvmti, libraries->resolveSymbol("j9thread_self*"));
 
   if (_openj9) {
     if (_jvmti->GetSystemProperty("jdk.extensions.version", &prop) == 0) {
@@ -227,12 +242,6 @@ bool VM::init(JavaVM *vm, bool attach) {
     prop = NULL;
   }
   if (_jvmti->GetSystemProperty("java.vm.version", &prop) == 0) {
-    if (_java_version == 0) {
-      // java.runtime.version was not found; try using java.vm.version to extract the information
-      JavaFullVersion version = JavaVersionAccess::get_java_version(prop);
-      _java_version = version.major;
-      _java_update_version = version.update;
-    }
     _hotspot_version = JavaVersionAccess::get_hotspot_version(prop);
     _jvmti->Deallocate((unsigned char *)prop);
     prop = NULL;
@@ -248,13 +257,8 @@ bool VM::init(JavaVM *vm, bool attach) {
     _java_version = _hotspot_version;
   }
 
-  _can_sample_objects = !_hotspot || hotspot_version() >= 11;
-
-  CodeCache *lib =
-      isOpenJ9()
-          ? profiler->findJvmLibrary("libj9vm")
-          : profiler->findLibraryByAddress((const void *)_asyncGetCallTrace);
-  if (lib == NULL) {
+  CodeCache *lib = openJvmLibrary();
+  if (lib == nullptr) {
     return false;
   }
 
@@ -263,10 +267,32 @@ bool VM::init(JavaVM *vm, bool attach) {
     lib->mark(isZeroInterpreterMethod);
   } else if (isOpenJ9()) {
     lib->mark(isOpenJ9InterpreterMethod);
-    CodeCache *libjit = profiler->findJvmLibrary("libj9jit");
+    CodeCache *libjit = libraries->findJvmLibrary("libj9jit");
     if (libjit != NULL) {
       libjit->mark(isOpenJ9JitStub);
     }
+  }
+  return true;
+}
+
+bool VM::initLibrary(JavaVM *vm) {
+  TEST_LOG("VM::initLibrary");
+  if (!initShared(vm)) {
+    return false;
+  }
+  ready(jvmti(), jni());
+  return true;
+}
+
+bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
+  TEST_LOG("VM::initProfilerBridge");
+  if (!initShared(vm)) {
+    return false;
+  }
+
+  CodeCache *lib = openJvmLibrary();
+  if (lib == nullptr) {
+    return false;
   }
 
   if (!attach && hotspot_version() == 8 && OS::isLinux()) {
@@ -277,10 +303,6 @@ bool VM::init(JavaVM *vm, bool attach) {
       applyPatch(func, (const char *)resolveMethodId,
                  (const char *)resolveMethodIdEnd);
     }
-  }
-
-  if (attach) {
-    ready(jvmti(), jni());
   }
 
   jvmtiCapabilities potential_capabilities = {0};
@@ -343,12 +365,12 @@ bool VM::init(JavaVM *vm, bool attach) {
   } else {
     // DebugNonSafepoints is automatically enabled with CompiledMethodLoad,
     // otherwise we set the flag manually
-    char *flag_addr = (char *)JVMFlag::find("DebugNonSafepoints");
+    char *flag_addr = (char *)JVMFlag::find("DebugNonSafepoints", {JVMFlag::Type::Bool});
     if (flag_addr != NULL) {
       *flag_addr = 1;
     }
   }
-  char *flag_addr = (char *)JVMFlag::find("KeepJNIIDs");
+  char *flag_addr = (char *)JVMFlag::find("KeepJNIIDs", {JVMFlag::Type::Bool});
   if (flag_addr != NULL) {
     *flag_addr = 1;
   }
@@ -357,12 +379,19 @@ bool VM::init(JavaVM *vm, bool attach) {
   // profiler to avoid the risk of crashing flag was made obsolete (inert) in 15
   // (see JDK-8228991) and removed in 16 (see JDK-8231560)
   if (hotspot_version() < 15) {
-    char *flag_addr = (char *)JVMFlag::find("UseAdaptiveGCBoundary");
+    char *flag_addr = (char *)JVMFlag::find("UseAdaptiveGCBoundary", {JVMFlag::Type::Bool});
     _is_adaptive_gc_boundary_flag_set = flag_addr != NULL && *flag_addr == 1;
   }
 
+  // Make sure we reload method IDs upon class retransformation
+  JVMTIFunctions *functions = *(JVMTIFunctions **)_jvmti;
+  _orig_RedefineClasses = functions->RedefineClasses;
+  _orig_RetransformClasses = functions->RetransformClasses;
+  functions->RedefineClasses = RedefineClassesHook;
+  functions->RetransformClasses = RetransformClassesHook;
+
   if (attach) {
-    loadAllMethodIDs(jvmti(), jni());
+    loadAllMethodIDs(_jvmti, jni());
     _jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);
     _jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD);
   } else {
@@ -382,13 +411,6 @@ void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
     VMStructs::ready();
   }
   _libjava = getLibraryHandle("libjava.so");
-
-  // Make sure we reload method IDs upon class retransformation
-  JVMTIFunctions *functions = *(JVMTIFunctions **)_jvmti;
-  _orig_RedefineClasses = functions->RedefineClasses;
-  _orig_RetransformClasses = functions->RetransformClasses;
-  functions->RedefineClasses = RedefineClassesHook;
-  functions->RetransformClasses = RetransformClassesHook;
 }
 
 void VM::applyPatch(char *func, const char *patch, const char *end_patch) {
@@ -445,14 +467,14 @@ void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
 }
 
 void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
-  jint class_count;
-  jclass *classes;
-  if (jvmti->GetLoadedClasses(&class_count, &classes) == 0) {
-    for (int i = 0; i < class_count; i++) {
-      loadMethodIDs(jvmti, jni, classes[i]);
+    jint class_count;
+    jclass *classes;
+    if (jvmti->GetLoadedClasses(&class_count, &classes) == 0) {
+      for (int i = 0; i < class_count; i++) {
+        loadMethodIDs(jvmti, jni, classes[i]);
+      }
+      jvmti->Deallocate((unsigned char *)classes);
     }
-    jvmti->Deallocate((unsigned char *)classes);
-  }
 }
 
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
@@ -517,7 +539,7 @@ Agent_OnLoad(JavaVM* vm, char* options, void* reserved) {
         return ARGUMENTS_ERROR;
     }
 
-    if (!VM::init(vm, false)) {
+    if (!VM::initProfilerBridge(vm, false)) {
         Log::error("JVM does not support Tool Interface");
         return COMMAND_ERROR;
     }
@@ -526,7 +548,7 @@ Agent_OnLoad(JavaVM* vm, char* options, void* reserved) {
 }
 
 extern "C" DLLEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
-  if (!VM::init(vm, true)) {
+  if (!VM::initLibrary(vm)) {
     return 0;
   }
   return JNI_VERSION_1_6;

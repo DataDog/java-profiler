@@ -24,6 +24,7 @@
 #include "profiler.h"
 #include "thread.h"
 #include "tsc.h"
+#include "vmEntry.h"
 #include "vmStructs.h"
 #include "wallClock.h"
 #include <errno.h>
@@ -58,6 +59,12 @@ public:
   const char *c_str() const { return _c_string; }
   int length() const { return _length; }
 };
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_init0(JNIEnv *env, jclass unused) {
+  // JavaVM* has already been stored when the native library was loaded so we can pass nullptr here
+  return VM::initProfilerBridge(nullptr, true);
+}
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_stop0(JNIEnv *env, jobject unused) {
@@ -282,4 +289,83 @@ Java_com_datadoghq_profiler_JavaProfiler_mallocArenaMax0(JNIEnv *env,
                                                          jobject unused,
                                                          jint maxArenas) {
   OS::mallocArenaMax(maxArenas);
+}
+
+extern "C" DLLEXPORT jstring JNICALL
+Java_com_datadoghq_profiler_JVMAccess_findStringJVMFlag0(JNIEnv *env,
+                                                         jobject unused,
+                                                         jstring flagName) {
+  JniString flag_str(env, flagName);
+  char** value = static_cast<char**>(JVMFlag::find(flag_str.c_str(), {JVMFlag::Type::String}));
+  if (value != NULL && *value != NULL) {
+    return env->NewStringUTF(*value);
+  }
+  return NULL;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JVMAccess_setStringJVMFlag0(JNIEnv *env,
+                                                         jobject unused,
+                                                         jstring flagName,
+                                                         jstring flagValue) {
+  JniString flag_str(env, flagName);
+  JniString value_str(env, flagValue);
+  char** value = static_cast<char**>(JVMFlag::find(flag_str.c_str(), {JVMFlag::Type::String}));
+  if (value != NULL) {
+    *value = strdup(value_str.c_str());
+  }
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JVMAccess_findBooleanJVMFlag0(JNIEnv *env,
+                                                         jobject unused,
+                                                         jstring flagName) {
+  JniString flag_str(env, flagName);
+  char* value = static_cast<char*>(JVMFlag::find(flag_str.c_str(), {JVMFlag::Type::Bool}));
+  if (value != NULL) {
+    return ((*value) & 0xff) == 1;
+  }
+  return false;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JVMAccess_setBooleanJVMFlag0(JNIEnv *env,
+                                                         jobject unused,
+                                                         jstring flagName,
+                                                         jboolean flagValue) {
+  JniString flag_str(env, flagName);
+  char* value = static_cast<char*>(JVMFlag::find(flag_str.c_str(), {JVMFlag::Type::Bool}));
+  if (value != NULL) {
+    *value = flagValue ? 1 : 0;
+  }
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JVMAccess_findIntJVMFlag0(JNIEnv *env,
+                                                         jobject unused,
+                                                         jstring flagName) {
+  JniString flag_str(env, flagName);
+  long* value = static_cast<long*>(JVMFlag::find(flag_str.c_str(), {JVMFlag::Type::Int, JVMFlag::Type::Uint, JVMFlag::Type::Intx, JVMFlag::Type::Uintx, JVMFlag::Type::Uint64_t, JVMFlag::Type::Size_t}));
+  if (value != NULL) {
+    return *value;
+  }
+  return 0;
+}
+
+extern "C" DLLEXPORT jdouble JNICALL
+Java_com_datadoghq_profiler_JVMAccess_findFloatJVMFlag0(JNIEnv *env,
+                                                         jobject unused,
+                                                         jstring flagName) {
+  JniString flag_str(env, flagName);
+  double* value = static_cast<double*>(JVMFlag::find(flag_str.c_str(),{ JVMFlag::Type::Double}));
+  if (value != NULL) {
+    return *value;
+  }
+  return 0.0;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JVMAccess_healthCheck0(JNIEnv *env,
+                                                         jobject unused) {
+  return true;
 }
