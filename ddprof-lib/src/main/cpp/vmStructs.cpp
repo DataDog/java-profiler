@@ -16,6 +16,7 @@
  */
 
 #include "vmStructs.h"
+#include "common.h"
 #include "j9Ext.h"
 #include "safeAccess.h"
 #include "spinLock.h"
@@ -569,11 +570,12 @@ void VMStructs::initThreadBridge(JNIEnv *env) {
   // Get eetop field - a bridge from Java Thread to VMThread
   jclass thread_class = env->GetObjectClass(thread);
   _tid = env->GetFieldID(thread_class, "tid", "J");
-  env->ExceptionClear();
   _eetop = env->GetFieldID(thread_class, "eetop", "J");
-  env->ExceptionClear();
 
   if (_tid == NULL || _eetop == NULL || VM::isOpenJ9()) {
+    // clear any pending exceptions
+    TEST_LOG("J9 thread: tid=%p, eetop=%p", _tid, _eetop);
+    env->ExceptionClear();
     // In JDK 18 and earlier the eetop will be NULL
     // In JDK 19 and later the eetop is an alias to 'threadRef' value
     //  - https://github.com/eclipse-openj9/openj9/blob/ecbfade39c5573ed48e19961708822b5c841b2e7/runtime/oti/vmconstantpool.xml#L239
