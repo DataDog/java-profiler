@@ -2,6 +2,7 @@ package com.datadoghq.profiler.cpu;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
@@ -19,7 +20,15 @@ public class VMStructsBasedCpuTest extends AbstractProfilerTest {
     private ProfiledCode profiledCode;
 
     @Override
+    protected void withTestAssumptions() {
+        // vmstructs based stackwalking will throw ISE on Java 23
+        Assumptions.assumeFalse(Platform.isJavaVersionAtLeast(23));
+    }
+
+    @Override
     protected void before() {
+        // vmstructs based stackwalking will throw ISE on Java 23
+        Assumptions.assumeFalse(Platform.isJavaVersionAtLeast(23));
         profiledCode = new ProfiledCode(profiler);
     }
 
