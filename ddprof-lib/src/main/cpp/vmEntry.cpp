@@ -95,12 +95,18 @@ static void resolveMethodIdEnd() {}
 
 JavaFullVersion JavaVersionAccess::get_java_version(char* prop_value) {
   JavaFullVersion version = {8, 362}; // initial value is 8u362; an arbitrary java version
-  if (strncmp(prop_value, "1.8.0", 5) == 0) {
+  TEST_LOG("version property: %s", prop_value);
+  if (strncmp(prop_value, "1.8.0_", 6) == 0) {
     version.major = 8;
     version.update = atoi(prop_value + 6);
   } else if (strncmp(prop_value, "8.0.", 4) == 0) {
     version.major = 8;
     version.update = atoi(prop_value + 4);
+  } else if (strncmp(prop_value, "25.", 3) == 0 && prop_value[3] != '0') {
+    // Java 8 encoded in java.vm.version system property looks like 25.352-b08
+    // The upcoming Java 25 version will have a form of '25.0.<update>' instead
+    version.major = 8;
+    version.update = atoi(prop_value + 3);
   } else if (strncmp(prop_value, "JRE 1.8.0", 9) == 0) {
     // IBM JDK 8 does not report the 'real' version in any property accessible
     // from JVMTI The only piece of info we can use has the following format
@@ -108,7 +114,6 @@ JavaFullVersion JavaVersionAccess::get_java_version(char* prop_value) {
     // Considering that JDK 8.0.361 is the only release in 2023 we can use
     // that part of the version string to pretend anything after year 2023
     // inclusive is 8.0.361. Not perfect, but this is the only thing we have.
-    JavaFullVersion version;
     version.major = 8;
     char *idx = strstr(prop_value, " 202");
     if (idx != NULL) {
@@ -234,6 +239,7 @@ bool VM::initShared(JavaVM* vm) {
       }
     }
   }
+  TEST_LOG("java.runtime.version: %s", prop);
   if (prop != NULL) {
     JavaFullVersion version = JavaVersionAccess::get_java_version(prop);
     _java_version = version.major;
@@ -242,6 +248,12 @@ bool VM::initShared(JavaVM* vm) {
     prop = NULL;
   }
   if (_jvmti->GetSystemProperty("java.vm.version", &prop) == 0) {
+    TEST_LOG("java.vm.version: %s", prop);
+    if (_java_version == 0) {
+      JavaFullVersion version = JavaVersionAccess::get_java_version(prop);
+      _java_version = version.major;
+      _java_update_version = version.update;
+    }
     _hotspot_version = JavaVersionAccess::get_hotspot_version(prop);
     _jvmti->Deallocate((unsigned char *)prop);
     prop = NULL;
@@ -256,6 +268,7 @@ bool VM::initShared(JavaVM* vm) {
     // - if we failed to resolve the _java_version but have _hotspot_version, let's use the hotspot version as java version
     _java_version = _hotspot_version;
   }
+  TEST_LOG("jvm_version#%d.%d.%d", _java_version, 0, _java_update_version);
 
   CodeCache *lib = openJvmLibrary();
   if (lib == nullptr) {
