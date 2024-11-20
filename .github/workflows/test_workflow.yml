@@ -46,6 +46,16 @@ jobs:
           export LIBC=glibc
           export JAVA_TEST_HOME=$(pwd)/test_jdk
           export SANITIZER=${{ matrix.config }}
+          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
+              split($2, v, "[._]");
+              if (v[1] == "1") {
+              # Java 8 or older: Include major, minor, and update
+              printf "%s.%s.%s\n", v[2], v[3], v[4]
+            } else {
+              # Java 9 or newer: Major, minor, and patch
+              printf "%s.%s.%s\n", v[1], v[2], v[3]
+            }
+          }')
           ./gradlew :ddprof-test:test${{ matrix.config }}  
           if [ $? -ne 0 ]; then 
             echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}.txt
@@ -109,6 +119,16 @@ jobs:
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
           export SANITIZER=${{ matrix.config }}
+          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
+              split($2, v, "[._]");
+              if (v[1] == "1") {
+              # Java 8 or older: Include major, minor, and update
+              printf "%s.%s.%s\n", v[2], v[3], v[4]
+            } else {
+              # Java 9 or newer: Major, minor, and patch
+              printf "%s.%s.%s\n", v[1], v[2], v[3]
+            }
+          }')
           ./gradlew :ddprof-test:test${{ matrix.config }}
           if [ $? -ne 0 ]; then 
             echo "ubuntu-jdk-${{ matrix.java_version }}-${{ matrix.config }}" >> failures_ubuntu-jdk-${{ matrix.java_version }}-${{ matrix.config }}.txt
@@ -169,6 +189,16 @@ jobs:
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
+          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
+              split($2, v, "[._]");
+              if (v[1] == "1") {
+              # Java 8 or older: Include major, minor, and update
+              printf "%s.%s.%s\n", v[2], v[3], v[4]
+            } else {
+              # Java 9 or newer: Major, minor, and patch
+              printf "%s.%s.%s\n", v[1], v[2], v[3]
+            }
+          }')
           chmod a+x gradlew
           ./gradlew :ddprof-test:test${{ matrix.config }}
           if [ $? -ne 0 ]; then 
@@ -233,6 +263,16 @@ jobs:
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
           export SANITIZER=${{ matrix.config }}
+          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
+              split($2, v, "[._]");
+              if (v[1] == "1") {
+              # Java 8 or older: Include major, minor, and update
+              printf "%s.%s.%s\n", v[2], v[3], v[4]
+            } else {
+              # Java 9 or newer: Major, minor, and patch
+              printf "%s.%s.%s\n", v[1], v[2], v[3]
+            }
+          }')
           ./gradlew :ddprof-test:test${{ matrix.config }}
           if [ $? -ne 0 ]; then 
             echo "glibc-oracle8-${{ matrix.config }}" >> failures_glibc-oracle8-${{ matrix.config }}.txt
@@ -295,6 +335,16 @@ jobs:
           export LIBC=musl
           export JAVA_TEST_HOME=$(pwd)/test_jdk
           export SANITIZER=${{ matrix.config }}
+          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
+              split($2, v, "[._]");
+              if (v[1] == "1") {
+              # Java 8 or older: Include major, minor, and update
+              printf "%s.%s.%s\n", v[2], v[3], v[4]
+            } else {
+              # Java 9 or newer: Major, minor, and patch
+              printf "%s.%s.%s\n", v[1], v[2], v[3]
+            }
+          }')
           ./gradlew :ddprof-test:test${{ matrix.config }}
           if [ $? -ne 0 ]; then 
             echo "musl-${{ matrix.java_version }}-${{ matrix.config }}" >> failures_musl-${{ matrix.java_version }}-${{ matrix.config }}.txt
@@ -380,6 +430,16 @@ jobs:
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
           export SANITIZER=${{ matrix.config }}
+          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
+              split($2, v, "[._]");
+              if (v[1] == "1") {
+              # Java 8 or older: Include major, minor, and update
+              printf "%s.%s.%s\n", v[2], v[3], v[4]
+            } else {
+              # Java 9 or newer: Major, minor, and patch
+              printf "%s.%s.%s\n", v[1], v[2], v[3]
+            }
+          }')
           ./gradlew :ddprof-test:test${{ matrix.config }}
           if [ $? -ne 0 ]; then 
             echo "glibc-zing-${{ matrix.java_version }}-${{ matrix.config }}" >> failures_zing-${{ matrix.java_version }}-${{ matrix.config }}.txt
