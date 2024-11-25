@@ -82,10 +82,14 @@ private:
 
   jlong getMaxMemory(JNIEnv *env);
 
-  static LivenessTracker *const _instance;
-
 public:
-  static LivenessTracker *instance() { return _instance; }
+  static LivenessTracker *instance() {
+    static LivenessTracker instance;
+    return &instance;
+  }
+  // Delete copy constructor and assignment operator to prevent copies
+  LivenessTracker(const LivenessTracker&) = delete;
+  LivenessTracker& operator=(const LivenessTracker&) = delete;
 
   LivenessTracker()
       : _initialized(false), _enabled(false), _stored_error(Error::OK),
