@@ -161,6 +161,8 @@ private:
 
   static bool crashHandler(int signo, siginfo_t *siginfo, void *ucontext);
 
+  static Profiler *const _instance;
+
 public:
   Profiler()
       : _state(NEW), _class_unload_hook_trap(2),
@@ -180,12 +182,8 @@ public:
   }
 
   static Profiler *instance() {
-    static Profiler instance;
-    return &instance;
+    return _instance;
   }
-  // Delete copy constructor and assignment operator to prevent copies
-  Profiler(const Profiler&) = delete;
-  Profiler& operator=(const Profiler&) = delete;
 
   u64 total_samples() { return _total_samples; }
   int max_stack_depth() { return _max_stack_depth; }

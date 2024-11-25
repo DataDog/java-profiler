@@ -48,6 +48,9 @@
 #include <sys/param.h>
 #include <unistd.h>
 
+// The instance is not deleted on purpose, since profiler structures
+// can be still accessed concurrently during VM termination
+Profiler *const Profiler::_instance = new Profiler();
 volatile bool Profiler::_signals_initialized = false;
 
 static void (*orig_trapHandler)(int signo, siginfo_t *siginfo, void *ucontext);
