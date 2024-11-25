@@ -5,8 +5,6 @@
 
 class Libraries {
  private:
-  static Libraries * _instance;
-
   CodeCacheArray _native_libs;
   CodeCache _runtime_stubs;
 
@@ -21,7 +19,14 @@ class Libraries {
   CodeCache *findLibraryByName(const char *lib_name);
   CodeCache *findLibraryByAddress(const void *address);
 
-  static Libraries *instance() { return _instance; }
+  static Libraries *instance() {
+    static Libraries instance;
+    return &instance;
+  }
+
+  // Delete copy constructor and assignment operator to prevent copies
+  Libraries(const Libraries&) = delete;
+  Libraries& operator=(const Libraries&) = delete;
 };
 
 #endif // _LIBRARIES_H

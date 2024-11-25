@@ -48,9 +48,6 @@
 #include <sys/param.h>
 #include <unistd.h>
 
-// The instance is not deleted on purpose, since profiler structures
-// can be still accessed concurrently during VM termination
-Profiler *const Profiler::_instance = new Profiler();
 volatile bool Profiler::_signals_initialized = false;
 
 static void (*orig_trapHandler)(int signo, siginfo_t *siginfo, void *ucontext);
@@ -138,12 +135,12 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 }
 
 int Profiler::registerThread(int tid) {
-  return _instance->_cpu_engine->registerThread(tid) |
-         _instance->_wall_engine->registerThread(tid);
+  return instance()->_cpu_engine->registerThread(tid) |
+         instance()->_wall_engine->registerThread(tid);
 }
 void Profiler::unregisterThread(int tid) {
-  _instance->_cpu_engine->unregisterThread(tid);
-  _instance->_wall_engine->unregisterThread(tid);
+  instance()->_cpu_engine->unregisterThread(tid);
+  instance()->_wall_engine->unregisterThread(tid);
 }
 
 const char *Profiler::asgctError(int code) {
