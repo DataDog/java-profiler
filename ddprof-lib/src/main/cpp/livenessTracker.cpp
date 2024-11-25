@@ -33,7 +33,6 @@
 #include <jni.h>
 #include <string.h>
 
-LivenessTracker *const LivenessTracker::_instance = new LivenessTracker();
 constexpr int LivenessTracker::MAX_TRACKING_TABLE_SIZE;
 constexpr int LivenessTracker::MIN_SAMPLING_INTERVAL;
 

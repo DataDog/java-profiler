@@ -5,8 +5,6 @@
 #include "vmEntry.h"
 #include "vmStructs.h"
 
-Libraries* Libraries::_instance = new Libraries();
-
 void Libraries::mangle(const char *name, char *buf, size_t size) {
   char *buf_end = buf + size;
   strcpy(buf, "_ZN");
