@@ -29,7 +29,7 @@ def static arch() {
 
 @SuppressWarnings('GroovyFallthrough')
 def static archIdentifier() {
-  String reportedArch = System.getProperty('os.arch')
+  String reportedArch = System.getProperty('os.arch').toLowerCase()
   switch (reportedArch) {
     case 'x86_64':
     case 'amd64':
@@ -125,3 +125,7 @@ ext {
   archIdentifier = this.&archIdentifier
   javaHome = this.&javaHome
 }
+
+// Print architecture details
+println "Detected Architecture: ${arch()}"
+println "Architecture Identifier: ${archIdentifier()}"
