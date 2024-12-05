@@ -1,17 +1,6 @@
 /*
- * Copyright 2016 Andrei Pangin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright The async-profiler authors
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _PROFILER_H
@@ -98,7 +87,8 @@ private:
   void *_timer_id;
 
   u64 _total_samples;
-  u64 _failures[ASGCT_FAILURE_TYPES];
+  u64 _total_stack_walk_time;
+    u64 _failures[ASGCT_FAILURE_TYPES];
 
   SpinLock _class_map_lock;
   SpinLock _locks[CONCURRENCY_LEVEL];
@@ -213,7 +203,8 @@ public:
   Error stop();
   Error flushJfr();
   Error dump(const char *path, const int length);
-  void switchThreadEvents(jvmtiEventMode mode);
+  void logStats();
+    void switchThreadEvents(jvmtiEventMode mode);
   int convertNativeTrace(int native_frames, const void **callchain,
                          ASGCT_CallFrame *frames);
   void recordSample(void *ucontext, u64 weight, int tid, jint event_type,
