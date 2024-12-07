@@ -1,8 +1,10 @@
 #ifdef __linux__
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "codeCache.h"
+#include "libraries.h"
 #include "symbols_linux.h"
 #include "log.h"
 
@@ -27,13 +29,64 @@ TEST(Elf, readSymTable) {
         exit(1);
     }
     char path[PATH_MAX];
-    snprintf(path, sizeof(path) - 1, "%s/../build/test/resources/unresolved-functions/main", cwd);
+    snprintf(path, sizeof(path) - 1, "%s/../build/test/resources/native-libs/unresolved-functions/main", cwd);
     if (access(path, R_OK) != 0) {
         fprintf(stdout, "Missing test resource %s. Skipping the test\n", path);
         exit(0);
     }
     CodeCache cc("test");
     ElfParser::parseFile(&cc, nullptr, path, false);
+}
+
+class ElfReladyn : public ::testing::Test {
+  protected:
+    Libraries* _libs = nullptr;
+    CodeCache* _libreladyn = nullptr;
+
+    // This method is called before each test.
+    void SetUp() override {
+        char cwd[PATH_MAX - 64];
+        if (getcwd(cwd, sizeof(cwd)) == nullptr) {
+            exit(1);
+        }
+        char path[PATH_MAX];
+        snprintf(path, sizeof(path) - 1, "%s/../build/test/resources/native-libs/reladyn-lib/libreladyn.so", cwd);
+        if (access(path, R_OK) != 0) {
+            fprintf(stdout, "Missing test resource %s. Skipping the test\n", path);
+            exit(0);
+        }
+        void* handle = dlopen(path, RTLD_NOW);
+        ASSERT_THAT(handle, ::testing::NotNull());
+
+        _libs = Libraries::instance();
+        _libs->updateSymbols(false);
+        _libreladyn = _libs->findLibraryByName("libreladyn");
+        ASSERT_THAT(_libreladyn, ::testing::NotNull());
+    }
+
+    // This method is called after each test.
+    void TearDown() override {
+        // Clean up resources.
+    }
+
+    CodeCache* libreladyn() {
+        return _libreladyn;
+    }
+};
+
+TEST_F(ElfReladyn, resolveFromRela_plt) {
+    void* sym = libreladyn()->findImport(im_pthread_create);
+    ASSERT_THAT(sym, ::testing::NotNull());
+}
+
+TEST_F(ElfReladyn, resolveFromRela_dyn_R_GLOB_DAT) {
+    void* sym = libreladyn()->findImport(im_pthread_setspecific);
+    ASSERT_THAT(sym, ::testing::NotNull());
+}
+
+TEST_F(ElfReladyn, resolveFromRela_dyn_R_ABS64) {
+    void* sym = libreladyn()->findImport(im_pthread_exit);
+    ASSERT_THAT(sym, ::testing::NotNull());
 }
 
 class ElfTest : public ::testing::Test {
@@ -247,7 +300,7 @@ TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
 
     // Construct the path to the test resource
     char path[PATH_MAX];
-    snprintf(path, sizeof(path) - 1, "%s/../build/test/resources/small-lib/libsmall-lib.so", cwd);
+    snprintf(path, sizeof(path) - 1, "%s/../build/test/resources/native-libs/small-lib/libsmall-lib.so", cwd);
     if (access(path, R_OK) != 0) {
         fprintf(stdout, "Missing test resource %s. Skipping the test\n", path);
         exit(1);
