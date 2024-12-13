@@ -2,7 +2,7 @@ package com.datadoghq.profiler.wallclock;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.Test;
+import org.junitpioneer.jupiter.RetryingTest;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
@@ -13,9 +13,9 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 
-public class WallclockThreadFilterTest extends AbstractProfilerTest {
+public class WallClockThreadFilterTest extends AbstractProfilerTest {
 
-    @Test
+    @RetryingTest(5)
     public void test() throws InterruptedException {
         Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();

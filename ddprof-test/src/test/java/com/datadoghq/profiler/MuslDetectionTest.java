@@ -15,8 +15,9 @@ public class MuslDetectionTest {
         String libc = System.getenv("LIBC");
         Assumptions.assumeTrue(libc != null, "not running in CI, so LIBC envvar not set");
         boolean isMusl = "musl".equalsIgnoreCase(libc);
-        assertEquals(isMusl, JavaProfiler.isMuslProcSelfMaps());
-        assertEquals(isMusl, JavaProfiler.isMuslJavaExecutable());
-        assertEquals(isMusl, JavaProfiler.isMusl());
+        OperatingSystem os = OperatingSystem.current();
+        assertEquals(isMusl, os.isMuslProcSelfMaps());
+        assertEquals(isMusl, os.isMuslJavaExecutable());
+        assertEquals(isMusl, os.isMusl());
     }
 }

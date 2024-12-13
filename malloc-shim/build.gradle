@@ -1,18 +1,24 @@
 plugins {
-    id 'cpp-library'
+  id 'cpp-library'
 }
 
 group = 'com.datadoghq'
 version = '0.1'
 
 tasks.withType(CppCompile).configureEach {
-    compilerArgs.addAll(
-        ["-O3", "-fno-omit-frame-pointer", "-fvisibility=hidden", "-std=c++11", "-DPROFILER_VERSION=\"${project.getProperty('version')}\""]
+  compilerArgs.addAll(
+    [
+      "-O3",
+      "-fno-omit-frame-pointer",
+      "-fvisibility=hidden",
+      "-std=c++11",
+      "-DPROFILER_VERSION=\"${project.getProperty('version')}\""
+    ]
     )
 }
 
 library {
-    baseName = "debug"
-    targetMachines = [machines.linux.x86_64]
-    linkage = [Linkage.SHARED]
+  baseName = "debug"
+  targetMachines = [machines.linux.x86_64]
+  linkage = [Linkage.SHARED]
 }

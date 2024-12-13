@@ -17,82 +17,90 @@
 #ifndef _LIVENESSTRACKER_H
 #define _LIVENESSTRACKER_H
 
-#include <jvmti.h>
-#include <pthread.h>
 #include "arch.h"
 #include "context.h"
 #include "engine.h"
 #include "event.h"
 #include "spinLock.h"
+#include <jvmti.h>
+#include <pthread.h>
 #include <set>
 
 class Recording;
 
 typedef struct TrackingEntry {
-    jweak ref;
-    AllocEvent alloc;
-    jint frames_size;
-    jvmtiFrameInfo *frames;
-    jint tid;
-    jlong time;
-    jlong age;
-    Context ctx;
+  jweak ref;
+  AllocEvent alloc;
+  double skipped;
+  jint frames_size;
+  jvmtiFrameInfo *frames;
+  jint tid;
+  jlong time;
+  jlong age;
+  Context ctx;
 } TrackingEntry;
 
-class LivenessTracker  {
+class LivenessTracker {
   friend Recording;
 
-  private:
-    const static int MAX_TRACKING_TABLE_SIZE = 262144;
-    const static int MIN_SAMPLING_INTERVAL = 524288; // 512kiB
+private:
+  // pre-c++17 we should mark these inline(or out of class)
+  constexpr static int MAX_TRACKING_TABLE_SIZE = 262144;
+  constexpr static int MIN_SAMPLING_INTERVAL = 524288; // 512kiB
 
-    bool _initialized;
-    bool _enabled;
-    Error _stored_error;
+  bool _initialized;
+  bool _enabled;
+  Error _stored_error;
 
-    SpinLock _table_lock;
-    volatile int _table_size;
-    int _table_cap;
-    int _table_max_cap;
-    TrackingEntry *_table;
+  SpinLock _table_lock;
+  volatile int _table_size;
+  int _table_cap;
+  int _table_max_cap;
+  TrackingEntry *_table;
 
-    bool _record_heap_usage;
+  double _subsample_ratio;
 
-    jclass _Class;
-    jmethodID _Class_getName;
+  bool _record_heap_usage;
 
-    volatile u64 _gc_epoch;
-    volatile u64 _last_gc_epoch;
+  jclass _Class;
+  jmethodID _Class_getName;
 
-    size_t _used_after_last_gc;
+  volatile u64 _gc_epoch;
+  volatile u64 _last_gc_epoch;
 
-    Error initialize(Arguments& args);
-    Error initialize_table(JNIEnv* jni, int sampling_interval);
+  size_t _used_after_last_gc;
 
-    void cleanup_table(bool force = false);
+  Error initialize(Arguments &args);
+  Error initialize_table(JNIEnv *jni, int sampling_interval);
 
-    void flush_table(std::set<int> *tracked_thread_ids);
+  void cleanup_table(bool force = false);
 
-    void onGC();
-    void runCleanup();
+  void flush_table(std::set<int> *tracked_thread_ids);
 
-    jlong getMaxMemory(JNIEnv* env);
+  void onGC();
+  void runCleanup();
 
-    static LivenessTracker* const _instance;
+  jlong getMaxMemory(JNIEnv *env);
 
-  public:
-    static LivenessTracker* instance() {
-        return _instance;
-    }
+  static LivenessTracker *const _instance;
 
-    LivenessTracker() : _initialized(false), _enabled(false), _stored_error(Error::OK), _table_size(0), _table_cap(0), _table(NULL), _table_max_cap(0), _record_heap_usage(false), _Class(NULL), _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0), _used_after_last_gc(0) {}
+public:
+  static LivenessTracker *instance() { return _instance; }
 
-    Error start(Arguments& args);
-    void stop();
-    void track(JNIEnv* env, AllocEvent &event, jint tid, jobject object, int num_frames, jvmtiFrameInfo* frames);
-    void flush(std::set<int> &tracked_thread_ids);
+  LivenessTracker()
+      : _initialized(false), _enabled(false), _stored_error(Error::OK),
+        _table_size(0), _table_cap(0), _table_max_cap(0), _table(NULL),
+        _subsample_ratio(0.1), _record_heap_usage(false), _Class(NULL),
+        _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0),
+        _used_after_last_gc(0) {}
 
-    static void JNICALL GarbageCollectionFinish(jvmtiEnv *jvmti_env);
+  Error start(Arguments &args);
+  void stop();
+  void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object,
+             int num_frames, jvmtiFrameInfo *frames);
+  void flush(std::set<int> &tracked_thread_ids);
+
+  static void JNICALL GarbageCollectionFinish(jvmtiEnv *jvmti_env);
 };
 
 #endif // _LIVENESSTRACKER_H

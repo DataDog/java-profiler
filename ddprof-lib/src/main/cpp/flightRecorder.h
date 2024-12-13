@@ -29,8 +29,8 @@
 #include "dictionary.h"
 #include "event.h"
 #include "frame.h"
-#include "log.h"
 #include "jfrMetadata.h"
+#include "log.h"
 #include "mutex.h"
 #include "objectSampler.h"
 #include "threadFilter.h"
@@ -52,63 +52,67 @@ class Profiler;
 class Lookup;
 
 struct CpuTime {
-    u64 real;
-    u64 user;
-    u64 system;
+  u64 real;
+  u64 user;
+  u64 system;
 };
 
 struct CpuTimes {
-    CpuTime proc;
-    CpuTime total;
+  CpuTime proc;
+  CpuTime total;
 };
 
 class SharedLineNumberTable {
-  public:
-    int _size;
-    void* _ptr;
+public:
+  int _size;
+  void *_ptr;
 
-    SharedLineNumberTable(int size, void* ptr) : _size(size), _ptr(ptr) {}
-    ~SharedLineNumberTable();
+  SharedLineNumberTable(int size, void *ptr) : _size(size), _ptr(ptr) {}
+  ~SharedLineNumberTable();
 };
 
 class MethodInfo {
-  public:
-    MethodInfo() : _mark(false), _is_entry(false), _key(0), _modifiers(0),
-     _class(0), _name(0), _sig(0), _line_number_table(nullptr), _type() {}
+public:
+  MethodInfo()
+      : _mark(false), _is_entry(false), _key(0), _class(0),
+        _name(0), _sig(0), _modifiers(0), _line_number_table(nullptr), _type() {}
 
-    bool _mark;
-    bool _is_entry;
-    u32 _key;
-    u32 _class;
-    u32 _name;
-    u32 _sig;
-    jint _modifiers;
-    std::shared_ptr<SharedLineNumberTable> _line_number_table;
-    FrameTypeId _type;
+  bool _mark;
+  bool _is_entry;
+  u32 _key;
+  u32 _class;
+  u32 _name;
+  u32 _sig;
+  jint _modifiers;
+  std::shared_ptr<SharedLineNumberTable> _line_number_table;
+  FrameTypeId _type;
 
-    jint getLineNumber(jint bci) {
-        // if the shared pointer is not pointing to the line number table, consider size 0
-        if (!_line_number_table || _line_number_table->_size == 0) {
-            return 0;
-        }
-
-        int i = 1;
-        while (i < _line_number_table->_size && bci >= ((jvmtiLineNumberEntry*)_line_number_table->_ptr)[i].start_location) {
-            i++;
-        }
-        return ((jvmtiLineNumberEntry*)_line_number_table->_ptr)[i - 1].line_number;
+  jint getLineNumber(jint bci) {
+    // if the shared pointer is not pointing to the line number table, consider
+    // size 0
+    if (!_line_number_table || _line_number_table->_size == 0) {
+      return 0;
     }
 
-    bool isHidden() {
-        // 0x1400 = ACC_SYNTHETIC(0x1000) | ACC_BRIDGE(0x0040)
-        return _modifiers == 0 || (_modifiers & 0x1040);
+    int i = 1;
+    while (i < _line_number_table->_size &&
+           bci >= ((jvmtiLineNumberEntry *)_line_number_table->_ptr)[i]
+                      .start_location) {
+      i++;
     }
+    return ((jvmtiLineNumberEntry *)_line_number_table->_ptr)[i - 1]
+        .line_number;
+  }
+
+  bool isHidden() {
+    // 0x1400 = ACC_SYNTHETIC(0x1000) | ACC_BRIDGE(0x0040)
+    return _modifiers == 0 || (_modifiers & 0x1040);
+  }
 };
 
 class MethodMap : public std::map<jmethodID, MethodInfo> {
-  public:
-    MethodMap() {
-    }
+public:
+  MethodMap() {}
 };
 
 class Recording {
@@ -116,192 +120,203 @@ class Recording {
   friend Profiler;
   friend Lookup;
 
-  private:
-    static char* _agent_properties;
-    static char* _jvm_args;
-    static char* _jvm_flags;
-    static char* _java_command;
+private:
+  static char *_agent_properties;
+  static char *_jvm_args;
+  static char *_jvm_flags;
+  static char *_java_command;
 
-    RecordingBuffer _buf[CONCURRENCY_LEVEL];
-    int _fd;
-    off_t _chunk_start;
-    ThreadFilter _thread_set;
-    MethodMap _method_map;
+  RecordingBuffer _buf[CONCURRENCY_LEVEL];
+  int _fd;
+  off_t _chunk_start;
+  ThreadFilter _thread_set;
+  MethodMap _method_map;
 
-    Arguments _args;
-    u64 _start_time;
-    u64 _recording_start_time;
-    u64 _start_ticks;
-    u64 _recording_start_ticks;
-    u64 _stop_time;
-    u64 _stop_ticks;
+  Arguments _args;
+  u64 _start_time;
+  u64 _recording_start_time;
+  u64 _start_ticks;
+  u64 _recording_start_ticks;
+  u64 _stop_time;
+  u64 _stop_ticks;
 
-    u64 _base_id;
-    u64 _bytes_written;
+  u64 _base_id;
+  u64 _bytes_written;
 
-    int _tid;
-    int _available_processors;
-    int _recorded_lib_count;
+  int _tid;
+  int _available_processors;
+  int _recorded_lib_count;
 
-    bool _cpu_monitor_enabled;
-    Buffer _cpu_monitor_buf;
-    CpuTimes _last_times;
+  bool _cpu_monitor_enabled;
+  Buffer _cpu_monitor_buf;
+  CpuTimes _last_times;
 
-    static float ratio(float value) {
-        return value < 0 ? 0 : value > 1 ? 1 : value;
-    }
+  static float ratio(float value) {
+    return value < 0 ? 0 : value > 1 ? 1 : value;
+  }
 
-  public:
-    Recording(int fd, Arguments& args);
-    ~Recording();
-    
-    void copyTo(int target_fd);
-    off_t finishChunk();
+public:
+  Recording(int fd, Arguments &args);
+  ~Recording();
 
-    off_t finishChunk(bool end_recording);
-    void switchChunk(int fd);
+  void copyTo(int target_fd);
+  off_t finishChunk();
 
-    void cpuMonitorCycle();
-    void appendRecording(const char* target_file, size_t size);
+  off_t finishChunk(bool end_recording);
+  void switchChunk(int fd);
 
-    RecordingBuffer* buffer(int lock_index);
+  void cpuMonitorCycle();
+  void appendRecording(const char *target_file, size_t size);
 
-    bool parseAgentProperties();
+  RecordingBuffer *buffer(int lock_index);
 
-    void flush(Buffer* buf);
-    void flushIfNeeded(Buffer* buf, int limit = JFR_EVENT_FLUSH_THRESHOLD);
-    void writeHeader(Buffer* buf);
+  bool parseAgentProperties();
 
-    void writeMetadata(Buffer* buf);
+  void flush(Buffer *buf);
+  void flushIfNeeded(Buffer *buf, int limit = JFR_EVENT_FLUSH_THRESHOLD);
+  void writeHeader(Buffer *buf);
 
-    void writeElement(Buffer* buf, const Element* e);
+  void writeMetadata(Buffer *buf);
 
-    void writeEventSizePrefix(Buffer* buf, int start);
+  void writeElement(Buffer *buf, const Element *e);
 
-    void writeRecordingInfo(Buffer* buf);
+  void writeEventSizePrefix(Buffer *buf, int start);
 
-    void writeSettings(Buffer* buf, Arguments& args);
+  void writeRecordingInfo(Buffer *buf);
 
-    void writeStringSetting(Buffer* buf, int category, const char* key, const char* value);
+  void writeSettings(Buffer *buf, Arguments &args);
 
-    void writeBoolSetting(Buffer* buf, int category, const char* key, bool value);
+  void writeStringSetting(Buffer *buf, int category, const char *key,
+                          const char *value);
 
-    void writeIntSetting(Buffer* buf, int category, const char* key, long long value);
-    void writeListSetting(Buffer* buf, int category, const char* key, const char* base, int offset);
+  void writeBoolSetting(Buffer *buf, int category, const char *key, bool value);
 
-    void writeDatadogSetting(Buffer* buf, int length, const char* name, const char* value, const char* unit);
+  void writeIntSetting(Buffer *buf, int category, const char *key,
+                       long long value);
+  void writeListSetting(Buffer *buf, int category, const char *key,
+                        const char *base, int offset);
 
-    void writeDatadogProfilerConfig(Buffer* buf,
-                                    long cpuInterval,
-                                    long wallInterval,
-                                    long allocInterval,
-                                    long memleakInterval,
-                                    long memleakCapacity,
-                                    bool gcGenerations,
-                                    int modeMask,
-                                    const char* cpuEngine);
+  void writeDatadogSetting(Buffer *buf, int length, const char *name,
+                           const char *value, const char *unit);
 
-    void writeHeapUsage(Buffer* buf, long value, bool live);
-    void writeOsCpuInfo(Buffer* buf);
-    void writeJvmInfo(Buffer* buf);
-    void writeSystemProperties(Buffer* buf);
-    void writeNativeLibraries(Buffer* buf);
-    void writeCpool(Buffer* buf);
+  void writeDatadogProfilerConfig(Buffer *buf, long cpuInterval,
+                                  long wallInterval, long allocInterval,
+                                  long memleakInterval, long memleakCapacity,
+                                  double memleakRatio, bool gcGenerations,
+                                  int modeMask, const char *cpuEngine);
 
-    void writeFrameTypes(Buffer* buf);
+  void writeHeapUsage(Buffer *buf, long value, bool live);
+  void writeOsCpuInfo(Buffer *buf);
+  void writeJvmInfo(Buffer *buf);
+  void writeSystemProperties(Buffer *buf);
+  void writeNativeLibraries(Buffer *buf);
+  void writeCpool(Buffer *buf);
 
-    void writeThreadStates(Buffer* buf);
+  void writeFrameTypes(Buffer *buf);
 
-    void writeExecutionModes(Buffer* buf);
-    void writeThreads(Buffer* buf);
+  void writeThreadStates(Buffer *buf);
 
-    void writeStackTraces(Buffer* buf, Lookup* lookup);
+  void writeExecutionModes(Buffer *buf);
+  void writeThreads(Buffer *buf);
 
-    void writeMethods(Buffer* buf, Lookup* lookup);
+  void writeStackTraces(Buffer *buf, Lookup *lookup);
 
-    void writeClasses(Buffer* buf, Lookup* lookup);
+  void writeMethods(Buffer *buf, Lookup *lookup);
 
-    void writePackages(Buffer* buf, Lookup* lookup);
+  void writeClasses(Buffer *buf, Lookup *lookup);
 
-    void writeConstantPoolSection(Buffer* buf, JfrType type, std::map<u32, const char*>& constants);
+  void writePackages(Buffer *buf, Lookup *lookup);
 
-    void writeConstantPoolSection(Buffer* buf, JfrType type, Dictionary* dictionary);
+  void writeConstantPoolSection(Buffer *buf, JfrType type,
+                                std::map<u32, const char *> &constants);
 
-    void writeLogLevels(Buffer* buf);
+  void writeConstantPoolSection(Buffer *buf, JfrType type,
+                                Dictionary *dictionary);
 
-    void writeCounters(Buffer* buf);
+  void writeLogLevels(Buffer *buf);
 
-    void writeContext(Buffer* buf, Context& context);
+  void writeCounters(Buffer *buf);
 
-    void recordExecutionSample(Buffer* buf, int tid, u32 call_trace_id, ExecutionEvent* event);
-    void recordMethodSample(Buffer* buf, int tid, u32 call_trace_id, ExecutionEvent* event);
-    void recordWallClockEpoch(Buffer* buf, WallClockEpochEvent* event);
-    void recordTraceRoot(Buffer* buf, int tid, TraceRootEvent* event);
-    void recordQueueTime(Buffer* buf, int tid, QueueTimeEvent* event);
-    void recordAllocation(RecordingBuffer* buf, int tid, u32 call_trace_id, AllocEvent* event);
-    void recordHeapLiveObject(Buffer* buf, int tid, u32 call_trace_id, ObjectLivenessEvent* event);
-    void recordMonitorBlocked(Buffer* buf, int tid, u32 call_trace_id, LockEvent* event);
-    void recordThreadPark(Buffer* buf, int tid, u32 call_trace_id, LockEvent* event);
-    void recordCpuLoad(Buffer* buf, float proc_user, float proc_system, float machine_total);
-    void addThread(int tid);
+  void writeContext(Buffer *buf, Context &context);
+
+  void recordExecutionSample(Buffer *buf, int tid, u32 call_trace_id,
+                             ExecutionEvent *event);
+  void recordMethodSample(Buffer *buf, int tid, u32 call_trace_id,
+                          ExecutionEvent *event);
+  void recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event);
+  void recordTraceRoot(Buffer *buf, int tid, TraceRootEvent *event);
+  void recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event);
+  void recordAllocation(RecordingBuffer *buf, int tid, u32 call_trace_id,
+                        AllocEvent *event);
+  void recordHeapLiveObject(Buffer *buf, int tid, u32 call_trace_id,
+                            ObjectLivenessEvent *event);
+  void recordMonitorBlocked(Buffer *buf, int tid, u32 call_trace_id,
+                            LockEvent *event);
+  void recordThreadPark(Buffer *buf, int tid, u32 call_trace_id,
+                        LockEvent *event);
+  void recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
+                     float machine_total);
+  void addThread(int tid);
 };
 
 class Lookup {
-  public:
-    Recording* _rec;
-    MethodMap* _method_map;
-    Dictionary* _classes;
-    Dictionary _packages;
-    Dictionary _symbols;
+public:
+  Recording *_rec;
+  MethodMap *_method_map;
+  Dictionary *_classes;
+  Dictionary _packages;
+  Dictionary _symbols;
 
-  private:
-    void fillNativeMethodInfo(MethodInfo* mi, const char* name, const char* lib_name);
-    void cutArguments(char* func);
-    void fillJavaMethodInfo(MethodInfo* mi, jmethodID method, bool first_time);
-    bool has_prefix(const char* str, const char* prefix) const {
-        return strncmp(str, prefix, strlen(prefix)) == 0;
-    }
+private:
+  void fillNativeMethodInfo(MethodInfo *mi, const char *name,
+                            const char *lib_name);
+  void cutArguments(char *func);
+  void fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time);
+  bool has_prefix(const char *str, const char *prefix) const {
+    return strncmp(str, prefix, strlen(prefix)) == 0;
+  }
 
-  public:
-    Lookup(Recording* rec, MethodMap* method_map, Dictionary* classes) :
-        _rec(rec), _method_map(method_map), _classes(classes), _packages(), _symbols() {}
+public:
+  Lookup(Recording *rec, MethodMap *method_map, Dictionary *classes)
+      : _rec(rec), _method_map(method_map), _classes(classes), _packages(),
+        _symbols() {}
 
-    MethodInfo* resolveMethod(ASGCT_CallFrame& frame);
-    u32 getPackage(const char* class_name);
-    u32 getSymbol(const char* name);
+  MethodInfo *resolveMethod(ASGCT_CallFrame &frame);
+  u32 getPackage(const char *class_name);
+  u32 getSymbol(const char *name);
 };
 
 class FlightRecorder {
   friend Profiler;
-  private:
-    std::string _filename;
-    Arguments _args;
-    Recording* _rec;
 
-    Error newRecording(bool reset);
+private:
+  std::string _filename;
+  Arguments _args;
+  Recording *_rec;
 
-  public:
-    FlightRecorder() : _rec(NULL) {}
-    Error start(Arguments& args, bool reset);
-    void stop();
-    Error dump(const char* filename, const int length);
-    void flush();
-    void wallClockEpoch(int lock_index, WallClockEpochEvent* event);
-    void recordTraceRoot(int lock_index, int tid, TraceRootEvent* event);
-    void recordQueueTime(int lock_index, int tid, QueueTimeEvent* event);
+  Error newRecording(bool reset);
 
-    bool active() const {
-        return _rec != NULL;
-    }
+public:
+  FlightRecorder() : _rec(NULL) {}
+  Error start(Arguments &args, bool reset);
+  void stop();
+  Error dump(const char *filename, const int length);
+  void flush();
+  void wallClockEpoch(int lock_index, WallClockEpochEvent *event);
+  void recordTraceRoot(int lock_index, int tid, TraceRootEvent *event);
+  void recordQueueTime(int lock_index, int tid, QueueTimeEvent *event);
 
-    void recordEvent(int lock_index, int tid, u32 call_trace_id,
-                     int event_type, Event* event, u64 counter);
+  bool active() const { return _rec != NULL; }
 
-    void recordLog(LogLevel level, const char* message, size_t len);
+  void recordEvent(int lock_index, int tid, u32 call_trace_id, int event_type,
+                   Event *event);
 
-    void recordDatadogSetting(int lock_index, int length, const char* name, const char* value, const char* unit);
+  void recordLog(LogLevel level, const char *message, size_t len);
 
-    void recordHeapUsage(int lock_index, long value, bool live);
+  void recordDatadogSetting(int lock_index, int length, const char *name,
+                            const char *value, const char *unit);
+
+  void recordHeapUsage(int lock_index, long value, bool live);
 };
 
 #endif // _FLIGHTRECORDER_H

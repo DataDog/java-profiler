@@ -6,6 +6,10 @@ on:
     - cron: '0 3 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   run-test:
     uses: ./.github/workflows/test_workflow.yml
@@ -17,7 +21,7 @@ jobs:
     if: failure()
     steps:
       - name: Download failed tests artifact
-        uses: actions/download-artifact@v2
+        uses: actions/download-artifact@v3
         with:
           name: failures
           path: ./artifacts

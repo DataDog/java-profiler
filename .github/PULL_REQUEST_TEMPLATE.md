@@ -19,5 +19,6 @@ unless the change does not modify code (e.g. only modifies docs, comments).
 - [ ] If this PR touches code that signs or publishes builds or packages, or handles
   credentials of any kind, I've requested a review from `@DataDog/security-design-and-guidance`.
 - [ ] This PR doesn't touch any of that.
+- [ ] JIRA: [JIRA-XXXX]
 
 Unsure? Have a question? Request a review!

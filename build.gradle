@@ -14,10 +14,18 @@ plugins {
   id "com.diffplug.spotless" version "6.11.0"
 }
 
-version = "1.10.0"
+version = "1.18.0"
 
 apply plugin: "com.dipien.semantic-version"
 version = project.hasProperty("ddprof_version") ? project.ddprof_version : version
+
+allprojects {
+  repositories {
+    mavenCentral()
+    mavenCentral()
+    gradlePluginPortal()
+  }
+}
 
 repositories {
   mavenLocal()
@@ -35,13 +43,12 @@ repositories {
   }
 }
 
-apply from: "$rootDir/gradle/spotless.gradle"
-
 allprojects {
   group = 'com.datadoghq'
 
   apply from: rootProject.file('common.gradle')
   apply from: rootProject.file('gradle/configurations.gradle')
+  apply from: "$rootDir/gradle/spotless.gradle"
 }
 
 subprojects {

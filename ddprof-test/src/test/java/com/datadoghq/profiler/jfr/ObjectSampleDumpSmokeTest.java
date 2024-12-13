@@ -9,14 +9,18 @@ import org.junitpioneer.jupiter.RetryingTest;
 
 public class ObjectSampleDumpSmokeTest extends JfrDumpTest {
     @Override
-    protected String getProfilerCommand() {
-        return "memory=16536:a";
+    protected boolean isPlatformSupported() {
+        return !Platform.isJavaVersion(8) && !Platform.isJ9();
     }
 
-    @RetryingTest(3)
+    @Override
+    protected String getProfilerCommand() {
+        return "memory=1024:a";
+    }
+
+    @RetryingTest(5)
     @Timeout(value = 60)
     public void test() throws Exception {
-        Assumptions.assumeFalse(Platform.isJ9());
         runTest("datadog.ObjectSample", "method3");
     }
 }

@@ -14,42 +14,44 @@
  * limitations under the License.
  */
 
-#include <jvmti.h>
-#include "jniHelper.h"
 #include "tsc.h"
+#include "jniHelper.h"
 #include "vmEntry.h"
-
+#include <jvmti.h>
 
 bool TSC::_initialized = false;
 bool TSC::_enabled = false;
 u64 TSC::_offset = 0;
 u64 TSC::_frequency = 1000000000;
 
-
 void TSC::initialize() {
-    JNIEnv* env = VM::jni();
+  JNIEnv *env = VM::jni();
 
-    jfieldID jvm;
-    jmethodID getTicksFrequency, counterTime;
-    jclass cls = env->FindClass("jdk/jfr/internal/JVM");
-    if (cls != NULL
-            && ((jvm = env->GetStaticFieldID(cls, "jvm", "Ljdk/jfr/internal/JVM;")) != NULL)
-            && ((getTicksFrequency = env->GetMethodID(cls, "getTicksFrequency", "()J")) != NULL)
-            && ((counterTime = env->GetStaticMethodID(cls, "counterTime", "()J")) != NULL)) {
+  jfieldID jvm;
+  jmethodID getTicksFrequency, counterTime;
+  jclass cls = env->FindClass("jdk/jfr/internal/JVM");
+  if (cls != NULL &&
+      ((jvm = env->GetStaticFieldID(cls, "jvm", "Ljdk/jfr/internal/JVM;")) !=
+       NULL) &&
+      ((getTicksFrequency =
+            env->GetMethodID(cls, "getTicksFrequency", "()J")) != NULL) &&
+      ((counterTime = env->GetStaticMethodID(cls, "counterTime", "()J")) !=
+       NULL)) {
 
-        u64 frequency = env->CallLongMethod(env->GetStaticObjectField(cls, jvm), getTicksFrequency);
-        if (jniExceptionCheck(env, true)) {
-            frequency = 0;
-        }
-        if (frequency > 1000000000) {
-            // Default 1GHz frequency might mean that rdtsc is not available
-            u64 jvm_ticks = env->CallStaticLongMethod(cls, counterTime);
-            _offset = rdtsc() - jvm_ticks;
-            _frequency = frequency;
-            _enabled = true;
-        }
+    u64 frequency = env->CallLongMethod(env->GetStaticObjectField(cls, jvm),
+                                        getTicksFrequency);
+    if (jniExceptionCheck(env, true)) {
+      frequency = 0;
     }
+    if (frequency > 1000000000) {
+      // Default 1GHz frequency might mean that rdtsc is not available
+      u64 jvm_ticks = env->CallStaticLongMethod(cls, counterTime);
+      _offset = rdtsc() - jvm_ticks;
+      _frequency = frequency;
+      _enabled = true;
+    }
+  }
 
-    env->ExceptionClear();
-    _initialized = true;
+  env->ExceptionClear();
+  _initialized = true;
 }

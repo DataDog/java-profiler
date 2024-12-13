@@ -17,29 +17,34 @@
 #ifndef _STACKWALKER_H
 #define _STACKWALKER_H
 
-#include <stdint.h>
+#include "thread.h"
 #include "vmEntry.h"
-
+#include <functional>
+#include <stdint.h>
 
 struct StackContext {
-    const void* pc;
-    uintptr_t sp;
-    uintptr_t fp;
+  const void *pc;
+  uintptr_t sp;
+  uintptr_t fp;
 
-    void set(const void* pc, uintptr_t sp, uintptr_t fp) {
-        this->pc = pc;
-        this->sp = sp;
-        this->fp = fp;
-    }
+  void set(const void *pc, uintptr_t sp, uintptr_t fp) {
+    this->pc = pc;
+    this->sp = sp;
+    this->fp = fp;
+  }
 };
 
 class StackWalker {
-  public:
-    static int walkFP(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool *truncated);
-    static int walkDwarf(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool *truncated);
-    static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, const void* _termination_frame_begin, const void* _termination_frame_end);
+public:
+  static int walkFP(void *ucontext, const void **callchain, int max_depth,
+                    StackContext *java_ctx, bool *truncated);
+  static int walkDwarf(void *ucontext, const void **callchain, int max_depth,
+                       StackContext *java_ctx, bool *truncated);
+  static int walkVM(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
+                    const void *_termination_frame_begin,
+                    const void *_termination_frame_end);
 
-    static void checkFault();
+  static void checkFault(ProfiledThread* thrd);
 };
 
 #endif // _STACKWALKER_H

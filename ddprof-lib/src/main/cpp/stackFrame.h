@@ -17,75 +17,72 @@
 #ifndef _STACKFRAME_H
 #define _STACKFRAME_H
 
+#include "arch.h"
 #include <stdint.h>
 #include <ucontext.h>
-#include "arch.h"
-
 
 class NMethod;
 
 class StackFrame {
-  private:
-    ucontext_t* _ucontext;
+private:
+  ucontext_t *_ucontext;
 
-    static bool withinCurrentStack(uintptr_t address) {
-        // Check that the address is not too far from the stack pointer of current context
-        void* real_sp;
-        return address - (uintptr_t)&real_sp <= 0xffff;
+  static bool withinCurrentStack(uintptr_t address) {
+    // Check that the address is not too far from the stack pointer of current
+    // context
+    void *real_sp;
+    return address - (uintptr_t)&real_sp <= 0xffff;
+  }
+
+public:
+  explicit StackFrame(void *ucontext) { _ucontext = (ucontext_t *)ucontext; }
+
+  void restore(uintptr_t saved_pc, uintptr_t saved_sp, uintptr_t saved_fp) {
+    if (_ucontext != NULL) {
+      pc() = saved_pc;
+      sp() = saved_sp;
+      fp() = saved_fp;
     }
+  }
 
-  public:
-    explicit StackFrame(void* ucontext) {
-        _ucontext = (ucontext_t*)ucontext;
-    }
+  uintptr_t stackAt(int slot) { return ((uintptr_t *)sp())[slot]; }
 
-    void restore(uintptr_t saved_pc, uintptr_t saved_sp, uintptr_t saved_fp) {
-        if (_ucontext != NULL) {
-            pc() = saved_pc;
-            sp() = saved_sp;
-            fp() = saved_fp;
-        }
-    }
+  uintptr_t &pc();
+  uintptr_t &sp();
+  uintptr_t &fp();
 
-    uintptr_t stackAt(int slot) {
-        return ((uintptr_t*)sp())[slot];
-    }
+  uintptr_t &retval();
+  uintptr_t link();
+  uintptr_t arg0();
+  uintptr_t arg1();
+  uintptr_t arg2();
+  uintptr_t arg3();
+  uintptr_t jarg0();
+  uintptr_t method();
+  uintptr_t senderSP();
 
-    uintptr_t& pc();
-    uintptr_t& sp();
-    uintptr_t& fp();
+  void ret();
 
-    uintptr_t& retval();
-    uintptr_t link();
-    uintptr_t arg0();
-    uintptr_t arg1();
-    uintptr_t arg2();
-    uintptr_t arg3();
-    uintptr_t jarg0();
-    uintptr_t method();
-    uintptr_t senderSP();
+  bool unwindStub(instruction_t *entry, const char *name) {
+    return unwindStub(entry, name, pc(), sp(), fp());
+  }
 
-    void ret();
+  bool unwindCompiled(NMethod *nm) {
+    return unwindCompiled(nm, pc(), sp(), fp());
+  }
 
-    bool unwindStub(instruction_t* entry, const char* name) {
-        return unwindStub(entry, name, pc(), sp(), fp());
-    }
+  bool unwindStub(instruction_t *entry, const char *name, uintptr_t &pc,
+                  uintptr_t &sp, uintptr_t &fp);
+  bool unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp, uintptr_t &fp);
 
-    bool unwindCompiled(NMethod* nm) {
-        return unwindCompiled(nm, pc(), sp(), fp());
-    }
+  void adjustCompiled(NMethod *nm, const void *pc, uintptr_t &sp);
 
-    bool unwindStub(instruction_t* entry, const char* name, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
-    bool unwindCompiled(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
+  bool skipFaultInstruction();
 
-    void adjustCompiled(NMethod* nm, const void* pc, uintptr_t& sp);
+  bool checkInterruptedSyscall();
 
-    bool skipFaultInstruction();
-
-    bool checkInterruptedSyscall();
-
-    // Check if PC points to a syscall instruction
-    static bool isSyscall(instruction_t* pc);
+  // Check if PC points to a syscall instruction
+  static bool isSyscall(instruction_t *pc);
 };
 
 #endif // _STACKFRAME_H

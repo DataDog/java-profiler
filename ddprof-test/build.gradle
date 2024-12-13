@@ -1,103 +1,118 @@
 plugins {
-    id 'java'
+  id 'java'
 }
 
 repositories {
-    mavenCentral()
+  mavenCentral()
 }
 
 def addCommonTestDependencies(Configuration configuration) {
-    configuration.dependencies.add(project.dependencies.create('org.junit.jupiter:junit-jupiter-api:5.9.2'))
-    configuration.dependencies.add(project.dependencies.create('org.junit.jupiter:junit-jupiter-engine:5.9.2'))
-    configuration.dependencies.add(project.dependencies.create('org.junit.jupiter:junit-jupiter-params:5.9.2'))
-    configuration.dependencies.add(project.dependencies.create('org.slf4j:slf4j-simple:1.7.32'))
-    configuration.dependencies.add(project.dependencies.create('org.openjdk.jmc:flightrecorder:8.1.0'))
-    configuration.dependencies.add(project.dependencies.create('org.openjdk.jol:jol-core:0.16'))
-    configuration.dependencies.add(project.dependencies.create('org.junit-pioneer:junit-pioneer:1.9.1'))
-    configuration.dependencies.add(project.dependencies.create('org.lz4:lz4-java:1.8.0'))
-    configuration.dependencies.add(project.dependencies.create('org.xerial.snappy:snappy-java:1.1.10.1'))
-    configuration.dependencies.add(project.dependencies.create('com.github.luben:zstd-jni:1.5.5-4'))
-    configuration.dependencies.add(project.dependencies.project(path: ":ddprof-test-tracer"))
+  configuration.dependencies.add(project.dependencies.create('org.junit.jupiter:junit-jupiter-api:5.9.2'))
+  configuration.dependencies.add(project.dependencies.create('org.junit.jupiter:junit-jupiter-engine:5.9.2'))
+  configuration.dependencies.add(project.dependencies.create('org.junit.jupiter:junit-jupiter-params:5.9.2'))
+  configuration.dependencies.add(project.dependencies.create('org.slf4j:slf4j-simple:1.7.32'))
+  configuration.dependencies.add(project.dependencies.create('org.openjdk.jmc:flightrecorder:8.1.0'))
+  configuration.dependencies.add(project.dependencies.create('org.openjdk.jol:jol-core:0.16'))
+  configuration.dependencies.add(project.dependencies.create('org.junit-pioneer:junit-pioneer:1.9.1'))
+  configuration.dependencies.add(project.dependencies.create('org.lz4:lz4-java:1.8.0'))
+  configuration.dependencies.add(project.dependencies.create('org.xerial.snappy:snappy-java:1.1.10.1'))
+  configuration.dependencies.add(project.dependencies.create('com.github.luben:zstd-jni:1.5.5-4'))
+  configuration.dependencies.add(project.dependencies.project(path: ":ddprof-test-tracer"))
 }
 
 configurations.create('testCommon') {
-    canBeConsumed = true
-    canBeResolved = true
+  canBeConsumed = true
+  canBeResolved = true
 }
 
 buildConfigurations.each { config ->
-    def name = config.name
-    if (config.os != osIdentifier() || config.arch != archIdentifier()) {
-        return
-    }
-    logger.debug("Creating configuration for ${name}")
+  def name = config.name
+  if (config.os != osIdentifier() || config.arch != archIdentifier()) {
+    return
+  }
+  logger.debug("Creating configuration for ${name}")
 
-    def cfg = configurations.create("test${name.capitalize()}Implementation") {
-        canBeConsumed = true
-        canBeResolved = true
-        extendsFrom configurations.testCommon
-    }
-    addCommonTestDependencies(cfg)
-    cfg.dependencies.add(project.dependencies.project(path: ":ddprof-lib", configuration: name))
+  def cfg = configurations.create("test${name.capitalize()}Implementation") {
+    canBeConsumed = true
+    canBeResolved = true
+    extendsFrom configurations.testCommon
+  }
+  addCommonTestDependencies(cfg)
+  cfg.dependencies.add(project.dependencies.project(path: ":ddprof-lib", configuration: name))
 
-    def task = tasks.register("test${name}", Test) {
-        onlyIf {
-            config.active
-        }
-        dependsOn compileTestJava
-        description = "Runs the unit tests with the ${name} library variant"
-        group = 'verification'
-        // Filter classpath to include only necessary dependencies for this test task
-        classpath = sourceSets.test.runtimeClasspath.filter { file ->
-            !file.name.contains('ddprof-') || file.name.contains('test-tracer')
-        } + cfg
-
-        if (!config.testEnv.empty) {
-            config.testEnv.each { key, value ->
-                environment key, value
-            }
-            logger.debug("Setting environment variables for ${name}: ${config.testEnv}")
-        }
-        if (config.name == "asan") {
-            onlyIf {
-                locateLibasan() != null
-            }
-        } else if (config.name == "tsan") {
-            onlyIf {
-                locateLibtsan() != null
-            }
-        }
+  def task = tasks.register("test${name}", Test) {
+    onlyIf {
+      config.active
     }
+    dependsOn compileTestJava
+    description = "Runs the unit tests with the ${name} library variant"
+    group = 'verification'
+    // Filter classpath to include only necessary dependencies for this test task
+    classpath = sourceSets.test.runtimeClasspath.filter { file ->
+      !file.name.contains('ddprof-') || file.name.contains('test-tracer')
+    } + cfg
+
+    if (!config.testEnv.empty) {
+      config.testEnv.each { key, value ->
+        environment key, value
+      }
+      logger.debug("Setting environment variables for ${name}: ${config.testEnv}")
+    }
+    if (config.name == "asan") {
+      onlyIf {
+        locateLibasan() != null
+      }
+    } else if (config.name == "tsan") {
+      onlyIf {
+        locateLibtsan() != null
+      }
+    }
+  }
 }
 
 tasks.withType(Test).configureEach {
-    // this is a shared configuration for all test tasks
-    onlyIf {
-        !project.hasProperty('skip-tests')
-    }
+  // this is a shared configuration for all test tasks
+  onlyIf {
+    !project.hasProperty('skip-tests')
+  }
 
-    jvmArgs '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true'
+  def config = it.name.replace("test", "")
 
-    def javaHome = System.getenv("JAVA_TEST_HOME")
-    if (javaHome == null) {
-        javaHome = System.getenv("JAVA_HOME")
-    }
-    useJUnitPlatform()
-    executable = new File("${javaHome}", 'bin/java')
+  jvmArgs '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true',
+    "-Dddprof_test.config=${config}", '-XX:ErrorFile=build/hs_err_pid%p.log', '-XX:+ResizeTLAB',
+    '-Xmx512m'
+
+  def javaHome = System.getenv("JAVA_TEST_HOME")
+  if (javaHome == null) {
+    javaHome = System.getenv("JAVA_HOME")
+  }
+  useJUnitPlatform()
+  executable = new File("${javaHome}", 'bin/java')
 }
 
 test {
-    onlyIf {
-        false
-    }
+  onlyIf {
+    false
+  }
 }
 
 tasks.withType(JavaCompile).configureEach {
-    options.compilerArgs.addAll(['--release', '8'])
+  options.compilerArgs.addAll(['--release', '8'])
 
-    if (name == "compileTestJava") {
-        sourceCompatibility = '8'
-        targetCompatibility = '8'
+  if (name == "compileTestJava") {
+    sourceCompatibility = '8'
+    targetCompatibility = '8'
+  }
+  classpath += configurations.testReleaseImplementation
+}
+
+// Make the assemble* tasks depend on the test* tasks
+gradle.projectsEvaluated {
+  buildConfigNames().each {
+    def testTask = tasks.findByName("test${it}")
+    def assembleTask = project(':ddprof-lib').tasks.findByName("assemble${it.capitalize()}")
+    if (testTask && assembleTask) {
+      assembleTask.dependsOn testTask
     }
-    classpath += configurations.testReleaseImplementation
+  }
 }

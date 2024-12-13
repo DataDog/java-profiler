@@ -14,54 +14,55 @@
  * limitations under the License.
  */
 
- #ifndef _JVMHEAP_H
- #define _JVMHEAP_H
+#ifndef _JVMHEAP_H
+#define _JVMHEAP_H
 
 #include <cstddef>
 
- /**
-  * This class only defines a layout compatible with the JDKs VirtualSpaceSummary class and particularly its subclasses
-  */
- class VirtualSpaceSummary {
-   private:
-     void* _start;
-     void* _committed_end;
-     void* _reserved_end;
-   public:
-     long maxSize() {
-         return (long)_reserved_end - (long)_start;
-     }
- };
+/**
+ * This class only defines a layout compatible with the JDKs VirtualSpaceSummary
+ * class and particularly its subclasses
+ */
+class VirtualSpaceSummary {
+private:
+  void *_start;
+  void *_committed_end;
+  void *_reserved_end;
 
- /**
-  * This class only defines a layout compatible with the JDKs GCHeapSummary class and particularly its subclasses
-  */
- class GCHeapSummary {
-   private:
-     void* vptr; // only 1-st level subclasses are used so we need to define the 'synthetic' vptr field here
-     VirtualSpaceSummary _heap;
-     size_t _used;
-   public:
-     long used() {
-         return (long)_used;
-     }
+public:
+  long maxSize() { return (long)_reserved_end - (long)_start; }
+};
 
-     long maxSize() {
-         return _heap.maxSize();
-     }
- };
+/**
+ * This class only defines a layout compatible with the JDKs GCHeapSummary class
+ * and particularly its subclasses
+ */
+class GCHeapSummary {
+private:
+  void *vptr; // only 1-st level subclasses are used so we need to define the
+              // 'synthetic' vptr field here
+  VirtualSpaceSummary _heap;
+  size_t _used;
 
- /**
-  * This class only defines a layout compatible with the JDKs CompatibleHeap class and particularly its subclasses
-  */
- class CollectedHeap {
-   private:
-     void* vptr; // only 1-st level subclasses are used so we need to define the 'synthetic' vptr field here
-     void* _gc_heap_log; // ignored
-   public:
-     // Historic gc information
-     size_t _capacity_at_last_gc;
-     size_t _used_at_last_gc;
- };
+public:
+  long used() { return (long)_used; }
 
- #endif // _JVMHEAP_H
+  long maxSize() { return _heap.maxSize(); }
+};
+
+/**
+ * This class only defines a layout compatible with the JDKs CompatibleHeap
+ * class and particularly its subclasses
+ */
+class CollectedHeap {
+private:
+  void *vptr; // only 1-st level subclasses are used so we need to define the
+              // 'synthetic' vptr field here
+  void *_gc_heap_log; // ignored
+public:
+  // Historic gc information
+  size_t _capacity_at_last_gc;
+  size_t _used_at_last_gc;
+};
+
+#endif // _JVMHEAP_H

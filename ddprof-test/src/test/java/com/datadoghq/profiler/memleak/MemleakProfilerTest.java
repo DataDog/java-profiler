@@ -20,12 +20,16 @@ import org.junit.jupiter.api.Assumptions;
 public class MemleakProfilerTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
-        return "memory=524288:L,cstack=fp";
+        return "memory=524288:L:0.5,cstack=fp";
+    }
+
+    @Override
+    protected boolean isPlatformSupported() {
+        return !(Platform.isJavaVersion(8) || Platform.isJ9() || Platform.isZing());
     }
 
     @RetryingTest(5)
     public void shouldGetLiveObjectSamples() throws InterruptedException {
-        Assumptions.assumeFalse(System.getProperty("java.version").contains("1.8") || Platform.isJ9() || Platform.isZing());
         MemLeakTarget target1 = new MemLeakTarget();
         MemLeakTarget target2 = new MemLeakTarget();
         runTests(target1, target2);

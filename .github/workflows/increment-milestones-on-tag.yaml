@@ -2,6 +2,10 @@ name: Increment milestones on tag
 on:
   create
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   increment_milestone:
     if: github.event.ref_type == 'tag' && github.event.master_branch == 'main'

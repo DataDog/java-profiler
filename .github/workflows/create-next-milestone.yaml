@@ -3,6 +3,10 @@ on:
   milestone:
     types: [closed]
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   create_next_milestone:
     runs-on: ubuntu-latest

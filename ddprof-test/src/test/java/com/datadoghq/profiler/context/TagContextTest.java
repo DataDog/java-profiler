@@ -100,7 +100,7 @@ public class TagContextTest extends AbstractProfilerTest {
         Map<String, Long> debugCounters = profiler.getDebugCounters();
         assertFalse(debugCounters.isEmpty());
         assertEquals(1, debugCounters.get("context_storage_pages"));
-        assertEquals(0x10000, debugCounters.get("context_storage_bytes"));
+        assertEquals(0x10000, debugCounters.get("context_storage_bytes"), () -> "invalid context storage: " + debugCounters);
         assertEquals(strings.length, debugCounters.get("dictionary_context_keys"));
         assertEquals(Arrays.stream(strings).mapToInt(s -> s.length() + 1).sum(), debugCounters.get("dictionary_context_keys_bytes"));
         assertBoundedBy(debugCounters.get("dictionary_context_pages"), strings.length, "context storage too many pages");
@@ -154,6 +154,6 @@ public class TagContextTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=~1ms,filter=0";
+        return "wall=1ms,filter=0";
     }
 }

@@ -21,62 +21,54 @@
 #include <atomic>
 #ifdef __linux__
 
-#include <signal.h>
 #include "arch.h"
+#include <signal.h>
 
 class CTimer : public Engine {
-  private:
-    static std::atomic<bool> _enabled;
-    static long _interval;
-    static CStack _cstack;
-    static int _signal;
+private:
+  static std::atomic<bool> _enabled;
+  static long _interval;
+  static CStack _cstack;
+  static int _signal;
 
-    static int _max_timers;
-    static int* _timers;
+  static int _max_timers;
+  static int *_timers;
 
-    int registerThread(int tid);
-    void unregisterThread(int tid);
+  int registerThread(int tid);
+  void unregisterThread(int tid);
 
-    // cppcheck-suppress unusedPrivateFunction
-    static void signalHandler(int signo, siginfo_t* siginfo, void* ucontext);
+  // cppcheck-suppress unusedPrivateFunction
+  static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
 
-  public:
-    const char* units() {
-        return "ns";
-    }
+public:
+  const char *units() { return "ns"; }
 
-    const char* name() {
-        return "CTimer";
-    }
+  const char *name() { return "CTimer"; }
 
-    long interval() const {
-        return _interval;
-    }
+  long interval() const { return _interval; }
 
-    Error check(Arguments& args);
-    Error start(Arguments& args);
-    void stop();
+  Error check(Arguments &args);
+  Error start(Arguments &args);
+  void stop();
 
-    inline void enableEvents(bool enabled) {
-        _enabled.store(enabled, std::memory_order_release);
-    }
+  inline void enableEvents(bool enabled) {
+    _enabled.store(enabled, std::memory_order_release);
+  }
 };
 
 #else
 
 class CTimer : public Engine {
-  public:
-    Error check(Arguments& args) {
-        return Error("CTimer is not supported on this platform");
-    }
+public:
+  Error check(Arguments &args) {
+    return Error("CTimer is not supported on this platform");
+  }
 
-    Error start(Arguments& args) {
-        return Error("CTimer is not supported on this platform");
-    }
+  Error start(Arguments &args) {
+    return Error("CTimer is not supported on this platform");
+  }
 
-    static bool supported() {
-        return false;
-    }
+  static bool supported() { return false; }
 };
 
 #endif // __linux__

@@ -17,148 +17,141 @@
 #ifndef _EVENT_H
 #define _EVENT_H
 
-#include <cstring>
-#include <memory>
-#include <stdint.h>
 #include "context.h"
 #include "os.h"
 #include "threadState.h"
+#include <cstring>
+#include <memory>
+#include <stdint.h>
 using namespace std;
 
 #define MAX_STRING_LEN 8191
 
-
 class Event {
-  public:
-    u32 _id;
+public:
+  u32 _id;
 
-    Event() : _id(0) {}
+  Event() : _id(0) {}
 };
 
 class ExecutionEvent : public Event {
-  public:
-    ThreadState _thread_state;
-    ExecutionMode _execution_mode;
-    u64 _weight;
-    u32 _call_trace_id;
+public:
+  ThreadState _thread_state;
+  ExecutionMode _execution_mode;
+  u64 _weight;
+  u32 _call_trace_id;
 
-    ExecutionEvent() : Event(), _thread_state(ThreadState::RUNNABLE), _weight(1), _execution_mode(ExecutionMode::UNKNOWN), _call_trace_id(0) {}
+  ExecutionEvent()
+      : Event(), _thread_state(ThreadState::RUNNABLE), _execution_mode(ExecutionMode::UNKNOWN),
+        _weight(1), _call_trace_id(0) {}
 };
 
 class AllocEvent : public Event {
-  public:
-    u64 _size;
-    float _weight;
+public:
+  u64 _size;
+  float _weight;
 
-    AllocEvent() : _size(0), _weight(1) {}
+  AllocEvent() : _size(0), _weight(1) {}
 };
 
 class LockEvent : public Event {
-  public:
-    u64 _start_time;
-    u64 _end_time;
-    uintptr_t _address;
-    long long _timeout;
+public:
+  u64 _start_time;
+  u64 _end_time;
+  uintptr_t _address;
+  long long _timeout;
 };
 
 class ObjectLivenessEvent : public Event {
-  public:
-    AllocEvent _alloc;
-    u64 _start_time;
-    u64 _age;
-    Context _ctx;
+public:
+  AllocEvent _alloc;
+  u64 _skipped;
+  u64 _start_time;
+  u64 _age;
+  Context _ctx;
 };
 
 class WallClockEpochEvent {
-  public:
-    bool _dirty;
-    u64 _start_time;
-    u64 _duration_millis;
-    u32 _num_samplable_threads;
-    u32 _num_successful_samples;
-    u32 _num_failed_samples;
-    u32 _num_exited_threads;
-    u32 _num_permission_denied;
+public:
+  bool _dirty;
+  u64 _start_time;
+  u64 _duration_millis;
+  u32 _num_samplable_threads;
+  u32 _num_successful_samples;
+  u32 _num_failed_samples;
+  u32 _num_exited_threads;
+  u32 _num_permission_denied;
 
-    WallClockEpochEvent(u64 start_time) :
-        _dirty(false),
-        _start_time(start_time),
-        _duration_millis(0),
-        _num_samplable_threads(0),
-        _num_successful_samples(0),
-        _num_failed_samples(0),
-        _num_exited_threads(0),
+  WallClockEpochEvent(u64 start_time)
+      : _dirty(false), _start_time(start_time), _duration_millis(0),
+        _num_samplable_threads(0), _num_successful_samples(0),
+        _num_failed_samples(0), _num_exited_threads(0),
         _num_permission_denied(0) {}
 
-    bool hasChanged() {
-        return _dirty;
-    }
+  bool hasChanged() { return _dirty; }
 
-    void updateNumSamplableThreads(u32 num_samplable_threads) {
-        if (_num_samplable_threads != num_samplable_threads) {
-            _dirty = true;
-            _num_samplable_threads = num_samplable_threads;
-        }
+  void updateNumSamplableThreads(u32 num_samplable_threads) {
+    if (_num_samplable_threads != num_samplable_threads) {
+      _dirty = true;
+      _num_samplable_threads = num_samplable_threads;
     }
+  }
 
-    void updateNumSuccessfulSamples(u32 num_successful_samples) {
-        if (_num_successful_samples != num_successful_samples) {
-            _dirty = true;
-            _num_successful_samples = num_successful_samples;
-        }
+  void updateNumSuccessfulSamples(u32 num_successful_samples) {
+    if (_num_successful_samples != num_successful_samples) {
+      _dirty = true;
+      _num_successful_samples = num_successful_samples;
     }
+  }
 
-    void updateNumFailedSamples(u32 num_failed_samples) {
-        if (_num_failed_samples != num_failed_samples) {
-            _dirty = true;
-            _num_failed_samples = num_failed_samples;
-        }
+  void updateNumFailedSamples(u32 num_failed_samples) {
+    if (_num_failed_samples != num_failed_samples) {
+      _dirty = true;
+      _num_failed_samples = num_failed_samples;
     }
+  }
 
-    void updateNumExitedThreads(u32 num_exited_threads) {
-        if (_num_exited_threads != num_exited_threads) {
-            _dirty = true;
-            _num_exited_threads = num_exited_threads;
-        }
+  void updateNumExitedThreads(u32 num_exited_threads) {
+    if (_num_exited_threads != num_exited_threads) {
+      _dirty = true;
+      _num_exited_threads = num_exited_threads;
     }
+  }
 
-    void updateNumPermissionDenied(u32 num_permission_denied) {
-        if (_num_permission_denied != num_permission_denied) {
-            _dirty = true;
-            _num_permission_denied = num_permission_denied;
-        }
+  void updateNumPermissionDenied(u32 num_permission_denied) {
+    if (_num_permission_denied != num_permission_denied) {
+      _dirty = true;
+      _num_permission_denied = num_permission_denied;
     }
+  }
 
-    void endEpoch(u64 millis) {
-        _duration_millis = millis;
-    }
+  void endEpoch(u64 millis) { _duration_millis = millis; }
 
-    void clean() {
-        _dirty = false;
-    }
+  void clean() { _dirty = false; }
 
-    void newEpoch(u64 start_time) {
-        _dirty = false;
-        _start_time = start_time;
-    }
+  void newEpoch(u64 start_time) {
+    _dirty = false;
+    _start_time = start_time;
+  }
 };
 
 class TraceRootEvent {
-  public:
-    u64 _local_root_span_id;
-    u32 _label;
-    u32 _operation;
+public:
+  u64 _local_root_span_id;
+  u32 _label;
+  u32 _operation;
 
-    TraceRootEvent(u64 local_root_span_id, u32 label, u32 operation) :
-        _local_root_span_id(local_root_span_id), _label(label), _operation(operation) {};
+  TraceRootEvent(u64 local_root_span_id, u32 label, u32 operation)
+      : _local_root_span_id(local_root_span_id), _label(label),
+        _operation(operation){};
 };
 
 typedef struct QueueTimeEvent {
-    u64 _start;
-    u64 _end;
-    u32 _task;
-    u32 _scheduler;
-    u32 _origin;
+  u64 _start;
+  u64 _end;
+  u32 _task;
+  u32 _scheduler;
+  u32 _origin;
 } QueueTimeEvent;
 
 #endif // _EVENT_H

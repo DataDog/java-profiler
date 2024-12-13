@@ -17,51 +17,41 @@
 #ifndef _J9WALLCLOCK_H
 #define _J9WALLCLOCK_H
 
-#include <pthread.h>
 #include "engine.h"
-
+#include <pthread.h>
 
 class J9WallClock : public Engine {
-  private:
-    static volatile bool _enabled;
-    static long _interval;
+private:
+  static volatile bool _enabled;
+  static long _interval;
 
-    bool _sample_idle_threads;
-    int _max_stack_depth;
-    volatile bool _running;
-    pthread_t _thread;
+  bool _sample_idle_threads;
+  int _max_stack_depth;
+  volatile bool _running;
+  pthread_t _thread;
 
-    static void* threadEntry(void* wall_clock) {
-        ((J9WallClock*)wall_clock)->timerLoop();
-        return NULL;
-    }
+  static void *threadEntry(void *wall_clock) {
+    ((J9WallClock *)wall_clock)->timerLoop();
+    return NULL;
+  }
 
-    void timerLoop();
+  void timerLoop();
 
-  public:
+public:
+  const char *units() { return "ns"; }
 
-    const char* units() {
-        return "ns";
-    }
+  const char *name() {
+    return _sample_idle_threads ? "J9WallClock" : "J9Execution";
+  }
 
-    const char* name() {
-        return _sample_idle_threads ? "J9WallClock" : "J9Execution";
-    }
+  virtual long interval() const { return _interval; }
 
-    virtual long interval() const {
-        return _interval;
-    }
+  inline void sampleIdleThreads() { _sample_idle_threads = true; }
 
-    inline void sampleIdleThreads() {
-      _sample_idle_threads = true;
-    }
+  Error start(Arguments &args);
+  void stop();
 
-    Error start(Arguments& args);
-    void stop();
-
-    inline void enableEvents(bool enabled) {
-      _enabled = enabled;
-    }
+  inline void enableEvents(bool enabled) { _enabled = enabled; }
 };
 
 #endif // _J9WALLCLOCK_H

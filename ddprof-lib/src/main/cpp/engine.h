@@ -19,48 +19,44 @@
 
 #include "arguments.h"
 
-
 class Engine {
-  protected:
-    static bool updateCounter(volatile unsigned long long& counter, unsigned long long value, unsigned long long interval) {
-        if (interval <= 1) {
-            return true;
+protected:
+  static bool updateCounter(volatile unsigned long long &counter,
+                            unsigned long long value,
+                            unsigned long long interval) {
+    if (interval <= 1) {
+      return true;
+    }
+
+    while (true) {
+      unsigned long long prev = counter;
+      unsigned long long next = prev + value;
+      if (next < interval) {
+        if (__sync_bool_compare_and_swap(&counter, prev, next)) {
+          return false;
         }
-
-        while (true) {
-            unsigned long long prev = counter;
-            unsigned long long next = prev + value;
-            if (next < interval) {
-                if (__sync_bool_compare_and_swap(&counter, prev, next)) {
-                    return false;
-                }
-            } else {
-                if (__sync_bool_compare_and_swap(&counter, prev, next % interval)) {
-                    return true;
-                }
-            }
+      } else {
+        if (__sync_bool_compare_and_swap(&counter, prev, next % interval)) {
+          return true;
         }
+      }
     }
+  }
 
-  public:
+public:
+  virtual const char *name() { return "None"; }
 
-    virtual const char* name() {
-        return "None";
-    }
+  virtual Error check(Arguments &args);
+  virtual Error start(Arguments &args);
+  virtual void stop();
+  virtual long interval() const { return 0L; }
 
-    virtual Error check(Arguments& args);
-    virtual Error start(Arguments& args);
-    virtual void stop();
-    virtual long interval() const {
-        return 0L;
-    }
+  virtual int registerThread(int tid) { return -1; }
+  virtual void unregisterThread(int tid) {}
 
-    virtual int registerThread(int tid) { return -1; }
-    virtual void unregisterThread(int tid) {}
-
-    virtual void enableEvents(bool enabled) {
-        // do nothing
-    }
+  virtual void enableEvents(bool enabled) {
+    // do nothing
+  }
 };
 
 #endif // _ENGINE_H

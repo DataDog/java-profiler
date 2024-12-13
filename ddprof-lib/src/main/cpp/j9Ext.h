@@ -1,5 +1,6 @@
 /*
  * Copyright 2022 Andrei Pangin
+ * Copyright 2024 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,92 +22,116 @@
 
 #include "vmEntry.h"
 
-#define JVMTI_EXT(f, ...)  ((jvmtiError (*)(jvmtiEnv*, __VA_ARGS__))f)
+#define JVMTI_EXT(f, ...) ((jvmtiError(*)(jvmtiEnv *, __VA_ARGS__))f)
 
 struct jvmtiFrameInfoExtended {
-    jmethodID method;
-    jlocation location;
-    jlocation machinepc;
-    jint type;
-    void* native_frame_address;
+  jmethodID method;
+  jlocation location;
+  jlocation machinepc;
+  jint type;
+  void *native_frame_address;
 };
 
 struct jvmtiStackInfoExtended {
-    jthread thread;
-    jint state;
-    jvmtiFrameInfoExtended* frame_buffer;
-    jint frame_count;
+  jthread thread;
+  jint state;
+  jvmtiFrameInfoExtended *frame_buffer;
+  jint frame_count;
 };
 
-enum {
-    SHOW_COMPILED_FRAMES = 4,
-    SHOW_INLINED_FRAMES = 8
-};
-
+enum { SHOW_COMPILED_FRAMES = 4, SHOW_INLINED_FRAMES = 8 };
 
 class J9Ext {
-  private:
-    static jvmtiEnv* _jvmti;
+private:
+  static jvmtiEnv *_jvmti;
 
-    static void* (*_j9thread_self)();
+  static void *(*_j9thread_self)();
 
-    static jvmtiExtensionFunction _GetOSThreadID;
-    static jvmtiExtensionFunction _GetJ9vmThread;
-    static jvmtiExtensionFunction _GetStackTraceExtended;
-    static jvmtiExtensionFunction _GetAllStackTracesExtended;
+  static jvmtiExtensionFunction _GetOSThreadID;
+  static jvmtiExtensionFunction _GetJ9vmThread;
+  static jvmtiExtensionFunction _GetStackTraceExtended;
+  static jvmtiExtensionFunction _GetAllStackTracesExtended;
 
-  public:
-    static bool can_use_ASGCT() {
-        // ASGCT usage on J9 is inherently unstable
-        return false;
+public:
+  static bool can_use_ASGCT() {
+    return (VM::java_version() == 8 && VM::java_update_version() >= 362) ||
+           (VM::java_version() == 11 && VM::java_update_version() >= 18) ||
+           (VM::java_version() == 17 && VM::java_update_version() >= 6) ||
+           (VM::java_version() >= 18);
+  }
+
+  static bool is_jmethodid_safe() {
+    return VM::java_version() == 8 ||
+           (VM::java_version() == 11 && VM::java_update_version() >= 23) ||
+           (VM::java_version() == 17 && VM::java_update_version() >= 11) ||
+           (VM::java_version() == 21 && VM::java_update_version() >= 3) ||
+           (VM::java_version() >= 22);
+  }
+
+  static bool is_jvmti_jmethodid_safe() {
+    // only JDK 8 is safe to use jmethodID in JVMTI for deferred resolution
+    return VM::java_version() == 8;
+  }
+
+  static bool initialize(jvmtiEnv *jvmti, const void *j9thread_self);
+
+  static int GetOSThreadID(jthread thread) {
+    jlong thread_id;
+    return JVMTI_EXT(_GetOSThreadID, jthread, jlong *)(_jvmti, thread,
+                                                       &thread_id) == 0
+               ? (int)thread_id
+               : -1;
+  }
+
+  static JNIEnv *GetJ9vmThread(jthread thread) {
+    JNIEnv *result;
+    return JVMTI_EXT(_GetJ9vmThread, jthread, JNIEnv **)(_jvmti, thread,
+                                                         &result) == 0
+               ? result
+               : NULL;
+  }
+
+  static jvmtiError GetStackTraceExtended(jthread thread, jint start_depth,
+                                          jint max_frame_count,
+                                          void *frame_buffer, jint *count_ptr) {
+    return JVMTI_EXT(_GetStackTraceExtended, jint, jthread, jint, jint, void *,
+                     jint *)(_jvmti, SHOW_COMPILED_FRAMES | SHOW_INLINED_FRAMES,
+                             thread, start_depth, max_frame_count, frame_buffer,
+                             count_ptr);
+  }
+
+  static jvmtiError GetAllStackTracesExtended(jint max_frame_count,
+                                              void **stack_info_ptr,
+                                              jint *thread_count_ptr) {
+    return JVMTI_EXT(_GetAllStackTracesExtended, jint, jint, void **,
+                     jint *)(_jvmti, SHOW_COMPILED_FRAMES | SHOW_INLINED_FRAMES,
+                             max_frame_count, stack_info_ptr, thread_count_ptr);
+  }
+
+  static jvmtiError GetStackTrace(jthread thread, jint start_depth,
+                                  jint max_frame_count,
+                                  ASGCT_CallFrame *frame_buffer,
+                                  jint *count_ptr) {
+    jvmtiFrameInfoExtended buffer[max_frame_count];
+
+    jvmtiError err = GetStackTraceExtended(thread, start_depth, max_frame_count,
+                                           buffer, count_ptr);
+    if (err) {
+      return err;
     }
-
-    static bool initialize(jvmtiEnv* jvmti, const void* j9thread_self);
-
-    static int GetOSThreadID(jthread thread) {
-        jlong thread_id;
-        return JVMTI_EXT(_GetOSThreadID, jthread, jlong*)(_jvmti, thread, &thread_id) == 0 ? (int)thread_id : -1;
+    for (int j = 0; j < *count_ptr; j++) {
+      jvmtiFrameInfoExtended *fi = &buffer[j];
+      frame_buffer[j].method_id = fi->method;
+      frame_buffer[j].bci = FrameType::encode(fi->type, fi->location);
     }
+    return JVMTI_ERROR_NONE;
+  }
 
-    static JNIEnv* GetJ9vmThread(jthread thread) {
-        JNIEnv* result;
-        return JVMTI_EXT(_GetJ9vmThread, jthread, JNIEnv**)(_jvmti, thread, &result) == 0 ? result : NULL;
-    }
+  static void *j9thread_self() {
+    return _j9thread_self != NULL ? _j9thread_self() : NULL;
+  }
 
-    static jvmtiError GetStackTraceExtended(jthread thread, jint start_depth, jint max_frame_count,
-                                            void* frame_buffer, jint* count_ptr) {
-        return JVMTI_EXT(_GetStackTraceExtended, jint, jthread, jint, jint, void*, jint*)(
-            _jvmti, SHOW_COMPILED_FRAMES | SHOW_INLINED_FRAMES,
-            thread, start_depth, max_frame_count, frame_buffer, count_ptr);
-    }
-
-    static jvmtiError GetAllStackTracesExtended(jint max_frame_count, void** stack_info_ptr, jint* thread_count_ptr) {
-        return JVMTI_EXT(_GetAllStackTracesExtended, jint, jint, void**, jint*)(
-            _jvmti, SHOW_COMPILED_FRAMES | SHOW_INLINED_FRAMES,
-            max_frame_count, stack_info_ptr, thread_count_ptr);
-    }
-
-    static jvmtiError GetStackTrace(jthread thread, jint start_depth, jint max_frame_count, ASGCT_CallFrame* frame_buffer, jint* count_ptr) {
-        jvmtiFrameInfoExtended buffer[max_frame_count];
-
-        jvmtiError err = GetStackTraceExtended(thread, start_depth, max_frame_count, buffer, count_ptr);
-        if (err) {
-            return err;
-        }
-        for (int j = 0; j < *count_ptr; j++) {
-            jvmtiFrameInfoExtended* fi = &buffer[j];
-            frame_buffer[j].method_id = fi->method;
-            frame_buffer[j].bci = FrameType::encode(fi->type, fi->location);
-        }
-        return JVMTI_ERROR_NONE;
-    }
-
-    static void* j9thread_self() {
-        return _j9thread_self != NULL ? _j9thread_self() : NULL;
-    }
-
-    static int InstrumentableObjectAlloc_id;
+  static int InstrumentableObjectAlloc_id;
 };
-
 
 #endif // _J9EXT_H
