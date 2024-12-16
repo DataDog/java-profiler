@@ -496,6 +496,7 @@ static int parseLibrariesCallback(struct dl_phdr_info *info, size_t size,
 
     // Do not try to parse pseudofiles like anon_inode:name, /memfd:name
     if (strchr(map.file(), ':') == NULL) {
+      TEST_LOG("Procesing library: %s", map.file())
       u64 inode = u64(map.dev()) << 32 | map.inode();
       if (inode != 0) {
         // Do not parse the same executable twice, e.g. on Alpine Linux
