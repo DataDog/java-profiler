@@ -43,7 +43,7 @@ jobs:
             fi
           fi
   check-formatting:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     needs: check-for-pr
     if: needs.check-for-pr.outputs.skip != 'true'
     steps:
