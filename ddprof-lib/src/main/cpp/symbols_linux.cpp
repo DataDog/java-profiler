@@ -17,6 +17,8 @@
 #ifdef __linux__
 
 #include "symbols_linux.h"
+
+#include "common.h"
 #include "dwarf.h"
 #include "log.h"
 #include "safeAccess.h"
@@ -492,10 +494,10 @@ static int parseLibrariesCallback(struct dl_phdr_info *info, size_t size,
     }
 
     const char *map_end = map.end();
-    CodeCache *cc = new CodeCache(map.file(), count, false, map_start, map_end);
-
     // Do not try to parse pseudofiles like anon_inode:name, /memfd:name
     if (strchr(map.file(), ':') == NULL) {
+      CodeCache *cc = new CodeCache(map.file(), count, false, map_start, map_end);
+      TEST_LOG("Procesing library: %s", map.file());
       u64 inode = u64(map.dev()) << 32 | map.inode();
       if (inode != 0) {
         // Do not parse the same executable twice, e.g. on Alpine Linux
@@ -516,10 +518,10 @@ static int parseLibrariesCallback(struct dl_phdr_info *info, size_t size,
       } else if (strcmp(map.file(), "[vdso]") == 0) {
         ElfParser::parseProgramHeaders(cc, map_start, map_end, true);
       }
-    }
 
-    cc->sort();
-    array->add(cc);
+      cc->sort();
+      array->add(cc);
+    }
   }
 
   free(str);
