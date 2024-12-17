@@ -15,6 +15,7 @@
  */
 
 #include "stackWalker.h"
+#include "common.h"
 #include "dwarf.h"
 #include "libraries.h"
 #include "profiler.h"
@@ -170,7 +171,8 @@ int StackWalker::walkDwarf(void *ucontext, const void **callchain,
         cc != NULL ? cc->findFrameDesc(pc) : &FrameDesc::default_frame;
 
     u8 cfa_reg = (u8)f->cfa;
-    int cfa_off = f->cfa >> 8;
+    int cfa_off = f->cfa >> 16; // cfa is encoded in the upper 16 bits of the CFA value
+
     if (cfa_reg == DW_REG_SP) {
       sp = sp + cfa_off;
     } else if (cfa_reg == DW_REG_FP) {
@@ -225,6 +227,10 @@ int StackWalker::walkDwarf(void *ucontext, const void **callchain,
   return depth;
 }
 
+#ifdef __aarch64__
+// we are seeing false alarms on aarch64 GHA runners due to 'heap-use-after-free'
+__attribute__((no_sanitize("address")))
+#endif
 int StackWalker::walkVM(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
                         const void *_termination_frame_begin,
                         const void *_termination_frame_end) {

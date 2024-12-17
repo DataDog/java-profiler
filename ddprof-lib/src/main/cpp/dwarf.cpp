@@ -15,7 +15,9 @@
  */
 
 #include "dwarf.h"
+#include "common.h"
 #include "log.h"
+#include <assert.h>
 #include <stdlib.h>
 
 enum {
@@ -185,10 +187,10 @@ void DwarfParser::parseInstructions(u32 loc, const char *end) {
   int fp_off = DW_SAME_FP;
   int pc_off = -EMPTY_FRAME_SIZE;
 
-  u32 rem_cfa_reg;
-  int rem_cfa_off;
-  int rem_fp_off;
-  int rem_pc_off;
+  u32 rem_cfa_reg = DW_REG_SP;
+  int rem_cfa_off = EMPTY_FRAME_SIZE;
+  int rem_fp_off = DW_SAME_FP;
+  int rem_pc_off = -EMPTY_FRAME_SIZE;
 
   while (_ptr < end) {
     u8 op = get8();
@@ -396,14 +398,19 @@ int DwarfParser::parseExpression() {
 
 void DwarfParser::addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off,
                             int pc_off) {
-  int cfa = cfa_reg | cfa_off << 8;
+  // sanity asserts for the values fitting into 16bit
+  assert(cfa_reg <= 0xffffffff);
+  assert(static_cast<u32>(cfa_off) <= 0xffffffff);
+
+  // cfa_reg and cfa_off can be encoded to a single 32 bit value, considering the existing and supported systems
+  u32 cfa = static_cast<u16>(cfa_off) << 16 | static_cast<u16>(cfa_reg);
   if (_prev == NULL || (_prev->loc == loc && --_count >= 0) ||
       _prev->cfa != cfa || _prev->fp_off != fp_off || _prev->pc_off != pc_off) {
     _prev = addRecordRaw(loc, cfa, fp_off, pc_off);
   }
 }
 
-FrameDesc *DwarfParser::addRecordRaw(u32 loc, int cfa, int fp_off, int pc_off) {
+FrameDesc *DwarfParser::addRecordRaw(u32 loc, u32 cfa, int fp_off, int pc_off) {
   if (_count >= _capacity) {
     FrameDesc *frameDesc =
         (FrameDesc *)realloc(_table, _capacity * 2 * sizeof(FrameDesc));
