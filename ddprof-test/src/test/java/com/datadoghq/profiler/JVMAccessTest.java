@@ -94,6 +94,10 @@ public class JVMAccessTest {
             }
         }
         assertNotNull(foundVersion, "java version not found in logs");
+        if (foundVersion.startsWith("8u")) {
+            // convert 8u432 to nomralized 8.0.432 format which is expected
+            foundVersion = "8.0." + foundVersion.split("u")[1];
+        }
         assertEquals(javaVersion, foundVersion, "invalid java version");
     }
 
