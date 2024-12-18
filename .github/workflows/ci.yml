@@ -55,14 +55,26 @@ jobs:
           # we need this to make sure we are actually using clang-format v. 11 
           sudo mv /usr/bin/clang-format /usr/bin/clang-format-14
           sudo mv /usr/bin/clang-format-11 /usr/bin/clang-format
-      - name: Prepare test JDK
-        uses: actions/setup-java@v3
+
+      - name: Cache Gradle Wrapper Binaries
+        uses: actions/cache@v4
         with:
-          distribution: 'temurin'
-          java-version: "21.0.3"
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-wrapper-${{ runner.os }}-
+
+      - name: Cache Gradle User Home
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-caches-${{ runner.os }}-
+
       - name: Check
         run: |
-          ./gradlew --no-daemon spotlessCheck
+          ./gradlew spotlessCheck --no-daemon --parallel --build-cache --no-watch-fs
 
   test-matrix:
     needs: check-formatting

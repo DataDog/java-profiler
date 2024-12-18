@@ -1,0 +1,18 @@
+name: Extract Java and Gradle Versions
+description: Versions are reported in JAVA_VERSION and GRADLE_VERSION environment variables
+runs:
+  using: "composite"
+  steps:
+    - name: Extract Versions
+      id: extract_versions
+      shell: bash
+      run: |
+        # Extract Java version
+        java_version="${{ matrix.java_version }}"
+        echo "JAVA_VERSION=${java_version%%+*}" >> $GITHUB_ENV
+
+        # Extract Gradle version from gradle-wrapper.properties
+        gradle_version=$(grep 'distributionUrl' gradle/wrapper/gradle-wrapper.properties | cut -d'=' -f2)
+        gradle_version=${gradle_version#*gradle-}
+        gradle_version=${gradle_version%-bin.zip}
+        echo "GRADLE_VERSION=${gradle_version}" >> $GITHUB_ENV
