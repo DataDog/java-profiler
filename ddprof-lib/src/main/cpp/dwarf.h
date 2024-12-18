@@ -71,7 +71,7 @@ const int LINKED_FRAME_SIZE = 0;
 
 struct FrameDesc {
   u32 loc;
-  int cfa;
+  u32 cfa;
   int fp_off;
   int pc_off;
 
@@ -106,6 +106,7 @@ private:
   }
 
   u8 get8() { return *_ptr++; }
+
   // We are getting alignment issues when loading the 16-bit value
   // todo: are these relevant and well handled ?
   __attribute__((no_sanitize("undefined"))) u16 get16() {
@@ -159,7 +160,7 @@ private:
   int parseExpression();
 
   void addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off, int pc_off);
-  FrameDesc *addRecordRaw(u32 loc, int cfa, int fp_off, int pc_off);
+  FrameDesc *addRecordRaw(u32 loc, u32 cfa, int fp_off, int pc_off);
 
 public:
   DwarfParser(const char *name, const char *image_base,
