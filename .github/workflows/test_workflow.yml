@@ -52,7 +52,9 @@ jobs:
         with:
           path: |
             test_${{ env.JAVA_VERSION }}_jdk
-          key: ${{ env.JAVA_VERSION }}-amd64
+          key: ${{ env.JAVA_VERSION }}-amd64-${{ github.run_id }}
+          restore-keys: |
+            ${{ env.JAVA_VERSION }}-amd64-
       - name: Prepare JDK ${{ env.JAVA_VERSION }}
         run: |
           TEST_JDK_DIR="test_${{ env.JAVA_VERSION }}_jdk"
@@ -153,7 +155,9 @@ jobs:
         with:
           path: |
             ~/test_${{ env.JAVA_VERSION }}_jdk
-          key: ${{ env.JAVA_VERSION }}-aarch64
+          key: ${{ env.JAVA_VERSION }}-aarch64-${{ github.run_id }}
+          restore-keys: |
+            ${{ env.JAVA_VERSION }}-aarch64-
       - name: Prepare JDK ${{ matrix.java_version }}
         run: |
           TEST_JDK_DIR="test_${{ env.JAVA_VERSION }}_jdk"
@@ -411,7 +415,9 @@ jobs:
         with:
           path: |
             /usr/lib/jvm/oracle8
-          key: oracle-jdk8
+          key: oracle-jdk8-${{ github.run_id }}
+          restore-keys: |
+              oracle-jdk8-
       - name: Prepare JDK ${{ matrix.java_version }}
         run: |
           sudo sysctl vm.mmap_rnd_bits=28
@@ -506,13 +512,18 @@ jobs:
         with:
           path: |
             test_11.0.25_jdk
-          key: 11.0.25-amd64-musl
+          key: 11.0.25-amd64-musl-${{ github.run_id }}
+          restore-keys: |
+            11.0.25-amd64-musl-
       - name: Cache JDK ${{ env.JAVA_VERSION }} [amd64-musl]
         uses: actions/cache@v3
         with:
           path: |
             test_${{ env.JAVA_VERSION }}_jdk
-          key: ${{ env.JAVA_VERSION }}-amd64-musl
+          key: ${{ env.JAVA_VERSION }}-amd64-musl-${{ github.run_id }}
+          restore-keys: |
+            ${{ env.JAVA_VERSION }}-amd64-musl-
+
       - name: Prepare JDK 11.0.25
         run: |
           TEST_JDK_DIR="test_11.0.25_jdk"
@@ -620,7 +631,9 @@ jobs:
         with:
           path: |
             test_${{ matrix.java_version }}_jdk
-          key: ${{ matrix.java_version }}-amd64-zing
+          key: ${{ matrix.java_version }}-amd64-zing-${{ github.run_id }}
+          restore-keys: |
+            ${{ matrix.java_version }}-amd64-zing-
       - name: Prepare JDK ${{ matrix.java_version }}
         if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
         run: |
@@ -742,7 +755,9 @@ jobs:
         with:
           path: |
             test_${{ matrix.java_version }}_jdk
-          key: ${{ matrix.java_version }}-aarch64-zing
+          key: ${{ matrix.java_version }}-aarch64-zing-${{ github.run_id }}
+          restore-keys: |
+            ${{ matrix.java_version }}-aarch64-zing-
       - name: Prepare JDK ${{ matrix.java_version }}
         if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
         run: |
