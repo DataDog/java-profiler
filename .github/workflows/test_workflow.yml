@@ -21,6 +21,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
+      - name: Extract Java Version
+        id: extract_version
+        run: |
+          java_version="${{ matrix.java_version }}"
+          echo "JAVA_VERSION=${java_version%%+*}" >> $GITHUB_ENV
       - uses: actions/checkout@v3
       - name: Prepare build JDK
         uses: actions/setup-java@v3
@@ -31,11 +36,20 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
-      - name: Prepare JDK ${{ matrix.java_version }}
+      - name: Cache JDK ${{ env.JAVA_VERSION }} [amd64]
+        uses: actions/cache@v3
+        with:
+          path: |
+            test_${{ env.JAVA_VERSION }}_jdk
+          key: ${{ env.JAVA_VERSION }}-amd64
+      - name: Prepare JDK ${{ env.JAVA_VERSION }}
         run: |
-          wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-amd64.tar.gz -O jdk.tar.gz
-          tar xzf *.tar.gz
-          find . -type d -name 'jdk*' -maxdepth 1| xargs -I {} mv {} test_jdk
+          TEST_JDK_DIR="test_${{ env.JAVA_VERSION }}_jdk"
+          if [ ! -e ${TEST_JDK_DIR}/bin/java ]; then
+            wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-amd64.tar.gz -O jdk.tar.gz
+            tar xzf *.tar.gz
+            find . -type d -name 'jdk*' -maxdepth 1| xargs -I {} mv {} ${TEST_JDK_DIR}
+          fi
       - name: Test
         run: |
           sudo sysctl vm.mmap_rnd_bits=28
@@ -44,7 +58,7 @@ jobs:
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}-amd64
           export LIBC=glibc
-          export JAVA_TEST_HOME=$(pwd)/test_jdk
+          export JAVA_TEST_HOME=$(pwd)/test_${{ env.JAVA_VERSION }}_jdk
           export SANITIZER=${{ matrix.config }}
           export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
               split($2, v, "[._]");
@@ -94,6 +108,11 @@ jobs:
       labels: arm-4core-linux
     timeout-minutes: 180
     steps:
+      - name: Extract Java Version
+        id: extract_version
+        run: |
+          java_version="${{ matrix.java_version }}"
+          echo "JAVA_VERSION=${java_version%%+*}" >> $GITHUB_ENV
       - uses: actions/checkout@v3
       - name: Prepare build JDK
         uses: actions/setup-java@v3
@@ -106,11 +125,20 @@ jobs:
           sudo apt remove -y g++
           sudo apt autoremove -y
           sudo apt install -y curl zip unzip clang make build-essential
+      - name: Cache JDK ${{ env.JAVA_VERSION }} [aarch64]
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/test_${{ env.JAVA_VERSION }}_jdk
+          key: ${{ env.JAVA_VERSION }}-aarch64
       - name: Prepare JDK ${{ matrix.java_version }}
         run: |
-          wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-aarch64.tar.gz -O jdk.tar.gz
-          tar xzf *.tar.gz
-          find . -type d -name 'jdk*' -maxdepth 1| xargs -I {} mv {} test_jdk
+          TEST_JDK_DIR="test_${{ env.JAVA_VERSION }}_jdk"
+          if [ ! -e ${TEST_JDK_DIR}/bin/java ]; then
+            wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-aarch64.tar.gz -O jdk.tar.gz
+            tar xzf *.tar.gz
+            find . -type d -name 'jdk*' -maxdepth 1| xargs -I {} mv {} ${TEST_JDK_DIR}
+          fi
       - name: Test
         run: |
           sudo sysctl vm.mmap_rnd_bits=28
@@ -119,7 +147,7 @@ jobs:
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}-aarch64
           export LIBC=glibc
-          export JAVA_TEST_HOME=$(pwd)/test_jdk
+          export JAVA_TEST_HOME=$(pwd)/test_${{ env.JAVA_VERSION }}_jdk
           export SANITIZER=${{ matrix.config }}
           ./gradlew :ddprof-test:test${{ matrix.config }}
           if [ $? -ne 0 ]; then
@@ -313,14 +341,22 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: "11"
+      - name: Cache JDK Oracle JDK 8
+        uses: actions/cache@v3
+        with:
+          path: |
+            /usr/lib/jvm/oracle8
+          key: oracle-jdk8
       - name: Prepare JDK ${{ matrix.java_version }}
         run: |
           sudo sysctl vm.mmap_rnd_bits=28
           set -eux;
-          sudo mkdir -p /usr/lib/jvm/oracle8;
-          # https://gist.github.com/wavezhang/ba8425f24a968ec9b2a8619d7c2d86a6?permalink_comment_id=4444663#gistcomment-4444663
-          # jdk1.8.0_361
-          curl -L --fail "https://javadl.oracle.com/webapps/download/AutoDL?BundleId=247926_0ae14417abb444ebb02b9815e2103550" | sudo tar -xvzf - -C /usr/lib/jvm/oracle8 --strip-components 1
+          if [ ! -e /usr/lib/jvm/oracle8/bin/java ]; then
+            sudo mkdir -p /usr/lib/jvm/oracle8;
+            # https://gist.github.com/wavezhang/ba8425f24a968ec9b2a8619d7c2d86a6?permalink_comment_id=4444663#gistcomment-4444663
+            # jdk1.8.0_361
+            curl -L --fail "https://javadl.oracle.com/webapps/download/AutoDL?BundleId=247926_0ae14417abb444ebb02b9815e2103550" | sudo tar -xvzf - -C /usr/lib/jvm/oracle8 --strip-components 1
+          fi
           uname -r
       - name: Test
         run: |
@@ -381,28 +417,51 @@ jobs:
       image: "alpine:3.14"
       options: --cpus 2
     steps:
+      - name: Extract Java Version
+        id: extract_version
+        run: |
+          java_version="${{ matrix.java_version }}"
+          echo "JAVA_VERSION=${java_version%%+*}" >> $GITHUB_ENV
       - uses: actions/checkout@v3
       - name: Setup OS
-        run: apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock >/dev/null
-      - name: Prepare build JDK
+        run: apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar >/dev/null
+      - name: Cache JDK 11.0.25 [amd64-musl]
+        uses: actions/cache@v3
+        with:
+          path: |
+            test_11.0.25_jdk
+          key: 11.0.25-amd64-musl
+      - name: Cache JDK ${{ env.JAVA_VERSION }} [amd64-musl]
+        uses: actions/cache@v3
+        with:
+          path: |
+            test_${{ env.JAVA_VERSION }}_jdk
+          key: ${{ env.JAVA_VERSION }}-amd64-musl
+      - name: Prepare JDK 11.0.25
         run: |
-          wget -nv https://download.bell-sw.com/java/11.0.25+11/bellsoft-jdk11.0.25+11-linux-x64-musl.tar.gz -O jdk.tar.gz
-          tar xzf *.tar.gz
-          find . -type d -name 'jdk*' -maxdepth 1 | xargs -I {} mv {} build_jdk
-      - name: Prepare JDK ${{ matrix.java_version }}
+          TEST_JDK_DIR="test_11.0.25_jdk"
+          if [ ! -e ${TEST_JDK_DIR}/bin/java ]; then
+            wget -nv https://download.bell-sw.com/java/11.0.25+11/bellsoft-jdk11.0.25+11-linux-x64-musl.tar.gz -O jdk.tar.gz
+            tar xzf *.tar.gz
+            find . -type d -name 'jdk*' -maxdepth 1| xargs -I {} mv {} ${TEST_JDK_DIR}
+          fi
+      - name: Prepare JDK ${{ env.JAVA_VERSION }}
         run: |
-          wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-x64-musl.tar.gz -O jdk.tar.gz
-          tar xzf *.tar.gz
-          find . -type d -name 'jdk*' -maxdepth 1 | xargs -I {} mv {} test_jdk
+          TEST_JDK_DIR="test_${{ env.JAVA_VERSION }}_jdk"
+          if [ ! -e ${TEST_JDK_DIR}/bin/java ]; then
+            wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-x64-musl.tar.gz -O jdk.tar.gz
+            tar xzf *.tar.gz
+            find . -type d -name 'jdk*' -maxdepth 1| xargs -I {} mv {} ${TEST_JDK_DIR}
+          fi
       - name: Test
         run: |
           set +e
-          export JAVA_HOME=$(pwd)/build_jdk
+          export JAVA_HOME=$(pwd)/test_11.0.25_jdk
           export PATH=$JAVA_HOME/bin:$PATH
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=musl/${{ matrix.java_version }}
           export LIBC=musl
-          export JAVA_TEST_HOME=$(pwd)/test_jdk
+          export JAVA_TEST_HOME=$(pwd)/test_${{ env.JAVA_VERSION }}_jdk
           export SANITIZER=${{ matrix.config }}
           export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
               split($2, v, "[._]");
@@ -466,29 +525,38 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: "11"
+      - name: Cache JDK ${{ matrix.java_version }} [amd64-zing]
+        uses: actions/cache@v3
+        with:
+          path: |
+            test_${{ matrix.java_version }}_jdk
+          key: ${{ matrix.java_version }}-amd64-zing
       - name: Prepare JDK ${{ matrix.java_version }}
         if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
         run: |
           sudo apt-get -y update && sudo apt-get -y install curl g++-9 gcc-9
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 100 --slave /usr/bin/g++ g++ /usr/bin/g++-9
           sudo update-alternatives --set gcc /usr/bin/gcc-9
-          set -eux
-          sudo mkdir -p /usr/lib/jvm/zing
-          if [ "${{ matrix.java_version }}" = "8" ]; then
-            # jdk1.8.0_372
-            curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk8.0.372-linux_x64.tar.gz" | sudo tar -xvzf - -C /usr/lib/jvm/zing --strip-components 1
-          elif [ "${{ matrix.java_version }}" = "11" ]; then
-            # jdk 11.0.19
-            curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk11.0.19-linux_x64.tar.gz" | sudo tar -xvzf - -C /usr/lib/jvm/zing --strip-components 1
-          elif [ "${{ matrix.java_version }}" = "17" ]; then
-            # jdk 17.0.7
-            curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk17.0.7-linux_x64.tar.gz" | sudo tar -xvzf - -C /usr/lib/jvm/zing --strip-components 1
-          elif [ "${{ matrix.java_version }}" = "21" ]; then
-            # jdk 21.0.2
-            curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.10.0.0/zing23.10.0.0-3-jdk21.0.1-linux_x64.tar.gz" | sudo tar -xvzf - -C /usr/lib/jvm/zing --strip-components 1
+          TEST_JDK_DIR=test_${{ matrix.java_version }}_jdk
+          if [ ! -e ${TEST_JDK_DIR}/bin/java ]; then
+            set -eux
+            mkdir -p ${TEST_JDK_DIR}
+            if [ "${{ matrix.java_version }}" = "8" ]; then
+              # jdk1.8.0_372
+              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk8.0.372-linux_x64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
+            elif [ "${{ matrix.java_version }}" = "11" ]; then
+              # jdk 11.0.19
+              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk11.0.19-linux_x64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
+            elif [ "${{ matrix.java_version }}" = "17" ]; then
+              # jdk 17.0.7
+              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk17.0.7-linux_x64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
+            elif [ "${{ matrix.java_version }}" = "21" ]; then
+              # jdk 21.0.2
+              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.10.0.0/zing23.10.0.0-3-jdk21.0.1-linux_x64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
+            fi
+            # rename the bundled libstdc++.so to avoid conflicts with the system one
+            sudo mv ${TEST_JDK_DIR}/etc/libc++/libstdc++.so.6 ${TEST_JDK_DIR}/etc/libc++/libstdc++.so.6.bak
           fi
-          # rename the bundled libstdc++.so to avoid conflicts with the system one
-          sudo mv /usr/lib/jvm/zing/etc/libc++/libstdc++.so.6 /usr/lib/jvm/zing/etc/libc++/libstdc++.so.6.bak
       - name: Test
         if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
         run: |
@@ -496,7 +564,7 @@ jobs:
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
           export LIBC=glibc
-          export JAVA_TEST_HOME=/usr/lib/jvm/zing
+          export JAVA_TEST_HOME=$(pwd)/test_${{ matrix.java_version }}_jdk
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
           export SANITIZER=${{ matrix.config }}
@@ -565,26 +633,35 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: "11"
+      - name: Cache JDK ${{ matrix.java_version }} [aarch64-zing]
+        uses: actions/cache@v3
+        with:
+          path: |
+            test_${{ matrix.java_version }}_jdk
+          key: ${{ matrix.java_version }}-aarch64-zing
       - name: Prepare JDK ${{ matrix.java_version }}
         if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
         run: |
           sudo apt-get -y update && sudo apt-get -y install curl g++-9 gcc-9
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 100 --slave /usr/bin/g++ g++ /usr/bin/g++-9
           sudo update-alternatives --set gcc /usr/bin/gcc-9
-          set -eux
-          sudo mkdir -p /usr/lib/jvm/zing
-          if [ "${{ matrix.java_version }}" = "8" ]; then
-            # jdk1.8.0_432
-            curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk8.0.431-linux_aarch64.tar.gz" | sudo tar -xvzf - -C /usr/lib/jvm/zing --strip-components 1
-          elif [ "${{ matrix.java_version }}" = "11" ]; then
-            # jdk 11.0.24
-            curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk11.0.24.0.101-linux_aarch64.tar.gz" | sudo tar -xvzf - -C /usr/lib/jvm/zing --strip-components 1
-          elif [ "${{ matrix.java_version }}" = "17" ]; then
-            # jdk 17.0.12
-            curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk17.0.12.0.101-linux_aarch64.tar.gz" | sudo tar -xvzf - -C /usr/lib/jvm/zing --strip-components 1
-          elif [ "${{ matrix.java_version }}" = "21" ]; then
-            # jdk 21.0.4
-            curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk21.0.4.0.101-linux_aarch64.tar.gz" | sudo tar -xvzf - -C /usr/lib/jvm/zing --strip-components 1
+          TEST_JDK_DIR=test_${{ matrix.java_version }}_jdk
+          if [ ! -e ${TEST_JDK_DIR}/bin/java ]; then
+            set -eux
+            mkdir -p ${TEST_JDK_DIR}
+            if [ "${{ matrix.java_version }}" = "8" ]; then
+              # jdk1.8.0_431
+              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk8.0.431-linux_aarch64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
+            elif [ "${{ matrix.java_version }}" = "11" ]; then
+              # jdk 11.0.24
+              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk11.0.24.0.101-linux_aarch64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
+            elif [ "${{ matrix.java_version }}" = "17" ]; then
+              # jdk 17.0.12
+              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk17.0.12.0.101-linux_aarch64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
+            elif [ "${{ matrix.java_version }}" = "21" ]; then
+              # jdk 21.0.4
+              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk21.0.4.0.101-linux_aarch64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
+            fi
           fi
       - name: Test
         if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
@@ -593,7 +670,7 @@ jobs:
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
           export LIBC=glibc
-          export JAVA_TEST_HOME=/usr/lib/jvm/zing
+          export JAVA_TEST_HOME=$(pwd)/test_${{ matrix.java_version }}_jdk
           export JAVA_HOME=$JAVA_HOME
           export PATH=$JAVA_HOME/bin:$PATH
           export SANITIZER=${{ matrix.config }}

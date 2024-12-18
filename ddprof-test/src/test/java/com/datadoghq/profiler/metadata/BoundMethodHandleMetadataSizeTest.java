@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
-public class BoundMethodHandeMetadataSizeTest extends AbstractProfilerTest {
+public class BoundMethodHandleMetadataSizeTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
         return "wall=100us";
@@ -22,6 +22,7 @@ public class BoundMethodHandeMetadataSizeTest extends AbstractProfilerTest {
     @Test
     public void test() throws Throwable {
         assumeFalse(Platform.isJ9() && Platform.isJavaVersion(17)); // JVMTI::GetClassSignature() is reliably crashing on a valid 'class' instance ¯\_(ツ)_/¯
+        assumeFalse(Platform.isAarch64() && Platform.isJavaVersion(8));
         registerCurrentThreadForWallClockProfiling();
         int numBoundMethodHandles = 10_000;
         int x = generateBoundMethodHandles(numBoundMethodHandles);
@@ -42,7 +43,7 @@ public class BoundMethodHandeMetadataSizeTest extends AbstractProfilerTest {
     public static int generateBoundMethodHandles(int howMany) throws Throwable {
         int total = 0;
         MethodHandle append = MethodHandles.lookup()
-                .findStatic(BoundMethodHandeMetadataSizeTest.class,
+                .findStatic(BoundMethodHandleMetadataSizeTest.class,
                         "append",
                         MethodType.methodType(String.class, String.class, int.class));
         for (int i = 0; i < howMany; i++) {

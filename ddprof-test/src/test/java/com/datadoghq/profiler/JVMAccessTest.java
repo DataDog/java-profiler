@@ -63,6 +63,10 @@ public class JVMAccessTest {
 
         String javaVersion = System.getenv("JAVA_VERSION");
         assumeTrue(javaVersion != null);
+        if (javaVersion.startsWith("8u")) {
+            // convert 8u432 to nomralized 8.0.432 format which is expected
+            javaVersion = "8.0." + javaVersion.split("u")[1];
+        }
 
         String javaHome = System.getenv("JAVA_TEST_HOME");
         if (javaHome == null) {
