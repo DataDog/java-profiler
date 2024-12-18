@@ -323,4 +323,8 @@ public final class Platform {
   public static String getRuntimePatches() {
     return RUNTIME.patches;
   }
+
+  public static boolean isAarch64() {
+    return System.getProperty("os.arch").toLowerCase().contains("aarch64");
+  }
 }
