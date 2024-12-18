@@ -21,17 +21,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - name: Extract Java Version
-        id: extract_version
-        run: |
-          java_version="${{ matrix.java_version }}"
-          echo "JAVA_VERSION=${java_version%%+*}" >> $GITHUB_ENV
       - uses: actions/checkout@v3
       - name: Prepare build JDK
         uses: actions/setup-java@v3
         with:
           distribution: 'temurin'
           java-version: "11"
+      - name: Extract Versions
+        uses: ./.github/actions/extract_versions
+      - name: Cache Gradle Wrapper Binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-wrapper-${{ runner.os }}-
+      - name: Cache Gradle User Home
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-caches-${{ runner.os }}-
       - name: Setup OS
         run: |
           sudo apt-get update
@@ -70,7 +81,8 @@ jobs:
               printf "%s.%s.%s\n", v[1], v[2], v[3]
             }
           }')
-          ./gradlew :ddprof-test:test${{ matrix.config }}
+          ./gradlew :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+          ls -la .gradle
           if [ $? -ne 0 ]; then
             echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
             exit 1
@@ -108,11 +120,6 @@ jobs:
       labels: arm-4core-linux
     timeout-minutes: 180
     steps:
-      - name: Extract Java Version
-        id: extract_version
-        run: |
-          java_version="${{ matrix.java_version }}"
-          echo "JAVA_VERSION=${java_version%%+*}" >> $GITHUB_ENV
       - uses: actions/checkout@v3
       - name: Prepare build JDK
         uses: actions/setup-java@v3
@@ -125,6 +132,22 @@ jobs:
           sudo apt remove -y g++
           sudo apt autoremove -y
           sudo apt install -y curl zip unzip clang make build-essential
+      - name: Extract Versions
+        uses: ./.github/actions/extract_versions
+      - name: Cache Gradle Wrapper Binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-wrapper-${{ runner.os }}-
+      - name: Cache Gradle User Home
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-caches-${{ runner.os }}-
       - name: Cache JDK ${{ env.JAVA_VERSION }} [aarch64]
         uses: actions/cache@v3
         with:
@@ -191,6 +214,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
 #          sudo sysctl vm.mmap_rnd_bits=28
+      - name: Cache Gradle Wrapper Binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-wrapper-${{ runner.os }}-
+      - name: Cache Gradle User Home
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-caches-${{ runner.os }}-
       - name: Prepare test JDK
         uses: actions/setup-java@v3
         with:
@@ -266,6 +303,20 @@ jobs:
           sudo apt remove -y g++
           sudo apt autoremove -y
           sudo apt install -y curl zip unzip clang make build-essential
+      - name: Cache Gradle Wrapper Binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-wrapper-${{ runner.os }}-
+      - name: Cache Gradle User Home
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-caches-${{ runner.os }}-
       - name: Prepare test JDK
         uses: actions/setup-java@v3
         with:
@@ -336,6 +387,20 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
+      - name: Cache Gradle Wrapper Binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-wrapper-${{ runner.os }}-
+      - name: Cache Gradle User Home
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-caches-${{ runner.os }}-
       - name: Prepare build JDK
         uses: actions/setup-java@v3
         with:
@@ -417,14 +482,25 @@ jobs:
       image: "alpine:3.14"
       options: --cpus 2
     steps:
-      - name: Extract Java Version
-        id: extract_version
-        run: |
-          java_version="${{ matrix.java_version }}"
-          echo "JAVA_VERSION=${java_version%%+*}" >> $GITHUB_ENV
       - uses: actions/checkout@v3
       - name: Setup OS
         run: apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar >/dev/null
+      - name: Extract Versions
+        uses: ./.github/actions/extract_versions
+      - name: Cache Gradle Wrapper Binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-wrapper-${{ runner.os }}-
+      - name: Cache Gradle User Home
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-caches-${{ runner.os }}-
       - name: Cache JDK 11.0.25 [amd64-musl]
         uses: actions/cache@v3
         with:
@@ -519,6 +595,20 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
+      - name: Cache Gradle Wrapper Binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-wrapper-${{ runner.os }}-
+      - name: Cache Gradle User Home
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-caches-${{ runner.os }}-
       - name: Prepare build JDK
         if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
         uses: actions/setup-java@v3
@@ -627,6 +717,20 @@ jobs:
           sudo apt remove -y g++
           sudo apt autoremove -y
           sudo apt install -y curl zip unzip clang make build-essential
+      - name: Cache Gradle Wrapper Binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-wrapper-${{ runner.os }}-
+      - name: Cache Gradle User Home
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-caches-${{ runner.os }}-
       - name: Prepare build JDK
         if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
         uses: actions/setup-java@v3
