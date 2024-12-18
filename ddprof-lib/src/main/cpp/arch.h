@@ -77,6 +77,9 @@ const int PERF_REG_PC = 8; // PERF_REG_X86_IP
 #define flushCache(addr)                                                       \
   asm volatile("mfence; clflush (%0); mfence" : : "r"(addr) : "memory")
 
+#define callerFP()        __builtin_frame_address(1)
+#define callerSP()        ((void**)__builtin_frame_address(0) + 2)
+
 #elif defined(__arm__) || defined(__thumb__)
 
 typedef unsigned int instruction_t;
@@ -97,6 +100,9 @@ const int PERF_REG_PC = 15; // PERF_REG_ARM_PC
   __builtin___clear_cache((char *)(addr),                                      \
                           (char *)(addr) + sizeof(instruction_t))
 
+#define callerFP()        __builtin_frame_address(1)
+#define callerSP()        __builtin_frame_address(1)
+
 #elif defined(__aarch64__)
 
 typedef unsigned int instruction_t;
@@ -116,6 +122,9 @@ const int PERF_REG_PC = 32; // PERF_REG_ARM64_PC
   __builtin___clear_cache((char *)(addr),                                      \
                           (char *)(addr) + sizeof(instruction_t))
 
+#define callerFP()        __builtin_frame_address(1)
+#define callerSP()        __builtin_frame_address(1)
+
 #elif defined(__PPC64__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
 
 typedef unsigned int instruction_t;
@@ -132,17 +141,56 @@ const int PLT_HEADER_SIZE = 24;
 const int PLT_ENTRY_SIZE = 24;
 const int PERF_REG_PC = 32; // PERF_REG_POWERPC_NIP
 
-#define spinPause()                                                            \
-  asm volatile("yield") // does nothing, but using or 1,1,1 would lead to other
-                        // problems
-#define rmb()                                                                  \
-  asm volatile("sync"                                                          \
-               :                                                               \
-               :                                                               \
-               : "memory") // lwsync would do but better safe than sorry
-#define flushCache(addr)                                                       \
-  __builtin___clear_cache((char *)(addr),                                      \
-                          (char *)(addr) + sizeof(instruction_t))
+#define spinPause()       asm volatile("yield") // does nothing, but using or 1,1,1 would lead to other problems
+#define rmb()             asm volatile ("sync" : : : "memory") // lwsync would do but better safe than sorry
+#define flushCache(addr)  __builtin___clear_cache((char*)(addr), (char*)(addr) + sizeof(instruction_t))
+
+#define callerFP()        __builtin_frame_address(1)
+#define callerSP()        __builtin_frame_address(0)
+
+#elif defined(__riscv) && (__riscv_xlen == 64)
+
+typedef unsigned int instruction_t;
+#if defined(__riscv_compressed)
+const instruction_t BREAKPOINT = 0x9002; // EBREAK (compressed form)
+#else
+const instruction_t BREAKPOINT = 0x00100073; // EBREAK
+#endif
+const int BREAKPOINT_OFFSET = 0;
+
+const int SYSCALL_SIZE = sizeof(instruction_t);
+const int FRAME_PC_SLOT = 1;    // return address is at -1 from FP
+const int PROBE_SP_LIMIT = 0;
+const int PLT_HEADER_SIZE = 24; // Best guess from examining readelf
+const int PLT_ENTRY_SIZE = 24;  // ...same...
+const int PERF_REG_PC = 0;      // PERF_REG_RISCV_PC
+
+#define spinPause()       // No architecture support
+#define rmb()             asm volatile ("fence" : : : "memory")
+#define flushCache(addr)  __builtin___clear_cache((char*)(addr), (char*)(addr) + sizeof(instruction_t))
+
+#define callerFP()        __builtin_frame_address(1)
+#define callerSP()        __builtin_frame_address(0)
+
+#elif defined(__loongarch_lp64)
+
+typedef unsigned int instruction_t;
+const instruction_t BREAKPOINT = 0x002a0005; // EBREAK
+const int BREAKPOINT_OFFSET = 0;
+
+const int SYSCALL_SIZE = sizeof(instruction_t);
+const int FRAME_PC_SLOT = 1;
+const int PROBE_SP_LIMIT = 0;
+const int PLT_HEADER_SIZE = 32;
+const int PLT_ENTRY_SIZE = 16;
+const int PERF_REG_PC = 0;      // PERF_REG_LOONGARCH_PC
+
+#define spinPause()       asm volatile("ibar 0x0")
+#define rmb()             asm volatile("dbar 0x0" : : : "memory")
+#define flushCache(addr)  __builtin___clear_cache((char*)(addr), (char*)(addr) + sizeof(instruction_t))
+
+#define callerFP()        __builtin_frame_address(1)
+#define callerSP()        __builtin_frame_address(0)
 
 #else
 
