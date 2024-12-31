@@ -51,6 +51,19 @@ JVM_GetManagement VM::_getManagement;
 
 static void wakeupHandler(int signo) {
   // Dummy handler for interrupting syscalls
+
+static bool isVmRuntimeEntry(const char* blob_name) {
+    return strcmp(blob_name, "_ZNK12MemAllocator8allocateEv") == 0
+        || strncmp(blob_name, "_Z22post_allocation_notify", 26) == 0
+        || strncmp(blob_name, "_ZN11OptoRuntime", 16) == 0
+        || strncmp(blob_name, "_ZN8Runtime1", 12) == 0
+        || strncmp(blob_name, "_ZN13SharedRuntime", 18) == 0
+        || strncmp(blob_name, "_ZN18InterpreterRuntime", 23) == 0;
+}
+
+static bool isZingRuntimeEntry(const char* blob_name) {
+    return strncmp(blob_name, "_ZN14DolphinRuntime", 19) == 0
+        || strncmp(blob_name, "_ZN37JvmtiSampledObjectAllocEventCollector", 42) == 0;
 }
 
 static bool isZeroInterpreterMethod(const char *blob_name) {
@@ -75,8 +88,28 @@ static bool isOpenJ9JitStub(const char *blob_name) {
   return false;
 }
 
-static void *resolveMethodId(void **mid) {
-  return mid == NULL || *mid < (void *)4096 ? NULL : *mid;
+static bool isOpenJ9Resolve(const char* blob_name) {
+    return strncmp(blob_name, "resolve", 7) == 0;
+}
+
+static bool isOpenJ9JitAlloc(const char* blob_name) {
+    return strncmp(blob_name, "old_", 4) == 0;
+}
+
+static bool isOpenJ9GcAlloc(const char* blob_name) {
+    return strncmp(blob_name, "J9Allocate", 10) == 0;
+}
+
+static bool isOpenJ9JvmtiAlloc(const char* blob_name) {
+    return strcmp(blob_name, "jvmtiHookSampledObjectAlloc") == 0;
+}
+
+static bool isCompilerEntry(const char* blob_name) {
+    return strncmp(blob_name, "_ZN13CompileBroker25invoke_compiler_on_method", 45) == 0;
+}
+
+static void* resolveMethodId(void** mid) {
+    return mid == NULL || *mid < (void*)4096 ? NULL : *mid;
 }
 
 static void resolveMethodIdEnd() {}
@@ -372,7 +405,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
     // DebugNonSafepoints is automatically enabled with CompiledMethodLoad,
     // otherwise we set the flag manually
     JVMFlag* f = JVMFlag::find("DebugNonSafepoints", {JVMFlag::Type::Bool});
-    if (f != NULL && f->origin() == 0) {
+    if (f != NULL && f->isDefault()) {
       f->set(1);
     }
   }
