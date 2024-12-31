@@ -1,7 +1,6 @@
 /*
  * Copyright The async-profiler authors
  * SPDX-License-Identifier: Apache-2.0
- * Copyright 2021, 2025 Datadog, Inc
  */
 
 #include <assert.h>
@@ -754,7 +753,7 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
                      Profiler::instance()->cpuEngine()->name());
   writeStringSetting(buf, T_ACTIVE_RECORDING, "wallEngine",
                      Profiler::instance()->wallEngine()->name());
-  writeStringSetting(buf, T_ACTIVE_RECORDING, "cstack", 
+  writeStringSetting(buf, T_ACTIVE_RECORDING, "cstack",
                      Profiler::instance()->cstack());
   flushIfNeeded(buf);
 }
