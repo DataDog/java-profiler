@@ -21,6 +21,16 @@ If you need a full-fledged Java profiler head back to [async-profiler](https://g
 
 Once prerequisites have been installed simple as `./gradlew assembleAll`. The resulting artifact is located in `ddprof-lib/build/libs/ddprof-<version>.jar`
 
+## Testing
+The associated test cases can be run for each specific configuration:
+- `testRelase` - test the release artifacts
+- `testDebug`  - test the debug artifacts
+- `testAsan`   - test with ASan
+- `testTsan`   - test with TSan
+
+The tests that create a JFR recording for the purpose of asserting will delete this recording at the end, unless `-PkeepJFRs` is provided to gradle.
+
+One can also completely skip all tests by adding `-Pskip-tests` gradle property.
 
 
 ### Consuming the artifact
