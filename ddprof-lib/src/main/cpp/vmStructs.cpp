@@ -148,7 +148,7 @@ void VMStructs::ready() {
   JNIEnv *env = VM::jni();
   initThreadBridge(env);
   initLogging(env);
-  initMemoryUsage(env);
+  HeapUsage::initJMXUsage(env);
   _libjvm->dump();
 }
 
@@ -637,17 +637,43 @@ void VMStructs::initLogging(JNIEnv *env) {
   }
 }
 
-void VMStructs::initMemoryUsage(JNIEnv *env) {
+bool HeapUsage::is_jmx_attempted = false;
+bool HeapUsage::is_jmx_supported = false; // default to not-supported
+
+void HeapUsage::initJMXUsage(JNIEnv *env) {
+  if (is_jmx_attempted) {
+    // do not re-run the initialization
+    return;
+  }
+  is_jmx_attempted = true;
   jclass factory = env->FindClass("java/lang/management/ManagementFactory");
+  if (!jniExceptionCheck(env) || factory == nullptr) {
+    return;
+  }
   jclass memoryBeanClass = env->FindClass("java/lang/management/MemoryMXBean");
+  if (!jniExceptionCheck(env) || memoryBeanClass == nullptr) {
+    return;
+  }
   jmethodID get_memory = env->GetStaticMethodID(
       factory, "getMemoryMXBean", "()Ljava/lang/management/MemoryMXBean;");
+  if (!jniExceptionCheck(env) || get_memory == nullptr) {
+    return;
+  }
   jobject memoryBean = env->CallStaticObjectMethod(factory, get_memory);
-  jniExceptionCheck(env);
+  if (!jniExceptionCheck(env) || memoryBean == nullptr) {
+    return;
+  }
   jmethodID get_heap = env->GetMethodID(memoryBeanClass, "getHeapMemoryUsage",
                                         "()Ljava/lang/management/MemoryUsage;");
+  if (!jniExceptionCheck(env) || get_heap == nullptr) {
+    return;
+  }
   env->CallObjectMethod(memoryBean, get_heap);
-  jniExceptionCheck(env);
+  if (!jniExceptionCheck(env)) {
+    return;
+  }
+  // mark JMX as supported only after we were able to retrieve the memory usage
+  is_jmx_supported = true;
 }
 
 VMThread *VMThread::current() {
