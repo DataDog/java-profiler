@@ -159,7 +159,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: |
-            ~/test_${{ env.JAVA_VERSION }}_jdk
+            test_${{ env.JAVA_VERSION }}_jdk
           key: ${{ env.JAVA_VERSION }}-aarch64-${{ github.run_id }}
           restore-keys: |
             ${{ env.JAVA_VERSION }}-aarch64-
