@@ -153,7 +153,10 @@ public abstract class AbstractProfilerTest {
 
     String testConfig = System.getenv("TEST_CONFIGURATION");
     testConfig = testConfig == null ? "" : testConfig;
-    jfrDump = Files.createTempFile(Paths.get("/tmp"), testConfig.replace('/', '_') + "-" + testInfo.getTestMethod().map(m -> m.getDeclaringClass().getSimpleName() + "_" + m.getName()).orElse("unknown"), ".jfr");
+    Path rootDir = Paths.get("/tmp/recordings");
+    Files.createDirectories(rootDir);
+
+    jfrDump = Files.createTempFile(rootDir, testConfig.replace('/', '_') + "-" + testInfo.getTestMethod().map(m -> m.getDeclaringClass().getSimpleName() + "_" + m.getName()).orElse("unknown"), ".jfr");
     profiler = JavaProfiler.getInstance();
     String command = "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
     cpuInterval = command.contains("cpu") ? parseInterval(command, "cpu") : (command.contains("interval") ? parseInterval(command, "interval") : Duration.ZERO);
@@ -168,6 +171,7 @@ public abstract class AbstractProfilerTest {
   public void cleanup() throws Exception {
     after();
     stopProfiler();
+    System.out.println("===> keep_jfrs: " + Boolean.getBoolean("ddprof_test.keep_jfrs"));
     if (jfrDump != null && !Boolean.getBoolean("ddprof_test.keep_jfrs")) {
       Files.deleteIfExists(jfrDump);
     }
@@ -183,13 +187,11 @@ public abstract class AbstractProfilerTest {
     try {
       IItemCollection profilerConfig = verifyEvents("datadog.DatadogProfilerConfig");
       for (IItemIterable items : profilerConfig) {
-        IMemberAccessor<String, IItem> cpuEngineAccessor = CPU_ENGINE.getAccessor(items.getType());
         IMemberAccessor<IQuantity, IItem> cpuIntervalAccessor = CPU_INTERVAL.getAccessor(items.getType());
         IMemberAccessor<IQuantity, IItem> wallIntervalAccessor = WALL_INTERVAL.getAccessor(items.getType());
         for (IItem item : items) {
           long cpuIntervalMillis = cpuIntervalAccessor.getMember(item).longValueIn(MILLISECOND);
           long wallIntervalMillis = wallIntervalAccessor.getMember(item).longValueIn(MILLISECOND);
-          System.out.println("===> cpu interval: " + cpuIntervalMillis);
           if (!Platform.isJ9() && Platform.isJavaVersionAtLeast(11)) {
             // fixme J9 engine have weird defaults and need fixing
             assertEquals(cpuInterval.toMillis(), cpuIntervalMillis);

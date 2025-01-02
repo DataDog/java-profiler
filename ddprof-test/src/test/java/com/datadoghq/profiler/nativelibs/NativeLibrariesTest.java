@@ -45,16 +45,18 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
     public void test() {
         Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
         boolean isMusl = Optional.ofNullable(System.getenv("TEST_CONFIGURATION")).orElse("").startsWith("musl");
+        boolean isAsan = Optional.ofNullable(System.getenv("TEST_CONFIGURATION")).orElse("").contains("asan");
+        int iterations = Platform.isAarch64() && isAsan ? 200 : 100;
         int blackhole = 0;
-        for (int i = 0; i < 100; i++) {
+        for (int i = 0; i < iterations; i++) {
             blackhole ^= lz4Java();
         }
-        for (int i = 0; i < 100; i++) {
+        for (int i = 0; i < iterations; i++) {
             blackhole ^= zstdJni();
         }
         // snappy-java may not load under musl
         if (!isMusl) {
-            for (int i = 0; i < 100; i++) {
+            for (int i = 0; i < iterations; i++) {
                 blackhole ^= snappyJava();
             }
         }
