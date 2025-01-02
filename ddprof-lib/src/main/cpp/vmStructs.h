@@ -570,12 +570,25 @@ public:
 };
 
 class HeapUsage : VMStructs {
+private:
+  static bool is_jmx_attempted;
+  static bool is_jmx_supported; // default to not-supported
 public:
+
+
   size_t _initSize = -1;
   size_t _used = -1;
   size_t _committed = -1;
   size_t _maxSize = -1;
   size_t _used_at_last_gc = -1;
+
+  static void initJMXUsage(JNIEnv* env);
+
+  static bool isJMXSupported() {
+    initJMXUsage(VM::jni());
+    return is_jmx_supported;
+  }
+
 
   static bool isLastGCUsageSupported() {
     // only supported for JDK 17+
@@ -638,7 +651,7 @@ public:
         usage._maxSize = summary.maxSize();
       }
     }
-    if (usage._maxSize == -1 && _memory_usage_func != NULL && allow_jmx) {
+    if (usage._maxSize == -1 && _memory_usage_func != NULL && allow_jmx && isJMXSupported()) {
       // this path is for non-hotspot JVMs
       // we need to patch the native method binding for JMX GetMemoryUsage to
       // capture the native method pointer first also, it requires JMX and
