@@ -1,5 +1,6 @@
 package com.datadoghq.profiler;
 
+import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.TestInfo;
 import org.openjdk.jmc.common.IMCStackTrace;
 import org.openjdk.jmc.common.item.Attribute;
 
@@ -145,11 +147,13 @@ public abstract class AbstractProfilerTest {
   protected void withTestAssumptions() {}
 
   @BeforeEach
-  public void setupProfiler() throws Exception {
+  public void setupProfiler(TestInfo testInfo) throws Exception {
     Assumptions.assumeTrue(isPlatformSupported());
     withTestAssumptions();
 
-    jfrDump = Files.createTempFile(Paths.get("/tmp"), getClass().getName() + UUID.randomUUID(), ".jfr");
+    String testConfig = System.getenv("TEST_CONFIGURATION");
+    testConfig = testConfig == null ? "" : testConfig;
+    jfrDump = Files.createTempFile(Paths.get("/tmp"), testConfig.replace('/', '_') + "-" + testInfo.getTestMethod().map(Method::getName).orElse("unknown"), ".jfr");
     profiler = JavaProfiler.getInstance();
     String command = "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
     cpuInterval = command.contains("cpu") ? parseInterval(command, "cpu") : (command.contains("interval") ? parseInterval(command, "interval") : Duration.ZERO);
@@ -164,7 +168,9 @@ public abstract class AbstractProfilerTest {
   public void cleanup() throws Exception {
     after();
     stopProfiler();
-    // Files.deleteIfExists(jfrDump);
+    if (jfrDump != null && !Boolean.getBoolean("ddprof_test.keep_jfrs")) {
+      Files.deleteIfExists(jfrDump);
+    }
   }
 
   protected void before() throws Exception {

@@ -83,7 +83,7 @@ jobs:
               printf "%s.%s.%s\n", v[1], v[2], v[3]
             }
           }')
-          ./gradlew :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+          ./gradlew -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           ls -la .gradle
           if [ $? -ne 0 ]; then
             echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
@@ -110,6 +110,11 @@ jobs:
         with:
           name: failures
           path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: recordings
+          path: /tmp/*.jfr
 
   test-linux-glibc-aarch64:
     strategy:
@@ -176,7 +181,7 @@ jobs:
           export LIBC=glibc
           export JAVA_TEST_HOME=$(pwd)/test_${{ env.JAVA_VERSION }}_jdk
           export SANITIZER=${{ matrix.config }}
-          ./gradlew :ddprof-test:test${{ matrix.config }}
+          ./gradlew -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           if [ $? -ne 0 ]; then
             echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
             exit 1
@@ -202,6 +207,11 @@ jobs:
         with:
           name: failures
           path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: recordings
+          path: /tmp/*.jfr
 
   test-linux-glibc-j9-amd64:
     strategy:
@@ -248,7 +258,7 @@ jobs:
         run: |
           set +e
           export TEST_COMMIT=${{ github.sha }}
-          export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
+          export TEST_CONFIGURATION=glibc/j9/${{ matrix.java_version }}-amd64
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
           export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
@@ -262,7 +272,7 @@ jobs:
             }
           }')
           chmod a+x gradlew
-          ./gradlew :ddprof-test:test${{ matrix.config }}
+          ./gradlew -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           if [ $? -ne 0 ]; then
             echo "glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
             exit 1
@@ -288,6 +298,11 @@ jobs:
         with:
           name: failures
           path: failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: recordings
+          path: /tmp/*.jfr
 
   test-linux-glibc-j9-aarch64:
     strategy:
@@ -337,7 +352,7 @@ jobs:
         run: |
           set +e
           export TEST_COMMIT=${{ github.sha }}
-          export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
+          export TEST_CONFIGURATION=glibc/j9/${{ matrix.java_version }}-aarch64
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
           export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
@@ -351,7 +366,7 @@ jobs:
             }
           }')
           chmod a+x gradlew
-          ./gradlew :ddprof-test:test${{ matrix.config }}
+          ./gradlew -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           if [ $? -ne 0 ]; then
             echo "glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
             exit 1
@@ -377,6 +392,11 @@ jobs:
         with:
           name: failures
           path: failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: recordings
+          path: /tmp/*.jfr
 
   test-linux-glibc-oracle8:
     strategy:
@@ -433,7 +453,7 @@ jobs:
         run: |
           set +e
           export TEST_COMMIT=${{ github.sha }}
-          export TEST_CONFIGURATION=glibc/8
+          export TEST_CONFIGURATION=glibc/oracle/8-amd64
           export LIBC=glibc
           export JAVA_TEST_HOME=/usr/lib/jvm/oracle8
           export JAVA_HOME=$JAVA_HOME
@@ -449,7 +469,7 @@ jobs:
               printf "%s.%s.%s\n", v[1], v[2], v[3]
             }
           }')
-          ./gradlew :ddprof-test:test${{ matrix.config }}
+          ./gradlew -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           if [ $? -ne 0 ]; then
             echo "glibc-oracle8-${{ matrix.config }}" >> failures_glibc-oracle8-${{ matrix.config }}.txt
             exit 1
@@ -474,6 +494,11 @@ jobs:
         with:
           name: failures
           path: failures_glibc-oracle8-${{ matrix.config }}.txt
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: recordings
+          path: /tmp/*.jfr
 
   test-linux-musl-amd64:
     strategy:
@@ -546,7 +571,7 @@ jobs:
           export JAVA_HOME=$(pwd)/test_11.0.25_jdk
           export PATH=$JAVA_HOME/bin:$PATH
           export TEST_COMMIT=${{ github.sha }}
-          export TEST_CONFIGURATION=musl/${{ matrix.java_version }}
+          export TEST_CONFIGURATION=musl/${{ matrix.java_version }}-amd64
           export LIBC=musl
           export JAVA_TEST_HOME=$(pwd)/test_${{ env.JAVA_VERSION }}_jdk
           export SANITIZER=${{ matrix.config }}
@@ -560,7 +585,7 @@ jobs:
               printf "%s.%s.%s\n", v[1], v[2], v[3]
             }
           }')
-          ./gradlew :ddprof-test:test${{ matrix.config }}
+          ./gradlew -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           if [ $? -ne 0 ]; then
             echo "musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
             exit 1
@@ -586,6 +611,11 @@ jobs:
         with:
           name: failures
           path: failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: recordings
+          path: /tmp/*.jfr
 
   test-linux-glibc-zing-amd64:
     strategy:
@@ -665,7 +695,7 @@ jobs:
         run: |
           set +e
           export TEST_COMMIT=${{ github.sha }}
-          export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
+          export TEST_CONFIGURATION=glibc/zing/${{ matrix.java_version }}-amd64
           export LIBC=glibc
           export JAVA_TEST_HOME=$(pwd)/test_${{ matrix.java_version }}_jdk
           export JAVA_HOME=$JAVA_HOME
@@ -681,7 +711,7 @@ jobs:
               printf "%s.%s.%s\n", v[1], v[2], v[3]
             }
           }')
-          ./gradlew :ddprof-test:test${{ matrix.config }}
+          ./gradlew -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           if [ $? -ne 0 ]; then
             echo "glibc-zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
             exit 1
@@ -706,6 +736,11 @@ jobs:
         with:
           name: failures
           path: failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: recordings
+          path: /tmp/*.jfr
 
   test-linux-glibc-zing-aarch64:
     strategy:
@@ -787,7 +822,7 @@ jobs:
         run: |
           set +e
           export TEST_COMMIT=${{ github.sha }}
-          export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}
+          export TEST_CONFIGURATION=glibc/zing/${{ matrix.java_version }}-aarch64
           export LIBC=glibc
           export JAVA_TEST_HOME=$(pwd)/test_${{ matrix.java_version }}_jdk
           export JAVA_HOME=$JAVA_HOME
@@ -803,7 +838,7 @@ jobs:
               printf "%s.%s.%s\n", v[1], v[2], v[3]
             }
           }')
-          ./gradlew :ddprof-test:test${{ matrix.config }}
+          ./gradlew -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           if [ $? -ne 0 ]; then
             echo "glibc-zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
             exit 1
@@ -828,3 +863,8 @@ jobs:
         with:
           name: failures
           path: failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: recordings
+          path: /tmp/*.jfr

@@ -77,7 +77,7 @@ def buildSmallLibTask = tasks.register("buildSmallLib", Exec) {
 
 def gtestAll = tasks.register("gtest") {
   onlyIf {
-    hasGtest && !project.hasProperty('skip-native')
+    hasGtest && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native')
   }
   group = 'verification'
   description = "Run all Google Tests for all build configurations of the library"
@@ -98,7 +98,7 @@ tasks.whenTaskAdded { task ->
             def testName = it.name.substring(0, it.name.lastIndexOf('.'))
             def gtestCompileTask = tasks.register("compileGtest${config.name.capitalize()}_${testName}", CppCompile) {
               onlyIf {
-                config.active && hasGtest && !project.hasProperty('skip-native')
+                config.active && hasGtest && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native')
               }
               group = 'build'
               description = "Compile the Google Test ${testName} for the ${config.name} build of the library"
@@ -155,7 +155,7 @@ tasks.whenTaskAdded { task ->
             def binary = file("$buildDir/bin/gtest/${config.name}_${testName}/${testName}")
             def gtestLinkTask = tasks.register("linkGtest${config.name.capitalize()}_${testName}", LinkExecutable) {
               onlyIf {
-                config.active && hasGtest && !project.hasProperty('skip-native')
+                config.active && hasGtest && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native')
               }
               group = 'build'
               description = "Link the Google Test for the ${config.name} build of the library"
@@ -179,7 +179,7 @@ tasks.whenTaskAdded { task ->
             }
             def gtestExecuteTask = tasks.register("gtest${config.name.capitalize()}_${testName}", Exec) {
               onlyIf {
-                config.active && hasGtest && !project.hasProperty('skip-native')
+                config.active && hasGtest && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native')
               }
               group = 'verification'
               description = "Run the Google Test ${testName} for the ${config.name} build of the library"
