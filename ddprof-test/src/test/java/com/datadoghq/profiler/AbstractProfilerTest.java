@@ -153,7 +153,7 @@ public abstract class AbstractProfilerTest {
 
     String testConfig = System.getenv("TEST_CONFIGURATION");
     testConfig = testConfig == null ? "" : testConfig;
-    jfrDump = Files.createTempFile(Paths.get("/tmp"), testConfig.replace('/', '_') + "-" + testInfo.getTestMethod().map(Method::getName).orElse("unknown"), ".jfr");
+    jfrDump = Files.createTempFile(Paths.get("/tmp"), testConfig.replace('/', '_') + "-" + testInfo.getTestMethod().map(m -> m.getDeclaringClass().getSimpleName() + "_" + m.getName()).orElse("unknown"), ".jfr");
     profiler = JavaProfiler.getInstance();
     String command = "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
     cpuInterval = command.contains("cpu") ? parseInterval(command, "cpu") : (command.contains("interval") ? parseInterval(command, "interval") : Duration.ZERO);
