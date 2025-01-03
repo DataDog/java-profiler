@@ -73,11 +73,11 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
                 modeCounters.computeIfAbsent(mode, x -> new AtomicInteger()).incrementAndGet();
                 if ("NATIVE".equals(mode)) {
                     String library = "";
-                    if (stacktrace.contains("LZ4JNI")) {
+                    if (stacktrace.contains("LZ4JNI") || stacktrace.contains(".LZ4HC_")) {
                         library = "LZ4";
-                    } else if (stacktrace.contains("Java_org_xerial_snappy_SnappyNative")) {
+                    } else if (stacktrace.contains("Java_org_xerial_snappy_SnappyNative") || stacktrace.contains("libsnappyjava")) {
                         library = "SNAPPY";
-                    } else if (stacktrace.contains("Java_com_github_luben_zstd")) {
+                    } else if (stacktrace.contains("Java_com_github_luben_zstd") || stacktrace.contains(".ZSTD_")) {
                         library = "ZSTD";
                     } else if (stacktrace.contains("Compile")) {
                         library = "JIT";
@@ -89,9 +89,8 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
         assertTrue(modeCounters.containsKey("JVM"), "no JVM samples");
         assertTrue(modeCounters.containsKey("NATIVE"), "no NATIVE samples");
         assertTrue(libraryCounters.containsKey("LZ4"), "no lz4-java samples");
-        // looks like we might drop these samples with FP unwinding (which we have to use on MacOS)
-        // flaky
-        // assertTrue(isMusl || Platform.isMac() || libraryCounters.containsKey("SNAPPY"), "no snappy-java samples");
+        // snappy is problematic on musl; we are not running it
+        assertTrue(isMusl || libraryCounters.containsKey("SNAPPY"), "no snappy-java samples");
         assertTrue(libraryCounters.containsKey("ZSTD"), "no zstd-jni samples");
         modeCounters.forEach((mode, count) -> System.err.println(mode + ": " + count.get()));
         libraryCounters.forEach((lib, count) -> System.err.println(lib + ": " + count.get()));
