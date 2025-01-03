@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Queue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -41,7 +42,9 @@ public class ShutdownTest {
   }
 
   private static void runTest(JavaProfiler profiler, String command) throws IOException {
-    Path jfrDump = Files.createTempFile("filter-test", ".jfr");
+    Path rootDir = Paths.get("/tmp/recordings");
+    Files.createDirectories(rootDir);
+    Path jfrDump = Files.createTempFile(rootDir, "shutdown-test", ".jfr");
     String commandWithDump = command + ",jfr,file=" + jfrDump.toAbsolutePath();
     ExecutorService executor = Executors.newSingleThreadExecutor();
     Queue<Throwable> errors = new LinkedBlockingQueue<>();
