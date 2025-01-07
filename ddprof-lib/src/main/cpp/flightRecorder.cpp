@@ -150,7 +150,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
     bool entry = false;
     if (VMMethod::check_jmethodID(method) &&
         jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
-        jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
+        ((!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) && jvmti->GetClassSignature(method_class, &class_name, NULL) == 0) &&
         jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
 
       if (first_time) {
