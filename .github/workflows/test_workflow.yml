@@ -12,7 +12,7 @@ permissions:
   actions: read
 
 jobs:
-  test-linux-glibc-graalvm:
+  test-linux-glibc-graalvm-amd64:
     strategy:
       fail-fast: false
       matrix:
@@ -63,6 +63,73 @@ jobs:
         run: |
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/graalvm/${{ matrix.java_version }}-amd64
+          export JAVA_TEST_HOME=$(pwd)/graalvm_${{ matrix.java_version }}_jdk
+          export PATH=${JAVA_TEST_HOME}/bin:$PATH
+          ./gradlew clean build --no-daemon --parallel --build-cache --no-watch-fs
+      - name: Upload Logs
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: graalvm-${{ matrix.java_version }}-logs
+          path: |
+            build/reports/tests/
+            build/tmp/
+
+  test-linux-glibc-graalvm-aarch64:
+    strategy:
+      fail-fast: false
+      matrix:
+        java_version: [ 17.0.9, 21.0.2, 23.0.1 ]
+        config: ${{ fromJson(inputs.configuration) }}
+    runs-on:
+      group: ARM LINUX SHARED
+      labels: arm-4core-linux
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup OS
+        run: |
+          sudo apt update -y
+          sudo apt remove -y g++
+          sudo apt autoremove -y
+          sudo apt install -y curl zip unzip clang make build-essential
+      - name: Cache Gradle Wrapper Binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-wrapper-${{ runner.os }}-
+      - name: Cache Gradle User Home
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-caches-${{ runner.os }}-
+      - name: Extract Java Major Version
+        run: echo "JAVA_MAJOR_VERSION=$(echo ${{ matrix.java_version }} | cut -d '.' -f 1)" >> $GITHUB_ENV
+      - name: Cache GraalVM JDK ${{ matrix.java_version }} [arm64]
+        uses: actions/cache@v3
+        with:
+          path: |
+            graalvm_${{ matrix.java_version }}_jdk
+          key: graalvm-${{ matrix.java_version }}-arm64-${{ github.run_id }}
+          restore-keys: |
+            graalvm-${{ matrix.java_version }}-arm64-
+      - name: Prepare GraalVM JDK ${{ matrix.java_version }}
+        run: |
+          GRAALVM_JDK_DIR="graalvm_${{ matrix.java_version }}_jdk"
+          if [ ! -e ${GRAALVM_JDK_DIR}/bin/java ]; then
+            wget -nv https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${{ matrix.java_version }}/graalvm-community-jdk-${{ matrix.java_version }}_linux-aarch64_bin.tar.gz -O graalvm.tar.gz
+            mkdir -p ${GRAALVM_JDK_DIR}
+            tar -xzf graalvm.tar.gz --strip-components=1 -C ${GRAALVM_JDK_DIR}
+          fi
+          ls -la ${GRAALVM_JDK_DIR}
+      - name: Test
+        run: |
+          export TEST_COMMIT=${{ github.sha }}
+          export TEST_CONFIGURATION=glibc/graalvm/${{ matrix.java_version }}-arm64
           export JAVA_TEST_HOME=$(pwd)/graalvm_${{ matrix.java_version }}_jdk
           export PATH=${JAVA_TEST_HOME}/bin:$PATH
           ./gradlew clean build --no-daemon --parallel --build-cache --no-watch-fs
