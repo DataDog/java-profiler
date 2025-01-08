@@ -37,7 +37,7 @@ __asm__(".symver exp,exp@GLIBC_2.17");
 #endif
 
 const int MAX_NATIVE_FRAMES = 128;
-const int RESERVED_FRAMES = 4;
+const int RESERVED_FRAMES   = 10;  // for synthetic frames
 
 enum EventMask { EM_CPU = 1 << 0, EM_WALL = 1 << 1, EM_ALLOC = 1 << 2 };
 
