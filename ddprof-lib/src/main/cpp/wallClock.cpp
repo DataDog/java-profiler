@@ -149,13 +149,13 @@ bool BaseWallClock::isEnabled() const {
 }
 
 void WallClockASGCT::initialize(Arguments& args) {
-    _collapsing = args._wall_collapsing;
-    OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
+  _collapsing = args._wall_collapsing;
+  OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
 }
 
 void WallClockJVMTI::timerLoop() {
     // Check for enablement before attaching/dettaching the current thread
-    if (!isEnabled()) {
+  if (!isEnabled()) {
     return;
   }
   // Attach to JVM as the first step
@@ -175,97 +175,97 @@ void WallClockJVMTI::timerLoop() {
         int self = OS::threadId();
 
         for (int i = 0; i < threads_count; i++) {
-            jthread thread = threads_ptr[i];
-            if (thread != nullptr) {
-                VMThread* nThread = VMThread::fromJavaThread(jni, thread);
-                if (nThread == nullptr) {
-                    continue;
-                }
-                int tid = nThread->osThreadId();
-                if (tid != self && (!do_filter || Profiler::instance()->threadFilter()->accept(tid))) {
-                    threads.push_back({nThread, thread});
-                }
+          jthread thread = threads_ptr[i];
+          if (thread != nullptr) {
+            VMThread* nThread = VMThread::fromJavaThread(jni, thread);
+            if (nThread == nullptr) {
+              continue;
             }
+            int tid = nThread->osThreadId();
+            if (tid != self && (!do_filter || Profiler::instance()->threadFilter()->accept(tid))) {
+              threads.push_back({nThread, thread});
+            }
+          }
         }
         jvmti->Deallocate((unsigned char*)threads_ptr);
     };
 
   auto sampleThreads = [&](ThreadEntry& thread_entry, int& num_failures, int& threads_already_exited, int& permission_denied) {
-        jint max_stack_depth = (jint)Profiler::instance()->max_stack_depth();
-        jvmtiFrameInfo* frame_buffer = new jvmtiFrameInfo[max_stack_depth];
-        jvmtiEnv* jvmti = VM::jvmti();
+    static jint max_stack_depth = (jint)Profiler::instance()->max_stack_depth();
+    static jvmtiFrameInfo* frame_buffer = new jvmtiFrameInfo[max_stack_depth];
+    static jvmtiEnv* jvmti = VM::jvmti();
 
-        int num_frames = 0;
-        jvmtiError err = jvmti->GetStackTrace(thread_entry.java, 0, max_stack_depth, frame_buffer, &num_frames);
-        if (err != JVMTI_ERROR_NONE) {
-            num_failures++;
-            if (err == JVMTI_ERROR_THREAD_NOT_ALIVE) {
-                threads_already_exited++;
-            }
-            return false;
-        }
-        ExecutionEvent event;
-        VMThread* vm_thread = thread_entry.native;
-        int raw_thread_state = vm_thread->state();
-        bool is_initialized = raw_thread_state >= JVMJavaThreadState::_thread_in_native && 
-                              raw_thread_state < JVMJavaThreadState::_thread_max_state;
-        ThreadState state = ThreadState::UNKNOWN;
-        ExecutionMode mode = ExecutionMode::UNKNOWN;
-        if (vm_thread && is_initialized) {
-            ThreadState os_state = vm_thread->osThreadState();
-            if (os_state != ThreadState::UNKNOWN) {
-                state = os_state;
-            }
-            mode = convertJvmExecutionState(raw_thread_state);
-        }
-        if (state == ThreadState::UNKNOWN) {
-            state = ThreadState::RUNNABLE;
-        }
-        event._thread_state = state;
-        event._execution_mode = mode;
-        event._weight =  1;
+    int num_frames = 0;
+    jvmtiError err = jvmti->GetStackTrace(thread_entry.java, 0, max_stack_depth, frame_buffer, &num_frames);
+    if (err != JVMTI_ERROR_NONE) {
+      num_failures++;
+      if (err == JVMTI_ERROR_THREAD_NOT_ALIVE) {
+        threads_already_exited++;
+      }
+      return false;
+    }
+    ExecutionEvent event;
+    VMThread* vm_thread = thread_entry.native;
+    int raw_thread_state = vm_thread->state();
+    bool is_initialized = raw_thread_state >= JVMJavaThreadState::_thread_in_native &&
+                          raw_thread_state < JVMJavaThreadState::_thread_max_state;
+    ThreadState state = ThreadState::UNKNOWN;
+    ExecutionMode mode = ExecutionMode::UNKNOWN;
+    if (vm_thread && is_initialized) {
+      ThreadState os_state = vm_thread->osThreadState();
+      if (os_state != ThreadState::UNKNOWN) {
+        state = os_state;
+      }
+      mode = convertJvmExecutionState(raw_thread_state);
+    }
+    if (state == ThreadState::UNKNOWN) {
+      state = ThreadState::RUNNABLE;
+    }
+    event._thread_state = state;
+    event._execution_mode = mode;
+    event._weight =  1;
 
-        Profiler::instance()->recordExternalSample(1, thread_entry.native->osThreadId(), frame_buffer, num_frames, false, BCI_WALL, &event);
-        return true;
-    };
+    Profiler::instance()->recordExternalSample(1, thread_entry.native->osThreadId(), frame_buffer, num_frames, false, BCI_WALL, &event);
+    return true;
+  };
 
-    timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, _reservoir_size, _interval);
-    // Don't forget to detach the thread
-    VM::detachThread();
+  timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, _reservoir_size, _interval);
+  // Don't forget to detach the thread
+  VM::detachThread();
 }
 
 void WallClockASGCT::timerLoop() {
     auto collectThreads = [&](std::vector<int>& tids) {
-    if (Profiler::instance()->threadFilter()->enabled()) {
-      Profiler::instance()->threadFilter()->collect(tids);
-    } else {
-      ThreadList *thread_list = OS::listThreads();
-      int tid = thread_list->next();
-      while (tid != -1) {
-        if (tid != OS::threadId()) {
-                    tids.push_back(tid);
-                }
-                tid = thread_list->next();
-            }
-            delete thread_list;
+      if (Profiler::instance()->threadFilter()->enabled()) {
+        Profiler::instance()->threadFilter()->collect(tids);
+      } else {
+        ThreadList *thread_list = OS::listThreads();
+        int tid = thread_list->next();
+        while (tid != -1) {
+          if (tid != OS::threadId()) {
+            tids.push_back(tid);
+          }
+          tid = thread_list->next();
         }
+        delete thread_list;
+      }
     };
 
     auto sampleThreads = [&](int tid, int& num_failures, int& threads_already_exited, int& permission_denied) {
-        if (!OS::sendSignalToThread(tid, SIGVTALRM)) {
-            num_failures++;
-            if (errno != 0) {
-                if (errno == ESRCH) {
-                    threads_already_exited++;
-                } else if (errno == EPERM) {
-                    permission_denied++;
-                } else {
-                    Log::debug("unexpected error %s", strerror(errno));
-                }
-            }
-            return false;
-    }
-    return true;
+      if (!OS::sendSignalToThread(tid, SIGVTALRM)) {
+        num_failures++;
+        if (errno != 0) {
+          if (errno == ESRCH) {
+              threads_already_exited++;
+          } else if (errno == EPERM) {
+              permission_denied++;
+          } else {
+              Log::debug("unexpected error %s", strerror(errno));
+          }
+        }
+        return false;
+      }
+      return true;
     };
 
     timerLoopCommon<int>(collectThreads, sampleThreads, _reservoir_size, _interval);
