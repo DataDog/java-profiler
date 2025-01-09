@@ -161,48 +161,82 @@ void WallClockJVMTI::timerLoop() {
   // Attach to JVM as the first step
     VM::attachThread("Datadog Profiler Wallclock Sampler");
     auto collectThreads = [&](std::vector<ThreadEntry>& threads) {
-        jvmtiEnv* jvmti = VM::jvmti();
-        if (jvmti == nullptr) {
-            return;
-        }
-        JNIEnv* jni = VM::jni();
+      jvmtiEnv* jvmti = VM::jvmti();
+      if (jvmti == nullptr) {
+          return;
+      }
+      JNIEnv* jni = VM::jni();
 
-        jint threads_count = 0;
-        jthread* threads_ptr = nullptr;
-        jvmti->GetAllThreads(&threads_count, &threads_ptr);
+      jint threads_count = 0;
+      jthread* threads_ptr = nullptr;
+      jvmti->GetAllThreads(&threads_count, &threads_ptr);
 
-        bool do_filter = Profiler::instance()->threadFilter()->enabled();
-        int self = OS::threadId();
-
-        for (int i = 0; i < threads_count; i++) {
-          jthread thread = threads_ptr[i];
-          if (thread != nullptr) {
-            VMThread* nThread = VMThread::fromJavaThread(jni, thread);
-            if (nThread == nullptr) {
-              continue;
-            }
-            int tid = nThread->osThreadId();
-            if (tid != self && (!do_filter || Profiler::instance()->threadFilter()->accept(tid))) {
-              threads.push_back({nThread, thread});
-            }
+      bool do_filter = Profiler::instance()->threadFilter()->enabled();
+      int self = OS::threadId();
+      for (int i = 0; i < threads_count; i++) {
+        jthread thread = threads_ptr[i];
+        if (thread != nullptr) {
+          VMThread* nThread = VMThread::fromJavaThread(jni, thread);
+          if (nThread == nullptr) {
+            jni->DeleteLocalRef(thread);
+            continue;
           }
+          jint thread_state;
+          if (jvmti->GetThreadState(thread, &thread_state) == JVMTI_ERROR_NONE &&
+              (thread_state & JVMTI_THREAD_STATE_TERMINATED) == 0) {
+              int tid = VMThread::nativeThreadId(jni, thread);
+              if (tid != -1 && tid != self && (!do_filter || Profiler::instance()->threadFilter()->accept(tid))) {
+                  threads.push_back({nThread, jni->NewWeakGlobalRef(thread)});
+              }
+          }
+          jni->DeleteLocalRef(thread);
         }
-        jvmti->Deallocate((unsigned char*)threads_ptr);
+      }
+      jvmti->Deallocate((unsigned char*)threads_ptr);
     };
 
   auto sampleThreads = [&](ThreadEntry& thread_entry, int& num_failures, int& threads_already_exited, int& permission_denied) {
     static jint max_stack_depth = (jint)Profiler::instance()->max_stack_depth();
     static jvmtiFrameInfo* frame_buffer = new jvmtiFrameInfo[max_stack_depth];
     static jvmtiEnv* jvmti = VM::jvmti();
+    static JNIEnv* jni = VM::jni();
 
     int num_frames = 0;
-    jvmtiError err = jvmti->GetStackTrace(thread_entry.java, 0, max_stack_depth, frame_buffer, &num_frames);
+    if (thread_entry.java_ref == nullptr) {
+      num_failures++;
+      return false;
+    }
+
+    jobject thread = jni->NewLocalRef(thread_entry.java_ref);
+    if (thread == nullptr) {
+        num_failures++;
+        jni->DeleteWeakGlobalRef(thread_entry.java_ref);
+        return false;
+    }
+
+    jint thread_state;
+    jvmtiError state_err = jvmti->GetThreadState(thread, &thread_state);
+    if (state_err != JVMTI_ERROR_NONE || (thread_state & JVMTI_THREAD_STATE_TERMINATED) != 0) {
+        num_failures++;
+        jni->DeleteWeakGlobalRef(thread_entry.java_ref);
+        jni->DeleteLocalRef(thread);
+        return false;
+    }
+    jvmtiError err = jvmti->GetStackTrace(thread, 0, max_stack_depth, frame_buffer, &num_frames);
+    // cleanup the reference(s) to the java thread
+    jni->DeleteWeakGlobalRef(thread_entry.java_ref);
+    jni->DeleteLocalRef(thread);
+
     if (err != JVMTI_ERROR_NONE) {
       num_failures++;
       if (err == JVMTI_ERROR_THREAD_NOT_ALIVE) {
         threads_already_exited++;
       }
       return false;
+    }
+    if (num_frames == 0) {
+      // some JVMTI attached threads are Java-like but have no stack; we can just ignore them
+      return true;
     }
     ExecutionEvent event;
     VMThread* vm_thread = thread_entry.native;
@@ -267,6 +301,5 @@ void WallClockASGCT::timerLoop() {
       }
       return true;
     };
-
     timerLoopCommon<int>(collectThreads, sampleThreads, _reservoir_size, _interval);
 }
