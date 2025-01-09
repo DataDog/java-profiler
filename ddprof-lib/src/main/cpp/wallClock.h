@@ -76,34 +76,36 @@ class BaseWallClock : public Engine {
 
       while (_running.load(std::memory_order_relaxed)) {
         collectThreads(threads);
-
-        int num_failures = 0;
-        int threads_already_exited = 0;
-        int permission_denied = 0;
-        std::vector<ThreadType> sample = reservoir.sample(threads);
-        for (ThreadType thread : sample) {
-          if (!sampleThreads(thread, num_failures, threads_already_exited, permission_denied)) {
-            continue;
+        int size = threads.size();
+        if (threads.size() > 0) {
+          int num_failures = 0;
+          int threads_already_exited = 0;
+          int permission_denied = 0;
+          std::vector<ThreadType> sample = reservoir.sample(threads);
+          for (ThreadType thread : sample) {
+            if (!sampleThreads(thread, num_failures, threads_already_exited, permission_denied)) {
+              continue;
+            }
           }
-        }
 
-        epoch.updateNumSamplableThreads(threads.size());
-        epoch.updateNumFailedSamples(num_failures);
-        epoch.updateNumSuccessfulSamples(sample.size() - num_failures);
-        epoch.updateNumExitedThreads(threads_already_exited);
-        epoch.updateNumPermissionDenied(permission_denied);
-        u64 endTime = TSC::ticks();
-        u64 duration = TSC::ticks_to_millis(endTime - startTime);
-        if (epoch.hasChanged() || duration >= 1000) {
-          epoch.endEpoch(duration);
-          Profiler::instance()->recordWallClockEpoch(self, &epoch);
-          epoch.newEpoch(endTime);
-          startTime = endTime;
-        } else {
-          epoch.clean();
-        }
+          epoch.updateNumSamplableThreads(threads.size());
+          epoch.updateNumFailedSamples(num_failures);
+          epoch.updateNumSuccessfulSamples(sample.size() - num_failures);
+          epoch.updateNumExitedThreads(threads_already_exited);
+          epoch.updateNumPermissionDenied(permission_denied);
+          u64 endTime = TSC::ticks();
+          u64 duration = TSC::ticks_to_millis(endTime - startTime);
+          if (epoch.hasChanged() || duration >= 1000) {
+            epoch.endEpoch(duration);
+            Profiler::instance()->recordWallClockEpoch(self, &epoch);
+            epoch.newEpoch(endTime);
+            startTime = endTime;
+          } else {
+            epoch.clean();
+          }
 
-        threads.clear();
+          threads.clear();
+        }
         // Get a random sleep duration
         // clamp the random interval to <1,2N-1>
         // the probability of clamping is extremely small, close to zero

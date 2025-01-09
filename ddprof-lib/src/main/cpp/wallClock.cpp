@@ -169,25 +169,26 @@ void WallClockJVMTI::timerLoop() {
 
         jint threads_count = 0;
         jthread* threads_ptr = nullptr;
-        jvmti->GetAllThreads(&threads_count, &threads_ptr);
+        jvmtiError err = jvmti->GetAllThreads(&threads_count, &threads_ptr);
+        if (err == JVMTI_ERROR_NONE && threads_ptr != nullptr) {
+          bool do_filter = Profiler::instance()->threadFilter()->enabled();
+          int self = OS::threadId();
 
-        bool do_filter = Profiler::instance()->threadFilter()->enabled();
-        int self = OS::threadId();
-
-        for (int i = 0; i < threads_count; i++) {
-          jthread thread = threads_ptr[i];
-          if (thread != nullptr) {
-            VMThread* nThread = VMThread::fromJavaThread(jni, thread);
-            if (nThread == nullptr) {
-              continue;
-            }
-            int tid = nThread->osThreadId();
-            if (tid != self && (!do_filter || Profiler::instance()->threadFilter()->accept(tid))) {
-              threads.push_back({nThread, thread});
+          for (int i = 0; i < threads_count; i++) {
+            jthread thread = threads_ptr[i];
+            if (thread != nullptr) {
+              VMThread* nThread = VMThread::fromJavaThread(jni, thread);
+              if (nThread == nullptr) {
+                continue;
+              }
+              int tid = VMThread::nativeThreadId(jni, thread);
+              if (tid != -1 && tid != self && (!do_filter || Profiler::instance()->threadFilter()->accept(tid))) {
+                threads.push_back({nThread, thread});
+              }
             }
           }
+          jvmti->Deallocate((unsigned char*)threads_ptr);
         }
-        jvmti->Deallocate((unsigned char*)threads_ptr);
     };
 
   auto sampleThreads = [&](ThreadEntry& thread_entry, int& num_failures, int& threads_already_exited, int& permission_denied) {
@@ -206,6 +207,11 @@ void WallClockJVMTI::timerLoop() {
     }
     ExecutionEvent event;
     VMThread* vm_thread = thread_entry.native;
+    if (vm_thread == nullptr) {
+      num_failures++;
+      return false;
+    }
+
     int raw_thread_state = vm_thread->state();
     bool is_initialized = raw_thread_state >= JVMJavaThreadState::_thread_in_native &&
                           raw_thread_state < JVMJavaThreadState::_thread_max_state;

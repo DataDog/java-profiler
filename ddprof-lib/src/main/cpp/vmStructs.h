@@ -451,7 +451,7 @@ public:
 
   int osThreadId() {
     const char *osthread = *(const char **)at(_thread_osthread_offset);
-    return *(int *)(osthread + _osthread_id_offset);
+    return (int)SafeAccess::load32((u32*)(osthread + _osthread_id_offset), (u32)0xffffffff);
   }
 
   int state() {
