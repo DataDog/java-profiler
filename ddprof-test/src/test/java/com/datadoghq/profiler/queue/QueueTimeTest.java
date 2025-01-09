@@ -15,14 +15,12 @@ import org.openjdk.jmc.common.unit.IRange;
 import org.openjdk.jmc.flightrecorder.JfrAttributes;
 import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
+import java.util.concurrent.ArrayBlockingQueue;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
-import static org.openjdk.jmc.common.unit.UnitLookup.CLASS;
-import static org.openjdk.jmc.common.unit.UnitLookup.EPOCH_MS;
-import static org.openjdk.jmc.common.unit.UnitLookup.EPOCH_NS;
-import static org.openjdk.jmc.common.unit.UnitLookup.THREAD;
-import static org.openjdk.jmc.common.unit.UnitLookup.TIMESTAMP;
+import static org.openjdk.jmc.common.unit.UnitLookup.*;
 
 public class QueueTimeTest extends AbstractProfilerTest {
     @Override
@@ -47,7 +45,7 @@ public class QueueTimeTest extends AbstractProfilerTest {
             profiler.setContext(1, 2);
             long now = profiler.getCurrentTicks();
             if (profiler.isThresholdExceeded(9, start, now)) {
-                profiler.recordQueueTime(start, now, getClass(), QueueTimeTest.class, origin);
+                profiler.recordQueueTime(start, now, getClass(), QueueTimeTest.class, ArrayBlockingQueue.class, 10, origin);
             }
             profiler.clearContext();
         }
@@ -68,6 +66,8 @@ public class QueueTimeTest extends AbstractProfilerTest {
         IAttribute<IMCThread> originAttr = attr("origin", "", "", THREAD);
         IAttribute<IMCType> taskAttr = attr("task", "", "", CLASS);
         IAttribute<IMCType> schedulerAttr = attr("scheduler", "", "", CLASS);
+        IAttribute<IMCType> queueTypeAttr = attr("queueType", "", "", CLASS);
+        IAttribute<IQuantity> queueLengthAttr = attr("queueLength", "", "", NUMBER);
 
         IItemCollection activeSettings = verifyEvents("jdk.ActiveSetting");
         for (IItemIterable activeSetting : activeSettings) {
@@ -94,6 +94,8 @@ public class QueueTimeTest extends AbstractProfilerTest {
                 assertEquals(1, SPAN_ID.getAccessor(it.getType()).getMember(item).longValue());
                 assertEquals(2, LOCAL_ROOT_SPAN_ID.getAccessor(it.getType()).getMember(item).longValue());
                 assertEquals("origin", originAttr.getAccessor(it.getType()).getMember(item).getThreadName());
+                assertEquals(ArrayBlockingQueue.class.getName(), queueTypeAttr.getAccessor(it.getType()).getMember(item).getTypeName());
+                assertEquals(10, queueLengthAttr.getAccessor(it.getType()).getMember(item).longValue());
             }
         }
     }
