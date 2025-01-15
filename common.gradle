@@ -110,11 +110,32 @@ def static isMusl() {
 
 ext.hasGtest = false
 
-// This is hardcoded - we could have some discovery mechanism here but it would mean forking to shell
-if (os().isMacOsX() && file('/opt/homebrew/opt/googletest').exists()) {
-  ext.hasGtest = true
-} else if (os().isLinux() && file('/usr/include/gtest').exists()) {
-  ext.hasGtest = true
+// Define potential GTest locations for MacOS and Linux
+def gtestLocations = [
+  macos: ['/opt/homebrew/opt/googletest', '/usr/local/opt/googletest'],
+  linux: ['/usr/include/gtest', '/usr/local/include/gtest']
+]
+
+// Function to check if any of the specified paths exist
+def checkGtestPaths(paths) {
+  for (path in paths) {
+    if (file(path).exists()) {
+      return true
+    }
+  }
+  return false
+}
+
+// Determine OS and check for GTest
+if (os().isMacOsX()) {
+  ext.hasGtest = checkGtestPaths(gtestLocations.macos)
+} else if (os().isLinux()) {
+  ext.hasGtest = checkGtestPaths(gtestLocations.linux)
+}
+
+// Log a message for debugging
+if (!ext.hasGtest) {
+  println "GTest not found. Please install GTest or configure paths."
 }
 
 ext {
