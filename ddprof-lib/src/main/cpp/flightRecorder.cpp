@@ -150,7 +150,14 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
     bool entry = false;
     if (VMMethod::check_jmethodID(method) &&
         jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
-        jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
+        // On some older versions of J9, the JVMTI call to GetMethodDeclaringClass will return OK = 0, but when a
+        // classloader is unloaded they free all JNIIDs. This means that anyone holding on to a jmethodID is
+        // pointing to corrupt data and the behaviour is undefined.
+        // The behaviour is adjusted so that when asgct() is used or if `-XX:+KeepJNIIDs` is specified,
+        // when a classloader is unloaded, the jmethodIDs are not freed, but instead marked as -1.
+        // The nested check below is to mitigate these crashes.
+        // In more recent versions, the condition above will short-circuit safely.
+        ((!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) && jvmti->GetClassSignature(method_class, &class_name, NULL) == 0) &&
         jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
 
       if (first_time) {
