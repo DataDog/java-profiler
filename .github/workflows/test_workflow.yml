@@ -67,7 +67,7 @@ jobs:
           export PATH=${JAVA_TEST_HOME}/bin:$PATH
           ./gradlew clean build --no-daemon --parallel --build-cache --no-watch-fs
       - name: Upload Logs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: graalvm-${{ matrix.java_version }}-logs
@@ -134,7 +134,7 @@ jobs:
           export PATH=${JAVA_TEST_HOME}/bin:$PATH
           ./gradlew clean build --no-daemon --parallel --build-cache --no-watch-fs
       - name: Upload Logs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: graalvm-${{ matrix.java_version }}-logs
@@ -222,7 +222,7 @@ jobs:
             exit 1
           fi
       - name: Upload logs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: reports-linux-glibc-${{ matrix.java_version }}-amd64.zip
@@ -232,17 +232,17 @@ jobs:
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64
           path: build/
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: failures
           path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: recordings
@@ -325,7 +325,7 @@ jobs:
           fi
           ls -la /tmp
       - name: Upload logs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: reports-linux-glibc-${{ matrix.java_version }}-aarch64.zip
@@ -335,17 +335,17 @@ jobs:
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
           path: build/
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: failures
           path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: recordings
@@ -419,7 +419,7 @@ jobs:
             exit 1
           fi
       - name: Upload logs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: reports-linux-glibc-j9-${{ matrix.java_version }}-amd64.zip
@@ -429,17 +429,17 @@ jobs:
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64
           path: build/
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: failures
           path: failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: recordings
@@ -516,7 +516,7 @@ jobs:
             exit 1
           fi
       - name: Upload logs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: reports-linux-glibc-j9-${{ matrix.java_version }}-aarch64.zip
@@ -526,17 +526,17 @@ jobs:
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
           path: build/
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: failures
           path: failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: recordings
@@ -622,7 +622,7 @@ jobs:
             exit 1
           fi
       - name: Upload logs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: reports-linux-oracle-jdk-8.zip
@@ -631,17 +631,17 @@ jobs:
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: x64-oracle-jdk8-${{ matrix.config }}
           path: build/
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: failures
           path: failures_glibc-oracle8-${{ matrix.config }}.txt
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: recordings
@@ -742,7 +742,7 @@ jobs:
             exit 1
           fi
       - name: Upload logs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: reports-linux-musl-${{ matrix.java_version }}-amd64.zip
@@ -752,17 +752,17 @@ jobs:
             ddprof-test/build/reports/tests
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64
           path: build/
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: failures
           path: failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: recordings
@@ -871,7 +871,7 @@ jobs:
             exit 1
           fi
       - name: Upload logs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: reports-linux-zing-jdk-${{ matrix.java_version }}-amd64.zip
@@ -880,17 +880,17 @@ jobs:
             ddprof-test/build/reports/tests/test
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: glibc-zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64
           path: build/
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: failures
           path: failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: recordings
@@ -1001,7 +1001,7 @@ jobs:
             exit 1
           fi
       - name: Upload logs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: reports-linux-zing-jdk-${{ matrix.java_version }}-aarch64.zip
@@ -1010,17 +1010,17 @@ jobs:
             ddprof-test/build/reports/tests/test
             ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
             ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: glibc-zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
           path: build/
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: failures
           path: failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: recordings

@@ -36,7 +36,7 @@ jobs:
         run: |
           ./gradlew scanBuild --no-daemon
       - name: Upload logs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: scan-build-reports
@@ -83,7 +83,7 @@ jobs:
           sed -i "s#target_branch#${HEAD_REF}#g" report-gh.html
           python .github/scripts/python_utils.py cppcheck_cleanup report-gh.html >> comment.html
       - name: Upload logs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: cppcheck-report
