@@ -136,9 +136,26 @@ configurations {
 }
 
 // We need this trickery to reuse the toolchain and system config from tasks created by the cpp-library plugin
-// Basically, we are listening when the default 'comile' and 'link' (eg. 'compileReleaseCpp') is added and then
+// Basically, we are listening when the default 'compile' and 'link' (eg. 'compileReleaseCpp') is added and then
 // we are adding our own tasks for each build configuration, inheriting the part of the configuration which was
 // added by the cpp-library plugin
+
+tasks.withType(CppCompile).configureEach {
+    compilerArgs.addAll([
+        "-isystem", "/usr/include/c++/13",
+        "-isystem", "/usr/include/aarch64-linux-gnu",
+        "-isystem", "/usr/include/aarch64-linux-gnu/c++/13",
+        "-isystem", "/usr/lib/gcc/aarch64-linux-gnu/13/include"
+    ])
+}
+
+tasks.withType(LinkSharedLibrary).configureEach {
+    linkerArgs.addAll([
+        "-L/usr/lib/gcc/aarch64-linux-gnu/13"
+    ])
+}
+
+
 tasks.whenTaskAdded { task ->
   if (task instanceof CppCompile) {
     if (!task.name.startsWith('compileLib') && task.name.contains('Release')) {
@@ -155,12 +172,15 @@ tasks.whenTaskAdded { task ->
             if (os().isLinux() && isMusl()) {
               compilerArgs.add('-D__musl__')
             }
+            // toolChain = toolChains.gcc
             toolChain = task.toolChain
             targetPlatform = task.targetPlatform
             includes task.includes
             includes project(':ddprof-lib').file('src/main/cpp').toString()
             includes "${javaHome()}/include"
             includes project(':malloc-shim').file('src/main/public').toString()
+            // includes "/usr/include/c++/13/"
+            includes "/usr/lib/clang/18.1.3/include"
             if (os().isMacOsX()) {
               includes "${javaHome()}/include/darwin"
             } else if (os().isLinux()) {
@@ -195,6 +215,7 @@ tasks.whenTaskAdded { task ->
               dependsOn compileTask
             }
             linkerArgs.addAll(config.linkerArgs)
+            // toolChain = toolChains.gcc
             toolChain = task.toolChain
             targetPlatform = task.targetPlatform
             libs = task.libs
@@ -225,6 +246,12 @@ tasks.whenTaskAdded { task ->
     }
   }
 }
+
+// tasks.whenTaskAdded { task ->
+//     if (task instanceof CppCompile || task instanceof LinkExecutable) {
+//         task.toolChain = toolChains.gcc
+//     }
+// }
 
 // configure the compiler here
 tasks.withType(CppCompile).configureEach {
@@ -261,6 +288,7 @@ library {
 
   // aarch64 support is still incubating
   // for the time being an aarch64 linux machine will match 'machines.linux.x86_64'
+  // targetMachines = [machines.macOS, machines.linux.x86_64, machines.linux.arm64]
   targetMachines = [machines.macOS, machines.linux.x86_64]
   linkage = [Linkage.SHARED]
 }

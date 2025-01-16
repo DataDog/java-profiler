@@ -14,6 +14,7 @@
 .project
 .settings
 .gradle
+sync.sh
 *.iml
 /ddprof-stresstest/jmh-result.*
 
