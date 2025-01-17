@@ -70,7 +70,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: graalvm-${{ matrix.java_version }}-logs
+          name: graalvm-${{ matrix.java_version }}-logs-amd64
           path: |
             build/reports/tests/
             build/tmp/
@@ -137,7 +137,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: graalvm-${{ matrix.java_version }}-logs
+          name: graalvm-${{ matrix.java_version }}-logs-aarch64
           path: |
             build/reports/tests/
             build/tmp/
