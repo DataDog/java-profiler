@@ -31,6 +31,8 @@ public class JavaProfilerTest {
         ProcessBuilder pb = new ProcessBuilder(javaHome + "/bin/java", "-cp", System.getProperty("java.class.path"), ExternalLauncher.class.getName(), "profiler");
         pb.redirectOutput(outFile);
         pb.redirectError(errFile);
+        pb.command().add("-Djava.library.path=/usr/lib/gcc/aarch64-linux-gnu/13");
+
         Process p = pb.start();
         int val = p.waitFor();
 
