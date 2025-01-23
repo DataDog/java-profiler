@@ -186,6 +186,8 @@ void JfrMetadata::initialize(
                   << field("origin", T_THREAD, "Origin Thread", F_CPOOL)
                   << field("task", T_CLASS, "Task", F_CPOOL)
                   << field("scheduler", T_CLASS, "Scheduler", F_CPOOL)
+                  << field("queueType", T_CLASS, "Queue Type", F_CPOOL)
+                  << field("queueLength", T_INT, "Queue Length on Entry")
                   << field("spanId", T_LONG, "Span ID")
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
               contextAttributes)
