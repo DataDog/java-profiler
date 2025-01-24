@@ -112,11 +112,13 @@ class MoveToLocal {
  public:
   MoveToLocal(JNIEnv* jni, T global_ref, bool is_weak) : _jni(jni) {
     if (jni != nullptr) {
-      _ref = jni->NewLocalRef(global_ref);
-      if (is_weak) {
-        _jni->DeleteWeakGlobalRef(global_ref);
-      } else {
-        _jni->DeleteGlobalRef(global_ref);
+      if (global_ref) {
+        _ref = jni->NewLocalRef(global_ref);
+        if (is_weak) {
+          _jni->DeleteWeakGlobalRef(global_ref);
+        } else {
+          _jni->DeleteGlobalRef(global_ref);
+        }
       }
     }
   }
