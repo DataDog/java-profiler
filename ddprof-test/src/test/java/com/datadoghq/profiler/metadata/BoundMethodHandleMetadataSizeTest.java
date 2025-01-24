@@ -22,7 +22,6 @@ public class BoundMethodHandleMetadataSizeTest extends AbstractProfilerTest {
     @Test
     public void test() throws Throwable {
         assumeFalse(Platform.isJ9() && Platform.isJavaVersion(17)); // JVMTI::GetClassSignature() is reliably crashing on a valid 'class' instance ¯\_(ツ)_/¯
-        assumeFalse(Platform.isAarch64() && Platform.isJavaVersion(8));
         registerCurrentThreadForWallClockProfiling();
         int numBoundMethodHandles = 10_000;
         int x = generateBoundMethodHandles(numBoundMethodHandles);
