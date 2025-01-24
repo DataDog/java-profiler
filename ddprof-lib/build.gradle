@@ -39,17 +39,6 @@ def libraryTargetBase(type) {
   return "${projectDir}/build/native/${type}"
 }
 
-def osarchext() {
-  if (osIdentifier() == 'linux' && archIdentifier() != 'x64') {
-    // when built on aarch64 the location the library is built in is 'x86-64' ¯\_(ツ)_/¯
-    return "x86-64"
-  } else if (osIdentifier() == 'macos') {
-    return archIdentifier() == 'x64' ? 'x86-64' : 'arm64'
-  } else {
-    return archIdentifier()
-  }
-}
-
 def libraryTargetPath(type) {
   return "${libraryTargetBase(type)}/META-INF/native-libs/${osIdentifier()}-${archIdentifier()}${isMusl() ? '-musl' : ''}"
 }
