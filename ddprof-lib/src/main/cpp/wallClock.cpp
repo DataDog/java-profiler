@@ -300,6 +300,12 @@ void WallClockJVMTI::timerLoop() {
     }
     JNIEnv* jni = VM::jni();
 
+    // When we collect thread list via JVMTI the threads will be effectively local references
+    // These local references would be automatically cleaned up once we get back from the native call to Java
+    // But here we are in an endless loop, never leaving the native call and as such all those local references
+    //  would just keep on piling up
+    // Therefore, we have this neat RAII JMVTIThreads type which will take care of releasing the local references
+    //  once we are out of scope here
     JVMTIThreads thread_array(jvmti, jni);
     bool do_filter = Profiler::instance()->threadFilter()->enabled();
     int self = OS::threadId();
