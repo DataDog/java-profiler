@@ -26,6 +26,139 @@
 #include "vmStructs.h"
 #include <math.h>
 #include <random>
+#include <cstdlib>
+
+class JVMTIThreads {
+ private:
+  jvmtiEnv* _jvmti;           // Pointer to JVMTI environment
+  JNIEnv* _jni;               // Pointer to JNI environment
+  jthread* _threads_ptr;      // Array of thread references
+  jint _threads_count;        // Number of threads
+
+ public:
+  // Constructor that takes a jvmtiEnv and retrieves all threads
+  JVMTIThreads(jvmtiEnv* jvmti, JNIEnv* jni) : _jvmti(jvmti), _jni(jni), _threads_ptr(nullptr), _threads_count(0) {
+    if (_jvmti && _jvmti->GetAllThreads(&_threads_count, &_threads_ptr) != JVMTI_ERROR_NONE) {
+      _threads_count = 0;
+      _threads_ptr = nullptr;
+    }
+  }
+
+  // Destructor to clean up resources
+  ~JVMTIThreads() {
+    if (_threads_ptr) {
+      // Delete local references of threads
+      for (jint i = 0; i < _threads_count; ++i) {
+        if (_threads_ptr[i]) {
+          _jni->DeleteLocalRef(_threads_ptr[i]);
+        }
+      }
+
+      // Deallocate memory for threads_ptr
+      _jvmti->Deallocate(reinterpret_cast<unsigned char*>(_threads_ptr));
+    }
+  }
+
+  // Disable copy constructor and assignment operator
+  JVMTIThreads(const JVMTIThreads&) = delete;
+  JVMTIThreads& operator=(const JVMTIThreads&) = delete;
+
+  // Allow move constructor and assignment operator
+  JVMTIThreads(JVMTIThreads&& other) noexcept
+    : _jvmti(other._jvmti), _jni(other._jni), _threads_ptr(other._threads_ptr), _threads_count(other._threads_count) {
+    other._jvmti = nullptr;
+    other._threads_ptr = nullptr;
+    other._threads_count = 0;
+  }
+
+  JVMTIThreads& operator=(JVMTIThreads&& other) noexcept {
+    if (this != &other) {
+      // Clean up current resources
+      this->~JVMTIThreads();
+
+      // Transfer ownership
+      _jvmti = other._jvmti;
+      _jni = other._jni;
+      _threads_ptr = other._threads_ptr;
+      _threads_count = other._threads_count;
+
+      other._jvmti = nullptr;
+      other._jni = nullptr;
+      other._threads_ptr = nullptr;
+      other._threads_count = 0;
+    }
+    return *this;
+  }
+
+  // Getters for thread count and thread pointer
+  jint count() const {
+      return _threads_count;
+  }
+
+  // Operator[] to access individual threads
+  jthread operator[](jint index) const noexcept {
+    if (index < 0 || index >= _threads_count) {
+      return nullptr;
+    }
+    return _threads_ptr[index];
+  }
+};
+
+template<typename T>
+class MoveToLocal {
+ private:
+   JNIEnv* _jni;  // JNI environment
+   T _ref;        // Local JNI reference
+ public:
+  MoveToLocal(JNIEnv* jni, T global_ref, bool is_weak) : _jni(jni) {
+    if (jni != nullptr) {
+      _ref = jni->NewLocalRef(global_ref);
+      if (is_weak) {
+        _jni->DeleteWeakGlobalRef(global_ref);
+      } else {
+        _jni->DeleteGlobalRef(global_ref);
+      }
+    }
+  }
+
+  ~MoveToLocal() {
+    if (_jni != nullptr) {
+      if (_ref) {
+        _jni->DeleteLocalRef(_ref);
+      }
+    }
+  }
+
+  // Disable copy constructor and assignment operator
+  MoveToLocal(const MoveToLocal&) = delete;
+  MoveToLocal& operator=(const MoveToLocal&) = delete;
+
+  // Allow move constructor and assignment operator
+  MoveToLocal(MoveToLocal&& other) noexcept
+    : _jni(other._jni), _ref(other._ref) {
+    other._jni = nullptr;
+    other._ref = nullptr;
+  }
+
+  MoveToLocal& operator=(MoveToLocal&& other) noexcept {
+    if (this != &other) {
+      // Clean up current resources
+      this->~MoveToLocal();
+
+      // Transfer ownership
+      _jni = other._jni;
+      _ref = other._ref;
+
+      other._jni = nullptr;
+      other._ref = nullptr;
+    }
+    return *this;
+  }
+
+  T local() {
+    return _ref;
+  }
+};
 
 std::atomic<bool> BaseWallClock::_enabled{false};
 
@@ -154,46 +287,44 @@ void WallClockASGCT::initialize(Arguments& args) {
 }
 
 void WallClockJVMTI::timerLoop() {
-    // Check for enablement before attaching/dettaching the current thread
+  // Check for enablement before attaching/dettaching the current thread
   if (!isEnabled()) {
     return;
   }
   // Attach to JVM as the first step
-    VM::attachThread("Datadog Profiler Wallclock Sampler");
-    auto collectThreads = [&](std::vector<ThreadEntry>& threads) {
-      jvmtiEnv* jvmti = VM::jvmti();
-      if (jvmti == nullptr) {
-          return;
-      }
-      JNIEnv* jni = VM::jni();
+  VM::attachThread("Datadog Profiler Wallclock Sampler");
+  auto collectThreads = [&](std::vector<ThreadEntry>& threads) {
+    jvmtiEnv* jvmti = VM::jvmti();
+    if (jvmti == nullptr) {
+        return;
+    }
+    JNIEnv* jni = VM::jni();
 
-      jint threads_count = 0;
-      jthread* threads_ptr = nullptr;
-      jvmti->GetAllThreads(&threads_count, &threads_ptr);
-
-      bool do_filter = Profiler::instance()->threadFilter()->enabled();
-      int self = OS::threadId();
-      for (int i = 0; i < threads_count; i++) {
-        jthread thread = threads_ptr[i];
-        if (thread != nullptr) {
-          VMThread* nThread = VMThread::fromJavaThread(jni, thread);
-          if (nThread == nullptr) {
-            jni->DeleteLocalRef(thread);
-            continue;
-          }
-          jint thread_state;
-          if (jvmti->GetThreadState(thread, &thread_state) == JVMTI_ERROR_NONE &&
-              (thread_state & JVMTI_THREAD_STATE_TERMINATED) == 0) {
-              int tid = VMThread::nativeThreadId(jni, thread);
-              if (tid != -1 && tid != self && (!do_filter || Profiler::instance()->threadFilter()->accept(tid))) {
-                  threads.push_back({nThread, jni->NewWeakGlobalRef(thread)});
-              }
-          }
-          jni->DeleteLocalRef(thread);
+    JVMTIThreads thread_array(jvmti, jni);
+    bool do_filter = Profiler::instance()->threadFilter()->enabled();
+    int self = OS::threadId();
+    for (int i = 0; i < thread_array.count(); i++) {
+      jthread thread = thread_array[i];
+      if (thread != nullptr) {
+        VMThread* nThread = VMThread::fromJavaThread(jni, thread);
+        if (nThread == nullptr) {
+          continue;
+        }
+        jint thread_state;
+        if (jvmti->GetThreadState(thread, &thread_state) == JVMTI_ERROR_NONE &&
+            (thread_state & JVMTI_THREAD_STATE_TERMINATED) == 0) {
+            // It might not always be possible to resolve native thread from a java thread
+            //   eg. when we are trying that very early in the thread startup
+            // In that case we would return -1 as the native tid and just skip that thread
+            int tid = VMThread::nativeThreadId(jni, thread);
+            if (tid != -1 && tid != self && (!do_filter || Profiler::instance()->threadFilter()->accept(tid))) {
+              // if NewWeakGlobalRef fails it will return 'nullptr' and we will skip it when the thread list is processed
+              threads.push_back({nThread, jni->NewWeakGlobalRef(thread)});
+            }
         }
       }
-      jvmti->Deallocate((unsigned char*)threads_ptr);
-    };
+    }
+  };
 
   auto sampleThreads = [&](ThreadEntry& thread_entry, int& num_failures, int& threads_already_exited, int& permission_denied) {
     static jint max_stack_depth = (jint)Profiler::instance()->max_stack_depth();
@@ -207,10 +338,10 @@ void WallClockJVMTI::timerLoop() {
       return false;
     }
 
-    jobject thread = jni->NewLocalRef(thread_entry.java_ref);
+    MoveToLocal<jthread> mtl(jni, thread_entry.java_ref, true);
+    jthread thread = mtl.local();
     if (thread == nullptr) {
         num_failures++;
-        jni->DeleteWeakGlobalRef(thread_entry.java_ref);
         return false;
     }
 
@@ -218,14 +349,9 @@ void WallClockJVMTI::timerLoop() {
     jvmtiError state_err = jvmti->GetThreadState(thread, &thread_state);
     if (state_err != JVMTI_ERROR_NONE || (thread_state & JVMTI_THREAD_STATE_TERMINATED) != 0) {
         num_failures++;
-        jni->DeleteWeakGlobalRef(thread_entry.java_ref);
-        jni->DeleteLocalRef(thread);
         return false;
     }
     jvmtiError err = jvmti->GetStackTrace(thread, 0, max_stack_depth, frame_buffer, &num_frames);
-    // cleanup the reference(s) to the java thread
-    jni->DeleteWeakGlobalRef(thread_entry.java_ref);
-    jni->DeleteLocalRef(thread);
 
     if (err != JVMTI_ERROR_NONE) {
       num_failures++;

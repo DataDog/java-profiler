@@ -107,11 +107,14 @@ class BaseWallClock : public Engine {
           threads.clear();
         }
         // Get a random sleep duration
-        // restrict the random interval to <N/2,2N-1>
+        // Restrict the random interval to <N/2,N+N/2>
+        // With the given parameters N/2 is 5 standard deviations from the mean ->
+        //  the probability of falling outside of the given range is ~0.000058%
+        long limit = _interval / 2;
         long int delay = _interval;
         do {
           delay = static_cast<long int>(distribution(generator));
-        } while (delay < interval / 2 || delay > 2 * interval);
+        } while (std::abs(delay - _interval) > limit);
         OS::sleep(delay);
       }
     }
