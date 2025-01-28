@@ -67,9 +67,7 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
     event._id = id;
   }
 
-  jint frames_size = 0;
-  jvmtiFrameInfo *frames = nullptr;
-
+  u32 call_trace_id = 0;
   // we do record the details and stacktraces only for when recording
   // allocations or liveness
   if (_record_allocations || _record_liveness) {
@@ -78,31 +76,14 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
                                 ? 1
                                 : 1 / (1 - exp(-size / (double)_interval)));
 
-    frames = new jvmtiFrameInfo[_max_stack_depth];
+    call_trace_id = Profiler::instance()->recordJVMTISample(size, tid, thread, BCI_ALLOC, &event, !_record_allocations);
 
-    if (jvmti->GetStackTrace(thread, 0, _max_stack_depth, frames,
-                             &frames_size) != JVMTI_ERROR_NONE ||
-        frames_size <= 0) {
-      delete[] frames;
+    if (call_trace_id == 0) {
       return;
-    }
-
-    if (frames_size > 0) {
-      std::set<jclass> classes;
-      jclass method_class;
-      for (int i = 0; i < frames_size; i++) {
-        if (jvmti->GetMethodDeclaringClass(frames[i].method, &method_class) ==
-            0) {
-          classes.insert(method_class);
-        }
-      }
     }
   }
 
   if (_record_allocations) {
-    Profiler::instance()->recordExternalSample(
-        size, tid, frames, frames_size, /*truncated=*/false, BCI_ALLOC, &event);
-
     u64 current_samples = __sync_add_and_fetch(&_alloc_event_count, 1);
     // in order to lower the number of atomic reads from the timestamp variable
     // the check will be performed only each N samples
@@ -130,15 +111,10 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
   }
 
   // Either we are recording liveness or tracking GC generations (lightweight
-  // livenss samples)
+  // liveness samples)
   if (_gc_generations || _record_liveness) {
-    LivenessTracker::instance()->track(jni, event, tid, object, frames_size,
-                                       frames);
+    LivenessTracker::instance()->track(jni, event, tid, object, call_trace_id);
   }
-
-  // it's safe to delete frames - the liveness tracker keeps a full copy of the
-  // frames and manages its own memory
-  delete[] frames;
 }
 
 Error ObjectSampler::check(Arguments &args) {

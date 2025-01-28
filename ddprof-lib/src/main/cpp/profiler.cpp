@@ -17,6 +17,7 @@
 
 #include "profiler.h"
 #include "asyncSampleMutex.h"
+#include "common.h"
 #include "context.h"
 #include "counters.h"
 #include "ctimer.h"
@@ -548,51 +549,6 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   return trace.frames - frames + 1;
 }
 
-int Profiler::getJavaTraceJvmti(jvmtiFrameInfo *jvmti_frames,
-                                ASGCT_CallFrame *frames, int start_depth,
-                                int max_depth) {
-  int num_frames;
-  if (VM::jvmti()->GetStackTrace(NULL, start_depth, _max_stack_depth,
-                                 jvmti_frames, &num_frames) == 0 &&
-      num_frames > 0) {
-    return convertFrames(jvmti_frames, frames, num_frames);
-  }
-  return 0;
-}
-
-int Profiler::getJavaTraceInternal(jvmtiFrameInfo *jvmti_frames,
-                                   ASGCT_CallFrame *frames, int max_depth) {
-  // We cannot call pure JVM TI here, because it assumes _thread_in_native
-  // state, but allocation events happen in _thread_in_vm state, see
-  // https://github.com/jvm-profiling-tools/java-profiler/issues/64
-  JNIEnv *jni = VM::jni();
-  if (jni == NULL) {
-    return 0;
-  }
-
-  JitWriteProtection jit(false);
-  VMThread *vm_thread = VMThread::fromEnv(jni);
-  int num_frames;
-  if (VMStructs::_get_stack_trace(NULL, vm_thread, 0, max_depth, jvmti_frames,
-                                  &num_frames) == 0 &&
-      num_frames > 0) {
-    return convertFrames(jvmti_frames, frames, num_frames);
-  }
-  return 0;
-}
-
-inline int Profiler::convertFrames(jvmtiFrameInfo *jvmti_frames,
-                                   ASGCT_CallFrame *frames, int num_frames) {
-  // Convert to AsyncGetCallTrace format.
-  // Note: jvmti_frames and frames may overlap.
-  for (int i = 0; i < num_frames; i++) {
-    jint bci = jvmti_frames[i].location;
-    frames[i].method_id = jvmti_frames[i].method;
-    frames[i].bci = bci;
-  }
-  return num_frames;
-}
-
 void Profiler::fillFrameTypes(ASGCT_CallFrame *frames, int num_frames,
                               NMethod *nmethod) {
   if (nmethod->isNMethod() && nmethod->isAlive()) {
@@ -634,10 +590,7 @@ void Profiler::fillFrameTypes(ASGCT_CallFrame *frames, int num_frames,
   }
 }
 
-void Profiler::recordExternalSample(u64 counter, int tid,
-                                    jvmtiFrameInfo *jvmti_frames,
-                                    jint num_jvmti_frames, bool truncated,
-                                    jint event_type, Event *event) {
+u32 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event, bool deferred) {
   atomicInc(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
@@ -647,29 +600,50 @@ void Profiler::recordExternalSample(u64 counter, int tid,
     // Too many concurrent signals already
     atomicInc(_failures[-ticks_skipped]);
 
-    if (event_type == BCI_CPU && _cpu_engine == &perf_events) {
-      // Need to reset PerfEvents ring buffer, even though we discard the
-      // collected trace
-      PerfEvents::resetBuffer(tid);
-    }
-    return;
+    return 0;
   }
   u32 call_trace_id = 0;
-  if (!_omit_stacktraces && jvmti_frames != nullptr) {
+  if (!_omit_stacktraces) {
     ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
+    jvmtiFrameInfo *jvmti_frames = _calltrace_buffer[lock_index]->_jvmti_frames;
 
     int num_frames = 0;
-    if (!_jfr.active() && BCI_ALLOC >= event_type && event_type >= BCI_PARK &&
-        event->_id) {
-      num_frames = makeFrame(frames, event_type, event->_id);
+
+    if (VM::jvmti()->GetStackTrace(thread, 0, _max_stack_depth, jvmti_frames, &num_frames) == JVMTI_ERROR_NONE && num_frames > 0) {
+      // Convert to AsyncGetCallTrace format.
+      // Note: jvmti_frames and frames may overlap.
+      for (int i = 0; i < num_frames; i++) {
+        jint bci = jvmti_frames[i].location;
+        jmethodID mid = jvmti_frames[i].method;
+        frames[i].method_id = mid;
+        frames[i].bci = bci;
+        // see https://github.com/async-profiler/async-profiler/pull/1090
+        LP64_ONLY(frames[i].padding = 0;)
+      }
     }
 
-    num_frames +=
-        convertFrames(jvmti_frames, frames + num_frames, num_jvmti_frames);
-
-    call_trace_id =
-        _call_trace_storage.put(num_frames, frames, truncated, counter);
+    call_trace_id = _call_trace_storage.put(num_frames, frames, false, counter);
   }
+  if (!deferred) {
+    _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
+  }
+
+  _locks[lock_index].unlock();
+  return call_trace_id;
+}
+
+void Profiler::recordDeferredSample(int tid, u32 call_trace_id, jint event_type, Event *event) {
+  atomicInc(_total_samples);
+
+  u32 lock_index = getLockIndex(tid);
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    // Too many concurrent signals already
+    atomicInc(_failures[-ticks_skipped]);
+    return;
+  }
+
   _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
 
   _locks[lock_index].unlock();
@@ -1153,13 +1127,11 @@ Error Profiler::start(Arguments &args, bool reset) {
   // (Re-)allocate calltrace buffers
   if (_max_stack_depth != args._jstackdepth) {
     _max_stack_depth = args._jstackdepth;
-    size_t buffer_size =
-        (_max_stack_depth + MAX_NATIVE_FRAMES + RESERVED_FRAMES) *
-        sizeof(CallTraceBuffer);
+    size_t nelem = _max_stack_depth + MAX_NATIVE_FRAMES + RESERVED_FRAMES;
 
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       free(_calltrace_buffer[i]);
-      _calltrace_buffer[i] = (CallTraceBuffer *)malloc(buffer_size);
+      _calltrace_buffer[i] = (CallTraceBuffer*)calloc(nelem, sizeof(CallTraceBuffer));
       if (_calltrace_buffer[i] == NULL) {
         _max_stack_depth = 0;
         return Error("Not enough memory to allocate stack trace buffers (try "
