@@ -192,18 +192,7 @@ void WallClockJVMTI::timerLoop() {
 
   auto sampleThreads = [&](ThreadEntry& thread_entry, int& num_failures, int& threads_already_exited, int& permission_denied) {
     static jint max_stack_depth = (jint)Profiler::instance()->max_stack_depth();
-    static jvmtiFrameInfo* frame_buffer = new jvmtiFrameInfo[max_stack_depth];
-    static jvmtiEnv* jvmti = VM::jvmti();
 
-    int num_frames = 0;
-    jvmtiError err = jvmti->GetStackTrace(thread_entry.java, 0, max_stack_depth, frame_buffer, &num_frames);
-    if (err != JVMTI_ERROR_NONE) {
-      num_failures++;
-      if (err == JVMTI_ERROR_THREAD_NOT_ALIVE) {
-        threads_already_exited++;
-      }
-      return false;
-    }
     ExecutionEvent event;
     VMThread* vm_thread = thread_entry.native;
     int raw_thread_state = vm_thread->state();
@@ -225,7 +214,7 @@ void WallClockJVMTI::timerLoop() {
     event._execution_mode = mode;
     event._weight =  1;
 
-    Profiler::instance()->recordExternalSample(1, thread_entry.native->osThreadId(), frame_buffer, num_frames, false, BCI_WALL, &event);
+    Profiler::instance()->recordJVMTISample(1, thread_entry.native->osThreadId(), thread_entry.java, BCI_WALL, &event, false);
     return true;
   };
 

@@ -67,22 +67,14 @@ void LivenessTracker::cleanup_table(bool forced) {
         if (target != i) {
           _table[target] = _table[i]; // will clone TrackingEntry at 'i'
           _table[i].ref = nullptr;    // will nullify the original ref
-          assert(_table[i].frames == _table[target].frames);
-          _table[i].frames = nullptr; // will nullify the original frames
-          assert(_table[target].frames != nullptr);
+          _table[i].call_trace_id = 0;
         }
-        assert(_table[target].ref != nullptr &&
-               _table[target].frames != nullptr);
         _table[target].age += epoch_diff;
       } else {
         jweak tmpRef = _table[i].ref;
         _table[i].ref = nullptr;
         env->DeleteWeakGlobalRef(tmpRef);
-
-        jvmtiFrameInfo *tmpFrames = _table[i].frames;
-        _table[i].frames = nullptr;
-        assert(_table[i].ref == nullptr && _table[i].frames == nullptr);
-        delete[] tmpFrames;
+        _table[i].call_trace_id = 0;
       }
     }
 
@@ -119,8 +111,6 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
   for (int i = 0; i < (sz = _table_size); i++) {
     jobject ref = env->NewLocalRef(_table[i].ref);
     if (ref != nullptr) {
-      assert(_table[i].frames != nullptr);
-
       if (tracked_thread_ids != nullptr) {
         tracked_thread_ids->insert(_table[i].tid);
       }
@@ -141,9 +131,7 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
                       : 0;
       env->ReleaseStringUTFChars(name_str, name);
 
-      Profiler::instance()->recordExternalSample(
-          1, _table[i].tid, _table[i].frames, _table[i].frames_size,
-          /*truncated=*/false, BCI_LIVENESS, &event);
+      Profiler::instance()->recordDeferredSample(_table[i].tid, _table[i].call_trace_id, BCI_LIVENESS, &event);
     }
 
     env->DeleteLocalRef(ref);
@@ -292,8 +280,7 @@ Error LivenessTracker::initialize(Arguments &args) {
 }
 
 void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
-                            jobject object, int num_frames,
-                            jvmtiFrameInfo *frames) {
+                            jobject object, u32 call_trace_id) {
   if (!_enabled) {
     // disabled
     return;
@@ -340,12 +327,7 @@ retry:
     _table[idx].alloc = event;
     _table[idx].skipped = skipped;
     _table[idx].age = 0;
-    _table[idx].frames_size = num_frames;
-    _table[idx].frames = new jvmtiFrameInfo[_table[idx].frames_size];
-    if (frames != nullptr) {
-      memcpy(_table[idx].frames, frames,
-             sizeof(jvmtiFrameInfo) * _table[idx].frames_size);
-    }
+    _table[idx].call_trace_id = call_trace_id;
     _table[idx].ctx = Contexts::get(tid);
   }
 

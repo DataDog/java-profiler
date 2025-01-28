@@ -20,6 +20,7 @@
 
 #include <jvmti.h>
 
+#include "arch.h"
 #include "codeCache.h"
 #include "frame.h"
 
@@ -62,8 +63,11 @@ enum ASGCT_Failure {
 
 typedef struct {
   jint bci;
+  // see https://github.com/async-profiler/async-profiler/pull/1090
+  LP64_ONLY(jint padding;)
   jmethodID method_id;
 } ASGCT_CallFrame;
+
 
 typedef struct {
   JNIEnv *env;

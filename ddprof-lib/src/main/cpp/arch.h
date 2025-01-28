@@ -19,6 +19,12 @@
 
 #include <stddef.h>
 
+#ifdef _LP64
+#  define LP64_ONLY(code) code
+#else // !_LP64
+#  define LP64_ONLY(code)
+#endif // _LP64
+
 typedef unsigned char u8;
 typedef unsigned short u16;
 typedef unsigned int u32;

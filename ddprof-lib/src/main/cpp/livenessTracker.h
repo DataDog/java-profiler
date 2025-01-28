@@ -32,8 +32,7 @@ typedef struct TrackingEntry {
   jweak ref;
   AllocEvent alloc;
   double skipped;
-  jint frames_size;
-  jvmtiFrameInfo *frames;
+  u32 call_trace_id;
   jint tid;
   jlong time;
   jlong age;
@@ -100,8 +99,7 @@ public:
 
   Error start(Arguments &args);
   void stop();
-  void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object,
-             int num_frames, jvmtiFrameInfo *frames);
+  void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u32 call_trace_id);
   void flush(std::set<int> &tracked_thread_ids);
 
   static void JNICALL GarbageCollectionFinish(jvmtiEnv *jvmti_env);

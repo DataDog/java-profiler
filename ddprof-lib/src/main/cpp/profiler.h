@@ -52,8 +52,9 @@ const int RESERVED_FRAMES = 4;
 
 enum EventMask { EM_CPU = 1 << 0, EM_WALL = 1 << 1, EM_ALLOC = 1 << 2 };
 
-struct CallTraceBuffer {
+union CallTraceBuffer {
   ASGCT_CallFrame _asgct_frames[1];
+  jvmtiFrameInfo _jvmti_frames[1];
 };
 
 class FrameName;
@@ -138,12 +139,6 @@ private:
                      int tid, StackContext *java_ctx, bool *truncated);
   int getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
                         StackContext *java_ctx, bool *truncated);
-  int getJavaTraceJvmti(jvmtiFrameInfo *jvmti_frames, ASGCT_CallFrame *frames,
-                        int start_depth, int max_depth);
-  int getJavaTraceInternal(jvmtiFrameInfo *jvmti_frames,
-                           ASGCT_CallFrame *frames, int max_depth);
-  int convertFrames(jvmtiFrameInfo *jvmti_frames, ASGCT_CallFrame *frames,
-                    int num_frames);
   void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames,
                       NMethod *nmethod);
   void updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
@@ -223,9 +218,8 @@ public:
                          ASGCT_CallFrame *frames);
   void recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u32 call_trace_id, Event *event);
-  void recordExternalSample(u64 weight, int tid, jvmtiFrameInfo *jvmti_frames,
-                            jint num_jvmti_frames, bool truncated,
-                            jint event_type, Event *event);
+  u32 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
+  void recordDeferredSample(int tid, u32 call_trace_id, jint event_type, Event *event);
   void recordExternalSample(u64 weight, int tid, int num_frames,
                             ASGCT_CallFrame *frames, bool truncated,
                             jint event_type, Event *event);
