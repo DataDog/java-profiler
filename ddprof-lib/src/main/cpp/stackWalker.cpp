@@ -217,39 +217,19 @@ int StackWalker::walkDwarf(void *ucontext, const void **callchain,
         break;
       }
     }
-
-    if (inDeadZone(pc)) {
-      *truncated = pc != NULL;
-      break;
-    }
   }
-
   return depth;
 }
 
-#ifdef __aarch64__
-// we are seeing false alarms on aarch64 GHA runners due to 'heap-use-after-free'
-__attribute__((no_sanitize("address")))
-#endif
-int StackWalker::walkVM(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
-                        const void *_termination_frame_begin,
-                        const void *_termination_frame_end) {
-  const void *pc;
-  uintptr_t fp;
-  uintptr_t sp;
-  uintptr_t bottom = (uintptr_t)&sp + MAX_WALK_SIZE;
-
+int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
+                        StackDetail detail, const void* pc, uintptr_t sp, uintptr_t fp, bool *truncated) {
   StackFrame frame(ucontext);
-  if (ucontext == NULL) {
-    pc = __builtin_return_address(0);
-    fp = (uintptr_t)__builtin_frame_address(1);
-    sp = (uintptr_t)__builtin_frame_address(0);
-  } else {
-    pc = (const void *)frame.pc();
-    fp = frame.fp();
-    sp = frame.sp();
-  }
+  uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
 
+  if (inDeadZone(pc)) {
+    *truncated = pc != NULL;
+    return 0;
+  }
   Profiler *profiler = Profiler::instance();
   Libraries *libraries = Libraries::instance();
 
@@ -276,9 +256,6 @@ int StackWalker::walkVM(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
 
   // Walk until the bottom of the stack or until the first Java frame
   while (depth < max_depth) {
-    if (pc >= _termination_frame_begin && pc < _termination_frame_end) {
-      break;
-    }
     if (CodeHeap::contains(pc)) {
       // constant time
       NMethod *nm = CodeHeap::findNMethod(pc);
@@ -286,7 +263,7 @@ int StackWalker::walkVM(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
         fillFrame(frames[depth++], BCI_ERROR, "unknown_nmethod");
       } else if (nm->isNMethod()) {
         int level = nm->level();
-        FrameTypeId type =
+        FrameTypeId type = detail != VM_BASIC &&
             level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED;
         fillFrame(frames[depth++], type, 0, nm->method()->id());
 
@@ -301,9 +278,10 @@ int StackWalker::walkVM(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
                 fillFrame(frames[depth++], BCI_ERROR, "unknown_scope");
                 break;
               }
-              type = scope_offset > 0           ? FRAME_INLINED
-                     : level >= 1 && level <= 3 ? FRAME_C1_COMPILED
-                                                : FRAME_JIT_COMPILED;
+              if (detail != VM_BASIC) {
+                type = scope_offset > 0 ? FRAME_INLINED :
+                       level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED;
+              }
               fillFrame(frames[depth++], type, scope.bci(),
                         scope.method()->id());
             } while (scope_offset > 0 && depth < max_depth);
@@ -373,12 +351,34 @@ int StackWalker::walkVM(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
 
         fillFrame(frames[depth++], BCI_ERROR, "break_interpreted");
         break;
+      } else if (detail < VM_EXPERT && nm->isEntryFrame(pc)) {
+        JavaFrameAnchor* anchor = JavaFrameAnchor::fromEntryFrame(fp);
+        if (anchor == NULL) {
+          fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame");
+          break;
+        }
+        uintptr_t prev_sp = sp;
+        sp = anchor->lastJavaSP();
+        fp = anchor->lastJavaFP();
+        pc = anchor->lastJavaPC();
+        if (sp == 0 || pc == NULL) {
+          // End of Java stack
+          break;
+        }
+        if (sp < prev_sp || sp >= bottom || !aligned(sp)) {
+          fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame");
+          break;
+        }
+        continue;
       } else {
         // linear time in number of runtime stubs
         CodeBlob *stub = profiler->findRuntimeStub(pc);
         const void *start = stub != NULL ? stub->_start : nm->code();
         const char *name = stub != NULL ? stub->_name : nm->name();
-        fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
+
+        if (detail != VM_BASIC) {
+          fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
+        }
 
         if (frame.unwindStub((instruction_t *)start, name, (uintptr_t &)pc, sp,
                              fp)) {
@@ -397,7 +397,10 @@ int StackWalker::walkVM(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
         cc = libraries->findLibraryByAddress(pc);
       }
       const char *name = cc == NULL ? NULL : cc->binarySearch(pc);
-      fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
+
+      if (detail != VM_BASIC) {
+        fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
+      }
     }
 
     uintptr_t prev_sp = sp;
@@ -412,7 +415,7 @@ int StackWalker::walkVM(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
         cc != NULL ? cc->findFrameDesc(pc) : &FrameDesc::default_frame;
 
     u8 cfa_reg = (u8)f->cfa;
-    int cfa_off = f->cfa >> 8;
+    int cfa_off = f->cfa >> 16;
     if (cfa_reg == DW_REG_SP) {
       sp = sp + cfa_off;
     } else if (cfa_reg == DW_REG_FP) {
@@ -464,6 +467,43 @@ int StackWalker::walkVM(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
     vm_thread->exception() = saved_exception;
 
   return depth;
+}
+
+int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, JavaFrameAnchor* anchor, bool *truncated) {
+  uintptr_t sp = anchor->lastJavaSP();
+  if (sp == 0) {
+    *truncated = true;
+    return 0;
+  }
+
+  uintptr_t fp = anchor->lastJavaFP();
+  if (fp == 0) {
+    fp = sp;
+  }
+
+  const void* pc = anchor->lastJavaPC();
+  if (pc == NULL) {
+    pc = ((const void**)sp)[-1];
+  }
+
+  return walkVM(ucontext, frames, max_depth, VM_BASIC, pc, sp, fp, truncated);
+}
+
+
+#ifdef __aarch64__
+// we are seeing false alarms on aarch64 GHA runners due to 'heap-use-after-free'
+__attribute__((no_sanitize("address")))
+#endif
+int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, StackDetail detail, bool *truncated) {
+  if (ucontext == NULL) {
+    const void* pc = __builtin_return_address(0);
+    uintptr_t sp = (uintptr_t)__builtin_frame_address(0) + LINKED_FRAME_SIZE;
+    uintptr_t fp = (uintptr_t)__builtin_frame_address(1);
+    return walkVM(ucontext, frames, max_depth, detail, pc, sp, fp, truncated);
+  } else {
+    StackFrame frame(ucontext);
+    return walkVM(ucontext, frames, max_depth, detail, (const void*)frame.pc(), frame.sp(), frame.fp(), truncated);
+  }
 }
 
 void StackWalker::checkFault(ProfiledThread* thrd) {
