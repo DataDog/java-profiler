@@ -170,6 +170,19 @@ public:
     return _instance;
   }
 
+  const char* cstack() {
+    switch (_cstack) {
+      case CSTACK_DEFAULT: return "default";
+      case CSTACK_NO: return "no";
+      case CSTACK_FP: return "fp";
+      case CSTACK_DWARF: return "dwarf";
+      case CSTACK_LBR: return "lbr";
+      case CSTACK_VM: return "vm";
+      case CSTACK_VMX: return "vmx";
+      default: return "default";
+    }
+  }
+
   u64 total_samples() { return _total_samples; }
   int max_stack_depth() { return _max_stack_depth; }
   time_t uptime() { return time(NULL) - _start_time; }
