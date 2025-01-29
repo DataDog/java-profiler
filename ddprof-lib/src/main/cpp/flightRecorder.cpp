@@ -758,6 +758,8 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
                      Profiler::instance()->cpuEngine()->name());
   writeStringSetting(buf, T_ACTIVE_RECORDING, "wallEngine",
                      Profiler::instance()->wallEngine()->name());
+  writeStringSetting(buf, T_ACTIVE_RECORDING, "cstack", 
+                     Profiler::instance()->cstack());
   flushIfNeeded(buf);
 }
 
