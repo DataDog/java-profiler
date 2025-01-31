@@ -86,6 +86,7 @@ jobs:
       - name: Prepare reports
         if: failure()
         run: |
+          set -e
           mkdir -p reports
           cp ddprof-test/build/hs_err* reports/ || true
           cp -r ddprof-lib/build/tmp reports/native_build
@@ -175,6 +176,7 @@ jobs:
       - name: Prepare reports
         if: failure()
         run: |
+          set -e
           mkdir -p reports
           cp ddprof-test/build/hs_err* reports/ || true
           cp -r ddprof-lib/build/tmp reports/native_build
@@ -265,17 +267,6 @@ jobs:
             echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
             exit 1
           fi
-      - name: Upload logs
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: reports-linux-glibc-${{ matrix.java_version }}-amd64.zip
-          path: |
-            /tmp/hs_err*
-            ddprof-test/hs_err_*
-            ddprof-test/build/reports/tests
-            ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
-            ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
       - uses: actions/upload-artifact@v4
         if: success()
         with:
@@ -289,6 +280,7 @@ jobs:
       - name: Prepare reports
         if: failure()
         run: |
+          set -e
           mkdir -p reports
           cp ddprof-test/build/hs_err* reports/ || true
           cp -r ddprof-lib/build/tmp reports/native_build
@@ -376,17 +368,6 @@ jobs:
             exit 1
           fi
           ls -la /tmp
-      - name: Upload logs
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: reports-linux-glibc-${{ matrix.java_version }}-aarch64.zip
-          path: |
-            /tmp/hs_err*
-            ddprof-test/hs_err_*
-            ddprof-test/build/reports/tests
-            ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
-            ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
       - uses: actions/upload-artifact@v4
         if: success()
         with:
@@ -400,6 +381,7 @@ jobs:
       - name: Prepare reports
         if: failure()
         run: |
+          set -e
           mkdir -p reports
           cp ddprof-test/build/hs_err* reports/ || true
           cp -r ddprof-lib/build/tmp reports/native_build
@@ -491,6 +473,7 @@ jobs:
       - name: Prepare reports
         if: failure()
         run: |
+          set -e
           mkdir -p reports
           cp ddprof-test/build/hs_err* reports/ || true
           cp -r ddprof-lib/build/tmp reports/native_build
@@ -585,6 +568,7 @@ jobs:
       - name: Prepare reports
         if: failure()
         run: |
+          set -e
           mkdir -p reports
           cp ddprof-test/build/hs_err* reports/ || true
           cp -r ddprof-lib/build/tmp reports/native_build
@@ -698,6 +682,7 @@ jobs:
       - name: Prepare reports
         if: failure()
         run: |
+          set -e
           mkdir -p reports
           cp ddprof-test/build/hs_err* reports/ || true
           cp ddprof-test/hs_err* reports/
@@ -817,6 +802,7 @@ jobs:
       - name: Prepare reports
         if: failure()
         run: |
+          set -e
           mkdir -p reports
           cp ddprof-test/build/hs_err* reports/ || true
           cp -r ddprof-lib/build/tmp reports/native_build
@@ -943,6 +929,7 @@ jobs:
       - name: Prepare reports
         if: failure()
         run: |
+          set -e
           mkdir -p reports
           cp ddprof-test/build/hs_err* reports/ || true
           cp -r ddprof-lib/build/tmp reports/native_build
@@ -1071,6 +1058,7 @@ jobs:
       - name: Prepare reports
         if: failure()
         run: |
+          set -e
           mkdir -p reports
           cp ddprof-test/build/hs_err* reports/ || true
           cp -r ddprof-lib/build/tmp reports/native_build
