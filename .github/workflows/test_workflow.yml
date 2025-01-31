@@ -61,19 +61,33 @@ jobs:
           ls -la ${GRAALVM_JDK_DIR}
       - name: Test
         run: |
+          set +e
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/graalvm/${{ matrix.java_version }}-amd64
           export JAVA_TEST_HOME=$(pwd)/graalvm_${{ matrix.java_version }}_jdk
           export PATH=${JAVA_TEST_HOME}/bin:$PATH
-          ./gradlew clean build --no-daemon --parallel --build-cache --no-watch-fs
-      - name: Upload Logs
-        uses: actions/upload-artifact@v4
-        if: always()
+          ./gradlew -PkeepJFRs=true clean build --no-daemon --parallel --build-cache --no-watch-fs
+          EXIT_CODE=$?
+          rm -rf $JAVA_TEST_HOME
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "graalvm-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_graalvm-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: success()
         with:
-          name: graalvm-${{ matrix.java_version }}-logs-amd64
-          path: |
-            build/reports/tests/
-            build/tmp/
+          name: build[test-linux-glibc-graalvm-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})]
+          path: build/
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: failures-graalvm-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+          path: failures_graalvm-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: recordings[test-linux-glibc-graalvm-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})]
+          path: /tmp/recordings
 
   test-linux-glibc-graalvm-aarch64:
     strategy:
@@ -128,19 +142,33 @@ jobs:
           ls -la ${GRAALVM_JDK_DIR}
       - name: Test
         run: |
+          set +e
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/graalvm/${{ matrix.java_version }}-arm64
           export JAVA_TEST_HOME=$(pwd)/graalvm_${{ matrix.java_version }}_jdk
           export PATH=${JAVA_TEST_HOME}/bin:$PATH
-          ./gradlew clean build --no-daemon --parallel --build-cache --no-watch-fs
-      - name: Upload Logs
-        uses: actions/upload-artifact@v4
-        if: always()
+          ./gradlew -PkeepJFRs=true clean build --no-daemon --parallel --build-cache --no-watch-fs
+          EXIT_CODE=$?
+          rm -rf $JAVA_TEST_HOME
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "graalvm-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_graalvm-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: success()
         with:
-          name: graalvm-${{ matrix.java_version }}-logs-aarch64
-          path: |
-            build/reports/tests/
-            build/tmp/
+          name: build[test-linux-glibc-graalvm-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})]
+          path: build/
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: failures-graalvm-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+          path: failures_graalvm-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: recordings[test-linux-glibc-graalvm-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})]
+          path: /tmp/recordings
 
   test-linux-glibc-amd64:
     strategy:
@@ -235,17 +263,17 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+          name: build[test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}]
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: failures
+          name: failures-${{ matrix.java_version }}-${{ matrix.config }}-amd64
           path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: recordings
+          name: recordings[test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}]
           path: /tmp/recordings
 
   test-linux-glibc-aarch64:
@@ -338,17 +366,17 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+          name: build[test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})]
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: failures
+          name: failures-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
           path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: recordings
+          name: recordings[test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})]
           path: /tmp/recordings
 
   test-linux-glibc-j9-amd64:
@@ -418,31 +446,20 @@ jobs:
             echo "glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
             exit 1
           fi
-      - name: Upload logs
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: reports-linux-glibc-j9-${{ matrix.java_version }}-amd64.zip
-          path: |
-            /tmp/javacore*
-            ddprof-test/javacore*
-            ddprof-test/build/reports/tests
-            ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
-            ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+          name: build[test-linux-glibc-j9-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})]
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: failures
+          name: failures-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64
           path: failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: recordings
+          name: recordings[test-linux-glibc-j9-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})]
           path: /tmp/recordings
 
   test-linux-glibc-j9-aarch64:
@@ -515,31 +532,20 @@ jobs:
             echo "glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
             exit 1
           fi
-      - name: Upload logs
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: reports-linux-glibc-j9-${{ matrix.java_version }}-aarch64.zip
-          path: |
-            /tmp/javacore*
-            ddprof-test/javacore*
-            ddprof-test/build/reports/tests
-            ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
-            ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+          name: build[test-linux-glibc-j9-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})]
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: failures
+          name: failures-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
           path: failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: recordings
+          name: recordings[test-linux-glibc-j9-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})]
           path: /tmp/recordings
 
   test-linux-glibc-oracle8:
@@ -621,30 +627,30 @@ jobs:
             echo "glibc-oracle8-${{ matrix.config }}" >> failures_glibc-oracle8-${{ matrix.config }}.txt
             exit 1
           fi
-      - name: Upload logs
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: reports-linux-oracle-jdk-8.zip
-          path: |
-            ddprof-test/hs_err_*
-            ddprof-test/build/reports/tests
-            ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
-            ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
+#      - name: Upload logs
+#        uses: actions/upload-artifact@v4
+#        if: always()
+#        with:
+#          name: reports-linux-oracle-jdk-8.zip
+#          path: |
+#            ddprof-test/hs_err_*
+#            ddprof-test/build/reports/tests
+#            ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
+#            ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: x64-oracle-jdk8-${{ matrix.config }}
+          name: build[test-linux-glibc-oracle8 (${{ matrix.config }})]
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: failures
+          name: failures-oracle-jdk8-${{ matrix.config }}
           path: failures_glibc-oracle8-${{ matrix.config }}.txt
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: recordings
+          name: recordings[test-linux-glibc-oracle8 (${{ matrix.config }})]
           path: /tmp/recordings
 
   test-linux-musl-amd64:
@@ -741,31 +747,20 @@ jobs:
             echo "musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
             exit 1
           fi
-      - name: Upload logs
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: reports-linux-musl-${{ matrix.java_version }}-amd64.zip
-          path: |
-            /tmp/hs_err*
-            ddprof-test/hs_err_*
-            ddprof-test/build/reports/tests
-            ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
-            ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+          name: build[test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})]
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: failures
+          name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64
           path: failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: recordings
+          name: recordings[test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})]
           path: /tmp/recordings
 
   test-linux-glibc-zing-amd64:
@@ -870,30 +865,20 @@ jobs:
             echo "glibc-zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
             exit 1
           fi
-      - name: Upload logs
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: reports-linux-zing-jdk-${{ matrix.java_version }}-amd64.zip
-          path: |
-            ddprof-test/hs_err_*
-            ddprof-test/build/reports/tests/test
-            ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
-            ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: glibc-zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+          name: build[test-linux-glibc-zing-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})]
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: failures
+          name: failures-zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64
           path: failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: recordings
+          name: recordings[test-linux-glibc-zing-amd64 (${{ matrix.java_version }}-${{ matrix.config }})]
           path: /tmp/recordings
 
   test-linux-glibc-zing-aarch64:
@@ -1000,28 +985,18 @@ jobs:
             echo "glibc-zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
             exit 1
           fi
-      - name: Upload logs
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: reports-linux-zing-jdk-${{ matrix.java_version }}-aarch64.zip
-          path: |
-            ddprof-test/hs_err_*
-            ddprof-test/build/reports/tests/test
-            ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
-            ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: glibc-zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+          name: build[test-linux-glibc-zing-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})]
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: failures
+          name: failures-zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
           path: failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: recordings
+          name: recordings[test-linux-glibc-zing-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})]
           path: /tmp/recordings
