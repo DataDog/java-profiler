@@ -331,14 +331,14 @@ jobs:
           key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: |
             gradle-caches-${{ runner.os }}-
-      - name: Cache JDK 11.0.26 [aarch64]
+      - name: Cache JDK 11 [aarch64]
         uses: actions/cache@v3
         with:
           path: |
             jdk
-          key: 11.0.26-aarch64-${{ github.run_id }}
+          key: 11-aarch64-${{ github.run_id }}
           restore-keys: |
-            11.0.26-aarch64-
+            11-aarch64-
       - name: Cache JDK ${{ matrix.java_version }} [aarch64]
         uses: actions/cache@v3
         with:
@@ -349,22 +349,19 @@ jobs:
             ${{ matrix.java_version }}-aarch64-
       - name: Prepare JDK ${{ matrix.java_version }}
         run: |
+          set -x
           curl -s "https://get.sdkman.io" | bash
           source ~/.sdkman/bin/sdkman-init.sh
           JDK_DIR="jdk"
-          TEST_JDK_DIR="test_${{ env.JAVA_VERSION }}_jdk"
+          TEST_JDK_DIR="test_${{ matrix.java_version }}_jdk"
           if [ ! -e ${JDK_DIR}/bin/java ]; then
             echo 'y' | sdk install java 11.0.26-tem
             ln -s ~/.sdkman/candidates/java/11.0.26-tem $JDK_DIR
           fi
           
           if [ ! -e ${TEST_JDK_DIR}/bin/java ]; then
-            echo -n | sdk install java $${ matrix.java_version }}
-            ln -s ~/.sdkman/candidates/java/${{ matrix.java_version }} test_${{ env.JAVA_VERSION }}_jdk
-#            wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-aarch64.tar.gz -O jdk.tar.gz
-#            tar xzf *.tar.gz
-#            find . -type d -name 'jdk*' -maxdepth 1| xargs -I {} mv {} ${TEST_JDK_DIR}
-          
+            echo -n | sdk install java "${{ matrix.java_version }}-tem"
+            ln -s ~/.sdkman/candidates/java/${{ matrix.java_version }}-tem "test_${{ matrix.java_version }}_jdk"
             ls -la ${TEST_JDK_DIR}
           fi
       - name: Test
@@ -376,7 +373,7 @@ jobs:
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}-aarch64
           export LIBC=glibc
-          export JAVA_TEST_HOME=$(pwd)/test_${{ env.JAVA_VERSION }}_jdk
+          export JAVA_TEST_HOME=$(pwd)/test_${{ matrix.java_version }}_jdk
           export SANITIZER=${{ matrix.config }}
           ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
