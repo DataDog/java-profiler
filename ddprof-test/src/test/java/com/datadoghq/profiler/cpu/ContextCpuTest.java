@@ -7,8 +7,15 @@ import java.util.concurrent.ExecutionException;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.datadoghq.profiler.CStackAwareAbstractProfilerTest;
+import com.datadoghq.profiler.junit.CStack;
+import com.datadoghq.profiler.junit.CStackInjector;
+import com.datadoghq.profiler.junit.RetryTest;
 import org.junit.jupiter.api.Assumptions;
-import org.junitpioneer.jupiter.RetryingTest;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
@@ -20,22 +27,31 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import static com.datadoghq.profiler.MoreAssertions.assertInRange;
 import com.datadoghq.profiler.Platform;
 
-public class ContextCpuTest extends AbstractProfilerTest {
+public class ContextCpuTest extends CStackAwareAbstractProfilerTest {
 
     private ProfiledCode profiledCode;
+
+    public ContextCpuTest(@CStack String cstack) {
+        super(cstack);
+    }
 
     @Override
     protected void before() {
         profiledCode = new ProfiledCode(profiler);
     }
 
-    @RetryingTest(10)
-    public void test() throws ExecutionException, InterruptedException {
+    @RetryTest(10)
+    @TestTemplate
+    @ValueSource(strings = {"fp", "dwarf", "vm", "vmx"})
+    public void test(@CStack String cstack) throws ExecutionException, InterruptedException {
         Assumptions.assumeTrue(!Platform.isJ9());
         for (int i = 0, id = 1; i < 100; i++, id += 3) {
             profiledCode.method1(id);
         }
         stopProfiler();
+
+        verifyCStackSettings();
+
         Set<Long> method1SpanIds = profiledCode.spanIdsForMethod("method1Impl");
         Set<Long> method2SpanIds = profiledCode.spanIdsForMethod("method2Impl");
         Set<Long> method3SpanIds = profiledCode.spanIdsForMethod("method3Impl");
