@@ -1,14 +1,15 @@
 package com.datadoghq.profiler;
 
-import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
@@ -38,7 +39,6 @@ import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 public abstract class AbstractProfilerTest {
-
   private static final boolean ALLOW_NATIVE_CSTACKS = true;
 
   private boolean stopped = true;
@@ -96,6 +96,24 @@ public abstract class AbstractProfilerTest {
 
   private Duration cpuInterval;
   private Duration wallInterval;
+
+  private Map<String, Object> testParams;
+
+  protected static Map<String, Object> mapOf(Object ... vals) {
+    Map<String, Object> map = new HashMap<>();
+    for (int i = 0; i < vals.length; i += 2) {
+      map.put(vals[i].toString(), vals[i + 1]);
+    }
+    return map;
+  }
+
+  protected AbstractProfilerTest(Map<String, Object> testParams) {
+    this.testParams = testParams != null ? new HashMap<>(testParams) : Collections.emptyMap();
+  }
+
+  protected AbstractProfilerTest() {
+    this(null);
+  }
 
   private static Duration parseInterval(String command, String part) {
     String prefix = part + "=";
@@ -156,7 +174,14 @@ public abstract class AbstractProfilerTest {
     Path rootDir = Paths.get("/tmp/recordings");
     Files.createDirectories(rootDir);
 
-    jfrDump = Files.createTempFile(rootDir, testConfig.replace('/', '_') + "-" + testInfo.getTestMethod().map(m -> m.getDeclaringClass().getSimpleName() + "_" + m.getName()).orElse("unknown"), ".jfr");
+    String cstack = (String)testParams.get("cstack");
+
+    if (cstack != null) {
+      rootDir = rootDir.resolve(cstack);
+      Files.createDirectories(rootDir);
+    }
+
+    jfrDump = Files.createTempFile(rootDir, (testConfig.isEmpty() ? "" : testConfig.replace('/', '_') + "-") + testInfo.getTestMethod().map(m -> m.getDeclaringClass().getSimpleName() + "_" + m.getName()).orElse("unknown"), ".jfr");
     profiler = JavaProfiler.getInstance();
     String command = "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
     cpuInterval = command.contains("cpu") ? parseInterval(command, "cpu") : (command.contains("interval") ? parseInterval(command, "interval") : Duration.ZERO);
@@ -228,7 +253,7 @@ public abstract class AbstractProfilerTest {
   }
 
 
-  protected void stopProfiler() {
+  public final void stopProfiler() {
     if (!stopped) {
       profiler.stop();
       stopped = true;
@@ -242,18 +267,22 @@ public abstract class AbstractProfilerTest {
     }
   }
 
-  protected void registerCurrentThreadForWallClockProfiling() {
+  public final void registerCurrentThreadForWallClockProfiling() {
     profiler.addThread();
   }
 
   private String getAmendedProfilerCommand() {
     String profilerCommand = getProfilerCommand();
-    return (ALLOW_NATIVE_CSTACKS || profilerCommand.contains("cstack=")
-            ? profilerCommand
-            : profilerCommand + ",cstack=fp")
-            // FIXME - test framework doesn't seem to be forking each test, so need to sync
-            //  these across test cases for now
-            + ",attributes=tag1;tag2;tag3";
+    String testCstack = (String)testParams.get("cstack");
+    if (testCstack != null) {
+      profilerCommand += ",cstack=" + testCstack;
+    } else if(!(ALLOW_NATIVE_CSTACKS || profilerCommand.contains("cstack="))) {
+      profilerCommand += ",cstack=fp";
+    }
+    // FIXME - test framework doesn't seem to be forking each test, so need to sync
+    //  these across test cases for now
+    profilerCommand += ",attributes=tag1;tag2;tag3";
+    return profilerCommand;
   }
 
   protected abstract String getProfilerCommand();
@@ -263,7 +292,7 @@ public abstract class AbstractProfilerTest {
     verifyEventsPresent(jfrDump, expectedEventTypes);
   }
 
-  protected void verifyEventsPresent(Path recording, String... expectedEventTypes) {  
+  protected void verifyEventsPresent(Path recording, String... expectedEventTypes) {
     try {
       IItemCollection events = JfrLoaderToolkit.loadEvents(Files.newInputStream(recording));
       assertTrue(events.hasItems());
@@ -278,7 +307,7 @@ public abstract class AbstractProfilerTest {
     }
   }
 
-  protected IItemCollection verifyEvents(String eventType) {
+  public final IItemCollection verifyEvents(String eventType) {
     return verifyEvents(eventType, true);
   }
 
@@ -300,6 +329,25 @@ public abstract class AbstractProfilerTest {
     } catch (Throwable t) {
       fail(getProfilerCommand() + " " + t);
       return null;
+    }
+  }
+
+  protected final void verifyCStackSettings() {
+    String cstack = (String)testParams.get("cstack");
+    if (cstack == null) {
+      // not a forced cstack mode
+      return;
+    }
+    IItemCollection settings = verifyEvents("jdk.ActiveSetting");
+    for (IItemIterable settingEvents : settings) {
+      IMemberAccessor<String, IItem> nameAccessor = JdkAttributes.REC_SETTING_NAME.getAccessor(settingEvents.getType());
+      IMemberAccessor<String, IItem> valueAccessor = JdkAttributes.REC_SETTING_VALUE.getAccessor(settingEvents.getType());
+      for (IItem item : settingEvents) {
+        String name  = nameAccessor.getMember(item);
+        if (name.equals("cstack")) {
+          assertEquals(cstack, valueAccessor.getMember(item));
+        }
+      }
     }
   }
 
