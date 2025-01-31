@@ -209,7 +209,7 @@ public abstract class AbstractProfilerTest {
   }
 
   protected final boolean isInCI() {
-    return Boolean.valueOf("ddprof.ci");
+    return Boolean.getBoolean("ddprof_test.ci");
   }
 
   private void checkConfig() {
