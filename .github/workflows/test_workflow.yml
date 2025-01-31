@@ -296,7 +296,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        java_version: [ 8u432+7, 11.0.25+11, 17.0.13+12, 21.0.5+11, 23.0.1+13 ]
+        java_version: [ 8.0.442, 11.0.26, 17.0.14, 21.0.6, 23.0.2 ]
         config: ${{ fromJson(inputs.configuration) }}
     runs-on:
       group: ARM LINUX SHARED
@@ -331,21 +331,39 @@ jobs:
           key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: |
             gradle-caches-${{ runner.os }}-
-      - name: Cache JDK ${{ env.JAVA_VERSION }} [aarch64]
+      - name: Cache JDK 11.0.26 [aarch64]
         uses: actions/cache@v3
         with:
           path: |
-            test_${{ env.JAVA_VERSION }}_jdk
-          key: ${{ env.JAVA_VERSION }}-aarch64-${{ github.run_id }}
+            jdk
+          key: 11.0.26-aarch64-${{ github.run_id }}
           restore-keys: |
-            ${{ env.JAVA_VERSION }}-aarch64-
+            11.0.26-aarch64-
+      - name: Cache JDK ${{ matrix.java_version }} [aarch64]
+        uses: actions/cache@v3
+        with:
+          path: |
+            test_${{ matrix.java_version }}_jdk
+          key: ${{ matrix.java_version }}-aarch64-${{ github.run_id }}
+          restore-keys: |
+            ${{ matrix.java_version }}-aarch64-
       - name: Prepare JDK ${{ matrix.java_version }}
         run: |
+          curl -s "https://get.sdkman.io" | bash
+          source ~/.sdkman/bin/sdkman-init.sh
+          JDK_DIR="jdk"
           TEST_JDK_DIR="test_${{ env.JAVA_VERSION }}_jdk"
+          if [ ! -e ${JDK_DIR}/bin/java ]; then
+            echo 'y' | sdk install java 11.0.26-tem
+            ln -s ~/.sdkman/candidates/java/11.0.26-tem $JDK_DIR
+          fi
+          
           if [ ! -e ${TEST_JDK_DIR}/bin/java ]; then
-            wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-aarch64.tar.gz -O jdk.tar.gz
-            tar xzf *.tar.gz
-            find . -type d -name 'jdk*' -maxdepth 1| xargs -I {} mv {} ${TEST_JDK_DIR}
+            echo -n | sdk install java $${ matrix.java_version }}
+            ln -s ~/.sdkman/candidates/java/${{ matrix.java_version }} test_${{ env.JAVA_VERSION }}_jdk
+#            wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-aarch64.tar.gz -O jdk.tar.gz
+#            tar xzf *.tar.gz
+#            find . -type d -name 'jdk*' -maxdepth 1| xargs -I {} mv {} ${TEST_JDK_DIR}
           
             ls -la ${TEST_JDK_DIR}
           fi
