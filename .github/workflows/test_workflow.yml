@@ -258,7 +258,7 @@ jobs:
               printf "%s.%s.%s\n", v[1], v[2], v[3]
             }
           }')
-          ./gradlew -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
           rm -rf $JAVA_TEST_HOME
           if [ $EXIT_CODE -ne 0 ]; then
@@ -368,7 +368,7 @@ jobs:
           export LIBC=glibc
           export JAVA_TEST_HOME=$(pwd)/test_${{ env.JAVA_VERSION }}_jdk
           export SANITIZER=${{ matrix.config }}
-          ./gradlew -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
           rm -rf $JAVA_TEST_HOME
           if [ $EXIT_CODE -ne 0 ]; then
@@ -471,7 +471,7 @@ jobs:
             }
           }')
           chmod a+x gradlew
-          ./gradlew -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
           rm -rf $JAVA_TEST_HOME
           if [ $EXIT_CODE -ne 0 ]; then
@@ -565,7 +565,7 @@ jobs:
             }
           }')
           chmod a+x gradlew
-          ./gradlew -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
           rm -rf $JAVA_TEST_HOME
           if [ $EXIT_CODE -ne 0 ]; then
@@ -668,7 +668,7 @@ jobs:
               printf "%s.%s.%s\n", v[1], v[2], v[3]
             }
           }')
-          ./gradlew -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
           rm -rf $JAVA_TEST_HOME
           if [ $EXIT_CODE -ne 0 ]; then
@@ -796,7 +796,7 @@ jobs:
               printf "%s.%s.%s\n", v[1], v[2], v[3]
             }
           }')
-          ./gradlew -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
           rm -rf $JAVA_TEST_HOME
           rm -rf $JAVA_HOME
@@ -923,7 +923,7 @@ jobs:
               printf "%s.%s.%s\n", v[1], v[2], v[3]
             }
           }')
-          ./gradlew -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
           rm -rf $JAVA_TEST_HOME
           if [ $EXIT_CODE -ne 0 ]; then
@@ -1051,7 +1051,7 @@ jobs:
               printf "%s.%s.%s\n", v[1], v[2], v[3]
             }
           }')
-          ./gradlew -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
           rm -rf $JAVA_TEST_HOME
           if [ $EXIT_CODE -ne 0 ]; then

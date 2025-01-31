@@ -208,6 +208,10 @@ public abstract class AbstractProfilerTest {
   protected void after() throws Exception {
   }
 
+  protected final boolean isInCI() {
+    return Boolean.valueOf("ddprof.ci");
+  }
+
   private void checkConfig() {
     try {
       IItemCollection profilerConfig = verifyEvents("datadog.DatadogProfilerConfig");

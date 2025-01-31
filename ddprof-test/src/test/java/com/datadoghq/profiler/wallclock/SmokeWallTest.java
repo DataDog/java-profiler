@@ -42,16 +42,13 @@ public class SmokeWallTest extends CStackAwareAbstractProfilerTest {
 
         IItemCollection events = verifyEvents("datadog.MethodSample");
 
-        // on mac the usage of itimer to drive the sampling provides very unreliable outputs
-//        if (!Platform.isMac()) {
-            for (IItemIterable cpuSamples : events) {
-                IMemberAccessor<String, IItem> frameAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
-                for (IItem sample : cpuSamples) {
-                    String stackTrace = frameAccessor.getMember(sample);
-                    assertFalse(stackTrace.contains("jvmtiError"));
-                }
+        for (IItemIterable cpuSamples : events) {
+            IMemberAccessor<String, IItem> frameAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
+            for (IItem sample : cpuSamples) {
+                String stackTrace = frameAccessor.getMember(sample);
+                assertFalse(stackTrace.contains("jvmtiError"));
             }
-//        }
+        }
     }
 
     @Override

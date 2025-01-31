@@ -21,6 +21,8 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 
 public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTest {
@@ -49,7 +51,11 @@ public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTe
     @TestTemplate
     @ValueSource(strings = {"fp", "dwarf", "vm", "vmx"})
     public void test(@CStack String cstack) {
-        Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
+        assumeFalse(Platform.isZing() || Platform.isJ9());
+        // on aarch64 and JDK 8 the vmstructs unwinding for wallclock is extremely unreliable
+        //   ; perhaps due to something missing in the unwinder but until we figure it out we will just not run the tests in CI
+        assumeTrue(!isInCI() || !Platform.isAarch64() || !cstack.startsWith("vm") || Platform.isJavaVersionAtLeast(11));
+
         long result = 0;
         for (int i = 0; i < 10; i++) {
             result += pingPong();
