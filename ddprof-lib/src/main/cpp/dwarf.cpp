@@ -84,9 +84,9 @@ enum {
   DW_EH_PE_omit = 0xff,
 };
 
-FrameDesc FrameDesc::empty_frame = {0, DW_REG_SP | EMPTY_FRAME_SIZE << 8,
+FrameDesc FrameDesc::empty_frame = {0, (static_cast<u64>(EMPTY_FRAME_SIZE) << 32) | DW_REG_SP,
                                     DW_SAME_FP, -EMPTY_FRAME_SIZE};
-FrameDesc FrameDesc::default_frame = {0, DW_REG_FP | LINKED_FRAME_SIZE << 8,
+FrameDesc FrameDesc::default_frame = {0, (static_cast<u64>(LINKED_FRAME_SIZE) << 32) | DW_REG_FP,
                                       -LINKED_FRAME_SIZE,
                                       -LINKED_FRAME_SIZE + DW_STACK_SLOT};
 
@@ -398,19 +398,14 @@ int DwarfParser::parseExpression() {
 
 void DwarfParser::addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off,
                             int pc_off) {
-  // sanity asserts for the values fitting into 16bit
-  assert(cfa_reg <= 0xffffffff);
-  assert(static_cast<u32>(cfa_off) <= 0xffffffff);
-
-  // cfa_reg and cfa_off can be encoded to a single 32 bit value, considering the existing and supported systems
-  u32 cfa = static_cast<u16>(cfa_off) << 16 | static_cast<u16>(cfa_reg);
+  u64 cfa = (static_cast<u64>(cfa_off) << 32) | cfa_reg;
   if (_prev == NULL || (_prev->loc == loc && --_count >= 0) ||
       _prev->cfa != cfa || _prev->fp_off != fp_off || _prev->pc_off != pc_off) {
     _prev = addRecordRaw(loc, cfa, fp_off, pc_off);
   }
 }
 
-FrameDesc *DwarfParser::addRecordRaw(u32 loc, u32 cfa, int fp_off, int pc_off) {
+FrameDesc *DwarfParser::addRecordRaw(u32 loc, u64 cfa, int fp_off, int pc_off) {
   if (_count >= _capacity) {
     FrameDesc *frameDesc =
         (FrameDesc *)realloc(_table, _capacity * 2 * sizeof(FrameDesc));

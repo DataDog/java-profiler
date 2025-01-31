@@ -170,8 +170,8 @@ int StackWalker::walkDwarf(void *ucontext, const void **callchain,
     FrameDesc *f =
         cc != NULL ? cc->findFrameDesc(pc) : &FrameDesc::default_frame;
 
-    u8 cfa_reg = (u8)f->cfa;
-    int cfa_off = f->cfa >> 16; // cfa is encoded in the upper 16 bits of the CFA value
+    u32 cfa_reg = f->cfa & 0xffffffff;
+    int cfa_off = (f->cfa  >> 32) & 0xffffffff;
 
     if (cfa_reg == DW_REG_SP) {
       sp = sp + cfa_off;
@@ -414,8 +414,8 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
     FrameDesc *f =
         cc != NULL ? cc->findFrameDesc(pc) : &FrameDesc::default_frame;
 
-    u8 cfa_reg = (u8)f->cfa;
-    int cfa_off = f->cfa >> 16;
+    u32 cfa_reg = f->cfa & 0xffffffff;
+    int cfa_off = (f->cfa  >> 32) & 0xffffffff;
     if (cfa_reg == DW_REG_SP) {
       sp = sp + cfa_off;
     } else if (cfa_reg == DW_REG_FP) {

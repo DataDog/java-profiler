@@ -71,7 +71,7 @@ const int LINKED_FRAME_SIZE = 0;
 
 struct FrameDesc {
   u32 loc;
-  u32 cfa;
+  u64 cfa;
   int fp_off;
   int pc_off;
 
@@ -160,7 +160,7 @@ private:
   int parseExpression();
 
   void addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off, int pc_off);
-  FrameDesc *addRecordRaw(u32 loc, u32 cfa, int fp_off, int pc_off);
+  FrameDesc *addRecordRaw(u32 loc, u64 cfa, int fp_off, int pc_off);
 
 public:
   DwarfParser(const char *name, const char *image_base,
