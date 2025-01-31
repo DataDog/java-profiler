@@ -261,8 +261,12 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
   CodeCache *cc = NULL;
 
   // Walk until the bottom of the stack or until the first Java frame
-  while (depth < max_depth) {
-    if (CodeHeap::contains(pc)) {
+  while (true) {
+    if (depth == max_depth) {
+      *truncated = true;
+      break;
+    }
+    if (CodeHeap::contains(pc) && !(depth == 0 && frame.unwindAtomicStub(pc))) {
       // constant time
       NMethod *nm = CodeHeap::findNMethod(pc);
       if (nm == NULL) {
