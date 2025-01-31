@@ -54,6 +54,12 @@ static inline void fillFrame(ASGCT_CallFrame &frame, FrameTypeId type, int bci,
   frame.method_id = method;
 }
 
+static inline void fillErrorFrame(ASGCT_CallFrame &frame, const char *msg, bool *truncated) {
+  *truncated = true;
+  fillFrame(frame, BCI_ERROR, msg);
+  TEST_LOG("Error frame: %s", msg);
+}
+
 static jmethodID getMethodId(VMMethod *method) {
   if (!inDeadZone(method) && aligned((uintptr_t)method)) {
     jmethodID method_id = method->id();
@@ -247,7 +253,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
     if (setjmp(crash_protection_ctx) != 0) {
       vm_thread->exception() = saved_exception;
       if (depth < max_depth) {
-        fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
+        fillErrorFrame(frames[depth++], "break_not_walkable", truncated);
       }
       return depth;
     }
@@ -260,7 +266,8 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
       // constant time
       NMethod *nm = CodeHeap::findNMethod(pc);
       if (nm == NULL) {
-        fillFrame(frames[depth++], BCI_ERROR, "unknown_nmethod");
+        fillErrorFrame(frames[depth++], "unknown_nmethod", truncated);
+        break;
       } else if (nm->isNMethod()) {
         int level = nm->level();
         FrameTypeId type = detail != VM_BASIC &&
@@ -275,7 +282,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
             do {
               scope_offset = scope.decode(scope_offset);
               if (scope.method() == nullptr) {
-                fillFrame(frames[depth++], BCI_ERROR, "unknown_scope");
+                fillErrorFrame(frames[depth++], "unknown_scope", truncated);
                 break;
               }
               if (detail != VM_BASIC) {
@@ -300,11 +307,11 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
           continue;
         }
 
-        fillFrame(frames[depth++], BCI_ERROR, "break_compiled");
+        fillErrorFrame(frames[depth++], "break_compiled", truncated);
         break;
       } else if (nm->isInterpreter()) {
         if (vm_thread != NULL && vm_thread->inDeopt()) {
-          fillFrame(frames[depth++], BCI_ERROR, "break_deopt");
+          fillErrorFrame(frames[depth++], "break_deopt", truncated);
           break;
         }
 
@@ -349,12 +356,12 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
           }
         }
 
-        fillFrame(frames[depth++], BCI_ERROR, "break_interpreted");
+        fillErrorFrame(frames[depth++], "break_interpreted", truncated);
         break;
       } else if (detail < VM_EXPERT && nm->isEntryFrame(pc)) {
         JavaFrameAnchor* anchor = JavaFrameAnchor::fromEntryFrame(fp);
         if (anchor == NULL) {
-          fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame");
+          fillErrorFrame(frames[depth++], "break_entry_frame", truncated);
           break;
         }
         uintptr_t prev_sp = sp;
@@ -366,7 +373,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
           break;
         }
         if (sp < prev_sp || sp >= bottom || !aligned(sp)) {
-          fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame");
+          fillErrorFrame(frames[depth++], "break_entry_frame", truncated);
           break;
         }
         continue;
