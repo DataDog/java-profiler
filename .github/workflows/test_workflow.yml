@@ -76,7 +76,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: build[test-linux-glibc-graalvm-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})]
+          name: test-linux-glibc-graalvm-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -86,12 +86,7 @@ jobs:
       - name: Prepare reports
         if: failure()
         run: |
-          set -e
-          mkdir -p reports
-          cp ddprof-test/build/hs_err* reports/ || true
-          cp -r ddprof-lib/build/tmp reports/native_build
-          cp -r ddprof-test/build/reports/tests reports/tests
-          cp -r /tmp/recordings reports/recordings
+          ./github/scripts/prepare_reports.sh
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -166,7 +161,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: build[test-linux-glibc-graalvm-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})]
+          name: test-linux-glibc-graalvm-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -270,7 +265,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: build[test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}]
+          name: test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}] (build)
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -386,7 +381,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: build[test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})]
+          name: test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -478,7 +473,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: build[test-linux-glibc-j9-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})]
+          name: test-linux-glibc-j9-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -573,7 +568,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: build[test-linux-glibc-j9-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})]
+          name: test-linux-glibc-j9-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -687,7 +682,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: build[test-linux-glibc-oracle8 (${{ matrix.config }})]
+          name: test-linux-glibc-oracle8 (${{ matrix.config }})] (build)
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -721,7 +716,7 @@ jobs:
 
     container:
       image: "alpine:3.14"
-      options: --cpus 2
+      options: --cpus 8
     steps:
       - uses: actions/checkout@v3
       - name: Setup OS
@@ -807,7 +802,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: build[test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})]
+          name: test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -817,12 +812,7 @@ jobs:
       - name: Prepare reports
         if: failure()
         run: |
-          set -e
-          mkdir -p reports
-          cp ddprof-test/build/hs_err* reports/ || true
-          cp -r ddprof-lib/build/tmp reports/native_build
-          cp -r ddprof-test/build/reports/tests reports/tests
-          cp -r /tmp/recordings reports/recordings
+          ./github/scripts/prepare_reports.sh
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -934,7 +924,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: build[test-linux-glibc-zing-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})]
+          name: test-linux-glibc-zing-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -1063,7 +1053,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: build[test-linux-glibc-zing-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})]
+          name: test-linux-glibc-zing-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -1073,12 +1063,7 @@ jobs:
       - name: Prepare reports
         if: failure()
         run: |
-          set -e
-          mkdir -p reports
-          cp ddprof-test/build/hs_err* reports/ || true
-          cp -r ddprof-lib/build/tmp reports/native_build
-          cp -r ddprof-test/build/reports/tests reports/tests
-          cp -r /tmp/recordings reports/recordings
+           ./github/scripts/prepare_reports.sh
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
