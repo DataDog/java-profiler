@@ -453,12 +453,10 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
     if (sp < prev_sp || sp >= prev_sp + MAX_FRAME_SIZE || sp >= bottom) {
       if (depth < 2 && (fp == 0x80 || sp == 0x90)) {
         if (thrd_anchor != nullptr) {
-          sp = thrd_anchor->lastJavaSP();
-          TEST_LOG("Boom: anchor sp=%p", sp);
-          fp = thrd_anchor->lastJavaFP();
-          TEST_LOG("Boom: anchor fp=%p", fp);
-          pc = thrd_anchor->lastJavaPC();
-          TEST_LOG("Boom: anchor pc=%p", pc);
+          TEST_LOG("sp=%p/%p/%p, fp=%p/%p/%p", thrd_anchor->lastJavaSP(), sp, sp_backup, thrd_anchor->lastJavaFP(), fp, fp_backup);
+//          sp = thrd_anchor->lastJavaSP();
+//          fp = thrd_anchor->lastJavaFP();
+//          pc = thrd_anchor->lastJavaPC();
         }
       }
       break;
