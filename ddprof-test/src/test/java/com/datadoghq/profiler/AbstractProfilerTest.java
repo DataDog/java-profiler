@@ -196,7 +196,6 @@ public abstract class AbstractProfilerTest {
   public void cleanup() throws Exception {
     after();
     stopProfiler();
-    System.out.println("===> keep_jfrs: " + Boolean.getBoolean("ddprof_test.keep_jfrs"));
     if (jfrDump != null && !Boolean.getBoolean("ddprof_test.keep_jfrs")) {
       Files.deleteIfExists(jfrDump);
     }
