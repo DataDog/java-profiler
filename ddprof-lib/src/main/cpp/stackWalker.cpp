@@ -245,6 +245,8 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
   VMThread *vm_thread = VMThread::current();
   void *saved_exception = vm_thread != NULL ? vm_thread->exception() : NULL;
 
+  CodeCache *cc = NULL;
+
   // Should be preserved across setjmp/longjmp
   volatile int depth = 0;
 
@@ -259,14 +261,26 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
       return depth;
     }
     thrd_anchor = vm_thread->anchor();
-//    if (thrd_anchor != nullptr) {
+    if (thrd_anchor != nullptr) {
+      if (!VMStructs::goodPtr((const void*)fp)) {
 ////      TEST_LOG("anchor: sp=%p > %p, fp=%p > %p", sp, thrd_anchor->lastJavaSP(), fp, thrd_anchor->lastJavaFP());
-//        sp = thrd_anchor->lastJavaSP();
-//        pc = thrd_anchor->lastJavaPC();
-//        fp = thrd_anchor->lastJavaFP();
-//    }
+        sp = thrd_anchor->lastJavaSP();
+        pc = thrd_anchor->lastJavaPC();
+        fp = thrd_anchor->lastJavaFP();
+        if (fp == 0) {
+          if (cc == NULL || !cc->contains(pc)) {
+            cc = libraries->findLibraryByAddress(pc);
+          }
+          const char *name = cc == NULL ? NULL : cc->binarySearch(pc);
+
+          if (detail != VM_BASIC) {
+            fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
+          }
+          return depth;
+        }
+      }
+    }
   }
-  CodeCache *cc = NULL;
 
   uintptr_t sp_backup = sp;
   uintptr_t fp_backup = fp;
@@ -451,26 +465,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
 
     // Check if the next frame is below on the current stack
     if (sp < prev_sp || sp >= prev_sp + MAX_FRAME_SIZE || sp >= bottom) {
-      if (fp_backup == 0x80 && sp == 0x90) {
-        if (thrd_anchor != nullptr) {
-            fp = thrd_anchor->lastJavaFP();
-            if (fp == 0) {
-              *truncated = true;
-              break;
-            }
-            sp = thrd_anchor->lastJavaSP();
-            pc = thrd_anchor->lastJavaPC();
-        }
-      }
-      if (depth < 2 && (fp == 0x80 || sp == 0x90)) {
-        if (thrd_anchor != nullptr) {
-          TEST_LOG("sp=%p/%p/%p, fp=%p/%p/%p", thrd_anchor->lastJavaSP(), sp, sp_backup, thrd_anchor->lastJavaFP(), fp, fp_backup);
-
-//          sp = thrd_anchor->lastJavaSP();
-//          fp = thrd_anchor->lastJavaFP();
-//          pc = thrd_anchor->lastJavaPC();
-        }
-      }
+      *truncated = true;
       break;
     }
 
@@ -509,9 +504,6 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
   if (vm_thread != NULL)
     vm_thread->exception() = saved_exception;
 
-  if (depth < 2) {
-    TEST_LOG("Boom: sp=%p/%p, fp=%p/%p", sp, sp_backup, fp, fp_backup);
-  }
   return depth;
 }
 

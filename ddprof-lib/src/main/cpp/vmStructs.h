@@ -33,6 +33,8 @@
 class HeapUsage;
 
 class VMStructs {
+friend class StackWalker;
+
 protected:
   static CodeCache *_libjvm;
   static CodeCache _unsafe_to_walk;
