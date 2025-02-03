@@ -270,6 +270,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
     }
     if (fp == 0x80 && sp == 0x90) {
       if (thrd_anchor != nullptr) {
+        TEST_LOG("Boom: anchor");
         sp = thrd_anchor->lastJavaSP();
         fp = thrd_anchor->lastJavaFP();
         pc = thrd_anchor->lastJavaPC();
@@ -486,6 +487,9 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
   if (vm_thread != NULL)
     vm_thread->exception() = saved_exception;
 
+  if (depth < 2) {
+    TEST_LOG("Boom: sp=%p, fp=%p", sp, fp);
+  }
   return depth;
 }
 
