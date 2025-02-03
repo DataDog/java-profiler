@@ -437,15 +437,15 @@ class JavaFrameAnchor : VMStructs {
     }
 
     uintptr_t lastJavaSP() {
-        return *(uintptr_t*) at(_anchor_sp_offset);
+        return _anchor_sp_offset != -1 ? *(uintptr_t*) at(_anchor_sp_offset) : 0;
     }
 
     uintptr_t lastJavaFP() {
-        return *(uintptr_t*) at(_anchor_fp_offset);
+        return _anchor_fp_offset != -1 ? *(uintptr_t*) at(_anchor_fp_offset) : 0;
     }
 
     const void* lastJavaPC() {
-        return *(const void**) at(_anchor_pc_offset);
+        return _anchor_pc_offset != -1 ? *(const void**) at(_anchor_pc_offset) : nullptr;
     }
 
     void setLastJavaPC(const void* pc) {
