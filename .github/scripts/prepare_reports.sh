@@ -2,6 +2,7 @@
 
 set -e
 mkdir -p reports
+cp /tmp/hs_err* reports/ || true
 cp ddprof-test/build/hs_err* reports/ || true
 cp -r ddprof-lib/build/tmp reports/native_build || true
 cp -r ddprof-test/build/reports/tests reports/tests || true
