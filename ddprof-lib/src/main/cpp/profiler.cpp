@@ -684,11 +684,16 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     ASGCT_CallFrame *native_stop = frames + num_frames;
     num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
                                  &java_ctx, &truncated);
+    JavaFrameAnchor* anchor = nullptr;
+    VMThread *vm_thread = VMThread::current();
+    if (vm_thread != nullptr) {
+      anchor = vm_thread->anchor();
+    }
     if (_cstack == CSTACK_VMX) {
       num_frames += StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_EXPERT, &truncated);
     } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
       if (_cstack == CSTACK_VM) {
-        num_frames += StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_NORMAL, &truncated);
+        num_frames += StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, anchor, &truncated);
       } else {
         // Async events
         AsyncSampleMutex mutex(ProfiledThread::current());

@@ -497,7 +497,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, 
     pc = ((const void**)sp)[-1];
   }
 
-  return walkVM(ucontext, frames, max_depth, VM_BASIC, pc, sp, fp, truncated);
+  return walkVM(ucontext, frames, max_depth, VM_NORMAL, pc, sp, fp, truncated);
 }
 
 
