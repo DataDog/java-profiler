@@ -12,698 +12,698 @@ permissions:
   actions: read
 
 jobs:
-  test-linux-glibc-graalvm-amd64:
-    strategy:
-      fail-fast: false
-      matrix:
-        java_version: [ 17.0.9, 21.0.2, 23.0.1 ]
-        config: ${{ fromJson(inputs.configuration) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v3
-      - name: Setup OS
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
-      - name: Cache Gradle Wrapper Binaries
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/wrapper/dists
-          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-wrapper-${{ runner.os }}-
-      - name: Cache Gradle User Home
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/caches
-          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-caches-${{ runner.os }}-
-      - name: Extract Java Major Version
-        run: echo "JAVA_MAJOR_VERSION=$(echo ${{ matrix.java_version }} | cut -d '.' -f 1)" >> $GITHUB_ENV
-      - name: Cache GraalVM JDK ${{ matrix.java_version }} [amd64]
-        uses: actions/cache@v3
-        with:
-          path: |
-            graalvm_${{ matrix.java_version }}_jdk
-          key: graalvm-${{ matrix.java_version }}-amd64-${{ github.run_id }}
-          restore-keys: |
-            graalvm-${{ matrix.java_version }}-amd64-
-      - name: Prepare GraalVM JDK ${{ matrix.java_version }}
-        run: |
-          GRAALVM_JDK_DIR="graalvm_${{ matrix.java_version }}_jdk"
-          if [ ! -e ${GRAALVM_JDK_DIR}/bin/java ]; then
-            wget -nv https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${{ matrix.java_version }}/graalvm-community-jdk-${{ matrix.java_version }}_linux-x64_bin.tar.gz -O graalvm.tar.gz
-            mkdir -p ${GRAALVM_JDK_DIR}
-            tar -xzf graalvm.tar.gz --strip-components=1 -C ${GRAALVM_JDK_DIR}
-          fi
-          ls -la ${GRAALVM_JDK_DIR}
-      - name: Test
-        run: |
-          set +e
-          export TEST_COMMIT=${{ github.sha }}
-          export TEST_CONFIGURATION=glibc/graalvm/${{ matrix.java_version }}-amd64
-          export JAVA_TEST_HOME=$(pwd)/graalvm_${{ matrix.java_version }}_jdk
-          export PATH=${JAVA_TEST_HOME}/bin:$PATH
-          ./gradlew -PkeepJFRs=true clean build --no-daemon --parallel --build-cache --no-watch-fs
-          EXIT_CODE=$?
-          rm -rf $JAVA_TEST_HOME
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "graalvm-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_graalvm-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
-            exit 1
-          fi
-      - uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: test-linux-glibc-graalvm-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
-          path: build/
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: failures-graalvm-${{ matrix.java_version }}-${{ matrix.config }}-amd64
-          path: failures_graalvm-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
-      - name: Prepare reports
-        if: failure()
-        run: |
-          .github/scripts/prepare_reports.sh
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: test-linux-glibc-graalvm-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
-          path: reports
-
-  test-linux-glibc-graalvm-aarch64:
-    strategy:
-      fail-fast: false
-      matrix:
-        java_version: [ 17.0.9, 21.0.2, 23.0.1 ]
-        config: ${{ fromJson(inputs.configuration) }}
-    runs-on:
-      group: ARM LINUX SHARED
-      labels: arm-4core-linux
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v3
-      - name: Setup OS
-        run: |
-          sudo apt update -y
-          sudo apt remove -y g++
-          sudo apt autoremove -y
-          sudo apt install -y curl zip unzip clang make build-essential
-      - name: Cache Gradle Wrapper Binaries
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/wrapper/dists
-          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-wrapper-${{ runner.os }}-
-      - name: Cache Gradle User Home
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/caches
-          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-caches-${{ runner.os }}-
-      - name: Extract Java Major Version
-        run: echo "JAVA_MAJOR_VERSION=$(echo ${{ matrix.java_version }} | cut -d '.' -f 1)" >> $GITHUB_ENV
-      - name: Cache GraalVM JDK ${{ matrix.java_version }} [arm64]
-        uses: actions/cache@v3
-        with:
-          path: |
-            graalvm_${{ matrix.java_version }}_jdk
-          key: graalvm-${{ matrix.java_version }}-arm64-${{ github.run_id }}
-          restore-keys: |
-            graalvm-${{ matrix.java_version }}-arm64-
-      - name: Prepare GraalVM JDK ${{ matrix.java_version }}
-        run: |
-          GRAALVM_JDK_DIR="graalvm_${{ matrix.java_version }}_jdk"
-          if [ ! -e ${GRAALVM_JDK_DIR}/bin/java ]; then
-            wget -nv https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${{ matrix.java_version }}/graalvm-community-jdk-${{ matrix.java_version }}_linux-aarch64_bin.tar.gz -O graalvm.tar.gz
-            mkdir -p ${GRAALVM_JDK_DIR}
-            tar -xzf graalvm.tar.gz --strip-components=1 -C ${GRAALVM_JDK_DIR}
-          fi
-          ls -la ${GRAALVM_JDK_DIR}
-      - name: Test
-        run: |
-          set +e
-          export TEST_COMMIT=${{ github.sha }}
-          export TEST_CONFIGURATION=glibc/graalvm/${{ matrix.java_version }}-arm64
-          export JAVA_TEST_HOME=$(pwd)/graalvm_${{ matrix.java_version }}_jdk
-          export PATH=${JAVA_TEST_HOME}/bin:$PATH
-          ./gradlew -PkeepJFRs=true clean build --no-daemon --parallel --build-cache --no-watch-fs
-          EXIT_CODE=$?
-          rm -rf $JAVA_TEST_HOME
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "graalvm-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_graalvm-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
-            exit 1
-          fi
-      - uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: test-linux-glibc-graalvm-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
-          path: build/
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: failures-graalvm-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
-          path: failures_graalvm-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
-      - name: Prepare reports
-        if: failure()
-        run: |
-          set -e
-          mkdir -p reports
-          cp ddprof-test/build/hs_err* reports/ || true
-          cp -r ddprof-lib/build/tmp reports/native_build
-          cp -r ddprof-test/build/reports/tests reports/tests
-          cp -r /tmp/recordings reports/recordings
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: test-linux-glibc-graalvm-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
-          path: reports
-
-  test-linux-glibc-amd64:
-    strategy:
-      fail-fast: false
-      matrix:
-        java_version: [ 8u432+7, 11.0.25+11, 17.0.13+12, 21.0.5+11, 23.0.1+13 ]
-        config: ${{ fromJson(inputs.configuration) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v3
-      - name: Prepare build JDK
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'temurin'
-          java-version: "11"
-      - name: Extract Versions
-        uses: ./.github/actions/extract_versions
-      - name: Cache Gradle Wrapper Binaries
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/wrapper/dists
-          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-wrapper-${{ runner.os }}-
-      - name: Cache Gradle User Home
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/caches
-          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-caches-${{ runner.os }}-
-      - name: Setup OS
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
-      - name: Cache JDK ${{ env.JAVA_VERSION }} [amd64]
-        uses: actions/cache@v3
-        with:
-          path: |
-            test_${{ env.JAVA_VERSION }}_jdk
-          key: ${{ env.JAVA_VERSION }}-amd64-${{ github.run_id }}
-          restore-keys: |
-            ${{ env.JAVA_VERSION }}-amd64-
-      - name: Prepare JDK ${{ env.JAVA_VERSION }}
-        run: |
-          TEST_JDK_DIR="test_${{ env.JAVA_VERSION }}_jdk"
-          if [ ! -e ${TEST_JDK_DIR}/bin/java ]; then
-            wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-amd64.tar.gz -O jdk.tar.gz
-            tar xzf *.tar.gz
-            find . -type d -name 'jdk*' -maxdepth 1| xargs -I {} mv {} ${TEST_JDK_DIR}
-          fi
-      - name: Test
-        run: |
-          sudo sysctl vm.mmap_rnd_bits=28
-
-          set +e
-          export KEEP_JFRS=true
-          export TEST_COMMIT=${{ github.sha }}
-          export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}-amd64
-          export LIBC=glibc
-          export JAVA_TEST_HOME=$(pwd)/test_${{ env.JAVA_VERSION }}_jdk
-          export SANITIZER=${{ matrix.config }}
-          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
-              split($2, v, "[._]");
-              if (v[1] == "1") {
-              # Java 8 or older: Include major, minor, and update
-              printf "%s.%s.%s\n", v[2], v[3], v[4]
-            } else {
-              # Java 9 or newer: Major, minor, and patch
-              printf "%s.%s.%s\n", v[1], v[2], v[3]
-            }
-          }')
-          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
-          EXIT_CODE=$?
-          rm -rf $JAVA_TEST_HOME
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
-            exit 1
-          fi
-      - uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}] (build)
-          path: build/
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: failures-${{ matrix.java_version }}-${{ matrix.config }}-amd64
-          path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
-      - name: Prepare reports
-        if: failure()
-        run: |
-          set -e
-          mkdir -p reports
-          cp ddprof-test/build/hs_err* reports/ || true
-          cp -r ddprof-lib/build/tmp reports/native_build
-          cp -r ddprof-test/build/reports/tests reports/tests
-          cp -r /tmp/recordings reports/recordings
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
-          path: reports
-
-  test-linux-glibc-aarch64:
-    strategy:
-      fail-fast: false
-      matrix:
-        java_version: [ 8.0.442, 11.0.26, 17.0.14, 21.0.6, 23.0.2 ]
-        config: ${{ fromJson(inputs.configuration) }}
-    runs-on:
-      group: ARM LINUX SHARED
-      labels: arm-4core-linux
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v3
-      - name: Prepare build JDK
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'temurin'
-          java-version: "11"
-      - name: Setup OS
-        run: |
-          sudo apt update -y
-          sudo apt remove -y g++
-          sudo apt autoremove -y
-          sudo apt install -y curl zip unzip clang make build-essential
-      - name: Extract Versions
-        uses: ./.github/actions/extract_versions
-      - name: Cache Gradle Wrapper Binaries
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/wrapper/dists
-          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-wrapper-${{ runner.os }}-
-      - name: Cache Gradle User Home
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/caches
-          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-caches-${{ runner.os }}-
-      - name: Cache JDK 11 [aarch64]
-        uses: actions/cache@v3
-        with:
-          path: |
-            jdk
-          key: 11-aarch64-${{ github.run_id }}
-          restore-keys: |
-            11-aarch64-
-      - name: Cache JDK ${{ matrix.java_version }} [aarch64]
-        uses: actions/cache@v3
-        with:
-          path: |
-            test_${{ matrix.java_version }}_jdk
-          key: ${{ matrix.java_version }}-aarch64-${{ github.run_id }}
-          restore-keys: |
-            ${{ matrix.java_version }}-aarch64-
-      - name: Prepare JDK ${{ matrix.java_version }}
-        run: |
-          set -x
-          curl -s "https://get.sdkman.io" | bash
-          source ~/.sdkman/bin/sdkman-init.sh
-          JDK_DIR="jdk"
-          TEST_JDK_DIR="test_${{ matrix.java_version }}_jdk"
-          if [ ! -e ${JDK_DIR}/bin/java ]; then
-            echo 'y' | sdk install java 11.0.26-tem
-            ln -s ~/.sdkman/candidates/java/11.0.26-tem $JDK_DIR
-          fi
-
-          if [ ! -e ${TEST_JDK_DIR}/bin/java ]; then
-            echo -n | sdk install java "${{ matrix.java_version }}-tem"
-            ln -s ~/.sdkman/candidates/java/${{ matrix.java_version }}-tem "test_${{ matrix.java_version }}_jdk"
-            ls -la ${TEST_JDK_DIR}
-          fi
-      - name: Test
-        run: |
-          sudo sysctl vm.mmap_rnd_bits=28
-
-          set +e
-          export KEEP_JFRS=true
-          export TEST_COMMIT=${{ github.sha }}
-          export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}-aarch64
-          export LIBC=glibc
-          export JAVA_TEST_HOME=$(pwd)/test_${{ matrix.java_version }}_jdk
-          export SANITIZER=${{ matrix.config }}
-          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
-          EXIT_CODE=$?
-          rm -rf $JAVA_TEST_HOME
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
-            exit 1
-          fi
-          ls -la /tmp
-      - uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
-          path: build/
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: failures-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
-          path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
-      - name: Prepare reports
-        if: failure()
-        run: |
-          set -e
-          mkdir -p reports
-          cp ddprof-test/build/hs_err* reports/ || true
-          cp -r ddprof-lib/build/tmp reports/native_build
-          cp -r ddprof-test/build/reports/tests reports/tests
-          cp -r /tmp/recordings reports/recordings
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
-          path: reports
-
-  test-linux-glibc-j9-amd64:
-    strategy:
-      fail-fast: false
-      matrix:
-        java_version: [ 8, 11, 17 ]
-        config: ${{ fromJson(inputs.configuration) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v3
-      - name: Setup OS
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
-#          sudo sysctl vm.mmap_rnd_bits=28
-      - name: Cache Gradle Wrapper Binaries
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/wrapper/dists
-          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-wrapper-${{ runner.os }}-
-      - name: Cache Gradle User Home
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/caches
-          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-caches-${{ runner.os }}-
-      - name: Prepare test JDK
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'adopt-openj9'
-          java-version: "${{ matrix.java_version }}"
-      - name: Store JAVA_TEST_HOME
-        run: JAVA_PATH=$(which java) && echo "JAVA_TEST_HOME=${JAVA_PATH/\/bin\/java/\/}" >> $GITHUB_ENV
-      - name: Prepare build JDK
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'adopt-openj9'
-          java-version: "11"
-      - name: Test
-        run: |
-          set +e
-          export KEEP_JFRS=true
-          export TEST_COMMIT=${{ github.sha }}
-          export TEST_CONFIGURATION=glibc/j9/${{ matrix.java_version }}-amd64
-          export LIBC=glibc
-          export SANITIZER=${{ matrix.config }}
-          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
-              split($2, v, "[._]");
-              if (v[1] == "1") {
-              # Java 8 or older: Include major, minor, and update
-              printf "%s.%s.%s\n", v[2], v[3], v[4]
-            } else {
-              # Java 9 or newer: Major, minor, and patch
-              printf "%s.%s.%s\n", v[1], v[2], v[3]
-            }
-          }')
-          chmod a+x gradlew
-          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
-          EXIT_CODE=$?
-          rm -rf $JAVA_TEST_HOME
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
-            exit 1
-          fi
-      - uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: test-linux-glibc-j9-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
-          path: build/
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: failures-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64
-          path: failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
-      - name: Prepare reports
-        if: failure()
-        run: |
-          set -e
-          mkdir -p reports
-          cp ddprof-test/build/hs_err* reports/ || true
-          cp -r ddprof-lib/build/tmp reports/native_build
-          cp -r ddprof-test/build/reports/tests reports/tests
-          cp -r /tmp/recordings reports/recordings
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: test-linux-glibc-j9-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
-          path: reports
-
-  test-linux-glibc-j9-aarch64:
-    strategy:
-      fail-fast: false
-      matrix:
-        java_version: [ 8, 11, 17 ]
-        config: ${{ fromJson(inputs.configuration) }}
-    runs-on:
-      group: ARM LINUX SHARED
-      labels: arm-4core-linux
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v3
-      - name: Setup OS
-        run: |
-          sudo apt update -y
-          sudo apt remove -y g++
-          sudo apt autoremove -y
-          sudo apt install -y curl zip unzip clang make build-essential
-      - name: Cache Gradle Wrapper Binaries
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/wrapper/dists
-          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-wrapper-${{ runner.os }}-
-      - name: Cache Gradle User Home
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/caches
-          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-caches-${{ runner.os }}-
-      - name: Prepare test JDK
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'adopt-openj9'
-          java-version: "${{ matrix.java_version }}"
-      - name: Store JAVA_TEST_HOME
-        run: JAVA_PATH=$(which java) && echo "JAVA_TEST_HOME=${JAVA_PATH/\/bin\/java/\/}" >> $GITHUB_ENV
-      - name: Prepare build JDK
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'adopt-openj9'
-          java-version: "11"
-      - name: Test
-        run: |
-          set +e
-          export KEEP_JFRS=true
-          export TEST_COMMIT=${{ github.sha }}
-          export TEST_CONFIGURATION=glibc/j9/${{ matrix.java_version }}-aarch64
-          export LIBC=glibc
-          export SANITIZER=${{ matrix.config }}
-          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
-              split($2, v, "[._]");
-              if (v[1] == "1") {
-              # Java 8 or older: Include major, minor, and update
-              printf "%s.%s.%s\n", v[2], v[3], v[4]
-            } else {
-              # Java 9 or newer: Major, minor, and patch
-              printf "%s.%s.%s\n", v[1], v[2], v[3]
-            }
-          }')
-          chmod a+x gradlew
-          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
-          EXIT_CODE=$?
-          rm -rf $JAVA_TEST_HOME
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
-            exit 1
-          fi
-      - uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: test-linux-glibc-j9-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
-          path: build/
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: failures-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
-          path: failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
-      - name: Prepare reports
-        if: failure()
-        run: |
-          set -e
-          mkdir -p reports
-          cp ddprof-test/build/hs_err* reports/ || true
-          cp -r ddprof-lib/build/tmp reports/native_build
-          cp -r ddprof-test/build/reports/tests reports/tests
-          cp -r /tmp/recordings reports/recordings
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: test-linux-glibc-j9-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
-          path: reports
-
-  test-linux-glibc-oracle8:
-    strategy:
-      fail-fast: false
-      matrix:
-        config: ${{ fromJson(inputs.configuration) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v3
-      - name: Setup OS
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
-      - name: Cache Gradle Wrapper Binaries
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/wrapper/dists
-          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-wrapper-${{ runner.os }}-
-      - name: Cache Gradle User Home
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/caches
-          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-caches-${{ runner.os }}-
-      - name: Prepare build JDK
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'temurin'
-          java-version: "11"
-      - name: Cache JDK Oracle JDK 8
-        uses: actions/cache@v3
-        with:
-          path: |
-            /usr/lib/jvm/oracle8
-          key: oracle-jdk8-${{ github.run_id }}
-          restore-keys: |
-              oracle-jdk8-
-      - name: Prepare JDK ${{ matrix.java_version }}
-        run: |
-          sudo sysctl vm.mmap_rnd_bits=28
-          set -eux;
-          if [ ! -e /usr/lib/jvm/oracle8/bin/java ]; then
-            sudo mkdir -p /usr/lib/jvm/oracle8;
-            # https://gist.github.com/wavezhang/ba8425f24a968ec9b2a8619d7c2d86a6?permalink_comment_id=4444663#gistcomment-4444663
-            # jdk1.8.0_361
-            curl -L --fail "https://javadl.oracle.com/webapps/download/AutoDL?BundleId=247926_0ae14417abb444ebb02b9815e2103550" | sudo tar -xvzf - -C /usr/lib/jvm/oracle8 --strip-components 1
-          fi
-          uname -r
-      - name: Test
-        run: |
-          set +e
-          export KEEP_JFRS=true
-          export TEST_COMMIT=${{ github.sha }}
-          export TEST_CONFIGURATION=glibc/oracle/8-amd64
-          export LIBC=glibc
-          export JAVA_TEST_HOME=/usr/lib/jvm/oracle8
-          export JAVA_HOME=$JAVA_HOME
-          export PATH=$JAVA_HOME/bin:$PATH
-          export SANITIZER=${{ matrix.config }}
-          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
-              split($2, v, "[._]");
-              if (v[1] == "1") {
-              # Java 8 or older: Include major, minor, and update
-              printf "%s.%s.%s\n", v[2], v[3], v[4]
-            } else {
-              # Java 9 or newer: Major, minor, and patch
-              printf "%s.%s.%s\n", v[1], v[2], v[3]
-            }
-          }')
-          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
-          EXIT_CODE=$?
-          rm -rf $JAVA_TEST_HOME
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "glibc-oracle8-${{ matrix.config }}" >> failures_glibc-oracle8-${{ matrix.config }}.txt
-            exit 1
-          fi
-#      - name: Upload logs
-#        uses: actions/upload-artifact@v4
-#        if: always()
+#  test-linux-glibc-graalvm-amd64:
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        java_version: [ 17.0.9, 21.0.2, 23.0.1 ]
+#        config: ${{ fromJson(inputs.configuration) }}
+#    runs-on: ubuntu-latest
+#    timeout-minutes: 180
+#    steps:
+#      - uses: actions/checkout@v3
+#      - name: Setup OS
+#        run: |
+#          sudo apt-get update
+#          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
+#      - name: Cache Gradle Wrapper Binaries
+#        uses: actions/cache@v4
 #        with:
-#          name: reports-linux-oracle-jdk-8.zip
+#          path: ~/.gradle/wrapper/dists
+#          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-wrapper-${{ runner.os }}-
+#      - name: Cache Gradle User Home
+#        uses: actions/cache@v4
+#        with:
+#          path: ~/.gradle/caches
+#          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-caches-${{ runner.os }}-
+#      - name: Extract Java Major Version
+#        run: echo "JAVA_MAJOR_VERSION=$(echo ${{ matrix.java_version }} | cut -d '.' -f 1)" >> $GITHUB_ENV
+#      - name: Cache GraalVM JDK ${{ matrix.java_version }} [amd64]
+#        uses: actions/cache@v3
+#        with:
 #          path: |
-#            ddprof-test/hs_err_*
-#            ddprof-test/build/reports/tests
-#            ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
-#            ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
-      - uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: test-linux-glibc-oracle8 (${{ matrix.config }})] (build)
-          path: build/
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: failures-oracle-jdk8-${{ matrix.config }}
-          path: failures_glibc-oracle8-${{ matrix.config }}.txt
-      - name: Prepare reports
-        if: failure()
-        run: |
-          set -e
-          mkdir -p reports
-          cp ddprof-test/build/hs_err* reports/ || true
-          cp ddprof-test/hs_err* reports/
-          cp -r ddprof-lib/build/tmp reports/native_build
-          cp -r ddprof-test/build/reports/tests reports/tests
-          cp -r /tmp/recordings reports/recordings
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: test-linux-glibc-oracle8 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
-          path: reports
+#            graalvm_${{ matrix.java_version }}_jdk
+#          key: graalvm-${{ matrix.java_version }}-amd64-${{ github.run_id }}
+#          restore-keys: |
+#            graalvm-${{ matrix.java_version }}-amd64-
+#      - name: Prepare GraalVM JDK ${{ matrix.java_version }}
+#        run: |
+#          GRAALVM_JDK_DIR="graalvm_${{ matrix.java_version }}_jdk"
+#          if [ ! -e ${GRAALVM_JDK_DIR}/bin/java ]; then
+#            wget -nv https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${{ matrix.java_version }}/graalvm-community-jdk-${{ matrix.java_version }}_linux-x64_bin.tar.gz -O graalvm.tar.gz
+#            mkdir -p ${GRAALVM_JDK_DIR}
+#            tar -xzf graalvm.tar.gz --strip-components=1 -C ${GRAALVM_JDK_DIR}
+#          fi
+#          ls -la ${GRAALVM_JDK_DIR}
+#      - name: Test
+#        run: |
+#          set +e
+#          export TEST_COMMIT=${{ github.sha }}
+#          export TEST_CONFIGURATION=glibc/graalvm/${{ matrix.java_version }}-amd64
+#          export JAVA_TEST_HOME=$(pwd)/graalvm_${{ matrix.java_version }}_jdk
+#          export PATH=${JAVA_TEST_HOME}/bin:$PATH
+#          ./gradlew -PkeepJFRs=true clean build --no-daemon --parallel --build-cache --no-watch-fs
+#          EXIT_CODE=$?
+#          rm -rf $JAVA_TEST_HOME
+#          if [ $EXIT_CODE -ne 0 ]; then
+#            echo "graalvm-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_graalvm-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
+#            exit 1
+#          fi
+#      - uses: actions/upload-artifact@v4
+#        if: success()
+#        with:
+#          name: test-linux-glibc-graalvm-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
+#          path: build/
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: failures-graalvm-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+#          path: failures_graalvm-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
+#      - name: Prepare reports
+#        if: failure()
+#        run: |
+#          .github/scripts/prepare_reports.sh
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: test-linux-glibc-graalvm-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
+#          path: reports
+#
+#  test-linux-glibc-graalvm-aarch64:
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        java_version: [ 17.0.9, 21.0.2, 23.0.1 ]
+#        config: ${{ fromJson(inputs.configuration) }}
+#    runs-on:
+#      group: ARM LINUX SHARED
+#      labels: arm-4core-linux
+#    timeout-minutes: 180
+#    steps:
+#      - uses: actions/checkout@v3
+#      - name: Setup OS
+#        run: |
+#          sudo apt update -y
+#          sudo apt remove -y g++
+#          sudo apt autoremove -y
+#          sudo apt install -y curl zip unzip clang make build-essential
+#      - name: Cache Gradle Wrapper Binaries
+#        uses: actions/cache@v4
+#        with:
+#          path: ~/.gradle/wrapper/dists
+#          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-wrapper-${{ runner.os }}-
+#      - name: Cache Gradle User Home
+#        uses: actions/cache@v4
+#        with:
+#          path: ~/.gradle/caches
+#          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-caches-${{ runner.os }}-
+#      - name: Extract Java Major Version
+#        run: echo "JAVA_MAJOR_VERSION=$(echo ${{ matrix.java_version }} | cut -d '.' -f 1)" >> $GITHUB_ENV
+#      - name: Cache GraalVM JDK ${{ matrix.java_version }} [arm64]
+#        uses: actions/cache@v3
+#        with:
+#          path: |
+#            graalvm_${{ matrix.java_version }}_jdk
+#          key: graalvm-${{ matrix.java_version }}-arm64-${{ github.run_id }}
+#          restore-keys: |
+#            graalvm-${{ matrix.java_version }}-arm64-
+#      - name: Prepare GraalVM JDK ${{ matrix.java_version }}
+#        run: |
+#          GRAALVM_JDK_DIR="graalvm_${{ matrix.java_version }}_jdk"
+#          if [ ! -e ${GRAALVM_JDK_DIR}/bin/java ]; then
+#            wget -nv https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${{ matrix.java_version }}/graalvm-community-jdk-${{ matrix.java_version }}_linux-aarch64_bin.tar.gz -O graalvm.tar.gz
+#            mkdir -p ${GRAALVM_JDK_DIR}
+#            tar -xzf graalvm.tar.gz --strip-components=1 -C ${GRAALVM_JDK_DIR}
+#          fi
+#          ls -la ${GRAALVM_JDK_DIR}
+#      - name: Test
+#        run: |
+#          set +e
+#          export TEST_COMMIT=${{ github.sha }}
+#          export TEST_CONFIGURATION=glibc/graalvm/${{ matrix.java_version }}-arm64
+#          export JAVA_TEST_HOME=$(pwd)/graalvm_${{ matrix.java_version }}_jdk
+#          export PATH=${JAVA_TEST_HOME}/bin:$PATH
+#          ./gradlew -PkeepJFRs=true clean build --no-daemon --parallel --build-cache --no-watch-fs
+#          EXIT_CODE=$?
+#          rm -rf $JAVA_TEST_HOME
+#          if [ $EXIT_CODE -ne 0 ]; then
+#            echo "graalvm-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_graalvm-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
+#            exit 1
+#          fi
+#      - uses: actions/upload-artifact@v4
+#        if: success()
+#        with:
+#          name: test-linux-glibc-graalvm-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
+#          path: build/
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: failures-graalvm-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+#          path: failures_graalvm-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
+#      - name: Prepare reports
+#        if: failure()
+#        run: |
+#          set -e
+#          mkdir -p reports
+#          cp ddprof-test/build/hs_err* reports/ || true
+#          cp -r ddprof-lib/build/tmp reports/native_build
+#          cp -r ddprof-test/build/reports/tests reports/tests
+#          cp -r /tmp/recordings reports/recordings
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: test-linux-glibc-graalvm-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
+#          path: reports
+#
+#  test-linux-glibc-amd64:
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        java_version: [ 8u432+7, 11.0.25+11, 17.0.13+12, 21.0.5+11, 23.0.1+13 ]
+#        config: ${{ fromJson(inputs.configuration) }}
+#    runs-on: ubuntu-latest
+#    timeout-minutes: 180
+#    steps:
+#      - uses: actions/checkout@v3
+#      - name: Prepare build JDK
+#        uses: actions/setup-java@v3
+#        with:
+#          distribution: 'temurin'
+#          java-version: "11"
+#      - name: Extract Versions
+#        uses: ./.github/actions/extract_versions
+#      - name: Cache Gradle Wrapper Binaries
+#        uses: actions/cache@v4
+#        with:
+#          path: ~/.gradle/wrapper/dists
+#          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-wrapper-${{ runner.os }}-
+#      - name: Cache Gradle User Home
+#        uses: actions/cache@v4
+#        with:
+#          path: ~/.gradle/caches
+#          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-caches-${{ runner.os }}-
+#      - name: Setup OS
+#        run: |
+#          sudo apt-get update
+#          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
+#      - name: Cache JDK ${{ env.JAVA_VERSION }} [amd64]
+#        uses: actions/cache@v3
+#        with:
+#          path: |
+#            test_${{ env.JAVA_VERSION }}_jdk
+#          key: ${{ env.JAVA_VERSION }}-amd64-${{ github.run_id }}
+#          restore-keys: |
+#            ${{ env.JAVA_VERSION }}-amd64-
+#      - name: Prepare JDK ${{ env.JAVA_VERSION }}
+#        run: |
+#          TEST_JDK_DIR="test_${{ env.JAVA_VERSION }}_jdk"
+#          if [ ! -e ${TEST_JDK_DIR}/bin/java ]; then
+#            wget -nv https://download.bell-sw.com/java/${{ matrix.java_version }}/bellsoft-jdk${{ matrix.java_version }}-linux-amd64.tar.gz -O jdk.tar.gz
+#            tar xzf *.tar.gz
+#            find . -type d -name 'jdk*' -maxdepth 1| xargs -I {} mv {} ${TEST_JDK_DIR}
+#          fi
+#      - name: Test
+#        run: |
+#          sudo sysctl vm.mmap_rnd_bits=28
+#
+#          set +e
+#          export KEEP_JFRS=true
+#          export TEST_COMMIT=${{ github.sha }}
+#          export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}-amd64
+#          export LIBC=glibc
+#          export JAVA_TEST_HOME=$(pwd)/test_${{ env.JAVA_VERSION }}_jdk
+#          export SANITIZER=${{ matrix.config }}
+#          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
+#              split($2, v, "[._]");
+#              if (v[1] == "1") {
+#              # Java 8 or older: Include major, minor, and update
+#              printf "%s.%s.%s\n", v[2], v[3], v[4]
+#            } else {
+#              # Java 9 or newer: Major, minor, and patch
+#              printf "%s.%s.%s\n", v[1], v[2], v[3]
+#            }
+#          }')
+#          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+#          EXIT_CODE=$?
+#          rm -rf $JAVA_TEST_HOME
+#          if [ $EXIT_CODE -ne 0 ]; then
+#            echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
+#            exit 1
+#          fi
+#      - uses: actions/upload-artifact@v4
+#        if: success()
+#        with:
+#          name: test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}] (build)
+#          path: build/
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: failures-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+#          path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
+#      - name: Prepare reports
+#        if: failure()
+#        run: |
+#          set -e
+#          mkdir -p reports
+#          cp ddprof-test/build/hs_err* reports/ || true
+#          cp -r ddprof-lib/build/tmp reports/native_build
+#          cp -r ddprof-test/build/reports/tests reports/tests
+#          cp -r /tmp/recordings reports/recordings
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
+#          path: reports
+#
+#  test-linux-glibc-aarch64:
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        java_version: [ 8.0.442, 11.0.26, 17.0.14, 21.0.6, 23.0.2 ]
+#        config: ${{ fromJson(inputs.configuration) }}
+#    runs-on:
+#      group: ARM LINUX SHARED
+#      labels: arm-4core-linux
+#    timeout-minutes: 180
+#    steps:
+#      - uses: actions/checkout@v3
+#      - name: Prepare build JDK
+#        uses: actions/setup-java@v3
+#        with:
+#          distribution: 'temurin'
+#          java-version: "11"
+#      - name: Setup OS
+#        run: |
+#          sudo apt update -y
+#          sudo apt remove -y g++
+#          sudo apt autoremove -y
+#          sudo apt install -y curl zip unzip clang make build-essential
+#      - name: Extract Versions
+#        uses: ./.github/actions/extract_versions
+#      - name: Cache Gradle Wrapper Binaries
+#        uses: actions/cache@v4
+#        with:
+#          path: ~/.gradle/wrapper/dists
+#          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-wrapper-${{ runner.os }}-
+#      - name: Cache Gradle User Home
+#        uses: actions/cache@v4
+#        with:
+#          path: ~/.gradle/caches
+#          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-caches-${{ runner.os }}-
+#      - name: Cache JDK 11 [aarch64]
+#        uses: actions/cache@v3
+#        with:
+#          path: |
+#            jdk
+#          key: 11-aarch64-${{ github.run_id }}
+#          restore-keys: |
+#            11-aarch64-
+#      - name: Cache JDK ${{ matrix.java_version }} [aarch64]
+#        uses: actions/cache@v3
+#        with:
+#          path: |
+#            test_${{ matrix.java_version }}_jdk
+#          key: ${{ matrix.java_version }}-aarch64-${{ github.run_id }}
+#          restore-keys: |
+#            ${{ matrix.java_version }}-aarch64-
+#      - name: Prepare JDK ${{ matrix.java_version }}
+#        run: |
+#          set -x
+#          curl -s "https://get.sdkman.io" | bash
+#          source ~/.sdkman/bin/sdkman-init.sh
+#          JDK_DIR="jdk"
+#          TEST_JDK_DIR="test_${{ matrix.java_version }}_jdk"
+#          if [ ! -e ${JDK_DIR}/bin/java ]; then
+#            echo 'y' | sdk install java 11.0.26-tem
+#            ln -s ~/.sdkman/candidates/java/11.0.26-tem $JDK_DIR
+#          fi
+#
+#          if [ ! -e ${TEST_JDK_DIR}/bin/java ]; then
+#            echo -n | sdk install java "${{ matrix.java_version }}-tem"
+#            ln -s ~/.sdkman/candidates/java/${{ matrix.java_version }}-tem "test_${{ matrix.java_version }}_jdk"
+#            ls -la ${TEST_JDK_DIR}
+#          fi
+#      - name: Test
+#        run: |
+#          sudo sysctl vm.mmap_rnd_bits=28
+#
+#          set +e
+#          export KEEP_JFRS=true
+#          export TEST_COMMIT=${{ github.sha }}
+#          export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}-aarch64
+#          export LIBC=glibc
+#          export JAVA_TEST_HOME=$(pwd)/test_${{ matrix.java_version }}_jdk
+#          export SANITIZER=${{ matrix.config }}
+#          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+#          EXIT_CODE=$?
+#          rm -rf $JAVA_TEST_HOME
+#          if [ $EXIT_CODE -ne 0 ]; then
+#            echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
+#            exit 1
+#          fi
+#          ls -la /tmp
+#      - uses: actions/upload-artifact@v4
+#        if: success()
+#        with:
+#          name: test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
+#          path: build/
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: failures-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+#          path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
+#      - name: Prepare reports
+#        if: failure()
+#        run: |
+#          set -e
+#          mkdir -p reports
+#          cp ddprof-test/build/hs_err* reports/ || true
+#          cp -r ddprof-lib/build/tmp reports/native_build
+#          cp -r ddprof-test/build/reports/tests reports/tests
+#          cp -r /tmp/recordings reports/recordings
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
+#          path: reports
+#
+#  test-linux-glibc-j9-amd64:
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        java_version: [ 8, 11, 17 ]
+#        config: ${{ fromJson(inputs.configuration) }}
+#    runs-on: ubuntu-latest
+#    timeout-minutes: 180
+#    steps:
+#      - uses: actions/checkout@v3
+#      - name: Setup OS
+#        run: |
+#          sudo apt-get update
+#          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
+##          sudo sysctl vm.mmap_rnd_bits=28
+#      - name: Cache Gradle Wrapper Binaries
+#        uses: actions/cache@v4
+#        with:
+#          path: ~/.gradle/wrapper/dists
+#          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-wrapper-${{ runner.os }}-
+#      - name: Cache Gradle User Home
+#        uses: actions/cache@v4
+#        with:
+#          path: ~/.gradle/caches
+#          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-caches-${{ runner.os }}-
+#      - name: Prepare test JDK
+#        uses: actions/setup-java@v3
+#        with:
+#          distribution: 'adopt-openj9'
+#          java-version: "${{ matrix.java_version }}"
+#      - name: Store JAVA_TEST_HOME
+#        run: JAVA_PATH=$(which java) && echo "JAVA_TEST_HOME=${JAVA_PATH/\/bin\/java/\/}" >> $GITHUB_ENV
+#      - name: Prepare build JDK
+#        uses: actions/setup-java@v3
+#        with:
+#          distribution: 'adopt-openj9'
+#          java-version: "11"
+#      - name: Test
+#        run: |
+#          set +e
+#          export KEEP_JFRS=true
+#          export TEST_COMMIT=${{ github.sha }}
+#          export TEST_CONFIGURATION=glibc/j9/${{ matrix.java_version }}-amd64
+#          export LIBC=glibc
+#          export SANITIZER=${{ matrix.config }}
+#          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
+#              split($2, v, "[._]");
+#              if (v[1] == "1") {
+#              # Java 8 or older: Include major, minor, and update
+#              printf "%s.%s.%s\n", v[2], v[3], v[4]
+#            } else {
+#              # Java 9 or newer: Major, minor, and patch
+#              printf "%s.%s.%s\n", v[1], v[2], v[3]
+#            }
+#          }')
+#          chmod a+x gradlew
+#          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+#          EXIT_CODE=$?
+#          rm -rf $JAVA_TEST_HOME
+#          if [ $EXIT_CODE -ne 0 ]; then
+#            echo "glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
+#            exit 1
+#          fi
+#      - uses: actions/upload-artifact@v4
+#        if: success()
+#        with:
+#          name: test-linux-glibc-j9-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
+#          path: build/
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: failures-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+#          path: failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
+#      - name: Prepare reports
+#        if: failure()
+#        run: |
+#          set -e
+#          mkdir -p reports
+#          cp ddprof-test/build/hs_err* reports/ || true
+#          cp -r ddprof-lib/build/tmp reports/native_build
+#          cp -r ddprof-test/build/reports/tests reports/tests
+#          cp -r /tmp/recordings reports/recordings
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: test-linux-glibc-j9-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
+#          path: reports
+#
+#  test-linux-glibc-j9-aarch64:
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        java_version: [ 8, 11, 17 ]
+#        config: ${{ fromJson(inputs.configuration) }}
+#    runs-on:
+#      group: ARM LINUX SHARED
+#      labels: arm-4core-linux
+#    timeout-minutes: 180
+#    steps:
+#      - uses: actions/checkout@v3
+#      - name: Setup OS
+#        run: |
+#          sudo apt update -y
+#          sudo apt remove -y g++
+#          sudo apt autoremove -y
+#          sudo apt install -y curl zip unzip clang make build-essential
+#      - name: Cache Gradle Wrapper Binaries
+#        uses: actions/cache@v4
+#        with:
+#          path: ~/.gradle/wrapper/dists
+#          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-wrapper-${{ runner.os }}-
+#      - name: Cache Gradle User Home
+#        uses: actions/cache@v4
+#        with:
+#          path: ~/.gradle/caches
+#          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-caches-${{ runner.os }}-
+#      - name: Prepare test JDK
+#        uses: actions/setup-java@v3
+#        with:
+#          distribution: 'adopt-openj9'
+#          java-version: "${{ matrix.java_version }}"
+#      - name: Store JAVA_TEST_HOME
+#        run: JAVA_PATH=$(which java) && echo "JAVA_TEST_HOME=${JAVA_PATH/\/bin\/java/\/}" >> $GITHUB_ENV
+#      - name: Prepare build JDK
+#        uses: actions/setup-java@v3
+#        with:
+#          distribution: 'adopt-openj9'
+#          java-version: "11"
+#      - name: Test
+#        run: |
+#          set +e
+#          export KEEP_JFRS=true
+#          export TEST_COMMIT=${{ github.sha }}
+#          export TEST_CONFIGURATION=glibc/j9/${{ matrix.java_version }}-aarch64
+#          export LIBC=glibc
+#          export SANITIZER=${{ matrix.config }}
+#          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
+#              split($2, v, "[._]");
+#              if (v[1] == "1") {
+#              # Java 8 or older: Include major, minor, and update
+#              printf "%s.%s.%s\n", v[2], v[3], v[4]
+#            } else {
+#              # Java 9 or newer: Major, minor, and patch
+#              printf "%s.%s.%s\n", v[1], v[2], v[3]
+#            }
+#          }')
+#          chmod a+x gradlew
+#          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+#          EXIT_CODE=$?
+#          rm -rf $JAVA_TEST_HOME
+#          if [ $EXIT_CODE -ne 0 ]; then
+#            echo "glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
+#            exit 1
+#          fi
+#      - uses: actions/upload-artifact@v4
+#        if: success()
+#        with:
+#          name: test-linux-glibc-j9-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
+#          path: build/
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: failures-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+#          path: failures_glibc-j9-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
+#      - name: Prepare reports
+#        if: failure()
+#        run: |
+#          set -e
+#          mkdir -p reports
+#          cp ddprof-test/build/hs_err* reports/ || true
+#          cp -r ddprof-lib/build/tmp reports/native_build
+#          cp -r ddprof-test/build/reports/tests reports/tests
+#          cp -r /tmp/recordings reports/recordings
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: test-linux-glibc-j9-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
+#          path: reports
+#
+#  test-linux-glibc-oracle8:
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        config: ${{ fromJson(inputs.configuration) }}
+#    runs-on: ubuntu-latest
+#    timeout-minutes: 180
+#    steps:
+#      - uses: actions/checkout@v3
+#      - name: Setup OS
+#        run: |
+#          sudo apt-get update
+#          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
+#      - name: Cache Gradle Wrapper Binaries
+#        uses: actions/cache@v4
+#        with:
+#          path: ~/.gradle/wrapper/dists
+#          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-wrapper-${{ runner.os }}-
+#      - name: Cache Gradle User Home
+#        uses: actions/cache@v4
+#        with:
+#          path: ~/.gradle/caches
+#          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-caches-${{ runner.os }}-
+#      - name: Prepare build JDK
+#        uses: actions/setup-java@v3
+#        with:
+#          distribution: 'temurin'
+#          java-version: "11"
+#      - name: Cache JDK Oracle JDK 8
+#        uses: actions/cache@v3
+#        with:
+#          path: |
+#            /usr/lib/jvm/oracle8
+#          key: oracle-jdk8-${{ github.run_id }}
+#          restore-keys: |
+#              oracle-jdk8-
+#      - name: Prepare JDK ${{ matrix.java_version }}
+#        run: |
+#          sudo sysctl vm.mmap_rnd_bits=28
+#          set -eux;
+#          if [ ! -e /usr/lib/jvm/oracle8/bin/java ]; then
+#            sudo mkdir -p /usr/lib/jvm/oracle8;
+#            # https://gist.github.com/wavezhang/ba8425f24a968ec9b2a8619d7c2d86a6?permalink_comment_id=4444663#gistcomment-4444663
+#            # jdk1.8.0_361
+#            curl -L --fail "https://javadl.oracle.com/webapps/download/AutoDL?BundleId=247926_0ae14417abb444ebb02b9815e2103550" | sudo tar -xvzf - -C /usr/lib/jvm/oracle8 --strip-components 1
+#          fi
+#          uname -r
+#      - name: Test
+#        run: |
+#          set +e
+#          export KEEP_JFRS=true
+#          export TEST_COMMIT=${{ github.sha }}
+#          export TEST_CONFIGURATION=glibc/oracle/8-amd64
+#          export LIBC=glibc
+#          export JAVA_TEST_HOME=/usr/lib/jvm/oracle8
+#          export JAVA_HOME=$JAVA_HOME
+#          export PATH=$JAVA_HOME/bin:$PATH
+#          export SANITIZER=${{ matrix.config }}
+#          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
+#              split($2, v, "[._]");
+#              if (v[1] == "1") {
+#              # Java 8 or older: Include major, minor, and update
+#              printf "%s.%s.%s\n", v[2], v[3], v[4]
+#            } else {
+#              # Java 9 or newer: Major, minor, and patch
+#              printf "%s.%s.%s\n", v[1], v[2], v[3]
+#            }
+#          }')
+#          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+#          EXIT_CODE=$?
+#          rm -rf $JAVA_TEST_HOME
+#          if [ $EXIT_CODE -ne 0 ]; then
+#            echo "glibc-oracle8-${{ matrix.config }}" >> failures_glibc-oracle8-${{ matrix.config }}.txt
+#            exit 1
+#          fi
+##      - name: Upload logs
+##        uses: actions/upload-artifact@v4
+##        if: always()
+##        with:
+##          name: reports-linux-oracle-jdk-8.zip
+##          path: |
+##            ddprof-test/hs_err_*
+##            ddprof-test/build/reports/tests
+##            ddprof-lib/src/test/build/Testing/Temporary/LastTest.log
+##            ddprof-lib/build/tmp/compileReleaseLinuxCpp/output.txt
+#      - uses: actions/upload-artifact@v4
+#        if: success()
+#        with:
+#          name: test-linux-glibc-oracle8 (${{ matrix.config }})] (build)
+#          path: build/
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: failures-oracle-jdk8-${{ matrix.config }}
+#          path: failures_glibc-oracle8-${{ matrix.config }}.txt
+#      - name: Prepare reports
+#        if: failure()
+#        run: |
+#          set -e
+#          mkdir -p reports
+#          cp ddprof-test/build/hs_err* reports/ || true
+#          cp ddprof-test/hs_err* reports/
+#          cp -r ddprof-lib/build/tmp reports/native_build
+#          cp -r ddprof-test/build/reports/tests reports/tests
+#          cp -r /tmp/recordings reports/recordings
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: test-linux-glibc-oracle8 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
+#          path: reports
 
   test-linux-musl-amd64:
     strategy:
@@ -819,253 +819,253 @@ jobs:
           name: test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
           path: reports
 
-  test-linux-glibc-zing-amd64:
-    strategy:
-      fail-fast: false
-      matrix:
-        java_version: [ 8, 11, 17, 21 ]
-        config: ${{ fromJson(inputs.configuration) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-
-    steps:
-      - name: Set config output
-        id: set_config
-        run: echo "::set-output name=config::${{ matrix.config }}"
-      - uses: actions/checkout@v3
-        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
-      - name: Setup OS
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
-      - name: Cache Gradle Wrapper Binaries
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/wrapper/dists
-          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-wrapper-${{ runner.os }}-
-      - name: Cache Gradle User Home
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/caches
-          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-caches-${{ runner.os }}-
-      - name: Prepare build JDK
-        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'temurin'
-          java-version: "11"
-      - name: Cache JDK ${{ matrix.java_version }} [amd64-zing]
-        uses: actions/cache@v3
-        with:
-          path: |
-            test_${{ matrix.java_version }}_jdk
-          key: ${{ matrix.java_version }}-amd64-zing-${{ github.run_id }}
-          restore-keys: |
-            ${{ matrix.java_version }}-amd64-zing-
-      - name: Prepare JDK ${{ matrix.java_version }}
-        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
-        run: |
-          sudo apt-get -y update && sudo apt-get -y install curl g++-9 gcc-9
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 100 --slave /usr/bin/g++ g++ /usr/bin/g++-9
-          sudo update-alternatives --set gcc /usr/bin/gcc-9
-          TEST_JDK_DIR=test_${{ matrix.java_version }}_jdk
-          if [ ! -e ${TEST_JDK_DIR}/bin/java ]; then
-            set -eux
-            mkdir -p ${TEST_JDK_DIR}
-            if [ "${{ matrix.java_version }}" = "8" ]; then
-              # jdk1.8.0_372
-              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk8.0.372-linux_x64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
-            elif [ "${{ matrix.java_version }}" = "11" ]; then
-              # jdk 11.0.19
-              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk11.0.19-linux_x64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
-            elif [ "${{ matrix.java_version }}" = "17" ]; then
-              # jdk 17.0.7
-              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk17.0.7-linux_x64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
-            elif [ "${{ matrix.java_version }}" = "21" ]; then
-              # jdk 21.0.2
-              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.10.0.0/zing23.10.0.0-3-jdk21.0.1-linux_x64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
-            fi
-            # rename the bundled libstdc++.so to avoid conflicts with the system one
-            sudo mv ${TEST_JDK_DIR}/etc/libc++/libstdc++.so.6 ${TEST_JDK_DIR}/etc/libc++/libstdc++.so.6.bak
-          fi
-      - name: Test
-        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
-        run: |
-          set +e
-          export KEEP_JFRS=true
-          export TEST_COMMIT=${{ github.sha }}
-          export TEST_CONFIGURATION=glibc/zing/${{ matrix.java_version }}-amd64
-          export LIBC=glibc
-          export JAVA_TEST_HOME=$(pwd)/test_${{ matrix.java_version }}_jdk
-          export JAVA_HOME=$JAVA_HOME
-          export PATH=$JAVA_HOME/bin:$PATH
-          export SANITIZER=${{ matrix.config }}
-          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
-              split($2, v, "[._]");
-              if (v[1] == "1") {
-              # Java 8 or older: Include major, minor, and update
-              printf "%s.%s.%s\n", v[2], v[3], v[4]
-            } else {
-              # Java 9 or newer: Major, minor, and patch
-              printf "%s.%s.%s\n", v[1], v[2], v[3]
-            }
-          }')
-          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
-          EXIT_CODE=$?
-          rm -rf $JAVA_TEST_HOME
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "glibc-zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
-            exit 1
-          fi
-      - uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: test-linux-glibc-zing-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
-          path: build/
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: failures-zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64
-          path: failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
-      - name: Prepare reports
-        if: failure()
-        run: |
-          set -e
-          mkdir -p reports
-          cp ddprof-test/build/hs_err* reports/ || true
-          cp -r ddprof-lib/build/tmp reports/native_build
-          cp -r ddprof-test/build/reports/tests reports/tests
-          cp -r /tmp/recordings reports/recordings
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: test-linux-glibc-zing-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
-          path: reports
-
-  test-linux-glibc-zing-aarch64:
-    strategy:
-      fail-fast: false
-      matrix:
-        java_version: [ 8, 11, 17, 21 ]
-        config: ${{ fromJson(inputs.configuration) }}
-    runs-on:
-      group: ARM LINUX SHARED
-      labels: arm-4core-linux
-    timeout-minutes: 180
-
-    steps:
-      - name: Set config output
-        id: set_config
-        run: echo "::set-output name=config::${{ matrix.config }}"
-      - uses: actions/checkout@v3
-        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
-      - name: Setup OS
-        run: |
-          sudo apt update -y
-          sudo apt remove -y g++
-          sudo apt autoremove -y
-          sudo apt install -y curl zip unzip clang make build-essential
-      - name: Cache Gradle Wrapper Binaries
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/wrapper/dists
-          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-wrapper-${{ runner.os }}-
-      - name: Cache Gradle User Home
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/caches
-          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-caches-${{ runner.os }}-
-      - name: Prepare build JDK
-        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'temurin'
-          java-version: "11"
-      - name: Cache JDK ${{ matrix.java_version }} [aarch64-zing]
-        uses: actions/cache@v3
-        with:
-          path: |
-            test_${{ matrix.java_version }}_jdk
-          key: ${{ matrix.java_version }}-aarch64-zing-${{ github.run_id }}
-          restore-keys: |
-            ${{ matrix.java_version }}-aarch64-zing-
-      - name: Prepare JDK ${{ matrix.java_version }}
-        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
-        run: |
-          sudo apt-get -y update && sudo apt-get -y install curl g++-9 gcc-9
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 100 --slave /usr/bin/g++ g++ /usr/bin/g++-9
-          sudo update-alternatives --set gcc /usr/bin/gcc-9
-          TEST_JDK_DIR=test_${{ matrix.java_version }}_jdk
-          if [ ! -e ${TEST_JDK_DIR}/bin/java ]; then
-            set -eux
-            mkdir -p ${TEST_JDK_DIR}
-            if [ "${{ matrix.java_version }}" = "8" ]; then
-              # jdk1.8.0_431
-              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk8.0.431-linux_aarch64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
-            elif [ "${{ matrix.java_version }}" = "11" ]; then
-              # jdk 11.0.24
-              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk11.0.24.0.101-linux_aarch64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
-            elif [ "${{ matrix.java_version }}" = "17" ]; then
-              # jdk 17.0.12
-              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk17.0.12.0.101-linux_aarch64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
-            elif [ "${{ matrix.java_version }}" = "21" ]; then
-              # jdk 21.0.4
-              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk21.0.4.0.101-linux_aarch64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
-            fi
-          fi
-      - name: Test
-        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
-        run: |
-          set +e
-          export KEEP_JFRS=true
-          export TEST_COMMIT=${{ github.sha }}
-          export TEST_CONFIGURATION=glibc/zing/${{ matrix.java_version }}-aarch64
-          export LIBC=glibc
-          export JAVA_TEST_HOME=$(pwd)/test_${{ matrix.java_version }}_jdk
-          export JAVA_HOME=$JAVA_HOME
-          export PATH=$JAVA_HOME/bin:$PATH
-          export SANITIZER=${{ matrix.config }}
-          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
-              split($2, v, "[._]");
-              if (v[1] == "1") {
-              # Java 8 or older: Include major, minor, and update
-              printf "%s.%s.%s\n", v[2], v[3], v[4]
-            } else {
-              # Java 9 or newer: Major, minor, and patch
-              printf "%s.%s.%s\n", v[1], v[2], v[3]
-            }
-          }')
-          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
-          EXIT_CODE=$?
-          rm -rf $JAVA_TEST_HOME
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "glibc-zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
-            exit 1
-          fi
-      - uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: test-linux-glibc-zing-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build
-          path: build/
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: failures-zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
-          path: failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
-      - name: Prepare reports
-        if: failure()
-        run: |
-           .github/scripts/prepare_reports.sh
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: test-linux-glibc-zing-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
-          path: reports
+#  test-linux-glibc-zing-amd64:
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        java_version: [ 8, 11, 17, 21 ]
+#        config: ${{ fromJson(inputs.configuration) }}
+#    runs-on: ubuntu-latest
+#    timeout-minutes: 180
+#
+#    steps:
+#      - name: Set config output
+#        id: set_config
+#        run: echo "::set-output name=config::${{ matrix.config }}"
+#      - uses: actions/checkout@v3
+#        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
+#      - name: Setup OS
+#        run: |
+#          sudo apt-get update
+#          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
+#      - name: Cache Gradle Wrapper Binaries
+#        uses: actions/cache@v4
+#        with:
+#          path: ~/.gradle/wrapper/dists
+#          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-wrapper-${{ runner.os }}-
+#      - name: Cache Gradle User Home
+#        uses: actions/cache@v4
+#        with:
+#          path: ~/.gradle/caches
+#          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-caches-${{ runner.os }}-
+#      - name: Prepare build JDK
+#        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
+#        uses: actions/setup-java@v3
+#        with:
+#          distribution: 'temurin'
+#          java-version: "11"
+#      - name: Cache JDK ${{ matrix.java_version }} [amd64-zing]
+#        uses: actions/cache@v3
+#        with:
+#          path: |
+#            test_${{ matrix.java_version }}_jdk
+#          key: ${{ matrix.java_version }}-amd64-zing-${{ github.run_id }}
+#          restore-keys: |
+#            ${{ matrix.java_version }}-amd64-zing-
+#      - name: Prepare JDK ${{ matrix.java_version }}
+#        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
+#        run: |
+#          sudo apt-get -y update && sudo apt-get -y install curl g++-9 gcc-9
+#          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 100 --slave /usr/bin/g++ g++ /usr/bin/g++-9
+#          sudo update-alternatives --set gcc /usr/bin/gcc-9
+#          TEST_JDK_DIR=test_${{ matrix.java_version }}_jdk
+#          if [ ! -e ${TEST_JDK_DIR}/bin/java ]; then
+#            set -eux
+#            mkdir -p ${TEST_JDK_DIR}
+#            if [ "${{ matrix.java_version }}" = "8" ]; then
+#              # jdk1.8.0_372
+#              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk8.0.372-linux_x64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
+#            elif [ "${{ matrix.java_version }}" = "11" ]; then
+#              # jdk 11.0.19
+#              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk11.0.19-linux_x64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
+#            elif [ "${{ matrix.java_version }}" = "17" ]; then
+#              # jdk 17.0.7
+#              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk17.0.7-linux_x64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
+#            elif [ "${{ matrix.java_version }}" = "21" ]; then
+#              # jdk 21.0.2
+#              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM23.10.0.0/zing23.10.0.0-3-jdk21.0.1-linux_x64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
+#            fi
+#            # rename the bundled libstdc++.so to avoid conflicts with the system one
+#            sudo mv ${TEST_JDK_DIR}/etc/libc++/libstdc++.so.6 ${TEST_JDK_DIR}/etc/libc++/libstdc++.so.6.bak
+#          fi
+#      - name: Test
+#        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
+#        run: |
+#          set +e
+#          export KEEP_JFRS=true
+#          export TEST_COMMIT=${{ github.sha }}
+#          export TEST_CONFIGURATION=glibc/zing/${{ matrix.java_version }}-amd64
+#          export LIBC=glibc
+#          export JAVA_TEST_HOME=$(pwd)/test_${{ matrix.java_version }}_jdk
+#          export JAVA_HOME=$JAVA_HOME
+#          export PATH=$JAVA_HOME/bin:$PATH
+#          export SANITIZER=${{ matrix.config }}
+#          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
+#              split($2, v, "[._]");
+#              if (v[1] == "1") {
+#              # Java 8 or older: Include major, minor, and update
+#              printf "%s.%s.%s\n", v[2], v[3], v[4]
+#            } else {
+#              # Java 9 or newer: Major, minor, and patch
+#              printf "%s.%s.%s\n", v[1], v[2], v[3]
+#            }
+#          }')
+#          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+#          EXIT_CODE=$?
+#          rm -rf $JAVA_TEST_HOME
+#          if [ $EXIT_CODE -ne 0 ]; then
+#            echo "glibc-zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
+#            exit 1
+#          fi
+#      - uses: actions/upload-artifact@v4
+#        if: success()
+#        with:
+#          name: test-linux-glibc-zing-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
+#          path: build/
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: failures-zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+#          path: failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
+#      - name: Prepare reports
+#        if: failure()
+#        run: |
+#          set -e
+#          mkdir -p reports
+#          cp ddprof-test/build/hs_err* reports/ || true
+#          cp -r ddprof-lib/build/tmp reports/native_build
+#          cp -r ddprof-test/build/reports/tests reports/tests
+#          cp -r /tmp/recordings reports/recordings
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: test-linux-glibc-zing-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
+#          path: reports
+#
+#  test-linux-glibc-zing-aarch64:
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        java_version: [ 8, 11, 17, 21 ]
+#        config: ${{ fromJson(inputs.configuration) }}
+#    runs-on:
+#      group: ARM LINUX SHARED
+#      labels: arm-4core-linux
+#    timeout-minutes: 180
+#
+#    steps:
+#      - name: Set config output
+#        id: set_config
+#        run: echo "::set-output name=config::${{ matrix.config }}"
+#      - uses: actions/checkout@v3
+#        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
+#      - name: Setup OS
+#        run: |
+#          sudo apt update -y
+#          sudo apt remove -y g++
+#          sudo apt autoremove -y
+#          sudo apt install -y curl zip unzip clang make build-essential
+#      - name: Cache Gradle Wrapper Binaries
+#        uses: actions/cache@v4
+#        with:
+#          path: ~/.gradle/wrapper/dists
+#          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-wrapper-${{ runner.os }}-
+#      - name: Cache Gradle User Home
+#        uses: actions/cache@v4
+#        with:
+#          path: ~/.gradle/caches
+#          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+#          restore-keys: |
+#            gradle-caches-${{ runner.os }}-
+#      - name: Prepare build JDK
+#        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
+#        uses: actions/setup-java@v3
+#        with:
+#          distribution: 'temurin'
+#          java-version: "11"
+#      - name: Cache JDK ${{ matrix.java_version }} [aarch64-zing]
+#        uses: actions/cache@v3
+#        with:
+#          path: |
+#            test_${{ matrix.java_version }}_jdk
+#          key: ${{ matrix.java_version }}-aarch64-zing-${{ github.run_id }}
+#          restore-keys: |
+#            ${{ matrix.java_version }}-aarch64-zing-
+#      - name: Prepare JDK ${{ matrix.java_version }}
+#        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
+#        run: |
+#          sudo apt-get -y update && sudo apt-get -y install curl g++-9 gcc-9
+#          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 100 --slave /usr/bin/g++ g++ /usr/bin/g++-9
+#          sudo update-alternatives --set gcc /usr/bin/gcc-9
+#          TEST_JDK_DIR=test_${{ matrix.java_version }}_jdk
+#          if [ ! -e ${TEST_JDK_DIR}/bin/java ]; then
+#            set -eux
+#            mkdir -p ${TEST_JDK_DIR}
+#            if [ "${{ matrix.java_version }}" = "8" ]; then
+#              # jdk1.8.0_431
+#              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk8.0.431-linux_aarch64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
+#            elif [ "${{ matrix.java_version }}" = "11" ]; then
+#              # jdk 11.0.24
+#              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk11.0.24.0.101-linux_aarch64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
+#            elif [ "${{ matrix.java_version }}" = "17" ]; then
+#              # jdk 17.0.12
+#              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk17.0.12.0.101-linux_aarch64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
+#            elif [ "${{ matrix.java_version }}" = "21" ]; then
+#              # jdk 21.0.4
+#              curl -L --fail "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk21.0.4.0.101-linux_aarch64.tar.gz" | sudo tar -xvzf - -C ${TEST_JDK_DIR} --strip-components 1
+#            fi
+#          fi
+#      - name: Test
+#        if: steps.set_config.outputs.config == 'release' || steps.set_config.outputs.config == 'debug'
+#        run: |
+#          set +e
+#          export KEEP_JFRS=true
+#          export TEST_COMMIT=${{ github.sha }}
+#          export TEST_CONFIGURATION=glibc/zing/${{ matrix.java_version }}-aarch64
+#          export LIBC=glibc
+#          export JAVA_TEST_HOME=$(pwd)/test_${{ matrix.java_version }}_jdk
+#          export JAVA_HOME=$JAVA_HOME
+#          export PATH=$JAVA_HOME/bin:$PATH
+#          export SANITIZER=${{ matrix.config }}
+#          export JAVA_VERSION=$(${JAVA_TEST_HOME}/bin/java -version 2>&1 | awk -F '"' '/version/ {
+#              split($2, v, "[._]");
+#              if (v[1] == "1") {
+#              # Java 8 or older: Include major, minor, and update
+#              printf "%s.%s.%s\n", v[2], v[3], v[4]
+#            } else {
+#              # Java 9 or newer: Major, minor, and patch
+#              printf "%s.%s.%s\n", v[1], v[2], v[3]
+#            }
+#          }')
+#          ./gradlew -PkeepJFRs -PCI :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+#          EXIT_CODE=$?
+#          rm -rf $JAVA_TEST_HOME
+#          if [ $EXIT_CODE -ne 0 ]; then
+#            echo "glibc-zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
+#            exit 1
+#          fi
+#      - uses: actions/upload-artifact@v4
+#        if: success()
+#        with:
+#          name: test-linux-glibc-zing-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build
+#          path: build/
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: failures-zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+#          path: failures_zing-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
+#      - name: Prepare reports
+#        if: failure()
+#        run: |
+#           .github/scripts/prepare_reports.sh
+#      - uses: actions/upload-artifact@v4
+#        if: failure()
+#        with:
+#          name: test-linux-glibc-zing-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
+#          path: reports
