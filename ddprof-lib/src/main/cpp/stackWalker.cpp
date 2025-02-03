@@ -268,6 +268,10 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
   }
   CodeCache *cc = NULL;
 
+  uintptr_t sp_backup = sp;
+  uintptr_t fp_backup = fp;
+  const void *pc_backup = pc;
+
   // Walk until the bottom of the stack or until the first Java frame
   while (true) {
     if (depth == max_depth) {
@@ -495,8 +499,8 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
   if (vm_thread != NULL)
     vm_thread->exception() = saved_exception;
 
-  if (depth < 2 && (fp != 0 || sp != 0) && (fp < 0xffff || sp < 0xffff)) {
-    TEST_LOG("Boom: sp=%p, fp=%p", sp, fp);
+  if (depth < 2 && (fp == 0x80 && sp == 0x90)) {
+    TEST_LOG("Boom: sp=%p, fp=%p", sp_backup, fp_backup);
   }
   return depth;
 }
