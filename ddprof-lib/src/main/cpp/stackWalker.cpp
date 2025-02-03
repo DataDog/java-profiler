@@ -499,8 +499,8 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
   if (vm_thread != NULL)
     vm_thread->exception() = saved_exception;
 
-  if (depth < 2 && (fp == 0x80 && sp == 0x90)) {
-    TEST_LOG("Boom: sp=%p, fp=%p", sp_backup, fp_backup);
+  if (depth < 2) {
+    TEST_LOG("Boom: sp=%p/%p, fp=%p/%p", sp, sp_backup, fp, fp_backup);
   }
   return depth;
 }
