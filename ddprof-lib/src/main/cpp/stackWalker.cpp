@@ -248,6 +248,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
   // Should be preserved across setjmp/longjmp
   volatile int depth = 0;
 
+  JavaFrameAnchor* thrd_anchor = nullptr;
   if (vm_thread != NULL) {
     vm_thread->exception() = &crash_protection_ctx;
     if (setjmp(crash_protection_ctx) != 0) {
@@ -257,12 +258,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
       }
       return depth;
     }
-    JavaFrameAnchor* thrd_anchor = vm_thread->anchor();
-    if (thrd_anchor != nullptr) {
-      sp = thrd_anchor->lastJavaSP();
-      fp = thrd_anchor->lastJavaFP();
-      pc = thrd_anchor->lastJavaPC();
-    }
+    thrd_anchor = vm_thread->anchor();
   }
   CodeCache *cc = NULL;
 
@@ -271,6 +267,13 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
     if (depth == max_depth) {
       *truncated = true;
       break;
+    }
+    if (fp == 0x80 && sp == 0x90) {
+      if (thrd_anchor != nullptr) {
+        sp = thrd_anchor->lastJavaSP();
+        fp = thrd_anchor->lastJavaFP();
+        pc = thrd_anchor->lastJavaPC();
+      }
     }
     if (CodeHeap::contains(pc) && !(depth == 0 && frame.unwindAtomicStub(pc))) {
       // constant time
