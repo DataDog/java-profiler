@@ -259,6 +259,12 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
       return depth;
     }
     thrd_anchor = vm_thread->anchor();
+    if (thrd_anchor != nullptr) {
+//      TEST_LOG("anchor: sp=%p > %p, fp=%p > %p", sp, thrd_anchor->lastJavaSP(), fp, thrd_anchor->lastJavaFP());
+        sp = thrd_anchor->lastJavaSP();
+        pc = thrd_anchor->lastJavaPC();
+        fp = thrd_anchor->lastJavaFP();
+    }
   }
   CodeCache *cc = NULL;
 
@@ -267,14 +273,6 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
     if (depth == max_depth) {
       *truncated = true;
       break;
-    }
-    if (fp == 0x80 && sp == 0x90) {
-      if (thrd_anchor != nullptr) {
-        TEST_LOG("Boom: anchor");
-        sp = thrd_anchor->lastJavaSP();
-        fp = thrd_anchor->lastJavaFP();
-        pc = thrd_anchor->lastJavaPC();
-      }
     }
     if (CodeHeap::contains(pc) && !(depth == 0 && frame.unwindAtomicStub(pc))) {
       // constant time
@@ -449,6 +447,16 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
 
     // Check if the next frame is below on the current stack
     if (sp < prev_sp || sp >= prev_sp + MAX_FRAME_SIZE || sp >= bottom) {
+      if (depth < 2 && (fp == 0x80 || sp == 0x90)) {
+        if (thrd_anchor != nullptr) {
+          sp = thrd_anchor->lastJavaSP();
+          TEST_LOG("Boom: anchor sp=%p", sp);
+          fp = thrd_anchor->lastJavaFP();
+          TEST_LOG("Boom: anchor fp=%p", fp);
+          pc = thrd_anchor->lastJavaPC();
+          TEST_LOG("Boom: anchor pc=%p", pc);
+        }
+      }
       break;
     }
 
@@ -487,7 +495,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
   if (vm_thread != NULL)
     vm_thread->exception() = saved_exception;
 
-  if (depth < 2) {
+  if (depth < 2 && (fp != 0 || sp != 0) && (fp < 0xffff || sp < 0xffff)) {
     TEST_LOG("Boom: sp=%p, fp=%p", sp, fp);
   }
   return depth;

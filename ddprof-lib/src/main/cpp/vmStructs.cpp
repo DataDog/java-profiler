@@ -270,6 +270,7 @@ void VMStructs::initOffsets() {
       } else if (strcmp(field, "_last_Java_pc") == 0) {
         _anchor_pc_offset = *(int *)(entry + offset_offset);
       } else if (strcmp(field, "_last_Java_fp") == 0) {
+        TEST_LOG("Found _last_Java_fp");
         _anchor_fp_offset = *(int *)(entry + offset_offset);
       }
     } else if (strcmp(type, "CodeBlob") == 0) {
