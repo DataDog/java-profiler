@@ -259,12 +259,12 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
       return depth;
     }
     thrd_anchor = vm_thread->anchor();
-    if (thrd_anchor != nullptr) {
-//      TEST_LOG("anchor: sp=%p > %p, fp=%p > %p", sp, thrd_anchor->lastJavaSP(), fp, thrd_anchor->lastJavaFP());
-        sp = thrd_anchor->lastJavaSP();
-        pc = thrd_anchor->lastJavaPC();
-        fp = thrd_anchor->lastJavaFP();
-    }
+//    if (thrd_anchor != nullptr) {
+////      TEST_LOG("anchor: sp=%p > %p, fp=%p > %p", sp, thrd_anchor->lastJavaSP(), fp, thrd_anchor->lastJavaFP());
+//        sp = thrd_anchor->lastJavaSP();
+//        pc = thrd_anchor->lastJavaPC();
+//        fp = thrd_anchor->lastJavaFP();
+//    }
   }
   CodeCache *cc = NULL;
 
