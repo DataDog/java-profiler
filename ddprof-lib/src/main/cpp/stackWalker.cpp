@@ -257,6 +257,12 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
       }
       return depth;
     }
+    JavaFrameAnchor* thrd_anchor = vm_thread->anchor();
+    if (thrd_anchor != nullptr) {
+      sp = thrd_anchor->lastJavaSP();
+      fp = thrd_anchor->lastJavaFP();
+      pc = thrd_anchor->lastJavaPC();
+    }
   }
   CodeCache *cc = NULL;
 
