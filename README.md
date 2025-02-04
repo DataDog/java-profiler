@@ -36,3 +36,8 @@ One can also completely skip all tests by adding `-Pskip-tests` gradle property.
 ### Consuming the artifact
 For dd-trace-java you just need to set the `ddprof.jar` project property.
 Eg. you can run the gradle build like this - ./gradlew clean -Pddprof.jar=file://<path-to-artifact.jar> :dd-java-agent:shadowJar` - which will result in a custom `dd-java-agent.jar` build containing your test version of Java profiler.
+
+## Working with upstream
+Although this project still shares the git history with the upstream the code structure is different. This makes it dificult to reliably
+cherry-pick the upstream changes. To make this easier we have a script that will prepare a filtered version of the upstream repository
+and add it as 'cherry' remote to this repository. This way you can cherry-pick the changes from the upstream repository with (relative) ease.
