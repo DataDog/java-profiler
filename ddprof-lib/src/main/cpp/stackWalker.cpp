@@ -263,7 +263,6 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
     thrd_anchor = vm_thread->anchor();
     if (thrd_anchor != nullptr) {
       if (!VMStructs::goodPtr((const void*)fp)) {
-////      TEST_LOG("anchor: sp=%p > %p, fp=%p > %p", sp, thrd_anchor->lastJavaSP(), fp, thrd_anchor->lastJavaFP());
         sp = thrd_anchor->lastJavaSP();
         pc = thrd_anchor->lastJavaPC();
         fp = thrd_anchor->lastJavaFP();
@@ -274,9 +273,13 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
           const char *name = cc == NULL ? NULL : cc->binarySearch(pc);
 
           if (detail != VM_BASIC) {
+            TEST_LOG("Single frame: %s", name);
             fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
           }
           return depth;
+        } else {
+          frame.restore((uintptr_t)pc, sp, fp);
+          TEST_LOG("using anchor: sp=%p, fp=%p", thrd_anchor->lastJavaSP(), thrd_anchor->lastJavaFP());
         }
       }
     }
