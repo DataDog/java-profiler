@@ -229,8 +229,10 @@ int StackWalker::walkDwarf(void *ucontext, const void **callchain,
 
 int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                         StackDetail detail, const void* pc, uintptr_t sp, uintptr_t fp, bool *truncated) {
-  StackFrame frame(ucontext);
-  uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
+  // StackFrameHolder is a RAII wrapper around StackFrame
+  // It will automatically restore the original stack frame when it goes out of scope
+  StackFrameHolder frame(ucontext);
+  uintptr_t bottom = frame.sp() + MAX_WALK_SIZE;
 
   if (inDeadZone(pc)) {
     *truncated = pc != NULL;
@@ -266,28 +268,31 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
         sp = thrd_anchor->lastJavaSP();
         pc = thrd_anchor->lastJavaPC();
         fp = thrd_anchor->lastJavaFP();
-        if (fp == 0) {
-          if (cc == NULL || !cc->contains(pc)) {
-            cc = libraries->findLibraryByAddress(pc);
-          }
-          const char *name = cc == NULL ? NULL : cc->binarySearch(pc);
-
+        if (fp == 0 || sp == 0) {
           if (detail != VM_BASIC) {
-            TEST_LOG("Single frame: %s", name);
-            fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
+            if (cc == NULL || !cc->contains(pc)) {
+              cc = libraries->findLibraryByAddress(pc);
+            }
+            const char *name = cc == NULL ? NULL : cc->binarySearch(pc);
+            if (name) {
+              fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
+              return depth;
+            }
           }
+          fillErrorFrame(frames[depth++], "unknown_frame", truncated);}
           return depth;
         } else {
-          frame.restore((uintptr_t)pc, sp, fp);
-          TEST_LOG("using anchor: sp=%p, fp=%p", thrd_anchor->lastJavaSP(), thrd_anchor->lastJavaFP());
+          frame.sp() = thrd_anchor->lastJavaSP();
+          frame.fp() = thrd_anchor->lastJavaFP();
+          frame.pc() = (uintptr_t) thrd_anchor->lastJavaPC();
+
+          sp = frame.sp();
+          fp = frame.fp();
+          pc = (void*) frame.pc();
         }
       }
     }
   }
-
-  uintptr_t sp_backup = sp;
-  uintptr_t fp_backup = fp;
-  const void *pc_backup = pc;
 
   // Walk until the bottom of the stack or until the first Java frame
   while (true) {

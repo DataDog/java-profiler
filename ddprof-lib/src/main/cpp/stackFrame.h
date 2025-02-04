@@ -86,4 +86,65 @@ public:
   static bool isSyscall(instruction_t *pc);
 };
 
+class StackFrameHolder {
+ private:
+  StackFrame _stack_frame;
+  uintptr_t _sp;
+  uintptr_t _fp;
+  uintptr_t _pc;
+ public:
+  StackFrameHolder(void *ucontext) : _stack_frame(ucontext) {
+    _sp = _stack_frame.sp();
+    _fp = _stack_frame.fp();
+    _pc = _stack_frame.pc();
+  }
+
+  ~StackFrameHolder() {
+    _stack_frame.restore(_pc, _sp, _fp);
+  }
+  StackFrameHolder(const StackFrameHolder&) = delete;
+  StackFrameHolder& operator=(const StackFrameHolder&) = delete;
+
+  uintptr_t &fp() {
+    return _stack_frame.fp();
+  }
+
+  uintptr_t &sp() {
+    return _stack_frame.sp();
+  }
+
+  uintptr_t &pc() {
+    return _stack_frame.pc();
+  }
+
+  void adjustSP(const void *entry, const void *pc, uintptr_t &sp) {
+    _stack_frame.adjustSP(entry, pc, sp);
+  }
+
+  bool unwindAtomicStub(const void*& pc) {
+    return _stack_frame.unwindAtomicStub(pc);
+  }
+
+  bool unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp, uintptr_t &fp) {
+    return _stack_frame.unwindCompiled(nm, pc, sp, fp);
+  }
+
+  uintptr_t method() {
+    return _stack_frame.method();
+  }
+
+  uintptr_t senderSP() {
+    return _stack_frame.senderSP();
+  }
+
+  bool unwindStub(instruction_t *entry, const char *name, uintptr_t &pc,
+                    uintptr_t &sp, uintptr_t &fp) {
+                    return _stack_frame.unwindStub(entry, name, pc, sp, fp);
+  }
+
+  uintptr_t link() {
+    return _stack_frame.link();
+  }
+};
+
 #endif // _STACKFRAME_H
