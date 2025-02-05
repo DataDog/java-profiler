@@ -87,8 +87,7 @@ private:
   void *_timer_id;
 
   u64 _total_samples;
-  u64 _total_stack_walk_time;
-    u64 _failures[ASGCT_FAILURE_TYPES];
+  u64 _failures[ASGCT_FAILURE_TYPES];
 
   SpinLock _class_map_lock;
   SpinLock _locks[CONCURRENCY_LEVEL];
