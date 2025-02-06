@@ -153,7 +153,7 @@ jobs:
 
       - name: Install JDKs
         run: |
-          source .github/scripts/java_setups.sh
+          source .github/scripts/java_setup.sh
           
           prepareJdk ${{ env.JAVA_BUILD_VERSION }}-tem ${{ env.JDKS_DIR }}/jdk
 
