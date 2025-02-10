@@ -1,174 +1,292 @@
 name: Cache Java Distributions
 
 on:
+  push:
+    branches:
+      - 'main'
+    paths:
+      - '.github/workflows/cache_java.yml'
+      - '.github/scripts/java_setup.sh'
+  schedule:
+    # Runs every day at 03:00 UTC every 4 days
+    # This should keep the caches fresh and not expiring after 7 days
+    - cron: '0 3 */4 * *'
   workflow_dispatch:
+  workflow_call:
 
 env:
   JDKS_DIR: jdks
-  JAVA_BUILD_VERSION: 11.0.26-tem
   JAVA_8_VERSION: 8.0.442
+  JAVA_8_J9_VERSION: 8.0.432
   JAVA_11_VERSION: 11.0.26
+  JAVA_11_J9_VERSION: 11.0.25
   JAVA_17_VERSION: 17.0.14
+  JAVA_17_J9_VERSION: 17.0.13
   JAVA_21_VERSION: 21.0.6
+  JAVA_21_J9_VERSION: 21.0.5
   JAVA_23_VERSION: 23.0.2
 
-  GRAAL_17_VERSION: 17.0.12
-  GRAAL_21_VERSION: 21.0.6
-  GRAAL_23_VERSION: 23.0.2
+  JAVA_17_GRAAL_VERSION: 17.0.12
+  JAVA_21_GRAAL_VERSION: 21.0.6
+  JAVA_23_GRAAL_VERSION: 23.0.2
+
+  # https://gist.github.com/wavezhang/ba8425f24a968ec9b2a8619d7c2d86a6?permalink_comment_id=4444663#gistcomment-4444663
+  # jdk1.8.0_361
+  JAVA_8_ORACLE_URL: "https://javadl.oracle.com/webapps/download/AutoDL?BundleId=247926_0ae14417abb444ebb02b9815e2103550"
+
+  JAVA_8_ZING_URL         : "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk8.0.372-linux_x64.tar.gz"
+  JAVA_8_ZING_AARCH64_URL : "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk8.0.431-linux_aarch64.tar.gz"
+  JAVA_11_ZING_URL        : "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk11.0.19-linux_x64.tar.gz"
+  JAVA_11_ZING_AARCH64_URL: "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk11.0.24.0.101-linux_aarch64.tar.gz"
+  JAVA_17_ZING_URL        : "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk17.0.7-linux_x64.tar.gz"
+  JAVA_17_ZING_AARCH64_URL: "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk17.0.12.0.101-linux_aarch64.tar.gz"
+  JAVA_21_ZING_URL        : "https://cdn.azul.com/zing-zvm/ZVM23.10.0.0/zing23.10.0.0-3-jdk21.0.1-linux_x64.tar.gz"
+  JAVA_21_ZING_AARCH64_URL: "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk21.0.4.0.101-linux_aarch64.tar.gz"
+
+  JAVA_8_MUSL_URL : "https://download.bell-sw.com/java/8u442+7/bellsoft-jdk8u442+7-linux-x64-musl-lite.tar.gz"
+  JAVA_11_MUSL_URL: "https://download.bell-sw.com/java/11.0.26+9/bellsoft-jdk11.0.26+9-linux-x64-musl-lite.tar.gz"
+  JAVA_17_MUSL_URL: "https://download.bell-sw.com/java/17.0.14+10/bellsoft-jdk17.0.14+10-linux-x64-musl-lite.tar.gz"
+  JAVA_21_MUSL_URL: "https://download.bell-sw.com/java/21.0.6+10/bellsoft-jdk21.0.6+10-linux-x64-musl-lite.tar.gz"
+  JAVA_23_MUSL_URL: "https://download.bell-sw.com/java/23.0.2+9/bellsoft-jdk23.0.2+9-linux-x64-musl-lite.tar.gz"
 
 permissions:
   contents: read
   actions: read
 
 jobs:
-  cache-amd64:
+  setup-sdkman-amd64:
     runs-on: ubuntu-latest
+    outputs:
+      sdkman_path: ${{ steps.export-path.outputs.sdkman_path }}
+    steps:
+      - name: Cache SDKMan! AMD64
+        uses: actions/cache@v4
+        with:
+          path: sdkman
+          key: sdkman-amd64-${{ github.run_id }}
+          restore-keys: |
+            sdkman-amd64-
+      - name: Check if SDKMAN! is Already Installed
+        id: check-sdkman
+        run: |
+          if [ -e "${GITHUB_WORKSPACE}/sdkman/bin/sdkman-init.sh" ]; then
+            echo "SDKMAN! already installed at ${GITHUB_WORKSPACE}/sdkman."
+            echo "skip_install=true" >> $GITHUB_ENV
+          else
+            echo "SDKMAN! not found, proceeding with installation."
+            echo "skip_install=false" >> $GITHUB_ENV
+          fi
+          echo "SDKMAN_DIR=${GITHUB_WORKSPACE}/sdkman" >> $GITHUB_ENV
+      - name: Setup OS
+        if: env.skip_install == 'false'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y curl zip unzip
+      - name: Install SDKMAN!
+        if: env.skip_install == 'false'
+        run: |
+          curl -s "https://get.sdkman.io" | bash
+      - name: Upload SDKMAN! as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdkman-installation-amd64
+          path: ${{ env.SDKMAN_DIR }}
+
+  setup-sdkman-aarch64:
+    runs-on:
+      group: ARM LINUX SHARED
+      labels: arm-4core-linux
+    outputs:
+      sdkman_path: ${{ steps.export-path.outputs.sdkman_path }}
+    steps:
+      - name: Cache SDKMan! AARCH64
+        uses: actions/cache@v4
+        with:
+          path: sdkman
+          key: sdkman-aarch64-${{ github.run_id }}
+          restore-keys: |
+            sdkman-aarch64-
+      - name: Check if SDKMAN! is Already Installed
+        id: check-sdkman
+        run: |
+          if [ -e "${GITHUB_WORKSPACE}/sdkman/bin/sdkman-init.sh" ]; then
+            echo "SDKMAN! already installed at ${GITHUB_WORKSPACE}/sdkman."
+            echo "skip_install=true" >> $GITHUB_ENV
+          else
+            echo "SDKMAN! not found, proceeding with installation."
+            echo "skip_install=false" >> $GITHUB_ENV
+          fi
+          echo "SDKMAN_DIR=${GITHUB_WORKSPACE}/sdkman" >> $GITHUB_ENV
+      - name: Setup OS
+        if: env.skip_install == 'false'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y curl zip unzip
+      - name: Install SDKMAN!
+        if: env.skip_install == 'false'
+        run: |
+          curl -s "https://get.sdkman.io" | bash
+      - name: Upload SDKMAN! as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdkman-installation-aarch64
+          path: ${{ env.SDKMAN_DIR }}
+
+  cache-amd64:
+    needs: setup-sdkman-amd64
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        java_variant: [ "8", "8-orcl", "8-zing", "8-j9", "11", "11-zing", "11-j9", "17", "17-zing", "17-j9", "17-graal", "21", "21-j9", "21-zing", "21-graal", "23", "23-graal" ]
+    steps:
+      - uses: actions/checkout@v3
+      - name: Try restore cache JDK ${{ matrix.java_variant }}
+        id: cache-jdk
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
+          key: jdk${{matrix.java_variant }}-amd64--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+      - name: Is JDK cached?
+        id: check-cache
+        run: |
+          if [ -d "jdks" ]; then
+            echo "cache-hit=true" >> $GITHUB_OUTPUT
+          else
+            echo "cache-hit=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Setup OS
+        if: steps.check-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y curl zip unzip
+      - name: Download SDKMAN! from Artifact
+        if: steps.check-cache.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: sdkman-installation-amd64
+          path: sdkman
+
+      - name: Install JDK ${{ matrix.java_variant }}
+        if: steps.check-cache.outputs.cache-hit != 'true'
+        run: |
+          mv $GITHUB_WORKSPACE/sdkman ~/.sdkman
+          mkdir -p ~/.sdkman/ext # Create ext directory; it is empty and not uploaded
+          mkdir -p ~/.sdkman/tmp # Create tmp directory; it is empty and not uploaded
+          
+          source .github/scripts/java_setup.sh
+
+          prepareJdk ${{ matrix.java_variant }} amd64
+
+      - name: Save JDK ${{ matrix.java_variant }} cache
+        if: steps.check-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
+          key: jdk${{matrix.java_variant }}-amd64--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+
+  cache-amd64-musl:
+    runs-on: ubuntu-latest
+    container:
+      image: "alpine:3.14"
+      options: --cpus 2
+    strategy:
+      fail-fast: true
+      matrix:
+        java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "23-librca" ]
     steps:
       - uses: actions/checkout@v3
       - name: Setup OS
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y curl zip unzip
-          mkdir jdks
-      - name: Install SDKMAN
+          # This needs to be done early because alpine does not have bash and tar is also iffy
+          apk update && apk add curl zip unzip bash tar
+      - name: Cache JDK ${{ matrix.java_variant }}
+        id: cache-jdk
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
+          key: jdk${{matrix.java_variant }}-amd64-musl--${{ hashFiles('.github/workflows/cache_java.yml') }}
+
+      - name: Is JDK cached?
+        id: check-cache
         run: |
-          curl -s "https://get.sdkman.io" | bash
-          source ~/.sdkman/bin/sdkman-init.sh
-      - name: Cache Build JDK [amd64]
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ env.JDKS_DIR }}/jdk
-          key: jdk-amd64-${{ github.run_id }}
-          restore-keys: |
-            jdk-amd64-
-      - name: Cache JDK 8
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ env.JDKS_DIR }}/jdk8
-          key: jdk8-amd64-${{ github.run_id }}
-          restore-keys: |
-            jdk8-amd64-
-      - name: Cache JDK 11
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ env.JDKS_DIR }}/jdk11
-          key: jdk11-amd64-${{ github.run_id }}
-          restore-keys: |
-            jdk11-amd64-
-      - name: Cache JDK 17
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ env.JDKS_DIR }}/jdk17
-          key: jdk17-amd64-${{ github.run_id }}
-          restore-keys: |
-            jdk17-amd64-
-      - name: Cache JDK 21
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ env.JDKS_DIR }}/jdk21
-          key: jdk21-amd64-${{ github.run_id }}
-          restore-keys: |
-            jdk21-amd64-
-      - name: Cache JDK 23
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ env.JDKS_DIR }}/jdk23
-          key: jdk23-amd64-${{ github.run_id }}
-          restore-keys: |
-            jdk23-amd64-
+          if [ -d "jdks" ]; then
+            echo "cache-hit=true" >> $GITHUB_OUTPUT
+          else
+            echo "cache-hit=false" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Cache JDK 8 (J9)
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ env.JDKS_DIR }}/jdk8-j9
-          key: jdk8-j9-amd64-${{ github.run_id }}
-          restore-keys: |
-            jdk8-j9-amd64-
-      - name: Cache JDK 11 (J9)
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ env.JDKS_DIR }}/jdk11-j9
-          key: jdk11-j9-amd64-${{ github.run_id }}
-          restore-keys: |
-            jdk11-j9-amd64-
-      - name: Cache JDK 17 (J9)
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ env.JDKS_DIR }}/jdk17-j9
-          key: jdk17-j9-amd64-${{ github.run_id }}
-          restore-keys: |
-            jdk17-j9-amd64-
-      - name: Cache JDK 21 (J9)
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ env.JDKS_DIR }}/jdk21-j9
-          key: jdk21-j9-amd64-${{ github.run_id }}
-          restore-keys: |
-            jdk21-j9-amd64-
-      - name: Cache JDK 23 (J9)
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ env.JDKS_DIR }}/jdk23-j9
-          key: jdk23-j9-amd64-${{ github.run_id }}
-          restore-keys: |
-            jdk23-j9-amd64-
-
-      - name: Cache JDK 17 (GraalVM)
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ env.JDKS_DIR }}/jdk17-graal
-          key: jdk17-graal-amd64-${{ github.run_id }}
-          restore-keys: |
-            jdk17-graal-amd64-
-      - name: Cache JDK 21 (GraalVM)
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ env.JDKS_DIR }}/jdk21-graal
-          key: jdk21-graal-amd64-${{ github.run_id }}
-          restore-keys: |
-            jdk21-graal-amd64-
-      - name: Cache JDK 23 (GraalVM)
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ env.JDKS_DIR }}/jdk23-graal
-          key: jdk23-graal-amd64-${{ github.run_id }}
-          restore-keys: |
-            jdk23-graal-amd64-          
-
-      - name: Install JDKs
+      - name: Install JDK ${{ matrix.java_variant }}
+        if: steps.check-cache.outputs.cache-hit != 'true'
+        shell: bash
         run: |
           source .github/scripts/java_setup.sh
-          
-          prepareJdk ${{ env.JAVA_BUILD_VERSION }}-tem ${{ env.JDKS_DIR }}/jdk
 
-          prepareJdk ${{ env.JAVA_8_VERSION }}-tem ${{ env.JDKS_DIR }}/jdk8
-          prepareJdk ${{ env.JAVA_8_VERSION }}-sem ${{ env.JDKS_DIR }}/jdk8-j9
+          prepareJdk ${{ matrix.java_variant }} amd64-musl
+
+      - name: Save JDK ${{ matrix.java_variant }} cache
+        if: steps.check-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
+          key: jdk${{matrix.java_variant }}-amd64-musl--${{ hashFiles('.github/workflows/cache_java.yml') }}
+
+  cache-aarch64:
+    needs: setup-sdkman-aarch64
+    runs-on:
+      group: ARM LINUX SHARED
+      labels: arm-4core-linux
+    strategy:
+      fail-fast: true
+      matrix:
+        java_variant: [ "8", "8-zing", "8-j9", "11", "11-zing", "11-j9", "17", "17-zing", "17-j9", "17-graal", "21", "21-j9", "21-zing", "21-graal", "23", "23-graal" ]
+    steps:
+      - uses: actions/checkout@v3
+      - name: Cache JDK ${{ matrix.java_variant }}
+        id: cache-jdk
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
+          key: jdk${{matrix.java_variant }}-aarch64--${{ hashFiles('.github/workflows/cache_java.yml') }}
+      - name: Is JDK cached?
+        id: check-cache
+        run: |
+          if [ -d "jdks" ]; then
+            echo "cache-hit=true" >> $GITHUB_OUTPUT
+          else
+            echo "cache-hit=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Setup OS
+        if: steps.check-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y curl zip unzip
+      - name: Download SDKMAN! from Artifact
+        if: steps.check-cache.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: sdkman-installation-aarch64
+          path: sdkman
+      - name: Install JDK ${{ matrix.java_variant }}
+        if: steps.check-cache.outputs.cache-hit != 'true'
+        run: |
+          mv $GITHUB_WORKSPACE/sdkman ~/.sdkman
+          mkdir -p ~/.sdkman/ext # Create ext directory; it is empty and not uploaded
+          mkdir -p ~/.sdkman/tmp # Create tmp directory; it is empty and not uploaded
           
-          prepareJdk ${{ env.JAVA_11_VERSION }}-tem ${{ env.JDKS_DIR }}/jdk11
-          prepareJdk ${{ env.JAVA_11_VERSION }}-sem ${{ env.JDKS_DIR }}/jdk11-j9
-          
-          prepareJdk ${{ env.JAVA_17_VERSION }}-tem ${{ env.JDKS_DIR }}/jdk17
-          prepareJdk ${{ env.JAVA_17_VERSION }}-sem ${{ env.JDKS_DIR }}/jdk17-j9
-          prepareJdk ${{ env.GRAAL_17_VERSION }}-graal ${{ env.JDKS_DIR }}/jdk17-graal
-          
-          prepareJdk ${{ env.JAVA_21_VERSION }}-tem ${{ env.JDKS_DIR }}/jdk21
-          prepareJdk ${{ env.JAVA_21_VERSION }}-sem ${{ env.JDKS_DIR }}/jdk21-j9
-          prepareJdk ${{ env.GRAAL_21_VERSION }}-graal ${{ env.JDKS_DIR }}/jdk21-graal
-          
-          prepareJdk ${{ env.JAVA_23_VERSION }}-tem ${{ env.JDKS_DIR }}/jdk23
-          prepareJdk ${{ env.JAVA_23_VERSION }}-sem ${{ env.JDKS_DIR }}/jdk23-j9
-          prepareJdk ${{ env.GRAAL_23_VERSION }}-graal ${{ env.JDKS_DIR }}/jdk23-graal
+          source .github/scripts/java_setup.sh
+
+          prepareJdk ${{ matrix.java_variant }} aarch64
+
+      - name: Save JDK ${{ matrix.java_variant }} cache
+        if: steps.check-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
+          key: jdk${{matrix.java_variant }}-aarch64--${{ hashFiles('.github/workflows/cache_java.yml') }}

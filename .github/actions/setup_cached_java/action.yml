@@ -1,0 +1,74 @@
+name: "Setup test Java environment"
+description: "Setup Java environment for testing"
+
+inputs:
+  version:
+    description: "The test JDK version to install"
+    required: true
+    default: "11"
+  arch:
+    description: "The architecture"
+    required: true
+    default: "amd64"
+
+runs:
+    using: composite
+    steps:
+      - name: Infer Build JDK
+        shell: bash
+        id: infer_build_jdk
+        run: |
+          echo "Infering JDK 11 [${{ inputs.arch }}]"
+          if [[ ${{ inputs.arch }} =~ "-musl" ]]; then
+            echo "build_jdk=jdk11-librca" >> $GITHUB_OUTPUT
+          else
+            echo "build_jdk=jdk11" >> $GITHUB_OUTPUT
+          fi
+      - name: Cache Build JDK [${{ inputs.arch }}]
+        id: cache_build_jdk
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            jdks/${{ steps.infer_build_jdk.outputs.build_jdk }}
+          key: ${{ steps.infer_build_jdk.outputs.build_jdk }}-${{ inputs.arch }}--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          restore-keys: |
+            ${{ steps.infer_build_jdk.outputs.build_jdk }}-${{ inputs.arch }}--
+      - name: Cache JDK ${{ inputs.version }} [${{ inputs.arch }}]
+        id: cache_jdk
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            jdks/jdk${{ inputs.version }}
+          key: jdk${{ inputs.version }}-${{ inputs.arch }}--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          restore-keys: |
+            jdk${{ inputs.version }}-${{ inputs.arch }}--
+      - name: JDK cache miss
+        if: steps.cache_jdk.outputs.cache-hit != 'true' || steps.cache_build_jdk.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          # well, the cache-hit is not alway set to 'true', even when cache is hit (but it is not freshly recreated, whatever that means)
+          if [ ! -d "jdks/jdk${{ inputs.version }}" ]; then
+            OWNER=${{ github.repository_owner }}
+            REPO=${{ github.event.repository.name }}
+            BRANCH=${{ github.ref_name }}
+            WORKFLOW="cache_java.yml"
+    
+            URL="https://github.com/$OWNER/$REPO/actions/workflows/$WORKFLOW"
+              
+            echo "### ⚠️ JDK Cache Miss Detected" >> $GITHUB_STEP_SUMMARY
+            echo "🛠️ [Click here and select ${BRANCH} branch to manually refresh the cache](<$URL>)" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+      - name: Setup Environment
+        shell: bash
+        run: |
+          chmod a+rx -R jdks
+          echo "Setting up JDK ${{ inputs.version }} [${{ inputs.arch }}]"
+          JAVA_HOME=$(pwd)/jdks/${{ steps.infer_build_jdk.outputs.build_jdk }}
+          JAVA_TEST_HOME=$(pwd)/jdks/jdk${{ inputs.version }}
+          PATH=$JAVA_HOME/bin:$PATH
+          echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
+          echo "JAVA_TEST_HOME=$JAVA_TEST_HOME" >> $GITHUB_ENV
+          echo "PATH=$JAVA_HOME/bin:$PATH" >> $GITHUB_ENV
+          
+          ldd $JAVA_HOME/bin/java
