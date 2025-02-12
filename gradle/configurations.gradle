@@ -102,6 +102,9 @@ ext {
   locateLibtsan = this.&locateLibtsan
 }
 
+// make sure the provided version is correctly propagated to the build
+version = project.findProperty("ddprof_version") ?: version
+
 // ======= Define build configurations below ========
 
 def commonLinuxCompilerArgs = [
