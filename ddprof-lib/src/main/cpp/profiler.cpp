@@ -985,11 +985,16 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
     return &noop_engine;
   } else if (args._cpu >= 0 || strcmp(args._event, EVENT_CPU) == 0) {
     if (VM::isOpenJ9()) {
-      if (!J9Ext::is_jvmti_jmethodid_safe()) {
-        Log::warn("Safe jmethodID access is not available on this JVM. Using "
-                  "CPU profiler on your own risk.");
+      if (!J9Ext::shouldUseAsgct() || !J9Ext::can_use_ASGCT()) {
+        if (!J9Ext::is_jvmti_jmethodid_safe()) {
+          fprintf(stderr, "[ddprof] [WARN] Safe jmethodID access is not available on this JVM. Using "
+                    "CPU profiler on your own risk. Use -XX:+KeepJNIIDs=true JVM "
+                    "flag to make access to jmethodIDs safe, if your JVM supports it\n");
+        }
+        TEST_LOG("J9[cpu]=jvmti");
+        return &j9_engine;
       }
-      return &j9_engine;
+      TEST_LOG("J9[cpu]=asgct");
     }
     return !ctimer.check(args)
                ? (Engine *)&ctimer
@@ -1012,14 +1017,17 @@ Engine *Profiler::selectWallEngine(Arguments &args) {
     return &noop_engine;
   }
   if (VM::isOpenJ9()) {
-    if (args._wallclock_sampler == JVMTI) {
+    if (args._wallclock_sampler == JVMTI || !J9Ext::shouldUseAsgct() || !J9Ext::can_use_ASGCT()) {
       if (!J9Ext::is_jvmti_jmethodid_safe()) {
-        Log::warn("Safe jmethodID access is not available on this JVM. Using "
-                  "wallclock profiler on your own risk.");
+        fprintf(stderr, "[ddprof] [WARN] Safe jmethodID access is not available on this JVM. Using "
+                  "wallclock profiler on your own risk. Use -XX:+KeepJNIIDs=true JVM "
+                  "flag to make access to jmethodIDs safe, if your JVM supports it\n");
       }
       j9_engine.sampleIdleThreads();
+      TEST_LOG("J9[wall]=jvmti");
       return (Engine *)&j9_engine;
     } else {
+      TEST_LOG("J9[wall]=asgct");
       return (Engine *)&wall_asgct_engine;
     }
   }
@@ -1473,4 +1481,17 @@ int Profiler::lookupClass(const char *key, size_t length) {
   }
   // unable to lookup the class
   return -1;
+}
+
+int Profiler::status(char* status, int max_len) {
+  return snprintf(status, max_len,
+    "== Java-Profiler Status ===\n"
+    " Running          : %s\n"
+    " CPU Engine       : %s\n"
+    " WallClock Engine : %s\n"
+    " Allocations      : %s\n",
+    _state == RUNNING ? "true" : "false",
+    _cpu_engine != nullptr ? _cpu_engine->name() : "None",
+    _wall_engine != nullptr ? _wall_engine->name() : "None",
+    _alloc_engine != nullptr ? _alloc_engine->name() : "None");
 }

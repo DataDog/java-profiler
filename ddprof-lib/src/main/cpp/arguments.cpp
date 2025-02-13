@@ -15,6 +15,8 @@
  */
 
 #include "arguments.h"
+#include "vmEntry.h"
+
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -340,6 +342,14 @@ Error Arguments::parse(const char *args) {
 
   if (_event == NULL && _cpu < 0 && _wall < 0 && _memory < 0) {
     _event = EVENT_CPU;
+  }
+
+  if (VM::isOpenJ9()) {
+    if (_cstack == CSTACK_FP) {
+      // J9 is compiled without FP
+      //   switch to DWARF for better results
+      _cstack = CSTACK_DWARF;
+    }
   }
 
   return Error::OK;

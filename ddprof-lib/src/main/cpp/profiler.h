@@ -135,6 +135,7 @@ private:
   void updateJavaThreadNames();
   void updateNativeThreadNames();
   void mangle(const char *name, char *buf, size_t size);
+
   Engine *selectCpuEngine(Arguments &args);
   Engine *selectWallEngine(Arguments &args);
   Engine *selectAllocEngine(Arguments &args);
@@ -168,6 +169,8 @@ public:
   static Profiler *instance() {
     return _instance;
   }
+
+  int status(char* status, int max_len);
 
   const char* cstack() {
     switch (_cstack) {
