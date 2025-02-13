@@ -88,17 +88,32 @@ typedef Elf32_Dyn ElfDyn;
 #endif // __LP64__
 
 #if defined(__x86_64__)
-#define R_GLOB_DAT R_X86_64_GLOB_DAT
+#  define R_GLOB_DAT R_X86_64_GLOB_DAT
+#  define R_ABS64 R_X86_64_64
 #elif defined(__i386__)
-#define R_GLOB_DAT R_386_GLOB_DAT
+#  define R_GLOB_DAT R_386_GLOB_DAT
+#  define R_ABS64 -1
 #elif defined(__arm__) || defined(__thumb__)
-#define R_GLOB_DAT R_ARM_GLOB_DAT
+#  define R_GLOB_DAT R_ARM_GLOB_DAT
+#  define R_ABS64 -1
 #elif defined(__aarch64__)
-#define R_GLOB_DAT R_AARCH64_GLOB_DAT
+#  define R_GLOB_DAT R_AARCH64_GLOB_DAT
+#  define R_ABS64 R_AARCH64_ABS64
 #elif defined(__PPC64__)
-#define R_GLOB_DAT R_PPC64_GLOB_DAT
+#  define R_GLOB_DAT R_PPC64_GLOB_DAT
+#  define R_ABS64 -1
+#elif defined(__riscv) && (__riscv_xlen == 64)
+// RISC-V does not have GLOB_DAT relocation, use something neutral,
+// like the impossible relocation number.
+#  define R_GLOB_DAT -1
+#  define R_ABS64 -1
+#elif defined(__loongarch_lp64)
+// LOONGARCH does not have GLOB_DAT relocation, use something neutral,
+// like the impossible relocation number.
+#  define R_GLOB_DAT -1
+#  define R_ABS64 -1
 #else
-#error "Compiling on unsupported arch"
+#  error "Compiling on unsupported arch"
 #endif
 
 #ifdef __musl__

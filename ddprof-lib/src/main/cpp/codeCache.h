@@ -1,17 +1,6 @@
 /*
- * Copyright 2017 Andrei Pangin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright The async-profiler authors
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _CODECACHE_H
@@ -35,7 +24,18 @@ enum ImportId {
   im_pthread_create,
   im_pthread_exit,
   im_pthread_setspecific,
+  im_poll,
+  im_malloc,
+  im_calloc,
+  im_realloc,
+  im_free,
   NUM_IMPORTS
+};
+
+enum ImportType {
+    PRIMARY,
+    SECONDARY,
+    NUM_IMPORT_TYPES
 };
 
 class NativeFunc {
@@ -58,7 +58,7 @@ public:
     if (posix_memalign((void**)(&func), sizeof(NativeFunc*), sizeof(NativeFunc)) != 0) {
       return -1;
     }
-    return func->_lib_index; 
+    return func->_lib_index;
   }
 
   static bool isMarked(const char *name) { return from(name)->_mark != 0; }
@@ -100,7 +100,7 @@ private:
   unsigned int _plt_offset;
   unsigned int _plt_size;
 
-  void **_imports[NUM_IMPORTS];
+  void **_imports[NUM_IMPORTS][NUM_IMPORT_TYPES];
   bool _imports_patchable;
   bool _debug_symbols;
 
@@ -113,6 +113,7 @@ private:
 
   void expand();
   void makeImportsPatchable();
+    void saveImport(ImportId id, void** entry);
 
 public:
   explicit CodeCache(const char *name, short lib_index = -1,

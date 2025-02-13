@@ -37,42 +37,37 @@ tasks.withType(StripSymbols).configureEach { task ->
   }
 }
 
-def buildResourcesTask = tasks.register("buildResources", Exec) {
+def buildNativeLibsTask = tasks.register("buildNativeLibs") {
   group = 'build'
-  description = "Build the resources for the Google Tests"
+  description = "Build the native libs for the Google Tests"
 
   onlyIf {
     hasGtest && !project.hasProperty('skip-native') && os().isLinux()
   }
 
-  def targetDir = project(':ddprof-lib').file('build/test/resources/unresolved-functions')
+  def srcDir = project(':ddprof-lib').file('src/test/resources/native-libs')
+  def targetDir = project(':ddprof-lib').file('build/test/resources/native-libs/')
 
-  commandLine "sh", "-c", "cd ${project(':ddprof-lib').projectDir}/src/test/resources/unresolved-functions && make TARGET_DIR=${targetDir}"
+  // Move the exec calls to the execution phase
+  doLast {
+    srcDir.eachDir { dir ->
+      def libName = dir.name
+      def libDir = file("${targetDir}/${libName}")
+      def libSrcDir = file("${srcDir}/${libName}")
 
-  inputs.files project(':ddprof-lib').files('src/test/resources/unresolved-functions')
-  outputs.file "${targetDir}/main"
-}
-
-def buildSmallLibTask = tasks.register("buildSmallLib", Exec) {
-  group = 'build'
-  description = "Build the small-lib shared library for the Google Tests"
-
-  onlyIf {
-    hasGtest && !project.hasProperty('skip-native') && os().isLinux()
+      exec {
+        commandLine "sh", "-c", """
+          echo "Processing library: ${libName} @ ${libSrcDir}"
+          mkdir -p ${libDir}
+          cd ${libSrcDir}
+          make TARGET_DIR=${libDir}
+        """
+      }
+    }
   }
 
-  def sourceDir = project(':ddprof-lib').file('src/test/resources/small-lib')
-  def targetDir = project(':ddprof-lib').file('build/test/resources/small-lib')
-
-  commandLine "sh", "-c", """
-        mkdir -p ${targetDir}
-        cd ${sourceDir} && g++ -fPIC -shared -o ${targetDir}/libsmall-lib.so *.cpp
-    """
-
-  inputs.files fileTree(sourceDir) {
-    include '**/*.cpp'
-  }
-  outputs.file "${targetDir}/libsmall-lib.so"
+  inputs.files project(':ddprof-lib').files('src/test/resources/native-libs/**/*')
+  outputs.dir "${targetDir}"
 }
 
 def gtestAll = tasks.register("gtest") {
@@ -201,7 +196,7 @@ tasks.whenTaskAdded { task ->
             gtestTask.get().dependsOn gtestExecuteTask.get()
             if (os().isLinux()) {
               // custom binaries for tests are built only on linux
-              gtestExecuteTask.get().dependsOn(buildResourcesTask, buildSmallLibTask)
+              gtestExecuteTask.get().dependsOn(buildNativeLibs)
             }
             gtestAll.get().dependsOn gtestExecuteTask.get()
           }
