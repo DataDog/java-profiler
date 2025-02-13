@@ -383,10 +383,6 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
       *flag_addr = 1;
     }
   }
-  char *flag_addr = (char *)JVMFlag::find("KeepJNIIDs", {JVMFlag::Type::Bool});
-  if (flag_addr != NULL) {
-    *flag_addr = 1;
-  }
 
   // if the user sets -XX:+UseAdaptiveGCBoundary we will just disable the
   // profiler to avoid the risk of crashing flag was made obsolete (inert) in 15

@@ -2,55 +2,104 @@ package com.datadoghq.profiler;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-public class JavaProfilerTest {
+public class JavaProfilerTest extends AbstractProcessProfilerTest {
     @Test
     void sanityInitailizationTest() throws Exception {
         String config = System.getProperty("ddprof_test.config");
-        assumeTrue(config != null && "debug".equals(config));
+        assumeTrue("debug".equals(config));
 
-        String javaHome = System.getenv("JAVA_TEST_HOME");
-        if (javaHome == null) {
-            javaHome = System.getenv("JAVA_HOME");
+        AtomicInteger initFlag = new AtomicInteger(0);
+        boolean val = launch("profiler", Collections.emptyList(), "", l -> {
+            if (l.contains("[TEST::INFO] VM::initLibrary")) {
+                initFlag.set(initFlag.get() | 1);
+            } else if (l.contains("[TEST::INFO] VM::initProfilerBridge")) {
+                initFlag.set(initFlag.get() | 2);
+            }
+            // found both expected sections; can terminate the test now
+            return initFlag.get() != 3;
+        }, null);
+
+        assertTrue(val);
+    }
+
+    @Test
+    void testJ9DefaultSanity() throws Exception {
+        String config = System.getProperty("ddprof_test.config");
+        assumeTrue("debug".equals(config));
+        assumeFalse(Platform.isMac()); // crashy on mac
+        assumeTrue(Platform.isJ9());
+
+        Path jfr = Files.createTempFile("j9", ".jfr");
+        jfr.toFile().deleteOnExit();
+
+        String sampler = "jvmti";
+        if (Platform.isJavaVersion(8) && Platform.isJavaVersionAtLeast(8, 0, 432)) {
+            sampler = "asgct";
+        } else if (Platform.isJavaVersion(11) && Platform.isJavaVersionAtLeast(11, 0, 25)) {
+            sampler = "asgct";
+        } else if (Platform.isJavaVersion(17) && Platform.isJavaVersionAtLeast(17, 0, 13)) {
+            sampler = "asgct";
         }
-        if (javaHome == null) {
-            javaHome = System.getProperty("java.home");
-        }
-        assertNotNull(javaHome);
 
-        File outFile = Files.createTempFile("jvmaccess", ".out").toFile();
-        outFile.deleteOnExit();
-        File errFile = Files.createTempFile("jvmaccess", ".err").toFile();
-        errFile.deleteOnExit();
+        AtomicReference<String> usedSampler = new AtomicReference<>("");
+        AtomicBoolean hasWall = new AtomicBoolean(false);
+        boolean val = launch("profiler", Collections.emptyList(), "start,cpu,file=" + jfr, l -> {
+            if (l.contains("J9[cpu]")) {
+                usedSampler.set(l.split("=")[1]);
+                return false;
+            } else if (l.contains("J9[wall]")) {
+                hasWall.set(true);
+                return false;
+            }
+            return true;
+        }, null);
+        assertTrue(val);
+        assertEquals(sampler, usedSampler.get());
+        assertFalse(hasWall.get());
+    }
 
-        ProcessBuilder pb = new ProcessBuilder(javaHome + "/bin/java", "-cp", System.getProperty("java.class.path"), ExternalLauncher.class.getName(), "profiler");
-        pb.redirectOutput(outFile);
-        pb.redirectError(errFile);
-        Process p = pb.start();
-        int val = p.waitFor();
+    @Test
+    void testJ9ForceJvmtiSanity() throws Exception {
+        String config = System.getProperty("ddprof_test.config");
+        assumeTrue("debug".equals(config));
+        assumeFalse(Platform.isMac()); // crashy on mac
+        assumeTrue(Platform.isJ9());
 
-        boolean initLibraryFound = false;
-        boolean initProfilerFound = false;
-        for (String line : Files.readAllLines(outFile.toPath())) {
-            initLibraryFound |= line.contains("[TEST::INFO] VM::initLibrary");
-            initProfilerFound |= line.contains("[TEST::INFO] VM::initProfilerBridge");
-            System.out.println("[out] " + line);
-        }
+        Path jfr = Files.createTempFile("j9", ".jfr");
+        jfr.toFile().deleteOnExit();
 
-        System.out.println();
+        String sampler = "jvmti";
 
-        for (String line : Files.readAllLines(errFile.toPath())) {
-            System.out.println("[err] " + line);
-        }
-
-        assertEquals(0, val);
-
-        assertTrue(initLibraryFound, "initLibrary not found");
-        assertTrue(initProfilerFound, "initProfilerBridge found");
+        AtomicReference<String> usedSampler = new AtomicReference<>("");
+        AtomicBoolean hasWall = new AtomicBoolean(false);
+        List<String> args = new ArrayList<>();
+        args.add("-XX:+KeepJNIIDs");
+        args.add("-Ddd.profiling.ddprof.j9.sampler=jvmti");
+        boolean val = launch("profiler", args, "start,cpu,file=" + jfr, l -> {
+            if (l.contains("J9[cpu]")) {
+                usedSampler.set(l.split("=")[1]);
+                return false;
+            } else if (l.contains("J9[wall]")) {
+                hasWall.set(true);
+                return false;
+            }
+            return true;
+        }, null);
+        assertTrue(val);
+        assertEquals(sampler, usedSampler.get());
+        assertFalse(hasWall.get());
     }
 }
