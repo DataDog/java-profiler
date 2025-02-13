@@ -20,7 +20,9 @@
 
 #include <jvmti.h>
 
+#include "log.h"
 #include "vmEntry.h"
+#include "vmStructs.h"
 
 #define JVMTI_EXT(f, ...) ((jvmtiError(*)(jvmtiEnv *, __VA_ARGS__))f)
 
@@ -54,23 +56,38 @@ private:
 
 public:
   static bool can_use_ASGCT() {
+    // as of 21.0.6 the use of ASGCT will lead to almost immediate crash
+    //   or livelock on J9
     return (VM::java_version() == 8 && VM::java_update_version() >= 362) ||
            (VM::java_version() == 11 && VM::java_update_version() >= 18) ||
            (VM::java_version() == 17 && VM::java_update_version() >= 6) ||
-           (VM::java_version() >= 18);
-  }
-
-  static bool is_jmethodid_safe() {
-    return VM::java_version() == 8 ||
-           (VM::java_version() == 11 && VM::java_update_version() >= 23) ||
-           (VM::java_version() == 17 && VM::java_update_version() >= 11) ||
-           (VM::java_version() == 21 && VM::java_update_version() >= 3) ||
-           (VM::java_version() >= 22);
+           (VM::java_version() >= 18 && VM::java_version() < 21);
   }
 
   static bool is_jvmti_jmethodid_safe() {
     // only JDK 8 is safe to use jmethodID in JVMTI for deferred resolution
+    //   unless -XX:+KeepJNIIDs=true is provided
     return VM::java_version() == 8;
+  }
+
+  static bool shouldUseAsgct() {
+    char *sampler = NULL;
+
+    jvmtiEnv *jvmti = VM::jvmti();
+    jvmti->GetSystemProperty("dd.profiling.ddprof.j9.sampler", &sampler);
+
+    bool asgct = true;
+    if (sampler != nullptr) {
+      if (!strncmp("asgct", sampler, 5)) {
+        asgct = true;
+      } else if (!strncmp("jvmti", sampler, 5)) {
+        asgct = false;
+      } else {
+        fprintf(stdout, "[ddprof] [WARN] Invalid J9 sampler: %s, supported values are [jvmti, asgct]", sampler);
+      }
+    }
+    jvmti->Deallocate((unsigned char *)sampler);
+    return asgct;
   }
 
   static bool initialize(jvmtiEnv *jvmti, const void *j9thread_self);
