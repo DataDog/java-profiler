@@ -167,6 +167,10 @@ public final class JavaProfiler {
         }
     }
 
+    public String getStatus() {
+        return getStatus0();
+    }
+
     /**
      * Execute an agent-compatible profiling command -
      * the comma-separated list of arguments described in arguments.cpp
@@ -472,4 +476,6 @@ public final class JavaProfiler {
     private static native long tscFrequency0();
 
     private static native void mallocArenaMax0(int max);
+
+    private static native String getStatus0();
 }

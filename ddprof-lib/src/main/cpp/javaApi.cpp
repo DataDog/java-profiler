@@ -109,6 +109,14 @@ Java_com_datadoghq_profiler_JavaProfiler_execute0(JNIEnv *env, jobject unused,
   return NULL;
 }
 
+extern "C" DLLEXPORT jstring JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getStatus0(JNIEnv* env, 
+                                                    jobject unused) {
+  char msg[2048];
+  int ret = Profiler::instance()->status((char*)msg, sizeof(msg) - 1);
+  return env->NewStringUTF(msg);
+}
+
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
                                                     jobject unused) {

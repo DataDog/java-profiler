@@ -3,14 +3,15 @@ package com.datadoghq.profiler;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.nio.file.Files;
+import java.util.Collections;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-public class JVMAccessTest {
+public class JVMAccessTest extends AbstractProcessProfilerTest {
     @BeforeAll
     static void setUp() {
         assumeFalse(Platform.isJ9() || Platform.isZing()); // J9 and Zing do not support vmstructs
@@ -21,39 +22,22 @@ public class JVMAccessTest {
         String config = System.getProperty("ddprof_test.config");
         assumeTrue("debug".equals(config));
 
-        String javaHome = System.getenv("JAVA_TEST_HOME");
-        if (javaHome == null) {
-            javaHome = System.getenv("JAVA_HOME");
-        }
-        if (javaHome == null) {
-            javaHome = System.getProperty("java.home");
-        }
-        assertNotNull(javaHome);
+        AtomicBoolean initLibraryFound = new AtomicBoolean(false);
+        AtomicBoolean initProfilerFound = new AtomicBoolean(false);
 
-        File outFile = Files.createTempFile("jvmaccess", ".out").toFile();
-        outFile.deleteOnExit();
-        File errFile = Files.createTempFile("jvmaccess", ".err").toFile();
-        errFile.deleteOnExit();
+        boolean rslt = launch("library", Collections.emptyList(), null, 
+            l -> {
+                initLibraryFound.set(initLibraryFound.get() | l.contains("[TEST::INFO] VM::initLibrary"));
+                initProfilerFound.set(initProfilerFound.get() | l.contains("[TEST::INFO] VM::initProfilerBridge"));
+                return true;
+            },
+            null
+        );
 
-        ProcessBuilder pb = new ProcessBuilder(javaHome + "/bin/java", "-cp", System.getProperty("java.class.path"), ExternalLauncher.class.getName(), "library");
-        pb.redirectOutput(outFile);
-        pb.redirectError(errFile);
-        Process p = pb.start();
-        int val = p.waitFor();
-        assertEquals(0, val);
+        assertTrue(rslt);
 
-        boolean initLibraryFound = false;
-        boolean initProfilerFound = false;
-        for (String line : Files.readAllLines(outFile.toPath())) {
-            initLibraryFound |= line.contains("[TEST::INFO] VM::initLibrary");
-            if (line.contains("[TEST::INFO] VM::initProfilerBridge")) {
-                // profiler is not expected to get initialized here; first occurrence means the test failed
-                initProfilerFound = true;
-                break;
-            }
-        }
-        assertTrue(initLibraryFound, "initLibrary not found");
-        assertFalse(initProfilerFound, "initProfilerBridge found");
+        assertTrue(initLibraryFound.get(), "initLibrary not found");
+        assertFalse(initProfilerFound.get(), "initProfilerBridge found");
     }
 
     @Test
@@ -68,37 +52,20 @@ public class JVMAccessTest {
             javaVersion = "8.0." + javaVersion.split("u")[1];
         }
 
-        String javaHome = System.getenv("JAVA_TEST_HOME");
-        if (javaHome == null) {
-            javaHome = System.getenv("JAVA_HOME");
-        }
-        if (javaHome == null) {
-            javaHome = System.getProperty("java.home");
-        }
-        assertNotNull(javaHome);
+        AtomicReference<String> foundVersion = new AtomicReference<>(null);
 
-        File outFile = Files.createTempFile("jvmaccess", ".out").toFile();
-        outFile.deleteOnExit();
-        File errFile = Files.createTempFile("jvmaccess", ".err").toFile();
-        errFile.deleteOnExit();
-
-        ProcessBuilder pb = new ProcessBuilder(javaHome + "/bin/java", "-cp", System.getProperty("java.class.path"), ExternalLauncher.class.getName(), "library");
-        pb.redirectOutput(outFile);
-        pb.redirectError(errFile);
-        Process p = pb.start();
-        int val = p.waitFor();
-        assertEquals(0, val);
-
-        String foundVersion = null;
-        for (String line : Files.readAllLines(outFile.toPath())) {
-            System.err.println(line);
-            if (line.contains("[TEST::INFO] jvm_version#")) {
-                foundVersion = line.split("#")[1];
-                break;
+        boolean rslt = launch("library", Collections.emptyList(), null, l -> {
+            if (l.contains("[TEST::INFO] jvm_version#")) {
+                foundVersion.set(l.split("#")[1]);
+                return false;
             }
-        }
-        assertNotNull(foundVersion, "java version not found in logs");
-        assertEquals(javaVersion, foundVersion, "invalid java version");
+            return true;
+        }, null);
+
+        assertTrue(rslt);
+
+        assertNotNull(foundVersion.get(), "java version not found in logs");
+        assertEquals(javaVersion, foundVersion.get(), "invalid java version");
     }
 
     @Test
