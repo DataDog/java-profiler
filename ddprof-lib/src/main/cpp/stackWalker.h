@@ -22,6 +22,8 @@
 #include <functional>
 #include <stdint.h>
 
+class JavaFrameAnchor;
+
 struct StackContext {
   const void *pc;
   uintptr_t sp;
@@ -34,15 +36,25 @@ struct StackContext {
   }
 };
 
+// Detail level of VMStructs stack walking
+enum StackDetail {
+    VM_BASIC,   // only basic Java frames similar to what AsyncGetCallTrace provides
+    VM_NORMAL,  // include frame types and runtime stubs
+    VM_EXPERT   // all features: frame types, runtime stubs, and intermediate native frames
+};
+
 class StackWalker {
+private:
+  static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
+                    StackDetail detail, const void* pc, uintptr_t sp, uintptr_t fp, bool *truncated);
+
 public:
   static int walkFP(void *ucontext, const void **callchain, int max_depth,
                     StackContext *java_ctx, bool *truncated);
   static int walkDwarf(void *ucontext, const void **callchain, int max_depth,
                        StackContext *java_ctx, bool *truncated);
-  static int walkVM(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
-                    const void *_termination_frame_begin,
-                    const void *_termination_frame_end);
+  static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, StackDetail detail, bool *truncated);
+  static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, JavaFrameAnchor* anchor, bool *truncated);
 
   static void checkFault(ProfiledThread* thrd);
 };

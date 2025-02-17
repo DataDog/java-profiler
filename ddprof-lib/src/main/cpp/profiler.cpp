@@ -17,7 +17,6 @@
 
 #include "profiler.h"
 #include "asyncSampleMutex.h"
-#include "common.h"
 #include "context.h"
 #include "counters.h"
 #include "ctimer.h"
@@ -289,7 +288,7 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
         PerfEvents::walkKernel(tid, callchain + native_frames,
                                MAX_NATIVE_FRAMES - native_frames, java_ctx);
   }
-  if (_cstack == CSTACK_VM) {
+  if (_cstack >= CSTACK_VM) {
     return 0;
   } else if (_cstack == CSTACK_DWARF) {
     native_frames += StackWalker::walkDwarf(ucontext, callchain + native_frames,
@@ -406,7 +405,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   if (in_java && java_ctx->sp != 0) {
     // skip ahead to the Java frames before calling AGCT
     frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);
-  } else if (state != 0 && vm_thread->lastJavaSP() == 0) {
+  } else if (state != 0 && (vm_thread->anchor() == nullptr || vm_thread->anchor()->lastJavaSP() == 0)) {
     // we haven't found the top Java frame ourselves, and the lastJavaSP wasn't
     // recorded either when not in the Java state, lastJava ucontext will be
     // used by AGCT
@@ -485,14 +484,16 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
     }
   } else if (trace.num_frames == ticks_unknown_not_Java &&
              !(_safe_mode & LAST_JAVA_PC)) {
-    uintptr_t &sp = vm_thread->lastJavaSP();
-    uintptr_t &pc = vm_thread->lastJavaPC();
-    if (sp != 0 && pc == 0) {
+    JavaFrameAnchor* anchor = vm_thread->anchor();
+    uintptr_t sp = anchor->lastJavaSP();
+    const void* pc = anchor->lastJavaPC();
+    if (sp != 0 && pc == NULL) {
       // We have the last Java frame anchor, but it is not marked as walkable.
       // Make it walkable here
-      pc = ((uintptr_t *)sp)[-1];
+      pc = ((const void**)sp)[-1];
+      anchor->setLastJavaPC(pc);
 
-      NMethod *m = CodeHeap::findNMethod((const void *)pc);
+      NMethod *m = CodeHeap::findNMethod(pc);
       if (m != NULL) {
         // AGCT fails if the last Java frame is a Runtime Stub with an invalid
         // _frame_complete_offset. In this case we patch _frame_complete_offset
@@ -502,20 +503,21 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
           m->setFrameCompleteOffset(0);
         }
         VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
-      } else if (_libs->findLibraryByAddress((const void *)pc) != NULL) {
+      } else if (_libs->findLibraryByAddress(pc) != NULL) {
         VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
       }
 
-      pc = 0;
+      anchor->setLastJavaPC(nullptr);
     }
   } else if (trace.num_frames == ticks_not_walkable_not_Java &&
              !(_safe_mode & LAST_JAVA_PC)) {
-    uintptr_t &sp = vm_thread->lastJavaSP();
-    uintptr_t &pc = vm_thread->lastJavaPC();
-    if (sp != 0 && pc != 0) {
+    JavaFrameAnchor* anchor = vm_thread->anchor();
+    uintptr_t sp = anchor->lastJavaSP();
+    const void* pc = anchor->lastJavaPC();
+    if (sp != 0 && pc != NULL) {
       // Similar to the above: last Java frame is set,
       // but points to a Runtime Stub with an invalid _frame_complete_offset
-      NMethod *m = CodeHeap::findNMethod((const void *)pc);
+      NMethod *m = CodeHeap::findNMethod(pc);
       if (m != NULL && !m->isNMethod() && m->frameSize() > 0 &&
           m->frameCompleteOffset() == -1) {
         m->setFrameCompleteOffset(0);
@@ -523,7 +525,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       }
     }
   } else if (trace.num_frames == ticks_GC_active && !(_safe_mode & GC_TRACES)) {
-    if (vm_thread->lastJavaSP() == 0) {
+    if (vm_thread->anchor()->lastJavaSP() == 0) {
       // Do not add 'GC_active' for threads with no Java frames, e.g. Compiler
       // threads
       frame.restore(saved_pc, saved_sp, saved_fp);
@@ -682,28 +684,32 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     ASGCT_CallFrame *native_stop = frames + num_frames;
     num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
                                  &java_ctx, &truncated);
-    if (_cstack == CSTACK_VM) {
-      num_frames +=
-          StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth,
-                              _call_stub_begin, _call_stub_end);
+    if (_cstack == CSTACK_VMX) {
+      num_frames += StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_EXPERT, &truncated);
     } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
-      int java_frames = 0;
-      {
+      if (_cstack == CSTACK_VM) {
+        num_frames += StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_NORMAL, &truncated);
+      } else {
         // Async events
         AsyncSampleMutex mutex(ProfiledThread::current());
+        int java_frames = 0;
         if (mutex.acquired()) {
-          java_frames =
-              getJavaTraceAsync(ucontext, frames + num_frames, _max_stack_depth,
-                                &java_ctx, &truncated);
+          java_frames = getJavaTraceAsync(ucontext, frames + num_frames, _max_stack_depth, &java_ctx, &truncated);
+          if (java_frames > 0 && java_ctx.pc != NULL && VMStructs::hasMethodStructs()) {
+              NMethod* nmethod = CodeHeap::findNMethod(java_ctx.pc);
+              if (nmethod != NULL) {
+                  fillFrameTypes(frames + num_frames, java_frames, nmethod);
+              }
+          }
         }
-      }
-      if (java_frames > 0 && java_ctx.pc != NULL) {
-        NMethod *nmethod = CodeHeap::findNMethod(java_ctx.pc);
-        if (nmethod != NULL) {
-          fillFrameTypes(frames + num_frames, java_frames, nmethod);
+        if (java_frames > 0 && java_ctx.pc != NULL) {
+          NMethod *nmethod = CodeHeap::findNMethod(java_ctx.pc);
+          if (nmethod != NULL) {
+            fillFrameTypes(frames + num_frames, java_frames, nmethod);
+          }
         }
+        num_frames += java_frames;
       }
-      num_frames += java_frames;
     }
 
     if (num_frames == 0) {
@@ -1069,7 +1075,7 @@ Error Profiler::checkJvmCapabilities() {
     }
   }
 
-  if (!VMStructs::hasDebugSymbols() && !VM::isOpenJ9()) {
+  if (!VMStructs::libjvm()->hasDebugSymbols() && !VM::isOpenJ9()) {
     Log::warn("Install JVM debug symbols to improve profile accuracy");
   }
 
@@ -1162,7 +1168,6 @@ Error Profiler::start(Arguments &args, bool reset) {
       return Error(
           "VMStructs stack walking is not supported on this JVM/platform");
     }
-    Log::info("cstack=vm is an experimental option, use with care");
   }
 
   // Kernel symbols are useful only for perf_events without --all-user
@@ -1292,7 +1297,7 @@ Error Profiler::check(Arguments &args) {
       return Error("DWARF unwinding is not supported on this platform");
     } else if (args._cstack == CSTACK_LBR && _cpu_engine != &perf_events) {
       return Error("Branch stack is supported only with PMU events");
-    } else if (args._cstack == CSTACK_VM && !VMStructs::hasStackStructs()) {
+    } else if (_cstack >= CSTACK_VM && !(VMStructs::hasStackStructs() && OS::isLinux())) {
       return Error(
           "VMStructs stack walking is not supported on this JVM/platform");
     }

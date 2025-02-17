@@ -1,9 +1,15 @@
 package com.datadoghq.profiler.cpu;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.CStackAwareAbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
+import com.datadoghq.profiler.junit.CStack;
+import com.datadoghq.profiler.junit.CStackInjector;
+import com.datadoghq.profiler.junit.RetryTest;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.junitpioneer.jupiter.RetryingTest;
@@ -22,23 +28,32 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-public class CTimerSamplerTest extends AbstractProfilerTest {
+public class CTimerSamplerTest extends CStackAwareAbstractProfilerTest {
 
     private ProfiledCode profiledCode;
+
+    public CTimerSamplerTest(@CStack String cstack) {
+        super(cstack);
+    }
 
     @Override
     protected void before() {
         profiledCode = new ProfiledCode(profiler);
     }
 
-    @RetryingTest(10)
-    public void test() throws ExecutionException, InterruptedException {
+    @RetryTest(10)
+    @TestTemplate
+    @ValueSource(strings = {"fp", "dwarf", "vm", "vmx"})
+    public void test(@CStack String cstack) throws ExecutionException, InterruptedException {
         // timer_create is available on Linux only
         assumeTrue(Platform.isLinux());
         for (int i = 0, id = 1; i < 100; i++, id += 3) {
             profiledCode.method1(id);
         }
         stopProfiler();
+
+        verifyCStackSettings();
+
         IItemCollection events = verifyEvents("datadog.ExecutionSample");
 
         for (IItemIterable cpuSamples : events) {

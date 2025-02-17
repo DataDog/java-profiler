@@ -1,5 +1,6 @@
 package com.datadoghq.profiler;
 
+import java.io.IOException;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 
@@ -326,5 +327,14 @@ public final class Platform {
 
   public static boolean isAarch64() {
     return System.getProperty("os.arch").toLowerCase().contains("aarch64");
+  }
+
+  public static boolean isMusl() {
+    try {
+      OperatingSystem current = OperatingSystem.current();
+      return current == OperatingSystem.linux && current.isMusl();
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    }
   }
 }

@@ -1,17 +1,6 @@
 /*
- * Copyright 2016 Andrei Pangin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright The async-profiler authors
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _PROFILER_H
@@ -180,6 +169,19 @@ public:
     return _instance;
   }
 
+  const char* cstack() {
+    switch (_cstack) {
+      case CSTACK_DEFAULT: return "default";
+      case CSTACK_NO: return "no";
+      case CSTACK_FP: return "fp";
+      case CSTACK_DWARF: return "dwarf";
+      case CSTACK_LBR: return "lbr";
+      case CSTACK_VM: return "vm";
+      case CSTACK_VMX: return "vmx";
+      default: return "default";
+    }
+  }
+
   u64 total_samples() { return _total_samples; }
   int max_stack_depth() { return _max_stack_depth; }
   time_t uptime() { return time(NULL) - _start_time; }
@@ -213,7 +215,8 @@ public:
   Error stop();
   Error flushJfr();
   Error dump(const char *path, const int length);
-  void switchThreadEvents(jvmtiEventMode mode);
+  void logStats();
+    void switchThreadEvents(jvmtiEventMode mode);
   int convertNativeTrace(int native_frames, const void **callchain,
                          ASGCT_CallFrame *frames);
   void recordSample(void *ucontext, u64 weight, int tid, jint event_type,

@@ -55,7 +55,13 @@ const int DW_REG_FP = 29;
 const int DW_REG_SP = 31;
 const int DW_REG_PC = 30;
 const int EMPTY_FRAME_SIZE = 0;
-const int LINKED_FRAME_SIZE = 0;
+
+// aarch64 function prologue looks like this (if frame pointer is used):
+// stp x29, x30, [sp, -16]!   // Save FP (x29) and LR (x30)
+// mov x29, sp                // Set FP to SP
+// ---
+// LINKED_FRAME_SIZE should be 16
+const int LINKED_FRAME_SIZE = 2 * DW_STACK_SLOT;
 
 #else
 

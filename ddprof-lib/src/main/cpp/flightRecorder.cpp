@@ -751,13 +751,15 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
   writeBoolSetting(buf, T_HEAP_LIVE_OBJECT, "enabled", args._record_liveness);
 
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "debugSymbols",
-                   VMStructs::hasDebugSymbols());
+                   VMStructs::libjvm()->hasDebugSymbols());
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "kernelSymbols",
                    Symbols::haveKernelSymbols());
   writeStringSetting(buf, T_ACTIVE_RECORDING, "cpuEngine",
                      Profiler::instance()->cpuEngine()->name());
   writeStringSetting(buf, T_ACTIVE_RECORDING, "wallEngine",
                      Profiler::instance()->wallEngine()->name());
+  writeStringSetting(buf, T_ACTIVE_RECORDING, "cstack", 
+                     Profiler::instance()->cstack());
   flushIfNeeded(buf);
 }
 
