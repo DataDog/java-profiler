@@ -903,9 +903,9 @@ void Recording::writeJvmInfo(Buffer *buf) {
   buf->putVar64(_start_ticks);
   buf->putUtf8(jvm_name);
   buf->putUtf8(jvm_version);
-  buf->putUtf8(_jvm_args);
-  buf->putUtf8(_jvm_flags);
-  buf->putUtf8(_java_command);
+  buf->putUtf8(_jvm_args != nullptr ? _jvm_args : "");
+  buf->putUtf8(_jvm_flags != nullptr ? _jvm_flags : "");
+  buf->putUtf8(_java_command != nullptr ? _java_command : "");
   buf->putVar64(OS::processStartTime());
   buf->putVar64(OS::processId());
   buf->putVar32(start, buf->offset() - start);
