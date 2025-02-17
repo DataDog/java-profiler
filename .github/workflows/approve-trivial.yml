@@ -9,7 +9,6 @@ permissions:
 
 jobs:
   auto-approve:
-    if: github.event.label.name == 'trivial'
     runs-on: ubuntu-latest
     steps:
       - name: Check if PR has the 'trivial' label
