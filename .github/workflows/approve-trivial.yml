@@ -14,10 +14,17 @@ jobs:
       - name: Check if PR has the 'trivial' label
         id: check-label
         run: |
+          # Transform the PR URL to the correct API endpoint
+          ISSUE_URL="${{ github.event.pull_request.url }}"  # Example: https://api.github.com/repos/owner/repo/pulls/184
+          ISSUE_URL="${ISSUE_URL/pulls/issues}"  # Replace "/pulls/" with "/issues/"
+      
+          # Fetch labels from the transformed URL
           labels=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
-            "${{ github.event.pull_request.url }}/labels" | jq -r '.[].name')
-          
+            "$ISSUE_URL/labels" | jq -r '.[].name')
+      
+          echo "Fetched labels: $labels"  # Debugging output
+      
           if echo "$labels" | grep -q "trivial"; then
             echo "HAS_LABEL=true" >> $GITHUB_ENV
           else
