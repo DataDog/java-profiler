@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Assumptions;
 public class GCGenerationsTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
-        return "generations=true,cstack=fp";
+        return "memory=128,generations=true,cstack=fp";
     }
 
     @Override

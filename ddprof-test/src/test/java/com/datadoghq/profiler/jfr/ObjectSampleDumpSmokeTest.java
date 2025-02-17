@@ -15,7 +15,7 @@ public class ObjectSampleDumpSmokeTest extends JfrDumpTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "memory=1024:a";
+        return "memory=128:a";
     }
 
     @RetryingTest(5)
