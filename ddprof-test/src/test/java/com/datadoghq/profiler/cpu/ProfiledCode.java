@@ -32,6 +32,7 @@ public class ProfiledCode implements AutoCloseable {
         try (Tracing.Context context = Tracing.newContext(() -> id, profiler)) {
             method1Impl(id, context);
         }
+        System.out.println("Sink: " + sink);
     }
 
     public void method1Impl(int id, Tracing.Context context) throws ExecutionException, InterruptedException {
@@ -85,7 +86,7 @@ public class ProfiledCode implements AutoCloseable {
         for (int i = 0; i < 1_000_000; i++) {
             blackhole ^= ThreadLocalRandom.current().nextLong();
         }
-        sink = blackhole;
+        sink ^= blackhole;
     }
 
     @Override
