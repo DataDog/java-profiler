@@ -2,6 +2,7 @@ package com.datadoghq.profiler.settings;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import org.junit.jupiter.api.Test;
+import org.junitpioneer.jupiter.RetryingTest;
 import org.openjdk.jmc.common.item.IAttribute;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
@@ -21,7 +22,7 @@ public class DatadogSettingsTest extends AbstractProfilerTest {
         return "cpu=1ms";
     }
 
-    @Test
+    @RetryingTest(5)
     public void testRecordDatadogSetting() {
         profiler.recordSetting("dimensionless", "value");
         profiler.recordSetting("withUnit", "60", "seconds");

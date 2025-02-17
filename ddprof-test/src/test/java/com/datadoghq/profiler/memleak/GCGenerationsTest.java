@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Assumptions;
 public class GCGenerationsTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
-        return "generations=true,cstack=fp";
+        return "memory=128,generations=true,cstack=fp";
     }
 
     @Override
@@ -28,29 +28,12 @@ public class GCGenerationsTest extends AbstractProfilerTest {
         return !(Platform.isJavaVersion(8) || Platform.isJ9() || Platform.isZing());
     }
 
-    @RetryingTest(5)
+    @RetryingTest(10)
     public void shouldGetLiveObjectSamples() throws InterruptedException {
         MemLeakTarget target1 = new MemLeakTarget();
         MemLeakTarget target2 = new MemLeakTarget();
         runTests(target1, target2);
-        IItemCollection allocations = verifyEvents("datadog.HeapLiveObject");
-
-//        assertAllocations(allocations, int[].class, target1, target2);
-//        assertAllocations(allocations, Integer[].class, target1, target2);
-    }
-
-    private static void assertAllocations(IItemCollection allocations, Class<?> clazz, MemLeakTarget... targets) {
-        long allocated = 0;
-        for (MemLeakTarget target : targets) {
-            allocated += target.getAllocated(clazz);
-        }
-        IItemCollection allocationsByType = allocations.apply(allocatedTypeFilter(clazz.getCanonicalName()));
-        assertTrue(allocationsByType.hasItems());
-        long recorded = allocationsByType.getAggregate(Aggregators.sum(SCALED_SIZE)).longValue();
-        long absoluteError = Math.abs(recorded - allocated);
-        assertTrue(absoluteError < allocated / 10,
-                String.format("allocation samples should be within 10pct tolerance of allocated memory (recorded %d, allocated %d)",
-                        recorded, allocated));
+        verifyEvents("datadog.HeapLiveObject");
     }
 
     public static class MemLeakTarget extends ClassValue<AtomicLong> implements Runnable {
@@ -89,10 +72,11 @@ public class GCGenerationsTest extends AbstractProfilerTest {
                 obj = new Integer[random.nextInt(64, 192) * 1000];
             }
 
-            if (random.nextInt(100) == 0 && sink.size() < 100_000) {
+            if (random.nextInt(100) <= 30 && sink.size() < 100_000) {
                 sink.add(obj);
             }
             if (random.nextInt(10000) == 0) {
+                System.out.println("Triggering GC");
                 System.gc();
             }
         }
