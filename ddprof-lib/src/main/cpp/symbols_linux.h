@@ -1,4 +1,5 @@
 #ifdef __linux__
+#include "common.h"
 #include "symbols.h"
 
 #include <elf.h>
@@ -122,6 +123,11 @@ static const bool MUSL = true;
 static const bool MUSL = false;
 #endif // __musl__
 
+
+enum BinaryCompiler {
+  GCC, CLANG, UNKNOWN
+};
+
 class ElfParser {
 private:
   CodeCache *_cc;
@@ -132,6 +138,8 @@ private:
   ElfHeader *_header;
   const char *_sections;
   const char *_vaddr_diff;
+
+  BinaryCompiler _compiler;
 
   ElfParser(CodeCache *cc, const char *base, const void *addr,
             const char *file_name, size_t length, bool relocate_dyn) {
@@ -153,11 +161,16 @@ private:
   }
 
   ElfSection *section(int index) {
-    return (ElfSection *)(_sections + index * _header->e_shentsize);
+    if (index >= _header->e_shnum) {
+      TEST_LOG("Invalid section index: %d", index);
+      return nullptr;
+    }
+    ElfSection* ret = (ElfSection *)(_sections + index * _header->e_shentsize);
+    return ret;
   }
 
   const char *at(ElfSection *section) {
-    return (const char *)_header + section->sh_offset;
+    return section != nullptr ? (const char *)_header + section->sh_offset : nullptr;
   }
 
   const char *at(ElfProgramHeader *pheader) {

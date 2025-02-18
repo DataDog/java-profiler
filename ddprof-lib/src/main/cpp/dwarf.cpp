@@ -84,11 +84,14 @@ enum {
   DW_EH_PE_omit = 0xff,
 };
 
-FrameDesc FrameDesc::empty_frame = {0, DW_REG_SP | EMPTY_FRAME_SIZE << 8,
+FrameDesc FrameDesc::empty_frame = {0, DW_REG_SP | EMPTY_FRAME_SIZE << 16,
                                     DW_SAME_FP, -EMPTY_FRAME_SIZE};
-FrameDesc FrameDesc::default_frame = {0, DW_REG_FP | LINKED_FRAME_SIZE << 8,
+FrameDesc FrameDesc::default_frame = {0, DW_REG_FP | LINKED_FRAME_SIZE << 16,
                                       -LINKED_FRAME_SIZE,
                                       -LINKED_FRAME_SIZE + DW_STACK_SLOT};
+FrameDesc FrameDesc::default_clang_frame = {0, DW_REG_FP | LINKED_FRAME_CLANG_SIZE << 16,
+                                            -LINKED_FRAME_SIZE,
+                                            -LINKED_FRAME_SIZE + DW_STACK_SLOT};
 
 DwarfParser::DwarfParser(const char *name, const char *image_base,
                          const char *eh_frame_hdr) {

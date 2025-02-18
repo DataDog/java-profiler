@@ -18,6 +18,7 @@
 #include <link.h>
 #include <linux/limits.h>
 #include <set>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,17 +31,45 @@
 #include <unistd.h>
 
 ElfSection *ElfParser::findSection(uint32_t type, const char *name) {
-  const char *strtab = at(section(_header->e_shstrndx));
-
-  for (int i = 0; i < _header->e_shnum; i++) {
-    ElfSection *section = this->section(i);
-    if (section->sh_type == type && section->sh_name != 0) {
-      if (strcmp(strtab + section->sh_name, name) == 0) {
-        return section;
+  if (_header == nullptr) {
+    TEST_LOG("Invalid ELF header");
+    return nullptr;
+  }
+  if (_header->e_shoff + (_header->e_shnum * sizeof(Elf64_Shdr)) > _length) {
+    TEST_LOG("Section header table exceeds ELF size: e_shoff=%lx, e_shnum=%u",
+             _header->e_shoff, _header->e_shnum);
+    return nullptr;
+  }
+  int idx = _header->e_shstrndx;
+  ElfSection* e_section = section(idx);
+  if (e_section) {
+    if (e_section->sh_offset >= _length) {
+      TEST_LOG("Invalid section offset: %d (%d)", e_section->sh_offset, _length);
+      return nullptr;
+    }
+    if (e_section->sh_offset + e_section->sh_size > _length) {
+      TEST_LOG("Section size extends beyond ELF bounds: offset=%lx, size=%lx, file size=%lx",
+               e_section->sh_offset, e_section->sh_size, _length);
+      return nullptr;
+    }
+    if (e_section->sh_offset < _header->e_ehsize) {
+      TEST_LOG("Invalid sh_offset: %lx (overlaps ELF header, e_ehsize=%x)", e_section->sh_offset, _header->e_ehsize);
+      return nullptr;
+    }
+    const char *strtab = at(e_section);
+    if (strtab) {
+      for (int i = 0; i < _header->e_shnum; i++) {
+        ElfSection *section = this->section(i);
+        if (section->sh_type == type && section->sh_name != 0) {
+          if (strcmp(strtab + section->sh_name, name) == 0) {
+            return section;
+          }
+        }
       }
     }
+  } else {
+    TEST_LOG("Section stringtable not found");
   }
-
   return NULL;
 }
 
@@ -97,6 +126,8 @@ void ElfParser::parseProgramHeaders(CodeCache *cc, const char *base,
     elf.calcVirtualLoadAddress();
     elf.parseDynamicSection();
     elf.parseDwarfInfo();
+  } else {
+    TEST_LOG("Invalid ELF header for %s", cc->name());
   }
 }
 
@@ -220,15 +251,38 @@ void ElfParser::parseDwarfInfo() {
     return;
 
   ElfProgramHeader *eh_frame_hdr = findProgramHeader(PT_GNU_EH_FRAME);
+  bool dwarf_set = false;
   if (eh_frame_hdr != NULL) {
     if (eh_frame_hdr->p_vaddr != 0) {
       DwarfParser dwarf(_cc->name(), _base, at(eh_frame_hdr));
-      _cc->setDwarfTable(dwarf.table(), dwarf.count());
-    } else if (strcmp(_cc->name(), "[vdso]") == 0) {
-      FrameDesc *table = (FrameDesc *)malloc(sizeof(FrameDesc));
-      *table = FrameDesc::empty_frame;
-      _cc->setDwarfTable(table, 1);
+      if (dwarf.count() > 0 && strcmp(_cc->name(), "[vdso]") != 0) {
+        _cc->setDwarfTable(dwarf.table(), dwarf.count());
+        dwarf_set =true;
+      }
     }
+  }
+  if (!dwarf_set) {
+    TEST_LOG("No eh_frame_hdr for %s", _cc->name());
+    FrameDesc *table = (FrameDesc *)malloc(sizeof(FrameDesc));
+#if defined(__aarch64__)
+    // default to clang frame layout - if we have gcc binary it will have the .comment section
+    *table = FrameDesc::default_clang_frame;
+    Elf64_Shdr* commentSection = findSection(SHT_PROGBITS, ".comment");
+    if (commentSection) {
+      if (commentSection->sh_size < 4) {  // "GCC" + NULL terminator needs at least 4 bytes
+        TEST_LOG("Invalid .comment section size");
+      } else {
+        char* commentData = (char*)at(commentSection);
+        if (strstr(commentData, "GCC") != 0) {
+          *table = FrameDesc::default_frame;
+        }
+      }
+    }
+#else
+    *table = FrameDesc::default_frame;
+#endif
+    TEST_LOG("Setting default frame for %s --> reg: %d, fp_off: %d", _cc->name(), table->cfa & 0xffff, table->cfa >> 16);
+    _cc->setDwarfTable(table, 1);
   }
 }
 
@@ -479,13 +533,16 @@ static int parseLibrariesCallback(struct dl_phdr_info *info, size_t size,
       last_inode = u64(map.dev()) << 32 | map.inode();
     }
 
-    if (!map.isExecutable() || !_parsed_libraries.insert(map_start).second) {
+    bool existing = false;
+    if (!map.isExecutable() || (existing = !_parsed_libraries.insert(map_start).second)) {
       // Not an executable segment or it has been already parsed
+//      TEST_LOG("Skipping library: %s, executable: %s, existing: %s, start: %p, end: %p", map.file(), map.isExecutable() ? "true" : "false", existing ? "true" : "false", map_start, (void*)map.end());
       continue;
     }
 
     int count = array->count();
     if (count >= MAX_NATIVE_LIBS) {
+      TEST_LOG("Too many libraries, skipping: %s", map.file());
       break;
     }
 
@@ -501,18 +558,24 @@ static int parseLibrariesCallback(struct dl_phdr_info *info, size_t size,
           if (inode == last_inode) {
             // If last_inode is set, image_base is known to be valid and
             // readable
+//            TEST_LOG("Parsing file: %s", map.file());
             ElfParser::parseFile(cc, image_base, map.file(), true);
             // Parse program headers after the file to ensure debug symbols are
             // parsed first
+//            TEST_LOG("Parsing headers: %s, start: %p, end: %p", map.file(), map_start, map_end);
             ElfParser::parseProgramHeaders(cc, image_base, map_end, MUSL);
           } else if ((unsigned long)map_start > map_offs) {
             // Unlikely case when image_base has not been found.
             // Be careful: executable file is not always ELF, e.g. classes.jsa
+//            TEST_LOG("Parsing file only: %s, start: %p, end: %p", map.file(), map_start, map_end);
             ElfParser::parseFile(cc, map_start - map_offs, map.file(), true);
           }
         }
       } else if (strcmp(map.file(), "[vdso]") == 0) {
+//        TEST_LOG("Parsing headers: %s, start: %p, end: %p", map.file(), map_start, map_end);
         ElfParser::parseProgramHeaders(cc, map_start, map_end, true);
+      } else {
+        TEST_LOG("No header for: %s", map.file());
       }
 
       cc->sort();

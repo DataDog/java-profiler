@@ -4,6 +4,7 @@
  */
 
 #include "codeCache.h"
+#include "common.h"
 #include "dwarf.h"
 #include "os.h"
 #include <stdint.h>
@@ -358,6 +359,9 @@ void CodeCache::makeImportsPatchable() {
 void CodeCache::setDwarfTable(FrameDesc *table, int length) {
   _dwarf_table = table;
   _dwarf_table_length = length;
+  if (_dwarf_table_length == 0) {
+    TEST_LOG("No DWARF table for %s", _name);
+  }
 }
 
 FrameDesc *CodeCache::findFrameDesc(const void *pc) {

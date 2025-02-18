@@ -130,9 +130,7 @@ final class BaseContextWallClockTest {
             assertTrue(modes.contains("UNKNOWN"), "no UNKNOWN samples");
         }
 
-        // TODO: vmstructs unwinding on Liberica and aarch64 creates a higher number of broken frames
-        //       it is under investigation but until it gets resolved we will just relax the error margin
-        double allowedError = Platform.isAarch64() && "BellSoft".equals(System.getProperty("java.vendor")) ? 0.4d : 0.2d;
+        double allowedError = 0.2d;
 
         // context filtering should prevent these
         assertFalse(states.contains("NEW"));
