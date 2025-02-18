@@ -16,6 +16,7 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 import java.util.concurrent.ExecutionException;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 public class SmokeWallTest extends CStackAwareAbstractProfilerTest {
     private ProfiledCode profiledCode;
