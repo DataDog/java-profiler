@@ -1,17 +1,6 @@
 /*
- * Copyright 2016 Andrei Pangin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright The async-profiler authors
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "codeCache.h"
@@ -274,23 +263,54 @@ void CodeCache::findSymbolsByPrefix(std::vector<const char *> &prefixes,
   }
 }
 
+void CodeCache::saveImport(ImportId id, void** entry) {
+    for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {
+        if (_imports[id][ty] == nullptr) {
+            _imports[id][ty] = entry;
+            return;
+        }
+    }
+}
+
 void CodeCache::addImport(void **entry, const char *name) {
-  switch (name[0]) {
-  case 'd':
-    if (strcmp(name, "dlopen") == 0) {
-      _imports[im_dlopen] = entry;
+    switch (name[0]) {
+      case 'c':
+          if (strcmp(name, "calloc") == 0) {
+              saveImport(im_calloc, entry);
+          }
+          break;
+      case 'd':
+          if (strcmp(name, "dlopen") == 0) {
+              saveImport(im_dlopen, entry);
+          }
+          break;
+      case 'f':
+          if (strcmp(name, "free") == 0) {
+              saveImport(im_free, entry);
+          }
+          break;
+      case 'm':
+          if (strcmp(name, "malloc") == 0) {
+              saveImport(im_malloc, entry);
+          }
+          break;
+      case 'p':
+          if (strcmp(name, "pthread_create") == 0) {
+              saveImport(im_pthread_create, entry);
+          } else if (strcmp(name, "pthread_exit") == 0) {
+              saveImport(im_pthread_exit, entry);
+          } else if (strcmp(name, "pthread_setspecific") == 0) {
+              saveImport(im_pthread_setspecific, entry);
+          } else if (strcmp(name, "poll") == 0) {
+              saveImport(im_poll, entry);
+          }
+          break;
+      case 'r':
+          if (strcmp(name, "realloc") == 0) {
+              saveImport(im_realloc, entry);
+          }
+          break;
     }
-    break;
-  case 'p':
-    if (strcmp(name, "pthread_create") == 0) {
-      _imports[im_pthread_create] = entry;
-    } else if (strcmp(name, "pthread_exit") == 0) {
-      _imports[im_pthread_exit] = entry;
-    } else if (strcmp(name, "pthread_setspecific") == 0) {
-      _imports[im_pthread_setspecific] = entry;
-    }
-    break;
-  }
 }
 
 void **CodeCache::findImport(ImportId id) {
@@ -298,24 +318,33 @@ void **CodeCache::findImport(ImportId id) {
     makeImportsPatchable();
     _imports_patchable = true;
   }
-  return _imports[id];
+  return _imports[id][PRIMARY];
 }
 
 void CodeCache::patchImport(ImportId id, void *hook_func) {
-  void **entry = findImport(id);
+  if (!_imports_patchable) {
+        makeImportsPatchable();
+        _imports_patchable = true;
+    }
+
+    for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {void **entry = _imports[id][ty];
   if (entry != NULL) {
     *entry = hook_func;
-  }
+  }}
 }
 
 void CodeCache::makeImportsPatchable() {
   void **min_import = (void **)-1;
   void **max_import = NULL;
   for (int i = 0; i < NUM_IMPORTS; i++) {
-    if (_imports[i] != NULL && _imports[i] < min_import)
-      min_import = _imports[i];
-    if (_imports[i] != NULL && _imports[i] > max_import)
-      max_import = _imports[i];
+    for (int j = 0; j < NUM_IMPORT_TYPES; j++) {
+            void** entry = _imports[i][j];
+            if (entry == NULL) continue;
+            if (entry < min_import)
+      min_import = entry;
+    if (entry > max_import)
+      max_import = entry;
+        }
   }
 
   if (max_import != NULL) {
