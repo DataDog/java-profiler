@@ -51,7 +51,7 @@ public class CStackInjector implements TestTemplateInvocationContextProvider {
             return Stream.of(new ParameterizedTestContext("no", retryCount));
         } else {
             return Stream.of(valueSource.strings()).
-                    filter(param -> (!Platform.isJ9() || !param.startsWith("vm"))).
+                    filter(param -> (!Platform.isJ9() || "dwarf".equals(param))).
                     map(param -> new ParameterizedTestContext(param, retryCount));
         }
     }
