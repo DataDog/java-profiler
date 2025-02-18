@@ -740,13 +740,15 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
   writeBoolSetting(buf, T_HEAP_LIVE_OBJECT, "enabled", args._record_liveness);
 
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "debugSymbols",
-                   VMStructs::hasDebugSymbols());
+                   VMStructs::libjvm()->hasDebugSymbols());
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "kernelSymbols",
                    Symbols::haveKernelSymbols());
   writeStringSetting(buf, T_ACTIVE_RECORDING, "cpuEngine",
                      Profiler::instance()->cpuEngine()->name());
   writeStringSetting(buf, T_ACTIVE_RECORDING, "wallEngine",
                      Profiler::instance()->wallEngine()->name());
+  writeStringSetting(buf, T_ACTIVE_RECORDING, "cstack", 
+                     Profiler::instance()->cstack());
   flushIfNeeded(buf);
 }
 
@@ -892,9 +894,9 @@ void Recording::writeJvmInfo(Buffer *buf) {
   buf->putVar64(_start_ticks);
   buf->putUtf8(jvm_name);
   buf->putUtf8(jvm_version);
-  buf->putUtf8(_jvm_args);
-  buf->putUtf8(_jvm_flags);
-  buf->putUtf8(_java_command);
+  buf->putUtf8(_jvm_args != nullptr ? _jvm_args : "");
+  buf->putUtf8(_jvm_flags != nullptr ? _jvm_flags : "");
+  buf->putUtf8(_java_command != nullptr ? _java_command : "");
   buf->putVar64(OS::processStartTime());
   buf->putVar64(OS::processId());
   buf->putVar32(start, buf->offset() - start);

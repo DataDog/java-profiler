@@ -1,0 +1,19 @@
+name: Auto-Approve Trivial PRs
+
+on:
+  pull_request_target:
+    types: [labeled]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  auto-approve:
+    if: contains(github.event.pull_request.labels.*.name, 'trivial')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Auto-approve PR if labeled 'trivial'
+        uses: hmarr/auto-approve-action@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}

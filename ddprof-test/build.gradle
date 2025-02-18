@@ -81,7 +81,7 @@ tasks.withType(Test).configureEach {
   def keepRecordings = project.hasProperty("keepJFRs") || Boolean.parseBoolean(System.getenv("KEEP_JFRS"))
 
   jvmArgs "-Dddprof_test.keep_jfrs=${keepRecordings}", '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true',
-    "-Dddprof_test.config=${config}", '-XX:ErrorFile=build/hs_err_pid%p.log', '-XX:+ResizeTLAB',
+    "-Dddprof_test.config=${config}", "-Dddprof_test.ci=${project.hasProperty('CI')}", '-XX:ErrorFile=build/hs_err_pid%p.log', '-XX:+ResizeTLAB',
     '-Xmx512m'
 
   def javaHome = System.getenv("JAVA_TEST_HOME")

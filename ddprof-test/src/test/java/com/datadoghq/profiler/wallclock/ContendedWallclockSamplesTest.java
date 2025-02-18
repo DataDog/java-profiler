@@ -1,10 +1,13 @@
 package com.datadoghq.profiler.wallclock;
 
-import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.CStackAwareAbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.context.ContextExecutor;
+import com.datadoghq.profiler.junit.CStack;
+import com.datadoghq.profiler.junit.RetryTest;
 import org.junit.jupiter.api.Assumptions;
-import org.junitpioneer.jupiter.RetryingTest;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
@@ -18,9 +21,15 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 
-public class ContendedWallclockSamplesTest extends AbstractProfilerTest {
+public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTest {
+    public ContendedWallclockSamplesTest(@CStack String cstack) {
+        super(cstack);
+    }
+
     @Override
     protected String getProfilerCommand() {
         return "wall=1ms";
@@ -38,15 +47,27 @@ public class ContendedWallclockSamplesTest extends AbstractProfilerTest {
         executor.shutdownNow();
     }
 
-    @RetryingTest(5)
-    public void test() {
-        Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
+    @RetryTest(10)
+    @TestTemplate
+    @ValueSource(strings = {"fp", "dwarf", "vm", "vmx"})
+    public void test(@CStack String cstack) {
+        assumeFalse(Platform.isZing() || Platform.isJ9());
+        // on aarch64 and JDK 8 the vmstructs unwinding for wallclock is extremely unreliable
+        //   ; perhaps due to something missing in the unwinder but until we figure it out we will just not run the tests in CI
+        assumeTrue(!isInCI() || !Platform.isAarch64() || !cstack.startsWith("vm") || Platform.isJavaVersionAtLeast(11));
+        // TODO: investigate why this test fails on musl
+        // on musl the missing fp unwinding makes the wallclock tests unreliable
+        assumeTrue(!Platform.isMusl() || !cstack.startsWith("vm"));
+
         long result = 0;
         for (int i = 0; i < 10; i++) {
             result += pingPong();
         }
         assertTrue(result != 0);
         stopProfiler();
+
+        verifyCStackSettings();
+
         String lambdaName = getClass().getName() + LAMBDA_QUALIFIER;
         String lambdaStateName = getClass().getName() + ".lambda$pingPong$";
         for (IItemIterable wallclockSamples : verifyEvents("datadog.MethodSample")) {

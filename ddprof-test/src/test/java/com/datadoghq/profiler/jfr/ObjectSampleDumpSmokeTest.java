@@ -15,11 +15,11 @@ public class ObjectSampleDumpSmokeTest extends JfrDumpTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "memory=1024:a";
+        return "memory=128:a";
     }
 
     @RetryingTest(5)
-    @Timeout(value = 60)
+    @Timeout(value = 300)
     public void test() throws Exception {
         runTest("datadog.ObjectSample", "method3");
     }

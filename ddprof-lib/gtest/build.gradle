@@ -42,7 +42,7 @@ def buildNativeLibsTask = tasks.register("buildNativeLibs") {
   description = "Build the native libs for the Google Tests"
 
   onlyIf {
-    hasGtest && !project.hasProperty('skip-native') && os().isLinux()
+    hasGtest && !project.hasProperty('skip-native') && !project.hasProperty('skip-gtest') && os().isLinux()
   }
 
   def srcDir = project(':ddprof-lib').file('src/test/resources/native-libs')
@@ -72,7 +72,7 @@ def buildNativeLibsTask = tasks.register("buildNativeLibs") {
 
 def gtestAll = tasks.register("gtest") {
   onlyIf {
-    hasGtest && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native')
+    hasGtest && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native') && !project.hasProperty('skip-gtest')
   }
   group = 'verification'
   description = "Run all Google Tests for all build configurations of the library"
@@ -94,6 +94,7 @@ tasks.whenTaskAdded { task ->
             def gtestCompileTask = tasks.register("compileGtest${config.name.capitalize()}_${testName}", CppCompile) {
               onlyIf {
                 config.active && hasGtest && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native')
+                && !project.hasProperty('skip-gtest')
               }
               group = 'build'
               description = "Compile the Google Test ${testName} for the ${config.name} build of the library"
@@ -151,6 +152,7 @@ tasks.whenTaskAdded { task ->
             def gtestLinkTask = tasks.register("linkGtest${config.name.capitalize()}_${testName}", LinkExecutable) {
               onlyIf {
                 config.active && hasGtest && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native')
+                && !project.hasProperty('skip-gtest')
               }
               group = 'build'
               description = "Link the Google Test for the ${config.name} build of the library"
@@ -175,6 +177,7 @@ tasks.whenTaskAdded { task ->
             def gtestExecuteTask = tasks.register("gtest${config.name.capitalize()}_${testName}", Exec) {
               onlyIf {
                 config.active && hasGtest && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native')
+                && !project.hasProperty('skip-gtest')
               }
               group = 'verification'
               description = "Run the Google Test ${testName} for the ${config.name} build of the library"
