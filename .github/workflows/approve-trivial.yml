@@ -10,10 +10,10 @@ permissions:
 
 jobs:
   auto-approve:
-    if: contains(github.event.pull_request.labels.*.name, 'trivial')
+    if: contains(github.event.pull_request.labels.*.name, 'trivial') || contains(github.event.pull_request.labels.*.name, 'no-review')
     runs-on: ubuntu-latest
     steps:
-      - name: Auto-approve PR if labeled 'trivial'
+      - name: Auto-approve PR
         uses: hmarr/auto-approve-action@v4
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
