@@ -1,6 +1,6 @@
 /*
  * Copyright 2022 Andrei Pangin
- * Copyright 2024 Datadog, Inc
+ * Copyright 2024, 2025 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -58,7 +58,7 @@ public:
   static bool can_use_ASGCT() {
     // as of 21.0.6 the use of ASGCT will lead to almost immediate crash
     //   or livelock on J9
-    return (VM::java_version() == 8 && VM::java_update_version() >= 362) ||
+    return (VM::java_version() == 8 && VM::java_update_version() >= 361) ||
            (VM::java_version() == 11 && VM::java_update_version() >= 18) ||
            (VM::java_version() == 17 && VM::java_update_version() >= 6) ||
            (VM::java_version() >= 18 && VM::java_version() < 21);
