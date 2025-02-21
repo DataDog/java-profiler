@@ -43,8 +43,6 @@ if [ "$BRANCH" != "$RELEASE_BRANCH" ]; then
   fi
   git push $DRYRUN --atomic --set-upstream origin $RELEASE_BRANCH
   git checkout $BRANCH
-else
-  git tag -f v_$BASE
 fi
 
 if [ "$TYPE" == "MAJOR" ] || [ "$TYPE" == "MINOR" ]; then
@@ -60,4 +58,3 @@ git commit -m "[Automated] Bump dev version to ${CANDIDATE}"
 
 git push $DRYRUN --atomic --set-upstream origin $BRANCH
 git push $DRYRUN -f --atomic --tags
-
