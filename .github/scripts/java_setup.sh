@@ -32,6 +32,17 @@ function prepareJdk() {
     fi
   fi
 
+  if [[ ${qualifier} == "ibm" ]]; then
+    if [[ ${version} == "8" ]]; then
+      mkdir -p "${target_path}"
+      curl -L --fail "${JAVA_8_IBM_URL}" | sudo tar -xvzf - -C ${target_path} --strip-components 2
+      return
+    else
+      echo "IBM JDK 8 only!"
+      exit 1
+    fi
+  fi
+
   if [[ ${qualifier} == "zing" ]]; then
     URL_VAR="JAVA_${version}_ZING_URL"
     if [[ "${arch}" == "aarch64" ]]; then
