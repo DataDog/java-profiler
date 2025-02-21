@@ -16,10 +16,14 @@ public abstract class JfrDumpTest extends AbstractProfilerTest {
     }
 
     public void runTest(String eventName, String ... patterns) throws Exception {
+        runTest(eventName, 10, patterns);
+    }
+
+    public void runTest(String eventName, int dumpCnt, String ... patterns) throws Exception {
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
         Assumptions.assumeFalse(Platform.isJ9());
 
-        for (int j = 0; j < 10; j++) {
+        for (int j = 0; j < dumpCnt; j++) {
             Path recording = Files.createTempFile("dump-", ".jfr");
             try {
                 for (int i = 0; i < 50; i++) {
