@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        java_version: [ "8", "8-orcl", "8-j9", "8-zing", "11", "11-j9", "11-zing", "17", "17-j9", "17-zing", "17-graal", "21", "21-zing", "21-graal", "23", "23-graal" ]
+        java_version: [ "8", "8-orcl", "8-j9", "8-zing", "8-ibm", "11", "11-j9", "11-zing", "17", "17-j9", "17-zing", "17-graal", "21", "21-zing", "21-graal", "23", "23-graal" ]
         config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
