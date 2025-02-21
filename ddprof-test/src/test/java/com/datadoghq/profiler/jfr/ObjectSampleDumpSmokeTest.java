@@ -21,6 +21,6 @@ public class ObjectSampleDumpSmokeTest extends JfrDumpTest {
     @RetryingTest(5)
     @Timeout(value = 300)
     public void test() throws Exception {
-        runTest("datadog.ObjectSample", "method3");
+        runTest("datadog.ObjectSample", 3, "method3");
     }
 }
