@@ -24,6 +24,9 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+
+// make sure lseek will use 64 bits offset
+#define _FILE_OFFSET_BITS 64
 #include <unistd.h>
 
 ElfSection *ElfParser::findSection(uint32_t type, const char *name) {
@@ -68,7 +71,7 @@ bool ElfParser::parseFile(CodeCache *cc, const char *base,
     return false;
   }
 
-  size_t length = (size_t)lseek64(fd, 0, SEEK_END);
+  size_t length = (size_t)lseek(fd, 0, SEEK_END);
   void *addr = mmap(NULL, length, PROT_READ, MAP_PRIVATE, fd, 0);
   close(fd);
 

@@ -120,7 +120,7 @@ jobs:
         config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     container:
-      image: "alpine:3.14"
+      image: "alpine:3.21"
       options: --cpus 4 --workdir /github/workspace -v /home/runner/work/_temp:/home/runner/work/_temp
     timeout-minutes: 180
     steps:
