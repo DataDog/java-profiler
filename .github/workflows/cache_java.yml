@@ -215,7 +215,7 @@ jobs:
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
-          key: jdk${{matrix.java_variant }}-amd64-musl--${{ hashFiles('.github/workflows/cache_java.yml') }}
+          key: jdk${{matrix.java_variant }}-amd64-musl--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
 
       - name: Is JDK cached?
         id: check-cache
@@ -240,7 +240,7 @@ jobs:
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
-          key: jdk${{matrix.java_variant }}-amd64-musl--${{ hashFiles('.github/workflows/cache_java.yml') }}
+          key: jdk${{matrix.java_variant }}-amd64-musl--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
 
   cache-aarch64:
     needs: setup-sdkman-aarch64
@@ -259,7 +259,7 @@ jobs:
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
-          key: jdk${{matrix.java_variant }}-aarch64--${{ hashFiles('.github/workflows/cache_java.yml') }}
+          key: jdk${{matrix.java_variant }}-aarch64--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
       - name: Is JDK cached?
         id: check-cache
         run: |
@@ -296,13 +296,12 @@ jobs:
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
-          key: jdk${{matrix.java_variant }}-aarch64--${{ hashFiles('.github/workflows/cache_java.yml') }}
+          key: jdk${{matrix.java_variant }}-aarch64--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
 
   cache-aarch64-musl:
-    runs-on: ubuntu-latest
-    container:
-      image: "alpine:3.21"
-      options: --cpus 2
+    runs-on:
+      group: ARM LINUX SHARED
+      labels: arm-4core-linux-ubuntu24.04
     strategy:
       fail-fast: true
       matrix:
@@ -312,14 +311,14 @@ jobs:
       - name: Setup OS
         run: |
           # This needs to be done early because alpine does not have bash and tar is also iffy
-          apk update && apk add curl zip unzip bash tar
+          sudo apt update && sudo apt install -y curl zip unzip bash tar
       - name: Cache JDK ${{ matrix.java_variant }}
         id: cache-jdk
         uses: actions/cache/restore@v4
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
-          key: jdk${{matrix.java_variant }}-aarch64-musl--${{ hashFiles('.github/workflows/cache_java.yml') }}
+          key: jdk${{matrix.java_variant }}-aarch64-musl--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
 
       - name: Is JDK cached?
         id: check-cache
@@ -344,4 +343,4 @@ jobs:
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
-          key: jdk${{matrix.java_variant }}-aarch64-musl--${{ hashFiles('.github/workflows/cache_java.yml') }}
+          key: jdk${{matrix.java_variant }}-aarch64-musl--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
