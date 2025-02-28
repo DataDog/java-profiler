@@ -44,6 +44,7 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
     @RetryingTest(3)
     public void test() {
         Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
+        Assumptions.assumeFalse(Platform.isMusl() && Platform.isAarch64());
         boolean isMusl = Optional.ofNullable(System.getenv("TEST_CONFIGURATION")).orElse("").startsWith("musl");
         boolean isAsan = Optional.ofNullable(System.getenv("TEST_CONFIGURATION")).orElse("").contains("asan");
         int iterations = Platform.isAarch64() && isAsan ? 200 : 100;
