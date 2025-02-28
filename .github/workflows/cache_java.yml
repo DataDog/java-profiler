@@ -46,10 +46,15 @@ env:
   JAVA_21_ZING_AARCH64_URL: "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk21.0.4.0.101-linux_aarch64.tar.gz"
 
   JAVA_8_MUSL_URL : "https://download.bell-sw.com/java/8u442+7/bellsoft-jdk8u442+7-linux-x64-musl-lite.tar.gz"
+  JAVA_8_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/8u442+7/bellsoft-jdk8u442+7-linux-aarch64-musl.tar.gz"
   JAVA_11_MUSL_URL: "https://download.bell-sw.com/java/11.0.26+9/bellsoft-jdk11.0.26+9-linux-x64-musl-lite.tar.gz"
+  JAVA_11_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/11.0.26+9/bellsoft-jdk11.0.26+9-linux-aarch64-musl-lite.tar.gz"
   JAVA_17_MUSL_URL: "https://download.bell-sw.com/java/17.0.14+10/bellsoft-jdk17.0.14+10-linux-x64-musl-lite.tar.gz"
+  JAVA_17_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/17.0.14+10/bellsoft-jdk17.0.14+10-linux-aarch64-musl-lite.tar.gz"
   JAVA_21_MUSL_URL: "https://download.bell-sw.com/java/21.0.6+10/bellsoft-jdk21.0.6+10-linux-x64-musl-lite.tar.gz"
+  JAVA_21_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/21.0.6+10/bellsoft-jdk21.0.6+10-linux-aarch64-musl-lite.tar.gz"
   JAVA_23_MUSL_URL: "https://download.bell-sw.com/java/23.0.2+9/bellsoft-jdk23.0.2+9-linux-x64-musl-lite.tar.gz"
+  JAVA_23_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/23.0.2+9/bellsoft-jdk23.0.2+9-linux-aarch64-musl-lite.tar.gz"
 
 permissions:
   contents: read
@@ -192,7 +197,7 @@ jobs:
   cache-amd64-musl:
     runs-on: ubuntu-latest
     container:
-      image: "alpine:3.14"
+      image: "alpine:3.21"
       options: --cpus 2
     strategy:
       fail-fast: true
@@ -292,3 +297,51 @@ jobs:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
           key: jdk${{matrix.java_variant }}-aarch64--${{ hashFiles('.github/workflows/cache_java.yml') }}
+
+  cache-aarch64-musl:
+    runs-on: ubuntu-latest
+    container:
+      image: "alpine:3.21"
+      options: --cpus 2
+    strategy:
+      fail-fast: true
+      matrix:
+        java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "23-librca" ]
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup OS
+        run: |
+          # This needs to be done early because alpine does not have bash and tar is also iffy
+          apk update && apk add curl zip unzip bash tar
+      - name: Cache JDK ${{ matrix.java_variant }}
+        id: cache-jdk
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
+          key: jdk${{matrix.java_variant }}-aarch64-musl--${{ hashFiles('.github/workflows/cache_java.yml') }}
+
+      - name: Is JDK cached?
+        id: check-cache
+        run: |
+          if [ -d "jdks" ]; then
+            echo "cache-hit=true" >> $GITHUB_OUTPUT
+          else
+            echo "cache-hit=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install JDK ${{ matrix.java_variant }}
+        if: steps.check-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          source .github/scripts/java_setup.sh
+  
+          prepareJdk ${{ matrix.java_variant }} aarch64-musl
+
+      - name: Save JDK ${{ matrix.java_variant }} cache
+        if: steps.check-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
+          key: jdk${{matrix.java_variant }}-aarch64-musl--${{ hashFiles('.github/workflows/cache_java.yml') }}
