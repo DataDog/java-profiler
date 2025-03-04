@@ -11,7 +11,12 @@ function prepareJdk() {
   mkdir -p ${target_path}
 
   if [[ ${qualifier} == "librca" ]] && [[ "${arch}" =~ "-musl" ]]; then
-    URL_VAR="JAVA_${version}_MUSL_URL"
+    local osarch="${arch%-musl}"
+    local suffix=
+    if [[ "${osarch}" == "aarch64" ]]; then
+      suffix="AARCH64_"
+    fi
+    URL_VAR="JAVA_${version}_MUSL_${suffix}URL"
     URL="${!URL_VAR}"
     if [[ -z "${URL}" ]]; then
       echo "Musl/Liberica JDK URL not found for ${arch}/${variant}"
