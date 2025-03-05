@@ -29,16 +29,17 @@ public class ContextWallClockTest extends CStackAwareAbstractProfilerTest {
         base.after();
     }
 
-    @RetryTest(5)
+    @RetryTest(0)
     @TestTemplate
-    @ValueSource(strings = {"fp", "dwarf", "vm", "vmx"})
+    // @ValueSource(strings = {"fp", "dwarf", "vm", "vmx"})
+    @ValueSource(strings = {"vm", "dwarf"})
     public void test(@CStack String cstack) throws ExecutionException, InterruptedException {
         // on aarch64 and JDK < 17 the vmstructs unwinding for wallclock is extremely unreliable
         //   ; perhaps due to something missing in the unwinder but until we figure it out we will just not run the tests in CI
-        assumeTrue(!isInCI() || !Platform.isAarch64() || !cstack.startsWith("vm") || Platform.isJavaVersionAtLeast(17));
+        // assumeTrue(!isInCI() || !Platform.isAarch64() || !cstack.startsWith("vm") || Platform.isJavaVersionAtLeast(17));
         // TODO: investigate why this test fails on musl
         // on musl the missing fp unwinding makes the wallclock tests unreliable
-        assumeTrue(!Platform.isMusl() || !cstack.startsWith("vm"));
+        // assumeTrue(!Platform.isMusl() || !cstack.startsWith("vm"));
         base.test(this);
     }
 
