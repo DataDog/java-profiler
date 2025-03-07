@@ -31,7 +31,7 @@ public class ContextWallClockTest extends CStackAwareAbstractProfilerTest {
 
     @RetryTest(0)
     @TestTemplate
-    // @ValueSource(strings = {"fp", "dwarf", "vm", "vmx"})
+    // @ValueSource(strings = {"vm"})
     @ValueSource(strings = {"vm", "dwarf"})
     public void test(@CStack String cstack) throws ExecutionException, InterruptedException {
         // on aarch64 and JDK < 17 the vmstructs unwinding for wallclock is extremely unreliable
