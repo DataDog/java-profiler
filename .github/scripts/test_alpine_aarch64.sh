@@ -2,6 +2,8 @@
 
 set -e
 
+uname -a
+
 export KEEP_JFRS=true
 export TEST_COMMIT="${1}"
 export TEST_CONFIGURATION="${2}"

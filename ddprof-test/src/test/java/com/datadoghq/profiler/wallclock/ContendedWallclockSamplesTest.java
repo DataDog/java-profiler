@@ -17,6 +17,8 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -40,6 +42,7 @@ public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTe
     @Override
     protected void before() {
         executor = new ContextExecutor(10, profiler);
+        ExecutorService es = Executors.newCachedThreadPool();
     }
 
     @Override
@@ -57,7 +60,7 @@ public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTe
         assumeTrue(!isInCI() || !Platform.isAarch64() || !cstack.startsWith("vm") || Platform.isJavaVersionAtLeast(11));
         // TODO: investigate why this test fails on musl
         // on musl the missing fp unwinding makes the wallclock tests unreliable
-        assumeTrue(!Platform.isMusl() || !cstack.startsWith("vm"));
+//        assumeTrue(!Platform.isMusl() || !cstack.startsWith("vm"));
 
         long result = 0;
         for (int i = 0; i < 10; i++) {
