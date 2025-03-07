@@ -120,7 +120,7 @@ bool ElfParser::parseFile(CodeCache *cc, const char *base,
 
 void ElfParser::parseProgramHeaders(CodeCache *cc, const char *base,
                                     const char *end, bool relocate_dyn) {
-  ElfParser elf(cc, base, base, NULL, 0, relocate_dyn);
+  ElfParser elf(cc, base, base, NULL, (size_t)(end - base), relocate_dyn);
   if (elf.validHeader() && base + elf._header->e_phoff < end) {
     cc->setTextBase(base);
     elf.calcVirtualLoadAddress();

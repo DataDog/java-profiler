@@ -147,6 +147,8 @@ private:
     _base = base;
     _file_name = file_name;
     _length = length;
+    TEST_LOG("Parsing %s, base: %p, addr: %p, length: %zu, relocate_dyn: %d",
+             file_name != nullptr ? file_name : cc->name(), base, addr, _length, relocate_dyn);
     _relocate_dyn = relocate_dyn && base != nullptr;
     _header = (ElfHeader *)addr;
     _sections = (const char *)addr + _header->e_shoff;
