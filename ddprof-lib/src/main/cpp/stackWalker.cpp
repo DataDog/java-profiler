@@ -172,7 +172,7 @@ int StackWalker::walkDwarf(void *ucontext, const void **callchain,
         cc != NULL ? cc->findFrameDesc(pc) : &FrameDesc::default_frame;
 
     u8 cfa_reg = (u8)f->cfa;
-    int cfa_off = f->cfa >> 16; // cfa is encoded in the upper 16 bits of the CFA value
+      int cfa_off = f->cfa >> 8; // cfa is encoded in the upper 8 bits of the CFA value
 
     if (cfa_reg == DW_REG_SP) {
       sp = sp + cfa_off;
@@ -262,6 +262,9 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
       NMethod *nm = CodeHeap::findNMethod(pc);
       if (nm == NULL) {
         fillFrame(frames[depth++], BCI_ERROR, "unknown_nmethod");
+        // we are somewhere in JVM code heap and have no idea what is this frame
+        // might be good to bail out since it would be a challenge to unwind properly?
+        break;
       } else if (nm->isNMethod()) {
         int level = nm->level();
         FrameTypeId type = detail != VM_BASIC &&
@@ -399,8 +402,10 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
       }
       const char *name = cc == NULL ? NULL : cc->binarySearch(pc);
 
-      if (detail != VM_BASIC) {
-        fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
+      fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
+      // _start should be the process entry point; any attempt to unwind from there will fail
+      if (name && !strcmp("_start", name)) {
+          break;
       }
     }
 
@@ -412,11 +417,15 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
     if (cc == NULL || !cc->contains(pc)) {
       cc = libraries->findLibraryByAddress(pc);
     }
+    // It may happen that the current PC can not be resolved as belonging to any known library.
+    // In that case we just use the default_frame which is a bit of gamble on aarch64 due to
+    // no standard in the function epilogue - but the bet is that the GCC compiled code is
+    // seen more often than the clang one.
     FrameDesc *f =
         cc != NULL ? cc->findFrameDesc(pc) : &FrameDesc::default_frame;
 
     u8 cfa_reg = (u8)f->cfa;
-    int cfa_off = f->cfa >> 16;
+    int cfa_off = f->cfa >> 8;
     if (cfa_reg == DW_REG_SP) {
       sp = sp + cfa_off;
     } else if (cfa_reg == DW_REG_FP) {

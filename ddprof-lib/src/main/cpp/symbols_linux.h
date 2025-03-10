@@ -153,6 +153,10 @@ private:
   }
 
   ElfSection *section(int index) {
+    if (index >= _header->e_shnum) {
+      // invalid section index
+      return NULL;
+    }
     return (ElfSection *)(_sections + index * _header->e_shentsize);
   }
 
