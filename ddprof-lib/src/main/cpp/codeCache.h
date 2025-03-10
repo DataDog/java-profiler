@@ -177,6 +177,9 @@ public:
   }
 
   int count() { return _count; }
+  CodeBlob* blob(int idx) {
+    return &_blobs[idx];
+  }
 };
 
 class CodeCacheArray {

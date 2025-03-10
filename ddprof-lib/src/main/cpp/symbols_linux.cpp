@@ -30,17 +30,36 @@
 #include <unistd.h>
 
 ElfSection *ElfParser::findSection(uint32_t type, const char *name) {
-  const char *strtab = at(section(_header->e_shstrndx));
-
-  for (int i = 0; i < _header->e_shnum; i++) {
-    ElfSection *section = this->section(i);
-    if (section->sh_type == type && section->sh_name != 0) {
-      if (strcmp(strtab + section->sh_name, name) == 0) {
-        return section;
+  if (_header == NULL) {
+    return NULL;
+  }
+  if (_header->e_shoff + (_header->e_shnum * sizeof(Elf64_Shdr)) > _length) {
+    return NULL;
+  }
+  int idx = _header->e_shstrndx;
+  ElfSection* e_section = section(idx);
+  if (e_section) {
+    if (e_section->sh_offset >= _length) {
+        return NULL;
+    }
+    if (e_section->sh_offset + e_section->sh_size > _length) {
+      return NULL;
+    }
+    if (e_section->sh_offset < _header->e_ehsize) {
+      return NULL;
+    }
+    const char *strtab = at(e_section);
+    if (strtab) {
+      for (int i = 0; i < _header->e_shnum; i++) {
+        ElfSection *section = this->section(i);
+        if (section->sh_type == type && section->sh_name != 0) {
+          if (strcmp(strtab + section->sh_name, name) == 0) {
+            return section;
+          }
+        }
       }
     }
   }
-
   return NULL;
 }
 
@@ -91,12 +110,14 @@ bool ElfParser::parseFile(CodeCache *cc, const char *base,
 
 void ElfParser::parseProgramHeaders(CodeCache *cc, const char *base,
                                     const char *end, bool relocate_dyn) {
-  ElfParser elf(cc, base, base, NULL, 0, relocate_dyn);
+  ElfParser elf(cc, base, base, NULL, (size_t)(end - base), relocate_dyn);
   if (elf.validHeader() && base + elf._header->e_phoff < end) {
     cc->setTextBase(base);
     elf.calcVirtualLoadAddress();
     elf.parseDynamicSection();
     elf.parseDwarfInfo();
+  } else {
+    Log::warn("Invalid ELF header for %s: %p-%p", cc->name(), base, end);
   }
 }
 
@@ -216,20 +237,70 @@ void ElfParser::parseDynamicSection() {
 }
 
 void ElfParser::parseDwarfInfo() {
-  if (!DWARF_SUPPORTED)
-    return;
+  if (!DWARF_SUPPORTED) return;
 
-  ElfProgramHeader *eh_frame_hdr = findProgramHeader(PT_GNU_EH_FRAME);
+  ElfProgramHeader* eh_frame_hdr = findProgramHeader(PT_GNU_EH_FRAME);
   if (eh_frame_hdr != NULL) {
     if (eh_frame_hdr->p_vaddr != 0) {
+      // found valid eh_frame_hdr
+      TEST_LOG("Found eh_frame_hdr for %s: %p", _cc->name(), at(eh_frame_hdr));
       DwarfParser dwarf(_cc->name(), _base, at(eh_frame_hdr));
-      _cc->setDwarfTable(dwarf.table(), dwarf.count());
-    } else if (strcmp(_cc->name(), "[vdso]") == 0) {
-      FrameDesc *table = (FrameDesc *)malloc(sizeof(FrameDesc));
-      *table = FrameDesc::empty_frame;
-      _cc->setDwarfTable(table, 1);
+      if (dwarf.count() > 0 && strcmp(_cc->name(), "[vdso]") != 0) {
+        TEST_LOG("Setting dwarf table for %s: %p", _cc->name(), dwarf.table());
+        _cc->setDwarfTable(dwarf.table(), dwarf.count());
+        return;
+      }
     }
   }
+  // no valid eh_frame_hdr found; need to rely on the default linked frame descriptor
+  FrameDesc *table = (FrameDesc *)malloc(sizeof(FrameDesc));
+#if defined(__aarch64__)
+  // default to clang frame layout - if we have gcc binary it will have the .comment section
+  *table = FrameDesc::default_frame;
+  Elf64_Shdr* commentSection = findSection(SHT_PROGBITS, ".comment");
+  bool frame_layout_resolved = false;
+  if (commentSection) {
+    if (commentSection->sh_size >= 4) {  // "GCC" + NULL terminator needs at least 4 bytes
+      char* commentData = (char*)at(commentSection);
+      if (strstr(commentData, "GCC") != 0) {
+        frame_layout_resolved = true;
+        TEST_LOG(".comment section for %s :: %s, using gcc frame layout", _cc->name(), commentData);
+      } else {
+        TEST_LOG(".comment section for %s :: %s, using clang frame layout", _cc->name(), commentData);
+      }
+    }
+  } else {
+    TEST_LOG("No .comment section found for %s, will probe pre-amble", _cc->name());
+  }
+  if (!frame_layout_resolved) {
+    for (int b = 0; b < _cc->count(); b++) {
+      CodeBlob* blob = _cc->blob(b);
+      if (blob) {
+        instruction_t* ptr = (instruction_t*)blob->_start;
+        instruction_t gcc_pattern = 0x910003fd;   // mov x29, sp
+        instruction_t clang_pattern = 0xfd7b01a9; // stp x29, x30, [sp, #16]
+        if (*(ptr + 1) == gcc_pattern || *(ptr + 2) == gcc_pattern) {
+          *table = FrameDesc::default_frame;
+          TEST_LOG("Found GCC pattern in code blob for %s, using gcc frame layout", _cc->name());
+          frame_layout_resolved = true;
+          break;
+        } else if (*(ptr + 1) == clang_pattern || *(ptr + 2) == clang_pattern) {
+          *table = FrameDesc::default_clang_frame;
+          TEST_LOG("Found Clang pattern in code blob for %s, using clang frame layout", _cc->name());
+          frame_layout_resolved = true;
+          break;
+        }
+      }
+    }
+  }
+  if (!frame_layout_resolved) {
+    *table = FrameDesc::default_frame;
+    TEST_LOG("No frame layout found for %s, using gcc frame layout", _cc->name());
+  }
+#else
+  *table = FrameDesc::default_frame;
+#endif
+  _cc->setDwarfTable(table, 1);
 }
 
 uint32_t ElfParser::getSymbolCount(uint32_t *gnu_hash) {
