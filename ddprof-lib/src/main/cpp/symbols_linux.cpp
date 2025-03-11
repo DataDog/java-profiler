@@ -258,11 +258,13 @@ void ElfParser::parseDwarfInfo() {
   // default to clang frame layout - if we have gcc binary it will have the .comment section
   *table = FrameDesc::default_clang_frame;
   Elf64_Shdr* commentSection = findSection(SHT_PROGBITS, ".comment");
+  bool frame_layout_resolved = false;
   if (commentSection) {
     if (commentSection->sh_size >= 4) {  // "GCC" + NULL terminator needs at least 4 bytes
       char* commentData = (char*)at(commentSection);
       if (strstr(commentData, "GCC") != 0) {
         *table = FrameDesc::default_frame;
+        frame_layout_resolved = true;
         TEST_LOG(".comment section for %s :: %s, using gcc frame layout", _cc->name(), commentData);
       } else {
         TEST_LOG(".comment section for %s :: %s, using clang frame layout", _cc->name(), commentData);
@@ -270,6 +272,24 @@ void ElfParser::parseDwarfInfo() {
     }
   } else {
     TEST_LOG("No .comment section found for %s, using clang frame layout", _cc->name());
+  }
+  if (!frame_layout_resolved) {
+    CodeBlob* blob = _cc->blob(0);
+    if (blob) {
+      const void* ptr = blob->_start;
+      static const unsigned char gcc_pattern[] = { 0xa9, 0xbe, 0x7b, 0xfd };
+      if (memcmp(ptr, gcc_pattern, sizeof(gcc_pattern)) == 0) {
+        *table = FrameDesc::default_frame;
+        frame_layout_resolved = true;
+        TEST_LOG("Found GCC pattern in the first code blob for %s, using gcc frame layout", _cc->name());
+      } else {
+        const unsigned char *p = (const unsigned char *)ptr;
+        TEST_LOG("prologue: %02x %02x %02x %02x\n", p[0], p[1], p[2], p[3]);
+      }
+    }
+  }
+  if (!frame_layout_resolved) {
+    TEST_LOG("Using clang frame layout for %s", _cc->name());
   }
 #else
   *table = FrameDesc::default_frame;
