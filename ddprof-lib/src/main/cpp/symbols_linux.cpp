@@ -243,8 +243,10 @@ void ElfParser::parseDwarfInfo() {
   if (eh_frame_hdr != NULL) {
     if (eh_frame_hdr->p_vaddr != 0) {
       // found valid eh_frame_hdr
+      TEST_LOG("Found eh_frame_hdr for %s: %p", _cc->name(), at(eh_frame_hdr));
       DwarfParser dwarf(_cc->name(), _base, at(eh_frame_hdr));
       if (dwarf.count() > 0 && strcmp(_cc->name(), "[vdso]") != 0) {
+        TEST_LOG("Setting dwarf table for %s: %p", _cc->name(), dwarf.table());
         _cc->setDwarfTable(dwarf.table(), dwarf.count());
         return;
       }
@@ -261,8 +263,13 @@ void ElfParser::parseDwarfInfo() {
       char* commentData = (char*)at(commentSection);
       if (strstr(commentData, "GCC") != 0) {
         *table = FrameDesc::default_frame;
+        TEST_LOG(".comment section for %s :: %s, using gcc frame layout", _cc->name(), commentData);
+      } else {
+        TEST_LOG(".comment section for %s :: %s, using clang frame layout", _cc->name(), commentData);
       }
     }
+  } else {
+    TEST_LOG("No .comment section found for %s, using clang frame layout", _cc->name());
   }
 #else
   *table = FrameDesc::default_frame;
