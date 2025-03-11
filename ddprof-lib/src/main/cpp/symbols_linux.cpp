@@ -236,6 +236,11 @@ void ElfParser::parseDynamicSection() {
     }
 }
 
+static void print_four_bytes(const char* name, const void *ptr) {
+    const unsigned char *p = (const unsigned char *)ptr;
+    TEST_LOG("%s: %02x %02x %02x %02x", name, p[0], p[1], p[2], p[3]);
+}
+
 void ElfParser::parseDwarfInfo() {
   if (!DWARF_SUPPORTED) return;
 
@@ -256,14 +261,13 @@ void ElfParser::parseDwarfInfo() {
   FrameDesc *table = (FrameDesc *)malloc(sizeof(FrameDesc));
 #if defined(__aarch64__)
   // default to clang frame layout - if we have gcc binary it will have the .comment section
-  *table = FrameDesc::default_clang_frame;
+  *table = FrameDesc::default_frame;
   Elf64_Shdr* commentSection = findSection(SHT_PROGBITS, ".comment");
   bool frame_layout_resolved = false;
   if (commentSection) {
     if (commentSection->sh_size >= 4) {  // "GCC" + NULL terminator needs at least 4 bytes
       char* commentData = (char*)at(commentSection);
       if (strstr(commentData, "GCC") != 0) {
-        *table = FrameDesc::default_frame;
         frame_layout_resolved = true;
         TEST_LOG(".comment section for %s :: %s, using gcc frame layout", _cc->name(), commentData);
       } else {
@@ -271,7 +275,7 @@ void ElfParser::parseDwarfInfo() {
       }
     }
   } else {
-    TEST_LOG("No .comment section found for %s, using clang frame layout", _cc->name());
+    TEST_LOG("No .comment section found for %s, will probe pre-amble", _cc->name());
   }
   if (!frame_layout_resolved) {
     for (int b = 0; b < _cc->count(); b++) {
@@ -279,19 +283,29 @@ void ElfParser::parseDwarfInfo() {
       if (blob) {
         TEST_LOG("Checking function: %s of %s", blob->_name, _cc->name());
         const unsigned char* ptr = (const unsigned char*)blob->_start;
-        static const unsigned char gcc_pattern[] = { 0xa9, 0xbe, 0x7b, 0xfd };   // Example: stp x29, x30, [sp, #-16]!
-        static const unsigned char clang_pattern[] = { 0xd1, 0x00, 0x83, 0xff }; // Example: sub sp, sp, #0x20
-        if (memcmp(ptr, gcc_pattern, sizeof(gcc_pattern)) == 0) {
+        static const unsigned char gcc_pattern[] = { 0xfd, 0x03, 0x00, 0x91 };   // mov x29, sp
+        static const unsigned char clang_pattern[] = { 0xa9, 0x01, 0x7b, 0xfd }; // stp x29, x30, [sp, #16]
+        if (memcmp(ptr + 4, gcc_pattern, sizeof(gcc_pattern)) == 0 || memcmp(ptr + 8, gcc_pattern, sizeof(gcc_pattern)) == 0) {
           *table = FrameDesc::default_frame;
           TEST_LOG("Found GCC pattern in the first code blob for %s, using gcc frame layout", _cc->name());
+          frame_layout_resolved = true;
           break;
-        } else if (memcmp(ptr, clang_pattern, sizeof(clang_pattern)) == 0) {
-          const unsigned char* p = (const unsigned char*)ptr;
+        } else if (memcmp(ptr + 4, clang_pattern, sizeof(clang_pattern)) == 0) {
+          *table = FrameDesc::default_clang_frame;
           TEST_LOG("Found Clang pattern in the first code blob for %s, using clang frame layout", _cc->name());
+          frame_layout_resolved = true;
           break;
+        } else {
+          print_four_bytes(blob->_name, ptr + 4);
+          print_four_bytes(blob->_name, ptr + 8);
+          TEST_LOG("===");
         }
       }
     }
+  }
+  if (!frame_layout_resolved) {
+    *table = FrameDesc::default_frame;
+    TEST_LOG("No frame layout found for %s, using gcc frame layout", _cc->name());
   }
 #else
   *table = FrameDesc::default_frame;
