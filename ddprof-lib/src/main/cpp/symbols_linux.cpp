@@ -274,34 +274,24 @@ void ElfParser::parseDwarfInfo() {
     TEST_LOG("No .comment section found for %s, using clang frame layout", _cc->name());
   }
   if (!frame_layout_resolved) {
-    CodeBlob* blob = _cc->blob(0);
-    if (blob) {
-      const unsigned char* ptr = (const unsigned char*)blob->_start;
-      static const unsigned char gcc_pattern[] = { 0xa9, 0xbe, 0x7b, 0xfd };
-      for (int i = 0; i < 32; i++) {
+    for (int b = 0; b < _cc->count(); b++) {
+      CodeBlob* blob = _cc->blob(b);
+      if (blob) {
+        TEST_LOG("Checking function: %s of %s", blob->_name, _cc->name());
+        const unsigned char* ptr = (const unsigned char*)blob->_start;
+        static const unsigned char gcc_pattern[] = { 0xa9, 0xbe, 0x7b, 0xfd };   // Example: stp x29, x30, [sp, #-16]!
+        static const unsigned char clang_pattern[] = { 0xd1, 0x00, 0x83, 0xff }; // Example: sub sp, sp, #0x20
         if (memcmp(ptr, gcc_pattern, sizeof(gcc_pattern)) == 0) {
           *table = FrameDesc::default_frame;
-          frame_layout_resolved = true;
-          break;
           TEST_LOG("Found GCC pattern in the first code blob for %s, using gcc frame layout", _cc->name());
-        } else {
+          break;
+        } else if (memcmp(ptr, clang_pattern, sizeof(clang_pattern)) == 0) {
           const unsigned char* p = (const unsigned char*)ptr;
-          TEST_LOG("prologue[%d]: %02x %02x %02x %02x\n", i, p[0], p[1], p[2], p[3]);
+          TEST_LOG("Found Clang pattern in the first code blob for %s, using clang frame layout", _cc->name());
+          break;
         }
-        ptr++;
-      }
-      if (memcmp(ptr, gcc_pattern, sizeof(gcc_pattern)) == 0) {
-        *table = FrameDesc::default_frame;
-        frame_layout_resolved = true;
-        TEST_LOG("Found GCC pattern in the first code blob for %s, using gcc frame layout", _cc->name());
-      } else {
-        const unsigned char *p = (const unsigned char *)ptr;
-        TEST_LOG("prologue: %02x %02x %02x %02x\n", p[0], p[1], p[2], p[3]);
       }
     }
-  }
-  if (!frame_layout_resolved) {
-    TEST_LOG("Using clang frame layout for %s", _cc->name());
   }
 #else
   *table = FrameDesc::default_frame;
