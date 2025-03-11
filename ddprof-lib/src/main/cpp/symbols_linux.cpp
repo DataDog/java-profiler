@@ -276,8 +276,20 @@ void ElfParser::parseDwarfInfo() {
   if (!frame_layout_resolved) {
     CodeBlob* blob = _cc->blob(0);
     if (blob) {
-      const void* ptr = blob->_start;
+      const unsigned char* ptr = (const unsigned char*)blob->_start;
       static const unsigned char gcc_pattern[] = { 0xa9, 0xbe, 0x7b, 0xfd };
+      for (int i = 0; i < 32; i++) {
+        if (memcmp(ptr, gcc_pattern, sizeof(gcc_pattern)) == 0) {
+          *table = FrameDesc::default_frame;
+          frame_layout_resolved = true;
+          break;
+          TEST_LOG("Found GCC pattern in the first code blob for %s, using gcc frame layout", _cc->name());
+        } else {
+          const unsigned char* p = (const unsigned char*)ptr;
+          TEST_LOG("prologue[%d]: %02x %02x %02x %02x\n", i, p[0], p[1], p[2], p[3]);
+        }
+        ptr++;
+      }
       if (memcmp(ptr, gcc_pattern, sizeof(gcc_pattern)) == 0) {
         *table = FrameDesc::default_frame;
         frame_layout_resolved = true;
