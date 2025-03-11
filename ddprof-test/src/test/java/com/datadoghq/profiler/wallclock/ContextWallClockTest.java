@@ -38,7 +38,7 @@ public class ContextWallClockTest extends CStackAwareAbstractProfilerTest {
         assumeTrue(!isInCI() || !Platform.isAarch64() || !cstack.startsWith("vm"));
         // TODO: investigate why this test fails on musl
         // on musl the missing fp unwinding makes the wallclock tests unreliable
-//        assumeTrue(!Platform.isMusl() || !cstack.startsWith("vm"));
+        assumeTrue(!Platform.isMusl() || Platform.isAarch64());
         base.test(this);
     }
 

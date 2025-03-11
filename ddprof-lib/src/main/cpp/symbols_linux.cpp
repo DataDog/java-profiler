@@ -252,21 +252,21 @@ void ElfParser::parseDwarfInfo() {
   }
   // no valid eh_frame_hdr found; need to rely on the default linked frame descriptor
   FrameDesc *table = (FrameDesc *)malloc(sizeof(FrameDesc));
-#if defined(__aarch64__)
-  // default to clang frame layout - if we have gcc binary it will have the .comment section
-  *table = FrameDesc::default_clang_frame;
-  Elf64_Shdr* commentSection = findSection(SHT_PROGBITS, ".comment");
-  if (commentSection) {
-    if (commentSection->sh_size >= 4) {  // "GCC" + NULL terminator needs at least 4 bytes
-      char* commentData = (char*)at(commentSection);
-      if (strstr(commentData, "GCC") != 0) {
-        *table = FrameDesc::default_frame;
-      }
-    }
-  }
-#else
+//#if defined(__aarch64__)
+//  // default to clang frame layout - if we have gcc binary it will have the .comment section
+//  *table = FrameDesc::default_clang_frame;
+//  Elf64_Shdr* commentSection = findSection(SHT_PROGBITS, ".comment");
+//  if (commentSection) {
+//    if (commentSection->sh_size >= 4) {  // "GCC" + NULL terminator needs at least 4 bytes
+//      char* commentData = (char*)at(commentSection);
+//      if (strstr(commentData, "GCC") != 0) {
+//        *table = FrameDesc::default_frame;
+//      }
+//    }
+//  }
+//#else
   *table = FrameDesc::default_frame;
-#endif
+//#endif
   _cc->setDwarfTable(table, 1);
 }
 
