@@ -54,7 +54,7 @@ public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTe
         assumeFalse(Platform.isZing() || Platform.isJ9());
         // on aarch64 and JDK 8 the vmstructs unwinding for wallclock is extremely unreliable
         //   ; perhaps due to something missing in the unwinder but until we figure it out we will just not run the tests in CI
-        assumeTrue(!isInCI() || !Platform.isAarch64() || !cstack.startsWith("vm") );
+//        assumeTrue(!isInCI() || !Platform.isAarch64() || !cstack.startsWith("vm") );
         // TODO: investigate why this test fails on musl
         // on musl the missing fp unwinding makes the wallclock tests unreliable
         assumeTrue(!Platform.isMusl() || Platform.isAarch64());
