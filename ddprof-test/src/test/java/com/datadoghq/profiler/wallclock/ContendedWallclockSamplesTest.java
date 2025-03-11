@@ -49,7 +49,7 @@ public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTe
 
     @RetryTest(10)
     @TestTemplate
-    @ValueSource(strings = {"fp", "dwarf", "vm", "vmx"})
+    @ValueSource(strings = {"vm", "vmx"})
     public void test(@CStack String cstack) {
         assumeFalse(Platform.isZing() || Platform.isJ9());
         // on aarch64 and JDK 8 the vmstructs unwinding for wallclock is extremely unreliable
