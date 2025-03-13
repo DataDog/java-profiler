@@ -70,7 +70,7 @@ function prepareJdk() {
   # below the installation of the SDKMAN-managed JDK
   source ~/.sdkman/bin/sdkman-init.sh
 
-  local suffix="tem"
+  local suffix="amzn"
   local versionVar="JAVA_${version}_VERSION"
   if [[ "${qualifier}" == "j9" ]]; then
     suffix="sem"
