@@ -427,7 +427,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
           }
         }
 
-        if (!recovered_from_anchor && anchor) {
+        if (!recovered_from_anchor && anchor && detail < VM_EXPERT) {
           if (anchor->lastJavaPC() == nullptr || anchor->lastJavaSP() == 0) {
             // End of Java stack
             break;
