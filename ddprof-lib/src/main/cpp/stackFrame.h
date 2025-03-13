@@ -76,7 +76,7 @@ public:
   bool unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp, uintptr_t &fp);
   bool unwindAtomicStub(const void*& pc);
 
-  void adjustSP(const void *entry, const void *pc, uintptr_t &sp);
+  void adjustSP(const void *entry, const void *pc, uintptr_t &sp, int &fp_off);
 
   bool skipFaultInstruction();
 

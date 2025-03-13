@@ -16,6 +16,7 @@
 
 #ifdef __aarch64__
 
+#include "common.h"
 #include "safeAccess.h"
 #include "stackFrame.h"
 #include "vmStructs.h"
@@ -149,7 +150,7 @@ bool StackFrame::unwindAtomicStub(const void*& pc) {
   return false;
 }
 
-void StackFrame::adjustSP(const void *entry, const void *pc, uintptr_t &sp) {
+void StackFrame::adjustSP(const void *entry, const void *pc, uintptr_t &sp, int &fp_off) {
   instruction_t *ip = (instruction_t *)pc;
   if (ip > entry && (ip[-1] == 0xa9bf27ff ||
                      (ip[-1] == 0xd63f0100 && ip[-2] == 0xa9bf27ff))) {
@@ -162,6 +163,19 @@ void StackFrame::adjustSP(const void *entry, const void *pc, uintptr_t &sp) {
     //   ...
     //   add  sp, sp, #0x10
     sp += 16;
+  } else if (ip[-1] == 0xd63f0100 && ip[-2] == 0xf2dfffe8 && (((instruction_t*)entry)[1] != 0xd14053e9 && ((instruction_t*)entry)[0] != 0xd14053e9)) {
+//    sp -= 16;
+//    fp_off = 16;
+//    u64 diff = ((instruction_t*)pc - (instruction_t*)entry) * (sizeof(instruction_t*));
+//    sp -= 16 + (((u64)pc) % 16);
+//    sp += 80;
+//    TEST_LOG("diff: %ld, aligned pc: %d, aligned entry: %d", diff, ((u64)pc) % 16, ((u64)entry) % 16);
+//    if (diff >= 224) {
+//        for (instruction_t* pp = (instruction_t*)entry; pp < ip + 24; pp++) {
+//          TEST_LOG("i: %lx", *pp);
+//        }
+//        TEST_LOG("===");
+//    }
   }
 }
 

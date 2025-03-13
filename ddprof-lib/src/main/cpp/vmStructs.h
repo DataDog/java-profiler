@@ -162,10 +162,6 @@ protected:
   static void initUnsafeFunctions();
   static void initMemoryUsage(JNIEnv *env);
 
-  static bool goodPtr(const void* ptr) {
-    return (uintptr_t)ptr >= 0x1000 && ((uintptr_t)ptr & (sizeof(uintptr_t) - 1)) == 0;
-  }
-
   const char *at(int offset) { return (const char *)this + offset; }
 
   static bool aligned(const void *ptr) {
@@ -184,6 +180,10 @@ private:
   static bool isFlagTrue(const char *name);
 
 public:
+  static bool goodPtr(const void* ptr) {
+    return (uintptr_t)ptr >= 0x1000 && ((uintptr_t)ptr & (sizeof(uintptr_t) - 1)) == 0;
+  }
+
   static void init(CodeCache *libjvm);
   static void ready();
 

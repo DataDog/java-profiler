@@ -71,6 +71,8 @@ static jmethodID getMethodId(VMMethod *method) {
         *(VMMethod **)method_id == method) {
       return method_id;
     }
+  } else {
+    TEST_LOG("getMethodId: inDeadZone(method): %s, aligned((uintptr_t)method): %s", inDeadZone(method) ? "true" : "false", aligned((uintptr_t)method) ? "true" : "false");
   }
   return NULL;
 }
@@ -252,6 +254,8 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
 
   // Should be preserved across setjmp/longjmp
   volatile int depth = 0;
+  JavaFrameAnchor* anchor = nullptr;
+  bool recovered_from_anchor = false;
 
   if (vm_thread != NULL) {
     vm_thread->exception() = &crash_protection_ctx;
@@ -262,12 +266,15 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
       }
       return depth;
     }
+    anchor = vm_thread->anchor();
   }
   CodeCache *cc = NULL;
 
+  int last_block = 0;
+  const void* prev_pc = 0;
   // Walk until the bottom of the stack or until the first Java frame
   while (depth < max_depth) {
-    if (CodeHeap::contains(pc)) {
+    if (CodeHeap::contains(pc) && !(depth == 0 && frame.unwindAtomicStub(pc))) {
       // constant time
       NMethod *nm = CodeHeap::findNMethod(pc);
       if (nm == NULL) {
@@ -301,16 +308,26 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
             } while (scope_offset > 0 && depth < max_depth);
           }
 
+          last_block = 1;
           // Handle situations when sp is temporarily changed in the compiled
           // code
-          frame.adjustSP(nm->entry(), pc, sp);
+          intptr_t spback = sp;
+          int fp_off = 0;
+          frame.adjustSP(nm->entry(), pc, sp, fp_off);
 
-          sp += nm->frameSize() * sizeof(void *);
-          fp = ((uintptr_t *)sp)[-FRAME_PC_SLOT - 1];
-          pc = ((const void **)sp)[-FRAME_PC_SLOT];
+//          if (sp != spback) {
+//            sp += nm->frameSize() * sizeof(void *);
+//            fp = ((uintptr_t *)sp)[-FRAME_PC_SLOT - 1];
+//            pc = ((const void **)sp)[-FRAME_PC_SLOT];
+//          } else {
+            fp = *(uintptr_t *)fp;
+            pc = *(const void **)(fp + sizeof(void *));
+            sp += nm->frameSize() * sizeof(void *);
+
           continue;
         } else if (frame.unwindCompiled(nm, (uintptr_t &)pc, sp, fp) &&
                    profiler->isAddressInCode(pc)) {
+          last_block = 2;
           continue;
         }
 
@@ -338,6 +355,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                           : bcp - bytecode_start;
             fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
 
+            last_block = 3;
             sp = ((uintptr_t *)fp)[InterpreterFrame::sender_sp_offset];
             pc = stripPointer(((void **)fp)[FRAME_PC_SLOT]);
             fp = *(uintptr_t *)fp;
@@ -352,15 +370,30 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
             fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id);
 
             if (is_plausible_interpreter_frame) {
+              last_block = 4;
               pc = stripPointer(((void **)fp)[FRAME_PC_SLOT]);
               sp = frame.senderSP();
               fp = *(uintptr_t *)fp;
             } else {
+              last_block = 5;
               pc = stripPointer(*(void **)sp);
               sp = frame.senderSP();
             }
             continue;
           }
+        }
+
+        if (!recovered_from_anchor && anchor) {
+          if (anchor->lastJavaPC() == nullptr || anchor->lastJavaSP() == 0) {
+            // End of Java stack
+            break;
+          }
+          last_block = 6;
+          fp = anchor->lastJavaFP();
+          sp = anchor->lastJavaSP();
+          pc = anchor->lastJavaPC();
+          recovered_from_anchor = true;
+          continue;
         }
 
         fillFrame(frames[depth++], BCI_ERROR, "break_interpreted");
@@ -371,6 +404,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
           fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame");
           break;
         }
+        last_block = 7;
         uintptr_t prev_sp = sp;
         sp = anchor->lastJavaSP();
         fp = anchor->lastJavaFP();
@@ -396,10 +430,12 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
 
         if (frame.unwindStub((instruction_t *)start, name, (uintptr_t &)pc, sp,
                              fp)) {
+          last_block = 8;
           continue;
         }
 
         if (depth > 1 && nm->frameSize() > 0) {
+          last_block = 9;
           sp += nm->frameSize() * sizeof(void *);
           fp = ((uintptr_t *)sp)[-FRAME_PC_SLOT - 1];
           pc = ((const void **)sp)[-FRAME_PC_SLOT];
@@ -407,15 +443,25 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
         }
       }
     } else {
-      if (cc == NULL || !cc->contains(pc)) {
-        cc = libraries->findLibraryByAddress(pc);
-      }
-      const char *name = cc == NULL ? NULL : cc->binarySearch(pc);
+      if (prev_pc != pc) {
+        if (cc == NULL || !cc->contains(pc)) {
+          cc = libraries->findLibraryByAddress(pc);
+        }
+        const char *name = cc == NULL ? NULL : cc->binarySearch(pc);
 
-      fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
-      // _start should be the process entry point; any attempt to unwind from there will fail
-      if (name && !strcmp("_start", name)) {
+        if (!name) {
+          static char hexBuffer[32];
+          snprintf(hexBuffer, sizeof(hexBuffer), "0x%lx", (uintptr_t)pc);
+          name = hexBuffer;
+          TEST_LOG("walkVM: no name found for last_block: %d", last_block);
+          last_block = 0;
+        }
+        fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
+        // _start should be the process entry point; any attempt to unwind from there will fail
+        if (name && !strcmp("_start", name)) {
           break;
+        }
+        prev_pc = pc;
       }
     }
 
@@ -434,6 +480,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
     FrameDesc *f =
         cc != NULL ? cc->findFrameDesc(pc) : &FrameDesc::default_frame;
 
+    last_block = 10;
     u8 cfa_reg = (u8)f->cfa;
     int cfa_off = f->cfa >> 16;
     if (cfa_reg == DW_REG_SP) {
@@ -456,6 +503,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
       break;
     }
 
+    last_block = 11;
     if (f->fp_off & DW_PC_OFFSET) {
       pc = (const char *)pc + (f->fp_off >> 1);
     } else {
@@ -476,6 +524,14 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
         // Stack bottom
         break;
       }
+    }
+
+    if (anchor && !recovered_from_anchor && !VMStructs::goodPtr((const void*)fp) && anchor->lastJavaSP() != 0) {
+      last_block = 12;
+      recovered_from_anchor = true;
+      sp = anchor->lastJavaSP();
+      fp = anchor->lastJavaFP();
+      pc = anchor->lastJavaPC();
     }
 
     if (inDeadZone(pc)) {
