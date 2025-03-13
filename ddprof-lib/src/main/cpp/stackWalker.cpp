@@ -326,7 +326,8 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
           last_block = 1;
           // Handle situations when sp is temporarily changed in the compiled
           // code
-          intptr_t spback = sp;
+          uintptr_t spback = sp;
+          uintptr_t fpback = fp;
           int fp_off = 0;
           frame.adjustSP(nm->entry(), pc, sp, fp_off);
 
@@ -335,14 +336,36 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
 
           last_frameSize = nm->frameSize() * sizeof(void *);
 
-          if (VMStructs::goodPtr((void*)fp)) {
-            sp += nm->frameSize() * sizeof(void *);
-            fp = *(uintptr_t *)fp;
-            pc = *(const void **)(fp + sizeof(void *));
-          } else {
-            sp += nm->frameSize() * sizeof(void *);
-            fp = ((uintptr_t *)sp)[-FRAME_PC_SLOT - 1];
-            pc = ((const void **)sp)[-FRAME_PC_SLOT];
+          sp += nm->frameSize() * sizeof(void *);
+          fp = ((uintptr_t *)sp)[-FRAME_PC_SLOT - 1];
+          pc = ((const void **)sp)[-FRAME_PC_SLOT];
+
+          if (!CodeHeap::contains(pc) && libraries->findLibraryByAddress(pc) == NULL) {
+//            TEST_LOG("=== Unwinding from compiled frame: pc=%p -> %p", last_pc, pc);
+            fp = *(uintptr_t *)fpback;
+            pc = *(const void **)(fpback + sizeof(void*));
+//            TEST_LOG("=== Reconstructed fp: %lx, pc: %p", fp, pc);
+//            TEST_LOG("===> Stack");
+//            int offset = nm->frameSize() * sizeof(void *);
+//            for (intptr_t ptr = spback; ptr <= sp; ptr += sizeof(void *)) {
+//              TEST_LOG("stack[%d]|%lx", -1 * (offset + 8), *(uintptr_t *)ptr);
+//              offset -= sizeof(void *);
+//            }
+//            TEST_LOG("===> Instructions");
+//            for (instruction_t* pp = (instruction_t*)nm->entry(); pp <= ((instruction_t*)last_pc); pp++) {
+//              TEST_LOG("ins[%lx]|%lx", pp, *pp);
+//            }
+//            TEST_LOG("===");
+
+//            for (intptr_t ptr = sp - 8; ptr >= spback; ptr -= sizeof(void *)) {
+//              uintptr_t addr = *(uintptr_t *)ptr;
+//              TEST_LOG("Checking addr: %lx", addr);
+//              if (libraries->findLibraryByAddress((const void *)addr) != NULL) {
+//                pc = (const void *)addr;
+//                TEST_LOG("Inferred PC: %p", pc);
+//                break;
+//              }
+//            }
           }
 
           continue;
@@ -479,6 +502,11 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
           snprintf(hexBuffer, sizeof(hexBuffer), "0x%lx", (uintptr_t)pc);
           name = hexBuffer;
           TEST_LOG("walkVM: no name found for last_block: %d", last_block);
+
+//          for (instruction_t* pp = (instruction_t*)pc; pp < ((instruction_t*)pc) + 64; pp++) {
+//            TEST_LOG("ins[%lx]|%lx", pp, *pp);
+//          }
+//          TEST_LOG("===");
           last_block = 0;
         }
         fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
