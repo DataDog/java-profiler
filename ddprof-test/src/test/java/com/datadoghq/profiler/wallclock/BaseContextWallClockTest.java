@@ -56,7 +56,7 @@ final class BaseContextWallClockTest {
         Assumptions.assumeTrue(!Platform.isJ9() && !Platform.isZing());
 
         test.registerCurrentThreadForWallClockProfiling();
-        for (int i = 0, id = 1; i < 100; i++, id += 3) {
+        for (int i = 0, id = 1; i < 300; i++, id += 3) {
             method1(id);
         }
         test.stopProfiler();

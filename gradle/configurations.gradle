@@ -235,7 +235,7 @@ addBuildConfiguration 'release', 'linux', 'arm64',
     "-Wl,--gc-sections"
   ]
 addBuildConfiguration 'debug', 'linux', 'arm64',
-  ['-O0', '-g', '-DDEBUG'] + commonLinuxCompilerArgs,
+  ['-O0', '-g', '-DDEBUG', '-fno-inline', '-fno-default-inline', '-disable-llvm-optzns', '-fno-omit-frame-pointer', '-fno-optimize-sibling-calls', '-gdwarf-4'] + commonLinuxCompilerArgs,
   commonLinuxLinkerArgs
 
 addBuildConfiguration 'asan', 'linux', 'arm64',

@@ -257,11 +257,27 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
   JavaFrameAnchor* anchor = nullptr;
   bool recovered_from_anchor = false;
 
+  volatile int last_block = 0;
+  volatile const void* last_entry = nullptr;
+  volatile const void* last_pc = nullptr;
+  volatile u64 last_frameSize = 0;
+
   if (vm_thread != NULL) {
     vm_thread->exception() = &crash_protection_ctx;
     if (setjmp(crash_protection_ctx) != 0) {
       vm_thread->exception() = saved_exception;
       if (depth < max_depth) {
+        TEST_LOG("[break_not_walkable]: last_block: %d, frame_size: %lu", last_block, last_frameSize);
+        if (last_block == 1 && last_entry != nullptr && last_pc != nullptr) {
+          for (instruction_t* pp = (instruction_t*)last_entry; pp < (instruction_t*)pc; pp++) {
+            TEST_LOG("ins|%lx", *pp);
+          }
+          TEST_LOG("===");
+          last_entry = nullptr;
+          last_pc = nullptr;
+          last_frameSize = 0;
+
+        }
         fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
       }
       return depth;
@@ -270,11 +286,10 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
   }
   CodeCache *cc = NULL;
 
-  int last_block = 0;
   const void* prev_pc = 0;
   // Walk until the bottom of the stack or until the first Java frame
   while (depth < max_depth) {
-    if (CodeHeap::contains(pc) && !(depth == 0 && frame.unwindAtomicStub(pc))) {
+    if (CodeHeap::contains(pc)) {
       // constant time
       NMethod *nm = CodeHeap::findNMethod(pc);
       if (nm == NULL) {
@@ -315,14 +330,20 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
           int fp_off = 0;
           frame.adjustSP(nm->entry(), pc, sp, fp_off);
 
-//          if (sp != spback) {
-//            sp += nm->frameSize() * sizeof(void *);
-//            fp = ((uintptr_t *)sp)[-FRAME_PC_SLOT - 1];
-//            pc = ((const void **)sp)[-FRAME_PC_SLOT];
-//          } else {
+          last_entry = nm->entry();
+          last_pc = pc;
+
+          last_frameSize = nm->frameSize() * sizeof(void *);
+
+          if (VMStructs::goodPtr((void*)fp)) {
+            sp += nm->frameSize() * sizeof(void *);
             fp = *(uintptr_t *)fp;
             pc = *(const void **)(fp + sizeof(void *));
+          } else {
             sp += nm->frameSize() * sizeof(void *);
+            fp = ((uintptr_t *)sp)[-FRAME_PC_SLOT - 1];
+            pc = ((const void **)sp)[-FRAME_PC_SLOT];
+          }
 
           continue;
         } else if (frame.unwindCompiled(nm, (uintptr_t &)pc, sp, fp) &&
@@ -399,22 +420,26 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
         fillFrame(frames[depth++], BCI_ERROR, "break_interpreted");
         break;
       } else if (detail < VM_EXPERT && nm->isEntryFrame(pc)) {
-        JavaFrameAnchor* anchor = JavaFrameAnchor::fromEntryFrame(fp);
-        if (anchor == NULL) {
-          fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame");
-          break;
+        JavaFrameAnchor* e_anchor = JavaFrameAnchor::fromEntryFrame(fp);
+        if (e_anchor == NULL) {
+          if (anchor != NULL && !recovered_from_anchor && anchor->lastJavaSP() != 0) {
+            e_anchor = anchor;
+          } else {
+            fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame: no anchor");
+            break;
+          }
         }
         last_block = 7;
         uintptr_t prev_sp = sp;
-        sp = anchor->lastJavaSP();
-        fp = anchor->lastJavaFP();
-        pc = anchor->lastJavaPC();
+        sp = e_anchor->lastJavaSP();
+        fp = e_anchor->lastJavaFP();
+        pc = e_anchor->lastJavaPC();
         if (sp == 0 || pc == NULL) {
           // End of Java stack
           break;
         }
         if (sp < prev_sp || sp >= bottom || !aligned(sp)) {
-          fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame");
+          fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame: invalid anchor");
           break;
         }
         continue;
