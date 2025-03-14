@@ -298,25 +298,13 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
         // might be good to bail out since it would be a challenge to unwind properly?
         break;
       } else {
-        if (!nm->frameSize()) {
-          pc = *(const void **)(fp + 8);
-          fp = *(uintptr_t *)fp;
-          sp = fp;
-          continue;
-        }
         if (nm->isNMethod()) {
-          if (nm->frameSize() == 0) {
-            TEST_LOG("unexpected[1] frameSize is 0");
-          }
           int level = nm->level();
           FrameTypeId type = detail != VM_BASIC &&
               level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED;
           fillFrame(frames[depth++], type, 0, nm->method()->id());
 
           if (nm->isFrameCompleteAt(pc)) {
-            if (nm->frameSize() == 0) {
-              TEST_LOG("unexpected[2] frameSize is 0");
-            }
             int scope_offset = nm->findScopeOffset(pc);
             if (scope_offset > 0) {
               depth--;
@@ -336,41 +324,67 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
               } while (scope_offset > 0 && depth < max_depth);
             }
 
-            last_block = 1;
-            // Handle situations when sp is temporarily changed in the compiled
-            // code
-            uintptr_t spback = sp;
-            uintptr_t fpback = fp;
-            int fp_off = 0;
-            frame.adjustSP(nm->entry(), pc, sp, fp_off);
+//            if (!nm->frameSize()) {
+//              last_block = -1;
+//              pc = stripPointer(*(const void **)(fp +sizeof(void*)));
+//              fp = *(uintptr_t *)fp;
+//              sp = fp;
+//            } else {
+              last_block = 1;
+              // Handle situations when sp is temporarily changed in the compiled
+              // code
+              uintptr_t spback = sp;
+              uintptr_t fpback = fp;
+              int fp_off = 0;
+              frame.adjustSP(nm->entry(), pc, sp, fp_off);
 
-            last_entry = nm->entry();
-            last_pc = pc;
+              last_entry = nm->entry();
+              last_pc = pc;
 
-            last_frameSize = nm->frameSize() * sizeof(void *);
+              last_frameSize = nm->frameSize() * sizeof(void *);
 
-            sp += nm->frameSize() * sizeof(void *);
-            fp = ((uintptr_t *)sp)[-FRAME_PC_SLOT - 1];
-            pc = ((const void **)sp)[-FRAME_PC_SLOT];
+              sp += nm->frameSize() * sizeof(void *);
+              fp = ((uintptr_t *)sp)[-FRAME_PC_SLOT - 1];
+              pc = ((const void **)sp)[-FRAME_PC_SLOT];
 
-            if (!CodeHeap::contains(pc) && libraries->findLibraryByAddress(pc) == NULL) {
-              fp = *(uintptr_t *)fpback;
-              pc = *(const void **)(fpback + sizeof(void*));
+              if (!profiler->isAddressInCode(pc)) {
+                if (anchor && !recovered_from_anchor) {
+                  TEST_LOG("Relinking via anchor: sp: %lx, fp: %lx, pc: %p", sp, fp, pc);
+                  recovered_from_anchor = true;
+                  last_block = -3;
+                  if (anchor->lastJavaPC() == nullptr || anchor->lastJavaSP() == 0) {
+                    // End of Java stack
+                    break;
+                  }
+                  pc = anchor->lastJavaPC();
+                  sp = anchor->lastJavaSP();
+                  fp = anchor->lastJavaFP();
+                  continue;
+                }
+                const void* newpc = stripPointer(*(const void **)(fpback + sizeof(void*)));
+                if (profiler->isAddressInCode(newpc)) {
+                  last_block = -2;
+                  TEST_LOG("Relinking via FP");
+                  fp = *(uintptr_t *)fpback;
+                  pc = newpc;
+                  sp = fp;
+                } else {
+                  fillFrame(frames[depth++], BCI_ERROR, "break_compiled");
+                  break;
+                }
+              }
+//            }
+            continue;
+          } else {
+            if (frame.unwindCompiled(nm, (uintptr_t &)pc, sp, fp) && profiler->isAddressInCode(pc)) {
+              last_block = 2;
+              continue;
             }
-
-            continue;
-          } else if (frame.unwindCompiled(nm, (uintptr_t &)pc, sp, fp) &&
-                     profiler->isAddressInCode(pc)) {
-            last_block = 2;
-            continue;
           }
 
           fillFrame(frames[depth++], BCI_ERROR, "break_compiled");
           break;
         } else if (nm->isInterpreter()) {
-          if (nm->frameSize() == 0) {
-            TEST_LOG("unexpected[3] frameSize is 0");
-          }
           if (vm_thread != NULL && vm_thread->inDeopt()) {
             fillFrame(frames[depth++], BCI_ERROR, "break_deopt");
             break;
@@ -436,9 +450,6 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
           fillFrame(frames[depth++], BCI_ERROR, "break_interpreted");
           break;
         } else if (detail < VM_EXPERT && nm->isEntryFrame(pc)) {
-          if (nm->frameSize() == 0) {
-            TEST_LOG("unexpected[4] frameSize is 0");
-          }
           JavaFrameAnchor* e_anchor = JavaFrameAnchor::fromEntryFrame(fp);
           if (e_anchor == NULL) {
             if (anchor != NULL && !recovered_from_anchor && anchor->lastJavaSP() != 0) {
@@ -483,6 +494,12 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
             sp += nm->frameSize() * sizeof(void *);
             fp = ((uintptr_t *)sp)[-FRAME_PC_SLOT - 1];
             pc = ((const void **)sp)[-FRAME_PC_SLOT];
+            continue;
+          } else {
+            TEST_LOG("Unwind stub: %s", name);
+            pc = stripPointer(*(const void **)(fp +sizeof(void*)));
+            fp = *(uintptr_t *)fp;
+            sp = fp;
             continue;
           }
         }
