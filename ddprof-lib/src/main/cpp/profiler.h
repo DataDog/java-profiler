@@ -243,7 +243,7 @@ public:
   const char *getLibraryName(const char *native_symbol);
   const char *findNativeMethod(const void *address);
   CodeBlob *findRuntimeStub(const void *address);
-  bool isAddressInCode(const void *pc);
+  bool isAddressInCode(const void *pc, bool include_stubs = true);
 
   static void segvHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void busHandler(int signo, siginfo_t *siginfo, void *ucontext);

@@ -281,24 +281,19 @@ void ElfParser::parseDwarfInfo() {
     for (int b = 0; b < _cc->count(); b++) {
       CodeBlob* blob = _cc->blob(b);
       if (blob) {
-        TEST_LOG("Checking function: %s of %s", blob->_name, _cc->name());
-        const unsigned char* ptr = (const unsigned char*)blob->_start;
-        static const unsigned char gcc_pattern[] = { 0xfd, 0x03, 0x00, 0x91 };   // mov x29, sp
-        static const unsigned char clang_pattern[] = { 0xa9, 0x01, 0x7b, 0xfd }; // stp x29, x30, [sp, #16]
-        if (memcmp(ptr + 4, gcc_pattern, sizeof(gcc_pattern)) == 0 || memcmp(ptr + 8, gcc_pattern, sizeof(gcc_pattern)) == 0) {
+        instruction_t* ptr = (instruction_t*)blob->_start;
+        instruction_t gcc_pattern = 0x910003fd;   // mov x29, sp
+        instruction_t clang_pattern = 0xfd7b01a9; // stp x29, x30, [sp, #16]
+        if (*(ptr + 1) == gcc_pattern || *(ptr + 2) == gcc_pattern) {
           *table = FrameDesc::default_frame;
-          TEST_LOG("Found GCC pattern in the first code blob for %s, using gcc frame layout", _cc->name());
+          TEST_LOG("Found GCC pattern in code blob for %s, using gcc frame layout", _cc->name());
           frame_layout_resolved = true;
           break;
-        } else if (memcmp(ptr + 4, clang_pattern, sizeof(clang_pattern)) == 0) {
+        } else if (*(ptr + 1) == clang_pattern || *(ptr + 2) == clang_pattern) {
           *table = FrameDesc::default_clang_frame;
-          TEST_LOG("Found Clang pattern in the first code blob for %s, using clang frame layout", _cc->name());
+          TEST_LOG("Found Clang pattern in code blob for %s, using clang frame layout", _cc->name());
           frame_layout_resolved = true;
           break;
-        } else {
-          print_four_bytes(blob->_name, ptr + 4);
-          print_four_bytes(blob->_name, ptr + 8);
-          TEST_LOG("===");
         }
       }
     }

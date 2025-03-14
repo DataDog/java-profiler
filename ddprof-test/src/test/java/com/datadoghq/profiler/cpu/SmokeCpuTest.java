@@ -60,7 +60,7 @@ public class SmokeCpuTest extends CStackAwareAbstractProfilerTest {
 
     @RetryTest(10)
     @TestTemplate
-    @ValueSource(strings = {"fp", "dwarf", "vm", "vmx"})
+    @ValueSource(strings = {"vm", "fp", "dwarf", "vmx"})
     public void testIOBound(@CStack String cstack) throws Exception {
         new IOBoundCode().run();
 
