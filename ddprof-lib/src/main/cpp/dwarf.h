@@ -36,6 +36,7 @@ const int DW_REG_SP = 7;
 const int DW_REG_PC = 16;
 const int EMPTY_FRAME_SIZE = DW_STACK_SLOT;
 const int LINKED_FRAME_SIZE = 2 * DW_STACK_SLOT;
+const int LINKED_FRAME_CLANG_SIZE = LINKED_FRAME_SIZE;
 
 #elif defined(__i386__)
 
@@ -46,6 +47,7 @@ const int DW_REG_SP = 4;
 const int DW_REG_PC = 8;
 const int EMPTY_FRAME_SIZE = DW_STACK_SLOT;
 const int LINKED_FRAME_SIZE = 2 * DW_STACK_SLOT;
+const int LINKED_FRAME_CLANG_SIZE = LINKED_FRAME_SIZE;
 
 #elif defined(__aarch64__)
 
@@ -55,13 +57,8 @@ const int DW_REG_FP = 29;
 const int DW_REG_SP = 31;
 const int DW_REG_PC = 30;
 const int EMPTY_FRAME_SIZE = 0;
-
-// aarch64 function prologue looks like this (if frame pointer is used):
-// stp x29, x30, [sp, -16]!   // Save FP (x29) and LR (x30)
-// mov x29, sp                // Set FP to SP
-// ---
-// LINKED_FRAME_SIZE should be 16
-const int LINKED_FRAME_SIZE = 2 * DW_STACK_SLOT;
+const int LINKED_FRAME_SIZE = 0;
+const int LINKED_FRAME_CLANG_SIZE = 2 * DW_STACK_SLOT;
 
 #else
 
@@ -72,6 +69,7 @@ const int DW_REG_SP = 1;
 const int DW_REG_PC = 2;
 const int EMPTY_FRAME_SIZE = 0;
 const int LINKED_FRAME_SIZE = 0;
+const int LINKED_FRAME_CLANG_SIZE = 0;
 
 #endif
 
@@ -83,6 +81,7 @@ struct FrameDesc {
 
   static FrameDesc empty_frame;
   static FrameDesc default_frame;
+  static FrameDesc default_clang_frame;
 
   static int comparator(const void *p1, const void *p2) {
     FrameDesc *fd1 = (FrameDesc *)p1;
