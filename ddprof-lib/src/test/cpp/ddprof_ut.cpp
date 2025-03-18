@@ -235,6 +235,17 @@
         EXPECT_EQ(9, hs_version1);
     }
 
+    TEST(JavaVersionAccess, testJavaVersionAccess_hs_24) {
+        char runtime_prop_value_1[] = "24+36-FR";
+        char vm_prop_value_1[] = "24+36-FR";
+
+        JavaFullVersion java_version1 = JavaVersionAccess::get_java_version(runtime_prop_value_1);
+        int hs_version1 = JavaVersionAccess::get_hotspot_version(vm_prop_value_1);
+        EXPECT_EQ(24, java_version1.major);
+        EXPECT_EQ(0, java_version1.update);
+        EXPECT_EQ(24, hs_version1);
+    }
+
     int main(int argc, char **argv) {
       ::testing::InitGoogleTest(&argc, argv);
       return RUN_ALL_TESTS();
