@@ -129,7 +129,12 @@ JavaFullVersion JavaVersionAccess::get_java_version(char* prop_value) {
     if (version.major < 9) {
       version.major = 9;
     }
-    // format is 11.0.17+8
+    char* peg_char = strchr(prop_value, '+');
+    if (peg_char) {
+      // terminate before the build specification
+      *peg_char = '\0';
+    }
+    // format is 11.0.17
     // this shortcut for parsing the update version should hold till Java 99
     version.update = atoi(prop_value + 5);
   }
