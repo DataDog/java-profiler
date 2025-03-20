@@ -23,6 +23,9 @@
 #include <string.h>
 #include <sys/syscall.h>
 
+#include "counters.h"
+#include "tsc.h"
+
 #ifdef __APPLE__
 #define REG(l, m) _ucontext->uc_mcontext->__ss.__##m
 #else
@@ -57,6 +60,7 @@ void StackFrame::ret() { pc() = link(); }
 
 bool StackFrame::unwindStub(instruction_t *entry, const char *name,
                             uintptr_t &pc, uintptr_t &sp, uintptr_t &fp) {
+  const u64 startTime = TSC::ticks();
   instruction_t *ip = (instruction_t *)pc;
   if (ip == entry || *ip == 0xd65f03c0 || strncmp(name, "itable", 6) == 0 ||
       strncmp(name, "vtable", 6) == 0 ||
@@ -67,6 +71,12 @@ bool StackFrame::unwindStub(instruction_t *entry, const char *name,
       strcmp(name, "atomic entry points") == 0 ||
       strcmp(name, "InlineCacheBuffer") == 0) {
     pc = link();
+
+    const u64 endTime = TSC::ticks();
+    const u64 duration = TSC::ticks_to_millis(endTime - startTime);
+    if (duration > 1) {
+      Counters::increment(UNWINDING_STUB_TIME, duration);
+    }
     return true;
   } else if (strcmp(name, "forward_copy_longs") == 0 ||
              strcmp(name, "backward_copy_longs") == 0
@@ -83,6 +93,12 @@ bool StackFrame::unwindStub(instruction_t *entry, const char *name,
       // When cstack=vm, unwind stub frames one by one
       pc = link();
     }
+
+    const u64 endTime = TSC::ticks();
+    const u64 duration = TSC::ticks_to_millis(endTime - startTime);
+    if (duration > 1) {
+      Counters::increment(UNWINDING_STUB_TIME, duration);
+    }
     return true;
   } else if (entry != NULL && entry[0] == 0xa9bf7bfd) {
     // The stub begins with
@@ -91,11 +107,23 @@ bool StackFrame::unwindStub(instruction_t *entry, const char *name,
     if (ip == entry + 1) {
       sp += 16;
       pc = ((uintptr_t *)sp)[-1];
+
+      const u64 endTime = TSC::ticks();
+      const u64 duration = TSC::ticks_to_millis(endTime - startTime);
+      if (duration > 1) {
+        Counters::increment(UNWINDING_STUB_TIME, duration);
+      }
       return true;
     } else if (entry[1] == 0x910003fd && withinCurrentStack(fp)) {
       sp = fp + 16;
       fp = ((uintptr_t *)sp)[-2];
       pc = ((uintptr_t *)sp)[-1];
+
+      const u64 endTime = TSC::ticks();
+      const u64 duration = TSC::ticks_to_millis(endTime - startTime);
+      if (duration > 1) {
+        Counters::increment(UNWINDING_STUB_TIME, duration);
+      }
       return true;
     }
   } else if (strncmp(name, "indexof_linear_", 15) == 0 &&
@@ -117,6 +145,7 @@ static inline bool isEntryBarrier(instruction_t *ip) {
 
 bool StackFrame::unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp,
                                 uintptr_t &fp) {
+  const u64 startTime = TSC::ticks();
   instruction_t *ip = (instruction_t *)pc;
   instruction_t *entry = (instruction_t *)nm->entry();
   if ((*ip & 0xffe07fff) == 0xa9007bfd) {
@@ -125,33 +154,70 @@ bool StackFrame::unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp,
     unsigned int offset = (*ip >> 12) & 0x1f8;
     sp += offset + 16;
     pc = link();
+
+    const u64 endTime = TSC::ticks();
+    const u64 duration = TSC::ticks_to_millis(endTime - startTime);
+    if (duration > 1) {
+      Counters::increment(UNWINDING_COMPILED_TIME, duration);
+    }
   } else if (ip > entry && ip[0] == 0x910003fd && ip[-1] == 0xa9bf7bfd) {
     // stp  x29, x30, [sp, #-16]!
     // mov  x29, sp
     sp += 16;
     pc = ((uintptr_t *)sp)[-1];
+
+    const u64 endTime = TSC::ticks();
+    const u64 duration = TSC::ticks_to_millis(endTime - startTime);
+    if (duration > 1) {
+      Counters::increment(UNWINDING_COMPILED_TIME, duration);
+    }
   } else if (ip > entry + 3 && !nm->isFrameCompleteAt(ip) &&
              (isEntryBarrier(ip) || isEntryBarrier(ip + 1))) {
     // Frame should be complete at this point
     sp += nm->frameSize() * sizeof(void *);
     fp = ((uintptr_t *)sp)[-2];
     pc = ((uintptr_t *)sp)[-1];
+
+    const u64 endTime = TSC::ticks();
+    const u64 duration = TSC::ticks_to_millis(endTime - startTime);
+    if (duration > 1) {
+      Counters::increment(UNWINDING_COMPILED_TIME, duration);
+    }
   } else {
     // Just try
     pc = link();
+  }
+
+  const u64 endTime = TSC::ticks();
+  const u64 duration = TSC::ticks_to_millis(endTime - startTime);
+  if (duration > 1) {
+    Counters::increment(UNWINDING_COMPILED_TIME, duration);
   }
   return true;
 }
 
 bool StackFrame::unwindAtomicStub(const void*& pc) {
   // VM threads may call generated atomic stubs, which are not normally walkable
+  const u64 startTime = TSC::ticks();
   const void* lr = (const void*)link();
   if (VMStructs::libjvm()->contains(lr)) {
     NMethod* nm = CodeHeap::findNMethod(pc);
     if (nm != NULL && strncmp(nm->name(), "Stub", 4) == 0) {
       pc = lr;
+
+      const u64 endTime = TSC::ticks();
+      const u64 duration = TSC::ticks_to_millis(endTime - startTime);
+      if (duration > 1) {
+        Counters::increment(UNWINDING_ATOMIC_STUB_TIME, duration);
+      }
       return true;
     }
+  }
+
+  const u64 endTime = TSC::ticks();
+  const u64 duration = TSC::ticks_to_millis(endTime - startTime);
+  if (duration > 1) {
+    Counters::increment(UNWINDING_ATOMIC_STUB_TIME, duration);
   }
   return false;
 }
