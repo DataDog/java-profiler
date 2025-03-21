@@ -348,6 +348,14 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
     saved_sp = frame.sp();
     saved_fp = frame.fp();
 
+    // Check if we're in a vdso region
+    if (_libs->findLibraryByAddress((const void*)saved_pc) != NULL && 
+        strcmp(_libs->findLibraryByAddress((const void*)saved_pc)->name(), "[vdso]") == 0) {
+      frames->bci = BCI_NATIVE_FRAME;
+      frames->method_id = (jmethodID)"vdso";
+      return 1;
+    }
+
     if (saved_pc >= (uintptr_t)_call_stub_begin &&
         saved_pc < (uintptr_t)_call_stub_end) {
       // call_stub is unsafe to walk
