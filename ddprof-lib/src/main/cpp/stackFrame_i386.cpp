@@ -21,6 +21,9 @@
 #include <errno.h>
 #include <string.h>
 
+#include "counters.h"
+#include "tsc.h"
+
 uintptr_t &StackFrame::pc() {
   return (uintptr_t &)_ucontext->uc_mcontext.gregs[REG_EIP];
 }
@@ -68,12 +71,19 @@ void StackFrame::ret() {
 
 bool StackFrame::unwindStub(instruction_t *entry, const char *name,
                             uintptr_t &pc, uintptr_t &sp, uintptr_t &fp) {
+  const u64 startTime = TSC::ticks();
   instruction_t *ip = (instruction_t *)pc;
   if (ip == entry || *ip == 0xc3 || strncmp(name, "itable", 6) == 0 ||
       strncmp(name, "vtable", 6) == 0 ||
       strcmp(name, "InlineCacheBuffer") == 0) {
     pc = *(uintptr_t *)sp;
     sp += 4;
+
+    const u64 endTime = TSC::ticks();
+    const u64 duration = TSC::ticks_to_millis(endTime - startTime);
+    if (duration > 1) {
+      Counters::increment(UNWINDING_STUB_TIME, duration);
+    }
     return true;
   } else if (entry != NULL && entry[0] == 0x55 && entry[1] == 0x8b &&
              entry[2] == 0xec) {
@@ -83,19 +93,38 @@ bool StackFrame::unwindStub(instruction_t *entry, const char *name,
     if (ip == entry + 1) {
       pc = ((uintptr_t *)sp)[1];
       sp += 8;
+
+      const u64 endTime = TSC::ticks();
+      const u64 duration = TSC::ticks_to_millis(endTime - startTime);
+      if (duration > 1) {
+        Counters::increment(UNWINDING_STUB_TIME, duration);
+      }
       return true;
     } else if (withinCurrentStack(fp)) {
       sp = fp + 8;
       fp = ((uintptr_t *)sp)[-2];
       pc = ((uintptr_t *)sp)[-1];
+
+      const u64 endTime = TSC::ticks();
+      const u64 duration = TSC::ticks_to_millis(endTime - startTime);
+      if (duration > 1) {
+        Counters::increment(UNWINDING_STUB_TIME, duration);
+      }
       return true;
     }
+  }
+
+  const u64 endTime = TSC::ticks();
+  const u64 duration = TSC::ticks_to_millis(endTime - startTime);
+  if (duration > 1) {
+    Counters::increment(UNWINDING_STUB_TIME, duration);
   }
   return false;
 }
 
 bool StackFrame::unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp,
                                 uintptr_t &fp) {
+  const u64 startTime = TSC::ticks();
   instruction_t *ip = (instruction_t *)pc;
   instruction_t *entry = (instruction_t *)nm->entry();
   if (ip <= entry || *ip == 0xc3 // ret
@@ -104,13 +133,31 @@ bool StackFrame::unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp,
   {
     pc = *(uintptr_t *)sp;
     sp += 4;
+
+    const u64 endTime = TSC::ticks();
+    const u64 duration = TSC::ticks_to_millis(endTime - startTime);
+    if (duration > 1) {
+      Counters::increment(UNWINDING_COMPILED_TIME, duration);
+    }
     return true;
   } else if (*ip == 0x5d) {
     // pop ebp
     fp = ((uintptr_t *)sp)[0];
     pc = ((uintptr_t *)sp)[1];
     sp += 8;
+
+    const u64 endTime = TSC::ticks();
+    const u64 duration = TSC::ticks_to_millis(endTime - startTime);
+    if (duration > 1) {
+      Counters::increment(UNWINDING_COMPILED_TIME, duration);
+    }
     return true;
+  }
+
+  const u64 endTime = TSC::ticks();
+  const u64 duration = TSC::ticks_to_millis(endTime - startTime);
+  if (duration > 1) {
+    Counters::increment(UNWINDING_COMPILED_TIME, duration);
   }
   return false;
 }
