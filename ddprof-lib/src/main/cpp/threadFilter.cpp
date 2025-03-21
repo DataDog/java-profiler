@@ -19,6 +19,8 @@
 #include "os.h"
 #include <stdlib.h>
 #include <string.h>
+#include <vector>
+#include <mutex>
 
 void trackPage() {
   Counters::increment(THREAD_FILTER_PAGES, 1);
@@ -87,7 +89,9 @@ void ThreadFilter::clear() {
 
 bool ThreadFilter::accept(int thread_id) {
   u64 *b = bitmap(thread_id);
-  return b != NULL && (word(b, thread_id) & (1ULL << (thread_id & 0x3f)));
+  if (b == NULL) return false;
+  u32 reversed = reverseBits(thread_id);
+  return word(b, thread_id) & (1ULL << (reversed & 0x3f));
 }
 
 void ThreadFilter::add(int thread_id) {
@@ -104,7 +108,8 @@ void ThreadFilter::add(int thread_id) {
     }
   }
 
-  u64 bit = 1ULL << (thread_id & 0x3f);
+  u32 reversed = reverseBits(thread_id);
+  u64 bit = 1ULL << (reversed & 0x3f);
   if (!(__sync_fetch_and_or(&word(b, thread_id), bit) & bit)) {
     atomicInc(_size);
   }
@@ -116,26 +121,36 @@ void ThreadFilter::remove(int thread_id) {
     return;
   }
 
-  u64 bit = 1ULL << (thread_id & 0x3f);
+  u32 reversed = reverseBits(thread_id);
+  u64 bit = 1ULL << (reversed & 0x3f);
   if (__sync_fetch_and_and(&word(b, thread_id), ~bit) & bit) {
     atomicInc(_size, -1);
   }
 }
 
-void ThreadFilter::collect(std::vector<int> &v) {
-  for (int i = 0; i < _max_bitmaps; i++) {
-    u64 *b = _bitmap[i];
-    if (b != NULL) {
-      int start_id = i * BITMAP_CAPACITY;
-      for (int j = 0; j < BITMAP_SIZE / sizeof(u64); j++) {
-        // Considering the functional impact, relaxed could be a reasonable
-        // order here
-        u64 word = __atomic_load_n(&b[j], __ATOMIC_ACQUIRE);
-        while (word != 0) {
-          v.push_back(start_id + j * 64 + __builtin_ctzl(word));
-          word &= (word - 1);
+void ThreadFilter::collect(std::vector<int>& tids) {
+    tids.reserve(_size);  // Pre-allocate space for efficiency
+    
+    // Iterate through the bitmap array
+    for (int i = 0; i < _max_bitmaps; i++) {
+        u64* b = _bitmap[i];
+        if (b != NULL) {
+            int start_id = i * BITMAP_CAPACITY;
+            for (int j = 0; j < BITMAP_SIZE / sizeof(u64); j++) {
+                u64 word = __atomic_load_n(&b[j], __ATOMIC_ACQUIRE);
+                while (word != 0) {
+                    int bit_pos = __builtin_ctzl(word);
+                    // For each bit position, we need to find all thread IDs that would map to it
+                    for (int k = 0; k < 64; k++) {
+                        int thread_id = start_id + (j << 6) + k;
+                        u32 reversed = reverseBits(thread_id);
+                        if ((reversed & 0x3f) == bit_pos) {
+                            tids.push_back(thread_id);
+                        }
+                    }
+                    word &= (word - 1);
+                }
+            }
         }
-      }
     }
-  }
 }

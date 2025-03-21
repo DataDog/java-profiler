@@ -11,6 +11,7 @@
     #include "threadLocalData.h"
     #include "vmEntry.h"
     #include <vector>
+    #include <algorithm>  // For std::sort
 
     ssize_t callback(char* ptr, int len) {
         return len;
@@ -143,6 +144,65 @@
             ASSERT_FALSE(filter.accept(tid));
         }
         EXPECT_EQ(0, filter.size());
+    }
+
+    TEST(ThreadFilter, testThreadFilterCollect) {
+        ThreadFilter filter;
+        filter.init("");
+        ASSERT_TRUE(filter.enabled());
+        EXPECT_EQ(0, filter.size());
+
+        // Add some thread IDs that would map to different bit positions
+        std::vector<int> test_tids = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+        for (int tid : test_tids) {
+            filter.add(tid);
+            EXPECT_TRUE(filter.accept(tid));
+        }
+        ASSERT_EQ(test_tids.size(), filter.size());
+
+        // Collect all thread IDs
+        std::vector<int> collected_tids;
+        filter.collect(collected_tids);
+        
+        // Verify size matches
+        ASSERT_EQ(test_tids.size(), collected_tids.size());
+        
+        // Sort both vectors for comparison
+        std::sort(test_tids.begin(), test_tids.end());
+        std::sort(collected_tids.begin(), collected_tids.end());
+        
+        // Verify all thread IDs are present
+        for (size_t i = 0; i < test_tids.size(); i++) {
+            EXPECT_EQ(test_tids[i], collected_tids[i]) 
+                << "Mismatch at index " << i 
+                << ": expected " << test_tids[i] 
+                << ", got " << collected_tids[i];
+        }
+
+        // Test with a larger range of thread IDs
+        filter.clear();
+        test_tids.clear();
+        for (int i = 0; i < 100; i++) {
+            int tid = i * 64 + 1;  // Use IDs that would map to different words
+            test_tids.push_back(tid);
+            filter.add(tid);
+            EXPECT_TRUE(filter.accept(tid));
+        }
+        ASSERT_EQ(test_tids.size(), filter.size());
+
+        collected_tids.clear();
+        filter.collect(collected_tids);
+        
+        ASSERT_EQ(test_tids.size(), collected_tids.size());
+        std::sort(test_tids.begin(), test_tids.end());
+        std::sort(collected_tids.begin(), collected_tids.end());
+        
+        for (size_t i = 0; i < test_tids.size(); i++) {
+            EXPECT_EQ(test_tids[i], collected_tids[i]) 
+                << "Mismatch at index " << i 
+                << ": expected " << test_tids[i] 
+                << ", got " << collected_tids[i];
+        }
     }
 
     TEST(ThreadInfoTest, testThreadInfoCleanupAllDead) {

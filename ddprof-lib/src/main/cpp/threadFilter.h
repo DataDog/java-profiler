@@ -45,9 +45,21 @@ private:
         __ATOMIC_ACQUIRE);
   }
 
-  u64 &word(u64 *bitmap, int thread_id) {
-    // todo: add thread safe APIs
-    return bitmap[((u32)thread_id % BITMAP_CAPACITY) >> 6];
+  static u32 reverseBits(u32 n) {
+      u32 x = n & 0x3f;  // isolate lower 6 bits
+      x = ((x & 0x01) << 5) |
+          ((x & 0x02) << 3) |
+          ((x & 0x04) << 1) |
+          ((x & 0x08) >> 1) |
+          ((x & 0x10) >> 3) |
+          ((x & 0x20) >> 5);
+      return (n & ~0x3f) | x;
+  }
+
+
+  // Map thread ID to word index
+  u64& word(u64 *bitmap, u32 thread_id) {
+    return bitmap[thread_id >> 6];
   }
 
 public:
