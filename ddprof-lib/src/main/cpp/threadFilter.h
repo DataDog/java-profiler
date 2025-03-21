@@ -46,14 +46,14 @@ private:
   }
 
   static u32 reverseBits(u32 n) {
-      u32 x = n & 0x3f;  // isolate lower 6 bits
-      x = ((x & 0x01) << 5) |
-          ((x & 0x02) << 3) |
-          ((x & 0x04) << 1) |
-          ((x & 0x08) >> 1) |
-          ((x & 0x10) >> 3) |
-          ((x & 0x20) >> 5);
-      return (n & ~0x3f) | x;
+    u32 x = n & 0x3f;  // isolate lower 6 bits
+    x = ((x & 0x01) << 5) |
+        ((x & 0x02) << 3) |
+        ((x & 0x04) << 1) |
+        ((x & 0x08) >> 1) |
+        ((x & 0x10) >> 3) |
+        ((x & 0x20) >> 5);
+    return (n & ~0x3f) | x;
   }
 
 
