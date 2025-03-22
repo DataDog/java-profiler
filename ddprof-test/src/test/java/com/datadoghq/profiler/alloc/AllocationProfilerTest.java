@@ -29,8 +29,12 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
     runTests(target1, target2);
     IItemCollection allocations = verifyEvents("datadog.ObjectSample");
     // FIXME when more tests are ported to this structure
-     assertAllocations(allocations, int[].class, target1, target2);
-     assertAllocations(allocations, Integer[].class, target1, target2);
+    if (!Platform.isMusl()) {
+      // we are observing weird lock-ups in CI on musl when trying to use JOL
+      // let's skip these assertions for now there
+      assertAllocations(allocations, int[].class, target1, target2);
+      assertAllocations(allocations, Integer[].class, target1, target2);
+    }
   }
 
   private static void assertAllocations(IItemCollection allocations, Class<?> clazz, AllocatingTarget... targets) {
