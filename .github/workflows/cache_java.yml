@@ -73,6 +73,7 @@ jobs:
           key: sdkman-amd64-${{ github.run_id }}
           restore-keys: |
             sdkman-amd64-
+          enableCrossOsArchive: true
       - name: Check if SDKMAN! is Already Installed
         id: check-sdkman
         run: |
@@ -155,6 +156,7 @@ jobs:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
           key: jdk${{matrix.java_variant }}-amd64--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          enableCrossOsArchive: true
       - name: Is JDK cached?
         id: check-cache
         run: |
@@ -193,6 +195,7 @@ jobs:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
           key: jdk${{matrix.java_variant }}-amd64--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          enableCrossOsArchive: true
 
   cache-amd64-musl:
     runs-on: ubuntu-latest
@@ -216,6 +219,7 @@ jobs:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
           key: jdk${{matrix.java_variant }}-amd64-musl--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          enableCrossOsArchive: true
 
       - name: Is JDK cached?
         id: check-cache
@@ -241,6 +245,7 @@ jobs:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
           key: jdk${{matrix.java_variant }}-amd64-musl--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          enableCrossOsArchive: true
 
   cache-aarch64:
     needs: setup-sdkman-aarch64
@@ -260,6 +265,7 @@ jobs:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
           key: jdk${{matrix.java_variant }}-aarch64--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          enableCrossOsArchive: true
       - name: Is JDK cached?
         id: check-cache
         run: |
@@ -297,6 +303,7 @@ jobs:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
           key: jdk${{matrix.java_variant }}-aarch64--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          enableCrossOsArchive: true
 
   cache-aarch64-musl:
     runs-on:
@@ -319,6 +326,7 @@ jobs:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
           key: jdk${{matrix.java_variant }}-aarch64-musl--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          enableCrossOsArchive: true
 
       - name: Is JDK cached?
         id: check-cache
@@ -344,3 +352,4 @@ jobs:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
           key: jdk${{matrix.java_variant }}-aarch64-musl--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          enableCrossOsArchive: true

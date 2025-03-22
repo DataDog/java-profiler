@@ -33,6 +33,7 @@ runs:
           key: ${{ steps.infer_build_jdk.outputs.build_jdk }}-${{ inputs.arch }}--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
           restore-keys: |
             ${{ steps.infer_build_jdk.outputs.build_jdk }}-${{ inputs.arch }}--
+          enableCrossOsArchive: true
       - name: Cache JDK ${{ inputs.version }} [${{ inputs.arch }}]
         id: cache_jdk
         uses: actions/cache/restore@v4
@@ -42,6 +43,7 @@ runs:
           key: jdk${{ inputs.version }}-${{ inputs.arch }}--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
           restore-keys: |
             jdk${{ inputs.version }}-${{ inputs.arch }}--
+          enableCrossOsArchive: true
       - name: JDK cache miss
         if: steps.cache_jdk.outputs.cache-hit != 'true' || steps.cache_build_jdk.outputs.cache-hit != 'true'
         shell: bash
