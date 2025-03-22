@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        java_version: [ "8", "8-orcl", "8-j9", "8-zing", "8-ibm", "11", "11-j9", "11-zing", "17", "17-j9", "17-zing", "17-graal", "21", "21-zing", "21-graal", "23", "23-graal" ]
+        java_version: [ "8", "8-orcl", "8-j9", "8-zing", "8-ibm", "11", "11-j9", "11-zing", "17", "17-j9", "17-zing", "17-graal", "21", "21-zing", "21-graal", "24", "24-graal" ]
         config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -116,7 +116,7 @@ jobs:
     strategy:
      fail-fast: false
      matrix:
-       java_version: [ "8-librca", "11-librca", "17-librca", "21-librca", "23-librca" ]
+       java_version: [ "8-librca", "11-librca", "17-librca", "21-librca", "24-librca" ]
        config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     container:
@@ -163,16 +163,20 @@ jobs:
     
           # due to env hell in GHA containers, we need to re-do the logic from Extract Versions here
           JAVA_VERSION=$(${{ env.JAVA_TEST_HOME }}/bin/java -version 2>&1 | awk -F '"' '/version/ {
-              split($2, v, "[._]");
-              if (v[1] == "1") {
-              # Java 8 or older: Include major, minor, and update
+            split($2, v, "[._]");
+            if (v[2] == "") {
+              # Version is like "24": assume it is major only and add .0.0
+              printf "%s.0.0\n", v[1]
+            } else if (v[1] == "1") {
+              # Java 8 or older: Format is "1.major.minor_update"
               printf "%s.%s.%s\n", v[2], v[3], v[4]
             } else {
-              # Java 9 or newer: Major, minor, and patch
+              # Java 9 or newer: Format is "major.minor.patch"
               printf "%s.%s.%s\n", v[1], v[2], v[3]
             }
           }')
           export JAVA_VERSION
+          echo "JAVA_VERSION=${JAVA_VERSION}"
     
           ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
@@ -208,7 +212,7 @@ jobs:
       matrix:
         # java_version: [ "8", "8-j9", "8-zing", "11", "11-j9", "11-zing", "17", "17-j9", "17-zing", "17-graal", "21", "21-zing", "21-graal", "23", "23-graal" ]
         # FIXME: Hotspot 8 and 11 versions are rather crashy in ASGCT on aarch64, so we are skipping them for now
-        java_version: [ "8-j9", "8-zing", "11-j9", "11-zing", "17", "17-j9", "17-zing", "17-graal", "21", "21-zing", "21-graal", "23", "23-graal" ]
+        java_version: [ "8-j9", "8-zing", "11-j9", "11-zing", "17", "17-j9", "17-zing", "17-graal", "21", "21-zing", "21-graal", "24", "24-graal" ]
         config: ${{ fromJson(inputs.configuration) }}
     runs-on:
       group: ARM LINUX SHARED
@@ -308,7 +312,7 @@ jobs:
      strategy:
        fail-fast: false
        matrix:
-         java_version: [ "8-librca", "11-librca", "17-librca", "21-librca", "23-librca" ]
+         java_version: [ "8-librca", "11-librca", "17-librca", "21-librca", "24-librca" ]
          config: ${{ fromJson(inputs.configuration) }}
      runs-on:
        group: ARM LINUX SHARED
@@ -341,7 +345,7 @@ jobs:
        - name: Test
          run: |
            set +e
-                
+           # the effective JAVA_VERSION is computed in the test_alpine_aarch64.sh script
            docker run --cpus 4 --rm -v /tmp:/tmp -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" -w "${GITHUB_WORKSPACE}" alpine:3.21 /bin/sh -c "
              \"$GITHUB_WORKSPACE/.github/scripts/test_alpine_aarch64.sh\" \
              \"${{ github.sha }}\" \"musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64\" \

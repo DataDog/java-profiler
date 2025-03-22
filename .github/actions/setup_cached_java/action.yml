@@ -72,5 +72,3 @@ runs:
           echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
           echo "JAVA_TEST_HOME=$JAVA_TEST_HOME" >> $GITHUB_ENV
           echo "PATH=$JAVA_HOME/bin:$PATH" >> $GITHUB_ENV
-          
-          ldd $JAVA_HOME/bin/java

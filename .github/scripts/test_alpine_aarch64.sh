@@ -1,6 +1,7 @@
 #! /bin/sh
 
 set -e
+set +x
 
 export KEEP_JFRS=true
 export TEST_COMMIT="${1}"
@@ -15,11 +16,14 @@ export PATH="${JAVA_HOME}/bin":${PATH}
 # due to env hell in GHA containers, we need to re-do the logic from Extract Versions here
 JAVA_VERSION=$("${JAVA_TEST_HOME}/bin/java" -version 2>&1 | awk -F '"' '/version/ {
   split($2, v, "[._]");
-  if (v[1] == "1") {
-    # Java 8 or older: Include major, minor, and update
+  if (v[2] == "") {
+    # Version is like "24": assume it is major only and add .0.0
+    printf "%s.0.0\n", v[1]
+  } else if (v[1] == "1") {
+    # Java 8 or older: Format is "1.major.minor_update"
     printf "%s.%s.%s\n", v[2], v[3], v[4]
   } else {
-    # Java 9 or newer: Major, minor, and patch
+    # Java 9 or newer: Format is "major.minor.patch"
     printf "%s.%s.%s\n", v[1], v[2], v[3]
   }
 }')
