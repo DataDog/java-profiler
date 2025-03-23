@@ -998,9 +998,7 @@ void VMStructs::checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni,
                                    jmethodID method, void *address) {
   char *method_name;
   char *method_sig;
-  int error = 0;
-  if ((error = jvmti->GetMethodName(method, &method_name, &method_sig, NULL)) ==
-      0) {
+  if (jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
     if (strcmp(method_name, "getMemoryUsage0") == 0 &&
         strcmp(method_sig, "(Z)Ljava/lang/management/MemoryUsage;") == 0) {
       _memory_usage_func = (MemoryUsageFunc)address;
