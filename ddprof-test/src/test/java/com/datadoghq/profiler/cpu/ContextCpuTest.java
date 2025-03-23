@@ -42,7 +42,7 @@ public class ContextCpuTest extends CStackAwareAbstractProfilerTest {
 
     @RetryTest(10)
     @TestTemplate
-    @ValueSource(strings = {"fp", "dwarf", "vm", "vmx"})
+    @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
     public void test(@CStack String cstack) throws ExecutionException, InterruptedException {
         Assumptions.assumeTrue(!Platform.isJ9());
         for (int i = 0, id = 1; i < 100; i++, id += 3) {

@@ -27,7 +27,7 @@ public class SmokeCpuTest extends CStackAwareAbstractProfilerTest {
 
     @RetryTest(10)
     @TestTemplate
-    @ValueSource(strings = {"fp", "dwarf", "vm", "vmx"})
+    @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
     public void testComputations(@CStack String cstack) throws Exception {
         try (ProfiledCode profiledCode = new ProfiledCode(profiler)) {
             for (int i = 0, id = 1; i < 100; i++, id += 3) {
@@ -59,7 +59,7 @@ public class SmokeCpuTest extends CStackAwareAbstractProfilerTest {
 
     @RetryTest(10)
     @TestTemplate
-    @ValueSource(strings = {"vm", "fp", "dwarf", "vmx"})
+    @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
     public void testIOBound(@CStack String cstack) throws Exception {
         new IOBoundCode().run();
 
