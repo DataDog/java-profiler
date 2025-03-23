@@ -51,9 +51,19 @@ public class CStackInjector implements TestTemplateInvocationContextProvider {
             return Stream.of(new ParameterizedTestContext("no", retryCount));
         } else {
             return Stream.of(valueSource.strings()).
-                    filter(param -> (!Platform.isJ9() || "dwarf".equals(param))).
+                    filter(CStackInjector::isModeSafe).
                     map(param -> new ParameterizedTestContext(param, retryCount));
         }
+    }
+
+    private static boolean isModeSafe(String mode) {
+        if (Platform.isJ9()) {
+            return "dwarf".equals(mode);
+        }
+        if (Platform.isAarch64() && !Platform.isJavaVersionAtLeast(17)) {
+            return mode.startsWith("vm");
+        }
+        return true;
     }
 
     public static class TestInfoAdapter implements TestInfo {

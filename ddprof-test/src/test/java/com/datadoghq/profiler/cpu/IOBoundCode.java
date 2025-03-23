@@ -68,10 +68,12 @@ public class IOBoundCode {
         try (ServerSocket s = new ServerSocket(0)) {
             String host = "localhost";
             int port = s.getLocalPort();
-            new IdleClient(host, port).start();
+            Thread t1 = new IdleClient(host, port);
+            t1.start();
             OutputStream idleClient = s.accept().getOutputStream();
 
-            new BusyClient(host, port).start();
+            Thread t2 = new BusyClient(host, port);
+            t2.start();
             OutputStream busyClient = s.accept().getOutputStream();
 
             byte[] buf = new byte[4096];
@@ -85,6 +87,8 @@ public class IOBoundCode {
                     busyClient.write(buf);
                 }
                 if (System.nanoTime() >= target) {
+                    t1.interrupt();
+                    t2.interrupt();
                     break;
                 }
             }
