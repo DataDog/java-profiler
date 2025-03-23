@@ -66,6 +66,13 @@ static inline void fillFrame(ASGCT_CallFrame &frame, FrameTypeId type, int bci,
   frame.method_id = method;
 }
 
+
+static inline void fillErrorFrame(ASGCT_CallFrame& frame, const char *name, bool *truncated) {
+  fillFrame(frame, BCI_ERROR, name);
+  *truncated = true;
+  TEST_LOG("[stackwalk-error] %s", name);
+}
+
 static jmethodID getMethodId(VMMethod *method) {
   if (!inDeadZone(method) && aligned((uintptr_t)method)) {
     jmethodID method_id = method->id();
@@ -264,7 +271,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
       vm_thread->exception() = saved_exception;
       if (depth < max_depth) {
         TEST_LOG("Crash protection triggered");
-        fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
+        fillErrorFrame(frames[depth++], "break_not_walkable", truncated);
       }
       return depth;
     }
@@ -280,8 +287,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
       // constant time
       NMethod *nm = CodeHeap::findNMethod(pc);
       if (nm == NULL) {
-        TEST_LOG("CodeHeap::findNMethod returned NULL for pc: %p", pc);
-        fillFrame(frames[depth++], BCI_ERROR, "unknown_nmethod");
+        fillErrorFrame(frames[depth++], "unknown_nmethod", truncated);
         // we are somewhere in JVM code heap and have no idea what is this frame
         // might be good to bail out since it would be a challenge to unwind properly?
         break;
@@ -300,8 +306,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
               do {
                 scope_offset = scope.decode(scope_offset);
                 if (scope.method() == nullptr) {
-                  TEST_LOG("ScopeDesc::decode returned nullptr for pc: %p", pc);
-                  fillFrame(frames[depth++], BCI_ERROR, "unknown_scope");
+                  fillErrorFrame(frames[depth++], "unknown_scope", truncated);
                   break;
                 }
                 if (detail != VM_BASIC) {
@@ -341,8 +346,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                   fp = anchor->lastJavaFP();
                   continue;
                 }
-                TEST_LOG("Failed to recover from entry: %lx, %s", nm->entry(), nm->name());
-                fillFrame(frames[depth++], BCI_ERROR, "break_compiled");
+                fillErrorFrame(frames[depth++], "break_compiled: no java anchor", truncated);
                 break;
               }
             }
@@ -353,13 +357,11 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
             }
           }
 
-          TEST_LOG("Failed to unwind compiled frame");
-          fillFrame(frames[depth++], BCI_ERROR, "break_compiled");
+          fillErrorFrame(frames[depth++], "break_compiled", truncated);
           break;
         } else if (nm->isInterpreter()) {
           if (vm_thread != NULL && vm_thread->inDeopt()) {
-            TEST_LOG("Failed to unwind deopt frame");
-            fillFrame(frames[depth++], BCI_ERROR, "break_deopt");
+            fillErrorFrame(frames[depth++], "break_deopt", truncated);
             break;
           }
 
@@ -416,8 +418,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
             continue;
           }
 
-          TEST_LOG("Failed to unwind interpreter frame");
-          fillFrame(frames[depth++], BCI_ERROR, "break_interpreted");
+          fillErrorFrame(frames[depth++], "break_interpreted", truncated);
           break;
         } else if (detail < VM_EXPERT && nm->isEntryFrame(pc)) {
           JavaFrameAnchor* e_anchor = JavaFrameAnchor::fromEntryFrame(fp);
@@ -426,7 +427,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
               TEST_LOG("Reusing thread anchor");
               e_anchor = anchor;
             } else {
-              fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame: no anchor");
+              fillErrorFrame(frames[depth++], "break_entry_frame: no anchor", truncated);
               break;
             }
           }
@@ -440,7 +441,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
           }
           if (sp < prev_sp || sp >= bottom || !aligned(sp)) {
             TEST_LOG("Failed to unwind entry frame");
-            fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame: invalid anchor");
+            fillErrorFrame(frames[depth++], "break_entry_frame: invalid anchor", truncated);
             break;
           }
           continue;
@@ -523,6 +524,19 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
 
     // Check if the next frame is below on the current stack
     if (sp < prev_sp || sp >= prev_sp + MAX_FRAME_SIZE || sp >= bottom) {
+      if (fp < 0xff && sp < 0xff && depth <= 1) {
+        // Most likely MUSL signal trampoline
+        // FP, SP, RET is completely garbled and unrecoverable
+        // Let's try to jump to the stored Java frame -
+        //   the garbled frame is leaf so there is no danger we 'loop' back to the top Java frame
+        if (anchor && !recovered_from_anchor && anchor->lastJavaSP() != 0) {
+          recovered_from_anchor = true;
+          sp = anchor->lastJavaSP();
+          fp = anchor->lastJavaFP();
+          pc = anchor->lastJavaPC();
+          continue;
+        }
+      }
       break;
     }
 
