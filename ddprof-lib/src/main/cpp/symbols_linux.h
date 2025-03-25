@@ -122,8 +122,16 @@ static const bool MUSL = true;
 static const bool MUSL = false;
 #endif // __musl__
 
+enum RootSymbolKind {
+  _start, start_thread, _ZL19thread_native_entryP6Thread, _thread_start, thread_start,
+  LAST_ROOT_SYMBOL_KIND
+};
+
 class ElfParser {
+friend Symbols;
 private:
+  static uintptr_t _root_symbols[LAST_ROOT_SYMBOL_KIND];
+
   CodeCache *_cc;
   const char *_base;
   const char *_file_name;
@@ -193,6 +201,8 @@ private:
   void loadSymbolTable(const char *symbols, size_t total_size, size_t ent_size,
                        const char *strings);
   void addRelocationSymbols(ElfSection *reltab, const char *plt);
+
+  void addSymbol(const void *start, int length, const char *name, bool update_bounds = false);
 
 public:
   static void parseProgramHeaders(CodeCache *cc, const char *base,

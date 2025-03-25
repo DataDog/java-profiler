@@ -29,6 +29,8 @@
 #define _FILE_OFFSET_BITS 64
 #include <unistd.h>
 
+uintptr_t ElfParser::_root_symbols[LAST_ROOT_SYMBOL_KIND] = {0};
+
 ElfSection *ElfParser::findSection(uint32_t type, const char *name) {
   if (_header == NULL) {
     return NULL;
@@ -348,6 +350,26 @@ void ElfParser::loadSymbols(bool use_debug) {
   }
 }
 
+void ElfParser::addSymbol(const void *start, int length, const char *name, bool update_bounds) {
+  _cc->add(start, length, name, update_bounds);
+  if (!strcmp("_start", name)) {
+    TEST_LOG("===> found _start");
+    _root_symbols[_start] = (uintptr_t)start;
+  } else if (!strcmp("start_thread", name)) {
+    TEST_LOG("===> found start_thread");
+    _root_symbols[start_thread] = (uintptr_t)start;
+  } else if (!strcmp("_ZL19thread_native_entryP6Thread", name)) {
+    TEST_LOG("===> found _ZL19thread_native_entryP6Thread");
+    _root_symbols[_ZL19thread_native_entryP6Thread] = (uintptr_t)start;
+  } else if (!strcmp("_thread_start", name)) {
+    TEST_LOG("===> found _thread_start");
+    _root_symbols[_thread_start] = (uintptr_t)start;
+  } else if (!strcmp("thread_start", name)) {
+    TEST_LOG("===> found thread_start");
+    _root_symbols[thread_start] = (uintptr_t)start;
+  }
+}
+
 // Load symbols from /usr/lib/debug/.build-id/ab/cdef1234.debug, where
 // abcdef1234 is Build ID
 bool ElfParser::loadSymbolsUsingBuildId() {
@@ -427,8 +449,7 @@ void ElfParser::loadSymbolTable(const char *symbols, size_t total_size,
       // Skip special AArch64 mapping symbols: $x and $d
       if (sym->st_size != 0 || sym->st_info != 0 ||
           strings[sym->st_name] != '$') {
-        _cc->add(_base + sym->st_value, (int)sym->st_size,
-                 strings + sym->st_name);
+        addSymbol(_base + sym->st_value, (int)sym->st_size, strings + sym->st_name);
       }
     }
   }
@@ -458,7 +479,7 @@ void ElfParser::addRelocationSymbols(ElfSection *reltab, const char *plt) {
       name[sizeof(name) - 1] = 0;
     }
 
-    _cc->add(plt, PLT_ENTRY_SIZE, name);
+    addSymbol(plt, PLT_ENTRY_SIZE, name);
     plt += PLT_ENTRY_SIZE;
   }
 }
@@ -612,6 +633,16 @@ void Symbols::parseLibraries(CodeCacheArray *array, bool kernel_symbols) {
   // concurrent loading and unloading of shared libraries.
   // Without it, we may access memory of a library that is being unloaded.
   dl_iterate_phdr(parseLibrariesCallback, array);
+  TEST_LOG("Parsed %d libraries", array->count());
+}
+
+bool Symbols::isRootSymbol(const void* address) {
+  for (int i = 0; i < LAST_ROOT_SYMBOL_KIND; i++) {
+    if (ElfParser::_root_symbols[i] == (uintptr_t)address) {
+      return true;
+    }
+  }
+  return false;
 }
 
 #endif // __linux__

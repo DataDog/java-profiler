@@ -21,6 +21,7 @@
 #include "profiler.h"
 #include "safeAccess.h"
 #include "stackFrame.h"
+#include "symbols.h"
 #include "vmStructs.h"
 
 #include <ucontext.h>
@@ -288,9 +289,6 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
       NMethod *nm = CodeHeap::findNMethod(pc);
       if (nm == NULL) {
         fillErrorFrame(frames[depth++], "unknown_nmethod", truncated);
-        // we are somewhere in JVM code heap and have no idea what is this frame
-        // might be good to bail out since it would be a challenge to unwind properly?
-        break;
       } else {
         if (nm->isNMethod()) {
           int level = nm->level();
@@ -485,11 +483,9 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
         const char *name = cc == NULL ? NULL : cc->binarySearch(pc);
 
         fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
-        // _start should be the process entry point; any attempt to unwind from there will fail
-        if (name) {
-          if (!strcmp("_start", name) || !strcmp("start_thread", name) || !strcmp("_ZL19thread_native_entryP6Thread", name) || !strcmp("_thread_start", name) || !strcmp("thread_start", name)) {
-            break;
-          }
+
+        if (Symbols::isRootSymbol(pc)) {
+          break;
         }
         prev_pc = pc;
       }
