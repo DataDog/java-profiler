@@ -427,6 +427,10 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
           JavaFrameAnchor* e_anchor = JavaFrameAnchor::fromEntryFrame(fp);
           if (e_anchor == NULL) {
             if (anchor != NULL && !recovered_from_anchor && anchor->lastJavaSP() != 0) {
+              if (anchor->lastJavaPC() == nullptr || anchor->lastJavaSP() == 0) {
+                // end of Java stack
+                break;
+              }
               TEST_LOG("Reusing thread anchor");
               fillSkipFrame(frames[depth++]);
               e_anchor = anchor;
@@ -532,11 +536,16 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
         // Let's try to jump to the stored Java frame -
         //   the garbled frame is leaf so there is no danger we 'loop' back to the top Java frame
         if (anchor && !recovered_from_anchor && anchor->lastJavaSP() != 0) {
+          if (anchor->lastJavaPC() == nullptr || anchor->lastJavaSP() == 0) {
+            // end of Java stack
+            break;
+          }
           recovered_from_anchor = true;
           fillSkipFrame(frames[depth++]);
           sp = anchor->lastJavaSP();
           fp = anchor->lastJavaFP();
           pc = anchor->lastJavaPC();
+
           continue;
         }
       }
@@ -571,6 +580,10 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
     }
 
     if (anchor && !recovered_from_anchor && !VMStructs::goodPtr((const void*)fp) && anchor->lastJavaSP() != 0) {
+      if (anchor->lastJavaPC() == nullptr || anchor->lastJavaSP() == 0) {
+        // end of Java stack
+        break;
+      }
       recovered_from_anchor = true;
       fillSkipFrame(frames[depth++]);
       sp = anchor->lastJavaSP();
