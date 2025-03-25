@@ -63,6 +63,13 @@ public class CStackInjector implements TestTemplateInvocationContextProvider {
         if (Platform.isAarch64() && !Platform.isJavaVersionAtLeast(17)) {
             return mode.startsWith("vm");
         }
+        if (AbstractProfilerTest.isInCI()) {
+            if (Platform.isMusl() && !Platform.isAarch64()) {
+                // our CI runner for musl on x64 is iffy and inexplicably locks up
+                //   randomly when doing vm stackwalking
+                return !mode.startsWith("vm");
+            }
+        }
         return true;
     }
 
