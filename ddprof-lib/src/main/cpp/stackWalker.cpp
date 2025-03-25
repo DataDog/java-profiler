@@ -71,7 +71,10 @@ static inline void fillFrame(ASGCT_CallFrame &frame, FrameTypeId type, int bci,
 static inline void fillErrorFrame(ASGCT_CallFrame& frame, const char *name, bool *truncated) {
   fillFrame(frame, BCI_ERROR, name);
   *truncated = true;
-  TEST_LOG("[stackwalk-error] %s", name);
+}
+
+static inline void fillSkipFrame(ASGCT_CallFrame& frame) {
+  fillFrame(frame, BCI_ERROR, "skipped_frames");
 }
 
 static jmethodID getMethodId(VMMethod *method) {
@@ -339,6 +342,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                     // End of Java stack
                     break;
                   }
+                  fillSkipFrame(frames[depth++]);
                   pc = anchor->lastJavaPC();
                   sp = anchor->lastJavaSP();
                   fp = anchor->lastJavaFP();
@@ -409,6 +413,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
               // End of Java stack
               break;
             }
+            fillSkipFrame(frames[depth++]);
             fp = anchor->lastJavaFP();
             sp = anchor->lastJavaSP();
             pc = anchor->lastJavaPC();
@@ -423,6 +428,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
           if (e_anchor == NULL) {
             if (anchor != NULL && !recovered_from_anchor && anchor->lastJavaSP() != 0) {
               TEST_LOG("Reusing thread anchor");
+              fillSkipFrame(frames[depth++]);
               e_anchor = anchor;
             } else {
               fillErrorFrame(frames[depth++], "break_entry_frame: no anchor", truncated);
@@ -527,6 +533,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
         //   the garbled frame is leaf so there is no danger we 'loop' back to the top Java frame
         if (anchor && !recovered_from_anchor && anchor->lastJavaSP() != 0) {
           recovered_from_anchor = true;
+          fillSkipFrame(frames[depth++]);
           sp = anchor->lastJavaSP();
           fp = anchor->lastJavaFP();
           pc = anchor->lastJavaPC();
@@ -565,6 +572,7 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
 
     if (anchor && !recovered_from_anchor && !VMStructs::goodPtr((const void*)fp) && anchor->lastJavaSP() != 0) {
       recovered_from_anchor = true;
+      fillSkipFrame(frames[depth++]);
       sp = anchor->lastJavaSP();
       fp = anchor->lastJavaFP();
       pc = anchor->lastJavaPC();
