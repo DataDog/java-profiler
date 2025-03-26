@@ -75,7 +75,7 @@ bool StackFrame::unwindStub(instruction_t *entry, const char *name,
     const u64 endTime = TSC::ticks();
     const u64 duration = TSC::ticks_to_millis(endTime - startTime);
     if (duration > 1) {
-      Counters::increment(UNWINDING_STUB_TIME, duration);
+      Counters::increment(UNWINDING_TIME, duration);
     }
     return true;
   } else if (strcmp(name, "forward_copy_longs") == 0 ||
@@ -97,7 +97,7 @@ bool StackFrame::unwindStub(instruction_t *entry, const char *name,
     const u64 endTime = TSC::ticks();
     const u64 duration = TSC::ticks_to_millis(endTime - startTime);
     if (duration > 1) {
-      Counters::increment(UNWINDING_STUB_TIME, duration);
+      Counters::increment(UNWINDING_TIME, duration);
     }
     return true;
   } else if (entry != NULL && entry[0] == 0xa9bf7bfd) {
@@ -111,7 +111,7 @@ bool StackFrame::unwindStub(instruction_t *entry, const char *name,
       const u64 endTime = TSC::ticks();
       const u64 duration = TSC::ticks_to_millis(endTime - startTime);
       if (duration > 1) {
-        Counters::increment(UNWINDING_STUB_TIME, duration);
+        Counters::increment(UNWINDING_TIME, duration);
       }
       return true;
     } else if (entry[1] == 0x910003fd && withinCurrentStack(fp)) {
@@ -122,7 +122,7 @@ bool StackFrame::unwindStub(instruction_t *entry, const char *name,
       const u64 endTime = TSC::ticks();
       const u64 duration = TSC::ticks_to_millis(endTime - startTime);
       if (duration > 1) {
-        Counters::increment(UNWINDING_STUB_TIME, duration);
+        Counters::increment(UNWINDING_TIME, duration);
       }
       return true;
     }
@@ -158,7 +158,7 @@ bool StackFrame::unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp,
     const u64 endTime = TSC::ticks();
     const u64 duration = TSC::ticks_to_millis(endTime - startTime);
     if (duration > 1) {
-      Counters::increment(UNWINDING_COMPILED_TIME, duration);
+      Counters::increment(UNWINDING_TIME, duration);
     }
   } else if (ip > entry && ip[0] == 0x910003fd && ip[-1] == 0xa9bf7bfd) {
     // stp  x29, x30, [sp, #-16]!
@@ -169,7 +169,7 @@ bool StackFrame::unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp,
     const u64 endTime = TSC::ticks();
     const u64 duration = TSC::ticks_to_millis(endTime - startTime);
     if (duration > 1) {
-      Counters::increment(UNWINDING_COMPILED_TIME, duration);
+      Counters::increment(UNWINDING_TIME, duration);
     }
   } else if (ip > entry + 3 && !nm->isFrameCompleteAt(ip) &&
              (isEntryBarrier(ip) || isEntryBarrier(ip + 1))) {
@@ -181,7 +181,7 @@ bool StackFrame::unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp,
     const u64 endTime = TSC::ticks();
     const u64 duration = TSC::ticks_to_millis(endTime - startTime);
     if (duration > 1) {
-      Counters::increment(UNWINDING_COMPILED_TIME, duration);
+      Counters::increment(UNWINDING_TIME, duration);
     }
   } else {
     // Just try
@@ -191,7 +191,7 @@ bool StackFrame::unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp,
   const u64 endTime = TSC::ticks();
   const u64 duration = TSC::ticks_to_millis(endTime - startTime);
   if (duration > 1) {
-    Counters::increment(UNWINDING_COMPILED_TIME, duration);
+    Counters::increment(UNWINDING_TIME, duration);
   }
   return true;
 }
@@ -208,7 +208,7 @@ bool StackFrame::unwindAtomicStub(const void*& pc) {
       const u64 endTime = TSC::ticks();
       const u64 duration = TSC::ticks_to_millis(endTime - startTime);
       if (duration > 1) {
-        Counters::increment(UNWINDING_ATOMIC_STUB_TIME, duration);
+        Counters::increment(UNWINDING_TIME, duration);
       }
       return true;
     }
@@ -217,7 +217,7 @@ bool StackFrame::unwindAtomicStub(const void*& pc) {
   const u64 endTime = TSC::ticks();
   const u64 duration = TSC::ticks_to_millis(endTime - startTime);
   if (duration > 1) {
-    Counters::increment(UNWINDING_ATOMIC_STUB_TIME, duration);
+    Counters::increment(UNWINDING_TIME, duration);
   }
   return false;
 }
