@@ -82,7 +82,7 @@ bool StackFrame::unwindStub(instruction_t *entry, const char *name,
     const u64 endTime = TSC::ticks();
     const u64 duration = TSC::ticks_to_millis(endTime - startTime);
     if (duration > 1) {
-      Counters::increment(UNWINDING_STUB_TIME, duration);
+      Counters::increment(UNWINDING_TIME, duration);
     }
     return true;
   } else if (entry != NULL && entry[0] == 0x55 && entry[1] == 0x8b &&
@@ -97,7 +97,7 @@ bool StackFrame::unwindStub(instruction_t *entry, const char *name,
       const u64 endTime = TSC::ticks();
       const u64 duration = TSC::ticks_to_millis(endTime - startTime);
       if (duration > 1) {
-        Counters::increment(UNWINDING_STUB_TIME, duration);
+        Counters::increment(UNWINDING_TIME, duration);
       }
       return true;
     } else if (withinCurrentStack(fp)) {
@@ -108,7 +108,7 @@ bool StackFrame::unwindStub(instruction_t *entry, const char *name,
       const u64 endTime = TSC::ticks();
       const u64 duration = TSC::ticks_to_millis(endTime - startTime);
       if (duration > 1) {
-        Counters::increment(UNWINDING_STUB_TIME, duration);
+        Counters::increment(UNWINDING_TIME, duration);
       }
       return true;
     }
@@ -117,7 +117,7 @@ bool StackFrame::unwindStub(instruction_t *entry, const char *name,
   const u64 endTime = TSC::ticks();
   const u64 duration = TSC::ticks_to_millis(endTime - startTime);
   if (duration > 1) {
-    Counters::increment(UNWINDING_STUB_TIME, duration);
+    Counters::increment(UNWINDING_TIME, duration);
   }
   return false;
 }
@@ -137,7 +137,7 @@ bool StackFrame::unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp,
     const u64 endTime = TSC::ticks();
     const u64 duration = TSC::ticks_to_millis(endTime - startTime);
     if (duration > 1) {
-      Counters::increment(UNWINDING_COMPILED_TIME, duration);
+      Counters::increment(UNWINDING_TIME, duration);
     }
     return true;
   } else if (*ip == 0x5d) {
@@ -149,7 +149,7 @@ bool StackFrame::unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp,
     const u64 endTime = TSC::ticks();
     const u64 duration = TSC::ticks_to_millis(endTime - startTime);
     if (duration > 1) {
-      Counters::increment(UNWINDING_COMPILED_TIME, duration);
+      Counters::increment(UNWINDING_TIME, duration);
     }
     return true;
   }
@@ -157,7 +157,7 @@ bool StackFrame::unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp,
   const u64 endTime = TSC::ticks();
   const u64 duration = TSC::ticks_to_millis(endTime - startTime);
   if (duration > 1) {
-    Counters::increment(UNWINDING_COMPILED_TIME, duration);
+    Counters::increment(UNWINDING_TIME, duration);
   }
   return false;
 }
