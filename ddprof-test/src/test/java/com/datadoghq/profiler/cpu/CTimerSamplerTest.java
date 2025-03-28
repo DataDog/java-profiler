@@ -43,7 +43,7 @@ public class CTimerSamplerTest extends CStackAwareAbstractProfilerTest {
 
     @RetryTest(10)
     @TestTemplate
-    @ValueSource(strings = {"fp", "dwarf", "vm", "vmx"})
+    @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
     public void test(@CStack String cstack) throws ExecutionException, InterruptedException {
         // timer_create is available on Linux only
         assumeTrue(Platform.isLinux());

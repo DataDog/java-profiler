@@ -21,7 +21,10 @@
 #include "profiler.h"
 #include "safeAccess.h"
 #include "stackFrame.h"
+#include "symbols.h"
 #include "vmStructs.h"
+
+#include <ucontext.h>
 #include <setjmp.h>
 
 const uintptr_t SAME_STACK_DISTANCE = 8192;
@@ -42,6 +45,16 @@ static inline bool sameStack(void *hi, void *lo) {
   return (uintptr_t)hi - (uintptr_t)lo < SAME_STACK_DISTANCE;
 }
 
+// AArch64: on Linux, frame link is stored at the top of the frame,
+// while on macOS, frame link is at the bottom.
+static inline uintptr_t defaultSenderSP(uintptr_t sp, uintptr_t fp) {
+#ifdef __APPLE__
+    return sp + 2 * sizeof(void*);
+#else
+    return fp;
+#endif
+}
+
 static inline void fillFrame(ASGCT_CallFrame &frame, ASGCT_CallFrameType type,
                              const char *name) {
   frame.bci = type;
@@ -52,6 +65,16 @@ static inline void fillFrame(ASGCT_CallFrame &frame, FrameTypeId type, int bci,
                              jmethodID method) {
   frame.bci = FrameType::encode(type, bci);
   frame.method_id = method;
+}
+
+
+static inline void fillErrorFrame(ASGCT_CallFrame& frame, const char *name, bool *truncated) {
+  fillFrame(frame, BCI_ERROR, name);
+  *truncated = true;
+}
+
+static inline void fillSkipFrame(ASGCT_CallFrame& frame) {
+  fillFrame(frame, BCI_ERROR, "skipped_frames");
 }
 
 static jmethodID getMethodId(VMMethod *method) {
@@ -172,7 +195,7 @@ int StackWalker::walkDwarf(void *ucontext, const void **callchain,
         cc != NULL ? cc->findFrameDesc(pc) : &FrameDesc::default_frame;
 
     u8 cfa_reg = (u8)f->cfa;
-    int cfa_off = f->cfa >> 16; // cfa is encoded in the upper 16 bits of the CFA value
+      int cfa_off = f->cfa >> 8; // cfa is encoded in the upper 8 bits of the CFA value
 
     if (cfa_reg == DW_REG_SP) {
       sp = sp + cfa_off;
@@ -210,7 +233,7 @@ int StackWalker::walkDwarf(void *ucontext, const void **callchain,
       } else if (f->fp_off != DW_SAME_FP) {
         // AArch64 default_frame
         pc = stripPointer(SafeAccess::load((void **)(sp + f->pc_off)));
-        sp = fp;
+        sp = defaultSenderSP(sp, fp);
       } else if (depth <= 1) {
         pc = (const void *)frame.link();
       } else {
@@ -224,6 +247,7 @@ int StackWalker::walkDwarf(void *ucontext, const void **callchain,
 
 int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                         StackDetail detail, const void* pc, uintptr_t sp, uintptr_t fp, bool *truncated) {
+  // extract StackFrame from uncontext
   StackFrame frame(ucontext);
   uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
 
@@ -242,165 +266,238 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
 
   // Should be preserved across setjmp/longjmp
   volatile int depth = 0;
+  JavaFrameAnchor* anchor = nullptr;
+  bool recovered_from_anchor = false;
 
   if (vm_thread != NULL) {
     vm_thread->exception() = &crash_protection_ctx;
     if (setjmp(crash_protection_ctx) != 0) {
       vm_thread->exception() = saved_exception;
       if (depth < max_depth) {
-        fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
+        TEST_LOG("Crash protection triggered");
+        fillErrorFrame(frames[depth++], "break_not_walkable", truncated);
       }
       return depth;
     }
+    anchor = vm_thread->anchor();
   }
   CodeCache *cc = NULL;
 
+  bool got_start_thread = false;
+  const void* prev_pc = 0;
   // Walk until the bottom of the stack or until the first Java frame
   while (depth < max_depth) {
     if (CodeHeap::contains(pc)) {
       // constant time
       NMethod *nm = CodeHeap::findNMethod(pc);
       if (nm == NULL) {
-        fillFrame(frames[depth++], BCI_ERROR, "unknown_nmethod");
-      } else if (nm->isNMethod()) {
-        int level = nm->level();
-        FrameTypeId type = detail != VM_BASIC &&
-            level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED;
-        fillFrame(frames[depth++], type, 0, nm->method()->id());
+        fillErrorFrame(frames[depth++], "unknown_nmethod", truncated);
+      } else {
+        if (nm->isNMethod()) {
+          int level = nm->level();
+          FrameTypeId type = detail != VM_BASIC &&
+              level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED;
+          fillFrame(frames[depth++], type, 0, nm->method()->id());
 
-        if (nm->isFrameCompleteAt(pc)) {
-          int scope_offset = nm->findScopeOffset(pc);
-          if (scope_offset > 0) {
-            depth--;
-            ScopeDesc scope(nm);
-            do {
-              scope_offset = scope.decode(scope_offset);
-              if (scope.method() == nullptr) {
-                fillFrame(frames[depth++], BCI_ERROR, "unknown_scope");
+          if (nm->isFrameCompleteAt(pc)) {
+            int scope_offset = nm->findScopeOffset(pc);
+            if (scope_offset > 0) {
+              depth--;
+              ScopeDesc scope(nm);
+              do {
+                scope_offset = scope.decode(scope_offset);
+                if (scope.method() == nullptr) {
+                  fillErrorFrame(frames[depth++], "unknown_scope", truncated);
+                  break;
+                }
+                if (detail != VM_BASIC) {
+                  type = scope_offset > 0 ? FRAME_INLINED :
+                         level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED;
+                }
+                fillFrame(frames[depth++], type, scope.bci(),
+                          scope.method()->id());
+              } while (scope_offset > 0 && depth < max_depth);
+            }
+
+            // Handle situations when sp is temporarily changed in the compiled
+            // code
+            frame.adjustSP(nm->entry(), pc, sp);
+            uintptr_t fpback = fp;
+            sp += nm->frameSize() * sizeof(void *);
+            fp = ((uintptr_t *)sp)[-FRAME_PC_SLOT - 1];
+            pc = ((const void **)sp)[-FRAME_PC_SLOT];
+
+            if (!profiler->isAddressInCode(pc, true)) {
+              const void* newpc = stripPointer(*(const void **)(fpback + sizeof(void*)));
+              if (profiler->isAddressInCode(newpc, true)) {
+                TEST_LOG("Relinking via FP for entry: %lx, %s", nm->entry(), nm->name());
+                fp = *(uintptr_t *)fpback;
+                pc = newpc;
+                sp = fp;
+              } else {
+                if (anchor && !recovered_from_anchor) {
+                  TEST_LOG("Recovering from java frame anchor from entry: %lx, %s", nm->entry(), nm->name());
+                  recovered_from_anchor = true;
+                  if (anchor->lastJavaPC() == nullptr || anchor->lastJavaSP() == 0) {
+                    // End of Java stack
+                    break;
+                  }
+                  fillSkipFrame(frames[depth++]);
+                  pc = anchor->lastJavaPC();
+                  sp = anchor->lastJavaSP();
+                  fp = anchor->lastJavaFP();
+                  continue;
+                }
+                fillErrorFrame(frames[depth++], "break_compiled: no java anchor", truncated);
                 break;
               }
-              if (detail != VM_BASIC) {
-                type = scope_offset > 0 ? FRAME_INLINED :
-                       level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED;
-              }
-              fillFrame(frames[depth++], type, scope.bci(),
-                        scope.method()->id());
-            } while (scope_offset > 0 && depth < max_depth);
-          }
-
-          // Handle situations when sp is temporarily changed in the compiled
-          // code
-          frame.adjustSP(nm->entry(), pc, sp);
-
-          sp += nm->frameSize() * sizeof(void *);
-          fp = ((uintptr_t *)sp)[-FRAME_PC_SLOT - 1];
-          pc = ((const void **)sp)[-FRAME_PC_SLOT];
-          continue;
-        } else if (frame.unwindCompiled(nm, (uintptr_t &)pc, sp, fp) &&
-                   profiler->isAddressInCode(pc)) {
-          continue;
-        }
-
-        fillFrame(frames[depth++], BCI_ERROR, "break_compiled");
-        break;
-      } else if (nm->isInterpreter()) {
-        if (vm_thread != NULL && vm_thread->inDeopt()) {
-          fillFrame(frames[depth++], BCI_ERROR, "break_deopt");
-          break;
-        }
-
-        bool is_plausible_interpreter_frame =
-            !inDeadZone((const void *)fp) && aligned(fp) &&
-            sp > fp - MAX_INTERPRETER_FRAME_SIZE &&
-            sp < fp + bcp_offset * sizeof(void *);
-
-        if (is_plausible_interpreter_frame) {
-          VMMethod *method = ((VMMethod **)fp)[InterpreterFrame::method_offset];
-          jmethodID method_id = getMethodId(method);
-          if (method_id != NULL) {
-            const char *bytecode_start = method->bytecode();
-            const char *bcp = ((const char **)fp)[bcp_offset];
-            int bci = bytecode_start == NULL || bcp < bytecode_start
-                          ? 0
-                          : bcp - bytecode_start;
-            fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
-
-            sp = ((uintptr_t *)fp)[InterpreterFrame::sender_sp_offset];
-            pc = stripPointer(((void **)fp)[FRAME_PC_SLOT]);
-            fp = *(uintptr_t *)fp;
-            continue;
-          }
-        }
-
-        if (depth == 0) {
-          VMMethod *method = (VMMethod *)frame.method();
-          jmethodID method_id = getMethodId(method);
-          if (method_id != NULL) {
-            fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id);
-
-            if (is_plausible_interpreter_frame) {
-              pc = stripPointer(((void **)fp)[FRAME_PC_SLOT]);
-              sp = frame.senderSP();
-              fp = *(uintptr_t *)fp;
-            } else {
-              pc = stripPointer(*(void **)sp);
-              sp = frame.senderSP();
             }
             continue;
+          } else {
+            if (frame.unwindCompiled(nm, (uintptr_t &)pc, sp, fp) && profiler->isAddressInCode(pc)) {
+              continue;
+            }
           }
-        }
 
-        fillFrame(frames[depth++], BCI_ERROR, "break_interpreted");
-        break;
-      } else if (detail < VM_EXPERT && nm->isEntryFrame(pc)) {
-        JavaFrameAnchor* anchor = JavaFrameAnchor::fromEntryFrame(fp);
-        if (anchor == NULL) {
-          fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame");
+          fillErrorFrame(frames[depth++], "break_compiled", truncated);
           break;
-        }
-        uintptr_t prev_sp = sp;
-        sp = anchor->lastJavaSP();
-        fp = anchor->lastJavaFP();
-        pc = anchor->lastJavaPC();
-        if (sp == 0 || pc == NULL) {
-          // End of Java stack
-          break;
-        }
-        if (sp < prev_sp || sp >= bottom || !aligned(sp)) {
-          fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame");
-          break;
-        }
-        continue;
-      } else {
-        // linear time in number of runtime stubs
-        CodeBlob *stub = profiler->findRuntimeStub(pc);
-        const void *start = stub != NULL ? stub->_start : nm->code();
-        const char *name = stub != NULL ? stub->_name : nm->name();
+        } else if (nm->isInterpreter()) {
+          if (vm_thread != NULL && vm_thread->inDeopt()) {
+            fillErrorFrame(frames[depth++], "break_deopt", truncated);
+            break;
+          }
 
-        if (detail != VM_BASIC) {
-          fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
-        }
+          bool is_plausible_interpreter_frame =
+              !inDeadZone((const void *)fp) && aligned(fp) &&
+              sp > fp - MAX_INTERPRETER_FRAME_SIZE &&
+              sp < fp + bcp_offset * sizeof(void *);
 
-        if (frame.unwindStub((instruction_t *)start, name, (uintptr_t &)pc, sp,
-                             fp)) {
+          if (is_plausible_interpreter_frame) {
+            VMMethod *method = ((VMMethod **)fp)[InterpreterFrame::method_offset];
+            jmethodID method_id = getMethodId(method);
+            if (method_id != NULL) {
+              const char *bytecode_start = method->bytecode();
+              const char *bcp = ((const char **)fp)[bcp_offset];
+              int bci = bytecode_start == NULL || bcp < bytecode_start
+                            ? 0
+                            : bcp - bytecode_start;
+              fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
+
+              sp = ((uintptr_t *)fp)[InterpreterFrame::sender_sp_offset];
+              pc = stripPointer(((void **)fp)[FRAME_PC_SLOT]);
+              fp = *(uintptr_t *)fp;
+              continue;
+            }
+          }
+
+          if (depth == 0) {
+            VMMethod *method = (VMMethod *)frame.method();
+            jmethodID method_id = getMethodId(method);
+            if (method_id != NULL) {
+              fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id);
+
+              if (is_plausible_interpreter_frame) {
+                pc = stripPointer(((void **)fp)[FRAME_PC_SLOT]);
+                sp = frame.senderSP();
+                fp = *(uintptr_t *)fp;
+              } else {
+                pc = stripPointer(*(void **)sp);
+                sp = frame.senderSP();
+              }
+              continue;
+            }
+          }
+
+          if (!recovered_from_anchor && anchor && detail < VM_EXPERT) {
+            if (anchor->lastJavaPC() == nullptr || anchor->lastJavaSP() == 0) {
+              // End of Java stack
+              break;
+            }
+            fillSkipFrame(frames[depth++]);
+            fp = anchor->lastJavaFP();
+            sp = anchor->lastJavaSP();
+            pc = anchor->lastJavaPC();
+            recovered_from_anchor = true;
+            continue;
+          }
+
+          fillErrorFrame(frames[depth++], "break_interpreted", truncated);
+          break;
+        } else if (detail < VM_EXPERT && nm->isEntryFrame(pc)) {
+          JavaFrameAnchor* e_anchor = JavaFrameAnchor::fromEntryFrame(fp);
+          if (e_anchor == NULL) {
+            if (anchor != NULL && !recovered_from_anchor && anchor->lastJavaSP() != 0) {
+              if (anchor->lastJavaPC() == nullptr || anchor->lastJavaSP() == 0) {
+                // end of Java stack
+                break;
+              }
+              TEST_LOG("Reusing thread anchor");
+              fillSkipFrame(frames[depth++]);
+              e_anchor = anchor;
+            } else {
+              fillErrorFrame(frames[depth++], "break_entry_frame: no anchor", truncated);
+              break;
+            }
+          }
+          uintptr_t prev_sp = sp;
+          sp = e_anchor->lastJavaSP();
+          fp = e_anchor->lastJavaFP();
+          pc = e_anchor->lastJavaPC();
+          if (sp == 0 || pc == NULL) {
+            // End of Java stack
+            break;
+          }
+          if (sp < prev_sp || sp >= bottom || !aligned(sp)) {
+            TEST_LOG("Failed to unwind entry frame");
+            fillErrorFrame(frames[depth++], "break_entry_frame: invalid anchor", truncated);
+            break;
+          }
           continue;
-        }
+        } else {
+          // linear time in number of runtime stubs
+          CodeBlob *stub = profiler->findRuntimeStub(pc);
+          const void *start = stub != NULL ? stub->_start : nm->code();
+          const char *name = stub != NULL ? stub->_name : nm->name();
 
-        if (depth > 1 && nm->frameSize() > 0) {
-          sp += nm->frameSize() * sizeof(void *);
-          fp = ((uintptr_t *)sp)[-FRAME_PC_SLOT - 1];
-          pc = ((const void **)sp)[-FRAME_PC_SLOT];
-          continue;
+          if (detail != VM_BASIC) {
+            fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
+          }
+
+          if (frame.unwindStub((instruction_t *)start, name, (uintptr_t &)pc, sp,
+                               fp)) {
+            continue;
+          }
+
+          if (nm->frameSize() == 0) {
+            // stubs with 0 frame size are real
+            pc = stripPointer(*(const void **)(fp +sizeof(void*)));
+            fp = *(uintptr_t *)fp;
+            sp = fp;
+            continue;
+          }
+          if (depth > 1 && nm->frameSize() > 0) {
+            sp += nm->frameSize() * sizeof(void *);
+            fp = ((uintptr_t *)sp)[-FRAME_PC_SLOT - 1];
+            pc = ((const void **)sp)[-FRAME_PC_SLOT];
+            continue;
+          }
         }
       }
     } else {
-      if (cc == NULL || !cc->contains(pc)) {
-        cc = libraries->findLibraryByAddress(pc);
-      }
-      const char *name = cc == NULL ? NULL : cc->binarySearch(pc);
+      // sometimes we seem to get into a long sequence of frames pointing to the same pc
+      //   we just want to skip that over
+      if (prev_pc != pc) {
+        if (cc == NULL || !cc->contains(pc)) {
+          cc = libraries->findLibraryByAddress(pc);
+        }
+        const char *name = cc == NULL ? NULL : cc->binarySearch(pc);
 
-      if (detail != VM_BASIC) {
         fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
+
+        if (Symbols::isRootSymbol(pc)) {
+          break;
+        }
+        prev_pc = pc;
       }
     }
 
@@ -412,11 +509,15 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
     if (cc == NULL || !cc->contains(pc)) {
       cc = libraries->findLibraryByAddress(pc);
     }
+    // It may happen that the current PC can not be resolved as belonging to any known library.
+    // In that case we just use the default_frame which is a bit of gamble on aarch64 due to
+    // no standard in the function epilogue - but the bet is that the GCC compiled code is
+    // seen more often than the clang one.
     FrameDesc *f =
         cc != NULL ? cc->findFrameDesc(pc) : &FrameDesc::default_frame;
 
     u8 cfa_reg = (u8)f->cfa;
-    int cfa_off = f->cfa >> 16;
+    int cfa_off = f->cfa >> 8;
     if (cfa_reg == DW_REG_SP) {
       sp = sp + cfa_off;
     } else if (cfa_reg == DW_REG_FP) {
@@ -429,6 +530,25 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
 
     // Check if the next frame is below on the current stack
     if (sp < prev_sp || sp >= prev_sp + MAX_FRAME_SIZE || sp >= bottom) {
+      if (fp < 0xff && sp < 0xff && depth <= 1) {
+        // Most likely MUSL signal trampoline
+        // FP, SP, RET is completely garbled and unrecoverable
+        // Let's try to jump to the stored Java frame -
+        //   the garbled frame is leaf so there is no danger we 'loop' back to the top Java frame
+        if (anchor && !recovered_from_anchor && anchor->lastJavaSP() != 0) {
+          if (anchor->lastJavaPC() == nullptr || anchor->lastJavaSP() == 0) {
+            // end of Java stack
+            break;
+          }
+          recovered_from_anchor = true;
+          fillSkipFrame(frames[depth++]);
+          sp = anchor->lastJavaSP();
+          fp = anchor->lastJavaFP();
+          pc = anchor->lastJavaPC();
+
+          continue;
+        }
+      }
       break;
     }
 
@@ -450,13 +570,25 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
       } else if (f->fp_off != DW_SAME_FP) {
         // AArch64 default_frame
         pc = stripPointer(*(void **)(sp + f->pc_off));
-        sp = fp;
+        sp = defaultSenderSP(sp, fp);
       } else if (depth <= 1) {
         pc = (const void *)frame.link();
       } else {
         // Stack bottom
         break;
       }
+    }
+
+    if (anchor && !recovered_from_anchor && !VMStructs::goodPtr((const void*)fp) && anchor->lastJavaSP() != 0) {
+      if (anchor->lastJavaPC() == nullptr || anchor->lastJavaSP() == 0) {
+        // end of Java stack
+        break;
+      }
+      recovered_from_anchor = true;
+      fillSkipFrame(frames[depth++]);
+      sp = anchor->lastJavaSP();
+      fp = anchor->lastJavaFP();
+      pc = anchor->lastJavaPC();
     }
 
     if (inDeadZone(pc)) {

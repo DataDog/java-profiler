@@ -180,4 +180,9 @@ void Symbols::parseLibraries(CodeCacheArray *array, bool kernel_symbols) {
   }
 }
 
+bool Symbols::isRootSymbol(const void* address) {
+  // no known 'always-root' symbols
+  return false;
+}
+
 #endif // __APPLE__

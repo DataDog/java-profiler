@@ -113,7 +113,7 @@ private:
 
   void expand();
   void makeImportsPatchable();
-    void saveImport(ImportId id, void** entry);
+  void saveImport(ImportId id, void** entry);
 
 public:
   explicit CodeCache(const char *name, short lib_index = -1,
@@ -177,6 +177,9 @@ public:
   }
 
   int count() { return _count; }
+  CodeBlob* blob(int idx) {
+    return &_blobs[idx];
+  }
 };
 
 class CodeCacheArray {
