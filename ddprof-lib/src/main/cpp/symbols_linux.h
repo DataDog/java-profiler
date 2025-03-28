@@ -122,10 +122,29 @@ static const bool MUSL = true;
 static const bool MUSL = false;
 #endif // __musl__
 
-enum RootSymbolKind {
-  _start, start_thread, _ZL19thread_native_entryP6Thread, _thread_start, thread_start,
-  LAST_ROOT_SYMBOL_KIND
+#define ROOT_SYMBOL_KIND(X)                                                  \
+  X(_start, "_start")                                                        \
+  X(start_thread, "start_thread")                                            \
+  X(_ZL19thread_native_entryP6Thread, "_ZL19thread_native_entryP6Thread")    \
+  X(_thread_start, "_thread_start")                                          \
+  X(thread_start, "thread_start")
+
+#define X_ENUM(a, b) a,
+typedef enum RootSymbolKind : int {
+  ROOT_SYMBOL_KIND(X_ENUM) LAST_ROOT_SYMBOL_KIND
+} RootSymbolKind;
+#undef X_ENUM
+
+typedef struct {
+  const char* name;
+  RootSymbolKind kind;
+} RootSymbolEntry;
+
+#define X_ENTRY(a, b) { b, a },
+static const RootSymbolEntry root_symbol_table[] = {
+  ROOT_SYMBOL_KIND(X_ENTRY)
 };
+#undef X_ENTRY
 
 class ElfParser {
 friend Symbols;

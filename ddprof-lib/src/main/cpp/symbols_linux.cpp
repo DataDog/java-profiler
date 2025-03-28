@@ -281,6 +281,7 @@ void ElfParser::parseDwarfInfo() {
         instruction_t* ptr = (instruction_t*)blob->_start;
         instruction_t gcc_pattern = 0x910003fd;   // mov x29, sp
         instruction_t clang_pattern = 0xfd7b01a9; // stp x29, x30, [sp, #16]
+        // first instruction may be noop so we are checking first 2 for the gcc pattern
         if (*(ptr + 1) == gcc_pattern || *(ptr + 2) == gcc_pattern) {
           *table = FrameDesc::default_frame;
           TEST_LOG("Found GCC pattern in code blob for %s, using gcc frame layout", _cc->name());
@@ -352,21 +353,12 @@ void ElfParser::loadSymbols(bool use_debug) {
 
 void ElfParser::addSymbol(const void *start, int length, const char *name, bool update_bounds) {
   _cc->add(start, length, name, update_bounds);
-  if (!strcmp("_start", name)) {
-    TEST_LOG("===> found _start");
-    _root_symbols[_start] = (uintptr_t)start;
-  } else if (!strcmp("start_thread", name)) {
-    TEST_LOG("===> found start_thread");
-    _root_symbols[start_thread] = (uintptr_t)start;
-  } else if (!strcmp("_ZL19thread_native_entryP6Thread", name)) {
-    TEST_LOG("===> found _ZL19thread_native_entryP6Thread");
-    _root_symbols[_ZL19thread_native_entryP6Thread] = (uintptr_t)start;
-  } else if (!strcmp("_thread_start", name)) {
-    TEST_LOG("===> found _thread_start");
-    _root_symbols[_thread_start] = (uintptr_t)start;
-  } else if (!strcmp("thread_start", name)) {
-    TEST_LOG("===> found thread_start");
-    _root_symbols[thread_start] = (uintptr_t)start;
+  for (int i = 0; i < sizeof(root_symbol_table)/sizeof(root_symbol_table[0]); i++) {
+    if (!strcmp(root_symbol_table[i].name, name)) {
+      TEST_LOG("===> found %s", name);
+      _root_symbols[root_symbol_table[i].kind] = (uintptr_t)start;
+      break;
+    }
   }
 }
 
