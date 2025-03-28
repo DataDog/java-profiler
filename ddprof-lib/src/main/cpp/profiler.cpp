@@ -601,7 +601,7 @@ u32 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
 
     int num_frames = 0;
 
-    if (VM::jvmti()->GetStackTrace(thread, 0, _max_stack_depth, jvmti_frames, &num_frames) == JVMTI_ERROR_NONE && num_frames > 0) {
+    if (VM::jvmti()->GetStackTrace(thread, 0, max_depth, jvmti_frames, &num_frames) == JVMTI_ERROR_NONE && num_frames > 0) {
       // Convert to AsyncGetCallTrace format.
       // Note: jvmti_frames and frames may overlap.
       for (int i = 0; i < num_frames; i++) {
