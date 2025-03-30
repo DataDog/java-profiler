@@ -89,6 +89,7 @@ FrameDesc FrameDesc::empty_frame = {0, DW_REG_SP | EMPTY_FRAME_SIZE << 8,
 FrameDesc FrameDesc::default_frame = {0, DW_REG_FP | LINKED_FRAME_SIZE << 8,
                                       -LINKED_FRAME_SIZE,
                                       -LINKED_FRAME_SIZE + DW_STACK_SLOT};
+FrameDesc FrameDesc::default_clang_frame = {0, DW_REG_FP | LINKED_FRAME_CLANG_SIZE << 8, -LINKED_FRAME_CLANG_SIZE, -LINKED_FRAME_CLANG_SIZE + DW_STACK_SLOT};
 
 DwarfParser::DwarfParser(const char *name, const char *image_base,
                          const char *eh_frame_hdr) {
@@ -398,12 +399,17 @@ int DwarfParser::parseExpression() {
 
 void DwarfParser::addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off,
                             int pc_off) {
-  // sanity asserts for the values fitting into 16bit
-  assert(cfa_reg <= 0xffffffff);
-  assert(static_cast<u32>(cfa_off) <= 0xffffffff);
+  // Sanity asserts to be able to pack those two values into one u32 vq
+  // Assert that the cfa_reg fits in 8 bits (0 to 255)
+  assert(cfa_reg <= 0xFF);
+
+  // Assert that the cfa_off fits in a 24-bit signed range.
+  // Signed 24-bit integer range: -2^23 (-8,388,608) to 2^23 - 1 (8,388,607)
+  assert(cfa_off >= -8388608 && cfa_off <= 8388607);
 
   // cfa_reg and cfa_off can be encoded to a single 32 bit value, considering the existing and supported systems
-  u32 cfa = static_cast<u16>(cfa_off) << 16 | static_cast<u16>(cfa_reg);
+  u32 cfa = static_cast<u32>(cfa_off) << 8 | static_cast<u32>(cfa_reg & 0xff);
+
   if (_prev == NULL || (_prev->loc == loc && --_count >= 0) ||
       _prev->cfa != cfa || _prev->fp_off != fp_off || _prev->pc_off != pc_off) {
     _prev = addRecordRaw(loc, cfa, fp_off, pc_off);

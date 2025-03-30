@@ -122,8 +122,35 @@ static const bool MUSL = true;
 static const bool MUSL = false;
 #endif // __musl__
 
+#define ROOT_SYMBOL_KIND(X)                                                  \
+  X(_start, "_start")                                                        \
+  X(start_thread, "start_thread")                                            \
+  X(_ZL19thread_native_entryP6Thread, "_ZL19thread_native_entryP6Thread")    \
+  X(_thread_start, "_thread_start")                                          \
+  X(thread_start, "thread_start")
+
+#define X_ENUM(a, b) a,
+typedef enum RootSymbolKind : int {
+  ROOT_SYMBOL_KIND(X_ENUM) LAST_ROOT_SYMBOL_KIND
+} RootSymbolKind;
+#undef X_ENUM
+
+typedef struct {
+  const char* name;
+  RootSymbolKind kind;
+} RootSymbolEntry;
+
+#define X_ENTRY(a, b) { b, a },
+static const RootSymbolEntry root_symbol_table[] = {
+  ROOT_SYMBOL_KIND(X_ENTRY)
+};
+#undef X_ENTRY
+
 class ElfParser {
+friend Symbols;
 private:
+  static uintptr_t _root_symbols[LAST_ROOT_SYMBOL_KIND];
+
   CodeCache *_cc;
   const char *_base;
   const char *_file_name;
@@ -153,6 +180,10 @@ private:
   }
 
   ElfSection *section(int index) {
+    if (index >= _header->e_shnum) {
+      // invalid section index
+      return NULL;
+    }
     return (ElfSection *)(_sections + index * _header->e_shentsize);
   }
 
@@ -189,6 +220,8 @@ private:
   void loadSymbolTable(const char *symbols, size_t total_size, size_t ent_size,
                        const char *strings);
   void addRelocationSymbols(ElfSection *reltab, const char *plt);
+
+  void addSymbol(const void *start, int length, const char *name, bool update_bounds = false);
 
 public:
   static void parseProgramHeaders(CodeCache *cc, const char *base,
