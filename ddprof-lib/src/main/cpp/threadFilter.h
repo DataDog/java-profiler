@@ -20,6 +20,9 @@
 #include "arch.h"
 #include <vector>
 
+#define ROTR32(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
+#define ROTL32(x, n) (((x) << (n)) | ((x) >> (32 - (n))))
+
 // The size of thread ID bitmap in bytes. Must be at least 64K to allow mmap()
 const u32 BITMAP_SIZE = 65536;
 // How many thread IDs one bitmap can hold
@@ -36,18 +39,27 @@ private:
   bool _enabled;
   volatile int _size;
 
-  u64 *bitmap(int thread_id) {
-    if (thread_id >= _max_thread_id) {
-      return NULL;
-    }
+  inline u32 thread2id(int thread_id) {
+    return ROTR32((u32)thread_id, 16);
+  }
+
+  inline int id2thread(u32 id) {
+    return (int)(ROTL32(id, 16));
+  }
+
+  inline u32 bitmapIdx(u32 id) {
+    return (u32)(id / BITMAP_CAPACITY);
+  }
+
+  u64 *bitmap(u32 id) {
     return __atomic_load_n(
-        &(_bitmap[static_cast<u32>(thread_id) / BITMAP_CAPACITY]),
+        &(_bitmap[bitmapIdx(id)]),
         __ATOMIC_ACQUIRE);
   }
 
-  u64 &word(u64 *bitmap, int thread_id) {
+  u64 &word(u64 *bitmap, u32 id) {
     // todo: add thread safe APIs
-    return bitmap[((u32)thread_id % BITMAP_CAPACITY) >> 6];
+    return bitmap[(id % BITMAP_CAPACITY) >> 6];
   }
 
 public:

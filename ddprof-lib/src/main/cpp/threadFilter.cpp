@@ -15,6 +15,7 @@
  */
 
 #include "threadFilter.h"
+#include "common.h"
 #include "counters.h"
 #include "os.h"
 #include <stdlib.h>
@@ -86,16 +87,31 @@ void ThreadFilter::clear() {
 }
 
 bool ThreadFilter::accept(int thread_id) {
-  u64 *b = bitmap(thread_id);
-  return b != NULL && (word(b, thread_id) & (1ULL << (thread_id & 0x3f)));
+  if (thread_id > _max_thread_id) {
+    // sanity check
+    return false;
+  }
+  u32 id = thread2id(thread_id);
+  u64 *b = bitmap(id);
+  if (b == NULL) {
+    return false;
+  }
+  return b != NULL && (word(b, id) & (1ULL << (id & 0x3f)));
 }
 
 void ThreadFilter::add(int thread_id) {
-  u64 *b = bitmap(thread_id);
+  if (thread_id > _max_thread_id) {
+    // sanity check
+    TEST_LOG("Thread ID %d is out of range\n", thread_id);
+    return;
+  }
+  u32 id = thread2id(thread_id);
+
+  u64 *b = bitmap(id);
   if (b == NULL) {
     b = (u64 *)OS::safeAlloc(BITMAP_SIZE);
     u64 *oldb = __sync_val_compare_and_swap(
-        &_bitmap[(u32)thread_id / BITMAP_CAPACITY], NULL, b);
+        &_bitmap[bitmapIdx(id)], NULL, b);
     if (oldb != NULL) {
       OS::safeFree(b, BITMAP_SIZE);
       b = oldb;
@@ -104,20 +120,26 @@ void ThreadFilter::add(int thread_id) {
     }
   }
 
-  u64 bit = 1ULL << (thread_id & 0x3f);
-  if (!(__sync_fetch_and_or(&word(b, thread_id), bit) & bit)) {
+  u64 bit = 1ULL << (id & 0x3f);
+  if (!(__sync_fetch_and_or(&word(b, id), bit) & bit)) {
     atomicInc(_size);
   }
 }
 
 void ThreadFilter::remove(int thread_id) {
-  u64 *b = bitmap(thread_id);
+  if (thread_id > _max_thread_id) {
+    // sanity check
+    TEST_LOG("Thread ID %d is out of range\n", thread_id);
+    return;
+  }
+  u32 id = thread2id(thread_id);
+  u64 *b = bitmap(id);
   if (b == NULL) {
     return;
   }
 
-  u64 bit = 1ULL << (thread_id & 0x3f);
-  if (__sync_fetch_and_and(&word(b, thread_id), ~bit) & bit) {
+  u64 bit = 1ULL << (id & 0x3f);
+  if (__sync_fetch_and_and(&word(b, id), ~bit) & bit) {
     atomicInc(_size, -1);
   }
 }
@@ -132,7 +154,8 @@ void ThreadFilter::collect(std::vector<int> &v) {
         // order here
         u64 word = __atomic_load_n(&b[j], __ATOMIC_ACQUIRE);
         while (word != 0) {
-          v.push_back(start_id + j * 64 + __builtin_ctzl(word));
+          u32 id = (u32)(start_id + j * 64 + __builtin_ctzl(word));
+          v.push_back(id2thread(id));
           word &= (word - 1);
         }
       }
