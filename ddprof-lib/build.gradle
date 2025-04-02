@@ -290,7 +290,8 @@ tasks.register('javadocJar', Jar) {
 
 tasks.register('scanBuild', Exec) {
   workingDir "${projectDir}/src/test/make"
-  commandLine 'scan-build'
+  def llvmVersion = project.findProperty('llvm.version') ?: '11'
+  commandLine "scan-build-${llvmVersion}"
   args "-o", "${projectDir}/build/reports/scan-build",
     "--force-analyze-debug-code",
     "--use-analyzer", "/usr/bin/clang++",
