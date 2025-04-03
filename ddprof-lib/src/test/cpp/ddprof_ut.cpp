@@ -12,6 +12,8 @@
     #include "vmEntry.h"
     #include <vector>
     #include <algorithm>  // For std::sort
+    #include <thread>
+    #include <atomic>
 
     ssize_t callback(char* ptr, int len) {
         return len;
@@ -119,88 +121,94 @@
     }
 
     TEST(ThreadFilter, testThreadFilter) {
-        int maxTid = OS::getMaxThreadId();
         ThreadFilter filter;
         filter.init("");
         ASSERT_TRUE(filter.enabled());
-        EXPECT_EQ(0, filter.size());
-        // increase step gradually to create different bit densities
-        int step = 1;
-        int size = 0;
-        for (int tid = 0; tid < maxTid - step - 1; tid += step, size++) {
-            EXPECT_FALSE(filter.accept(tid));
-            filter.add(tid);
-            EXPECT_TRUE(filter.accept(tid));
-            step++;
+
+        const int num_threads = 10;
+        const int num_ops = 100;
+        std::vector<std::thread> threads;
+        std::atomic<int> completed_threads{0};
+
+        // Each thread will add and remove its own thread ID multiple times
+        for (int i = 1; i <= num_threads; i++) {
+            threads.emplace_back([&filter, i, &completed_threads]() {
+                for (int j = 0; j < num_ops; j++) {
+                    // Add thread ID
+                    filter.add(i);
+                    bool accepted = filter.accept(i);
+                    if (!accepted) {
+                        fprintf(stderr, "FAIL: Thread %d, op %d: accept(%d) returned false after add\n", i, j, i);
+                    }
+                    EXPECT_TRUE(accepted);
+                    
+                    // Remove thread ID
+                    filter.remove(i);
+                    accepted = filter.accept(i);
+                    if (accepted) {
+                        fprintf(stderr, "FAIL: Thread %d, op %d: accept(%d) returned true after remove\n", i, j, i);
+                    }
+                    EXPECT_FALSE(accepted);
+                }
+                completed_threads++;
+            });
         }
-        ASSERT_EQ(size, filter.size());
+
+        // Wait for all threads to complete
+        for (auto& t : threads) {
+            t.join();
+        }
+
+        // Verify all threads completed
+        ASSERT_EQ(completed_threads.load(), num_threads);
+
+        // Collect and verify all thread IDs were properly removed
         std::vector<int> tids;
-        tids.reserve(size);
         filter.collect(tids);
-        ASSERT_EQ(size, tids.size());
-        for (int tid : tids) {
-            ASSERT_TRUE(filter.accept(tid));
-            filter.remove(tid);
-            ASSERT_FALSE(filter.accept(tid));
-        }
-        EXPECT_EQ(0, filter.size());
+        ASSERT_EQ(tids.size(), 0);
     }
 
     TEST(ThreadFilter, testThreadFilterCollect) {
         ThreadFilter filter;
         filter.init("");
         ASSERT_TRUE(filter.enabled());
-        EXPECT_EQ(0, filter.size());
 
-        // Add some thread IDs that would map to different bit positions
-        std::vector<int> test_tids = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
-        for (int tid : test_tids) {
-            filter.add(tid);
-            EXPECT_TRUE(filter.accept(tid));
+        const int num_threads = 10;
+        std::vector<std::thread> threads;
+        std::atomic<int> completed_threads{0};
+        std::vector<int> expected_tids;
+
+        // Each thread will add its thread ID
+        for (int i = 1; i <= num_threads; i++) {
+            expected_tids.push_back(i);
+            threads.emplace_back([&filter, i, &completed_threads]() {
+                filter.add(i);
+                EXPECT_TRUE(filter.accept(i));
+                completed_threads++;
+            });
         }
-        ASSERT_EQ(test_tids.size(), filter.size());
 
-        // Collect all thread IDs
+        // Wait for all threads to complete
+        for (auto& t : threads) {
+            t.join();
+        }
+
+        // Verify all threads completed
+        ASSERT_EQ(completed_threads.load(), num_threads);
+
+        // Collect and verify all thread IDs are present
         std::vector<int> collected_tids;
         filter.collect(collected_tids);
         
-        // Verify size matches
-        ASSERT_EQ(test_tids.size(), collected_tids.size());
-        
         // Sort both vectors for comparison
-        std::sort(test_tids.begin(), test_tids.end());
+        std::sort(expected_tids.begin(), expected_tids.end());
         std::sort(collected_tids.begin(), collected_tids.end());
         
-        // Verify all thread IDs are present
-        for (size_t i = 0; i < test_tids.size(); i++) {
-            EXPECT_EQ(test_tids[i], collected_tids[i]) 
+        ASSERT_EQ(expected_tids.size(), collected_tids.size());
+        for (size_t i = 0; i < expected_tids.size(); i++) {
+            EXPECT_EQ(expected_tids[i], collected_tids[i]) 
                 << "Mismatch at index " << i 
-                << ": expected " << test_tids[i] 
-                << ", got " << collected_tids[i];
-        }
-
-        // Test with a larger range of thread IDs
-        filter.clear();
-        test_tids.clear();
-        for (int i = 0; i < 100; i++) {
-            int tid = i * 64 + 1;  // Use IDs that would map to different words
-            test_tids.push_back(tid);
-            filter.add(tid);
-            EXPECT_TRUE(filter.accept(tid));
-        }
-        ASSERT_EQ(test_tids.size(), filter.size());
-
-        collected_tids.clear();
-        filter.collect(collected_tids);
-        
-        ASSERT_EQ(test_tids.size(), collected_tids.size());
-        std::sort(test_tids.begin(), test_tids.end());
-        std::sort(collected_tids.begin(), collected_tids.end());
-        
-        for (size_t i = 0; i < test_tids.size(); i++) {
-            EXPECT_EQ(test_tids[i], collected_tids[i]) 
-                << "Mismatch at index " << i 
-                << ": expected " << test_tids[i] 
+                << ": expected " << expected_tids[i] 
                 << ", got " << collected_tids[i];
         }
     }

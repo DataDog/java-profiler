@@ -1,156 +1,108 @@
-/*
- * Copyright 2020 Andrei Pangin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// todo copyright stuff
+// as I rewrote all the implem
 
 #include "threadFilter.h"
-#include "counters.h"
-#include "os.h"
-#include <stdlib.h>
-#include <string.h>
-#include <vector>
 #include <mutex>
+#include <thread>
+#include <cstdlib>
+#include <cstring>
 
-void trackPage() {
-  Counters::increment(THREAD_FILTER_PAGES, 1);
-  Counters::increment(THREAD_FILTER_BYTES, BITMAP_SIZE);
-}
+static ThreadFilter* global_filter = nullptr;
+thread_local ThreadFilter::SlotID tls_slot_id = -1; // todo, use the signal safe stuff 
+static std::mutex slot_mutex;
 
-ThreadFilter::ThreadFilter() {
-  _max_thread_id = OS::getMaxThreadId(128 * 1024);
-  _max_bitmaps = (_max_thread_id + BITMAP_SIZE - 1) / BITMAP_SIZE;
-  u32 capacity = _max_bitmaps * sizeof(u64 *);
-  _bitmap = (u64 **)OS::safeAlloc(capacity);
-  memset(_bitmap, 0, capacity);
-  _bitmap[0] = (u64 *)OS::safeAlloc(BITMAP_SIZE);
-  trackPage();
-  _enabled = false;
-  _size = 0;
+ThreadFilter::ThreadFilter() : _next_index(0) {
+    std::lock_guard<std::mutex> lock(slot_mutex);
+    _slots.resize(128); // preallocate some slots
 }
 
 ThreadFilter::~ThreadFilter() {
-  for (int i = 0; i < _max_bitmaps; i++) {
-    if (_bitmap[i] != NULL) {
-      OS::safeFree(_bitmap[i], BITMAP_SIZE);
-    }
-  }
-  if (_bitmap) {
-    OS::safeFree(_bitmap, _max_bitmaps * sizeof(u64 *));
-  }
+    std::lock_guard<std::mutex> lock(slot_mutex);
+    _slots.clear();
 }
 
-void ThreadFilter::init(const char *filter) {
-  if (filter == NULL) {
-    _enabled = false;
-    return;
+ThreadFilter::SlotID ThreadFilter::registerThread() {
+  int index = _next_index.fetch_add(1, std::memory_order_relaxed);
+  if (index < static_cast<int>(_slots.size())) {
+      return index;
   }
-
-  char *end;
-  do {
-    int id = strtol(filter, &end, 0);
-    if (id <= 0) {
-      break;
+  // Lock required to safely grow the vector
+  {
+    std::lock_guard<std::mutex> lock(slot_mutex);
+    size_t current_size = _slots.size();
+    if (static_cast<size_t>(index) >= current_size) {
+        _slots.resize(current_size * 2);
     }
+  }
+  return index;
+}
 
-    if (*end == '-') {
-      int to = strtol(end + 1, &end, 0);
-      while (id <= to) {
-        add(id++);
-      }
-    } else {
-      add(id);
+ThreadFilter::SlotID ThreadFilter::ensureThreadRegistered() {
+    if (tls_slot_id == -1) {
+        tls_slot_id = registerThread();
     }
-
-    filter = end + 1;
-  } while (*end);
-
-  _enabled = true;
+    return tls_slot_id;
 }
 
 void ThreadFilter::clear() {
-  for (int i = 0; i < _max_bitmaps; i++) {
-    if (_bitmap[i] != NULL) {
-      memset(_bitmap[i], 0, BITMAP_SIZE);
+    std::lock_guard<std::mutex> lock(slot_mutex);
+    for (auto& slot : _slots) {
+        slot.value.store(-1, std::memory_order_relaxed);
     }
-  }
-  _size = 0;
 }
 
-bool ThreadFilter::accept(int thread_id) {
-  u64 *b = bitmap(thread_id);
-  if (b == NULL) return false;
-  u32 reversed = reverseBits(thread_id);
-  return word(b, thread_id) & (1ULL << (reversed & 0x3f));
+bool ThreadFilter::accept(int tid) const {
+    if (!_enabled) return true;
+    SlotID id = tls_slot_id;
+    return id >= 0 && id < static_cast<int>(_slots.size()) && _slots[id].value.load(std::memory_order_acquire) != -1;
 }
 
-void ThreadFilter::add(int thread_id) {
-  u64 *b = bitmap(thread_id);
-  if (b == NULL) {
-    b = (u64 *)OS::safeAlloc(BITMAP_SIZE);
-    u64 *oldb = __sync_val_compare_and_swap(
-        &_bitmap[(u32)thread_id / BITMAP_CAPACITY], NULL, b);
-    if (oldb != NULL) {
-      OS::safeFree(b, BITMAP_SIZE);
-      b = oldb;
-    } else {
-      trackPage();
-    }
-  }
-
-  u32 reversed = reverseBits(thread_id);
-  u64 bit = 1ULL << (reversed & 0x3f);
-  if (!(__sync_fetch_and_or(&word(b, thread_id), bit) & bit)) {
-    atomicInc(_size);
-  }
+void ThreadFilter::add(int tid) {
+    SlotID id = ensureThreadRegistered();
+    _slots[id].value.store(tid, std::memory_order_relaxed);
 }
 
-void ThreadFilter::remove(int thread_id) {
-  u64 *b = bitmap(thread_id);
-  if (b == NULL) {
-    return;
-  }
-
-  u32 reversed = reverseBits(thread_id);
-  u64 bit = 1ULL << (reversed & 0x3f);
-  if (__sync_fetch_and_and(&word(b, thread_id), ~bit) & bit) {
-    atomicInc(_size, -1);
-  }
+void ThreadFilter::remove(int /*tid*/) {
+    SlotID id = ensureThreadRegistered(); // we probably are already registered 
+    _slots[id].value.store(-1, std::memory_order_relaxed);
 }
 
-void ThreadFilter::collect(std::vector<int>& tids) {
-    tids.reserve(_size);  // Pre-allocate space for efficiency
-    
-    // Iterate through the bitmap array
-    for (int i = 0; i < _max_bitmaps; i++) {
-        u64* b = _bitmap[i];
-        if (b != NULL) {
-            int start_id = i * BITMAP_CAPACITY;
-            for (int j = 0; j < BITMAP_SIZE / sizeof(u64); j++) {
-                u64 word = __atomic_load_n(&b[j], __ATOMIC_ACQUIRE);
-                while (word != 0) {
-                    int bit_pos = __builtin_ctzl(word);
-                    // For each bit position, we need to find all thread IDs that would map to it
-                    for (int k = 0; k < 64; k++) {
-                        int thread_id = start_id + (j << 6) + k;
-                        u32 reversed = reverseBits(thread_id);
-                        if ((reversed & 0x3f) == bit_pos) {
-                            tids.push_back(thread_id);
-                        }
-                    }
-                    word &= (word - 1);
-                }
-            }
+void ThreadFilter::collect(std::vector<int>& tids) const {
+    tids.clear();
+    std::lock_guard<std::mutex> lock(slot_mutex);
+    for (const auto& slot : _slots) {
+        int tid = slot.value.load(std::memory_order_acquire);
+        if (tid != -1) {
+            tids.push_back(tid);
         }
     }
+}
+
+void ThreadFilter::init(const char* filter) {
+    if (filter == nullptr) {
+        return;
+    }
+    // char* end;
+    // // todo understand this strange init
+    // do {
+    //     int id = strtol(filter, &end, 0);
+    //     if (id <= 0) {
+    //         break;
+    //     }
+
+    //     if (*end == '-') {
+    //         int to = strtol(end + 1, &end, 0);
+    //         while (id <= to) {
+    //             add(id++);
+    //         }
+    //     } else {
+    //         add(id);
+    //     }
+    //     filter = end + 1;
+    // } while (*end);
+    _enabled = true;
+}
+
+bool ThreadFilter::enabled() const {
+    return _enabled;
 }

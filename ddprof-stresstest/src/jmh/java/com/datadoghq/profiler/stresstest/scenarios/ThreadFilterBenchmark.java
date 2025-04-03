@@ -11,6 +11,7 @@ import java.io.PrintWriter;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicIntegerArray;
 
 @State(Scope.Benchmark)
 public class ThreadFilterBenchmark extends Configuration {
@@ -24,6 +25,11 @@ public class ThreadFilterBenchmark extends Configuration {
     private AtomicLong operationCount;
     private long startTime;
     private PrintWriter logWriter;
+    private static final int ARRAY_SIZE = 1024; // Larger array to stress memory
+    private static final int[] sharedArray = new int[ARRAY_SIZE];
+    private static final AtomicIntegerArray atomicArray = new AtomicIntegerArray(ARRAY_SIZE);
+    private static final int CACHE_LINE_SIZE = 64; // Typical cache line size
+    private static final int STRIDE = CACHE_LINE_SIZE / Integer.BYTES; // Elements per cache line
 
     @Setup(Level.Trial)
     public void setup() throws IOException {
@@ -32,6 +38,12 @@ public class ThreadFilterBenchmark extends Configuration {
         executorService = Executors.newFixedThreadPool(NUM_THREADS);
         System.out.println("Getting profiler instance");
         profiler = JavaProfiler.getInstance();
+        System.out.println("Stopping any existing profiler session");
+        try {
+            profiler.stop();
+        } catch (Exception e) {
+            // Ignore if profiler wasn't started
+        }
         System.out.println("Starting profiler with wall=1ms,filter=0,file=/tmp/thread_filter_profile.jfr");
         profiler.execute("start,wall=1ms,filter=0,file=/tmp/thread_filter_profile.jfr");
         System.out.println("Started profiler with output file");
@@ -129,7 +141,7 @@ public class ThreadFilterBenchmark extends Configuration {
             executorService.submit(() -> {
                 try {
                     startLatch.countDown();
-                    startLatch.await(5, TimeUnit.SECONDS); // Add timeout for thread startup
+                    startLatch.await(5, TimeUnit.SECONDS);
                     
                     String startMsg = String.format("Thread %d started%n", threadId);
                     System.out.print(startMsg);
@@ -139,9 +151,39 @@ public class ThreadFilterBenchmark extends Configuration {
                     }
                     
                     while (running.get()) {
+                        // Register thread
                         profiler.addThread();
+                        
+                        // Memory-intensive operations that would be sensitive to false sharing
+                        for (int j = 0; j < ARRAY_SIZE; j += STRIDE) {
+                            // Each thread writes to its own cache line
+                            int baseIndex = (threadId * STRIDE) % ARRAY_SIZE;
+                            for (int k = 0; k < STRIDE; k++) {
+                                int index = (baseIndex + k) % ARRAY_SIZE;
+                                // Write to shared array
+                                sharedArray[index] = threadId;
+                                // Read and modify
+                                int value = sharedArray[index] + 1;
+                                // Atomic operation
+                                atomicArray.set(index, value);
+                            }
+                        }
+                        
                         operationCount.incrementAndGet();
+                        
+                        // Remove thread
                         profiler.removeThread();
+                        
+                        // More memory operations
+                        for (int j = 0; j < ARRAY_SIZE; j += STRIDE) {
+                            int baseIndex = (threadId * STRIDE) % ARRAY_SIZE;
+                            for (int k = 0; k < STRIDE; k++) {
+                                int index = (baseIndex + k) % ARRAY_SIZE;
+                                int value = atomicArray.get(index);
+                                sharedArray[index] = value * 2;
+                            }
+                        }
+                        
                         operationCount.incrementAndGet();
                         
                         if (operationCount.get() % 1000 == 0) {

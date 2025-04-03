@@ -1055,7 +1055,6 @@ void Recording::writeExecutionModes(Buffer *buf) {
 void Recording::writeThreads(Buffer *buf) {
   addThread(_tid);
   std::vector<int> threads;
-  threads.reserve(_thread_set.size());
   _thread_set.collect(threads);
   _thread_set.clear();
 
