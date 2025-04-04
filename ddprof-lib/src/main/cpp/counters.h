@@ -59,7 +59,8 @@
   X(AGCT_NOT_JAVA, "agct_not_java")                                            \
   X(AGCT_NATIVE_NO_JAVA_CONTEXT, "agct_native_no_java_context")                \
   X(AGCT_BLOCKED_IN_VM, "agct_blocked_in_vm")                                  \
-  X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")
+  X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
+  X(UNWINDING_TIME, "unwinding_time")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS
