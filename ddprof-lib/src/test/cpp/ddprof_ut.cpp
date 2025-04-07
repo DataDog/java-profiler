@@ -6,10 +6,13 @@
     #include "counters.h"
     #include "mutex.h"
     #include "os.h"
+    #include "unwindStats.h"
     #include "threadFilter.h"
     #include "threadInfo.h"
     #include "threadLocalData.h"
     #include "vmEntry.h"
+    #include <map>
+    #include <thread>
     #include <vector>
 
     ssize_t callback(char* ptr, int len) {
@@ -244,6 +247,149 @@
         EXPECT_EQ(24, java_version1.major);
         EXPECT_EQ(0, java_version1.update);
         EXPECT_EQ(24, hs_version1);
+    }
+
+    TEST(UnwindFailures, BasicFunctionality) {
+      UnwindFailures failures;
+
+      // Test recording failures
+      EXPECT_EQ(0, failures.count("test_stub1"));
+      failures.record(UNWIND_FAILURE_STUB, "test_stub1");
+      EXPECT_EQ(1, failures.count("test_stub1"));
+
+      failures.record(UNWIND_FAILURE_COMPILED, "test_stub1");
+      EXPECT_EQ(1, failures.count("test_stub1", UNWIND_FAILURE_STUB));
+      EXPECT_EQ(1, failures.count("test_stub1", UNWIND_FAILURE_COMPILED));
+      EXPECT_EQ(2, failures.count("test_stub1"));
+
+      // Test different stubs
+      EXPECT_EQ(0, failures.count("test_stub2"));
+      failures.record(UNWIND_FAILURE_STUB, "test_stub2");
+      EXPECT_EQ(2, failures.count("test_stub1"));
+      EXPECT_EQ(1, failures.count("test_stub2"));
+
+      // Test reset
+      failures.clear();
+      EXPECT_TRUE(failures.empty());
+      EXPECT_EQ(0, failures.count("test_stub1"));
+      EXPECT_EQ(0, failures.count("test_stub2"));
+    }
+
+    TEST(UnwindFailures, HashCollisions) {
+      UnwindFailures failures;
+
+      // Test multiple entries that might collide
+      for (int i = 0; i < 100; i++) {
+        char name[32];
+        snprintf(name, sizeof(name), "stub_%d", i);
+        EXPECT_EQ(0, failures.count(name));
+        failures.record(UNWIND_FAILURE_STUB, name);
+        EXPECT_EQ(1, failures.count(name));
+      }
+
+      // Verify counts are correct
+      for (int i = 0; i < 100; i++) {
+        char name[32];
+        snprintf(name, sizeof(name), "stub_%d", i);
+        EXPECT_EQ(1, failures.count(name));
+      }
+    }
+
+    TEST(UnwindFailures, SwapEmptyInstances) {
+      UnwindFailures failures1;
+      UnwindFailures failures2;
+
+      // Verify both instances are empty
+      EXPECT_TRUE(failures1.empty());
+      EXPECT_TRUE(failures2.empty());
+
+      // Swap the empty instances
+      failures1.swap(failures2);
+
+      // Verify both instances are still empty after swap
+      EXPECT_TRUE(failures1.empty());
+      EXPECT_TRUE(failures2.empty());
+
+      // Add some data to failures1
+      failures1.record(UNWIND_FAILURE_STUB, "test_stub1");
+      EXPECT_FALSE(failures1.empty());
+      EXPECT_TRUE(failures2.empty());
+
+      // Swap again
+      failures1.swap(failures2);
+
+      // Verify data moved correctly
+      EXPECT_TRUE(failures1.empty());
+      EXPECT_FALSE(failures2.empty());
+      EXPECT_EQ(1, failures2.count("test_stub1"));
+    }
+
+    TEST(UnwindStats, CollectAndReset) {
+      // Record some failures
+      UnwindFailures failures;
+      failures.record(UNWIND_FAILURE_STUB, "test_stub1");
+      failures.record(UNWIND_FAILURE_STUB, "test_stub2");
+      UnwindStats::recordFailures(failures);
+
+      // Collect and reset
+      UnwindFailures result;
+      UnwindStats::collectAndReset(result);
+
+      // Verify the result contains the recorded failures
+      EXPECT_EQ(1, result.count("test_stub1"));
+      EXPECT_EQ(1, result.count("test_stub2"));
+
+      // Verify the stats are reset
+      UnwindFailures empty_result;
+      UnwindStats::collectAndReset(empty_result);
+      EXPECT_TRUE(empty_result.empty());
+    }
+
+    TEST(UnwindStatsTest, ThreadSafety) {
+      UnwindStats::reset();
+
+      const int numThreads = 4;
+      const int iterations = 10000;
+      std::thread threads[numThreads];
+
+      fprintf(stderr, "Starting %d threads with %d iterations each\n", numThreads, iterations);
+      // Each thread records failures for different stubs
+      for (int i = 0; i < numThreads; i++) {
+        threads[i] = std::thread([i, iterations]() {
+          UnwindFailures failures; // per-thread instance
+          char name[32];
+          snprintf(name, sizeof(name), "thread_%d_stub", i);
+          for (int j = 0; j < iterations; j++) {
+            failures.record(UNWIND_FAILURE_STUB, name);
+          }
+          // record the thread-stats
+          UnwindStats::recordFailures(failures);
+        });
+      }
+
+      fprintf(stderr, "Waiting for threads to finish\n");
+      // Wait for all threads
+      for (int i = 0; i < numThreads; i++) {
+        threads[i].join();
+      }
+
+      fprintf(stderr, "All threads finished\n");
+      fprintf(stderr, "Verifying counts\n");
+
+      UnwindFailures result;
+      UnwindStats::collectAndReset(result);
+      // Verify counts
+      u64 globalCount = 0;
+      for (int i = 0; i < numThreads; i++) {
+        char name[32];
+        snprintf(name, sizeof(name), "thread_%d_stub", i);
+        // due to expected concurrency issues some failures may not be counted
+        // failure recording prefers dropping the failure over blocking on the lock
+        u64 count = result.count(name);
+        EXPECT_TRUE(count <= iterations);
+        globalCount += count;
+      }
+      EXPECT_TRUE(globalCount > 0);
     }
 
     int main(int argc, char **argv) {

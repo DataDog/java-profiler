@@ -127,7 +127,8 @@ static const bool MUSL = false;
   X(start_thread, "start_thread")                                            \
   X(_ZL19thread_native_entryP6Thread, "_ZL19thread_native_entryP6Thread")    \
   X(_thread_start, "_thread_start")                                          \
-  X(thread_start, "thread_start")
+  X(thread_start, "thread_start")                                            \
+  X(thread_native_entry, "thread_native_entry")
 
 #define X_ENUM(a, b) a,
 typedef enum RootSymbolKind : int {

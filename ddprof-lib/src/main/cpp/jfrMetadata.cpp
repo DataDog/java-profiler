@@ -279,6 +279,13 @@ void JfrMetadata::initialize(
               << field("name", T_COUNTER_NAME, "Name")
               << field("count", T_LONG, "Count"))
 
+          << (type("datadog.UnwindFailure", T_UNWIND_FAILURE, "Unwind Failure")
+              << category("Datadog")
+              << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+              << field("kind", T_STRING, "Kind")
+              << field("name", T_STRING, "Name")
+              << field("count", T_LONG, "Count"))
+
           << (type("jdk.OSInformation", T_OS_INFORMATION, "OS Information")
               << category("Operating System")
               << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)

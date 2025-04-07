@@ -30,3 +30,6 @@ datadog/maven/resources
 /gradle.properties
 **/hs_err*
 
+# cursor AI history
+.history
+

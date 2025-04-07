@@ -130,6 +130,10 @@ unsigned int Dictionary::lookup(const char *key, size_t length, bool for_insert,
   }
 }
 
+bool Dictionary::check(const char* key) {
+  return lookup(key, strlen(key), false, 0) != 0;
+}
+
 unsigned int Dictionary::bounded_lookup(const char *key, size_t length,
                                         int size_limit) {
   // bounded lookup will find the encoding if the key is already mapped,

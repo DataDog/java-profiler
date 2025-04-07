@@ -74,6 +74,7 @@ public:
 
   void clear();
 
+  bool         check(const char* key);
   unsigned int lookup(const char *key);
   unsigned int lookup(const char *key, size_t length);
   unsigned int bounded_lookup(const char *key, size_t length, int size_limit);

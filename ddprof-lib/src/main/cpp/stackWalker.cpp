@@ -22,6 +22,7 @@
 #include "safeAccess.h"
 #include "stackFrame.h"
 #include "symbols.h"
+#include "thread.h"
 #include "vmStructs.h"
 
 #include <ucontext.h>
@@ -264,10 +265,13 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
   VMThread *vm_thread = VMThread::current();
   void *saved_exception = vm_thread != NULL ? vm_thread->exception() : NULL;
 
-  // Should be preserved across setjmp/longjmp
-  volatile int depth = 0;
   JavaFrameAnchor* anchor = nullptr;
   bool recovered_from_anchor = false;
+  ProfiledThread *pThread = ProfiledThread::current();
+
+  // Should be preserved across setjmp/longjmp
+  volatile int depth = 0;
+  UnwindFailures *unwindFailures = pThread != nullptr ? pThread->unwindFailures() : nullptr;
 
   if (vm_thread != NULL) {
     vm_thread->exception() = &crash_protection_ctx;
@@ -276,6 +280,9 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
       if (depth < max_depth) {
         TEST_LOG("Crash protection triggered");
         fillErrorFrame(frames[depth++], "break_not_walkable", truncated);
+      }
+      if (unwindFailures) {
+        UnwindStats::recordFailures(unwindFailures);
       }
       return depth;
     }
@@ -473,13 +480,20 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
             pc = stripPointer(*(const void **)(fp +sizeof(void*)));
             fp = *(uintptr_t *)fp;
             sp = fp;
-            continue;
+            if (profiler->isAddressInCode(pc, true)) {
+              continue;
+            }
           }
           if (depth > 1 && nm->frameSize() > 0) {
             sp += nm->frameSize() * sizeof(void *);
             fp = ((uintptr_t *)sp)[-FRAME_PC_SLOT - 1];
             pc = ((const void **)sp)[-FRAME_PC_SLOT];
-            continue;
+            if (profiler->isAddressInCode(pc, true)) {
+              continue;
+            }
+          }
+          if (unwindFailures) {
+            unwindFailures->record(UNWIND_FAILURE_STUB, name);
           }
         }
       }
@@ -598,6 +612,11 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
 
   if (vm_thread != NULL)
     vm_thread->exception() = saved_exception;
+
+  if (unwindFailures && !unwindFailures->empty()) {
+    TEST_LOG("Recording unwind failures");
+    UnwindStats::recordFailures(unwindFailures);
+  }
 
   return depth;
 }

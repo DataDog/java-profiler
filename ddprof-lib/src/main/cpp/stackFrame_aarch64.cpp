@@ -105,7 +105,7 @@ bool StackFrame::unwindStub(instruction_t *entry, const char *name,
             sp += 32;
             pc = link();
             return true;
-   }
+  }
   return false;
 }
 

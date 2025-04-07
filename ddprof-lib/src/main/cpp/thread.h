@@ -3,6 +3,7 @@
 
 #include "os.h"
 #include "threadLocalData.h"
+#include "unwindStats.h"
 #include <atomic>
 #include <cstdint>
 #include <jvmti.h>
@@ -42,6 +43,7 @@ private:
   u32 _wall_epoch;
   u32 _call_trace_id;
   u32 _recording_epoch;
+  UnwindFailures _unwind_failures;
 
   ProfiledThread(int buffer_pos, int tid)
       : ThreadLocalData(), _pc(0), _span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
@@ -108,6 +110,13 @@ public:
 
   bool isDeepCrashHandler() {
     return _crash_depth > CRASH_HANDLER_NESTING_LIMIT;
+  }
+
+  UnwindFailures* unwindFailures(bool reset = true) {
+    if (reset) {
+      _unwind_failures.clear();
+    }
+    return &_unwind_failures;
   }
 
   static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
