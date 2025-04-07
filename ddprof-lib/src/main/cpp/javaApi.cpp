@@ -113,7 +113,7 @@ extern "C" DLLEXPORT jstring JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getStatus0(JNIEnv* env, 
                                                     jobject unused) {
   char msg[2048];
-  int ret = Profiler::instance()->status((char*)msg, sizeof(msg) - 1);
+  Profiler::instance()->status((char*)msg, sizeof(msg) - 1);
   return env->NewStringUTF(msg);
 }
 

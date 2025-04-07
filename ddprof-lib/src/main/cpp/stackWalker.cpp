@@ -155,7 +155,6 @@ int StackWalker::walkDwarf(void *ucontext, const void **callchain,
   const void *pc;
   uintptr_t fp;
   uintptr_t sp;
-  uintptr_t prev_sp;
   uintptr_t bottom = (uintptr_t)&sp + MAX_WALK_SIZE;
   StackFrame frame(ucontext);
   if (ucontext == NULL) {
@@ -188,7 +187,7 @@ int StackWalker::walkDwarf(void *ucontext, const void **callchain,
     }
 
     callchain[depth++] = pc;
-    prev_sp = sp;
+    uintptr_t prev_sp = sp;
 
     CodeCache *cc = libraries->findLibraryByAddress(pc);
     FrameDesc *f =
