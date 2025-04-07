@@ -19,6 +19,7 @@
 #include "profiler.h"
 #include "rustDemangler.h"
 #include "spinLock.h"
+#include "unwindStats.h"
 #include "symbols.h"
 #include "threadFilter.h"
 #include "threadState.h"
@@ -35,6 +36,7 @@
 #include <string>
 #include <sys/types.h>
 #include <sys/utsname.h>
+#include <vector>
 #include <unistd.h>
 
 static SpinLock _rec_lock(1);
@@ -422,6 +424,11 @@ off_t Recording::finishChunk(bool end_recording) {
   // familiarity with the code base will be required to use this diagnostic
   // information for now.
   writeCounters(_buf);
+
+  // Keep a simple stats for where we failed to unwind
+  // For the sakes of simplicity we are not keeping the count of failed unwinds which would also be
+  // just 'eventually consistent' because we do not want to block the unwinding while writing out the stats.
+  writeUnwindFailures(_buf);
 
   for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
     flush(&_buf[i]);
@@ -1247,6 +1254,22 @@ void Recording::writeCounters(Buffer *buf) {
       flushIfNeeded(buf);
     }
   }
+}
+
+void Recording::writeUnwindFailures(Buffer *buf) {
+  static UnwindFailures failures;
+  UnwindStats::collectAndReset(failures);
+
+  failures.forEach([&](UnwindFailureKind kind, const char *name, u64 count) {
+    int start = buf->skip(1);
+    buf->putVar64(T_UNWIND_FAILURE);
+    buf->putVar64(_start_ticks);
+    buf->putUtf8((kind & UNWIND_FAILURE_STUB) ? "stub" : "other");
+    buf->putUtf8(name);
+    buf->putVar64(count);
+    writeEventSizePrefix(buf, start);
+    flushIfNeeded(buf);
+  });
 }
 
 void Recording::writeContext(Buffer *buf, Context &context) {

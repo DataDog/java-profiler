@@ -1,0 +1,60 @@
+plugins {
+  id 'cpp-application'
+}
+
+// this feels weird but it is the only way invoking `./gradlew :ddprof-lib:*` tasks will work
+if (rootDir.toString().endsWith("ddprof-lib/gradle")) {
+  apply from: rootProject.file('../../common.gradle')
+}
+
+application {
+  baseName = "unwind_failures_benchmark"
+  source.from file('src')
+  privateHeaders.from file('src')
+
+  targetMachines = [machines.macOS, machines.linux.x86_64]
+}
+
+// Include the main library headers
+tasks.withType(CppCompile).configureEach {
+  includes file('../src/main/cpp').toString()
+}
+
+// Add a task to run the benchmark
+tasks.register('runBenchmark', Exec) {
+  dependsOn 'assemble'
+  workingDir = buildDir
+
+  doFirst {
+    // Find the executable by looking for it in the build directory
+    def executableName = "unwind_failures_benchmark"
+    def executable = null
+
+    // Search for the executable in the build directory
+    buildDir.eachFileRecurse { file ->
+      if (file.isFile() && file.name == executableName && file.canExecute()) {
+        executable = file
+        return true // Stop searching once found
+      }
+    }
+
+    if (executable == null) {
+      throw new GradleException("Executable '${executableName}' not found in ${buildDir.absolutePath}. Make sure the build was successful.")
+    }
+
+    // Build command line with the executable path and any additional arguments
+    def cmd = [executable.absolutePath]
+
+    // Add any additional arguments passed to the Gradle task
+    if (project.hasProperty('args')) {
+      cmd.addAll(project.args.split(' '))
+    }
+
+    println "Running benchmark using executable at: ${executable.absolutePath}"
+    commandLine = cmd
+  }
+
+  doLast {
+    println "Benchmark completed."
+  }
+}

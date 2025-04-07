@@ -28,6 +28,13 @@ dependencies {
   project(':ddprof-lib:gtest')
 }
 
+// Add a task to run all benchmarks
+tasks.register('runBenchmarks') {
+  dependsOn ':ddprof-lib:benchmarks:runBenchmark'
+  group = 'verification'
+  description = 'Run all benchmarks'
+}
+
 test {
   onlyIf {
     !project.hasProperty('skip-tests')
