@@ -504,11 +504,12 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
         if (cc == NULL || !cc->contains(pc)) {
           cc = libraries->findLibraryByAddress(pc);
         }
-        const char *name = cc == NULL ? NULL : cc->binarySearch(pc);
+        const char *name = NULL;
+        const void* symbolPc = cc == NULL ? NULL : cc->binarySearch(pc, &name);
 
         fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
 
-        if (Symbols::isRootSymbol(pc)) {
+        if (symbolPc && Symbols::isRootSymbol(symbolPc)) {
           break;
         }
         prev_pc = pc;
