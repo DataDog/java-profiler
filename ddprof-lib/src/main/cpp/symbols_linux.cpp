@@ -353,9 +353,6 @@ void ElfParser::loadSymbols(bool use_debug) {
 
 void ElfParser::addSymbol(const void *start, int length, const char *name, bool update_bounds) {
   _cc->add(start, length, name, update_bounds);
-  if (strstr(name, "thread_native_entry")) {
-    TEST_LOG("===> %s", name);
-  }
   for (int i = 0; i < LAST_ROOT_SYMBOL_KIND; i++) {
     if (!strcmp(root_symbol_table[i].name, name)) {
       TEST_LOG("Adding root symbol %s: %p", name, start);

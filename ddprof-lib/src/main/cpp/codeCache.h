@@ -162,7 +162,7 @@ public:
 
   CodeBlob *findBlob(const char *name);
   CodeBlob *findBlobByAddress(const void *address);
-  const char *binarySearch(const void *address);
+  const void *binarySearch(const void *address, const char **name);
   const void *findSymbol(const char *name);
   const void *findSymbolByPrefix(const char *prefix);
   const void *findSymbolByPrefix(const char *prefix, int prefix_len);

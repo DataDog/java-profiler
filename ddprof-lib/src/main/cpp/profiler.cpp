@@ -245,7 +245,11 @@ const char *Profiler::getLibraryName(const char *native_symbol) {
 
 const char *Profiler::findNativeMethod(const void *address) {
   CodeCache *lib = _libs->findLibraryByAddress(address);
-  return lib == NULL ? NULL : lib->binarySearch(address);
+  const char *name = NULL;
+  if (lib != NULL) {
+    lib->binarySearch(address, &name);
+  }
+  return name;
 }
 
 CodeBlob *Profiler::findRuntimeStub(const void *address) {
