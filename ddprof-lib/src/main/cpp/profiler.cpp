@@ -23,6 +23,7 @@
 #include "stackWalker.h"
 #include "symbols.h"
 #include "thread.h"
+#include "tsc.h"
 #include "vmStructs.h"
 #include "wallClock.h"
 #include <algorithm>
@@ -600,6 +601,7 @@ u32 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
   }
   u32 call_trace_id = 0;
   if (!_omit_stacktraces) {
+    u64 startTime = TSC::ticks();
     ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
     jvmtiFrameInfo *jvmti_frames = _calltrace_buffer[lock_index]->_jvmti_frames;
 
@@ -619,6 +621,10 @@ u32 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
     }
 
     call_trace_id = _call_trace_storage.put(num_frames, frames, false, counter);
+    u64 duration = TSC::ticks() - startTime;
+    if (duration > 0) {
+      Counters::increment(UNWINDING_TIME_JVMTI, duration); // increment the JVMTI specific counter
+    }
   }
   if (!deferred) {
     _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
@@ -670,6 +676,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
   // record a null stacktrace we can skip the unwind if we've got a
   // call_trace_id determined to be reusable at a higher level
   if (!_omit_stacktraces && call_trace_id == 0) {
+    u64 startTime = TSC::ticks();
     ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
 
     int num_frames = 0;
@@ -715,6 +722,10 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     ProfiledThread *thread = ProfiledThread::current();
     if (thread != nullptr) {
       thread->recordCallTraceId(call_trace_id);
+    }
+    u64 duration = TSC::ticks() - startTime;
+    if (duration > 0) {
+      Counters::increment(UNWINDING_TIME_ASYNC, duration); // increment the async specific counter
     }
   }
   _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
@@ -1360,6 +1371,11 @@ Error Profiler::dump(const char *path, const int length) {
 
     _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();
+
+    // reset unwinding counters
+    Counters::set(UNWINDING_TIME_ASYNC, 0);
+    Counters::set(UNWINDING_TIME_JVMTI, 0);
+
     return err;
   }
 
