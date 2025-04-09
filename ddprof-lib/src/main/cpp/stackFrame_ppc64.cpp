@@ -22,9 +22,6 @@
 #include <errno.h>
 #include <signal.h>
 
-#include "counters.h"
-#include "tsc.h"
-
 uintptr_t &StackFrame::pc() {
   return (uintptr_t &)_ucontext->uc_mcontext.regs->nip;
 }
@@ -115,21 +112,12 @@ static inline bool inC2PrologueCrit(uintptr_t pc) {
 
 bool StackFrame::unwindStub(instruction_t *entry, const char *name,
                             uintptr_t &pc, uintptr_t &sp, uintptr_t &fp) {
-  const u64 startTime = TSC::ticks();
   pc = link();
-
-  const u64 endTime = TSC::ticks();
-  const u64 duration = TSC::ticks_to_millis(endTime - startTime);
-  if (duration > 1) {
-    Counters::increment(UNWINDING_TIME, duration);
-  }
   return true;
 }
 
 bool StackFrame::unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp,
                                 uintptr_t &fp) {
-  const u64 startTime = TSC::ticks();
-
   // On PPC there is a valid back link to the previous frame at all times. The
   // callee stores the return address in the caller's frame before it constructs
   // its own frame. After it has destroyed its frame it restores the link
@@ -152,12 +140,6 @@ bool StackFrame::unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp,
     pc = link();
   }
 
-
-  const u64 endTime = TSC::ticks();
-  const u64 duration = TSC::ticks_to_millis(endTime - startTime);
-  if (duration > 1) {
-    Counters::increment(UNWINDING_TIME, duration);
-  }
   return true;
 }
 

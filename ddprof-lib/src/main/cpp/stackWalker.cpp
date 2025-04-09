@@ -146,7 +146,6 @@ int StackWalker::walkFP(void *ucontext, const void **callchain, int max_depth,
     sp = fp + (FRAME_PC_SLOT + 1) * sizeof(void *);
     fp = *(uintptr_t *)fp;
   }
-
   return depth;
 }
 

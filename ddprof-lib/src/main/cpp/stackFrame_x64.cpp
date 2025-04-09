@@ -22,9 +22,6 @@
 #include <string.h>
 #include <sys/syscall.h>
 
-#include "counters.h"
-#include "tsc.h"
-
 #ifdef __APPLE__
 #define REG(l, m) _ucontext->uc_mcontext->__ss.__##m
 #else
@@ -65,36 +62,18 @@ void StackFrame::ret() {
 
 bool StackFrame::unwindStub(instruction_t *entry, const char *name,
                             uintptr_t &pc, uintptr_t &sp, uintptr_t &fp) {
-  const u64 startTime = TSC::ticks();
   instruction_t *ip = (instruction_t *)pc;
   if (ip == entry || *ip == 0xc3 || strncmp(name, "itable", 6) == 0 ||
       strncmp(name, "vtable", 6) == 0 ||
       strcmp(name, "InlineCacheBuffer") == 0) {
     pc = ((uintptr_t *)sp)[0] - 1;
     sp += 8;
-
-    const u64 endTime = TSC::ticks();
-    const u64 duration = TSC::ticks_to_millis(endTime - startTime);
-    if (duration > 1) {
-      Counters::increment(UNWINDING_TIME, duration);
-    }
     return true;
   }
   if (entry == nullptr) {
-    const u64 endTime = TSC::ticks();
-    const u64 duration = TSC::ticks_to_millis(endTime - startTime);
-    if (duration > 1) {
-      Counters::increment(UNWINDING_TIME, duration);
-    }
     return false;
   }
   if (reinterpret_cast<uintptr_t>(entry) % alignof(unsigned int) != 0) {
-
-    const u64 endTime = TSC::ticks();
-    const u64 duration = TSC::ticks_to_millis(endTime - startTime);
-    if (duration > 1) {
-      Counters::increment(UNWINDING_TIME, duration);
-    }
     return false;
   }
   if (*(unsigned int *)entry == 0xec8b4855) {
@@ -104,38 +83,19 @@ bool StackFrame::unwindStub(instruction_t *entry, const char *name,
     if (ip == entry + 1) {
       pc = ((uintptr_t *)sp)[1] - 1;
       sp += 16;
-
-      const u64 endTime = TSC::ticks();
-      const u64 duration = TSC::ticks_to_millis(endTime - startTime);
-      if (duration > 1) {
-        Counters::increment(UNWINDING_TIME, duration);
-      }
       return true;
     } else if (withinCurrentStack(fp)) {
       sp = fp + 16;
       fp = ((uintptr_t *)sp)[-2];
       pc = ((uintptr_t *)sp)[-1] - 1;
-
-      const u64 endTime = TSC::ticks();
-      const u64 duration = TSC::ticks_to_millis(endTime - startTime);
-      if (duration > 1) {
-        Counters::increment(UNWINDING_TIME, duration);
-      }
       return true;
     }
-  }
-
-  const u64 endTime = TSC::ticks();
-  const u64 duration = TSC::ticks_to_millis(endTime - startTime);
-  if (duration > 1) {
-    Counters::increment(UNWINDING_TIME, duration);
   }
   return false;
 }
 
 bool StackFrame::unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp,
                                 uintptr_t &fp) {
-  const u64 startTime = TSC::ticks();
   instruction_t *ip = (instruction_t *)pc;
   instruction_t *entry = (instruction_t *)nm->entry();
   if (ip <= entry || *ip == 0xc3 // ret
@@ -148,48 +108,23 @@ bool StackFrame::unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp,
     // otherwise it may be attributed to a wrong bytecode
     pc = ((uintptr_t *)sp)[0] - 1;
     sp += 8;
-
-    const u64 endTime = TSC::ticks();
-    const u64 duration = TSC::ticks_to_millis(endTime - startTime);
-    if (duration > 1)
-    {
-      Counters::increment(UNWINDING_TIME, duration);
-    }
     return true;
   } else if (*ip == 0x5d) {
     // pop rbp
     fp = ((uintptr_t *)sp)[0];
     pc = ((uintptr_t *)sp)[1] - 1;
     sp += 16;
-
-    const u64 endTime = TSC::ticks();
-    const u64 duration = TSC::ticks_to_millis(endTime - startTime);
-    if (duration > 1) {
-      Counters::increment(UNWINDING_TIME, duration);
-    }
     return true;
   } else if (ip <= entry + 15 && ((uintptr_t)ip & 0xfff) && ip[-1] == 0x55) {
     // push rbp
     pc = ((uintptr_t *)sp)[1] - 1;
     sp += 16;
-
-    const u64 endTime = TSC::ticks();
-    const u64 duration = TSC::ticks_to_millis(endTime - startTime);
-    if (duration > 1) {
-      Counters::increment(UNWINDING_TIME, duration);
-    }
     return true;
   } else if (ip <= entry + 7 && ip[0] == 0x48 && ip[1] == 0x89 &&
              ip[2] == 0x6c && ip[3] == 0x24) {
     // mov [rsp + #off], rbp
     sp += ip[4] + 16;
     pc = ((uintptr_t *)sp)[-1] - 1;
-
-    const u64 endTime = TSC::ticks();
-    const u64 duration = TSC::ticks_to_millis(endTime - startTime);
-    if (duration > 1) {
-      Counters::increment(UNWINDING_TIME, duration);
-    }
     return true;
   } else if ((ip[0] == 0x41 && ip[1] == 0x81 && ip[2] == 0x7f &&
               *(u32 *)(ip + 4) == 1) ||
@@ -200,19 +135,7 @@ bool StackFrame::unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp,
     sp += nm->frameSize() * sizeof(void *);
     fp = ((uintptr_t *)sp)[-2];
     pc = ((uintptr_t *)sp)[-1];
-
-    const u64 endTime = TSC::ticks();
-    const u64 duration = TSC::ticks_to_millis(endTime - startTime);
-    if (duration > 1) {
-      Counters::increment(UNWINDING_TIME, duration);
-    }
     return true;
-  }
-
-  const u64 endTime = TSC::ticks();
-  const u64 duration = TSC::ticks_to_millis(endTime - startTime);
-  if (duration > 1) {
-    Counters::increment(UNWINDING_TIME, duration);
   }
   return false;
 }
