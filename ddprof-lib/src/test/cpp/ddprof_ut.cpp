@@ -2,6 +2,7 @@
 
     #include "asyncSampleMutex.h"
     #include "buffers.h"
+    #include "common.h"
     #include "context.h"
     #include "counters.h"
     #include "mutex.h"
@@ -133,12 +134,13 @@
         // Each thread will add and remove its own thread ID multiple times
         for (int i = 1; i <= num_threads; i++) {
             threads.emplace_back([&filter, i, &completed_threads]() {
+                filter.registerThread();
                 for (int j = 0; j < num_ops; j++) {
                     // Add thread ID
                     filter.add(i);
                     bool accepted = filter.accept(i);
                     if (!accepted) {
-                        fprintf(stderr, "FAIL: Thread %d, op %d: accept(%d) returned false after add\n", i, j, i);
+                        TEST_LOG("FAIL: Thread %d, op %d: accept(%d) returned false after add", i, j, i);
                     }
                     EXPECT_TRUE(accepted);
                     
@@ -146,11 +148,12 @@
                     filter.remove(i);
                     accepted = filter.accept(i);
                     if (accepted) {
-                        fprintf(stderr, "FAIL: Thread %d, op %d: accept(%d) returned true after remove\n", i, j, i);
+                        TEST_LOG("FAIL: Thread %d, op %d: accept(%d) returned true after remove", i, j, i);
                     }
                     EXPECT_FALSE(accepted);
                 }
                 completed_threads++;
+                filter.deregisterThread();
             });
         }
 
@@ -176,25 +179,32 @@
         const int num_threads = 10;
         std::vector<std::thread> threads;
         std::atomic<int> completed_threads{0};
+        std::atomic<int> ready_threads{0};
         std::vector<int> expected_tids;
 
         // Each thread will add its thread ID
         for (int i = 1; i <= num_threads; i++) {
             expected_tids.push_back(i);
-            threads.emplace_back([&filter, i, &completed_threads]() {
+            threads.emplace_back([&filter, i, &completed_threads, &ready_threads]() {
+                filter.registerThread();
                 filter.add(i);
                 EXPECT_TRUE(filter.accept(i));
+                ready_threads++;
+                // Wait for all threads to be ready before deregistering
+                while (ready_threads < num_threads) {
+                    std::this_thread::yield();
+                    usleep(100);
+                }
+                usleep(100);
+                filter.deregisterThread();
                 completed_threads++;
             });
         }
 
-        // Wait for all threads to complete
-        for (auto& t : threads) {
-            t.join();
+        // Wait for all threads to be ready (have registered and added their IDs)
+        while (ready_threads < num_threads) {
+            std::this_thread::yield();
         }
-
-        // Verify all threads completed
-        ASSERT_EQ(completed_threads.load(), num_threads);
 
         // Collect and verify all thread IDs are present
         std::vector<int> collected_tids;
@@ -211,6 +221,14 @@
                 << ": expected " << expected_tids[i] 
                 << ", got " << collected_tids[i];
         }
+
+        // Wait for all threads to complete
+        for (auto& t : threads) {
+            t.join();
+        }
+
+        // Verify all threads completed
+        ASSERT_EQ(completed_threads.load(), num_threads);
     }
 
     TEST(ThreadInfoTest, testThreadInfoCleanupAllDead) {
