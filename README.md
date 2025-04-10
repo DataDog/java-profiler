@@ -129,5 +129,14 @@ Eg. you can run the gradle build like this - ./gradlew clean -Pddprof.jar=file:/
 ## Working with upstream
 
 Although this project still shares the git history with the upstream the code structure is different. This makes it dificult to reliably
-cherry-pick the upstream changes. To make this easier we have a script that will prepare a filtered version of the upstream repository
-and add it as 'cherry' remote to this repository. This way you can cherry-pick the changes from the upstream repository with (relative) ease.
+cherry-pick the upstream changes. To make this easier we have a script that will prepare the upstream repository
+and add it as 'cherry' remote to this repository.
+This way you can cherry-pick the changes from the upstream repository with (relative) ease.
+
+```bash
+./utils/init_cherrypick_repo.sh # you need to run this only once
+
+./utils/cherry.sh <commit>
+# ... resolve conflicts, if any
+./utils/cherry.sh --continue # to commit the resolved conflicts
+```
