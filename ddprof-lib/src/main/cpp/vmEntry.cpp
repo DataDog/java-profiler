@@ -51,6 +51,7 @@ JVM_GetManagement VM::_getManagement;
 
 static void wakeupHandler(int signo) {
   // Dummy handler for interrupting syscalls
+}
 
 static bool isVmRuntimeEntry(const char* blob_name) {
     return strcmp(blob_name, "_ZNK12MemAllocator8allocateEv") == 0
@@ -302,14 +303,32 @@ bool VM::initShared(JavaVM* vm) {
   }
 
   VMStructs::init(lib);
-  if (is_zero_vm) {
-    lib->mark(isZeroInterpreterMethod);
-  } else if (isOpenJ9()) {
-    lib->mark(isOpenJ9InterpreterMethod);
-    CodeCache *libjit = libraries->findJvmLibrary("libj9jit");
-    if (libjit != NULL) {
-      libjit->mark(isOpenJ9JitStub);
-    }
+  if (isOpenJ9()) {
+      Libraries* libraries = Libraries::instance();
+      lib->mark(isOpenJ9InterpreterMethod, MARK_INTERPRETER);
+      lib->mark(isOpenJ9Resolve, MARK_VM_RUNTIME);
+      CodeCache* libjit = libraries->findJvmLibrary("libj9jit");
+      if (libjit != NULL) {
+          libjit->mark(isOpenJ9JitStub, MARK_INTERPRETER);
+          libjit->mark(isOpenJ9JitAlloc, MARK_VM_RUNTIME);
+      }
+      CodeCache* libgc = libraries->findJvmLibrary("libj9gc");
+      if (libgc != NULL) {
+          libgc->mark(isOpenJ9GcAlloc, MARK_VM_RUNTIME);
+      }
+      CodeCache* libjvmti = libraries->findJvmLibrary("libj9jvmti");
+      if (libjvmti != NULL) {
+          libjvmti->mark(isOpenJ9JvmtiAlloc, MARK_VM_RUNTIME);
+      }
+  } else {
+      lib->mark(isVmRuntimeEntry, MARK_VM_RUNTIME);
+      if (isZing()) {
+          lib->mark(isZingRuntimeEntry, MARK_VM_RUNTIME);
+      } else if (is_zero_vm) {
+          lib->mark(isZeroInterpreterMethod, MARK_INTERPRETER);
+      } else {
+          lib->mark(isCompilerEntry, MARK_COMPILER_ENTRY);
+      }
   }
   return true;
 }
