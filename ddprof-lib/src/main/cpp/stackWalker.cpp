@@ -1,17 +1,6 @@
 /*
- * Copyright 2021 Andrei Pangin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright The async-profiler authors
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "stackWalker.h"
@@ -96,17 +85,16 @@ int StackWalker::walkFP(void *ucontext, const void **callchain, int max_depth,
   uintptr_t sp;
   uintptr_t bottom = (uintptr_t)&sp + MAX_WALK_SIZE;
 
-  StackFrame frame(ucontext);
-  if (ucontext == NULL) {
-    pc = __builtin_return_address(0);
-    fp = (uintptr_t)__builtin_frame_address(1);
-    sp = (uintptr_t)__builtin_frame_address(0);
-  } else {
     StackFrame frame(ucontext);
-    pc = (const void *)frame.pc();
-    fp = frame.fp();
-    sp = frame.sp();
-  }
+    if (ucontext == NULL) {
+        pc = callerPC();
+        fp = (uintptr_t)callerFP();
+        sp = (uintptr_t)callerSP();
+    } else {
+        pc = (const void*)frame.pc();
+        fp = frame.fp();
+        sp = frame.sp();
+    }
 
   int depth = 0;
 
@@ -149,24 +137,23 @@ int StackWalker::walkFP(void *ucontext, const void **callchain, int max_depth,
   return depth;
 }
 
-int StackWalker::walkDwarf(void *ucontext, const void **callchain,
-                           int max_depth, StackContext *java_ctx,
-                           bool *truncated) {
-  const void *pc;
-  uintptr_t fp;
-  uintptr_t sp;
-  uintptr_t prev_sp;
-  uintptr_t bottom = (uintptr_t)&sp + MAX_WALK_SIZE;
-  StackFrame frame(ucontext);
-  if (ucontext == NULL) {
-    pc = __builtin_return_address(0);
-    fp = (uintptr_t)__builtin_frame_address(1);
-    sp = (uintptr_t)__builtin_frame_address(0);
-  } else {
-    pc = (const void *)frame.pc();
-    fp = frame.fp();
-    sp = frame.sp();
-  }
+int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated) {
+    const void* pc;
+    uintptr_t fp;
+    uintptr_t sp;
+    uintptr_t prev_sp;
+    uintptr_t bottom = (uintptr_t)&sp + MAX_WALK_SIZE;
+
+    StackFrame frame(ucontext);
+    if (ucontext == NULL) {
+        pc = callerPC();
+        fp = (uintptr_t)callerFP();
+        sp = (uintptr_t)callerSP();
+    } else {
+        pc = (const void*)frame.pc();
+        fp = frame.fp();
+        sp = frame.sp();
+    }
 
   int depth = 0;
   Libraries *libraries = Libraries::instance();
@@ -243,6 +230,43 @@ int StackWalker::walkDwarf(void *ucontext, const void **callchain,
     }
   }
   return depth;
+}
+
+int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, JavaFrameAnchor* anchor, bool *truncated) {
+  uintptr_t sp = anchor->lastJavaSP();
+  if (sp == 0) {
+    *truncated = true;
+    return 0;
+  }
+
+  uintptr_t fp = anchor->lastJavaFP();
+  if (fp == 0) {
+    fp = sp;
+  }
+
+  const void* pc = anchor->lastJavaPC();
+  if (pc == NULL) {
+    pc = ((const void**)sp)[-1];
+  }
+
+  return walkVM(ucontext, frames, max_depth, VM_BASIC, pc, sp, fp, truncated);
+}
+
+
+#ifdef __aarch64__
+// we are seeing false alarms on aarch64 GHA runners due to 'heap-use-after-free'
+__attribute__((no_sanitize("address")))
+#endif
+int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, StackDetail detail, bool *truncated) {
+  if (ucontext == NULL) {
+    const void* pc = callerPC();
+    uintptr_t sp = (uintptr_t)callerSP();
+    uintptr_t fp = (uintptr_t)callerFP();
+    return walkVM(ucontext, frames, max_depth, detail, pc, sp, fp, truncated);
+  } else {
+    StackFrame frame(ucontext);
+    return walkVM(ucontext, frames, max_depth, detail, (const void*)frame.pc(), frame.sp(), frame.fp(), truncated);
+  }
 }
 
 int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
@@ -619,43 +643,6 @@ int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
   }
 
   return depth;
-}
-
-int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, JavaFrameAnchor* anchor, bool *truncated) {
-  uintptr_t sp = anchor->lastJavaSP();
-  if (sp == 0) {
-    *truncated = true;
-    return 0;
-  }
-
-  uintptr_t fp = anchor->lastJavaFP();
-  if (fp == 0) {
-    fp = sp;
-  }
-
-  const void* pc = anchor->lastJavaPC();
-  if (pc == NULL) {
-    pc = ((const void**)sp)[-1];
-  }
-
-  return walkVM(ucontext, frames, max_depth, VM_BASIC, pc, sp, fp, truncated);
-}
-
-
-#ifdef __aarch64__
-// we are seeing false alarms on aarch64 GHA runners due to 'heap-use-after-free'
-__attribute__((no_sanitize("address")))
-#endif
-int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, StackDetail detail, bool *truncated) {
-  if (ucontext == NULL) {
-    const void* pc = __builtin_return_address(0);
-    uintptr_t sp = (uintptr_t)__builtin_frame_address(0) + LINKED_FRAME_SIZE;
-    uintptr_t fp = (uintptr_t)__builtin_frame_address(1);
-    return walkVM(ucontext, frames, max_depth, detail, pc, sp, fp, truncated);
-  } else {
-    StackFrame frame(ucontext);
-    return walkVM(ucontext, frames, max_depth, detail, (const void*)frame.pc(), frame.sp(), frame.fp(), truncated);
-  }
 }
 
 void StackWalker::checkFault(ProfiledThread* thrd) {

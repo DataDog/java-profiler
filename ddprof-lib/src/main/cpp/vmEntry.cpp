@@ -1,18 +1,6 @@
 /*
- * Copyright 2016 Andrei Pangin
- * Copyright 2021, 2024 Datadog, Inc
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright The async-profiler authors
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "common.h"
@@ -65,6 +53,20 @@ static void wakeupHandler(int signo) {
   // Dummy handler for interrupting syscalls
 }
 
+static bool isVmRuntimeEntry(const char* blob_name) {
+    return strcmp(blob_name, "_ZNK12MemAllocator8allocateEv") == 0
+        || strncmp(blob_name, "_Z22post_allocation_notify", 26) == 0
+        || strncmp(blob_name, "_ZN11OptoRuntime", 16) == 0
+        || strncmp(blob_name, "_ZN8Runtime1", 12) == 0
+        || strncmp(blob_name, "_ZN13SharedRuntime", 18) == 0
+        || strncmp(blob_name, "_ZN18InterpreterRuntime", 23) == 0;
+}
+
+static bool isZingRuntimeEntry(const char* blob_name) {
+    return strncmp(blob_name, "_ZN14DolphinRuntime", 19) == 0
+        || strncmp(blob_name, "_ZN37JvmtiSampledObjectAllocEventCollector", 42) == 0;
+}
+
 static bool isZeroInterpreterMethod(const char *blob_name) {
   return strncmp(blob_name, "_ZN15ZeroInterpreter", 20) == 0 ||
          strncmp(blob_name, "_ZN19BytecodeInterpreter3run", 28) == 0;
@@ -87,8 +89,28 @@ static bool isOpenJ9JitStub(const char *blob_name) {
   return false;
 }
 
-static void *resolveMethodId(void **mid) {
-  return mid == NULL || *mid < (void *)4096 ? NULL : *mid;
+static bool isOpenJ9Resolve(const char* blob_name) {
+    return strncmp(blob_name, "resolve", 7) == 0;
+}
+
+static bool isOpenJ9JitAlloc(const char* blob_name) {
+    return strncmp(blob_name, "old_", 4) == 0;
+}
+
+static bool isOpenJ9GcAlloc(const char* blob_name) {
+    return strncmp(blob_name, "J9Allocate", 10) == 0;
+}
+
+static bool isOpenJ9JvmtiAlloc(const char* blob_name) {
+    return strcmp(blob_name, "jvmtiHookSampledObjectAlloc") == 0;
+}
+
+static bool isCompilerEntry(const char* blob_name) {
+    return strncmp(blob_name, "_ZN13CompileBroker25invoke_compiler_on_method", 45) == 0;
+}
+
+static void* resolveMethodId(void** mid) {
+    return mid == NULL || *mid < (void*)4096 ? NULL : *mid;
 }
 
 static void resolveMethodIdEnd() {}
@@ -281,14 +303,32 @@ bool VM::initShared(JavaVM* vm) {
   }
 
   VMStructs::init(lib);
-  if (is_zero_vm) {
-    lib->mark(isZeroInterpreterMethod);
-  } else if (isOpenJ9()) {
-    lib->mark(isOpenJ9InterpreterMethod);
-    CodeCache *libjit = libraries->findJvmLibrary("libj9jit");
-    if (libjit != NULL) {
-      libjit->mark(isOpenJ9JitStub);
-    }
+  if (isOpenJ9()) {
+      Libraries* libraries = Libraries::instance();
+      lib->mark(isOpenJ9InterpreterMethod, MARK_INTERPRETER);
+      lib->mark(isOpenJ9Resolve, MARK_VM_RUNTIME);
+      CodeCache* libjit = libraries->findJvmLibrary("libj9jit");
+      if (libjit != NULL) {
+          libjit->mark(isOpenJ9JitStub, MARK_INTERPRETER);
+          libjit->mark(isOpenJ9JitAlloc, MARK_VM_RUNTIME);
+      }
+      CodeCache* libgc = libraries->findJvmLibrary("libj9gc");
+      if (libgc != NULL) {
+          libgc->mark(isOpenJ9GcAlloc, MARK_VM_RUNTIME);
+      }
+      CodeCache* libjvmti = libraries->findJvmLibrary("libj9jvmti");
+      if (libjvmti != NULL) {
+          libjvmti->mark(isOpenJ9JvmtiAlloc, MARK_VM_RUNTIME);
+      }
+  } else {
+      lib->mark(isVmRuntimeEntry, MARK_VM_RUNTIME);
+      if (isZing()) {
+          lib->mark(isZingRuntimeEntry, MARK_VM_RUNTIME);
+      } else if (is_zero_vm) {
+          lib->mark(isZeroInterpreterMethod, MARK_INTERPRETER);
+      } else {
+          lib->mark(isCompilerEntry, MARK_COMPILER_ENTRY);
+      }
   }
   return true;
 }
@@ -383,9 +423,9 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   } else {
     // DebugNonSafepoints is automatically enabled with CompiledMethodLoad,
     // otherwise we set the flag manually
-    char *flag_addr = (char *)JVMFlag::find("DebugNonSafepoints", {JVMFlag::Type::Bool});
-    if (flag_addr != NULL) {
-      *flag_addr = 1;
+    JVMFlag* f = JVMFlag::find("DebugNonSafepoints", {JVMFlag::Type::Bool});
+    if (f != NULL && f->isDefault()) {
+      f->set(1);
     }
   }
 
@@ -393,8 +433,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   // profiler to avoid the risk of crashing flag was made obsolete (inert) in 15
   // (see JDK-8228991) and removed in 16 (see JDK-8231560)
   if (hotspot_version() < 15) {
-    char *flag_addr = (char *)JVMFlag::find("UseAdaptiveGCBoundary", {JVMFlag::Type::Bool});
-    _is_adaptive_gc_boundary_flag_set = flag_addr != NULL && *flag_addr == 1;
+    JVMFlag *f = JVMFlag::find("UseAdaptiveGCBoundary", {JVMFlag::Type::Bool});
+    _is_adaptive_gc_boundary_flag_set = f != NULL && f->get();
   }
 
   // Make sure we reload method IDs upon class retransformation
