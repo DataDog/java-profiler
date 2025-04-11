@@ -575,11 +575,11 @@ public:
   }
 
   char get() {
-      return *addr();
+      return *((char*)addr());
   }
 
   void set(char value) {
-      *addr() = value;
+      *((char*)addr()) = value;
   }
 };
 

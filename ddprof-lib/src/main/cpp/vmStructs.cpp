@@ -393,17 +393,6 @@ void VMStructs::resolveOffsets() {
     _klass = (jfieldID)(uintptr_t)(*_klass_offset_addr << 2 | 2);
   }
 
-  JVMFlag* ccp = JVMFlag::find("UseCompressedClassPointers");
-  if (ccp != NULL && ccp->get() && _narrow_klass_base_addr != NULL && _narrow_klass_shift_addr != NULL) {
-    _narrow_klass_base = *_narrow_klass_base_addr;
-    _narrow_klass_shift = *_narrow_klass_shift_addr;
-  }
-
-  JVMFlag* coh = JVMFlag::find("UseCompactObjectHeaders");
-  if (coh != NULL && coh->get()) {
-    _compact_object_headers = true;
-  }
-
   _has_class_names =
       _klass_name_offset >= 0 &&
       (_symbol_length_offset >= 0 || _symbol_length_and_refcount_offset >= 0) &&
@@ -854,7 +843,7 @@ JVMFlag *JVMFlag::find(const char *name) {
   return NULL;
 }
 
-void *JVMFlag::find(const char *name, std::initializer_list<Type> types) {
+JVMFlag *JVMFlag::find(const char *name, std::initializer_list<Type> types) {
   int mask = 0;
   for (int type : types) {
     mask |= 0x1 << type;
@@ -896,14 +885,14 @@ int JVMFlag::type() {
   }
 }
 
-void *JVMFlag::find(const char *name, int type_mask) {
+JVMFlag *JVMFlag::find(const char *name, int type_mask) {
   if (_flags_addr != NULL && _flag_size > 0) {
     for (int i = 0; i < _flag_count; i++) {
       JVMFlag *f = (JVMFlag *)(_flags_addr + i * _flag_size);
       if (f->name() != NULL && strcmp(f->name(), name) == 0) {
         int masked = 0x1 << f->type();
         if (masked & type_mask) {
-            return f->addr();
+            return (JVMFlag*)f;
         }
       }
     }
