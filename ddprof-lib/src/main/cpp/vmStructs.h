@@ -547,6 +547,12 @@ public:
 
 class JVMFlag : VMStructs {
 private:
+  enum {
+      ORIGIN_DEFAULT = 0,
+      ORIGIN_MASK    = 15,
+      SET_ON_CMDLINE = 1 << 17
+  };
+
   static JVMFlag* find(const char *name, int type_mask);
 public:
   enum Type {
@@ -570,8 +576,19 @@ public:
   int type();
 
   void *addr() { return *(void **)at(_flag_addr_offset); }
+
   char origin() {
       return _flag_origin_offset >= 0 ? (*(char*) at(_flag_origin_offset)) & 15 : 0;
+  }
+
+  bool isDefault() {
+      return _flag_origin_offset < 0 || (*(int*) at(_flag_origin_offset) & ORIGIN_MASK) == ORIGIN_DEFAULT;
+  }
+
+  void setCmdline() {
+      if (_flag_origin_offset >= 0) {
+          *(int*) at(_flag_origin_offset) |= SET_ON_CMDLINE;
+      }
   }
 
   char get() {
