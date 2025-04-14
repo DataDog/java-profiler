@@ -106,7 +106,7 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 
   int tid = ProfiledThread::currentTid();
   if (_thread_filter.enabled()) {
-    _thread_filter.registerThread();
+    // _thread_filter.registerThread();
     _thread_filter.remove(tid);
   }
   updateThreadName(jvmti, jni, thread, true);
@@ -117,9 +117,9 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   int tid = ProfiledThread::currentTid();
-  if (_thread_filter.enabled()) {
-    _thread_filter.deregisterThread();
-  }
+  // if (_thread_filter.enabled()) {
+  //   _thread_filter.deregisterThread();
+  // }
   updateThreadName(jvmti, jni, thread, true);
 
   _cpu_engine->unregisterThread(tid);

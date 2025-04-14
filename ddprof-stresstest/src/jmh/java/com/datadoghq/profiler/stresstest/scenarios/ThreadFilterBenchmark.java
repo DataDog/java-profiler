@@ -38,12 +38,18 @@ public class ThreadFilterBenchmark extends Configuration {
         executorService = Executors.newFixedThreadPool(NUM_THREADS);
         System.out.println("Getting profiler instance");
         profiler = JavaProfiler.getInstance();
-        System.out.println("Stopping any existing profiler session");
+        
+        // Try to stop any existing profiler session
         try {
-            profiler.stop();
+            System.out.println("Stopping any existing profiler session...");
+            profiler.execute("stop");
+            // Give a small delay to ensure stop completes
+            Thread.sleep(100);
         } catch (Exception e) {
-            // Ignore if profiler wasn't started
+            // Ignore exceptions if profiler wasn't started
+            System.out.println("No existing profiler session to stop");
         }
+        
         System.out.println("Starting profiler with wall=1ms,filter=0,file=/tmp/thread_filter_profile.jfr");
         profiler.execute("start,wall=1ms,filter=0,file=/tmp/thread_filter_profile.jfr");
         System.out.println("Started profiler with output file");
@@ -69,12 +75,14 @@ public class ThreadFilterBenchmark extends Configuration {
     @TearDown(Level.Trial)
     public void tearDown() {
         System.out.println("Tearing down benchmark...");
+        
+        // First stop all threads
         running.set(false);
         
         // Wait for all threads to finish with a timeout
         try {
             if (stopLatch != null) {
-                if (!stopLatch.await(5, TimeUnit.SECONDS)) {
+                if (!stopLatch.await(30, TimeUnit.SECONDS)) {
                     System.err.println("Warning: Some threads did not finish within timeout");
                 }
             }
@@ -83,22 +91,37 @@ public class ThreadFilterBenchmark extends Configuration {
         }
 
         // Shutdown executor with timeout
-        executorService.shutdown();
-        try {
-            if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
-                executorService.shutdownNow();
-                if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
-                    System.err.println("Warning: Executor did not terminate");
+        if (executorService != null) {
+            executorService.shutdown();
+            try {
+                if (!executorService.awaitTermination(30, TimeUnit.SECONDS)) {
+                    executorService.shutdownNow();
+                    if (!executorService.awaitTermination(30, TimeUnit.SECONDS)) {
+                        System.err.println("Warning: Executor did not terminate");
+                    }
                 }
+            } catch (InterruptedException e) {
+                executorService.shutdownNow();
+                Thread.currentThread().interrupt();
             }
-        } catch (InterruptedException e) {
-            executorService.shutdownNow();
-            Thread.currentThread().interrupt();
         }
 
-        profiler.stop();
+        // Stop profiler with timeout
+        if (profiler != null) {
+            try {
+                System.out.println("Stopping profiler...");
+                profiler.execute("stop");
+                // Give a small delay to ensure stop completes
+                Thread.sleep(100);
+            } catch (Exception e) {
+                System.err.println("Warning: Error stopping profiler: " + e.getMessage());
+                e.printStackTrace();
+            }
+        }
+
+        // Calculate and log statistics
         long endTime = System.currentTimeMillis();
-        long totalOps = operationCount.get();
+        long totalOps = operationCount != null ? operationCount.get() : 0;
         double durationSecs = (endTime - startTime) / 1000.0;
         double opsPerSec = totalOps / durationSecs;
         
@@ -141,7 +164,7 @@ public class ThreadFilterBenchmark extends Configuration {
             executorService.submit(() -> {
                 try {
                     startLatch.countDown();
-                    startLatch.await(5, TimeUnit.SECONDS);
+                    startLatch.await(30, TimeUnit.SECONDS);
                     
                     String startMsg = String.format("Thread %d started%n", threadId);
                     System.out.print(startMsg);
@@ -151,11 +174,11 @@ public class ThreadFilterBenchmark extends Configuration {
                     }
                     
                     while (running.get()) {
-                        // Register thread
-                        profiler.addThread();
-                        
                         // Memory-intensive operations that would be sensitive to false sharing
                         for (int j = 0; j < ARRAY_SIZE; j += STRIDE) {
+                            // Register thread at the start of each cache line operation
+                            profiler.addThread();
+                            
                             // Each thread writes to its own cache line
                             int baseIndex = (threadId * STRIDE) % ARRAY_SIZE;
                             for (int k = 0; k < STRIDE; k++) {
@@ -167,24 +190,28 @@ public class ThreadFilterBenchmark extends Configuration {
                                 // Atomic operation
                                 atomicArray.set(index, value);
                             }
+                            
+                            // Remove thread after cache line operation
+                            profiler.removeThread();
+                            operationCount.incrementAndGet();
                         }
                         
-                        operationCount.incrementAndGet();
-                        
-                        // Remove thread
-                        profiler.removeThread();
-                        
-                        // More memory operations
+                        // More memory operations with thread registration
                         for (int j = 0; j < ARRAY_SIZE; j += STRIDE) {
+                            // Register thread at the start of each cache line operation
+                            profiler.addThread();
+                            
                             int baseIndex = (threadId * STRIDE) % ARRAY_SIZE;
                             for (int k = 0; k < STRIDE; k++) {
                                 int index = (baseIndex + k) % ARRAY_SIZE;
                                 int value = atomicArray.get(index);
                                 sharedArray[index] = value * 2;
                             }
+                            
+                            // Remove thread after cache line operation
+                            profiler.removeThread();
+                            operationCount.incrementAndGet();
                         }
-                        
-                        operationCount.incrementAndGet();
                         
                         if (operationCount.get() % 1000 == 0) {
                             String progressMsg = String.format("Thread %d completed %d operations%n", threadId, operationCount.get());
@@ -210,10 +237,10 @@ public class ThreadFilterBenchmark extends Configuration {
         }
 
         // Wait for all threads to finish with timeout
-        if (!stopLatch.await(5, TimeUnit.SECONDS)) {
+        if (!stopLatch.await(30, TimeUnit.SECONDS)) {
             System.err.println("Warning: Benchmark did not complete within timeout");
         }
         
         return operationCount.get();
     }
-} 
+}

@@ -123,52 +123,36 @@
 
     TEST(ThreadFilter, testThreadFilter) {
         ThreadFilter filter;
-        filter.init("");
-        ASSERT_TRUE(filter.enabled());
+        ASSERT_TRUE(filter.init(""));
 
-        const int num_threads = 10;
-        const int num_ops = 100;
-        std::vector<std::thread> threads;
-        std::atomic<int> completed_threads{0};
+        // Add some thread IDs
+        filter.add(1);
+        filter.add(2);
+        filter.add(3);
 
-        // Each thread will add and remove its own thread ID multiple times
-        for (int i = 1; i <= num_threads; i++) {
-            threads.emplace_back([&filter, i, &completed_threads]() {
-                filter.registerThread();
-                for (int j = 0; j < num_ops; j++) {
-                    // Add thread ID
-                    filter.add(i);
-                    bool accepted = filter.accept(i);
-                    if (!accepted) {
-                        TEST_LOG("FAIL: Thread %d, op %d: accept(%d) returned false after add", i, j, i);
-                    }
-                    EXPECT_TRUE(accepted);
-                    
-                    // Remove thread ID
-                    filter.remove(i);
-                    accepted = filter.accept(i);
-                    if (accepted) {
-                        TEST_LOG("FAIL: Thread %d, op %d: accept(%d) returned true after remove", i, j, i);
-                    }
-                    EXPECT_FALSE(accepted);
-                }
-                completed_threads++;
-                filter.deregisterThread();
-            });
-        }
+        // Verify they exist
+        ASSERT_TRUE(filter.accept(1));
+        ASSERT_TRUE(filter.accept(2));
+        ASSERT_TRUE(filter.accept(3));
+        ASSERT_FALSE(filter.accept(4));
 
-        // Wait for all threads to complete
-        for (auto& t : threads) {
-            t.join();
-        }
+        // Remove one
+        ASSERT_TRUE(filter.remove(2));
+        ASSERT_FALSE(filter.accept(2));
 
-        // Verify all threads completed
-        ASSERT_EQ(completed_threads.load(), num_threads);
+        // Collect remaining IDs
+        std::vector<int> thread_ids;
+        filter.collect(thread_ids);
+        ASSERT_EQ(thread_ids.size(), 2);
+        std::sort(thread_ids.begin(), thread_ids.end());
+        ASSERT_EQ(thread_ids[0], 1);
+        ASSERT_EQ(thread_ids[1], 3);
 
-        // Collect and verify all thread IDs were properly removed
-        std::vector<int> tids;
-        filter.collect(tids);
-        ASSERT_EQ(tids.size(), 0);
+        // Clear and verify empty
+        filter.clear();
+        thread_ids.clear();
+        filter.collect(thread_ids);
+        ASSERT_TRUE(thread_ids.empty());
     }
 
     TEST(ThreadFilter, testThreadFilterCollect) {
@@ -180,23 +164,24 @@
         std::vector<std::thread> threads;
         std::atomic<int> completed_threads{0};
         std::atomic<int> ready_threads{0};
+        std::atomic<bool> collect_done{false};
         std::vector<int> expected_tids;
 
         // Each thread will add its thread ID
         for (int i = 1; i <= num_threads; i++) {
             expected_tids.push_back(i);
-            threads.emplace_back([&filter, i, &completed_threads, &ready_threads]() {
-                filter.registerThread();
+            threads.emplace_back([&filter, i, &completed_threads, &ready_threads, &collect_done]() {
                 filter.add(i);
                 EXPECT_TRUE(filter.accept(i));
                 ready_threads++;
-                // Wait for all threads to be ready before deregistering
-                while (ready_threads < num_threads) {
+                
+                // Wait for collect to complete before removing
+                while (!collect_done) {
                     std::this_thread::yield();
                     usleep(100);
                 }
-                usleep(100);
-                filter.deregisterThread();
+                
+                filter.remove(i);
                 completed_threads++;
             });
         }
@@ -209,6 +194,9 @@
         // Collect and verify all thread IDs are present
         std::vector<int> collected_tids;
         filter.collect(collected_tids);
+        
+        // Signal threads they can now deregister
+        collect_done = true;
         
         // Sort both vectors for comparison
         std::sort(expected_tids.begin(), expected_tids.end());

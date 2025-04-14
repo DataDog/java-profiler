@@ -1,6 +1,10 @@
 #ifndef _COMMON_H
 #define _COMMON_H
 
+#include <cstddef>
+
+static constexpr size_t MAX_THREAD_SLOTS = 128;
+
 #ifdef DEBUG
 #define TEST_LOG(fmt, ...) do { \
   fprintf(stdout, "[TEST::INFO] " fmt "\n", ##__VA_ARGS__); \
