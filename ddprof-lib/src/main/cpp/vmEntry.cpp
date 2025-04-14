@@ -313,7 +313,10 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
     return false;
   }
 
-  if (!attach && hotspot_version() == 8 && OS::isLinux()) {
+  if (hotspot_version() == 8 && OS::isLinux()) {
+    // Note: Unlike in async-profiler, we don't need to guard for '!attach' as we are never running the agent in
+    // 'attach' mode. The agent is always attached to the JVM at the startup - although it is via `-javaagent` and
+    // not `-agentlib` or `--agentpath`.
     // Workaround for JDK-8185348
     char *func = (char *)lib->findSymbol(
         "_ZN6Method26checked_resolve_jmethod_idEP10_jmethodID");
