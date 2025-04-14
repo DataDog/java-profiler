@@ -16,7 +16,7 @@
 #ifndef JAVA_PROFILER_LIBRARY_COUNTERS_H
 #define JAVA_PROFILER_LIBRARY_COUNTERS_H
 
-#include "arch.h"
+#include "arch_dd.h"
 #include <cstring>
 #include <vector>
 

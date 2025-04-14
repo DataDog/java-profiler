@@ -17,7 +17,7 @@
 #ifndef _LIVENESSTRACKER_H
 #define _LIVENESSTRACKER_H
 
-#include "arch.h"
+#include "arch_dd.h"
 #include "context.h"
 #include "engine.h"
 #include "event.h"

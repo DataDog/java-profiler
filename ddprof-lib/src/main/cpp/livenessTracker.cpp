@@ -19,7 +19,7 @@
 #include <set>
 #include <thread>
 
-#include "arch.h"
+#include "arch_dd.h"
 #include "context.h"
 #include "incbin.h"
 #include "jniHelper.h"
