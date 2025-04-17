@@ -121,7 +121,7 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
         }
         currentCommit = os.toString().trim()
       }
-      
+
       if (currentCommit != commit_lock) {
         println "async-profiler commit hash differs (current: ${currentCommit}, expected: ${commit_lock}), updating..."
         exec {
