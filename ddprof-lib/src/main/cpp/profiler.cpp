@@ -24,7 +24,7 @@
 #include "symbols.h"
 #include "thread.h"
 #include "tsc.h"
-#include "vmStructs.h"
+#include "vmStructs_dd.h"
 #include "wallClock.h"
 #include <algorithm>
 #include <dlfcn.h>
@@ -333,7 +333,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   // Workaround for JDK-8132510: it's not safe to call GetEnv() inside a signal
   // handler since JDK 9, so we do it only for threads already registered in
   // ThreadLocalStorage
-  VMThread *vm_thread = VMThread::current();
+  ddprof::VMThread *vm_thread = ddprof::VMThread::current();
   if (vm_thread == NULL) {
     Counters::increment(AGCT_NOT_REGISTERED_IN_TLS);
     return 0;
@@ -361,7 +361,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       return 1;
     }
 
-    if (!VMStructs::isSafeToWalk(saved_pc)) {
+    if (!ddprof::VMStructs::isSafeToWalk(saved_pc)) {
       frames->bci = BCI_NATIVE_FRAME;
       CodeBlob *codeBlob =
           VMStructs::libjvm()->findBlobByAddress((const void *)saved_pc);
@@ -409,7 +409,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   }
   bool blocked_in_vm = (state == 10 || state == 11);
   // avoid unwinding during deoptimization
-  if (blocked_in_vm && vm_thread->osThreadState() == ThreadState::RUNNABLE) {
+  if (blocked_in_vm && vm_thread->osThreadState() == OSThreadState::RUNNABLE) {
     Counters::increment(AGCT_BLOCKED_IN_VM);
     return 0;
   }

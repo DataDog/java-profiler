@@ -24,7 +24,7 @@
 #include "threadFilter.h"
 #include "threadState.h"
 #include "tsc.h"
-#include "vmStructs.h"
+#include "vmStructs_dd.h"
 
 class BaseWallClock : public Engine {
   private:
@@ -159,7 +159,7 @@ class WallClockJVMTI : public BaseWallClock {
     void timerLoop() override;
   public:
     struct ThreadEntry {
-        VMThread* native;
+        ddprof::VMThread* native;
         jthread java;
     };
     WallClockJVMTI() : BaseWallClock() {}

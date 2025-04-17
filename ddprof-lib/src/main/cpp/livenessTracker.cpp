@@ -29,7 +29,7 @@
 #include "profiler.h"
 #include "thread.h"
 #include "tsc.h"
-#include "vmStructs.h"
+#include "vmStructs_dd.h"
 #include <jni.h>
 #include <string.h>
 
@@ -140,11 +140,11 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
   _table_lock.unlock();
 
   if (_record_heap_usage) {
-    bool isLastGc = HeapUsage::isLastGCUsageSupported();
-    size_t used = isLastGc ? HeapUsage::get()._used_at_last_gc
+    bool isLastGc = ddprof::HeapUsage::isLastGCUsageSupported();
+    size_t used = isLastGc ? ddprof::HeapUsage::get()._used_at_last_gc
                            : loadAcquire(_used_after_last_gc);
     if (used == 0) {
-      used = HeapUsage::get()._used;
+      used = ddprof::HeapUsage::get()._used;
       isLastGc = false;
     }
     Profiler::instance()->writeHeapUsage(used, isLastGc);
@@ -160,7 +160,7 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
 
 Error LivenessTracker::initialize_table(JNIEnv *jni, int sampling_interval) {
   _table_max_cap = 0;
-  jlong max_heap = HeapUsage::getMaxHeap(jni);
+  jlong max_heap = ddprof::HeapUsage::getMaxHeap(jni);
   if (max_heap == -1) {
     return Error("Can not track liveness for allocation samples without heap "
                  "size information.");
@@ -390,7 +390,7 @@ void LivenessTracker::onGC() {
   // just increment the epoch
   atomicInc(_gc_epoch, 1);
 
-  if (!HeapUsage::isLastGCUsageSupported()) {
-    storeRelease(_used_after_last_gc, HeapUsage::get(false)._used);
+  if (!ddprof::HeapUsage::isLastGCUsageSupported()) {
+    storeRelease(_used_after_last_gc, ddprof::HeapUsage::get(false)._used);
   }
 }

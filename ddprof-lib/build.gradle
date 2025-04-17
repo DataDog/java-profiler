@@ -118,6 +118,8 @@ def initSubrepoTask = tasks.register('initSubrepo', Copy) {
     include "stackFrame*.cpp"
     include "trap.h"
     include "trap.cpp"
+    include "vmStructs.h"
+    include "vmStructs.cpp"
   }
   into "${projectDir}/src/main/cpp-external"
 }

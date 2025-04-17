@@ -14,7 +14,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "safeAccess.h"
-#include "vmStructs.h"
+#include "vmStructs_dd.h"
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
@@ -302,7 +302,7 @@ bool VM::initShared(JavaVM* vm) {
     return false;
   }
 
-  VMStructs::init(lib);
+  ddprof::VMStructs::init(lib);
   if (isOpenJ9()) {
       Libraries* libraries = Libraries::instance();
       lib->mark(isOpenJ9InterpreterMethod, MARK_INTERPRETER);
@@ -371,7 +371,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
       (!_hotspot || hotspot_version() >= 11);
   _can_intercept_binding =
       potential_capabilities.can_generate_native_method_bind_events &&
-      HeapUsage::needsNativeBindingInterception();
+      ddprof::HeapUsage::needsNativeBindingInterception();
 
   jvmtiCapabilities capabilities = {0};
   capabilities.can_generate_all_class_hook_events = 1;
@@ -404,7 +404,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.ThreadEnd = Profiler::ThreadEnd;
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
   callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;
-  callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
+  callbacks.NativeMethodBind = ddprof::VMStructs::NativeMethodBind;
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
@@ -423,7 +423,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   } else {
     // DebugNonSafepoints is automatically enabled with CompiledMethodLoad,
     // otherwise we set the flag manually
-    JVMFlag* f = JVMFlag::find("DebugNonSafepoints", {JVMFlag::Type::Bool});
+    ddprof::JVMFlag* f = ddprof::JVMFlag::find("DebugNonSafepoints", {ddprof::JVMFlag::Type::Bool});
     if (f != NULL && f->isDefault()) {
       f->set(1);
     }
@@ -433,7 +433,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   // profiler to avoid the risk of crashing flag was made obsolete (inert) in 15
   // (see JDK-8228991) and removed in 16 (see JDK-8231560)
   if (hotspot_version() < 15) {
-    JVMFlag *f = JVMFlag::find("UseAdaptiveGCBoundary", {JVMFlag::Type::Bool});
+    ddprof::JVMFlag *f = ddprof::JVMFlag::find("UseAdaptiveGCBoundary", {ddprof::JVMFlag::Type::Bool});
     _is_adaptive_gc_boundary_flag_set = f != NULL && f->get();
   }
 
