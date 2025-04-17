@@ -13,8 +13,14 @@ def libraryName = "ddprof"
 description = "Datadog Java Profiler Library"
 
 def component_version = project.hasProperty("ddprof_version") ? project.ddprof_version : project.version
-def branch_lock = "jb/truncated_stacktraces"
 
+def props = new Properties()
+file("${rootDir}/gradle/ap-lock.properties").withInputStream { stream ->
+  props.load(stream)
+}
+
+def branch_lock = props.getProperty("branch")
+def commit_lock = props.getProperty("commit")
 
 // this feels weird but it is the only way invoking `./gradlew :ddprof-lib:*` tasks will work
 if (rootDir.toString().endsWith("ddprof-lib")) {
@@ -99,6 +105,10 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
       println "Cloning missing async-profiler git subdirectory..."
       exec {
         commandLine 'git', 'clone', '--branch', branch_lock, '--depth', '1', 'https://github.com/datadog/async-profiler.git', targetDir.absolutePath
+      }
+      exec {
+        workingDir targetDir.absolutePath
+        commandLine 'git', 'checkout', commit_lock
       }
     } else {
       println "async-profiler git subdirectory already present."

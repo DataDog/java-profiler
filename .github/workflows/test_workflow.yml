@@ -52,6 +52,15 @@ jobs:
           key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: |
             gradle-caches-${{ runner.os }}-
+      - name: Cache async-profiler
+        if: steps.set_enabled.outputs.enabled == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ddprof-lib/build/async-profiler
+          key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/ap-lock.properties') }}
+          enableCrossOsArchive: true
+          restore-keys: |
+            async-profiler-${{ runner.os }}-
       - name: Setup cached JDK
         id: cache-jdk
         if: steps.set_enabled.outputs.enabled == 'true'
@@ -142,6 +151,15 @@ jobs:
           key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: |
             gradle-caches-${{ runner.os }}-
+      - name: Cache async-profiler
+        if: steps.set_enabled.outputs.enabled == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ddprof-lib/build/async-profiler
+          key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/ap-lock.properties') }}
+          enableCrossOsArchive: true
+          restore-keys: |
+            async-profiler-${{ runner.os }}-
       - name: Setup cached JDK
         id: cache-jdk
         uses: ./.github/actions/setup_cached_java
@@ -253,6 +271,15 @@ jobs:
         with:
           version: ${{ matrix.java_version }}
           arch: 'aarch64'
+      - name: Cache async-profiler
+        if: steps.set_enabled.outputs.enabled == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ddprof-lib/build/async-profiler
+          key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/ap-lock.properties') }}
+          enableCrossOsArchive: true
+          restore-keys: |
+            async-profiler-${{ runner.os }}-
       - name: Setup OS
         if: steps.set_enabled.outputs.enabled == 'true'
         run: |
@@ -340,6 +367,15 @@ jobs:
          with:
            version: ${{ matrix.java_version }}
            arch: 'aarch64-musl'
+       - name: Cache async-profiler
+         if: steps.set_enabled.outputs.enabled == 'true'
+         uses: actions/cache@v4
+         with:
+           path: ddprof-lib/build/async-profiler
+           key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/ap-lock.properties') }}
+           enableCrossOsArchive: true
+           restore-keys: |
+             async-profiler-${{ runner.os }}-
        - name: Extract Versions
          uses: ./.github/actions/extract_versions
        - name: Test
