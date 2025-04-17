@@ -29,10 +29,10 @@ namespace ddprof {
           *truncated = true;
           walked = max_depth;
         } else if (walked > 0) {
-//          if (frames[walked - 1].bci == BCI_ERROR) {
-//            // root frame is error; best guess is that the trace is truncated
-//            *truncated = true;
-//          }
+          if (frames[walked - 1].bci == BCI_ERROR) {
+            // root frame is error; best guess is that the trace is truncated
+            *truncated = true;
+          }
         }
         return walked;
       }
@@ -43,10 +43,10 @@ namespace ddprof {
           *truncated = true;
           walked = max_depth;
         } else if (walked > 0) {
-//          if (frames[walked - 1].bci == BCI_ERROR) {
-//            // root frame is error; best guess is that the trace is truncated
-//            *truncated = true;
-//          }
+          if (frames[walked - 1].bci == BCI_ERROR) {
+            // root frame is error; best guess is that the trace is truncated
+            *truncated = true;
+          }
         }
         return walked;
       }
