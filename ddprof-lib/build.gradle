@@ -98,7 +98,8 @@ tasks.register('copyExternalLibs', Copy) {
 }
 
 def cloneAPTask = tasks.register('cloneAsyncProfiler') {
-  description = 'Clones async-profiler repo if directory is missing'
+  description = 'Clones async-profiler repo if directory is missing or updates it if commit hash differs'
+  inputs.file("${rootDir}/gradle/ap-lock.properties")
   doFirst {
     def targetDir = file("${projectDir}/build/async-profiler")
     if (!targetDir.exists()) {
@@ -111,7 +112,29 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
         commandLine 'git', 'checkout', commit_lock
       }
     } else {
-      println "async-profiler git subdirectory already present."
+      def currentCommit = ""
+      new ByteArrayOutputStream().withStream { os ->
+        exec {
+          workingDir targetDir.absolutePath
+          commandLine 'git', 'rev-parse', 'HEAD'
+          standardOutput = os
+        }
+        currentCommit = os.toString().trim()
+      }
+      
+      if (currentCommit != commit_lock) {
+        println "async-profiler commit hash differs (current: ${currentCommit}, expected: ${commit_lock}), updating..."
+        exec {
+          workingDir targetDir.absolutePath
+          commandLine 'git', 'fetch', 'origin', branch_lock, '--depth', '1'
+        }
+        exec {
+          workingDir targetDir.absolutePath
+          commandLine 'git', 'checkout', commit_lock
+        }
+      } else {
+        println "async-profiler git subdirectory present with correct commit hash."
+      }
     }
   }
 }
