@@ -20,7 +20,7 @@
 #include "perfEvents.h"
 #include "safeAccess.h"
 #include "stackFrame.h"
-#include "stackWalker.h"
+#include "stackWalker_dd.h"
 #include "symbols.h"
 #include "thread.h"
 #include "tsc.h"
@@ -286,11 +286,11 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
   if (_cstack >= CSTACK_VM) {
     return 0;
   } else if (_cstack == CSTACK_DWARF) {
-    native_frames += StackWalker::walkDwarf(ucontext, callchain + native_frames,
+    native_frames += ddprof::StackWalker::walkDwarf(ucontext, callchain + native_frames,
                                             MAX_NATIVE_FRAMES - native_frames,
                                             java_ctx, truncated);
   } else {
-    native_frames += StackWalker::walkFP(ucontext, callchain + native_frames,
+    native_frames += ddprof::StackWalker::walkFP(ucontext, callchain + native_frames,
                                          MAX_NATIVE_FRAMES - native_frames,
                                          java_ctx, truncated);
   }
@@ -686,10 +686,10 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
                                  &java_ctx, &truncated);
     if (_cstack == CSTACK_VMX) {
-      num_frames += StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_EXPERT, &truncated);
+      num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_EXPERT, &truncated);
     } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
       if (_cstack == CSTACK_VM) {
-        num_frames += StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_NORMAL, &truncated);
+        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_NORMAL, &truncated);
       } else {
         // Async events
         AsyncSampleMutex mutex(ProfiledThread::current());
