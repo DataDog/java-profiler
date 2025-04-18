@@ -25,10 +25,12 @@
 #include "vmStructs.h"
 
 namespace ddprof {
+  using VMStructsBase = ::VMStructs;
+  using VMMethodBase = ::VMMethod;
 
   class HeapUsage;
 
-  class VMStructs : public ::VMStructs {
+  class VMStructs : public VMStructsBase {
   public:
     typedef bool (*IsValidMethodFunc)(void *);
   protected:
@@ -88,7 +90,7 @@ namespace ddprof {
 
   };
 
-  class VMMethod : public ::VMMethod {
+  class VMMethod : public VMMethodBase {
   private:
     static bool check_jmethodID_J9(jmethodID id);
     static bool check_jmethodID_hotspot(jmethodID id);
@@ -139,7 +141,7 @@ namespace ddprof {
     }
   };
 
-  class JVMFlag : public ddprof::VMStructs {
+  class JVMFlag : public VMStructs {
   private:
     enum {
         ORIGIN_DEFAULT = 0,
@@ -193,7 +195,7 @@ namespace ddprof {
     }
   };
 
-  class HeapUsage : ddprof::VMStructs {
+  class HeapUsage : VMStructs {
   private:
     static bool is_jmx_attempted;
     static bool is_jmx_supported; // default to not-supported
