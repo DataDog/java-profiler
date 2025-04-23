@@ -1,5 +1,5 @@
 CC := g++
-SRCDIR := ../../main/cpp
+SRCDIR := ../../main/cpp-external ../../main/cpp
 OBJDIR := ./../../../build/scanbuild_obj
 CFLAGS := -O0 -Wall -std=c++11 -fno-omit-frame-pointer -momit-leaf-frame-pointer -fvisibility=hidden
 SRCS := ${wildcard ${SRCDIR}/*.cpp }

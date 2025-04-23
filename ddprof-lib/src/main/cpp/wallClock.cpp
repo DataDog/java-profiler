@@ -23,7 +23,7 @@
 #include "profiler.h"
 #include "stackFrame.h"
 #include "thread.h"
-#include "vmStructs.h"
+#include "vmStructs_dd.h"
 #include <math.h>
 #include <random>
 
@@ -80,26 +80,26 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   }
 
   ExecutionEvent event;
-  VMThread *vm_thread = VMThread::current();
+  ddprof::VMThread *vm_thread = ddprof::VMThread::current();
   bool is_java_thread = vm_thread && VM::jni();
   int raw_thread_state = vm_thread && is_java_thread ? vm_thread->state() : 0;
   bool is_initialized = raw_thread_state >= 4 && raw_thread_state < 12;
-  ThreadState state = ThreadState::UNKNOWN;
+  OSThreadState state = OSThreadState::UNKNOWN;
   ExecutionMode mode = ExecutionMode::UNKNOWN;
   if (vm_thread && is_initialized) {
-    ThreadState os_state = vm_thread->osThreadState();
-    if (os_state != ThreadState::UNKNOWN) {
+    OSThreadState os_state = vm_thread->osThreadState();
+    if (os_state != OSThreadState::UNKNOWN) {
       state = os_state;
     }
     mode = is_java_thread ? convertJvmExecutionState(raw_thread_state)
                           : ExecutionMode::JVM;
   }
-  if (state == ThreadState::UNKNOWN) {
+  if (state == OSThreadState::UNKNOWN) {
     if (inSyscall(ucontext)) {
-      state = ThreadState::SYSCALL;
+      state = OSThreadState::SYSCALL;
       mode = ExecutionMode::SYSCALL;
     } else {
-      state = ThreadState::RUNNABLE;
+      state = OSThreadState::RUNNABLE;
     }
   }
   event._thread_state = state;
@@ -177,7 +177,7 @@ void WallClockJVMTI::timerLoop() {
         for (int i = 0; i < threads_count; i++) {
           jthread thread = threads_ptr[i];
           if (thread != nullptr) {
-            VMThread* nThread = VMThread::fromJavaThread(jni, thread);
+            ddprof::VMThread* nThread = static_cast<ddprof::VMThread*>(VMThread::fromJavaThread(jni, thread));
             if (nThread == nullptr) {
               continue;
             }
@@ -194,21 +194,21 @@ void WallClockJVMTI::timerLoop() {
     static jint max_stack_depth = (jint)Profiler::instance()->max_stack_depth();
 
     ExecutionEvent event;
-    VMThread* vm_thread = thread_entry.native;
+    ddprof::VMThread* vm_thread = thread_entry.native;
     int raw_thread_state = vm_thread->state();
-    bool is_initialized = raw_thread_state >= JVMJavaThreadState::_thread_in_native &&
-                          raw_thread_state < JVMJavaThreadState::_thread_max_state;
-    ThreadState state = ThreadState::UNKNOWN;
+    bool is_initialized = raw_thread_state >= ddprof::JVMJavaThreadState::_thread_in_native &&
+                          raw_thread_state < ddprof::JVMJavaThreadState::_thread_max_state;
+    OSThreadState state = OSThreadState::UNKNOWN;
     ExecutionMode mode = ExecutionMode::UNKNOWN;
     if (vm_thread && is_initialized) {
-      ThreadState os_state = vm_thread->osThreadState();
-      if (os_state != ThreadState::UNKNOWN) {
+      OSThreadState os_state = vm_thread->osThreadState();
+      if (os_state != OSThreadState::UNKNOWN) {
         state = os_state;
       }
       mode = convertJvmExecutionState(raw_thread_state);
     }
-    if (state == ThreadState::UNKNOWN) {
-      state = ThreadState::RUNNABLE;
+    if (state == OSThreadState::UNKNOWN) {
+      state = OSThreadState::RUNNABLE;
     }
     event._thread_state = state;
     event._execution_mode = mode;

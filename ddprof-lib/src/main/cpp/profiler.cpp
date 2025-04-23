@@ -20,11 +20,11 @@
 #include "perfEvents.h"
 #include "safeAccess.h"
 #include "stackFrame.h"
-#include "stackWalker.h"
+#include "stackWalker_dd.h"
 #include "symbols.h"
 #include "thread.h"
 #include "tsc.h"
-#include "vmStructs.h"
+#include "vmStructs_dd.h"
 #include "wallClock.h"
 #include <algorithm>
 #include <dlfcn.h>
@@ -286,11 +286,11 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
   if (_cstack >= CSTACK_VM) {
     return 0;
   } else if (_cstack == CSTACK_DWARF) {
-    native_frames += StackWalker::walkDwarf(ucontext, callchain + native_frames,
+    native_frames += ddprof::StackWalker::walkDwarf(ucontext, callchain + native_frames,
                                             MAX_NATIVE_FRAMES - native_frames,
                                             java_ctx, truncated);
   } else {
-    native_frames += StackWalker::walkFP(ucontext, callchain + native_frames,
+    native_frames += ddprof::StackWalker::walkFP(ucontext, callchain + native_frames,
                                          MAX_NATIVE_FRAMES - native_frames,
                                          java_ctx, truncated);
   }
@@ -333,7 +333,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   // Workaround for JDK-8132510: it's not safe to call GetEnv() inside a signal
   // handler since JDK 9, so we do it only for threads already registered in
   // ThreadLocalStorage
-  VMThread *vm_thread = VMThread::current();
+  ddprof::VMThread *vm_thread = ddprof::VMThread::current();
   if (vm_thread == NULL) {
     Counters::increment(AGCT_NOT_REGISTERED_IN_TLS);
     return 0;
@@ -361,7 +361,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       return 1;
     }
 
-    if (!VMStructs::isSafeToWalk(saved_pc)) {
+    if (!ddprof::VMStructs::isSafeToWalk(saved_pc)) {
       frames->bci = BCI_NATIVE_FRAME;
       CodeBlob *codeBlob =
           VMStructs::libjvm()->findBlobByAddress((const void *)saved_pc);
@@ -409,7 +409,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   }
   bool blocked_in_vm = (state == 10 || state == 11);
   // avoid unwinding during deoptimization
-  if (blocked_in_vm && vm_thread->osThreadState() == ThreadState::RUNNABLE) {
+  if (blocked_in_vm && vm_thread->osThreadState() == OSThreadState::RUNNABLE) {
     Counters::increment(AGCT_BLOCKED_IN_VM);
     return 0;
   }
@@ -686,10 +686,10 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
                                  &java_ctx, &truncated);
     if (_cstack == CSTACK_VMX) {
-      num_frames += StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_EXPERT, &truncated);
+      num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_EXPERT, &truncated);
     } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
       if (_cstack == CSTACK_VM) {
-        num_frames += StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_NORMAL, &truncated);
+        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_NORMAL, &truncated);
       } else {
         // Async events
         AsyncSampleMutex mutex(ProfiledThread::current());
@@ -910,7 +910,7 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (VM::isHotspot()) {
     // the following checks require vmstructs and therefore HotSpot
 
-    StackWalker::checkFault(thrd);
+    StackWalker::checkFault();
 
     // Workaround for JDK-8313796. Setting cstack=dwarf also helps
     if (VMStructs::isInterpretedFrameValidFunc((const void *)pc) &&

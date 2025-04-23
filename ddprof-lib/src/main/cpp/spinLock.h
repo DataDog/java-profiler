@@ -17,7 +17,7 @@
 #ifndef _SPINLOCK_H
 #define _SPINLOCK_H
 
-#include "arch.h"
+#include "arch_dd.h"
 
 // Cannot use regular mutexes inside signal handler.
 // This lock is based on CAS busy loop. GCC atomic builtins imply full barrier.

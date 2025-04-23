@@ -6,7 +6,7 @@
 #ifndef _PROFILER_H
 #define _PROFILER_H
 
-#include "arch.h"
+#include "arch_dd.h"
 #include "arguments.h"
 #include "callTraceStorage.h"
 #include "codeCache.h"
@@ -274,6 +274,11 @@ public:
 
   static void JNICALL ThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     instance()->onThreadEnd(jvmti, jni, thread);
+  }
+
+  // Keep backward compatibility with the upstream async-profiler
+  inline CodeCache* findLibraryByAddress(const void *address) {
+    return Libraries::instance()->findLibraryByAddress(address);
   }
 
   friend class Recording;

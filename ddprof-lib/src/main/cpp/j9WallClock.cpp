@@ -81,10 +81,10 @@ void J9WallClock::timerLoop() {
           // no frames recorded
           continue;
         }
-        ThreadState ts = (si->state & JVMTI_THREAD_STATE_RUNNABLE)
-                             ? ThreadState::RUNNABLE
-                             : ThreadState::SLEEPING;
-        if (!_sample_idle_threads && ts != ThreadState::RUNNABLE) {
+        OSThreadState ts = (si->state & JVMTI_THREAD_STATE_RUNNABLE)
+                             ? OSThreadState::RUNNABLE
+                             : OSThreadState::SLEEPING;
+        if (!_sample_idle_threads && ts != OSThreadState::RUNNABLE) {
           // in execution profiler mode the non-running threads are skipped
           continue;
         }
@@ -101,7 +101,7 @@ void J9WallClock::timerLoop() {
         }
         ExecutionEvent event;
         event._thread_state = ts;
-        if (ts == ThreadState::RUNNABLE) {
+        if (ts == OSThreadState::RUNNABLE) {
           Profiler::instance()->recordExternalSample(
               _interval, tid, si->frame_count, frames, /*truncated=*/false,
               BCI_CPU, &event);

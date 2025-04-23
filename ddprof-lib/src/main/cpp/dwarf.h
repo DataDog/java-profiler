@@ -17,7 +17,7 @@
 #ifndef _DWARF_H
 #define _DWARF_H
 
-#include "arch.h"
+#include "arch_dd.h"
 #include <stddef.h>
 
 const int DW_REG_PLT = 128;     // denotes special rule for PLT entries

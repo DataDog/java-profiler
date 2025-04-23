@@ -110,6 +110,7 @@ tasks.whenTaskAdded { task ->
               toolChain = task.toolChain
               targetPlatform = task.targetPlatform
               includes task.includes
+              includes project(':ddprof-lib').file('src/main/cpp-external').toString()
               includes project(':ddprof-lib').file('src/main/cpp').toString()
               includes "${javaHome()}/include"
               includes project(':malloc-shim').file('src/main/public').toString()
@@ -123,6 +124,9 @@ tasks.whenTaskAdded { task ->
               source project(':ddprof-lib').fileTree('src/main/cpp') {
                 include '**/*'
               }
+              source project(':ddprof-lib').fileTree('src/main/cpp-external') {
+                include '**/*'
+              }
               source testFile
 
               inputs.files source
@@ -131,6 +135,12 @@ tasks.whenTaskAdded { task ->
             def linkTask = tasks.named("linkGtest${config.name.capitalize()}_${testName}")
             if (linkTask != null) {
               linkTask.get().dependsOn gtestCompileTask
+            }
+            def subrepoInitTask = project(':ddprof-lib').tasks.named("initSubrepo")
+            if (subrepoInitTask != null) {
+              gtestCompileTask.configure {
+                dependsOn subrepoInitTask
+              }
             }
           }
         }

@@ -19,7 +19,7 @@
 
 #ifdef __linux__
 
-#include "arch.h"
+#include "arch_dd.h"
 #include "engine.h"
 #include <signal.h>
 

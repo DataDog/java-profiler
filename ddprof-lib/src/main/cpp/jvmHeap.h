@@ -51,10 +51,10 @@ public:
 };
 
 /**
- * This class only defines a layout compatible with the JDKs CompatibleHeap
+ * This class only defines a layout compatible with the JDKs CollectedHeap
  * class and particularly its subclasses
  */
-class CollectedHeap {
+class CollectedHeapWrapper {
 private:
   void *vptr; // only 1-st level subclasses are used so we need to define the
               // 'synthetic' vptr field here

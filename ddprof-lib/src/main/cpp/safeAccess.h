@@ -17,7 +17,7 @@
 #ifndef _SAFEACCESS_H
 #define _SAFEACCESS_H
 
-#include "arch.h"
+#include "arch_dd.h"
 #include <stdint.h>
 
 #ifdef __clang__

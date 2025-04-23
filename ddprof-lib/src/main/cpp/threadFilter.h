@@ -17,7 +17,7 @@
 #ifndef _THREADFILTER_H
 #define _THREADFILTER_H
 
-#include "arch.h"
+#include "arch_dd.h"
 #include <vector>
 
 // The size of thread ID bitmap in bytes. Must be at least 64K to allow mmap()

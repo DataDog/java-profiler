@@ -23,7 +23,7 @@
 #include "threadFilter.h"
 #include "threadState.h"
 #include "tsc.h"
-#include "vmStructs.h"
+#include "vmStructs_dd.h"
 #include <arpa/inet.h>
 #include <cxxabi.h>
 #include <errno.h>
@@ -138,7 +138,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   jvmti->GetPhase(&phase);
   if ((phase & (JVMTI_PHASE_START | JVMTI_PHASE_LIVE)) != 0) {
     bool entry = false;
-    if (VMMethod::check_jmethodID(method) &&
+    if (ddprof::VMMethod::check_jmethodID(method) &&
         jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
         // On some older versions of J9, the JVMTI call to GetMethodDeclaringClass will return OK = 0, but when a
         // classloader is unloaded they free all JNIIDs. This means that anyone holding on to a jmethodID is
@@ -1017,25 +1017,25 @@ void Recording::writeFrameTypes(Buffer *buf) {
 void Recording::writeThreadStates(Buffer *buf) {
   buf->putVar64(T_THREAD_STATE);
   buf->put8(10);
-  buf->put8(static_cast<int>(ThreadState::UNKNOWN));
+  buf->put8(static_cast<int>(OSThreadState::UNKNOWN));
   buf->putUtf8("UNKNOWN");
-  buf->put8(static_cast<int>(ThreadState::NEW));
+  buf->put8(static_cast<int>(OSThreadState::NEW));
   buf->putUtf8("NEW");
-  buf->put8(static_cast<int>(ThreadState::RUNNABLE));
+  buf->put8(static_cast<int>(OSThreadState::RUNNABLE));
   buf->putUtf8("RUNNABLE");
-  buf->put8(static_cast<int>(ThreadState::MONITOR_WAIT));
+  buf->put8(static_cast<int>(OSThreadState::MONITOR_WAIT));
   buf->putUtf8("CONTENDED");
-  buf->put8(static_cast<int>(ThreadState::CONDVAR_WAIT));
+  buf->put8(static_cast<int>(OSThreadState::CONDVAR_WAIT));
   buf->putUtf8("PARKED");
-  buf->put8(static_cast<int>(ThreadState::OBJECT_WAIT));
+  buf->put8(static_cast<int>(OSThreadState::OBJECT_WAIT));
   buf->putUtf8("WAITING");
-  buf->put8(static_cast<int>(ThreadState::BREAKPOINTED));
+  buf->put8(static_cast<int>(OSThreadState::BREAKPOINTED));
   buf->putUtf8("BREAKPOINT");
-  buf->put8(static_cast<int>(ThreadState::SLEEPING));
+  buf->put8(static_cast<int>(OSThreadState::SLEEPING));
   buf->putUtf8("SLEEPING");
-  buf->put8(static_cast<int>(ThreadState::TERMINATED));
+  buf->put8(static_cast<int>(OSThreadState::TERMINATED));
   buf->putUtf8("TERMINATED");
-  buf->put8(static_cast<int>(ThreadState::SYSCALL));
+  buf->put8(static_cast<int>(OSThreadState::SYSCALL));
   buf->putUtf8("SYSCALL");
   flushIfNeeded(buf);
 }
