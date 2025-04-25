@@ -312,7 +312,7 @@ Java_com_datadoghq_profiler_JVMAccess_findStringJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
   JniString flag_str(env, flagName);
-  ddprof::JVMFlag *f = ddprof::JVMFlag::find(flag_str.c_str(), {ddprof::JVMFlag::Type::String});
+  ddprof::JVMFlag *f = ddprof::JVMFlag::find(flag_str.c_str(), {ddprof::JVMFlag::Type::String, ddprof::JVMFlag::Type::Stringlist});
   if (f) {
     char** value = static_cast<char**>(f->addr());
     if (value != NULL && *value != NULL) {
@@ -329,7 +329,7 @@ Java_com_datadoghq_profiler_JVMAccess_setStringJVMFlag0(JNIEnv *env,
                                                          jstring flagValue) {
   JniString flag_str(env, flagName);
   JniString value_str(env, flagValue);
-  ddprof::JVMFlag *f = ddprof::JVMFlag::find(flag_str.c_str(), {ddprof::JVMFlag::Type::String});
+  ddprof::JVMFlag *f = ddprof::JVMFlag::find(flag_str.c_str(), {ddprof::JVMFlag::Type::String, ddprof::JVMFlag::Type::Stringlist});
   if (f) {
     char** value = static_cast<char**>(f->addr());
     if (value != NULL) {
