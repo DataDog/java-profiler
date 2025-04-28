@@ -66,6 +66,7 @@ public final class JavaProfiler {
 
     private ByteBuffer[] contextStorage;
     private long[] contextBaseOffsets;
+    private static final ByteBuffer SENTINEL = ByteBuffer.allocate(0);
 
     private JavaProfiler() {
     }
@@ -240,6 +241,9 @@ public final class JavaProfiler {
             return;
         }
         long pageOffset = getPageUnsafe(tid);
+        if (pageOffset == 0) {
+            return;
+        }
         int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
         long base = pageOffset + index;
         UNSAFE.putLong(base + SPAN_OFFSET, spanId);
@@ -252,20 +256,27 @@ public final class JavaProfiler {
             return;
         }
         ByteBuffer page = getPage(tid);
+        if (page == SENTINEL) {
+            return;
+        }
         int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
         page.putLong(index + SPAN_OFFSET, spanId);
         page.putLong(index + ROOT_SPAN_OFFSET, rootSpanId);
         page.putLong(index + CHECKSUM_OFFSET, spanId ^ rootSpanId);
     }
 
-
-
     private ByteBuffer getPage(int tid) {
         int pageIndex = tid / PAGE_SIZE;
         ByteBuffer page = contextStorage[pageIndex];
         if (page == null) {
             // the underlying page allocation is atomic so we don't care which view we have over it
-            contextStorage[pageIndex] = page = getContextPage0(tid).order(ByteOrder.LITTLE_ENDIAN);
+            ByteBuffer buffer = getContextPage0(tid);
+            if (buffer == null) {
+                page = SENTINEL;
+            } else {
+                page = buffer.order(ByteOrder.LITTLE_ENDIAN);
+            }
+            contextStorage[pageIndex] = page;
         }
         return page;
     }
@@ -305,6 +316,9 @@ public final class JavaProfiler {
             return;
         }
         long pageOffset = getPageUnsafe(tid);
+        if (pageOffset == 0) {
+            return;
+        }
         UNSAFE.putInt(pageOffset + addressOf(tid, offset), value);
     }
 
@@ -313,6 +327,9 @@ public final class JavaProfiler {
             return;
         }
         ByteBuffer page = getPage(tid);
+        if (page == SENTINEL) {
+            return;
+        }
         page.putInt(addressOf(tid, offset), value);
     }
 
@@ -330,6 +347,9 @@ public final class JavaProfiler {
             return;
         }
         long pageOffset = getPageUnsafe(tid);
+        if (pageOffset == 0) {
+            return;
+        }
         long address = pageOffset + addressOf(tid, 0);
         for (int i = 0; i < snapshot.length; i++) {
             snapshot[i] = UNSAFE.getInt(address);
@@ -342,6 +362,9 @@ public final class JavaProfiler {
             return;
         }
         ByteBuffer page = getPage(tid);
+        if (page == SENTINEL) {
+            return;
+        }
         int address = addressOf(tid, 0);
         for (int i = 0; i < snapshot.length; i++) {
             snapshot[i] = page.getInt(address + i * Integer.BYTES);
