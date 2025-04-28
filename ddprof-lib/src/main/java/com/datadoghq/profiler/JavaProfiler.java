@@ -66,6 +66,7 @@ public final class JavaProfiler {
 
     private ByteBuffer[] contextStorage;
     private long[] contextBaseOffsets;
+    private static final ByteBuffer SENTINEL = ByteBuffer.allocate(0);
 
     private JavaProfiler() {
     }
@@ -255,7 +256,7 @@ public final class JavaProfiler {
             return;
         }
         ByteBuffer page = getPage(tid);
-        if (page == null) {
+        if (page == SENTINEL) {
             return;
         }
         int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
@@ -270,9 +271,12 @@ public final class JavaProfiler {
         if (page == null) {
             // the underlying page allocation is atomic so we don't care which view we have over it
             ByteBuffer buffer = getContextPage0(tid);
-            if (buffer != null) {
-                contextStorage[pageIndex] = page = buffer.order(ByteOrder.LITTLE_ENDIAN);
+            if (buffer == null) {
+                page = SENTINEL;
+            } else {
+                page = buffer.order(ByteOrder.LITTLE_ENDIAN);
             }
+            contextStorage[pageIndex] = page;
         }
         return page;
     }
@@ -323,7 +327,7 @@ public final class JavaProfiler {
             return;
         }
         ByteBuffer page = getPage(tid);
-        if (page == null) {
+        if (page == SENTINEL) {
             return;
         }
         page.putInt(addressOf(tid, offset), value);
@@ -358,7 +362,7 @@ public final class JavaProfiler {
             return;
         }
         ByteBuffer page = getPage(tid);
-        if (page == null) {
+        if (page == SENTINEL) {
             return;
         }
         int address = addressOf(tid, 0);
