@@ -235,6 +235,7 @@ void WallClockJVMTI::timerLoop() {
 }
 
 void WallClockASGCT::timerLoop() {
+    // todo: re-allocating the vector every time is not efficient
     auto collectThreads = [&](std::vector<int>& tids) {
       // Get thread IDs from the filter if it's enabled
       // Otherwise list all threads in the system

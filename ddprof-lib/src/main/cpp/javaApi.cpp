@@ -129,7 +129,7 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThread_1add(JNIEnv *env,
                                                        jobject unused) {
   ProfiledThread *current = ProfiledThread::current();
   int tid = current->tid();
-  if (tid < 0) {
+  if (unlikely(tid < 0)) {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
@@ -145,7 +145,7 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThread_1remove(JNIEnv *env,
                                                        jobject unused) {
   ProfiledThread *current = ProfiledThread::current();
   int tid = current->tid();
-  if (tid < 0) {
+  if (unlikely(tid < 0)) {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
