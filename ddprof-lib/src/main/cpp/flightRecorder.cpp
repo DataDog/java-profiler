@@ -1419,7 +1419,9 @@ void Recording::recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
   flushIfNeeded(buf);
 }
 
-void Recording::addThread(int tid) { _thread_set.add(tid); }
+void Recording::addThread(int tid) {
+  _thread_set.add(tid, 0); // todo: add slot_id management
+}
 
 Error FlightRecorder::start(Arguments &args, bool reset) {
   const char *file = args.file();

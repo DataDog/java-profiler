@@ -207,7 +207,7 @@ public final class JavaProfiler {
      * 'filter' option must be enabled to use this method.
      */
     public void addThread() {
-        filterThread0(true);
+        filterThread_add();
     }
 
     /**
@@ -215,9 +215,8 @@ public final class JavaProfiler {
      * 'filter' option must be enabled to use this method.
      */
     public void removeThread() {
-        filterThread0(false);
+        filterThread_remove();
     }
-
 
     /**
      * Passing context identifier to a profiler. This ID is thread-local and is dumped in
@@ -446,7 +445,9 @@ public final class JavaProfiler {
     private static native boolean init0();
     private native void stop0() throws IllegalStateException;
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
-    private native void filterThread0(boolean enable);
+
+    private native void filterThread_add();
+    private native void filterThread_remove();
 
     private static native int getTid0();
     private static native ByteBuffer getContextPage0(int tid);

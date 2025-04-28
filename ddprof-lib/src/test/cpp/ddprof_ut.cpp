@@ -134,19 +134,24 @@
         for (int i = 1; i <= num_threads; i++) {
             threads.emplace_back([&filter, i, &completed_threads]() {
                 for (int j = 0; j < num_ops; j++) {
-                    // Add thread ID
-                    filter.add(i);
-                    bool accepted = filter.accept(i);
+                    // Register a new slot for this thread
+                    int slot_id = filter.registerThread();
+                    
+                    // Add thread ID to slot
+                    filter.add(i, slot_id);
+                    bool accepted = filter.accept(slot_id);
                     if (!accepted) {
-                        fprintf(stderr, "FAIL: Thread %d, op %d: accept(%d) returned false after add\n", i, j, i);
+                        fprintf(stderr, "FAIL: Thread %d, op %d, slot %d: accept(slot=%d) returned false after add\n", 
+                                i, j, slot_id, slot_id);
                     }
                     EXPECT_TRUE(accepted);
                     
                     // Remove thread ID
-                    filter.remove(i);
-                    accepted = filter.accept(i);
+                    filter.remove(slot_id);
+                    accepted = filter.accept(slot_id);
                     if (accepted) {
-                        fprintf(stderr, "FAIL: Thread %d, op %d: accept(%d) returned true after remove\n", i, j, i);
+                        fprintf(stderr, "FAIL: Thread %d, op %d, slot %d: accept(slot=%d) returned true after remove\n", 
+                                i, j, slot_id, slot_id);
                     }
                     EXPECT_FALSE(accepted);
                 }
@@ -177,13 +182,21 @@
         std::vector<std::thread> threads;
         std::atomic<int> completed_threads{0};
         std::vector<int> expected_tids;
+        std::vector<int> slots(num_threads); // Track slot IDs
+
+        // Pre-register slots for each thread
+        for (int i = 0; i < num_threads; i++) {
+            slots[i] = filter.registerThread();
+        }
 
         // Each thread will add its thread ID
         for (int i = 1; i <= num_threads; i++) {
             expected_tids.push_back(i);
-            threads.emplace_back([&filter, i, &completed_threads]() {
-                filter.add(i);
-                EXPECT_TRUE(filter.accept(i));
+            int slot_id = slots[i-1]; // Use the pre-registered slot
+            
+            threads.emplace_back([&filter, i, slot_id, &completed_threads]() {
+                filter.add(i, slot_id);
+                EXPECT_TRUE(filter.accept(slot_id));
                 completed_threads++;
             });
         }

@@ -123,21 +123,39 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
   return (jlong)Profiler::instance()->total_samples();
 }
 
+// some duplication between add and remove, though we want to avoid having an extra branch in the hot path
 extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_filterThread0(JNIEnv *env,
-                                                       jobject unused,
-                                                       jboolean enable) {
-  int tid = ProfiledThread::currentTid();
+Java_com_datadoghq_profiler_JavaProfiler_filterThread_1add(JNIEnv *env,
+                                                       jobject unused) {
+  ProfiledThread *current = ProfiledThread::current();
+  int tid = current->tid();
   if (tid < 0) {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
-  if (enable) {
-    thread_filter->add(tid);
-  } else {
-    thread_filter->remove(tid);
+  int slot_id = current->filterSlotId();
+  if (unlikely(slot_id == -1)) {
+    return;
   }
+  thread_filter->add(tid, slot_id);
 }
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_filterThread_1remove(JNIEnv *env,
+                                                       jobject unused) {
+  ProfiledThread *current = ProfiledThread::current();
+  int tid = current->tid();
+  if (tid < 0) {
+    return;
+  }
+  ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
+  int slot_id = current->filterSlotId();
+  if (unlikely(slot_id == -1)) {
+    return;
+  }
+  thread_filter->remove(slot_id);
+}
+
 
 extern "C" DLLEXPORT jobject JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getContextPage0(JNIEnv *env,

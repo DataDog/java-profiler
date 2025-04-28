@@ -15,11 +15,13 @@ public:
     void init(const char* filter);
     void clear();
     bool enabled() const;
-    bool accept(int thread_id) const;
-    void add(int thread_id);
-    void remove(int thread_id);  // tid unused, for API consistency
+    bool accept(int slot_id) const;
+    void add(int tid, int slot_id);
+    void remove(int slot_id);  // tid unused, for API consistency
     void collect(std::vector<int>& tids) const;
-    SlotID ensureThreadRegistered();
+
+    SlotID registerThread();
+    void unregisterThread(SlotID slot_id);
 
 private:
     struct Slot {
@@ -30,10 +32,9 @@ private:
            std::memory_order_relaxed); return *this; }
     };
 
-    SlotID registerThread();
-
     bool _enabled = false;
     std::vector<Slot> _slots;
+    std::vector<Slot> _free_list;
     std::atomic<int> _next_index;
 };
 

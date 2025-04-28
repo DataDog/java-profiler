@@ -26,6 +26,7 @@
 #include "vmStructs.h"
 #include <math.h>
 #include <random>
+#include <algorithm> // For std::sort and std::binary_search
 
 std::atomic<bool> BaseWallClock::_enabled{false};
 
@@ -174,6 +175,14 @@ void WallClockJVMTI::timerLoop() {
         bool do_filter = Profiler::instance()->threadFilter()->enabled();
         int self = OS::threadId();
 
+        // If filtering is enabled, collect the filtered TIDs first
+        std::vector<int> filtered_tids;
+        if (do_filter) {
+            Profiler::instance()->threadFilter()->collect(filtered_tids);
+            // Sort the TIDs for efficient lookup
+            std::sort(filtered_tids.begin(), filtered_tids.end());
+        }
+
         for (int i = 0; i < threads_count; i++) {
           jthread thread = threads_ptr[i];
           if (thread != nullptr) {
@@ -182,7 +191,9 @@ void WallClockJVMTI::timerLoop() {
               continue;
             }
             int tid = nThread->osThreadId();
-            if (tid != self && (!do_filter || Profiler::instance()->threadFilter()->accept(tid))) {
+            if (tid != self && (!do_filter || 
+                 // Use binary search to efficiently find if tid is in filtered_tids
+                 std::binary_search(filtered_tids.begin(), filtered_tids.end(), tid))) {
               threads.push_back({nThread, thread});
             }
           }
@@ -225,12 +236,15 @@ void WallClockJVMTI::timerLoop() {
 
 void WallClockASGCT::timerLoop() {
     auto collectThreads = [&](std::vector<int>& tids) {
+      // Get thread IDs from the filter if it's enabled
+      // Otherwise list all threads in the system
       if (Profiler::instance()->threadFilter()->enabled()) {
         Profiler::instance()->threadFilter()->collect(tids);
       } else {
         ThreadList *thread_list = OS::listThreads();
         int tid = thread_list->next();
         while (tid != -1) {
+          // Don't include the current thread
           if (tid != OS::threadId()) {
             tids.push_back(tid);
           }
