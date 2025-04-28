@@ -43,6 +43,10 @@ private:
     std::vector<std::array<Slot, kChunkSize>> _slots;
     std::atomic<SlotID> _next_index;
     
+    static constexpr int kFreeListSize = 128;
+    std::atomic<SlotID> _free_list[kFreeListSize];
+    std::atomic<int> _free_list_top;  // Points to next free slot
+
     mutable std::mutex _slot_mutex;
 };
 
