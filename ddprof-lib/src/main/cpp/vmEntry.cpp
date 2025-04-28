@@ -535,6 +535,9 @@ void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     ready(jvmti, jni);
     loadAllMethodIDs(jvmti, jni);
 
+    // initialize the heap usage tracking only after the VM is ready
+    ddprof::HeapUsage::initJMXUsage(VM::jni());
+
     // Delayed start of profiler if agent has been loaded at VM bootstrap
     Error error = Profiler::instance()->run(_agent_args);
     if (error) {
