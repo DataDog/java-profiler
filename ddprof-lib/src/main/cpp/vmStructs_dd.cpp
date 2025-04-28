@@ -44,7 +44,6 @@ namespace ddprof {
     initOffsets();
     initJvmFunctions();
     initUnsafeFunctions();
-    HeapUsage::initJMXUsage(VM::jni());
   }
 
   void VMStructs_::initOffsets() {
