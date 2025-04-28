@@ -144,6 +144,9 @@ Java_com_datadoghq_profiler_JavaProfiler_getContextPage0(JNIEnv *env,
                                                          jobject unused,
                                                          jint tid) {
   ContextPage page = Contexts::getPage((int)tid);
+  if (page.storage == 0) {
+    return NULL;
+  }
   return env->NewDirectByteBuffer((void *)page.storage, (jlong)page.capacity);
 }
 

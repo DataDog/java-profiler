@@ -47,17 +47,21 @@ Context &Contexts::get(int tid) {
 
 Context &Contexts::empty() { return DD_EMPTY_CONTEXT; }
 
-void Contexts::initialize(int pageIndex) {
+bool Contexts::initialize(int pageIndex) {
   if (pageIndex >= _max_pages) {
     Counters::increment(CounterId::CONTEXT_BOUNDS_MISS_INITS);
     // extreme edge case: pageIndex >= _max_pages if pid_max was increased
     // during the process's runtime
-    return;
+    return false;
   }
   if (__atomic_load_n(&_pages[pageIndex], __ATOMIC_ACQUIRE) == NULL) {
     u32 capacity = DD_CONTEXT_PAGE_SIZE * sizeof(Context);
-    Context *page = (Context *)aligned_alloc(sizeof(Context), capacity);
-    // need to zero the storage because there is no aligned_calloc
+    Context *page;
+    if (posix_memalign((void**)&page, sizeof(Context), capacity)) {
+      Counters::increment(CONTEXT_ALLOC_FAILS);
+      return false;
+    }
+    // need to zero the storage
     memset(page, 0, capacity);
     if (!__sync_bool_compare_and_swap(&_pages[pageIndex], NULL, page)) {
       free(page);
@@ -66,6 +70,7 @@ void Contexts::initialize(int pageIndex) {
       Counters::increment(CONTEXT_STORAGE_PAGES);
     }
   }
+  return true;
 }
 
 void Contexts::reset() {
@@ -78,9 +83,12 @@ void Contexts::reset() {
 
 ContextPage Contexts::getPage(int tid) {
   int pageIndex = tid >> DD_CONTEXT_PAGE_SHIFT;
-  initialize(pageIndex);
-  return {.capacity = DD_CONTEXT_PAGE_SIZE * sizeof(Context),
-          .storage = _pages[pageIndex]};
+  if (initialize(pageIndex)) {
+    return {.capacity = DD_CONTEXT_PAGE_SIZE * sizeof(Context),
+      .storage = _pages[pageIndex]};
+  } else {
+    return {};
+  }
 }
 
 // The number of pages that can cover all allowed thread IDs

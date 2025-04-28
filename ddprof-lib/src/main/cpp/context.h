@@ -52,7 +52,7 @@ class Contexts {
 private:
   static int _max_pages;
   static Context **_pages;
-  static void initialize(int pageIndex);
+  static bool initialize(int pageIndex);
 
 public:
   // get must not allocate
