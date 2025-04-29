@@ -87,7 +87,7 @@ ContextPage Contexts::getPage(int tid) {
     return {.capacity = DD_CONTEXT_PAGE_SIZE * sizeof(Context),
       .storage = _pages[pageIndex]};
   } else {
-    return {};
+    return {.capacity = 0, .storage = NULL};
   }
 }
 
