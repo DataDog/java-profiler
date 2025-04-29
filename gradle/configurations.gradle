@@ -114,7 +114,7 @@ def commonLinuxCompilerArgs = [
   "-fvisibility=hidden",
   "-fdata-sections",
   "-ffunction-sections",
-  "-std=c++11",
+  "-std=c++17",
   "-DPROFILER_VERSION=\"${version}\"",
   "-DCOUNTERS"
 ]
