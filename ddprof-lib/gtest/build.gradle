@@ -101,7 +101,7 @@ tasks.whenTaskAdded { task ->
               objectFileDir = file("$buildDir/obj/gtest/${config.name}/${testName}")
               compilerArgs.addAll(config.compilerArgs.findAll {
                 // need to drop the -std and -DNDEBUG flags because we need a different standard and assertions enabled
-                it != '-std=c++11' && it != '-DNDEBUG'
+                it != '-std=c++17' && it != '-DNDEBUG'
               })
               if (os().isLinux() && isMusl()) {
                 compilerArgs.add('-D__musl__')
