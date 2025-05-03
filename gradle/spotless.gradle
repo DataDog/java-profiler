@@ -55,29 +55,21 @@ spotless {
   }
   if (project.plugins.hasPlugin('cpp-library') || project.plugins.hasPlugin('cpp-application')) {
     cpp {
-      def clangVersion = null
+      def llvmVersion = project.findProperty('llvm.version') ?: '11'
+      def clangFormatBinary = "clang-format-${llvmVersion}"
+
       try {
-        def checkClangFormat = ['clang-format', '--version'].execute()
+        def checkClangFormat = [clangFormatBinary, '--version'].execute()
         checkClangFormat.waitFor()
-        if (checkClangFormat.exitValue() == 0) {
-          def versionOutput = checkClangFormat.text.trim()
-          // Extract the version number from the output using regex
-          def versionMatcher = (versionOutput =~ /clang-format version (\d+\.\d+\.\d+.*)/)
-          if (versionMatcher) {
-            clangVersion = versionMatcher[0][1]  // The version is captured in group 1
-          }
+        if (checkClangFormat.exitValue() != 0) {
+          throw new GradleException("${clangFormatBinary} is not available. Please install Clang ${llvmVersion}.")
         }
       } catch (Throwable t) {
-        throw new GradleException("Clang-format is not available. Please install Clang 11.")
-      }
-
-      // Check if the version is 11.0.0 or higher
-      if (clangVersion && !clangVersion.startsWith("11")) {
-        throw new GradleException("Clang version ${clangVersion} is not supported. Please install Clang 11.")
+        throw new GradleException("${clangFormatBinary} is not available. Please install Clang ${llvmVersion}.")
       }
 
       target 'src/main/cpp/**'
-      clangFormat(clangVersion).configFile(configPath + '/enforcement/.clang-format')
+      clangFormat().configFile(configPath + '/enforcement/.clang-format')
     }
   }
 
