@@ -425,6 +425,10 @@ library {
   privateHeaders.from file('src/main/cpp')
   privateHeaders.from file('src/main/cpp-external')
 
+  // Include JDK headers
+  privateHeaders.from System.getenv("JAVA_HOME") + "/include"
+  privateHeaders.from System.getenv("JAVA_HOME") + "/include/" + osIdentifier()
+
   // aarch64 support is still incubating
   // for the time being an aarch64 linux machine will match 'machines.linux.x86_64'
   targetMachines = [machines.macOS, machines.linux.x86_64]

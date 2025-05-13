@@ -365,7 +365,7 @@ const char *Arguments::file() {
 // Should match statically computed HASH(arg)
 long long Arguments::hash(const char *arg) {
   long long h = 0;
-  for (int shift = 0; *arg != 0; shift += 5) {
+  for (int shift = 0; *arg != 0 && shift <= 55; shift += 5) {
     h |= (*arg++ & 31LL) << shift;
   }
   return h;

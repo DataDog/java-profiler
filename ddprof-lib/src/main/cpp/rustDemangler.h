@@ -18,6 +18,10 @@
 #include <string>
 
 namespace RustDemangler {
+constexpr size_t MAX_DEMANGLE_OUTPUT_SIZE = 4096;
+
 bool is_probably_rust_legacy(const std::string &str);
 std::string demangle(const std::string &str);
+void append_checked(std::string &str, const std::string &append);
+
 }; // namespace RustDemangler
