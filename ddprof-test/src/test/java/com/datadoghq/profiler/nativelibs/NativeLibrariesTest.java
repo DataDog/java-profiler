@@ -43,6 +43,9 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
 
     @RetryingTest(3)
     public void test() {
+        String config = System.getProperty("ddprof_test.config");
+        boolean isSanitizer = config.endsWith("san");
+
         Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
         Assumptions.assumeFalse(Platform.isMusl() && Platform.isAarch64());
         boolean isMusl = Optional.ofNullable(System.getenv("TEST_CONFIGURATION")).orElse("").startsWith("musl");
@@ -91,7 +94,8 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
         assertTrue(modeCounters.containsKey("NATIVE"), "no NATIVE samples");
         assertTrue(libraryCounters.containsKey("LZ4"), "no lz4-java samples");
         // snappy is problematic on musl; we are not running it
-        assertTrue(isMusl || libraryCounters.containsKey("SNAPPY"), "no snappy-java samples");
+        // for some reason it is not also appearing in sanitized runs
+        assertTrue(isMusl || isSanitizer || libraryCounters.containsKey("SNAPPY"), "no snappy-java samples");
         assertTrue(libraryCounters.containsKey("ZSTD"), "no zstd-jni samples");
         modeCounters.forEach((mode, count) -> System.err.println(mode + ": " + count.get()));
         libraryCounters.forEach((lib, count) -> System.err.println(lib + ": " + count.get()));

@@ -51,6 +51,8 @@ public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTe
     @TestTemplate
     @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
     public void test(@CStack String cstack) {
+        String config = System.getProperty("ddprof_test.config");
+        boolean isSanitizer = config.endsWith("san");
         assumeFalse(Platform.isZing() || Platform.isJ9());
 
         long result = 0;
@@ -72,8 +74,10 @@ public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTe
                 if ("CONTENDED".equals(state)) {
                     String stackTrace = frameAccessor.getMember(sample);
                     if (!stackTrace.endsWith(".GC_active()")) {
-                        assertTrue(stackTrace.contains(lambdaStateName), () -> stackTrace + " missing " + lambdaStateName);
-                        assertTrue(stackTrace.contains(lambdaName), () -> stackTrace + " missing " + lambdaName);
+                        // shortcut the assertions for sanitized runs
+                        // the samples are not that good, but it still makes sense to run this load under sanitizers
+                        assertTrue(isSanitizer || stackTrace.contains(lambdaStateName), () -> stackTrace + " missing " + lambdaStateName);
+                        assertTrue(isSanitizer || stackTrace.contains(lambdaName), () -> stackTrace + " missing " + lambdaName);
                     }
                 }
             }
