@@ -126,8 +126,8 @@ def commonMacosCompilerArgs = commonLinuxCompilerArgs + ["-D_XOPEN_SOURCE", "-D_
 def asanEnv = hasAsan() ?
   ['LD_PRELOAD': libasan,
     // warning: stack use after return can cause slowness on arm64
-    "ASAN_OPTIONS" : "detect_stack_use_after_return=1 suppressions=${rootDir}/gradle/sanitizers/asan.supp",
-    "UBSAN_OPTIONS" : "halt_on_error=1 abort_on_error=1 print_stacktrace=1 suppressions=${rootDir}/gradle/sanitizers/ubsan.supp",
+    "ASAN_OPTIONS" : "allocator_may_return_null=1:unwind_abort_on_malloc=1:use_sigaltstack=0:detect_stack_use_after_return=1:handle_segv=0:halt_on_error=1:abort_on_error=1:suppressions=${rootDir}/gradle/sanitizers/asan.supp",
+    "UBSAN_OPTIONS" : "halt_on_error=1:abort_on_error=1:print_stacktrace=1:suppressions=${rootDir}/gradle/sanitizers/ubsan.supp",
     // lsan still does not run for all tests - manually trigger on some tests
     "LSAN_OPTIONS" :  "detect_leaks=0"
   ] : [:]
