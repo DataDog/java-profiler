@@ -53,7 +53,11 @@ public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTe
     public void test(@CStack String cstack) {
         String config = System.getProperty("ddprof_test.config");
         boolean isSanitizer = config.endsWith("san");
+        boolean isJvmci = System.getProperty("java.vm.version", "").contains("jvmci");
         assumeFalse(Platform.isZing() || Platform.isJ9());
+        // Running vm stackwalker tests on JVMCI (Graal), JDK 24, aarch64 and with a sanitizer is crashing in a weird place
+        // This looks like the sanitizer instrumentation is breaking the longjump based crash recovery :(
+        assumeFalse(Platform.isJavaVersionAtLeast(24) && isJvmci && Platform.isAarch64() && cstack.startsWith("vm") && isSanitizer);
 
         long result = 0;
         for (int i = 0; i < 10; i++) {
