@@ -26,6 +26,7 @@
 #include "thread.h"
 #include "vmStructs.h"
 #include <jni.h>
+#include <limits.h>
 #include <math.h>
 #include <string.h>
 
@@ -188,14 +189,16 @@ Error ObjectSampler::updateConfiguration(u64 events, double time_coefficient) {
       CONFIG_UPDATE_CHECK_PERIOD_SECS, 15);
 
   float signal = pid_controller.compute(events, time_coefficient);
-  int required_interval = _interval - static_cast<int>(signal);
+  // we are in unsigned land here - if the signal is larger thant the current sampling interval, clamp the diff to _configured_interval
+  u64 required_interval = _interval >= signal ? static_cast<u64>(_interval) - static_cast<int>(signal) : _configured_interval;
   required_interval =
       required_interval >= _configured_interval
           ? required_interval
           : _configured_interval; // do not dip below the manually configured
                                   // sampling interval
   if (required_interval != _interval) {
-    _interval = required_interval;
+    // clamp the sampling interval to the max positive int value to avoid overflow
+    _interval = static_cast<int>(std::min(required_interval, static_cast<u64>(INT_MAX)));
     VM::jvmti()->SetHeapSamplingInterval(_interval);
   }
 
