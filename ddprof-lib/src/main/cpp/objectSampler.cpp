@@ -26,6 +26,7 @@
 #include "thread.h"
 #include "vmStructs.h"
 #include <jni.h>
+#include <limits.h>
 #include <math.h>
 #include <string.h>
 
@@ -187,15 +188,24 @@ Error ObjectSampler::updateConfiguration(u64 events, double time_coefficient) {
            // can change abruptly (low impact of the predicted allocation rate)
       CONFIG_UPDATE_CHECK_PERIOD_SECS, 15);
 
-  float signal = pid_controller.compute(events, time_coefficient);
-  int required_interval = _interval - static_cast<int>(signal);
-  required_interval =
-      required_interval >= _configured_interval
-          ? required_interval
-          : _configured_interval; // do not dip below the manually configured
-                                  // sampling interval
-  if (required_interval != _interval) {
-    _interval = required_interval;
+  double signal = pid_controller.compute(events, time_coefficient);
+  int64_t signal_adjustment = static_cast<int64_t>(signal);
+  // use ints to avoid any wrap around
+  int64_t new_interval = static_cast<int64_t>(_interval) - signal_adjustment;
+
+  // Clamp to never go below configured min
+  if (new_interval < static_cast<int64_t>(_configured_interval)) {
+      new_interval = static_cast<int64_t>(_configured_interval);
+  }
+
+  // We actually need to consider the max interval from JVMTI api (max int32)
+  if (new_interval > INT32_MAX) {
+      new_interval = INT32_MAX;
+  }
+
+  if (new_interval != _interval) {
+    // clamp the sampling interval to the max positive int value to avoid overflow
+    _interval = new_interval;
     VM::jvmti()->SetHeapSamplingInterval(_interval);
   }
 
