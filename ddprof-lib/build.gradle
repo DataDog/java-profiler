@@ -139,8 +139,11 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
   }
 }
 
-def initSubrepoTask = tasks.register('initSubrepo', Copy) {
-  description = 'Copy shared files'
+def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
+  configure {
+    dependsOn cloneAPTask
+  }
+  description = 'Copy shared upstream files'
   from("${projectDir}/build/async-profiler/src") {
     include "arch.h"
     include "incbin.h"
@@ -157,8 +160,62 @@ def initSubrepoTask = tasks.register('initSubrepo', Copy) {
   into "${projectDir}/src/main/cpp-external"
 }
 
-initSubrepoTask.configure {
-  dependsOn cloneAPTask
+def patchStackFrame = tasks.register("patchStackFrame") {
+  description = 'Patch stackFrame_x64.cpp after copying'
+  configure {
+    dependsOn copyUpstreamFiles
+  }
+  doLast {
+    def file = file("${projectDir}/src/main/cpp-external/stackFrame_x64.cpp")
+    if (!file.exists()) throw new GradleException("File not found: ${file}")
+
+    def content = file.getText('UTF-8')
+    def original = content
+
+    // Add no_sanitize to unwindStub
+    content = content.replaceAll(
+      /(bool\s+StackFrame::unwindStub\s*\()/,
+      '__attribute__((no_sanitize("address"))) bool StackFrame::unwindStub('
+      )
+
+    // Replace *(unsigned int*)entry
+    content = content.replaceAll(
+      /entry\s*!=\s*NULL\s*&&\s*\*\(unsigned int\*\)\s*entry\s*==\s*0xec8b4855/,
+      '''entry != NULL && ([&] { unsigned int val; memcpy(&val, entry, sizeof(val)); return val; }()) == 0xec8b4855'''
+      )
+
+    // Add no_sanitize to checkInterruptedSyscall
+    content = content.replaceAll(
+      /(bool\s+StackFrame::checkInterruptedSyscall\s*\()/,
+      '__attribute__((no_sanitize("address"))) bool StackFrame::checkInterruptedSyscall('
+      )
+
+    // Replace *(int*)(pc - 6)
+    content = content.replaceAll(
+      /\*\(int\*\)\s*\(pc\s*-\s*6\)/,
+      '([&] { int val; memcpy(&val, (const void*)(pc - 6), sizeof(val)); return val; }())'
+      )
+
+    // Insert #include <cstring> if missing
+    if (!content.contains('#include <cstring>')) {
+      def lines = content.readLines()
+      def lastInclude = lines.findLastIndexOf { it.startsWith('#include') }
+      if (lastInclude >= 0) lines.add(lastInclude + 1, '#include <cstring>')
+      else lines.add(0, '#include <cstring>')
+      content = lines.join('\n')
+    }
+
+    if (content != original) {
+      file.write(content, 'UTF-8')
+      println "Patched stackFrame_x64.cpp"
+    }
+  }
+}
+
+def initSubrepoTask = tasks.register('initSubrepo') {
+  configure {
+    dependsOn copyUpstreamFiles, patchStackFrame
+  }
 }
 
 tasks.register('assembleAll') {}

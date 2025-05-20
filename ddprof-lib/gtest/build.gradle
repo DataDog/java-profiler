@@ -106,7 +106,7 @@ tasks.whenTaskAdded { task ->
               if (os().isLinux() && isMusl()) {
                 compilerArgs.add('-D__musl__')
               }
-              compilerArgs.add('-std=c++14')
+              compilerArgs.add('-std=c++17')
               toolChain = task.toolChain
               targetPlatform = task.targetPlatform
               includes task.includes

@@ -275,7 +275,7 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
        _cstack == CSTACK_DEFAULT)) {
     return 0;
   }
-  const void *callchain[MAX_NATIVE_FRAMES];
+  const void *callchain[MAX_NATIVE_FRAMES + 1]; // we can read one frame past when trying to figure out whether the result is truncated
   int native_frames = 0;
 
   if (event_type == BCI_CPU && _cpu_engine == &perf_events) {

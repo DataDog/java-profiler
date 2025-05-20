@@ -432,16 +432,21 @@ bool ElfParser::loadSymbolsUsingDebugLink() {
   return result;
 }
 
-void ElfParser::loadSymbolTable(const char *symbols, size_t total_size,
-                                size_t ent_size, const char *strings) {
-  for (const char *symbols_end = symbols + total_size; symbols < symbols_end;
-       symbols += ent_size) {
+void ElfParser::loadSymbolTable(const char *symbols, size_t total_size, size_t ent_size, const char *strings) {
+  for (const char *symbols_end = symbols + total_size; symbols < symbols_end; symbols += ent_size) {
     ElfSymbol *sym = (ElfSymbol *)symbols;
     if (sym->st_name != 0 && sym->st_value != 0) {
       // Skip special AArch64 mapping symbols: $x and $d
       if (sym->st_size != 0 || sym->st_info != 0 ||
-          strings[sym->st_name] != '$') {
-        addSymbol(_base + sym->st_value, (int)sym->st_size, strings + sym->st_name);
+        strings[sym->st_name] != '$') {
+
+        uintptr_t addr = (uintptr_t)_base + sym->st_value;
+        if (addr < (uintptr_t)_base) {
+          // detected wrap-around → skip
+          continue;
+        }
+
+        addSymbol((void*)addr, (int)sym->st_size, strings + sym->st_name);
       }
     }
   }

@@ -171,14 +171,14 @@ jobs:
       - name: Test
         run: |
           set +e
-    
+
           export KEEP_JFRS=true
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=musl/${{ matrix.java_version }}-${{ matrix.config }}-amd64
           # make sure the job knows it is running on musl
           export LIBC=musl
           export SANITIZER=${{ matrix.config }}
-    
+
           # due to env hell in GHA containers, we need to re-do the logic from Extract Versions here
           JAVA_VERSION=$(${{ env.JAVA_TEST_HOME }}/bin/java -version 2>&1 | awk -F '"' '/version/ {
             split($2, v, "[._]");
@@ -195,10 +195,10 @@ jobs:
           }')
           export JAVA_VERSION
           echo "JAVA_VERSION=${JAVA_VERSION}"
-    
+
           ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
-    
+
           if [ $EXIT_CODE -ne 0 ]; then
             echo "musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
             exit 1
@@ -299,17 +299,17 @@ jobs:
         if: steps.set_enabled.outputs.enabled == 'true'
         run: |
           sudo sysctl vm.mmap_rnd_bits=28
-  
+
           set +e
           export KEEP_JFRS=true
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}-${{ matrix.config }}-aarch64
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
-  
+
           ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
-  
+
           if [ $EXIT_CODE -ne 0 ]; then
             echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
             exit 1
@@ -387,9 +387,9 @@ jobs:
              \"${{ github.sha }}\" \"musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64\" \
              \"${{ matrix.config }}\" \"${{ env.JAVA_HOME }}\" \"${{ env.JAVA_TEST_HOME }}\"
            "
-           
+
            EXIT_CODE=$?
-       
+
            if [ $EXIT_CODE -ne 0 ]; then
              echo "musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
              exit 1

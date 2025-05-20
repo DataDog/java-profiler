@@ -90,6 +90,10 @@ tasks.withType(Test).configureEach {
   }
   useJUnitPlatform()
   executable = new File("${javaHome}", 'bin/java')
+
+  testLogging {
+    showStandardStreams = true
+  }
 }
 
 test {
