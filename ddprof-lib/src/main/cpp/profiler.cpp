@@ -910,7 +910,7 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (VM::isHotspot()) {
     // the following checks require vmstructs and therefore HotSpot
 
-    StackWalker::checkFault();
+    ddprof::StackWalker::checkFault(thrd);
 
     // Workaround for JDK-8313796. Setting cstack=dwarf also helps
     if (VMStructs::isInterpretedFrameValidFunc((const void *)pc) &&
