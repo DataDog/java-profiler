@@ -143,6 +143,9 @@ def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
   configure {
     dependsOn cloneAPTask
   }
+  onlyIf {
+    !project.hasProperty("debug-ap")
+  }
   description = 'Copy shared upstream files'
   from("${projectDir}/build/async-profiler/src") {
     include "arch.h"

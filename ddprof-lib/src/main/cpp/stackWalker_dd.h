@@ -18,9 +18,19 @@
 #define _STACKWALKER_DD_H
 
 #include "stackWalker.h"
+#include "thread.h"
+#include "vmStructs_dd.h"
 
 
 namespace ddprof {
+  // === copied over from the upstream stackWalker.cpp because of visibility issues ===
+  const uintptr_t SAME_STACK_DISTANCE = 8192;
+
+  static inline bool sameStack(void* hi, void* lo) {
+    return (uintptr_t)hi - (uintptr_t)lo < SAME_STACK_DISTANCE;
+  }
+  // === end of copied code ===
+
   class StackWalker : public ::StackWalker {
     public:
       inline static int walkFP(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated) {
@@ -65,6 +75,20 @@ namespace ddprof {
           }
         }
         return walked;
+      }
+
+      static void checkFault(ProfiledThread* thrd) {
+        // We need to copy the following checks from the upstream stackWalker.cpp because we need a callback
+        // when the crash is actually handled and this is DD specific
+        VMThread *vm_thread = VMThread::current();
+        if (vm_thread != NULL && sameStack(vm_thread->exception(), &vm_thread)) {
+          if (thrd) {
+            // going to longjmp out of the signal handler, reset the crash handler depth counter
+            thrd->resetCrashHandler();
+          }
+        }
+        // delegate back to the upstream code
+        ::StackWalker::checkFault();
       }
   };
 }
