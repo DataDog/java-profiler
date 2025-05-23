@@ -29,10 +29,10 @@ public class JVMAccessTest extends AbstractProcessProfilerTest {
             l -> {
                 initLibraryFound.set(initLibraryFound.get() | l.contains("[TEST::INFO] VM::initLibrary"));
                 initProfilerFound.set(initProfilerFound.get() | l.contains("[TEST::INFO] VM::initProfilerBridge"));
-                return true;
+                return LineConsumerResult.CONTINUE;
             },
             null
-        );
+        ).inTime;
 
         assertTrue(rslt);
 
@@ -57,10 +57,10 @@ public class JVMAccessTest extends AbstractProcessProfilerTest {
         boolean rslt = launch("library", Collections.emptyList(), null, l -> {
             if (l.contains("[TEST::INFO] jvm_version#")) {
                 foundVersion.set(l.split("#")[1]);
-                return false;
+                return LineConsumerResult.STOP;
             }
-            return true;
-        }, null);
+            return LineConsumerResult.CONTINUE;
+        }, null).inTime;
 
         assertTrue(rslt);
 
