@@ -10,6 +10,7 @@
 #include "arguments.h"
 #include "callTraceStorage.h"
 #include "codeCache.h"
+#include "common.h"
 #include "dictionary.h"
 #include "engine.h"
 #include "event.h"
@@ -34,6 +35,11 @@
 __asm__(".symver log,log@GLIBC_2.17");
 __asm__(".symver exp,exp@GLIBC_2.17");
 #endif
+#endif
+
+#ifdef DEBUG
+#include <signal.h>
+static const char* force_stackwalk_crash_env = getenv("DDPROF_FORCE_STACKWALK_CRASH");
 #endif
 
 const int MAX_NATIVE_FRAMES = 128;
@@ -278,6 +284,14 @@ public:
 
   // Keep backward compatibility with the upstream async-profiler
   inline CodeCache* findLibraryByAddress(const void *address) {
+  #ifdef DEBUG
+    // we need this code to simulate segfault during stackwalking
+    // this is a safe place to do it since this wrapper is used solely from the 'vm' stackwalker implementation
+    if (force_stackwalk_crash_env) {
+      TEST_LOG("FORCE_SIGSEGV");
+      raise(SIGSEGV);
+    }
+  #endif
     return Libraries::instance()->findLibraryByAddress(address);
   }
 
