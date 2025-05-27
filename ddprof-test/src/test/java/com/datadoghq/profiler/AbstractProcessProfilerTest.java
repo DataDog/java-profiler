@@ -4,15 +4,38 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 
 public abstract class AbstractProcessProfilerTest {
-    protected final boolean launch(String target, List<String> jvmArgs, String commands, Function<String, Boolean> onStdoutLine, Function<String, Boolean> onStderrLine) throws Exception {
+    public static final class LaunchResult {
+        public final boolean inTime;
+        public final int exitCode;
+
+        public LaunchResult(boolean inTime, int exitCode) {
+            this.inTime = inTime;
+            this.exitCode = exitCode;
+        }
+    }
+
+    public enum LineConsumerResult {
+        CONTINUE,
+        STOP,
+        IGNORE
+    }
+
+    protected final LaunchResult launch(String target, List<String> jvmArgs, String commands, Function<String, LineConsumerResult> onStdoutLine, Function<String, LineConsumerResult> onStderrLine) throws Exception {
+        return launch(target, jvmArgs, commands, Collections.emptyMap(), onStdoutLine, onStderrLine);
+    }
+
+    protected final LaunchResult launch(String target, List<String> jvmArgs, String commands, Map<String, String> env, Function<String, LineConsumerResult> onStdoutLine, Function<String, LineConsumerResult> onStderrLine) throws Exception {
         String javaHome = System.getenv("JAVA_TEST_HOME");
         if (javaHome == null) {
             javaHome = System.getenv("JAVA_HOME");
@@ -34,23 +57,34 @@ public abstract class AbstractProcessProfilerTest {
         }
 
         ProcessBuilder pb = new ProcessBuilder(args);
+        pb.environment().putAll(env);
         Process p = pb.start();
         Thread stdoutReader = new Thread(() -> {
-            Function<String, Boolean> lineProcessor = onStdoutLine != null ? onStdoutLine : l -> true;
+            Function<String, LineConsumerResult> lineProcessor = onStdoutLine != null ? onStdoutLine : l -> LineConsumerResult.CONTINUE;
             try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
                 String line;
                 while ((line = br.readLine()) != null) {
                     System.out.println("[out] " + line);
-                    if (!lineProcessor.apply(line)) {
-                        try {
-                            p.getOutputStream().write(1);
-                            p.getOutputStream().flush();
-                        } catch (IOException ignored) {
+                    LineConsumerResult lResult = lineProcessor.apply(line);
+                    switch (lResult) {
+                        case STOP: {
+                            try {
+                                p.getOutputStream().write(1);
+                                p.getOutputStream().flush();
+                            } catch (IOException ignored) {
+                            }
+                            break;
                         }
-                    } else {
-                        if (line.contains("[ready]")) {
-                            p.getOutputStream().write(1);
-                            p.getOutputStream().flush();
+                        case CONTINUE: {
+                            if (line.contains("[ready]")) {
+                                p.getOutputStream().write(1);
+                                p.getOutputStream().flush();
+                            }
+                            break;
+                        }
+                        case IGNORE: {
+                            // ignore
+                            break;
                         }
                     }
                 }
@@ -60,16 +94,27 @@ public abstract class AbstractProcessProfilerTest {
             }
         }, "stdout-reader");
         Thread stderrReader = new Thread(() -> {
-            Function<String, Boolean> lineProcessor = onStderrLine != null ? onStderrLine : l -> true;
+            Function<String, LineConsumerResult> lineProcessor = onStderrLine != null ? onStderrLine : l -> LineConsumerResult.CONTINUE;
             try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getErrorStream()))) {
                 String line;
                 while ((line = br.readLine()) != null) {
                     System.out.println("[err] " + line);
-                    if (!lineProcessor.apply(line)) {
-                        try {
-                            p.getOutputStream().write(1);
-                            p.getOutputStream().flush();
-                        } catch (IOException ignored) {
+                    LineConsumerResult lResult = lineProcessor.apply(line);
+                    switch (lResult) {
+                        case STOP: {
+                            try {
+                                p.getOutputStream().write(1);
+                                p.getOutputStream().flush();
+                            } catch (IOException ignored) {
+                            }
+                            break;
+                        }
+                        case CONTINUE: {
+                            break;
+                        }
+                        case IGNORE: {
+                            // ignore
+                            break;
                         }
                     }
                 }
@@ -89,6 +134,6 @@ public abstract class AbstractProcessProfilerTest {
         if (!val) {
             p.destroyForcibly();
         }
-        return val;
+        return new LaunchResult(val, p.exitValue());
     }
 }

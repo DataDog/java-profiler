@@ -7,9 +7,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.LockSupport;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
@@ -29,8 +32,8 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
                 initFlag.set(initFlag.get() | 2);
             }
             // found both expected sections; can terminate the test now
-            return initFlag.get() != 3;
-        }, null);
+            return initFlag.get() != 3 ? LineConsumerResult.CONTINUE : LineConsumerResult.STOP;
+        }, null).inTime;
 
         assertTrue(val);
     }
@@ -59,13 +62,13 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
         boolean val = launch("profiler", Collections.emptyList(), "start,cpu,file=" + jfr, l -> {
             if (l.contains("J9[cpu]")) {
                 usedSampler.set(l.split("=")[1]);
-                return false;
+                return LineConsumerResult.STOP;
             } else if (l.contains("J9[wall]")) {
                 hasWall.set(true);
-                return false;
+                return LineConsumerResult.STOP;
             }
-            return true;
-        }, null);
+            return LineConsumerResult.CONTINUE;
+        }, null).inTime;
         assertTrue(val);
         assertEquals(sampler, usedSampler.get());
         assertFalse(hasWall.get());
@@ -91,15 +94,40 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
         boolean val = launch("profiler", args, "start,cpu,file=" + jfr, l -> {
             if (l.contains("J9[cpu]")) {
                 usedSampler.set(l.split("=")[1]);
-                return false;
+                return LineConsumerResult.STOP;
             } else if (l.contains("J9[wall]")) {
                 hasWall.set(true);
-                return false;
+                return LineConsumerResult.STOP;
             }
-            return true;
-        }, null);
+            return LineConsumerResult.CONTINUE;
+        }, null).inTime;
         assertTrue(val);
         assertEquals(sampler, usedSampler.get());
         assertFalse(hasWall.get());
+    }
+
+    @Test
+    void vmStackwalkerCrashRecoveryTest() throws Exception {
+        assumeFalse(Platform.isJ9() || Platform.isZing()); // J9 and Zing do not support vmstructs
+        String config = System.getProperty("ddprof_test.config");
+        assumeTrue("debug".equals(config));
+
+        Path jfr = Files.createTempFile("work", ".jfr");
+        jfr.toFile().deleteOnExit();
+
+        Map<String, String> env = Collections.singletonMap("DDPROF_FORCE_STACKWALK_CRASH", "1");
+        // run the profiled process and generate at least 50ms of cpu activity
+        LaunchResult rslt = launch("profiler-work:50", Collections.emptyList(), "start,cpu=1ms,cstack=vm,file=" + jfr, env, l -> {
+            if (l.contains("[ready]")) {
+                return LineConsumerResult.IGNORE;
+            }
+            if (l.contains("[working]")) {
+                return LineConsumerResult.STOP;
+            }
+            return LineConsumerResult.CONTINUE;
+        }, null);
+
+        assertTrue(rslt.inTime);
+        assertEquals(0, rslt.exitCode, "exit code should be 0");
     }
 }
