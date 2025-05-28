@@ -61,6 +61,9 @@ The project includes both Java and C++ unit tests. You can run them using:
 - Skip native build: `./gradlew build -Pskip-native`
 - Skip C++ tests: `./gradlew build -Pskip-gtest`
 
+### Cross-JDK Testing
+`JAVA_TEST_HOME=<path to test JDK> ./gradlew testDebug`
+
 ## Development
 
 ### Code Quality
