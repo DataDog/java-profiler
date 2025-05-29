@@ -215,9 +215,34 @@ def patchStackFrame = tasks.register("patchStackFrame") {
   }
 }
 
+def patchStackWalker = tasks.register("patchStackWalker") {
+  description = 'Patch stackWalker.cpp after copying'
+  configure {
+    dependsOn copyUpstreamFiles
+  }
+  doLast {
+    def file = file("${projectDir}/src/main/cpp-external/stackWalker.cpp")
+    if (!file.exists()) throw new GradleException("File not found: ${file}")
+
+    def content = file.getText('UTF-8')
+    def original = content
+
+    // Add no_sanitize to walkVM
+    content = content.replaceAll(
+      /(int\s+StackWalker::walkVM\s*\()/,
+      '__attribute__((no_sanitize("address"))) int StackWalker::walkVM('
+      )
+
+    if (content != original) {
+      file.write(content, 'UTF-8')
+      println "Patched stackWalker.cpp"
+    }
+  }
+}
+
 def initSubrepoTask = tasks.register('initSubrepo') {
   configure {
-    dependsOn copyUpstreamFiles, patchStackFrame
+    dependsOn copyUpstreamFiles, patchStackFrame, patchStackWalker
   }
 }
 
