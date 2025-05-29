@@ -89,6 +89,10 @@ tasks.whenTaskAdded { task ->
       buildConfigurations.each { config ->
         if (config.os == osIdentifier() && config.arch == archIdentifier()) {
           project(':ddprof-lib').file("src/test/cpp/").eachFile {
+            // Only process .cpp files, skip header files
+            if (!it.name.endsWith('.cpp')) {
+              return
+            }
             def testFile = it
             def testName = it.name.substring(0, it.name.lastIndexOf('.'))
             def gtestCompileTask = tasks.register("compileGtest${config.name.capitalize()}_${testName}", CppCompile) {
@@ -155,7 +159,10 @@ tasks.whenTaskAdded { task ->
             description = "Run all Google Tests for the ${config.name} build of the library"
           }
           project(':ddprof-lib').file("src/test/cpp/").eachFile {
-
+            // Only process .cpp files, skip header files
+            if (!it.name.endsWith('.cpp')) {
+              return
+            }
             def testFile = it
             def testName = it.name.substring(0, it.name.lastIndexOf('.'))
             def binary = file("$buildDir/bin/gtest/${config.name}_${testName}/${testName}")

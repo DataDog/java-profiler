@@ -42,6 +42,11 @@ void LinearAllocator::clear() {
 }
 
 void *LinearAllocator::alloc(size_t size) {
+  if (size > _chunk_size) {
+    // If the requested size is larger than the chunk size, return NULL
+    return NULL;
+  }
+
   Chunk *chunk = __atomic_load_n(&_tail, __ATOMIC_ACQUIRE);
   do {
     // Fast path: bump a pointer with CAS
