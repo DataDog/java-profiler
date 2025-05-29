@@ -46,7 +46,7 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
         String config = System.getProperty("ddprof_test.config");
         boolean isSanitizer = config.endsWith("san");
 
-        Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
+        Assumptions.assumeFalse(Platform.isZing());
         Assumptions.assumeFalse(Platform.isMusl() && Platform.isAarch64());
         boolean isMusl = Optional.ofNullable(System.getenv("TEST_CONFIGURATION")).orElse("").startsWith("musl");
         boolean isAsan = Optional.ofNullable(System.getenv("TEST_CONFIGURATION")).orElse("").contains("asan");
