@@ -3,6 +3,7 @@ _Based on [async-profiler 2.8.3](https://github.com/jvm-profiling-tools/java-pro
 
 ## Disclaimer
 This is not a fork of [async-profiler](https://github.com/jvm-profiling-tools/async-profiler). This is a work derived from __async-profiler__ but tailored very specifically for Datadog needs.
+See [gritty details](#gritty-details) for more info.
 If you need a full-fledged Java profiler head back to [async-profiler](https://github.com/jvm-profiling-tools/async-profiler)
 
 ## Build
@@ -34,6 +35,27 @@ cd java-profiler
 ```
 
 The resulting artifact will be in `ddprof-lib/build/libs/ddprof-<version>.jar`
+
+#### Gritty details
+To smoothen the absorption of the upstream changes, we are using parts of the upstream codebase in (mostly) vanilla form.
+
+For this, we have four new gradle tasks in [ddprof-lib/build.gradle](ddprof-lib/build.gradle):
+- `cloneAsyncProfiler` - clones the [DataDog/async-profiler](https://github.com/DataDog/async-profiler) repository into `ddprof-lib/build/async-profiler` using the commit lock specified in [gradle/ap-lock.properties](gradle/ap-lock.properties)
+  - in that repository, we are maintainin a branch called `dd/master` where we keep the upstream code in sync with the 'safe' changes from the upstream `master` branch
+  - cherry-picks into that branch should be rare and only done for critical fixes that are needed in the project
+  - otherwise, we should wait for the next upstream release to avoid conflicts
+- `copyUpstreamFiles` - copies the selected upstream source file into the `ddprof-lib/src/main/cpp-external` directory
+- `patchStackFrame` and `patchStackWalker` - patches the upstream files if it is unavoidable to eg. pass the asan checks
+
+Since the upstream code might not be 100% compatible with the current version of the project, we need to provide adapters.
+The adapters are sharing the same file name as the upstream files but are suffixed with `_dd` (e.g. `arch_dd.h`).
+
+In case we need to adapt a class from the upstream codebase, we put the adapter class into `ddprof` namespace to avoid
+conflicts with the upstream code. This allows us to use the upstream code as-is while still providing the necessary modifications for our use case.
+
+See [ddprof-lib/src/main/cpp/stackWalker_dd.h](ddprof-lib/src/main/cpp/stackWalker_dd.h) for an example of how we adapt the upstream code to fit our needs.
+
+An example of this is the `ddprof-lib/src/main/cpp-external/stack_frame.cpp` file which is a modified version of the upstream `stack_frame.cpp` file.
 
 ## Testing
 
@@ -161,18 +183,3 @@ DD_SERVICE=your-service DD_TRACE_DEBUG=true java -javaagent:./temp/dd-java-agent
 
 For dd-trace-java you just need to set the `ddprof.jar` project property.
 Eg. you can run the gradle build like this - ./gradlew clean -Pddprof.jar=file://<path-to-artifact.jar> :dd-java-agent:shadowJar` - which will result in a custom `dd-java-agent.jar` build containing your test version of Java profiler.
-
-## Working with upstream
-
-Although this project still shares the git history with the upstream the code structure is different. This makes it dificult to reliably
-cherry-pick the upstream changes. To make this easier we have a script that will prepare the upstream repository
-and add it as 'cherry' remote to this repository.
-This way you can cherry-pick the changes from the upstream repository with (relative) ease.
-
-```bash
-./utils/init_cherrypick_repo.sh # you need to run this only once
-
-./utils/cherry.sh <commit>
-# ... resolve conflicts, if any
-./utils/cherry.sh --continue # to commit the resolved conflicts
-```
