@@ -61,6 +61,7 @@ public:
 
   void init(const char *filter);
   void clear();
+  void setBitmap(int index, u64* bitmap);
 
   bool accept(int thread_id);
   void add(int thread_id);

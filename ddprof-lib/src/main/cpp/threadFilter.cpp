@@ -85,6 +85,10 @@ void ThreadFilter::clear() {
   _size = 0;
 }
 
+void ThreadFilter::setBitmap(int index, u64* bitmap) {
+  _bitmap[index] = bitmap;
+}
+
 bool ThreadFilter::accept(int thread_id) {
   u64 *b = bitmap(thread_id);
   return b != NULL && (word(b, thread_id) & (1ULL << (thread_id & 0x3f)));

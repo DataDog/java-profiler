@@ -406,3 +406,12 @@ Java_com_datadoghq_profiler_JVMAccess_healthCheck0(JNIEnv *env,
                                                          jobject unused) {
   return true;
 }
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_ActiveBitmaps_DirectByteBufferAccess_setBitmap(JNIEnv *env,
+		                                                           jclass unused,
+									   jint index,
+									   jlong addr) {
+  u64* ptr = (u64*)addr;
+  Profiler::instance()->threadFilter()->setBitmap((int)index, ptr);
+}	

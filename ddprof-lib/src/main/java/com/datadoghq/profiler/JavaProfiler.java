@@ -208,7 +208,7 @@ public final class JavaProfiler {
      * 'filter' option must be enabled to use this method.
      */
     public void addThread() {
-        filterThread0(true);
+	ActiveBitmaps.setActive(TID.get(), true);
     }
 
     /**
@@ -216,7 +216,7 @@ public final class JavaProfiler {
      * 'filter' option must be enabled to use this method.
      */
     public void removeThread() {
-        filterThread0(false);
+        ActiveBitmaps.setActive(TID.get(), false);
     }
 
 
