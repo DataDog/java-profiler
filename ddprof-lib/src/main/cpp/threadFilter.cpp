@@ -85,8 +85,12 @@ void ThreadFilter::clear() {
   _size = 0;
 }
 
-void ThreadFilter::setBitmap(int index, u64* bitmap) {
-  _bitmap[index] = bitmap;
+u64* ThreadFilter::createBitmapFor(int index, int& size) {
+  assert(_bitmap[index] == NULL);
+  b = (u64 *)OS::safeAlloc(BITMAP_SIZE);
+  size = BITMAP_SIZE;
+  _bitmap[index] = b;
+  return b; 
 }
 
 bool ThreadFilter::accept(int thread_id) {
