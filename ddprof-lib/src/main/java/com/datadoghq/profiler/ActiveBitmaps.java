@@ -1,55 +1,55 @@
 package com.datadoghq.profiler;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.nio.ByteBuffer;
-import java.nio.Buffer;
-import java.lang.invoke.VarHandle;
+import sun.misc.Unsafe;
+import java.lang.reflect.Field;
+
 
 class ActiveBitmaps {
-    static final int BITMAP_SIZE = 65536; // 64K
-    static final int BITMAP_CAPACITY = BITMAP_SIZE * 8;
-    static final List<ByteBuffer> bitmaps = new ArrayList<>();
+  private static final Unsafe UNSAFE;
+  static {
+        Unsafe unsafe = null;
+        try {
+          Field f = Unsafe.class.getDeclaredField("theUnsafe");
+          f.setAccessible(true);
+          unsafe = (Unsafe) f.get(null);
+        } catch (Exception ignore) { }
+        UNSAFE = unsafe;
+  }
 
-    public synchronized static void setActive(int tid, boolean active) {
-        ByteBuffer bitmap = bitmapFor(tid);
-        int index = (tid % BITMAP_CAPACITY) / 8;
-        byte val = bitmap.get(index);
-        byte mask = (byte)(1 << (tid & 0x07));
-        if (active) {
-            bitmap.put(index, (byte)(val | mask));
-        } else {
-            bitmap.put(index, (byte)(val & (~mask)));
-        }
-	// Volatile store
-	VarHandle.fullFence();
+  private static final ThreadLocal<Long> Address = new ThreadLocal<Long>() {
+    @Override protected Long initialValue() {
+        return -1L;
     }
+  }; 
+  
+  // Set bitmap to native code
+  static native long bitmapAddressFor0(int tid);
 
-    static ByteBuffer bitmapFor(int tid) {
-        int index = tid / BITMAP_CAPACITY;
-        if (bitmaps.size() <= index) {
-            for (int i = bitmaps.size(); i <= index; i++) {
-                bitmaps.add(null);
-            }
-        }
-        ByteBuffer bitmap = bitmaps.get(index);
-        if (bitmap == null) {
-            bitmap = allocateBitmap();
-            setBitmap(index, bitmap);
-            bitmaps.set(index, allocateBitmap());
-        }
-        return bitmap;
-    }
+  static void setActive(int tid, boolean active) {
+     long addr = Address.get();
+     if (addr == -1) {
+       addr = bitmapAddressFor0(tid);
+       Address.set(addr);
+     }
+     long bitmask = 1L << (tid & 0x3f);
+     long value = UNSAFE.getLong(addr);
+     long newVal; 
+     if (active) {
+       newVal = value | bitmask;  
+     } else {
+       newVal = value & ~bitmask;
+     }
+     while (!UNSAFE.compareAndSwapLong(null, addr, value, newVal)) {
+       value = UNSAFE.getLong(addr);
+       newVal = active ? (value | bitmask) : (value & ~bitmask);
+     }
 
-    static ByteBuffer allocateBitmap() {
-        ByteBuffer b = ByteBuffer.allocateDirect(BITMAP_SIZE);
-        for (int index = 0; index < BITMAP_SIZE; index++) {
-            b.put(index, (byte)0);
-        }
-        return b;
-    }
-
-    // Set bitmap to native code
-    static native ByteBuffer newBitmapFor(int index);
+     if (isActive(tid) != active) {
+       throw new RuntimeException("Blooooom! " + addr);
+     }
+  }
+ 
+  // Verify
+  static native boolean isActive(int tid);
 }
 

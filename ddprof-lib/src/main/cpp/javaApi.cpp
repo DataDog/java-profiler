@@ -407,12 +407,17 @@ Java_com_datadoghq_profiler_JVMAccess_healthCheck0(JNIEnv *env,
   return true;
 }
 
-extern "C" DLLEXPORT jobject JNICALL
-Java_com_datadoghq_profiler_ActiveBitmaps_newBitmapFor(JNIEnv *env,
-		                                       jclass unused,
-						       jint index) {
-  int size;
-  u64* bitmap = Profiler::instance()->threadFilter()->createBitmapFor((int)indexi, size);
-  jobject b = env->NewDirectByteBuffer((void*)bitmap, (jlong)size);
-  return b;
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_ActiveBitmaps_bitmapAddressFor0(JNIEnv *env,
+		                                     jclass unused,
+						     jint tid) {
+  u64* bitmap = Profiler::instance()->threadFilter()->bitmapAddressFor((int)tid);
+  return (jlong)bitmap;
 }	
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_ActiveBitmaps_isActive(JNIEnv *env,
+                                                   jclass unused,
+                                                   jint tid) {
+  return Profiler::instance()->threadFilter()->accept((int)tid) ? JNI_TRUE : JNI_FALSE;
+}

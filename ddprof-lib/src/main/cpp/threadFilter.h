@@ -50,6 +50,8 @@ private:
     return bitmap[((u32)thread_id % BITMAP_CAPACITY) >> 6];
   }
 
+  u64* getBitmapFor(int thread_id);
+
 public:
   ThreadFilter();
   ThreadFilter(ThreadFilter &threadFilter) = delete;
@@ -62,11 +64,10 @@ public:
   void init(const char *filter);
   void clear();
 
-  u64* createBitmapFor(int index, int& size);
-
   bool accept(int thread_id);
   void add(int thread_id);
   void remove(int thread_id);
+  u64* bitmapAddressFor(int thread_id);
 
   void collect(std::vector<int> &v);
 };
