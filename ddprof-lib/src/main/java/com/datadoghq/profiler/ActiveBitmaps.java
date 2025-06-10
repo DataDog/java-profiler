@@ -44,11 +44,8 @@ class ActiveBitmaps {
        newVal = active ? (value | bitmask) : (value & ~bitmask);
      }
 
-     if (isActive(tid) != active) {
-       throw new RuntimeException("Blooooom! " + addr);
-     }
+     assert isActive(tid) == active;
   }
- 
   // Verify
   static native boolean isActive(int tid);
 }
