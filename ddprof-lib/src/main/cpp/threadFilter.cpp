@@ -17,7 +17,6 @@
 #include "threadFilter.h"
 #include "counters.h"
 #include "os.h"
-#include <cassert>
 #include <stdlib.h>
 #include <string.h>
 
