@@ -86,6 +86,8 @@ void ThreadFilter::clear() {
 }
 
 int ThreadFilter::mapThreadId(int thread_id) {
+  // We want to map the thread_id inside the same bitmap
+  static_assert(BITMAP_SIZE >= (u16)0xffff, "Potential verflow");
   u16 lower16 = (u16)(thread_id & 0xffff);
   lower16 = ((lower16 & 0x00ff) << 8) | ((lower16 & 0xff00) >> 8);
   int tid = (thread_id & ~0xffff) | lower16;
