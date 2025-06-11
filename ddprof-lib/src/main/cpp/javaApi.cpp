@@ -421,3 +421,9 @@ Java_com_datadoghq_profiler_ActiveBitmaps_isActive(JNIEnv *env,
                                                    jint tid) {
   return Profiler::instance()->threadFilter()->accept((int)tid) ? JNI_TRUE : JNI_FALSE;
 }
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_ActiveBitmaps_getActiveCountAddr0(JNIEnv *env,
+                                                              jclass unused) {
+  return (jlong)Profiler::instance()->threadFilter()->addressOfSize();
+}

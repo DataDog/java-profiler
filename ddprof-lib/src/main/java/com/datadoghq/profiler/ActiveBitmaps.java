@@ -16,12 +16,18 @@ class ActiveBitmaps {
         UNSAFE = unsafe;
   }
 
+  private static long activeCountAddr = 0;
+
   private static final ThreadLocal<Long> Address = new ThreadLocal<Long>() {
     @Override protected Long initialValue() {
         return -1L;
     }
-  }; 
-  
+  };
+
+  public static void initialize() {
+    activeCountAddr = getActiveCountAddr0(); 
+  }
+
   // Set bitmap to native code
   static native long bitmapAddressFor0(int tid);
 
@@ -31,7 +37,7 @@ class ActiveBitmaps {
        addr = bitmapAddressFor0(tid);
        Address.set(addr);
      }
-     long bitmask = 1L << (tid & 0x3f);
+     long bitmask = 1L << ((tid >> 8) & 0x3f);
      long value = UNSAFE.getLong(addr);
      long newVal; 
      if (active) {
@@ -43,10 +49,14 @@ class ActiveBitmaps {
        value = UNSAFE.getLong(addr);
        newVal = active ? (value | bitmask) : (value & ~bitmask);
      }
-
+     int delta = active ? 1 : -1;
+     assert activeCountAddr != 0;
+     UNSAFE.getAndAddInt(null, activeCountAddr, delta);
      assert isActive(tid) == active;
   }
   // Verify
   static native boolean isActive(int tid);
+
+  static native long getActiveCountAddr0();
 }
 

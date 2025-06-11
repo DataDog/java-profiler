@@ -106,7 +106,7 @@ public class ThreadFilterBenchmark extends Configuration {
 
         // Stop the profiler if it's active
         try {
-            profiler.stop();
+//            profiler.stop();
         } catch (IllegalStateException e) {
             System.out.println("Profiler was not active at teardown.");
         }

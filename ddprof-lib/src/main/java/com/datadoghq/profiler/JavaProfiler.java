@@ -108,6 +108,7 @@ public final class JavaProfiler {
             throw new IOException("Failed to load Datadog Java profiler library", result.error);
         }
         init0();
+        ActiveBitmaps.initialize();
 
         profiler.initializeContextStorage();
         instance = profiler;

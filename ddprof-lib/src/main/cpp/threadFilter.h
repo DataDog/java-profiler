@@ -45,6 +45,8 @@ private:
         __ATOMIC_ACQUIRE);
   }
 
+  static int mapThreadId(int thread_id);
+
   u64 &word(u64 *bitmap, int thread_id) {
     // todo: add thread safe APIs
     return bitmap[((u32)thread_id % BITMAP_CAPACITY) >> 6];
@@ -60,6 +62,7 @@ public:
   bool enabled() { return _enabled; }
 
   int size() { return _size; }
+  const volatile int* addressOfSize() const { return &_size; }
 
   void init(const char *filter);
   void clear();
