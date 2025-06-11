@@ -85,7 +85,7 @@ void ThreadFilter::clear() {
   _size = 0;
 }
 
-int ThreadFilter::hashThreadId(int thread_id) {
+int ThreadFilter::mapThreadId(int thread_id) {
   u16 lower16 = (u16)(thread_id & 0xffff);
   lower16 = ((lower16 & 0x00ff) << 8) | ((lower16 & 0xff00) >> 8);
   int tid = (thread_id & ~0xffff) | lower16;
@@ -93,13 +93,13 @@ int ThreadFilter::hashThreadId(int thread_id) {
 }
 
 bool ThreadFilter::accept(int thread_id) {
-  thread_id = hashThreadId(thread_id);
+  thread_id = mapThreadId(thread_id);
   u64 *b = bitmap(thread_id);
   return b != NULL && (word(b, thread_id) & (1ULL << (thread_id & 0x3f)));
 }
 
 void ThreadFilter::add(int thread_id) {
-  thread_id = hashThreadId(thread_id);
+  thread_id = mapThreadId(thread_id);
   u64 *b = bitmap(thread_id);
   if (b == NULL) {
     b = (u64 *)OS::safeAlloc(BITMAP_SIZE);
@@ -120,7 +120,7 @@ void ThreadFilter::add(int thread_id) {
 }
 
 void ThreadFilter::remove(int thread_id) {
-  thread_id = hashThreadId(thread_id);
+  thread_id = mapThreadId(thread_id);
   u64 *b = bitmap(thread_id);
   if (b == NULL) {
     return;
@@ -143,8 +143,8 @@ void ThreadFilter::collect(std::vector<int> &v) {
         u64 word = __atomic_load_n(&b[j], __ATOMIC_ACQUIRE);
         while (word != 0) {
           int tid = start_id + j * 64 + __builtin_ctzl(word);
-          // restore thread id;
-          tid = hashThreadId(tid);
+          // restore thread id
+          tid = mapThreadId(tid);
           v.push_back(tid);
           word &= (word - 1);
         }
