@@ -54,7 +54,8 @@ class ActiveBitmaps {
      UNSAFE.getAndAddInt(null, activeCountAddr, delta);
      assert isActive(tid) == active;
   }
-  // Verify
+
+  // For verification 
   static native boolean isActive(int tid);
 
   static native long getActiveCountAddr0();

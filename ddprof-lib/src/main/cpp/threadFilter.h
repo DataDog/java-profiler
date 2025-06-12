@@ -52,6 +52,10 @@ private:
     return bitmap[((u32)thread_id % BITMAP_CAPACITY) >> 6];
   }
 
+  u64* wordAddress(u64 *bitmap, int thread_id) {
+    return &bitmap[((u32)thread_id % BITMAP_CAPACITY) >> 6];
+  }
+
   u64* getBitmapFor(int thread_id);
 
 public:
