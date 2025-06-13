@@ -17,6 +17,7 @@
 #include "threadFilter.h"
 #include "counters.h"
 #include "os.h"
+#include "reverse_bits.h"
 #include <cassert>
 #include <stdlib.h>
 #include <string.h>
@@ -90,10 +91,11 @@ int ThreadFilter::mapThreadId(int thread_id) {
   // We want to map the thread_id inside the same bitmap
   static_assert(BITMAP_SIZE >= (u16)0xffff, "Potential verflow");
   u16 lower16 = (u16)(thread_id & 0xffff);
-  lower16 = ((lower16 & 0x00ff) << 8) | ((lower16 & 0xff00) >> 8);
+  lower16 = reverse16(lower16);
   int tid = (thread_id & ~0xffff) | lower16;
   return tid; 
 }
+
 
 u64* ThreadFilter::getBitmapFor(int thread_id) {
   int index = static_cast<u32>(thread_id) / BITMAP_CAPACITY;
@@ -135,11 +137,12 @@ void ThreadFilter::add(int thread_id) {
 }
 
 void ThreadFilter::remove(int thread_id) {
+  thread_id = mapThreadId(thread_id);
   u64 *b = bitmap(thread_id);
   if (b == NULL) {
     return;
   }
-  thread_id = mapThreadId(thread_id);
+
   u64 bit = 1ULL << (thread_id & 0x3f);
   if (__sync_fetch_and_and(&word(b, thread_id), ~bit) & bit) {
     atomicInc(_size, -1);
@@ -156,9 +159,10 @@ void ThreadFilter::collect(std::vector<int> &v) {
         // order here
         u64 word = __atomic_load_n(&b[j], __ATOMIC_ACQUIRE);
         while (word != 0) {
-          int thread_id = start_id + j * 64 + __builtin_ctzl(word);
-          thread_id = mapThreadId(thread_id);
-          v.push_back(thread_id);
+          int tid = start_id + j * 64 + __builtin_ctzl(word);
+          // restore thread id
+          tid = mapThreadId(tid);
+          v.push_back(tid);
           word &= (word - 1);
         }
       }

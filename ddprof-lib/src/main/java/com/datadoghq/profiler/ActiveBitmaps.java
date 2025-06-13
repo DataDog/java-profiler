@@ -31,13 +31,26 @@ class ActiveBitmaps {
   // Set bitmap to native code
   static native long bitmapAddressFor0(int tid);
 
+  static long getBitmask(int tid) {
+    int tmp = (tid >> 8) & 0xff ;
+    int bits = 0;
+    for (int index = 0; index < 7 ; index++) {
+      if ((tmp & 0x01) == 0x01) {
+        bits |= 0x01;
+      }
+      tmp >>= 1;
+      bits <<= 1; 
+    }
+    return 1L << (bits & 0x3f);
+  }
+
   static void setActive(int tid, boolean active) {
      long addr = Address.get();
      if (addr == -1) {
        addr = bitmapAddressFor0(tid);
        Address.set(addr);
      }
-     long bitmask = 1L << ((tid >> 8) & 0x3f);
+     long bitmask = getBitmask(tid);
      long value = UNSAFE.getLong(addr);
      long newVal; 
      if (active) {
@@ -52,6 +65,10 @@ class ActiveBitmaps {
      int delta = active ? 1 : -1;
      assert activeCountAddr != 0;
      UNSAFE.getAndAddInt(null, activeCountAddr, delta);
+//     if (isActive(tid) != active) {
+//       throw new RuntimeException("SetActive failed");
+//     }
+
      assert isActive(tid) == active;
   }
 
