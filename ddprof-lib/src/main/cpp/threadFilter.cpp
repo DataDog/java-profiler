@@ -17,6 +17,8 @@
 #include "threadFilter.h"
 #include "counters.h"
 #include "os.h"
+#include "reverse_bits.h"
+#include <cassert>
 #include <stdlib.h>
 #include <string.h>
 
@@ -85,17 +87,23 @@ void ThreadFilter::clear() {
   _size = 0;
 }
 
-bool ThreadFilter::accept(int thread_id) {
-  u64 *b = bitmap(thread_id);
-  return b != NULL && (word(b, thread_id) & (1ULL << (thread_id & 0x3f)));
+int ThreadFilter::mapThreadId(int thread_id) {
+  // We want to map the thread_id inside the same bitmap
+  static_assert(BITMAP_SIZE >= (u16)0xffff, "Potential verflow");
+  u16 lower16 = (u16)(thread_id & 0xffff);
+  lower16 = reverse16(lower16);
+  int tid = (thread_id & ~0xffff) | lower16;
+  return tid; 
 }
 
-void ThreadFilter::add(int thread_id) {
-  u64 *b = bitmap(thread_id);
+
+u64* ThreadFilter::getBitmapFor(int thread_id) {
+  int index = static_cast<u32>(thread_id) / BITMAP_CAPACITY;
+  u64* b = _bitmap[index];
   if (b == NULL) {
     b = (u64 *)OS::safeAlloc(BITMAP_SIZE);
     u64 *oldb = __sync_val_compare_and_swap(
-        &_bitmap[(u32)thread_id / BITMAP_CAPACITY], NULL, b);
+        &_bitmap[index], NULL, b);
     if (oldb != NULL) {
       OS::safeFree(b, BITMAP_SIZE);
       b = oldb;
@@ -103,7 +111,25 @@ void ThreadFilter::add(int thread_id) {
       trackPage();
     }
   }
+  return b;
+}
 
+u64* ThreadFilter::bitmapAddressFor(int thread_id) {
+  u64* bitmap = getBitmapFor(thread_id);
+  thread_id = mapThreadId(thread_id);
+  return wordAddress(bitmap, thread_id);
+}
+
+bool ThreadFilter::accept(int thread_id) {
+  u64 *b = bitmap(thread_id);
+  thread_id = mapThreadId(thread_id);
+  return b != NULL && (word(b, thread_id) & (1ULL << (thread_id & 0x3f)));
+}
+
+void ThreadFilter::add(int thread_id) {
+  u64 *b = getBitmapFor(thread_id);
+  assert(b != NULL);
+  thread_id = mapThreadId(thread_id);
   u64 bit = 1ULL << (thread_id & 0x3f);
   if (!(__sync_fetch_and_or(&word(b, thread_id), bit) & bit)) {
     atomicInc(_size);
@@ -111,6 +137,7 @@ void ThreadFilter::add(int thread_id) {
 }
 
 void ThreadFilter::remove(int thread_id) {
+  thread_id = mapThreadId(thread_id);
   u64 *b = bitmap(thread_id);
   if (b == NULL) {
     return;
@@ -132,7 +159,10 @@ void ThreadFilter::collect(std::vector<int> &v) {
         // order here
         u64 word = __atomic_load_n(&b[j], __ATOMIC_ACQUIRE);
         while (word != 0) {
-          v.push_back(start_id + j * 64 + __builtin_ctzl(word));
+          int tid = start_id + j * 64 + __builtin_ctzl(word);
+          // restore thread id
+          tid = mapThreadId(tid);
+          v.push_back(tid);
           word &= (word - 1);
         }
       }

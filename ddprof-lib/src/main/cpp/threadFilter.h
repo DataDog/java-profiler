@@ -45,10 +45,18 @@ private:
         __ATOMIC_ACQUIRE);
   }
 
+  static int mapThreadId(int thread_id);
+
   u64 &word(u64 *bitmap, int thread_id) {
     // todo: add thread safe APIs
     return bitmap[((u32)thread_id % BITMAP_CAPACITY) >> 6];
   }
+
+  u64* wordAddress(u64 *bitmap, int thread_id) {
+    return &bitmap[((u32)thread_id % BITMAP_CAPACITY) >> 6];
+  }
+
+  u64* getBitmapFor(int thread_id);
 
 public:
   ThreadFilter();
@@ -58,6 +66,7 @@ public:
   bool enabled() { return _enabled; }
 
   int size() { return _size; }
+  const volatile int* addressOfSize() const { return &_size; }
 
   void init(const char *filter);
   void clear();
@@ -65,6 +74,7 @@ public:
   bool accept(int thread_id);
   void add(int thread_id);
   void remove(int thread_id);
+  u64* bitmapAddressFor(int thread_id);
 
   void collect(std::vector<int> &v);
 };
