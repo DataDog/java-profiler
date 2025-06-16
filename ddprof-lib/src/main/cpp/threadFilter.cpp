@@ -86,6 +86,7 @@ void ThreadFilter::clear() {
   _size = 0;
 }
 
+// The mapping has to be reversible: f(f(x)) == x
 int ThreadFilter::mapThreadId(int thread_id) {
   // We want to map the thread_id inside the same bitmap
   static_assert(BITMAP_SIZE >= (u16)0xffff, "Potential verflow");
