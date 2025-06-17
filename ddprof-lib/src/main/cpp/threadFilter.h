@@ -51,7 +51,6 @@ private:
     // todo: add thread safe APIs
     return bitmap[((u32)thread_id % BITMAP_CAPACITY) >> 6];
   }
-
 public:
   ThreadFilter();
   ThreadFilter(ThreadFilter &threadFilter) = delete;
