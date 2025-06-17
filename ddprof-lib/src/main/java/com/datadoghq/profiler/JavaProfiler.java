@@ -129,7 +129,7 @@ public final class JavaProfiler {
         if (this.contextStorage == null) {
             int maxPages = getMaxContextPages0();
             if (maxPages > 0) {
-                if (UNSAFE != null) {
+                if (isJDK8) {
                     contextBaseOffsets = new long[maxPages];
                     // be sure to choose an illegal address as a sentinel value
                     Arrays.fill(contextBaseOffsets, Long.MIN_VALUE);
