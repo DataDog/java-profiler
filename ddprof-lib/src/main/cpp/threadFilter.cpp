@@ -99,7 +99,8 @@ int ThreadFilter::mapThreadId(int thread_id) {
 
 // Get bitmap that contains the thread id, create one if it does not exist
 u64* ThreadFilter::getBitmapFor(int thread_id) {
-  int index = static_cast<u32>(thread_id) / BITMAP_CAPACITY;
+  int index = thread_id / BITMAP_CAPACITY;
+  assert(index >= 0 && index < (int)_max_bitmaps);
   u64* b = _bitmap[index];
   if (b == NULL) {
     b = (u64 *)OS::safeAlloc(BITMAP_SIZE);
