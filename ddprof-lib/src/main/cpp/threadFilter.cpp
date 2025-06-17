@@ -124,15 +124,6 @@ u64* ThreadFilter::bitmapAddressFor(int thread_id) {
   return wordAddress(b, thread_id);
 }
 
-u64 ThreadFilter::getBitmapValue(int thread_id, long v) {
-  thread_id = mapThreadId(thread_id);
-  u64 *b = bitmap(thread_id);
-  if (b == NULL) return 0;
-  assert((long)word(b, thread_id) == v);
-  return word(b, thread_id);
-}
-
-
 bool ThreadFilter::accept(int thread_id) {
   thread_id = mapThreadId(thread_id);
   u64 *b = bitmap(thread_id);

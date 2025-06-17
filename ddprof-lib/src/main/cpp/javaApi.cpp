@@ -427,11 +427,3 @@ Java_com_datadoghq_profiler_ActiveBitmap_getActiveCountAddr0(JNIEnv *env,
                                                               jclass unused) {
   return (jlong)Profiler::instance()->threadFilter()->addressOfSize();
 }
-
-extern "C" DLLEXPORT jlong JNICALL
-Java_com_datadoghq_profiler_ActiveBitmap_getBitmapValue0(JNIEnv *env,
-                jclass unused,
-                jint tid,
-                jlong v) {
-  return (jlong)Profiler::instance()->threadFilter()->getBitmapValue((int)tid, (long)v);
-}
