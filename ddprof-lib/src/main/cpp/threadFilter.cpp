@@ -21,6 +21,7 @@
 #include <cassert>
 #include <stdlib.h>
 #include <string.h>
+#include <iostream>
 
 void trackPage() {
   Counters::increment(THREAD_FILTER_PAGES, 1);
@@ -117,10 +118,20 @@ u64* ThreadFilter::getBitmapFor(int thread_id) {
 }
 
 u64* ThreadFilter::bitmapAddressFor(int thread_id) {
-  u64* bitmap = getBitmapFor(thread_id);
+  u64* b = getBitmapFor(thread_id);
   thread_id = mapThreadId(thread_id);
-  return wordAddress(bitmap, thread_id);
+  assert(b == bitmap(thread_id));
+  return wordAddress(b, thread_id);
 }
+
+u64 ThreadFilter::getBitmapValue(int thread_id, long v) {
+  thread_id = mapThreadId(thread_id);
+  u64 *b = bitmap(thread_id);
+  if (b == NULL) return 0;
+  assert((long)word(b, thread_id) == v);
+  return word(b, thread_id);
+}
+
 
 bool ThreadFilter::accept(int thread_id) {
   thread_id = mapThreadId(thread_id);
@@ -129,9 +140,10 @@ bool ThreadFilter::accept(int thread_id) {
 }
 
 void ThreadFilter::add(int thread_id) {
-  thread_id = mapThreadId(thread_id);
   u64 *b = getBitmapFor(thread_id);
   assert (b != NULL);
+  thread_id = mapThreadId(thread_id);
+  assert(b == bitmap(thread_id));
   u64 bit = 1ULL << (thread_id & 0x3f);
   if (!(__sync_fetch_and_or(&word(b, thread_id), bit) & bit)) {
     atomicInc(_size);

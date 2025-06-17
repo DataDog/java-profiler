@@ -26,12 +26,11 @@ class ActiveBitmap {
     static long getBitmask(int tid) {
         int tmp = (tid >> 8) & 0xff ;
         int bits = 0;
-        for (int index = 0; index < 7 ; index++) {
+        for (int index = 0; index <= 7; index++) {
             if ((tmp & 0x01) == 0x01) {
-                bits |= 0x01;
+                bits |= 1 << (7 - index);
             }
-            tmp >>= 1;
-            bits <<= 1;
+            tmp >>>= 1;
         }
         return 1L << (bits & 0x3f);
     }
@@ -44,12 +43,8 @@ class ActiveBitmap {
         }
         long bitmask = getBitmask(tid);
         long value = UNSAFE.getLong(addr);
-        long newVal;
-        if (active) {
-            newVal = value | bitmask;
-        } else {
-            newVal = value & ~bitmask;
-        }
+        long newVal = active ? (value | bitmask) : (value & ~bitmask);
+
         while (!UNSAFE.compareAndSwapLong(null, addr, value, newVal)) {
             value = UNSAFE.getLong(addr);
             newVal = active ? (value | bitmask) : (value & ~bitmask);
@@ -57,10 +52,12 @@ class ActiveBitmap {
         int delta = active ? 1 : -1;
         assert activeCountAddr != 0;
         UNSAFE.getAndAddInt(null, activeCountAddr, delta);
+        if (isActive0(tid) != active) {
+            throw new RuntimeException("SetActive Failed");
+        }
 
         assert isActive0(tid) == active;
     }
-
 
 
     // Address of bitmap word that contains the active bit of this thread Id

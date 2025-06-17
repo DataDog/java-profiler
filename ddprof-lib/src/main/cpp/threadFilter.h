@@ -74,6 +74,7 @@ public:
   void add(int thread_id);
   void remove(int thread_id);
   u64* bitmapAddressFor(int thread_id);
+  u64 getBitmapValue(int thread_id, long v);
 
   void collect(std::vector<int> &v);
 };
