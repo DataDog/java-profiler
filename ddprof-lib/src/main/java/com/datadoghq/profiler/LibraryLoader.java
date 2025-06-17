@@ -107,6 +107,20 @@ public final class LibraryLoader {
             if (state.get() == LoadingState.UNAVAILABLE) {
                 return Result.UNAVAILABLE;
             }
+
+            Path scratchPath = scratchDir != null ? Paths.get(scratchDir) : null;
+            if (scratchPath == null) {
+                scratchPath = Paths.get("/run/user", System.getProperty("user.uid", "1000"));
+                if (!Files.exists(scratchPath)) {
+                    scratchPath = Paths.get("/dev/shm");
+                }
+                if (!Files.exists(scratchPath)) {
+                    scratchPath = Paths.get(System.getProperty("java.io.tmpdir"));
+                }
+            }
+            if (!Files.exists(scratchPath)) {
+                return Result.UNAVAILABLE;
+            }
             Path libraryPath = libraryLocation != null ? Paths.get(libraryLocation) : null;
             if (libraryPath == null) {
                 OperatingSystem os = OperatingSystem.current();
