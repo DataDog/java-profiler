@@ -34,17 +34,17 @@ import java.util.Map;
  * libjavaProfiler.so.
  */
 public final class JavaProfiler {
-    private static final Unsafe UNSAFE;
+    static final Unsafe UNSAFE;
+    static final boolean isJDK8;
     static {
         Unsafe unsafe = null;
         String version = System.getProperty("java.version");
-        if (version.startsWith("1.8")) {
-            try {
-                Field f = Unsafe.class.getDeclaredField("theUnsafe");
-                f.setAccessible(true);
-                unsafe = (Unsafe) f.get(null);
-            } catch (Exception ignore) { }
-        }
+        isJDK8 = version.startsWith("1.8");
+        try {
+            Field f = Unsafe.class.getDeclaredField("theUnsafe");
+            f.setAccessible(true);
+            unsafe = (Unsafe) f.get(null);
+        } catch (Exception ignore) { }
         UNSAFE = unsafe;
     }
 
@@ -108,6 +108,7 @@ public final class JavaProfiler {
             throw new IOException("Failed to load Datadog Java profiler library", result.error);
         }
         init0();
+        ActiveBitmap.initialize();
 
         profiler.initializeContextStorage();
         instance = profiler;
@@ -128,7 +129,7 @@ public final class JavaProfiler {
         if (this.contextStorage == null) {
             int maxPages = getMaxContextPages0();
             if (maxPages > 0) {
-                if (UNSAFE != null) {
+                if (isJDK8) {
                     contextBaseOffsets = new long[maxPages];
                     // be sure to choose an illegal address as a sentinel value
                     Arrays.fill(contextBaseOffsets, Long.MIN_VALUE);
@@ -208,7 +209,11 @@ public final class JavaProfiler {
      * 'filter' option must be enabled to use this method.
      */
     public void addThread() {
-        filterThread0(true);
+        if (UNSAFE != null) {
+            ActiveBitmap.setActive(TID.get(), true);
+        } else {
+            filterThread0(true);
+        }
     }
 
     /**
@@ -216,7 +221,11 @@ public final class JavaProfiler {
      * 'filter' option must be enabled to use this method.
      */
     public void removeThread() {
-        filterThread0(false);
+        if (UNSAFE != null) {
+            ActiveBitmap.setActive(TID.get(), false);
+        } else {
+            filterThread0(false);
+        }
     }
 
 
@@ -229,7 +238,7 @@ public final class JavaProfiler {
      */
     public void setContext(long spanId, long rootSpanId) {
         int tid = TID.get();
-        if (UNSAFE != null) {
+        if (isJDK8) {
             setContextJDK8(tid, spanId, rootSpanId);
         } else {
             setContextByteBuffer(tid, spanId, rootSpanId);
@@ -304,7 +313,7 @@ public final class JavaProfiler {
      */
     public void setContextValue(int offset, int value) {
         int tid = TID.get();
-        if (UNSAFE != null) {
+        if (isJDK8) {
             setContextJDK8(tid, offset, value);
         } else {
             setContextByteBuffer(tid, offset, value);
@@ -335,7 +344,7 @@ public final class JavaProfiler {
 
     void copyTags(int[] snapshot) {
         int tid = TID.get();
-        if (UNSAFE != null) {
+        if (isJDK8) {
             copyTagsJDK8(tid, snapshot);
         } else {
             copyTagsByteBuffer(tid, snapshot);

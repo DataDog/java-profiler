@@ -18,6 +18,7 @@
 #include "counters.h"
 #include "os.h"
 #include "reverse_bits.h"
+#include <cassert>
 #include <stdlib.h>
 #include <string.h>
 
@@ -96,19 +97,15 @@ int ThreadFilter::mapThreadId(int thread_id) {
   return tid;
 }
 
-bool ThreadFilter::accept(int thread_id) {
-  thread_id = mapThreadId(thread_id);
-  u64 *b = bitmap(thread_id);
-  return b != NULL && (word(b, thread_id) & (1ULL << (thread_id & 0x3f)));
-}
-
-void ThreadFilter::add(int thread_id) {
-  thread_id = mapThreadId(thread_id);
-  u64 *b = bitmap(thread_id);
+// Get bitmap that contains the thread id, create one if it does not exist
+u64* ThreadFilter::getBitmapFor(int thread_id) {
+  int index = thread_id / BITMAP_CAPACITY;
+  assert(index >= 0 && index < (int)_max_bitmaps);
+  u64* b = _bitmap[index];
   if (b == NULL) {
     b = (u64 *)OS::safeAlloc(BITMAP_SIZE);
     u64 *oldb = __sync_val_compare_and_swap(
-        &_bitmap[(u32)thread_id / BITMAP_CAPACITY], NULL, b);
+        &_bitmap[index], NULL, b);
     if (oldb != NULL) {
       OS::safeFree(b, BITMAP_SIZE);
       b = oldb;
@@ -116,7 +113,27 @@ void ThreadFilter::add(int thread_id) {
       trackPage();
     }
   }
+  return b;
+}
 
+u64* ThreadFilter::bitmapAddressFor(int thread_id) {
+  u64* b = getBitmapFor(thread_id);
+  thread_id = mapThreadId(thread_id);
+  assert(b == bitmap(thread_id));
+  return wordAddress(b, thread_id);
+}
+
+bool ThreadFilter::accept(int thread_id) {
+  thread_id = mapThreadId(thread_id);
+  u64 *b = bitmap(thread_id);
+  return b != NULL && (word(b, thread_id) & (1ULL << (thread_id & 0x3f)));
+}
+
+void ThreadFilter::add(int thread_id) {
+  u64 *b = getBitmapFor(thread_id);
+  assert (b != NULL);
+  thread_id = mapThreadId(thread_id);
+  assert(b == bitmap(thread_id));
   u64 bit = 1ULL << (thread_id & 0x3f);
   if (!(__sync_fetch_and_or(&word(b, thread_id), bit) & bit)) {
     atomicInc(_size);
