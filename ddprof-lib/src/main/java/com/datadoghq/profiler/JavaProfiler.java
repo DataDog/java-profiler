@@ -207,7 +207,7 @@ public final class JavaProfiler {
      * 'filter' option must be enabled to use this method.
      */
     public void addThread() {
-        filterThread_add();
+        filterThreadAdd0();
     }
 
     /**
@@ -215,7 +215,7 @@ public final class JavaProfiler {
      * 'filter' option must be enabled to use this method.
      */
     public void removeThread() {
-        filterThread_remove();
+        filterThreadRemove0();
     }
 
     /**
@@ -446,8 +446,10 @@ public final class JavaProfiler {
     private native void stop0() throws IllegalStateException;
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
 
-    private native void filterThread_add();
-    private native void filterThread_remove();
+    private native void filterThreadAdd0();
+    private native void filterThreadRemove0();
+    // Backward compatibility for existing code
+    private native void filterThread0(boolean enable);
 
     private static native int getTid0();
     private static native ByteBuffer getContextPage0(int tid);

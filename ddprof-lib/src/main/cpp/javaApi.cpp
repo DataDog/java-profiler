@@ -125,8 +125,8 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 
 // some duplication between add and remove, though we want to avoid having an extra branch in the hot path
 extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_filterThread_1add(JNIEnv *env,
-                                                       jobject unused) {
+Java_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0(JNIEnv *env,
+                                                          jobject unused) {
   ProfiledThread *current = ProfiledThread::current();
   int tid = current->tid();
   if (unlikely(tid < 0)) {
@@ -141,8 +141,8 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThread_1add(JNIEnv *env,
 }
 
 extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_filterThread_1remove(JNIEnv *env,
-                                                       jobject unused) {
+Java_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0(JNIEnv *env,
+                                                             jobject unused) {
   ProfiledThread *current = ProfiledThread::current();
   int tid = current->tid();
   if (unlikely(tid < 0)) {
@@ -156,6 +156,28 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThread_1remove(JNIEnv *env,
   thread_filter->remove(slot_id);
 }
 
+// Backward compatibility for existing code
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_filterThread0(JNIEnv *env,
+                                                       jobject unused,
+                                                       jboolean enable) {
+  ProfiledThread *current = ProfiledThread::current();
+  int tid = current->tid();
+  if (unlikely(tid < 0)) {
+    return;
+  }
+  ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
+  int slot_id = current->filterSlotId();
+  if (unlikely(slot_id == -1)) {
+    return;
+  }
+  
+  if (enable) {
+    thread_filter->add(tid, slot_id);
+  } else {
+    thread_filter->remove(slot_id);
+  }
+}
 
 extern "C" DLLEXPORT jobject JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getContextPage0(JNIEnv *env,

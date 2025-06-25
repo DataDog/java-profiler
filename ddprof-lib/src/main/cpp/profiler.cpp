@@ -106,8 +106,9 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   ProfiledThread *current = ProfiledThread::current();
   int tid = current->tid();
   if (_thread_filter.enabled()) {
-    current->setFilterSlotId(_thread_filter.registerThread());
-    _thread_filter.remove(tid);
+    int slot_id = _thread_filter.registerThread();
+    current->setFilterSlotId(slot_id);
+    _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
   updateThreadName(jvmti, jni, thread, true);
 

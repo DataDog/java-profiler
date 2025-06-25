@@ -1063,8 +1063,8 @@ void Recording::writeThreads(Buffer *buf) {
   threads.insert(_tid);
 
   for (int i = 0; i < CONCURRENCY_LEVEL; ++i) {
-    // I can not use merge : cpp 17
-    threads.insert(_thread_ids[i][old_index].begin(), _thread_ids[i][old_index].end());
+    // Collect thread IDs from the fixed-size table into the main set
+    _thread_ids[i][old_index].collect(threads);
     _thread_ids[i][old_index].clear();
   }
 

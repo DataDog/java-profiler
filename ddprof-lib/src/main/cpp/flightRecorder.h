@@ -35,6 +35,7 @@
 #include "mutex.h"
 #include "objectSampler.h"
 #include "threadFilter.h"
+#include "threadIdTable.h"
 #include "vmEntry.h"
 
 const u64 MAX_JLONG = 0x7fffffffffffffffULL;
@@ -128,9 +129,9 @@ private:
   static char *_java_command;
 
   RecordingBuffer _buf[CONCURRENCY_LEVEL];
-  // we have several sets to avoid lock contention
-  // we have a second dimension to allow a switch in the active set
-  std::unordered_set<int> _thread_ids[CONCURRENCY_LEVEL][2];
+  // we have several tables to avoid lock contention
+  // we have a second dimension to allow a switch in the active table
+  ThreadIdTable _thread_ids[CONCURRENCY_LEVEL][2];
   std::atomic<int> _active_index{0};  // 0 or 1 globally
 
   int _fd;
