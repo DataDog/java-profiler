@@ -16,10 +16,6 @@ if [ ! -d "$PATH_REPO" ]; then
   git clone https://github.com/async-profiler/async-profiler.git $PATH_REPO
 
   cd "$PATH_REPO" || exit 1
-  git filter-repo --path-rename src/:ddprof-lib/src/main/cpp/
-
-  # filter-repo will remove the remote origin, so we need to add it back but as 'upstream' to avoid
-  #  accidental pushes to the original repo
 
   git remote add upstream https://github.com/async-profiler/async-profiler.git
 fi

@@ -23,7 +23,7 @@
 #include <limits.h>
 #include <string.h>
 
-#include "arch.h"
+#include "arch_dd.h"
 #include "arguments.h"
 #include "buffers.h"
 #include "counters.h"
@@ -242,6 +242,8 @@ public:
   void writeLogLevels(Buffer *buf);
 
   void writeCounters(Buffer *buf);
+
+  void writeUnwindFailures(Buffer *buf);
 
   void writeContext(Buffer *buf, Context &context);
 

@@ -29,8 +29,11 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
     runTests(target1, target2);
     IItemCollection allocations = verifyEvents("datadog.ObjectSample");
     // FIXME when more tests are ported to this structure
-     assertAllocations(allocations, int[].class, target1, target2);
-     assertAllocations(allocations, Integer[].class, target1, target2);
+    if (!Platform.isMusl()) {
+      // JOL on musl seems to be locking up randomly
+      assertAllocations(allocations, int[].class, target1, target2);
+      assertAllocations(allocations, Integer[].class, target1, target2);
+    }
   }
 
   private static void assertAllocations(IItemCollection allocations, Class<?> clazz, AllocatingTarget... targets) {
@@ -75,7 +78,10 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
       } else {
         object = new Integer[128 * 1000];
       }
-      get(object.getClass()).addAndGet(GraphLayout.parseInstance(object).totalSize());
+      if (!Platform.isMusl()) {
+        // JOL does not work that well with musl
+        get(object.getClass()).addAndGet(GraphLayout.parseInstance(object).totalSize());
+      }
       sink = object;
     }
 

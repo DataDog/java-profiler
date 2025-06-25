@@ -19,9 +19,6 @@ public class ThreadFilterBenchmark extends Configuration {
     @Param({"true", "false"}) // Parameterize the filter usage
     public boolean useThreadFilters;
 
-    @Param({"true"})
-    public boolean useProfiler;
-
     private static final int NUM_THREADS = 15;
     private ExecutorService executorService;
     private JavaProfiler profiler;
@@ -43,7 +40,6 @@ public class ThreadFilterBenchmark extends Configuration {
     @Setup(Level.Trial)
     public void setup() throws IOException {
         System.out.println("Setting up benchmark...");
-        System.out.println("Thread filters enabled: " + useThreadFilters);
         System.out.println("Creating thread pool with " + NUM_THREADS + " threads");
         executorService = Executors.newFixedThreadPool(NUM_THREADS);
         System.out.println("Getting profiler instance");
@@ -56,14 +52,11 @@ public class ThreadFilterBenchmark extends Configuration {
             System.out.println("Profiler was not active at setup.");
         }
         
-        if (useProfiler) {
-            String config = "start,wall=10ms,filter=1,file=/tmp/thread_filter_profile.jfr";
-            System.out.println("Starting profiler with " + config);
-            profiler.execute(config);
-            System.out.println("Started profiler with output file");
-        } else {
-            System.out.println("Profiler is disabled for this run.");
-        }
+        String config = "start,wall=10ms,filter=1,file=/tmp/thread_filter_profile.jfr";
+        System.out.println("Starting profiler with " + config);
+        profiler.execute(config);
+        System.out.println("Started profiler with output file");
+        
         running = new AtomicBoolean(true);
         operationCount = new AtomicLong(0);
         startTime = System.currentTimeMillis();
@@ -114,14 +107,11 @@ public class ThreadFilterBenchmark extends Configuration {
             Thread.currentThread().interrupt();
         }
 
-        // Stop the profiler if it's active and was started
-        if (useProfiler) {
-            try {
-                profiler.stop();
-                System.out.println("Profiler stopped.");
-            } catch (IllegalStateException e) {
-                System.out.println("Profiler was not active at teardown.");
-            }
+        // Stop the profiler if it's active
+        try {
+            profiler.stop();
+        } catch (IllegalStateException e) {
+            System.out.println("Profiler was not active at teardown.");
         }
 
         long endTime = System.currentTimeMillis();
@@ -154,10 +144,6 @@ public class ThreadFilterBenchmark extends Configuration {
         }
     }
 
-    public void setUseThreadFilters(boolean useThreadFilters) {
-        this.useThreadFilters = useThreadFilters;
-    }
-
     @Benchmark
     @BenchmarkMode(Mode.Throughput)
     @Fork(value = 1, warmups = 1)
@@ -170,16 +156,13 @@ public class ThreadFilterBenchmark extends Configuration {
         startLatch = new CountDownLatch(NUM_THREADS);
         stopLatch = new CountDownLatch(NUM_THREADS);
 
-        // Start all worker threads[]
+        // Start all worker threads
         for (int i = 0; i < NUM_THREADS; i++) {
             final int threadId = i;
             executorService.submit(() -> {
                 try {
                     startLatch.countDown();
                     startLatch.await(30, TimeUnit.SECONDS);
-                    if (useProfiler) {
-                        profiler.addThread(); // Initial registration if profiler is on
-                    }
                     String startMsg = String.format("Thread %d started%n", threadId);
                     System.out.print(startMsg);
                     if (logWriter != null) {
@@ -190,7 +173,7 @@ public class ThreadFilterBenchmark extends Configuration {
                     while (running.get() && System.currentTimeMillis() < stopTime) {
                         // Memory-intensive operations that would be sensitive to false sharing
                         for (int j = 0; j < ARRAY_SIZE; j += STRIDE) {
-                            if (useThreadFilters && useProfiler) {
+                            if (useThreadFilters) {
                                 // Register thread at the start of each cache line operation
                                 profiler.addThread();
                                 addThreadCount.incrementAndGet();
@@ -208,7 +191,7 @@ public class ThreadFilterBenchmark extends Configuration {
                                 atomicArray.set(index, value);
                             }
                             
-                            if (useThreadFilters && useProfiler) {
+                            if (useThreadFilters) {
                                 // Remove thread after cache line operation
                                 profiler.removeThread();
                                 removeThreadCount.incrementAndGet();
@@ -218,7 +201,7 @@ public class ThreadFilterBenchmark extends Configuration {
 
                         // More memory operations with thread registration
                         for (int j = 0; j < ARRAY_SIZE; j += STRIDE) {
-                            if (useThreadFilters && useProfiler) {
+                            if (useThreadFilters) {
                                 // Register thread at the start of each cache line operation
                                 profiler.addThread();
                                 addThreadCount.incrementAndGet();
@@ -231,7 +214,7 @@ public class ThreadFilterBenchmark extends Configuration {
                                 sharedArray[index] = value * 2;
                             }
                             
-                            if (useThreadFilters && useProfiler) {
+                            if (useThreadFilters) {
                                 // Remove thread after cache line operation
                                 profiler.removeThread();
                                 removeThreadCount.incrementAndGet();

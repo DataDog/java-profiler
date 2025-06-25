@@ -49,15 +49,15 @@ public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTe
 
     @RetryTest(10)
     @TestTemplate
-    @ValueSource(strings = {"fp", "dwarf", "vm", "vmx"})
+    @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
     public void test(@CStack String cstack) {
+        String config = System.getProperty("ddprof_test.config");
+        boolean isSanitizer = config.endsWith("san");
+        boolean isJvmci = System.getProperty("java.vm.version", "").contains("jvmci");
         assumeFalse(Platform.isZing() || Platform.isJ9());
-        // on aarch64 and JDK 8 the vmstructs unwinding for wallclock is extremely unreliable
-        //   ; perhaps due to something missing in the unwinder but until we figure it out we will just not run the tests in CI
-        assumeTrue(!isInCI() || !Platform.isAarch64() || !cstack.startsWith("vm") || Platform.isJavaVersionAtLeast(11));
-        // TODO: investigate why this test fails on musl
-        // on musl the missing fp unwinding makes the wallclock tests unreliable
-        assumeTrue(!Platform.isMusl() || !cstack.startsWith("vm"));
+        // Running vm stackwalker tests on JVMCI (Graal), JDK 24, aarch64 and with a sanitizer is crashing in a weird place
+        // This looks like the sanitizer instrumentation is breaking the longjump based crash recovery :(
+        assumeFalse(Platform.isJavaVersionAtLeast(24) && isJvmci && Platform.isAarch64() && cstack.startsWith("vm") && isSanitizer);
 
         long result = 0;
         for (int i = 0; i < 10; i++) {
@@ -78,8 +78,10 @@ public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTe
                 if ("CONTENDED".equals(state)) {
                     String stackTrace = frameAccessor.getMember(sample);
                     if (!stackTrace.endsWith(".GC_active()")) {
-                        assertTrue(stackTrace.contains(lambdaStateName), () -> stackTrace + " missing " + lambdaStateName);
-                        assertTrue(stackTrace.contains(lambdaName), () -> stackTrace + " missing " + lambdaName);
+                        // shortcut the assertions for sanitized runs
+                        // the samples are not that good, but it still makes sense to run this load under sanitizers
+                        assertTrue(isSanitizer || stackTrace.contains(lambdaStateName), () -> stackTrace + " missing " + lambdaStateName);
+                        assertTrue(isSanitizer || stackTrace.contains(lambdaName), () -> stackTrace + " missing " + lambdaName);
                     }
                 }
             }

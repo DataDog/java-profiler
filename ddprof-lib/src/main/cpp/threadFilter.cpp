@@ -17,6 +17,7 @@ ThreadFilter::~ThreadFilter() {
     std::unique_lock<std::mutex> lock(_slot_mutex);
     _slots.clear();
 }
+
 ThreadFilter::SlotID ThreadFilter::registerThread() {
     int top = _free_list_top.load(std::memory_order_acquire);
     for (int i = 0; i < top; ++i) {

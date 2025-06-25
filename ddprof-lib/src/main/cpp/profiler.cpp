@@ -20,10 +20,11 @@
 #include "perfEvents.h"
 #include "safeAccess.h"
 #include "stackFrame.h"
-#include "stackWalker.h"
+#include "stackWalker_dd.h"
 #include "symbols.h"
 #include "thread.h"
-#include "vmStructs.h"
+#include "tsc.h"
+#include "vmStructs_dd.h"
 #include "wallClock.h"
 #include <algorithm>
 #include <dlfcn.h>
@@ -250,17 +251,21 @@ const char *Profiler::getLibraryName(const char *native_symbol) {
 
 const char *Profiler::findNativeMethod(const void *address) {
   CodeCache *lib = _libs->findLibraryByAddress(address);
-  return lib == NULL ? NULL : lib->binarySearch(address);
+  const char *name = NULL;
+  if (lib != NULL) {
+    lib->binarySearch(address, &name);
+  }
+  return name;
 }
 
 CodeBlob *Profiler::findRuntimeStub(const void *address) {
   return _runtime_stubs.findBlobByAddress(address);
 }
 
-bool Profiler::isAddressInCode(const void *pc) {
+bool Profiler::isAddressInCode(const void *pc, bool include_stubs) {
   if (CodeHeap::contains(pc)) {
     return CodeHeap::findNMethod(pc) != NULL &&
-           !(pc >= _call_stub_begin && pc < _call_stub_end);
+           (include_stubs || !(pc >= _call_stub_begin && pc < _call_stub_end));
   } else {
     return _libs->findLibraryByAddress(pc) != NULL;
   }
@@ -275,7 +280,7 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
        _cstack == CSTACK_DEFAULT)) {
     return 0;
   }
-  const void *callchain[MAX_NATIVE_FRAMES];
+  const void *callchain[MAX_NATIVE_FRAMES + 1]; // we can read one frame past when trying to figure out whether the result is truncated
   int native_frames = 0;
 
   if (event_type == BCI_CPU && _cpu_engine == &perf_events) {
@@ -286,11 +291,11 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
   if (_cstack >= CSTACK_VM) {
     return 0;
   } else if (_cstack == CSTACK_DWARF) {
-    native_frames += StackWalker::walkDwarf(ucontext, callchain + native_frames,
+    native_frames += ddprof::StackWalker::walkDwarf(ucontext, callchain + native_frames,
                                             MAX_NATIVE_FRAMES - native_frames,
                                             java_ctx, truncated);
   } else {
-    native_frames += StackWalker::walkFP(ucontext, callchain + native_frames,
+    native_frames += ddprof::StackWalker::walkFP(ucontext, callchain + native_frames,
                                          MAX_NATIVE_FRAMES - native_frames,
                                          java_ctx, truncated);
   }
@@ -333,7 +338,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   // Workaround for JDK-8132510: it's not safe to call GetEnv() inside a signal
   // handler since JDK 9, so we do it only for threads already registered in
   // ThreadLocalStorage
-  VMThread *vm_thread = VMThread::current();
+  ddprof::VMThread *vm_thread = ddprof::VMThread::current();
   if (vm_thread == NULL) {
     Counters::increment(AGCT_NOT_REGISTERED_IN_TLS);
     return 0;
@@ -361,7 +366,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       return 1;
     }
 
-    if (!VMStructs::isSafeToWalk(saved_pc)) {
+    if (!ddprof::VMStructs::isSafeToWalk(saved_pc)) {
       frames->bci = BCI_NATIVE_FRAME;
       CodeBlob *codeBlob =
           VMStructs::libjvm()->findBlobByAddress((const void *)saved_pc);
@@ -409,7 +414,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   }
   bool blocked_in_vm = (state == 10 || state == 11);
   // avoid unwinding during deoptimization
-  if (blocked_in_vm && vm_thread->osThreadState() == ThreadState::RUNNABLE) {
+  if (blocked_in_vm && vm_thread->osThreadState() == OSThreadState::RUNNABLE) {
     Counters::increment(AGCT_BLOCKED_IN_VM);
     return 0;
   }
@@ -601,6 +606,7 @@ u32 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
   }
   u32 call_trace_id = 0;
   if (!_omit_stacktraces) {
+    u64 startTime = TSC::ticks();
     ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
     jvmtiFrameInfo *jvmti_frames = _calltrace_buffer[lock_index]->_jvmti_frames;
 
@@ -620,6 +626,10 @@ u32 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
     }
 
     call_trace_id = _call_trace_storage.put(num_frames, frames, false, counter);
+    u64 duration = TSC::ticks() - startTime;
+    if (duration > 0) {
+      Counters::increment(UNWINDING_TIME_JVMTI, duration); // increment the JVMTI specific counter
+    }
   }
   if (!deferred) {
     _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
@@ -671,6 +681,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
   // record a null stacktrace we can skip the unwind if we've got a
   // call_trace_id determined to be reusable at a higher level
   if (!_omit_stacktraces && call_trace_id == 0) {
+    u64 startTime = TSC::ticks();
     ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
 
     int num_frames = 0;
@@ -680,10 +691,10 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
                                  &java_ctx, &truncated);
     if (_cstack == CSTACK_VMX) {
-      num_frames += StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_EXPERT, &truncated);
+      num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_EXPERT, &truncated);
     } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
       if (_cstack == CSTACK_VM) {
-        num_frames += StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_NORMAL, &truncated);
+        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_NORMAL, &truncated);
       } else {
         // Async events
         AsyncSampleMutex mutex(ProfiledThread::current());
@@ -716,6 +727,10 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     ProfiledThread *thread = ProfiledThread::current();
     if (thread != nullptr) {
       thread->recordCallTraceId(call_trace_id);
+    }
+    u64 duration = TSC::ticks() - startTime;
+    if (duration > 0) {
+      Counters::increment(UNWINDING_TIME_ASYNC, duration); // increment the async specific counter
     }
   }
   _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
@@ -900,7 +915,7 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (VM::isHotspot()) {
     // the following checks require vmstructs and therefore HotSpot
 
-    StackWalker::checkFault(thrd);
+    ddprof::StackWalker::checkFault(thrd);
 
     // Workaround for JDK-8313796. Setting cstack=dwarf also helps
     if (VMStructs::isInterpretedFrameValidFunc((const void *)pc) &&
@@ -1361,6 +1376,11 @@ Error Profiler::dump(const char *path, const int length) {
 
     _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();
+
+    // reset unwinding counters
+    Counters::set(UNWINDING_TIME_ASYNC, 0);
+    Counters::set(UNWINDING_TIME_JVMTI, 0);
+
     return err;
   }
 

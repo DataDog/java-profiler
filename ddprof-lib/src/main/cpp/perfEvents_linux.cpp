@@ -16,7 +16,7 @@
 
 #ifdef __linux__
 
-#include "arch.h"
+#include "arch_dd.h"
 #include "context.h"
 #include "debugSupport.h"
 #include "libraries.h"

@@ -15,7 +15,7 @@
  */
 
 #include "dictionary.h"
-#include "arch.h"
+#include "arch_dd.h"
 #include "counters.h"
 #include <climits>
 #include <stdlib.h>
@@ -128,6 +128,10 @@ unsigned int Dictionary::lookup(const char *key, size_t length, bool for_insert,
     table = row->next;
     h = (h >> ROW_BITS) | (h << (32 - ROW_BITS));
   }
+}
+
+bool Dictionary::check(const char* key) {
+  return lookup(key, strlen(key), false, 0) != 0;
 }
 
 unsigned int Dictionary::bounded_lookup(const char *key, size_t length,

@@ -21,7 +21,7 @@
 #include <atomic>
 #ifdef __linux__
 
-#include "arch.h"
+#include "arch_dd.h"
 #include <signal.h>
 
 class CTimer : public Engine {

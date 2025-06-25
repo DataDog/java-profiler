@@ -29,10 +29,10 @@ public class JVMAccessTest extends AbstractProcessProfilerTest {
             l -> {
                 initLibraryFound.set(initLibraryFound.get() | l.contains("[TEST::INFO] VM::initLibrary"));
                 initProfilerFound.set(initProfilerFound.get() | l.contains("[TEST::INFO] VM::initProfilerBridge"));
-                return true;
+                return LineConsumerResult.CONTINUE;
             },
             null
-        );
+        ).inTime;
 
         assertTrue(rslt);
 
@@ -57,10 +57,10 @@ public class JVMAccessTest extends AbstractProcessProfilerTest {
         boolean rslt = launch("library", Collections.emptyList(), null, l -> {
             if (l.contains("[TEST::INFO] jvm_version#")) {
                 foundVersion.set(l.split("#")[1]);
-                return false;
+                return LineConsumerResult.STOP;
             }
-            return true;
-        }, null);
+            return LineConsumerResult.CONTINUE;
+        }, null).inTime;
 
         assertTrue(rslt);
 
@@ -78,6 +78,7 @@ public class JVMAccessTest extends AbstractProcessProfilerTest {
         assertEquals("build/hs_err_pid%p.log", flags.getStringFlag("ErrorFile")); // set to 'build/hs_err_pid%p.log' in the test task
         assertTrue(flags.getBooleanFlag("ResizeTLAB")); // set to 'true' in the test task
         assertEquals(512 * 1024 * 1024, flags.getIntFlag("MaxHeapSize")); // set to 512m in the test task
+        assertNotNull(flags.getStringFlag("OnError"));
     }
 
     @Test

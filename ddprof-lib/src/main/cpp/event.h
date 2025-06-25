@@ -36,13 +36,13 @@ public:
 
 class ExecutionEvent : public Event {
 public:
-  ThreadState _thread_state;
+  OSThreadState _thread_state;
   ExecutionMode _execution_mode;
   u64 _weight;
   u32 _call_trace_id;
 
   ExecutionEvent()
-      : Event(), _thread_state(ThreadState::RUNNABLE), _execution_mode(ExecutionMode::UNKNOWN),
+      : Event(), _thread_state(OSThreadState::RUNNABLE), _execution_mode(ExecutionMode::UNKNOWN),
         _weight(1), _call_trace_id(0) {}
 };
 

@@ -32,6 +32,9 @@ public:
   // There are internal caches that are not associated to the array
   static void clearParsingCaches();
   static bool haveKernelSymbols() { return _have_kernel_symbols; }
+
+  // Some symbols are always roots - eg. no unwinding should be attempted once they are encountered
+  static bool isRootSymbol(const void* address);
 };
 
 #endif // _SYMBOLS_H

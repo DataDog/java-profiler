@@ -3,7 +3,7 @@
 
 #include "jvmti.h"
 
-enum class ThreadState : int {
+enum class OSThreadState : int {
   UNKNOWN = 0,
   NEW = 1,      // The thread has been initialized but yet started
   RUNNABLE = 2, // Has been started and is runnable, but not necessarily running

@@ -1,1 +1,3 @@
 rootProject.name = "JavaProfiler"
+
+include ':ddprof-lib:benchmarks'

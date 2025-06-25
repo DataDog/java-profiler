@@ -208,7 +208,7 @@ public abstract class AbstractProfilerTest {
   protected void after() throws Exception {
   }
 
-  protected final boolean isInCI() {
+  public static final boolean isInCI() {
     return Boolean.getBoolean("ddprof_test.ci");
   }
 

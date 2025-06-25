@@ -1,18 +1,6 @@
 /*
- * Copyright 2016 Andrei Pangin
- * Copyright 2021, 2024 Datadog, Inc
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright The async-profiler authors
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "common.h"
@@ -26,7 +14,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "safeAccess.h"
-#include "vmStructs.h"
+#include "vmStructs_dd.h"
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,6 +53,20 @@ static void wakeupHandler(int signo) {
   // Dummy handler for interrupting syscalls
 }
 
+static bool isVmRuntimeEntry(const char* blob_name) {
+    return strcmp(blob_name, "_ZNK12MemAllocator8allocateEv") == 0
+        || strncmp(blob_name, "_Z22post_allocation_notify", 26) == 0
+        || strncmp(blob_name, "_ZN11OptoRuntime", 16) == 0
+        || strncmp(blob_name, "_ZN8Runtime1", 12) == 0
+        || strncmp(blob_name, "_ZN13SharedRuntime", 18) == 0
+        || strncmp(blob_name, "_ZN18InterpreterRuntime", 23) == 0;
+}
+
+static bool isZingRuntimeEntry(const char* blob_name) {
+    return strncmp(blob_name, "_ZN14DolphinRuntime", 19) == 0
+        || strncmp(blob_name, "_ZN37JvmtiSampledObjectAllocEventCollector", 42) == 0;
+}
+
 static bool isZeroInterpreterMethod(const char *blob_name) {
   return strncmp(blob_name, "_ZN15ZeroInterpreter", 20) == 0 ||
          strncmp(blob_name, "_ZN19BytecodeInterpreter3run", 28) == 0;
@@ -87,8 +89,28 @@ static bool isOpenJ9JitStub(const char *blob_name) {
   return false;
 }
 
-static void *resolveMethodId(void **mid) {
-  return mid == NULL || *mid < (void *)4096 ? NULL : *mid;
+static bool isOpenJ9Resolve(const char* blob_name) {
+    return strncmp(blob_name, "resolve", 7) == 0;
+}
+
+static bool isOpenJ9JitAlloc(const char* blob_name) {
+    return strncmp(blob_name, "old_", 4) == 0;
+}
+
+static bool isOpenJ9GcAlloc(const char* blob_name) {
+    return strncmp(blob_name, "J9Allocate", 10) == 0;
+}
+
+static bool isOpenJ9JvmtiAlloc(const char* blob_name) {
+    return strcmp(blob_name, "jvmtiHookSampledObjectAlloc") == 0;
+}
+
+static bool isCompilerEntry(const char* blob_name) {
+    return strncmp(blob_name, "_ZN13CompileBroker25invoke_compiler_on_method", 45) == 0;
+}
+
+static void* resolveMethodId(void** mid) {
+    return mid == NULL || *mid < (void*)4096 ? NULL : *mid;
 }
 
 static void resolveMethodIdEnd() {}
@@ -129,7 +151,12 @@ JavaFullVersion JavaVersionAccess::get_java_version(char* prop_value) {
     if (version.major < 9) {
       version.major = 9;
     }
-    // format is 11.0.17+8
+    char* peg_char = strchr(prop_value, '+');
+    if (peg_char) {
+      // terminate before the build specification
+      *peg_char = '\0';
+    }
+    // format is 11.0.17
     // this shortcut for parsing the update version should hold till Java 99
     version.update = atoi(prop_value + 5);
   }
@@ -275,15 +302,33 @@ bool VM::initShared(JavaVM* vm) {
     return false;
   }
 
-  VMStructs::init(lib);
-  if (is_zero_vm) {
-    lib->mark(isZeroInterpreterMethod);
-  } else if (isOpenJ9()) {
-    lib->mark(isOpenJ9InterpreterMethod);
-    CodeCache *libjit = libraries->findJvmLibrary("libj9jit");
-    if (libjit != NULL) {
-      libjit->mark(isOpenJ9JitStub);
-    }
+  ddprof::VMStructs::init(lib);
+  if (isOpenJ9()) {
+      Libraries* libraries = Libraries::instance();
+      lib->mark(isOpenJ9InterpreterMethod, MARK_INTERPRETER);
+      lib->mark(isOpenJ9Resolve, MARK_VM_RUNTIME);
+      CodeCache* libjit = libraries->findJvmLibrary("libj9jit");
+      if (libjit != NULL) {
+          libjit->mark(isOpenJ9JitStub, MARK_INTERPRETER);
+          libjit->mark(isOpenJ9JitAlloc, MARK_VM_RUNTIME);
+      }
+      CodeCache* libgc = libraries->findJvmLibrary("libj9gc");
+      if (libgc != NULL) {
+          libgc->mark(isOpenJ9GcAlloc, MARK_VM_RUNTIME);
+      }
+      CodeCache* libjvmti = libraries->findJvmLibrary("libj9jvmti");
+      if (libjvmti != NULL) {
+          libjvmti->mark(isOpenJ9JvmtiAlloc, MARK_VM_RUNTIME);
+      }
+  } else {
+      lib->mark(isVmRuntimeEntry, MARK_VM_RUNTIME);
+      if (isZing()) {
+          lib->mark(isZingRuntimeEntry, MARK_VM_RUNTIME);
+      } else if (is_zero_vm) {
+          lib->mark(isZeroInterpreterMethod, MARK_INTERPRETER);
+      } else {
+          lib->mark(isCompilerEntry, MARK_COMPILER_ENTRY);
+      }
   }
   return true;
 }
@@ -326,7 +371,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
       (!_hotspot || hotspot_version() >= 11);
   _can_intercept_binding =
       potential_capabilities.can_generate_native_method_bind_events &&
-      HeapUsage::needsNativeBindingInterception();
+      ddprof::HeapUsage::needsNativeBindingInterception();
 
   jvmtiCapabilities capabilities = {0};
   capabilities.can_generate_all_class_hook_events = 1;
@@ -359,7 +404,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.ThreadEnd = Profiler::ThreadEnd;
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
   callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;
-  callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
+  callbacks.NativeMethodBind = ddprof::VMStructs::NativeMethodBind;
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
@@ -378,9 +423,9 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   } else {
     // DebugNonSafepoints is automatically enabled with CompiledMethodLoad,
     // otherwise we set the flag manually
-    char *flag_addr = (char *)JVMFlag::find("DebugNonSafepoints", {JVMFlag::Type::Bool});
-    if (flag_addr != NULL) {
-      *flag_addr = 1;
+    ddprof::JVMFlag* f = ddprof::JVMFlag::find("DebugNonSafepoints", {ddprof::JVMFlag::Type::Bool});
+    if (f != NULL && f->isDefault()) {
+      f->set(1);
     }
   }
 
@@ -388,8 +433,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   // profiler to avoid the risk of crashing flag was made obsolete (inert) in 15
   // (see JDK-8228991) and removed in 16 (see JDK-8231560)
   if (hotspot_version() < 15) {
-    char *flag_addr = (char *)JVMFlag::find("UseAdaptiveGCBoundary", {JVMFlag::Type::Bool});
-    _is_adaptive_gc_boundary_flag_set = flag_addr != NULL && *flag_addr == 1;
+    ddprof::JVMFlag *f = ddprof::JVMFlag::find("UseAdaptiveGCBoundary", {ddprof::JVMFlag::Type::Bool});
+    _is_adaptive_gc_boundary_flag_set = f != NULL && f->get();
   }
 
   // Make sure we reload method IDs upon class retransformation
@@ -489,6 +534,9 @@ void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     ready(jvmti, jni);
     loadAllMethodIDs(jvmti, jni);
+
+    // initialize the heap usage tracking only after the VM is ready
+    ddprof::HeapUsage::initJMXUsage(VM::jni());
 
     // Delayed start of profiler if agent has been loaded at VM bootstrap
     Error error = Profiler::instance()->run(_agent_args);

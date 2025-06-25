@@ -38,6 +38,13 @@ enum ImportType {
     NUM_IMPORT_TYPES
 };
 
+enum Mark {
+    MARK_VM_RUNTIME = 1,
+    MARK_INTERPRETER = 2,
+    MARK_COMPILER_ENTRY = 3,
+    MARK_ASYNC_PROFILER = 4, // async-profiler internals such as native hooks.
+};
+
 class NativeFunc {
 private:
   short _lib_index;
@@ -63,7 +70,13 @@ public:
 
   static bool isMarked(const char *name) { return from(name)->_mark != 0; }
 
-  static void mark(const char *name) { from(name)->_mark = 1; }
+  static char mark(const char* name) {
+      return from(name)->_mark;
+  }
+
+  static void mark(const char* name, char value) {
+      from(name)->_mark = value;
+  }
 };
 
 class CodeBlob {
@@ -113,7 +126,7 @@ private:
 
   void expand();
   void makeImportsPatchable();
-    void saveImport(ImportId id, void** entry);
+  void saveImport(ImportId id, void** entry);
 
 public:
   explicit CodeCache(const char *name, short lib_index = -1,
@@ -154,7 +167,20 @@ public:
            bool update_bounds = false);
   void updateBounds(const void *start, const void *end);
   void sort();
-  void mark(NamePredicate predicate);
+  template <typename NamePredicate>
+  inline void mark(NamePredicate predicate, char value) {
+      for (int i = 0; i < _count; i++) {
+          const char* blob_name = _blobs[i]._name;
+          if (blob_name != NULL && predicate(blob_name)) {
+              NativeFunc::mark(blob_name, value);
+          }
+      }
+
+      if (value == MARK_VM_RUNTIME && _name != NULL) {
+          // In case a library has no debug symbols
+          NativeFunc::mark(_name, value);
+      }
+  }
 
   void addImport(void **entry, const char *name);
   void **findImport(ImportId id);
@@ -162,7 +188,7 @@ public:
 
   CodeBlob *findBlob(const char *name);
   CodeBlob *findBlobByAddress(const void *address);
-  const char *binarySearch(const void *address);
+  const void *binarySearch(const void *address, const char **name);
   const void *findSymbol(const char *name);
   const void *findSymbolByPrefix(const char *prefix);
   const void *findSymbolByPrefix(const char *prefix, int prefix_len);
@@ -177,6 +203,9 @@ public:
   }
 
   int count() { return _count; }
+  CodeBlob* blob(int idx) {
+    return &_blobs[idx];
+  }
 };
 
 class CodeCacheArray {

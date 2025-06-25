@@ -17,7 +17,7 @@
 #ifndef _CALLTRACESTORAGE_H
 #define _CALLTRACESTORAGE_H
 
-#include "arch.h"
+#include "arch_dd.h"
 #include "linearAllocator.h"
 #include "spinLock.h"
 #include "vmEntry.h"

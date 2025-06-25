@@ -17,7 +17,7 @@
 #ifndef _STACKFRAME_H
 #define _STACKFRAME_H
 
-#include "arch.h"
+#include "arch_dd.h"
 #include <stdint.h>
 #include <ucontext.h>
 

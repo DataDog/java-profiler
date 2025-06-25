@@ -16,19 +16,19 @@ on:
 
 env:
   JDKS_DIR: jdks
-  JAVA_8_VERSION: 8.0.442
-  JAVA_8_J9_VERSION: 8.0.432
-  JAVA_11_VERSION: 11.0.26
-  JAVA_11_J9_VERSION: 11.0.25
-  JAVA_17_VERSION: 17.0.14
-  JAVA_17_J9_VERSION: 17.0.13
-  JAVA_21_VERSION: 21.0.6
-  JAVA_21_J9_VERSION: 21.0.5
-  JAVA_23_VERSION: 23.0.2
+  JAVA_8_VERSION: 8.0.452
+  JAVA_8_J9_VERSION: 8.0.452
+  JAVA_11_VERSION: 11.0.27
+  JAVA_11_J9_VERSION: 11.0.27
+  JAVA_17_VERSION: 17.0.15
+  JAVA_17_J9_VERSION: 17.0.15
+  JAVA_21_VERSION: 21.0.7
+  JAVA_21_J9_VERSION: 21.0.7
+  JAVA_24_VERSION: 24.0.1
 
   JAVA_17_GRAAL_VERSION: 17.0.12
-  JAVA_21_GRAAL_VERSION: 21.0.6
-  JAVA_23_GRAAL_VERSION: 23.0.2
+  JAVA_21_GRAAL_VERSION: 21.0.7
+  JAVA_24_GRAAL_VERSION: 24.0.1
 
   # https://gist.github.com/wavezhang/ba8425f24a968ec9b2a8619d7c2d86a6?permalink_comment_id=4444663#gistcomment-4444663
   # jdk1.8.0_361
@@ -53,8 +53,8 @@ env:
   JAVA_17_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/17.0.14+10/bellsoft-jdk17.0.14+10-linux-aarch64-musl-lite.tar.gz"
   JAVA_21_MUSL_URL: "https://download.bell-sw.com/java/21.0.6+10/bellsoft-jdk21.0.6+10-linux-x64-musl-lite.tar.gz"
   JAVA_21_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/21.0.6+10/bellsoft-jdk21.0.6+10-linux-aarch64-musl-lite.tar.gz"
-  JAVA_23_MUSL_URL: "https://download.bell-sw.com/java/23.0.2+9/bellsoft-jdk23.0.2+9-linux-x64-musl-lite.tar.gz"
-  JAVA_23_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/23.0.2+9/bellsoft-jdk23.0.2+9-linux-aarch64-musl-lite.tar.gz"
+  JAVA_24_MUSL_URL: "https://download.bell-sw.com/java/24+37/bellsoft-jdk24+37-linux-x64-musl-lite.tar.gz"
+  JAVA_24_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/24+37/bellsoft-jdk24+37-linux-aarch64-musl-lite.tar.gz"
 
 permissions:
   contents: read
@@ -73,6 +73,7 @@ jobs:
           key: sdkman-amd64-${{ github.run_id }}
           restore-keys: |
             sdkman-amd64-
+          enableCrossOsArchive: true
       - name: Check if SDKMAN! is Already Installed
         id: check-sdkman
         run: |
@@ -145,7 +146,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        java_variant: [ "8", "8-orcl", "8-zing", "8-j9", "8-ibm", "11", "11-zing", "11-j9", "17", "17-zing", "17-j9", "17-graal", "21", "21-j9", "21-zing", "21-graal", "23", "23-graal" ]
+        java_variant: [ "8", "8-orcl", "8-zing", "8-j9", "8-ibm", "11", "11-zing", "11-j9", "17", "17-zing", "17-j9", "17-graal", "21", "21-j9", "21-zing", "21-graal", "24", "24-graal" ]
     steps:
       - uses: actions/checkout@v3
       - name: Try restore cache JDK ${{ matrix.java_variant }}
@@ -155,6 +156,7 @@ jobs:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
           key: jdk${{matrix.java_variant }}-amd64--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          enableCrossOsArchive: true
       - name: Is JDK cached?
         id: check-cache
         run: |
@@ -193,6 +195,7 @@ jobs:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
           key: jdk${{matrix.java_variant }}-amd64--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          enableCrossOsArchive: true
 
   cache-amd64-musl:
     runs-on: ubuntu-latest
@@ -202,7 +205,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "23-librca" ]
+        java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "24-librca" ]
     steps:
       - uses: actions/checkout@v3
       - name: Setup OS
@@ -216,6 +219,7 @@ jobs:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
           key: jdk${{matrix.java_variant }}-amd64-musl--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          enableCrossOsArchive: true
 
       - name: Is JDK cached?
         id: check-cache
@@ -241,6 +245,7 @@ jobs:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
           key: jdk${{matrix.java_variant }}-amd64-musl--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          enableCrossOsArchive: true
 
   cache-aarch64:
     needs: setup-sdkman-aarch64
@@ -250,7 +255,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        java_variant: [ "8", "8-zing", "8-j9", "11", "11-zing", "11-j9", "17", "17-zing", "17-j9", "17-graal", "21", "21-j9", "21-zing", "21-graal", "23", "23-graal" ]
+        java_variant: [ "8", "8-zing", "8-j9", "11", "11-zing", "11-j9", "17", "17-zing", "17-j9", "17-graal", "21", "21-j9", "21-zing", "21-graal", "24", "24-graal" ]
     steps:
       - uses: actions/checkout@v3
       - name: Cache JDK ${{ matrix.java_variant }}
@@ -260,6 +265,7 @@ jobs:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
           key: jdk${{matrix.java_variant }}-aarch64--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          enableCrossOsArchive: true
       - name: Is JDK cached?
         id: check-cache
         run: |
@@ -297,6 +303,7 @@ jobs:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
           key: jdk${{matrix.java_variant }}-aarch64--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          enableCrossOsArchive: true
 
   cache-aarch64-musl:
     runs-on:
@@ -305,7 +312,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "23-librca" ]
+        java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "24-librca" ]
     steps:
       - uses: actions/checkout@v3
       - name: Setup OS
@@ -319,6 +326,7 @@ jobs:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
           key: jdk${{matrix.java_variant }}-aarch64-musl--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          enableCrossOsArchive: true
 
       - name: Is JDK cached?
         id: check-cache
@@ -344,3 +352,4 @@ jobs:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
           key: jdk${{matrix.java_variant }}-aarch64-musl--${{ hashFiles('.github/workflows/cache_java.yml', '.github/scripts/java_setup.sh') }}
+          enableCrossOsArchive: true

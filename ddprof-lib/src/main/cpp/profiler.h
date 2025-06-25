@@ -6,10 +6,11 @@
 #ifndef _PROFILER_H
 #define _PROFILER_H
 
-#include "arch.h"
+#include "arch_dd.h"
 #include "arguments.h"
 #include "callTraceStorage.h"
 #include "codeCache.h"
+#include "common.h"
 #include "dictionary.h"
 #include "engine.h"
 #include "event.h"
@@ -36,8 +37,13 @@ __asm__(".symver exp,exp@GLIBC_2.17");
 #endif
 #endif
 
+#ifdef DEBUG
+#include <signal.h>
+static const char* force_stackwalk_crash_env = getenv("DDPROF_FORCE_STACKWALK_CRASH");
+#endif
+
 const int MAX_NATIVE_FRAMES = 128;
-const int RESERVED_FRAMES = 4;
+const int RESERVED_FRAMES   = 10;  // for synthetic frames
 
 enum EventMask { EM_CPU = 1 << 0, EM_WALL = 1 << 1, EM_ALLOC = 1 << 2 };
 
@@ -243,7 +249,7 @@ public:
   const char *getLibraryName(const char *native_symbol);
   const char *findNativeMethod(const void *address);
   CodeBlob *findRuntimeStub(const void *address);
-  bool isAddressInCode(const void *pc);
+  bool isAddressInCode(const void *pc, bool include_stubs = true);
 
   static void segvHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void busHandler(int signo, siginfo_t *siginfo, void *ucontext);
@@ -274,6 +280,19 @@ public:
 
   static void JNICALL ThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     instance()->onThreadEnd(jvmti, jni, thread);
+  }
+
+  // Keep backward compatibility with the upstream async-profiler
+  inline CodeCache* findLibraryByAddress(const void *address) {
+  #ifdef DEBUG
+    // we need this code to simulate segfault during stackwalking
+    // this is a safe place to do it since this wrapper is used solely from the 'vm' stackwalker implementation
+    if (force_stackwalk_crash_env) {
+      TEST_LOG("FORCE_SIGSEGV");
+      raise(SIGSEGV);
+    }
+  #endif
+    return Libraries::instance()->findLibraryByAddress(address);
   }
 
   friend class Recording;

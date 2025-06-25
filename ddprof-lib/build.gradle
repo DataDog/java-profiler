@@ -14,6 +14,13 @@ description = "Datadog Java Profiler Library"
 
 def component_version = project.hasProperty("ddprof_version") ? project.ddprof_version : project.version
 
+def props = new Properties()
+file("${rootDir}/gradle/ap-lock.properties").withInputStream { stream ->
+  props.load(stream)
+}
+
+def branch_lock = props.getProperty("branch")
+def commit_lock = props.getProperty("commit")
 
 // this feels weird but it is the only way invoking `./gradlew :ddprof-lib:*` tasks will work
 if (rootDir.toString().endsWith("ddprof-lib")) {
@@ -26,6 +33,13 @@ dependencies {
     project(':malloc-shim')
   }
   project(':ddprof-lib:gtest')
+}
+
+// Add a task to run all benchmarks
+tasks.register('runBenchmarks') {
+  dependsOn ':ddprof-lib:benchmarks:runBenchmark'
+  group = 'verification'
+  description = 'Run all benchmarks'
 }
 
 test {
@@ -80,6 +94,155 @@ tasks.register('copyExternalLibs', Copy) {
       include "**/*.dylib"
     }
     into "${projectDir}/build/classes/java/main/META-INF/native-libs"
+  }
+}
+
+def cloneAPTask = tasks.register('cloneAsyncProfiler') {
+  description = 'Clones async-profiler repo if directory is missing or updates it if commit hash differs'
+  inputs.file("${rootDir}/gradle/ap-lock.properties")
+  doFirst {
+    def targetDir = file("${projectDir}/build/async-profiler")
+    if (!targetDir.exists()) {
+      println "Cloning missing async-profiler git subdirectory..."
+      exec {
+        commandLine 'git', 'clone', '--branch', branch_lock, '--depth', '1', 'https://github.com/datadog/async-profiler.git', targetDir.absolutePath
+      }
+      exec {
+        workingDir targetDir.absolutePath
+        commandLine 'git', 'checkout', commit_lock
+      }
+    } else {
+      def currentCommit = ""
+      new ByteArrayOutputStream().withStream { os ->
+        exec {
+          workingDir targetDir.absolutePath
+          commandLine 'git', 'rev-parse', 'HEAD'
+          standardOutput = os
+        }
+        currentCommit = os.toString().trim()
+      }
+
+      if (currentCommit != commit_lock) {
+        println "async-profiler commit hash differs (current: ${currentCommit}, expected: ${commit_lock}), updating..."
+        exec {
+          workingDir targetDir.absolutePath
+          commandLine 'git', 'fetch', 'origin', branch_lock, '--depth', '1'
+        }
+        exec {
+          workingDir targetDir.absolutePath
+          commandLine 'git', 'checkout', commit_lock
+        }
+      } else {
+        println "async-profiler git subdirectory present with correct commit hash."
+      }
+    }
+  }
+}
+
+def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
+  configure {
+    dependsOn cloneAPTask
+  }
+  onlyIf {
+    !project.hasProperty("debug-ap")
+  }
+  description = 'Copy shared upstream files'
+  from("${projectDir}/build/async-profiler/src") {
+    include "arch.h"
+    include "incbin.h"
+    include "mutex.h"
+    include "mutex.cpp"
+    include "stackWalker.h"
+    include "stackWalker.cpp"
+    include "stackFrame*.cpp"
+    include "trap.h"
+    include "trap.cpp"
+    include "vmStructs.h"
+    include "vmStructs.cpp"
+  }
+  into "${projectDir}/src/main/cpp-external"
+}
+
+def patchStackFrame = tasks.register("patchStackFrame") {
+  description = 'Patch stackFrame_x64.cpp after copying'
+  configure {
+    dependsOn copyUpstreamFiles
+  }
+  doLast {
+    def file = file("${projectDir}/src/main/cpp-external/stackFrame_x64.cpp")
+    if (!file.exists()) throw new GradleException("File not found: ${file}")
+
+    def content = file.getText('UTF-8')
+    def original = content
+
+    // Add no_sanitize to unwindStub
+    content = content.replaceAll(
+      /(bool\s+StackFrame::unwindStub\s*\()/,
+      '__attribute__((no_sanitize("address"))) bool StackFrame::unwindStub('
+      )
+
+    // Replace *(unsigned int*)entry
+    content = content.replaceAll(
+      /entry\s*!=\s*NULL\s*&&\s*\*\(unsigned int\*\)\s*entry\s*==\s*0xec8b4855/,
+      '''entry != NULL && ([&] { unsigned int val; memcpy(&val, entry, sizeof(val)); return val; }()) == 0xec8b4855'''
+      )
+
+    // Add no_sanitize to checkInterruptedSyscall
+    content = content.replaceAll(
+      /(bool\s+StackFrame::checkInterruptedSyscall\s*\()/,
+      '__attribute__((no_sanitize("address"))) bool StackFrame::checkInterruptedSyscall('
+      )
+
+    // Replace *(int*)(pc - 6)
+    content = content.replaceAll(
+      /\*\(int\*\)\s*\(pc\s*-\s*6\)/,
+      '([&] { int val; memcpy(&val, (const void*)(pc - 6), sizeof(val)); return val; }())'
+      )
+
+    // Insert #include <cstring> if missing
+    if (!content.contains('#include <cstring>')) {
+      def lines = content.readLines()
+      def lastInclude = lines.findLastIndexOf { it.startsWith('#include') }
+      if (lastInclude >= 0) lines.add(lastInclude + 1, '#include <cstring>')
+      else lines.add(0, '#include <cstring>')
+      content = lines.join('\n')
+    }
+
+    if (content != original) {
+      file.write(content, 'UTF-8')
+      println "Patched stackFrame_x64.cpp"
+    }
+  }
+}
+
+def patchStackWalker = tasks.register("patchStackWalker") {
+  description = 'Patch stackWalker.cpp after copying'
+  configure {
+    dependsOn copyUpstreamFiles
+  }
+  doLast {
+    def file = file("${projectDir}/src/main/cpp-external/stackWalker.cpp")
+    if (!file.exists()) throw new GradleException("File not found: ${file}")
+
+    def content = file.getText('UTF-8')
+    def original = content
+
+    // Add no_sanitize to walkVM
+    content = content.replaceAll(
+      /(int\s+StackWalker::walkVM\s*\()/,
+      '__attribute__((no_sanitize("address"))) int StackWalker::walkVM('
+      )
+
+    if (content != original) {
+      file.write(content, 'UTF-8')
+      println "Patched stackWalker.cpp"
+    }
+  }
+}
+
+def initSubrepoTask = tasks.register('initSubrepo') {
+  configure {
+    dependsOn copyUpstreamFiles, patchStackFrame, patchStackWalker
   }
 }
 
@@ -158,6 +321,7 @@ tasks.whenTaskAdded { task ->
             toolChain = task.toolChain
             targetPlatform = task.targetPlatform
             includes task.includes
+            includes project(':ddprof-lib').file('src/main/cpp-external').toString()
             includes project(':ddprof-lib').file('src/main/cpp').toString()
             includes "${javaHome()}/include"
             includes project(':malloc-shim').file('src/main/public').toString()
@@ -257,7 +421,9 @@ tasks.withType(LinkSharedLibrary).configureEach {
 library {
   baseName = "javaProfiler"
   source.from file('src/main/cpp')
+  source.from file('src/main/cpp-external')
   privateHeaders.from file('src/main/cpp')
+  privateHeaders.from file('src/main/cpp-external')
 
   // aarch64 support is still incubating
   // for the time being an aarch64 linux machine will match 'machines.linux.x86_64'
@@ -332,6 +498,10 @@ gradle.projectsEvaluated {
     def copyReleaseLibs = tasks.findByName("copyReleaseLibs")
     if (javadocTask != null && copyReleaseLibs != null) {
       javadocTask.dependsOn copyReleaseLibs
+    }
+    def initTask = tasks.findByName("initSubrepo")
+    if (initTask != null) {
+      compileTask.dependsOn initTask
     }
   }
 }
@@ -428,4 +598,8 @@ tasks.withType(AbstractPublishToMaven).configureEach {
   rootProject.subprojects {
     mustRunAfter tasks.matching { it instanceof VerificationTask }
   }
+}
+
+clean {
+  delete "${projectDir}/src/main/cpp-external"
 }

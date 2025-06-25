@@ -34,17 +34,17 @@ import java.util.Map;
  * libjavaProfiler.so.
  */
 public final class JavaProfiler {
-    private static final Unsafe UNSAFE;
+    static final Unsafe UNSAFE;
+    static final boolean isJDK8;
     static {
         Unsafe unsafe = null;
         String version = System.getProperty("java.version");
-        if (version.startsWith("1.8")) {
-            try {
-                Field f = Unsafe.class.getDeclaredField("theUnsafe");
-                f.setAccessible(true);
-                unsafe = (Unsafe) f.get(null);
-            } catch (Exception ignore) { }
-        }
+        isJDK8 = version.startsWith("1.8");
+        try {
+            Field f = Unsafe.class.getDeclaredField("theUnsafe");
+            f.setAccessible(true);
+            unsafe = (Unsafe) f.get(null);
+        } catch (Exception ignore) { }
         UNSAFE = unsafe;
     }
 
@@ -66,6 +66,7 @@ public final class JavaProfiler {
 
     private ByteBuffer[] contextStorage;
     private long[] contextBaseOffsets;
+    private static final ByteBuffer SENTINEL = ByteBuffer.allocate(0);
 
     private JavaProfiler() {
     }
@@ -127,7 +128,7 @@ public final class JavaProfiler {
         if (this.contextStorage == null) {
             int maxPages = getMaxContextPages0();
             if (maxPages > 0) {
-                if (UNSAFE != null) {
+                if (isJDK8) {
                     contextBaseOffsets = new long[maxPages];
                     // be sure to choose an illegal address as a sentinel value
                     Arrays.fill(contextBaseOffsets, Long.MIN_VALUE);
@@ -227,7 +228,7 @@ public final class JavaProfiler {
      */
     public void setContext(long spanId, long rootSpanId) {
         int tid = TID.get();
-        if (UNSAFE != null) {
+        if (isJDK8) {
             setContextJDK8(tid, spanId, rootSpanId);
         } else {
             setContextByteBuffer(tid, spanId, rootSpanId);
@@ -239,6 +240,9 @@ public final class JavaProfiler {
             return;
         }
         long pageOffset = getPageUnsafe(tid);
+        if (pageOffset == 0) {
+            return;
+        }
         int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
         long base = pageOffset + index;
         UNSAFE.putLong(base + SPAN_OFFSET, spanId);
@@ -251,20 +255,27 @@ public final class JavaProfiler {
             return;
         }
         ByteBuffer page = getPage(tid);
+        if (page == SENTINEL) {
+            return;
+        }
         int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
         page.putLong(index + SPAN_OFFSET, spanId);
         page.putLong(index + ROOT_SPAN_OFFSET, rootSpanId);
         page.putLong(index + CHECKSUM_OFFSET, spanId ^ rootSpanId);
     }
 
-
-
     private ByteBuffer getPage(int tid) {
         int pageIndex = tid / PAGE_SIZE;
         ByteBuffer page = contextStorage[pageIndex];
         if (page == null) {
             // the underlying page allocation is atomic so we don't care which view we have over it
-            contextStorage[pageIndex] = page = getContextPage0(tid).order(ByteOrder.LITTLE_ENDIAN);
+            ByteBuffer buffer = getContextPage0(tid);
+            if (buffer == null) {
+                page = SENTINEL;
+            } else {
+                page = buffer.order(ByteOrder.LITTLE_ENDIAN);
+            }
+            contextStorage[pageIndex] = page;
         }
         return page;
     }
@@ -292,7 +303,7 @@ public final class JavaProfiler {
      */
     public void setContextValue(int offset, int value) {
         int tid = TID.get();
-        if (UNSAFE != null) {
+        if (isJDK8) {
             setContextJDK8(tid, offset, value);
         } else {
             setContextByteBuffer(tid, offset, value);
@@ -304,6 +315,9 @@ public final class JavaProfiler {
             return;
         }
         long pageOffset = getPageUnsafe(tid);
+        if (pageOffset == 0) {
+            return;
+        }
         UNSAFE.putInt(pageOffset + addressOf(tid, offset), value);
     }
 
@@ -312,12 +326,15 @@ public final class JavaProfiler {
             return;
         }
         ByteBuffer page = getPage(tid);
+        if (page == SENTINEL) {
+            return;
+        }
         page.putInt(addressOf(tid, offset), value);
     }
 
     void copyTags(int[] snapshot) {
         int tid = TID.get();
-        if (UNSAFE != null) {
+        if (isJDK8) {
             copyTagsJDK8(tid, snapshot);
         } else {
             copyTagsByteBuffer(tid, snapshot);
@@ -329,6 +346,9 @@ public final class JavaProfiler {
             return;
         }
         long pageOffset = getPageUnsafe(tid);
+        if (pageOffset == 0) {
+            return;
+        }
         long address = pageOffset + addressOf(tid, 0);
         for (int i = 0; i < snapshot.length; i++) {
             snapshot[i] = UNSAFE.getInt(address);
@@ -341,6 +361,9 @@ public final class JavaProfiler {
             return;
         }
         ByteBuffer page = getPage(tid);
+        if (page == SENTINEL) {
+            return;
+        }
         int address = addressOf(tid, 0);
         for (int i = 0; i < snapshot.length; i++) {
             snapshot[i] = page.getInt(address + i * Integer.BYTES);

@@ -16,7 +16,7 @@
 #ifndef JAVA_PROFILER_LIBRARY_COUNTERS_H
 #define JAVA_PROFILER_LIBRARY_COUNTERS_H
 
-#include "arch.h"
+#include "arch_dd.h"
 #include <cstring>
 #include <vector>
 
@@ -43,6 +43,7 @@
   X(CONTEXT_BOUNDS_MISS_GETS, "context_bounds_miss_gets")                      \
   X(CONTEXT_CHECKSUM_REJECT_GETS, "context_checksum_reject_gets")              \
   X(CONTEXT_NULL_PAGE_GETS, "context_null_page_gets")                          \
+  X(CONTEXT_ALLOC_FAILS, "context_alloc_fails")                                \
   X(CALLTRACE_STORAGE_BYTES, "calltrace_storage_bytes")                        \
   X(CALLTRACE_STORAGE_TRACES, "calltrace_storage_traces")                      \
   X(LINEAR_ALLOCATOR_BYTES, "linear_allocator_bytes")                          \
@@ -59,7 +60,9 @@
   X(AGCT_NOT_JAVA, "agct_not_java")                                            \
   X(AGCT_NATIVE_NO_JAVA_CONTEXT, "agct_native_no_java_context")                \
   X(AGCT_BLOCKED_IN_VM, "agct_blocked_in_vm")                                  \
-  X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")
+  X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
+  X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
+  X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS

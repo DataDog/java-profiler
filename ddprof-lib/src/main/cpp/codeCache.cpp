@@ -162,15 +162,6 @@ void CodeCache::sort() {
     _max_address = _blobs[_count - 1]._end;
 }
 
-void CodeCache::mark(NamePredicate predicate) {
-  for (int i = 0; i < _count; i++) {
-    const char *blob_name = _blobs[i]._name;
-    if (blob_name != NULL && predicate(blob_name)) {
-      NativeFunc::mark(blob_name);
-    }
-  }
-}
-
 CodeBlob *CodeCache::findBlob(const char *name) {
   for (int i = 0; i < _count; i++) {
     const char *blob_name = _blobs[i]._name;
@@ -190,7 +181,7 @@ CodeBlob *CodeCache::findBlobByAddress(const void *address) {
   return NULL;
 }
 
-const char *CodeCache::binarySearch(const void *address) {
+const void *CodeCache::binarySearch(const void *address, const char **name) {
   int low = 0;
   int high = _count - 1;
 
@@ -201,7 +192,10 @@ const char *CodeCache::binarySearch(const void *address) {
     } else if (_blobs[mid]._start > address) {
       high = mid - 1;
     } else {
-      return _blobs[mid]._name;
+      if (name != NULL) {
+        *name = _blobs[mid]._name;
+      }
+      return _blobs[mid]._start;
     }
   }
 
@@ -210,7 +204,12 @@ const char *CodeCache::binarySearch(const void *address) {
   // point beyond the function.
   if (low > 0 && (_blobs[low - 1]._start == _blobs[low - 1]._end ||
                   _blobs[low - 1]._end == address)) {
-    return _blobs[low - 1]._name;
+
+    if (name != NULL) {
+      *name = _blobs[low - 1]._name;
+    }
+
+    return _blobs[low - 1]._start;
   }
   return _name;
 }
