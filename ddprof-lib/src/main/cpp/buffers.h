@@ -88,6 +88,7 @@ public:
   // the trickery of RecordingBuffer extending Buffer::_data array may trip off asan on aarch64
   __attribute__((no_sanitize("bounds")))
   #endif
+  __attribute__((no_sanitize("undefined")))
   void put16(short v) {
     assert(_offset + 2 < limit());
     *(short *)(_data + _offset) = htons(v);

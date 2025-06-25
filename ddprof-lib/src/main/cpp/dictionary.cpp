@@ -30,7 +30,12 @@ static inline char *allocateKey(const char *key, size_t length) {
 
 static inline bool keyEquals(const char *candidate, const char *key,
                              size_t length) {
-  return strncmp(candidate, key, length) == 0 && candidate[length] == 0;
+  if (strncmp(candidate, key, length) != 0) {
+    return false;
+  }
+  
+  size_t candidate_len = strlen(candidate);
+  return candidate_len == length;
 }
 
 Dictionary::~Dictionary() {
