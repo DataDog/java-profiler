@@ -40,6 +40,7 @@ public class ThreadFilterBenchmark extends Configuration {
     @Setup(Level.Trial)
     public void setup() throws IOException {
         System.out.println("Setting up benchmark...");
+        System.out.println("Thread filters enabled: " + useThreadFilters);
         System.out.println("Creating thread pool with " + NUM_THREADS + " threads");
         executorService = Executors.newFixedThreadPool(NUM_THREADS);
         System.out.println("Getting profiler instance");
@@ -110,6 +111,7 @@ public class ThreadFilterBenchmark extends Configuration {
         // Stop the profiler if it's active
         try {
             profiler.stop();
+            System.out.println("Profiler stopped.");
         } catch (IllegalStateException e) {
             System.out.println("Profiler was not active at teardown.");
         }
@@ -144,6 +146,10 @@ public class ThreadFilterBenchmark extends Configuration {
         }
     }
 
+    public void setUseThreadFilters(boolean useThreadFilters) {
+        this.useThreadFilters = useThreadFilters;
+    }
+
     @Benchmark
     @BenchmarkMode(Mode.Throughput)
     @Fork(value = 1, warmups = 1)
@@ -156,7 +162,7 @@ public class ThreadFilterBenchmark extends Configuration {
         startLatch = new CountDownLatch(NUM_THREADS);
         stopLatch = new CountDownLatch(NUM_THREADS);
 
-        // Start all worker threads
+        // Start all worker threads[]
         for (int i = 0; i < NUM_THREADS; i++) {
             final int threadId = i;
             executorService.submit(() -> {
