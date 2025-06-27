@@ -72,7 +72,7 @@ jobs:
         if: steps.set_enabled.outputs.enabled == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev
+          sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev binutils
           if [[ ${{ matrix.java_version }} =~ "-zing" ]]; then
             sudo apt-get install -y g++-9 gcc-9
             sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 100 --slave /usr/bin/g++ g++ /usr/bin/g++-9
@@ -135,7 +135,7 @@ jobs:
     steps:
       - name: Setup OS
         run: |
-          apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar >/dev/null
+          apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar binutils >/dev/null
       - uses: actions/checkout@v3
       - name: Cache Gradle Wrapper Binaries
         uses: actions/cache@v4
@@ -286,7 +286,7 @@ jobs:
           sudo apt update -y
           sudo apt remove -y g++
           sudo apt autoremove -y
-          sudo apt install -y curl zip unzip clang make build-essential
+          sudo apt install -y curl zip unzip clang make build-essential binutils
           if [[ ${{ matrix.java_version }} =~ "-zing" ]]; then
             sudo apt -y install g++-9 gcc-9
             sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 100 --slave /usr/bin/g++ g++ /usr/bin/g++-9

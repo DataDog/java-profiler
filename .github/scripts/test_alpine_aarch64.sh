@@ -29,6 +29,6 @@ JAVA_VERSION=$("${JAVA_TEST_HOME}/bin/java" -version 2>&1 | awk -F '"' '/version
 }')
 export JAVA_VERSION
 
-apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar >/dev/null
+apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar binutils >/dev/null
 
 ./gradlew -PCI -PkeepJFRs :ddprof-test:test${CONFIG} --no-daemon --parallel --build-cache --no-watch-fs
