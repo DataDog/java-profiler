@@ -366,11 +366,55 @@ tasks.whenTaskAdded { task ->
             outputs.file linkedFile
           }
           if (config.name == 'release') {
-            def stripTask = tasks.register('stripLibRelease', StripSymbols) {
+            def extractDebugTask = tasks.register('extractDebugLibRelease', Exec) {
               onlyIf {
                 config.active
               }
               dependsOn linkTask
+              description = 'Extract debug symbols from release library'
+              workingDir project.buildDir
+
+              def sourceFile = tasks.linkLibRelease.linkedFile.get()
+              def debugFile = file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/debug/libjavaProfiler.${os().isLinux() ? 'so' : 'dylib'}.debug")
+
+              inputs.file sourceFile
+              outputs.file debugFile
+
+              doFirst {
+                // Ensure debug directory exists
+                debugFile.parentFile.mkdirs()
+              }
+
+              if (os().isLinux()) {
+                commandLine 'objcopy', '--only-keep-debug', sourceFile.asFile.absolutePath, debugFile.absolutePath
+              } else {
+                // For macOS, we'll use dsymutil instead
+                commandLine 'dsymutil', sourceFile.asFile.absolutePath, '-o', debugFile.absolutePath.replace('.debug', '.dSYM')
+              }
+            }
+
+            def addDebugLinkTask = tasks.register('addDebugLinkLibRelease', Exec) {
+              onlyIf {
+                config.active && os().isLinux()
+              }
+              dependsOn extractDebugTask
+              description = 'Add debug link to the original library'
+
+              def sourceFile = tasks.linkLibRelease.linkedFile.get()
+              def debugFile = file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/debug/libjavaProfiler.${os().isLinux() ? 'so' : 'dylib'}.debug")
+
+              inputs.file sourceFile
+              inputs.file debugFile
+              outputs.file sourceFile // modifies the source file
+
+              commandLine 'objcopy', '--add-gnu-debuglink=' + debugFile.absolutePath, sourceFile.asFile.absolutePath
+            }
+
+            def stripTask = tasks.register('stripLibRelease', StripSymbols) {
+              onlyIf {
+                config.active
+              }
+              dependsOn addDebugLinkTask
               targetPlatform = tasks.linkLibRelease.targetPlatform
               toolChain = tasks.linkLibRelease.toolChain
               binaryFile = tasks.linkLibRelease.linkedFile.get()
@@ -378,6 +422,16 @@ tasks.whenTaskAdded { task ->
               inputs.file binaryFile
               outputs.file outputFile
             }
+
+            // Create a task to copy debug files to the final location
+            def copyDebugTask = tasks.register('copyReleaseDebugFiles', Copy) {
+              dependsOn extractDebugTask
+              from file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/debug")
+              into file(libraryTargetPath(config.name + '-debug'))
+              include '**/*.debug'
+              include '**/*.dSYM/**'
+            }
+
             def copyTask = tasks.findByName("copyReleaseLibs")
             if (copyTask != null) {
               copyTask.dependsOn stripTask
