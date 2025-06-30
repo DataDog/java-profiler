@@ -207,7 +207,9 @@ void WallClockJVMTI::timerLoop() {
       }
       mode = convertJvmExecutionState(raw_thread_state);
     }
-    if (state == OSThreadState::UNKNOWN) {
+    if (state == OSThreadState::TERMINATED) {
+      return false;
+    } else if (state == OSThreadState::UNKNOWN) {
       state = OSThreadState::RUNNABLE;
     }
     event._thread_state = state;
