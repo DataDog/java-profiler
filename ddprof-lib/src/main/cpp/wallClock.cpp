@@ -173,19 +173,18 @@ void WallClockJVMTI::timerLoop() {
 
         bool do_filter = Profiler::instance()->threadFilter()->enabled();
         int self = OS::threadId();
-        JNIEnv *env = VM::jni();
 
         for (int i = 0; i < threads_count; i++) {
           jthread thread = threads_ptr[i];
           if (thread != nullptr) {
             ddprof::VMThread* nThread = static_cast<ddprof::VMThread*>(VMThread::fromJavaThread(jni, thread));
-            if (nThread != nullptr) {
-              int tid = nThread->osThreadId();
-              if (tid != self && (!do_filter || Profiler::instance()->threadFilter()->accept(tid))) {
-                threads.push_back({nThread, thread});
-              }
+            if (nThread == nullptr) {
+              continue;
             }
-            env->DeleteLocalRef(thread);
+            int tid = nThread->osThreadId();
+            if (tid != self && (!do_filter || Profiler::instance()->threadFilter()->accept(tid))) {
+              threads.push_back({nThread, thread});
+            }
           }
         }
         jvmti->Deallocate((unsigned char*)threads_ptr);
@@ -219,7 +218,11 @@ void WallClockJVMTI::timerLoop() {
     return true;
   };
 
-  timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, _reservoir_size, _interval);
+  auto cleanThreads = [](ThreadEntry& thread_entry) {
+    VM::jni()->DeleteLocalRef(thread_entry.java);
+  };
+
+  timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, cleanThreads, _reservoir_size, _interval);
   // Don't forget to detach the thread
   VM::detachThread();
 }
@@ -258,5 +261,8 @@ void WallClockASGCT::timerLoop() {
       return true;
     };
 
-    timerLoopCommon<int>(collectThreads, sampleThreads, _reservoir_size, _interval);
+    auto doNothing = [](int tid) {
+    };
+
+    timerLoopCommon<int>(collectThreads, sampleThreads, doNothing, _reservoir_size, _interval);
 }

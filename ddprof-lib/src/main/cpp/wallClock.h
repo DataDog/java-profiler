@@ -50,8 +50,8 @@ class BaseWallClock : public Engine {
 
     bool isEnabled() const;
 
-    template <typename ThreadType, typename CollectThreadsFunc, typename SampleThreadsFunc>
-    void timerLoopCommon(CollectThreadsFunc collectThreads, SampleThreadsFunc sampleThreads, int reservoirSize, u64 interval) {
+    template <typename ThreadType, typename CollectThreadsFunc, typename SampleThreadsFunc, typename CleanThreadFunc>
+    void timerLoopCommon(CollectThreadsFunc collectThreads, SampleThreadsFunc sampleThreads, CleanThreadFunc cleanThreads, int reservoirSize, u64 interval) {
       if (!_enabled.load(std::memory_order_acquire)) {
         return;
       }
@@ -101,6 +101,10 @@ class BaseWallClock : public Engine {
           startTime = endTime;
         } else {
           epoch.clean();
+        }
+
+        for (ThreadType thread : threads) {
+          cleanThreads(thread);
         }
 
         threads.clear();
