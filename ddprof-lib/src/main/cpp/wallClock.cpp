@@ -173,18 +173,19 @@ void WallClockJVMTI::timerLoop() {
 
         bool do_filter = Profiler::instance()->threadFilter()->enabled();
         int self = OS::threadId();
+        JNIEnv *env = VM::jni();
 
         for (int i = 0; i < threads_count; i++) {
           jthread thread = threads_ptr[i];
           if (thread != nullptr) {
             ddprof::VMThread* nThread = static_cast<ddprof::VMThread*>(VMThread::fromJavaThread(jni, thread));
-            if (nThread == nullptr) {
-              continue;
+            if (nThread != nullptr) {
+              int tid = nThread->osThreadId();
+              if (tid != self && (!do_filter || Profiler::instance()->threadFilter()->accept(tid))) {
+                threads.push_back({nThread, thread});
+              }
             }
-            int tid = nThread->osThreadId();
-            if (tid != self && (!do_filter || Profiler::instance()->threadFilter()->accept(tid))) {
-              threads.push_back({nThread, thread});
-            }
+            env->DeleteLocalRef(thread);
           }
         }
         jvmti->Deallocate((unsigned char*)threads_ptr);
