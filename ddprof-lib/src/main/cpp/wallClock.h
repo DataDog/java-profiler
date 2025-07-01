@@ -165,6 +165,7 @@ class WallClockJVMTI : public BaseWallClock {
     struct ThreadEntry {
         ddprof::VMThread* native;
         jthread java;
+        int tid;
     };
     WallClockJVMTI() : BaseWallClock() {}
     const char* name() override {

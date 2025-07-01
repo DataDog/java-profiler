@@ -607,6 +607,7 @@ u32 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
 
     int num_frames = 0;
 
+    // This is a racy call, because the thread may not be alive at this moment.
     if (VM::jvmti()->GetStackTrace(thread, 0, _max_stack_depth, jvmti_frames, &num_frames) == JVMTI_ERROR_NONE && num_frames > 0) {
       // Convert to AsyncGetCallTrace format.
       // Note: jvmti_frames and frames may overlap.
@@ -618,18 +619,17 @@ u32 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
         // see https://github.com/async-profiler/async-profiler/pull/1090
         LP64_ONLY(frames[i].padding = 0;)
       }
-    }
 
-    call_trace_id = _call_trace_storage.put(num_frames, frames, false, counter);
-    u64 duration = TSC::ticks() - startTime;
-    if (duration > 0) {
-      Counters::increment(UNWINDING_TIME_JVMTI, duration); // increment the JVMTI specific counter
-    }
+        call_trace_id = _call_trace_storage.put(num_frames, frames, false, counter);
+        u64 duration = TSC::ticks() - startTime;
+        if (duration > 0) {
+          Counters::increment(UNWINDING_TIME_JVMTI, duration); // increment the JVMTI specific counter
+        }
+      }
+      if (!deferred) {
+        _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
+      }
   }
-  if (!deferred) {
-    _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
-  }
-
   _locks[lock_index].unlock();
   return call_trace_id;
 }

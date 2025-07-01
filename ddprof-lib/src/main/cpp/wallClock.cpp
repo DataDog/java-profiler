@@ -183,7 +183,7 @@ void WallClockJVMTI::timerLoop() {
             }
             int tid = nThread->osThreadId();
             if (tid != self && (!do_filter || Profiler::instance()->threadFilter()->accept(tid))) {
-              threads.push_back({nThread, thread});
+              threads.push_back({nThread, thread, tid});
             }
           }
         }
@@ -217,7 +217,7 @@ void WallClockJVMTI::timerLoop() {
     event._execution_mode = mode;
     event._weight =  1;
 
-    Profiler::instance()->recordJVMTISample(1, thread_entry.native->osThreadId(), thread_entry.java, BCI_WALL, &event, false);
+    Profiler::instance()->recordJVMTISample(1, thread_entry.tid, thread_entry.java, BCI_WALL, &event, false);
     return true;
   };
 
