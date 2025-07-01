@@ -63,7 +63,7 @@ def getMissingToolErrorMessage(toolName, installInstructions) {
 def createDebugExtractionTask(config, linkTask) {
   return tasks.register('extractDebugLibRelease', Exec) {
     onlyIf {
-      config.active && !shouldSkipDebugExtraction()
+      !shouldSkipDebugExtraction()
     }
     dependsOn linkTask
     description = 'Extract debug symbols from release library'
@@ -109,7 +109,7 @@ def createDebugExtractionTask(config, linkTask) {
 def createDebugLinkTask(config, linkTask, extractDebugTask) {
   return tasks.register('addDebugLinkLibRelease', Exec) {
     onlyIf {
-      config.active && os().isLinux() && !shouldSkipDebugExtraction()
+      os().isLinux() && !shouldSkipDebugExtraction()
     }
     dependsOn extractDebugTask
     description = 'Add debug link to the original library'
@@ -148,16 +148,14 @@ def createDebugCopyTask(config, extractDebugTask) {
 
 // Main function to setup debug extraction for release builds
 def setupDebugExtraction(config, linkTask) {
-  if (config.name == 'release') {
+  if (config.name == 'release' && config.active && !project.hasProperty('skip-native')) {
     // Create all debug-related tasks
     def extractDebugTask = createDebugExtractionTask(config, linkTask)
     def addDebugLinkTask = createDebugLinkTask(config, linkTask, extractDebugTask)
 
     // Create the strip task and configure it properly
     def stripTask = tasks.register('stripLibRelease', StripSymbols) {
-      onlyIf {
-        config.active
-      }
+      // No onlyIf needed here - setupDebugExtraction already handles the main conditions
       dependsOn addDebugLinkTask
     }
 
@@ -176,6 +174,9 @@ def setupDebugExtraction(config, linkTask) {
     if (copyTask != null) {
       copyTask.dependsOn stripTask
       copyTask.inputs.files stripTask.get().outputs.files
+
+      // Create an extra folder for the debug symbols
+      copyTask.dependsOn copyDebugTask
     }
   }
 }
