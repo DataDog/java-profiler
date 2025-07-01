@@ -153,6 +153,11 @@ void WallClockASGCT::initialize(Arguments& args) {
   OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
 }
 
+/* This method is extremely racy!
+ * Thread references that are returned from JVMTI GetAllThreads(), only guarantee thread objects
+ * not to be collected by GC, they don't prevent threads from exiting.
+ * We have to be extremely cautious when accessing thread's data.
+ */
 void WallClockJVMTI::timerLoop() {
     // Check for enablement before attaching/dettaching the current thread
   if (!isEnabled()) {

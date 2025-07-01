@@ -1,9 +1,10 @@
 #ifndef JAVA_PROFILER_LIBRARY_THREAD_STATE_H
 #define JAVA_PROFILER_LIBRARY_THREAD_STATE_H
 
+#include "arch.h"
 #include "jvmti.h"
 
-enum class OSThreadState : int {
+enum class OSThreadState : u32 {
   UNKNOWN = 0,
   NEW = 1,      // The thread has been initialized but yet started
   RUNNABLE = 2, // Has been started and is runnable, but not necessarily running

@@ -20,6 +20,7 @@
 #include "common.h"
 #include "jniHelper.h"
 #include "jvmHeap.h"
+#include "safeAccess.h"
 #include "threadState.h"
 #include "vmEntry.h"
 #include "vmStructs.h"
@@ -135,6 +136,17 @@ namespace ddprof {
         if (osthread != nullptr) {
           return static_cast<OSThreadState>(
               *(int *)(osthread + ddprof::VMStructs::osthread_state_offset()));
+        }
+      }
+      return OSThreadState::UNKNOWN;
+    }
+
+    OSThreadState osThreadStateSafe() {
+      if (ddprof::VMStructs::thread_osthread_offset() >= 0 && ddprof::VMStructs::osthread_state_offset() >= 0) {
+        u32 *osthread = *(u32 **)at(ddprof::VMStructs::thread_osthread_offset());
+        if (osthread != nullptr) {
+          return static_cast<OSThreadState>(
+              SafeAccess::load32(osthread, static_cast<u32>(OSThreadState::TERMINATED)));
         }
       }
       return OSThreadState::UNKNOWN;
