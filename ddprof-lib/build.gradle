@@ -8,6 +8,178 @@ plugins {
   id 'de.undercouch.download' version '4.1.1'
 }
 
+// Helper function to check if objcopy is available
+def checkObjcopyAvailable() {
+  try {
+    def process = ['objcopy', '--version'].execute()
+    process.waitFor()
+    return process.exitValue() == 0
+  } catch (Exception e) {
+    return false
+  }
+}
+
+// Helper function to check if dsymutil is available (for macOS)
+def checkDsymutilAvailable() {
+  try {
+    def process = ['dsymutil', '--version'].execute()
+    process.waitFor()
+    return process.exitValue() == 0
+  } catch (Exception e) {
+    return false
+  }
+}
+
+// Helper function to check if debug extraction should be skipped
+def shouldSkipDebugExtraction() {
+  return project.hasProperty('skip-debug-extraction')
+}
+
+// Helper function to get debug file path for a given config
+def getDebugFilePath(config) {
+  def extension = os().isLinux() ? 'so' : 'dylib'
+  return file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/debug/libjavaProfiler.${extension}.debug")
+}
+
+// Helper function to get stripped file path for a given config
+def getStrippedFilePath(config) {
+  def extension = os().isLinux() ? 'so' : 'dylib'
+  return file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/stripped/libjavaProfiler.${extension}")
+}
+
+// Helper function to create error message for missing tools
+def getMissingToolErrorMessage(toolName, installInstructions) {
+  return """
+    |${toolName} is not available but is required for split debug information.
+    |
+    |To fix this issue:
+    |${installInstructions}
+    |
+    |If you want to build without split debug info, set -Pskip-debug-extraction=true
+  """.stripMargin()
+}
+
+// Helper function to create debug extraction task
+def createDebugExtractionTask(config, linkTask) {
+  return tasks.register('extractDebugLibRelease', Exec) {
+    onlyIf {
+      config.active && !shouldSkipDebugExtraction()
+    }
+    dependsOn linkTask
+    description = 'Extract debug symbols from release library'
+    workingDir project.buildDir
+
+    doFirst {
+      def sourceFile = linkTask.get().linkedFile.get().asFile
+      def debugFile = getDebugFilePath(config)
+
+      // Check for required tools before proceeding
+      if (os().isLinux()) {
+        if (!checkObjcopyAvailable()) {
+          def installInstructions = """
+            |  - On Ubuntu/Debian: sudo apt-get install binutils
+            |  - On RHEL/CentOS: sudo yum install binutils  
+            |  - On Alpine: apk add binutils""".stripMargin()
+          throw new GradleException(getMissingToolErrorMessage('objcopy', installInstructions))
+        }
+      } else if (os().isMacOsX()) {
+        if (!checkDsymutilAvailable()) {
+          def installInstructions = """
+            |  dsymutil should be available with Xcode command line tools:
+            |  xcode-select --install""".stripMargin()
+          throw new GradleException(getMissingToolErrorMessage('dsymutil', installInstructions))
+        }
+      }
+
+      // Ensure debug directory exists
+      debugFile.parentFile.mkdirs()
+
+      // Set the command line based on platform
+      if (os().isLinux()) {
+        commandLine = ['objcopy', '--only-keep-debug', sourceFile.absolutePath, debugFile.absolutePath]
+      } else {
+        // For macOS, we'll use dsymutil instead
+        commandLine = ['dsymutil', sourceFile.absolutePath, '-o', debugFile.absolutePath.replace('.debug', '.dSYM')]
+      }
+    }
+  }
+}
+
+// Helper function to create debug link task (Linux only)
+def createDebugLinkTask(config, linkTask, extractDebugTask) {
+  return tasks.register('addDebugLinkLibRelease', Exec) {
+    onlyIf {
+      config.active && os().isLinux() && !shouldSkipDebugExtraction()
+    }
+    dependsOn extractDebugTask
+    description = 'Add debug link to the original library'
+
+    doFirst {
+      def sourceFile = linkTask.get().linkedFile.get().asFile
+      def debugFile = getDebugFilePath(config)
+
+      // Check for objcopy availability
+      if (!checkObjcopyAvailable()) {
+        def installInstructions = """
+          |  - On Ubuntu/Debian: sudo apt-get install binutils
+          |  - On RHEL/CentOS: sudo yum install binutils
+          |  - On Alpine: apk add binutils""".stripMargin()
+        throw new GradleException(getMissingToolErrorMessage('objcopy', installInstructions))
+      }
+
+      commandLine = ['objcopy', '--add-gnu-debuglink=' + debugFile.absolutePath, sourceFile.absolutePath]
+    }
+  }
+}
+
+// Helper function to create debug file copy task
+def createDebugCopyTask(config, extractDebugTask) {
+  return tasks.register('copyReleaseDebugFiles', Copy) {
+    onlyIf {
+      !shouldSkipDebugExtraction()
+    }
+    dependsOn extractDebugTask
+    from file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/debug")
+    into file(libraryTargetPath(config.name + '-debug'))
+    include '**/*.debug'
+    include '**/*.dSYM/**'
+  }
+}
+
+// Main function to setup debug extraction for release builds
+def setupDebugExtraction(config, linkTask) {
+  if (config.name == 'release') {
+    // Create all debug-related tasks
+    def extractDebugTask = createDebugExtractionTask(config, linkTask)
+    def addDebugLinkTask = createDebugLinkTask(config, linkTask, extractDebugTask)
+
+    // Create the strip task and configure it properly
+    def stripTask = tasks.register('stripLibRelease', StripSymbols) {
+      onlyIf {
+        config.active
+      }
+      dependsOn addDebugLinkTask
+    }
+
+    // Configure the strip task after registration
+    stripTask.configure {
+      targetPlatform = linkTask.get().targetPlatform
+      toolChain = linkTask.get().toolChain
+      binaryFile = linkTask.get().linkedFile.get().asFile
+      outputFile = getStrippedFilePath(config)
+    }
+
+    def copyDebugTask = createDebugCopyTask(config, extractDebugTask)
+
+    // Wire up the copy task to use stripped binaries
+    def copyTask = tasks.findByName("copyReleaseLibs")
+    if (copyTask != null) {
+      copyTask.dependsOn stripTask
+      copyTask.inputs.files stripTask.get().outputs.files
+    }
+  }
+}
+
 def libraryName = "ddprof"
 
 description = "Datadog Java Profiler Library"
@@ -366,77 +538,7 @@ tasks.whenTaskAdded { task ->
             outputs.file linkedFile
           }
           if (config.name == 'release') {
-            def extractDebugTask = tasks.register('extractDebugLibRelease', Exec) {
-              onlyIf {
-                config.active
-              }
-              dependsOn linkTask
-              description = 'Extract debug symbols from release library'
-              workingDir project.buildDir
-
-              def sourceFile = tasks.linkLibRelease.linkedFile.get()
-              def debugFile = file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/debug/libjavaProfiler.${os().isLinux() ? 'so' : 'dylib'}.debug")
-
-              inputs.file sourceFile
-              outputs.file debugFile
-
-              doFirst {
-                // Ensure debug directory exists
-                debugFile.parentFile.mkdirs()
-              }
-
-              if (os().isLinux()) {
-                commandLine 'objcopy', '--only-keep-debug', sourceFile.asFile.absolutePath, debugFile.absolutePath
-              } else {
-                // For macOS, we'll use dsymutil instead
-                commandLine 'dsymutil', sourceFile.asFile.absolutePath, '-o', debugFile.absolutePath.replace('.debug', '.dSYM')
-              }
-            }
-
-            def addDebugLinkTask = tasks.register('addDebugLinkLibRelease', Exec) {
-              onlyIf {
-                config.active && os().isLinux()
-              }
-              dependsOn extractDebugTask
-              description = 'Add debug link to the original library'
-
-              def sourceFile = tasks.linkLibRelease.linkedFile.get()
-              def debugFile = file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/debug/libjavaProfiler.${os().isLinux() ? 'so' : 'dylib'}.debug")
-
-              inputs.file sourceFile
-              inputs.file debugFile
-              outputs.file sourceFile // modifies the source file
-
-              commandLine 'objcopy', '--add-gnu-debuglink=' + debugFile.absolutePath, sourceFile.asFile.absolutePath
-            }
-
-            def stripTask = tasks.register('stripLibRelease', StripSymbols) {
-              onlyIf {
-                config.active
-              }
-              dependsOn addDebugLinkTask
-              targetPlatform = tasks.linkLibRelease.targetPlatform
-              toolChain = tasks.linkLibRelease.toolChain
-              binaryFile = tasks.linkLibRelease.linkedFile.get()
-              outputFile = file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/stripped/libjavaProfiler.${os().isLinux() ? 'so' : 'dylib'}")
-              inputs.file binaryFile
-              outputs.file outputFile
-            }
-
-            // Create a task to copy debug files to the final location
-            def copyDebugTask = tasks.register('copyReleaseDebugFiles', Copy) {
-              dependsOn extractDebugTask
-              from file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/debug")
-              into file(libraryTargetPath(config.name + '-debug'))
-              include '**/*.debug'
-              include '**/*.dSYM/**'
-            }
-
-            def copyTask = tasks.findByName("copyReleaseLibs")
-            if (copyTask != null) {
-              copyTask.dependsOn stripTask
-              copyTask.inputs.files stripTask.get().outputs.files
-            }
+            setupDebugExtraction(config, linkTask)
           }
         }
       }
