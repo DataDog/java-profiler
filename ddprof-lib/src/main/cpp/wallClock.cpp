@@ -200,18 +200,19 @@ void WallClockJVMTI::timerLoop() {
                           raw_thread_state < ddprof::JVMJavaThreadState::_thread_max_state;
     OSThreadState state = OSThreadState::UNKNOWN;
     ExecutionMode mode = ExecutionMode::UNKNOWN;
-    if (vm_thread && is_initialized) {
-      OSThreadState os_state = vm_thread->osThreadState();
-      if (os_state != OSThreadState::UNKNOWN) {
-        state = os_state;
-      }
-      mode = convertJvmExecutionState(raw_thread_state);
+    if (vm_thread == nullptr || !is_initialized) {
+        return false;
     }
+    OSThreadState os_state = vm_thread->osThreadState();
     if (state == OSThreadState::TERMINATED) {
       return false;
     } else if (state == OSThreadState::UNKNOWN) {
       state = OSThreadState::RUNNABLE;
+    } else {
+      state = os_state;
     }
+    mode = convertJvmExecutionState(raw_thread_state);
+
     event._thread_state = state;
     event._execution_mode = mode;
     event._weight =  1;
