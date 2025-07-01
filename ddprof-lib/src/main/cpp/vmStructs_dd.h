@@ -58,6 +58,7 @@ namespace ddprof {
   public:
     static void init(CodeCache* libjvm);
     static bool isSafeToWalk(uintptr_t pc);
+    static bool isInOSRProcess(uintptr_t pc, const char* caller_location = "unknown");
 
     static void JNICALL NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni,
                                         jthread thread, jmethodID method,
