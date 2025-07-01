@@ -275,6 +275,18 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
        _cstack == CSTACK_DEFAULT)) {
     return 0;
   }
+
+  // Check for OSR in progress for OpenJ9 before attempting stack walking
+  if (ucontext != NULL && VM::isOpenJ9()) {
+    StackFrame frame(ucontext);
+    uintptr_t pc = frame.pc();
+    if (ddprof::VMStructs::isInOSRProcess(pc, "getNativeTrace")) {
+      fprintf(stderr, "*** DD_PROFILER: Skipping native stack walking due to OSR at PC=0x%lx ***\n", pc);
+      fflush(stderr);
+      return 0; // Skip native stack walking during OSR
+    }
+  }
+
   const void *callchain[MAX_NATIVE_FRAMES + 1]; // we can read one frame past when trying to figure out whether the result is truncated
   int native_frames = 0;
 
@@ -372,6 +384,15 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       }
       return 1;
     }
+
+    // Check for OSR (On-Stack Replacement) in progress for OpenJ9
+    if (ddprof::VMStructs::isInOSRProcess(saved_pc, "getJavaTraceAsync_initial_check")) {
+      fprintf(stderr, "*** DD_PROFILER: Returning osr_in_progress frame due to OSR at PC=0x%lx ***\n", saved_pc);
+      fflush(stderr);
+      frames->bci = BCI_NATIVE_FRAME;
+      frames->method_id = (jmethodID) "osr_in_progress";
+      return 1;
+    }
   } else {
     return 0;
   }
@@ -416,6 +437,16 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
 
   JitWriteProtection jit(false);
   ASGCT_CallTrace trace = {jni, 0, frames};
+  
+  // Check for OSR before first ASGCT call
+  if (VM::isOpenJ9() && ddprof::VMStructs::isInOSRProcess(frame.pc(), "getJavaTraceAsync_main_ASGCT")) {
+    fprintf(stderr, "*** DD_PROFILER: Skipping ASGCT due to OSR at PC=0x%lx ***\n", frame.pc());
+    fflush(stderr);
+    frames->bci = BCI_NATIVE_FRAME;
+    frames->method_id = (jmethodID) "osr_in_progress";
+    return 1;
+  }
+  
   VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
 
   if (trace.num_frames > 0) {
@@ -440,6 +471,16 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       if (!(_safe_mode & POP_STUB) &&
           frame.unwindStub((instruction_t *)stub->_start, stub->_name) &&
           isAddressInCode((const void *)frame.pc())) {
+        
+        // Check for OSR before ASGCT call after stub unwinding
+        if (VM::isOpenJ9() && ddprof::VMStructs::isInOSRProcess(frame.pc(), "getJavaTraceAsync_post_stub_unwind")) {
+          fprintf(stderr, "*** DD_PROFILER: Skipping post-stub ASGCT due to OSR at PC=0x%lx ***\n", frame.pc());
+          fflush(stderr);
+          frames->bci = BCI_NATIVE_FRAME;
+          frames->method_id = (jmethodID) "osr_in_progress";
+          return 1;
+        }
+        
         VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
       }
     } else if (VMStructs::hasMethodStructs()) {
@@ -453,6 +494,16 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
           }
           if (!(_safe_mode & POP_METHOD) && frame.unwindCompiled(nmethod) &&
               isAddressInCode((const void *)frame.pc())) {
+            
+            // Check for OSR before ASGCT call after method unwinding
+            if (VM::isOpenJ9() && ddprof::VMStructs::isInOSRProcess(frame.pc(), "getJavaTraceAsync_post_method_unwind")) {
+              fprintf(stderr, "*** DD_PROFILER: Skipping post-method ASGCT due to OSR at PC=0x%lx ***\n", frame.pc());
+              fflush(stderr);
+              frames->bci = BCI_NATIVE_FRAME;
+              frames->method_id = (jmethodID) "osr_in_progress";
+              return 1;
+            }
+            
             VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
           }
           if ((_safe_mode & PROBE_SP) && trace.num_frames < 0) {
@@ -461,6 +512,16 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
             }
             for (int i = 0; trace.num_frames < 0 && i < PROBE_SP_LIMIT; i++) {
               frame.sp() += sizeof(void*);
+              
+              // Check for OSR before ASGCT call in SP probe loop
+              if (VM::isOpenJ9() && ddprof::VMStructs::isInOSRProcess(frame.pc(), "getJavaTraceAsync_probe_sp_loop")) {
+                fprintf(stderr, "*** DD_PROFILER: Skipping probe-sp ASGCT due to OSR at PC=0x%lx ***\n", frame.pc());
+                fflush(stderr);
+                frames->bci = BCI_NATIVE_FRAME;
+                frames->method_id = (jmethodID) "osr_in_progress";
+                return 1;
+              }
+              
               VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
             }
           }
@@ -473,6 +534,16 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
         if (!(_safe_mode & POP_STUB) &&
             frame.unwindStub(NULL, nmethod->name()) &&
             isAddressInCode((const void *)frame.pc())) {
+          
+          // Check for OSR before ASGCT call after nmethod stub unwinding
+          if (VM::isOpenJ9() && ddprof::VMStructs::isInOSRProcess(frame.pc(), "getJavaTraceAsync_post_nmethod_unwind")) {
+            fprintf(stderr, "*** DD_PROFILER: Skipping post-nmethod ASGCT due to OSR at PC=0x%lx ***\n", frame.pc());
+            fflush(stderr);
+            frames->bci = BCI_NATIVE_FRAME;
+            frames->method_id = (jmethodID) "osr_in_progress";
+            return 1;
+          }
+          
           VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
         }
       }
@@ -497,8 +568,30 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
             m->frameCompleteOffset() == -1) {
           m->setFrameCompleteOffset(0);
         }
+        
+        // Check for OSR before ASGCT call in last Java PC handling
+        if (VM::isOpenJ9() && ddprof::VMStructs::isInOSRProcess((uintptr_t)pc, "getJavaTraceAsync_last_java_pc")) {
+          fprintf(stderr, "*** DD_PROFILER: Skipping last-java-pc ASGCT due to OSR at PC=0x%lx ***\n", (uintptr_t)pc);
+          fflush(stderr);
+          frames->bci = BCI_NATIVE_FRAME;
+          frames->method_id = (jmethodID) "osr_in_progress";
+          anchor->setLastJavaPC(nullptr);
+          return 1;
+        }
+        
         VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
       } else if (_libs->findLibraryByAddress(pc) != NULL) {
+        
+        // Check for OSR before ASGCT call in library address handling
+        if (VM::isOpenJ9() && ddprof::VMStructs::isInOSRProcess((uintptr_t)pc, "getJavaTraceAsync_lib_addr")) {
+          fprintf(stderr, "*** DD_PROFILER: Skipping lib-addr ASGCT due to OSR at PC=0x%lx ***\n", (uintptr_t)pc);
+          fflush(stderr);
+          frames->bci = BCI_NATIVE_FRAME;
+          frames->method_id = (jmethodID) "osr_in_progress";
+          anchor->setLastJavaPC(nullptr);
+          return 1;
+        }
+        
         VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
       }
 
@@ -516,6 +609,16 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       if (m != NULL && !m->isNMethod() && m->frameSize() > 0 &&
           m->frameCompleteOffset() == -1) {
         m->setFrameCompleteOffset(0);
+        
+        // Check for OSR before ASGCT call in not-walkable handling
+        if (VM::isOpenJ9() && ddprof::VMStructs::isInOSRProcess((uintptr_t)pc, "getJavaTraceAsync_not_walkable")) {
+          fprintf(stderr, "*** DD_PROFILER: Skipping not-walkable ASGCT due to OSR at PC=0x%lx ***\n", (uintptr_t)pc);
+          fflush(stderr);
+          frames->bci = BCI_NATIVE_FRAME;
+          frames->method_id = (jmethodID) "osr_in_progress";
+          return 1;
+        }
+        
         VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
       }
     }
