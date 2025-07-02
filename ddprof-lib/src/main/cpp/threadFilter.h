@@ -71,7 +71,7 @@ public:
   void clear();
 
   inline bool isValid(int thread_id) {
-    return thread_id > 0 && thread_id < _max_thread_id;
+    return thread_id >= 0 && thread_id < _max_thread_id;
   }
 
   bool accept(int thread_id);

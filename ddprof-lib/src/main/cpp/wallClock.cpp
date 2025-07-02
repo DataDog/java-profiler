@@ -204,7 +204,7 @@ void WallClockJVMTI::timerLoop() {
   auto sampleThreads = [&](ThreadEntry& thread_entry, int& num_failures, int& threads_already_exited, int& permission_denied) {
     static jint max_stack_depth = (jint)Profiler::instance()->max_stack_depth();
 
-    // Following code is racy, use safe version to access native structure.
+    // Following code is racy, use safer version to access native structure.
     ExecutionEvent event;
     ddprof::VMThread* vm_thread = thread_entry.native;
     int raw_thread_state = vm_thread->stateSafe();
@@ -276,8 +276,7 @@ void WallClockASGCT::timerLoop() {
       return true;
     };
 
-    auto doNothing = [](int tid) {
-    };
+    auto doNothing = [](int tid) { };
 
     timerLoopCommon<int>(collectThreads, sampleThreads, doNothing, _reservoir_size, _interval);
 }
