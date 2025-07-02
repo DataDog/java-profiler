@@ -35,7 +35,7 @@ jobs:
             TAG="$GITHUB_REF_NAME"
           fi
           VERSION=$(echo "${TAG}" | sed -e 's/v_//g')
-          ASSET_URL="https://oss.sonatype.org/service/local/repositories/releases/content/com/datadoghq/ddprof/${VERSION}/ddprof-${VERSION}.jar"
+          ASSET_URL="https://repo1.maven.org/maven2/com/datadoghq/ddprof/${VERSION}/ddprof-${VERSION}.jar"
           RESULT=1
           while [ $RESULT -ne 0 ]; do
             wget -q $ASSET_URL
