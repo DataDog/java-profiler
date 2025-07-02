@@ -190,6 +190,8 @@ void WallClockJVMTI::timerLoop() {
             }
             // Racy, use safe version
             int tid = nThread->osThreadIdSafe();
+            assert(tid == nThread->osThreadId());
+
             if (tid != self && (!do_filter || Profiler::instance()->threadFilter()->accept(tid))) {
               threads.push_back({nThread, thread, tid});
             }
