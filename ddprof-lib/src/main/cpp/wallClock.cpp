@@ -153,6 +153,8 @@ void WallClockASGCT::initialize(Arguments& args) {
   OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
 }
 
+static long eventCount = 0;
+
 /* This method is extremely racy!
  * Thread references that are returned from JVMTI GetAllThreads(), only guarantee thread objects
  * not to be collected by GC, they don't prevent threads from exiting.
@@ -186,7 +188,8 @@ void WallClockJVMTI::timerLoop() {
             if (nThread == nullptr) {
               continue;
             }
-            int tid = nThread->osThreadId();
+            // Racy, use safe version
+            int tid = nThread->osThreadIdSafe();
             if (tid != self && (!do_filter || Profiler::instance()->threadFilter()->accept(tid))) {
               threads.push_back({nThread, thread, tid});
             }
@@ -197,19 +200,30 @@ void WallClockJVMTI::timerLoop() {
 
   auto sampleThreads = [&](ThreadEntry& thread_entry, int& num_failures, int& threads_already_exited, int& permission_denied) {
     static jint max_stack_depth = (jint)Profiler::instance()->max_stack_depth();
+    jvmtiEnv* jvmti = VM::jvmti();
+    jint thread_state;
+    // Reliable test
+    if (jvmti->GetThreadState(thread_entry.java, &thread_state) != JVMTI_ERROR_NONE ||
+        (thread_state & JVMTI_THREAD_STATE_ALIVE) == 0) {
+        printf("Thread no longer alive\n");
+      return false;
+    }
 
+    // Following code is racy, use safe version to access native structure.
     ExecutionEvent event;
     ddprof::VMThread* vm_thread = thread_entry.native;
-    int raw_thread_state = vm_thread->state();
+    int raw_thread_state = vm_thread->stateSafe();
     bool is_initialized = raw_thread_state >= ddprof::JVMJavaThreadState::_thread_in_native &&
                           raw_thread_state < ddprof::JVMJavaThreadState::_thread_max_state;
     OSThreadState state = OSThreadState::UNKNOWN;
     ExecutionMode mode = ExecutionMode::UNKNOWN;
     if (vm_thread == nullptr || !is_initialized) {
+    printf("Thread not initialized\n");
         return false;
     }
-    OSThreadState os_state = vm_thread->osThreadState();
+    OSThreadState os_state = vm_thread->osThreadStateSafe();
     if (state == OSThreadState::TERMINATED) {
+    printf("Thread terminated\n");
       return false;
     } else if (state == OSThreadState::UNKNOWN) {
       state = OSThreadState::RUNNABLE;
@@ -223,16 +237,19 @@ void WallClockJVMTI::timerLoop() {
     event._weight =  1;
 
     Profiler::instance()->recordJVMTISample(1, thread_entry.tid, thread_entry.java, BCI_WALL, &event, false);
+    eventCount ++;
     return true;
   };
 
-  auto cleanThreads = [](ThreadEntry& thread_entry) {
+  auto clearThreadRefs = [](ThreadEntry& thread_entry) {
     VM::jni()->DeleteLocalRef(thread_entry.java);
   };
 
-  timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, cleanThreads, _reservoir_size, _interval);
+  eventCount = 0;
+  timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, clearThreadRefs, _reservoir_size, _interval);
   // Don't forget to detach the thread
   VM::detachThread();
+  printf("Event generated: %d\n", eventCount);
 }
 
 void WallClockASGCT::timerLoop() {

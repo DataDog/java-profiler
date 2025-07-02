@@ -67,9 +67,19 @@ namespace ddprof {
     inline static int thread_osthread_offset() {
       return _thread_osthread_offset;
     }
+
     inline static int osthread_state_offset() {
       return _osthread_state_offset;
     }
+
+    inline static int osthread_id_offset() {
+      return _osthread_id_offset;
+    }
+
+    inline static int thread_state_offset() {
+      return _thread_state_offset;
+    }
+
     inline static int flag_type_offset() {
       return _flag_type_offset;
     }
@@ -145,11 +155,47 @@ namespace ddprof {
       if (ddprof::VMStructs::thread_osthread_offset() >= 0 && ddprof::VMStructs::osthread_state_offset() >= 0) {
         u32 *osthread = *(u32 **)at(ddprof::VMStructs::thread_osthread_offset());
         if (osthread != nullptr) {
-          return static_cast<OSThreadState>(
-              SafeAccess::load32(osthread, static_cast<u32>(OSThreadState::TERMINATED)));
+          // If the location is accessible, the thread must have been terminated
+          u32 value = SafeAccess::load32(osthread + ddprof::VMStructs::osthread_state_offset(),
+                                         static_cast<u32>(OSThreadState::TERMINATED));
+          // Bad value, treat it as terminated
+          if (value > static_cast<u32>(OSThreadState::SYSCALL)) {
+            return OSThreadState::TERMINATED;
+          }
+          return static_cast<OSThreadState>(value);
+        }
+     }
+     return OSThreadState::UNKNOWN;
+    }
+
+    int osThreadIdSafe() {
+      if (ddprof::VMStructs::thread_osthread_offset() >= 0 && ddprof::VMStructs::osthread_id_offset() >=0) {
+        u32* osthread = *(u32**) at(ddprof::VMStructs::thread_osthread_offset());
+        if (osthread == nullptr) {
+          return -1;
+        } else {
+          u32 value = SafeAccess::load32(osthread + ddprof::VMStructs::osthread_id_offset(), -1);
+          return static_cast<int>(value);
         }
       }
-      return OSThreadState::UNKNOWN;
+      return -1;
+    }
+
+    int stateSafe() {
+      int offset = ddprof::VMStructs::thread_state_offset();
+      if (offset >= 0) {
+          u32* state = *(u32**)at(offset);
+          if (state == nullptr) {
+            return 0;
+          } else {
+            u32 value = SafeAccess::load32(state, 0);
+            if (value > static_cast<u32>(_thread_max_state)) {
+              value = 0;
+            }
+            return static_cast<int>(value);
+          }
+      }
+      return 0;
     }
   };
 
