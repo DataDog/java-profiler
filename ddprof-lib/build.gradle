@@ -36,16 +36,16 @@ def shouldSkipDebugExtraction() {
   if (project.hasProperty('skip-debug-extraction')) {
     return true
   }
-  
+
   // Skip if required tools are not available
   if (os().isLinux() && !checkObjcopyAvailable()) {
     return true
   }
-  
+
   if (os().isMacOsX() && !checkDsymutilAvailable()) {
     return true
   }
-  
+
   return false
 }
 
