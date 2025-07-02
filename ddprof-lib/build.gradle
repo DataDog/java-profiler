@@ -32,7 +32,21 @@ def checkDsymutilAvailable() {
 
 // Helper function to check if debug extraction should be skipped
 def shouldSkipDebugExtraction() {
-  return project.hasProperty('skip-debug-extraction')
+  // Skip if explicitly disabled
+  if (project.hasProperty('skip-debug-extraction')) {
+    return true
+  }
+  
+  // Skip if required tools are not available
+  if (os().isLinux() && !checkObjcopyAvailable()) {
+    return true
+  }
+  
+  if (os().isMacOsX() && !checkDsymutilAvailable()) {
+    return true
+  }
+  
+  return false
 }
 
 // Helper function to get debug file path for a given config
@@ -73,24 +87,6 @@ def createDebugExtractionTask(config, linkTask) {
       def sourceFile = linkTask.get().linkedFile.get().asFile
       def debugFile = getDebugFilePath(config)
 
-      // Check for required tools before proceeding
-      if (os().isLinux()) {
-        if (!checkObjcopyAvailable()) {
-          def installInstructions = """
-            |  - On Ubuntu/Debian: sudo apt-get install binutils
-            |  - On RHEL/CentOS: sudo yum install binutils  
-            |  - On Alpine: apk add binutils""".stripMargin()
-          throw new GradleException(getMissingToolErrorMessage('objcopy', installInstructions))
-        }
-      } else if (os().isMacOsX()) {
-        if (!checkDsymutilAvailable()) {
-          def installInstructions = """
-            |  dsymutil should be available with Xcode command line tools:
-            |  xcode-select --install""".stripMargin()
-          throw new GradleException(getMissingToolErrorMessage('dsymutil', installInstructions))
-        }
-      }
-
       // Ensure debug directory exists
       debugFile.parentFile.mkdirs()
 
@@ -117,15 +113,6 @@ def createDebugLinkTask(config, linkTask, extractDebugTask) {
     doFirst {
       def sourceFile = linkTask.get().linkedFile.get().asFile
       def debugFile = getDebugFilePath(config)
-
-      // Check for objcopy availability
-      if (!checkObjcopyAvailable()) {
-        def installInstructions = """
-          |  - On Ubuntu/Debian: sudo apt-get install binutils
-          |  - On RHEL/CentOS: sudo yum install binutils
-          |  - On Alpine: apk add binutils""".stripMargin()
-        throw new GradleException(getMissingToolErrorMessage('objcopy', installInstructions))
-      }
 
       commandLine = ['objcopy', '--add-gnu-debuglink=' + debugFile.absolutePath, sourceFile.absolutePath]
     }
