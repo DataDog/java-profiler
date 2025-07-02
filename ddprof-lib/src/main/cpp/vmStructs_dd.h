@@ -184,7 +184,7 @@ namespace ddprof {
     int stateSafe() {
       int offset = ddprof::VMStructs::thread_state_offset();
       if (offset >= 0) {
-          u32* state = *(u32**)at(offset);
+          u32* state = (u32*)at(offset);
           if (state == nullptr) {
             return 0;
           } else {
