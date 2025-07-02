@@ -153,12 +153,10 @@ void WallClockASGCT::initialize(Arguments& args) {
   OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
 }
 
-static long eventCount = 0;
-
 /* This method is extremely racy!
- * Thread references that are returned from JVMTI GetAllThreads(), only guarantee thread objects
- * not to be collected by GC, they don't prevent threads from exiting.
- * We have to be extremely cautious when accessing thread's data.
+ * Thread references, that are returned from JVMTI::GetAllThreads(), only guarantee thread objects
+ * are not collected by GCs, they don't prevent threads from exiting.
+ * We have to be extremely careful when accessing thread's data, so it may not be valid.
  */
 void WallClockJVMTI::timerLoop() {
     // Check for enablement before attaching/dettaching the current thread
@@ -166,50 +164,45 @@ void WallClockJVMTI::timerLoop() {
     return;
   }
   // Attach to JVM as the first step
-    VM::attachThread("Datadog Profiler Wallclock Sampler");
-    auto collectThreads = [&](std::vector<ThreadEntry>& threads) {
-        jvmtiEnv* jvmti = VM::jvmti();
-        if (jvmti == nullptr) {
-            return;
-        }
-        JNIEnv* jni = VM::jni();
+  VM::attachThread("Datadog Profiler Wallclock Sampler");
+  auto collectThreads = [&](std::vector<ThreadEntry>& threads) {
+      jvmtiEnv* jvmti = VM::jvmti();
+      if (jvmti == nullptr) {
+          return;
+      }
+      JNIEnv* jni = VM::jni();
 
-        jint threads_count = 0;
-        jthread* threads_ptr = nullptr;
-        jvmti->GetAllThreads(&threads_count, &threads_ptr);
+      jint threads_count = 0;
+      jthread* threads_ptr = nullptr;
+      jvmti->GetAllThreads(&threads_count, &threads_ptr);
 
-        bool do_filter = Profiler::instance()->threadFilter()->enabled();
-        int self = OS::threadId();
+      ThreadFilter* threadFilter = Profiler::instance()->threadFilter();
+      bool do_filter = threadFilter->enabled();
+      int self = OS::threadId();
 
-        for (int i = 0; i < threads_count; i++) {
-          jthread thread = threads_ptr[i];
-          if (thread != nullptr) {
-            ddprof::VMThread* nThread = static_cast<ddprof::VMThread*>(VMThread::fromJavaThread(jni, thread));
-            if (nThread == nullptr) {
-              continue;
-            }
-            // Racy, use safe version
-            int tid = nThread->osThreadIdSafe();
-            assert(tid == nThread->osThreadId());
+      for (int i = 0; i < threads_count; i++) {
+        jthread thread = threads_ptr[i];
+        if (thread != nullptr) {
+          ddprof::VMThread* nThread = static_cast<ddprof::VMThread*>(VMThread::fromJavaThread(jni, thread));
+          if (nThread == nullptr) {
+            continue;
+          }
+          // Racy, use safer version and check
+          int tid = nThread->osThreadIdSafe();
+          if (!threadFilter->isValid(tid)) {
+            continue;
+          }
 
-            if (tid != self && (!do_filter || Profiler::instance()->threadFilter()->accept(tid))) {
-              threads.push_back({nThread, thread, tid});
-            }
+          if (tid != self && (!do_filter || threadFilter->accept(tid))) {
+            threads.push_back({nThread, thread, tid});
           }
         }
-        jvmti->Deallocate((unsigned char*)threads_ptr);
+      }
+      jvmti->Deallocate((unsigned char*)threads_ptr);
     };
 
   auto sampleThreads = [&](ThreadEntry& thread_entry, int& num_failures, int& threads_already_exited, int& permission_denied) {
     static jint max_stack_depth = (jint)Profiler::instance()->max_stack_depth();
-    jvmtiEnv* jvmti = VM::jvmti();
-    jint thread_state;
-    // Reliable test
-    if (jvmti->GetThreadState(thread_entry.java, &thread_state) != JVMTI_ERROR_NONE ||
-        (thread_state & JVMTI_THREAD_STATE_ALIVE) == 0) {
-        printf("Thread no longer alive\n");
-      return false;
-    }
 
     // Following code is racy, use safe version to access native structure.
     ExecutionEvent event;
@@ -220,12 +213,10 @@ void WallClockJVMTI::timerLoop() {
     OSThreadState state = OSThreadState::UNKNOWN;
     ExecutionMode mode = ExecutionMode::UNKNOWN;
     if (vm_thread == nullptr || !is_initialized) {
-    printf("Thread not initialized\n");
         return false;
     }
     OSThreadState os_state = vm_thread->osThreadStateSafe();
     if (state == OSThreadState::TERMINATED) {
-    printf("Thread terminated\n");
       return false;
     } else if (state == OSThreadState::UNKNOWN) {
       state = OSThreadState::RUNNABLE;
@@ -239,7 +230,6 @@ void WallClockJVMTI::timerLoop() {
     event._weight =  1;
 
     Profiler::instance()->recordJVMTISample(1, thread_entry.tid, thread_entry.java, BCI_WALL, &event, false);
-    eventCount ++;
     return true;
   };
 
@@ -247,11 +237,9 @@ void WallClockJVMTI::timerLoop() {
     VM::jni()->DeleteLocalRef(thread_entry.java);
   };
 
-  eventCount = 0;
   timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, clearThreadRefs, _reservoir_size, _interval);
   // Don't forget to detach the thread
   VM::detachThread();
-  printf("Event generated: %d\n", eventCount);
 }
 
 void WallClockASGCT::timerLoop() {

@@ -70,6 +70,10 @@ public:
   void init(const char *filter);
   void clear();
 
+  inline bool isValid(int thread_id) {
+    return thread_id > 0 && thread_id < _max_thread_id;
+  }
+
   bool accept(int thread_id);
   void add(int thread_id);
   void remove(int thread_id);

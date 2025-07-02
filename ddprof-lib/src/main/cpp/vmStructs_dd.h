@@ -151,6 +151,7 @@ namespace ddprof {
       return OSThreadState::UNKNOWN;
     }
 
+    // Safer version
     OSThreadState osThreadStateSafe() {
       if (ddprof::VMStructs::thread_osthread_offset() >= 0 && ddprof::VMStructs::osthread_state_offset() >= 0) {
         const char *osthread = *(char **)at(ddprof::VMStructs::thread_osthread_offset());
@@ -158,7 +159,7 @@ namespace ddprof {
           // If the location is accessible, the thread must have been terminated
           u32 value = SafeAccess::load32((u32*)(osthread + ddprof::VMStructs::osthread_state_offset()),
                                          static_cast<u32>(OSThreadState::TERMINATED));
-          // Bad value, treat it as terminated
+          // Checking for bad data
           if (value > static_cast<u32>(OSThreadState::SYSCALL)) {
             return OSThreadState::TERMINATED;
           }
@@ -189,6 +190,7 @@ namespace ddprof {
             return 0;
           } else {
             u32 value = SafeAccess::load32(state, 0);
+            // Checking for bad data
             if (value > static_cast<u32>(_thread_max_state)) {
               value = 0;
             }
