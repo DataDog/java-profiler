@@ -18,6 +18,7 @@
 #define _SAFEACCESS_H
 
 #include "arch_dd.h"
+#include "codeCache.h"
 #include <stdint.h>
 
 #ifdef __clang__
@@ -28,7 +29,25 @@
 #define NOADDRSANITIZE __attribute__((no_sanitize("address")))
 
 class SafeAccess {
+private:
+   typedef int (*SafeFetch32)(int* ptr, int defaultValue);
+   static SafeFetch32 _safeFetch32Func;
+
 public:
+  static void initSafeFetch(CodeCache* libjvm);
+
+  static bool hasSafeFetch() {
+    return _safeFetch32Func != nullptr;
+  }
+
+  static int safeFetch(int* ptr, int defaultValue) {
+    if (_safeFetch32Func != nullptr) {
+      return _safeFetch32Func(ptr, defaultValue);
+    } else {
+      return defaultValue;
+    }
+  }
+
   NOINLINE NOADDRSANITIZE __attribute__((aligned(16))) static void *load(void **ptr) {
     return *ptr;
   }

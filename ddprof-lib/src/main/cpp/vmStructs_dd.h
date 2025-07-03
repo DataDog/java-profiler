@@ -52,6 +52,8 @@ namespace ddprof {
     static void initOffsets();
     static void initJvmFunctions();
     static void initUnsafeFunctions();
+    // We need safe access for all jdk versions
+    static void initSafeFetch(CodeCache* libjvm);
 
     static void checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni, jmethodID method,
                                   void *address);
@@ -157,10 +159,10 @@ namespace ddprof {
         const char *osthread = *(char **)at(ddprof::VMStructs::thread_osthread_offset());
         if (osthread != nullptr) {
           // If the location is accessible, the thread must have been terminated
-          u32 value = SafeAccess::load32((u32*)(osthread + ddprof::VMStructs::osthread_state_offset()),
-                                         static_cast<u32>(OSThreadState::TERMINATED));
+          int value = SafeAccess::safeFetch((int*)(osthread + ddprof::VMStructs::osthread_state_offset()),
+                                            static_cast<int>(OSThreadState::TERMINATED));
           // Checking for bad data
-          if (value > static_cast<u32>(OSThreadState::SYSCALL)) {
+          if (value > static_cast<int>(OSThreadState::SYSCALL)) {
             return OSThreadState::TERMINATED;
           }
           return static_cast<OSThreadState>(value);
@@ -175,8 +177,7 @@ namespace ddprof {
         if (osthread == nullptr) {
           return -1;
         } else {
-          u32 value = SafeAccess::load32((u32*)(osthread + ddprof::VMStructs::osthread_id_offset()), -1);
-          return static_cast<int>(value);
+          return SafeAccess::safeFetch((int*)(osthread + ddprof::VMStructs::osthread_id_offset()), -1);
         }
       }
       return -1;
@@ -185,16 +186,16 @@ namespace ddprof {
     int stateSafe() {
       int offset = ddprof::VMStructs::thread_state_offset();
       if (offset >= 0) {
-          u32* state = (u32*)at(offset);
+          int* state = (int*)at(offset);
           if (state == nullptr) {
             return 0;
           } else {
-            u32 value = SafeAccess::load32(state, 0);
+            int value = SafeAccess::safeFetch(state, 0);
             // Checking for bad data
-            if (value > static_cast<u32>(_thread_max_state)) {
+            if (value > _thread_max_state) {
               value = 0;
             }
-            return static_cast<int>(value);
+            return value;
           }
       }
       return 0;
