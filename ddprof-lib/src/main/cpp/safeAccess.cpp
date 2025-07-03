@@ -22,5 +22,9 @@ SafeAccess::SafeFetch32 SafeAccess::_safeFetch32Func = nullptr;
 
 void SafeAccess::initSafeFetch(CodeCache* libjvm) {
   _safeFetch32Func = (SafeFetch32)libjvm->findSymbol("SafeFetch32_impl");
+  if (_safeFetch32Func == nullptr) {
+    // jdk11 stub implementation
+    _safeFetch32Func = (SafeFetch32)libjvm->findSymbol("_ZN12StubRoutines18_safefetch32_entryE");
+  }
   assert(_safeFetch32Func != nullptr);
 }
