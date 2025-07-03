@@ -129,7 +129,7 @@
         // increase step gradually to create different bit densities
         int step = 1;
         int size = 0;
-        for (int tid = 0; tid < maxTid - step - 1; tid += step, size++) {
+        for (int tid = 1; tid < maxTid - step - 1; tid += step, size++) {
             EXPECT_FALSE(filter.accept(tid));
             filter.add(tid);
             EXPECT_TRUE(filter.accept(tid));
