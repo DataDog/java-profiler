@@ -135,7 +135,7 @@ void ThreadFilter::add(int thread_id) {
   thread_id = mapThreadId(thread_id);
   assert(b == bitmap(thread_id));
   u64 bit = 1ULL << (thread_id & 0x3f);
-  if (!(__sync_fetch_and_or(&word(b, thread_id), bit) & bit)) {
+  if (!(__atomic_fetch_or(&word(b, thread_id), bit, __ATOMIC_RELAXED) & bit)) {
     atomicInc(_size);
   }
 }
@@ -148,7 +148,7 @@ void ThreadFilter::remove(int thread_id) {
   }
 
   u64 bit = 1ULL << (thread_id & 0x3f);
-  if (__sync_fetch_and_and(&word(b, thread_id), ~bit) & bit) {
+  if (__atomic_fetch_and(&word(b, thread_id), ~bit, __ATOMIC_RELAXED) & bit) {
     atomicInc(_size, -1);
   }
 }
