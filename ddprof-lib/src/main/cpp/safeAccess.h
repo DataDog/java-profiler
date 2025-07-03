@@ -32,7 +32,6 @@ class SafeAccess {
 private:
    typedef int (*SafeFetch32)(int* ptr, int defaultValue);
    static SafeFetch32 _safeFetch32Func;
-
 public:
   static void initSafeFetch(CodeCache* libjvm);
 
