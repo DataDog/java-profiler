@@ -1,4 +1,4 @@
-package com.datadoghq.profiler.stresstest.scenarios;
+package com.datadoghq.profiler.stresstest.scenarios.counters;
 
 import com.datadoghq.profiler.stresstest.Configuration;
 import org.openjdk.jmh.annotations.*;
