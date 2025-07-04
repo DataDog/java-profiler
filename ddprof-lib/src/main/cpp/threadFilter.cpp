@@ -1,175 +1,147 @@
-/*
- * Copyright 2020 Andrei Pangin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Copyright (C) Datadog 2025
+// Implementation of thread filter management
 
 #include "threadFilter.h"
-#include "counters.h"
-#include "os.h"
-#include "reverse_bits.h"
-#include <cassert>
-#include <stdlib.h>
-#include <string.h>
 
-void trackPage() {
-  Counters::increment(THREAD_FILTER_PAGES, 1);
-  Counters::increment(THREAD_FILTER_BYTES, BITMAP_SIZE);
-}
+#include <cstdlib>
+#include <thread>
 
-ThreadFilter::ThreadFilter() {
-  _max_thread_id = OS::getMaxThreadId(128 * 1024);
-  _max_bitmaps = (_max_thread_id + BITMAP_SIZE - 1) / BITMAP_SIZE;
-  u32 capacity = _max_bitmaps * sizeof(u64 *);
-  _bitmap = (u64 **)OS::safeAlloc(capacity);
-  memset(_bitmap, 0, capacity);
-  _bitmap[0] = (u64 *)OS::safeAlloc(BITMAP_SIZE);
-  trackPage();
-  _enabled = false;
-  _size = 0;
+ThreadFilter::ThreadFilter()
+    : _next_index(0), _enabled(false) {
+    std::unique_lock<std::mutex> lock(_slot_mutex);
+    _slots.emplace_back(); // Allocate first chunk
+    clear();
 }
 
 ThreadFilter::~ThreadFilter() {
-  for (int i = 0; i < _max_bitmaps; i++) {
-    if (_bitmap[i] != NULL) {
-      OS::safeFree(_bitmap[i], BITMAP_SIZE);
-    }
-  }
-  if (_bitmap) {
-    OS::safeFree(_bitmap, _max_bitmaps * sizeof(u64 *));
-  }
+    std::unique_lock<std::mutex> lock(_slot_mutex);
+    _slots.clear();
 }
 
-void ThreadFilter::init(const char *filter) {
-  if (filter == NULL) {
-    _enabled = false;
-    return;
-  }
-
-  char *end;
-  do {
-    int id = strtol(filter, &end, 0);
-    if (id <= 0) {
-      break;
+ThreadFilter::SlotID ThreadFilter::registerThread() {
+    int top = _free_list_top.load(std::memory_order_acquire);
+    for (int i = 0; i < top; ++i) {
+        int value = _free_list[i].load(std::memory_order_relaxed);
+        if (value >= 0) {
+            int expected = value;
+            if (_free_list[i].compare_exchange_strong(expected, -1, std::memory_order_acq_rel)) {
+                return value; // Successfully claimed a free slot
+            }
+            // If CAS fails, someone else claimed it, continue scanning
+        }
     }
 
-    if (*end == '-') {
-      int to = strtol(end + 1, &end, 0);
-      while (id <= to) {
-        add(id++);
-      }
-    } else {
-      add(id);
+    SlotID index = _next_index.fetch_add(1, std::memory_order_relaxed);
+    if (index >= kMaxThreads) {
+        return -1;
     }
 
-    filter = end + 1;
-  } while (*end);
+    const int outer_idx = index >> kChunkShift;
+    {
+        if (outer_idx < static_cast<int>(_slots.size())) {
+            return index;
+        }
+    }
 
-  _enabled = true;
+    {
+        std::unique_lock<std::mutex> write_lock(_slot_mutex);
+        while (outer_idx >= static_cast<int>(_slots.size())) {
+            _slots.emplace_back();
+        }
+    }
+
+    return index;
 }
 
 void ThreadFilter::clear() {
-  for (int i = 0; i < _max_bitmaps; i++) {
-    if (_bitmap[i] != NULL) {
-      memset(_bitmap[i], 0, BITMAP_SIZE);
-    }
-  }
-  _size = 0;
-}
-
-// The mapping has to be reversible: f(f(x)) == x
-int ThreadFilter::mapThreadId(int thread_id) {
-  // We want to map the thread_id inside the same bitmap
-  static_assert(BITMAP_SIZE >= (u16)0xffff, "Potential verflow");
-  u16 lower16 = (u16)(thread_id & 0xffff);
-  lower16 = reverse16(lower16);
-  int tid = (thread_id & ~0xffff) | lower16;
-  return tid;
-}
-
-// Get bitmap that contains the thread id, create one if it does not exist
-u64* ThreadFilter::getBitmapFor(int thread_id) {
-  int index = thread_id / BITMAP_CAPACITY;
-  assert(index >= 0 && index < (int)_max_bitmaps);
-  u64* b = _bitmap[index];
-  if (b == NULL) {
-    b = (u64 *)OS::safeAlloc(BITMAP_SIZE);
-    u64 *oldb = __sync_val_compare_and_swap(
-        &_bitmap[index], NULL, b);
-    if (oldb != NULL) {
-      OS::safeFree(b, BITMAP_SIZE);
-      b = oldb;
-    } else {
-      trackPage();
-    }
-  }
-  return b;
-}
-
-u64* ThreadFilter::bitmapAddressFor(int thread_id) {
-  u64* b = getBitmapFor(thread_id);
-  thread_id = mapThreadId(thread_id);
-  assert(b == bitmap(thread_id));
-  return wordAddress(b, thread_id);
-}
-
-bool ThreadFilter::accept(int thread_id) {
-  thread_id = mapThreadId(thread_id);
-  u64 *b = bitmap(thread_id);
-  return b != NULL && (word(b, thread_id) & (1ULL << (thread_id & 0x3f)));
-}
-
-void ThreadFilter::add(int thread_id) {
-  u64 *b = getBitmapFor(thread_id);
-  assert (b != NULL);
-  thread_id = mapThreadId(thread_id);
-  assert(b == bitmap(thread_id));
-  u64 bit = 1ULL << (thread_id & 0x3f);
-  if (!(__sync_fetch_and_or(&word(b, thread_id), bit) & bit)) {
-    atomicInc(_size);
-  }
-}
-
-void ThreadFilter::remove(int thread_id) {
-  thread_id = mapThreadId(thread_id);
-  u64 *b = bitmap(thread_id);
-  if (b == NULL) {
-    return;
-  }
-
-  u64 bit = 1ULL << (thread_id & 0x3f);
-  if (__sync_fetch_and_and(&word(b, thread_id), ~bit) & bit) {
-    atomicInc(_size, -1);
-  }
-}
-
-void ThreadFilter::collect(std::vector<int> &v) {
-  for (int i = 0; i < _max_bitmaps; i++) {
-    u64 *b = _bitmap[i];
-    if (b != NULL) {
-      int start_id = i * BITMAP_CAPACITY;
-      for (int j = 0; j < BITMAP_SIZE / sizeof(u64); j++) {
-        // Considering the functional impact, relaxed could be a reasonable
-        // order here
-        u64 word = __atomic_load_n(&b[j], __ATOMIC_ACQUIRE);
-        while (word != 0) {
-          int tid = start_id + j * 64 + __builtin_ctzl(word);
-          // restore thread id
-          tid = mapThreadId(tid);
-          v.push_back(tid);
-          word &= (word - 1);
+    for (auto& chunk : _slots) {
+        for (auto& slot : chunk) {
+            slot.value.store(-1, std::memory_order_relaxed);
         }
-      }
     }
-  }
+    for (int i = 0; i < kFreeListSize; ++i) {
+        _free_list[i].store(-1, std::memory_order_relaxed);
+    }
+    _free_list_top.store(0, std::memory_order_relaxed);
+}
+
+bool ThreadFilter::accept(SlotID slot_id) const {
+    if (!_enabled) {
+        return true;
+    }
+    if (slot_id < 0) return false;
+    int outer_idx = slot_id >> kChunkShift;
+    int inner_idx = slot_id & kChunkMask;
+    if (outer_idx >= static_cast<int>(_slots.size())) return false;
+    return _slots[outer_idx][inner_idx].value.load(std::memory_order_acquire) != -1;
+}
+
+void ThreadFilter::add(int tid, SlotID slot_id) {
+    int outer_idx = slot_id >> kChunkShift;
+    int inner_idx = slot_id & kChunkMask;
+    _slots[outer_idx][inner_idx].value.store(tid, std::memory_order_relaxed);
+}
+
+void ThreadFilter::remove(SlotID slot_id) {
+    int outer_idx = slot_id >> kChunkShift;
+    int inner_idx = slot_id & kChunkMask;
+    _slots[outer_idx][inner_idx].value.store(-1, std::memory_order_relaxed);
+}
+
+void ThreadFilter::unregisterThread(SlotID slot_id) {
+    if (slot_id < 0) return;
+
+    int outer_idx = slot_id >> kChunkShift;
+    int inner_idx = slot_id & kChunkMask;
+    _slots[outer_idx][inner_idx].value.store(-1, std::memory_order_relaxed);
+
+    constexpr int try_limit = 16;
+
+    int top = _free_list_top.load(std::memory_order_acquire);
+    int limit = top < kFreeListSize ? top : kFreeListSize;
+    int tries = 0;
+
+    for (int i = 0; i < limit && tries < try_limit; ++i) {
+        int value = _free_list[i].load(std::memory_order_relaxed);
+        if (value == -1) {
+            int expected = -1;
+            if (_free_list[i].compare_exchange_strong(expected, slot_id, std::memory_order_acq_rel)) {
+                return; // Successfully claimed empty spot
+            }
+            ++tries; // Only count actual CAS attempts
+        }
+    }
+
+    // Fallback: append if no empty slot found
+    int pos = _free_list_top.fetch_add(1, std::memory_order_acq_rel);
+    if (pos < kFreeListSize) {
+        _free_list[pos].store(slot_id, std::memory_order_release);
+    } else {
+        // Free list overflow: ignore
+    }
+}
+
+void ThreadFilter::collect(std::vector<int>& tids) const {
+    tids.clear();
+    // std::unique_lock<std::mutex> lock(_slot_mutex);
+    for (const auto& chunk : _slots) {
+        for (const auto& slot : chunk) {
+            int slot_tid = slot.value.load(std::memory_order_acquire);
+            if (slot_tid != -1) {
+                tids.push_back(slot_tid);
+            }
+        }
+    }
+}
+
+void ThreadFilter::init(const char* filter) {
+    if (!filter) {
+        return;
+    }
+    // TODO: Implement parsing of filter string if needed
+    _enabled = true;
+}
+
+bool ThreadFilter::enabled() const {
+    return _enabled;
 }

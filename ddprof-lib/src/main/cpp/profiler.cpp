@@ -104,10 +104,12 @@ void Profiler::addRuntimeStub(const void *address, int length,
 
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   ProfiledThread::initCurrentThread();
-
-  int tid = ProfiledThread::currentTid();
+  ProfiledThread *current = ProfiledThread::current();
+  int tid = current->tid();
   if (_thread_filter.enabled()) {
-    _thread_filter.remove(tid);
+    int slot_id = _thread_filter.registerThread();
+    current->setFilterSlotId(slot_id);
+    _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
   updateThreadName(jvmti, jni, thread, true);
 
@@ -116,9 +118,12 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 }
 
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  int tid = ProfiledThread::currentTid();
+  ProfiledThread *current = ProfiledThread::current();
+  int slot_id = current->filterSlotId();
+  int tid = current->tid();
   if (_thread_filter.enabled()) {
-    _thread_filter.remove(tid);
+    _thread_filter.unregisterThread(slot_id);
+    current->setFilterSlotId(-1);
   }
   updateThreadName(jvmti, jni, thread, true);
 
