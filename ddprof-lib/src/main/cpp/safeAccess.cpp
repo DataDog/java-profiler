@@ -26,7 +26,9 @@ void SafeAccess::initSafeFetch(CodeCache* libjvm) {
   if (_safeFetch32Func == nullptr && !WX_MEMORY) {
     // jdk11 stub implementation other than Macosx/aarch64
     void** entry = (void**)libjvm->findSymbol("_ZN12StubRoutines18_safefetch32_entryE");
-    _safeFetch32Func = (SafeFetch32)*entry;
+    if (entry != nullptr && *entry != nullptr) {
+      _safeFetch32Func = (SafeFetch32)*entry;
+    }
   }
   // Fallback
   if (_safeFetch32Func == nullptr) {
