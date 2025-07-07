@@ -1,81 +1,77 @@
-/*
- * Copyright 2020 Andrei Pangin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 #ifndef _THREADFILTER_H
 #define _THREADFILTER_H
 
-#include "arch_dd.h"
+#include <atomic>
+#include <array>
 #include <vector>
+#include <cstdint>
+#include <memory>
 
-// The size of thread ID bitmap in bytes. Must be at least 64K to allow mmap()
-const u32 BITMAP_SIZE = 65536;
-// How many thread IDs one bitmap can hold
-const u32 BITMAP_CAPACITY = BITMAP_SIZE * 8;
-
-// ThreadFilter query operations must be lock-free and signal-safe;
-// update operations are mostly lock-free, except rare bitmap allocations
 class ThreadFilter {
-private:
-  // Total number of bitmaps required to hold the entire range of thread IDs
-  u32 _max_thread_id;
-  u32 _max_bitmaps;
-  u64 **_bitmap;
-  bool _enabled;
-  volatile int _size;
-
-  u64 *bitmap(int thread_id) {
-    if (thread_id >= _max_thread_id) {
-      return NULL;
-    }
-    return __atomic_load_n(
-        &(_bitmap[static_cast<u32>(thread_id) / BITMAP_CAPACITY]),
-        __ATOMIC_ACQUIRE);
-  }
-
-  static int mapThreadId(int thread_id);
-
-  u64 &word(u64 *bitmap, int thread_id) {
-    // todo: add thread safe APIs
-    return bitmap[((u32)thread_id % BITMAP_CAPACITY) >> 6];
-  }
-
-  u64* const wordAddress(u64 *bitmap, int thread_id) const {
-    return &bitmap[((u32)thread_id % BITMAP_CAPACITY) >> 6];
-  }
-
-  u64* getBitmapFor(int thread_id);
 public:
-  ThreadFilter();
-  ThreadFilter(ThreadFilter &threadFilter) = delete;
-  ~ThreadFilter();
+    using SlotID = int;
+    
+    // Optimized limits for reasonable memory usage
+    static constexpr int kChunkSize = 256;
+    static constexpr int kChunkShift = 8;   // log2(256)
+    static constexpr int kChunkMask = kChunkSize - 1;
+    static constexpr int kMaxThreads = 2048;
+    static constexpr int kMaxChunks = (kMaxThreads + kChunkSize - 1) / kChunkSize;  // = 8 chunks
+    
+    ThreadFilter();
+    ~ThreadFilter();
 
-  bool enabled() const { return _enabled; }
+    void init(const char* filter);
+    void clear();
+    bool enabled() const;
+    bool accept(SlotID slot_id) const;
+    void add(int tid, SlotID slot_id);
+    void remove(SlotID slot_id);
+    void collect(std::vector<int>& tids) const;
 
-  int size() const { return _size; }
-  const volatile int* addressOfSize() const { return &_size; }
+    SlotID registerThread();
+    void unregisterThread(SlotID slot_id);
 
-  void init(const char *filter);
-  void clear();
+private:
+    // Optimized slot structure with padding to avoid false sharing
+    struct alignas(64) Slot {
+        std::atomic<int> value{-1};
+        char padding[60];  // Pad to cache line size
+    };
 
-  bool accept(int thread_id);
-  void add(int thread_id);
-  void remove(int thread_id);
-  u64* bitmapAddressFor(int thread_id);
+    // Lock-free free list using a stack-like structure
+    struct FreeListNode {
+        std::atomic<int> value{-1};
+        std::atomic<int> next{-1};
+    };
 
-  void collect(std::vector<int> &v);
+    // Pre-allocated chunk storage to eliminate mutex contention
+    struct ChunkStorage {
+        std::array<Slot, kChunkSize> slots;
+        std::atomic<bool> initialized{false};
+    };
+
+    bool _enabled = false;
+    
+    // Lazily allocated storage for chunks
+    std::atomic<ChunkStorage*> _chunks[kMaxChunks];
+    std::atomic<int> _num_chunks{1};
+    
+    // Lock-free slot allocation
+    std::atomic<SlotID> _next_index{0};
+    
+    // High-performance free list using Treiber stack
+    static constexpr int kFreeListSize = 1024;  // Increased from 128
+    std::unique_ptr<FreeListNode[]> _free_list;
+    std::atomic<int> _free_list_head{-1};
+    
+    // Active slot tracking for efficient collect()
+    std::atomic<int> _active_slots{0};
+    
+    // Helper methods for lock-free operations
+    void initializeChunk(int chunk_idx);
+    bool pushToFreeList(SlotID slot_id);
+    SlotID popFromFreeList();
 };
 
 #endif // _THREADFILTER_H

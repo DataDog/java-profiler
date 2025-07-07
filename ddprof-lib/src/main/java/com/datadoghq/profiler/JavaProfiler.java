@@ -109,7 +109,6 @@ public final class JavaProfiler {
             throw new IOException("Failed to load Datadog Java profiler library", result.error);
         }
         init0();
-        ActiveBitmap.initialize();
 
         profiler.initializeContextStorage();
         instance = profiler;
@@ -210,11 +209,7 @@ public final class JavaProfiler {
      * 'filter' option must be enabled to use this method.
      */
     public void addThread() {
-        if (UNSAFE != null) {
-            ActiveBitmap.setActive(TID.get(), true);
-        } else {
-            filterThread0(true);
-        }
+        filterThreadAdd0();
     }
 
     /**
@@ -222,13 +217,8 @@ public final class JavaProfiler {
      * 'filter' option must be enabled to use this method.
      */
     public void removeThread() {
-        if (UNSAFE != null) {
-            ActiveBitmap.setActive(TID.get(), false);
-        } else {
-            filterThread0(false);
-        }
+        filterThreadRemove0();
     }
-
 
     /**
      * Passing context identifier to a profiler. This ID is thread-local and is dumped in
@@ -479,6 +469,10 @@ public final class JavaProfiler {
     private static native boolean init0();
     private native void stop0() throws IllegalStateException;
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
+
+    private native void filterThreadAdd0();
+    private native void filterThreadRemove0();
+    // Backward compatibility for existing code
     private native void filterThread0(boolean enable);
 
     private static native int getTid0();
