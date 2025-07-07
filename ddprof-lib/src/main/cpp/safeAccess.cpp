@@ -20,10 +20,16 @@
 SafeAccess::SafeFetch32 SafeAccess::_safeFetch32Func = nullptr;
 
 void SafeAccess::initSafeFetch(CodeCache* libjvm) {
+  // Hotspot JVM's safefetch implementation appears better, e.g. it actually returns errorValue,
+  // when the address is invalid. let's use it whenever possible.
   _safeFetch32Func = (SafeFetch32)libjvm->findSymbol("SafeFetch32_impl");
   if (_safeFetch32Func == nullptr && !WX_MEMORY) {
     // jdk11 stub implementation other than Macosx/aarch64
     void** entry = (void**)libjvm->findSymbol("_ZN12StubRoutines18_safefetch32_entryE");
     _safeFetch32Func = (SafeFetch32)*entry;
+  }
+  // Fallback
+  if (_safeFetch32Func == nullptr) {
+    _safeFetch32Func = (SafeFetch32)load32;
   }
 }

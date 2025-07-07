@@ -19,6 +19,7 @@
 
 #include "arch_dd.h"
 #include "codeCache.h"
+#include <cassert>
 #include <stdint.h>
 
 #ifdef __clang__
@@ -30,8 +31,9 @@
 
 class SafeAccess {
 private:
-   typedef int (*SafeFetch32)(int* ptr, int defaultValue);
+   typedef int (*SafeFetch32)(int* ptr, int errorValue);
    static SafeFetch32 _safeFetch32Func;
+
 public:
   static void initSafeFetch(CodeCache* libjvm);
 
@@ -39,12 +41,9 @@ public:
     return _safeFetch32Func != nullptr;
   }
 
-  static int safeFetch(int* ptr, int defaultValue) {
-    if (_safeFetch32Func != nullptr) {
-      return _safeFetch32Func(ptr, defaultValue);
-    } else {
-      return defaultValue;
-    }
+  static inline int safeFetch(int* ptr, int errorValue) {
+    assert(_safeFetch32Func != nullptr);
+    return _safeFetch32Func(ptr, errorValue);
   }
 
   NOINLINE NOADDRSANITIZE __attribute__((aligned(16))) static void *load(void **ptr) {
