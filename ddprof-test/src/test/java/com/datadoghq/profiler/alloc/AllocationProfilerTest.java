@@ -22,6 +22,14 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
 
   @RetryingTest(5)
   public void shouldGetObjectAllocationSamples() throws InterruptedException {
+
+    // We seem to hit issues on j9:
+    // OSR (On stack replacement) creates crashes with the profiler.
+    //     ----------- Stack Backtrace -----------
+    // prepareForOSR+0xbf (0x00007F51062A4DDF [libj9jit29.so+0x4a4ddf])
+    if (Platform.isJ9() && !Platform.isJavaVersionAtLeast(8)) {
+      return;
+    }
     Assumptions.assumeFalse(isAsan() || isTsan());
 
     AllocatingTarget target1 = new AllocatingTarget();
