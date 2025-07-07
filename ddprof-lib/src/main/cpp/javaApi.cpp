@@ -144,7 +144,13 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0(JNIEnv *env,
   
   int slot_id = current->filterSlotId();
   if (unlikely(slot_id == -1)) {
-    return;
+    // Thread doesn't have a slot ID yet (e.g., main thread), so register it
+    slot_id = thread_filter->registerThread();
+    current->setFilterSlotId(slot_id);
+  }
+  
+  if (unlikely(slot_id == -1)) {
+    return;  // Failed to register thread
   }
   thread_filter->add(tid, slot_id);
 }
@@ -167,6 +173,7 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0(JNIEnv *env,
   
   int slot_id = current->filterSlotId();
   if (unlikely(slot_id == -1)) {
+    // Thread doesn't have a slot ID yet - nothing to remove
     return;
   }
   thread_filter->remove(slot_id);
@@ -192,7 +199,18 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThread0(JNIEnv *env,
   
   int slot_id = current->filterSlotId();
   if (unlikely(slot_id == -1)) {
-    return;
+    if (enable) {
+      // Thread doesn't have a slot ID yet, so register it
+      slot_id = thread_filter->registerThread();
+      current->setFilterSlotId(slot_id);
+    } else {
+      // Thread doesn't have a slot ID yet - nothing to remove
+      return;
+    }
+  }
+  
+  if (unlikely(slot_id == -1)) {
+    return;  // Failed to register thread
   }
   
   if (enable) {

@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <thread>
 #include <algorithm>
+#include <cstring>
 
 ThreadFilter::ThreadFilter() : _enabled(false) {
     // Initialize chunk pointers to null (lazy allocation)
@@ -243,9 +244,14 @@ void ThreadFilter::collect(std::vector<int>& tids) const {
 
 void ThreadFilter::init(const char* filter) {
     if (!filter) {
+        _enabled = false;
         return;
     }
-    // TODO: Implement parsing of filter string if needed
+    
+    // Simple logic: any filter value (including "0") enables filtering
+    // Only explicitly registered threads via addThread() will be sampled
+    // Previously we had a syntax where we could manually force some thread IDs.
+    // This is no longer supported.
     _enabled = true;
 }
 
