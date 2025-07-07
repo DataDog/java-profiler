@@ -35,16 +35,17 @@ import java.util.Map;
  */
 public final class JavaProfiler {
     static final Unsafe UNSAFE;
-    static final boolean isJDK8;
     static {
         Unsafe unsafe = null;
-        String version = System.getProperty("java.version");
-        isJDK8 = version.startsWith("1.8");
-        try {
-            Field f = Unsafe.class.getDeclaredField("theUnsafe");
-            f.setAccessible(true);
-            unsafe = (Unsafe) f.get(null);
-        } catch (Exception ignore) { }
+        // a safety and testing valve to disable unsafe access
+        if (!Boolean.getBoolean("ddprof.disable_unsafe")) {
+            try {
+                Field f = Unsafe.class.getDeclaredField("theUnsafe");
+                f.setAccessible(true);
+                unsafe = (Unsafe) f.get(null);
+            } catch (Exception ignore) {
+            }
+        }
         UNSAFE = unsafe;
     }
 
@@ -128,7 +129,7 @@ public final class JavaProfiler {
         if (this.contextStorage == null) {
             int maxPages = getMaxContextPages0();
             if (maxPages > 0) {
-                if (isJDK8) {
+                if (UNSAFE != null) {
                     contextBaseOffsets = new long[maxPages];
                     // be sure to choose an illegal address as a sentinel value
                     Arrays.fill(contextBaseOffsets, Long.MIN_VALUE);
@@ -228,14 +229,14 @@ public final class JavaProfiler {
      */
     public void setContext(long spanId, long rootSpanId) {
         int tid = TID.get();
-        if (isJDK8) {
-            setContextJDK8(tid, spanId, rootSpanId);
+        if (UNSAFE != null) {
+            setContextUnsafe(tid, spanId, rootSpanId);
         } else {
             setContextByteBuffer(tid, spanId, rootSpanId);
         }
     }
 
-    private void setContextJDK8(int tid, long spanId, long rootSpanId) {
+    private void setContextUnsafe(int tid, long spanId, long rootSpanId) {
         if (contextBaseOffsets == null) {
             return;
         }
@@ -303,14 +304,14 @@ public final class JavaProfiler {
      */
     public void setContextValue(int offset, int value) {
         int tid = TID.get();
-        if (isJDK8) {
-            setContextJDK8(tid, offset, value);
+        if (UNSAFE != null) {
+            setContextUnsafe(tid, offset, value);
         } else {
             setContextByteBuffer(tid, offset, value);
         }
     }
 
-    private void setContextJDK8(int tid, int offset, int value) {
+    private void setContextUnsafe(int tid, int offset, int value) {
         if (contextBaseOffsets == null) {
             return;
         }
@@ -334,14 +335,14 @@ public final class JavaProfiler {
 
     void copyTags(int[] snapshot) {
         int tid = TID.get();
-        if (isJDK8) {
-            copyTagsJDK8(tid, snapshot);
+        if (UNSAFE != null) {
+            copyTagsUnsafe(tid, snapshot);
         } else {
             copyTagsByteBuffer(tid, snapshot);
         }
     }
 
-    void copyTagsJDK8(int tid, int[] snapshot) {
+    void copyTagsUnsafe(int tid, int[] snapshot) {
         if (contextBaseOffsets == null) {
             return;
         }

@@ -5,15 +5,19 @@
 #include <array>
 #include <vector>
 #include <cstdint>
-#include <mutex>
+#include <memory>
 
 class ThreadFilter {
 public:
     using SlotID = int;
-    static constexpr int kChunkSize = 128;
-    static constexpr int kChunkShift = 7;
+    
+    // Optimized limits for reasonable memory usage
+    static constexpr int kChunkSize = 256;
+    static constexpr int kChunkShift = 8;   // log2(256)
     static constexpr int kChunkMask = kChunkSize - 1;
     static constexpr int kMaxThreads = 2048;
+    static constexpr int kMaxChunks = (kMaxThreads + kChunkSize - 1) / kChunkSize;  // = 8 chunks
+    
     ThreadFilter();
     ~ThreadFilter();
 
@@ -29,25 +33,45 @@ public:
     void unregisterThread(SlotID slot_id);
 
 private:
-    struct Slot {
+    // Optimized slot structure with padding to avoid false sharing
+    struct alignas(64) Slot {
         std::atomic<int> value{-1};
-        Slot() = default;
-        Slot(const Slot& o) { value.store(o.value.load(std::memory_order_relaxed), std::memory_order_relaxed); }
-        Slot& operator=(const Slot& o) { 
-            value.store(o.value.load(std::memory_order_relaxed), std::memory_order_relaxed); 
-            return *this; 
-        }
+        char padding[60];  // Pad to cache line size
+    };
+
+    // Lock-free free list using a stack-like structure
+    struct FreeListNode {
+        std::atomic<int> value{-1};
+        std::atomic<int> next{-1};
+    };
+
+    // Pre-allocated chunk storage to eliminate mutex contention
+    struct ChunkStorage {
+        std::array<Slot, kChunkSize> slots;
+        std::atomic<bool> initialized{false};
     };
 
     bool _enabled = false;
-    std::vector<std::array<Slot, kChunkSize>> _slots;
-    std::atomic<SlotID> _next_index;
     
-    static constexpr int kFreeListSize = 128;
-    std::atomic<SlotID> _free_list[kFreeListSize];
-    std::atomic<int> _free_list_top;  // Points to next free slot
-
-    mutable std::mutex _slot_mutex;
+    // Lazily allocated storage for chunks
+    std::atomic<ChunkStorage*> _chunks[kMaxChunks];
+    std::atomic<int> _num_chunks{1};
+    
+    // Lock-free slot allocation
+    std::atomic<SlotID> _next_index{0};
+    
+    // High-performance free list using Treiber stack
+    static constexpr int kFreeListSize = 1024;  // Increased from 128
+    std::unique_ptr<FreeListNode[]> _free_list;
+    std::atomic<int> _free_list_head{-1};
+    
+    // Active slot tracking for efficient collect()
+    std::atomic<int> _active_slots{0};
+    
+    // Helper methods for lock-free operations
+    void initializeChunk(int chunk_idx);
+    bool pushToFreeList(SlotID slot_id);
+    SlotID popFromFreeList();
 };
 
 #endif // _THREADFILTER_H

@@ -1,4 +1,4 @@
-package com.datadoghq.profiler.stresstest.scenarios;
+package com.datadoghq.profiler.stresstest.scenarios.counters;
 
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.Threads;

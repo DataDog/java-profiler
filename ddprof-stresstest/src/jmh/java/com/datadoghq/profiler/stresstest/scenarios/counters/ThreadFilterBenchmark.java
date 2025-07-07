@@ -1,9 +1,8 @@
-package com.datadoghq.profiler.stresstest.scenarios;
+package com.datadoghq.profiler.stresstest.scenarios.counters;
 
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.stresstest.Configuration;
 import org.openjdk.jmh.annotations.*;
-import org.openjdk.jmh.infra.Blackhole;
 
 import java.io.FileWriter;
 import java.io.IOException;

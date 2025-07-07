@@ -128,11 +128,20 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0(JNIEnv *env,
                                                           jobject unused) {
   ProfiledThread *current = ProfiledThread::current();
+  if (unlikely(current == nullptr)) {
+    printf("[DEBUG] ProfiledThread::current() returned null in addThread() - thread not initialized\n");
+    fflush(stdout);
+    return;
+  }
   int tid = current->tid();
   if (unlikely(tid < 0)) {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
+  if (unlikely(!thread_filter->enabled())) {
+    return;
+  }
+  
   int slot_id = current->filterSlotId();
   if (unlikely(slot_id == -1)) {
     return;
@@ -144,11 +153,18 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0(JNIEnv *env,
                                                              jobject unused) {
   ProfiledThread *current = ProfiledThread::current();
+  if (unlikely(current == nullptr)) {
+    return;
+  }
   int tid = current->tid();
   if (unlikely(tid < 0)) {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
+  if (unlikely(!thread_filter->enabled())) {
+    return;
+  }
+  
   int slot_id = current->filterSlotId();
   if (unlikely(slot_id == -1)) {
     return;
@@ -162,11 +178,18 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThread0(JNIEnv *env,
                                                        jobject unused,
                                                        jboolean enable) {
   ProfiledThread *current = ProfiledThread::current();
+  if (unlikely(current == nullptr)) {
+    return;
+  }
   int tid = current->tid();
   if (unlikely(tid < 0)) {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
+  if (unlikely(!thread_filter->enabled())) {
+    return;
+  }
+  
   int slot_id = current->filterSlotId();
   if (unlikely(slot_id == -1)) {
     return;
