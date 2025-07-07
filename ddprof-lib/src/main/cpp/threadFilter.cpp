@@ -1,175 +1,254 @@
-/*
- * Copyright 2020 Andrei Pangin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Copyright (C) Datadog 2025
+// High-performance lock-free thread filter implementation
 
 #include "threadFilter.h"
-#include "counters.h"
-#include "os.h"
-#include "reverse_bits.h"
-#include <cassert>
-#include <stdlib.h>
-#include <string.h>
 
-void trackPage() {
-  Counters::increment(THREAD_FILTER_PAGES, 1);
-  Counters::increment(THREAD_FILTER_BYTES, BITMAP_SIZE);
-}
+#include <cstdlib>
+#include <thread>
+#include <algorithm>
 
-ThreadFilter::ThreadFilter() {
-  _max_thread_id = OS::getMaxThreadId(128 * 1024);
-  _max_bitmaps = (_max_thread_id + BITMAP_SIZE - 1) / BITMAP_SIZE;
-  u32 capacity = _max_bitmaps * sizeof(u64 *);
-  _bitmap = (u64 **)OS::safeAlloc(capacity);
-  memset(_bitmap, 0, capacity);
-  _bitmap[0] = (u64 *)OS::safeAlloc(BITMAP_SIZE);
-  trackPage();
-  _enabled = false;
-  _size = 0;
+ThreadFilter::ThreadFilter() : _enabled(false) {
+    // Initialize chunk pointers to null (lazy allocation)
+    for (int i = 0; i < kMaxChunks; ++i) {
+        _chunks[i].store(nullptr, std::memory_order_relaxed);
+    }
+    _free_list = std::make_unique<FreeListNode[]>(kFreeListSize);
+    
+    // Initialize the first chunk
+    initializeChunk(0);
+    clear();
 }
 
 ThreadFilter::~ThreadFilter() {
-  for (int i = 0; i < _max_bitmaps; i++) {
-    if (_bitmap[i] != NULL) {
-      OS::safeFree(_bitmap[i], BITMAP_SIZE);
+    // Clean up allocated chunks
+    for (int i = 0; i < kMaxChunks; ++i) {
+        ChunkStorage* chunk = _chunks[i].load(std::memory_order_relaxed);
+        delete chunk;
     }
-  }
-  if (_bitmap) {
-    OS::safeFree(_bitmap, _max_bitmaps * sizeof(u64 *));
-  }
 }
 
-void ThreadFilter::init(const char *filter) {
-  if (filter == NULL) {
-    _enabled = false;
-    return;
-  }
-
-  char *end;
-  do {
-    int id = strtol(filter, &end, 0);
-    if (id <= 0) {
-      break;
-    }
-
-    if (*end == '-') {
-      int to = strtol(end + 1, &end, 0);
-      while (id <= to) {
-        add(id++);
-      }
+void ThreadFilter::initializeChunk(int chunk_idx) {
+    if (chunk_idx >= kMaxChunks) return;
+    
+    // Check if chunk already exists
+    ChunkStorage* existing = _chunks[chunk_idx].load(std::memory_order_acquire);
+    if (existing != nullptr) return;
+    
+    // Allocate new chunk
+    ChunkStorage* new_chunk = new ChunkStorage();
+    
+    // Try to install it atomically
+    ChunkStorage* expected = nullptr;
+    if (_chunks[chunk_idx].compare_exchange_strong(expected, new_chunk, std::memory_order_acq_rel)) {
+        // Successfully installed - initialize all slots
+        for (auto& slot : new_chunk->slots) {
+            slot.value.store(-1, std::memory_order_relaxed);
+        }
+        new_chunk->initialized.store(true, std::memory_order_release);
     } else {
-      add(id);
+        // Another thread beat us to it - clean up our allocation
+        delete new_chunk;
+    }
+}
+
+ThreadFilter::SlotID ThreadFilter::registerThread() {
+    // First, try to get a slot from the free list (lock-free stack)
+    SlotID reused_slot = popFromFreeList();
+    if (reused_slot >= 0) {
+        return reused_slot;
     }
 
-    filter = end + 1;
-  } while (*end);
+    // Allocate a new slot
+    SlotID index = _next_index.fetch_add(1, std::memory_order_relaxed);
+    if (index >= kMaxThreads) {
+        // Revert the increment and return failure
+        _next_index.fetch_sub(1, std::memory_order_relaxed);
+        return -1;
+    }
 
-  _enabled = true;
+    const int chunk_idx = index >> kChunkShift;
+    
+    // Ensure the chunk is initialized (lock-free)
+    if (chunk_idx >= _num_chunks.load(std::memory_order_acquire)) {
+        // Update the chunk count atomically
+        int expected_chunks = chunk_idx;
+        int desired_chunks = chunk_idx + 1;
+        while (!_num_chunks.compare_exchange_weak(expected_chunks, desired_chunks, 
+                                                   std::memory_order_acq_rel)) {
+            if (expected_chunks > chunk_idx) {
+                break; // Another thread already updated it
+            }
+            desired_chunks = expected_chunks + 1;
+        }
+    }
+    
+    // Initialize the chunk if needed
+    initializeChunk(chunk_idx);
+    
+    return index;
 }
 
 void ThreadFilter::clear() {
-  for (int i = 0; i < _max_bitmaps; i++) {
-    if (_bitmap[i] != NULL) {
-      memset(_bitmap[i], 0, BITMAP_SIZE);
-    }
-  }
-  _size = 0;
-}
-
-// The mapping has to be reversible: f(f(x)) == x
-int ThreadFilter::mapThreadId(int thread_id) {
-  // We want to map the thread_id inside the same bitmap
-  static_assert(BITMAP_SIZE >= (u16)0xffff, "Potential verflow");
-  u16 lower16 = (u16)(thread_id & 0xffff);
-  lower16 = reverse16(lower16);
-  int tid = (thread_id & ~0xffff) | lower16;
-  return tid;
-}
-
-// Get bitmap that contains the thread id, create one if it does not exist
-u64* ThreadFilter::getBitmapFor(int thread_id) {
-  int index = thread_id / BITMAP_CAPACITY;
-  assert(index >= 0 && index < (int)_max_bitmaps);
-  u64* b = _bitmap[index];
-  if (b == NULL) {
-    b = (u64 *)OS::safeAlloc(BITMAP_SIZE);
-    u64 *oldb = __sync_val_compare_and_swap(
-        &_bitmap[index], NULL, b);
-    if (oldb != NULL) {
-      OS::safeFree(b, BITMAP_SIZE);
-      b = oldb;
-    } else {
-      trackPage();
-    }
-  }
-  return b;
-}
-
-u64* ThreadFilter::bitmapAddressFor(int thread_id) {
-  u64* b = getBitmapFor(thread_id);
-  thread_id = mapThreadId(thread_id);
-  assert(b == bitmap(thread_id));
-  return wordAddress(b, thread_id);
-}
-
-bool ThreadFilter::accept(int thread_id) {
-  thread_id = mapThreadId(thread_id);
-  u64 *b = bitmap(thread_id);
-  return b != NULL && (word(b, thread_id) & (1ULL << (thread_id & 0x3f)));
-}
-
-void ThreadFilter::add(int thread_id) {
-  u64 *b = getBitmapFor(thread_id);
-  assert (b != NULL);
-  thread_id = mapThreadId(thread_id);
-  assert(b == bitmap(thread_id));
-  u64 bit = 1ULL << (thread_id & 0x3f);
-  if (!(__atomic_fetch_or(&word(b, thread_id), bit, __ATOMIC_RELAXED) & bit)) {
-    atomicInc(_size);
-  }
-}
-
-void ThreadFilter::remove(int thread_id) {
-  thread_id = mapThreadId(thread_id);
-  u64 *b = bitmap(thread_id);
-  if (b == NULL) {
-    return;
-  }
-
-  u64 bit = 1ULL << (thread_id & 0x3f);
-  if (__atomic_fetch_and(&word(b, thread_id), ~bit, __ATOMIC_RELAXED) & bit) {
-    atomicInc(_size, -1);
-  }
-}
-
-void ThreadFilter::collect(std::vector<int> &v) {
-  for (int i = 0; i < _max_bitmaps; i++) {
-    u64 *b = _bitmap[i];
-    if (b != NULL) {
-      int start_id = i * BITMAP_CAPACITY;
-      for (int j = 0; j < BITMAP_SIZE / sizeof(u64); j++) {
-        // Considering the functional impact, relaxed could be a reasonable
-        // order here
-        u64 word = __atomic_load_n(&b[j], __ATOMIC_ACQUIRE);
-        while (word != 0) {
-          int tid = start_id + j * 64 + __builtin_ctzl(word);
-          // restore thread id
-          tid = mapThreadId(tid);
-          v.push_back(tid);
-          word &= (word - 1);
+    // Clear all initialized chunks
+    int num_chunks = _num_chunks.load(std::memory_order_relaxed);
+    for (int i = 0; i < num_chunks; ++i) {
+        ChunkStorage* chunk = _chunks[i].load(std::memory_order_relaxed);
+        if (chunk != nullptr) {
+            for (auto& slot : chunk->slots) {
+                slot.value.store(-1, std::memory_order_relaxed);
+            }
         }
-      }
     }
-  }
+    
+    // Clear the free list
+    for (int i = 0; i < kFreeListSize; ++i) {
+        _free_list[i].value.store(-1, std::memory_order_relaxed);
+        _free_list[i].next.store(-1, std::memory_order_relaxed);
+    }
+    _free_list_head.store(-1, std::memory_order_relaxed);
+    _active_slots.store(0, std::memory_order_relaxed);
+}
+
+bool ThreadFilter::accept(SlotID slot_id) const {
+    if (!_enabled) {
+        return true;
+    }
+    if (slot_id < 0) return false;
+    
+    int chunk_idx = slot_id >> kChunkShift;
+    int slot_idx = slot_id & kChunkMask;
+    
+    if (chunk_idx >= kMaxChunks) return false;
+    ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
+    if (chunk == nullptr) return false;  // Fail-fast if not allocated
+    
+    return chunk->slots[slot_idx].value.load(std::memory_order_acquire) != -1;
+}
+
+void ThreadFilter::add(int tid, SlotID slot_id) {
+    if (slot_id < 0) return;
+    
+    int chunk_idx = slot_id >> kChunkShift;
+    int slot_idx = slot_id & kChunkMask;
+    
+    if (chunk_idx >= kMaxChunks) return;
+    ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
+    if (chunk == nullptr) return;  // Fail-fast if not allocated
+    
+    // Store the tid and increment active slots if this was previously empty
+    int old_value = chunk->slots[slot_idx].value.exchange(tid, std::memory_order_acq_rel);
+    if (old_value == -1) {
+        _active_slots.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void ThreadFilter::remove(SlotID slot_id) {
+    if (slot_id < 0) return;
+    
+    int chunk_idx = slot_id >> kChunkShift;
+    int slot_idx = slot_id & kChunkMask;
+    
+    if (chunk_idx >= kMaxChunks) return;
+    ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
+    if (chunk == nullptr) return;  // Fail-fast if not allocated
+    
+    // Remove the tid and decrement active slots if this was previously occupied
+    int old_value = chunk->slots[slot_idx].value.exchange(-1, std::memory_order_acq_rel);
+    if (old_value != -1) {
+        _active_slots.fetch_sub(1, std::memory_order_relaxed);
+    }
+}
+
+void ThreadFilter::unregisterThread(SlotID slot_id) {
+    if (slot_id < 0) return;
+
+    // Clear the slot first
+    remove(slot_id);
+
+    // Add to free list for reuse
+    pushToFreeList(slot_id);
+}
+
+bool ThreadFilter::pushToFreeList(SlotID slot_id) {
+    // Lock-free Treiber stack push
+    for (int i = 0; i < kFreeListSize; ++i) {
+        int expected = -1;
+        if (_free_list[i].value.compare_exchange_strong(expected, slot_id, std::memory_order_acq_rel)) {
+            // Successfully stored in this slot
+            int old_head = _free_list_head.load(std::memory_order_acquire);
+            do {
+                _free_list[i].next.store(old_head, std::memory_order_relaxed);
+            } while (!_free_list_head.compare_exchange_weak(old_head, i, std::memory_order_acq_rel));
+            return true;
+        }
+    }
+    return false; // Free list full, slot is lost but this is rare
+}
+
+ThreadFilter::SlotID ThreadFilter::popFromFreeList() {
+    // Lock-free Treiber stack pop
+    while (true) {
+        int head = _free_list_head.load(std::memory_order_acquire);
+        if (head == -1) {
+            return -1; // Empty list
+        }
+        
+        int slot_id = _free_list[head].value.load(std::memory_order_acquire);
+        int next = _free_list[head].next.load(std::memory_order_acquire);
+        
+        // Try to update the head
+        if (_free_list_head.compare_exchange_weak(head, next, std::memory_order_acq_rel)) {
+            // Clear the node
+            _free_list[head].value.store(-1, std::memory_order_relaxed);
+            _free_list[head].next.store(-1, std::memory_order_relaxed);
+            return slot_id;
+        }
+        // Retry if another thread modified the head
+    }
+}
+
+void ThreadFilter::collect(std::vector<int>& tids) const {
+    tids.clear();
+    
+    // Early exit if no active slots
+    int active_count = _active_slots.load(std::memory_order_relaxed);
+    if (active_count == 0) {
+        return;
+    }
+    
+    // Reserve space for efficiency
+    tids.reserve(active_count);
+    
+    // Scan only initialized chunks
+    int num_chunks = _num_chunks.load(std::memory_order_relaxed);
+    for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
+        ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
+        if (chunk == nullptr) {
+            continue;  // Skip unallocated chunks
+        }
+        
+        for (const auto& slot : chunk->slots) {
+            int slot_tid = slot.value.load(std::memory_order_acquire);
+            if (slot_tid != -1) {
+                tids.push_back(slot_tid);
+            }
+        }
+    }
+    
+    // Optional: shrink if we over-reserved significantly
+    if (tids.capacity() > tids.size() * 2) {
+        tids.shrink_to_fit();
+    }
+}
+
+void ThreadFilter::init(const char* filter) {
+    if (!filter) {
+        return;
+    }
+    // TODO: Implement parsing of filter string if needed
+    _enabled = true;
+}
+
+bool ThreadFilter::enabled() const {
+    return _enabled;
 }
