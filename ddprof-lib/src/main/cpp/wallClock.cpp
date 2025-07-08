@@ -163,6 +163,19 @@ void WallClockJVMTI::timerLoop() {
   if (!isEnabled()) {
     return;
   }
+
+  jvmtiEnv* jvmti = VM::jvmti();
+  if (jvmti == nullptr) {
+    return;
+  }
+
+  jint threads_count = 0;
+  jthread* threads_ptr = nullptr;
+  if (jvmti->GetAllThreads(&threads_count, &threads_ptr) != JVMTI_ERROR_NONE ||
+    threads_count == 0) {
+    return;
+  }
+
   // Attach to JVM as the first step
   VM::attachThread("Datadog Profiler Wallclock Sampler");
   auto collectThreads = [&](std::vector<ThreadEntry>& threads) {
@@ -171,10 +184,6 @@ void WallClockJVMTI::timerLoop() {
           return;
       }
       JNIEnv* jni = VM::jni();
-
-      jint threads_count = 0;
-      jthread* threads_ptr = nullptr;
-      jvmti->GetAllThreads(&threads_count, &threads_ptr);
 
       ThreadFilter* threadFilter = Profiler::instance()->threadFilter();
       bool do_filter = threadFilter->enabled();
@@ -198,7 +207,6 @@ void WallClockJVMTI::timerLoop() {
           }
         }
       }
-      jvmti->Deallocate((unsigned char*)threads_ptr);
     };
 
   auto sampleThreads = [&](ThreadEntry& thread_entry, int& num_failures, int& threads_already_exited, int& permission_denied) {
@@ -233,11 +241,14 @@ void WallClockJVMTI::timerLoop() {
     return true;
   };
 
-  auto clearThreadRefs = [](ThreadEntry& thread_entry) {
-    VM::jni()->DeleteLocalRef(thread_entry.java);
-  };
+  timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, _reservoir_size, _interval);
 
-  timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, clearThreadRefs, _reservoir_size, _interval);
+  JNIEnv* jni = VM::jni();
+  for (jint index = 0; index < threads_count; index++) {
+    jni->DeleteLocalRef(threads_ptr[index]);
+  }
+  jvmti->Deallocate((unsigned char*)threads_ptr);
+
   // Don't forget to detach the thread
   VM::detachThread();
 }
@@ -276,7 +287,5 @@ void WallClockASGCT::timerLoop() {
       return true;
     };
 
-    auto doNothing = [](int tid) { };
-
-    timerLoopCommon<int>(collectThreads, sampleThreads, doNothing, _reservoir_size, _interval);
+    timerLoopCommon<int>(collectThreads, sampleThreads, _reservoir_size, _interval);
 }
