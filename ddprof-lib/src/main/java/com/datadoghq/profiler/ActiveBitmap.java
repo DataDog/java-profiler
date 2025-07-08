@@ -52,10 +52,6 @@ class ActiveBitmap {
         int delta = active ? 1 : -1;
         assert activeCountAddr != 0;
         UNSAFE.getAndAddInt(null, activeCountAddr, delta);
-        if (isActive0(tid) != active) {
-            throw new RuntimeException("SetActive Failed");
-        }
-
         assert isActive0(tid) == active;
     }
 
