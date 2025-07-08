@@ -17,12 +17,9 @@ public class Main {
 
     public static void main(String... args) throws Exception {
         String filter = "*";
-        if (args.length == 1) {
+        if (args.length >= 1) {
             filter = args[0];
-        } else if (args.length > 1) {
-            System.err.println("Usage: java -jar ddprof-stresstest.jar [scenario filter]");
-            System.exit(1);
-        }
+        } 
         CommandLineOptions commandLineOptions = new CommandLineOptions(args);
         Mode mode = Mode.AverageTime;
         Options options = new OptionsBuilder()
