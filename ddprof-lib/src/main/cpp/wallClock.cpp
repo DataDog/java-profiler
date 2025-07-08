@@ -183,25 +183,28 @@ void WallClockJVMTI::timerLoop() {
       for (int i = 0; i < threads_count; i++) {
         jthread thread = threads_ptr[i];
         if (thread != nullptr) {
+          ThreadHandle handle(thread);
           ddprof::VMThread* nThread = static_cast<ddprof::VMThread*>(VMThread::fromJavaThread(jni, thread));
           if (nThread == nullptr) {
-            continue;
+            continue; // handle destructor will clean up automatically
           }
           // Racy, use safer version and check
           int tid = nThread->osThreadIdSafe();
           if (!threadFilter->isValid(tid)) {
-            continue;
+            continue; // handle destructor will clean up automatically
           }
 
           if (tid != self && (!do_filter || threadFilter->accept(tid))) {
-            threads.push_back({nThread, thread, tid});
+            // Move the handle - transfers ownership to ThreadEntry
+            threads.emplace_back(nThread, std::move(handle), tid);
           }
+          // If not moved, handle destructor will clean up automatically
         }
       }
       jvmti->Deallocate((unsigned char*)threads_ptr);
     };
 
-  auto sampleThreads = [&](ThreadEntry& thread_entry, int& num_failures, int& threads_already_exited, int& permission_denied) {
+  auto sampleThreads = [&](const ThreadEntry& thread_entry, int& num_failures, int& threads_already_exited, int& permission_denied) {
     static jint max_stack_depth = (jint)Profiler::instance()->max_stack_depth();
 
     // Following code is racy, use safer version to access native structure.
@@ -213,7 +216,7 @@ void WallClockJVMTI::timerLoop() {
     OSThreadState state = OSThreadState::UNKNOWN;
     ExecutionMode mode = ExecutionMode::UNKNOWN;
     if (vm_thread == nullptr || !is_initialized) {
-        return false;
+      return false;
     }
     OSThreadState os_state = vm_thread->osThreadStateSafe();
     if (state == OSThreadState::TERMINATED) {
@@ -229,15 +232,12 @@ void WallClockJVMTI::timerLoop() {
     event._execution_mode = mode;
     event._weight =  1;
 
-    Profiler::instance()->recordJVMTISample(1, thread_entry.tid, thread_entry.java, BCI_WALL, &event, false);
+    Profiler::instance()->recordJVMTISample(1, thread_entry.tid, thread_entry.java.get(), BCI_WALL, &event, false);
     return true;
   };
 
-  auto clearThreadRefs = [](ThreadEntry& thread_entry) {
-    VM::jni()->DeleteLocalRef(thread_entry.java);
-  };
-
-  timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, clearThreadRefs, _reservoir_size, _interval);
+  // No manual cleanup needed - ThreadHandle destructors handle it automatically!
+  timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, _reservoir_size, _interval);
   // Don't forget to detach the thread
   VM::detachThread();
 }

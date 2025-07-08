@@ -72,22 +72,29 @@ class BaseWallClock : public Engine {
       u64 startTime = TSC::ticks();
       WallClockEpochEvent epoch(startTime);
 
-      ReservoirSampler<ThreadType> reservoir(reservoirSize);
-
       while (_running.load(std::memory_order_relaxed)) {
         collectThreads(threads);
 
+        if (threads.empty()) {
+          continue;
+        }
+        ReservoirSampler<ThreadType> reservoir(reservoirSize);
         int num_failures = 0;
         int threads_already_exited = 0;
         int permission_denied = 0;
         std::vector<ThreadType> sample = reservoir.sample(threads);
-        for (ThreadType thread : sample) {
+        for (const ThreadType &thread : sample) {
           if (!sampleThreads(thread, num_failures, threads_already_exited, permission_denied)) {
             continue;
           }
         }
 
+        // Statistics
         epoch.updateNumSamplableThreads(threads.size());
+        
+        // No explicit cleanup needed - ThreadHandle destructors handle it automatically
+        threads.clear();
+
         epoch.updateNumFailedSamples(num_failures);
         epoch.updateNumSuccessfulSamples(sample.size() - num_failures);
         epoch.updateNumExitedThreads(threads_already_exited);
@@ -103,16 +110,18 @@ class BaseWallClock : public Engine {
           epoch.clean();
         }
 
-        for (ThreadType thread : threads) {
-          cleanThreads(thread);
-        }
-
-        threads.clear();
         // Get a random sleep duration
         // clamp the random interval to <1,2N-1>
         // the probability of clamping is extremely small, close to zero
         OS::sleep(std::min(std::max((long int)1, static_cast<long int>(distribution(generator))), ((_interval * 2) - 1)));
       }
+    }
+
+    // Overload for RAII types that automatically handle cleanup
+    template <typename ThreadType, typename CollectThreadsFunc, typename SampleThreadsFunc>
+    void timerLoopCommon(CollectThreadsFunc collectThreads, SampleThreadsFunc sampleThreads, int reservoirSize, u64 interval) {
+      // Delegate to the main version with a no-op cleanup function
+      timerLoopCommon<ThreadType>(collectThreads, sampleThreads, [](ThreadType&){}, reservoirSize, interval);
     }
 
 public:
@@ -160,13 +169,108 @@ class WallClockASGCT : public BaseWallClock {
 
 class WallClockJVMTI : public BaseWallClock {
   private:
+    // RAII wrapper for JNI local thread references
+    class ThreadHandle {
+    private:
+      jthread _thread;
+      bool _owned;
+      
+    public:
+      // Constructor takes ownership of the reference
+      explicit ThreadHandle(jthread thread) : _thread(thread), _owned(true) {}
+      
+      // Copy constructor - create new local reference
+      ThreadHandle(const ThreadHandle& other) : _thread(nullptr), _owned(false) {
+        if (other._owned && other._thread) {
+          JNIEnv* env = VM::jni();
+          if (env) {
+            _thread = (jthread)env->NewLocalRef(other._thread);
+            _owned = (_thread != nullptr);
+          }
+        }
+      }
+      
+      // Copy assignment - create new local reference
+      ThreadHandle& operator=(const ThreadHandle& other) {
+        if (this != &other) {
+          cleanup();
+          _thread = nullptr;
+          _owned = false;
+          
+          if (other._owned && other._thread) {
+            JNIEnv* env = VM::jni();
+            if (env) {
+              _thread = (jthread)env->NewLocalRef(other._thread);
+              _owned = (_thread != nullptr);
+            }
+          }
+        }
+        return *this;
+      }
+      
+      // Move constructor - transfer ownership
+      ThreadHandle(ThreadHandle&& other) noexcept 
+        : _thread(other._thread), _owned(other._owned) {
+        other._thread = nullptr;
+        other._owned = false;
+      }
+      
+      // Move assignment - transfer ownership
+      ThreadHandle& operator=(ThreadHandle&& other) noexcept {
+        if (this != &other) {
+          cleanup();
+          _thread = other._thread;
+          _owned = other._owned;
+          other._thread = nullptr;
+          other._owned = false;
+        }
+        return *this;
+      }
+      
+      // Destructor - cleanup if owned
+      ~ThreadHandle() {
+        cleanup();
+      }
+      
+      // Release ownership (caller takes responsibility)
+      jthread release() {
+        _owned = false;
+        return _thread;
+      }
+      
+      // Get the jthread (still owned by this handle)
+      jthread get() const {
+        return _thread;
+      }
+      
+      // Get the jthread (still owned by this handle)
+      operator jthread() const {
+        return _thread;
+      }
+      
+    private:
+      void cleanup() {
+        if (_owned && _thread) {
+          JNIEnv* env = VM::jni();
+          if (env) {
+            env->DeleteLocalRef(_thread);
+          }
+        }
+      }
+    };
+
     void timerLoop() override;
   public:
     struct ThreadEntry {
         ddprof::VMThread* native;
-        jthread java;
+        ThreadHandle java;
         int tid;
+        
+        // Constructor that takes a ThreadHandle by move
+        ThreadEntry(ddprof::VMThread* n, ThreadHandle&& handle, int t) 
+          : native(n), java(std::move(handle)), tid(t) {}
     };
+    
     WallClockJVMTI() : BaseWallClock() {}
     const char* name() override {
     return "WallClock (JVMTI)";
