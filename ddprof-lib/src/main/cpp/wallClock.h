@@ -50,8 +50,8 @@ class BaseWallClock : public Engine {
 
     bool isEnabled() const;
 
-    template <typename ThreadType, typename CollectThreadsFunc, typename SampleThreadsFunc>
-    void timerLoopCommon(CollectThreadsFunc collectThreads, SampleThreadsFunc sampleThreads, int reservoirSize, u64 interval) {
+    template <typename ThreadType, typename CollectThreadsFunc, typename SampleThreadsFunc, typename CleanThreadFunc>
+    void timerLoopCommon(CollectThreadsFunc collectThreads, SampleThreadsFunc sampleThreads, CleanThreadFunc cleanThreads, int reservoirSize, u64 interval) {
       if (!_enabled.load(std::memory_order_acquire)) {
         return;
       }
@@ -104,6 +104,8 @@ class BaseWallClock : public Engine {
         }
 
         threads.clear();
+        cleanThreads();
+
         // Get a random sleep duration
         // clamp the random interval to <1,2N-1>
         // the probability of clamping is extremely small, close to zero
@@ -161,6 +163,7 @@ class WallClockJVMTI : public BaseWallClock {
     struct ThreadEntry {
         ddprof::VMThread* native;
         jthread java;
+        int tid;
     };
     WallClockJVMTI() : BaseWallClock() {}
     const char* name() override {

@@ -972,6 +972,7 @@ void Profiler::updateJavaThreadNames() {
   JNIEnv *jni = VM::jni();
   for (int i = 0; i < thread_count; i++) {
     updateThreadName(jvmti, jni, thread_objects[i]);
+    jni->DeleteLocalRef(thread_objects[i]);
   }
 
   jvmti->Deallocate((unsigned char *)thread_objects);
