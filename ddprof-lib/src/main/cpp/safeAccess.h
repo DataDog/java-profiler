@@ -37,7 +37,7 @@ private:
 public:
   static void initSafeFetch(CodeCache* libjvm);
 
-  static inline int safeFetch(int* ptr, int errorValue) {
+  static inline int safeFetch32(int* ptr, int errorValue) {
     assert(_safeFetch32Func != nullptr);
     return _safeFetch32Func(ptr, errorValue);
   }

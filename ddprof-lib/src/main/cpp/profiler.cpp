@@ -625,9 +625,9 @@ u32 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
     if (duration > 0) {
       Counters::increment(UNWINDING_TIME_JVMTI, duration); // increment the JVMTI specific counter
     }
-    if (!deferred) {
-      _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
-    }
+  }
+  if (!deferred) {
+    _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
   }
 
   _locks[lock_index].unlock();

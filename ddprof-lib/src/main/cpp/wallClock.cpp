@@ -196,8 +196,7 @@ void WallClockJVMTI::timerLoop() {
           if (nThread == nullptr) {
             continue;
           }
-          // Racy, use safer version and check
-          int tid = nThread->osThreadIdSafe();
+          int tid = nThread->osThreadId();
           if (!threadFilter->isValid(tid)) {
             continue;
           }
@@ -212,10 +211,9 @@ void WallClockJVMTI::timerLoop() {
   auto sampleThreads = [&](ThreadEntry& thread_entry, int& num_failures, int& threads_already_exited, int& permission_denied) {
     static jint max_stack_depth = (jint)Profiler::instance()->max_stack_depth();
 
-    // Following code is racy, use safer version to access native structure.
     ExecutionEvent event;
     ddprof::VMThread* vm_thread = thread_entry.native;
-    int raw_thread_state = vm_thread->stateSafe();
+    int raw_thread_state = vm_thread->state();
     bool is_initialized = raw_thread_state >= ddprof::JVMJavaThreadState::_thread_in_native &&
                           raw_thread_state < ddprof::JVMJavaThreadState::_thread_max_state;
     OSThreadState state = OSThreadState::UNKNOWN;
@@ -223,7 +221,7 @@ void WallClockJVMTI::timerLoop() {
     if (vm_thread == nullptr || !is_initialized) {
         return false;
     }
-    OSThreadState os_state = vm_thread->osThreadStateSafe();
+    OSThreadState os_state = vm_thread->osThreadState();
     if (state == OSThreadState::TERMINATED) {
       return false;
     } else if (state == OSThreadState::UNKNOWN) {

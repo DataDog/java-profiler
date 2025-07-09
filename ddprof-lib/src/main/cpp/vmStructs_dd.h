@@ -144,22 +144,10 @@ namespace ddprof {
 
     OSThreadState osThreadState() {
       if (ddprof::VMStructs::thread_osthread_offset() >= 0 && ddprof::VMStructs::osthread_state_offset() >= 0) {
-        const char *osthread = *(const char **)at(ddprof::VMStructs::thread_osthread_offset());
-        if (osthread != nullptr) {
-          return static_cast<OSThreadState>(
-              *(int *)(osthread + ddprof::VMStructs::osthread_state_offset()));
-        }
-      }
-      return OSThreadState::UNKNOWN;
-    }
-
-    // Safer version
-    OSThreadState osThreadStateSafe() {
-      if (ddprof::VMStructs::thread_osthread_offset() >= 0 && ddprof::VMStructs::osthread_state_offset() >= 0) {
         const char *osthread = *(char **)at(ddprof::VMStructs::thread_osthread_offset());
         if (osthread != nullptr) {
-          // If the location is accessible, the thread must have been terminated
-          int value = SafeAccess::safeFetch((int*)(osthread + ddprof::VMStructs::osthread_state_offset()),
+          // If the location is not accessible, the thread must have been terminated
+          int value = SafeAccess::safeFetch32((int*)(osthread + ddprof::VMStructs::osthread_state_offset()),
                                             static_cast<int>(OSThreadState::TERMINATED));
           // Checking for bad data
           if (value > static_cast<int>(OSThreadState::SYSCALL)) {
@@ -171,26 +159,26 @@ namespace ddprof {
      return OSThreadState::UNKNOWN;
     }
 
-    int osThreadIdSafe() {
+    int osThreadId() {
       if (ddprof::VMStructs::thread_osthread_offset() >= 0 && ddprof::VMStructs::osthread_id_offset() >=0) {
         const char* osthread = *(const char**) at(ddprof::VMStructs::thread_osthread_offset());
         if (osthread == nullptr) {
           return -1;
         } else {
-          return SafeAccess::safeFetch((int*)(osthread + ddprof::VMStructs::osthread_id_offset()), -1);
+          return SafeAccess::safeFetch32((int*)(osthread + ddprof::VMStructs::osthread_id_offset()), -1);
         }
       }
       return -1;
     }
 
-    int stateSafe() {
+    int state() {
       int offset = ddprof::VMStructs::thread_state_offset();
       if (offset >= 0) {
           int* state = (int*)at(offset);
           if (state == nullptr) {
             return 0;
           } else {
-            int value = SafeAccess::safeFetch(state, 0);
+            int value = SafeAccess::safeFetch32(state, 0);
             // Checking for bad data
             if (value > _thread_max_state) {
               value = 0;
