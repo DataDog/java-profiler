@@ -104,6 +104,8 @@ class BaseWallClock : public Engine {
         }
 
         threads.clear();
+        cleanThreads();
+
         // Get a random sleep duration
         // clamp the random interval to <1,2N-1>
         // the probability of clamping is extremely small, close to zero
