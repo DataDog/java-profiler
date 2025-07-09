@@ -622,7 +622,7 @@ tasks.register('debugInfoJar', Jar) {
   from files(libraryTargetBase('release-debug')) {
     include "**/*"
   }
-  
+
   // When using external libraries, depend on copyExternalDebugFiles
   if (project.hasProperty("with-libs")) {
     dependsOn copyExternalDebugFiles
