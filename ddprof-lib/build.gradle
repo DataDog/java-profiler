@@ -83,6 +83,9 @@ def createDebugExtractionTask(config, linkTask) {
     description = 'Extract debug symbols from release library'
     workingDir project.buildDir
 
+    // Declare outputs so Gradle knows what files this task creates
+    outputs.file getDebugFilePath(config)
+
     doFirst {
       def sourceFile = linkTask.get().linkedFile.get().asFile
       def debugFile = getDebugFilePath(config)
@@ -127,7 +130,7 @@ def createDebugCopyTask(config, extractDebugTask) {
     }
     dependsOn extractDebugTask
     from file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/debug")
-    into file(libraryTargetPath(config.name + '-debug'))
+    into file(libraryTargetPath(config.name))
     include '**/*.debug'
     include '**/*.dSYM/**'
   }
@@ -164,12 +167,6 @@ def setupDebugExtraction(config, linkTask) {
 
       // Create an extra folder for the debug symbols
       copyTask.dependsOn copyDebugTask
-    }
-
-    // Wire up the debug info JAR to depend on debug files being copied
-    def debugInfoJarTask = tasks.findByName("debugInfoJar")
-    if (debugInfoJarTask != null) {
-      debugInfoJarTask.dependsOn copyDebugTask
     }
   }
 }
@@ -258,19 +255,10 @@ tasks.register('copyExternalLibs', Copy) {
     from(project.getProperty("with-libs")) {
       include "**/*.so"
       include "**/*.dylib"
-    }
-    into "${projectDir}/build/classes/java/main/META-INF/native-libs"
-  }
-}
-
-// Copy debug files from external libraries if they exist
-tasks.register('copyExternalDebugFiles', Copy) {
-  if (project.hasProperty("with-libs")) {
-    from(project.getProperty("with-libs")) {
       include "**/*.debug"
       include "**/*.dSYM/**"
     }
-    into libraryTargetBase('release-debug') + "/META-INF/native-libs"
+    into "${projectDir}/build/classes/java/main/META-INF/native-libs"
   }
 }
 
@@ -450,6 +438,7 @@ buildConfigNames().each { name ->
     if (!project.hasProperty('skip-native')) {
       dependsOn copyTask
     }
+
     from sourceSets.main.output.classesDirs
     from files(libraryTargetBase(name)) {
       include "**/*"
@@ -615,19 +604,7 @@ tasks.register('javadocJar', Jar) {
   from javadoc.destinationDir
 }
 
-tasks.register('debugInfoJar', Jar) {
-  archiveBaseName = libraryName
-  archiveClassifier = 'debugInfo'
-  archiveVersion = component_version
-  from files(libraryTargetBase('release-debug')) {
-    include "**/*"
-  }
 
-  // When using external libraries, depend on copyExternalDebugFiles
-  if (project.hasProperty("with-libs")) {
-    dependsOn copyExternalDebugFiles
-  }
-}
 
 tasks.register('scanBuild', Exec) {
   workingDir "${projectDir}/src/test/make"
@@ -698,7 +675,6 @@ publishing {
       }
       publication.artifact sourcesJar
       publication.artifact javadocJar
-      publication.artifact debugInfoJar
 
       publication.groupId = 'com.datadoghq'
       publication.artifactId = 'ddprof'
