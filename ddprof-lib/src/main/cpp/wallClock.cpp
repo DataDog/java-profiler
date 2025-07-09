@@ -169,12 +169,13 @@ void WallClockJVMTI::timerLoop() {
     return;
   }
 
+  // Notice:
+  // We want to cache threads that are captured by collectThread(), so that we can
+  // clean them up in cleanThreadRefs().
+  // The approach is not ideal, but it is cleaner than cleaning individual thread
+  // during filtering phases.
   jint threads_count = 0;
   jthread* threads_ptr = nullptr;
-  if (jvmti->GetAllThreads(&threads_count, &threads_ptr) != JVMTI_ERROR_NONE ||
-    threads_count == 0) {
-    return;
-  }
 
   // Attach to JVM as the first step
   VM::attachThread("Datadog Profiler Wallclock Sampler");
@@ -183,6 +184,12 @@ void WallClockJVMTI::timerLoop() {
       if (jvmti == nullptr) {
           return;
       }
+
+      if (jvmti->GetAllThreads(&threads_count, &threads_ptr) != JVMTI_ERROR_NONE ||
+        threads_count == 0) {
+        return;
+      }
+
       JNIEnv* jni = VM::jni();
 
       ThreadFilter* threadFilter = Profiler::instance()->threadFilter();
@@ -239,13 +246,18 @@ void WallClockJVMTI::timerLoop() {
     return true;
   };
 
-  timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, _reservoir_size, _interval);
+  auto cleanThreadRefs = [&]() {
+      JNIEnv* jni = VM::jni();
+      for (jint index = 0; index < threads_count; index++) {
+        jni->DeleteLocalRef(threads_ptr[index]);
+      }
+      jvmti->Deallocate((unsigned char*)threads_ptr);
+      threads_ptr = nullptr;
+      threads_count = 0;
+  };
 
-  JNIEnv* jni = VM::jni();
-  for (jint index = 0; index < threads_count; index++) {
-    jni->DeleteLocalRef(threads_ptr[index]);
-  }
-  jvmti->Deallocate((unsigned char*)threads_ptr);
+  timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, cleanThreadRefs, _reservoir_size, _interval);
+
 
   // Don't forget to detach the thread
   VM::detachThread();
@@ -285,5 +297,8 @@ void WallClockASGCT::timerLoop() {
       return true;
     };
 
-    timerLoopCommon<int>(collectThreads, sampleThreads, _reservoir_size, _interval);
+    auto doNothing = []() {
+    };
+
+    timerLoopCommon<int>(collectThreads, sampleThreads, doNothing, _reservoir_size, _interval);
 }
