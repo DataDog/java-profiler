@@ -17,7 +17,9 @@ public:
     static constexpr int kChunkMask = kChunkSize - 1;
     static constexpr int kMaxThreads = 2048;
     static constexpr int kMaxChunks = (kMaxThreads + kChunkSize - 1) / kChunkSize;  // = 8 chunks
-
+// High-performance free list using Treiber stack, 64 shards
+    static constexpr int kFreeListSize  = 1024;
+    static constexpr int kShardCount    = 64;          // power-of-two
     ThreadFilter();
     ~ThreadFilter();
 
@@ -59,15 +61,13 @@ private:
 
     // Lock-free slot allocation
     std::atomic<SlotID> _next_index{0};
-
-    // High-performance free list using Treiber stack
-    static constexpr int kFreeListSize = 1024;  // Increased from 128
     std::unique_ptr<FreeListNode[]> _free_list;
-    std::atomic<int> _free_list_head{-1};
 
-    // Active slot tracking for efficient collect()
-    std::atomic<int> _active_slots{0};
+    struct alignas(64) ShardHead { std::atomic<int> head{-1}; };
+static ShardHead _free_heads[kShardCount];         // one cache-line each
 
+    static inline int shardOf(int tid)  { return tid & (kShardCount - 1); }
+    static inline int shardOfSlot(int s){ return s  & (kShardCount - 1); }
     // Helper methods for lock-free operations
     void initializeChunk(int chunk_idx);
     bool pushToFreeList(SlotID slot_id);
