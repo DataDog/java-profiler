@@ -496,7 +496,6 @@ bool Symbols::_libs_limit_reported = false;
 static std::unordered_set<u64> _parsed_inodes;
 
 void Symbols::clearParsingCaches() {
-  _parsed_libraries.clear();
   _parsed_inodes.clear();
 }
 
@@ -573,11 +572,6 @@ static void collectSharedLibraries(std::unordered_map<u64, SharedLibrary>& libs,
         continue;  // all shared libraries have inode, except vDSO
     }
 
-    int count = array->count();
-    if (count >= MAX_NATIVE_LIBS) {
-      break;
-    }
-
     const char* map_start = map.addr();
     const char *map_end = map.end();
     if (inode != last_inode && map.offs() == 0) {
@@ -598,8 +592,9 @@ static void collectSharedLibraries(std::unordered_map<u64, SharedLibrary>& libs,
         }
     }
 
-  free(str);
-  fclose(f);
+    free(str);
+    fclose(f);
+  }
 }
 
 void Symbols::parseLibraries(CodeCacheArray *array, bool kernel_symbols) {
