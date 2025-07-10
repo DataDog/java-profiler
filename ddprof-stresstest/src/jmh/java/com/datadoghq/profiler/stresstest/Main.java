@@ -8,6 +8,7 @@ import org.openjdk.jmh.runner.options.Options;
 import org.openjdk.jmh.runner.options.OptionsBuilder;
 import org.openjdk.jmh.runner.options.TimeValue;
 
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.concurrent.TimeUnit;
 
@@ -17,11 +18,9 @@ public class Main {
 
     public static void main(String... args) throws Exception {
         String filter = "*";
-        if (args.length == 1) {
+        if (args.length >= 1) {
             filter = args[0];
-        } else if (args.length > 1) {
-            System.err.println("Usage: java -jar ddprof-stresstest.jar [scenario filter]");
-            System.exit(1);
+            args = Arrays.copyOfRange(args, 1, args.length);
         }
         CommandLineOptions commandLineOptions = new CommandLineOptions(args);
         Mode mode = Mode.AverageTime;

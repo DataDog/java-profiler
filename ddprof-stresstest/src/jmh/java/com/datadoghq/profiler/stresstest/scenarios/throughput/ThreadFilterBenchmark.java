@@ -41,70 +41,82 @@ public class ThreadFilterBenchmark extends Configuration {
         workloadNum = Long.parseLong(workload);
     }
 
+//    @Benchmark
+//    @BenchmarkMode(Mode.Throughput)
+//    @Fork(value = 3, warmups = 3)
+//    @Warmup(iterations = 5)
+//    @Measurement(iterations = 8)
+//    @Threads(1)
+//    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+//    public void threadFilterStress01() throws InterruptedException {
+//        profiler.addThread();
+//        // Simulate per-thread work
+//        Blackhole.consumeCPU(workloadNum);
+//        profiler.removeThread();
+//    }
+//
+//    @Benchmark
+//    @BenchmarkMode(Mode.Throughput)
+//    @Fork(value = 3, warmups = 3)
+//    @Warmup(iterations = 5)
+//    @Measurement(iterations = 8)
+//    @Threads(2)
+//    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+//    public void threadFilterStress02() throws InterruptedException {
+//        profiler.addThread();
+//        // Simulate per-thread work
+//        Blackhole.consumeCPU(workloadNum);
+//        profiler.removeThread();
+//    }
+//
+//    @Benchmark
+//    @BenchmarkMode(Mode.Throughput)
+//    @Fork(value = 3, warmups = 3)
+//    @Warmup(iterations = 5)
+//    @Measurement(iterations = 8)
+//    @Threads(4)
+//    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+//    public void threadFilterStress04() throws InterruptedException {
+//        profiler.addThread();
+//        // Simulate per-thread work
+//        Blackhole.consumeCPU(workloadNum);
+//        profiler.removeThread();
+//    }
+//
+//    @Benchmark
+//    @BenchmarkMode(Mode.Throughput)
+//    @Fork(value = 3, warmups = 3)
+//    @Warmup(iterations = 5)
+//    @Measurement(iterations = 8)
+//    @Threads(8)
+//    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+//    public void threadFilterStress08() throws InterruptedException {
+//        profiler.addThread();
+//        // Simulate per-thread work
+//        Blackhole.consumeCPU(workloadNum);
+//        profiler.removeThread();
+//    }
+//
+//    @Benchmark
+//    @BenchmarkMode(Mode.Throughput)
+//    @Fork(value = 3, warmups = 3)
+//    @Warmup(iterations = 5)
+//    @Measurement(iterations = 8)
+//    @Threads(16)
+//    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+//    public void threadFilterStress16() throws InterruptedException {
+//        profiler.addThread();
+//        // Simulate per-thread work
+//        Blackhole.consumeCPU(workloadNum);
+//        profiler.removeThread();
+//    }
     @Benchmark
     @BenchmarkMode(Mode.Throughput)
     @Fork(value = 3, warmups = 3)
     @Warmup(iterations = 5)
     @Measurement(iterations = 8)
-    @Threads(1)
     @OutputTimeUnit(TimeUnit.MILLISECONDS)
-    public void threadFilterStress01() throws InterruptedException {
-        profiler.addThread();
-        // Simulate per-thread work
-        Blackhole.consumeCPU(workloadNum);
-        profiler.removeThread();
-    }
-
-    @Benchmark
-    @BenchmarkMode(Mode.Throughput)
-    @Fork(value = 3, warmups = 3)
-    @Warmup(iterations = 5)
-    @Measurement(iterations = 8)
-    @Threads(2)
-    @OutputTimeUnit(TimeUnit.MILLISECONDS)
-    public void threadFilterStress02() throws InterruptedException {
-        profiler.addThread();
-        // Simulate per-thread work
-        Blackhole.consumeCPU(workloadNum);
-        profiler.removeThread();
-    }
-
-    @Benchmark
-    @BenchmarkMode(Mode.Throughput)
-    @Fork(value = 3, warmups = 3)
-    @Warmup(iterations = 5)
-    @Measurement(iterations = 8)
-    @Threads(4)
-    @OutputTimeUnit(TimeUnit.MILLISECONDS)
-    public void threadFilterStress04() throws InterruptedException {
-        profiler.addThread();
-        // Simulate per-thread work
-        Blackhole.consumeCPU(workloadNum);
-        profiler.removeThread();
-    }
-
-    @Benchmark
-    @BenchmarkMode(Mode.Throughput)
-    @Fork(value = 3, warmups = 3)
-    @Warmup(iterations = 5)
-    @Measurement(iterations = 8)
-    @Threads(8)
-    @OutputTimeUnit(TimeUnit.MILLISECONDS)
-    public void threadFilterStress08() throws InterruptedException {
-        profiler.addThread();
-        // Simulate per-thread work
-        Blackhole.consumeCPU(workloadNum);
-        profiler.removeThread();
-    }
-
-    @Benchmark
-    @BenchmarkMode(Mode.Throughput)
-    @Fork(value = 3, warmups = 3)
-    @Warmup(iterations = 5)
-    @Measurement(iterations = 8)
-    @Threads(16)
-    @OutputTimeUnit(TimeUnit.MILLISECONDS)
-    public void threadFilterStress16() throws InterruptedException {
+    public void threadFilterStress() throws InterruptedException {
         profiler.addThread();
         // Simulate per-thread work
         Blackhole.consumeCPU(workloadNum);

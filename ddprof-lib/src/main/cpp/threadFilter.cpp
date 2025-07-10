@@ -135,12 +135,13 @@ void ThreadFilter::add(int tid, SlotID slot_id) {
     if (chunk_idx >= kMaxChunks) return;
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
     if (chunk == nullptr) return;  // Fail-fast if not allocated
-    
+
+    chunk->slots[slot_idx].value.store(tid, std::memory_order_release);
     // Store the tid and increment active slots if this was previously empty
-    int old_value = chunk->slots[slot_idx].value.exchange(tid, std::memory_order_acq_rel);
-    if (old_value == -1) {
-        _active_slots.fetch_add(1, std::memory_order_relaxed);
-    }
+//    int old_value = chunk->slots[slot_idx].value.exchange(tid, std::memory_order_acq_rel);
+//    if (old_value == -1) {
+//        _active_slots.fetch_add(1, std::memory_order_relaxed);
+//    }
 }
 
 void ThreadFilter::remove(SlotID slot_id) {
@@ -211,14 +212,14 @@ ThreadFilter::SlotID ThreadFilter::popFromFreeList() {
 void ThreadFilter::collect(std::vector<int>& tids) const {
     tids.clear();
     
-    // Early exit if no active slots
-    int active_count = _active_slots.load(std::memory_order_relaxed);
-    if (active_count == 0) {
-        return;
-    }
+//    // Early exit if no active slots
+//    int active_count = _active_slots.load(std::memory_order_relaxed);
+//    if (active_count == 0) {
+//        return;
+//    }
     
     // Reserve space for efficiency
-    tids.reserve(active_count);
+    tids.reserve(512);
     
     // Scan only initialized chunks
     int num_chunks = _num_chunks.load(std::memory_order_relaxed);

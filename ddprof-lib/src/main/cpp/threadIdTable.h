@@ -32,7 +32,7 @@ public:
         
         int start_slot = hash(tid);
         for (int probe = 0; probe < TABLE_SIZE; probe++) {
-            int slot = (start_slot + probe) % TABLE_SIZE;
+            int slot = (start_slot + (probe * 7)) % TABLE_SIZE;
             int expected = 0;
             
             // Try to claim empty slot
