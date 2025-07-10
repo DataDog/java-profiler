@@ -22,7 +22,7 @@
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
-#include <set>
+#include <unordered_set>
 #include <string.h>
 
 class MachOParser {
@@ -140,7 +140,8 @@ public:
 
 Mutex Symbols::_parse_lock;
 bool Symbols::_have_kernel_symbols = false;
-static std::set<const void *> _parsed_libraries;
+bool Symbols::_libs_limit_reported = false;
+static std::unordered_set<const void*> _parsed_libraries;
 
 void Symbols::clearParsingCaches() { _parsed_libraries.clear(); }
 void Symbols::parseKernelSymbols(CodeCache *cc) {}
@@ -157,6 +158,10 @@ void Symbols::parseLibraries(CodeCacheArray *array, bool kernel_symbols) {
 
     int count = array->count();
     if (count >= MAX_NATIVE_LIBS) {
+      if (!_libs_limit_reported) {
+          Log::warn("Number of parsed libraries reached the limit of %d", MAX_NATIVE_LIBS);
+          _libs_limit_reported = true;
+      }
       break;
     }
 
