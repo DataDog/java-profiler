@@ -83,6 +83,9 @@ def createDebugExtractionTask(config, linkTask) {
     description = 'Extract debug symbols from release library'
     workingDir project.buildDir
 
+    // Declare outputs so Gradle knows what files this task creates
+    outputs.file getDebugFilePath(config)
+
     doFirst {
       def sourceFile = linkTask.get().linkedFile.get().asFile
       def debugFile = getDebugFilePath(config)
@@ -127,7 +130,7 @@ def createDebugCopyTask(config, extractDebugTask) {
     }
     dependsOn extractDebugTask
     from file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/debug")
-    into file(libraryTargetPath(config.name + '-debug'))
+    into file(libraryTargetPath(config.name))
     include '**/*.debug'
     include '**/*.dSYM/**'
   }
@@ -252,6 +255,8 @@ tasks.register('copyExternalLibs', Copy) {
     from(project.getProperty("with-libs")) {
       include "**/*.so"
       include "**/*.dylib"
+      include "**/*.debug"
+      include "**/*.dSYM/**"
     }
     into "${projectDir}/build/classes/java/main/META-INF/native-libs"
   }
@@ -433,6 +438,7 @@ buildConfigNames().each { name ->
     if (!project.hasProperty('skip-native')) {
       dependsOn copyTask
     }
+
     from sourceSets.main.output.classesDirs
     from files(libraryTargetBase(name)) {
       include "**/*"
@@ -597,6 +603,8 @@ tasks.register('javadocJar', Jar) {
   archiveVersion = component_version
   from javadoc.destinationDir
 }
+
+
 
 tasks.register('scanBuild', Exec) {
   workingDir "${projectDir}/src/test/make"
