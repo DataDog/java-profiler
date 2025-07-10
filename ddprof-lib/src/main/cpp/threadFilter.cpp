@@ -8,13 +8,15 @@
 #include <algorithm>
 #include <cstring>
 
+ThreadFilter::ShardHead ThreadFilter::_free_heads[ThreadFilter::kShardCount] {};
+
 ThreadFilter::ThreadFilter() : _enabled(false) {
     // Initialize chunk pointers to null (lazy allocation)
     for (int i = 0; i < kMaxChunks; ++i) {
         _chunks[i].store(nullptr, std::memory_order_relaxed);
     }
     _free_list = std::make_unique<FreeListNode[]>(kFreeListSize);
-    
+
     // Initialize the first chunk
     initializeChunk(0);
     clear();
@@ -30,14 +32,14 @@ ThreadFilter::~ThreadFilter() {
 
 void ThreadFilter::initializeChunk(int chunk_idx) {
     if (chunk_idx >= kMaxChunks) return;
-    
+
     // Check if chunk already exists
     ChunkStorage* existing = _chunks[chunk_idx].load(std::memory_order_acquire);
     if (existing != nullptr) return;
-    
+
     // Allocate new chunk
     ChunkStorage* new_chunk = new ChunkStorage();
-    
+
     // Try to install it atomically
     ChunkStorage* expected = nullptr;
     if (_chunks[chunk_idx].compare_exchange_strong(expected, new_chunk, std::memory_order_acq_rel)) {
@@ -68,13 +70,13 @@ ThreadFilter::SlotID ThreadFilter::registerThread() {
     }
 
     const int chunk_idx = index >> kChunkShift;
-    
+
     // Ensure the chunk is initialized (lock-free)
     if (chunk_idx >= _num_chunks.load(std::memory_order_acquire)) {
         // Update the chunk count atomically
         int expected_chunks = chunk_idx;
         int desired_chunks = chunk_idx + 1;
-        while (!_num_chunks.compare_exchange_weak(expected_chunks, desired_chunks, 
+        while (!_num_chunks.compare_exchange_weak(expected_chunks, desired_chunks,
                                                    std::memory_order_acq_rel)) {
             if (expected_chunks > chunk_idx) {
                 break; // Another thread already updated it
@@ -82,10 +84,10 @@ ThreadFilter::SlotID ThreadFilter::registerThread() {
             desired_chunks = expected_chunks + 1;
         }
     }
-    
+
     // Initialize the chunk if needed
     initializeChunk(chunk_idx);
-    
+
     return index;
 }
 
@@ -100,14 +102,17 @@ void ThreadFilter::clear() {
             }
         }
     }
-    
+
     // Clear the free list
     for (int i = 0; i < kFreeListSize; ++i) {
         _free_list[i].value.store(-1, std::memory_order_relaxed);
         _free_list[i].next.store(-1, std::memory_order_relaxed);
     }
-    _free_list_head.store(-1, std::memory_order_relaxed);
-    _active_slots.store(0, std::memory_order_relaxed);
+
+    // Reset the free heads for each shard
+    for (int s = 0; s < kShardCount; ++s) {
+        _free_heads[s].head.store(-1, std::memory_order_relaxed);
+    }
 }
 
 bool ThreadFilter::accept(SlotID slot_id) const {
@@ -115,49 +120,43 @@ bool ThreadFilter::accept(SlotID slot_id) const {
         return true;
     }
     if (slot_id < 0) return false;
-    
+
     int chunk_idx = slot_id >> kChunkShift;
     int slot_idx = slot_id & kChunkMask;
-    
+
     if (chunk_idx >= kMaxChunks) return false;
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
     if (chunk == nullptr) return false;  // Fail-fast if not allocated
-    
+
     return chunk->slots[slot_idx].value.load(std::memory_order_acquire) != -1;
 }
 
 void ThreadFilter::add(int tid, SlotID slot_id) {
     if (slot_id < 0) return;
-    
+
     int chunk_idx = slot_id >> kChunkShift;
     int slot_idx = slot_id & kChunkMask;
-    
+
     if (chunk_idx >= kMaxChunks) return;
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
     if (chunk == nullptr) return;  // Fail-fast if not allocated
-    
-    // Store the tid and increment active slots if this was previously empty
-    int old_value = chunk->slots[slot_idx].value.exchange(tid, std::memory_order_acq_rel);
-    if (old_value == -1) {
-        _active_slots.fetch_add(1, std::memory_order_relaxed);
-    }
+
+    // Store the tid
+    chunk->slots[slot_idx].value.store(tid, std::memory_order_release);
 }
 
 void ThreadFilter::remove(SlotID slot_id) {
     if (slot_id < 0) return;
-    
+
     int chunk_idx = slot_id >> kChunkShift;
     int slot_idx = slot_id & kChunkMask;
-    
+
     if (chunk_idx >= kMaxChunks) return;
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
     if (chunk == nullptr) return;  // Fail-fast if not allocated
-    
-    // Remove the tid and decrement active slots if this was previously occupied
-    int old_value = chunk->slots[slot_idx].value.exchange(-1, std::memory_order_acq_rel);
-    if (old_value != -1) {
-        _active_slots.fetch_sub(1, std::memory_order_relaxed);
-    }
+
+    // Remove the tid
+    chunk->slots[slot_idx].value.store(-1, std::memory_order_acq_rel);
 }
 
 void ThreadFilter::unregisterThread(SlotID slot_id) {
@@ -171,15 +170,20 @@ void ThreadFilter::unregisterThread(SlotID slot_id) {
 }
 
 bool ThreadFilter::pushToFreeList(SlotID slot_id) {
-    // Lock-free Treiber stack push
+    // Lock-free sharded Treiber stack push
+    const int shard = shardOfSlot(slot_id);
+    auto& head      = _free_heads[shard].head; // private cache-line
+
     for (int i = 0; i < kFreeListSize; ++i) {
         int expected = -1;
-        if (_free_list[i].value.compare_exchange_strong(expected, slot_id, std::memory_order_acq_rel)) {
-            // Successfully stored in this slot
-            int old_head = _free_list_head.load(std::memory_order_acquire);
+        if (_free_list[i].value.compare_exchange_strong(
+                expected, slot_id, std::memory_order_acq_rel)) {
+            // Link node into this shard’s Treiber stack
+            int old_head = head.load(std::memory_order_acquire);
             do {
                 _free_list[i].next.store(old_head, std::memory_order_relaxed);
-            } while (!_free_list_head.compare_exchange_weak(old_head, i, std::memory_order_acq_rel));
+            } while (!head.compare_exchange_weak(old_head, i,
+                       std::memory_order_acq_rel, std::memory_order_relaxed));
             return true;
         }
     }
@@ -187,38 +191,39 @@ bool ThreadFilter::pushToFreeList(SlotID slot_id) {
 }
 
 ThreadFilter::SlotID ThreadFilter::popFromFreeList() {
-    // Lock-free Treiber stack pop
-    while (true) {
-        int head = _free_list_head.load(std::memory_order_acquire);
-        if (head == -1) {
-            return -1; // Empty list
+    // Lock-free sharded Treiber stack pop
+    int hash = static_cast<int>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    int start = shardOf(hash);
+
+    for (int pass = 0; pass < kShardCount; ++pass) {
+        int s      = (start + pass) & (kShardCount - 1);
+        auto& head = _free_heads[s].head;
+
+        while (true) {
+            int node = head.load(std::memory_order_acquire);
+            if (node == -1) break;                 // shard empty → try next
+
+            int next = _free_list[node].next.load(std::memory_order_relaxed);
+            if (head.compare_exchange_weak(node, next,
+                                           std::memory_order_acq_rel,
+                                           std::memory_order_relaxed))
+            {
+                int id = _free_list[node].value.exchange(-1,
+                              std::memory_order_relaxed);
+                _free_list[node].next.store(-1, std::memory_order_relaxed);
+                return id;
+            }
         }
-        
-        int slot_id = _free_list[head].value.load(std::memory_order_acquire);
-        int next = _free_list[head].next.load(std::memory_order_acquire);
-        
-        // Try to update the head
-        if (_free_list_head.compare_exchange_weak(head, next, std::memory_order_acq_rel)) {
-            // Clear the node
-            _free_list[head].value.store(-1, std::memory_order_relaxed);
-            _free_list[head].next.store(-1, std::memory_order_relaxed);
-            return slot_id;
-        }
-        // Retry if another thread modified the head
     }
+    return -1; // Empty list
 }
 
 void ThreadFilter::collect(std::vector<int>& tids) const {
     tids.clear();
     
-    // Early exit if no active slots
-    int active_count = _active_slots.load(std::memory_order_relaxed);
-    if (active_count == 0) {
-        return;
-    }
-    
     // Reserve space for efficiency
-    tids.reserve(active_count);
+    // The eventual resize is not the bottleneck, so we reserve a reasonable size
+    tids.reserve(512);
     
     // Scan only initialized chunks
     int num_chunks = _num_chunks.load(std::memory_order_relaxed);
