@@ -642,17 +642,9 @@ void Symbols::parseLibraries(CodeCacheArray *array, bool kernel_symbols) {
             // Parse debug symbols first
             ElfParser::parseFile(cc, lib.image_base, lib.file, true);
 
-            dlerror();  // reset any error from previous dl function calls
-
-            // Protect library from unloading while parsing in-memory ELF program headers.
-            // Also, dlopen() ensures the library is fully loaded.
-            // Main executable and ld-linux interpreter cannot be dlopen'ed, but dlerror() returns NULL for them.
-            void* handle = dlopen(lib.file, RTLD_LAZY | RTLD_NOLOAD);
-            if (handle != NULL || dlerror() == NULL) {
-               ElfParser::parseProgramHeaders(cc, lib.image_base, lib.map_end, MUSL);
-               if (handle != NULL) {
-                    dlclose(handle);
-                }
+            UnloadProtection handle(cc);
+            if (handle.isValid()) {
+                ElfParser::parseProgramHeaders(cc, lib.image_base, lib.map_end, MUSL);
             }
         }
 
@@ -675,6 +667,46 @@ bool Symbols::isRootSymbol(const void* address) {
     }
   }
   return false;
+}
+
+// Check that the base address of the shared object has not changed
+static bool verifyBaseAddress(const CodeCache* cc, void* lib_handle) {
+    Dl_info dl_info;
+    struct link_map* map;
+
+    if (dlinfo(lib_handle, RTLD_DI_LINKMAP, &map) != 0 || dladdr(map->l_ld, &dl_info) == 0) {
+        return false;
+    }
+
+    return cc->imageBase() == (const char*)dl_info.dli_fbase;
+}
+
+UnloadProtection::UnloadProtection(const CodeCache *cc) {
+    if (OS::isMusl() || isMainExecutable(cc->imageBase(), cc->maxAddress()) || isLoader(cc->imageBase())) {
+        _lib_handle = NULL;
+        _valid = true;
+        return;
+    }
+
+    // dlopen() can reopen previously loaded libraries even if the underlying file has been deleted
+    const char* stripped_name = cc->name();
+    size_t name_len = strlen(stripped_name);
+    if (name_len > 10 && strcmp(stripped_name + name_len - 10, " (deleted)") == 0) {
+        char* buf = (char*) alloca(name_len - 9);
+        *stpncpy(buf, stripped_name, name_len - 10) = 0;
+        stripped_name = buf;
+    }
+
+    // Protect library from unloading while parsing in-memory ELF program headers.
+    // Also, dlopen() ensures the library is fully loaded.
+    _lib_handle = dlopen(stripped_name, RTLD_LAZY | RTLD_NOLOAD);
+    _valid = _lib_handle != NULL && verifyBaseAddress(cc, _lib_handle);
+}
+
+UnloadProtection::~UnloadProtection() {
+    if (_lib_handle != NULL) {
+        dlclose(_lib_handle);
+    }
 }
 
 #endif // __linux__
