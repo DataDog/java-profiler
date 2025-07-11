@@ -567,7 +567,6 @@ static void collectSharedLibraries(std::unordered_map<u64, SharedLibrary>& libs,
     if (_parsed_inodes.find(inode) != _parsed_inodes.end()) {
        continue;  // shared object is already parsed
     }
-
     if (inode == 0 && strcmp(map.file(), "[vdso]") != 0) {
         continue;  // all shared libraries have inode, except vDSO
     }
@@ -587,14 +586,14 @@ static void collectSharedLibraries(std::unordered_map<u64, SharedLibrary>& libs,
             lib.map_end = map_end;
             lib.image_base = inode == last_inode ? image_base : NULL;
             max_count--;
+        } else {
             // The same library may have multiple executable segments mapped
             lib.map_end = map_end;
         }
     }
-
-    free(str);
-    fclose(f);
   }
+  free(str);
+  fclose(f);
 }
 
 void Symbols::parseLibraries(CodeCacheArray *array, bool kernel_symbols) {
@@ -659,7 +658,6 @@ void Symbols::parseLibraries(CodeCacheArray *array, bool kernel_symbols) {
         free(lib.file);
 
         cc->sort();
-        applyPatch(cc);
         array->add(cc);
     }
 
