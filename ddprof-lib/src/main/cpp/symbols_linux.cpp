@@ -622,7 +622,7 @@ void Symbols::parseLibraries(CodeCacheArray *array, bool kernel_symbols) {
         _parsed_inodes.insert(inode);
 
         SharedLibrary& lib = it.second;
-        CodeCache* cc = new CodeCache(lib.file, array->count(), false, lib.map_start, lib.map_end);
+        CodeCache* cc = new CodeCache(lib.file, array->count(), false, lib.map_start, lib.map_end, lib.image_base);
 
         // Strip " (deleted)" suffix so that removed library can be reopened
         size_t len = strlen(lib.file);
@@ -681,8 +681,16 @@ static bool verifyBaseAddress(const CodeCache* cc, void* lib_handle) {
     return cc->imageBase() == (const char*)dl_info.dli_fbase;
 }
 
+static bool isMainExecutable(const char* image_base, const void* map_end) {
+    return _main_phdr != NULL && _main_phdr >= image_base && _main_phdr < map_end;
+}
+
+static bool isLoader(const char* image_base) {
+    return _ld_base == image_base;
+}
+
 UnloadProtection::UnloadProtection(const CodeCache *cc) {
-    if (OS::isMusl() || isMainExecutable(cc->imageBase(), cc->maxAddress()) || isLoader(cc->imageBase())) {
+    if (MUSL || isMainExecutable(cc->imageBase(), cc->maxAddress()) || isLoader(cc->imageBase())) {
         _lib_handle = NULL;
         _valid = true;
         return;
