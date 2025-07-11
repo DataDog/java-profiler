@@ -631,9 +631,7 @@ void Symbols::parseLibraries(CodeCacheArray *array, bool kernel_symbols) {
             lib.file[len - 10] = 0;
         }
 
-        if (strchr(lib.file, ':') != NULL) {
-            // Do not try to parse pseudofiles like anon_inode:name, /memfd:name
-        } else if (strcmp(lib.file, "[vdso]") == 0) {
+       if (strcmp(lib.file, "[vdso]") == 0) {
             ElfParser::parseProgramHeaders(cc, lib.map_start, lib.map_end, true);
         } else if (lib.image_base == NULL) {
             // Unlikely case when image base has not been found: not safe to access program headers.
