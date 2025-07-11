@@ -22,8 +22,21 @@
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
-#include <set>
+#include <unordered_set>
 #include <string.h>
+
+UnloadProtection::UnloadProtection(const CodeCache *cc) {
+    // Protect library from unloading while parsing in-memory ELF program headers.
+    // Also, dlopen() ensures the library is fully loaded.
+    _lib_handle = dlopen(cc->name(), RTLD_LAZY | RTLD_NOLOAD);
+    _valid = _lib_handle != NULL;
+}
+
+UnloadProtection::~UnloadProtection() {
+    if (_lib_handle != NULL) {
+        dlclose(_lib_handle);
+    }
+}
 
 class MachOParser {
 private:
@@ -140,7 +153,8 @@ public:
 
 Mutex Symbols::_parse_lock;
 bool Symbols::_have_kernel_symbols = false;
-static std::set<const void *> _parsed_libraries;
+bool Symbols::_libs_limit_reported = false;
+static std::unordered_set<const void*> _parsed_libraries;
 
 void Symbols::clearParsingCaches() { _parsed_libraries.clear(); }
 void Symbols::parseKernelSymbols(CodeCache *cc) {}
@@ -157,26 +171,28 @@ void Symbols::parseLibraries(CodeCacheArray *array, bool kernel_symbols) {
 
     int count = array->count();
     if (count >= MAX_NATIVE_LIBS) {
+      if (!_libs_limit_reported) {
+          Log::warn("Number of parsed libraries reached the limit of %d", MAX_NATIVE_LIBS);
+          _libs_limit_reported = true;
+      }
       break;
     }
 
     const char *path = _dyld_get_image_name(i);
 
-    // Protect the library from unloading while parsing symbols
-    void *handle = dlopen(path, RTLD_LAZY | RTLD_NOLOAD);
-    if (handle == NULL) {
-      continue;
-    }
-
     CodeCache *cc = new CodeCache(path, count, true);
-    MachOParser parser(cc, image_base);
-    if (!parser.parse()) {
-      Log::warn("Could not parse symbols from %s", path);
-    }
-    dlclose(handle);
 
-    cc->sort();
-    array->add(cc);
+    UnloadProtection handle(cc);
+    if (handle.isValid()) {
+        MachOParser parser(cc, image_base);
+        if (!parser.parse()) {
+          Log::warn("Could not parse symbols from %s", path);
+        }
+        cc->sort();
+        array->add(cc);
+    } else {
+        delete cc;
+    }
   }
 }
 
