@@ -649,6 +649,7 @@ void Symbols::parseLibraries(CodeCacheArray *array, bool kernel_symbols) {
             // Main executable and ld-linux interpreter cannot be dlopen'ed, but dlerror() returns NULL for them.
             void* handle = dlopen(lib.file, RTLD_LAZY | RTLD_NOLOAD);
             if (handle != NULL || dlerror() == NULL) {
+               ElfParser::parseProgramHeaders(cc, lib.image_base, lib.map_end, MUSL);
                if (handle != NULL) {
                     dlclose(handle);
                 }
