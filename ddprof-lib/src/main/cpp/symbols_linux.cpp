@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/auxv.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -680,6 +681,18 @@ static bool verifyBaseAddress(const CodeCache* cc, void* lib_handle) {
 
     return cc->imageBase() == (const char*)dl_info.dli_fbase;
 }
+
+static const void* getMainPhdr() {
+    void* main_phdr = NULL;
+    dl_iterate_phdr([](struct dl_phdr_info* info, size_t size, void* data) {
+        *(const void**)data = info->dlpi_phdr;
+        return 1;
+    }, &main_phdr);
+    return main_phdr;
+}
+
+static const void* _main_phdr = getMainPhdr();
+static const char* _ld_base = (const char*)getauxval(AT_BASE);
 
 static bool isMainExecutable(const char* image_base, const void* map_end) {
     return _main_phdr != NULL && _main_phdr >= image_base && _main_phdr < map_end;
