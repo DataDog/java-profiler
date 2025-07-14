@@ -524,6 +524,7 @@ tasks.whenTaskAdded { task ->
             if (compileTask != null) {
               dependsOn compileTask
             }
+            dependsOn asmTask
             linkerArgs.addAll(config.linkerArgs)
             toolChain = task.toolChain
             targetPlatform = task.targetPlatform
@@ -604,7 +605,9 @@ tasks.register('javadocJar', Jar) {
   from javadoc.destinationDir
 }
 
-
+tasks.register('asmTask', Exec) {
+  commandLine 'clang', '-D__aarch64__', 'src/main/asm/safefetch.S', '-o', 'build/obj/safefetch.o'
+}
 
 tasks.register('scanBuild', Exec) {
   workingDir "${projectDir}/src/test/make"
