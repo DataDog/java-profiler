@@ -16,19 +16,10 @@ public class Main {
     public static final String SCENARIOS_PACKAGE = "com.datadoghq.profiler.stresstest.scenarios.";
 
     public static void main(String... args) throws Exception {
-        String filter = "*";
-        if (args.length == 1) {
-            filter = args[0];
-        } else if (args.length > 1) {
-            System.err.println("Usage: java -jar ddprof-stresstest.jar [scenario filter]");
-            System.exit(1);
-        }
         CommandLineOptions commandLineOptions = new CommandLineOptions(args);
         Mode mode = Mode.AverageTime;
         Options options = new OptionsBuilder()
                 .parent(new CommandLineOptions(args))
-                .include(SCENARIOS_PACKAGE + filter)
-                .addProfiler(WhiteboxProfiler.class)
                 .forks(commandLineOptions.getForkCount().orElse(1))
                 .warmupIterations(commandLineOptions.getWarmupIterations().orElse(0))
                 .measurementIterations(commandLineOptions.getMeasurementIterations().orElse(1))
