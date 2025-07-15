@@ -16,23 +16,30 @@
 
 
 #include "safeAccess.h"
+#include <ucontext.h>
 
-SafeAccess::SafeFetch32 SafeAccess::_safeFetch32Func = nullptr;
 
-void SafeAccess::initSafeFetch(CodeCache* libjvm) {
-  // Hotspot JVM's safefetch implementation appears better, e.g. it actually returns errorValue,
-  // when the address is invalid. let's use it whenever possible.
-  // When the methods are not available, fallback to SafeAccess::load32() implementation.
-  _safeFetch32Func = (SafeFetch32)libjvm->findSymbol("SafeFetch32_impl");
-  if (_safeFetch32Func == nullptr && !WX_MEMORY) {
-    // jdk11 stub implementation other than Macosx/aarch64
-    void** entry = (void**)libjvm->findSymbol("_ZN12StubRoutines18_safefetch32_entryE");
-    if (entry != nullptr && *entry != nullptr) {
-      _safeFetch32Func = (SafeFetch32)*entry;
+#ifdef __APPLE__
+
+#if defined(__x86_64)
+  #define context_pc context_rip
+#elif defined(__aarch64__)
+  #define DU3_PREFIX(s, m) __ ## s.__ ## m
+  #define context_pc uc_mcontext->DU3_PREFIX(ss,pc)
+#endif
+
+#endif
+
+extern "C" char _SafeFetch32_continuation[] __attribute__ ((visibility ("hidden")));
+extern "C" char _SafeFetch32_fault[] __attribute__ ((visibility ("hidden")));
+
+bool SafeAccess::handle_safefetch(int sig, uintptr_t pc, void* context) {
+  ucontext_t* uc = (ucontext_t*)context;
+  if ((sig == SIGSEGV || sig == SIGBUS) && uc != nullptr) {
+    if (pc == (uintptr_t)_SafeFetch32_fault) {
+      uc->context_pc == (uintptr_t)_SafeFetch32_continuation;
+      return true;
     }
   }
-  // Fallback
-  if (_safeFetch32Func == nullptr) {
-    _safeFetch32Func = (SafeFetch32)load32;
-  }
+  return false;
 }

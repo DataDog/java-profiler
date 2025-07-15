@@ -3,7 +3,6 @@ plugins {
   id 'java'
   id 'maven-publish'
   id 'signing'
-  id 'assembler'
 
   id 'com.github.ben-manes.versions' version '0.27.0'
   id 'de.undercouch.download' version '4.1.1'
@@ -621,8 +620,7 @@ tasks.register('asmTask', Exec) {
   } else {
     os = '-D__LINUX__'
   }
-
-  commandLine 'gcc', arch, os, 'src/main/assembler/safefetch.S', '-c', 'build/obj/safefetch.o'
+  commandLine 'gcc', arch, os, 'src/main/assembler/safefetch.S', '-c', 'safefetch.o'
 }
 
 tasks.register('scanBuild', Exec) {

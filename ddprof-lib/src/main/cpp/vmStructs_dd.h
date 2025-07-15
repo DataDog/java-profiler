@@ -52,8 +52,6 @@ namespace ddprof {
     static void initOffsets();
     static void initJvmFunctions();
     static void initUnsafeFunctions();
-    // We need safe access for all jdk versions
-    static void initSafeFetch(CodeCache* libjvm);
 
     static void checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni, jmethodID method,
                                   void *address);

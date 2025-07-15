@@ -44,7 +44,6 @@ namespace ddprof {
     initOffsets();
     initJvmFunctions();
     initUnsafeFunctions();
-    initSafeFetch(libjvm);
   }
 
   void VMStructs_::initOffsets() {
@@ -97,10 +96,6 @@ namespace ddprof {
                             blob->_name, true);
       }
     }
-  }
-
-  void VMStructs_::initSafeFetch(CodeCache* libjvm) {
-    SafeAccess::initSafeFetch(libjvm);
   }
 
   const void *VMStructs_::findHeapUsageFunc() {

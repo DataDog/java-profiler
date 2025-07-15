@@ -878,6 +878,13 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return false;
   }
 
+  if (SafeAccess::handle_safefetch(signo, pc, ucontext)) {
+    if (thrd != nullptr) {
+      thrd->exitCrashHandler();
+    }
+    return true;
+  }
+
   uintptr_t length = SafeAccess::skipLoad(pc);
   if (length > 0) {
     // Skip the fault instruction, as if it successfully loaded NULL
