@@ -1,9 +1,20 @@
+#ifdef __APPLE__
+  # macOS prefixes symbols with _
+  #define SYMBOL(s) _ ## s
 
-#define DECLARE_FUNC(func) \
-    .globl func %% \
-    .hidden func %% \
-    .type func, %function %% \
+  #define DECLARE_FUNC(func) \
+    .globl SYMBOL(func) %% \
+    .private_extern SYMBOL(func) %% \
+    SYMBOL(func)
+#else
+  #define SYMBOL(s) s
+
+  #define DECLARE_FUNC(func) \
+    .globl func ; \
+    .hidden func ; \
+    .type func, %function ; \
     func
+#endif // __APPLE__
 
 #if defined(__x86_64__)
     .text

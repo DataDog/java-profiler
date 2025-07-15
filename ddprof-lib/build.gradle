@@ -3,6 +3,7 @@ plugins {
   id 'java'
   id 'maven-publish'
   id 'signing'
+  id 'assembler'
 
   id 'com.github.ben-manes.versions' version '0.27.0'
   id 'de.undercouch.download' version '4.1.1'
@@ -606,7 +607,22 @@ tasks.register('javadocJar', Jar) {
 }
 
 tasks.register('asmTask', Exec) {
-  commandLine 'clang', '-D__aarch64__', 'src/main/asm/safefetch.S', '-o', 'build/obj/safefetch.o'
+  String reportedArch = System.getProperty('os.arch')
+  String arch
+  if (reportedArch == 'x86_64') {
+    arch = '-D__x86_64__'
+  } else {
+    arch = '-D__aarch64__'
+  }
+
+  String os
+  if (osIdentifier() == 'macos') {
+    os = '-D__APPLE__'
+  } else {
+    os = '-D__LINUX__'
+  }
+
+  commandLine 'gcc', arch, os, 'src/main/assembler/safefetch.S', '-c', 'build/obj/safefetch.o'
 }
 
 tasks.register('scanBuild', Exec) {
