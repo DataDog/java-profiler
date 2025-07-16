@@ -20,14 +20,18 @@
 #include <ucontext.h>
 
 #ifdef __APPLE__
-    #if defined(__x86_64)
+    #if defined(__x86_64__)
       #define context_pc context_rip
     #elif defined(__aarch64__)
       #define DU3_PREFIX(s, m) __ ## s.__ ## m
       #define context_pc uc_mcontext->DU3_PREFIX(ss,pc)
     #endif
 #else
-   #define context_pc uc_mcontext.gregs[REG_RIP]
+    #if defined(__x86_64__)
+      #define context_pc uc_mcontext.gregs[REG_RIP]
+    #elif defined(__aarch64__)
+      #define context_pc uc_mcontext.gregs[_REG_ELR]
+    #endif
 #endif
 
 extern "C" char _SafeFetch32_continuation[] __attribute__ ((visibility ("hidden")));
