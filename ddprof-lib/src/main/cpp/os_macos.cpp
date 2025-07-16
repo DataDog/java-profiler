@@ -342,6 +342,11 @@ void OS::freePageCache(int fd, off_t start_offset) {
   // Not supported on macOS
 }
 
+int OS::mprotect(void* addr, size_t size, int prot) {
+  if (prot & PROT_WRITE) prot |= VM_PROT_COPY;
+  return vm_protect(mach_task_self(), (vm_address_t)addr, size, 0, prot);
+}
+
 void OS::mallocArenaMax(int arena_max) {
   // Not supported on macOS
 }
