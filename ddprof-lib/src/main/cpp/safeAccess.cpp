@@ -30,7 +30,7 @@
     #if defined(__x86_64__)
       #define context_pc uc_mcontext.gregs[REG_RIP]
     #elif defined(__aarch64__)
-      #define context_pc uc_mcontext.regs[_REG_ELR]
+      #define context_pc uc_mcontext.regs[REG_ELR]
     #endif
 #endif
 
