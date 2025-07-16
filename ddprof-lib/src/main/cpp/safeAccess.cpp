@@ -16,25 +16,26 @@
 
 
 #include "safeAccess.h"
+#include <signal.h>
 #include <ucontext.h>
 
-
 #ifdef __APPLE__
-
-#if defined(__x86_64)
-  #define context_pc context_rip
-#elif defined(__aarch64__)
-  #define DU3_PREFIX(s, m) __ ## s.__ ## m
-  #define context_pc uc_mcontext->DU3_PREFIX(ss,pc)
-#endif
-
+    #if defined(__x86_64)
+      #define context_pc context_rip
+    #elif defined(__aarch64__)
+      #define DU3_PREFIX(s, m) __ ## s.__ ## m
+      #define context_pc uc_mcontext->DU3_PREFIX(ss,pc)
+    #endif
+#else
+   #define context_pc uc_mcontext.gregs[REG_RIP]
 #endif
 
 extern "C" char _SafeFetch32_continuation[] __attribute__ ((visibility ("hidden")));
 extern "C" char _SafeFetch32_fault[] __attribute__ ((visibility ("hidden")));
 
-bool SafeAccess::handle_safefetch(int sig, uintptr_t pc, void* context) {
+bool SafeAccess::handle_safefetch(int sig, void* context) {
   ucontext_t* uc = (ucontext_t*)context;
+  uintptr_t pc = uc->context_pc;
   if ((sig == SIGSEGV || sig == SIGBUS) && uc != nullptr) {
     if (pc == (uintptr_t)_SafeFetch32_fault) {
       uc->context_pc == (uintptr_t)_SafeFetch32_continuation;

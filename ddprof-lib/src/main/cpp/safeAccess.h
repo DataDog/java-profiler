@@ -38,7 +38,7 @@ public:
     return SafeFetch32_impl(ptr, errorValue);
   }
 
-  static bool handle_safefetch(int sig, uintptr_t pc, void* context);
+  static bool handle_safefetch(int sig, void* context);
 
   NOINLINE NOADDRSANITIZE __attribute__((aligned(16))) static void *load(void **ptr) {
     return *ptr;
