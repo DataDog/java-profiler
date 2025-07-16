@@ -38,7 +38,7 @@ bool SafeAccess::handle_safefetch(int sig, void* context) {
   uintptr_t pc = uc->context_pc;
   if ((sig == SIGSEGV || sig == SIGBUS) && uc != nullptr) {
     if (pc == (uintptr_t)_SafeFetch32_fault) {
-      uc->context_pc == (uintptr_t)_SafeFetch32_continuation;
+      uc->context_pc = (uintptr_t)_SafeFetch32_continuation;
       return true;
     }
   }
