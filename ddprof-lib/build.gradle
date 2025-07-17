@@ -519,7 +519,6 @@ tasks.whenTaskAdded { task ->
             group = 'build'
             description = "Link the ${config.name} build of the library"
             source = fileTree("$buildDir/obj/main/${config.name}")
-
             linkedFile = file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/libjavaProfiler.${os().isLinux() ? 'so' : 'dylib'}")
             def compileTask = tasks.findByName("compileLib${config.name.capitalize()}".toString())
             if (compileTask != null) {
@@ -605,13 +604,15 @@ tasks.register('javadocJar', Jar) {
   from javadoc.destinationDir
 }
 
+
+
 tasks.register('scanBuild', Exec) {
   workingDir "${projectDir}/src/test/make"
   commandLine 'scan-build'
   args "-o", "${projectDir}/build/reports/scan-build",
-  "--force-analyze-debug-code",
-  "--use-analyzer", "/usr/bin/clang++",
-  "make", "-j4",  "clean", "all"
+    "--force-analyze-debug-code",
+    "--use-analyzer", "/usr/bin/clang++",
+    "make", "-j4",  "clean", "all"
 }
 
 tasks.withType(Test) {
