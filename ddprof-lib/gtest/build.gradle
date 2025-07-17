@@ -154,10 +154,7 @@ tasks.whenTaskAdded { task ->
             group = 'verification'
             description = "Run all Google Tests for the ${config.name} build of the library"
           }
-          def libProject = project(':ddprof-lib')
-          def asmTask = libProject.tasks.findByName("asm")
-
-          libProject.file("src/test/cpp/").eachFile {
+          project(':ddprof-lib').file("src/test/cpp/").eachFile {
 
             def testFile = it
             def testName = it.name.substring(0, it.name.lastIndexOf('.'))
@@ -170,7 +167,6 @@ tasks.whenTaskAdded { task ->
               group = 'build'
               description = "Link the Google Test for the ${config.name} build of the library"
               source = fileTree("$buildDir/obj/gtest/${config.name}/${testName}")
-              source.from(file("${rootDir}/ddprof-lib/build/obj/main/asm/assembly.o"))
               linkedFile = binary
               if (config.name != 'release') {
                 // linking the gtests using the minimizing release flags is making gtest unhappy
@@ -187,7 +183,6 @@ tasks.whenTaskAdded { task ->
               libs = task.libs
               inputs.files source
               outputs.file linkedFile
-              dependsOn asmTask
             }
             def gtestExecuteTask = tasks.register("gtest${config.name.capitalize()}_${testName}", Exec) {
               onlyIf {

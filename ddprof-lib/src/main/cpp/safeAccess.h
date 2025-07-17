@@ -22,7 +22,8 @@
 #include <cassert>
 #include <stdint.h>
 
-extern "C" int SafeFetch32_impl(int* adr, int errValue);
+extern "C" int safefetch32_impl(int* adr, int errValue);
+extern "C" int safefetch32_continuation(int* adr, int errValue);
 
 #ifdef __clang__
 #define NOINLINE __attribute__((noinline))
@@ -35,7 +36,7 @@ class SafeAccess {
 public:
 
   static inline int safeFetch32(int* ptr, int errorValue) {
-    return SafeFetch32_impl(ptr, errorValue);
+    return safefetch32_impl(ptr, errorValue);
   }
 
   static bool handle_safefetch(int sig, void* context);

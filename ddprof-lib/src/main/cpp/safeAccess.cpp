@@ -34,15 +34,74 @@
     #endif
 #endif
 
-extern "C" char _SafeFetch32_continuation[] __attribute__ ((visibility ("hidden")));
-extern "C" char _SafeFetch32_fault[] __attribute__ ((visibility ("hidden")));
+#if defined(__x86_64__)
+  #ifdef __APPLE__
+    asm(R"(
+        .globl _safefetch32_impl
+        .private_extern _safefetch32_impl
+        _safefetch32_impl:
+            movl (%rdi), %eax
+            ret
+        .globl _safefetch32_continuation
+        .private_extern _safefetch32_continuation
+        _safefetch32_continuation:
+            movl %esi, %eax
+            ret
+    )");
+  #else
+    asm(R"(
+        .globl safefetch32_impl
+        .hidden safefetch32_impl
+        .type safefetch32_imp, %function
+        safefetch32_impl:
+            movl (%rdi), %eax
+            ret
+        .globl safefetch32_continuation
+        .hidden safefetch32_continuation
+        .type safefetch32_continuation, %function
+        safefetch32_continuation:
+            movl %esi, %eax
+            ret
+    )");
+  #endif // __APPLE__
+#elif defined(__aarch64__)
+  #ifdef __APPLE__
+    asm(R"(
+        .globl _safefetch32_impl
+        .private_extern _safefetch32_impl
+        _safefetch32_impl:
+            ldr      w0, [x0]
+            ret
+        .globl _safefetch32_continuation
+        .private_extern _safefetch32_continuation
+        _safefetch32_continuation:
+            mov      x0, x1
+            ret
+    )");
+  #else
+    asm(R"(
+        .globl safefetch32_impl
+        .hidden safefetch32_impl
+        .type safefetch32_impl, %function
+        safefetch32_impl:
+            ldr      w0, [x0]
+            ret
+        .globl safefetch32_continuation
+        .hidden safefetch32_continuation
+        .type safefetch32_continuation, %function
+        safefetch32_continuation:
+            mov      x0, x1
+            ret
+    )");
+  #endif
+#endif
 
 bool SafeAccess::handle_safefetch(int sig, void* context) {
   ucontext_t* uc = (ucontext_t*)context;
   uintptr_t pc = uc->context_pc;
   if ((sig == SIGSEGV || sig == SIGBUS) && uc != nullptr) {
-    if (pc == (uintptr_t)_SafeFetch32_fault) {
-      uc->context_pc = (uintptr_t)_SafeFetch32_continuation;
+    if (pc == (uintptr_t)safefetch32_impl) {
+      uc->context_pc = (uintptr_t)safefetch32_continuation;
       return true;
     }
   }

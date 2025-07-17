@@ -516,19 +516,15 @@ tasks.whenTaskAdded { task ->
             onlyIf {
               config.active
             }
-
             group = 'build'
             description = "Link the ${config.name} build of the library"
             source = fileTree("$buildDir/obj/main/${config.name}")
-            source.from(file("${projectDir}/build/obj/main/asm/assembly.o"))
 
             linkedFile = file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/libjavaProfiler.${os().isLinux() ? 'so' : 'dylib'}")
             def compileTask = tasks.findByName("compileLib${config.name.capitalize()}".toString())
             if (compileTask != null) {
               dependsOn compileTask
             }
-            def asmTask = tasks.findByName("asm")
-            dependsOn asmTask
             linkerArgs.addAll(config.linkerArgs)
             toolChain = task.toolChain
             targetPlatform = task.targetPlatform
@@ -607,45 +603,6 @@ tasks.register('javadocJar', Jar) {
   archiveClassifier = 'javadoc'
   archiveVersion = component_version
   from javadoc.destinationDir
-}
-
-tasks.register('asm', Exec) {
-  group = 'build'
-
-  def arch
-  if (archIdentifier() == 'x64') {
-    arch = '-D__x86_64__'
-  } else {
-    arch = '-D__aarch64__'
-  }
-
-  def os
-  if (osIdentifier() == 'macos') {
-    os = '-D__APPLE__'
-  } else {
-    os = '-D__LINUX__'
-  }
-  def asmDir = file("${projectDir}/src/main/assembler")
-  if (!asmDir.exists()) {
-    // no assembler files found, skipping
-    return
-  }
-
-  doLast {
-    // Ensure the output directory exists
-    file("${projectDir}/build/obj/main/asm").mkdirs()
-  }
-
-  // collect all assembler files and compile them
-  workingDir asmDir
-  inputs.files fileTree("${projectDir}/src/main/assembler") {
-    include '**/*.S'
-  }
-  def asmFiles = inputs.files.collect { it.absolutePath }
-  outputs.dir "${projectDir}/build/obj/main/asm"
-  // use gcc to compile assembler files
-  commandLine 'gcc', arch, os, '-c', '-x', 'assembler-with-cpp',
-  *asmFiles, '-o', "${projectDir}/build/obj/main/asm/assembly.o"
 }
 
 tasks.register('scanBuild', Exec) {
