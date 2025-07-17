@@ -12,9 +12,9 @@ static void (*orig_busHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 
 void signal_handle_wrapper(int signo, siginfo_t* siginfo, void* context) {
   if (!SafeAccess::handle_safefetch(signo, context)) {
-    if (signo == SIGBUS) {
+    if (signo == SIGBUS && orig_busHandler != nullptr) {
        orig_busHandler(signo, siginfo, context);
-    } else if (signo == SIGSEGV) {
+    } else if (signo == SIGSEGV && orig_segvHandler != nullptr) {
        orig_segvHandler(signo, siginfo, context);
     }
   }

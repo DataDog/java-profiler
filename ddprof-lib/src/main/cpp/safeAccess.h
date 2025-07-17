@@ -23,7 +23,6 @@
 #include <stdint.h>
 
 extern "C" int safefetch32_impl(int* adr, int errValue);
-extern "C" int safefetch32_continuation(int* adr, int errValue);
 
 #ifdef __clang__
 #define NOINLINE __attribute__((noinline))
