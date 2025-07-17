@@ -317,9 +317,12 @@ def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
     include "incbin.h"
     include "mutex.h"
     include "mutex.cpp"
+    include "os*.*"
     include "stackWalker.h"
     include "stackWalker.cpp"
+    include "stackFrame.h"
     include "stackFrame*.cpp"
+    include "symbols*.*"
     include "trap.h"
     include "trap.cpp"
     include "vmStructs.h"
@@ -405,9 +408,31 @@ def patchStackWalker = tasks.register("patchStackWalker") {
   }
 }
 
+def patchSymbolsLinuxTask = tasks.register("patchSymbolsLinux") {
+  description = 'Patch symbols_linux.cpp after copying'
+  configure {
+    dependsOn copyUpstreamFiles
+  }
+  doLast {
+    def file = file("${projectDir}/src/main/cpp-external/symbols_linux.cpp")
+    if (!file.exists()) throw new GradleException("File not found: ${file}")
+
+    def content = file.getText('UTF-8')
+    def original = content
+
+    // Add no_sanitize to walkVM
+    content = content.replace("#include \"fdtransferClient.h\"", "")
+
+    if (content != original) {
+      file.write(content, 'UTF-8')
+      println "Patched symbols_linux.cpp"
+    }
+  }
+}
+
 def initSubrepoTask = tasks.register('initSubrepo') {
   configure {
-    dependsOn copyUpstreamFiles, patchStackFrame, patchStackWalker
+    dependsOn copyUpstreamFiles, patchStackFrame, patchStackWalker, patchSymbolsLinux
   }
 }
 
