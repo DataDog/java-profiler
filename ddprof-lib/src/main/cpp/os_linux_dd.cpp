@@ -31,7 +31,7 @@ int ddprof::OS::truncateFile(int fd) {
   return rslt;
 }
 
-SigAction OS::replaceSigbusHandler(SigAction action) {
+SigAction ddprof::OS::replaceSigbusHandler(SigAction action) {
   struct sigaction sa;
   sigaction(SIGBUS, NULL, &sa);
   SigAction old_action = sa.sa_sigaction;
