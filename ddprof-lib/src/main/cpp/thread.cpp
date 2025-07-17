@@ -1,5 +1,5 @@
 #include "thread.h"
-#include "os.h"
+#include "os_dd.h"
 #include "profiler.h"
 #include <time.h>
 
@@ -122,14 +122,14 @@ void ProfiledThread::doInitExistingThreads() {
     Any newly started threads will be handled by the JVMTI callback so we need
     to worry only about the existing threads here.
     */
-    prepareBuffer(tlist->size());
+    prepareBuffer(tlist->count());
 
     old_handler =
         OS::installSignalHandler(SIGUSR1, ProfiledThread::signalHandler);
     int cntr = 0;
     int tid = -1;
     while ((tid = tlist->next()) != -1) {
-      if (tlist->size() <= cntr++) {
+      if (tlist->count() <= cntr++) {
         break;
       }
       OS::sendSignalToThread(tid, SIGUSR1);

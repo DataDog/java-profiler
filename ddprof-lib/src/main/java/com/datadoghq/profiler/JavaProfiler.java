@@ -114,15 +114,6 @@ public final class JavaProfiler {
         profiler.initializeContextStorage();
         instance = profiler;
 
-        String maxArenaValue = System.getProperty("ddprof.debug.malloc_arena_max");
-        if (maxArenaValue != null) {
-            try {
-                mallocArenaMax0(Integer.parseInt(maxArenaValue));
-            } catch (NumberFormatException e) {
-                System.out.println("[WARN] Invalid value for ddprof.debug.malloc_arena_max: " + maxArenaValue + ". Expecting an integer.");
-            }
-        }
-
         return profiler;
     }
 

@@ -16,7 +16,7 @@
 
 #include "threadFilter.h"
 #include "counters.h"
-#include "os.h"
+#include "os_dd.h"
 #include "reverse_bits.h"
 #include <cassert>
 #include <stdlib.h>
@@ -28,7 +28,7 @@ void trackPage() {
 }
 
 ThreadFilter::ThreadFilter() {
-  _max_thread_id = OS::getMaxThreadId(128 * 1024);
+  _max_thread_id = ddprof::OS::getMaxThreadId(128 * 1024);
   _max_bitmaps = (_max_thread_id + BITMAP_SIZE - 1) / BITMAP_SIZE;
   u32 capacity = _max_bitmaps * sizeof(u64 *);
   _bitmap = (u64 **)OS::safeAlloc(capacity);

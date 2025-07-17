@@ -14,7 +14,7 @@
 #include "jfrMetadata.h"
 #include "jniHelper.h"
 #include "jvm.h"
-#include "os.h"
+#include "os_dd.h"
 #include "profiler.h"
 #include "rustDemangler.h"
 #include "spinLock.h"
@@ -487,8 +487,8 @@ void Recording::switchChunk(int fd) {
   _bytes_written = 0;
   if (fd > -1) {
     // move the chunk to external file and reset the continuous recording file
-    OS::copyFile(_fd, fd, 0, _chunk_start);
-    OS::truncateFile(_fd);
+    ddprof::OS::copyFile(_fd, fd, 0, _chunk_start);
+    ddprof::OS::truncateFile(_fd);
     // need to reset the file offset here
     _chunk_start = 0;
     _base_id = 0;
