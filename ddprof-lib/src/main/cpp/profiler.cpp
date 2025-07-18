@@ -986,14 +986,15 @@ void Profiler::updateNativeThreadNames() {
     constexpr size_t buffer_size = 64;
     char name_buf[buffer_size];  // Stack-allocated buffer
 
-    for (int tid; (tid = thread_list->next()) != -1;) {
-        _thread_info.updateThreadName(
-                tid, [&](int tid) -> std::string {
-                    if (OS::threadName(tid, name_buf, buffer_size)) {
-                        return std::string(name_buf, buffer_size);
-                    }
-                    return std::string();
-                });
+    while (thread_list->hasNext()) {
+      int tid = thread_list->next();
+      _thread_info.updateThreadName(
+              tid, [&](int tid) -> std::string {
+                  if (OS::threadName(tid, name_buf, buffer_size)) {
+                      return std::string(name_buf, buffer_size);
+                  }
+                  return std::string();
+              });
     }
 
     delete thread_list;
