@@ -36,6 +36,13 @@ extern "C" int safefetch32_cont(int* adr, int errValue);
     #endif
 #endif
 
+/**
+ Loading a 32-bit value from specific address, the errValue will be returned
+ if the address is invalid.
+ The load is protected by the 'handle_safefetch` signal handler, who sets next `pc`
+ to `safefetch32_cont`, upon returning from signal handler, `safefetch32_cont` returns `errValue`
+ **/
+
 #if defined(__x86_64__)
   #ifdef __APPLE__
     asm(R"(
