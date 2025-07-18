@@ -23,6 +23,7 @@
 #include <stdint.h>
 
 extern "C" int safefetch32_impl(int* adr, int errValue);
+extern "C" int safefetch64_impl(int64_t* adr, int64_t errValue);
 
 #ifdef __clang__
 #define NOINLINE __attribute__((noinline))
@@ -38,19 +39,29 @@ public:
     return safefetch32_impl(ptr, errorValue);
   }
 
+  static inline int safeFetch64(int64_t* ptr, int64_t errorValue) {
+    return safefetch64_impl(ptr, errorValue);
+  }
+
   static bool handle_safefetch(int sig, void* context);
 
-  NOINLINE NOADDRSANITIZE __attribute__((aligned(16))) static void *load(void **ptr) {
-    return *ptr;
+  static inline void *load(void **ptr) {
+    return loadPtr(ptr, nullptr);
   }
 
-  NOINLINE NOADDRSANITIZE __attribute__((aligned(16))) static u32 load32(u32 *ptr,
-                                                          u32 default_value) {
-    return *ptr;
+  static inline u32 load32(u32 *ptr, u32 default_value) {
+    int res = safefetch32_impl((int*)ptr, (int)default_value);
+    return static_cast<u32>(res);
   }
 
-  NOINLINE NOADDRSANITIZE __attribute__((aligned(16))) static void *
-  loadPtr(void **ptr, void *default_value) {
+  static inline void *loadPtr(void **ptr, void *default_value) {
+  #if defined(__x86_64__) || defined(__aarch64__)
+    int64_t res = safefetch64_impl((int64_t*)ptr, (int64_t)default_value);
+    return (void*)res;
+  #elif defined(__i386__) || defined(__arm__) || defined(__thumb__)
+    int res = safefetch32_impl((int*)ptr, (int)default_value);
+    return (void*)res;
+  #endif
     return *ptr;
   }
 

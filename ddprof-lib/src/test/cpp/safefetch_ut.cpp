@@ -34,7 +34,7 @@ protected:
 };
 
 
-TEST_F(SafeFetchTest, validAccess) {
+TEST_F(SafeFetchTest, validAccess32) {
   int i = 42;
   int* p = &i;
   int res = SafeAccess::safeFetch32(p, -1);
@@ -42,10 +42,25 @@ TEST_F(SafeFetchTest, validAccess) {
 }
 
 
-TEST_F(SafeFetchTest, invalidAccess) {
+TEST_F(SafeFetchTest, invalidAccess32) {
   int* p = nullptr;
   int res = SafeAccess::safeFetch32(p, -1);
   EXPECT_EQ(res, -1);
   res = SafeAccess::safeFetch32(p, -2);
+  EXPECT_EQ(res, -2);
+}
+
+TEST_F(SafeFetchTest, validAccess64) {
+  int64_t i = 42;
+  int64_t* p = &i;
+  int64_t res = SafeAccess::safeFetch64(p, -1);
+  EXPECT_EQ(res, i);
+}
+
+TEST_F(SafeFetchTest, invalidAccess64) {
+  int64_t* p = nullptr;
+  int64_t res = SafeAccess::safeFetch64(p, -1);
+  EXPECT_EQ(res, -1);
+  res = SafeAccess::safeFetch64(p, -2);
   EXPECT_EQ(res, -2);
 }
