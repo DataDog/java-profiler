@@ -126,7 +126,7 @@ private:
   CodeBlob *_blobs;
 
   void expand();
-  void makeImportsPatchable();
+  bool makeImportsPatchable();
   void saveImport(ImportId id, void** entry);
 
 public:

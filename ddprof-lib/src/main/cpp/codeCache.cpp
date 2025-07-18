@@ -29,7 +29,7 @@ CodeCache::CodeCache(const char *name, short lib_index, bool imports_patchable,
   _lib_index = lib_index;
   _min_address = min_address;
   _max_address = max_address;
-  if (_max_address > 0 && _min_address > _max_address) {
+  if (_max_address != nullptr && _min_address > _max_address) {
     // upstream is sometimes swapping the range boundaries????
     TEST_LOG("Swapped range: [%p, %p]", _min_address, _max_address);
     const void *tmp = _min_address;
@@ -342,7 +342,7 @@ void CodeCache::patchImport(ImportId id, void *hook_func) {
   }
 }
 
-void CodeCache::makeImportsPatchable() {
+bool CodeCache::makeImportsPatchable() {
   void **min_import = (void **)-1;
   void **max_import = NULL;
   for (int i = 0; i < NUM_IMPORTS; i++) {
@@ -358,7 +358,6 @@ void CodeCache::makeImportsPatchable() {
     uintptr_t patch_start = (uintptr_t)min_import & ~OS::page_mask;
     uintptr_t patch_end = (uintptr_t)max_import & ~OS::page_mask;
     if (OS::mprotect((void*)patch_start, patch_end - patch_start + OS::page_size, PROT_READ | PROT_WRITE) != 0) {
-      Log::warn("Could not patch %s", name());
       return false;
     }
   }
