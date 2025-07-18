@@ -422,6 +422,12 @@ def patchSymbolsLinuxTask = tasks.register("patchSymbolsLinux") {
 
     // Add no_sanitize to walkVM
     content = content.replace("#include \"fdtransferClient.h\"", "")
+    content = content.replaceAll(
+        "(?s)if\\s*\\(\\s*FdTransferClient::hasPeer\\s*\\(\\s*\\)\\s*\\)\\s*\\{\\s*" +
+        "fd\\s*=\\s*FdTransferClient::requestKallsymsFd\\s*\\(\\s*\\)\\s*;\\s*\\}" +
+        "\\s*else\\s*\\{\\s*" +
+        "fd\\s*=\\s*open\\s*\\(\\s*\"/proc/kallsyms\"\\s*,\\s*O_RDONLY\\s*\\)\\s*;\\s*\\}",
+        "fd = open(\"/proc/kallsyms\", O_RDONLY);\n")
 
     if (content != original) {
       file.write(content, 'UTF-8')

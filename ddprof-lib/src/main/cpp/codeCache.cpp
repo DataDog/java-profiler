@@ -4,6 +4,7 @@
  */
 
 #include "codeCache.h"
+#include "common.h"
 #include "dwarf.h"
 #include "os.h"
 #include <stdint.h>
@@ -28,6 +29,13 @@ CodeCache::CodeCache(const char *name, short lib_index, bool imports_patchable,
   _lib_index = lib_index;
   _min_address = min_address;
   _max_address = max_address;
+  if (_max_address > 0 && _min_address > _max_address) {
+    // upstream is sometimes swapping the range boundaries????
+    TEST_LOG("Swapped range: [%p, %p]", _min_address, _max_address);
+    const void *tmp = _min_address;
+    _min_address = _max_address;
+    _max_address = tmp;
+  }
   _text_base = NULL;
   _image_base = image_base;
 
@@ -317,21 +325,21 @@ void CodeCache::addImport(void **entry, const char *name) {
 void **CodeCache::findImport(ImportId id) {
   if (!_imports_patchable) {
     makeImportsPatchable();
-    _imports_patchable = true;
   }
   return _imports[id][PRIMARY];
 }
 
 void CodeCache::patchImport(ImportId id, void *hook_func) {
-  if (!_imports_patchable) {
-        makeImportsPatchable();
-        _imports_patchable = true;
-    }
+  if (!_imports_patchable && !makeImportsPatchable()) {
+    return;
+  }
 
-    for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {void **entry = _imports[id][ty];
-  if (entry != NULL) {
-    *entry = hook_func;
-  }}
+  for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {
+    void **entry = _imports[id][ty];
+    if (entry != NULL) {
+      *entry = hook_func;
+    }
+  }
 }
 
 void CodeCache::makeImportsPatchable() {
@@ -339,21 +347,24 @@ void CodeCache::makeImportsPatchable() {
   void **max_import = NULL;
   for (int i = 0; i < NUM_IMPORTS; i++) {
     for (int j = 0; j < NUM_IMPORT_TYPES; j++) {
-            void** entry = _imports[i][j];
-            if (entry == NULL) continue;
-            if (entry < min_import)
-      min_import = entry;
-    if (entry > max_import)
-      max_import = entry;
-        }
+      void **entry = _imports[i][j];
+      if (entry == NULL) continue;
+      if (entry < min_import) min_import = entry;
+      if (entry > max_import) max_import = entry;
+    }
   }
 
   if (max_import != NULL) {
     uintptr_t patch_start = (uintptr_t)min_import & ~OS::page_mask;
     uintptr_t patch_end = (uintptr_t)max_import & ~OS::page_mask;
-    mprotect((void *)patch_start, patch_end - patch_start + OS::page_size,
-             PROT_READ | PROT_WRITE);
+    if (OS::mprotect((void*)patch_start, patch_end - patch_start + OS::page_size, PROT_READ | PROT_WRITE) != 0) {
+      Log::warn("Could not patch %s", name());
+      return false;
+    }
   }
+
+  _imports_patchable = true;
+  return true;
 }
 
 void CodeCache::setDwarfTable(FrameDesc *table, int length) {

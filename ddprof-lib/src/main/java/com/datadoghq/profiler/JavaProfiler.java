@@ -499,7 +499,5 @@ public final class JavaProfiler {
 
     private static native long tscFrequency0();
 
-    private static native void mallocArenaMax0(int max);
-
     private static native String getStatus0();
 }
