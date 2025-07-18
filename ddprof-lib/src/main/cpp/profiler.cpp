@@ -867,6 +867,14 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     // we are already in a crash handler; don't recurse!
     return false;
   }
+
+  if (SafeAccess::handle_safefetch(signo, ucontext)) {
+    if (thrd != nullptr) {
+      thrd->exitCrashHandler();
+    }
+    return true;
+  }
+
   uintptr_t fault_address = (uintptr_t)siginfo->si_addr;
   StackFrame frame(ucontext);
   uintptr_t pc = frame.pc();

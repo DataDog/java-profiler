@@ -22,6 +22,8 @@
 #include <cassert>
 #include <stdint.h>
 
+extern "C" int safefetch32_impl(int* adr, int errValue);
+
 #ifdef __clang__
 #define NOINLINE __attribute__((noinline))
 #else
@@ -30,17 +32,13 @@
 #define NOADDRSANITIZE __attribute__((no_sanitize("address")))
 
 class SafeAccess {
-private:
-   typedef int (*SafeFetch32)(int* ptr, int errorValue);
-   static SafeFetch32 _safeFetch32Func;
-
 public:
-  static void initSafeFetch(CodeCache* libjvm);
 
   static inline int safeFetch32(int* ptr, int errorValue) {
-    assert(_safeFetch32Func != nullptr);
-    return _safeFetch32Func(ptr, errorValue);
+    return safefetch32_impl(ptr, errorValue);
   }
+
+  static bool handle_safefetch(int sig, void* context);
 
   NOINLINE NOADDRSANITIZE __attribute__((aligned(16))) static void *load(void **ptr) {
     return *ptr;
