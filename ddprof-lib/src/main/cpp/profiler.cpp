@@ -835,8 +835,11 @@ void *Profiler::dlopen_hook(const char *filename, int flags) {
 }
 
 void Profiler::switchLibraryTrap(bool enable) {
-  void *impl = enable ? (void *)dlopen_hook : (void *)dlopen;
-  __atomic_store_n(_dlopen_entry, impl, __ATOMIC_RELEASE);
+  if (_dlopen_entry != NULL) {
+        void* impl = enable ? (void*)dlopen_hook : (void*)dlopen;
+        TEST_LOG("Switching dlopen implementation: %p@%p", impl, _dlopen_entry);
+        __atomic_store_n(_dlopen_entry, impl, __ATOMIC_RELEASE);
+    }
 }
 
 void Profiler::enableEngines() {
@@ -1083,10 +1086,13 @@ Error Profiler::checkJvmCapabilities() {
   }
 
   if (_dlopen_entry == NULL) {
+    TEST_LOG("Searching for dlopen implementation");
     CodeCache *lib = _libs->findJvmLibrary("libj9prt");
+    TEST_LOG("Found libj9prt: %p", lib);
     if (lib == NULL || (_dlopen_entry = lib->findImport(im_dlopen)) == NULL) {
       return Error("Could not set dlopen hook. Unsupported JVM?");
     }
+    TEST_LOG("Found dlopen implementation: %p", _dlopen_entry);
   }
 
   if (!VMStructs::libjvm()->hasDebugSymbols() && !VM::isOpenJ9()) {

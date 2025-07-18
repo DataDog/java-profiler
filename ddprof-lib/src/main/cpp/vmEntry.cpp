@@ -183,19 +183,26 @@ CodeCache* VM::openJvmLibrary() {
   }
 
   Libraries* libraries = Libraries::instance();
+  if (libraries == nullptr) {
+    TEST_LOG("Libraries instance is not available, cannot open JVM library");
+    return nullptr;
+  }
   CodeCache *lib =
     isOpenJ9()
         ? libraries->findJvmLibrary("libj9vm")
         : libraries->findLibraryByAddress((const void *)_asyncGetCallTrace);
+  TEST_LOG("Opened JVM library: isJ9=%s, %p", isOpenJ9() ? "true" : "false", lib);
   return lib;
 }
 
 bool VM::initShared(JavaVM* vm) {
-  if (_jvmti != NULL)
+  if (_jvmti != NULL) {
     return true;
+  }
 
   _vm = vm;
   if (_vm->GetEnv((void **)&_jvmti, JVMTI_VERSION_1_0) != 0) {
+    TEST_LOG("Failed to get JVMTI environment");
     return false;
   }
 
@@ -299,6 +306,7 @@ bool VM::initShared(JavaVM* vm) {
 
   CodeCache *lib = openJvmLibrary();
   if (lib == nullptr) {
+    TEST_LOG("Failed to open JVM library");
     return false;
   }
 
@@ -345,15 +353,18 @@ bool VM::initLibrary(JavaVM *vm) {
 bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   TEST_LOG("VM::initProfilerBridge");
   if (!initShared(vm)) {
+    TEST_LOG("Failed to initialize shared VM data");
     return false;
   }
 
   CodeCache *lib = openJvmLibrary();
   if (lib == nullptr) {
+    TEST_LOG("Failed to open JVM library");
     return false;
   }
 
   if (!attach && hotspot_version() == 8 && OS::isLinux()) {
+    TEST_LOG("Applying patch for JDK-8185348");
     // Workaround for JDK-8185348
     char *func = (char *)lib->findSymbol(
         "_ZN6Method26checked_resolve_jmethod_idEP10_jmethodID");
@@ -592,11 +603,13 @@ Agent_OnLoad(JavaVM* vm, char* options, void* reserved) {
     Log::open(_agent_args);
 
     if (error) {
+        fprintf(stderr, "Error parsing agent arguments: %s\n", error.message());
         Log::error("%s", error.message());
         return ARGUMENTS_ERROR;
     }
 
     if (!VM::initProfilerBridge(vm, false)) {
+        fprintf(stderr, "Failed to initialize profiler bridge\n");
         Log::error("JVM does not support Tool Interface");
         return COMMAND_ERROR;
     }
