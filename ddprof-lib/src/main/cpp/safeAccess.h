@@ -23,7 +23,7 @@
 #include <stdint.h>
 
 extern "C" int safefetch32_impl(int* adr, int errValue);
-extern "C" int safefetch64_impl(int64_t* adr, int64_t errValue);
+extern "C" int64_t safefetch64_impl(int64_t* adr, int64_t errValue);
 
 #ifdef __clang__
 #define NOINLINE __attribute__((noinline))
@@ -39,7 +39,7 @@ public:
     return safefetch32_impl(ptr, errorValue);
   }
 
-  static inline int safeFetch64(int64_t* ptr, int64_t errorValue) {
+  static inline int64_t safeFetch64(int64_t* ptr, int64_t errorValue) {
     return safefetch64_impl(ptr, errorValue);
   }
 
@@ -54,10 +54,10 @@ public:
     return static_cast<u32>(res);
   }
 
-  static inline void *loadPtr(void **ptr, void *default_value) {
+  static inline void *loadPtr(void** ptr, void* default_value) {
   #if defined(__x86_64__) || defined(__aarch64__)
-    int64_t res = safefetch64_impl((int64_t*)ptr, (int64_t)default_value);
-    return (void*)res;
+    int64_t res = safefetch64_impl((int64_t*)ptr, (int64_t)reinterpret_cast<uintptr_t>(default_value));
+    return (void*)static_cast<uintptr_t>(res);
   #elif defined(__i386__) || defined(__arm__) || defined(__thumb__)
     int res = safefetch32_impl((int*)ptr, (int)default_value);
     return (void*)res;

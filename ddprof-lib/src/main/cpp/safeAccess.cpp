@@ -20,7 +20,7 @@
 #include <ucontext.h>
 
 extern "C" int safefetch32_cont(int* adr, int errValue);
-extern "C" int safefetch64_cont(int64_t* adr, int64_t errValue);
+extern "C" int64_t safefetch64_cont(int64_t* adr, int64_t errValue);
 
 #ifdef __APPLE__
     #if defined(__x86_64__)
@@ -74,7 +74,7 @@ extern "C" int safefetch64_cont(int64_t* adr, int64_t errValue);
         .globl safefetch32_impl
         .hidden safefetch32_impl
         .type safefetch32_imp, %function
-        safefetch32_impl:
+        safefetch64_impl:
             movl (%rdi), %eax
             ret
         .globl safefetch32_cont
@@ -86,7 +86,7 @@ extern "C" int safefetch64_cont(int64_t* adr, int64_t errValue);
         .globl safefetch64_impl
         .hidden safefetch64_impl
         .type safefetch64_imp, %function
-        safefetch32_impl:
+        safefetch64_impl:
             movq (%rdi), %rax
             ret
         .globl safefetch64_cont
@@ -160,7 +160,7 @@ bool SafeAccess::handle_safefetch(int sig, void* context) {
       uc->current_pc = (uintptr_t)safefetch32_cont;
       return true;
     } else if (pc == (uintptr_t)safefetch64_impl) {
-      uc->current_pc = (uintptr_t)safefetch32_cont;
+      uc->current_pc = (uintptr_t)safefetch64_cont;
       return true;
     }
   }

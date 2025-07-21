@@ -1,5 +1,6 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <climits>
 #include <signal.h>
 
 #include "safeAccess.h"
@@ -39,6 +40,12 @@ TEST_F(SafeFetchTest, validAccess32) {
   int* p = &i;
   int res = SafeAccess::safeFetch32(p, -1);
   EXPECT_EQ(res, i);
+  i = INT_MAX;
+  res = SafeAccess::safeFetch32(p, -1);
+  EXPECT_EQ(res, i);
+  i = INT_MIN;
+  res = SafeAccess::safeFetch32(p, 0);
+  EXPECT_EQ(res, i);
 }
 
 
@@ -55,6 +62,12 @@ TEST_F(SafeFetchTest, validAccess64) {
   int64_t* p = &i;
   int64_t res = SafeAccess::safeFetch64(p, -1);
   EXPECT_EQ(res, i);
+  i = LONG_MIN;
+  res = SafeAccess::safeFetch64(p, -19);
+  EXPECT_EQ(res, i);
+  i = LONG_MAX;
+  res = SafeAccess::safeFetch64(p, -1);
+  EXPECT_EQ(res, i);
 }
 
 TEST_F(SafeFetchTest, invalidAccess64) {
@@ -63,4 +76,23 @@ TEST_F(SafeFetchTest, invalidAccess64) {
   EXPECT_EQ(res, -1);
   res = SafeAccess::safeFetch64(p, -2);
   EXPECT_EQ(res, -2);
+}
+
+TEST_F(SafeFetchTest, validAccessPtr) {
+  char c = 'a';
+  void* p = (void*)&c;
+  void** pp = &p;
+  void* res = SafeAccess::loadPtr(pp, nullptr);
+  EXPECT_EQ(res, p);
+}
+
+TEST_F(SafeFetchTest, invalidAccessPtr) {
+  int a, b;
+  void* ap = (void*)&a;
+  void* bp = (void*)&b;
+  void** pp = nullptr;
+  void* res = SafeAccess::loadPtr(pp, ap);
+  EXPECT_EQ(res, ap);
+  res = SafeAccess::loadPtr(pp, bp);
+  EXPECT_EQ(res, bp);
 }
