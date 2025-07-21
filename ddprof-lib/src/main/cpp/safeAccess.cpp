@@ -38,12 +38,12 @@ extern "C" int64_t safefetch64_cont(int64_t* adr, int64_t errValue);
 #endif
 
 /**
- Loading a 32-bit value from specific address, the errValue will be returned
+ Loading a 32-bit/64-bit value from specific address, the errValue will be returned
  if the address is invalid.
  The load is protected by the 'handle_safefetch` signal handler, who sets next `pc`
- to `safefetch32_cont`, upon returning from signal handler, `safefetch32_cont` returns `errValue`
+ to `safefetch32_cont/safefetch64_cont`, upon returning from signal handler,
+ `safefetch32_cont/safefetch64_cont` returns `errValue`
  **/
-
 #if defined(__x86_64__)
   #ifdef __APPLE__
     asm(R"(
@@ -74,7 +74,7 @@ extern "C" int64_t safefetch64_cont(int64_t* adr, int64_t errValue);
         .globl safefetch32_impl
         .hidden safefetch32_impl
         .type safefetch32_imp, %function
-        safefetch64_impl:
+        safefetch32_impl:
             movl (%rdi), %eax
             ret
         .globl safefetch32_cont
