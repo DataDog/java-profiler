@@ -64,47 +64,6 @@ public:
   #endif
     return *ptr;
   }
-
-  NOADDRSANITIZE static uintptr_t skipLoad(uintptr_t pc) {
-    if (pc - (uintptr_t)load < sizeSafeLoadFunc) {
-#if defined(__x86_64__)
-      return *(u16 *)pc == 0x8b48 ? 3 : 0; // mov rax, [reg]
-#elif defined(__i386__)
-      return *(u8 *)pc == 0x8b ? 2 : 0; // mov eax, [reg]
-#elif defined(__arm__) || defined(__thumb__)
-      return (*(instruction_t *)pc & 0x0e50f000) == 0x04100000
-                 ? 4
-                 : 0; // ldr r0, [reg]
-#elif defined(__aarch64__)
-      return (*(instruction_t *)pc & 0xffc0001f) == 0xf9400000
-                 ? 4
-                 : 0; // ldr x0, [reg]
-#else
-      return sizeof(instruction_t);
-#endif
-    }
-    return 0;
-  }
-
-  static uintptr_t skipLoadArg(uintptr_t pc) {
-#if defined(__aarch64__)
-    if ((pc - (uintptr_t)load32) < sizeSafeLoadFunc ||
-        (pc - (uintptr_t)loadPtr) < sizeSafeLoadFunc) {
-      return 4;
-    }
-#endif
-    return 0;
-  }
-#ifndef __SANITIZE_ADDRESS__
-  constexpr static size_t sizeSafeLoadFunc = 16;
-#else
-  // asan significantly increases the size of the load function
-  // checking disassembled code can help adjust the value
-  // gdb --batch -ex 'disas _ZN10SafeAccess4loadEPPv' ./elfparser_ut
-  // I see that the functions can also have a 156 bytes size for the load32
-  // and 136 for the loadPtr functions
-  constexpr static inline size_t sizeSafeLoadFunc = 132;
-#endif
 };
 
 #endif // _SAFEACCESS_H
