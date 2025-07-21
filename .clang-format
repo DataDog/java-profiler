@@ -7,11 +7,5 @@ BreakBeforeBraces: Attach
 AllowShortFunctionsOnASingleLine: None
 AllowShortIfStatementsOnASingleLine: false
 AllowShortLoopsOnASingleLine: false
-AllowShortBlocksOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
 AllowShortCaseLabelsOnASingleLine: false
-AllowShortNamespacesOnASingleLine: false
-AllowShortStructsOnASingleLine: false
-AllowShortEnumsOnASingleLine: false
-AllowShortLambdasOnASingleLine: false
-AllowShortCompoundStatementsOnASingleLine: false
-AllowShortAlwaysBreakType: None
