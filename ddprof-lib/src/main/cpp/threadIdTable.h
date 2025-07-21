@@ -13,7 +13,10 @@
 // Signal-safe thread ID table with fixed size
 class ThreadIdTable {
 private:
-    static const int TABLE_SIZE = 256;  // Should handle most realistic thread counts
+    // We have 256 slots per concurrency level (currently 16)
+    // This should cater for 4096 threads - if it turns out to be too small, we
+    // can increase it or make it configurable
+    static const int TABLE_SIZE = 256;
     std::atomic<int> table[TABLE_SIZE];
     
     int hash(int tid) const {

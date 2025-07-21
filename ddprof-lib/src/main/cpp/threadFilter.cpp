@@ -125,6 +125,8 @@ bool ThreadFilter::accept(SlotID slot_id) const {
     int slot_idx = slot_id & kChunkMask;
 
     if (chunk_idx >= kMaxChunks) return false;
+    if (slot_idx >= kChunkSize) return false;
+
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
     if (chunk == nullptr) return false;  // Fail-fast if not allocated
 
@@ -138,6 +140,8 @@ void ThreadFilter::add(int tid, SlotID slot_id) {
     int slot_idx = slot_id & kChunkMask;
 
     if (chunk_idx >= kMaxChunks) return;
+    if (slot_idx >= kChunkSize) return;
+
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
     if (chunk == nullptr) return;  // Fail-fast if not allocated
 
@@ -152,6 +156,8 @@ void ThreadFilter::remove(SlotID slot_id) {
     int slot_idx = slot_id & kChunkMask;
 
     if (chunk_idx >= kMaxChunks) return;
+    if (slot_idx >= kChunkSize) return;
+
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
     if (chunk == nullptr) return;  // Fail-fast if not allocated
 

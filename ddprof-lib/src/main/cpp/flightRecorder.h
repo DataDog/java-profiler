@@ -164,7 +164,7 @@ private:
 public:
   Recording(int fd, Arguments &args);
   ~Recording();
-  
+
   void copyTo(int target_fd);
   off_t finishChunk();
 
