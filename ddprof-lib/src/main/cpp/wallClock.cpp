@@ -197,27 +197,26 @@ void WallClockJVMTI::timerLoop() {
       bool do_filter = threadFilter->enabled();
       int self = OS::threadId();
 
-        // If filtering is enabled, collect the filtered TIDs first
-        std::vector<int> filtered_tids;
-        if (do_filter) {
-            Profiler::instance()->threadFilter()->collect(filtered_tids);
-            // Sort the TIDs for efficient lookup
-            std::sort(filtered_tids.begin(), filtered_tids.end());
-        }
+      // If filtering is enabled, collect the filtered TIDs first
+      std::vector<int> filtered_tids;
+      if (do_filter) {
+          Profiler::instance()->threadFilter()->collect(filtered_tids);
+          // Sort the TIDs for efficient lookup
+          std::sort(filtered_tids.begin(), filtered_tids.end());
+      }
 
-        for (int i = 0; i < threads_count; i++) {
-          jthread thread = threads_ptr[i];
-          if (thread != nullptr) {
-            ddprof::VMThread* nThread = static_cast<ddprof::VMThread*>(VMThread::fromJavaThread(jni, thread));
-            if (nThread == nullptr) {
-              continue;
-            }
-            int tid = nThread->osThreadId();
-            if (tid != self && (!do_filter ||
-                 // Use binary search to efficiently find if tid is in filtered_tids
-                 std::binary_search(filtered_tids.begin(), filtered_tids.end(), tid))) {
-              threads.push_back({nThread, thread});
-            }
+      for (int i = 0; i < threads_count; i++) {
+        jthread thread = threads_ptr[i];
+        if (thread != nullptr) {
+          ddprof::VMThread* nThread = static_cast<ddprof::VMThread*>(VMThread::fromJavaThread(jni, thread));
+          if (nThread == nullptr) {
+            continue;
+          }
+          int tid = nThread->osThreadId();
+          if (tid != self && (!do_filter ||
+               // Use binary search to efficiently find if tid is in filtered_tids
+               std::binary_search(filtered_tids.begin(), filtered_tids.end(), tid))) {
+            threads.push_back({nThread, thread});
           }
         }
       }
