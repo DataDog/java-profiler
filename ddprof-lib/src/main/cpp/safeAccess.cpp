@@ -20,6 +20,7 @@
 #include <ucontext.h>
 
 extern "C" int safefetch32_cont(int* adr, int errValue);
+extern "C" int64_t safefetch64_cont(int64_t* adr, int64_t errValue);
 
 #ifdef __APPLE__
     #if defined(__x86_64__)
@@ -37,12 +38,12 @@ extern "C" int safefetch32_cont(int* adr, int errValue);
 #endif
 
 /**
- Loading a 32-bit value from specific address, the errValue will be returned
+ Loading a 32-bit/64-bit value from specific address, the errValue will be returned
  if the address is invalid.
  The load is protected by the 'handle_safefetch` signal handler, who sets next `pc`
- to `safefetch32_cont`, upon returning from signal handler, `safefetch32_cont` returns `errValue`
+ to `safefetch32_cont/safefetch64_cont`, upon returning from signal handler,
+ `safefetch32_cont/safefetch64_cont` returns `errValue`
  **/
-
 #if defined(__x86_64__)
   #ifdef __APPLE__
     asm(R"(
@@ -55,6 +56,16 @@ extern "C" int safefetch32_cont(int* adr, int errValue);
         .private_extern _safefetch32_cont
         _safefetch32_cont:
             movl %esi, %eax
+            ret
+        .globl _safefetch64_impl
+        .private_extern _safefetch64_impl
+        _safefetch64_impl:
+             movq (%rdi), %rax
+             ret
+        .globl _safefetch64_cont
+        .private_extern _safefetch64_cont
+        _safefetch64_cont:
+            movq %rsi, %rax
             ret
     )");
   #else
@@ -72,6 +83,18 @@ extern "C" int safefetch32_cont(int* adr, int errValue);
         safefetch32_cont:
             movl %esi, %eax
             ret
+        .globl safefetch64_impl
+        .hidden safefetch64_impl
+        .type safefetch64_imp, %function
+        safefetch64_impl:
+            movq (%rdi), %rax
+            ret
+        .globl safefetch64_cont
+        .hidden safefetch64_cont
+        .type safefetch64_cont, %function
+        safefetch64_cont:
+            movq %rsi, %rax
+            ret
     )");
   #endif // __APPLE__
 #elif defined(__aarch64__)
@@ -85,6 +108,16 @@ extern "C" int safefetch32_cont(int* adr, int errValue);
         .globl _safefetch32_cont
         .private_extern _safefetch32_cont
         _safefetch32_cont:
+            mov      w0, w1
+            ret
+        .globl _safefetch64_impl
+        .private_extern _safefetch64_impl
+        _safefetch64_impl:
+            ldr      x0, [x0]
+            ret
+        .globl _safefetch64_cont
+        .private_extern _safefetch64_cont
+        _safefetch64_cont:
             mov      x0, x1
             ret
     )");
@@ -101,6 +134,18 @@ extern "C" int safefetch32_cont(int* adr, int errValue);
         .hidden safefetch32_cont
         .type safefetch32_cont, %function
         safefetch32_cont:
+            mov      w0, w1
+            ret
+        .globl safefetch64_impl
+        .hidden safefetch64_impl
+        .type safefetch64_impl, %function
+        safefetch64_impl:
+            ldr      x0, [x0]
+            ret
+        .globl safefetch64_cont
+        .hidden safefetch64_cont
+        .type safefetch64_cont, %function
+        safefetch64_cont:
             mov      x0, x1
             ret
     )");
@@ -113,6 +158,9 @@ bool SafeAccess::handle_safefetch(int sig, void* context) {
   if ((sig == SIGSEGV || sig == SIGBUS) && uc != nullptr) {
     if (pc == (uintptr_t)safefetch32_impl) {
       uc->current_pc = (uintptr_t)safefetch32_cont;
+      return true;
+    } else if (pc == (uintptr_t)safefetch64_impl) {
+      uc->current_pc = (uintptr_t)safefetch64_cont;
       return true;
     }
   }
