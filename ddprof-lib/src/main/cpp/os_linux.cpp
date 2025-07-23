@@ -273,6 +273,10 @@ void *OS::safeAlloc(size_t size) {
 
 void OS::safeFree(void *addr, size_t size) { syscall(__NR_munmap, addr, size); }
 
+int OS::mprotect(void *addr, size_t len, int prot) {
+  return mprotect(addr, len, prot);
+}
+
 bool OS::getCpuDescription(char *buf, size_t size) {
   int fd = open("/proc/cpuinfo", O_RDONLY);
   if (fd == -1) {
