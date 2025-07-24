@@ -112,7 +112,7 @@ def createDebugLinkTask(config, linkTask, extractDebugTask) {
     }
     dependsOn extractDebugTask
     description = 'Add debug link to the original library'
-    
+
     inputs.files linkTask, extractDebugTask
     outputs.file { linkTask.get().linkedFile.get().asFile }
 
@@ -362,7 +362,7 @@ def patchStackFrame = tasks.register("patchStackFrame") {
   }
   inputs.files copyUpstreamFiles
   outputs.file("${projectDir}/src/main/cpp-external/stackFrame_x64.cpp")
-  
+
   doLast {
     def file = file("${projectDir}/src/main/cpp-external/stackFrame_x64.cpp")
     if (!file.exists()) throw new GradleException("File not found: ${file}")
@@ -417,7 +417,7 @@ def patchStackWalker = tasks.register("patchStackWalker") {
   }
   inputs.files copyUpstreamFiles
   outputs.file("${projectDir}/src/main/cpp-external/stackWalker.cpp")
-  
+
   doLast {
     def file = file("${projectDir}/src/main/cpp-external/stackWalker.cpp")
     if (!file.exists()) throw new GradleException("File not found: ${file}")
