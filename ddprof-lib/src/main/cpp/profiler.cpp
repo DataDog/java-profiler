@@ -891,28 +891,6 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return false;
   }
 
-  uintptr_t length = SafeAccess::skipLoad(pc);
-  if (length > 0) {
-    // Skip the fault instruction, as if it successfully loaded NULL
-    frame.pc() += length;
-    frame.retval() = 0;
-    if (thrd != nullptr) {
-      thrd->exitCrashHandler();
-    }
-    return true;
-  }
-
-  length = SafeAccess::skipLoadArg(pc);
-  if (length > 0) {
-    // Act as if the load returned default_value argument
-    frame.pc() += length;
-    frame.retval() = frame.arg1();
-    if (thrd != nullptr) {
-      thrd->exitCrashHandler();
-    }
-    return true;
-  }
-
   if (WX_MEMORY && Trap::isFaultInstruction(pc)) {
     if (thrd != nullptr) {
       thrd->exitCrashHandler();
