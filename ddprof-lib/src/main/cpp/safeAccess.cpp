@@ -85,7 +85,7 @@ extern "C" int64_t safefetch64_cont(int64_t* adr, int64_t errValue);
             ret
         .globl safefetch64_impl
         .hidden safefetch64_impl
-        .type safefetch64_imp, %function
+        .type safefetch64_impl, %function
         safefetch64_impl:
             movq (%rdi), %rax
             ret
