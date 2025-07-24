@@ -39,7 +39,7 @@ task runStressTests(type: Exec) {
   }
   group = 'Execution'
   description = 'Run JMH stresstests'
-  commandLine "${javaHome}/bin/java", '-jar', 'build/libs/stresstests.jar'
+  commandLine "${javaHome}/bin/java", '-jar', 'build/libs/stresstests.jar', '-prof', 'com.datadoghq.profiler.stresstest.WhiteboxProfiler', 'counters.*'
 }
 
 tasks.withType(JavaCompile).configureEach {

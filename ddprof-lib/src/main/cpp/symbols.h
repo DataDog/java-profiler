@@ -24,6 +24,7 @@ class Symbols {
 private:
   static Mutex _parse_lock;
   static bool _have_kernel_symbols;
+  static bool _libs_limit_reported;
 
 public:
   static void parseKernelSymbols(CodeCache *cc);
@@ -35,6 +36,20 @@ public:
 
   // Some symbols are always roots - eg. no unwinding should be attempted once they are encountered
   static bool isRootSymbol(const void* address);
+};
+
+class UnloadProtection {
+  private:
+    void* _lib_handle;
+    bool _valid;
+
+  public:
+    UnloadProtection(const CodeCache *cc);
+    ~UnloadProtection();
+
+    UnloadProtection& operator=(const UnloadProtection& other) = delete;
+
+    bool isValid() const { return _valid; }
 };
 
 #endif // _SYMBOLS_H

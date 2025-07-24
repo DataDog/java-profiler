@@ -64,6 +64,39 @@ The project includes both Java and C++ unit tests. You can run them using:
 ### Cross-JDK Testing
 `JAVA_TEST_HOME=<path to test JDK> ./gradlew testDebug`
 
+## Release Builds and Debug Information
+
+### Split Debug Information
+Release builds automatically generate split debug information to optimize deployment size while preserving debugging capabilities:
+
+- **Stripped libraries** (~1.2MB): Production-ready binaries with symbols removed for deployment
+- **Debug symbol files** (~6.1MB): Separate `.debug` files containing full debugging information
+- **Debug links**: Stripped libraries include `.gnu_debuglink` sections pointing to debug files
+
+### Build Artifacts Structure
+```
+ddprof-lib/build/
+├── lib/main/release/linux/x64/
+│   ├── libjavaProfiler.so              # Original library with debug symbols
+│   ├── stripped/
+│   │   └── libjavaProfiler.so          # Stripped library (83% smaller)
+│   └── debug/
+│       └── libjavaProfiler.so.debug    # Debug symbols only
+├── native/release/
+│   └── META-INF/native-libs/linux-x64/
+│       └── libjavaProfiler.so          # Final stripped library (deployed)
+└── native/release-debug/
+    └── META-INF/native-libs/linux-x64/
+        └── libjavaProfiler.so.debug    # Debug symbols package
+```
+
+### Build Options
+- **Skip debug extraction**: `./gradlew buildRelease -Pskip-debug-extraction=true`
+- **Debug extraction requires**: `objcopy` (Linux) or `dsymutil` (macOS)
+  - Ubuntu/Debian: `sudo apt-get install binutils`
+  - Alpine: `apk add binutils`
+  - macOS: Included with Xcode command line tools
+
 ## Development
 
 ### Code Quality

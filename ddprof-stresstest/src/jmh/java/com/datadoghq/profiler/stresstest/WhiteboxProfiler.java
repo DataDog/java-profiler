@@ -46,12 +46,16 @@ public class WhiteboxProfiler implements InternalProfiler {
             JavaProfiler.getInstance().stop();
             long fileSize = Files.size(jfr);
             Files.deleteIfExists(jfr);
-            List<ScalarResult> results = new ArrayList<>();
-            results.add(new ScalarResult("jfr_filesize_bytes", fileSize, "", AggregationPolicy.MAX));
-            for (Map.Entry<String, Long> counter : JavaProfiler.getInstance().getDebugCounters().entrySet()) {
-                results.add(new ScalarResult(counter.getKey(), counter.getValue(), "", AggregationPolicy.MAX));
+            if (!Boolean.parseBoolean(benchmarkParams.getParam("skipResults"))) {
+                List<ScalarResult> results = new ArrayList<>();
+                results.add(new ScalarResult("jfr_filesize_bytes", fileSize, "", AggregationPolicy.MAX));
+                for (Map.Entry<String, Long> counter : JavaProfiler.getInstance().getDebugCounters().entrySet()) {
+                    results.add(new ScalarResult(counter.getKey(), counter.getValue(), "", AggregationPolicy.MAX));
+                }
+                return results;
+            } else {
+                return Collections.emptyList();
             }
-            return results;
         } catch (IOException e) {
             e.printStackTrace();
             return Collections.emptyList();

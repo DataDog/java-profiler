@@ -20,8 +20,6 @@ public class Main {
         Mode mode = Mode.AverageTime;
         Options options = new OptionsBuilder()
                 .parent(new CommandLineOptions(args))
-                .include(SCENARIOS_PACKAGE + "*")
-                .addProfiler(WhiteboxProfiler.class)
                 .forks(commandLineOptions.getForkCount().orElse(1))
                 .warmupIterations(commandLineOptions.getWarmupIterations().orElse(0))
                 .measurementIterations(commandLineOptions.getMeasurementIterations().orElse(1))

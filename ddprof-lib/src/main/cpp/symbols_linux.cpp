@@ -12,18 +12,21 @@
 #include "log.h"
 #include "safeAccess.h"
 #include "symbols.h"
+#include <dlfcn.h>
 #include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <link.h>
 #include <linux/limits.h>
-#include <set>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/auxv.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unordered_map>
+#include <unordered_set>
 
 // make sure lseek will use 64 bits offset
 #define _FILE_OFFSET_BITS 64
@@ -481,13 +484,19 @@ void ElfParser::addRelocationSymbols(ElfSection *reltab, const char *plt) {
   }
 }
 
+struct SharedLibrary {
+    char* file;
+    const char* map_start;
+    const char* map_end;
+    const char* image_base;
+};
+
 Mutex Symbols::_parse_lock;
 bool Symbols::_have_kernel_symbols = false;
-static std::set<const void *> _parsed_libraries;
-static std::set<u64> _parsed_inodes;
+bool Symbols::_libs_limit_reported = false;
+static std::unordered_set<u64> _parsed_inodes;
 
 void Symbols::clearParsingCaches() {
-  _parsed_libraries.clear();
   _parsed_inodes.clear();
 }
 
@@ -531,22 +540,20 @@ void Symbols::parseKernelSymbols(CodeCache *cc) {
   fclose(f);
 }
 
-static int parseLibrariesCallback(struct dl_phdr_info *info, size_t size,
-                                  void *data) {
+static void collectSharedLibraries(std::unordered_map<u64, SharedLibrary>& libs, int max_count) {
 
   FILE *f = fopen("/proc/self/maps", "r");
   if (f == NULL) {
-    return 1;
+    return;
   }
 
-  CodeCacheArray *array = (CodeCacheArray *)data;
   const char *image_base = NULL;
   u64 last_inode = 0;
   char *str = NULL;
   size_t str_size = 0;
   ssize_t len;
 
-  while ((len = getline(&str, &str_size, f)) > 0) {
+  while (max_count > 0 && (len = getline(&str, &str_size, f)) > 0) {
     str[len - 1] = 0;
     MemoryMapDesc map(str);
     if (!map.isReadable() || map.file() == NULL || map.file()[0] == 0) {
@@ -557,62 +564,45 @@ static int parseLibrariesCallback(struct dl_phdr_info *info, size_t size,
       continue;
     }
 
-    const char *map_start = map.addr();
-    unsigned long map_offs = map.offs();
-
-    if (map_offs == 0) {
-      image_base = map_start;
-      last_inode = u64(map.dev()) << 32 | map.inode();
+    u64 inode = u64(map.dev()) << 32 | map.inode();
+    if (_parsed_inodes.find(inode) != _parsed_inodes.end()) {
+       continue;  // shared object is already parsed
+    }
+    if (inode == 0 && strcmp(map.file(), "[vdso]") != 0) {
+        continue;  // all shared libraries have inode, except vDSO
     }
 
-    if (!map.isExecutable() || !_parsed_libraries.insert(map_start).second) {
-      // Not an executable segment or it has been already parsed
-      continue;
-    }
-
-    int count = array->count();
-    if (count >= MAX_NATIVE_LIBS) {
-      break;
-    }
-
+    const char* map_start = map.addr();
     const char *map_end = map.end();
-    // Do not try to parse pseudofiles like anon_inode:name, /memfd:name
-    if (strchr(map.file(), ':') == NULL) {
-      CodeCache *cc = new CodeCache(map.file(), count, false, map_start, map_end);
-      TEST_LOG("Procesing library: %s", map.file());
-      u64 inode = u64(map.dev()) << 32 | map.inode();
-      if (inode != 0) {
-        // Do not parse the same executable twice, e.g. on Alpine Linux
-        if (_parsed_inodes.insert(inode).second) {
-          if (inode == last_inode) {
-            // If last_inode is set, image_base is known to be valid and
-            // readable
-            ElfParser::parseFile(cc, image_base, map.file(), true);
-            // Parse program headers after the file to ensure debug symbols are
-            // parsed first
-            ElfParser::parseProgramHeaders(cc, image_base, map_end, MUSL);
-          } else if ((unsigned long)map_start > map_offs) {
-            // Unlikely case when image_base has not been found.
-            // Be careful: executable file is not always ELF, e.g. classes.jsa
-            ElfParser::parseFile(cc, map_start - map_offs, map.file(), true);
-          }
-        }
-      } else if (strcmp(map.file(), "[vdso]") == 0) {
-        ElfParser::parseProgramHeaders(cc, map_start, map_end, true);
-      }
+    if (inode != last_inode && map.offs() == 0) {
+        image_base = map_start;
+        last_inode = inode;
+    }
 
-      cc->sort();
-      array->add(cc);
+    if (map.isExecutable()) {
+        SharedLibrary& lib = libs[inode];
+        if (lib.file == nullptr) {
+            lib.file = strdup(map.file());
+            lib.map_start = map_start;
+            lib.map_end = map_end;
+            lib.image_base = inode == last_inode ? image_base : NULL;
+            max_count--;
+        } else {
+            // The same library may have multiple executable segments mapped
+            lib.map_end = map_end;
+        }
     }
   }
-
   free(str);
   fclose(f);
-  return 1; // stop at first iteration
 }
 
 void Symbols::parseLibraries(CodeCacheArray *array, bool kernel_symbols) {
   MutexLocker ml(_parse_lock);
+
+  if (array->count() >= MAX_NATIVE_LIBS) {
+    return;
+  }
 
   if (kernel_symbols && !haveKernelSymbols()) {
     CodeCache *cc = new CodeCache("[kernel]");
@@ -625,12 +615,48 @@ void Symbols::parseLibraries(CodeCacheArray *array, bool kernel_symbols) {
       delete cc;
     }
   }
+    std::unordered_map<u64, SharedLibrary> libs;
+    collectSharedLibraries(libs, MAX_NATIVE_LIBS - array->count());
 
-  // In glibc, dl_iterate_phdr() holds dl_load_write_lock, therefore preventing
-  // concurrent loading and unloading of shared libraries.
-  // Without it, we may access memory of a library that is being unloaded.
-  dl_iterate_phdr(parseLibrariesCallback, array);
-  TEST_LOG("Parsed %d libraries", array->count());
+    for (auto& it : libs) {
+        u64 inode = it.first;
+        _parsed_inodes.insert(inode);
+
+        SharedLibrary& lib = it.second;
+        CodeCache* cc = new CodeCache(lib.file, array->count(), false, lib.map_start, lib.map_end, lib.image_base);
+
+        // Strip " (deleted)" suffix so that removed library can be reopened
+        size_t len = strlen(lib.file);
+        if (len > 10 && strcmp(lib.file + len - 10, " (deleted)") == 0) {
+            lib.file[len - 10] = 0;
+        }
+
+       if (strcmp(lib.file, "[vdso]") == 0) {
+            ElfParser::parseProgramHeaders(cc, lib.map_start, lib.map_end, true);
+        } else if (lib.image_base == NULL) {
+            // Unlikely case when image base has not been found: not safe to access program headers.
+            // Be careful: executable file is not always ELF, e.g. classes.jsa
+            ElfParser::parseFile(cc, lib.map_start, lib.file, true);
+        } else {
+            // Parse debug symbols first
+            ElfParser::parseFile(cc, lib.image_base, lib.file, true);
+
+            UnloadProtection handle(cc);
+            if (handle.isValid()) {
+                ElfParser::parseProgramHeaders(cc, lib.image_base, lib.map_end, MUSL);
+            }
+        }
+
+        free(lib.file);
+
+        cc->sort();
+        array->add(cc);
+    }
+
+    if (array->count() >= MAX_NATIVE_LIBS && !_libs_limit_reported) {
+        Log::warn("Number of parsed libraries reached the limit of %d", MAX_NATIVE_LIBS);
+        _libs_limit_reported = true;
+    }
 }
 
 bool Symbols::isRootSymbol(const void* address) {
@@ -640,6 +666,66 @@ bool Symbols::isRootSymbol(const void* address) {
     }
   }
   return false;
+}
+
+// Check that the base address of the shared object has not changed
+static bool verifyBaseAddress(const CodeCache* cc, void* lib_handle) {
+    Dl_info dl_info;
+    struct link_map* map;
+
+    if (dlinfo(lib_handle, RTLD_DI_LINKMAP, &map) != 0 || dladdr(map->l_ld, &dl_info) == 0) {
+        return false;
+    }
+
+    return cc->imageBase() == (const char*)dl_info.dli_fbase;
+}
+
+static const void* getMainPhdr() {
+    void* main_phdr = NULL;
+    dl_iterate_phdr([](struct dl_phdr_info* info, size_t size, void* data) {
+        *(const void**)data = info->dlpi_phdr;
+        return 1;
+    }, &main_phdr);
+    return main_phdr;
+}
+
+static const void* _main_phdr = getMainPhdr();
+static const char* _ld_base = (const char*)getauxval(AT_BASE);
+
+static bool isMainExecutable(const char* image_base, const void* map_end) {
+    return _main_phdr != NULL && _main_phdr >= image_base && _main_phdr < map_end;
+}
+
+static bool isLoader(const char* image_base) {
+    return _ld_base == image_base;
+}
+
+UnloadProtection::UnloadProtection(const CodeCache *cc) {
+    if (MUSL || isMainExecutable(cc->imageBase(), cc->maxAddress()) || isLoader(cc->imageBase())) {
+        _lib_handle = NULL;
+        _valid = true;
+        return;
+    }
+
+    // dlopen() can reopen previously loaded libraries even if the underlying file has been deleted
+    const char* stripped_name = cc->name();
+    size_t name_len = strlen(stripped_name);
+    if (name_len > 10 && strcmp(stripped_name + name_len - 10, " (deleted)") == 0) {
+        char* buf = (char*) alloca(name_len - 9);
+        *stpncpy(buf, stripped_name, name_len - 10) = 0;
+        stripped_name = buf;
+    }
+
+    // Protect library from unloading while parsing in-memory ELF program headers.
+    // Also, dlopen() ensures the library is fully loaded.
+    _lib_handle = dlopen(stripped_name, RTLD_LAZY | RTLD_NOLOAD);
+    _valid = _lib_handle != NULL && verifyBaseAddress(cc, _lib_handle);
+}
+
+UnloadProtection::~UnloadProtection() {
+    if (_lib_handle != NULL) {
+        dlclose(_lib_handle);
+    }
 }
 
 #endif // __linux__

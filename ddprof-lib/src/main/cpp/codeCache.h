@@ -109,6 +109,7 @@ private:
   const void *_min_address;
   const void *_max_address;
   const char *_text_base;
+  const char* _image_base;
 
   unsigned int _plt_offset;
   unsigned int _plt_size;
@@ -132,7 +133,8 @@ public:
   explicit CodeCache(const char *name, short lib_index = -1,
                      bool imports_patchable = false,
                      const void *min_address = NO_MIN_ADDRESS,
-                     const void *max_address = NO_MAX_ADDRESS);
+                     const void *max_address = NO_MAX_ADDRESS,
+                     const char* image_base = NULL);
   // Copy constructor
   CodeCache(const CodeCache &other);
   // Copy assignment operator
@@ -147,6 +149,8 @@ public:
   const void *minAddress() const { return _min_address; }
 
   const void *maxAddress() const { return _max_address; }
+
+  const char* imageBase() const { return _image_base; }
 
   bool contains(const void *address) const {
     return address >= _min_address && address < _max_address;

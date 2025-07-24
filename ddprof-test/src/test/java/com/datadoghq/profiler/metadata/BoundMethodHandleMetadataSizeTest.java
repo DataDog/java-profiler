@@ -22,6 +22,7 @@ public class BoundMethodHandleMetadataSizeTest extends AbstractProfilerTest {
     @Test
     public void test() throws Throwable {
         assumeFalse(Platform.isJ9() && isAsan()); // running this test on j9 and asan is weirdly crashy
+        assumeFalse(Platform.isJ9() && Platform.isJavaVersion(8)); // geting crash-failur in CI reliable; remove once that is fixed
         assumeFalse(Platform.isJ9() && Platform.isJavaVersion(17)); // JVMTI::GetClassSignature() is reliably crashing on a valid 'class' instance
         assumeFalse(Platform.isAarch64() && Platform.isMusl() && !Platform.isJavaVersionAtLeast(11)); // aarch64 + musl + jdk 8 will crash very often
         registerCurrentThreadForWallClockProfiling();

@@ -867,6 +867,14 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     // we are already in a crash handler; don't recurse!
     return false;
   }
+
+  if (SafeAccess::handle_safefetch(signo, ucontext)) {
+    if (thrd != nullptr) {
+      thrd->exitCrashHandler();
+    }
+    return true;
+  }
+
   uintptr_t fault_address = (uintptr_t)siginfo->si_addr;
   StackFrame frame(ucontext);
   uintptr_t pc = frame.pc();
@@ -876,28 +884,6 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
       thrd->exitCrashHandler();
     }
     return false;
-  }
-
-  uintptr_t length = SafeAccess::skipLoad(pc);
-  if (length > 0) {
-    // Skip the fault instruction, as if it successfully loaded NULL
-    frame.pc() += length;
-    frame.retval() = 0;
-    if (thrd != nullptr) {
-      thrd->exitCrashHandler();
-    }
-    return true;
-  }
-
-  length = SafeAccess::skipLoadArg(pc);
-  if (length > 0) {
-    // Act as if the load returned default_value argument
-    frame.pc() += length;
-    frame.retval() = frame.arg1();
-    if (thrd != nullptr) {
-      thrd->exitCrashHandler();
-    }
-    return true;
   }
 
   if (WX_MEMORY && Trap::isFaultInstruction(pc)) {
@@ -972,6 +958,7 @@ void Profiler::updateJavaThreadNames() {
   JNIEnv *jni = VM::jni();
   for (int i = 0; i < thread_count; i++) {
     updateThreadName(jvmti, jni, thread_objects[i]);
+    jni->DeleteLocalRef(thread_objects[i]);
   }
 
   jvmti->Deallocate((unsigned char *)thread_objects);

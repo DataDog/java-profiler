@@ -37,12 +37,15 @@ public final class JavaProfiler {
     static final Unsafe UNSAFE;
     static {
         Unsafe unsafe = null;
-        String version = System.getProperty("java.version");
-        try {
-            Field f = Unsafe.class.getDeclaredField("theUnsafe");
-            f.setAccessible(true);
-            unsafe = (Unsafe) f.get(null);
-        } catch (Exception ignore) { }
+        // a safety and testing valve to disable unsafe access
+        if (!Boolean.getBoolean("ddprof.disable_unsafe")) {
+            try {
+                Field f = Unsafe.class.getDeclaredField("theUnsafe");
+                f.setAccessible(true);
+                unsafe = (Unsafe) f.get(null);
+            } catch (Exception ignore) {
+            }
+        }
         UNSAFE = unsafe;
     }
 
