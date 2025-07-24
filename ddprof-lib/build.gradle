@@ -270,7 +270,7 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
     if (!targetDir.exists()) {
       println "Cloning missing async-profiler git subdirectory..."
       exec {
-        commandLine 'git', 'clone', '--branch', branch_lock, '--depth', '1', 'https://github.com/datadog/async-profiler.git', targetDir.absolutePath
+        commandLine 'git', 'clone', '--branch', branch_lock, 'https://github.com/datadog/async-profiler.git', targetDir.absolutePath
       }
       exec {
         workingDir targetDir.absolutePath
@@ -291,7 +291,10 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
         println "async-profiler commit hash differs (current: ${currentCommit}, expected: ${commit_lock}), updating..."
         exec {
           workingDir targetDir.absolutePath
-          commandLine 'git', 'fetch', 'origin', branch_lock, '--depth', '1'
+          commandLine 'rm', '-rf', targetDir.absolutePath
+        }
+        exec {
+          commandLine 'git', 'clone', '--branch', branch_lock, 'https://github.com/datadog/async-profiler.git', targetDir.absolutePath
         }
         exec {
           workingDir targetDir.absolutePath
