@@ -84,6 +84,7 @@ public:
 
   static void *safeAlloc(size_t size);
   static void safeFree(void *addr, size_t size);
+  static int mprotect(void *addr, size_t len, int prot);
 
   static bool getCpuDescription(char *buf, size_t size);
   static u64 getProcessCpuTime(u64 *utime, u64 *stime);

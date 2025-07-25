@@ -260,6 +260,10 @@ void *OS::safeAlloc(size_t size) {
 
 void OS::safeFree(void *addr, size_t size) { munmap(addr, size); }
 
+int OS::mprotect(void *addr, size_t len, int prot) {
+  return mprotect(addr, len, prot);
+}
+
 bool OS::getCpuDescription(char *buf, size_t size) {
   return sysctlbyname("machdep.cpu.brand_string", buf, &size, NULL, 0) == 0;
 }
