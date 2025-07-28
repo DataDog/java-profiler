@@ -290,6 +290,12 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
     }
   }
   doLast {
+    // Fix for CI environments where git detects dubious ownership
+    exec {
+      commandLine 'git', 'config', '--global', '--add', 'safe.directory', projectDir.parentFile.absolutePath
+      ignoreExitValue = true  // Don't fail if this command fails
+    }
+    
     def targetDir = file("${projectDir}/build/async-profiler")
     if (!targetDir.exists()) {
       println "Cloning missing async-profiler git subdirectory..."
@@ -301,6 +307,13 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
         commandLine 'git', 'checkout', commit_lock
       }
     } else {
+      // Also fix git ownership for existing directory
+      exec {
+        workingDir targetDir.absolutePath
+        commandLine 'git', 'config', '--global', '--add', 'safe.directory', targetDir.absolutePath
+        ignoreExitValue = true
+      }
+      
       def currentCommit = ""
       new ByteArrayOutputStream().withStream { os ->
         exec {
