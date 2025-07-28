@@ -199,7 +199,8 @@ tasks.whenTaskAdded { task ->
               }
 
               inputs.files binary
-              outputs.upToDateWhen {true}
+              // Test tasks should run every time the test command is run
+              outputs.upToDateWhen { false }
             }
 
             def compileTask = tasks.findByName("compileGtest${config.name.capitalize()}_${testName}")

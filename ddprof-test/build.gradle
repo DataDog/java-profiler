@@ -120,5 +120,11 @@ gradle.projectsEvaluated {
     if (testTask && assembleTask) {
       assembleTask.dependsOn testTask
     }
+
+    // Hook C++ gtest tasks to run as part of the corresponding Java test tasks
+    def gtestTask = project(':ddprof-lib:gtest').tasks.findByName("gtest${it.capitalize()}")
+    if (testTask && gtestTask) {
+      testTask.dependsOn gtestTask
+    }
   }
 }
