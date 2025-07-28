@@ -295,7 +295,7 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
       commandLine 'git', 'config', '--global', '--add', 'safe.directory', projectDir.parentFile.absolutePath
       ignoreExitValue = true  // Don't fail if this command fails
     }
-    
+
     def targetDir = file("${projectDir}/build/async-profiler")
     if (!targetDir.exists()) {
       println "Cloning missing async-profiler git subdirectory..."
@@ -313,7 +313,7 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
         commandLine 'git', 'config', '--global', '--add', 'safe.directory', targetDir.absolutePath
         ignoreExitValue = true
       }
-      
+
       def currentCommit = ""
       new ByteArrayOutputStream().withStream { os ->
         exec {
