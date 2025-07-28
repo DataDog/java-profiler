@@ -15,7 +15,10 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
 @State(Scope.Benchmark)
 public class ThreadFilterBenchmark extends Configuration {
 
-    private static final int NUM_THREADS = 4;
+    @Param({"true", "false"}) // Parameterize the filter usage
+    public boolean useThreadFilters;
+
+    private static final int NUM_THREADS = 15;
     private ExecutorService executorService;
     private JavaProfiler profiler;
     private AtomicBoolean running;
@@ -30,13 +33,13 @@ public class ThreadFilterBenchmark extends Configuration {
     private static final AtomicIntegerArray atomicArray = new AtomicIntegerArray(ARRAY_SIZE);
     private static final int CACHE_LINE_SIZE = 64; // Typical cache line size
     private static final int STRIDE = CACHE_LINE_SIZE / Integer.BYTES; // Elements per cache line
-    private boolean useThreadFilters = true; // Flag to control the use of thread filters
     private AtomicLong addThreadCount = new AtomicLong(0);
     private AtomicLong removeThreadCount = new AtomicLong(0);
 
     @Setup(Level.Trial)
     public void setup() throws IOException {
         System.out.println("Setting up benchmark...");
+        System.out.println("Thread filters enabled: " + useThreadFilters);
         System.out.println("Creating thread pool with " + NUM_THREADS + " threads");
         executorService = Executors.newFixedThreadPool(NUM_THREADS);
         System.out.println("Getting profiler instance");
@@ -53,6 +56,7 @@ public class ThreadFilterBenchmark extends Configuration {
         System.out.println("Starting profiler with " + config);
         profiler.execute(config);
         System.out.println("Started profiler with output file");
+        
         running = new AtomicBoolean(true);
         operationCount = new AtomicLong(0);
         startTime = System.currentTimeMillis();
@@ -106,6 +110,7 @@ public class ThreadFilterBenchmark extends Configuration {
         // Stop the profiler if it's active
         try {
             profiler.stop();
+            System.out.println("Profiler stopped.");
         } catch (IllegalStateException e) {
             System.out.println("Profiler was not active at teardown.");
         }
@@ -146,7 +151,7 @@ public class ThreadFilterBenchmark extends Configuration {
 
     @Benchmark
     @BenchmarkMode(Mode.Throughput)
-    @Fork(value = 1, warmups = 0)
+    @Fork(value = 1, warmups = 1)
     @Warmup(iterations = 1, time = 1)
     @Measurement(iterations = 1, time = 2)
     @Threads(1)
@@ -156,14 +161,13 @@ public class ThreadFilterBenchmark extends Configuration {
         startLatch = new CountDownLatch(NUM_THREADS);
         stopLatch = new CountDownLatch(NUM_THREADS);
 
-        // Start all worker threads
+        // Start all worker threads[]
         for (int i = 0; i < NUM_THREADS; i++) {
             final int threadId = i;
             executorService.submit(() -> {
                 try {
                     startLatch.countDown();
                     startLatch.await(30, TimeUnit.SECONDS);
-                    
                     String startMsg = String.format("Thread %d started%n", threadId);
                     System.out.print(startMsg);
                     if (logWriter != null) {
@@ -223,14 +227,14 @@ public class ThreadFilterBenchmark extends Configuration {
                             operationCount.incrementAndGet();
                         }
                         
-                        if (operationCount.get() % 1000 == 0) {
-                            String progressMsg = String.format("Thread %d completed %d operations%n", threadId, operationCount.get());
-                            System.out.print(progressMsg);
-                            if (logWriter != null) {
-                                logWriter.print(progressMsg);
-                                logWriter.flush();
-                            }
-                        }
+                        // if (operationCount.get() % 1000 == 0) {
+                        //     String progressMsg = String.format("Thread %d completed %d operations%n", threadId, operationCount.get());
+                        //     System.out.print(progressMsg);
+                        //     if (logWriter != null) {
+                        //         logWriter.print(progressMsg);
+                        //         logWriter.flush();
+                        //     }
+                        // }
                     }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
