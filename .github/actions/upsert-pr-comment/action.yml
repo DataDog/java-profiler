@@ -1,0 +1,57 @@
+name: "Upsert PR Comment with Octo-STS"
+description: >
+  Exchanges OIDC for an Octo-STS GitHub-App token and
+  creates or updates a single comment on the PR.
+
+inputs:
+  body-file:
+    description: "Path to file whose contents become the comment body"
+    required: true
+  repo:        # optional; defaults to triggering repo
+    description: "Repository (owner/repo)."
+    required: false
+  pr-number:   # optional; defaults to triggering PR
+    description: "Pull-request number."
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    # 1. Get installation token from DD-Octo-STS
+    - name: Obtain Octo-STS token
+      id: octo-sts
+      uses: DataDog/dd-octo-sts-action@08f2144903ced3254a3dafec2592563409ba2aa0 # v1.0.1
+      with:
+        audience: dd-octo-sts
+        scope: DataDog/java-profiler
+        policy: self.pr-comment
+
+    # 2. Upsert the comment
+    - name: Upsert PR comment
+      env:
+        GH_TOKEN: ${{ steps.octo-sts.outputs.token }}
+        BODY_FILE: ${{ inputs['body-file'] }}
+        REPO: ${{ inputs.repo || github.repository }}
+        PR:   ${{ inputs['pr-number'] || github.event.pull_request.number }}
+      shell: bash
+      run: |
+        if [[ -s "$BODY_FILE" ]]; then
+          set -e
+          # find last comment by this actor
+          # first, build a jq filter that embeds the actor’s login
+          filter=".[] | select(.user.login == \"${GITHUB_ACTOR}\") | .id"
+          cid=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" \
+                --jq "${filter}" | tail -n1)
+  
+          if [[ -n "$cid" ]]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$cid" \
+              --raw-field body="$(< "$BODY_FILE")"
+            echo "✏️  Updated comment $cid"
+          else
+            gh api --method POST "repos/$REPO/issues/$PR/comments" \
+              --raw-field body="$(< "$BODY_FILE")"
+            echo "💬  Created new comment"
+          fi
+        else
+          echo "⚠️  Skipping empty comment"
+        fi
