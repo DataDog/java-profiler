@@ -31,7 +31,7 @@ cd java-profiler
 
 2. Build a release version of the project:
 ```bash
-./gradle buildRelease
+./gradlew buildRelease
 ```
 
 The resulting artifact will be in `ddprof-lib/build/libs/ddprof-<version>.jar`
