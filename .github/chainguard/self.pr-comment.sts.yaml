@@ -10,3 +10,4 @@ permissions:
   issues: write
   contents: read
   metadata: read
+  pull_requests: read
