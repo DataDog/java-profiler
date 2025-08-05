@@ -103,13 +103,6 @@ public class ThreadFilterBenchmark extends Configuration {
             Thread.currentThread().interrupt();
         }
 
-        // Stop the profiler if it's active
-        try {
-            profiler.stop();
-        } catch (IllegalStateException e) {
-            System.out.println("Profiler was not active at teardown.");
-        }
-
         long endTime = System.currentTimeMillis();
         long totalOps = operationCount.get();
         double durationSecs = (endTime - startTime) / 1000.0;
