@@ -17,9 +17,11 @@
 #include "vmStructs_dd.h"
 #include "common.h"
 #include "j9Ext.h"
+#include "libraries.h"
 #include "safeAccess.h"
 #include "spinLock.h"
 #include "vector"
+#include <assert.h>
 #include <cstdlib>
 #include <pthread.h>
 #include <unistd.h>
@@ -319,6 +321,41 @@ namespace ddprof {
   bool VMStructs_::isSafeToWalk(uintptr_t pc) {
     return !(_unsafe_to_walk.contains((const void *)pc) &&
             _unsafe_to_walk.findFrameDesc((const void *)pc));
+  }
+
+  bool VMStructs_::isInOSRProcess(uintptr_t pc, const char* caller_location) {
+    if (!VM::isOpenJ9()) {
+      return false;
+    }
+    
+    // Check if we're in OSR-related functions in OpenJ9 JIT
+    Libraries* libraries = Libraries::instance();
+    CodeCache* libjit = libraries->findJvmLibrary("libj9jit");
+    if (libjit != nullptr) {
+      CodeBlob* blob = libjit->findBlobByAddress((const void*)pc);
+      if (blob != nullptr && blob->_name != nullptr) {
+        const char* name = blob->_name;
+        // Check for OSR-related function names in OpenJ9
+        if (strstr(name, "prepareForOSR") != nullptr ||
+            strstr(name, "OSR") != nullptr ||
+            strstr(name, "onStackReplacement") != nullptr ||
+            strstr(name, "J9::Recompilation") != nullptr ||
+            strstr(name, "TR_OSRCompilation") != nullptr ||
+            strstr(name, "osrEntry") != nullptr) {
+          
+          // DEBUG: Print where OSR is detected with caller location
+          fprintf(stderr, "*** DD_PROFILER: OSR DETECTED at %s! PC=0x%lx, function='%s' ***\n", 
+                  caller_location, pc, name);
+          fflush(stderr);
+          
+          // ASSERT to make it very visible in CI
+          assert(false && "OSR process detected");
+          
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   void VMStructs_::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
