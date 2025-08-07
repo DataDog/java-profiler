@@ -180,13 +180,10 @@ description = "Datadog Java Profiler Library"
 
 def component_version = project.hasProperty("ddprof_version") ? project.ddprof_version : project.version
 
-def props = new Properties()
-file("${rootDir}/gradle/ap-lock.properties").withInputStream { stream ->
-  props.load(stream)
+def gitlockProperties = new Properties()
+file("${rootDir}/gradle/git-lock.properties").withInputStream { stream ->
+  gitlockProperties.load(stream)
 }
-
-def branch_lock = props.getProperty("branch")
-def commit_lock = props.getProperty("commit")
 
 // this feels weird but it is the only way invoking `./gradlew :ddprof-lib:*` tasks will work
 if (rootDir.toString().endsWith("ddprof-lib")) {
@@ -265,20 +262,23 @@ tasks.register('copyExternalLibs', Copy) {
   }
 }
 
-def cloneAPTask = tasks.register('cloneAsyncProfiler') {
-  description = 'Clones async-profiler repo if directory is missing or updates it if commit hash differs'
-  inputs.file("${rootDir}/gradle/ap-lock.properties")
-  outputs.dir("${projectDir}/build/async-profiler")
+def cloneMimallocTask = tasks.register('cloneMimalloc') {
+  description = 'Clones mimalloc repo if directory is missing or updates it if commit hash differs'
+  def repoDir = file("${projectDir}/build/mimalloc")
+  inputs.file("${rootDir}/gradle/git-lock.properties")
+  outputs.dir(repoDir.absolutePath)
+
+  def commit_lock = gitlockProperties.getProperty("mimalloc.commit")
+  def repo_url = 'https://github.com/microsoft/mimalloc.git'
   outputs.upToDateWhen {
-    def targetDir = file("${projectDir}/build/async-profiler")
-    if (!targetDir.exists()) {
+    if (!repoDir.exists()) {
       return false
     }
     def currentCommit = ""
     try {
       new ByteArrayOutputStream().withStream { os ->
         exec {
-          workingDir targetDir.absolutePath
+          workingDir repoDir.absolutePath
           commandLine 'git', 'rev-parse', 'HEAD'
           standardOutput = os
         }
@@ -296,28 +296,108 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
       ignoreExitValue = true  // Don't fail if this command fails
     }
 
-    def targetDir = file("${projectDir}/build/async-profiler")
-    if (!targetDir.exists()) {
-      println "Cloning missing async-profiler git subdirectory..."
+    if (!repoDir.exists()) {
+      println "Cloning missing mimalloc git subdirectory..."
       exec {
-        commandLine 'git', 'clone', '--branch', branch_lock, 'https://github.com/datadog/async-profiler.git', targetDir.absolutePath
+        commandLine 'git', 'clone', repo_url, repoDir.absolutePath
       }
       exec {
-        workingDir targetDir.absolutePath
-        commandLine 'git', 'checkout', commit_lock
+        workingDir repoDir.absolutePath
+        commandLine 'git', 'checkout', gitlockProperties.getProperty("mimalloc.tag")
       }
     } else {
       // Also fix git ownership for existing directory
       exec {
-        workingDir targetDir.absolutePath
-        commandLine 'git', 'config', '--global', '--add', 'safe.directory', targetDir.absolutePath
+        workingDir repoDir.absolutePath
+        commandLine 'git', 'config', '--global', '--add', 'safe.directory', repoDir.absolutePath
         ignoreExitValue = true
       }
 
       def currentCommit = ""
       new ByteArrayOutputStream().withStream { os ->
         exec {
-          workingDir targetDir.absolutePath
+          workingDir repoDir.absolutePath
+          commandLine 'git', 'rev-parse', 'HEAD'
+          standardOutput = os
+        }
+        currentCommit = os.toString().trim()
+      }
+
+      if (currentCommit != commit_lock) {
+        println "mimalloc commit hash differs (current: ${currentCommit}, expected: ${commit_lock}), updating..."
+        exec {
+          workingDir repoDir.absolutePath
+          commandLine 'rm', '-rf', repoDir.absolutePath
+        }
+        exec {
+          commandLine 'git', 'clone', repo_url, repoDir.absolutePath
+        }
+        exec {
+          workingDir repoDir.absolutePath
+          commandLine 'git', 'checkout', gitlockProperties.getProperty("mimalloc.tag")
+        }
+      } else {
+        println "mimalloc git subdirectory present with correct commit hash."
+      }
+    }
+  }
+}
+
+def cloneAPTask = tasks.register('cloneAsyncProfiler') {
+  description = 'Clones async-profiler repo if directory is missing or updates it if commit hash differs'
+  inputs.file("${rootDir}/gradle/git-lock.properties")
+  def repoDir = file("${projectDir}/build/async-profiler")
+  outputs.dir(repoDir.absolutePath)
+
+  def commit_lock = gitlockProperties.getProperty("ap.commit")
+  def repo_url = 'https://github.com/datadog/async-profiler.git'
+  outputs.upToDateWhen {
+    if (!repoDir.exists()) {
+      return false
+    }
+    def currentCommit = ""
+    try {
+      new ByteArrayOutputStream().withStream { os ->
+        exec {
+          workingDir repoDir.absolutePath
+          commandLine 'git', 'rev-parse', 'HEAD'
+          standardOutput = os
+        }
+        currentCommit = os.toString().trim()
+      }
+      return currentCommit == commit_lock
+    } catch (Exception e) {
+      return false
+    }
+  }
+  doLast {
+    // Fix for CI environments where git detects dubious ownership
+    exec {
+      commandLine 'git', 'config', '--global', '--add', 'safe.directory', projectDir.parentFile.absolutePath
+      ignoreExitValue = true  // Don't fail if this command fails
+    }
+
+    if (!repoDir.exists()) {
+      println "Cloning missing async-profiler git subdirectory..."
+      exec {
+        commandLine 'git', 'clone', '--branch', gitlockProperties.getProperty("ap.branch"), repo_url, repoDir.absolutePath
+      }
+      exec {
+        workingDir repoDir.absolutePath
+        commandLine 'git', 'checkout', commit_lock
+      }
+    } else {
+      // Also fix git ownership for existing directory
+      exec {
+        workingDir repoDir.absolutePath
+        commandLine 'git', 'config', '--global', '--add', 'safe.directory', repoDir.absolutePath
+        ignoreExitValue = true
+      }
+
+      def currentCommit = ""
+      new ByteArrayOutputStream().withStream { os ->
+        exec {
+          workingDir repoDir.absolutePath
           commandLine 'git', 'rev-parse', 'HEAD'
           standardOutput = os
         }
@@ -327,14 +407,14 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
       if (currentCommit != commit_lock) {
         println "async-profiler commit hash differs (current: ${currentCommit}, expected: ${commit_lock}), updating..."
         exec {
-          workingDir targetDir.absolutePath
-          commandLine 'rm', '-rf', targetDir.absolutePath
+          workingDir repoDir.absolutePath
+          commandLine 'rm', '-rf', repoDir.absolutePath
         }
         exec {
-          commandLine 'git', 'clone', '--branch', branch_lock, 'https://github.com/datadog/async-profiler.git', targetDir.absolutePath
+          commandLine 'git', 'clone', '--branch', gitlockProperties.getProperty("ap.branch"), repo_url, repoDir.absolutePath
         }
         exec {
-          workingDir targetDir.absolutePath
+          workingDir repoDir.absolutePath
           commandLine 'git', 'checkout', commit_lock
         }
       } else {
@@ -511,15 +591,15 @@ configurations {
 }
 
 // We need this trickery to reuse the toolchain and system config from tasks created by the cpp-library plugin
-// Basically, we are listening when the default 'comile' and 'link' (eg. 'compileReleaseCpp') is added and then
+// Basically, we are listening when the default 'compile' and 'link' (eg. 'compileReleaseCpp') is added and then
 // we are adding our own tasks for each build configuration, inheriting the part of the configuration which was
 // added by the cpp-library plugin
 tasks.whenTaskAdded { task ->
   if (task instanceof CppCompile) {
-    if (!task.name.startsWith('compileLib') && task.name.contains('Release')) {
+    if (!task.name.startsWith('compileLib') && !task.name.startsWith('compileMimalloc') && task.name.contains('Release')) {
       buildConfigurations.each { config ->
         if (config.os == osIdentifier() && config.arch == archIdentifier()) {
-          def cppTask = tasks.register("compileLib${config.name.capitalize()}", CppCompile) {
+          def cppLibTask = tasks.register("compileLib${config.name.capitalize()}", CppCompile) {
             onlyIf {
               config.active
             }
@@ -533,6 +613,7 @@ tasks.whenTaskAdded { task ->
             toolChain = task.toolChain
             targetPlatform = task.targetPlatform
             includes task.includes
+            includes project(':ddprof-lib').file('build/mimalloc/include')
             includes project(':ddprof-lib').file('src/main/cpp-external').toString()
             includes project(':ddprof-lib').file('src/main/cpp').toString()
             includes "${javaHome()}/include"
@@ -546,10 +627,46 @@ tasks.whenTaskAdded { task ->
             source task.source
             inputs.files source
             outputs.dir objectFileDir
+
+            dependsOn cloneMimallocTask
           }
+
+          def cppMimallocTask = tasks.register("compileMimalloc${config.name.capitalize()}", CppCompile) {
+            onlyIf {
+              config.active
+            }
+            group = 'build'
+            description = "Compile the ${config.name} build of the mimalloc"
+            objectFileDir = file("$buildDir/obj/mimalloc/${config.name}")
+            compilerArgs.addAll(config.compilerArgs)
+            // compile a single-file static mimalloc library useful for having malloc/new override
+            compilerArgs.add("-DMI_STATIC_LIB")
+            // actually enable the malloc/new override
+            compilerArgs.add("-DMI_MALLOC_OVERRIDE")
+            if (os().isLinux() && isMusl()) {
+              compilerArgs.add('-D__musl__')
+            }
+            toolChain = task.toolChain
+            targetPlatform = task.targetPlatform
+            includes task.includes
+            includes project(':ddprof-lib').file('build/mimalloc/include').toString()
+            includes "${javaHome()}/include"
+            if (os().isMacOsX()) {
+              includes "${javaHome()}/include/darwin"
+            } else if (os().isLinux()) {
+              includes "${javaHome()}/include/linux"
+            }
+            systemIncludes.from task.systemIncludes
+            source project(':ddprof-lib').file('build/mimalloc/src/static.c')
+            inputs.files source
+            outputs.dir objectFileDir
+            dependsOn cloneMimallocTask
+          }
+
           def linkTask = tasks.findByName("linkLib${config.name.capitalize()}".toString())
           if (linkTask != null) {
-            linkTask.dependsOn cppTask
+            linkTask.dependsOn cppLibTask
+            linkTask.dependsOn cppMimallocTask
           }
         }
       }
@@ -564,7 +681,8 @@ tasks.whenTaskAdded { task ->
             }
             group = 'build'
             description = "Link the ${config.name} build of the library"
-            source = fileTree("$buildDir/obj/main/${config.name}")
+            source fileTree("$buildDir/obj/mimalloc/${config.name}")
+            source fileTree("$buildDir/obj/main/${config.name}")
             linkedFile = file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/libjavaProfiler.${os().isLinux() ? 'so' : 'dylib'}")
             def compileTask = tasks.findByName("compileLib${config.name.capitalize()}".toString())
             if (compileTask != null) {
@@ -576,6 +694,11 @@ tasks.whenTaskAdded { task ->
             libs = task.libs
             inputs.files source
             outputs.file linkedFile
+
+            def mimallocCompileTask = tasks.findByName("compileMimalloc${config.name.capitalize()}".toString())
+            if (mimallocCompileTask != null) {
+              dependsOn mimallocCompileTask
+            }
           }
           if (config.name == 'release') {
             setupDebugExtraction(config, linkTask)

@@ -4,6 +4,8 @@
  * Copyright 2024, 2025 Datadog, Inc
  */
 
+#include "mimalloc.h"
+
 #include "profiler.h"
 #include "asyncSampleMutex.h"
 #include "context.h"
@@ -1225,6 +1227,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
 
+    
     return Error::OK;
   }
   // no engine was activated; perform cleanup
@@ -1363,6 +1366,7 @@ Error Profiler::dump(const char *path, const int length) {
     Counters::set(UNWINDING_TIME_ASYNC, 0);
     Counters::set(UNWINDING_TIME_JVMTI, 0);
 
+    mi_stats_print(NULL);
     return err;
   }
 
@@ -1477,6 +1481,8 @@ void Profiler::shutdown(Arguments &args) {
       Log::error("%s", error.message());
     }
   }
+  TEST_LOG("Going to print mimalloc stats");
+  mi_stats_print(NULL);
 
   _state = TERMINATED;
 }
