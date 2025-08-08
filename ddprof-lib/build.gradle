@@ -113,6 +113,9 @@ def createDebugLinkTask(config, linkTask, extractDebugTask) {
     dependsOn extractDebugTask
     description = 'Add debug link to the original library'
 
+    inputs.files linkTask, extractDebugTask
+    outputs.file { linkTask.get().linkedFile.get().asFile }
+
     doFirst {
       def sourceFile = linkTask.get().linkedFile.get().asFile
       def debugFile = getDebugFilePath(config)
@@ -265,7 +268,34 @@ tasks.register('copyExternalLibs', Copy) {
 def cloneAPTask = tasks.register('cloneAsyncProfiler') {
   description = 'Clones async-profiler repo if directory is missing or updates it if commit hash differs'
   inputs.file("${rootDir}/gradle/ap-lock.properties")
-  doFirst {
+  outputs.dir("${projectDir}/build/async-profiler")
+  outputs.upToDateWhen {
+    def targetDir = file("${projectDir}/build/async-profiler")
+    if (!targetDir.exists()) {
+      return false
+    }
+    def currentCommit = ""
+    try {
+      new ByteArrayOutputStream().withStream { os ->
+        exec {
+          workingDir targetDir.absolutePath
+          commandLine 'git', 'rev-parse', 'HEAD'
+          standardOutput = os
+        }
+        currentCommit = os.toString().trim()
+      }
+      return currentCommit == commit_lock
+    } catch (Exception e) {
+      return false
+    }
+  }
+  doLast {
+    // Fix for CI environments where git detects dubious ownership
+    exec {
+      commandLine 'git', 'config', '--global', '--add', 'safe.directory', projectDir.parentFile.absolutePath
+      ignoreExitValue = true  // Don't fail if this command fails
+    }
+
     def targetDir = file("${projectDir}/build/async-profiler")
     if (!targetDir.exists()) {
       println "Cloning missing async-profiler git subdirectory..."
@@ -277,6 +307,13 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
         commandLine 'git', 'checkout', commit_lock
       }
     } else {
+      // Also fix git ownership for existing directory
+      exec {
+        workingDir targetDir.absolutePath
+        commandLine 'git', 'config', '--global', '--add', 'safe.directory', targetDir.absolutePath
+        ignoreExitValue = true
+      }
+
       def currentCommit = ""
       new ByteArrayOutputStream().withStream { os ->
         exec {
@@ -336,6 +373,9 @@ def patchStackFrame = tasks.register("patchStackFrame") {
   configure {
     dependsOn copyUpstreamFiles
   }
+  inputs.files copyUpstreamFiles
+  outputs.file("${projectDir}/src/main/cpp-external/stackFrame_x64.cpp")
+
   doLast {
     def file = file("${projectDir}/src/main/cpp-external/stackFrame_x64.cpp")
     if (!file.exists()) throw new GradleException("File not found: ${file}")
@@ -386,8 +426,11 @@ def patchStackFrame = tasks.register("patchStackFrame") {
 def patchStackWalker = tasks.register("patchStackWalker") {
   description = 'Patch stackWalker.cpp after copying'
   configure {
-    dependsOn copyUpstreamFiles
+    dependsOn copyUpstreamFiles, patchStackFrame
   }
+  inputs.files copyUpstreamFiles
+  outputs.file("${projectDir}/src/main/cpp-external/stackWalker.cpp")
+
   doLast {
     def file = file("${projectDir}/src/main/cpp-external/stackWalker.cpp")
     if (!file.exists()) throw new GradleException("File not found: ${file}")
@@ -643,10 +686,6 @@ gradle.projectsEvaluated {
         if (copyTask != null) {
           copyTask.dependsOn linkTask
         }
-      }
-      def gtestTask = project(':ddprof-lib:gtest').tasks.findByName("gtest${it.capitalize()}")
-      if (gtestTask != null) {
-        linkTask.dependsOn gtestTask
       }
     }
     def javadocTask = tasks.findByName("javadoc")

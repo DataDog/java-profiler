@@ -6,11 +6,13 @@ concurrency:
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
   pull-requests: write
   actions: read
+  id-token: write
 
 jobs:
   scan-build:
@@ -46,13 +48,10 @@ jobs:
         id: read-report
         run: |
           find ddprof-lib/build/reports/scan-build -name 'index.html' | xargs -I {} python .github/scripts/python_utils.py scanbuild_cleanup {} ${HEAD_REF} > comment.html
-      - name: Post or update PR comment
-        uses: ./.github/actions/pr_comment
+      - name: Comment on PR
+        uses: ./.github/actions/upsert-pr-comment
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          comment-id: "scan-build"
-          commenter: "pr-comment-scanbuild"
-          comment-file: 'comment.html'
+          body-file: comment.html
 
   cppcheck:
     if: needs.check-for-pr.outputs.skip != 'true'
@@ -90,13 +89,11 @@ jobs:
           path: |
             report.html
             report.xml
-      - name: Post or update PR comment
-        uses: ./.github/actions/pr_comment
+      - name: Comment on PR
+        uses: ./.github/actions/upsert-pr-comment
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          comment-id: "cppcheck"
-          commenter: "pr-comment-cppcheck"
-          comment-file: 'comment.html'
+          body-file: comment.html
+
   codeql:
     if: needs.check-for-pr.outputs.skip != 'true'
     runs-on: ubuntu-latest

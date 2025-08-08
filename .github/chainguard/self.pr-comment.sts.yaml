@@ -1,0 +1,13 @@
+issuer: https://token.actions.githubusercontent.com
+
+subject: repo:DataDog/java-profiler:pull_request
+claim_pattern:
+  event_name: pull_request
+  # target only the codecheck workflow, but we may extend it later
+  job_workflow_ref: DataDog/java-profiler/.github/workflows/codecheck.yml@.*
+
+permissions:
+  issues: write
+  contents: read
+  metadata: read
+  pull_requests: write
