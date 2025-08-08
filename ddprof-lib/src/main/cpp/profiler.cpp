@@ -119,18 +119,32 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   ProfiledThread *current = ProfiledThread::current();
-  int slot_id = current->filterSlotId();
-  int tid = current->tid();
-  if (_thread_filter.enabled()) {
-    _thread_filter.unregisterThread(slot_id);
-    current->setFilterSlotId(-1);
+  int tid = -1;
+  
+  if (current != nullptr) {
+    // ProfiledThread is alive - do full cleanup and use efficient tid access
+    int slot_id = current->filterSlotId();
+    tid = current->tid();
+    
+    if (_thread_filter.enabled()) {
+      _thread_filter.unregisterThread(slot_id);
+      current->setFilterSlotId(-1);
+    }
+    
+    ProfiledThread::release();
+  } else {
+    // ProfiledThread already cleaned up - try to get tid from JVMTI as fallback
+    tid = VMThread::nativeThreadId(jni, thread);
+    if (tid < 0) {
+      // No ProfiledThread AND can't get tid from JVMTI - nothing we can do
+      return;
+    }
   }
-  updateThreadName(jvmti, jni, thread, true);
-
+  
+  // These should always run if we have a valid tid
+  updateThreadName(jvmti, jni, thread, false);  // false = not self
   _cpu_engine->unregisterThread(tid);
-  // unregister here because JNI callers generally don't know about thread exits
   _wall_engine->unregisterThread(tid);
-  ProfiledThread::release();
 }
 
 int Profiler::registerThread(int tid) {
