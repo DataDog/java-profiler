@@ -318,7 +318,7 @@ char *Recording::_jvm_flags = NULL;
 char *Recording::_java_command = NULL;
 
 Recording::Recording(int fd, Arguments &args)
-    : _fd(fd), _thread_set(), _method_map() {
+    : _fd(fd), _method_map() {
 
   args.save(_args);
   _chunk_start = lseek(_fd, 0, SEEK_END);
@@ -330,6 +330,8 @@ Recording::Recording(int fd, Arguments &args)
   _bytes_written = 0;
 
   _tid = OS::threadId();
+  _active_index.store(0, std::memory_order_relaxed);
+
   VM::jvmti()->GetAvailableProcessors(&_available_processors);
 
   writeHeader(_buf);
@@ -1059,11 +1061,18 @@ void Recording::writeExecutionModes(Buffer *buf) {
 }
 
 void Recording::writeThreads(Buffer *buf) {
-  addThread(_tid);
-  std::vector<int> threads;
-  threads.reserve(_thread_set.size());
-  _thread_set.collect(threads);
-  _thread_set.clear();
+  int old_index = _active_index.fetch_xor(1, std::memory_order_acq_rel);
+  // After flip: new samples go into the new active set
+  // We flush from old_index (the previous active set)
+
+  std::unordered_set<int> threads;
+  threads.insert(_tid);
+
+  for (int i = 0; i < CONCURRENCY_LEVEL; ++i) {
+    // Collect thread IDs from the fixed-size table into the main set
+    _thread_ids[i][old_index].collect(threads);
+    _thread_ids[i][old_index].clear();
+  }
 
   Profiler *profiler = Profiler::instance();
   ThreadInfo *t_info = &profiler->_thread_info;
@@ -1072,15 +1081,15 @@ void Recording::writeThreads(Buffer *buf) {
 
   buf->putVar64(T_THREAD);
   buf->putVar64(threads.size());
-  for (int i = 0; i < threads.size(); i++) {
+  for (auto tid : threads) {
     const char *thread_name;
     jlong thread_id;
-    std::pair<std::shared_ptr<std::string>, u64> info = t_info->get(threads[i]);
+    std::pair<std::shared_ptr<std::string>, u64> info = t_info->get(tid);
     if (info.first) {
       thread_name = info.first->c_str();
       thread_id = info.second;
     } else {
-      snprintf(name_buf, sizeof(name_buf), "[tid=%d]", threads[i]);
+      snprintf(name_buf, sizeof(name_buf), "[tid=%d]", tid);
       thread_name = name_buf;
       thread_id = 0;
     }
@@ -1090,9 +1099,9 @@ void Recording::writeThreads(Buffer *buf) {
                    (thread_id == 0 ? length + 1 : 2 * length) -
                    3 * 10; // 3x max varint length
     flushIfNeeded(buf, required);
-    buf->putVar64(threads[i]);
+    buf->putVar64(tid);
     buf->putUtf8(thread_name, length);
-    buf->putVar64(threads[i]);
+    buf->putVar64(tid);
     if (thread_id == 0) {
       buf->put8(0);
     } else {
@@ -1442,7 +1451,11 @@ void Recording::recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
   flushIfNeeded(buf);
 }
 
-void Recording::addThread(int tid) { _thread_set.add(tid); }
+// assumption is that we hold the lock (with lock_index)
+void Recording::addThread(int lock_index, int tid) {
+    int active = _active_index.load(std::memory_order_acquire);
+    _thread_ids[lock_index][active].insert(tid);
+}
 
 Error FlightRecorder::start(Arguments &args, bool reset) {
   const char *file = args.file();
@@ -1599,7 +1612,7 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u32 call_trace_id,
       break;
     }
     _rec->flushIfNeeded(buf);
-    _rec->addThread(tid);
+    _rec->addThread(lock_index, tid);
   }
 }
 
