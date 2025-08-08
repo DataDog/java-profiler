@@ -309,6 +309,11 @@ public final class Platform {
     return System.getProperty("java.vm.name").contains("Zing");
   }
 
+  public static boolean isGraal() {
+    String vendor = System.getProperty("java.vendor.version");
+    return vendor != null && vendor.contains(" GraalVM ");
+  }
+
   public static String getLangVersion() {
     return String.valueOf(JAVA_VERSION.major);
   }
