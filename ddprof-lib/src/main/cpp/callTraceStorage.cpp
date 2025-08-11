@@ -127,6 +127,12 @@ u64 CallTraceStorage::calcHash(int num_frames, ASGCT_CallFrame *frames,
   const u64 M = 0xc6a4a7935bd1e995ULL;
   const int R = 47;
 
+  // Safety check for NULL frames or invalid frame count
+  if (frames == NULL || num_frames <= 0) {
+    // Return a consistent hash for empty/invalid frames
+    return truncated ? 0x1234567890ABCDEFULL : 0xFEDCBA0987654321ULL;
+  }
+
   int len = num_frames * sizeof(ASGCT_CallFrame);
   u64 h = len * M * (truncated ? 1 : 2);
 
@@ -157,6 +163,11 @@ u64 CallTraceStorage::calcHash(int num_frames, ASGCT_CallFrame *frames,
 CallTrace *CallTraceStorage::storeCallTrace(int num_frames,
                                             ASGCT_CallFrame *frames,
                                             bool truncated) {
+  // Safety check for NULL frames or invalid frame count
+  if (frames == NULL || num_frames <= 0) {
+    return NULL;
+  }
+
   const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
   const size_t total_size = header_size + num_frames * sizeof(ASGCT_CallFrame);
   CallTrace *buf = (CallTrace *)_allocator.alloc(total_size);
@@ -194,6 +205,11 @@ CallTrace *CallTraceStorage::findCallTrace(LongHashTable *table, u64 hash) {
 
 u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame *frames,
                           bool truncated, u64 weight) {
+  // Safety check for invalid input
+  if (num_frames <= 0) {
+    return 0;
+  }
+
   // Currently, CallTraceStorage is a singleton used globally in Profiler and
   // therefore start-stop operation requires data structures cleanup. This
   // cleanup may and will race this method and the racing can cause all sorts of
@@ -204,9 +220,15 @@ u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame *frames,
     return 0;
   }
 
+  // Note: calcHash now handles NULL frames safely
   u64 hash = calcHash(num_frames, frames, truncated);
 
   LongHashTable *table = _current_table;
+  if (table == NULL) {
+    _lock.unlockShared();
+    return 0;
+  }
+  
   u64 *keys = table->keys();
   u32 capacity = table->capacity();
   u32 slot = hash & (capacity - 1);
@@ -235,7 +257,13 @@ u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame *frames,
       if (trace == NULL) {
         trace = storeCallTrace(num_frames, frames, truncated);
       }
-      table->values()[slot].setTrace(trace);
+      if (trace != NULL) {
+        table->values()[slot].setTrace(trace);
+      } else {
+        // If we couldn't store the trace, use the overflow trace
+        table->values()[slot].setTrace(&_overflow_trace);
+        atomicInc(_overflow);
+      }
 
       // clear the slot in the prev table such it is not written out to constant
       // pool multiple times
