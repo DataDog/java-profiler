@@ -5,7 +5,6 @@ import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.context.ContextExecutor;
 import com.datadoghq.profiler.junit.CStack;
 import com.datadoghq.profiler.junit.RetryTest;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.openjdk.jmc.common.item.IItem;
@@ -21,8 +20,6 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 
 public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTest {
@@ -53,7 +50,8 @@ public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTe
     public void test(@CStack String cstack) {
         // Skip test entirely on unsupported JVMs (don't use assumeFalse which gets retried)
         if (Platform.isZing() || Platform.isJ9() ||
-            (isInCI() && isAsan() && Platform.isGraal() && Platform.isAarch64() && "vm".equals(cstack))) {
+            (isInCI() && isAsan() && Platform.isGraal() && Platform.isAarch64() &&
+             ("vm".equals(cstack) || "vmx".equals(cstack)))) {
             return;
         }
 
