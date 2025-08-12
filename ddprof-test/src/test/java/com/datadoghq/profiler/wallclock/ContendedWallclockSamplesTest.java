@@ -53,7 +53,8 @@ public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTe
     public void test(@CStack String cstack) {
         // Skip test entirely on unsupported JVMs (don't use assumeFalse which gets retried)
         if (Platform.isZing() || Platform.isJ9() ||
-            (isInCI() && isAsan() && Platform.isGraal() && Platform.isAarch64() && "vm".equals(cstack))) {
+            (isInCI() && isAsan() && Platform.isGraal() && Platform.isAarch64() &&
+             ("vm".equals(cstack) || "vmx".equals(cstack)))) {
             return;
         }
 
