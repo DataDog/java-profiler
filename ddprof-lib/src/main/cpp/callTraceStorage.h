@@ -78,6 +78,7 @@ public:
 
   void clear();
   void collectTraces(std::map<u32, CallTrace *> &map);
+  void collectTraces(std::map<u32, CallTrace *> &map, const std::map<u32, u32> &liveness_counts);
 
   u32 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);
 };

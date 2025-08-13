@@ -25,6 +25,7 @@
 #include <jvmti.h>
 #include <pthread.h>
 #include <set>
+#include <map>
 
 class Recording;
 
@@ -101,6 +102,7 @@ public:
   void stop();
   void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u32 call_trace_id);
   void flush(std::set<int> &tracked_thread_ids);
+  void countCallTraceReferences(std::map<u32, u32> &call_trace_counts);
 
   static void JNICALL GarbageCollectionFinish(jvmtiEnv *jvmti_env);
 };

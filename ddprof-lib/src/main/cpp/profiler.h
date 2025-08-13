@@ -25,6 +25,7 @@
 #include "threadInfo.h"
 #include "trap.h"
 #include "vmEntry.h"
+#include "livenessTracker.h"
 #include <iostream>
 #include <map>
 #include <time.h>
@@ -206,7 +207,9 @@ public:
   int lookupClass(const char *key, size_t length);
   void collectCallTraces(std::map<u32, CallTrace *> &traces) {
     if (!_omit_stacktraces) {
-      _call_trace_storage.collectTraces(traces);
+      std::map<u32, u32> liveness_counts;
+      LivenessTracker::instance()->countCallTraceReferences(liveness_counts);
+      _call_trace_storage.collectTraces(traces, liveness_counts);
     }
   }
 

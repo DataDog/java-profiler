@@ -2,6 +2,7 @@
 
     #include "asyncSampleMutex.h"
     #include "buffers.h"
+    #include "callTraceStorage.h"
     #include "context.h"
     #include "counters.h"
     #include "mutex.h"
@@ -390,6 +391,78 @@
         globalCount += count;
       }
       EXPECT_TRUE(globalCount > 0);
+    }
+
+    TEST(CallTraceStorage, LivenessReferencePreservation) {
+      CallTraceStorage storage;
+      
+      // Create test call frames for first trace
+      ASGCT_CallFrame frames1[2];
+      frames1[0].bci = BCI_NATIVE_FRAME;
+      frames1[0].method_id = (jmethodID)0x1000;
+      frames1[1].bci = BCI_NATIVE_FRAME;
+      frames1[1].method_id = (jmethodID)0x2000;
+      
+      // Put a call trace into storage (this sets samples > 0)
+      u32 call_trace_id1 = storage.put(2, frames1, false, 1);
+      EXPECT_GT(call_trace_id1, 0);
+      
+      // First collectTraces without liveness references (old behavior)
+      // This should consume the trace and set samples = 0
+      std::map<u32, u32> empty_liveness_counts;
+      std::map<u32, CallTrace *> traces1;
+      storage.collectTraces(traces1, empty_liveness_counts);
+      
+      // Verify trace was collected
+      EXPECT_EQ(1, traces1.size());
+      EXPECT_NE(traces1.end(), traces1.find(call_trace_id1));
+      
+      // Second collectTraces without liveness references
+      // Should be empty since samples was set to 0
+      std::map<u32, CallTrace *> traces2;
+      storage.collectTraces(traces2, empty_liveness_counts);
+      EXPECT_EQ(0, traces2.size()); // Trace is consumed
+      
+      // Now test the fix: create a different call trace with liveness references
+      ASGCT_CallFrame frames2[2];
+      frames2[0].bci = BCI_NATIVE_FRAME;
+      frames2[0].method_id = (jmethodID)0x3000; // Different method ID
+      frames2[1].bci = BCI_NATIVE_FRAME;
+      frames2[1].method_id = (jmethodID)0x4000; // Different method ID
+      
+      u32 call_trace_id2 = storage.put(2, frames2, false, 1);
+      EXPECT_GT(call_trace_id2, 0);
+      EXPECT_NE(call_trace_id1, call_trace_id2); // Should be different trace IDs
+      
+      // Create liveness reference count map
+      std::map<u32, u32> liveness_counts;
+      liveness_counts[call_trace_id2] = 2; // Simulate 2 liveness events referencing this trace
+      
+      // First collectTraces with liveness references
+      std::map<u32, CallTrace *> traces3;
+      storage.collectTraces(traces3, liveness_counts);
+      
+      // Verify trace was collected
+      EXPECT_EQ(1, traces3.size());
+      EXPECT_NE(traces3.end(), traces3.find(call_trace_id2));
+      
+      // Second collectTraces with same liveness references
+      // Should still find the trace because samples was set to liveness count (2), not 0
+      std::map<u32, CallTrace *> traces4;
+      storage.collectTraces(traces4, liveness_counts);
+      EXPECT_EQ(1, traces4.size()); // Trace is still available!
+      EXPECT_NE(traces4.end(), traces4.find(call_trace_id2));
+      
+      // Third collectTraces with no liveness references (liveness events consumed)
+      // This sets samples = 0 but still returns the trace
+      std::map<u32, CallTrace *> traces5;
+      storage.collectTraces(traces5, empty_liveness_counts);
+      EXPECT_EQ(1, traces5.size()); // Trace is returned one last time while being cleared
+      
+      // Fourth collectTraces should now find samples = 0 and skip the trace
+      std::map<u32, CallTrace *> traces6;
+      storage.collectTraces(traces6, empty_liveness_counts);
+      EXPECT_EQ(0, traces6.size()); // Now trace is truly consumed
     }
 
     int main(int argc, char **argv) {

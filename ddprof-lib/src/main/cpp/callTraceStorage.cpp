@@ -99,6 +99,11 @@ void CallTraceStorage::clear() {
 }
 
 void CallTraceStorage::collectTraces(std::map<u32, CallTrace *> &map) {
+  std::map<u32, u32> empty_liveness_counts;
+  collectTraces(map, empty_liveness_counts);
+}
+
+void CallTraceStorage::collectTraces(std::map<u32, CallTrace *> &map, const std::map<u32, u32> &liveness_counts) {
   for (LongHashTable *table = _current_table; table != NULL;
        table = table->prev()) {
     u64 *keys = table->keys();
@@ -107,11 +112,17 @@ void CallTraceStorage::collectTraces(std::map<u32, CallTrace *> &map) {
 
     for (u32 slot = 0; slot < capacity; slot++) {
       if (keys[slot] != 0 && loadAcquire(values[slot].samples) != 0) {
-        // Reset samples to avoid duplication of call traces between JFR chunks
-        values[slot].samples = 0;
+        u32 call_trace_id = capacity - (INITIAL_CAPACITY - 1) + slot;
+        
+        // Instead of setting samples = 0, set it to the number of liveness events 
+        // that still reference this call trace
+        auto liveness_it = liveness_counts.find(call_trace_id);
+        u32 liveness_ref_count = (liveness_it != liveness_counts.end()) ? liveness_it->second : 0;
+        values[slot].samples = liveness_ref_count;
+        
         CallTrace *trace = values[slot].acquireTrace();
         if (trace != NULL) {
-          map[capacity - (INITIAL_CAPACITY - 1) + slot] = trace;
+          map[call_trace_id] = trace;
         }
       }
     }

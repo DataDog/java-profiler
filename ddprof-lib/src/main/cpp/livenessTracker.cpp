@@ -382,6 +382,22 @@ void JNICALL LivenessTracker::GarbageCollectionFinish(jvmtiEnv *jvmti_env) {
   LivenessTracker::instance()->onGC();
 }
 
+void LivenessTracker::countCallTraceReferences(std::map<u32, u32> &call_trace_counts) {
+  if (!_enabled) {
+    return;
+  }
+
+  _table_lock.lockShared();
+  
+  for (int i = 0; i < _table_size; i++) {
+    if (_table[i].ref != nullptr && _table[i].call_trace_id != 0) {
+      call_trace_counts[_table[i].call_trace_id]++;
+    }
+  }
+  
+  _table_lock.unlockShared();
+}
+
 void LivenessTracker::onGC() {
   if (!_initialized) {
     return;
