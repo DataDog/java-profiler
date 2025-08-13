@@ -29,7 +29,9 @@ private:
   volatile int _lock;
   char _padding[DEFAULT_CACHE_LINE_SIZE - sizeof(_lock)];
 public:
-  constexpr SpinLock(int initial_state = 0) : _lock(initial_state) {}
+  constexpr SpinLock(int initial_state = 0) : _lock(initial_state), _padding() {
+    static_assert(sizeof(SpinLock) == DEFAULT_CACHE_LINE_SIZE);
+  }
 
   void reset() { _lock = 0; }
 
