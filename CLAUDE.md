@@ -188,3 +188,5 @@ ddprof-lib/build/
 - Module ddprof-lib/gtest is only containing the gtest build setup
 - Java unit tests are in ddprof-test module
 - Always run ./gradlew spotlessApply before commiting the changes
+
+- When opening PR for https://github.com/DataDog/java-profiler make sure you are following the PR template defined for that project

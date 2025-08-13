@@ -170,6 +170,7 @@ private:
     _relocate_dyn = relocate_dyn && base != nullptr;
     _header = (ElfHeader *)addr;
     _sections = (const char *)addr + _header->e_shoff;
+    _vaddr_diff = nullptr;
   }
 
   bool validHeader() {
