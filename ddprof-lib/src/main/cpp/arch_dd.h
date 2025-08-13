@@ -5,6 +5,8 @@
 
 #include <stddef.h>
 
+constexpr int DEFAULT_CACHE_LINE_SIZE = 64;
+
 static inline long long atomicInc(volatile long long &var,
                                   long long increment = 1) {
   return __sync_fetch_and_add(&var, increment);

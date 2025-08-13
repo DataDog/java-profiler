@@ -21,13 +21,13 @@
 
 // Cannot use regular mutexes inside signal handler.
 // This lock is based on CAS busy loop. GCC atomic builtins imply full barrier.
-class SpinLock {
+class alignas(DEFAULT_CACHE_LINE_SIZE) SpinLock {
 private:
   //  0 - unlocked
   //  1 - exclusive lock
   // <0 - shared lock
   volatile int _lock;
-
+  char _padding[DEFAULT_CACHE_LINE_SIZE - sizeof(_lock)];
 public:
   constexpr SpinLock(int initial_state = 0) : _lock(initial_state) {}
 
