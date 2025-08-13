@@ -1612,8 +1612,8 @@ void FlightRecorder::recordLog(LogLevel level, const char *message,
 
   if (len > MAX_STRING_LENGTH)
     len = MAX_STRING_LENGTH;
-  std::vector<char> buf_storage(len + 40);
-  Buffer *buf = reinterpret_cast<Buffer *>(buf_storage.data());
+  // cppcheck-suppress obsoleteFunctions
+  Buffer *buf = (Buffer *)alloca(len + 40);
   buf->reset();
 
   int start = buf->skip(5);
