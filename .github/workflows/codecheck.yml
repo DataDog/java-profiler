@@ -75,7 +75,8 @@ jobs:
       - name: Run Cppcheck
         id: run-cppcheck
         run: |
-          cppcheck --quiet --force --enable=all --std=c++17 --language=c++ --inline-suppr --suppressions-list=.github/scripts/cppcheck-suppressions.txt --xml --output-file=report.xml ddprof-lib/src/main/cpp/*
+          ./gradlew copyUpstreamFiles --no-daemon
+          cppcheck --quiet --force --enable=all --std=c++17 --language=c++ --inline-suppr --suppressions-list=.github/scripts/cppcheck-suppressions.txt --xml --output-file=report.xml -I ddprof-lib/src/main/cpp-external -D LP64_ONLY\(x\)=x -D _LP64 -D COMMA=, ddprof-lib/src/main/cpp/*
           xsltproc --output report.html .github/scripts/cppcheck-html.xslt report.xml
           xsltproc --output report-gh.html .github/scripts/cppcheck-gh.xslt report.xml
           sed -i "s#target_branch#${HEAD_REF}#g" report.html

@@ -52,10 +52,14 @@ CodeCache::CodeCache(const CodeCache &other) {
   _min_address = other._min_address;
   _max_address = other._max_address;
   _text_base = other._text_base;
+  _image_base = other._image_base;
 
-  _imports_patchable = other._imports_patchable;
   _plt_offset = other._plt_offset;
   _plt_size = other._plt_size;
+
+  memcpy(_imports, other._imports, sizeof(_imports));
+  _imports_patchable = other._imports_patchable;
+  _debug_symbols = other._debug_symbols;
 
   _dwarf_table_length = other._dwarf_table_length;
   _dwarf_table = new FrameDesc[_dwarf_table_length];
@@ -81,11 +85,14 @@ CodeCache &CodeCache::operator=(const CodeCache &other) {
     _min_address = other._min_address;
     _max_address = other._max_address;
     _text_base = other._text_base;
-
-    _imports_patchable = other._imports_patchable;
+    _image_base = other._image_base;
 
     _plt_offset = other._plt_offset;
     _plt_size = other._plt_size;
+
+    memcpy(_imports, other._imports, sizeof(_imports));
+    _imports_patchable = other._imports_patchable;
+    _debug_symbols = other._debug_symbols;
 
     _dwarf_table_length = other._dwarf_table_length;
     _dwarf_table = new FrameDesc[_dwarf_table_length];

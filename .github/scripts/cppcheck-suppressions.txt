@@ -2,3 +2,8 @@ cstyleCast
 constParameter
 obsoleteFunctions:flightRecorder.cpp
 obsoleteFunctionsalloca:flightRecorder.cpp
+unusedStructMember
+missingOverride
+shadowVariable
+redundantAssignment
+redundantOperation
