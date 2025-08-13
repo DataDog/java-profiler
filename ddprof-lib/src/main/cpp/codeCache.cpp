@@ -109,7 +109,7 @@ CodeCache &CodeCache::operator=(const CodeCache &other) {
 }
 
 CodeCache::~CodeCache() {
-  for (int i = 0; i < _count; i++) {
+  for (int i = 0; i < _count; ++i) {
     NativeFunc::destroy(_blobs[i]._name);
   }
   NativeFunc::destroy(_name);
@@ -172,7 +172,7 @@ void CodeCache::sort() {
 }
 
 CodeBlob *CodeCache::findBlob(const char *name) {
-  for (int i = 0; i < _count; i++) {
+  for (int i = 0; i < _count; ++i) {
     const char *blob_name = _blobs[i]._name;
     if (blob_name != NULL && strcmp(blob_name, name) == 0) {
       return &_blobs[i];
@@ -182,7 +182,7 @@ CodeBlob *CodeCache::findBlob(const char *name) {
 }
 
 CodeBlob *CodeCache::findBlobByAddress(const void *address) {
-  for (int i = 0; i < _count; i++) {
+  for (int i = 0; i < _count; ++i) {
     if (address >= _blobs[i]._start && address < _blobs[i]._end) {
       return &_blobs[i];
     }
@@ -226,7 +226,7 @@ const void *CodeCache::binarySearch(const void *address, const char **name) {
 void CodeCache::dump() {
 #ifdef TRACE
   fprintf(stdout, "Dumping symbols for %s:\n+-\n", _name);
-  for (int i = 0; i < _count; i++) {
+  for (int i = 0; i < _count; ++i) {
     fprintf(stdout, "%d. %s\n", i, _blobs[i]._name);
   }
   fprintf(stdout, "+-\n");
@@ -243,7 +243,7 @@ const void *CodeCache::findSymbolByPrefix(const char *prefix) {
 }
 
 const void *CodeCache::findSymbolByPrefix(const char *prefix, int prefix_len) {
-  for (int i = 0; i < _count; i++) {
+  for (int i = 0; i < _count; ++i) {
     const char *blob_name = _blobs[i]._name;
     if (blob_name != NULL && strncmp(blob_name, prefix, prefix_len) == 0) {
       return _blobs[i]._start;
@@ -259,7 +259,7 @@ void CodeCache::findSymbolsByPrefix(std::vector<const char *> &prefixes,
   for (const char *prefix : prefixes) {
     prefix_lengths.push_back(strlen(prefix));
   }
-  for (int i = 0; i < _count; i++) {
+  for (int i = 0; i < _count; ++i) {
     const char *blob_name = _blobs[i]._name;
     if (blob_name != NULL) {
       for (int i = 0; i < prefixes.size(); i++) {

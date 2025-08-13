@@ -40,7 +40,7 @@ ThreadFilter::ThreadFilter() {
 }
 
 ThreadFilter::~ThreadFilter() {
-  for (int i = 0; i < _max_bitmaps; i++) {
+  for (int i = 0; i < _max_bitmaps; ++i) {
     if (_bitmap[i] != NULL) {
       OS::safeFree(_bitmap[i], BITMAP_SIZE);
     }
@@ -79,7 +79,7 @@ void ThreadFilter::init(const char *filter) {
 }
 
 void ThreadFilter::clear() {
-  for (int i = 0; i < _max_bitmaps; i++) {
+  for (int i = 0; i < _max_bitmaps; ++i) {
     if (_bitmap[i] != NULL) {
       memset(_bitmap[i], 0, BITMAP_SIZE);
     }
@@ -88,7 +88,7 @@ void ThreadFilter::clear() {
 }
 
 // The mapping has to be reversible: f(f(x)) == x
-int ThreadFilter::mapThreadId(int thread_id) {
+int ThreadFilter::mapThreadId(const int thread_id) {
   // We want to map the thread_id inside the same bitmap
   static_assert(BITMAP_SIZE >= (u16)0xffff, "Potential verflow");
   u16 lower16 = (u16)(thread_id & 0xffff);
@@ -154,11 +154,11 @@ void ThreadFilter::remove(int thread_id) {
 }
 
 void ThreadFilter::collect(std::vector<int> &v) {
-  for (int i = 0; i < _max_bitmaps; i++) {
+  for (int i = 0; i < _max_bitmaps; ++i) {
     u64 *b = _bitmap[i];
     if (b != NULL) {
       int start_id = i * BITMAP_CAPACITY;
-      for (int j = 0; j < BITMAP_SIZE / sizeof(u64); j++) {
+      for (int j = 0; j < BITMAP_SIZE / sizeof(u64); ++j) {
         // Considering the functional impact, relaxed could be a reasonable
         // order here
         u64 word = __atomic_load_n(&b[j], __ATOMIC_ACQUIRE);

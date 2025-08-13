@@ -45,7 +45,7 @@ private:
         __ATOMIC_ACQUIRE);
   }
 
-  static int mapThreadId(int thread_id);
+  static int mapThreadId(const int thread_id);
 
   u64 &word(u64 *bitmap, int thread_id) {
     // todo: add thread safe APIs

@@ -52,9 +52,9 @@ void Dictionary::clear() {
 }
 
 void Dictionary::clear(DictTable *table, int id) {
-  for (int i = 0; i < ROWS; i++) {
+  for (int i = 0; i < ROWS; ++i) {
     DictRow *row = &table->rows[i];
-    for (int j = 0; j < CELLS; j++) {
+    for (int j = 0; j < CELLS; ++j) {
       if (row->keys[j]) {
         free(row->keys[j]); // content is zeroed en-mass in the clear() function
       }
@@ -72,7 +72,7 @@ void Dictionary::clear(DictTable *table, int id) {
 // FNV-1a is reasonably fast and sufficiently random.
 unsigned int Dictionary::hash(const char *key, size_t length) {
   unsigned int h = 2166136261U;
-  for (size_t i = 0; i < length; i++) {
+  for (size_t i = 0; i < length; ++i) {
     h = (h ^ key[i]) * 16777619;
   }
   return h;
@@ -93,7 +93,7 @@ unsigned int Dictionary::lookup(const char *key, size_t length, bool for_insert,
 
   while (true) {
     DictRow *row = &table->rows[h % ROWS];
-    for (int c = 0; c < CELLS; c++) {
+    for (int c = 0; c < CELLS; ++c) {
       if (for_insert && row->keys[c] == NULL) {
         char *new_key = allocateKey(key, length);
         if (__sync_bool_compare_and_swap(&row->keys[c], NULL, new_key)) {
@@ -147,9 +147,9 @@ void Dictionary::collect(std::map<unsigned int, const char *> &map) {
 
 void Dictionary::collect(std::map<unsigned int, const char *> &map,
                          DictTable *table) {
-  for (int i = 0; i < ROWS; i++) {
+  for (int i = 0; i < ROWS; ++i) {
     DictRow *row = &table->rows[i];
-    for (int j = 0; j < CELLS; j++) {
+    for (int j = 0; j < CELLS; ++j) {
       if (row->keys[j] != NULL) {
         map[table->index(i, j)] = row->keys[j];
       }

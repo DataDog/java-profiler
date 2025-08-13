@@ -64,7 +64,7 @@ public:
   Error start(Arguments &args);
   void stop();
 
-  virtual long interval() const { return _interval; }
+  long interval() const override { return _interval; }
 
   static void JNICALL SampledObjectAlloc(jvmtiEnv *jvmti, JNIEnv *jni,
                                          jthread thread, jobject object,

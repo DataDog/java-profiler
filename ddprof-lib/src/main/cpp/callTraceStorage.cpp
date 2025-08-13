@@ -110,7 +110,7 @@ void CallTraceStorage::collectTraces(std::map<u32, CallTrace *> &map, const std:
     CallTraceSample *values = table->values();
     u32 capacity = table->capacity();
 
-    for (u32 slot = 0; slot < capacity; slot++) {
+    for (u32 slot = 0; slot < capacity; ++slot) {
       if (keys[slot] != 0 && loadAcquire(values[slot].samples) != 0) {
         u32 call_trace_id = capacity - (INITIAL_CAPACITY - 1) + slot;
         
@@ -174,7 +174,7 @@ CallTrace *CallTraceStorage::storeCallTrace(int num_frames,
   if (buf != NULL) {
     buf->num_frames = num_frames;
     // Do not use memcpy inside signal handler
-    for (int i = 0; i < num_frames; i++) {
+    for (int i = 0; i < num_frames; ++i) {
       buf->frames[i] = frames[i];
     }
     buf->truncated = truncated;
