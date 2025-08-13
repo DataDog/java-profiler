@@ -52,13 +52,16 @@ private:
   char _reserved;
   char _name[0];
 
+  // Private constructor - this class is allocated manually with create()
+  NativeFunc() : _lib_index(0), _mark(0), _reserved(0) {}
+
   static NativeFunc *from(const char *name) {
     return (NativeFunc *)(name - sizeof(NativeFunc));
   }
 
 public:
   static char *create(const char *name, short lib_index);
-  static void destroy(char *name);
+  static void destroy(const char *name);
 
   static short libIndex(const char *name) {
     NativeFunc* func = from(name);
@@ -196,7 +199,7 @@ public:
   const void *findSymbol(const char *name);
   const void *findSymbolByPrefix(const char *prefix);
   const void *findSymbolByPrefix(const char *prefix, int prefix_len);
-  void findSymbolsByPrefix(std::vector<const char *> &prefixes,
+  void findSymbolsByPrefix(const std::vector<const char *> &prefixes,
                            std::vector<const void *> &symbols);
 
   void setDwarfTable(FrameDesc *table, int length);
@@ -233,9 +236,9 @@ public:
   }
 
   long long memoryUsage() {
-    int count = __atomic_load_n(&_count, __ATOMIC_ACQUIRE);
+    int lib_count = __atomic_load_n(&_count, __ATOMIC_ACQUIRE);
     long long totalUsage = 0;
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < lib_count; i++) {
       totalUsage += _libs[i]->memoryUsage();
     }
     return totalUsage;

@@ -13,13 +13,16 @@
 
 char *NativeFunc::create(const char *name, short lib_index) {
   NativeFunc *f = (NativeFunc *)malloc(sizeof(NativeFunc) + 1 + strlen(name));
+  if (f == NULL) {
+    return NULL;
+  }
   f->_lib_index = lib_index;
   f->_mark = 0;
   // cppcheck-suppress memleak
   return strcpy(f->_name, name);
 }
 
-void NativeFunc::destroy(char *name) { free(from(name)); }
+void NativeFunc::destroy(const char *name) { free(from(name)); }
 
 CodeCache::CodeCache(const char *name, short lib_index, bool imports_patchable,
                      const void *min_address, const void *max_address,
@@ -234,8 +237,8 @@ void CodeCache::dump() {
 }
 
 const void *CodeCache::findSymbol(const char *name) {
-  CodeBlob *blob = findBlob(name);
-  return blob == NULL ? NULL : blob->_start;
+  CodeBlob *found_blob = findBlob(name);
+  return found_blob == NULL ? NULL : found_blob->_start;
 }
 
 const void *CodeCache::findSymbolByPrefix(const char *prefix) {
@@ -252,7 +255,7 @@ const void *CodeCache::findSymbolByPrefix(const char *prefix, int prefix_len) {
   return NULL;
 }
 
-void CodeCache::findSymbolsByPrefix(std::vector<const char *> &prefixes,
+void CodeCache::findSymbolsByPrefix(const std::vector<const char *> &prefixes,
                                     std::vector<const void *> &symbols) {
   std::vector<int> prefix_lengths;
   prefix_lengths.reserve(prefixes.size());
@@ -262,8 +265,8 @@ void CodeCache::findSymbolsByPrefix(std::vector<const char *> &prefixes,
   for (int i = 0; i < _count; ++i) {
     const char *blob_name = _blobs[i]._name;
     if (blob_name != NULL) {
-      for (int i = 0; i < prefixes.size(); i++) {
-        if (strncmp(blob_name, prefixes[i], prefix_lengths[i]) == 0) {
+      for (int j = 0; j < prefixes.size(); j++) {
+        if (strncmp(blob_name, prefixes[j], prefix_lengths[j]) == 0) {
           symbols.push_back(_blobs[i]._start);
         }
       }
