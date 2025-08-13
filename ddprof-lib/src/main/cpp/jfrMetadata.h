@@ -117,7 +117,7 @@ public:
   std::vector<Attribute> _attributes;
   std::vector<const Element *> _children;
 
-  Element(const char *name) : _name(getId(name)), _attributes(), _children() {}
+  explicit Element(const char *name) : _name(getId(name)), _attributes(), _children() {}
 
   Element &attribute(const char *key, const char *value) {
     _attributes.push_back(Attribute(getId(key), getId(value)));
@@ -153,7 +153,7 @@ public:
 
 class NoField : public Element {
 public:
-  NoField(const char *name) : Element(name) {}
+  explicit NoField(const char *name) : Element(name) {}
 
   virtual const bool is_nofield() { return true; }
 };

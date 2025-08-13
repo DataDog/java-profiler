@@ -160,7 +160,7 @@ class ExclusiveLock {
  private:
   SpinLock &_lock;
  public:
-  ExclusiveLock(SpinLock &lock) : _lock(lock) {
+  explicit ExclusiveLock(SpinLock &lock) : _lock(lock) {
     _lock.lock();
   }
   ~ExclusiveLock() {
@@ -175,7 +175,7 @@ class SharedLock {
  private:
   SpinLock &_lock;
  public:
-  SharedLock(SpinLock &lock) : _lock(lock) {
+  explicit SharedLock(SpinLock &lock) : _lock(lock) {
     _lock.lockShared();
   }
   ~SharedLock() {

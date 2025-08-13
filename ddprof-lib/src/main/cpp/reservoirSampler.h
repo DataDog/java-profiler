@@ -32,7 +32,7 @@ private:
     std::vector<T> _reservoir;
 
 public:
-    ReservoirSampler(const int size) :
+    explicit ReservoirSampler(const int size) :
         _size(size),
         _generator([]() {
             std::random_device rd;

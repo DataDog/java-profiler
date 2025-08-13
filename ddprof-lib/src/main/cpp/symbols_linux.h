@@ -11,7 +11,7 @@ private:
   const char *_desc;
 
 public:
-  SymbolDesc(const char *s) {
+  explicit SymbolDesc(const char *s) {
     _addr = s;
     _desc = strchr(_addr, ' ');
   }
@@ -32,7 +32,7 @@ private:
   const char *_file;
 
 public:
-  MemoryMapDesc(const char *s) {
+  explicit MemoryMapDesc(const char *s) {
     _addr = s;
     _end = strchr(_addr, '-') + 1;
     _perm = strchr(_end, ' ') + 1;

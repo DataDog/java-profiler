@@ -710,10 +710,10 @@ UnloadProtection::UnloadProtection(const CodeCache *cc) {
     // dlopen() can reopen previously loaded libraries even if the underlying file has been deleted
     const char* stripped_name = cc->name();
     size_t name_len = strlen(stripped_name);
+    std::string name_buf;
     if (name_len > 10 && strcmp(stripped_name + name_len - 10, " (deleted)") == 0) {
-        char* buf = (char*) alloca(name_len - 9);
-        *stpncpy(buf, stripped_name, name_len - 10) = 0;
-        stripped_name = buf;
+        name_buf.assign(stripped_name, name_len - 10);
+        stripped_name = name_buf.c_str();
     }
 
     // Protect library from unloading while parsing in-memory ELF program headers.

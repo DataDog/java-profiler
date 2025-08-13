@@ -63,7 +63,7 @@ private:
 
 public:
   Dictionary() : Dictionary(0) {}
-  Dictionary(int id) : _id(id) {
+  explicit Dictionary(int id) : _id(id) {
     _table = (DictTable *)calloc(1, sizeof(DictTable));
     Counters::set(DICTIONARY_PAGES, 1, id);
     Counters::set(DICTIONARY_BYTES, sizeof(DictTable), id);
