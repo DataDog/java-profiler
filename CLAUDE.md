@@ -96,7 +96,7 @@ JAVA_TEST_HOME=/path/to/test/jdk ./gradlew testDebug
 ### Module Structure
 - **ddprof-lib**: Main profiler library (Java + C++)
 - **ddprof-test**: Integration tests
-- **ddprof-test-tracer**: Tracing context tests  
+- **ddprof-test-tracer**: Tracing context tests
 - **ddprof-stresstest**: JMH-based performance tests
 - **malloc-shim**: Memory allocation interceptor (Linux only)
 
@@ -177,13 +177,14 @@ ddprof-lib/build/
 
 ## Legacy and Compatibility
 
-- `legacy_tests/`: Shell-based tests (being migrated to Gradle)
 - Java 8 compatibility maintained throughout
 - JNI interface follows async-profiler conventions
-- Supports both Oracle JDK and OpenJDK implementations
+- Supports Oracle JDK, OpenJDK and OpenJ9 implementations
 - Always test with ./gradlew testDebug
 - Always consult openjdk source codes when analyzing profiler issues and looking for proposed solutions
+- For OpenJ9 specific issues consul the openj9 github project
 - don't use assemble task. Use assembleDebug or assembleRelease instead
 - gtest tests are located in ddprof-lib/src/test/cpp
 - Module ddprof-lib/gtest is only containing the gtest build setup
 - Java unit tests are in ddprof-test module
+- Always run ./gradlew spotlessApply before commiting the changes
