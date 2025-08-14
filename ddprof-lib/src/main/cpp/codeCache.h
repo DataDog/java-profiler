@@ -61,7 +61,7 @@ private:
 
 public:
   static char *create(const char *name, short lib_index);
-  static void destroy(const char *name);
+  static void destroy(char *name);
 
   static short libIndex(const char *name) {
     NativeFunc* func = from(name);

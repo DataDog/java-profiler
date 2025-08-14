@@ -22,7 +22,7 @@ char *NativeFunc::create(const char *name, short lib_index) {
   return strcpy(f->_name, name);
 }
 
-void NativeFunc::destroy(const char *name) { free(from(name)); }
+void NativeFunc::destroy(char *name) { free(from(name)); }
 
 CodeCache::CodeCache(const char *name, short lib_index, bool imports_patchable,
                      const void *min_address, const void *max_address,
