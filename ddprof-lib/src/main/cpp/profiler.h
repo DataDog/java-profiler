@@ -207,7 +207,13 @@ public:
   int lookupClass(const char *key, size_t length);
   void collectCallTraces(std::map<u32, CallTrace *> &traces) {
     if (!_omit_stacktraces) {
-      _call_trace_storage.collectTraces(traces);
+      _call_trace_storage.collectAndConsolidateTraces(traces);
+    }
+  }
+  
+  void resetCollectedCallTraces() {
+    if (!_omit_stacktraces) {
+      _call_trace_storage.resetCollectedSamples();
     }
   }
 
