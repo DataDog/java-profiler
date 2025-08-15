@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2025 Datadog, Inc
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -392,16 +393,16 @@ off_t Recording::finishChunk(bool end_recording) {
   if (oSampler->_record_liveness) {
     writeIntSetting(_buf, T_HEAP_LIVE_OBJECT, "interval", oSampler->_interval);
     writeIntSetting(_buf, T_HEAP_LIVE_OBJECT, "capacity",
-                    LivenessTracker::instance()->_table_cap);
+                    LivenessTracker::instance()->getTableCapacity());
     writeIntSetting(_buf, T_HEAP_LIVE_OBJECT, "maximum capacity",
-                    LivenessTracker::instance()->_table_max_cap);
+                    LivenessTracker::instance()->getMaxTableCapacity());
   }
   writeDatadogProfilerConfig(
       _buf, Profiler::instance()->cpuEngine()->interval() / 1000000,
       Profiler::instance()->wallEngine()->interval() / 1000000,
       oSampler->_record_allocations ? oSampler->_interval : 0L,
       oSampler->_record_liveness ? oSampler->_interval : 0L,
-      oSampler->_record_liveness ? LivenessTracker::instance()->_table_cap : 0L,
+      oSampler->_record_liveness ? LivenessTracker::instance()->getTableCapacity() : 0L,
       oSampler->_record_liveness ? LivenessTracker::instance()->_subsample_ratio
                                  : 0.0,
       oSampler->_gc_generations, Profiler::instance()->eventMask(),

@@ -1,5 +1,5 @@
 /*
- * Copyright 2021, 2023 Datadog, Inc
+ * Copyright 2021, 2025 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,23 +21,13 @@
 #include "context.h"
 #include "engine.h"
 #include "event.h"
-#include "spinLock.h"
+#include "trackingTable.h"
 #include <jvmti.h>
 #include <pthread.h>
 #include <set>
+#include <map>
 
 class Recording;
-
-typedef struct TrackingEntry {
-  jweak ref;
-  AllocEvent alloc;
-  double skipped;
-  u32 call_trace_id;
-  jint tid;
-  jlong time;
-  jlong age;
-  Context ctx;
-} TrackingEntry;
 
 class LivenessTracker {
   friend Recording;
@@ -51,11 +41,8 @@ private:
   bool _enabled;
   Error _stored_error;
 
-  SpinLock _table_lock;
-  volatile int _table_size;
-  int _table_cap;
+  TrackingTable _tracking_table;
   int _table_max_cap;
-  TrackingEntry *_table;
 
   double _subsample_ratio;
 
@@ -68,6 +55,8 @@ private:
   volatile u64 _last_gc_epoch;
 
   size_t _used_after_last_gc;
+  
+  class CallTraceStorage* _call_trace_storage;
 
   Error initialize(Arguments &args);
   Error initialize_table(JNIEnv *jni, int sampling_interval);
@@ -92,15 +81,33 @@ public:
 
   LivenessTracker()
       : _initialized(false), _enabled(false), _stored_error(Error::OK),
-        _table_size(0), _table_cap(0), _table_max_cap(0), _table(NULL),
-        _subsample_ratio(0.1), _record_heap_usage(false), _Class(NULL),
-        _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0),
-        _used_after_last_gc(0) {}
+        _table_max_cap(0), _subsample_ratio(0.1), _record_heap_usage(false), 
+        _Class(NULL), _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0),
+        _used_after_last_gc(0), _call_trace_storage(nullptr) {}
 
   Error start(Arguments &args);
   void stop();
   void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u32 call_trace_id);
   void flush(std::set<int> &tracked_thread_ids);
+  
+  // Direct liveness marking: no intermediate maps
+  template<typename CallbackFn>
+  void markLiveCallTraces(CallbackFn callback) {
+    if (!_enabled) {
+      return;
+    }
+    _tracking_table.markLiveCallTraces(callback);
+  }
+  
+  // Simplified interface: directly mark call traces in the configured storage
+  void markLiveCallTraces();
+  
+  // Set the call trace storage for automatic increments/decrements
+  void setCallTraceStorage(class CallTraceStorage& storage);
+  
+  // Public accessors for table capacity (used by flightRecorder)
+  int getTableCapacity() const { return _tracking_table.capacity(); }
+  int getMaxTableCapacity() const { return _table_max_cap; }
 
   static void JNICALL GarbageCollectionFinish(jvmtiEnv *jvmti_env);
 };

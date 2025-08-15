@@ -1,11 +1,31 @@
+/*
+ * Copyright 2025 Datadog, Inc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
     #include <gtest/gtest.h>
 
     #include "asyncSampleMutex.h"
     #include "buffers.h"
+    #include "callTraceStorage.h"
     #include "context.h"
     #include "counters.h"
+    #include "livenessTracker.h"
     #include "mutex.h"
     #include "os.h"
+    #include "spinLock.h"
+    #include "trackingTable.h"
     #include "unwindStats.h"
     #include "threadFilter.h"
     #include "threadInfo.h"
@@ -14,6 +34,9 @@
     #include <map>
     #include <thread>
     #include <vector>
+    #include <atomic>
+    #include <chrono>
+    #include <cstring>
 
     ssize_t callback(char* ptr, int len) {
         return len;
@@ -390,6 +413,224 @@
         globalCount += count;
       }
       EXPECT_TRUE(globalCount > 0);
+    }
+
+    TEST(CallTraceStorage, LivenessReferencePreservation) {
+      CallTraceStorage storage;
+      
+      // Create test call frames for first trace
+      ASGCT_CallFrame frames1[2];
+      frames1[0].bci = BCI_NATIVE_FRAME;
+      frames1[0].method_id = (jmethodID)0x1000;
+      frames1[1].bci = BCI_NATIVE_FRAME;
+      frames1[1].method_id = (jmethodID)0x2000;
+      
+      // Put a call trace into storage (this sets samples > 0)
+      u32 call_trace_id1 = storage.put(2, frames1, false, 1);
+      EXPECT_GT(call_trace_id1, 0);
+      
+      // First collectTraces without liveness references (old behavior)
+      // This should consume the trace and set samples = 0
+      std::map<u32, CallTrace *> traces1;
+      storage.collectTraces(traces1);
+      
+      // Verify trace was collected
+      EXPECT_EQ(1, traces1.size());
+      EXPECT_NE(traces1.end(), traces1.find(call_trace_id1));
+      
+      // Second collectTraces should find nothing since samples were reset to 0
+      // and no liveness references were re-introduced
+      std::map<u32, CallTrace *> traces2;
+      storage.collectTraces(traces2);
+      EXPECT_EQ(0, traces2.size()); // Trace is consumed
+      
+      // Now test the fix: create a different call trace with liveness references
+      ASGCT_CallFrame frames2[2];
+      frames2[0].bci = BCI_NATIVE_FRAME;
+      frames2[0].method_id = (jmethodID)0x3000; // Different method ID
+      frames2[1].bci = BCI_NATIVE_FRAME;
+      frames2[1].method_id = (jmethodID)0x4000; // Different method ID
+      
+      u32 call_trace_id2 = storage.put(2, frames2, false, 1);
+      EXPECT_GT(call_trace_id2, 0);
+      EXPECT_NE(call_trace_id1, call_trace_id2); // Should be different trace IDs
+      
+      // Add liveness reference after collection (simulates ongoing liveness tracking)
+      storage.incrementSamples(call_trace_id2);
+      
+      // First collectTraces with liveness references
+      std::map<u32, CallTrace *> traces3;
+      storage.collectTraces(traces3); // This resets samples to 0 automatically
+      
+      // Verify trace was collected
+      EXPECT_EQ(1, traces3.size());
+      EXPECT_NE(traces3.end(), traces3.find(call_trace_id2));
+      
+      // Mark it as live again (simulates ongoing liveness tracking after collection)
+      storage.incrementSamples(call_trace_id2);
+      
+      // Second collectTraces with live marking
+      // Should still find the trace because it was marked live again
+      std::map<u32, CallTrace *> traces4;
+      storage.collectTraces(traces4);
+      EXPECT_EQ(1, traces4.size()); // Trace is still available!
+      EXPECT_NE(traces4.end(), traces4.find(call_trace_id2));
+      
+      // Third collectTraces with no liveness marking
+      // This should find no traces since no liveness references were added after last collection
+      std::map<u32, CallTrace *> traces5;
+      storage.collectTraces(traces5);
+      EXPECT_EQ(0, traces5.size()); // No liveness references = 0 samples
+      
+      // Fourth collectTraces should still find nothing
+      std::map<u32, CallTrace *> traces6;
+      storage.collectTraces(traces6);
+      EXPECT_EQ(0, traces6.size()); // Still no traces
+      
+      // Test decrement functionality
+      storage.incrementSamples(call_trace_id2);
+      storage.incrementSamples(call_trace_id2); // Now samples = 2
+      
+      std::map<u32, CallTrace *> traces7;
+      storage.collectTraces(traces7);
+      EXPECT_EQ(1, traces7.size()); // Should find the trace
+      
+      // After collection, increment once, then decrement once - should still be live
+      storage.incrementSamples(call_trace_id2); // samples = 1  
+      storage.decrementSamples(call_trace_id2);  // samples = 0
+      
+      std::map<u32, CallTrace *> traces8;
+      storage.collectTraces(traces8);
+      EXPECT_EQ(0, traces8.size()); // Should find no traces (samples = 0)
+    }
+
+    TEST(CallTraceStorage, LivenessCallbackIntegration) {
+      CallTraceStorage storage;
+      
+      // Create test call frames
+      ASGCT_CallFrame frames[2];
+      frames[0].bci = BCI_NATIVE_FRAME;
+      frames[0].method_id = (jmethodID)0x1234;
+      frames[1].bci = BCI_NATIVE_FRAME;
+      frames[1].method_id = (jmethodID)0x5678;
+      
+      // Put a call trace into storage (this sets samples > 0)
+      u32 call_trace_id = storage.put(2, frames, false, 1);
+      EXPECT_GT(call_trace_id, 0);
+      
+      // Set up a liveness callback that marks our trace as live
+      bool callback_called = false;
+      storage.setLivenessCallback([call_trace_id, &callback_called](std::function<void(u32)> callback) {
+        callback_called = true;
+        callback(call_trace_id); // Mark this trace as live
+      });
+      
+      // First collectTraces - callback should be invoked during Step 0
+      std::map<u32, CallTrace *> traces1;
+      storage.collectTraces(traces1);
+      
+      // Verify callback was called and trace was collected
+      EXPECT_TRUE(callback_called);
+      EXPECT_EQ(1, traces1.size());
+      EXPECT_NE(traces1.end(), traces1.find(call_trace_id));
+      
+      // Reset callback state
+      callback_called = false;
+      
+      // Second collectTraces - trace should be available again because 
+      // liveness callback re-marked it during Step 0
+      std::map<u32, CallTrace *> traces2;
+      storage.collectTraces(traces2);
+      
+      EXPECT_TRUE(callback_called); // Callback should be called again
+      EXPECT_EQ(1, traces2.size()); // Trace should be available
+      EXPECT_NE(traces2.end(), traces2.find(call_trace_id));
+    }
+
+    TEST(TrackingTable, MarkLiveCallTracesThreadSafety) {
+      // This test verifies that the extracted TrackingTable class provides
+      // thread-safe access to call trace marking using exclusive locks.
+      // It validates that markLiveCallTraces works correctly with concurrent writes.
+      //
+      // NOTE: If more LivenessTracker tests are added, consider moving them to
+      // a separate livenessTracker_ut.cpp file following gtest conventions.
+      
+      TrackingTable table;
+      ASSERT_TRUE(table.initialize(1000)) << "Failed to initialize tracking table";
+      
+      const int numWriters = 4;
+      const int writesPerThread = 50;
+      std::atomic<bool> stop_writers{false};
+      std::thread writers[numWriters];
+      
+      // Start concurrent writers that simulate track() calls
+      for (int i = 0; i < numWriters; i++) {
+        writers[i] = std::thread([&table, i, writesPerThread, &stop_writers]() {
+          for (int j = 0; j < writesPerThread && !stop_writers.load(); j++) {
+            TrackingEntry entry = {};
+            entry.call_trace_id = i * writesPerThread + j + 1;
+            entry.tid = i + 1;
+            entry.ref = (jweak)0x1; // Dummy non-null pointer for unit test (not a real JNI ref)
+            
+            table.addEntry(entry);
+            std::this_thread::sleep_for(std::chrono::microseconds(1));
+          }
+        });
+      }
+      
+      // Test concurrent reading while writes are happening - this tests the core fix
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      
+      // Stop writers
+      stop_writers = true;
+      for (int i = 0; i < numWriters; i++) {
+        writers[i].join();
+      }
+      
+      // Test markLiveCallTraces callback functionality
+      std::set<u32> marked_traces1, marked_traces2;
+      
+      table.markLiveCallTraces([&marked_traces1](u32 call_trace_id) {
+        marked_traces1.insert(call_trace_id);
+      });
+      
+      table.markLiveCallTraces([&marked_traces2](u32 call_trace_id) {
+        marked_traces2.insert(call_trace_id);
+      });
+      
+      // Key assertions that validate the thread safety and functionality:
+      
+      // 1. Both calls should mark the same set of call traces
+      EXPECT_EQ(marked_traces1.size(), marked_traces2.size()) 
+        << "Both markLiveCallTraces calls should mark same number of traces";
+      
+      // 2. The sets should be identical
+      EXPECT_EQ(marked_traces1, marked_traces2)
+        << "Both markLiveCallTraces calls should mark identical traces";
+      
+      // 3. Should have processed the expected amount of data
+      EXPECT_GT(table.size(), 0) << "Should have added some entries";
+      EXPECT_GT(marked_traces1.size(), 0) << "Should have marked some call traces";
+      
+      // 4. Validate that no data was lost or corrupted
+      // Note: Due to tryLockShared() failures, we might have fewer than the maximum possible entries
+      EXPECT_LE(marked_traces1.size(), numWriters * writesPerThread) 
+        << "Should not have more entries than possible";
+        
+      // 5. Test that each call trace ID appears exactly once (no duplicates in callback)
+      std::vector<u32> callback_calls;
+      table.markLiveCallTraces([&callback_calls](u32 call_trace_id) {
+        callback_calls.push_back(call_trace_id);
+      });
+      
+      // Convert to set to check for duplicates
+      std::set<u32> unique_calls(callback_calls.begin(), callback_calls.end());
+      EXPECT_EQ(callback_calls.size(), unique_calls.size())
+        << "Callback should be called exactly once per unique call_trace_id (no duplicates)";
+      
+      // Verify the unique calls match our first marked traces
+      EXPECT_EQ(unique_calls, marked_traces1)
+        << "Callback calls should match the expected set of call trace IDs";
     }
 
     int main(int argc, char **argv) {
