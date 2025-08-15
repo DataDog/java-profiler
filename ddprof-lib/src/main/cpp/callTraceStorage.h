@@ -61,25 +61,44 @@ class CallTraceStorage {
 private:
   static CallTrace _overflow_trace;
 
+  // Short-term storage (regular samples, cleared on dump)
   LinearAllocator _allocator;
   LongHashTable *_current_table;
   u64 _overflow;
-
   SpinLock _lock;
+
+  // Long-term storage (persists across dumps) 
+  // Stores traces with SAME IDs as short-term, with reference counting
+  LinearAllocator _longterm_allocator;
+  SpinLock _longterm_lock;
+  std::map<u32, CallTraceSample> _longterm_traces;
+  
 
   u64 calcHash(int num_frames, ASGCT_CallFrame *frames, bool truncated);
   CallTrace *storeCallTrace(int num_frames, ASGCT_CallFrame *frames,
-                            bool truncated);
+                            bool truncated, bool longterm);
   CallTrace *findCallTrace(LongHashTable *table, u64 hash);
+  CallTrace *copyCallTrace(CallTrace *original_trace, LinearAllocator *target_allocator);
+  bool tracesEqual(CallTrace *trace1, CallTrace *trace2);
+  u32 putShortterm(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);
 
 public:
   CallTraceStorage();
   ~CallTraceStorage();
 
-  void clear();
-  void collectTraces(std::map<u32, CallTrace *> &map);
+  void clear();  // Clears short-term storage, compacts long-term storage if needed
+  void collectTraces(std::map<u32, CallTrace *> &map);  // Collects from both storages
+  void collectAndConsolidateTraces(std::map<u32, CallTrace *> &map);  // Collects from both storages with deduplication
+  void resetCollectedSamples();  // Resets samples to 0 for all collected traces
+  void compact(); // Compacts long-term storage
 
   u32 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);
+  void promoteToLongterm(u32 call_trace_id);  // Copy trace to long-term with same ID
+  void removeLongtermReference(u32 call_trace_id);  // Decrements long-term reference count
+  
+  // Methods for incrementing/decrementing samples count (for testing and liveness tracking)
+  void incrementSamples(u32 call_trace_id);
+  void decrementSamples(u32 call_trace_id);
 };
 
 #endif // _CALLTRACESTORAGE

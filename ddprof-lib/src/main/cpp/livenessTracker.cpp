@@ -72,9 +72,15 @@ void LivenessTracker::cleanup_table(bool forced) {
         _table[target].age += epoch_diff;
       } else {
         jweak tmpRef = _table[i].ref;
+        u32 old_call_trace_id = _table[i].call_trace_id;
         _table[i].ref = nullptr;
         env->DeleteWeakGlobalRef(tmpRef);
         _table[i].call_trace_id = 0;
+        
+        // Decrement reference count in longterm call trace storage if this is a longterm ID
+        if (old_call_trace_id != 0) {
+          Profiler::instance()->getCallTraceStorage()->removeLongtermReference(old_call_trace_id);
+        }
       }
     }
 
@@ -131,7 +137,10 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
                       : 0;
       env->ReleaseStringUTFChars(name_str, name);
 
-      Profiler::instance()->recordDeferredSample(_table[i].tid, _table[i].call_trace_id, BCI_LIVENESS, &event);
+      // Use the call trace ID directly - it should already be from longterm storage
+      u32 call_trace_id_to_use = _table[i].call_trace_id;
+      
+      Profiler::instance()->recordDeferredSample(_table[i].tid, call_trace_id_to_use, BCI_LIVENESS, &event);
     }
 
     env->DeleteLocalRef(ref);
@@ -193,6 +202,7 @@ Error LivenessTracker::start(Arguments &args) {
     // disabled
     return Error::OK;
   }
+  
   // Enable Java Object Sample events
   jvmtiEnv *jvmti = VM::jvmti();
   jvmti->SetEventNotificationMode(
@@ -208,6 +218,9 @@ void LivenessTracker::stop() {
   }
   cleanup_table();
   flush_table(nullptr);
+
+  // Compact the longterm call trace storage to remove unreferenced traces
+  Profiler::instance()->getCallTraceStorage()->compact();
 
   // do not disable GC notifications here - the tracker is supposed to survive
   // multiple recordings
