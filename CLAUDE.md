@@ -198,3 +198,5 @@ When you are modifying copyright already including 'Datadog' update the 'until y
 - Always run ./gradlew spotlessApply before committing changes
 
 - Always  create a commit message based solely on the actual changes visible in the diff
+
+- You can use TEST_LOG macro to log debug info which can then be used in ddprof-test tests to assert correct execution. The macro is defined in 'common.h'
