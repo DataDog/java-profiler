@@ -31,6 +31,7 @@
 #include "thread.h"
 #include "tsc.h"
 #include "vmStructs_dd.h"
+#include "common.h"
 #include <jni.h>
 #include <string.h>
 
@@ -138,6 +139,7 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
                         : 0;
         env->ReleaseStringUTFChars(name_str, name);
 
+        TEST_LOG("LivenessTracker::flush recording liveness event with call_trace_id=%u", table[i].call_trace_id);
         Profiler::instance()->recordDeferredSample(table[i].tid, table[i].call_trace_id, BCI_LIVENESS, &event);
       }
 
@@ -354,6 +356,7 @@ success:
   // Increment sample count to preserve the call trace referenced by this tracking entry
   if (call_trace_id != 0 && _call_trace_storage != nullptr) {
     _call_trace_storage->incrementSamples(call_trace_id);
+    TEST_LOG("LivenessTracker::track stored call_trace_id=%u for object", call_trace_id);
   }
   
   skipped = 0; // reset the subsampling skipped bytes

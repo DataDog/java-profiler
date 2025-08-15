@@ -6,6 +6,7 @@
 #include "callTraceStorage.h"
 #include "counters.h"
 #include "os.h"
+#include "common.h"
 #include <string.h>
 
 #define COMMA ,
@@ -77,7 +78,6 @@ CallTrace CallTraceStorage::_overflow_trace = {false, 1, {BCI_ERROR, LP64_ONLY(0
 CallTraceStorage::CallTraceStorage() : _allocator(CALL_TRACE_CHUNK), _lock(0), _call_trace_index() {
   _current_table = LongHashTable::allocate(NULL, INITIAL_CAPACITY);
   _overflow = 0;
-  _liveness_callback = nullptr;
 }
 
 CallTraceStorage::~CallTraceStorage() {
@@ -102,21 +102,22 @@ void CallTraceStorage::clear() {
 
 
 void CallTraceStorage::collectTraces(std::map<u32, CallTrace *> &map) {
-  // Step 1: Collect all traces with samples > 0
-  // Note: Liveness-referenced traces already have their samples incremented
-  // when tracking entries are created in LivenessTracker::track()
   for (LongHashTable *table = _current_table; table != NULL; table = table->prev()) {
     u64 *keys = table->keys();
     CallTraceSample *values = table->values();
     u32 capacity = table->capacity();
 
     for (u32 slot = 0; slot < capacity; slot++) {
-      if (keys[slot] != 0 && loadAcquire(values[slot].samples) != 0) {
-        u32 call_trace_id = capacity - (INITIAL_CAPACITY - 1) + slot;
-        
-        CallTrace *trace = values[slot].acquireTrace();
-        if (trace != NULL) {
-          map[call_trace_id] = trace;
+      if (keys[slot] != 0) {
+        u64 samples = __sync_lock_test_and_set(&values[slot].samples, 0);
+        if (samples != 0) {
+          u32 call_trace_id = capacity - (INITIAL_CAPACITY - 1) + slot;
+          
+          CallTrace *trace = values[slot].acquireTrace();
+          if (trace != NULL) {
+            map[call_trace_id] = trace;
+            TEST_LOG("CallTraceStorage::collectTraces collected call_trace_id=%u samples=%llu", call_trace_id, (unsigned long long)samples);
+          }
         }
       }
     }
@@ -124,61 +125,27 @@ void CallTraceStorage::collectTraces(std::map<u32, CallTrace *> &map) {
   if (_overflow > 0) {
     map[OVERFLOW_TRACE_ID] = &_overflow_trace;
   }
-  
-  // Step 2: Reset all samples to 0
-  resetSamples();
-  
-  // Step 3: Re-introduce liveness samples for next recording cycle
-  processLivenessReferences();
 }
 
 
-void CallTraceStorage::resetSamples() {
-  // Reset all samples to 0
-  for (LongHashTable *table = _current_table; table != NULL; table = table->prev()) {
-    CallTraceSample *values = table->values();
-    u32 capacity = table->capacity();
-
-    for (u32 slot = 0; slot < capacity; slot++) {
-      storeRelease(values[slot].samples, 0);
-    }
-  }
-}
 
 void CallTraceStorage::incrementSamples(u32 call_trace_id) {
-  // O(1) increment: increment samples count for any sample type
   CallTraceLocation location;
   if (_call_trace_index.get(call_trace_id, location)) {
     CallTraceSample *values = location.table->values();
-    // Atomically increment the samples count
     atomicInc(values[location.slot].samples);
   }
 }
 
 void CallTraceStorage::decrementSamples(u32 call_trace_id) {
-  // O(1) decrement: decrement samples count (e.g., when liveness entry is dropped)
   CallTraceLocation location;
   if (_call_trace_index.get(call_trace_id, location)) {
     CallTraceSample *values = location.table->values();
-    // Atomically decrement the samples count
     u64 current = loadAcquire(values[location.slot].samples);
     if (current > 0) {
       storeRelease(values[location.slot].samples, current - 1);
     }
   }
-}
-
-void CallTraceStorage::processLivenessReferences() {
-  // Use callback to process liveness references if registered
-  if (_liveness_callback) {
-    _liveness_callback([this](u32 call_trace_id) {
-      incrementSamples(call_trace_id);
-    });
-  }
-}
-
-void CallTraceStorage::setLivenessCallback(std::function<void(std::function<void(u32)>)> callback) {
-  _liveness_callback = callback;
 }
 
 // Adaptation of MurmurHash64A by Austin Appleby

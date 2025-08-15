@@ -1221,10 +1221,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
     
-    // Set up callback-based liveness processing for next-cycle sample restoration
-    _call_trace_storage.setLivenessCallback([](std::function<void(u32)> callback) {
-      LivenessTracker::instance()->markLiveCallTraces(callback);
-    });
+    // Set up direct reference for liveness processing
     LivenessTracker::instance()->setCallTraceStorage(_call_trace_storage);
 
     _state = RUNNING;
@@ -1336,8 +1333,7 @@ Error Profiler::dump(const char *path, const int length) {
 
   if (_state == RUNNING) {
     std::set<int> thread_ids;
-    // flush the liveness tracker instance and note all the threads referenced
-    // by the live objects
+    LivenessTracker::instance()->markLiveCallTraces();
     LivenessTracker::instance()->flush(thread_ids);
 
     updateJavaThreadNames();

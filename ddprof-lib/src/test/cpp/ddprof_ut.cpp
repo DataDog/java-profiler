@@ -504,7 +504,7 @@
       EXPECT_EQ(0, traces8.size()); // Should find no traces (samples = 0)
     }
 
-    TEST(CallTraceStorage, LivenessCallbackIntegration) {
+    TEST(CallTraceStorage, LivenessMarkingIntegration) {
       CallTraceStorage storage;
       
       // Create test call frames
@@ -518,33 +518,28 @@
       u32 call_trace_id = storage.put(2, frames, false, 1);
       EXPECT_GT(call_trace_id, 0);
       
-      // Set up a liveness callback that marks our trace as live
-      bool callback_called = false;
-      storage.setLivenessCallback([call_trace_id, &callback_called](std::function<void(u32)> callback) {
-        callback_called = true;
-        callback(call_trace_id); // Mark this trace as live
-      });
-      
-      // First collectTraces - callback should be invoked during Step 0
+      // First collectTraces - should collect the trace and atomically reset samples to 0
       std::map<u32, CallTrace *> traces1;
       storage.collectTraces(traces1);
       
-      // Verify callback was called and trace was collected
-      EXPECT_TRUE(callback_called);
+      // Verify trace was collected
       EXPECT_EQ(1, traces1.size());
       EXPECT_NE(traces1.end(), traces1.find(call_trace_id));
       
-      // Reset callback state
-      callback_called = false;
-      
-      // Second collectTraces - trace should be available again because 
-      // liveness callback re-marked it during Step 0
+      // Second collectTraces - should find nothing since samples are now 0
       std::map<u32, CallTrace *> traces2;
       storage.collectTraces(traces2);
+      EXPECT_EQ(0, traces2.size()); // No traces without marking
       
-      EXPECT_TRUE(callback_called); // Callback should be called again
-      EXPECT_EQ(1, traces2.size()); // Trace should be available
-      EXPECT_NE(traces2.end(), traces2.find(call_trace_id));
+      // Manually mark trace as live (simulating pre-flush marking)
+      storage.incrementSamples(call_trace_id);
+      
+      // Third collectTraces - should now find the trace again
+      std::map<u32, CallTrace *> traces3;
+      storage.collectTraces(traces3);
+      
+      EXPECT_EQ(1, traces3.size()); // Trace should be available after marking
+      EXPECT_NE(traces3.end(), traces3.find(call_trace_id));
     }
 
     TEST(TrackingTable, MarkLiveCallTracesThreadSafety) {

@@ -68,8 +68,6 @@ private:
   u64 _overflow;
 
   SpinLock _lock;
-  
-  std::function<void(std::function<void(u32)>)> _liveness_callback;
 
   u64 calcHash(int num_frames, ASGCT_CallFrame *frames, bool truncated);
   CallTrace *storeCallTrace(int num_frames, ASGCT_CallFrame *frames,
@@ -85,21 +83,11 @@ public:
   
   u32 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);
 
-  // Sample count management - used internally by liveness tracking and GC cleanup
-  // Note: These are public for access by LivenessTracker and test code, but are
-  // implementation details that should not be called directly by most code
-  void incrementSamples(u32 call_trace_id); // Increment samples count
-  void decrementSamples(u32 call_trace_id); // Decrement samples count
-  
-  // Register callback for liveness processing during collection
-  void processLivenessReferences();
-  
-  // Set callback for liveness processing - avoids hard dependencies
-  void setLivenessCallback(std::function<void(std::function<void(u32)>)> callback);
+  // Liveness tracking support
+  void incrementSamples(u32 call_trace_id);
+  void decrementSamples(u32 call_trace_id);
 
 private:
-  void resetSamples(); // Reset all samples to 0 (called internally after collection)
-  // Index: call_trace_id -> (table, slot) for O(1) marking
   struct CallTraceLocation {
     LongHashTable* table;
     u32 slot;
