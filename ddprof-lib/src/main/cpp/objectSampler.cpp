@@ -20,6 +20,7 @@
 #include <set>
 
 #include "context.h"
+#include "livenessTracker.h"
 #include "objectSampler.h"
 #include "pidController.h"
 #include "profiler.h"
@@ -112,7 +113,7 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
   }
 
   // Either we are recording liveness or tracking GC generations (lightweight
-  // liveness samples)
+  // liveness samples)  
   if (_gc_generations || _record_liveness) {
     LivenessTracker::instance()->track(jni, event, tid, object, call_trace_id);
   }

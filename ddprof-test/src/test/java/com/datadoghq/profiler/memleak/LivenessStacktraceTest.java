@@ -3,8 +3,14 @@ package com.datadoghq.profiler.memleak;
 import com.datadoghq.profiler.AbstractProfilerTest;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItemCollection;
+import org.openjdk.jmc.common.item.IItemIterable;
+import org.openjdk.jmc.common.item.IItem;
+import org.openjdk.jmc.common.item.IMemberAccessor;
+import org.openjdk.jmc.common.IMCStackTrace;
+import org.openjdk.jmc.common.IMCFrame;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.util.*;
 
@@ -78,8 +84,12 @@ public class LivenessStacktraceTest extends AbstractProfilerTest {
             recordingFiles.add(finalRecording);
             dump(finalRecording);
             
-            // Verify all recordings have liveness events
+            // Verify all recordings have liveness events with valid stacktraces
             int totalLivenessEvents = 0;
+            int eventsWithValidStacktraces = 0;
+            int eventsWithMissingStacktraces = 0;
+            int eventsWithSingleFrameStacktraces = 0;
+            
             for (int i = 0; i < recordingFiles.size(); i++) {
                 java.nio.file.Path recording = recordingFiles.get(i);
                 try {
@@ -87,18 +97,56 @@ public class LivenessStacktraceTest extends AbstractProfilerTest {
                     long eventCount = events.stream().flatMap(items -> items.stream()).count();
                     totalLivenessEvents += eventCount;
                     
-                    System.out.println("Recording " + i + ": " + eventCount + " liveness events");
+                    // Verify stacktraces for each event
+                    for (IItemIterable sample : events) {
+                        IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor = STACK_TRACE.getAccessor(sample.getType());
+                        
+                        for (IItem item : sample) {
+                            if (stackTraceAccessor != null) {
+                                IMCStackTrace stackTrace = stackTraceAccessor.getMember(item);
+                                if (stackTrace != null) {
+                                    List<? extends IMCFrame> frames = stackTrace.getFrames();
+                                    if (frames != null && frames.size() > 1) {
+                                        eventsWithValidStacktraces++;
+                                    } else if (frames != null && frames.size() == 1) {
+                                        eventsWithSingleFrameStacktraces++;
+                                        System.out.println("Recording " + i + ": Found event with single frame stacktrace");
+                                    } else {
+                                        eventsWithMissingStacktraces++;
+                                        System.out.println("Recording " + i + ": Found event with empty stacktrace");
+                                    }
+                                } else {
+                                    eventsWithMissingStacktraces++;
+                                    System.out.println("Recording " + i + ": Found event with null stacktrace");
+                                }
+                            } else {
+                                eventsWithMissingStacktraces++;
+                                System.out.println("Recording " + i + ": No stacktrace accessor available");
+                            }
+                        }
+                    }
                     
-                    // TODO: Add more sophisticated verification of call trace consistency
-                    // For now, just verify we have some events in most dumps
+                    System.out.println("Recording " + i + ": " + eventCount + " liveness events");
                     
                 } catch (Exception e) {
                     System.err.println("Error verifying recording " + i + ": " + e.getMessage());
+                    e.printStackTrace();
                 }
             }
             
             System.out.println("Total liveness events across all recordings: " + totalLivenessEvents);
+            System.out.println("Events with valid stacktraces (>1 frame): " + eventsWithValidStacktraces);
+            System.out.println("Events with single frame stacktraces: " + eventsWithSingleFrameStacktraces);
+            System.out.println("Events with missing/null stacktraces: " + eventsWithMissingStacktraces);
+            
             assertTrue(totalLivenessEvents > 0, "Should have recorded liveness events across all dumps");
+            assertTrue(eventsWithValidStacktraces > 0, "Should have some events with valid stacktraces");
+            
+            // The critical assertion: all events should have valid stacktraces with more than one frame
+            if (eventsWithMissingStacktraces > 0 || eventsWithSingleFrameStacktraces > 0) {
+                fail(String.format("Found %d events with missing stacktraces and %d events with single-frame stacktraces. All liveness events should have valid stacktraces with more than one frame.",
+                    eventsWithMissingStacktraces, eventsWithSingleFrameStacktraces));
+            }
             
         } finally {
             // Clean up

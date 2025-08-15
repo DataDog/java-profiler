@@ -18,11 +18,9 @@
 #define _CALLTRACESTORAGE_H
 
 #include "arch_dd.h"
-#include "concurrentHashTable.h"
 #include "linearAllocator.h"
 #include "spinLock.h"
 #include "vmEntry.h"
-#include <functional>
 #include <map>
 #include <vector>
 
@@ -63,41 +61,40 @@ class CallTraceStorage {
 private:
   static CallTrace _overflow_trace;
 
+  // Short-term storage (regular samples, cleared on dump)
   LinearAllocator _allocator;
   LongHashTable *_current_table;
   u64 _overflow;
-
   SpinLock _lock;
+
+  // Long-term storage (persists across dumps)
+  LinearAllocator _longterm_allocator;
+  LongHashTable *_current_longterm_table;
+  u64 _longterm_overflow;
+  SpinLock _longterm_lock;
 
   u64 calcHash(int num_frames, ASGCT_CallFrame *frames, bool truncated);
   CallTrace *storeCallTrace(int num_frames, ASGCT_CallFrame *frames,
-                            bool truncated);
+                            bool truncated, bool longterm);
   CallTrace *findCallTrace(LongHashTable *table, u64 hash);
+  CallTrace *copyCallTrace(CallTrace *original_trace, LinearAllocator *target_allocator);
+  u32 putShortterm(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);
+  u32 putLongterm(int num_frames, ASGCT_CallFrame *frames, bool truncated);
 
 public:
   CallTraceStorage();
   ~CallTraceStorage();
 
-  void clear();
-  void collectTraces(std::map<u32, CallTrace *> &map);
-  
-  u32 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);
+  void clear();  // Clears short-term storage, compacts long-term storage if needed
+  void collectTraces(std::map<u32, CallTrace *> &map);  // Collects from both storages
+  void compact(); // Compacts long-term storage
 
-  // Liveness tracking support
+  u32 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight, bool longterm = false);
+  void removeLongtermReference(u32 call_trace_id);
+  
+  // Methods for incrementing/decrementing samples count (for testing and liveness tracking)
   void incrementSamples(u32 call_trace_id);
   void decrementSamples(u32 call_trace_id);
-
-private:
-  struct CallTraceLocation {
-    LongHashTable* table;
-    u32 slot;
-    
-    CallTraceLocation() : table(nullptr), slot(0) {}
-    CallTraceLocation(LongHashTable* t, u32 s) : table(t), slot(s) {}
-  };
-
-  // Thread-safe concurrent hash table for call trace index
-  ConcurrentHashTable<u32, CallTraceLocation> _call_trace_index;
 };
 
 #endif // _CALLTRACESTORAGE

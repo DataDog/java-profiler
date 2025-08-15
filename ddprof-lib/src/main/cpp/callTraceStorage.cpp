@@ -4,9 +4,9 @@
  */
 
 #include "callTraceStorage.h"
+#include "common.h"
 #include "counters.h"
 #include "os.h"
-#include "common.h"
 #include <string.h>
 
 #define COMMA ,
@@ -14,6 +14,10 @@
 static const u32 INITIAL_CAPACITY = 65536;
 static const u32 CALL_TRACE_CHUNK = 8 * 1024 * 1024;
 static const u32 OVERFLOW_TRACE_ID = 0x7fffffff;
+
+static const u32 LONGTERM_INITIAL_CAPACITY = 4096;
+static const u32 LONGTERM_CALL_TRACE_CHUNK = 2 * 1024 * 1024;
+static const u32 LONGTERM_ID_OFFSET = 0x40000000;  // Start longterm IDs at this offset
 
 class LongHashTable {
 private:
@@ -75,18 +79,25 @@ public:
 
 CallTrace CallTraceStorage::_overflow_trace = {false, 1, {BCI_ERROR, LP64_ONLY(0 COMMA) (jmethodID)"storage_overflow"}};
 
-CallTraceStorage::CallTraceStorage() : _allocator(CALL_TRACE_CHUNK), _lock(0), _call_trace_index() {
+CallTraceStorage::CallTraceStorage() : _allocator(CALL_TRACE_CHUNK), _lock(0), 
+    _longterm_allocator(LONGTERM_CALL_TRACE_CHUNK), _longterm_lock(0) {
   _current_table = LongHashTable::allocate(NULL, INITIAL_CAPACITY);
+  _current_longterm_table = LongHashTable::allocate(NULL, LONGTERM_INITIAL_CAPACITY);
   _overflow = 0;
+  _longterm_overflow = 0;
 }
 
 CallTraceStorage::~CallTraceStorage() {
   while (_current_table != NULL) {
     _current_table = _current_table->destroy();
   }
+  while (_current_longterm_table != NULL) {
+    _current_longterm_table = _current_longterm_table->destroy();
+  }
 }
 
 void CallTraceStorage::clear() {
+  // Clear short-term storage
   _lock.lock();
   while (_current_table->prev() != NULL) {
     _current_table = _current_table->destroy();
@@ -94,57 +105,54 @@ void CallTraceStorage::clear() {
   _current_table->clear();
   _allocator.clear();
   _overflow = 0;
-  _call_trace_index.clear(); // Clear the concurrent hash table
   Counters::set(CALLTRACE_STORAGE_BYTES, 0);
   Counters::set(CALLTRACE_STORAGE_TRACES, 0);
   _lock.unlock();
+  
+  // Compact long-term storage if it's getting large
+  // TODO: Add size threshold check here
+  compact();
 }
 
-
 void CallTraceStorage::collectTraces(std::map<u32, CallTrace *> &map) {
-  for (LongHashTable *table = _current_table; table != NULL; table = table->prev()) {
+  // Collect from short-term storage
+  for (LongHashTable *table = _current_table; table != NULL;
+       table = table->prev()) {
     u64 *keys = table->keys();
     CallTraceSample *values = table->values();
     u32 capacity = table->capacity();
 
     for (u32 slot = 0; slot < capacity; slot++) {
-      if (keys[slot] != 0) {
-        u64 samples = __sync_lock_test_and_set(&values[slot].samples, 0);
-        if (samples != 0) {
-          u32 call_trace_id = capacity - (INITIAL_CAPACITY - 1) + slot;
-          
-          CallTrace *trace = values[slot].acquireTrace();
-          if (trace != NULL) {
-            map[call_trace_id] = trace;
-            TEST_LOG("CallTraceStorage::collectTraces collected call_trace_id=%u samples=%llu", call_trace_id, (unsigned long long)samples);
-          }
+      if (keys[slot] != 0 && loadAcquire(values[slot].samples) != 0) {
+        // Reset samples to avoid duplication of call traces between JFR chunks
+        values[slot].samples = 0;
+        CallTrace *trace = values[slot].acquireTrace();
+        if (trace != NULL) {
+          map[capacity - (INITIAL_CAPACITY - 1) + slot] = trace;
         }
       }
     }
   }
+  
+  // Collect from long-term storage
+  for (LongHashTable *table = _current_longterm_table; table != NULL;
+       table = table->prev()) {
+    u64 *keys = table->keys();
+    CallTraceSample *values = table->values();
+    u32 capacity = table->capacity();
+
+    for (u32 slot = 0; slot < capacity; slot++) {
+      if (keys[slot] != 0 && __atomic_load_n(&values[slot].samples, __ATOMIC_ACQUIRE) > 0) {
+        CallTrace *trace = values[slot].acquireTrace();
+        if (trace != NULL) {
+          map[LONGTERM_ID_OFFSET + capacity - (LONGTERM_INITIAL_CAPACITY - 1) + slot] = trace;
+        }
+      }
+    }
+  }
+  
   if (_overflow > 0) {
     map[OVERFLOW_TRACE_ID] = &_overflow_trace;
-  }
-}
-
-
-
-void CallTraceStorage::incrementSamples(u32 call_trace_id) {
-  CallTraceLocation location;
-  if (_call_trace_index.get(call_trace_id, location)) {
-    CallTraceSample *values = location.table->values();
-    atomicInc(values[location.slot].samples);
-  }
-}
-
-void CallTraceStorage::decrementSamples(u32 call_trace_id) {
-  CallTraceLocation location;
-  if (_call_trace_index.get(call_trace_id, location)) {
-    CallTraceSample *values = location.table->values();
-    u64 current = loadAcquire(values[location.slot].samples);
-    if (current > 0) {
-      storeRelease(values[location.slot].samples, current - 1);
-    }
   }
 }
 
@@ -183,10 +191,13 @@ u64 CallTraceStorage::calcHash(int num_frames, ASGCT_CallFrame *frames,
 
 CallTrace *CallTraceStorage::storeCallTrace(int num_frames,
                                             ASGCT_CallFrame *frames,
-                                            bool truncated) {
+                                            bool truncated, bool longterm) {
   const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
   const size_t total_size = header_size + num_frames * sizeof(ASGCT_CallFrame);
-  CallTrace *buf = (CallTrace *)_allocator.alloc(total_size);
+  
+  LinearAllocator *allocator = longterm ? &_longterm_allocator : &_allocator;
+  CallTrace *buf = (CallTrace *)allocator->alloc(total_size);
+  
   if (buf != NULL) {
     buf->num_frames = num_frames;
     // Do not use memcpy inside signal handler
@@ -194,8 +205,11 @@ CallTrace *CallTraceStorage::storeCallTrace(int num_frames,
       buf->frames[i] = frames[i];
     }
     buf->truncated = truncated;
-    Counters::increment(CALLTRACE_STORAGE_BYTES, total_size);
-    Counters::increment(CALLTRACE_STORAGE_TRACES);
+    
+    if (!longterm) {
+      Counters::increment(CALLTRACE_STORAGE_BYTES, total_size);
+      Counters::increment(CALLTRACE_STORAGE_TRACES);
+    }
   }
   return buf;
 }
@@ -220,7 +234,16 @@ CallTrace *CallTraceStorage::findCallTrace(LongHashTable *table, u64 hash) {
 }
 
 u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame *frames,
-                          bool truncated, u64 weight) {
+                          bool truncated, u64 weight, bool longterm) {
+  if (longterm) {
+    return putLongterm(num_frames, frames, truncated);
+  } else {
+    return putShortterm(num_frames, frames, truncated, weight);
+  }
+}
+
+u32 CallTraceStorage::putShortterm(int num_frames, ASGCT_CallFrame *frames,
+                                   bool truncated, u64 weight) {
   // Currently, CallTraceStorage is a singleton used globally in Profiler and
   // therefore start-stop operation requires data structures cleanup. This
   // cleanup may and will race this method and the racing can cause all sorts of
@@ -241,9 +264,6 @@ u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame *frames,
   while (true) {
     u64 key_value = __atomic_load_n(&keys[slot], __ATOMIC_RELAXED);
     if (key_value == hash) { // Hash matches, exit the loop
-      // Update index for existing call trace
-      u32 call_trace_id = capacity - (INITIAL_CAPACITY - 1) + slot;
-      _call_trace_index.put(call_trace_id, CallTraceLocation(table, slot));
       break;
     }
     if (key_value == 0) {
@@ -263,7 +283,7 @@ u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame *frames,
       CallTrace *trace =
           table->prev() == NULL ? NULL : findCallTrace(table->prev(), hash);
       if (trace == NULL) {
-        trace = storeCallTrace(num_frames, frames, truncated);
+        trace = storeCallTrace(num_frames, frames, truncated, false);
       }
       table->values()[slot].setTrace(trace);
 
@@ -273,10 +293,6 @@ u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame *frames,
       if (prev_table != NULL) {
         prev_table->keys()[slot] = 0;
       }
-      
-      // Maintain call trace index incrementally during insertion
-      u32 call_trace_id = capacity - (INITIAL_CAPACITY - 1) + slot;
-      
       break;
     }
 
@@ -296,4 +312,310 @@ u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame *frames,
 
   _lock.unlockShared();
   return capacity - (INITIAL_CAPACITY - 1) + slot;
+}
+
+u32 CallTraceStorage::putLongterm(int num_frames, ASGCT_CallFrame *frames,
+                                  bool truncated) {
+  if (!_longterm_lock.tryLockShared()) {
+    return 0;
+  }
+
+  u64 hash = calcHash(num_frames, frames, truncated);
+
+  LongHashTable *table = _current_longterm_table;
+  u64 *keys = table->keys();
+  u32 capacity = table->capacity();
+  u32 slot = hash & (capacity - 1);
+  u32 step = 0;
+  while (true) {
+    u64 key_value = __atomic_load_n(&keys[slot], __ATOMIC_RELAXED);
+    if (key_value == hash) {
+      // Found existing trace, increment longterm reference count
+      CallTraceSample &sample = table->values()[slot];
+      atomicInc(sample.samples);
+      u32 call_trace_id = LONGTERM_ID_OFFSET + capacity - (LONGTERM_INITIAL_CAPACITY - 1) + slot;
+      _longterm_lock.unlockShared();
+      return call_trace_id;
+    }
+    if (key_value == 0) {
+      if (!__sync_bool_compare_and_swap(&keys[slot], 0, hash)) {
+        continue;
+      }
+      
+      // Increment table size and check for resize
+      if (table->incSize() == capacity * 3 / 4) {
+        LongHashTable *new_table = LongHashTable::allocate(table, capacity * 2);
+        if (new_table != NULL) {
+          __sync_bool_compare_and_swap(&_current_longterm_table, table, new_table);
+        }
+      }
+
+      // Check if trace exists in previous table
+      CallTrace *trace = table->prev() == NULL ? NULL : findCallTrace(table->prev(), hash);
+      if (trace == NULL) {
+        trace = storeCallTrace(num_frames, frames, truncated, true);
+      }
+      
+      CallTraceSample &sample = table->values()[slot];
+      sample.setTrace(trace);
+      sample.samples = 1;
+
+      // Clear slot in previous table to avoid duplication
+      LongHashTable *prev_table = table->prev();
+      if (prev_table != NULL) {
+        prev_table->keys()[slot] = 0;
+      }
+      
+      u32 call_trace_id = LONGTERM_ID_OFFSET + capacity - (LONGTERM_INITIAL_CAPACITY - 1) + slot;
+      _longterm_lock.unlockShared();
+      return call_trace_id;
+    }
+
+    if (++step >= capacity) {
+      atomicInc(_longterm_overflow);
+      _longterm_lock.unlockShared();
+      return OVERFLOW_TRACE_ID;
+    }
+    slot = (slot + step) & (capacity - 1);
+  }
+}
+
+
+void CallTraceStorage::removeLongtermReference(u32 call_trace_id) {
+  if (call_trace_id < LONGTERM_ID_OFFSET) {
+    return; // Not a longterm ID
+  }
+  
+  _longterm_lock.lockShared();
+  
+  for (LongHashTable *table = _current_longterm_table; table != NULL; table = table->prev()) {
+    u32 capacity = table->capacity();
+    u32 expected_base = LONGTERM_ID_OFFSET + capacity - (LONGTERM_INITIAL_CAPACITY - 1);
+    
+    if (call_trace_id >= expected_base && call_trace_id < expected_base + capacity) {
+      u32 slot = call_trace_id - expected_base;
+      if (slot < capacity && table->keys()[slot] != 0) {
+        CallTraceSample &sample = table->values()[slot];
+        if (sample.samples > 0) {
+          atomicInc(sample.samples, -1);
+        }
+        break;
+      }
+    }
+  }
+  
+  _longterm_lock.unlockShared();
+}
+
+CallTrace *CallTraceStorage::copyCallTrace(CallTrace *original_trace, LinearAllocator *target_allocator) {
+  if (original_trace == NULL) {
+    return NULL;
+  }
+  
+  const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
+  const size_t total_size = header_size + original_trace->num_frames * sizeof(ASGCT_CallFrame);
+  
+  CallTrace *new_trace = (CallTrace *)target_allocator->alloc(total_size);
+  if (new_trace != NULL) {
+    new_trace->num_frames = original_trace->num_frames;
+    new_trace->truncated = original_trace->truncated;
+    // Copy frames - avoid memcpy in signal handler context
+    for (int i = 0; i < original_trace->num_frames; i++) {
+      new_trace->frames[i] = original_trace->frames[i];
+    }
+  }
+  return new_trace;
+}
+
+void CallTraceStorage::compact() {
+  _longterm_lock.lock();
+  
+  // Check if compaction is needed - count entries to be removed
+  u32 entries_to_remove = 0;
+  u32 total_entries = 0;
+  
+  for (LongHashTable *table = _current_longterm_table; table != NULL; table = table->prev()) {
+    u64 *keys = table->keys();
+    CallTraceSample *values = table->values();
+    u32 capacity = table->capacity();
+
+    for (u32 slot = 0; slot < capacity; slot++) {
+      if (keys[slot] != 0) {
+        total_entries++;
+        u64 sample_count = __atomic_load_n(&values[slot].samples, __ATOMIC_ACQUIRE);
+        if (sample_count == 0) {
+          entries_to_remove++;
+        }
+      }
+    }
+  }
+  
+  // Only perform true compaction if significant memory can be reclaimed
+  // Threshold: compact if more than 25% of entries are to be removed
+  if (entries_to_remove > 0 && entries_to_remove * 4 > total_entries) {
+    // True compaction: copy live traces to new allocator, then clear old one
+    // This follows the same pattern as CallTraceStorage::clear()
+    
+    LinearAllocator new_allocator(LONGTERM_CALL_TRACE_CHUNK);
+    
+    // Step 1: Copy all live traces to new allocator while preserving slot positions
+    for (LongHashTable *table = _current_longterm_table; table != NULL; table = table->prev()) {
+      u64 *keys = table->keys();
+      CallTraceSample *values = table->values();
+      u32 capacity = table->capacity();
+
+      for (u32 slot = 0; slot < capacity; slot++) {
+        if (keys[slot] != 0 && __atomic_load_n(&values[slot].samples, __ATOMIC_ACQUIRE) > 0) {
+          // This is a live trace - copy it to new allocator
+          CallTrace *original_trace = values[slot].acquireTrace();
+          if (original_trace != NULL) {
+            CallTrace *new_trace = copyCallTrace(original_trace, &new_allocator);
+            if (new_trace != NULL) {
+              values[slot].setTrace(new_trace);
+            } else {
+              // Failed to allocate - mark as dead
+              keys[slot] = 0;
+              values[slot].setTrace(NULL);
+              values[slot].samples = 0;
+              values[slot].counter = 0;
+            }
+          }
+        } else {
+          // Dead entry - clear it
+          keys[slot] = 0;
+          values[slot].setTrace(NULL);
+          values[slot].samples = 0;
+          values[slot].counter = 0;
+        }
+      }
+    }
+    
+    // Step 2: Clear old allocator - this FREES ALL old CallTrace memory at once  
+    // (same as CallTraceStorage::clear() does for short-term storage)
+    _longterm_allocator.clear();
+    
+    // Step 3: Copy traces back from new_allocator to cleared _longterm_allocator
+    // This avoids issues with moving LinearAllocator which may not have proper move semantics
+    for (LongHashTable *table = _current_longterm_table; table != NULL; table = table->prev()) {
+      u64 *keys = table->keys();
+      CallTraceSample *values = table->values();
+      u32 capacity = table->capacity();
+
+      for (u32 slot = 0; slot < capacity; slot++) {
+        if (keys[slot] != 0 && values[slot].acquireTrace() != NULL) {
+          // This trace is currently in new_allocator, copy it to cleared _longterm_allocator
+          CallTrace *temp_trace = values[slot].acquireTrace();
+          CallTrace *final_trace = copyCallTrace(temp_trace, &_longterm_allocator);
+          if (final_trace != NULL) {
+            values[slot].setTrace(final_trace);
+          } else {
+            // Failed to allocate in cleared allocator - remove entry
+            keys[slot] = 0;
+            values[slot].setTrace(NULL);
+            values[slot].samples = 0;
+            values[slot].counter = 0;
+          }
+        }
+      }
+    }
+    
+    // new_allocator will be destroyed here, freeing the temporary copies
+    
+  } else {
+    // Simple cleanup without memory compaction (for small amounts of dead entries)
+    for (LongHashTable *table = _current_longterm_table; table != NULL; table = table->prev()) {
+      u64 *keys = table->keys();
+      CallTraceSample *values = table->values();
+      u32 capacity = table->capacity();
+
+      for (u32 slot = 0; slot < capacity; slot++) {
+        if (keys[slot] != 0 && __atomic_load_n(&values[slot].samples, __ATOMIC_ACQUIRE) == 0) {
+          // This slot has no longterm references - remove it
+          // NOTE: CallTrace memory is NOT freed in this path (memory leak)
+          keys[slot] = 0;
+          values[slot].setTrace(NULL);
+          values[slot].samples = 0;
+          values[slot].counter = 0;
+        }
+      }
+    }
+  }
+  
+  _longterm_lock.unlock();
+}
+
+void CallTraceStorage::incrementSamples(u32 call_trace_id) {
+  if (call_trace_id >= LONGTERM_ID_OFFSET) {
+    // Long-term trace ID
+    _longterm_lock.lockShared();
+    
+    u32 adjusted_id = call_trace_id - LONGTERM_ID_OFFSET;
+    for (LongHashTable *table = _current_longterm_table; table != NULL; table = table->prev()) {
+      u32 capacity = table->capacity();
+      u32 slot = adjusted_id - (capacity - (LONGTERM_INITIAL_CAPACITY - 1));
+      
+      if (slot < capacity && table->keys()[slot] != 0) {
+        __atomic_fetch_add(&table->values()[slot].samples, 1, __ATOMIC_RELAXED);
+        break;
+      }
+    }
+    
+    _longterm_lock.unlockShared();
+  } else {
+    // Short-term trace ID
+    _lock.lockShared();
+    
+    for (LongHashTable *table = _current_table; table != NULL; table = table->prev()) {
+      u32 capacity = table->capacity();
+      u32 slot = call_trace_id - (capacity - (INITIAL_CAPACITY - 1));
+      
+      if (slot < capacity && table->keys()[slot] != 0) {
+        __atomic_fetch_add(&table->values()[slot].samples, 1, __ATOMIC_RELAXED);
+        break;
+      }
+    }
+    
+    _lock.unlockShared();
+  }
+}
+
+void CallTraceStorage::decrementSamples(u32 call_trace_id) {
+  if (call_trace_id >= LONGTERM_ID_OFFSET) {
+    // Long-term trace ID
+    _longterm_lock.lockShared();
+    
+    u32 adjusted_id = call_trace_id - LONGTERM_ID_OFFSET;
+    for (LongHashTable *table = _current_longterm_table; table != NULL; table = table->prev()) {
+      u32 capacity = table->capacity();
+      u32 slot = adjusted_id - (capacity - (LONGTERM_INITIAL_CAPACITY - 1));
+      
+      if (slot < capacity && table->keys()[slot] != 0) {
+        u64 current = __atomic_load_n(&table->values()[slot].samples, __ATOMIC_RELAXED);
+        if (current > 0) {
+          __atomic_fetch_sub(&table->values()[slot].samples, 1, __ATOMIC_RELAXED);
+        }
+        break;
+      }
+    }
+    
+    _longterm_lock.unlockShared();
+  } else {
+    // Short-term trace ID
+    _lock.lockShared();
+    
+    for (LongHashTable *table = _current_table; table != NULL; table = table->prev()) {
+      u32 capacity = table->capacity();
+      u32 slot = call_trace_id - (capacity - (INITIAL_CAPACITY - 1));
+      
+      if (slot < capacity && table->keys()[slot] != 0) {
+        u64 current = __atomic_load_n(&table->values()[slot].samples, __ATOMIC_RELAXED);
+        if (current > 0) {
+          __atomic_fetch_sub(&table->values()[slot].samples, 1, __ATOMIC_RELAXED);
+        }
+        break;
+      }
+    }
+    
+    _lock.unlockShared();
+  }
 }

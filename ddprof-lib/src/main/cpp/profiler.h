@@ -202,6 +202,7 @@ public:
   Dictionary *contextValueMap() { return &_context_value_map; }
   u32 numContextAttributes() { return _num_context_attributes; }
   ThreadFilter *threadFilter() { return &_thread_filter; }
+  CallTraceStorage *getCallTraceStorage() { return &_call_trace_storage; }
 
   int lookupClass(const char *key, size_t length);
   void collectCallTraces(std::map<u32, CallTrace *> &traces) {
