@@ -1,4 +1,4 @@
-package com.datadoghq.profiler;
+package com.datadoghq.profiler.memleak;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import org.junit.jupiter.api.Test;
@@ -7,7 +7,6 @@ import org.openjdk.jmc.common.item.IItemCollection;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
 public class LivenessStacktraceTest extends AbstractProfilerTest {
     

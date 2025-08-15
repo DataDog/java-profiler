@@ -140,6 +140,7 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
         env->ReleaseStringUTFChars(name_str, name);
 
         TEST_LOG("LivenessTracker::flush recording liveness event with call_trace_id=%u", table[i].call_trace_id);
+        _call_trace_storage->incrementSamples(table[i].call_trace_id);
         Profiler::instance()->recordDeferredSample(table[i].tid, table[i].call_trace_id, BCI_LIVENESS, &event);
       }
 

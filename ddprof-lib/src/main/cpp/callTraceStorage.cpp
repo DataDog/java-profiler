@@ -276,7 +276,6 @@ u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame *frames,
       
       // Maintain call trace index incrementally during insertion
       u32 call_trace_id = capacity - (INITIAL_CAPACITY - 1) + slot;
-      _call_trace_index.put(call_trace_id, CallTraceLocation(table, slot));
       
       break;
     }

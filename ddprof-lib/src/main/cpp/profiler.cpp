@@ -1333,7 +1333,6 @@ Error Profiler::dump(const char *path, const int length) {
 
   if (_state == RUNNING) {
     std::set<int> thread_ids;
-    LivenessTracker::instance()->markLiveCallTraces();
     LivenessTracker::instance()->flush(thread_ids);
 
     updateJavaThreadNames();

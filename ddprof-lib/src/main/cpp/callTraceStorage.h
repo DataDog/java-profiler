@@ -95,7 +95,7 @@ private:
     CallTraceLocation() : table(nullptr), slot(0) {}
     CallTraceLocation(LongHashTable* t, u32 s) : table(t), slot(s) {}
   };
-  
+
   // Thread-safe concurrent hash table for call trace index
   ConcurrentHashTable<u32, CallTraceLocation> _call_trace_index;
 };
