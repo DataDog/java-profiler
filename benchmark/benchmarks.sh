@@ -18,17 +18,17 @@ run_benchmarks() {
   fi
 }
 
-# Find or rebuild tracer to be used in the benchmarks
+# Find or rebuild profiler to be used in the benchmarks
 if [[ ! -f "${PROFILER}" ]]; then
   mkdir -p "${SCRIPT_DIR}/profiler"
   cd "${PROFILER_DIR}"
   readonly PROFILER_VERSION=$(./gradlew properties -q | grep "version:" | awk '{print $2}')
   readonly PROFILER_COMPILED="${PROFILER_DIR}/ddprof-lib/build/native/release/META-INF/native-libs/linux-x64/libjavaProfiler.so"
   if [[ ! -f "${PROFILER_COMPILED}" ]]; then
-    echo "Tracer not found, starting gradle compile ..."
-    ./gradlew assemble
+    echo "Profiler not found, starting gradle compile ..."
+    ./gradlew assembleAll
   fi
-  cp "${TRACER_COMPILED}" "${PROFILER}"
+  cp "${PROFILER_COMPILED}" "${PROFILER}"
   cd "${SCRIPT_DIR}"
 fi
 
