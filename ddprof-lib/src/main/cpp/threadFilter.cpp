@@ -37,17 +37,16 @@ void ThreadFilter::initializeChunk(int chunk_idx) {
     ChunkStorage* existing = _chunks[chunk_idx].load(std::memory_order_acquire);
     if (existing != nullptr) return;
 
-    // Allocate new chunk
+    // Allocate and initialize new chunk completely before swapping
     ChunkStorage* new_chunk = new ChunkStorage();
+    for (auto& slot : new_chunk->slots) {
+        slot.value.store(-1, std::memory_order_relaxed);
+    }
 
     // Try to install it atomically
     ChunkStorage* expected = nullptr;
     if (_chunks[chunk_idx].compare_exchange_strong(expected, new_chunk, std::memory_order_acq_rel)) {
-        // Successfully installed - initialize all slots
-        for (auto& slot : new_chunk->slots) {
-            slot.value.store(-1, std::memory_order_relaxed);
-        }
-        new_chunk->initialized.store(true, std::memory_order_release);
+        // Successfully installed
     } else {
         // Another thread beat us to it - clean up our allocation
         delete new_chunk;

@@ -50,7 +50,6 @@ private:
     // Pre-allocated chunk storage to eliminate mutex contention
     struct ChunkStorage {
         std::array<Slot, kChunkSize> slots;
-        std::atomic<bool> initialized{false};
     };
 
     bool _enabled = false;
