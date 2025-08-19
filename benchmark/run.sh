@@ -3,27 +3,27 @@ set -eu
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 readonly INITIAL_DIR="$(pwd)"
-readonly TRACER="${SCRIPT_DIR}/tracer/dd-java-agent.jar"
+export PROFILER="${SCRIPT_DIR}/profiler/libjavaProfiler.so"
 
 cd "${SCRIPT_DIR}"
 
 # Build container image
 echo "Building base image ..."
 docker build \
-  -t dd-trace-java/benchmark \
+  -t profiler-java/benchmark \
   .
 
-# Find or rebuild tracer to be used in the benchmarks
-if [[ ! -f "${TRACER}" ]]; then
+# Find or rebuild profiler to be used in the benchmarks
+if [[ ! -f "${PROFILER}" ]]; then
   mkdir -p "${SCRIPT_DIR}/tracer"
   cd "${SCRIPT_DIR}/.."
-  readonly TRACER_VERSION=$(./gradlew properties -q | grep "version:" | awk '{print $2}')
-  readonly TRACER_COMPILED="${SCRIPT_DIR}/../dd-java-agent/build/libs/dd-java-agent-${TRACER_VERSION}.jar"
+  readonly PROFILER_VERSION=$(./gradlew properties -q | grep "version:" | awk '{print $2}')
+  readonly PROFILER_COMPILED="${SCRIPT_DIR}/../java-profiler//ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
   if [ ! -f "${TRACER_COMPILED}" ]; then
-    echo "Tracer not found, starting gradle compile ..."
+    echo "Profiler not found, starting gradle compile ..."
     ./gradlew assemble
   fi
-  cp "${TRACER_COMPILED}" "${TRACER}"
+  cp "${PROFILER_COMPILED}" "${PROFILER}"
   cd "${SCRIPT_DIR}"
 fi
 
@@ -32,12 +32,12 @@ echo "Running benchmarks ..."
 docker run --rm \
   -v "${HOME}/.gradle":/home/benchmark/.gradle:delegated \
   -v "${PWD}/..":/tracer:delegated \
-  -w /tracer/benchmark \
+  -w /profiler/benchmark \
   -e GRADLE_OPTS="-Dorg.gradle.daemon=false" \
   --entrypoint=./benchmarks.sh \
-  --name dd-trace-java-benchmark \
+  --name java-profiler-benchmark \
   --cap-add SYS_ADMIN \
-  dd-trace-java/benchmark \
+  java-profiler/benchmark \
   "$@"
 
 cd "${INITIAL_DIR}"
