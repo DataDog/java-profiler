@@ -141,7 +141,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     }
   }
   
-  // These should always run if we have a valid tid
+  // These can run if we have a valid tid
   updateThreadName(jvmti, jni, thread, false);  // false = not self
   _cpu_engine->unregisterThread(tid);
   _wall_engine->unregisterThread(tid);
