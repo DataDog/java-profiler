@@ -26,7 +26,7 @@ if [[ ! -f "${PROFILER}" ]]; then
   readonly PROFILER_COMPILED="${PROFILER_DIR}/ddprof-lib/build/native/release/META-INF/native-libs/linux-x64/libjavaProfiler.so"
   if [[ ! -f "${PROFILER_COMPILED}" ]]; then
     echo "Profiler not found, starting gradle compile ..."
-    ./gradlew assembleAll
+    ./gradlew assemble
   fi
   cp "${PROFILER_COMPILED}" "${PROFILER}"
   cd "${SCRIPT_DIR}"
