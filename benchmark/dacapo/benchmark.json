@@ -14,7 +14,7 @@
     "profiling": {
       "env": {
         "VARIANT": "profiling",
-        "JAVA_OPTS": "-javapath:${PROFILER} -Ddd.profiling.enabled=true"
+        "JAVA_OPTS": "-agentpath:${PROFILER}=start,wall=10ms,file=${OUTPUT_DIR}/${VARIANT}/profiler.jfr"
       }
     }
   }
