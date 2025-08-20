@@ -5,7 +5,6 @@ import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.context.ContextExecutor;
 import com.datadoghq.profiler.junit.CStack;
 import com.datadoghq.profiler.junit.RetryTest;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.openjdk.jmc.common.item.IItem;
@@ -21,8 +20,6 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 
 public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTest {
@@ -52,9 +49,12 @@ public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTe
     @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
     public void test(@CStack String cstack) {
         // Skip test entirely on unsupported JVMs (don't use assumeFalse which gets retried)
-        if (Platform.isZing() || Platform.isJ9()) {
+        if (Platform.isZing() || Platform.isJ9() ||
+            (isInCI() && isAsan() && Platform.isGraal() && Platform.isAarch64() &&
+             ("vm".equals(cstack) || "vmx".equals(cstack)))) {
             return;
         }
+
         // Running vm stackwalker tests on JVMCI (Graal), JDK 24, aarch64 and with a sanitizer is crashing in a weird place
         // This looks like the sanitizer instrumentation is breaking the longjump based crash recovery :(
         String config = System.getProperty("ddprof_test.config");
