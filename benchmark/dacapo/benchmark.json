@@ -1,0 +1,21 @@
+{
+  "name": "dacapo_${BENCHMARK}",
+  "setup": "bash -c \"mkdir -p ${OUTPUT_DIR}/${VARIANT}\"",
+  "run": "bash -c \"java ${JAVA_OPTS} -jar ${DACAPO} --converge --scratch-directory=${OUTPUT_DIR}/${VARIANT}/scratch --latency-csv ${BENCHMARK} &> ${OUTPUT_DIR}/${VARIANT}/dacapo.log\"",
+  "timeout": 150,
+  "iterations": 1,
+  "variants": {
+    "baseline": {
+      "env": {
+        "VARIANT": "baseline",
+        "JAVA_OPTS": ""
+      }
+    },
+    "profiling": {
+      "env": {
+        "VARIANT": "profiling",
+        "JAVA_OPTS": "-javapath:${PROFILER} -Ddd.profiling.enabled=true"
+      }
+    }
+  }
+}

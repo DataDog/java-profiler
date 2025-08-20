@@ -19,8 +19,11 @@ if [[ ! -f "${PROFILER}" ]]; then
   cd "${SCRIPT_DIR}/.."
 
   ARCH=$(uname -p)
-  if [ $ARCH eq "x86_64" ]; then
+  if [[ "$ARCH" == "x86_64" ]];
+  then
     ARCH="x64"
+  elif [[ "$ARCH" == "aarch64" ]]
+    ARCH="arm64"
   fi
 
   readonly PROFILER_VERSION=$(./gradlew properties -q | grep "version:" | awk '{print $2}')
