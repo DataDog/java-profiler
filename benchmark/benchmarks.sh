@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -eu
 
+echo "Running benchmarks ..."
+
 readonly SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 export PROFILER_DIR="${SCRIPT_DIR}/.."
 export REPORTS_DIR="${SCRIPT_DIR}/reports"
@@ -22,8 +24,13 @@ run_benchmarks() {
 if [[ ! -f "${PROFILER}" ]]; then
   mkdir -p "${SCRIPT_DIR}/profiler"
   cd "${PROFILER_DIR}"
+  ARCH=$(uname -p)
+  if [ $ARCH eq "x86_64" ]; then
+    ARCH="x64"
+  fi
+
   readonly PROFILER_VERSION=$(./gradlew properties -q | grep "version:" | awk '{print $2}')
-  readonly PROFILER_COMPILED="${PROFILER_DIR}/ddprof-lib/build/native/release/META-INF/native-libs/linux-x64/libjavaProfiler.so"
+  readonly PROFILER_COMPILED="${SCRIPT_DIR}/../ddprof-lib/build/lib/main/release/linux/${ARCH}/libjavaProfiler.so"
   if [[ ! -f "${PROFILER_COMPILED}" ]]; then
     echo "Profiler not found, starting gradle compile ..."
     ./gradlew assemble

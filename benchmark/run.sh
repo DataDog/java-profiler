@@ -10,16 +10,22 @@ cd "${SCRIPT_DIR}"
 # Build container image
 echo "Building base image ..."
 docker build \
-  -t profiler-java/benchmark \
+  -t java-profiler/benchmark \
   .
 
 # Find or rebuild profiler to be used in the benchmarks
 if [[ ! -f "${PROFILER}" ]]; then
-  mkdir -p "${SCRIPT_DIR}/tracer"
+  mkdir -p "${SCRIPT_DIR}/profiler"
   cd "${SCRIPT_DIR}/.."
+
+  ARCH=$(uname -p)
+  if [ $ARCH eq "x86_64" ]; then
+    ARCH="x64"
+  fi
+
   readonly PROFILER_VERSION=$(./gradlew properties -q | grep "version:" | awk '{print $2}')
-  readonly PROFILER_COMPILED="${SCRIPT_DIR}/../java-profiler//ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
-  if [ ! -f "${TRACER_COMPILED}" ]; then
+  readonly PROFILER_COMPILED="${SCRIPT_DIR}/../ddprof-lib/build/lib/main/release/linux/${ARCH}/libjavaProfiler.so"
+  if [ ! -f "${PROFILER_COMPILED}" ]; then
     echo "Profiler not found, starting gradle compile ..."
     ./gradlew assemble
   fi
@@ -28,10 +34,9 @@ if [[ ! -f "${PROFILER}" ]]; then
 fi
 
 # Trigger benchmarks
-echo "Running benchmarks ..."
 docker run --rm \
   -v "${HOME}/.gradle":/home/benchmark/.gradle:delegated \
-  -v "${PWD}/..":/tracer:delegated \
+  -v "${PWD}/..":/profiler:delegated \
   -w /profiler/benchmark \
   -e GRADLE_OPTS="-Dorg.gradle.daemon=false" \
   --entrypoint=./benchmarks.sh \

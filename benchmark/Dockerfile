@@ -1,7 +1,7 @@
 # Dacapo download
 FROM debian:bookworm-slim as dacapo
 RUN apt-get update \
-  && apt-get -y install wget unzip libgmock-dev \
+  && apt-get -y install wget unzip libc6 \
   && apt-get -y clean \
   && rm -rf /var/lib/apt/lists/*
 
