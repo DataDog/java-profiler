@@ -16,7 +16,7 @@
 
 #include <assert.h>
 
-#include "branch_hints.h"
+#include "arch_dd.h"
 #include "context.h"
 #include "counters.h"
 #include "engine.h"

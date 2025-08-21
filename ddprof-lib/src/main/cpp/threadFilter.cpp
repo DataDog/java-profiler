@@ -20,9 +20,11 @@
 // - These methods assume slot_id comes from registerThread() (undefined behavior otherwise)
 
 #include "threadFilter.h"
-#include "branch_hints.h"
+#include "arch_dd.h"
 
+#include <cassert>
 #include <cstdlib>
+#include <cstdio>
 #include <thread>
 #include <algorithm>
 #include <cstring>
@@ -181,10 +183,17 @@ void ThreadFilter::remove(SlotID slot_id) {
     int chunk_idx = slot_id >> kChunkShift;
     int slot_idx = slot_id & kChunkMask;
 
-    ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
-    if (likely(chunk != nullptr)) {
-        chunk->slots[slot_idx].value.store(-1, std::memory_order_release);
+    if (unlikely(chunk_idx >= kMaxChunks)) {
+        assert(false && "Invalid slot_id in ThreadFilter::remove - should not happen after wall clock fix");
+        return;
     }
+
+    ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
+    if (unlikely(chunk == nullptr)) {
+        return;
+    }
+    
+    chunk->slots[slot_idx].value.store(-1, std::memory_order_release);
 }
 
 void ThreadFilter::unregisterThread(SlotID slot_id) {
