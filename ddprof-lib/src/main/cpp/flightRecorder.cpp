@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2025, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -1104,44 +1105,44 @@ void Recording::writeThreads(Buffer *buf) {
 }
 
 void Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
-  std::map<u32, CallTrace *> traces;
-  Profiler::instance()->collectCallTraces(traces);
-
-  buf->putVar64(T_STACK_TRACE);
-  buf->putVar64(traces.size());
-  for (std::map<u32, CallTrace *>::const_iterator it = traces.begin();
-       it != traces.end(); ++it) {
-    CallTrace *trace = it->second;
-    buf->putVar64(it->first);
-    if (trace->num_frames > 0) {
-      MethodInfo *mi =
-          lookup->resolveMethod(trace->frames[trace->num_frames - 1]);
-      if (mi->_type < FRAME_NATIVE) {
-        buf->put8(mi->_is_entry ? 0 : 1);
-      } else {
-        buf->put8(trace->truncated);
+  // Use safe trace processing with guaranteed lifetime during callback execution
+  Profiler::instance()->processCallTraces([this, buf, lookup](const std::unordered_set<CallTrace*>& traces) {
+    buf->putVar64(T_STACK_TRACE);
+    buf->putVar64(traces.size());
+    for (std::unordered_set<CallTrace *>::const_iterator it = traces.begin();
+         it != traces.end(); ++it) {
+      CallTrace *trace = *it;
+      buf->putVar64(trace->trace_id);
+      if (trace->num_frames > 0) {
+        MethodInfo *mi =
+            lookup->resolveMethod(trace->frames[trace->num_frames - 1]);
+        if (mi->_type < FRAME_NATIVE) {
+          buf->put8(mi->_is_entry ? 0 : 1);
+        } else {
+          buf->put8(trace->truncated);
+        }
       }
-    }
-    buf->putVar64(trace->num_frames);
-    for (int i = 0; i < trace->num_frames; i++) {
-      MethodInfo *mi = lookup->resolveMethod(trace->frames[i]);
-      buf->putVar64(mi->_key);
-      jint bci = trace->frames[i].bci;
-      if (mi->_type < FRAME_NATIVE) {
-        FrameTypeId type = FrameType::decode(bci);
-        bci = (bci & 0x10000) ? 0 : (bci & 0xffff);
-        buf->putVar32(mi->getLineNumber(bci));
-        buf->putVar32(bci);
-        buf->put8(type);
-      } else {
-        buf->putVar32(0);
-        buf->putVar32(bci);
-        buf->put8(mi->_type);
+      buf->putVar64(trace->num_frames);
+      for (int i = 0; i < trace->num_frames; i++) {
+        MethodInfo *mi = lookup->resolveMethod(trace->frames[i]);
+        buf->putVar64(mi->_key);
+        jint bci = trace->frames[i].bci;
+        if (mi->_type < FRAME_NATIVE) {
+          FrameTypeId type = FrameType::decode(bci);
+          bci = (bci & 0x10000) ? 0 : (bci & 0xffff);
+          buf->putVar32(mi->getLineNumber(bci));
+          buf->putVar32(bci);
+          buf->put8(type);
+        } else {
+          buf->putVar32(0);
+          buf->putVar32(bci);
+          buf->put8(mi->_type);
+        }
+        flushIfNeeded(buf);
       }
       flushIfNeeded(buf);
     }
-    flushIfNeeded(buf);
-  }
+  });  // End of processCallTraces lambda
 }
 
 void Recording::writeMethods(Buffer *buf, Lookup *lookup) {
@@ -1286,7 +1287,7 @@ void Recording::writeEventSizePrefix(Buffer *buf, int start) {
   buf->put8(start, size);
 }
 
-void Recording::recordExecutionSample(Buffer *buf, int tid, u32 call_trace_id,
+void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
                                       ExecutionEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_EXECUTION_SAMPLE);
@@ -1301,7 +1302,7 @@ void Recording::recordExecutionSample(Buffer *buf, int tid, u32 call_trace_id,
   flushIfNeeded(buf);
 }
 
-void Recording::recordMethodSample(Buffer *buf, int tid, u32 call_trace_id,
+void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
                                    ExecutionEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_METHOD_SAMPLE);
@@ -1362,7 +1363,7 @@ void Recording::recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event) {
 }
 
 void Recording::recordAllocation(RecordingBuffer *buf, int tid,
-                                 u32 call_trace_id, AllocEvent *event) {
+                                 u64 call_trace_id, AllocEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_ALLOC);
   buf->putVar64(TSC::ticks());
@@ -1376,13 +1377,13 @@ void Recording::recordAllocation(RecordingBuffer *buf, int tid,
   flushIfNeeded(buf);
 }
 
-void Recording::recordHeapLiveObject(Buffer *buf, int tid, u32 call_trace_id,
+void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
                                      ObjectLivenessEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_HEAP_LIVE_OBJECT);
   buf->putVar64(event->_start_time);
   buf->putVar32(tid);
-  buf->putVar32(call_trace_id);
+  buf->putVar64(call_trace_id);
   buf->putVar32(event->_id);
   buf->putVar64(event->_age);
   buf->putVar64(event->_alloc._size);
@@ -1398,7 +1399,7 @@ void Recording::recordHeapLiveObject(Buffer *buf, int tid, u32 call_trace_id,
   flushIfNeeded(buf);
 }
 
-void Recording::recordMonitorBlocked(Buffer *buf, int tid, u32 call_trace_id,
+void Recording::recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,
                                      LockEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_MONITOR_ENTER);
@@ -1414,7 +1415,7 @@ void Recording::recordMonitorBlocked(Buffer *buf, int tid, u32 call_trace_id,
   flushIfNeeded(buf);
 }
 
-void Recording::recordThreadPark(Buffer *buf, int tid, u32 call_trace_id,
+void Recording::recordThreadPark(Buffer *buf, int tid, u64 call_trace_id,
                                  LockEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_THREAD_PARK);
@@ -1571,7 +1572,7 @@ void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
   }
 }
 
-void FlightRecorder::recordEvent(int lock_index, int tid, u32 call_trace_id,
+void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
                                  int event_type, Event *event) {
   if (_rec != NULL) {
     RecordingBuffer *buf = _rec->buffer(lock_index);

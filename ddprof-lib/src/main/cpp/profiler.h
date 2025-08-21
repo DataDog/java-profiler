@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2025, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -204,10 +205,18 @@ public:
   ThreadFilter *threadFilter() { return &_thread_filter; }
 
   int lookupClass(const char *key, size_t length);
-  void collectCallTraces(std::map<u32, CallTrace *> &traces) {
+  void processCallTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor) {
     if (!_omit_stacktraces) {
-      _call_trace_storage.collectTraces(traces);
+      _call_trace_storage.processTraces(processor);
+    } else {
+      // If stack traces are omitted, call processor with empty set
+      static std::unordered_set<CallTrace*> empty_traces;
+      processor(empty_traces);
     }
+  }
+  
+  void registerLivenessChecker(LivenessChecker checker) {
+    _call_trace_storage.registerLivenessChecker(checker);
   }
 
   inline u32 recordingEpoch() {
@@ -229,9 +238,9 @@ public:
   int convertNativeTrace(int native_frames, const void **callchain,
                          ASGCT_CallFrame *frames);
   void recordSample(void *ucontext, u64 weight, int tid, jint event_type,
-                    u32 call_trace_id, Event *event);
-  u32 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
-  void recordDeferredSample(int tid, u32 call_trace_id, jint event_type, Event *event);
+                    u64 call_trace_id, Event *event);
+  u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
+  void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);
   void recordExternalSample(u64 weight, int tid, int num_frames,
                             ASGCT_CallFrame *frames, bool truncated,
                             jint event_type, Event *event);

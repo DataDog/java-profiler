@@ -1,3 +1,8 @@
+/*
+ * Copyright 2025, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #ifndef _THREAD_H
 #define _THREAD_H
 
@@ -41,7 +46,7 @@ private:
   int _tid;
   u32 _cpu_epoch;
   u32 _wall_epoch;
-  u32 _call_trace_id;
+  u64 _call_trace_id;
   u32 _recording_epoch;
   UnwindFailures _unwind_failures;
 
@@ -72,7 +77,7 @@ public:
     return ++_cpu_epoch;
   }
 
-  u32 lookupWallclockCallTraceId(u64 pc, u32 recording_epoch, u64 span_id) {
+  u64 lookupWallclockCallTraceId(u64 pc, u32 recording_epoch, u64 span_id) {
     if (_wall_epoch == _cpu_epoch && _pc == pc && _span_id == span_id &&
         _recording_epoch == recording_epoch && _call_trace_id != 0) {
       return _call_trace_id;
@@ -83,7 +88,7 @@ public:
     return 0;
   }
 
-  inline void recordCallTraceId(u32 call_trace_id) {
+  inline void recordCallTraceId(u64 call_trace_id) {
     _call_trace_id = call_trace_id;
   }
 
