@@ -1,5 +1,23 @@
-// Copyright (C) Datadog 2025
+/*
+ * Copyright 2025 Datadog, Inc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 // High-performance lock-free thread filter implementation
+//
+// PERFORMANCE CONTRACT:
+// - add(), remove(), accept() are optimized for signal-safe hot paths
+// - These methods assume slot_id comes from registerThread() (undefined behavior otherwise)
 
 #include "threadFilter.h"
 
@@ -149,6 +167,8 @@ bool ThreadFilter::accept(SlotID slot_id) const {
 }
 
 void ThreadFilter::add(int tid, SlotID slot_id) {
+    // PRECONDITION: slot_id must be from registerThread() or negative
+    // Undefined behavior for invalid positive slot_ids (performance optimization)
     if (slot_id < 0) return;
 
     int chunk_idx = slot_id >> kChunkShift;
@@ -162,12 +182,13 @@ void ThreadFilter::add(int tid, SlotID slot_id) {
 }
 
 void ThreadFilter::remove(SlotID slot_id) {
+    // PRECONDITION: slot_id must be from registerThread() or negative
+    // Undefined behavior for invalid positive slot_ids (performance optimization)
     if (slot_id < 0) return;
 
     int chunk_idx = slot_id >> kChunkShift;
     int slot_idx = slot_id & kChunkMask;
 
-    // Fast path: assume valid slot_id from registerThread()
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
     if (likely(chunk != nullptr)) {
         chunk->slots[slot_idx].value.store(-1, std::memory_order_release);
@@ -176,11 +197,7 @@ void ThreadFilter::remove(SlotID slot_id) {
 
 void ThreadFilter::unregisterThread(SlotID slot_id) {
     if (slot_id < 0) return;
-
-    // Clear the slot first
     remove(slot_id);
-
-    // Add to free list for reuse
     pushToFreeList(slot_id);
 }
 
