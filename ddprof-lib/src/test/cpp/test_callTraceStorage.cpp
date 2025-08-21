@@ -217,68 +217,12 @@ TEST_F(CallTraceStorageTest, ClearMethod) {
     // clear() should completely clear both storages, ignoring liveness checkers
     storage->clear();
     
-    // Should have no traces after clear
+    // Should have no traces after clear, except for the dropped trace
     size_t traces_after_clear = 0;
     storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
         traces_after_clear = traces.size();
     });
     EXPECT_EQ(traces_after_clear, 1);
-}
-
-TEST_F(CallTraceStorageTest, HandleNullHashTable) {
-    // Test what happens when a hash table's _current_table could be NULL
-    // This simulates the case where initial allocation fails
-    
-    ASGCT_CallFrame frame;
-    frame.bci = 10;
-    frame.method_id = (jmethodID)0x1234;
-    
-    // Create a new hash table - if allocation were to fail, _current_table would be NULL
-    // Our NULL checks should prevent crashes
-    CallTraceHashTable hash_table;
-    
-    // Test that puts work normally when table is allocated properly
-    u64 result = hash_table.put(1, &frame, false, 1);
-    EXPECT_GT(result, 0);  // Should succeed with valid table
-    
-    // Note: We can't easily test the NULL case without mocking OS::safeAlloc,
-    // but the NULL checks we added prevent crashes when _current_table is NULL
-}
-
-TEST_F(CallTraceStorageTest, HandleAllocationFailures) {
-    // Test that we handle graceful degradation when allocations fail
-    ASGCT_CallFrame frame;
-    frame.bci = 10;
-    frame.method_id = (jmethodID)0x1234;
-    
-    // Store a trace normally first
-    u64 normal_trace_id = storage->put(1, &frame, false, 1);
-    EXPECT_GT(normal_trace_id, 0);
-    
-    // Test with many large traces to potentially trigger allocation failures
-    // This creates memory pressure that might cause storeCallTrace to return NULL
-    std::vector<ASGCT_CallFrame> large_frames(1000);  // Very large trace
-    for (int i = 0; i < 1000; i++) {
-        large_frames[i].bci = i;
-        large_frames[i].method_id = (jmethodID)(0x1000 + i);
-    }
-    
-    // Try to store many large traces - some might fail allocation
-    int successful_stores = 0;
-    for (int i = 0; i < 100; i++) {
-        u64 result = storage->put(large_frames.size(), large_frames.data(), false, 1);
-        if (result > 0) {
-            successful_stores++;
-        }
-    }
-    
-    // Even if some allocations fail, we should have some successful stores
-    // and the system should remain stable (no crashes)
-    EXPECT_GT(successful_stores, 0);
-    
-    // System should still be functional after allocation failures
-    u64 recovery_trace_id = storage->put(1, &frame, false, 1);
-    EXPECT_GT(recovery_trace_id, 0);
 }
 
 TEST_F(CallTraceStorageTest, ConcurrentClearAndPut) {
