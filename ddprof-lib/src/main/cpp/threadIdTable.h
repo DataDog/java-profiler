@@ -1,7 +1,17 @@
 /*
- * Copyright The async-profiler authors
- * SPDX-License-Identifier: Apache-2.0
- * Copyright 2021, 2025 Datadog, Inc
+ * Copyright 2025 Datadog, Inc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #ifndef _THREADIDTABLE_H
@@ -9,19 +19,23 @@
 
 #include <atomic>
 #include <unordered_set>
+#include "branch_hints.h"
 
-// Signal-safe thread ID table with fixed size
+// Simple fixed size thread ID table
 class ThreadIdTable {
 private:
     // We have 256 slots per concurrency level (currently 16)
     // This should cater for 4096 threads - if it turns out to be too small, we
     // can increase it or make it configurable
-    static const int TABLE_SIZE = 256;
+    static const int TABLE_SIZE = 256; // power of 2
+    static const int TABLE_MASK = TABLE_SIZE - 1;  // For fast bit masking
     std::atomic<int> table[TABLE_SIZE];
     
     int hash(int tid) const {
-        // Simple hash function - could be improved if needed
-        return tid % TABLE_SIZE;
+        // Improved hash function with bit mixing to reduce clustering
+        unsigned int utid = static_cast<unsigned int>(tid);
+        utid ^= utid >> 16;  // Mix high and low bits
+        return utid & TABLE_MASK;  // Fast bit masking instead of modulo
     }
     
 public:
@@ -31,11 +45,11 @@ public:
     
     // Signal-safe insertion using atomic operations only
     void insert(int tid) {
-        if (tid == 0) return; // Invalid thread ID, 0 is reserved for empty slots
+        if (unlikely(tid == 0)) return; // Invalid thread ID, 0 is reserved for empty slots
         
         int start_slot = hash(tid);
         for (int probe = 0; probe < TABLE_SIZE; probe++) {
-            int slot = (start_slot + probe) % TABLE_SIZE;
+            int slot = (start_slot + probe) & TABLE_MASK;  // Fast bit masking
             int expected = 0;
             
             // Try to claim empty slot
@@ -43,8 +57,8 @@ public:
                 return; // Successfully inserted
             }
             
-            // Check if already present
-            if (table[slot].load(std::memory_order_relaxed) == tid) {
+            // Check if already present (common case - threads insert multiple times)
+            if (likely(table[slot].load(std::memory_order_relaxed) == tid)) {
                 return; // Already exists
             }
         }

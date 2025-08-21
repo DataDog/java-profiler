@@ -20,20 +20,12 @@
 // - These methods assume slot_id comes from registerThread() (undefined behavior otherwise)
 
 #include "threadFilter.h"
+#include "branch_hints.h"
 
 #include <cstdlib>
 #include <thread>
 #include <algorithm>
 #include <cstring>
-
-// Branch prediction hints for hot paths
-#ifdef __GNUC__
-#define likely(x)   __builtin_expect(!!(x), 1)
-#define unlikely(x) __builtin_expect(!!(x), 0)
-#else
-#define likely(x)   (x)
-#define unlikely(x) (x)
-#endif
 
 ThreadFilter::ShardHead ThreadFilter::_free_heads[ThreadFilter::kShardCount] {};
 
