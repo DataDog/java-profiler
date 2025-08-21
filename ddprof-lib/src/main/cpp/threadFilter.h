@@ -18,13 +18,14 @@ public:
     static constexpr int kMaxThreads = 2048;
     static constexpr int kMaxChunks = (kMaxThreads + kChunkSize - 1) / kChunkSize;  // = 8 chunks
     // High-performance free list using Treiber stack, 64 shards
-    static constexpr int kFreeListSize  = 1024;
-    static constexpr int kShardCount    = 64;          // power-of-two
+    static constexpr int kFreeListSize  = 1024;       // power-of-two for fast modulo
+    static constexpr int kShardCount    = 64;          // power-of-two for fast modulo
+    static constexpr int kFreeListMask  = kFreeListSize - 1;  // For fast modulo
     ThreadFilter();
     ~ThreadFilter();
 
     void init(const char* filter);
-    void clear();
+    void initFreeList();
     bool enabled() const;
     bool accept(SlotID slot_id) const;
     void add(int tid, SlotID slot_id);
@@ -52,7 +53,7 @@ private:
         std::array<Slot, kChunkSize> slots;
     };
 
-    bool _enabled = false;
+    std::atomic<bool> _enabled{false};
 
     // Lazily allocated storage for chunks
     std::atomic<ChunkStorage*> _chunks[kMaxChunks];

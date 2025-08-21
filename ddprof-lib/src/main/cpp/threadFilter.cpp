@@ -8,6 +8,15 @@
 #include <algorithm>
 #include <cstring>
 
+// Branch prediction hints for hot paths
+#ifdef __GNUC__
+#define likely(x)   __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+#else
+#define likely(x)   (x)
+#define unlikely(x) (x)
+#endif
+
 ThreadFilter::ShardHead ThreadFilter::_free_heads[ThreadFilter::kShardCount] {};
 
 ThreadFilter::ThreadFilter() : _enabled(false) {
@@ -19,13 +28,26 @@ ThreadFilter::ThreadFilter() : _enabled(false) {
 
     // Initialize the first chunk
     initializeChunk(0);
-    clear();
+    // ordering is fine because we are not enabled yet
+    initFreeList();
 }
 
 ThreadFilter::~ThreadFilter() {
-    // Clean up allocated chunks
+    // Make the filter inert for any concurrent readers
+    _enabled.store(false, std::memory_order_release);
+    // Reset free-list heads and nodes first
+    for (int s = 0; s < kShardCount; ++s) {
+        _free_heads[s].head.store(-1, std::memory_order_relaxed);
+    }
+    for (int i = 0; i < kFreeListSize; ++i) {
+        _free_list[i].value.store(-1, std::memory_order_relaxed);
+        _free_list[i].next.store(-1, std::memory_order_relaxed);
+    }
+    // Publish 0 chunks to stop range scans (collect)
+    _num_chunks.store(0, std::memory_order_release);
+    // Detach and delete chunks
     for (int i = 0; i < kMaxChunks; ++i) {
-        ChunkStorage* chunk = _chunks[i].load(std::memory_order_relaxed);
+        ChunkStorage* chunk = _chunks[i].exchange(nullptr, std::memory_order_acq_rel);
         delete chunk;
     }
 }
@@ -54,6 +76,11 @@ void ThreadFilter::initializeChunk(int chunk_idx) {
 }
 
 ThreadFilter::SlotID ThreadFilter::registerThread() {
+    // If disabled, block new registrations
+    if (!_enabled.load(std::memory_order_acquire)) {
+        return -1;
+    }
+
     // First, try to get a slot from the free list (lock-free stack)
     SlotID reused_slot = popFromFreeList();
     if (reused_slot >= 0) {
@@ -90,19 +117,8 @@ ThreadFilter::SlotID ThreadFilter::registerThread() {
     return index;
 }
 
-void ThreadFilter::clear() {
-    // Clear all initialized chunks
-    int num_chunks = _num_chunks.load(std::memory_order_relaxed);
-    for (int i = 0; i < num_chunks; ++i) {
-        ChunkStorage* chunk = _chunks[i].load(std::memory_order_relaxed);
-        if (chunk != nullptr) {
-            for (auto& slot : chunk->slots) {
-                slot.value.store(-1, std::memory_order_relaxed);
-            }
-        }
-    }
-
-    // Clear the free list
+void ThreadFilter::initFreeList() {
+    // Initialize the free list storage
     for (int i = 0; i < kFreeListSize; ++i) {
         _free_list[i].value.store(-1, std::memory_order_relaxed);
         _free_list[i].next.store(-1, std::memory_order_relaxed);
@@ -115,21 +131,21 @@ void ThreadFilter::clear() {
 }
 
 bool ThreadFilter::accept(SlotID slot_id) const {
-    if (!_enabled) {
+    // Fast path: if disabled, accept everything (relaxed to avoid fences on hot path)
+    if (unlikely(!_enabled.load(std::memory_order_relaxed))) {
         return true;
     }
-    if (slot_id < 0) return false;
+    if (unlikely(slot_id < 0)) return false;
 
     int chunk_idx = slot_id >> kChunkShift;
     int slot_idx = slot_id & kChunkMask;
 
-    if (chunk_idx >= kMaxChunks) return false;
-    if (slot_idx >= kChunkSize) return false;
-
+    // Fast path: assume valid slot_id from registerThread()
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
-    if (chunk == nullptr) return false;  // Fail-fast if not allocated
-
-    return chunk->slots[slot_idx].value.load(std::memory_order_acquire) != -1;
+    if (likely(chunk != nullptr)) {
+        return chunk->slots[slot_idx].value.load(std::memory_order_acquire) != -1;
+    }
+    return false;
 }
 
 void ThreadFilter::add(int tid, SlotID slot_id) {
@@ -138,14 +154,11 @@ void ThreadFilter::add(int tid, SlotID slot_id) {
     int chunk_idx = slot_id >> kChunkShift;
     int slot_idx = slot_id & kChunkMask;
 
-    if (chunk_idx >= kMaxChunks) return;
-    if (slot_idx >= kChunkSize) return;
-
+    // Fast path: assume valid slot_id from registerThread()
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
-    if (chunk == nullptr) return;  // Fail-fast if not allocated
-
-    // Store the tid
-    chunk->slots[slot_idx].value.store(tid, std::memory_order_release);
+    if (likely(chunk != nullptr)) {
+        chunk->slots[slot_idx].value.store(tid, std::memory_order_release);
+    }
 }
 
 void ThreadFilter::remove(SlotID slot_id) {
@@ -154,14 +167,11 @@ void ThreadFilter::remove(SlotID slot_id) {
     int chunk_idx = slot_id >> kChunkShift;
     int slot_idx = slot_id & kChunkMask;
 
-    if (chunk_idx >= kMaxChunks) return;
-    if (slot_idx >= kChunkSize) return;
-
+    // Fast path: assume valid slot_id from registerThread()
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
-    if (chunk == nullptr) return;  // Fail-fast if not allocated
-
-    // Remove the tid
-    chunk->slots[slot_idx].value.store(-1, std::memory_order_acq_rel);
+    if (likely(chunk != nullptr)) {
+        chunk->slots[slot_idx].value.store(-1, std::memory_order_release);
+    }
 }
 
 void ThreadFilter::unregisterThread(SlotID slot_id) {
@@ -184,11 +194,12 @@ bool ThreadFilter::pushToFreeList(SlotID slot_id) {
         if (_free_list[i].value.compare_exchange_strong(
                 expected, slot_id, std::memory_order_acq_rel)) {
             // Link node into this shard’s Treiber stack
-            int old_head = head.load(std::memory_order_acquire);
+            int old_head;
             do {
+                old_head = head.load(std::memory_order_acquire);
                 _free_list[i].next.store(old_head, std::memory_order_relaxed);
             } while (!head.compare_exchange_weak(old_head, i,
-                       std::memory_order_acq_rel, std::memory_order_relaxed));
+                       std::memory_order_release, std::memory_order_relaxed));
             return true;
         }
     }
@@ -210,7 +221,7 @@ ThreadFilter::SlotID ThreadFilter::popFromFreeList() {
 
             int next = _free_list[node].next.load(std::memory_order_relaxed);
             if (head.compare_exchange_weak(node, next,
-                                           std::memory_order_acq_rel,
+                                           std::memory_order_release,
                                            std::memory_order_relaxed))
             {
                 int id = _free_list[node].value.exchange(-1,
@@ -253,18 +264,13 @@ void ThreadFilter::collect(std::vector<int>& tids) const {
 }
 
 void ThreadFilter::init(const char* filter) {
-    if (!filter) {
-        _enabled = false;
-        return;
-    }
-    
     // Simple logic: any filter value (including "0") enables filtering
     // Only explicitly registered threads via addThread() will be sampled
     // Previously we had a syntax where we could manually force some thread IDs.
     // This is no longer supported.
-    _enabled = true;
+    _enabled.store(filter != nullptr, std::memory_order_release);
 }
 
 bool ThreadFilter::enabled() const {
-    return _enabled;
+    return _enabled.load(std::memory_order_acquire);
 }
