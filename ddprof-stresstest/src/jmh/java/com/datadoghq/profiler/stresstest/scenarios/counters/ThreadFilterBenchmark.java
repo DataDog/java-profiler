@@ -218,15 +218,6 @@ public class ThreadFilterBenchmark extends Configuration {
                             }
                             operationCount.incrementAndGet();
                         }
-                        
-                        // if (operationCount.get() % 1000 == 0) {
-                        //     String progressMsg = String.format("Thread %d completed %d operations%n", threadId, operationCount.get());
-                        //     System.out.print(progressMsg);
-                        //     if (logWriter != null) {
-                        //         logWriter.print(progressMsg);
-                        //         logWriter.flush();
-                        //     }
-                        // }
                     }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
