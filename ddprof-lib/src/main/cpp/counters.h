@@ -62,7 +62,8 @@
   X(AGCT_BLOCKED_IN_VM, "agct_blocked_in_vm")                                  \
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
-  X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")
+  X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
+  X(CALLTRACE_STORAGE_DROPPED, "calltrace_storage_dropped_traces")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS

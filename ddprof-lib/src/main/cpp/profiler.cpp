@@ -1,7 +1,7 @@
 /*
  * Copyright The async-profiler authors
- * SPDX-License-Identifier: Apache-2.0
  * Copyright 2024, 2025 Datadog, Inc
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "profiler.h"
@@ -587,7 +587,7 @@ void Profiler::fillFrameTypes(ASGCT_CallFrame *frames, int num_frames,
   }
 }
 
-u32 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event, bool deferred) {
+u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event, bool deferred) {
   atomicInc(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
@@ -599,7 +599,7 @@ u32 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
 
     return 0;
   }
-  u32 call_trace_id = 0;
+  u64 call_trace_id = 0;
   if (!_omit_stacktraces) {
     u64 startTime = TSC::ticks();
     ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
@@ -634,7 +634,7 @@ u32 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
   return call_trace_id;
 }
 
-void Profiler::recordDeferredSample(int tid, u32 call_trace_id, jint event_type, Event *event) {
+void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event) {
   atomicInc(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
@@ -652,7 +652,7 @@ void Profiler::recordDeferredSample(int tid, u32 call_trace_id, jint event_type,
 }
 
 void Profiler::recordSample(void *ucontext, u64 counter, int tid,
-                            jint event_type, u32 call_trace_id, Event *event) {
+                            jint event_type, u64 call_trace_id, Event *event) {
   atomicInc(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
@@ -771,7 +771,7 @@ void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
                                     jint event_type, Event *event) {
   atomicInc(_total_samples);
 
-  u32 call_trace_id =
+  u64 call_trace_id =
       _call_trace_storage.put(num_frames, frames, truncated, weight);
 
   u32 lock_index = getLockIndex(tid);
@@ -1346,10 +1346,9 @@ Error Profiler::dump(const char *path, const int length) {
     Error err = _jfr.dump(path, length);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
 
-    // Reset calltrace storage
-    if (!_omit_stacktraces) {
-      _call_trace_storage.clear();
-    }
+    // Note: No need to clear call trace storage here - the double buffering system
+    // in processTraces() already handles clearing old traces while preserving
+    // traces referenced by surviving LivenessTracker objects
     unlockAll();
     // Reset classmap
     _class_map_lock.lock();

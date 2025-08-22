@@ -1,17 +1,6 @@
 /*
- * Copyright 2021, 2023 Datadog, Inc
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2021, 2025, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include <algorithm>
@@ -193,6 +182,12 @@ Error LivenessTracker::start(Arguments &args) {
     // disabled
     return Error::OK;
   }
+  
+  // Self-register with the profiler for liveness checking
+  Profiler::instance()->registerLivenessChecker([this](std::vector<u64>& buffer) {
+    this->getLiveTraceIds(buffer);
+  });
+  
   // Enable Java Object Sample events
   jvmtiEnv *jvmti = VM::jvmti();
   jvmti->SetEventNotificationMode(
@@ -280,7 +275,7 @@ Error LivenessTracker::initialize(Arguments &args) {
 }
 
 void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
-                            jobject object, u32 call_trace_id) {
+                            jobject object, u64 call_trace_id) {
   if (!_enabled) {
     // disabled
     return;
@@ -393,4 +388,28 @@ void LivenessTracker::onGC() {
   if (!ddprof::HeapUsage::isLastGCUsageSupported()) {
     storeRelease(_used_after_last_gc, ddprof::HeapUsage::get(false)._used);
   }
+}
+
+void LivenessTracker::getLiveTraceIds(std::vector<u64>& out_buffer) {
+  out_buffer.clear();
+  
+  if (!_enabled || !_initialized) {
+    return;
+  }
+  
+  // Lock the table to iterate over tracking entries
+  _table_lock.lockShared();
+  
+  // Reserve space to avoid reallocations during filling
+  out_buffer.reserve(_table_size);
+  
+  // Collect call_trace_id values from all live tracking entries
+  for (int i = 0; i < _table_size; i++) {
+    TrackingEntry* entry = &_table[i];
+    if (entry->ref != nullptr) {
+      out_buffer.push_back(entry->call_trace_id);
+    }
+  }
+  
+  _table_lock.unlockShared();
 }
