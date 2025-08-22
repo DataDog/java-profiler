@@ -39,6 +39,9 @@ public class LivenessTrackingTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
         // Enable liveness tracking with memory profiling
+        // "memory=256:L" configures the profiler as follows:
+        //   256 - sets the memory sampling interval (in kilobytes)
+        //   :L  - enables liveness tracking (records only live objects)
         return "memory=256:L";
     }
 
