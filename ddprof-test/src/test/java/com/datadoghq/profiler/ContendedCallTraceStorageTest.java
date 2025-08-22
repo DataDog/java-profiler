@@ -57,7 +57,11 @@ public class ContendedCallTraceStorageTest extends AbstractProfilerTest {
         for (ContentionResult currentResult : currentResults) {
             // For this test, we verify that contention measurement works
             assertTrue(currentResult.totalAttempts > 0, "Should measure total attempts");
-            assertTrue(currentResult.droppedSamples / (double) currentResult.totalAttempts < 0.1f, "Should not drop more than 10% of samples");
+            assertTrue(
+                currentResult.totalAttempts > 0 &&
+                currentResult.droppedSamples / (double) currentResult.totalAttempts < 0.1f,
+                "Should measure total attempts and not drop more than 10% of samples"
+            );
         }
         
         // The key insight: this test framework can be used to validate
