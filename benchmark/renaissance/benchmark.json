@@ -1,0 +1,21 @@
+{
+  "name": "renassance_${BENCHMARK}",
+  "setup": "bash -c \"mkdir -p ${OUTPUT_DIR}/${VARIANT}\"",
+  "run": "bash -c \"java ${JAVA_OPTS} -jar ${RENASSANCE} --converge --scratch-base=${OUTPUT_DIR}/${VARIANT}/scratch --json ${OUTPUT_DIR}/${VARIANT}/${BENCHMARK}.json ${BENCHMARK} \"",
+  "timeout": 150,
+  "iterations": 1,
+  "variants": {
+    "baseline": {
+      "env": {
+        "VARIANT": "baseline",
+        "JAVA_OPTS": ""
+      }
+    },
+    "profiling": {
+      "env": {
+        "VARIANT": "profiling",
+        "JAVA_OPTS": "-agentpath:${PROFILER}=start,wall=10ms,file=${OUTPUT_DIR}/${VARIANT}/profiler.jfr"
+      }
+    }
+  }
+}
