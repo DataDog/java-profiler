@@ -15,6 +15,11 @@ RUN wget -nv -O dacapo.zip https://download.dacapobench.org/chopin/dacapo-$DACAP
 	&& rm -rf /dacapo/dacapo-$DACAPO_VERSION/dat/graphchi \
 	&& rm dacapo.zip
 
+# Download and install renaissance benchmark
+ARG RENAISSANCE_VERSION=0.16.0
+RUN mkdir /renaissance \
+    && wget -nv -O  ./renaissance/renaissance-gpl.jar https://github.com/renaissance-benchmarks/renaissance/releases/download/v${RENAISSANCE_VERSION}/renaissance-gpl-${RENAISSANCE_VERSION}.jar \
+
 FROM debian:bookworm-slim
 
 RUN apt-get update \
@@ -56,3 +61,6 @@ RUN mkdir -p /app
 COPY --from=dacapo /dacapo/ /app/
 ARG DACAPO_VERSION=23.11-chopin
 ENV DACAPO=/app/dacapo-$DACAPO_VERSION.jar
+
+COPY --from=renaissance /renaissance/ /app/
+ENV RENAISSANCE=/app/renaissance.jar
