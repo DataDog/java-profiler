@@ -21,6 +21,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "reservoirSampler.h"
+#include "thread.h"
 #include "threadFilter.h"
 #include "threadState.h"
 #include "tsc.h"
@@ -67,7 +68,15 @@ class BaseWallClock : public Engine {
       threads.reserve(reservoirSize);
       int self = OS::threadId();
       ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
-      thread_filter->remove(self);
+      
+      // We don't want to profile ourselves in wall time
+      ProfiledThread* current = ProfiledThread::current();
+      if (current != nullptr) {
+        int slot_id = current->filterSlotId();
+        if (slot_id != -1) {
+          thread_filter->remove(slot_id);
+        }
+      }
 
       u64 startTime = TSC::ticks();
       WallClockEpochEvent epoch(startTime);
