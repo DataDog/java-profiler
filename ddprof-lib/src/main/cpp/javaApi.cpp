@@ -21,6 +21,7 @@
 #include "engine.h"
 #include "incbin.h"
 #include "os.h"
+#include "otel_process_ctx.h"
 #include "profiler.h"
 #include "thread.h"
 #include "tsc.h"
@@ -426,4 +427,21 @@ extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_ActiveBitmap_getActiveCountAddr0(JNIEnv *env,
                                                               jclass unused) {
   return (jlong)Profiler::instance()->threadFilter()->addressOfSize();
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
+                                                         jclass unused,
+                                                         jstring serviceName,
+                                                         jstring serviceId,
+                                                         jstring environment) {
+  JniString service_name_str(env, serviceName);
+  JniString service_id_str(env, serviceId);
+  JniString environment_str(env, environment);
+  otel_process_ctx_data data = {
+    const_cast<char*>(service_name_str.c_str()),
+    const_cast<char*>(service_id_str.c_str()),
+    const_cast<char*>(environment_str.c_str())
+  };
+  otel_process_ctx_publish(data);
 }
