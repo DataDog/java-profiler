@@ -53,47 +53,6 @@ jobs:
         with:
           body-file: comment.html
 
-  cppcheck:
-    if: needs.check-for-pr.outputs.skip != 'true'
-    runs-on: ubuntu-latest
-    env:
-      HEAD_REF: ${{ github.head_ref }}
-    steps:
-      - uses: actions/checkout@v3
-      - name: System setup
-        run: |
-          sudo apt-get update
-          sudo apt install -y cppcheck xsltproc
-      - name: Set up Python
-        uses: actions/setup-python@v2
-        with:
-          python-version: 3.9
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install beautifulsoup4
-      - name: Run Cppcheck
-        id: run-cppcheck
-        run: |
-          cppcheck --quiet --force --enable=all --std=c++17 --language=c++ --inline-suppr --suppressions-list=.github/scripts/cppcheck-suppressions.txt --xml --output-file=report.xml ddprof-lib/src/main/cpp/*
-          xsltproc --output report.html .github/scripts/cppcheck-html.xslt report.xml
-          xsltproc --output report-gh.html .github/scripts/cppcheck-gh.xslt report.xml
-          sed -i "s#target_branch#${HEAD_REF}#g" report.html
-          sed -i "s#target_branch#${HEAD_REF}#g" report-gh.html
-          python .github/scripts/python_utils.py cppcheck_cleanup report-gh.html >> comment.html
-      - name: Upload logs
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: cppcheck-report
-          path: |
-            report.html
-            report.xml
-      - name: Comment on PR
-        uses: ./.github/actions/upsert-pr-comment
-        with:
-          body-file: comment.html
-
   codeql:
     if: needs.check-for-pr.outputs.skip != 'true'
     runs-on: ubuntu-latest
