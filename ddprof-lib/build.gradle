@@ -181,12 +181,15 @@ description = "Datadog Java Profiler Library"
 def component_version = project.hasProperty("ddprof_version") ? project.ddprof_version : project.version
 
 def props = new Properties()
-file("${rootDir}/gradle/ap-lock.properties").withInputStream { stream ->
+file("${rootDir}/gradle/lock.properties").withInputStream { stream ->
   props.load(stream)
 }
 
-def branch_lock = props.getProperty("branch")
-def commit_lock = props.getProperty("commit")
+def ap_branch_lock = props.getProperty("ap_branch")
+def ap_commit_lock = props.getProperty("ap_commit")
+
+def ctx_branch_lock = props.getProperty("ctx_branch")
+def ctx_commit_lock = props.getProperty("ctx_commit")
 
 // this feels weird but it is the only way invoking `./gradlew :ddprof-lib:*` tasks will work
 if (rootDir.toString().endsWith("ddprof-lib")) {
@@ -265,12 +268,12 @@ tasks.register('copyExternalLibs', Copy) {
   }
 }
 
-def cloneAPTask = tasks.register('cloneAsyncProfiler') {
-  description = 'Clones async-profiler repo if directory is missing or updates it if commit hash differs'
-  inputs.file("${rootDir}/gradle/ap-lock.properties")
-  outputs.dir("${projectDir}/build/async-profiler")
+def cloneCtxTask = tasks.register('cloneEbpfContext') {
+  description = 'Clones ebpf context poc repo if directory is missing or updates it if commit hash differs'
+  inputs.file("${rootDir}/gradle/lock.properties")
+  outputs.dir("${projectDir}/build/ebpf-ctx")
   outputs.upToDateWhen {
-    def targetDir = file("${projectDir}/build/async-profiler")
+    def targetDir = file("${projectDir}/build/ebpf-ctx")
     if (!targetDir.exists()) {
       return false
     }
@@ -284,7 +287,7 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
         }
         currentCommit = os.toString().trim()
       }
-      return currentCommit == commit_lock
+      return currentCommit == ap_commit_lock
     } catch (Exception e) {
       return false
     }
@@ -296,15 +299,15 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
       ignoreExitValue = true  // Don't fail if this command fails
     }
 
-    def targetDir = file("${projectDir}/build/async-profiler")
+    def targetDir = file("${projectDir}/build/ebpf-ctx")
     if (!targetDir.exists()) {
-      println "Cloning missing async-profiler git subdirectory..."
+      println "Cloning missing ebpf-ctx git subdirectory..."
       exec {
-        commandLine 'git', 'clone', '--branch', branch_lock, 'https://github.com/datadog/async-profiler.git', targetDir.absolutePath
+        commandLine 'git', 'clone', '--branch', ctx_branch_lock, 'https://github.com/DataDog/fullhost-code-hotspots-wip.git', targetDir.absolutePath
       }
       exec {
         workingDir targetDir.absolutePath
-        commandLine 'git', 'checkout', commit_lock
+        commandLine 'git', 'checkout', ap_commit_lock
       }
     } else {
       // Also fix git ownership for existing directory
@@ -324,18 +327,97 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
         currentCommit = os.toString().trim()
       }
 
-      if (currentCommit != commit_lock) {
-        println "async-profiler commit hash differs (current: ${currentCommit}, expected: ${commit_lock}), updating..."
+      if (currentCommit != ctx_commit_lock) {
+        println "async-profiler commit hash differs (current: ${currentCommit}, expected: ${ctx_commit_lock}), updating..."
         exec {
           workingDir targetDir.absolutePath
           commandLine 'rm', '-rf', targetDir.absolutePath
         }
         exec {
-          commandLine 'git', 'clone', '--branch', branch_lock, 'https://github.com/datadog/async-profiler.git', targetDir.absolutePath
+          commandLine 'git', 'clone', '--branch', ctx_branch_lock, 'https://github.com/DataDog/fullhost-code-hotspots-wip.git', targetDir.absolutePath
         }
         exec {
           workingDir targetDir.absolutePath
-          commandLine 'git', 'checkout', commit_lock
+          commandLine 'git', 'checkout', ctx_commit_lock
+        }
+      } else {
+        println "ebpf-ctx git subdirectory present with correct commit hash."
+      }
+    }
+  }
+}
+
+def cloneAPTask = tasks.register('cloneAsyncProfiler') {
+  description = 'Clones async-profiler repo if directory is missing or updates it if commit hash differs'
+  inputs.file("${rootDir}/gradle/lock.properties")
+  outputs.dir("${projectDir}/build/async-profiler")
+  outputs.upToDateWhen {
+    def targetDir = file("${projectDir}/build/async-profiler")
+    if (!targetDir.exists()) {
+      return false
+    }
+    def currentCommit = ""
+    try {
+      new ByteArrayOutputStream().withStream { os ->
+        exec {
+          workingDir targetDir.absolutePath
+          commandLine 'git', 'rev-parse', 'HEAD'
+          standardOutput = os
+        }
+        currentCommit = os.toString().trim()
+      }
+      return currentCommit == ap_commit_lock
+    } catch (Exception e) {
+      return false
+    }
+  }
+  doLast {
+    // Fix for CI environments where git detects dubious ownership
+    exec {
+      commandLine 'git', 'config', '--global', '--add', 'safe.directory', projectDir.parentFile.absolutePath
+      ignoreExitValue = true  // Don't fail if this command fails
+    }
+
+    def targetDir = file("${projectDir}/build/async-profiler")
+    if (!targetDir.exists()) {
+      println "Cloning missing async-profiler git subdirectory..."
+      exec {
+        commandLine 'git', 'clone', '--branch', ap_branch_lock, 'https://github.com/datadog/async-profiler.git', targetDir.absolutePath
+      }
+      exec {
+        workingDir targetDir.absolutePath
+        commandLine 'git', 'checkout', ap_commit_lock
+      }
+    } else {
+      // Also fix git ownership for existing directory
+      exec {
+        workingDir targetDir.absolutePath
+        commandLine 'git', 'config', '--global', '--add', 'safe.directory', targetDir.absolutePath
+        ignoreExitValue = true
+      }
+
+      def currentCommit = ""
+      new ByteArrayOutputStream().withStream { os ->
+        exec {
+          workingDir targetDir.absolutePath
+          commandLine 'git', 'rev-parse', 'HEAD'
+          standardOutput = os
+        }
+        currentCommit = os.toString().trim()
+      }
+
+      if (currentCommit != ap_commit_lock) {
+        println "async-profiler commit hash differs (current: ${currentCommit}, expected: ${ap_commit_lock}), updating..."
+        exec {
+          workingDir targetDir.absolutePath
+          commandLine 'rm', '-rf', targetDir.absolutePath
+        }
+        exec {
+          commandLine 'git', 'clone', '--branch', ap_branch_lock, 'https://github.com/datadog/async-profiler.git', targetDir.absolutePath
+        }
+        exec {
+          workingDir targetDir.absolutePath
+          commandLine 'git', 'checkout', ap_commit_lock
         }
       } else {
         println "async-profiler git subdirectory present with correct commit hash."
@@ -346,10 +428,10 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
 
 def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
   configure {
-    dependsOn cloneAPTask
+    dependsOn cloneAPTask, cloneCtxTask
   }
   onlyIf {
-    !project.hasProperty("debug-ap")
+    !project.hasProperty("debug-ap") || !project.hasProperty("debug-ctx")
   }
   description = 'Copy shared upstream files'
   from("${projectDir}/build/async-profiler/src") {
@@ -364,6 +446,10 @@ def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
     include "trap.cpp"
     include "vmStructs.h"
     include "vmStructs.cpp"
+  }
+  from("${projectDir}/build/ebpf-ctx/lang-exp/anonmapping-clib") {
+    include "otel_process_ctx.h"
+    include "otel_process_ctx.c"
   }
   into "${projectDir}/src/main/cpp-external"
 }
