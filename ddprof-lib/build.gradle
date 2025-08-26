@@ -268,85 +268,6 @@ tasks.register('copyExternalLibs', Copy) {
   }
 }
 
-def cloneCtxTask = tasks.register('cloneEbpfContext') {
-  description = 'Clones ebpf context poc repo if directory is missing or updates it if commit hash differs'
-  inputs.file("${rootDir}/gradle/lock.properties")
-  outputs.dir("${projectDir}/build/ebpf-ctx")
-  outputs.upToDateWhen {
-    def targetDir = file("${projectDir}/build/ebpf-ctx")
-    if (!targetDir.exists()) {
-      return false
-    }
-    def currentCommit = ""
-    try {
-      new ByteArrayOutputStream().withStream { os ->
-        exec {
-          workingDir targetDir.absolutePath
-          commandLine 'git', 'rev-parse', 'HEAD'
-          standardOutput = os
-        }
-        currentCommit = os.toString().trim()
-      }
-      return currentCommit == ap_commit_lock
-    } catch (Exception e) {
-      return false
-    }
-  }
-  doLast {
-    // Fix for CI environments where git detects dubious ownership
-    exec {
-      commandLine 'git', 'config', '--global', '--add', 'safe.directory', projectDir.parentFile.absolutePath
-      ignoreExitValue = true  // Don't fail if this command fails
-    }
-
-    def targetDir = file("${projectDir}/build/ebpf-ctx")
-    if (!targetDir.exists()) {
-      println "Cloning missing ebpf-ctx git subdirectory..."
-      exec {
-        commandLine 'git', 'clone', '--branch', ctx_branch_lock, 'https://github.com/DataDog/fullhost-code-hotspots-wip.git', targetDir.absolutePath
-      }
-      exec {
-        workingDir targetDir.absolutePath
-        commandLine 'git', 'checkout', ap_commit_lock
-      }
-    } else {
-      // Also fix git ownership for existing directory
-      exec {
-        workingDir targetDir.absolutePath
-        commandLine 'git', 'config', '--global', '--add', 'safe.directory', targetDir.absolutePath
-        ignoreExitValue = true
-      }
-
-      def currentCommit = ""
-      new ByteArrayOutputStream().withStream { os ->
-        exec {
-          workingDir targetDir.absolutePath
-          commandLine 'git', 'rev-parse', 'HEAD'
-          standardOutput = os
-        }
-        currentCommit = os.toString().trim()
-      }
-
-      if (currentCommit != ctx_commit_lock) {
-        println "async-profiler commit hash differs (current: ${currentCommit}, expected: ${ctx_commit_lock}), updating..."
-        exec {
-          workingDir targetDir.absolutePath
-          commandLine 'rm', '-rf', targetDir.absolutePath
-        }
-        exec {
-          commandLine 'git', 'clone', '--branch', ctx_branch_lock, 'https://github.com/DataDog/fullhost-code-hotspots-wip.git', targetDir.absolutePath
-        }
-        exec {
-          workingDir targetDir.absolutePath
-          commandLine 'git', 'checkout', ctx_commit_lock
-        }
-      } else {
-        println "ebpf-ctx git subdirectory present with correct commit hash."
-      }
-    }
-  }
-}
-
 def cloneAPTask = tasks.register('cloneAsyncProfiler') {
   description = 'Clones async-profiler repo if directory is missing or updates it if commit hash differs'
   inputs.file("${rootDir}/gradle/lock.properties")
@@ -428,10 +349,10 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
 
 def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
   configure {
-    dependsOn cloneAPTask, cloneCtxTask
+    dependsOn cloneAPTask
   }
   onlyIf {
-    !project.hasProperty("debug-ap") || !project.hasProperty("debug-ctx")
+    !project.hasProperty("debug-ap")
   }
   description = 'Copy shared upstream files'
   from("${projectDir}/build/async-profiler/src") {
@@ -447,81 +368,7 @@ def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
     include "vmStructs.h"
     include "vmStructs.cpp"
   }
-  from("${projectDir}/build/ebpf-ctx/lang-exp/anonmapping-clib") {
-    include "otel_process_ctx.h"
-    include "otel_process_ctx.c"
-  }
   into "${projectDir}/src/main/cpp-external"
-}
-
-def patchLinuxOtelCtx = tasks.register("patchLinuxOtelCtx") {
-  description = 'Patch otel_process_ctx.c after copying'
-  configure {
-    dependsOn copyUpstreamFiles
-  }
-  inputs.files(fileTree("${projectDir}/src/main/cpp-external") { include "otel_process_ctx.c" })
-  outputs.files("${projectDir}/src/main/cpp-external/otel_process_ctx.cpp")
-
-  // Force task to run when .c file exists (even if .cpp is up to date)
-  outputs.upToDateWhen {
-    def cFile = file("${projectDir}/src/main/cpp-external/otel_process_ctx.c")
-    def cppFile = file("${projectDir}/src/main/cpp-external/otel_process_ctx.cpp")
-    return !cFile.exists() && cppFile.exists()
-  }
-
-  doLast {
-    def cFile = file("${projectDir}/src/main/cpp-external/otel_process_ctx.c")
-    def cppFile = file("${projectDir}/src/main/cpp-external/otel_process_ctx.cpp")
-
-    // Always work with the .c file first (since that's what gets copied from upstream)
-    if (!cFile.exists()) throw new GradleException("Source file not found: ${cFile}")
-
-    def content = cFile.getText('UTF-8')
-    def original = content
-
-    // Step 1: Add #ifdef __linux__ guard if not already present
-    if (!content.trim().startsWith("#ifdef __linux__")) {
-      content = "#ifdef __linux__\n" + content + "\n#endif\n"
-    }
-
-    // Step 2: Fix C++ compilation errors - add explicit casts for void* returns
-    content = content.replaceAll(
-      /(volatile otel_process_ctx_state \*state = )calloc\(1, sizeof\(otel_process_ctx_state\)\);/,
-      '$1(volatile otel_process_ctx_state *)calloc(1, sizeof(otel_process_ctx_state));'
-      )
-
-    content = content.replaceAll(
-      /(otel_process_ctx_mapping \*mapping =\s+)mmap\(/,
-      '$1(otel_process_ctx_mapping *)mmap('
-      )
-
-    content = content.replaceAll(
-      /(char \*encoded = )calloc\(total_size, 1\);/,
-      '$1(char *)calloc(total_size, 1);'
-      )
-
-    content = content.replaceAll(
-      /(if \(!fp\) return )result;/,
-      '$1(otel_process_ctx_mapping *)result;'
-      )
-
-    content = content.replaceAll(
-      /(char \*value = )malloc\(value_len \+ 1\);/,
-      '$1(char *)malloc(value_len + 1);'
-      )
-
-    // Step 3: Create .cpp file with patched content and remove .c file
-    if (content != original || cFile.exists()) {
-      cppFile.write(content, 'UTF-8')
-      println "Created otel_process_ctx.cpp with patches (Linux guard + C++ casts)"
-
-      // Remove .c file to prevent build system conflicts
-      if (cFile.exists()) {
-        cFile.delete()
-        println "Removed otel_process_ctx.c to avoid build conflicts"
-      }
-    }
-  }
 }
 
 def patchStackFrame = tasks.register("patchStackFrame") {
@@ -609,7 +456,7 @@ def patchStackWalker = tasks.register("patchStackWalker") {
 
 def initSubrepoTask = tasks.register('initSubrepo') {
   configure {
-    dependsOn copyUpstreamFiles, patchStackFrame, patchStackWalker, patchLinuxOtelCtx
+    dependsOn copyUpstreamFiles, patchStackFrame, patchStackWalker
   }
 }
 
