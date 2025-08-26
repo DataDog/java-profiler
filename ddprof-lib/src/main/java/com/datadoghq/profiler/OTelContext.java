@@ -70,7 +70,7 @@ public final class OTelContext {
      * by printing warnings to System.out.
      */
     private OTelContext() {
-        LibraryLoader.Result result = LibraryLoader.builder().load();;
+        LibraryLoader.Result result = LibraryLoader.builder().load();
         if (!result.succeeded ) {
             System.out.println("[WARNING] Failed to obtain OTel context.\n" + result.error);
         }
