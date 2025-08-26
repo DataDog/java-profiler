@@ -429,6 +429,9 @@ Java_com_datadoghq_profiler_ActiveBitmap_getActiveCountAddr0(JNIEnv *env,
   return (jlong)Profiler::instance()->threadFilter()->addressOfSize();
 }
 
+// Static variable to track the current published context
+static otel_process_ctx_result* current_published_context = nullptr;
+
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
                                                          jclass unused,
@@ -443,5 +446,69 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
     const_cast<char*>(service_id_str.c_str()),
     const_cast<char*>(environment_str.c_str())
   };
-  otel_process_ctx_publish(data);
+  
+  if (current_published_context == nullptr) {
+    // First time publishing - use publish
+    current_published_context = new otel_process_ctx_result();
+    *current_published_context = otel_process_ctx_publish(data);
+  } else {
+    // Already have a published context - use update
+    otel_process_ctx_result new_result = otel_process_ctx_update(current_published_context, data);
+    *current_published_context = new_result;
+  }
+}
+
+extern "C" DLLEXPORT jobject JNICALL
+Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unused) {
+#ifndef OTEL_PROCESS_CTX_NO_READ
+  otel_process_ctx_read_result result = otel_process_ctx_read();
+  
+  if (!result.success) {
+    // Return null if reading failed
+    return nullptr;
+  }
+  
+  // Find the ProcessContext class
+  jclass processContextClass = env->FindClass("com/datadoghq/profiler/OTelContext$ProcessContext");
+  if (!processContextClass) {
+    // Clean up allocated strings before returning
+    if (result.data.service_name) free((void*)result.data.service_name);
+    if (result.data.service_instance_id) free((void*)result.data.service_instance_id);
+    if (result.data.deployment_environment_name) free((void*)result.data.deployment_environment_name);
+    return nullptr;
+  }
+  
+  // Find the constructor
+  jmethodID constructor = env->GetMethodID(processContextClass, "<init>", 
+    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
+  if (!constructor) {
+    // Clean up allocated strings before returning
+    if (result.data.service_name) free((void*)result.data.service_name);
+    if (result.data.service_instance_id) free((void*)result.data.service_instance_id);
+    if (result.data.deployment_environment_name) free((void*)result.data.deployment_environment_name);
+    return nullptr;
+  }
+  
+  // Convert C strings to Java strings
+  jstring jServiceName = result.data.service_name ? 
+    env->NewStringUTF(result.data.service_name) : nullptr;
+  jstring jServiceInstanceId = result.data.service_instance_id ? 
+    env->NewStringUTF(result.data.service_instance_id) : nullptr;
+  jstring jDeploymentEnvironmentName = result.data.deployment_environment_name ? 
+    env->NewStringUTF(result.data.deployment_environment_name) : nullptr;
+  
+  // Clean up the malloc'd strings
+  if (result.data.service_name) free((void*)result.data.service_name);
+  if (result.data.service_instance_id) free((void*)result.data.service_instance_id);
+  if (result.data.deployment_environment_name) free((void*)result.data.deployment_environment_name);
+  
+  // Create the ProcessContext object
+  jobject processContext = env->NewObject(processContextClass, constructor,
+    jServiceName, jServiceInstanceId, jDeploymentEnvironmentName);
+  
+  return processContext;
+#else
+  // If OTEL_PROCESS_CTX_NO_READ is defined, return null
+  return nullptr;
+#endif
 }

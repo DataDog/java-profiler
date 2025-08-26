@@ -92,16 +92,59 @@ public final class OTelContext {
      * @param errorHandler custom error handler for library loading failures, or null 
      *                     to print warnings to System.out
      */
-    public OTelContext(String libLocation, String scratchDir, Consumer<Throwable> errorHandler) {
+    // @VisibleForTesting
+    OTelContext(String libLocation, String scratchDir, Consumer<Throwable> errorHandler) {
         LibraryLoader.Result result = LibraryLoader.builder().withLibraryLocation(libLocation).withScratchDir(scratchDir).load();
         if (!result.succeeded && result.error != null) {
             if (errorHandler != null) {
                 errorHandler.accept(result.error);
             } else {
-                System.out.println("[WARNING] Failed to obtain JVM access.\n" + result.error);
+                System.out.println("[WARNING] Failed to obtain OTelContext access.\n" + result.error);
             }
         }
         libraryLoadResult = result;
+    }
+
+    /**
+     * Reads the currently published OpenTelemetry process context, if any.
+     * 
+     * <p>This method attempts to read back the process context that was previously
+     * published via {@link #setProcessContext(String, String, String)}. This is
+     * primarily useful for debugging and testing purposes.
+     * 
+     * <p><b>Platform Support:</b> Currently only supported on Linux. On other
+     * platforms, this method will return null.
+     * 
+     * <p><b>Thread Safety:</b> This method assumes there is no concurrent mutation
+     * of the process context and is safe to call from any thread.
+     * 
+     * @return a ProcessContext object containing the current context data if
+     *         successfully read, or null if no context is published or reading failed
+     * @since 1.30.0
+     */
+    public ProcessContext readProcessContext() {
+        return readProcessCtx0();
+    }
+
+    /**
+     * Represents the OpenTelemetry process context data.
+     */
+    public static final class ProcessContext {
+        public final String serviceName;
+        public final String serviceInstanceId;
+        public final String deploymentEnvironmentName;
+        
+        public ProcessContext(String serviceName, String serviceInstanceId, String deploymentEnvironmentName) {
+            this.serviceName = serviceName;
+            this.serviceInstanceId = serviceInstanceId;
+            this.deploymentEnvironmentName = deploymentEnvironmentName;
+        }
+        
+        @Override
+        public String toString() {
+            return String.format("ProcessContext{serviceName='%s', serviceInstanceId='%s', deploymentEnvironmentName='%s'}", 
+                serviceName, serviceInstanceId, deploymentEnvironmentName);
+        }
     }
 
     /**
@@ -131,12 +174,12 @@ public final class OTelContext {
      * );
      * }</pre>
      * 
-     * @param serviceName the logical name of the service as defined by OpenTelemetry
-     *                   semantic conventions (service.name). Must not be null.
-     *                   Examples: "order-service", "user-management", "payment-processor"
-     * @param serviceId the unique identifier for this specific instance of the service
-     *                 as defined by OpenTelemetry semantic conventions (service.instance.id).
-     *                 Must not be null. Examples: pod name, container ID, hostname
+     * @param service the logical name of the service as defined by OpenTelemetry
+     *                semantic conventions (service.name). Must not be null.
+     *                Examples: "order-service", "user-management", "payment-processor"
+     * @param runtimeId the unique identifier for this specific instance of the service
+     *                  as defined by OpenTelemetry semantic conventions (service.instance.id).
+     *                  Must not be null. Examples: pod name, container ID, hostname
      * @param environment the deployment environment name as defined by OpenTelemetry
      *                   semantic conventions (deployment.environment.name). Must not be null.
      *                   Examples: "production", "staging", "development", "test"
@@ -146,9 +189,10 @@ public final class OTelContext {
      * @see <a href="https://opentelemetry.io/docs/specs/semconv/registry/attributes/service/">OpenTelemetry Service Attributes</a>
      * @see <a href="https://opentelemetry.io/docs/specs/semconv/registry/attributes/deployment/">OpenTelemetry Deployment Attributes</a>
      */
-    public void setProcessContext(String serviceName, String serviceId, String environment) {
-        setProcessCtx0(serviceName, serviceId, environment);
+    public void setProcessContext(String service, String runtimeId, String environment) {
+        setProcessCtx0(service, runtimeId, environment);
     }
 
     private static native void setProcessCtx0(String serviceName, String serviceId, String environment);
+    private static native ProcessContext readProcessCtx0();
 }

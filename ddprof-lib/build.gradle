@@ -454,12 +454,82 @@ def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
   into "${projectDir}/src/main/cpp-external"
 }
 
+def patchLinuxOtelCtx = tasks.register("patchLinuxOtelCtx") {
+  description = 'Patch otel_process_ctx.c after copying'
+  configure {
+    dependsOn copyUpstreamFiles
+  }
+  inputs.files(fileTree("${projectDir}/src/main/cpp-external") { include "otel_process_ctx.c" })
+  outputs.files("${projectDir}/src/main/cpp-external/otel_process_ctx.cpp")
+
+  // Force task to run when .c file exists (even if .cpp is up to date)
+  outputs.upToDateWhen {
+    def cFile = file("${projectDir}/src/main/cpp-external/otel_process_ctx.c")
+    def cppFile = file("${projectDir}/src/main/cpp-external/otel_process_ctx.cpp")
+    return !cFile.exists() && cppFile.exists()
+  }
+
+  doLast {
+    def cFile = file("${projectDir}/src/main/cpp-external/otel_process_ctx.c")
+    def cppFile = file("${projectDir}/src/main/cpp-external/otel_process_ctx.cpp")
+
+    // Always work with the .c file first (since that's what gets copied from upstream)
+    if (!cFile.exists()) throw new GradleException("Source file not found: ${cFile}")
+
+    def content = cFile.getText('UTF-8')
+    def original = content
+
+    // Step 1: Add #ifdef __linux__ guard if not already present
+    if (!content.trim().startsWith("#ifdef __linux__")) {
+      content = "#ifdef __linux__\n" + content + "\n#endif\n"
+    }
+
+    // Step 2: Fix C++ compilation errors - add explicit casts for void* returns
+    content = content.replaceAll(
+      /(volatile otel_process_ctx_state \*state = )calloc\(1, sizeof\(otel_process_ctx_state\)\);/,
+      '$1(volatile otel_process_ctx_state *)calloc(1, sizeof(otel_process_ctx_state));'
+      )
+
+    content = content.replaceAll(
+      /(otel_process_ctx_mapping \*mapping =\s+)mmap\(/,
+      '$1(otel_process_ctx_mapping *)mmap('
+      )
+
+    content = content.replaceAll(
+      /(char \*encoded = )calloc\(total_size, 1\);/,
+      '$1(char *)calloc(total_size, 1);'
+      )
+
+    content = content.replaceAll(
+      /(if \(!fp\) return )result;/,
+      '$1(otel_process_ctx_mapping *)result;'
+      )
+
+    content = content.replaceAll(
+      /(char \*value = )malloc\(value_len \+ 1\);/,
+      '$1(char *)malloc(value_len + 1);'
+      )
+
+    // Step 3: Create .cpp file with patched content and remove .c file
+    if (content != original || cFile.exists()) {
+      cppFile.write(content, 'UTF-8')
+      println "Created otel_process_ctx.cpp with patches (Linux guard + C++ casts)"
+
+      // Remove .c file to prevent build system conflicts
+      if (cFile.exists()) {
+        cFile.delete()
+        println "Removed otel_process_ctx.c to avoid build conflicts"
+      }
+    }
+  }
+}
+
 def patchStackFrame = tasks.register("patchStackFrame") {
   description = 'Patch stackFrame_x64.cpp after copying'
   configure {
     dependsOn copyUpstreamFiles
   }
-  inputs.files copyUpstreamFiles
+  inputs.file("${projectDir}/src/main/cpp-external/stackFrame_x64.cpp")
   outputs.file("${projectDir}/src/main/cpp-external/stackFrame_x64.cpp")
 
   doLast {
@@ -514,7 +584,7 @@ def patchStackWalker = tasks.register("patchStackWalker") {
   configure {
     dependsOn copyUpstreamFiles, patchStackFrame
   }
-  inputs.files copyUpstreamFiles
+  inputs.file("${projectDir}/src/main/cpp-external/stackWalker.cpp")
   outputs.file("${projectDir}/src/main/cpp-external/stackWalker.cpp")
 
   doLast {
@@ -539,7 +609,7 @@ def patchStackWalker = tasks.register("patchStackWalker") {
 
 def initSubrepoTask = tasks.register('initSubrepo') {
   configure {
-    dependsOn copyUpstreamFiles, patchStackFrame, patchStackWalker
+    dependsOn copyUpstreamFiles, patchStackFrame, patchStackWalker, patchLinuxOtelCtx
   }
 }
 
