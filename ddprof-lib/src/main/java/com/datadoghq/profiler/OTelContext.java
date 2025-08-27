@@ -1,5 +1,6 @@
 package com.datadoghq.profiler;
 
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
 
 /**
@@ -62,6 +63,7 @@ public final class OTelContext {
     }
 
     private final LibraryLoader.Result libraryLoadResult;
+    private final ReentrantReadWriteLock readWriteLock = new ReentrantReadWriteLock();
 
     /**
      * Private constructor for singleton instance.
@@ -123,7 +125,12 @@ public final class OTelContext {
      * @since 1.30.0
      */
     public ProcessContext readProcessContext() {
-        return readProcessCtx0();
+        try {
+            readWriteLock.readLock().lock();
+            return libraryLoadResult.succeeded readProcessCtx0() : null;
+        } finally {
+            readWriteLock.readLock().unlock();
+        }
     }
 
     /**
@@ -190,7 +197,14 @@ public final class OTelContext {
      * @see <a href="https://opentelemetry.io/docs/specs/semconv/registry/attributes/deployment/">OpenTelemetry Deployment Attributes</a>
      */
     public void setProcessContext(String service, String runtimeId, String environment) {
-        setProcessCtx0(service, runtimeId, environment);
+        try {
+            readWriteLock.writeLock().lock();
+            if (libraryLoadResult.succeeded ) {
+                setProcessCtx0(service, runtimeId, environment);
+            }
+        } finally {
+            readWriteLock.writeLock().unlock();
+        } 
     }
 
     private static native void setProcessCtx0(String serviceName, String serviceId, String environment);
