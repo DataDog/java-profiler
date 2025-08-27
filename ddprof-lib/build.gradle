@@ -185,11 +185,8 @@ file("${rootDir}/gradle/lock.properties").withInputStream { stream ->
   props.load(stream)
 }
 
-def ap_branch_lock = props.getProperty("ap_branch")
-def ap_commit_lock = props.getProperty("ap_commit")
-
-def ctx_branch_lock = props.getProperty("ctx_branch")
-def ctx_commit_lock = props.getProperty("ctx_commit")
+def ap_branch_lock = props.getProperty("ap.branch")
+def ap_commit_lock = props.getProperty("ap.commit")
 
 // this feels weird but it is the only way invoking `./gradlew :ddprof-lib:*` tasks will work
 if (rootDir.toString().endsWith("ddprof-lib")) {
