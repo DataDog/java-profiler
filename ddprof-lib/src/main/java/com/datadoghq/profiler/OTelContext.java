@@ -127,7 +127,7 @@ public final class OTelContext {
     public ProcessContext readProcessContext() {
         try {
             readWriteLock.readLock().lock();
-            return libraryLoadResult.succeeded readProcessCtx0() : null;
+            return libraryLoadResult.succeeded ? readProcessCtx0() : null;
         } finally {
             readWriteLock.readLock().unlock();
         }
