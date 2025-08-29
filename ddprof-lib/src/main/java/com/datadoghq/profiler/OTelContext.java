@@ -39,6 +39,37 @@ public final class OTelContext {
     private static final class SingletonHolder {
         static final OTelContext INSTANCE = new OTelContext();
     }
+
+    /**
+     * Represents the OpenTelemetry process context data.
+     */
+    public static final class ProcessContext {
+        public final String deploymentEnvironmentName;
+        public final String hostName;
+        public final String serviceInstanceId;
+        public final String serviceName;
+        public final String serviceVersion;
+        public final String telemetrySdkLanguage;
+        public final String telemetrySdkVersion;
+        public final String telemetrySdkName;
+
+        public ProcessContext(String deploymentEnvironmentName, String hostName, String serviceInstanceId, String serviceName, String serviceVersion, String telemetrySdkLanguage, String telemetrySdkVersion, String telemetrySdkName) {
+            this.deploymentEnvironmentName = deploymentEnvironmentName;
+            this.hostName = hostName;
+            this.serviceInstanceId = serviceInstanceId;
+            this.serviceName = serviceName;
+            this.serviceVersion = serviceVersion;
+            this.telemetrySdkLanguage = telemetrySdkLanguage;
+            this.telemetrySdkVersion = telemetrySdkVersion;
+            this.telemetrySdkName = telemetrySdkName;
+        }
+        
+        @Override
+        public String toString() {
+            return String.format("ProcessContext{deploymentEnvironmentName='%s', hostName='%s', serviceInstanceId='%s', serviceName='%s', serviceVersion='%s', telemetrySdkLanguage='%s', telemetrySdkVersion='%s', telemetrySdkName='%s'}",
+                deploymentEnvironmentName, hostName, serviceInstanceId, serviceName, serviceVersion, telemetrySdkLanguage, telemetrySdkVersion, telemetrySdkName);
+        }
+    }
     
     /**
      * Returns the singleton instance of the OpenTelemetry process context.
@@ -58,6 +89,7 @@ public final class OTelContext {
     }
 
     private final LibraryLoader.Result libraryLoadResult;
+    private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
 
     /**
      * Private constructor for singleton instance.
@@ -115,38 +147,15 @@ public final class OTelContext {
      *         successfully read, or null if no context is published or reading failed
      * @since 1.30.0
      */
-    public synchronized ProcessContext readProcessContext() {
-        return libraryLoadResult.succeeded ? readProcessCtx0() : null;
-    }
-
-    /**
-     * Represents the OpenTelemetry process context data.
-     */
-    public static final class ProcessContext {
-        public final String deploymentEnvironmentName;
-        public final String hostName;
-        public final String serviceInstanceId;
-        public final String serviceName;
-        public final String serviceVersion;
-        public final String telemetrySdkLanguage;
-        public final String telemetrySdkVersion;
-        public final String telemetrySdkName;
-
-        public ProcessContext(String deploymentEnvironmentName, String hostName, String serviceInstanceId, String serviceName, String serviceVersion, String telemetrySdkLanguage, String telemetrySdkVersion, String telemetrySdkName) {
-            this.deploymentEnvironmentName = deploymentEnvironmentName;
-            this.hostName = hostName;
-            this.serviceInstanceId = serviceInstanceId;
-            this.serviceName = serviceName;
-            this.serviceVersion = serviceVersion;
-            this.telemetrySdkLanguage = telemetrySdkLanguage;
-            this.telemetrySdkVersion = telemetrySdkVersion;
-            this.telemetrySdkName = telemetrySdkName;
+    public ProcessContext readProcessContext() {
+        if (!libraryLoadResult.succeeded) {
+            return null;
         }
-        
-        @Override
-        public String toString() {
-            return String.format("ProcessContext{deploymentEnvironmentName='%s', hostName='%s', serviceInstanceId='%s', serviceName='%s', serviceVersion='%s', telemetrySdkLanguage='%s', telemetrySdkVersion='%s', telemetrySdkName='%s'}",
-                deploymentEnvironmentName, hostName, serviceInstanceId, serviceName, serviceVersion, telemetrySdkLanguage, telemetrySdkVersion, telemetrySdkName);
+        try {
+            lock.readLock().lock();
+            return readProcessCtx0();
+        } finally {
+            lock.readLock().unlock();
         }
     }
 
@@ -202,10 +211,16 @@ public final class OTelContext {
      * @see <a href="https://opentelemetry.io/docs/specs/semconv/registry/attributes/service/">OpenTelemetry Service Attributes</a>
      * @see <a href="https://opentelemetry.io/docs/specs/semconv/registry/attributes/deployment/">OpenTelemetry Deployment Attributes</a>
      */
-    public synchronized void setProcessContext(String env, String hostname, String runtimeId, String service, String version, String tracerVersion) {
-        if (libraryLoadResult.succeeded ) {
-            setProcessCtx0(env, hostname, runtimeId, service, version, tracerVersion);
+    public void setProcessContext(String env, String hostname, String runtimeId, String service, String version, String tracerVersion) {
+        if (!libraryLoadResult.succeeded) {
+            return;
         }
+        try {
+            lock.writeLock().lock();
+            setProcessCtx0(env, hostname, runtimeId, service, version, tracerVersion);
+        } finally {
+            lock.writeLock().unlock();
+        } 
     }
 
     private static native void setProcessCtx0(String env, String hostname, String runtimeId, String service, String version, String tracerVersion);
