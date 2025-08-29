@@ -14,8 +14,7 @@ import java.util.function.Consumer;
  * <p><b>Platform Support:</b>
  * <ul>
  *   <li><b>Linux:</b> Full support using anonymous memory mappings with prctl naming</li>
- *   <li><b>macOS:</b> Limited support - API calls are no-ops</li>
- *   <li><b>Other platforms:</b> Not supported</li>
+ *   <li><b>Others:</b> Limited support - API calls are no-ops</li>
  * </ul>
  * 
  * <p><b>Thread Safety:</b> This class is thread-safe. All public methods can be
@@ -27,11 +26,7 @@ import java.util.function.Consumer;
  * OTelContext context = OTelContext.getInstance();
  * 
  * // Set process context for external discovery
- * context.setProcessContext(
- *     "my-service",           // service name
- *     "instance-12345",       // unique instance identifier  
- *     "production"            // deployment environment
- * );
+ * context.setProcessContext(...);
  * }</pre>
  * 
  * <p><b>External Discovery:</b> Once published, the process context can be
@@ -63,7 +58,6 @@ public final class OTelContext {
     }
 
     private final LibraryLoader.Result libraryLoadResult;
-    private final ReentrantReadWriteLock readWriteLock = new ReentrantReadWriteLock();
 
     /**
      * Private constructor for singleton instance.
@@ -111,46 +105,48 @@ public final class OTelContext {
      * Reads the currently published OpenTelemetry process context, if any.
      * 
      * <p>This method attempts to read back the process context that was previously
-     * published via {@link #setProcessContext(String, String, String)}. This is
+     * published via {@link #setProcessContext(String, String, String, String, String, String)}. This is
      * primarily useful for debugging and testing purposes.
      * 
      * <p><b>Platform Support:</b> Currently only supported on Linux. On other
      * platforms, this method will return null.
-     * 
-     * <p><b>Thread Safety:</b> This method assumes there is no concurrent mutation
-     * of the process context and is safe to call from any thread.
-     * 
+     *
      * @return a ProcessContext object containing the current context data if
      *         successfully read, or null if no context is published or reading failed
      * @since 1.30.0
      */
-    public ProcessContext readProcessContext() {
-        try {
-            readWriteLock.readLock().lock();
-            return libraryLoadResult.succeeded ? readProcessCtx0() : null;
-        } finally {
-            readWriteLock.readLock().unlock();
-        }
+    public synchronized ProcessContext readProcessContext() {
+        return libraryLoadResult.succeeded ? readProcessCtx0() : null;
     }
 
     /**
      * Represents the OpenTelemetry process context data.
      */
     public static final class ProcessContext {
-        public final String serviceName;
-        public final String serviceInstanceId;
         public final String deploymentEnvironmentName;
-        
-        public ProcessContext(String serviceName, String serviceInstanceId, String deploymentEnvironmentName) {
-            this.serviceName = serviceName;
-            this.serviceInstanceId = serviceInstanceId;
+        public final String hostName;
+        public final String serviceInstanceId;
+        public final String serviceName;
+        public final String serviceVersion;
+        public final String telemetrySdkLanguage;
+        public final String telemetrySdkVersion;
+        public final String telemetrySdkName;
+
+        public ProcessContext(String deploymentEnvironmentName, String hostName, String serviceInstanceId, String serviceName, String serviceVersion, String telemetrySdkLanguage, String telemetrySdkVersion, String telemetrySdkName) {
             this.deploymentEnvironmentName = deploymentEnvironmentName;
+            this.hostName = hostName;
+            this.serviceInstanceId = serviceInstanceId;
+            this.serviceName = serviceName;
+            this.serviceVersion = serviceVersion;
+            this.telemetrySdkLanguage = telemetrySdkLanguage;
+            this.telemetrySdkVersion = telemetrySdkVersion;
+            this.telemetrySdkName = telemetrySdkName;
         }
         
         @Override
         public String toString() {
-            return String.format("ProcessContext{serviceName='%s', serviceInstanceId='%s', deploymentEnvironmentName='%s'}", 
-                serviceName, serviceInstanceId, deploymentEnvironmentName);
+            return String.format("ProcessContext{deploymentEnvironmentName='%s', hostName='%s', serviceInstanceId='%s', serviceName='%s', serviceVersion='%s', telemetrySdkLanguage='%s', telemetrySdkVersion='%s', telemetrySdkName='%s'}",
+                deploymentEnvironmentName, hostName, serviceInstanceId, serviceName, serviceVersion, telemetrySdkLanguage, telemetrySdkVersion, telemetrySdkName);
         }
     }
 
@@ -175,38 +171,43 @@ public final class OTelContext {
      * <p><b>Usage Example:</b>
      * <pre>{@code
      * OTelContext.getInstance().setProcessContext(
-     *     "order-service",        // Identifies the service
-     *     "pod-abc123",          // Unique instance ID (e.g., pod name, container ID)
-     *     "production"           // Environment (production, staging, dev, etc.)
+     *     "staging",           // env
+     *     "my-hostname",       // hostname
+     *     "instance-12345"     // runtime-id
+     *     "my-service",        // service
+     *     "1.0.0",             // version
+     *     "3.5.0"              // tracer-version
      * );
      * }</pre>
-     * 
+     *
+     * @param env the deployment environment name as defined by OpenTelemetry
+     *            semantic conventions (deployment.environment.name). Must not be null.
+     *            Examples: "production", "staging", "development", "test"
+     * @param hostname the hostname of the service as defined by OpenTelemetry
+     *                 semantic conventions (host.name). Must not be null.
+     *                 Examples: "my-hostname", "my-hostname.example.com"
+     * @param runtimeId the unique identifier for this specific instance of the service
+     *                  as defined by OpenTelemetry semantic conventions (service.instance.id).
+     *                  Must not be null.
      * @param service the logical name of the service as defined by OpenTelemetry
      *                semantic conventions (service.name). Must not be null.
      *                Examples: "order-service", "user-management", "payment-processor"
-     * @param runtimeId the unique identifier for this specific instance of the service
-     *                  as defined by OpenTelemetry semantic conventions (service.instance.id).
-     *                  Must not be null. Examples: pod name, container ID, hostname
-     * @param environment the deployment environment name as defined by OpenTelemetry
-     *                   semantic conventions (deployment.environment.name). Must not be null.
-     *                   Examples: "production", "staging", "development", "test"
-     *                   
-     * @throws RuntimeException if the native library failed to load during initialization
-     * 
+     * @param version the version of the service as defined by OpenTelemetry
+     *                semantic conventions (service.version). Must not be null.
+     *                Examples: "1.0.0", "2.3.4"
+     * @param tracerVersion the version of the tracer as defined by OpenTelemetry
+     *                      semantic conventions (telemetry.sdk.version). Must not be null.
+     *                      Examples: "3.5.0", "4.2.0"
+     *     *
      * @see <a href="https://opentelemetry.io/docs/specs/semconv/registry/attributes/service/">OpenTelemetry Service Attributes</a>
      * @see <a href="https://opentelemetry.io/docs/specs/semconv/registry/attributes/deployment/">OpenTelemetry Deployment Attributes</a>
      */
-    public void setProcessContext(String service, String runtimeId, String environment) {
-        try {
-            readWriteLock.writeLock().lock();
-            if (libraryLoadResult.succeeded ) {
-                setProcessCtx0(service, runtimeId, environment);
-            }
-        } finally {
-            readWriteLock.writeLock().unlock();
-        } 
+    public synchronized void setProcessContext(String env, String hostname, String runtimeId, String service, String version, String tracerVersion) {
+        if (libraryLoadResult.succeeded ) {
+            setProcessCtx0(env, hostname, runtimeId, service, version, tracerVersion);
+        }
     }
 
-    private static native void setProcessCtx0(String serviceName, String serviceId, String environment);
+    private static native void setProcessCtx0(String env, String hostname, String runtimeId, String service, String version, String tracerVersion);
     private static native ProcessContext readProcessCtx0();
 }
