@@ -1,5 +1,5 @@
 # Dacapo download
-FROM debian:bookworm-slim as dacapo
+FROM debian:bookworm-slim as benchmarks
 RUN apt-get update \
   && apt-get -y install wget unzip libc6 \
   && apt-get -y clean \
@@ -18,7 +18,7 @@ RUN wget -nv -O dacapo.zip https://download.dacapobench.org/chopin/dacapo-$DACAP
 # Download and install renaissance benchmark
 ARG RENAISSANCE_VERSION=0.16.0
 RUN mkdir /renaissance \
-    && wget -nv -O  ./renaissance/renaissance-gpl.jar https://github.com/renaissance-benchmarks/renaissance/releases/download/v${RENAISSANCE_VERSION}/renaissance-gpl-${RENAISSANCE_VERSION}.jar \
+    && wget -nv -O  ./renaissance/renaissance-gpl.jar https://github.com/renaissance-benchmarks/renaissance/releases/download/v${RENAISSANCE_VERSION}/renaissance-gpl-${RENAISSANCE_VERSION}.jar
 
 FROM debian:bookworm-slim
 
@@ -58,9 +58,9 @@ RUN wget -O k6.tar.gz https://github.com/grafana/k6/releases/download/v$K6_VERSI
 
 RUN mkdir -p /app
 
-COPY --from=dacapo /dacapo/ /app/
+COPY --from=benchmarks /dacapo/ /app/
 ARG DACAPO_VERSION=23.11-chopin
 ENV DACAPO=/app/dacapo-$DACAPO_VERSION.jar
 
-COPY --from=renaissance /renaissance/ /app/
+COPY --from=benchmarks /renaissance/ /app/
 ENV RENAISSANCE=/app/renaissance.jar
