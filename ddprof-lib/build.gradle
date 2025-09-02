@@ -354,6 +354,8 @@ def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
   description = 'Copy shared upstream files'
   from("${projectDir}/build/async-profiler/src") {
     include "arch.h"
+    include "fallbackUnwinding.*"
+    include "frameValidation.*"
     include "incbin.h"
     include "mutex.h"
     include "mutex.cpp"
@@ -362,6 +364,8 @@ def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
     include "stackFrame*.cpp"
     include "trap.h"
     include "trap.cpp"
+    include "unwindingMetrics.*"
+    include "unwindingOptimizations.*"
     include "vmStructs.h"
     include "vmStructs.cpp"
   }
