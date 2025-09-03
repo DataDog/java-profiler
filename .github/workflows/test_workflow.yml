@@ -57,7 +57,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ddprof-lib/build/async-profiler
-          key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/ap-lock.properties') }}
+          key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/lock.properties') }}
           enableCrossOsArchive: true
           restore-keys: |
             async-profiler-${{ runner.os }}-
@@ -156,7 +156,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ddprof-lib/build/async-profiler
-          key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/ap-lock.properties') }}
+          key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/lock.properties') }}
           enableCrossOsArchive: true
           restore-keys: |
             async-profiler-${{ runner.os }}-
@@ -276,7 +276,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ddprof-lib/build/async-profiler
-          key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/ap-lock.properties') }}
+          key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/lock.properties') }}
           enableCrossOsArchive: true
           restore-keys: |
             async-profiler-${{ runner.os }}-
@@ -372,7 +372,7 @@ jobs:
          uses: actions/cache@v4
          with:
            path: ddprof-lib/build/async-profiler
-           key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/ap-lock.properties') }}
+           key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/lock.properties') }}
            enableCrossOsArchive: true
            restore-keys: |
              async-profiler-${{ runner.os }}-
