@@ -40,7 +40,7 @@ if [[ ! -f "${PROFILER}" ]]; then
 fi
 
 if [[ "$#" == '0' ]]; then
-  for type in 'dacapo'; do
+  for type in 'dacapo' 'renaissance'; do
     run_benchmarks "$type"
   done
 else

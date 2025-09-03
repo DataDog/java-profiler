@@ -63,4 +63,4 @@ ARG DACAPO_VERSION=23.11-chopin
 ENV DACAPO=/app/dacapo-$DACAPO_VERSION.jar
 
 COPY --from=benchmarks /renaissance/ /app/
-ENV RENAISSANCE=/app/renaissance.jar
+ENV RENAISSANCE=/app/renaissance-gpl.jar

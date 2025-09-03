@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -eu
 
-source "${UTILS_DIR}/update-java-version.sh" 11
+source "${UTILS_DIR}/update-java-version.sh" 17
 
 function message() {
   echo "$(date +"%T"): $1"
@@ -21,7 +21,6 @@ run_benchmark() {
 
   # substitute environment variables in the json file
   benchmark=$(mktemp)
-  # shellcheck disable=SC2046
   # shellcheck disable=SC2016
   envsubst "$(printf '${%s} ' $(env | cut -d'=' -f1))" <benchmark.json >"${benchmark}"
 

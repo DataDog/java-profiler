@@ -1,7 +1,7 @@
 {
   "name": "renassance_${BENCHMARK}",
   "setup": "bash -c \"mkdir -p ${OUTPUT_DIR}/${VARIANT}/scratch\"",
-  "run": "bash -c \"java ${JAVA_OPTS} -jar ${RENAISSANCE} -scratch-base=${OUTPUT_DIR}/${VARIANT}/scratch --json ${OUTPUT_DIR}/${VARIANT}/${BENCHMARK}.json ${BENCHMARK} \"",
+  "run": "bash -c \"java ${JAVA_OPTS} -jar ${RENAISSANCE} --scratch-base=${OUTPUT_DIR}/${VARIANT}/scratch --json ${OUTPUT_DIR}/${VARIANT}/${BENCHMARK}.json ${BENCHMARK} \"",
   "timeout": 150,
   "iterations": 1,
   "variants": {
