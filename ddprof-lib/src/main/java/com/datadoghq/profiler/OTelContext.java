@@ -120,8 +120,7 @@ public final class OTelContext {
      * @param errorHandler custom error handler for library loading failures, or null 
      *                     to print warnings to System.out
      */
-    // @VisibleForTesting
-    OTelContext(String libLocation, String scratchDir, Consumer<Throwable> errorHandler) {
+    public OTelContext(String libLocation, String scratchDir, Consumer<Throwable> errorHandler) {
         LibraryLoader.Result result = LibraryLoader.builder().withLibraryLocation(libLocation).withScratchDir(scratchDir).load();
         if (!result.succeeded && result.error != null) {
             if (errorHandler != null) {
