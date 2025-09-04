@@ -1171,6 +1171,16 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   _thread_filter.init(args._filter);
+  
+  // Minor optim: Register the current thread (start thread won't be called)
+  if (_thread_filter.enabled()) {
+    ProfiledThread *current = ProfiledThread::current();
+    if (current != nullptr) {
+      int slot_id = _thread_filter.registerThread();
+      current->setFilterSlotId(slot_id);
+      _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
+    }
+  }
 
   _cpu_engine = selectCpuEngine(args);
   _wall_engine = selectWallEngine(args);

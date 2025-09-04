@@ -22,6 +22,8 @@
 #include <cstdint>
 #include <memory>
 
+#include "arch_dd.h"
+
 class ThreadFilter {
 public:
     using SlotID = int;
@@ -52,10 +54,11 @@ public:
 
 private:
     // Optimized slot structure with padding to avoid false sharing
-    struct alignas(64) Slot {
+    struct alignas(DEFAULT_CACHE_LINE_SIZE) Slot {
         std::atomic<int> value{-1};
-        char padding[60];  // Pad to cache line size
+        char padding[DEFAULT_CACHE_LINE_SIZE - sizeof(value)];  // Pad to cache line size
     };
+    static_assert(sizeof(Slot) == DEFAULT_CACHE_LINE_SIZE, "Slot must be exactly one cache line");
 
     // Lock-free free list using a stack-like structure
     struct FreeListNode {
@@ -78,7 +81,7 @@ private:
     std::atomic<SlotID> _next_index{0};
     std::unique_ptr<FreeListNode[]> _free_list;
 
-    struct alignas(64) ShardHead { std::atomic<int> head{-1}; };
+    struct alignas(DEFAULT_CACHE_LINE_SIZE) ShardHead { std::atomic<int> head{-1}; };
     static ShardHead _free_heads[kShardCount];         // one cache-line each
 
     static inline int shardOf(int tid)  { return tid & (kShardCount - 1); }

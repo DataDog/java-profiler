@@ -21,6 +21,7 @@
 
 #include "threadFilter.h"
 #include "arch_dd.h"
+#include "os.h"
 
 #include <cassert>
 #include <cstdlib>
@@ -44,6 +45,9 @@ ThreadFilter::ThreadFilter() : _enabled(false) {
     initFreeList();
 }
 
+// This function is not called as we keep the profiler alive
+// Memory orders should be adjusted if we want to unload the profiler
+// This could have a perf impact on reading chunk variables.
 ThreadFilter::~ThreadFilter() {
     // Make the filter inert for any concurrent readers
     _enabled.store(false, std::memory_order_release);
@@ -59,7 +63,7 @@ ThreadFilter::~ThreadFilter() {
     _num_chunks.store(0, std::memory_order_release);
     // Detach and delete chunks
     for (int i = 0; i < kMaxChunks; ++i) {
-        ChunkStorage* chunk = _chunks[i].exchange(nullptr, std::memory_order_acq_rel);
+        ChunkStorage* chunk = _chunks[i].exchange(nullptr, std::memory_order_acquire);
         delete chunk;
     }
 }
@@ -79,7 +83,7 @@ void ThreadFilter::initializeChunk(int chunk_idx) {
 
     // Try to install it atomically
     ChunkStorage* expected = nullptr;
-    if (_chunks[chunk_idx].compare_exchange_strong(expected, new_chunk, std::memory_order_acq_rel)) {
+    if (_chunks[chunk_idx].compare_exchange_strong(expected, new_chunk, std::memory_order_release)) {
         // Successfully installed
     } else {
         // Another thread beat us to it - clean up our allocation
@@ -152,8 +156,8 @@ bool ThreadFilter::accept(SlotID slot_id) const {
     int chunk_idx = slot_id >> kChunkShift;
     int slot_idx = slot_id & kChunkMask;
 
-    // Fast path: assume valid slot_id from registerThread()
-    ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
+    // This is not a fast path like the add operation.
+    ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
     if (likely(chunk != nullptr)) {
         return chunk->slots[slot_idx].value.load(std::memory_order_acquire) != -1;
     }

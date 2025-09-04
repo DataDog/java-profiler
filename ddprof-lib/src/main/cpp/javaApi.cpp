@@ -145,6 +145,7 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0(JNIEnv *env,
   int slot_id = current->filterSlotId();
   if (unlikely(slot_id == -1)) {
     // Thread doesn't have a slot ID yet (e.g., main thread), so register it
+    // Happens when we are not enabled before thread start
     slot_id = thread_filter->registerThread();
     current->setFilterSlotId(slot_id);
   }
@@ -203,6 +204,7 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThread0(JNIEnv *env,
   if (unlikely(slot_id == -1)) {
     if (enable) {
       // Thread doesn't have a slot ID yet, so register it
+      assert(thread_filter->enabled() && "ThreadFilter should be enabled when trying to register thread");
       slot_id = thread_filter->registerThread();
       current->setFilterSlotId(slot_id);
     } else {
