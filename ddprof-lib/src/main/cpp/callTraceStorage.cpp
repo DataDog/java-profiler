@@ -103,6 +103,13 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
     return result;
 }
 
+/*
+ * This function is not thread safe. The caller must ensure that it is never called concurrently.
+ *
+ * For all practical purposes, we end up calling this function only via FlightRecorder::flush()
+ * and that function is already locking on the recording lock, so there will never be two concurrent
+ * flushes at the same time.
+ */
 void CallTraceStorage::processTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor) {
     // Split lock strategy: minimize time under exclusive lock by separating swap from processing
     std::unordered_set<u64> preserve_set;
