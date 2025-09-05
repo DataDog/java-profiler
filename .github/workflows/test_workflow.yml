@@ -57,7 +57,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ddprof-lib/build/async-profiler
-          key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/ap-lock.properties') }}
+          key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/lock.properties') }}
           enableCrossOsArchive: true
           restore-keys: |
             async-profiler-${{ runner.os }}-
@@ -103,7 +103,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
+          name: (build) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -117,7 +117,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
+          name: (reports) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: reports
 
   test-linux-musl-amd64:
@@ -156,7 +156,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ddprof-lib/build/async-profiler
-          key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/ap-lock.properties') }}
+          key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/lock.properties') }}
           enableCrossOsArchive: true
           restore-keys: |
             async-profiler-${{ runner.os }}-
@@ -206,7 +206,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
+          name: (build) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -220,7 +220,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
+          name: (reports) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: reports
 
   test-linux-glibc-aarch64:
@@ -276,7 +276,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ddprof-lib/build/async-profiler
-          key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/ap-lock.properties') }}
+          key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/lock.properties') }}
           enableCrossOsArchive: true
           restore-keys: |
             async-profiler-${{ runner.os }}-
@@ -317,7 +317,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
+          name: (build) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: build/
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -331,7 +331,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
+          name: (reports) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: reports
 
   test-linux-musl-aarch64:
@@ -372,7 +372,7 @@ jobs:
          uses: actions/cache@v4
          with:
            path: ddprof-lib/build/async-profiler
-           key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/ap-lock.properties') }}
+           key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/lock.properties') }}
            enableCrossOsArchive: true
            restore-keys: |
              async-profiler-${{ runner.os }}-
@@ -397,7 +397,7 @@ jobs:
        - uses: actions/upload-artifact@v4
          if: success()
          with:
-           name: test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})] (build)
+           name: (build) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
            path: build/
        - uses: actions/upload-artifact@v4
          if: failure()
@@ -411,5 +411,5 @@ jobs:
        - uses: actions/upload-artifact@v4
          if: failure()
          with:
-           name: test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}) (reports)
+           name: (reports) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
            path: reports
