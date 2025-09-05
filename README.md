@@ -40,7 +40,7 @@ The resulting artifact will be in `ddprof-lib/build/libs/ddprof-<version>.jar`
 To smoothen the absorption of the upstream changes, we are using parts of the upstream codebase in (mostly) vanilla form.
 
 For this, we have four new gradle tasks in [ddprof-lib/build.gradle](ddprof-lib/build.gradle):
-- `cloneAsyncProfiler` - clones the [DataDog/async-profiler](https://github.com/DataDog/async-profiler) repository into `ddprof-lib/build/async-profiler` using the commit lock specified in [gradle/ap-lock.properties](gradle/ap-lock.properties)
+- `cloneAsyncProfiler` - clones the [DataDog/async-profiler](https://github.com/DataDog/async-profiler) repository into `ddprof-lib/build/async-profiler` using the commit lock specified in [gradle/ap-lock.properties](gradle/lock.properties)
   - in that repository, we are maintainin a branch called `dd/master` where we keep the upstream code in sync with the 'safe' changes from the upstream `master` branch
   - cherry-picks into that branch should be rare and only done for critical fixes that are needed in the project
   - otherwise, we should wait for the next upstream release to avoid conflicts

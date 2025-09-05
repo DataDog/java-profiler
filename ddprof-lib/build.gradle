@@ -181,12 +181,12 @@ description = "Datadog Java Profiler Library"
 def component_version = project.hasProperty("ddprof_version") ? project.ddprof_version : project.version
 
 def props = new Properties()
-file("${rootDir}/gradle/ap-lock.properties").withInputStream { stream ->
+file("${rootDir}/gradle/lock.properties").withInputStream { stream ->
   props.load(stream)
 }
 
-def branch_lock = props.getProperty("branch")
-def commit_lock = props.getProperty("commit")
+def ap_branch_lock = props.getProperty("ap.branch")
+def ap_commit_lock = props.getProperty("ap.commit")
 
 // this feels weird but it is the only way invoking `./gradlew :ddprof-lib:*` tasks will work
 if (rootDir.toString().endsWith("ddprof-lib")) {
@@ -267,7 +267,7 @@ tasks.register('copyExternalLibs', Copy) {
 
 def cloneAPTask = tasks.register('cloneAsyncProfiler') {
   description = 'Clones async-profiler repo if directory is missing or updates it if commit hash differs'
-  inputs.file("${rootDir}/gradle/ap-lock.properties")
+  inputs.file("${rootDir}/gradle/lock.properties")
   outputs.dir("${projectDir}/build/async-profiler")
   outputs.upToDateWhen {
     def targetDir = file("${projectDir}/build/async-profiler")
@@ -284,7 +284,7 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
         }
         currentCommit = os.toString().trim()
       }
-      return currentCommit == commit_lock
+      return currentCommit == ap_commit_lock
     } catch (Exception e) {
       return false
     }
@@ -300,11 +300,11 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
     if (!targetDir.exists()) {
       println "Cloning missing async-profiler git subdirectory..."
       exec {
-        commandLine 'git', 'clone', '--branch', branch_lock, 'https://github.com/datadog/async-profiler.git', targetDir.absolutePath
+        commandLine 'git', 'clone', '--branch', ap_branch_lock, 'https://github.com/datadog/async-profiler.git', targetDir.absolutePath
       }
       exec {
         workingDir targetDir.absolutePath
-        commandLine 'git', 'checkout', commit_lock
+        commandLine 'git', 'checkout', ap_commit_lock
       }
     } else {
       // Also fix git ownership for existing directory
@@ -324,18 +324,18 @@ def cloneAPTask = tasks.register('cloneAsyncProfiler') {
         currentCommit = os.toString().trim()
       }
 
-      if (currentCommit != commit_lock) {
-        println "async-profiler commit hash differs (current: ${currentCommit}, expected: ${commit_lock}), updating..."
+      if (currentCommit != ap_commit_lock) {
+        println "async-profiler commit hash differs (current: ${currentCommit}, expected: ${ap_commit_lock}), updating..."
         exec {
           workingDir targetDir.absolutePath
           commandLine 'rm', '-rf', targetDir.absolutePath
         }
         exec {
-          commandLine 'git', 'clone', '--branch', branch_lock, 'https://github.com/datadog/async-profiler.git', targetDir.absolutePath
+          commandLine 'git', 'clone', '--branch', ap_branch_lock, 'https://github.com/datadog/async-profiler.git', targetDir.absolutePath
         }
         exec {
           workingDir targetDir.absolutePath
-          commandLine 'git', 'checkout', commit_lock
+          commandLine 'git', 'checkout', ap_commit_lock
         }
       } else {
         println "async-profiler git subdirectory present with correct commit hash."
@@ -373,7 +373,7 @@ def patchStackFrame = tasks.register("patchStackFrame") {
   configure {
     dependsOn copyUpstreamFiles
   }
-  inputs.files copyUpstreamFiles
+  inputs.file("${projectDir}/src/main/cpp-external/stackFrame_x64.cpp")
   outputs.file("${projectDir}/src/main/cpp-external/stackFrame_x64.cpp")
 
   doLast {
@@ -428,7 +428,7 @@ def patchStackWalker = tasks.register("patchStackWalker") {
   configure {
     dependsOn copyUpstreamFiles, patchStackFrame
   }
-  inputs.files copyUpstreamFiles
+  inputs.file("${projectDir}/src/main/cpp-external/stackWalker.cpp")
   outputs.file("${projectDir}/src/main/cpp-external/stackWalker.cpp")
 
   doLast {
