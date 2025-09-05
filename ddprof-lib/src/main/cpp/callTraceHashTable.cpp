@@ -33,14 +33,14 @@ private:
   }
 
 public:
-  LongHashTable() : _prev(NULL), _padding0(NULL), _capacity(0), _size(0) {
+  LongHashTable() : _prev(nullptr), _padding0(nullptr), _capacity(0), _size(0) {
     memset(_padding1, 0, sizeof(_padding1));
     memset(_padding2, 0, sizeof(_padding2));
   }
 
   static LongHashTable *allocate(LongHashTable *prev, u32 capacity) {
     LongHashTable *table = (LongHashTable *)OS::safeAlloc(getSize(capacity));
-    if (table != NULL) {
+    if (table != nullptr) {
       table->_prev = prev;
       table->_capacity = capacity;
       // The reset is not useful with the anon mmap setting the memory is
@@ -79,19 +79,19 @@ CallTrace CallTraceHashTable::_overflow_trace = {false, 1, OVERFLOW_TRACE_ID, {B
 
 CallTraceHashTable::CallTraceHashTable() : _allocator(CALL_TRACE_CHUNK) {
   _instance_id = 0;  // Will be set externally via setInstanceId()
-  _current_table = LongHashTable::allocate(NULL, INITIAL_CAPACITY);
+  _current_table = LongHashTable::allocate(nullptr, INITIAL_CAPACITY);
   _overflow = 0;
 }
 
 CallTraceHashTable::~CallTraceHashTable() {
-  while (_current_table != NULL) {
+  while (_current_table != nullptr) {
     _current_table = _current_table->destroy();
   }
 }
 
 void CallTraceHashTable::clear() {
-  if (_current_table != NULL) {
-    while (_current_table->prev() != NULL) {
+  if (_current_table != nullptr) {
+    while (_current_table->prev() != nullptr) {
       _current_table = _current_table->destroy();
     }
     _current_table->clear();
@@ -139,7 +139,7 @@ CallTrace *CallTraceHashTable::storeCallTrace(int num_frames,
   const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
   const size_t total_size = header_size + num_frames * sizeof(ASGCT_CallFrame);
   CallTrace *buf = (CallTrace *)_allocator.alloc(total_size);
-  if (buf != NULL) {
+  if (buf != nullptr) {
     buf->num_frames = num_frames;
     // Do not use memcpy inside signal handler
     for (int i = 0; i < num_frames; i++) {
@@ -161,10 +161,10 @@ CallTrace *CallTraceHashTable::findCallTrace(LongHashTable *table, u64 hash) {
 
   while (keys[slot] != hash) {
     if (keys[slot] == 0) {
-      return NULL;
+      return nullptr;
     }
     if (++step >= capacity) {
-      return NULL;
+      return nullptr;
     }
     slot = (slot + step) & (capacity - 1);
   }
@@ -179,7 +179,7 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
   u64 hash = calcHash(num_frames, frames, truncated);
 
   LongHashTable *table = _current_table;
-  if (table == NULL) {
+  if (table == nullptr) {
     // Table allocation failed or was cleared - drop sample
     // This could be: 1) Initial allocation failure, 2) Use-after-destruction during shutdown
     Counters::increment(CALLTRACE_STORAGE_DROPPED);
@@ -229,7 +229,7 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
         // Trace is ready, use it
         return current_trace->trace_id;
       } else {
-        // Trace is NULL but hash exists - this indicates preparation failed
+        // Trace is nullptr but hash exists - this indicates preparation failed
         // Read the key again to confirm it's still there
         u64 recheck_key = __atomic_load_n(&keys[slot], __ATOMIC_ACQUIRE);
         if (recheck_key != hash) {
@@ -260,7 +260,7 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
       u32 current_size = table->incSize();
       if (current_size == capacity * 3 / 4) {
         LongHashTable *new_table = LongHashTable::allocate(table, capacity * 2);
-        if (new_table != NULL) {
+        if (new_table != nullptr) {
           // Use atomic CAS to safely update _current_table
           __atomic_compare_exchange_n(&_current_table, &table, new_table, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
         }
@@ -268,13 +268,13 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
 
       // Migrate from a previous table to save space
       CallTrace *trace =
-          table->prev() == NULL ? NULL : findCallTrace(table->prev(), hash);
-      if (trace == NULL) {
+          table->prev() == nullptr ? nullptr : findCallTrace(table->prev(), hash);
+      if (trace == nullptr) {
         // Generate unique trace ID: upper 32 bits = instance_id, lower 32 bits = slot
         // 64-bit provides massive collision space and JFR constant pool compatibility
         u64 trace_id = (_instance_id << 32) | slot;
         trace = storeCallTrace(num_frames, frames, truncated, trace_id);
-        if (trace == NULL) {
+        if (trace == nullptr) {
           // Allocation failure - reset trace first, then clear key with proper memory ordering
           table->values()[slot].setTrace(nullptr);
           // Use full memory barrier to ensure trace=null is visible before key=0
@@ -291,7 +291,7 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
       // clear the slot in the prev table such it is not written out to constant
       // pool multiple times
       LongHashTable *prev_table = table->prev();
-      if (prev_table != NULL) {
+      if (prev_table != nullptr) {
         __atomic_store_n(&prev_table->keys()[slot], 0, __ATOMIC_RELEASE);
       }
       
@@ -311,14 +311,14 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
 
 void CallTraceHashTable::collect(std::unordered_set<CallTrace *> &traces) {
   // Simple collection without copying - used for lock-free processing
-  for (LongHashTable *table = _current_table; table != NULL; table = table->prev()) {
+  for (LongHashTable *table = _current_table; table != nullptr; table = table->prev()) {
     u64 *keys = table->keys();
     CallTraceSample *values = table->values();
     u32 capacity = table->capacity();
     for (u32 slot = 0; slot < capacity; slot++) {
       if (keys[slot] != 0) {
         CallTrace *trace = values[slot].acquireTrace();
-        if (trace != NULL) {
+        if (trace != nullptr) {
           traces.insert(trace);
         }
       }
@@ -334,14 +334,14 @@ void CallTraceHashTable::collect(std::unordered_set<CallTrace *> &traces) {
 void CallTraceHashTable::collectAndCopySelective(std::unordered_set<CallTrace *> &traces, 
                                                   const std::unordered_set<u64> &trace_ids_to_preserve, 
                                                   CallTraceHashTable* target) {
-  for (LongHashTable *table = _current_table; table != NULL; table = table->prev()) {
+  for (LongHashTable *table = _current_table; table != nullptr; table = table->prev()) {
     u64 *keys = table->keys();
     CallTraceSample *values = table->values();
     u32 capacity = table->capacity();
     for (u32 slot = 0; slot < capacity; slot++) {
       if (keys[slot] != 0) {
         CallTrace *trace = values[slot].acquireTrace();
-        if (trace != NULL) {
+        if (trace != nullptr) {
           // Always collect for JFR output - trace contains its own ID
           traces.insert(trace);
           
@@ -370,7 +370,7 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
   u64 hash = calcHash(source_trace->num_frames, source_trace->frames, source_trace->truncated);
   
   LongHashTable *table = _current_table;
-  if (table == NULL) {
+  if (table == nullptr) {
     // Table allocation failed or was cleared - drop sample
     return;
   }
@@ -397,7 +397,7 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
       const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
       const size_t total_size = header_size + source_trace->num_frames * sizeof(ASGCT_CallFrame);
       CallTrace* copied_trace = (CallTrace*)_allocator.alloc(total_size);
-      if (copied_trace != NULL) {
+      if (copied_trace != nullptr) {
         copied_trace->truncated = source_trace->truncated;
         copied_trace->num_frames = source_trace->num_frames;
         copied_trace->trace_id = source_trace->trace_id; // Preserve exact trace ID
@@ -416,7 +416,7 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
       u32 current_size = table->incSize();
       if (current_size == capacity * 3 / 4) {
         LongHashTable *new_table = LongHashTable::allocate(table, capacity * 2);
-        if (new_table != NULL) {
+        if (new_table != nullptr) {
           // Use atomic CAS to safely update _current_table
           __atomic_compare_exchange_n(&_current_table, &table, new_table, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
         }
