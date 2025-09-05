@@ -1,3 +1,4 @@
+#ifdef __linux__
 #include "otel_process_ctx.h"
 
 #include <limits.h>
@@ -508,3 +509,4 @@ static otel_process_ctx_result otel_process_ctx_encode_payload(char **out, uint3
 #endif // OTEL_PROCESS_CTX_NO_READ
 
 #endif // OTEL_PROCESS_CTX_NOOP
+#endif // __linux__
