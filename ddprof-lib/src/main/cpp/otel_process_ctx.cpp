@@ -1,4 +1,3 @@
-#ifdef __linux__
 #include "otel_process_ctx.h"
 
 #include <limits.h>
@@ -13,8 +12,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <sys/prctl.h>
 #include <unistd.h>
 
 #define ADD_QUOTES_HELPER(x) #x
@@ -61,6 +58,8 @@ static const otel_process_ctx_data empty_data = {
   #endif // OTEL_PROCESS_CTX_NO_READ
 #else // OTEL_PROCESS_CTX_NOOP
 
+#include <sys/mman.h>
+#include <sys/prctl.h>
 /**
  * The process context data that's written into the published anonymous mapping.
  *
@@ -509,4 +508,3 @@ static otel_process_ctx_result otel_process_ctx_encode_payload(char **out, uint3
 #endif // OTEL_PROCESS_CTX_NO_READ
 
 #endif // OTEL_PROCESS_CTX_NOOP
-#endif // __linux__
