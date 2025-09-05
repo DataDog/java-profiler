@@ -16,6 +16,7 @@
 
 #include <assert.h>
 
+#include "arch_dd.h"
 #include "context.h"
 #include "counters.h"
 #include "engine.h"
@@ -124,19 +125,103 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
   return (jlong)Profiler::instance()->total_samples();
 }
 
+// some duplication between add and remove, though we want to avoid having an extra branch in the hot path
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0(JNIEnv *env,
+                                                          jobject unused) {
+  ProfiledThread *current = ProfiledThread::current();
+  if (unlikely(current == nullptr)) {
+    assert(false);
+    return;
+  }
+  int tid = current->tid();
+  if (unlikely(tid < 0)) {
+    return;
+  }
+  ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
+  if (unlikely(!thread_filter->enabled())) {
+    return;
+  }
+  
+  int slot_id = current->filterSlotId();
+  if (unlikely(slot_id == -1)) {
+    // Thread doesn't have a slot ID yet (e.g., main thread), so register it
+    // Happens when we are not enabled before thread start
+    slot_id = thread_filter->registerThread();
+    current->setFilterSlotId(slot_id);
+  }
+  
+  if (unlikely(slot_id == -1)) {
+    return;  // Failed to register thread
+  }
+  thread_filter->add(tid, slot_id);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0(JNIEnv *env,
+                                                             jobject unused) {
+  ProfiledThread *current = ProfiledThread::current();
+  if (unlikely(current == nullptr)) {
+    assert(false);
+    return;
+  }
+  int tid = current->tid();
+  if (unlikely(tid < 0)) {
+    return;
+  }
+  ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
+  if (unlikely(!thread_filter->enabled())) {
+    return;
+  }
+  
+  int slot_id = current->filterSlotId();
+  if (unlikely(slot_id == -1)) {
+    // Thread doesn't have a slot ID yet - nothing to remove
+    return;
+  }
+  thread_filter->remove(slot_id);
+}
+
+// Backward compatibility for existing code
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_filterThread0(JNIEnv *env,
                                                        jobject unused,
                                                        jboolean enable) {
-  int tid = ProfiledThread::currentTid();
-  if (tid < 0) {
+  ProfiledThread *current = ProfiledThread::current();
+  if (unlikely(current == nullptr)) {
+    assert(false);
+    return;
+  }
+  int tid = current->tid();
+  if (unlikely(tid < 0)) {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
+  if (unlikely(!thread_filter->enabled())) {
+    return;
+  }
+  
+  int slot_id = current->filterSlotId();
+  if (unlikely(slot_id == -1)) {
+    if (enable) {
+      // Thread doesn't have a slot ID yet, so register it
+      assert(thread_filter->enabled() && "ThreadFilter should be enabled when trying to register thread");
+      slot_id = thread_filter->registerThread();
+      current->setFilterSlotId(slot_id);
+    } else {
+      // Thread doesn't have a slot ID yet - nothing to remove
+      return;
+    }
+  }
+  
+  if (unlikely(slot_id == -1)) {
+    return;  // Failed to register thread
+  }
+  
   if (enable) {
-    thread_filter->add(tid);
+    thread_filter->add(tid, slot_id);
   } else {
-    thread_filter->remove(tid);
+    thread_filter->remove(slot_id);
   }
 }
 
@@ -406,27 +491,6 @@ extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JVMAccess_healthCheck0(JNIEnv *env,
                                                          jobject unused) {
   return true;
-}
-
-extern "C" DLLEXPORT jlong JNICALL
-Java_com_datadoghq_profiler_ActiveBitmap_bitmapAddressFor0(JNIEnv *env,
-		                                                    jclass unused,
-						                                    jint tid) {
-  u64* bitmap = Profiler::instance()->threadFilter()->bitmapAddressFor((int)tid);
-  return (jlong)bitmap;
-}
-
-extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_ActiveBitmap_isActive0(JNIEnv *env,
-                                                   jclass unused,
-                                                   jint tid) {
-  return Profiler::instance()->threadFilter()->accept((int)tid) ? JNI_TRUE : JNI_FALSE;
-}
-
-extern "C" DLLEXPORT jlong JNICALL
-Java_com_datadoghq_profiler_ActiveBitmap_getActiveCountAddr0(JNIEnv *env,
-                                                              jclass unused) {
-  return (jlong)Profiler::instance()->threadFilter()->addressOfSize();
 }
 
 // Static variable to track the current published context

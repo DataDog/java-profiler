@@ -13,6 +13,7 @@ import org.openjdk.jmh.annotations.Param;
 import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
+import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
@@ -39,6 +40,17 @@ public class ThreadFilterBenchmark extends Configuration {
     public void setup() throws IOException {
         profiler = JavaProfiler.getInstance();
         workloadNum = Long.parseLong(workload);
+        // Start profiling to enable JVMTI ThreadStart callbacks
+        // Add JFR file parameter to satisfy profiler requirements
+        profiler.execute("start," + command + ",jfr,file=/tmp/thread-filter-benchmark.jfr");
+    }
+
+    @TearDown(Level.Trial)
+    public void tearDown() throws IOException {
+        // Stop profiling and clean up
+        if (profiler != null) {
+            profiler.execute("stop");
+        }
     }
 
     @Benchmark

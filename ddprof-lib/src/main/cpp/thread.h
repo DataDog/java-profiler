@@ -43,11 +43,12 @@ private:
   u32 _wall_epoch;
   u32 _call_trace_id;
   u32 _recording_epoch;
+  int _filter_slot_id; // Slot ID for thread filtering
   UnwindFailures _unwind_failures;
 
   ProfiledThread(int buffer_pos, int tid)
       : ThreadLocalData(), _pc(0), _span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
-        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0) {};
+        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _filter_slot_id(-1) {};
 
   void releaseFromBuffer();
 
@@ -120,6 +121,9 @@ public:
   }
 
   static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
+
+  int filterSlotId() { return _filter_slot_id; }
+  void setFilterSlotId(int slotId) { _filter_slot_id = slotId; }
 };
 
 #endif // _THREAD_H
