@@ -360,6 +360,8 @@ def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
     include "stackWalker.h"
     include "stackWalker.cpp"
     include "stackFrame*.cpp"
+    include "symbols.h"
+    include "symbols_*.cpp"
     include "trap.h"
     include "trap.cpp"
     include "vmStructs.h"
