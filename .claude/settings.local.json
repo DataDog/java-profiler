@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git reset:*)",
+      "Bash(./gradlew gtestDebug:*)",
+      "Bash(git add:*)",
+      "Bash(./gradlew:*)",
+      "Bash(JAVA_TOOL_OPTIONS=\"-Djava.util.logging.config.file=logging.properties\" ./gradlew :ddprof-test:test --tests \"com.datadoghq.profiler.jfr.JfrDumpTest.testJfrDump\" --console=plain)",
+      "Bash(timeout:*)",
+      "Bash(git checkout:*)",
+      "Bash(./build_run.sh)",
+      "Bash(gh pr view:*)",
+      "Bash(grep:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
