@@ -1,265 +1,201 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2025, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "callTraceStorage.h"
 #include "counters.h"
-#include "os.h"
+#include "common.h"
+#include "vmEntry.h" // For BCI_ERROR constant
+#include "arch_dd.h" // For LP64_ONLY macro and COMMA macro
 #include <string.h>
+#include <atomic>
 
-#define COMMA ,
+static const u64 OVERFLOW_TRACE_ID = 0x7fffffffffffffffULL;  // Max 64-bit signed value
 
-static const u32 INITIAL_CAPACITY = 65536;
-static const u32 CALL_TRACE_CHUNK = 8 * 1024 * 1024;
-static const u32 OVERFLOW_TRACE_ID = 0x7fffffff;
+// Static atomic for instance ID generation - explicit initialization avoids function-local static issues
+std::atomic<u64> CallTraceStorage::_next_instance_id{1};  // Start from 1, 0 is reserved
 
-class LongHashTable {
-private:
-  LongHashTable *_prev;
-  void *_padding0;
-  u32 _capacity;
-  u32 _padding1[15];
-  volatile u32 _size;
-  u32 _padding2[15];
+// Lazy initialization helper to avoid global constructor race conditions
+u64 CallTraceStorage::getNextInstanceId() {
+    u64 instance_id = _next_instance_id.fetch_add(1, std::memory_order_relaxed);
+    return instance_id;
+}
 
-  static size_t getSize(u32 capacity) {
-    size_t size = sizeof(LongHashTable) +
-                  (sizeof(u64) + sizeof(CallTraceSample)) * capacity;
-    return (size + OS::page_mask) & ~OS::page_mask;
-  }
+CallTraceStorage::CallTraceStorage() : _lock(0) {
+    // Initialize active storage with its instance ID
+    _active_storage = std::make_unique<CallTraceHashTable>();
+    u64 initial_instance_id = getNextInstanceId();
+    _active_storage->setInstanceId(initial_instance_id);
+    
+    _standby_storage = std::make_unique<CallTraceHashTable>();
+    // Standby will get its instance ID during swap
 
-public:
-  LongHashTable() : _prev(NULL), _padding0(NULL), _capacity(0), _size(0) {
-    memset(_padding1, 0, sizeof(_padding1));
-    memset(_padding2, 0, sizeof(_padding2));
-  }
+    // Pre-allocate containers to avoid malloc() during hot path operations
+    _liveness_checkers.reserve(4);      // Typical max: 1-2 checkers, avoid growth
+    _preserve_buffer.reserve(1024);     // Reserve for typical liveness workloads
+    _preserve_set.reserve(1024);        // Pre-size hash buckets for lookups
 
-  static LongHashTable *allocate(LongHashTable *prev, u32 capacity) {
-    LongHashTable *table = (LongHashTable *)OS::safeAlloc(getSize(capacity));
-    if (table != NULL) {
-      table->_prev = prev;
-      table->_capacity = capacity;
-      // The reset is not useful with the anon mmap setting the memory is
-      // zeroed. However this silences a false positive and should not have a
-      // performance impact.
-      table->clear();
-    }
-    return table;
-  }
-
-  LongHashTable *destroy() {
-    LongHashTable *prev = _prev;
-    OS::safeFree(this, getSize(_capacity));
-    return prev;
-  }
-
-  LongHashTable *prev() { return _prev; }
-
-  u32 capacity() { return _capacity; }
-
-  u32 size() { return _size; }
-
-  u32 incSize() { return __sync_add_and_fetch(&_size, 1); }
-
-  u64 *keys() { return (u64 *)(this + 1); }
-
-  CallTraceSample *values() { return (CallTraceSample *)(keys() + _capacity); }
-
-  void clear() {
-    memset(keys(), 0, (sizeof(u64) + sizeof(CallTraceSample)) * _capacity);
-    _size = 0;
-  }
-};
-
-CallTrace CallTraceStorage::_overflow_trace = {false, 1, {BCI_ERROR, LP64_ONLY(0 COMMA) (jmethodID)"storage_overflow"}};
-
-CallTraceStorage::CallTraceStorage() : _allocator(CALL_TRACE_CHUNK), _lock(0) {
-  _current_table = LongHashTable::allocate(NULL, INITIAL_CAPACITY);
-  _overflow = 0;
+    // Initialize counters
+    Counters::set(CALLTRACE_STORAGE_BYTES, 0);
+    Counters::set(CALLTRACE_STORAGE_TRACES, 0);
 }
 
 CallTraceStorage::~CallTraceStorage() {
-  while (_current_table != NULL) {
-    _current_table = _current_table->destroy();
-  }
+    TEST_LOG("CallTraceStorage::~CallTraceStorage() - shutting down, invalidating active storage to prevent use-after-destruction");
+    
+    // Take exclusive lock to ensure no ongoing put() operations
+    _lock.lock();
+    
+    // Invalidate active storage first to prevent use-after-destruction
+    // Any subsequent put() calls will see nullptr and return DROPPED_TRACE_ID safely
+    _active_storage = nullptr;
+    _standby_storage = nullptr;
+    
+    _lock.unlock();
+    
+    TEST_LOG("CallTraceStorage::~CallTraceStorage() - destruction complete");
+    // Unique pointers will automatically clean up the actual objects
 }
+
+CallTrace* CallTraceStorage::getDroppedTrace() {
+    // Static dropped trace object - created once and reused
+    // Use same pattern as storage_overflow trace for consistent platform handling
+    static CallTrace dropped_trace = {false, 1, DROPPED_TRACE_ID, {BCI_ERROR, LP64_ONLY(0 COMMA) (jmethodID)"<dropped>"}};
+    
+    return &dropped_trace;
+}
+
+void CallTraceStorage::registerLivenessChecker(LivenessChecker checker) {
+    _lock.lock();
+    _liveness_checkers.push_back(checker);
+    _lock.unlock();
+}
+
+void CallTraceStorage::clearLivenessCheckers() {
+    _lock.lock();
+    _liveness_checkers.clear();
+    _lock.unlock();
+}
+
+u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncated, u64 weight) {
+    // Use shared lock - multiple put operations can run concurrently since each trace 
+    // goes to a different slot based on its hash. Only blocked by exclusive operations like collectTraces() or clear().
+    if (!_lock.tryLockShared()) {
+        // Exclusive operation (collectTraces or clear) in progress - return special dropped trace ID
+        Counters::increment(CALLTRACE_STORAGE_DROPPED);
+        return DROPPED_TRACE_ID;
+    }
+    
+    // Safety check: if active storage is invalid (e.g., during destruction), drop the sample
+    if (_active_storage == nullptr) {
+        TEST_LOG("CallTraceStorage::put() - _active_storage is NULL (shutdown/destruction?), returning DROPPED_TRACE_ID");
+        _lock.unlockShared();
+        Counters::increment(CALLTRACE_STORAGE_DROPPED);
+        return DROPPED_TRACE_ID;
+    }
+    
+    // Forward to active storage
+    u64 result = _active_storage->put(num_frames, frames, truncated, weight);
+    
+    _lock.unlockShared();
+    return result;
+}
+
+/*
+ * This function is not thread safe. The caller must ensure that it is never called concurrently.
+ *
+ * For all practical purposes, we end up calling this function only via FlightRecorder::flush()
+ * and that function is already locking on the recording lock, so there will never be two concurrent
+ * flushes at the same time.
+ */
+void CallTraceStorage::processTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor) {
+    // Split lock strategy: minimize time under exclusive lock by separating swap from processing
+    std::unordered_set<u64> preserve_set;
+    
+    // PHASE 1: Brief exclusive lock for liveness collection and storage swap
+    {
+        _lock.lock();
+        
+        // Step 1: Collect all call_trace_id values that need to be preserved
+        // Use pre-allocated containers to avoid malloc() in hot path
+        _preserve_buffer.clear();      // No deallocation - keeps reserved capacity
+        _preserve_set.clear();         // No bucket deallocation - keeps reserved buckets
+
+        for (const auto& checker : _liveness_checkers) {
+            checker(_preserve_buffer); // Fill buffer by reference - no malloc()
+        }
+
+        // Copy preserve set for use outside lock - bulk insert into set
+        _preserve_set.insert(_preserve_buffer.begin(), _preserve_buffer.end());
+        preserve_set = _preserve_set; // Copy the set for lock-free processing
+        
+        // Step 2: Assign new instance ID to standby storage to avoid trace ID clashes
+        u64 new_instance_id = getNextInstanceId();
+        _standby_storage->setInstanceId(new_instance_id);
+        
+        // Step 3: Swap storage atomically - standby (with new instance ID) becomes active
+        // Old active becomes standby and will be processed lock-free
+        _active_storage.swap(_standby_storage);
+        
+        _lock.unlock();
+        // END PHASE 1 - Lock released, put() operations can now proceed concurrently
+    }
+    
+    // PHASE 2: Lock-free processing - iterate owned storage and collect traces
+    std::unordered_set<CallTrace*> traces;
+    std::unordered_set<CallTrace*> traces_to_preserve;
+    
+    // Collect all traces and identify which ones to preserve (no lock held)
+    _standby_storage->collect(traces);  // Get all traces from standby (old active) for JFR processing
+    
+    // Always ensure the dropped trace is included in JFR constant pool
+    // This guarantees that events with DROPPED_TRACE_ID have a valid stack trace entry
+    traces.insert(getDroppedTrace());
+    
+    // Identify traces that need to be preserved based on their IDs
+    for (CallTrace* trace : traces) {
+        if (preserve_set.find(trace->trace_id) != preserve_set.end()) {
+            traces_to_preserve.insert(trace);
+        }
+    }
+    
+    // Process traces while they're still valid in standby storage (no lock held)
+    // The callback is guaranteed that all traces remain valid during execution
+    processor(traces);
+    
+    // PHASE 3: Brief exclusive lock to copy preserved traces back to active storage and clear standby
+    {
+        _lock.lock();
+        
+        // Copy preserved traces to current active storage, maintaining their original trace IDs
+        for (CallTrace* trace : traces_to_preserve) {
+            _active_storage->putWithExistingId(trace, 1);
+        }
+        
+        // Clear standby storage (old active) now that we're done processing
+        // This keeps the hash table structure but clears all data
+        _standby_storage->clear();
+        
+        _lock.unlock();
+        // END PHASE 3 - All preserved traces copied back to active storage, standby cleared for reuse
+    }
+}
+
+
 
 void CallTraceStorage::clear() {
-  _lock.lock();
-  while (_current_table->prev() != NULL) {
-    _current_table = _current_table->destroy();
-  }
-  _current_table->clear();
-  _allocator.clear();
-  _overflow = 0;
-  Counters::set(CALLTRACE_STORAGE_BYTES, 0);
-  Counters::set(CALLTRACE_STORAGE_TRACES, 0);
-  _lock.unlock();
+    // This is called from profiler start/dump - clear both storages
+    _lock.lock();
+
+    _active_storage->clear();
+    _standby_storage->clear();
+
+    // Reset counters when clearing all storage
+    Counters::set(CALLTRACE_STORAGE_BYTES, 0);
+    Counters::set(CALLTRACE_STORAGE_TRACES, 0);
+
+    _lock.unlock();
 }
 
-void CallTraceStorage::collectTraces(std::map<u32, CallTrace *> &map) {
-  for (LongHashTable *table = _current_table; table != NULL;
-       table = table->prev()) {
-    u64 *keys = table->keys();
-    CallTraceSample *values = table->values();
-    u32 capacity = table->capacity();
-
-    for (u32 slot = 0; slot < capacity; slot++) {
-      if (keys[slot] != 0 && loadAcquire(values[slot].samples) != 0) {
-        // Reset samples to avoid duplication of call traces between JFR chunks
-        values[slot].samples = 0;
-        CallTrace *trace = values[slot].acquireTrace();
-        if (trace != NULL) {
-          map[capacity - (INITIAL_CAPACITY - 1) + slot] = trace;
-        }
-      }
-    }
-  }
-  if (_overflow > 0) {
-    map[OVERFLOW_TRACE_ID] = &_overflow_trace;
-  }
-}
-
-// Adaptation of MurmurHash64A by Austin Appleby
-u64 CallTraceStorage::calcHash(int num_frames, ASGCT_CallFrame *frames,
-                               bool truncated) {
-  const u64 M = 0xc6a4a7935bd1e995ULL;
-  const int R = 47;
-
-  int len = num_frames * sizeof(ASGCT_CallFrame);
-  u64 h = len * M * (truncated ? 1 : 2);
-
-  const u64 *data = (const u64 *)frames;
-  const u64 *end = data + len / sizeof(u64);
-
-  while (data != end) {
-    u64 k = *data++;
-    k *= M;
-    k ^= k >> R;
-    k *= M;
-    h ^= k;
-    h *= M;
-  }
-
-  if (len & 4) {
-    h ^= *(u32 *)data;
-    h *= M;
-  }
-
-  h ^= h >> R;
-  h *= M;
-  h ^= h >> R;
-
-  return h;
-}
-
-CallTrace *CallTraceStorage::storeCallTrace(int num_frames,
-                                            ASGCT_CallFrame *frames,
-                                            bool truncated) {
-  const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
-  const size_t total_size = header_size + num_frames * sizeof(ASGCT_CallFrame);
-  CallTrace *buf = (CallTrace *)_allocator.alloc(total_size);
-  if (buf != NULL) {
-    buf->num_frames = num_frames;
-    // Do not use memcpy inside signal handler
-    for (int i = 0; i < num_frames; i++) {
-      buf->frames[i] = frames[i];
-    }
-    buf->truncated = truncated;
-    Counters::increment(CALLTRACE_STORAGE_BYTES, total_size);
-    Counters::increment(CALLTRACE_STORAGE_TRACES);
-  }
-  return buf;
-}
-
-CallTrace *CallTraceStorage::findCallTrace(LongHashTable *table, u64 hash) {
-  u64 *keys = table->keys();
-  u32 capacity = table->capacity();
-  u32 slot = hash & (capacity - 1);
-  u32 step = 0;
-
-  while (keys[slot] != hash) {
-    if (keys[slot] == 0) {
-      return NULL;
-    }
-    if (++step >= capacity) {
-      return NULL;
-    }
-    slot = (slot + step) & (capacity - 1);
-  }
-
-  return table->values()[slot].trace;
-}
-
-u32 CallTraceStorage::put(int num_frames, ASGCT_CallFrame *frames,
-                          bool truncated, u64 weight) {
-  // Currently, CallTraceStorage is a singleton used globally in Profiler and
-  // therefore start-stop operation requires data structures cleanup. This
-  // cleanup may and will race this method and the racing can cause all sorts of
-  // trouble. Unfortunately, this code running in a signal handler we can not
-  // just wait till the cleanup is finished and must drop samples instead.
-  if (!_lock.tryLockShared()) {
-    // FIXME: take proper snapshot of the data instead of dropping samples
-    return 0;
-  }
-
-  u64 hash = calcHash(num_frames, frames, truncated);
-
-  LongHashTable *table = _current_table;
-  u64 *keys = table->keys();
-  u32 capacity = table->capacity();
-  u32 slot = hash & (capacity - 1);
-  u32 step = 0;
-  while (true) {
-    u64 key_value = __atomic_load_n(&keys[slot], __ATOMIC_RELAXED);
-    if (key_value == hash) { // Hash matches, exit the loop
-      break;
-    }
-    if (key_value == 0) {
-      if (!__sync_bool_compare_and_swap(&keys[slot], 0, hash)) {
-        continue; // another thread claimed it, go to next slot
-      }
-      // Increment the table size, and if the load factor exceeds 0.75, reserve
-      // a new table
-      if (table->incSize() == capacity * 3 / 4) {
-        LongHashTable *new_table = LongHashTable::allocate(table, capacity * 2);
-        if (new_table != NULL) {
-          __sync_bool_compare_and_swap(&_current_table, table, new_table);
-        }
-      }
-
-      // Migrate from a previous table to save space
-      CallTrace *trace =
-          table->prev() == NULL ? NULL : findCallTrace(table->prev(), hash);
-      if (trace == NULL) {
-        trace = storeCallTrace(num_frames, frames, truncated);
-      }
-      table->values()[slot].setTrace(trace);
-
-      // clear the slot in the prev table such it is not written out to constant
-      // pool multiple times
-      LongHashTable *prev_table = table->prev();
-      if (prev_table != NULL) {
-        prev_table->keys()[slot] = 0;
-      }
-      break;
-    }
-
-    if (++step >= capacity) {
-      // Very unlikely case of a table overflow
-      atomicInc(_overflow);
-      _lock.unlockShared();
-      return OVERFLOW_TRACE_ID;
-    }
-    // Improved version of linear probing
-    slot = (slot + step) & (capacity - 1);
-  }
-
-  CallTraceSample &s = table->values()[slot];
-  atomicInc(s.samples);
-  atomicInc(s.counter, weight);
-
-  _lock.unlockShared();
-  return capacity - (INITIAL_CAPACITY - 1) + slot;
-}

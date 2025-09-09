@@ -33,3 +33,4 @@ datadog/maven/resources
 
 # cursor AI history
 .history
+/.claude/

@@ -1,17 +1,7 @@
 /*
- * Copyright 2018 Andrei Pangin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright The async-profiler authors
+ * Copyright 2025, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _FLIGHTRECORDER_H
@@ -247,20 +237,20 @@ public:
 
   void writeContext(Buffer *buf, Context &context);
 
-  void recordExecutionSample(Buffer *buf, int tid, u32 call_trace_id,
+  void recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
                              ExecutionEvent *event);
-  void recordMethodSample(Buffer *buf, int tid, u32 call_trace_id,
+  void recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
                           ExecutionEvent *event);
   void recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event);
   void recordTraceRoot(Buffer *buf, int tid, TraceRootEvent *event);
   void recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event);
-  void recordAllocation(RecordingBuffer *buf, int tid, u32 call_trace_id,
+  void recordAllocation(RecordingBuffer *buf, int tid, u64 call_trace_id,
                         AllocEvent *event);
-  void recordHeapLiveObject(Buffer *buf, int tid, u32 call_trace_id,
+  void recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
                             ObjectLivenessEvent *event);
-  void recordMonitorBlocked(Buffer *buf, int tid, u32 call_trace_id,
+  void recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,
                             LockEvent *event);
-  void recordThreadPark(Buffer *buf, int tid, u32 call_trace_id,
+  void recordThreadPark(Buffer *buf, int tid, u64 call_trace_id,
                         LockEvent *event);
   void recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
                      float machine_total);
@@ -317,7 +307,7 @@ public:
 
   bool active() const { return _rec != NULL; }
 
-  void recordEvent(int lock_index, int tid, u32 call_trace_id, int event_type,
+  void recordEvent(int lock_index, int tid, u64 call_trace_id, int event_type,
                    Event *event);
 
   void recordLog(LogLevel level, const char *message, size_t len);
