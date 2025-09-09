@@ -4,7 +4,7 @@
 #include <signal.h>
 
 #include "safeAccess.h"
-#include "os.h"
+#include "os_dd.h"
 
 
 static void (*orig_segvHandler)(int signo, siginfo_t *siginfo, void *ucontext);

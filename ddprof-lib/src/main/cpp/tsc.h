@@ -17,7 +17,7 @@
 #ifndef _TSC_H
 #define _TSC_H
 
-#include "os.h"
+#include "os_dd.h"
 
 #if defined(__x86_64__)
 

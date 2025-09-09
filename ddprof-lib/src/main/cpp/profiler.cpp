@@ -16,7 +16,7 @@
 #include "j9Ext.h"
 #include "j9WallClock.h"
 #include "objectSampler.h"
-#include "os.h"
+#include "os_dd.h"
 #include "perfEvents.h"
 #include "safeAccess.h"
 #include "stackFrame.h"
@@ -939,8 +939,8 @@ void Profiler::setupSignalHandlers() {
       if (VM::isHotspot() || VM::isOpenJ9()) {
         // HotSpot and J9 tolerate interposed SIGSEGV/SIGBUS handler; other JVMs
         // probably not
-        orig_segvHandler = OS::replaceSigsegvHandler(segvHandler);
-        orig_busHandler = OS::replaceSigbusHandler(busHandler);
+        orig_segvHandler = ddprof::OS::replaceSigsegvHandler(segvHandler);
+        orig_busHandler = ddprof::OS::replaceSigbusHandler(busHandler);
       }
   }
 }
@@ -988,7 +988,8 @@ void Profiler::updateNativeThreadNames() {
     constexpr size_t buffer_size = 64;
     char name_buf[buffer_size];  // Stack-allocated buffer
 
-    for (int tid; (tid = thread_list->next()) != -1;) {
+    while (thread_list->hasNext()) { 
+        int tid = thread_list->next(); 
         _thread_info.updateThreadName(
                 tid, [&](int tid) -> std::string {
                     if (OS::threadName(tid, name_buf, buffer_size)) {

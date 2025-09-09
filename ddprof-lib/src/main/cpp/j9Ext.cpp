@@ -16,7 +16,7 @@
  */
 
 #include "j9Ext.h"
-#include "os.h"
+#include "os_dd.h"
 #include <string.h>
 
 jvmtiEnv *J9Ext::_jvmti;

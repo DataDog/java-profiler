@@ -5,7 +5,7 @@
 
 #include "codeCache.h"
 #include "libraries.h"
-#include "symbols_linux.h"
+#include "symbols.h"
 #include "log.h"
 
 #include <unistd.h>

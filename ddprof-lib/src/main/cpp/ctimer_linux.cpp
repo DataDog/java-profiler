@@ -176,7 +176,8 @@ Error CTimer::start(Arguments &args) {
   // Register all existing threads
   Error result = Error::OK;
   ThreadList *thread_list = OS::listThreads();
-  for (int tid; (tid = thread_list->next()) != -1;) {
+  while (thread_list->hasNext()) { 
+    int tid = thread_list->next();
     int err = registerThread(tid);
     if (err != 0) {
       result = Error("Failed to register thread");

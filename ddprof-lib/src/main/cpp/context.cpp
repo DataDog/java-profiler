@@ -16,7 +16,7 @@
 
 #include "context.h"
 #include "counters.h"
-#include "os.h"
+#include "os_dd.h"
 #include <cstring>
 
 int Contexts::_max_pages = Contexts::getMaxPages();

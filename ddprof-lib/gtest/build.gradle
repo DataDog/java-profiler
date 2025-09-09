@@ -93,8 +93,7 @@ tasks.whenTaskAdded { task ->
             def testName = it.name.substring(0, it.name.lastIndexOf('.'))
             def gtestCompileTask = tasks.register("compileGtest${config.name.capitalize()}_${testName}", CppCompile) {
               onlyIf {
-                config.active && hasGtest && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native')
-                && !project.hasProperty('skip-gtest')
+                config.active && hasGtest && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native') && !project.hasProperty('skip-gtest')
               }
               group = 'build'
               description = "Compile the Google Test ${testName} for the ${config.name} build of the library"

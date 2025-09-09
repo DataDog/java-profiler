@@ -76,7 +76,15 @@ public:
   bool unwindCompiled(NMethod *nm, uintptr_t &pc, uintptr_t &sp, uintptr_t &fp);
   bool unwindAtomicStub(const void*& pc);
 
-  void adjustSP(const void *entry, const void *pc, uintptr_t &sp);
+  bool unwindPrologue(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
+  bool unwindEpilogue(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
+
+  void adjustSP(NMethod* nm, const void* pc, uintptr_t& sp);
+
+  // SP baseline helpers for compiled frame unwinding
+  uintptr_t sender_sp_baseline(const NMethod* nm, uintptr_t sp, uintptr_t fp, const void* pc);
+  const void* read_caller_pc_from_sp(uintptr_t sp_base);
+  uintptr_t read_saved_fp_from_sp(uintptr_t sp_base);
 
   bool skipFaultInstruction();
 

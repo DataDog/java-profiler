@@ -86,6 +86,85 @@ The project includes both Java and C++ unit tests. You can run them using:
 ### Cross-JDK Testing
 `JAVA_TEST_HOME=<path to test JDK> ./gradlew testDebug`
 
+## Unwinding Validation Tool
+
+The project includes a comprehensive unwinding validation tool that tests JIT compilation unwinding scenarios to detect stack frame issues. This tool validates the profiler's ability to correctly unwind stack frames during complex JIT compilation scenarios.
+
+### Running the Unwinding Validator
+
+```bash
+# Run all unwinding validation scenarios (release or debug build required)
+./gradlew :ddprof-test:runUnwindingValidator
+
+# Run specific scenario
+./gradlew :ddprof-test:runUnwindingValidator -PvalidatorArgs="--scenario=C2CompilationTriggers"
+
+# Generate markdown report for CI
+./gradlew :ddprof-test:unwindingReport
+
+# Show available options
+./gradlew :ddprof-test:runUnwindingValidator -PvalidatorArgs="--help"
+```
+
+### Available Scenarios
+
+The validator includes 13 specialized scenarios targeting different unwinding challenges:
+
+- **C2CompilationTriggers** - Heavy computational workloads that trigger C2 compilation
+- **OSRScenarios** - On-Stack Replacement compilation scenarios
+- **ConcurrentC2Compilation** - Concurrent C2 compilation stress testing
+- **C2DeoptScenarios** - C2 deoptimization and transition edge cases
+- **ExtendedJNIScenarios** - Extended JNI operation patterns
+- **MultipleStressRounds** - Multiple concurrent stress rounds
+- **ExtendedPLTScenarios** - PLT (Procedure Linkage Table) resolution scenarios
+- **ActivePLTResolution** - Intensive PLT resolution during profiling
+- **ConcurrentCompilationStress** - Heavy JIT compilation + native activity
+- **VeneerHeavyScenarios** - ARM64 veneer/trampoline intensive workloads
+- **RapidTierTransitions** - Rapid compilation tier transitions
+- **DynamicLibraryOps** - Dynamic library operations during profiling
+- **StackBoundaryStress** - Stack boundary stress scenarios
+
+### Output Formats
+
+The validator supports multiple output formats:
+
+```bash
+# Text output (default)
+./gradlew :ddprof-test:runUnwindingValidator
+
+# JSON format for programmatic analysis
+./gradlew :ddprof-test:runUnwindingValidator -PvalidatorArgs="--output-format=json --output-file=unwinding-report.json"
+
+# Markdown format for documentation
+./gradlew :ddprof-test:runUnwindingValidator -PvalidatorArgs="--output-format=markdown --output-file=unwinding-report.md"
+```
+
+### CI Integration
+
+The unwinding validator is automatically integrated into GitHub Actions CI pipeline:
+
+- Runs only on **debug builds** in CI (provides clean measurements without optimization interference)
+- Generates rich markdown reports displayed directly in job summaries
+- Creates downloadable report artifacts for historical analysis
+- Fails builds when critical unwinding issues are detected
+
+The validator provides immediate visibility into unwinding quality across all supported platforms and Java versions without requiring artifact downloads.
+
+### Understanding Results
+
+The tool analyzes JFR (Java Flight Recorder) data to measure:
+
+- **Error Rate** - Percentage of samples with unwinding failures (`.unknown()`, `.break_interpreted()`)
+- **Native Coverage** - Percentage of samples successfully unwound in native code
+- **Sample Count** - Total profiling samples captured during validation
+- **Error Types** - Breakdown of specific unwinding failure patterns
+
+Results are categorized as:
+- 🟢 **Excellent** - Error rate < 0.1%
+- 🟢 **Good** - Error rate < 1.0%
+- 🟡 **Moderate** - Error rate < 5.0%
+- 🔴 **Needs Work** - Error rate ≥ 5.0%
+
 ## Release Builds and Debug Information
 
 ### Split Debug Information

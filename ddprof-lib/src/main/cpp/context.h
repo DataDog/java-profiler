@@ -19,7 +19,7 @@
 
 #include "arch_dd.h"
 #include "arguments.h"
-#include "os.h"
+#include "os_dd.h"
 
 static const u32 DD_TAGS_CAPACITY = 10;
 
