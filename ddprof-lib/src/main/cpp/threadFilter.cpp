@@ -159,7 +159,7 @@ bool ThreadFilter::accept(SlotID slot_id) const {
     // This is not a fast path like the add operation.
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
     if (likely(chunk != nullptr)) {
-        return chunk->slots[slot_idx].value.load(std::memory_order_acquire) != -1;
+        return chunk->slots[slot_idx].value.load(std::memory_order_relaxed) != -1;
     }
     return false;
 }
@@ -173,7 +173,7 @@ void ThreadFilter::add(int tid, SlotID slot_id) {
     int slot_idx = slot_id & kChunkMask;
 
     // Fast path: assume valid slot_id from registerThread()
-    ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
+    ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
     if (likely(chunk != nullptr)) {
         chunk->slots[slot_idx].value.store(tid, std::memory_order_release);
     }
@@ -192,7 +192,7 @@ void ThreadFilter::remove(SlotID slot_id) {
         return;
     }
 
-    ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
+    ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
     if (unlikely(chunk == nullptr)) {
         return;
     }
@@ -266,13 +266,13 @@ void ThreadFilter::collect(std::vector<int>& tids) const {
     // Scan only initialized chunks
     int num_chunks = _num_chunks.load(std::memory_order_relaxed);
     for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
-        ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_relaxed);
+        ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
         if (chunk == nullptr) {
             continue;  // Skip unallocated chunks
         }
         
         for (const auto& slot : chunk->slots) {
-            int slot_tid = slot.value.load(std::memory_order_acquire);
+            int slot_tid = slot.value.load(std::memory_order_relaxed);
             if (slot_tid != -1) {
                 tids.push_back(slot_tid);
             }
