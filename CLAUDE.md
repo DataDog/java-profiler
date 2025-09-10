@@ -306,3 +306,6 @@ With separate debug symbol packages for production debugging support.
 - Always challange my proposals. Use deep analysis and logic to find flaws in what I am proposing
 
 - Exclude ddprof-lib/build/async-profiler from searches of active usage
+
+- Run tests with 'testdebug' gradle task
+- Use at most Java 21 to build and run tests
