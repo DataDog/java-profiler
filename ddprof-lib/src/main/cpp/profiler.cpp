@@ -899,7 +899,8 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 
     ddprof::StackWalker::checkFault(thrd);
 
-    // Workaround for JDK-8313796 in unfixed version. Setting cstack=dwarf also helps
+    // Workaround for JDK-8313796 in unfixed version. '
+    // Setting cstack=dwarf also helps
     if (_need_JDK_8313796_workaround &&
         VMStructs::isInterpretedFrameValidFunc((const void *)pc) &&
         frame.skipFaultInstruction()) {
