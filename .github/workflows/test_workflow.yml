@@ -103,7 +103,7 @@ jobs:
       - name: Generate Unwinding Report
         if: success() && matrix.config == 'debug'
         run: |
-          ./gradlew :ddprof-test:unwindingReport --no-daemon
+          ./gradlew -PCI :ddprof-test:unwindingReport --no-daemon
       - name: Add Unwinding Report to Job Summary
         if: success() && matrix.config == 'debug' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''
         run: |
@@ -220,7 +220,7 @@ jobs:
       - name: Generate Unwinding Report
         if: success() && matrix.config == 'debug'
         run: |
-          ./gradlew :ddprof-test:unwindingReport --no-daemon
+          ./gradlew -PCI :ddprof-test:unwindingReport --no-daemon
       - name: Add Unwinding Report to Job Summary
         if: success() && matrix.config == 'debug' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''
         run: |
@@ -345,7 +345,7 @@ jobs:
       - name: Generate Unwinding Report
         if: success() && matrix.config == 'debug'
         run: |
-          ./gradlew :ddprof-test:unwindingReport --no-daemon
+          ./gradlew -PCI :ddprof-test:unwindingReport --no-daemon
       - name: Add Unwinding Report to Job Summary
         if: success() && matrix.config == 'debug' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''
         run: |
@@ -439,7 +439,7 @@ jobs:
        - name: Generate Unwinding Report
          if: success() && matrix.config == 'debug'
          run: | 
-           ./gradlew :ddprof-test:unwindingReport --no-daemon
+           ./gradlew -PCI :ddprof-test:unwindingReport --no-daemon
        - name: Add Unwinding Report to Job Summary
          if: success() && matrix.config == 'debug' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''
          run: |
