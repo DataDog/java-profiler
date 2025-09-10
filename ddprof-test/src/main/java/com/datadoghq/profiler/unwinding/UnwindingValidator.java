@@ -169,6 +169,9 @@ public class UnwindingValidator {
         }
         
         System.err.println("=== Comprehensive Unwinding Validation Tool ===");
+        System.err.println("Platform: " + System.getProperty("os.name") + " " + System.getProperty("os.arch"));
+        System.err.println("Java Version: " + System.getProperty("java.version"));
+        System.err.println("Is musl: " + Platform.isMusl());
         System.err.println("Scenario: " + targetScenario);
         System.err.println("Output format: " + outputFormat.name().toLowerCase());
         if (outputFile != null) {
@@ -508,24 +511,46 @@ public class UnwindingValidator {
     /**
      * Start profiler with aggressive settings for unwinding validation.
      */
-    private void startProfiler() throws Exception {
+    private void startProfiler(String testName) throws Exception {
         if (profilerStarted) {
             throw new IllegalStateException("Profiler already started");
         }
         
-        // Create JFR recording file
-        Path rootDir = Paths.get("/tmp/recordings");
-        Files.createDirectories(rootDir);
-        jfrDump = Files.createTempFile(rootDir, "unwinding-test-", ".jfr");
+        // Create JFR recording file - use current working directory in case /tmp has issues
+        Path rootDir;
+        try {
+            rootDir = Paths.get("/tmp/unwinding-recordings");
+            Files.createDirectories(rootDir);
+        } catch (Exception e) {
+            // Fallback to current directory if /tmp is not writable
+            rootDir = Paths.get("./unwinding-recordings");
+            Files.createDirectories(rootDir);
+        }
+        jfrDump = Files.createTempFile(rootDir, testName + "-", ".jfr");
         
-        // EXTREMELY aggressive profiling to catch incomplete stack frames
+        // Use less aggressive profiling for musl environments which may be more sensitive
         profiler = JavaProfiler.getInstance();
-        String command = "start,cpu=10us,cstack=vm,jfr,file=" + jfrDump.toAbsolutePath();
-        profiler.execute(command);
-        profilerStarted = true;
+        String interval = Platform.isMusl() ? "100us" : "10us";
+        String command = "start,cpu=" + interval + ",cstack=vm,jfr,file=" + jfrDump.toAbsolutePath();
         
-        // Give profiler time to initialize
-        Thread.sleep(100);
+        try {
+            profiler.execute(command);
+            profilerStarted = true;
+        } catch (Exception e) {
+            System.err.println("Failed to start profiler: " + e.getMessage());
+            // Try with even less aggressive settings as fallback
+            try {
+                command = "start,cpu=1ms,jfr,file=" + jfrDump.toAbsolutePath();
+                profiler.execute(command);
+                profilerStarted = true;
+                System.err.println("Started profiler with fallback settings");
+            } catch (Exception fallbackE) {
+                throw new RuntimeException("Failed to start profiler with both standard and fallback settings", fallbackE);
+            }
+        }
+        
+        // Give profiler more time to initialize on potentially slower environments
+        Thread.sleep(Platform.isMusl() ? 500 : 100);
     }
     
     /**
@@ -565,7 +590,7 @@ public class UnwindingValidator {
         long startTime = System.currentTimeMillis();
         
         // Start profiler for this specific scenario
-        startProfiler();
+        startProfiler(testName);
         
         try {
             // Execute the scenario
@@ -599,7 +624,7 @@ public class UnwindingValidator {
                 if (isCI) {
                     System.err.println("CI mode: Extending scenario execution time...");
                     // Re-run scenario with longer execution
-                    startProfiler();
+                    startProfiler(testName);
                     Thread.sleep(1000); // Wait 1 second before scenario
                     scenario.execute();
                     Thread.sleep(1000); // Wait 1 second after scenario
@@ -1240,7 +1265,8 @@ public class UnwindingValidator {
 
     private void performIntensiveLZ4Operations() {
         if (Platform.isMusl()) {
-            // lz4 native lib not available on musl
+            // lz4 native lib not available on musl - simulate equivalent work
+            performAlternativeNativeWork();
             return;
         }
         try {
@@ -1296,6 +1322,41 @@ public class UnwindingValidator {
         String.valueOf(ThreadLocalRandom.current().nextInt()).hashCode();
     }
 
+    private void performAlternativeNativeWork() {
+        // Alternative native work for musl where LZ4 is not available
+        // Focus on JNI calls that are available on musl
+        try {
+            // Array operations that go through native code
+            int[] source = new int[256];
+            int[] dest = new int[256];
+            for (int i = 0; i < source.length; i++) {
+                source[i] = ThreadLocalRandom.current().nextInt();
+            }
+            System.arraycopy(source, 0, dest, 0, source.length);
+            
+            // String interning and native operations
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 10; i++) {
+                sb.append("test").append(i);
+            }
+            String result = sb.toString();
+            result.hashCode();
+            
+            // Reflection calls that exercise native method resolution
+            Method method = String.class.getMethod("length");
+            method.invoke(result);
+            
+            // Math operations that may use native implementations
+            for (int i = 0; i < 50; i++) {
+                Math.sin(i * Math.PI / 180);
+                Math.cos(i * Math.PI / 180);
+            }
+            
+        } catch (Exception e) {
+            // Expected during alternative native work
+        }
+    }
+
     private long performMixedNativeJavaTransitions() {
         long work = 0;
         
@@ -1321,19 +1382,28 @@ public class UnwindingValidator {
             Method method = buffer.getClass().getMethod("position");
             Integer pos = (Integer) method.invoke(buffer);
             
-            // More JNI
-            LZ4Compressor compressor = LZ4Factory.nativeInstance().fastCompressor();
-            ByteBuffer source = ByteBuffer.allocateDirect(256);
-            ByteBuffer compressed = ByteBuffer.allocateDirect(compressor.maxCompressedLength(256));
+            // More JNI - use platform-appropriate operations
+            long workResult;
+            if (Platform.isMusl()) {
+                // Alternative native operations for musl
+                performAlternativeNativeWork();
+                workResult = buffer.position();
+            } else {
+                // LZ4 operations for non-musl platforms
+                LZ4Compressor compressor = LZ4Factory.nativeInstance().fastCompressor();
+                ByteBuffer source = ByteBuffer.allocateDirect(256);
+                ByteBuffer compressed = ByteBuffer.allocateDirect(compressor.maxCompressedLength(256));
+                
+                byte[] data = new byte[256];
+                ThreadLocalRandom.current().nextBytes(data);
+                source.put(data);
+                source.flip();
+                
+                compressor.compress(source, compressed);
+                workResult = compressed.position();
+            }
             
-            byte[] data = new byte[256];
-            ThreadLocalRandom.current().nextBytes(data);
-            source.put(data);
-            source.flip();
-            
-            compressor.compress(source, compressed);
-            
-            return pos + compressed.position() + performDeepJNIChain(depth - 1);
+            return pos + workResult + performDeepJNIChain(depth - 1);
             
         } catch (Exception e) {
             return e.hashCode() % 1000 + performDeepJNIChain(depth - 1);

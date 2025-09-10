@@ -232,11 +232,6 @@ jobs:
           name: (build) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: build/
       - uses: actions/upload-artifact@v4
-        if: success() && matrix.config == 'debug'
-        with:
-          name: unwinding-report-${{ matrix.java_version }}-release-amd64-musl
-          path: ddprof-test/build/reports/unwinding-summary.md
-      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64
@@ -246,10 +241,15 @@ jobs:
         run: |
           .github/scripts/prepare_reports.sh
       - uses: actions/upload-artifact@v4
+        if: success() && matrix.config == 'debug'
+        with:
+          name: (unwinding-reports) unwinding-${{ matrix.java_version }}-release-amd64-musl
+          path: unwinding-reports
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: (reports) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
-          path: reports
+          name: (test-reports) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          path: test-reports
 
   test-linux-glibc-aarch64:
     needs: cache-jdks
@@ -357,11 +357,6 @@ jobs:
           name: (build) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: build/
       - uses: actions/upload-artifact@v4
-        if: success() && matrix.config == 'debug'
-        with:
-          name: unwinding-report-${{ matrix.java_version }}-release-aarch64
-          path: ddprof-test/build/reports/unwinding-summary.md
-      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
@@ -371,10 +366,15 @@ jobs:
         run: |
           .github/scripts/prepare_reports.sh
       - uses: actions/upload-artifact@v4
+        if: success() && matrix.config == 'debug'
+        with:
+          name: (unwinding-reports) unwinding-${{ matrix.java_version }}-release-aarch64
+          path: unwinding-reports
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: (reports) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
-          path: reports
+          name: (test-reports) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          path: test-reports
 
   test-linux-musl-aarch64:
      needs: cache-jdks
@@ -462,11 +462,6 @@ jobs:
            name: (build) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
            path: build/
        - uses: actions/upload-artifact@v4
-         if: success() && matrix.config == 'debug'
-         with:
-           name: unwinding-report-${{ matrix.java_version }}-release-aarch64-musl
-           path: ddprof-test/build/reports/unwinding-summary.md
-       - uses: actions/upload-artifact@v4
          if: failure()
          with:
            name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
@@ -476,7 +471,12 @@ jobs:
          run: |
            .github/scripts/prepare_reports.sh
        - uses: actions/upload-artifact@v4
+         if: success() && matrix.config == 'debug'
+         with:
+           name: (unwinding-reports) unwinding-${{ matrix.java_version }}-release-aarch64-musl
+           path: unwinding-reports
+       - uses: actions/upload-artifact@v4
          if: failure()
          with:
-           name: (reports) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
-           path: reports
+           name: (test-reports) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
+           path: test-reports
