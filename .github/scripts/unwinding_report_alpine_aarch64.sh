@@ -31,4 +31,4 @@ export JAVA_VERSION
 
 apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar binutils >/dev/null
 
-./gradlew -PCI :ddprof-test:unwindingReport --no-daemon
+./gradlew -PCI :ddprof-test:unwindingReport --no-daemon --parallel --build-cache --no-watch-fs

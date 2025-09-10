@@ -203,6 +203,7 @@ public class UnwindingValidator {
         
         // Check for CI environment to avoid failing builds - use same pattern as build.gradle
         boolean isCI = System.getenv("CI") != null;
+        System.err.println("===> isCI: " +  isCI);
         
         // Exit with non-zero if there are critical issues (unless in CI mode)
         boolean hasCriticalIssues = results.stream()
