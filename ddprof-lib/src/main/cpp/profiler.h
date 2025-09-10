@@ -67,6 +67,7 @@ private:
   // signal handlers
   static volatile bool _signals_initialized;
 
+  static bool _need_JDK_8313796_workaround;
   Mutex _state_lock;
   State _state;
   // class unload hook
@@ -150,6 +151,8 @@ private:
 
   void lockAll();
   void unlockAll();
+
+  static bool check_JDK_8313796_workaround();
 
   static bool crashHandler(int signo, siginfo_t *siginfo, void *ucontext);
 
