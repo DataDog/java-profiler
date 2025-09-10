@@ -8,7 +8,9 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 /**
  * Utility class for collecting and analyzing stub unwinding metrics from JFR data.
@@ -167,11 +169,13 @@ public class UnwindingMetrics {
     }
     
     private static void categorizeErrorType(String stackTrace, Map<String, AtomicInteger> errorTypes) {
-        Arrays.stream(stackTrace.split(System.lineSeparator())).filter(UnwindingMetrics::containsError).forEach(f -> errorTypes.computeIfAbsent(f, k -> new AtomicInteger()).incrementAndGet());
+        Set<String> observedErrors = Arrays.stream(stackTrace.split(System.lineSeparator())).filter(UnwindingMetrics::containsError).collect(Collectors.toSet());
+        observedErrors.forEach(f -> errorTypes.computeIfAbsent(f, k -> new AtomicInteger()).incrementAndGet());
     }
     
     private static void categorizeStubType(String stackTrace, Map<String, AtomicInteger> stubTypes) {
-        Arrays.stream(stackTrace.split(System.lineSeparator())).filter(UnwindingMetrics::containsStubMethod).forEach(f -> stubTypes.computeIfAbsent(f, k -> new AtomicInteger()).incrementAndGet());
+        Set<String> observedStubs = Arrays.stream(stackTrace.split(System.lineSeparator())).filter(UnwindingMetrics::containsStubMethod).collect(Collectors.toSet());
+        observedStubs.forEach(f -> stubTypes.computeIfAbsent(f, k -> new AtomicInteger()).incrementAndGet());
     }
     
     // Pattern detection methods (reused from individual tests)
