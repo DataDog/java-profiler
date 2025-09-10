@@ -1,5 +1,6 @@
 plugins {
   id 'java'
+  id 'application'
 }
 
 repositories {
@@ -20,9 +21,31 @@ def addCommonTestDependencies(Configuration configuration) {
   configuration.dependencies.add(project.dependencies.project(path: ":ddprof-test-tracer"))
 }
 
+def addCommonMainDependencies(Configuration configuration) {
+  // Main dependencies for the unwinding validator application
+  configuration.dependencies.add(project.dependencies.create('org.slf4j:slf4j-simple:1.7.32'))
+  configuration.dependencies.add(project.dependencies.create('org.openjdk.jmc:flightrecorder:8.1.0'))
+  configuration.dependencies.add(project.dependencies.create('org.openjdk.jol:jol-core:0.16'))
+  configuration.dependencies.add(project.dependencies.create('org.lz4:lz4-java:1.8.0'))
+  configuration.dependencies.add(project.dependencies.create('org.xerial.snappy:snappy-java:1.1.10.1'))
+  configuration.dependencies.add(project.dependencies.create('com.github.luben:zstd-jni:1.5.5-4'))
+  configuration.dependencies.add(project.dependencies.project(path: ":ddprof-test-tracer"))
+}
+
 configurations.create('testCommon') {
   canBeConsumed = true
   canBeResolved = true
+}
+
+// Configuration for main source set dependencies
+configurations.create('mainCommon') {
+  canBeConsumed = true 
+  canBeResolved = true
+}
+
+// Application configuration
+application {
+  mainClass = 'com.datadoghq.profiler.unwinding.UnwindingValidator'
 }
 
 buildConfigurations.each { config ->
@@ -32,6 +55,7 @@ buildConfigurations.each { config ->
   }
   logger.debug("Creating configuration for ${name}")
 
+  // Test configuration
   def cfg = configurations.create("test${name.capitalize()}Implementation") {
     canBeConsumed = true
     canBeResolved = true
@@ -67,6 +91,125 @@ buildConfigurations.each { config ->
         locateLibtsan() != null
       }
     }
+  }
+
+  // Main/application configuration for unwinding validator (release and debug configs)
+  if (name == "release" || name == "debug") {
+    def mainCfg = configurations.create("${name}Implementation") {
+      canBeConsumed = true
+      canBeResolved = true
+      extendsFrom configurations.mainCommon
+    }
+    addCommonMainDependencies(mainCfg)
+    mainCfg.dependencies.add(project.dependencies.project(path: ":ddprof-lib", configuration: name))
+
+    // Manual execution task
+    tasks.register("runUnwindingValidator${name.capitalize()}", JavaExec) {
+      onlyIf {
+        config.active
+      }
+      dependsOn compileJava
+      description = "Run the unwinding validator application (release or debug config)"
+      group = 'application'
+      mainClass = 'com.datadoghq.profiler.unwinding.UnwindingValidator'
+      classpath = sourceSets.main.runtimeClasspath + mainCfg
+
+      if (!config.testEnv.empty) {
+        config.testEnv.each { key, value ->
+          environment key, value
+        }
+      }
+
+      def javaHome = System.getenv("JAVA_TEST_HOME")
+      if (javaHome == null) {
+        javaHome = System.getenv("JAVA_HOME")
+      }
+      executable = new File("${javaHome}", 'bin/java')
+
+      jvmArgs '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true',
+              '-XX:ErrorFile=build/hs_err_pid%p.log', '-XX:+ResizeTLAB',
+              '-Xmx512m'
+    }
+
+    // Configure arguments for runUnwindingValidator task
+    tasks.named("runUnwindingValidator${name.capitalize()}") {
+      if (project.hasProperty('validatorArgs')) {
+        setArgs(project.property('validatorArgs').split(' ').toList())
+      }
+    }
+
+    // CI reporting task
+    tasks.register("unwindingReport${name.capitalize()}", JavaExec) {
+      onlyIf {
+        config.active
+      }
+      dependsOn compileJava
+      description = "Generate unwinding report for CI (release or debug config)"
+      group = 'verification'
+      mainClass = 'com.datadoghq.profiler.unwinding.UnwindingValidator'
+      classpath = sourceSets.main.runtimeClasspath + mainCfg
+      args = [
+          '--output-format=markdown', 
+          '--output-file=build/reports/unwinding-summary.md'
+      ]
+
+      if (!config.testEnv.empty) {
+        config.testEnv.each { key, value ->
+          environment key, value
+        }
+      }
+
+      def javaHome = System.getenv("JAVA_TEST_HOME")
+      if (javaHome == null) {
+        javaHome = System.getenv("JAVA_HOME")  
+      }
+      executable = new File("${javaHome}", 'bin/java')
+
+      jvmArgs '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true',
+              '-XX:ErrorFile=build/hs_err_pid%p.log', '-XX:+ResizeTLAB',
+              '-Xmx512m'
+
+      doFirst {
+        file("${buildDir}/reports").mkdirs()
+      }
+    }
+  }
+}
+
+// Create convenience tasks that delegate to the appropriate config
+task runUnwindingValidator {
+  description = "Run the unwinding validator application (delegates to release if available, otherwise debug)"
+  group = 'application'
+  dependsOn {
+    if (tasks.findByName('runUnwindingValidatorRelease')) {
+      return 'runUnwindingValidatorRelease'
+    } else if (tasks.findByName('runUnwindingValidatorDebug')) {
+      return 'runUnwindingValidatorDebug'  
+    } else {
+      throw new GradleException("No suitable build configuration available for unwinding validator")
+    }
+  }
+  
+  doLast {
+    // Delegate to the appropriate task - actual work is done by dependency
+  }
+}
+
+task unwindingReport {
+  description = "Generate unwinding report for CI (delegates to release if available, otherwise debug)"
+  group = 'verification'
+  dependsOn {
+    if (tasks.findByName('unwindingReportRelease')) {
+      return 'unwindingReportRelease'
+    } else if (tasks.findByName('unwindingReportDebug')) {
+      return 'unwindingReportDebug'  
+    } else {
+      throw new GradleException("No suitable build configuration available for unwinding report")
+    }
+  }
+  
+  doLast {
+    // Delegate to the appropriate task - actual work is done by dependency
   }
 }
 
