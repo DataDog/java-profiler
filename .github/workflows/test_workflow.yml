@@ -438,7 +438,7 @@ jobs:
            fi
        - name: Generate Unwinding Report
          if: success() && matrix.config == 'debug'
-         run: |
+         run: | 
            ./gradlew :ddprof-test:unwindingReport --no-daemon
        - name: Add Unwinding Report to Job Summary
          if: success() && matrix.config == 'debug' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''

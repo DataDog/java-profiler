@@ -111,7 +111,7 @@ The project includes a comprehensive unwinding validation tool that tests JIT co
 The validator includes 13 specialized scenarios targeting different unwinding challenges:
 
 - **C2CompilationTriggers** - Heavy computational workloads that trigger C2 compilation
-- **OSRScenarios** - On-Stack Replacement compilation scenarios  
+- **OSRScenarios** - On-Stack Replacement compilation scenarios
 - **ConcurrentC2Compilation** - Concurrent C2 compilation stress testing
 - **C2DeoptScenarios** - C2 deoptimization and transition edge cases
 - **ExtendedJNIScenarios** - Extended JNI operation patterns
@@ -143,7 +143,7 @@ The validator supports multiple output formats:
 
 The unwinding validator is automatically integrated into GitHub Actions CI pipeline:
 
-- Runs only on **debug builds** in CI (provides clean measurements without optimization interference)  
+- Runs only on **debug builds** in CI (provides clean measurements without optimization interference)
 - Generates rich markdown reports displayed directly in job summaries
 - Creates downloadable report artifacts for historical analysis
 - Fails builds when critical unwinding issues are detected
@@ -161,7 +161,7 @@ The tool analyzes JFR (Java Flight Recorder) data to measure:
 
 Results are categorized as:
 - 🟢 **Excellent** - Error rate < 0.1%
-- 🟢 **Good** - Error rate < 1.0%  
+- 🟢 **Good** - Error rate < 1.0%
 - 🟡 **Moderate** - Error rate < 5.0%
 - 🔴 **Needs Work** - Error rate ≥ 5.0%
 
