@@ -6,7 +6,7 @@ trigger_internal_build:
     - when: always
       allow_failure: false
   variables:
-    DOWNSTREAM_BRANCH: "main"
+    DOWNSTREAM_BRANCH: "zgu/benchmark"
     DDPROF_DEFAULT_BRANCH: "main"
     DDPROF_COMMIT_BRANCH: ${CI_COMMIT_BRANCH}
     DDROF_COMMIT_SHA: ${CI_COMMIT_SHA}
