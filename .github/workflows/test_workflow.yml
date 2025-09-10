@@ -438,8 +438,19 @@ jobs:
            fi
        - name: Generate Unwinding Report
          if: success() && matrix.config == 'debug'
-         run: | 
-           ./gradlew -PCI :ddprof-test:unwindingReport --no-daemon
+         run: |
+           docker run --cpus 4 --rm -v /tmp:/tmp -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" -w "${GITHUB_WORKSPACE}" alpine:3.21 /bin/sh -c "
+             apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar binutils >/dev/null
+             export KEEP_JFRS=true
+             export TEST_COMMIT=${{ github.sha }}
+             export TEST_CONFIGURATION=musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+             export LIBC=musl
+             export SANITIZER=${{ matrix.config }}
+             export JAVA_HOME=${{ env.JAVA_HOME }}
+             export JAVA_TEST_HOME=${{ env.JAVA_TEST_HOME }}
+             export PATH=\${JAVA_HOME}/bin:\${PATH}
+             ./gradlew -PCI :ddprof-test:unwindingReport --no-daemon
+           "
        - name: Add Unwinding Report to Job Summary
          if: success() && matrix.config == 'debug' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''
          run: |

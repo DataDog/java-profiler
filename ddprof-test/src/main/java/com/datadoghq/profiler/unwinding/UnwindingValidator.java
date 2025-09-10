@@ -518,14 +518,9 @@ public class UnwindingValidator {
         Files.createDirectories(rootDir);
         jfrDump = Files.createTempFile(rootDir, "unwinding-test-", ".jfr");
         
-        // Aggressive profiling with CI-friendly settings
+        // EXTREMELY aggressive profiling to catch incomplete stack frames
         profiler = JavaProfiler.getInstance();
-        
-        // Use less aggressive sampling in CI to ensure data capture
-        boolean isCI = System.getenv("CI") != null;
-        String samplingInterval = isCI ? "100us" : "10us";
-        
-        String command = "start,cpu=" + samplingInterval + ",cstack=vm,jfr,file=" + jfrDump.toAbsolutePath();
+        String command = "start,cpu=10us,cstack=vm,jfr,file=" + jfrDump.toAbsolutePath();
         profiler.execute(command);
         profilerStarted = true;
         
@@ -863,92 +858,253 @@ public class UnwindingValidator {
     // Enhanced implementations for CI reliability
     
     private long performActivePLTResolution() {
-        long work = 0;
-        boolean isCI = System.getenv("CI") != null;
-        int rounds = isCI ? 100 : 50; // More rounds in CI
+        // Create conditions where PLT stubs are actively resolving during profiling
+        // This maximizes the chance of catching signals during incomplete stack setup
         
-        for (int i = 0; i < rounds; i++) {
-            work += performPLTScenarios();
-            if (isCI && i % 10 == 0) {
-                LockSupport.parkNanos(5_000_000); // 5ms pause in CI
-            }
+        System.err.println("  Creating intensive PLT resolution activity...");
+        long work = 0;
+        
+        // Use multiple threads to force PLT resolution under concurrent load
+        ExecutorService executor = Executors.newFixedThreadPool(4);
+        CountDownLatch latch = new CountDownLatch(4);
+        
+        for (int thread = 0; thread < 4; thread++) {
+            executor.submit(() -> {
+                try {
+                    // Force many different native library calls to trigger PLT resolution
+                    for (int i = 0; i < 1000; i++) {
+                        // Mix of different libraries to force PLT entries
+                        performIntensiveLZ4Operations();
+                        performIntensiveZSTDOperations();
+                        performIntensiveReflectionCalls();
+                        performIntensiveSystemCalls();
+                        
+                        // No sleep - maximum PLT activity
+                        if (i % 100 == 0 && Thread.currentThread().isInterrupted()) break;
+                    }
+                } finally {
+                    latch.countDown();
+                }
+            });
         }
-        return work;
+        
+        try {
+            latch.await(30, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        
+        executor.shutdown();
+        return work + 1000;
     }
     
     private long performConcurrentCompilationStress() {
+        // Start JIT compilation and immediately begin profiling during active compilation
+        System.err.println("  Starting concurrent compilation + profiling...");
         long work = 0;
-        boolean isCI = System.getenv("CI") != null;
-        int duration = isCI ? 2000 : 1000; // Longer duration in CI
         
-        for (int i = 0; i < duration; i++) {
-            work += heavyArithmeticMethod(i);
-            if (i % 100 == 0) {
-                work += performPLTScenarios();
-            }
+        // Create multiple compilation contexts simultaneously
+        ExecutorService compilationExecutor = Executors.newFixedThreadPool(6);
+        CountDownLatch compilationLatch = new CountDownLatch(6);
+
+        final LongAdder summer = new LongAdder();
+        for (int thread = 0; thread < 6; thread++) {
+            final int threadId = thread;
+            compilationExecutor.submit(() -> {
+                try {
+                    // Each thread triggers different compilation patterns
+                    switch (threadId % 3) {
+                        case 0:
+                            // Heavy C2 compilation triggers
+                            for (int i = 0; i < 500; i++) {
+                                summer.add(performIntensiveArithmetic(i * 1000));
+                                summer.add(performIntensiveBranching(i));
+                            }
+                            break;
+                        case 1:
+                            // OSR compilation scenarios
+                            performLongRunningLoops(1000);
+                            break;
+                        case 2:
+                            // Mixed native/Java transitions
+                            for (int i = 0; i < 300; i++) {
+                                performMixedNativeJavaTransitions();
+                            }
+                            break;
+                    }
+                } finally {
+                    compilationLatch.countDown();
+                }
+            });
         }
-        return work;
+        
+        try {
+            compilationLatch.await(45, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        System.out.println("=== blackhole: " + summer.sumThenReset());
+        
+        compilationExecutor.shutdown();
+        return work + 2000;
     }
     
     private long performVeneerHeavyScenarios() {
+        // ARM64-specific: create conditions requiring veneers/trampolines
+        System.err.println("  Creating veneer-heavy call patterns...");
         long work = 0;
-        boolean isCI = System.getenv("CI") != null;
-        int rounds = isCI ? 200 : 100; // More rounds in CI
         
-        for (int i = 0; i < rounds; i++) {
-            work += performPLTScenarios();
-            work += heavyArithmeticMethod(i * 100);
-            if (isCI && i % 20 == 0) {
-                LockSupport.parkNanos(2_000_000); // 2ms pause in CI
-            }
+        // Create call patterns that require long jumps (potential veneers on ARM64)
+        for (int round = 0; round < 50; round++) {
+            // Cross-library calls that may require veneers
+            work += performCrossLibraryCalls();
+            
+            // Deep recursion that spans different code sections
+            work += performDeepCrossModuleRecursion(20);
+            
+            // Rapid library switching
+            work += performRapidLibrarySwitching();
+            
+            // No delays - keep veneer activity high
         }
+        
         return work;
     }
     
     private long performRapidTierTransitions() {
+        // Force rapid interpreter -> C1 -> C2 transitions during active profiling
+        System.err.println("  Forcing rapid compilation tier transitions...");
         long work = 0;
-        boolean isCI = System.getenv("CI") != null;
-        int cycles = isCI ? 500 : 200; // More cycles in CI
         
-        for (int i = 0; i < cycles; i++) {
-            work += heavyArithmeticMethod(i);
-            work += complexArrayOperations(i % 50);
-            if (i % 50 == 0) {
-                work += performPLTScenarios();
-            }
+        // Use multiple patterns to trigger different tier transitions
+        ExecutorService tierExecutor = Executors.newFixedThreadPool(3);
+        CountDownLatch tierLatch = new CountDownLatch(3);
+        
+        for (int thread = 0; thread < 3; thread++) {
+            final int threadId = thread;
+            tierExecutor.submit(() -> {
+                try {
+                    for (int cycle = 0; cycle < 200; cycle++) {
+                        // Force decompilation -> recompilation cycles
+                        switch (threadId) {
+                            case 0:
+                                forceDeoptimizationCycle(cycle);
+                                break;
+                            case 1:
+                                forceOSRCompilationCycle(cycle);
+                                break;
+                            case 2:
+                                forceUncommonTrapCycle(cycle);
+                                break;
+                        }
+                        
+                        // Brief pause to allow tier transitions
+                        if (cycle % 50 == 0) {
+                            LockSupport.parkNanos(1_000_000); // 1ms
+                        }
+                    }
+                } finally {
+                    tierLatch.countDown();
+                }
+            });
         }
-        return work;
+        
+        try {
+            tierLatch.await(60, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        
+        tierExecutor.shutdown();
+        return work + 3000;
     }
     
     private long performDynamicLibraryOperations() {
+        // Force dynamic library operations during profiling to stress symbol resolution
         long work = 0;
-        boolean isCI = System.getenv("CI") != null;
-        int iterations = isCI ? 300 : 100; // More iterations in CI
         
-        for (int i = 0; i < iterations; i++) {
-            work += performComplexReflection();
-            work += performBasicJNIScenarios();
-            if (i % 30 == 0) {
-                work += heavyArithmeticMethod(i * 10);
-            }
+        ExecutorService libraryExecutor = Executors.newFixedThreadPool(2);
+        CountDownLatch libraryLatch = new CountDownLatch(2);
+        
+        for (int thread = 0; thread < 2; thread++) {
+            libraryExecutor.submit(() -> {
+                try {
+                    // Force class loading and native method resolution during profiling
+                    for (int i = 0; i < 100; i++) {
+                        // Force dynamic loading of native methods by class loading
+                        forceClassLoading(i);
+                        
+                        // Force JNI method resolution
+                        forceJNIMethodResolution();
+                        
+                        // Force reflection method caching
+                        forceReflectionMethodCaching(i);
+                        
+                        // Brief yield to maximize chance of signal during resolution
+                        Thread.yield();
+                    }
+                } finally {
+                    libraryLatch.countDown();
+                }
+            });
         }
-        return work;
+        
+        try {
+            libraryLatch.await(30, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        
+        libraryExecutor.shutdown();
+        return work + 1000;
     }
     
     private long performStackBoundaryStress() {
+        // Create scenarios that stress stack walking at boundaries
         long work = 0;
-        boolean isCI = System.getenv("CI") != null;
-        int rounds = isCI ? 150 : 75; // More rounds in CI
         
-        for (int i = 0; i < rounds; i++) {
-            work += performDeepJNIChain(3);
-            work += complexArrayOperations(i % 25);
-            work += mathIntensiveLoop(i);
-            if (isCI && i % 15 == 0) {
-                LockSupport.parkNanos(3_000_000); // 3ms pause in CI
-            }
+        ExecutorService boundaryExecutor = Executors.newFixedThreadPool(3);
+        CountDownLatch boundaryLatch = new CountDownLatch(3);
+        
+        for (int thread = 0; thread < 3; thread++) {
+            final int threadId = thread;
+            boundaryExecutor.submit(() -> {
+                try {
+                    switch (threadId) {
+                        case 0:
+                            // Deep recursion to stress stack boundaries
+                            for (int i = 0; i < 50; i++) {
+                                performDeepRecursionWithNativeCalls(30);
+                            }
+                            break;
+                        case 1:
+                            // Rapid stack growth/shrinkage
+                            for (int i = 0; i < 200; i++) {
+                                performRapidStackChanges(i);
+                            }
+                            break;
+                        case 2:
+                            // Exception-based stack unwinding stress
+                            for (int i = 0; i < 100; i++) {
+                                performExceptionBasedUnwindingStress();
+                            }
+                            break;
+                    }
+                } finally {
+                    boundaryLatch.countDown();
+                }
+            });
         }
-        return work;
+        
+        try {
+            boundaryLatch.await(45, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        
+        boundaryExecutor.shutdown();
+        return work + 2000;
     }
 
     // Computational helper methods (abbreviated - full versions would be copied)
@@ -1040,7 +1196,416 @@ public class UnwindingValidator {
     private long classLoadingDuringExecution() { return 300; }
     private long nullCheckDeoptimization() { return 125; }
     private long arrayBoundsDeoptimization() { return 175; }
-    private long performDeepJNIChain(int depth) { return depth * 10; }
-    private long performLargeBufferOps() { return 500; }
-    private long performComplexReflection() { return 250; }
+    private long performIntensiveArithmetic(int cycles) {
+        // Heavy arithmetic computation to trigger C2 compilation
+        long result = 0;
+        for (int i = 0; i < cycles; i++) {
+            result = result * 31 + i;
+            result = Long.rotateLeft(result, 5);
+            result ^= (result >>> 21);
+            result *= 0x9e3779b97f4a7c15L;
+        }
+        return result;
+    }
+
+    private long performIntensiveBranching(int cycles) {
+        // Heavy branching patterns to trigger compilation
+        long result = 0;
+        for (int i = 0; i < cycles; i++) {
+            if (i % 2 == 0) {
+                result += i * 3L;
+            } else if (i % 3 == 0) {
+                result += i * 7L;
+            } else if (i % 5 == 0) {
+                result += i * 11L;
+            } else {
+                result += i;
+            }
+        }
+        return result;
+    }
+
+    private void performLongRunningLoops(int iterations) {
+        // Long-running loops that trigger OSR compilation
+        long sum = 0;
+        for (int i = 0; i < iterations; i++) {
+            sum += (long) i * ThreadLocalRandom.current().nextInt(100);
+            if (i % 100 == 0) {
+                // Force memory access to prevent optimization
+                String.valueOf(sum).hashCode();
+            }
+        }
+        System.out.println("=== blackhole: " + sum);
+    }
+
+    private void performIntensiveLZ4Operations() {
+        if (Platform.isMusl()) {
+            // lz4 native lib not available on musl
+            return;
+        }
+        try {
+            LZ4Compressor compressor = LZ4Factory.nativeInstance().fastCompressor();
+            LZ4FastDecompressor decompressor = LZ4Factory.nativeInstance().fastDecompressor();
+            
+            ByteBuffer source = ByteBuffer.allocateDirect(1024);
+            source.putInt(ThreadLocalRandom.current().nextInt());
+            source.flip();
+            
+            ByteBuffer compressed = ByteBuffer.allocateDirect(compressor.maxCompressedLength(source.limit()));
+            compressor.compress(source, compressed);
+            
+            compressed.flip();
+            ByteBuffer decompressed = ByteBuffer.allocateDirect(source.limit());
+            decompressor.decompress(compressed, decompressed);
+        } catch (Exception e) {
+            // Expected during rapid PLT resolution
+        }
+    }
+
+    private void performIntensiveZSTDOperations() {
+        try {
+            ByteBuffer source = ByteBuffer.allocateDirect(1024);
+            source.putLong(ThreadLocalRandom.current().nextLong());
+            source.flip();
+            
+            ByteBuffer compressed = ByteBuffer.allocateDirect(Math.toIntExact(Zstd.compressBound(source.limit())));
+            Zstd.compress(compressed, source);
+        } catch (Exception e) {
+            // Expected during rapid PLT resolution
+        }
+    }
+
+    private void performIntensiveReflectionCalls() {
+        try {
+            Method method = String.class.getMethod("valueOf", int.class);
+            for (int i = 0; i < 10; i++) {
+                method.invoke(null, i);
+            }
+        } catch (Exception e) {
+            // Expected during rapid reflection
+        }
+    }
+
+    private void performIntensiveSystemCalls() {
+        // System calls that go through different stubs
+        int[] array1 = new int[100];
+        int[] array2 = new int[100];
+        System.arraycopy(array1, 0, array2, 0, array1.length);
+        
+        // String operations that may use native methods
+        String.valueOf(ThreadLocalRandom.current().nextInt()).hashCode();
+    }
+
+    private long performMixedNativeJavaTransitions() {
+        long work = 0;
+        
+        // Rapid Java -> Native -> Java transitions
+        work += performIntensiveArithmetic(100);
+        performIntensiveLZ4Operations();
+        work += performIntensiveBranching(50);
+        performIntensiveSystemCalls();
+        work += performIntensiveArithmetic(75);
+        
+        return work;
+    }
+
+    private long performDeepJNIChain(int depth) {
+        if (depth <= 0) return ThreadLocalRandom.current().nextInt(100);
+        
+        try {
+            // JNI -> Java -> JNI chain
+            ByteBuffer buffer = ByteBuffer.allocateDirect(1024);
+            buffer.putLong(System.nanoTime());
+            
+            // Reflection in the middle
+            Method method = buffer.getClass().getMethod("position");
+            Integer pos = (Integer) method.invoke(buffer);
+            
+            // More JNI
+            LZ4Compressor compressor = LZ4Factory.nativeInstance().fastCompressor();
+            ByteBuffer source = ByteBuffer.allocateDirect(256);
+            ByteBuffer compressed = ByteBuffer.allocateDirect(compressor.maxCompressedLength(256));
+            
+            byte[] data = new byte[256];
+            ThreadLocalRandom.current().nextBytes(data);
+            source.put(data);
+            source.flip();
+            
+            compressor.compress(source, compressed);
+            
+            return pos + compressed.position() + performDeepJNIChain(depth - 1);
+            
+        } catch (Exception e) {
+            return e.hashCode() % 1000 + performDeepJNIChain(depth - 1);
+        }
+    }
+    
+    private long performLargeBufferOps() {
+        long work = 0;
+        
+        try {
+            ByteBuffer large = ByteBuffer.allocateDirect(16384);
+            byte[] data = new byte[8192];
+            ThreadLocalRandom.current().nextBytes(data);
+            large.put(data);
+            large.flip();
+            
+            // ZSTD compression
+            ByteBuffer compressed = ByteBuffer.allocateDirect(Math.toIntExact(Zstd.compressBound(large.remaining())));
+            work += Zstd.compress(compressed, large);
+            
+            // ZSTD decompression
+            compressed.flip();
+            ByteBuffer decompressed = ByteBuffer.allocateDirect(8192);
+            work += Zstd.decompress(decompressed, compressed);
+            
+        } catch (Exception e) {
+            work += e.hashCode() % 1000;
+        }
+        
+        return work;
+    }
+    
+    private long performComplexReflection() {
+        long work = 0;
+        try {
+            // Complex reflection patterns that stress unwinder
+            Class<?> clazz = ByteBuffer.class;
+            Method[] methods = clazz.getDeclaredMethods();
+            for (Method method : methods) {
+                if (method.getName().startsWith("put") && method.getParameterCount() == 1) {
+                    work += method.hashCode();
+                    // Create method handle for more complex unwinding
+                    MethodHandles.Lookup lookup = MethodHandles.lookup();
+                    MethodHandle handle = lookup.unreflect(method);
+                    work += handle.hashCode();
+                    break;
+                }
+            }
+            
+            // Nested reflection calls
+            Method lengthMethod = String.class.getMethod("length");
+            for (int i = 0; i < 10; i++) {
+                String testStr = "test" + i;
+                work += (Integer) lengthMethod.invoke(testStr);
+            }
+            
+        } catch (Throwable e) {
+            work += e.hashCode() % 1000;
+        }
+        return work;
+    }
+
+    // Supporting methods for cross-library and tier transition scenarios
+    
+    private long performCrossLibraryCalls() {
+        long work = 0;
+        
+        // Mix calls across different native libraries
+        try {
+            // LZ4 -> ZSTD -> System -> Reflection
+            performIntensiveLZ4Operations();
+            performIntensiveZSTDOperations();
+            performIntensiveSystemCalls();
+            performIntensiveReflectionCalls();
+            work += 10;
+        } catch (Exception e) {
+            // Expected during cross-library transitions
+        }
+        
+        return work;
+    }
+
+    private long performDeepCrossModuleRecursion(int depth) {
+        if (depth <= 0) return 1;
+        
+        // Mix native and Java calls in recursion
+        performIntensiveLZ4Operations();
+        long result = performDeepCrossModuleRecursion(depth - 1);
+        performIntensiveSystemCalls();
+        
+        return result + depth;
+    }
+
+    private long performRapidLibrarySwitching() {
+        long work = 0;
+        
+        // Rapid switching between different native libraries
+        for (int i = 0; i < 20; i++) {
+            switch (i % 4) {
+                case 0: performIntensiveLZ4Operations(); break;
+                case 1: performIntensiveZSTDOperations(); break;
+                case 2: performIntensiveSystemCalls(); break;
+                case 3: performIntensiveReflectionCalls(); break;
+            }
+            work++;
+        }
+        
+        return work;
+    }
+
+    private void forceDeoptimizationCycle(int cycle) {
+        // Pattern that forces deoptimization
+        Object obj = (cycle % 2 == 0) ? "string" : Integer.valueOf(cycle);
+        
+        // This will cause uncommon trap and deoptimization
+        if (obj instanceof String) {
+            performIntensiveArithmetic(cycle);
+        } else {
+            performIntensiveBranching(cycle);
+        }
+    }
+
+    private void forceOSRCompilationCycle(int cycle) {
+        // Long-running loop that triggers OSR
+        long sum = 0;
+        for (int i = 0; i < 1000; i++) {
+            sum += (long) i * cycle;
+            if (i % 100 == 0) {
+                // Force native call during OSR
+                performIntensiveSystemCalls();
+            }
+        }
+    }
+
+    private void forceUncommonTrapCycle(int cycle) {
+        // Pattern that creates uncommon traps
+        try {
+            Class<?> clazz = (cycle % 3 == 0) ? String.class : Integer.class;
+            Method method = clazz.getMethod("toString");
+            method.invoke((cycle % 2 == 0) ? "test" : Integer.valueOf(cycle));
+        } catch (Exception e) {
+            // Creates uncommon trap scenarios
+        }
+    }
+
+    // Additional supporting methods for dynamic library operations
+
+    private void forceClassLoading(int iteration) {
+        try {
+            // Force loading of classes with native methods
+            String className = (iteration % 3 == 0) ? "java.util.zip.CRC32" : 
+                               (iteration % 3 == 1) ? "java.security.SecureRandom" : 
+                               "java.util.concurrent.ThreadLocalRandom";
+            
+            Class<?> clazz = Class.forName(className);
+            // Force static initialization which may involve native method resolution
+            clazz.getDeclaredMethods();
+        } catch (Exception e) {
+            // Expected during dynamic loading
+        }
+    }
+
+    private void forceJNIMethodResolution() {
+        // Operations that force JNI method resolution
+        try {
+            // These operations force native method lookup
+            System.identityHashCode(new Object());
+            Runtime.getRuntime().availableProcessors();
+            System.nanoTime();
+            
+            // Force string native operations
+            "test".intern();
+            
+        } catch (Exception e) {
+            // Expected during method resolution
+        }
+    }
+
+    private void forceReflectionMethodCaching(int iteration) {
+        try {
+            // Force method handle caching and native method resolution
+            Class<?> clazz = String.class;
+            Method method = clazz.getMethod("valueOf", int.class);
+            
+            // This forces method handle creation and caching
+            for (int i = 0; i < 5; i++) {
+                method.invoke(null, iteration + i);
+            }
+        } catch (Exception e) {
+            // Expected during reflection operations
+        }
+    }
+
+    // Stack boundary stress supporting methods
+
+    private void performDeepRecursionWithNativeCalls(int depth) {
+        if (depth <= 0) return;
+        
+        // Mix native calls in recursion
+        performIntensiveLZ4Operations();
+        System.arraycopy(new int[10], 0, new int[10], 0, 10);
+        
+        performDeepRecursionWithNativeCalls(depth - 1);
+        
+        // More native calls on return path
+        String.valueOf(depth).hashCode();
+    }
+
+    private void performRapidStackChanges(int iteration) {
+        // Create rapid stack growth and shrinkage patterns
+        try {
+            switch (iteration % 4) {
+                case 0:
+                    rapidStackGrowth1(iteration);
+                    break;
+                case 1:
+                    rapidStackGrowth2(iteration);
+                    break;
+                case 2:
+                    rapidStackGrowth3(iteration);
+                    break;
+                case 3:
+                    rapidStackGrowth4(iteration);
+                    break;
+            }
+        } catch (StackOverflowError e) {
+            // Expected - this stresses stack boundaries
+        }
+    }
+
+    private void rapidStackGrowth1(int depth) {
+        if (depth > 50) return;
+        performIntensiveSystemCalls();
+        rapidStackGrowth1(depth + 1);
+    }
+
+    private void rapidStackGrowth2(int depth) {
+        if (depth > 50) return;
+        performIntensiveLZ4Operations();
+        rapidStackGrowth2(depth + 1);
+    }
+
+    private void rapidStackGrowth3(int depth) {
+        if (depth > 50) return;
+        performIntensiveReflectionCalls();
+        rapidStackGrowth3(depth + 1);
+    }
+
+    private void rapidStackGrowth4(int depth) {
+        if (depth > 50) return;
+        performIntensiveZSTDOperations();
+        rapidStackGrowth4(depth + 1);
+    }
+
+    private void performExceptionBasedUnwindingStress() {
+        // Use exceptions to force stack unwinding during native operations
+        try {
+            try {
+                try {
+                    performIntensiveLZ4Operations();
+                    throw new RuntimeException("Force unwinding");
+                } catch (RuntimeException e1) {
+                    performIntensiveSystemCalls();
+                    throw new IllegalArgumentException("Force unwinding 2");
+                }
+            } catch (IllegalArgumentException e2) {
+                performIntensiveReflectionCalls();
+                throw new UnsupportedOperationException("Force unwinding 3");
+            }
+        } catch (UnsupportedOperationException e3) {
+            // Final catch - forces multiple stack unwind operations
+            performIntensiveZSTDOperations();
+        }
+    }
 }
