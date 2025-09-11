@@ -45,7 +45,6 @@ Profiler *const Profiler::_instance = new Profiler();
 volatile bool Profiler::_signals_initialized = false;
 bool Profiler::_need_JDK_8313796_workaround = true;
 
-
 static void (*orig_trapHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 static void (*orig_segvHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 static void (*orig_busHandler)(int signo, siginfo_t *siginfo, void *ucontext);
