@@ -104,10 +104,12 @@ void Profiler::addRuntimeStub(const void *address, int length,
 
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   ProfiledThread::initCurrentThread();
-
-  int tid = ProfiledThread::currentTid();
+  ProfiledThread *current = ProfiledThread::current();
+  int tid = current->tid();
   if (_thread_filter.enabled()) {
-    _thread_filter.remove(tid);
+    int slot_id = _thread_filter.registerThread();
+    current->setFilterSlotId(slot_id);
+    _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
   updateThreadName(jvmti, jni, thread, true);
 
@@ -116,16 +118,33 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 }
 
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  int tid = ProfiledThread::currentTid();
-  if (_thread_filter.enabled()) {
-    _thread_filter.remove(tid);
+  ProfiledThread *current = ProfiledThread::current();
+  int tid = -1;
+  
+  if (current != nullptr) {
+    // ProfiledThread is alive - do full cleanup and use efficient tid access
+    int slot_id = current->filterSlotId();
+    tid = current->tid();
+    
+    if (_thread_filter.enabled()) {
+      _thread_filter.unregisterThread(slot_id);
+      current->setFilterSlotId(-1);
+    }
+    
+    ProfiledThread::release();
+  } else {
+    // ProfiledThread already cleaned up - try to get tid from JVMTI as fallback
+    tid = VMThread::nativeThreadId(jni, thread);
+    if (tid < 0) {
+      // No ProfiledThread AND can't get tid from JVMTI - nothing we can do
+      return;
+    }
   }
-  updateThreadName(jvmti, jni, thread, true);
-
+  
+  // These can run if we have a valid tid
+  updateThreadName(jvmti, jni, thread, false);  // false = not self
   _cpu_engine->unregisterThread(tid);
-  // unregister here because JNI callers generally don't know about thread exits
   _wall_engine->unregisterThread(tid);
-  ProfiledThread::release();
 }
 
 int Profiler::registerThread(int tid) {
@@ -1152,6 +1171,16 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   _thread_filter.init(args._filter);
+  
+  // Minor optim: Register the current thread (start thread won't be called)
+  if (_thread_filter.enabled()) {
+    ProfiledThread *current = ProfiledThread::current();
+    if (current != nullptr) {
+      int slot_id = _thread_filter.registerThread();
+      current->setFilterSlotId(slot_id);
+      _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
+    }
+  }
 
   _cpu_engine = selectCpuEngine(args);
   _wall_engine = selectWallEngine(args);
