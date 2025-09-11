@@ -7,6 +7,7 @@ trigger_internal_build:
       allow_failure: false
   variables:
     DOWNSTREAM_BRANCH: "zgu/benchmark"
+    UPSTREAM_PROJECT: $CI_PROJECT_PATH
     UPSTREAM_PROJECT_NAME: ${CI_PROJECT_NAME}
     UPSTREAM_BRANCH: ${CI_COMMIT_BRANCH}
     UPSTREAM_COMMIT_SHA: ${CI_COMMIT_SHA}
