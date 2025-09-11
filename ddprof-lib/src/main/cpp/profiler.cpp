@@ -10,7 +10,7 @@
 #include "common.h"
 #include "counters.h"
 #include "ctimer.h"
-#include "dwarf.h"
+#include "dwarf_dd.h"
 #include "flightRecorder.h"
 #include "itimer.h"
 #include "j9Ext.h"

@@ -6,6 +6,7 @@
 #include "codeCache.h"
 #include "libraries.h"
 #include "symbols.h"
+#include "symbols_linux.h"
 #include "log.h"
 
 #include <unistd.h>
@@ -26,7 +27,7 @@
 TEST(Elf, readSymTable) {
     char cwd[PATH_MAX - 64];
     if (getcwd(cwd, sizeof(cwd)) == nullptr) {
-        exit(1);
+        exit(1);    
     }
     char path[PATH_MAX];
     snprintf(path, sizeof(path) - 1, "%s/../build/test/resources/native-libs/unresolved-functions/main", cwd);

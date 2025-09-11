@@ -39,13 +39,13 @@ The resulting artifact will be in `ddprof-lib/build/libs/ddprof-<version>.jar`
 #### Gritty details
 To smoothen the absorption of the upstream changes, we are using parts of the upstream codebase in (mostly) vanilla form.
 
-For this, we have four new gradle tasks in [ddprof-lib/build.gradle](ddprof-lib/build.gradle):
-- `cloneAsyncProfiler` - clones the [DataDog/async-profiler](https://github.com/DataDog/async-profiler) repository into `ddprof-lib/build/async-profiler` using the commit lock specified in [gradle/ap-lock.properties](gradle/lock.properties)
-  - in that repository, we are maintainin a branch called `dd/master` where we keep the upstream code in sync with the 'safe' changes from the upstream `master` branch
+For this, we have several gradle tasks in [ddprof-lib/build.gradle](ddprof-lib/build.gradle):
+- `cloneAsyncProfiler` - clones the [DataDog/async-profiler](https://github.com/DataDog/async-profiler) repository into `ddprof-lib/build/async-profiler` using the commit lock specified in [gradle/lock.properties](gradle/lock.properties)
+  - in that repository, we are maintaining a branch called `dd/master` where we keep the upstream code in sync with the 'safe' changes from the upstream `master` branch
   - cherry-picks into that branch should be rare and only done for critical fixes that are needed in the project
   - otherwise, we should wait for the next upstream release to avoid conflicts
-- `copyUpstreamFiles` - copies the selected upstream source file into the `ddprof-lib/src/main/cpp-external` directory
-- `patchStackFrame` and `patchStackWalker` - patches the upstream files if it is unavoidable to eg. pass the asan checks
+- `copyUpstreamFiles` - copies the selected upstream source files into the `ddprof-lib/src/main/cpp-external` directory
+- `patchUpstreamFiles` - applies unified patches to upstream files for ASan compatibility, memory safety, and API extensions
 
 Since the upstream code might not be 100% compatible with the current version of the project, we need to provide adapters.
 The adapters are sharing the same file name as the upstream files but are suffixed with `_dd` (e.g. `arch_dd.h`).
@@ -55,7 +55,116 @@ conflicts with the upstream code. This allows us to use the upstream code as-is 
 
 See [ddprof-lib/src/main/cpp/stackWalker_dd.h](ddprof-lib/src/main/cpp/stackWalker_dd.h) for an example of how we adapt the upstream code to fit our needs.
 
-An example of this is the `ddprof-lib/src/main/cpp-external/stack_frame.cpp` file which is a modified version of the upstream `stack_frame.cpp` file.
+### Unified Patching System
+
+The project uses a unified configuration-driven patching system to apply modifications to upstream source files:
+
+- **Configuration File**: All patches are defined in `gradle/patching.gradle` using structured Gradle DSL
+- **Direct Source Modification**: Patches are applied directly to upstream source files using regex-based find/replace
+- **Idempotent Operations**: Each patch includes checks to prevent double-application
+- **Validation System**: Pre-patch validation ensures upstream structure hasn't changed incompatibly
+- **Single Unified Task**: One `patchUpstreamFiles` task replaces multiple fragmented patch tasks
+
+## Patch Configuration Structure
+
+Patches are defined in `gradle/patching.gradle` with this structure:
+
+```groovy
+ext.upstreamPatches = [
+  "filename.cpp": [
+    validations: [
+      [contains: "expected_function"],
+      [contains: "expected_class"]
+    ],
+    operations: [
+      [
+        type: "function_attribute",
+        name: "Add ASan compatibility attribute", 
+        find: "(bool\\s+StackFrame::unwindStub\\s*\\()",
+        replace: "__attribute__((no_sanitize(\"address\"))) \$1",
+        idempotent_check: "__attribute__((no_sanitize(\"address\"))) bool StackFrame::unwindStub("
+      ]
+    ]
+  ]
+]
+```
+
+### Patch Operation Types
+
+1. **function_attribute**: Add attributes (like `__attribute__`) to function declarations
+2. **expression_replace**: Replace unsafe code patterns with safe equivalents
+3. **method_declaration**: Add new method declarations to class definitions  
+4. **method_implementation**: Add complete method implementations to source files
+
+### Adding New Patches
+
+1. **Edit Configuration**: Add patch definition to `gradle/patching.gradle`
+2. **Add Validations**: Ensure expected code structure exists
+3. **Define Operations**: Specify find/replace patterns with appropriate type
+4. **Include Idempotency**: Add `idempotent_check` to prevent double-application
+5. **Test Thoroughly**: Verify patch works with clean upstream files
+
+For detailed syntax documentation, see the comprehensive comments in `gradle/patching.gradle`.
+
+## Claude Code Integration
+
+This project includes Claude Code commands for streamlined development workflows when using [Claude Code](https://claude.ai/code):
+
+### Available Commands
+
+#### `/build-and-summarize <gradle-tasks...>`
+Automated build execution with intelligent log analysis:
+```bash
+# Build with automated analysis
+/build-and-summarize buildRelease
+
+# Run tests with summary
+/build-and-summarize testDebug
+
+# Custom gradle tasks
+/build-and-summarize clean buildDebug testDebug
+```
+
+**Features:**
+- Executes Gradle builds with appropriate logging (`-i --console=plain`)
+- Captures timestamped build logs in `build/logs/`
+- Automatically analyzes build results using the gradle-logs-analyst agent
+- Generates structured reports: `build/reports/claude/gradle-summary.md` and `build/reports/claude/gradle-summary.json`
+- Extracts key information: build status, failed tasks, test results, warnings, and performance metrics
+
+#### `/compare-and-patch <filename>`
+Upstream/local file comparison and patch analysis:
+```bash
+# Analyze differences between upstream and local versions
+/compare-and-patch stackFrame.h
+/compare-and-patch symbols.cpp
+/compare-and-patch buffers.h
+```
+
+**Features:**
+- Automatically resolves upstream (`ddprof-lib/build/async-profiler/src/`) and local (`ddprof-lib/src/main/cpp/`) file paths
+- Intelligently compares files while ignoring newline and copyright-only changes
+- Uses the patch-analyst agent to generate comprehensive analysis
+- Creates structured patch reports: `build/reports/claude/patches/<file>.patch.json` and `build/reports/claude/patches/<file>.patch.md`
+- Identifies required patch operations compatible with the unified patching system
+- Handles cases where files are Datadog-specific additions with no upstream equivalent
+
+### Integration Benefits
+
+These commands complement the existing patching workflow by providing:
+- **Automated Analysis**: Intelligent parsing of build logs and patch requirements
+- **Structured Output**: Machine-readable JSON and human-readable Markdown reports
+- **Consistency**: Standardized analysis format across all patch operations
+- **Efficiency**: Streamlined workflow for patch development and maintenance
+- **Documentation**: Automatic generation of patch documentation
+
+### Usage in Development Workflow
+
+1. **Build Analysis**: Use `/build-and-summarize` to quickly identify build issues and performance bottlenecks
+2. **Patch Development**: Use `/compare-and-patch` to analyze upstream changes and generate patch requirements
+3. **Maintenance**: Regular patch analysis helps maintain compatibility with upstream updates
+
+The generated reports integrate seamlessly with the existing `gradle/patching.gradle` configuration system, making it easier to maintain and update patches as the upstream codebase evolves.
 
 ## Testing
 

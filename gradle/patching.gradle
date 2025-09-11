@@ -1,0 +1,271 @@
+/*
+ * Copyright 2025 Datadog, Inc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * Unified upstream patching configuration for DataDog Java Profiler
+ * 
+ * This file defines all modifications applied to async-profiler upstream source files
+ * to ensure compatibility with DataDog's requirements (ASan, memory safety, API extensions)
+ * 
+ * CONFIGURATION SYNTAX AND SEMANTICS
+ * ==================================
+ * 
+ * Root Structure:
+ * ---------------
+ * ext.upstreamPatches = [
+ *   "filename1.cpp": [patches for file1],
+ *   "filename2.h": [patches for file2]
+ * ]
+ * 
+ * File Configuration Structure:
+ * ----------------------------
+ * Each file entry contains:
+ * 
+ * "filename.ext": [
+ *   validations: [                    // Optional: Pre-patch validation rules
+ *     [contains: "required_text"],    // Ensures file contains specific text
+ *     [contains: "another_check"]     // Multiple validations run in sequence
+ *   ],
+ *   operations: [                     // Required: List of patch operations
+ *     [
+ *       type: "patch_type",           // Required: Type of patch operation
+ *       name: "Human readable name",  // Optional: Description of what this patch does
+ *       description: "Detailed...",   // Optional: Extended description
+ *       find: "regex_pattern",        // Required: Regex pattern to find in file
+ *       replace: "replacement_text",  // Required: Text to replace matches with
+ *       idempotent_check: "check_text" // Optional: Text that indicates patch already applied
+ *     ]
+ *   ]
+ * ]
+ * 
+ * PATCH OPERATION TYPES
+ * ====================
+ * 
+ * 1. function_attribute:
+ *    Purpose: Add attributes (like __attribute__) to function declarations
+ *    Example: Add ASan no_sanitize attribute to prevent false positives
+ *    find: "(bool\\s+StackFrame::unwindStub\\s*\\()"
+ *    replace: "__attribute__((no_sanitize(\"address\"))) $1"
+ * 
+ * 2. expression_replace:
+ *    Purpose: Replace unsafe code patterns with safe equivalents
+ *    Example: Replace direct pointer dereference with memcpy for ASan compatibility
+ *    find: "\\*\\(unsigned int\\*\\)\\s*entry"
+ *    replace: "([&] { unsigned int val; memcpy(&val, entry, sizeof(val)); return val; }())"
+ * 
+ * 3. method_declaration:
+ *    Purpose: Add new method declarations to class definitions
+ *    Example: Add clearParsingCaches method to Symbols class
+ *    find: "(static bool haveKernelSymbols\\(\\) \\{[^}]+\\})"
+ *    replace: "$1\n    static void clearParsingCaches();"
+ * 
+ * 4. method_implementation:
+ *    Purpose: Add complete method implementations to source files
+ *    Example: Add clearParsingCaches implementation with cache clearing logic
+ *    find: "(#endif \\/\\/ __linux__\\s*$)"
+ *    replace: "void Symbols::clearParsingCaches() {\n    _parsed_inodes.clear();\n}\n\n$1"
+ * 
+ * REGEX PATTERNS AND REPLACEMENTS
+ * ===============================
+ * 
+ * Pattern Syntax:
+ * - Use Java regex syntax (java.util.regex.Pattern)
+ * - Escape special characters: \\( \\) \\{ \\} \\[ \\] \\* \\+ \\? \\. \\|
+ * - Use \\s for whitespace, \\w for word characters, \\d for digits
+ * - Use capture groups: (pattern) to capture parts for reuse
+ * - Use non-capturing groups: (?:pattern) when grouping without capture
+ * 
+ * Replacement Syntax:
+ * - Use $1, $2, etc. to reference capture groups from find pattern
+ * - Use \n for newlines in replacement text
+ * - Use \t for tabs (though spaces are preferred for consistency)
+ * - Escape dollar signs as \$ if literal $ needed
+ * 
+ * IDEMPOTENT OPERATIONS
+ * ====================
+ * 
+ * Purpose: Prevent applying same patch multiple times
+ * - Set idempotent_check to text that would exist after patch is applied
+ * - System checks for this text before applying patch
+ * - If found, patch is skipped with "already applied" message
+ * - Critical for maintaining clean, predictable builds
+ * 
+ * Example:
+ * find: "(bool\\s+StackFrame::unwindStub\\s*\\()"
+ * replace: "__attribute__((no_sanitize(\"address\"))) $1"
+ * idempotent_check: "__attribute__((no_sanitize(\"address\"))) bool StackFrame::unwindStub("
+ * 
+ * VALIDATION RULES
+ * ===============
+ * 
+ * Purpose: Ensure upstream file structure hasn't changed in incompatible ways
+ * Types:
+ * - contains: "text" - File must contain this exact text
+ * - Validates that expected functions, classes, or patterns exist
+ * - Fails fast if upstream changes break patch assumptions
+ * - Helps maintain compatibility across upstream updates
+ * 
+ * Best Practices:
+ * - Validate key function signatures that patches modify
+ * - Validate class names and critical code structures
+ * - Keep validations minimal but sufficient to catch breaking changes
+ * 
+ * MAINTENANCE GUIDELINES
+ * =====================
+ * 
+ * Adding New Patches:
+ * 1. Add file entry if not exists: "newfile.cpp": [...]
+ * 2. Add validations to verify expected code structure
+ * 3. Add operation with appropriate type, find, replace
+ * 4. Always include idempotent_check to prevent double-application
+ * 5. Test thoroughly with clean upstream files
+ * 
+ * Modifying Existing Patches:
+ * 1. Update find pattern if upstream code changed
+ * 2. Update replace text if modification requirements changed
+ * 3. Update idempotent_check to match new replacement
+ * 4. Update validations if structural assumptions changed
+ * 
+ * Removing Patches:
+ * 1. Remove entire operation block
+ * 2. Remove validations that are no longer needed
+ * 3. Remove file entry if no operations remain
+ * 4. Clean up any orphaned files that depended on removed patches
+ */
+
+ext.upstreamPatches = [
+  // Stack frame unwinding patches for ASan compatibility and memory safety
+  "stackFrame_x64.cpp": [
+    validations: [
+      [contains: "StackFrame::"],
+      [contains: "StackFrame::unwindStub"],
+      [contains: "StackFrame::checkInterruptedSyscall"]
+    ],
+    operations: [
+      [
+        type: "function_attribute",
+        name: "Add ASan no_sanitize attribute to unwindStub",
+        description: "Adds __attribute__((no_sanitize(\"address\"))) to unwindStub function to prevent ASan false positives during stack unwinding",
+        find: "(bool\\s+StackFrame::unwindStub\\s*\\()",
+        replace: "__attribute__((no_sanitize(\"address\"))) \$1",
+        idempotent_check: "__attribute__((no_sanitize(\"address\"))) bool StackFrame::unwindStub("
+      ],
+      [
+        type: "expression_replace",
+        name: "Safe memory access for entry pointer check",
+        description: "Replaces unsafe pointer dereference with safe memcpy-based access to prevent ASan violations",
+        find: "entry\\s*!=\\s*NULL\\s*&&\\s*\\*\\(unsigned int\\*\\)\\s*entry\\s*==\\s*0xec8b4855",
+        replace: "entry != NULL && ([&] { unsigned int val; memcpy(&val, entry, sizeof(val)); return val; }()) == 0xec8b4855"
+      ],
+      [
+        type: "function_attribute",
+        name: "Add ASan no_sanitize attribute to checkInterruptedSyscall",
+        description: "Adds __attribute__((no_sanitize(\"address\"))) to checkInterruptedSyscall function",
+        find: "(bool\\s+StackFrame::checkInterruptedSyscall\\s*\\()",
+        replace: "__attribute__((no_sanitize(\"address\"))) \$1",
+        idempotent_check: "__attribute__((no_sanitize(\"address\"))) bool StackFrame::checkInterruptedSyscall("
+      ],
+      [
+        type: "expression_replace",
+        name: "Safe memory access for pc offset read",
+        description: "Replaces unsafe pointer dereference at pc-6 with safe memcpy-based access",
+        find: "\\*\\(int\\*\\)\\s*\\(pc\\s*-\\s*6\\)",
+        replace: "([&] { int val; memcpy(&val, (const void*)(pc - 6), sizeof(val)); return val; }())"
+      ]
+    ]
+  ],
+  
+  // Stack walker patches for ASan compatibility
+  "stackWalker.cpp": [
+    validations: [
+      [contains: "StackWalker::"],
+      [contains: "StackWalker::walkVM"]
+    ],
+    operations: [
+      [
+        type: "function_attribute",
+        name: "Add ASan no_sanitize attribute to walkVM",
+        description: "Adds __attribute__((no_sanitize(\"address\"))) to walkVM function to prevent ASan false positives during VM stack walking",
+        find: "(int\\s+StackWalker::walkVM\\s*\\()",
+        replace: "__attribute__((no_sanitize(\"address\"))) \$1",
+        idempotent_check: "__attribute__((no_sanitize(\"address\"))) int StackWalker::walkVM("
+      ]
+    ]
+  ],
+  
+  // Symbol management patches for DataDog-specific API extensions
+  "symbols.h": [
+    validations: [
+      [contains: "class Symbols"],
+      [contains: "static bool haveKernelSymbols"]
+    ],
+    operations: [
+      [
+        type: "method_declaration",
+        name: "Add clearParsingCaches method declaration",
+        description: "Adds clearParsingCaches static method declaration to Symbols class for test compatibility",
+        find: "(static bool haveKernelSymbols\\(\\) \\{[^}]+\\})",
+        replace: "\$1\n    // Clear internal caches - mainly for test purposes\n    static void clearParsingCaches();",
+        idempotent_check: "static void clearParsingCaches();"
+      ]
+    ]
+  ],
+  
+  // Symbol implementation patches for DataDog-specific API extensions
+  "symbols_linux.cpp": [
+    validations: [
+      [contains: "#ifdef __linux__"],
+      [contains: "_parsed_inodes"]
+    ],
+    operations: [
+      [
+        type: "method_implementation",
+        name: "Add clearParsingCaches method implementation",
+        description: "Adds clearParsingCaches static method implementation that clears internal parsing caches",
+        find: "(#endif \\/\\/ __linux__\\s*\$)",
+        replace: "// Implementation of clearParsingCaches for test compatibility\nvoid Symbols::clearParsingCaches() {\n    _parsed_inodes.clear();\n}\n\n\$1",
+        idempotent_check: "void Symbols::clearParsingCaches()"
+      ]
+    ]
+  ],
+  
+  // Stack frame header patches for DataDog-specific API extensions
+  "stackFrame.h": [
+    validations: [
+      [contains: "class StackFrame"],
+      [contains: "unwindStub"],
+      [contains: "adjustSP"]
+    ],
+    operations: [
+      [
+        type: "expression_replace", 
+        name: "Make StackFrame constructor explicit",
+        description: "Add explicit keyword to prevent implicit conversions",
+        find: "StackFrame\\(void\\* ucontext\\)",
+        replace: "explicit StackFrame(void* ucontext)",
+        idempotent_check: "explicit StackFrame(void* ucontext)"
+      ],
+      [
+        type: "method_declaration",
+        name: "Add DataDog SP baseline helper methods",
+        description: "Add sender_sp_baseline, read_caller_pc_from_sp, and read_saved_fp_from_sp methods for DataDog unwinding logic",
+        find: "(void adjustSP\\(const void\\* entry, const void\\* pc, uintptr_t& sp\\);)",
+        replace: "\$1\n\n    // SP baseline helpers for compiled frame unwinding\n    uintptr_t sender_sp_baseline(const NMethod* nm, uintptr_t sp, uintptr_t fp, const void* pc);\n    const void* read_caller_pc_from_sp(uintptr_t sp_base);\n    uintptr_t read_saved_fp_from_sp(uintptr_t sp_base);",
+        idempotent_check: "uintptr_t sender_sp_baseline("
+      ]
+    ]
+  ]
+]

@@ -18,6 +18,8 @@
 
 #include "os_dd.h"
 #include <signal.h>
+#include <unistd.h>
+#include <sys/types.h>
 
 #ifndef __musl__
 #include <malloc.h>

@@ -29,3 +29,5 @@ echo "Running: ./gradlew ${ARGS[*]} -i --console=plain"
 (./gradlew "${ARGS[@]}" -i --console=plain 2>&1 | tee "$LOG") || true
 
 # Delegate parsing to the sub-agent
+echo "Delegating to gradle-logs-analyst agent..."
+claude "Act as the gradle-logs-analyst agent to parse the build log at: $LOG. Generate the required gradle summary artifacts as specified in the gradle-logs-analyst agent definition."
