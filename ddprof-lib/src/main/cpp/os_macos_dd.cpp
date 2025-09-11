@@ -18,6 +18,7 @@
 
 #include "os_dd.h"
 #include <signal.h>
+#include <unistd.h>
 
 int ddprof::OS::truncateFile(int fd) {
   int rslt = ftruncate(fd, 0);
