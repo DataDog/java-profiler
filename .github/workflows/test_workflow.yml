@@ -73,6 +73,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y curl zip unzip libgtest-dev libgmock-dev binutils
+          # Install debug symbols for system libraries
+          sudo apt-get install -y libc6-dbg
           if [[ ${{ matrix.java_version }} =~ "-zing" ]]; then
             sudo apt-get install -y g++-9 gcc-9
             sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 100 --slave /usr/bin/g++ g++ /usr/bin/g++-9
@@ -154,6 +156,8 @@ jobs:
       - name: Setup OS
         run: |
           apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar binutils >/dev/null
+          # Install debug symbols for musl libc
+          apk add musl-dbg
       - uses: actions/checkout@v3
       - name: Cache Gradle Wrapper Binaries
         uses: actions/cache@v4
@@ -323,6 +327,8 @@ jobs:
           sudo apt remove -y g++
           sudo apt autoremove -y
           sudo apt install -y curl zip unzip clang make build-essential binutils
+          # Install debug symbols for system libraries
+          sudo apt install -y libc6-dbg
           if [[ ${{ matrix.java_version }} =~ "-zing" ]]; then
             sudo apt -y install g++-9 gcc-9
             sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 100 --slave /usr/bin/g++ g++ /usr/bin/g++-9
