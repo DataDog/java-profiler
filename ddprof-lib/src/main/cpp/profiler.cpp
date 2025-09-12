@@ -1171,7 +1171,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
   }
 
-  _thread_filter.init(args._filter);
+  // TODO: Current way of setting filter is weird with the recent changes
+  _thread_filter.init(args._filter ? args._filter : "0");
   
   // Minor optim: Register the current thread (start thread won't be called)
   if (_thread_filter.enabled()) {

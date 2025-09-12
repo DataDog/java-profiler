@@ -15,7 +15,10 @@ public class CollapsingSleepTest extends AbstractProfilerTest {
     public void testSleep() throws InterruptedException {
         Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
-        Thread.sleep(1000);
+        long ts = System.nanoTime();
+        do {
+            Thread.sleep(1000);
+        } while (System.nanoTime() - ts < 1_000_000_000L);
         stopProfiler();
         IItemCollection events = verifyEvents("datadog.MethodSample");
         assertTrue(events.hasItems());
@@ -25,6 +28,6 @@ public class CollapsingSleepTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=~10ms";
+        return "wall=~1ms";
     }
 }

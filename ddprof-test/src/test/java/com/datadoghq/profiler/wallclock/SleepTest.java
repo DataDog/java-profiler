@@ -11,13 +11,16 @@ public class SleepTest extends AbstractProfilerTest {
     @Test
     public void testSleep() throws InterruptedException {
         registerCurrentThreadForWallClockProfiling();
-        Thread.sleep(1000);
+        long ts = System.nanoTime();
+        do {
+            Thread.sleep(1000);
+        } while (System.nanoTime() - ts < 1_000_000_000L);
         stopProfiler();
         assertTrue(verifyEvents("datadog.MethodSample").getAggregate(Aggregators.count()).longValue() > 90);
     }
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=10ms";
+        return "wall=1ms";
     }
 }

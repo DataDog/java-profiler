@@ -206,7 +206,7 @@ void WallClockJVMTI::timerLoop() {
           if (tid != self && (!do_filter ||
                // Use binary search to efficiently find if tid is in filtered_tids
                std::binary_search(filtered_tids.begin(), filtered_tids.end(), tid))) {
-            threads.push_back({nThread, thread});
+            threads.push_back({nThread, thread, tid});
           }
         }
       }
@@ -226,9 +226,9 @@ void WallClockJVMTI::timerLoop() {
         return false;
     }
     OSThreadState os_state = vm_thread->osThreadState();
-    if (state == OSThreadState::TERMINATED) {
+    if (os_state == OSThreadState::TERMINATED) {
       return false;
-    } else if (state == OSThreadState::UNKNOWN) {
+    } else if (os_state == OSThreadState::UNKNOWN) {
       state = OSThreadState::RUNNABLE;
     } else {
       state = os_state;
