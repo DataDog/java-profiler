@@ -79,7 +79,7 @@ ext.upstreamPatches = [
     operations: [
       [
         type: "function_attribute",
-        name: "Add ASan compatibility attribute", 
+        name: "Add ASan compatibility attribute",
         find: "(bool\\s+StackFrame::unwindStub\\s*\\()",
         replace: "__attribute__((no_sanitize(\"address\"))) \$1",
         idempotent_check: "__attribute__((no_sanitize(\"address\"))) bool StackFrame::unwindStub("
@@ -93,7 +93,7 @@ ext.upstreamPatches = [
 
 1. **function_attribute**: Add attributes (like `__attribute__`) to function declarations
 2. **expression_replace**: Replace unsafe code patterns with safe equivalents
-3. **method_declaration**: Add new method declarations to class definitions  
+3. **method_declaration**: Add new method declarations to class definitions
 4. **method_implementation**: Add complete method implementations to source files
 
 ### Adding New Patches

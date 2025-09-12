@@ -383,42 +383,42 @@ def patchUpstreamFiles = tasks.register("patchUpstreamFiles") {
   configure {
     dependsOn copyUpstreamFiles
   }
-  
+
   inputs.file("${rootDir}/gradle/patching.gradle")
   inputs.files(fileTree("${projectDir}/src/main/cpp-external").include("*.cpp", "*.h"))
   outputs.files(fileTree("${projectDir}/src/main/cpp-external").include("*.cpp", "*.h"))
-  
+
   doLast {
     try {
       // Use configuration from gradle/patching.gradle
       def patches = upstreamPatches
-      
+
       // Apply patches using simplified inline logic
       def totalFiles = patches.size()
       def totalOperations = 0
       patches.each { fileName, fileConfig ->
         totalOperations += fileConfig.operations?.size() ?: 0
       }
-      
+
       logger.quiet("Unified patching system: processing ${totalFiles} files with ${totalOperations} total operations")
-      
+
       // Apply patches to all configured files
       patches.each { fileName, fileConfig ->
         def filePath = "${projectDir}/src/main/cpp-external/${fileName}"
         def targetFile = file(filePath)
-        
+
         if (targetFile.exists()) {
           def content = targetFile.getText('UTF-8')
           def originalContent = content
           def patchCount = 0
-          
+
           // Run validations first
           fileConfig.validations?.each { validation ->
             if (validation.contains && !content.contains(validation.contains)) {
               throw new RuntimeException("Validation failed for ${fileName}: required text '${validation.contains}' not found. Upstream structure may have changed.")
             }
           }
-          
+
           // Apply operations in order
           fileConfig.operations?.each { operation ->
             // Check if already applied (idempotent check)
@@ -426,14 +426,14 @@ def patchUpstreamFiles = tasks.register("patchUpstreamFiles") {
               logger.quiet("Skipped patch '${operation.name ?: operation.type}' for ${fileName} (already applied)")
               return
             }
-            
+
             // Apply regex pattern
             def pattern = java.util.regex.Pattern.compile(operation.find)
             def matcher = pattern.matcher(content)
-            
+
             if (matcher.find()) {
               def newContent = matcher.replaceAll(operation.replace)
-              
+
               if (newContent != content) {
                 content = newContent
                 patchCount++
@@ -443,7 +443,7 @@ def patchUpstreamFiles = tasks.register("patchUpstreamFiles") {
               logger.warn("Pattern '${operation.find}' not found in ${fileName} for operation: ${operation.name ?: operation.type}")
             }
           }
-          
+
           // Write back if any modifications were made
           if (patchCount > 0) {
             targetFile.write(content, 'UTF-8')
@@ -455,9 +455,9 @@ def patchUpstreamFiles = tasks.register("patchUpstreamFiles") {
           logger.warn("Patch target file not found: ${fileName}")
         }
       }
-      
+
       logger.quiet("Unified patching completed successfully")
-      
+
     } catch (Exception e) {
       throw new GradleException("Unified patching failed: ${e.message}", e)
     }

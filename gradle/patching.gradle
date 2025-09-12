@@ -187,13 +187,10 @@ ext.upstreamPatches = [
       ]
     ]
   ],
-  
+
   // Stack walker patches for ASan compatibility
   "stackWalker.cpp": [
-    validations: [
-      [contains: "StackWalker::"],
-      [contains: "StackWalker::walkVM"]
-    ],
+    validations: [[contains: "StackWalker::"], [contains: "StackWalker::walkVM"]],
     operations: [
       [
         type: "function_attribute",
@@ -205,13 +202,10 @@ ext.upstreamPatches = [
       ]
     ]
   ],
-  
+
   // Symbol management patches for DataDog-specific API extensions
   "symbols.h": [
-    validations: [
-      [contains: "class Symbols"],
-      [contains: "static bool haveKernelSymbols"]
-    ],
+    validations: [[contains: "class Symbols"], [contains: "static bool haveKernelSymbols"]],
     operations: [
       [
         type: "method_declaration",
@@ -223,13 +217,10 @@ ext.upstreamPatches = [
       ]
     ]
   ],
-  
+
   // Symbol implementation patches for DataDog-specific API extensions
   "symbols_linux.cpp": [
-    validations: [
-      [contains: "#ifdef __linux__"],
-      [contains: "_parsed_inodes"]
-    ],
+    validations: [[contains: "#ifdef __linux__"], [contains: "_parsed_inodes"]],
     operations: [
       [
         type: "method_implementation",
@@ -241,7 +232,7 @@ ext.upstreamPatches = [
       ]
     ]
   ],
-  
+
   // Stack frame header patches for DataDog-specific API extensions
   "stackFrame.h": [
     validations: [
@@ -251,7 +242,7 @@ ext.upstreamPatches = [
     ],
     operations: [
       [
-        type: "expression_replace", 
+        type: "expression_replace",
         name: "Make StackFrame constructor explicit",
         description: "Add explicit keyword to prevent implicit conversions",
         find: "StackFrame\\(void\\* ucontext\\)",
