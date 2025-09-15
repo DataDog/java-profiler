@@ -137,7 +137,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: (reports) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (test-reports) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: test-reports
 
   test-linux-musl-amd64:
