@@ -43,6 +43,7 @@
 // can be still accessed concurrently during VM termination
 Profiler *const Profiler::_instance = new Profiler();
 volatile bool Profiler::_signals_initialized = false;
+volatile bool Profiler::_need_JDK_8313796_workaround = true;
 
 static void (*orig_trapHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 static void (*orig_segvHandler)(int signo, siginfo_t *siginfo, void *ucontext);
@@ -917,8 +918,9 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 
     ddprof::StackWalker::checkFault(thrd);
 
-    // Workaround for JDK-8313796. Setting cstack=dwarf also helps
-    if (VMStructs::isInterpretedFrameValidFunc((const void *)pc) &&
+    // Workaround for JDK-8313796 if needed. Setting cstack=dwarf also helps
+    if (_need_JDK_8313796_workaround &&
+        VMStructs::isInterpretedFrameValidFunc((const void *)pc) &&
         frame.skipFaultInstruction()) {
       if (thrd != nullptr) {
         thrd->exitCrashHandler();
@@ -1100,6 +1102,20 @@ Error Profiler::checkJvmCapabilities() {
 
   return Error::OK;
 }
+
+void Profiler::check_JDK_8313796_workaround() {
+  int java_version = VM::java_version();
+  int java_update_version = VM::java_update_version();
+
+  // JDK-8313796 has been fixed in JDK 22 and backported to
+  // JDK versions 11.0.21, 17.0.9 and 21.0.1
+  bool fixed_version = java_version >= 22 ||
+                         (java_version == 11 && java_update_version >= 21) ||
+                         (java_version == 17 && java_update_version >= 9) ||
+                         (java_version == 21 && java_update_version >= 1);
+    _need_JDK_8313796_workaround = !fixed_version;
+}
+
 
 Error Profiler::start(Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
