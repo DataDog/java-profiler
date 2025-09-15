@@ -124,9 +124,9 @@ public:
   static void increment(CounterId counter, long long delta = 1,
                         int offset = 0) {
 #ifdef COUNTERS
-    atomicInc(Counters::instance()
-                  ._counters[address(static_cast<int>(counter) + offset)],
-              delta);
+    atomicIncRelaxed(Counters::instance()
+                         ._counters[address(static_cast<int>(counter) + offset)],
+                     delta);
 #endif // COUNTERS
   }
 

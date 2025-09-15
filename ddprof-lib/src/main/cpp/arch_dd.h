@@ -14,6 +14,12 @@ static inline long long atomicInc(volatile long long &var,
   return __sync_fetch_and_add(&var, increment);
 }
 
+
+static inline long long atomicIncRelaxed(volatile long long &var,
+                                         long long increment = 1) {
+  return __atomic_fetch_add(&var, increment, __ATOMIC_RELAXED);
+}
+
 static inline u64 loadAcquire(volatile u64 &var) {
   return __atomic_load_n(&var, __ATOMIC_ACQUIRE);
 }
