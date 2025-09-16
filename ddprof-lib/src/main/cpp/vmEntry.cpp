@@ -459,6 +459,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
 
 // Run late initialization when JVM is ready
 void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
+  Profiler::check_JDK_8313796_workaround();
   Profiler::setupSignalHandlers();
   {
     JitWriteProtection jit(true);
