@@ -177,65 +177,37 @@ public class UnwindingMetrics {
         Set<String> observedStubs = Arrays.stream(stackTrace.split(System.lineSeparator())).filter(UnwindingMetrics::containsStubMethod).collect(Collectors.toSet());
         observedStubs.forEach(f -> stubTypes.computeIfAbsent(f, k -> new AtomicInteger()).incrementAndGet());
     }
+
+    private static boolean containsAny(String target, String ... values) {
+        return Arrays.stream(values).anyMatch(target::contains);
+    }
     
     // Pattern detection methods (reused from individual tests)
     private static boolean containsJNIMethod(String stackTrace) {
-        return stackTrace.contains("DirectByteBuffer") || 
-               stackTrace.contains("Unsafe") ||
-               stackTrace.contains("System.arraycopy") ||
-               stackTrace.contains("ByteBuffer.get") ||
-               stackTrace.contains("ByteBuffer.put") ||
-               stackTrace.contains("ByteBuffer.allocateDirect");
+        return containsAny(stackTrace, "DirectByteBuffer", "Unsafe", "System.arraycopy", "ByteBuffer.get", "ByteBuffer.put", "ByteBuffer.allocateDirect");
     }
 
     private static boolean containsStubMethod(String value) {
-        return value.contains("stub") ||
-               value.contains("Stub") ||
-               value.contains("jni_") ||
-               value.contains("_stub") ||
-               value.contains("call_stub") ||
-               value.contains("adapter");
+        return containsAny(value, "stub", "Stub", "jni_", "_stub", "call_stub", "adapter");
     }
     
     private static boolean containsPLTReference(String stackTrace) {
-        return stackTrace.contains("@plt") ||
-               stackTrace.contains(".plt") ||
-               stackTrace.contains("PLT") ||
-               stackTrace.contains("_plt") ||
-               stackTrace.contains("plt_") ||
-               stackTrace.contains("dl_runtime") ||
-               stackTrace.contains("_dl_fixup");
+        return containsAny(stackTrace, "@plt", ".plt", "PLT", "_plt", "plt_", "dl_runtime", "_dl_fixup");
     }
 
     private static boolean containsReflectionMethod(String stackTrace) {
-        return stackTrace.contains("Method.invoke") ||
-               stackTrace.contains("reflect") ||
-               stackTrace.contains("NativeMethodAccessor");
+        return containsAny(stackTrace, "Method.invoke", "reflect", "NativeMethodAccessor");
     }
     
     private static boolean containsJITReference(String stackTrace) {
-        return stackTrace.contains("Compile") ||
-               stackTrace.contains("C1") ||
-               stackTrace.contains("C2") ||
-               stackTrace.contains("OSR") ||
-               stackTrace.contains("Tier") ||
-               stackTrace.contains("I2C") ||
-               stackTrace.contains("C2I") ||
-               stackTrace.contains("I2OSR");
+        return containsAny(stackTrace, "Compile", "C1", "C2", "OSR", "Tier", "I2C", "C2I", "I2OSR");
     }
     
     private static boolean containsMethodHandleReference(String stackTrace) {
-        return stackTrace.contains("MethodHandle") ||
-               stackTrace.contains("java.lang.invoke") ||
-               stackTrace.contains("LambdaForm") ||
-               stackTrace.contains("DirectMethodHandle") ||
-               stackTrace.contains("BoundMethodHandle");
+        return containsAny(stackTrace, "MethodHandle", "java.lang.invoke", "LambdaForm", "DirectMethodHandle", "BoundMethodHandle");
     }
 
     private static boolean containsError(String value) {
-        return value.contains(".break_") ||
-                value.contains("BCI_ERROR") ||
-                value.contains(".invalid_") ||
-                value.contains(".unknown()");
+        return containsAny(value, ".break_", "BCI_ERROR", ".invalid_", ".unknown()");
     }
 }
