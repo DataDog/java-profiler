@@ -6,7 +6,7 @@ trigger_internal_build:
     - when: always
       allow_failure: false
   variables:
-    DOWNSTREAM_BRANCH: "zgu/remove_legacy_flag"
+    DOWNSTREAM_BRANCH: "main"
     UPSTREAM_PROJECT: ${CI_PROJECT_PATH}
     UPSTREAM_PROJECT_NAME: ${CI_PROJECT_NAME}
     UPSTREAM_BRANCH: ${CI_COMMIT_BRANCH}
