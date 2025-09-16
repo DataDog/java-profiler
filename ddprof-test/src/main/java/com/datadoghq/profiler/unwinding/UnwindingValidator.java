@@ -25,7 +25,6 @@ import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.item.ItemFilters;
-import org.openjdk.jmc.common.item.IType;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 import org.openjdk.jmc.common.item.IAttribute;
@@ -104,7 +103,7 @@ public class UnwindingValidator {
         EXTENDED_JNI_SCENARIOS("ExtendedJNIScenarios"),
         MULTIPLE_STRESS_ROUNDS("MultipleStressRounds"),
         EXTENDED_PLT_SCENARIOS("ExtendedPLTScenarios"),
-        ACITVE_PLT_RESOLUTION("ActivePLTResolution"),
+        ACTIVE_PLT_RESOLUTION("ActivePLTResolution"),
         CONCURRENT_COMPILATION_STRESS("ConcurrentCompilationStress"),
         VENEER_HEAVY_SCENARIOS("VeneerHeavyScenarios"),
         RAPID_TIER_TRANSITIONS("RapidTierTransitions"),
@@ -346,7 +345,7 @@ public class UnwindingValidator {
                     return work;
                 });
 
-            case ACITVE_PLT_RESOLUTION:
+            case ACTIVE_PLT_RESOLUTION:
                 return executeIndividualScenario(scenario.name, "Intensive PLT resolution during profiling",
                         this::performActivePLTResolution);
 
