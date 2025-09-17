@@ -363,6 +363,13 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
     }
   }
 
+  int jvmti_version;
+  _jvmti->GetVersionNumber(&jvmti_version);
+  int major_version = (jvmti_version & JVMTI_VERSION_MASK_MAJOR) >> JVMTI_VERSION_SHIFT_MAJOR;
+
+  bool support_vthread_profiling = (major_version >= 21);
+  printf("JVMTI major version: %d\n", major_version);
+
   jvmtiCapabilities potential_capabilities = {0};
   _jvmti->GetPotentialCapabilities(&potential_capabilities);
 
@@ -390,6 +397,9 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   capabilities.can_generate_compiled_method_load_events = 1;
   capabilities.can_generate_monitor_events = 1;
   capabilities.can_tag_objects = 1;
+  if (support_vthread_profiling) {
+    capabilities.can_support_virtual_threads = 1;
+  }
 
   _jvmti->AddCapabilities(&capabilities);
 
@@ -405,6 +415,24 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
   callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;
   callbacks.NativeMethodBind = ddprof::VMStructs::NativeMethodBind;
+
+  if (support_vthread_profiling) {
+    callbacks.VirtualThreadStart = Profiler::VirtualThreadStart;
+    callbacks.VirtualThreadEnd = Profiler::VirtualThreadEnd;
+
+    jint extCount = 0;
+    jvmtiExtensionEventInfo* extList = nullptr;
+    jvmtiError err = _jvmti->GetExtensionEvents(&extCount, &extList);
+
+    for (int i = 0; i < extCount; i++) {
+      if (strstr(extList[i].id, "VirtualThreadMount") != nullptr) {
+          _jvmti->SetExtensionEventCallback(extList[i].extension_event_index, Profiler::VirtualThreadMount);
+      } else if (strstr(extList[i].id, "VirtualThreadUnmount") != nullptr) {
+          _jvmti->SetExtensionEventCallback(extList[i].extension_event_index, Profiler::VirtualThreadUnmount);
+      }
+    }
+  }
+
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
@@ -415,6 +443,18 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
                                    JVMTI_EVENT_DYNAMIC_CODE_GENERATED, NULL);
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND,
                                    NULL);
+
+  if (support_vthread_profiling) {
+  _jvmti->SetEventNotificationMode(JVMTI_ENABLE,
+                                   JVMTI_EVENT_VIRTUAL_THREAD_START, NULL);
+  _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VIRTUAL_THREAD_END,
+                                   NULL);
+
+  _jvmti->SetEventNotificationMode(JVMTI_ENABLE,
+                                   EXT_EVENT_VIRTUAL_THREAD_MOUNT, NULL);
+  _jvmti->SetEventNotificationMode(JVMTI_ENABLE, EXT_EVENT_VIRTUAL_THREAD_UNMOUNT,
+                                   NULL);
+  }
 
   if (hotspot_version() == 0 || !CodeHeap::available()) {
     // Workaround for JDK-8173361: avoid CompiledMethodLoad events when possible
