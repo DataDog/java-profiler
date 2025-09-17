@@ -25,7 +25,7 @@
 #include <unistd.h>
 
 namespace ddprof {
-  using VMStructs_ = ::ddprof::VMStructs;
+  using VMStructs_ = ddprof::VMStructs;
 
   int VMStructs_::_flag_type_offset = -1;
   int VMStructs_::_osthread_state_offset = -1;

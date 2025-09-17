@@ -59,7 +59,7 @@ subprojects {
 apply from: rootProject.file('common.gradle')
 apply from: rootProject.file('gradle/configurations.gradle')
 
-def isCI = System.getenv("CI") != null
+def isCI = project.hasProperty("CI") || Boolean.parseBoolean(System.getenv("CI"))
 
 nexusPublishing {
   repositories {

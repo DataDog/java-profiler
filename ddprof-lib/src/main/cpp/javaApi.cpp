@@ -21,7 +21,7 @@
 #include "counters.h"
 #include "engine.h"
 #include "incbin.h"
-#include "os.h"
+#include "os_dd.h"
 #include "otel_process_ctx.h"
 #include "profiler.h"
 #include "thread.h"
@@ -393,7 +393,7 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_mallocArenaMax0(JNIEnv *env,
                                                          jobject unused,
                                                          jint maxArenas) {
-  OS::mallocArenaMax(maxArenas);
+  ddprof::OS::mallocArenaMax(maxArenas);
 }
 
 extern "C" DLLEXPORT jstring JNICALL

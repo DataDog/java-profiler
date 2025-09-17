@@ -181,7 +181,7 @@ public abstract class AbstractProfilerTest {
       Files.createDirectories(rootDir);
     }
 
-    jfrDump = Files.createTempFile(rootDir, (testConfig.isEmpty() ? "" : testConfig.replace('/', '_') + "-") + testInfo.getTestMethod().map(m -> m.getDeclaringClass().getSimpleName() + "_" + m.getName()).orElse("unknown"), ".jfr");
+    jfrDump = Files.createTempFile(rootDir, testInfo.getTestMethod().map(m -> m.getDeclaringClass().getSimpleName() + "_" + m.getName()).orElse("unknown") + (testConfig.isEmpty() ? "" : "-" + testConfig.replace('/', '_')), ".jfr");
     profiler = JavaProfiler.getInstance();
     String command = "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
     cpuInterval = command.contains("cpu") ? parseInterval(command, "cpu") : (command.contains("interval") ? parseInterval(command, "interval") : Duration.ZERO);

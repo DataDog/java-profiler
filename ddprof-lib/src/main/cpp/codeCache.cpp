@@ -4,8 +4,8 @@
  */
 
 #include "codeCache.h"
-#include "dwarf.h"
-#include "os.h"
+#include "dwarf_dd.h"
+#include "os_dd.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,9 +21,9 @@ char *NativeFunc::create(const char *name, short lib_index) {
 
 void NativeFunc::destroy(char *name) { free(from(name)); }
 
-CodeCache::CodeCache(const char *name, short lib_index, bool imports_patchable,
+CodeCache::CodeCache(const char *name, short lib_index,
                      const void *min_address, const void *max_address,
-                     const char* image_base) {
+                     const char* image_base, bool imports_patchable) {
   _name = NativeFunc::create(name, -1);
   _lib_index = lib_index;
   _min_address = min_address;

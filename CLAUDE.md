@@ -13,82 +13,111 @@ This is the Datadog Java Profiler Library, a specialized profiler derived from a
 - JNI (Java Native Interface for C++ integration)
 - CMake (for C++ unit tests via Google Test)
 
+## Project Operating Guide for Claude (Main Session)
+
+You are the **Main Orchestrator** for this repository.
+
+### Goals
+- When I ask you to build, you MUST:
+    1) run the Gradle task with plain console and increased verbosity,
+    2) capture stdout into `build/logs/<timestamp>-<task>.log`,
+    3) **delegate** parsing to the sub-agent `gradle-log-analyst`,
+    4) respond in chat with only a short status and the two output file paths:
+        - `build/reports/claude/gradle-summary.md`
+        - `build/reports/claude/gradle-summary.json`
+
+### Rules
+- **Never** paste large log chunks into the chat.
+- Prefer shell over long in-chat output. If more than ~30 lines are needed, write to a file.
+- If no log path is provided, use the newest `build/logs/*.log`.
+- Assume macOS/Linux unless I explicitly say Windows; if Windows, use PowerShell equivalents.
+- If a step fails, print the failing command and a one-line hint, then stop.
+
+### Implementation Hints for You
+- For builds, always use: `--console=plain -i` (or `-d` if I ask for debug).
+- Use `mkdir -p build/logs build/reports/claude` before writing.
+- Timestamp format: `$(date +%Y%m%d-%H%M%S)`.
+- After the build finishes, call the sub-agent like:
+  “Use `gradle-log-analyst` to parse LOG_PATH; write the two reports; reply with only a 3–6 line status and the two relative file paths.”
+
+### Shortcuts I Expect
+- `/build-and-summarize <gradle-task...>` to do everything in one step.
+- If I just say “build assembleDebugJar”, interpret that as the shortcut above.
+
 ## Build Commands
+Never use 'gradle' or 'gradlew' directly. Instead, use the '/build-and-summarize' command.
 
 ### Main Build Tasks
 ```bash
 # Build release version (primary artifact)
-./gradlew buildRelease
+/build-and-summarize buildRelease
 
 # Build all configurations
-./gradlew assembleAll
+/build-and-summarize assembleAll
 
 # Clean build
-./gradlew clean
+/build-and-summarize clean
 ```
 
 ### Development Builds
 ```bash
 # Debug build with symbols
-./gradlew buildDebug
+/build-and-summarize buildDebug
 
 # ASan build (if available)
-./gradlew buildAsan
+/build-and-summarize buildAsan
 
 # TSan build (if available)
-./gradlew buildTsan
+/build-and-summarize buildTsan
 ```
 
 ### Testing
 ```bash
-# Run all tests
-./gradlew test
-
 # Run specific test configurations
-./gradlew testRelease
-./gradlew testDebug
-./gradlew testAsan
-./gradlew testTsan
+/build-and-summarize testRelease
+/build-and-summarize testDebug
+/build-and-summarize testAsan
+/build-and-summarize testTsan
 
 # Run C++ unit tests only
-./gradlew gtestDebug
-./gradlew gtestRelease
+/build-and-summarize gtestDebug
+/build-and-summarize gtestRelease
 
 # Cross-JDK testing
-JAVA_TEST_HOME=/path/to/test/jdk ./gradlew testDebug
+JAVA_TEST_HOME=/path/to/test/jdk /build-and-summarize testDebug
 ```
 
 ### Build Options
 ```bash
 # Skip native compilation
-./gradlew build -Pskip-native
+/build-and-summarize buildDebug -Pskip-native
 
 # Skip all tests
-./gradlew build -Pskip-tests
+/build-and-summarize buildDebug -Pskip-tests
 
 # Skip C++ tests
-./gradlew build -Pskip-gtest
+/build-and-summarize buildDebug -Pskip-gtest
 
 # Keep JFR recordings after tests
-./gradlew test -PkeepJFRs
+/build-and-summarize testDebug -PkeepJFRs
 
 # Skip debug symbol extraction
-./gradlew buildRelease -Pskip-debug-extraction=true
+/build-and-summarize buildRelease -Pskip-debug-extraction=true
 ```
 
 ### Code Quality
 ```bash
 # Format code
-./gradlew spotlessApply
+/build-and-summarize spotlessApply
 
 # Static analysis
-./gradlew scanBuild
+/build-and-summarize scanBuild
 
 # Run stress tests
-./gradlew :ddprof-stresstest:runStressTests
+/build-and-summarize :ddprof-stresstest:runStressTests
 
 # Run benchmarks
-./gradlew runBenchmarks
+/build-and-summarize runBenchmarks
 ```
 
 ## Architecture
@@ -143,7 +172,7 @@ Use standard Gradle syntax:
 
 ### Working with Native Code
 Native compilation is automatic during build. C++ code changes require:
-1. Full rebuild: `./gradlew clean build`
+1. Full rebuild: `/build-and-summarize clean build`
 2. The build system automatically handles JNI headers and platform detection
 
 ### Debugging Native Issues
@@ -281,14 +310,14 @@ With separate debug symbol packages for production debugging support.
 - Java 8 compatibility maintained throughout
 - JNI interface follows async-profiler conventions
 - Supports Oracle JDK, OpenJDK and OpenJ9 implementations
-- Always test with ./gradlew testDebug
+- Always test with /build-and-summarize testDebug
 - Always consult openjdk source codes when analyzing profiler issues and looking for proposed solutions
 - For OpenJ9 specific issues consul the openj9 github project
 - don't use assemble task. Use assembleDebug or assembleRelease instead
 - gtest tests are located in ddprof-lib/src/test/cpp
 - Module ddprof-lib/gtest is only containing the gtest build setup
 - Java unit tests are in ddprof-test module
-- Always run ./gradlew spotlessApply before commiting the changes
+- Always run /build-and-summarize spotlessApply before commiting the changes
 
 - When you are adding copyright - like 'Copyright 2021, 2023 Datadog, Inc' do the current year -> 'Copyright <current year>, Datadog, Inc'
   When you are modifying copyright already including 'Datadog' update the 'until year' ('Copyright from year, until year') to the current year
@@ -296,7 +325,7 @@ With separate debug symbol packages for production debugging support.
 - When proposing solutions try minimizing allocations. We are fighting hard to avoid fragmentation and malloc arena issues
 - Use O(N) or worse only in small amounts of elements. A rule of thumb cut-off is 256 elements. Anything larger requires either index or binary search to get better than linear performance
 
-- Always run ./gradlew spotlessApply before committing changes
+- Always run /build-and-summarize spotlessApply before committing changes
 
 - Always  create a commit message based solely on the actual changes visible in the diff
 
@@ -306,3 +335,6 @@ With separate debug symbol packages for production debugging support.
 - Always challange my proposals. Use deep analysis and logic to find flaws in what I am proposing
 
 - Exclude ddprof-lib/build/async-profiler from searches of active usage
+
+- Run tests with 'testdebug' gradle task
+- Use at most Java 21 to build and run tests

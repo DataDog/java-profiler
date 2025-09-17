@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "dwarf.h"
+#include "dwarf_dd.h"
 #include "common.h"
 #include "log.h"
 #include <assert.h>
@@ -89,7 +89,7 @@ FrameDesc FrameDesc::empty_frame = {0, DW_REG_SP | EMPTY_FRAME_SIZE << 8,
 FrameDesc FrameDesc::default_frame = {0, DW_REG_FP | LINKED_FRAME_SIZE << 8,
                                       -LINKED_FRAME_SIZE,
                                       -LINKED_FRAME_SIZE + DW_STACK_SLOT};
-FrameDesc FrameDesc::default_clang_frame = {0, DW_REG_FP | LINKED_FRAME_CLANG_SIZE << 8, -LINKED_FRAME_CLANG_SIZE, -LINKED_FRAME_CLANG_SIZE + DW_STACK_SLOT};
+FrameDesc ddprof::FrameDesc::default_clang_frame = {0, DW_REG_FP | LINKED_FRAME_CLANG_SIZE << 8, -LINKED_FRAME_CLANG_SIZE, -LINKED_FRAME_CLANG_SIZE + DW_STACK_SLOT};
 
 DwarfParser::DwarfParser(const char *name, const char *image_base,
                          const char *eh_frame_hdr) {
@@ -416,7 +416,7 @@ void DwarfParser::addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off,
   }
 }
 
-FrameDesc *DwarfParser::addRecordRaw(u32 loc, u32 cfa, int fp_off, int pc_off) {
+FrameDesc *DwarfParser::addRecordRaw(u32 loc, int cfa, int fp_off, int pc_off) {
   if (_count >= _capacity) {
     FrameDesc *frameDesc =
         (FrameDesc *)realloc(_table, _capacity * 2 * sizeof(FrameDesc));

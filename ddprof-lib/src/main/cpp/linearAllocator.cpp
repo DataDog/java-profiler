@@ -16,7 +16,7 @@
 
 #include "linearAllocator.h"
 #include "counters.h"
-#include "os.h"
+#include "os_dd.h"
 
 LinearAllocator::LinearAllocator(size_t chunk_size) {
   _chunk_size = chunk_size;

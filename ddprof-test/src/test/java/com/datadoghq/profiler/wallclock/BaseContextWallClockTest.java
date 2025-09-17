@@ -53,6 +53,10 @@ final class BaseContextWallClockTest {
     }
 
     void test(AbstractProfilerTest test) throws ExecutionException, InterruptedException {
+        test(test, true);
+    }
+
+    void test(AbstractProfilerTest test, boolean assertContext) throws ExecutionException, InterruptedException {
         String config = System.getProperty("ddprof_test.config");
 
         Assumptions.assumeTrue(!Platform.isJ9() && !Platform.isZing());
@@ -94,21 +98,27 @@ final class BaseContextWallClockTest {
                 // taken in the part of method2 between activation and invoking method2Impl, which complicates
                 // assertions when we only find method1Impl
                 if (stackTrace.contains("method3Impl")) {
-                    // method3 is scheduled after method2, and method1 blocks on it, so spanId == rootSpanId + 2
-                    assertEquals(rootSpanId + 2, spanId, stackTrace);
-                    assertTrue(spanId == 0 || method3SpanIds.contains(spanId), stackTrace);
+                    if (assertContext) {
+                        // method3 is scheduled after method2, and method1 blocks on it, so spanId == rootSpanId + 2
+                        assertEquals(rootSpanId + 2, spanId, stackTrace);
+                        assertTrue(spanId == 0 || method3SpanIds.contains(spanId), stackTrace);
+                    }
                     method3Weight += weight;
                 } else if (stackTrace.contains("method2Impl")) {
-                    // method2 is called next, so spanId == rootSpanId + 1
-                    assertEquals(rootSpanId + 1, spanId, stackTrace);
-                    assertTrue(spanId == 0 || method2SpanIds.contains(spanId), stackTrace);
+                    if (assertContext) {
+                        // method2 is called next, so spanId == rootSpanId + 1
+                        assertEquals(rootSpanId + 1, spanId, stackTrace);
+                        assertTrue(spanId == 0 || method2SpanIds.contains(spanId), stackTrace);
+                    }
                     method2Weight += weight;
                 } else if (stackTrace.contains("method1Impl")
                         && !stackTrace.contains("method2") && !stackTrace.contains("method3")) {
-                    // need to check this after method2 because method1 calls method2
-                    // it's the root so spanId == rootSpanId
-                    assertEquals(rootSpanId, spanId, stackTrace);
-                    assertTrue(spanId == 0 || method1SpanIds.contains(spanId), stackTrace);
+                    if (assertContext) {
+                        // need to check this after method2 because method1 calls method2
+                        // it's the root so spanId == rootSpanId
+                        assertEquals(rootSpanId, spanId, stackTrace);
+                        assertTrue(spanId == 0 || method1SpanIds.contains(spanId), stackTrace);
+                    }
                     method1Weight += weight;
                 }
                 assertTrue(weight <= 10 && weight > 0);

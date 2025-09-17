@@ -21,8 +21,7 @@
 
 #include "threadFilter.h"
 #include "arch_dd.h"
-#include "os.h"
-
+#include "os_dd.h"
 #include <cassert>
 #include <cstdlib>
 #include <cstdio>
@@ -196,7 +195,7 @@ void ThreadFilter::remove(SlotID slot_id) {
     if (unlikely(chunk == nullptr)) {
         return;
     }
-    
+
     chunk->slots[slot_idx].value.store(-1, std::memory_order_release);
 }
 
@@ -258,11 +257,11 @@ ThreadFilter::SlotID ThreadFilter::popFromFreeList() {
 
 void ThreadFilter::collect(std::vector<int>& tids) const {
     tids.clear();
-    
+
     // Reserve space for efficiency
     // The eventual resize is not the bottleneck, so we reserve a reasonable size
     tids.reserve(512);
-    
+
     // Scan only initialized chunks
     int num_chunks = _num_chunks.load(std::memory_order_relaxed);
     for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
@@ -270,7 +269,7 @@ void ThreadFilter::collect(std::vector<int>& tids) const {
         if (chunk == nullptr) {
             continue;  // Skip unallocated chunks
         }
-        
+
         for (const auto& slot : chunk->slots) {
             int slot_tid = slot.value.load(std::memory_order_relaxed);
             if (slot_tid != -1) {
@@ -278,7 +277,7 @@ void ThreadFilter::collect(std::vector<int>& tids) const {
             }
         }
     }
-    
+
     // Optional: shrink if we over-reserved significantly
     if (tids.capacity() > tids.size() * 2) {
         tids.shrink_to_fit();

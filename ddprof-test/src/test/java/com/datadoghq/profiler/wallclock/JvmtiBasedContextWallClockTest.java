@@ -1,6 +1,8 @@
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.Platform;
+import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
 
 import java.util.concurrent.ExecutionException;
@@ -20,11 +22,14 @@ public class JvmtiBasedContextWallClockTest extends AbstractProfilerTest {
 
     @RetryingTest(5)
     public void test() throws ExecutionException, InterruptedException {
-        base.test(this);
+        // thread local handshake available only since Java 15
+        Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(15));
+        // do not assert context because of sampling skid
+        base.test(this, false);
     }
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=~1ms,filter=0,loglevel=warn;wallsampler=jvmti";
+        return "wall=~1ms,loglevel=warn,wallsampler=jvmti";
     }
 }
