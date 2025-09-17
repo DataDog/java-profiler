@@ -25,7 +25,7 @@ jobs:
       - name: System setup
         run: |
           sudo apt-get update
-          sudo apt install -y clang clang-tools openjdk-11-jdk
+          sudo apt install -y clang clang-tools openjdk-21-jdk
       - name: Set up Python
         uses: actions/setup-python@v2
         with:
