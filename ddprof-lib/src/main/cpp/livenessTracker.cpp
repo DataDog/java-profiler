@@ -30,8 +30,8 @@ void LivenessTracker::cleanup_table(bool forced) {
   u64 target_gc_epoch = load(_gc_epoch);
 
   if ((target_gc_epoch == _last_gc_epoch ||
-       !__sync_bool_compare_and_swap(&_last_gc_epoch, current,
-                                     target_gc_epoch)) &&
+       !__atomic_compare_exchange_n(&_last_gc_epoch, &current,
+                                     target_gc_epoch, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) &&
       !forced) {
     // if the last processed GC epoch hasn't changed, or if we failed to update
     // it, there's nothing to do
