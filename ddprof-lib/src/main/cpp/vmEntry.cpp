@@ -368,7 +368,6 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   int major_version = (jvmti_version & JVMTI_VERSION_MASK_MAJOR) >> JVMTI_VERSION_SHIFT_MAJOR;
 
   bool support_vthread_profiling = (major_version >= 21);
-  printf("JVMTI major version: %d\n", major_version);
 
   jvmtiCapabilities potential_capabilities = {0};
   _jvmti->GetPotentialCapabilities(&potential_capabilities);

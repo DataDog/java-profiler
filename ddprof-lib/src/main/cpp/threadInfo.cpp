@@ -4,7 +4,6 @@
 
 void ThreadInfo::set(int tid, const char *name, u64 java_thread_id) {
   MutexLocker ml(_ti_lock);
-printf("Set Thread: %d name: %s\n", tid, name);
 
   _thread_names[tid] = std::string(name);
   _thread_ids[tid] = java_thread_id;
@@ -47,7 +46,6 @@ void ThreadInfo::clearAll(std::set<int> &live_thread_ids) {
     std::map<int, std::string>::iterator name_itr = _thread_names.begin();
     while (name_itr != _thread_names.end()) {
       if (live_thread_ids.find(name_itr->first) == live_thread_ids.end()) {
-        printf("Remove thread name: %s\n", name_itr->second.c_str());
         name_itr = _thread_names.erase(name_itr);
       } else {
         ++name_itr;
@@ -76,7 +74,6 @@ void ThreadInfo::updateThreadName(
     if (it == _thread_names.end()) {
         // Thread ID not found, insert new entry
         std::string name = resolver(tid);
-        printf("ThreadInfo updateThreadName: %d : %s\n", tid, name.c_str());
         if (!name.empty()) {
             _thread_names.emplace(tid, std::move(name));
         }

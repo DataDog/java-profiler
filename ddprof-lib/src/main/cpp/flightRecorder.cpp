@@ -1090,9 +1090,7 @@ void Recording::writeThreads(Buffer *buf) {
       thread_name = info.first->c_str();
       thread_id = info.second;
     } else {
-      if (!OS::threadName(tid, name_buf, sizeof(name_buf))) {
-        snprintf(name_buf, sizeof(name_buf), "[tid=%d]", tid);
-      }
+      snprintf(name_buf, sizeof(name_buf), "[tid=%d]", tid);
       thread_name = name_buf;
       thread_id = 0;
     }
