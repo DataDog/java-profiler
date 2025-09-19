@@ -25,7 +25,7 @@ jobs:
       - name: System setup
         run: |
           sudo apt-get update
-          sudo apt install -y clang clang-tools openjdk-11-jdk
+          sudo apt install -y clang clang-tools openjdk-21-jdk
       - name: Set up Python
         uses: actions/setup-python@v2
         with:
@@ -34,6 +34,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install beautifulsoup4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'zulu' 
       - name: Scan Build
         run: |
           ./gradlew scanBuild --no-daemon
@@ -81,6 +86,10 @@ jobs:
           # By default, queries listed here will override any specified in a config file.
           # Prefix the list here with "+" to use these queries and those in the config file.
           # queries: ./path/to/local/query, your-org/your-repo/queries@main
+      - uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
       - run: ./gradlew -x test assembleReleaseJar
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3

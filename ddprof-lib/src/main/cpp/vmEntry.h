@@ -20,6 +20,9 @@
 #define DLLEXPORT __attribute__((visibility("default"), externally_visible))
 #endif
 
+#define EXT_EVENT_VIRTUAL_THREAD_MOUNT (jvmtiEvent)(JVMTI_MIN_EVENT_TYPE_VAL-2)
+#define EXT_EVENT_VIRTUAL_THREAD_UNMOUNT (jvmtiEvent)(JVMTI_MIN_EVENT_TYPE_VAL-3)
+
 // Denotes ASGCT_CallFrame where method_id has special meaning (not jmethodID)
 enum ASGCT_CallFrameType {
   BCI_CPU = 0,                  // cpu time

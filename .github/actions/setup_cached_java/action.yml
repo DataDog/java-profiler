@@ -5,7 +5,7 @@ inputs:
   version:
     description: "The test JDK version to install"
     required: true
-    default: "11"
+    default: "21"
   arch:
     description: "The architecture"
     required: true
@@ -18,11 +18,11 @@ runs:
         shell: bash
         id: infer_build_jdk
         run: |
-          echo "Infering JDK 11 [${{ inputs.arch }}]"
+          echo "Infering JDK 21 [${{ inputs.arch }}]"
           if [[ ${{ inputs.arch }} =~ "-musl" ]]; then
-            echo "build_jdk=jdk11-librca" >> $GITHUB_OUTPUT
+            echo "build_jdk=jdk21-librca" >> $GITHUB_OUTPUT
           else
-            echo "build_jdk=jdk11" >> $GITHUB_OUTPUT
+            echo "build_jdk=jdk21" >> $GITHUB_OUTPUT
           fi
       - name: Cache Build JDK [${{ inputs.arch }}]
         id: cache_build_jdk

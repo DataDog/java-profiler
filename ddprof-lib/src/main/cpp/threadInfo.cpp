@@ -4,6 +4,7 @@
 
 void ThreadInfo::set(int tid, const char *name, u64 java_thread_id) {
   MutexLocker ml(_ti_lock);
+
   _thread_names[tid] = std::string(name);
   _thread_ids[tid] = java_thread_id;
 }
