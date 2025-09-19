@@ -96,7 +96,7 @@ private:
   WaitableMutex _timer_lock;
   void *_timer_id;
 
-  u64 _total_samples;
+  volatile u64 _total_samples;
   u64 _failures[ASGCT_FAILURE_TYPES];
 
   SpinLock _class_map_lock;

@@ -560,7 +560,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
     return 0;
   }
 
-  atomicInc(_failures[-trace.num_frames]);
+  atomicIncRelaxed(_failures[-trace.num_frames]);
   trace.frames->bci = BCI_ERROR;
   trace.frames->method_id = (jmethodID)err_string;
   return trace.frames - frames + 1;
@@ -608,14 +608,14 @@ void Profiler::fillFrameTypes(ASGCT_CallFrame *frames, int num_frames,
 }
 
 u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event, bool deferred) {
-  atomicInc(_total_samples);
+  atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
       !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     // Too many concurrent signals already
-    atomicInc(_failures[-ticks_skipped]);
+    atomicIncRelaxed(_failures[-ticks_skipped]);
 
     return 0;
   }
@@ -655,14 +655,14 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
 }
 
 void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event) {
-  atomicInc(_total_samples);
+  atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
       !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     // Too many concurrent signals already
-    atomicInc(_failures[-ticks_skipped]);
+    atomicIncRelaxed(_failures[-ticks_skipped]);
     return;
   }
 
@@ -673,14 +673,14 @@ void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type,
 
 void Profiler::recordSample(void *ucontext, u64 counter, int tid,
                             jint event_type, u64 call_trace_id, Event *event) {
-  atomicInc(_total_samples);
+  atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
       !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     // Too many concurrent signals already
-    atomicInc(_failures[-ticks_skipped]);
+    atomicIncRelaxed(_failures[-ticks_skipped]);
 
     if (event_type == BCI_CPU && _cpu_engine == &perf_events) {
       // Need to reset PerfEvents ring buffer, even though we discard the
@@ -789,7 +789,7 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
                                     ASGCT_CallFrame *frames, bool truncated,
                                     jint event_type, Event *event) {
-  atomicInc(_total_samples);
+  atomicIncRelaxed(_total_samples);
 
   u64 call_trace_id =
       _call_trace_storage.put(num_frames, frames, truncated, weight);
@@ -799,7 +799,7 @@ void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
       !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     // Too many concurrent signals already
-    atomicInc(_failures[-ticks_skipped]);
+    atomicIncRelaxed(_failures[-ticks_skipped]);
     return;
   }
 
