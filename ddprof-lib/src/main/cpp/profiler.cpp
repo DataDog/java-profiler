@@ -10,13 +10,13 @@
 #include "common.h"
 #include "counters.h"
 #include "ctimer.h"
-#include "dwarf.h"
+#include "dwarf_dd.h"
 #include "flightRecorder.h"
 #include "itimer.h"
 #include "j9Ext.h"
 #include "j9WallClock.h"
 #include "objectSampler.h"
-#include "os.h"
+#include "os_dd.h"
 #include "perfEvents.h"
 #include "safeAccess.h"
 #include "stackFrame.h"
@@ -560,7 +560,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
     return 0;
   }
 
-  atomicInc(_failures[-trace.num_frames]);
+  atomicIncRelaxed(_failures[-trace.num_frames]);
   trace.frames->bci = BCI_ERROR;
   trace.frames->method_id = (jmethodID)err_string;
   return trace.frames - frames + 1;
@@ -608,14 +608,14 @@ void Profiler::fillFrameTypes(ASGCT_CallFrame *frames, int num_frames,
 }
 
 u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event, bool deferred) {
-  atomicInc(_total_samples);
+  atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
       !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     // Too many concurrent signals already
-    atomicInc(_failures[-ticks_skipped]);
+    atomicIncRelaxed(_failures[-ticks_skipped]);
 
     return 0;
   }
@@ -655,14 +655,14 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
 }
 
 void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event) {
-  atomicInc(_total_samples);
+  atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
       !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     // Too many concurrent signals already
-    atomicInc(_failures[-ticks_skipped]);
+    atomicIncRelaxed(_failures[-ticks_skipped]);
     return;
   }
 
@@ -673,14 +673,14 @@ void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type,
 
 void Profiler::recordSample(void *ucontext, u64 counter, int tid,
                             jint event_type, u64 call_trace_id, Event *event) {
-  atomicInc(_total_samples);
+  atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
       !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     // Too many concurrent signals already
-    atomicInc(_failures[-ticks_skipped]);
+    atomicIncRelaxed(_failures[-ticks_skipped]);
 
     if (event_type == BCI_CPU && _cpu_engine == &perf_events) {
       // Need to reset PerfEvents ring buffer, even though we discard the
@@ -789,7 +789,7 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
                                     ASGCT_CallFrame *frames, bool truncated,
                                     jint event_type, Event *event) {
-  atomicInc(_total_samples);
+  atomicIncRelaxed(_total_samples);
 
   u64 call_trace_id =
       _call_trace_storage.put(num_frames, frames, truncated, weight);
@@ -799,7 +799,7 @@ void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
       !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     // Too many concurrent signals already
-    atomicInc(_failures[-ticks_skipped]);
+    atomicIncRelaxed(_failures[-ticks_skipped]);
     return;
   }
 
@@ -941,8 +941,8 @@ void Profiler::setupSignalHandlers() {
       if (VM::isHotspot() || VM::isOpenJ9()) {
         // HotSpot and J9 tolerate interposed SIGSEGV/SIGBUS handler; other JVMs
         // probably not
-        orig_segvHandler = OS::replaceSigsegvHandler(segvHandler);
-        orig_busHandler = OS::replaceSigbusHandler(busHandler);
+        orig_segvHandler = ddprof::OS::replaceSigsegvHandler(segvHandler);
+        orig_busHandler = ddprof::OS::replaceSigbusHandler(busHandler);
       }
   }
 }
@@ -992,7 +992,8 @@ void Profiler::updateNativeThreadNames() {
     constexpr size_t buffer_size = 64;
     char name_buf[buffer_size];  // Stack-allocated buffer
 
-    for (int tid; (tid = thread_list->next()) != -1;) {
+    while (thread_list->hasNext()) { 
+        int tid = thread_list->next(); 
         _thread_info.updateThreadName(
                 tid, [&](int tid) -> std::string {
                     if (OS::threadName(tid, name_buf, buffer_size)) {
@@ -1188,7 +1189,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
   }
 
-  _thread_filter.init(args._filter);
+  // TODO: Current way of setting filter is weird with the recent changes
+  _thread_filter.init(args._filter ? args._filter : "0");
   
   // Minor optim: Register the current thread (start thread won't be called)
   if (_thread_filter.enabled()) {

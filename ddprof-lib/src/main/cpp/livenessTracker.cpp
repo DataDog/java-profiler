@@ -14,7 +14,7 @@
 #include "jniHelper.h"
 #include "livenessTracker.h"
 #include "log.h"
-#include "os.h"
+#include "os_dd.h"
 #include "profiler.h"
 #include "thread.h"
 #include "tsc.h"
@@ -26,12 +26,12 @@ constexpr int LivenessTracker::MAX_TRACKING_TABLE_SIZE;
 constexpr int LivenessTracker::MIN_SAMPLING_INTERVAL;
 
 void LivenessTracker::cleanup_table(bool forced) {
-  u64 current = loadAcquire(_last_gc_epoch);
-  u64 target_gc_epoch = loadAcquire(_gc_epoch);
+  u64 current = load(_last_gc_epoch);
+  u64 target_gc_epoch = load(_gc_epoch);
 
   if ((target_gc_epoch == _last_gc_epoch ||
-       !__sync_bool_compare_and_swap(&_last_gc_epoch, current,
-                                     target_gc_epoch)) &&
+       !__atomic_compare_exchange_n(&_last_gc_epoch, &current,
+                                     target_gc_epoch, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) &&
       !forced) {
     // if the last processed GC epoch hasn't changed, or if we failed to update
     // it, there's nothing to do
@@ -383,10 +383,10 @@ void LivenessTracker::onGC() {
   }
 
   // just increment the epoch
-  atomicInc(_gc_epoch, 1);
+  atomicIncRelaxed(_gc_epoch,u64(1));
 
   if (!ddprof::HeapUsage::isLastGCUsageSupported()) {
-    storeRelease(_used_after_last_gc, ddprof::HeapUsage::get(false)._used);
+    store(_used_after_last_gc, ddprof::HeapUsage::get(false)._used);
   }
 }
 

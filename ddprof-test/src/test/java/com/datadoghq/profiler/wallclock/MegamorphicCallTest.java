@@ -20,7 +20,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class MegamorphicCallTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
-        // use wall because it lets us control which threads to sample
         return "wall=100us";
     }
 

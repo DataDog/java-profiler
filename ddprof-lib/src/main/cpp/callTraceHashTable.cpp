@@ -301,7 +301,7 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
 
     if (++step >= capacity) {
       // Very unlikely case of a table overflow
-      atomicInc(_overflow);
+      atomicIncRelaxed(_overflow);
       return OVERFLOW_TRACE_ID;
     }
     // Improved version of linear probing
@@ -359,7 +359,7 @@ void CallTraceHashTable::collectAndCopySelective(std::unordered_set<CallTrace *>
     traces.insert(&_overflow_trace);
     if (trace_ids_to_preserve.find(OVERFLOW_TRACE_ID) != trace_ids_to_preserve.end()) {
       // Copy overflow trace to target - it's a static trace so just increment overflow counter
-      atomicInc(target->_overflow);
+      atomicIncRelaxed(target->_overflow);
     }
   }
 }

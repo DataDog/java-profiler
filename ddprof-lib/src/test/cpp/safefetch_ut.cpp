@@ -4,7 +4,7 @@
 #include <signal.h>
 
 #include "safeAccess.h"
-#include "os.h"
+#include "os_dd.h"
 
 
 static void (*orig_segvHandler)(int signo, siginfo_t *siginfo, void *ucontext);
@@ -24,13 +24,13 @@ void signal_handle_wrapper(int signo, siginfo_t* siginfo, void* context) {
 class SafeFetchTest : public ::testing::Test {
 protected:
     void SetUp() override {
-       orig_segvHandler = OS::replaceSigsegvHandler(signal_handle_wrapper);
-       orig_busHandler = OS::replaceSigbusHandler(signal_handle_wrapper);
+       orig_segvHandler = ddprof::OS::replaceSigsegvHandler(signal_handle_wrapper);
+       orig_busHandler = ddprof::OS::replaceSigbusHandler(signal_handle_wrapper);
     }
 
     void TearDown() override {
-       OS::replaceSigsegvHandler(orig_segvHandler);
-       OS::replaceSigbusHandler(orig_busHandler);
+       ddprof::OS::replaceSigsegvHandler(orig_segvHandler);
+       ddprof::OS::replaceSigbusHandler(orig_busHandler);
     }
 };
 

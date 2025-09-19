@@ -52,7 +52,7 @@ private:
 
   LinearAllocator _allocator;
   LongHashTable *_current_table;
-  u64 _overflow;
+  volatile u64 _overflow;
 
   u64 calcHash(int num_frames, ASGCT_CallFrame *frames, bool truncated);
   CallTrace *storeCallTrace(int num_frames, ASGCT_CallFrame *frames,

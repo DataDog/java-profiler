@@ -131,10 +131,10 @@ private:
 
 public:
   explicit CodeCache(const char *name, short lib_index = -1,
-                     bool imports_patchable = false,
                      const void *min_address = NO_MIN_ADDRESS,
                      const void *max_address = NO_MAX_ADDRESS,
-                     const char* image_base = NULL);
+                     const char* image_base = NULL,
+                     bool imports_patchable = false);
   // Copy constructor
   CodeCache(const CodeCache &other);
   // Copy assignment operator

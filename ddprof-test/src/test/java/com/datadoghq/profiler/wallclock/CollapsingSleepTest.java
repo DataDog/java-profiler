@@ -9,13 +9,21 @@ import org.openjdk.jmc.common.item.IItemCollection;
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 
+import java.util.concurrent.locks.LockSupport;
+
 public class CollapsingSleepTest extends AbstractProfilerTest {
 
     @Test
-    public void testSleep() throws InterruptedException {
+    public void testSleep() {
         Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
-        Thread.sleep(1000);
+        long ts = System.nanoTime();
+        long waitTime = 1_000_000_000L; // 1mil ns == 1s
+        do {
+            LockSupport.parkNanos(waitTime);
+            waitTime -= (System.nanoTime() - ts);
+            ts = System.nanoTime();
+        } while (waitTime > 1_000);
         stopProfiler();
         IItemCollection events = verifyEvents("datadog.MethodSample");
         assertTrue(events.hasItems());
@@ -25,6 +33,6 @@ public class CollapsingSleepTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=~10ms";
+        return "wall=~1ms";
     }
 }

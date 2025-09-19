@@ -21,7 +21,7 @@
 #include "debugSupport.h"
 #include "libraries.h"
 #include "log.h"
-#include "os.h"
+#include "os_dd.h"
 #include "perfEvents.h"
 #include "profiler.h"
 #include "spinLock.h"
@@ -889,7 +889,8 @@ Error PerfEvents::start(Arguments &args) {
   int *threads = (int *)malloc((threads_cap = 1024) * sizeof(int));
   ThreadList *thread_list = OS::listThreads();
   // get a fixed list of all the threads
-  for (int tid; (tid = thread_list->next()) != -1;) {
+  while (thread_list->hasNext()) { 
+    int tid = thread_list->next();
     if (threads_sz == threads_cap) {
       threads = (int *)realloc(threads, (threads_cap += 1024) * sizeof(int));
     }

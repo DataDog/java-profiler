@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Write",
+      "Bash(grep:*)",
+      "Bash(awk:*)",
+      "Bash(sed:*)",
+      "Bash(python3:*)",
+      "Bash(./gradlew:*)",
+      "Bash(sh:*)",
+      "Bash(ls:*)",
+      "Bash/date:*",
+      "Bash/mkdir:*",
+      "Bash/tee:*"
+    ],
+    "ask": [],
+    "deny": [
+      "Bash(sudo:*)",
+      "Bash(rm:*)"
+    ]
+  },
+  "hooks": {
+    "SubagentStop": [
+      {
+        "matcher": "gradle-log-analyst",
+        "hooks": [
+          "echo '[gradle-log-analyst] Wrote build/reports/claude/gradle-summary.{md,json}' >&2"
+        ]
+      }
+    ]
+  }
+}
