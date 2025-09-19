@@ -354,12 +354,18 @@ def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
   description = 'Copy shared upstream files'
   from("${projectDir}/build/async-profiler/src") {
     include "arch.h"
+    include "dwarf.h"
     include "incbin.h"
     include "mutex.h"
     include "mutex.cpp"
+    include "os.h"
+    include "os_*.cpp"
+    include "stackFrame.h"
     include "stackWalker.h"
     include "stackWalker.cpp"
     include "stackFrame*.cpp"
+    include "symbols.h"
+    include "symbols_*.cpp"
     include "trap.h"
     include "trap.cpp"
     include "vmStructs.h"
@@ -368,92 +374,100 @@ def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
   into "${projectDir}/src/main/cpp-external"
 }
 
-def patchStackFrame = tasks.register("patchStackFrame") {
-  description = 'Patch stackFrame_x64.cpp after copying'
+
+// Load patch configuration from external file
+apply from: "${rootDir}/gradle/patching.gradle"
+
+def patchUpstreamFiles = tasks.register("patchUpstreamFiles") {
+  description = 'Apply all upstream patches via unified configuration system'
   configure {
     dependsOn copyUpstreamFiles
   }
-  inputs.file("${projectDir}/src/main/cpp-external/stackFrame_x64.cpp")
-  outputs.file("${projectDir}/src/main/cpp-external/stackFrame_x64.cpp")
+
+  inputs.file("${rootDir}/gradle/patching.gradle")
+  inputs.files(fileTree("${projectDir}/src/main/cpp-external").include("*.cpp", "*.h"))
+  outputs.files(fileTree("${projectDir}/src/main/cpp-external").include("*.cpp", "*.h"))
 
   doLast {
-    def file = file("${projectDir}/src/main/cpp-external/stackFrame_x64.cpp")
-    if (!file.exists()) throw new GradleException("File not found: ${file}")
+    try {
+      // Use configuration from gradle/patching.gradle
+      def patches = upstreamPatches
 
-    def content = file.getText('UTF-8')
-    def original = content
+      // Apply patches using simplified inline logic
+      def totalFiles = patches.size()
+      def totalOperations = 0
+      patches.each { fileName, fileConfig ->
+        totalOperations += fileConfig.operations?.size() ?: 0
+      }
 
-    // Add no_sanitize to unwindStub
-    content = content.replaceAll(
-      /(bool\s+StackFrame::unwindStub\s*\()/,
-      '__attribute__((no_sanitize("address"))) bool StackFrame::unwindStub('
-      )
+      logger.quiet("Unified patching system: processing ${totalFiles} files with ${totalOperations} total operations")
 
-    // Replace *(unsigned int*)entry
-    content = content.replaceAll(
-      /entry\s*!=\s*NULL\s*&&\s*\*\(unsigned int\*\)\s*entry\s*==\s*0xec8b4855/,
-      '''entry != NULL && ([&] { unsigned int val; memcpy(&val, entry, sizeof(val)); return val; }()) == 0xec8b4855'''
-      )
+      // Apply patches to all configured files
+      patches.each { fileName, fileConfig ->
+        def filePath = "${projectDir}/src/main/cpp-external/${fileName}"
+        def targetFile = file(filePath)
 
-    // Add no_sanitize to checkInterruptedSyscall
-    content = content.replaceAll(
-      /(bool\s+StackFrame::checkInterruptedSyscall\s*\()/,
-      '__attribute__((no_sanitize("address"))) bool StackFrame::checkInterruptedSyscall('
-      )
+        if (targetFile.exists()) {
+          def content = targetFile.getText('UTF-8')
+          def originalContent = content
+          def patchCount = 0
 
-    // Replace *(int*)(pc - 6)
-    content = content.replaceAll(
-      /\*\(int\*\)\s*\(pc\s*-\s*6\)/,
-      '([&] { int val; memcpy(&val, (const void*)(pc - 6), sizeof(val)); return val; }())'
-      )
+          // Run validations first
+          fileConfig.validations?.each { validation ->
+            if (validation.contains && !content.contains(validation.contains)) {
+              throw new RuntimeException("Validation failed for ${fileName}: required text '${validation.contains}' not found. Upstream structure may have changed.")
+            }
+          }
 
-    // Insert #include <cstring> if missing
-    if (!content.contains('#include <cstring>')) {
-      def lines = content.readLines()
-      def lastInclude = lines.findLastIndexOf { it.startsWith('#include') }
-      if (lastInclude >= 0) lines.add(lastInclude + 1, '#include <cstring>')
-      else lines.add(0, '#include <cstring>')
-      content = lines.join('\n')
-    }
+          // Apply operations in order
+          fileConfig.operations?.each { operation ->
+            // Check if already applied (idempotent check)
+            if (operation.idempotent_check && content.contains(operation.idempotent_check)) {
+              logger.quiet("Skipped patch '${operation.name ?: operation.type}' for ${fileName} (already applied)")
+              return
+            }
 
-    if (content != original) {
-      file.write(content, 'UTF-8')
-      println "Patched stackFrame_x64.cpp"
+            // Apply regex pattern
+            def pattern = java.util.regex.Pattern.compile(operation.find)
+            def matcher = pattern.matcher(content)
+
+            if (matcher.find()) {
+              def newContent = matcher.replaceAll(operation.replace)
+
+              if (newContent != content) {
+                content = newContent
+                patchCount++
+                logger.quiet("Applied patch '${operation.name ?: operation.type}' to ${fileName}")
+              }
+            } else {
+              logger.warn("Pattern '${operation.find}' not found in ${fileName} for operation: ${operation.name ?: operation.type}")
+            }
+          }
+
+          // Write back if any modifications were made
+          if (patchCount > 0) {
+            targetFile.write(content, 'UTF-8')
+            logger.quiet("Patched ${fileName} with ${patchCount} operations")
+          } else {
+            logger.quiet("No patches applied to ${fileName} (all already present)")
+          }
+        } else {
+          logger.warn("Patch target file not found: ${fileName}")
+        }
+      }
+
+      logger.quiet("Unified patching completed successfully")
+
+    } catch (Exception e) {
+      throw new GradleException("Unified patching failed: ${e.message}", e)
     }
   }
 }
 
-def patchStackWalker = tasks.register("patchStackWalker") {
-  description = 'Patch stackWalker.cpp after copying'
-  configure {
-    dependsOn copyUpstreamFiles, patchStackFrame
-  }
-  inputs.file("${projectDir}/src/main/cpp-external/stackWalker.cpp")
-  outputs.file("${projectDir}/src/main/cpp-external/stackWalker.cpp")
-
-  doLast {
-    def file = file("${projectDir}/src/main/cpp-external/stackWalker.cpp")
-    if (!file.exists()) throw new GradleException("File not found: ${file}")
-
-    def content = file.getText('UTF-8')
-    def original = content
-
-    // Add no_sanitize to walkVM
-    content = content.replaceAll(
-      /(int\s+StackWalker::walkVM\s*\()/,
-      '__attribute__((no_sanitize("address"))) int StackWalker::walkVM('
-      )
-
-    if (content != original) {
-      file.write(content, 'UTF-8')
-      println "Patched stackWalker.cpp"
-    }
-  }
-}
 
 def initSubrepoTask = tasks.register('initSubrepo') {
   configure {
-    dependsOn copyUpstreamFiles, patchStackFrame, patchStackWalker
+    dependsOn patchUpstreamFiles
   }
 }
 
@@ -671,7 +685,7 @@ tasks.withType(Test) {
   }
   executable = file("${javaHome}/bin/java")
   javaLauncher.set(javaToolchains.launcherFor {
-    languageVersion = JavaLanguageVersion.of(21)
+    languageVersion = JavaLanguageVersion.of(11)
   })
 }
 
