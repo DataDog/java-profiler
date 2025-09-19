@@ -952,6 +952,8 @@ void Profiler::setupSignalHandlers() {
  */
 void Profiler::updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                                 bool self) {
+
+  printf("UpdateThreadName: \n");
   JitWriteProtection jit(true); // workaround for JDK-8262896
   jvmtiThreadInfo thread_info;
   int native_thread_id = VMThread::nativeThreadId(jni, thread);

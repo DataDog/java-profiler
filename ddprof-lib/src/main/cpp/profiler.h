@@ -297,19 +297,19 @@ public:
 
   static void JNICALL VirtualThreadStart(jvmtiEnv *jvmti, JNIEnv *jni,
                                   jthread thread) {
-     printf("VirtualThread started\n");
+//     printf("VirtualThread started\n");
   }
 
   static void JNICALL VirtualThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-     printf("VirtualThread ended\n");
+//     printf("VirtualThread ended\n");
   }
 
   static void JNICALL VirtualThreadMount(jvmtiEnv *jvmti, ...) {
-     printf("VirtualThread mounted\n");
+//     printf("VirtualThread mounted\n");
   }
 
   static void JNICALL VirtualThreadUnmount(jvmtiEnv *jvmti, ...) {
-     printf("VirtualThread unmounted\n");
+//     printf("VirtualThread unmounted\n");
   }
 
   // Keep backward compatibility with the upstream async-profiler

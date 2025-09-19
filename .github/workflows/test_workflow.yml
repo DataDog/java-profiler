@@ -93,7 +93,7 @@ jobs:
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
       
-          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+          ./gradlew --stacktrace -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
       
           if [ $EXIT_CODE -ne 0 ]; then
