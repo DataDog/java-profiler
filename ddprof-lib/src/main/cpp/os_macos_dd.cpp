@@ -16,12 +16,12 @@ void ddprof::OS::mallocArenaMax(int arena_max) {
   // Not supported on macOS
 }
 
-SigAction ddprof::OS::replaceSigbusHandler(SigAction action) {
+SigAction ddprof::OS::replaceSigsegvHandler(SigAction action) {
   struct sigaction sa;
-  sigaction(SIGBUS, NULL, &sa);
+  sigaction(SIGSEGV, NULL, &sa);
   SigAction old_action = sa.sa_sigaction;
   sa.sa_sigaction = action;
-  sigaction(SIGBUS, &sa, NULL);
+  sigaction(SIGSEGV, &sa, NULL);
   return old_action;
 }
 
