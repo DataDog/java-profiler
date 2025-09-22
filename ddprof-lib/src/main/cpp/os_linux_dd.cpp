@@ -29,6 +29,10 @@ void ddprof::OS::mallocArenaMax(int arena_max) {
 #endif
 }
 
+SigAction ddprof::OS::replaceSigsegvHandler(SigAction action) {
+  return ::OS::replaceCrashHandler(action);
+}
+
 SigAction ddprof::OS::replaceSigbusHandler(SigAction action) {
   struct sigaction sa;
   sigaction(SIGBUS, NULL, &sa);

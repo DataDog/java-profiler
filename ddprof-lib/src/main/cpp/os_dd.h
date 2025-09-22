@@ -8,10 +8,7 @@ namespace ddprof {
 class OS : public ::OS {
 public:
   static SigAction replaceSigsegvHandler(SigAction action);
-
-  inline static SigAction replaceSigbusHandler(SigAction action) {
-    return ::OS::replaceCrashHandler(action);
-  }
+  static SigAction replaceSigbusHandler(SigAction action);
 
   inline static int getMaxThreadId(int floor) {
     int maxThreadId = ::OS::getMaxThreadId();
