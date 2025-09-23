@@ -7,10 +7,7 @@
 namespace ddprof {
 class OS : public ::OS {
 public:
-  inline static SigAction replaceSigsegvHandler(SigAction action) {
-    return ::OS::replaceCrashHandler(action);
-  }
-
+  static SigAction replaceSigsegvHandler(SigAction action);
   static SigAction replaceSigbusHandler(SigAction action);
 
   inline static int getMaxThreadId(int floor) {
