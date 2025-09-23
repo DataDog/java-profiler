@@ -95,7 +95,7 @@ jobs:
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
       
-          ./gradlew --stacktrace --warning-mode all -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
       
           if [ $EXIT_CODE -ne 0 ]; then
@@ -105,7 +105,7 @@ jobs:
       - name: Generate Unwinding Report
         if: success() && matrix.config == 'debug'
         run: |
-          ./gradlew --stacktrace --warning-mode all -PCI :ddprof-test:unwindingReport --no-daemon
+          ./gradlew -PCI :ddprof-test:unwindingReport --no-daemon
       - name: Add Unwinding Report to Job Summary
         if: success() && matrix.config == 'debug' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''
         run: |
@@ -218,7 +218,7 @@ jobs:
           export JAVA_VERSION
           echo "JAVA_VERSION=${JAVA_VERSION}"
 
-          ./gradlew --stacktrace --warning-mode all -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
 
           if [ $EXIT_CODE -ne 0 ]; then
@@ -228,7 +228,7 @@ jobs:
       - name: Generate Unwinding Report
         if: success() && matrix.config == 'debug'
         run: |
-          ./gradlew --stacktrace --warning-mode all -PCI :ddprof-test:unwindingReport --no-daemon
+          ./gradlew -PCI :ddprof-test:unwindingReport --no-daemon
       - name: Add Unwinding Report to Job Summary
         if: success() && matrix.config == 'debug' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''
         run: |
@@ -349,7 +349,7 @@ jobs:
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
 
-          ./gradlew --stacktrace --warning-mode all -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
+          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
 
           if [ $EXIT_CODE -ne 0 ]; then
@@ -359,7 +359,7 @@ jobs:
       - name: Generate Unwinding Report
         if: success() && matrix.config == 'debug'
         run: |
-          ./gradlew --stacktrace --warning-mode all -PCI :ddprof-test:unwindingReport --no-daemon
+          ./gradlew -PCI :ddprof-test:unwindingReport --no-daemon
       - name: Add Unwinding Report to Job Summary
         if: success() && matrix.config == 'debug' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''
         run: |
