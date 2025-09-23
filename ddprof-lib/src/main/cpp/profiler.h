@@ -132,10 +132,10 @@ private:
   void onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
 
   // Virtual thread
-  void onVThreadStart(jvmtiEnv *jvmti, JNIEnv *jni,jthread thread);
-  void onVThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni,jthread thread);
-  void onVThreadMount(jvmtiEnv *jvmti, ...);
-  void onVThreadUnmount(jvmtiEnv *jvmti, ...);
+  void onVThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
+  void onVThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
+  void onVThreadMount(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
+  void onVThreadUnmount(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
 
   const char *asgctError(int code);
   u32 getLockIndex(int tid);
@@ -310,11 +310,29 @@ public:
   }
 
   static void JNICALL VirtualThreadMount(jvmtiEnv *jvmti, ...) {
-    instance()->onVThreadMount(jvmti);
+    va_list ap;
+    JNIEnv* jni = nullptr;
+    jthread thread = nullptr;
+
+    va_start(ap, jvmti);
+    jni = va_arg(ap, JNIEnv*);
+    thread = va_arg(ap, jthread);
+    va_end(ap);
+
+    instance()->onVThreadMount(jvmti, jni, thread);
   }
 
   static void JNICALL VirtualThreadUnmount(jvmtiEnv *jvmti, ...) {
-    instance()->onVThreadUnmount(jvmti);
+    va_list ap;
+    JNIEnv* jni = nullptr;
+    jthread thread = nullptr;
+
+    va_start(ap, jvmti);
+    jni = va_arg(ap, JNIEnv*);
+    thread = va_arg(ap, jthread);
+    va_end(ap);
+
+    instance()->onVThreadUnmount(jvmti, jni, thread);
   }
 
   // Keep backward compatibility with the upstream async-profiler

@@ -162,33 +162,16 @@ void Profiler::onVThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni,jthread thread) {
   printf("VThread ended: %d\n", tid);
 
 }
-void Profiler::onVThreadMount(jvmtiEnv *jvmti, ...) {
-  va_list ap;
-  JNIEnv* jni = nullptr;
-  jthread thread = nullptr;
 
-  va_start(ap, jvmti);
-  jni = va_arg(ap, JNIEnv*);
-  thread = va_arg(ap, jthread);
-  va_end(ap);
-
+void Profiler::onVThreadMount(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   jlong vthreadId = VMThread::javaThreadId(jni, thread);
 
   ProfiledThread *current = ProfiledThread::current();
   int tid = current->tid();
   printf("Mount VThread: %ld to %d\n", (long)vthreadId, tid);
-
 }
-void Profiler::onVThreadUnmount(jvmtiEnv *jvmti, ...) {
-  va_list ap;
-  JNIEnv* jni = nullptr;
-  jthread thread = nullptr;
 
-  va_start(ap, jvmti);
-  jni = va_arg(ap, JNIEnv*);
-  thread = va_arg(ap, jthread);
-  va_end(ap);
-
+void Profiler::onVThreadUnmount(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   jlong vthreadId = VMThread::javaThreadId(jni, thread);
 
   ProfiledThread *current = ProfiledThread::current();
