@@ -148,6 +148,55 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   _wall_engine->unregisterThread(tid);
 }
 
+
+void Profiler::onVThreadStart(jvmtiEnv *jvmti, JNIEnv *jni,jthread thread) {
+  ProfiledThread *current = ProfiledThread::current();
+  int tid = current->tid();
+  printf("VThread started: %d\n", tid);
+
+}
+
+void Profiler::onVThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni,jthread thread) {
+  ProfiledThread *current = ProfiledThread::current();
+  int tid = current->tid();
+  printf("VThread ended: %d\n", tid);
+
+}
+void Profiler::onVThreadMount(jvmtiEnv *jvmti, ...) {
+  va_list ap;
+  JNIEnv* jni = nullptr;
+  jthread thread = nullptr;
+
+  va_start(ap, jvmti);
+  jni = va_arg(ap, JNIEnv*);
+  thread = va_arg(ap, jthread);
+  va_end(ap);
+
+  jlong vthreadId = VMThread::javaThreadId(jni, thread);
+
+  ProfiledThread *current = ProfiledThread::current();
+  int tid = current->tid();
+  printf("Mount VThread: %ld to %d\n", (long)vthreadId, tid);
+
+}
+void Profiler::onVThreadUnmount(jvmtiEnv *jvmti, ...) {
+  va_list ap;
+  JNIEnv* jni = nullptr;
+  jthread thread = nullptr;
+
+  va_start(ap, jvmti);
+  jni = va_arg(ap, JNIEnv*);
+  thread = va_arg(ap, jthread);
+  va_end(ap);
+
+  jlong vthreadId = VMThread::javaThreadId(jni, thread);
+
+  ProfiledThread *current = ProfiledThread::current();
+  int tid = current->tid();
+  printf("Unmount VThread: %ld to %d\n", (long)vthreadId, tid);
+}
+
+
 int Profiler::registerThread(int tid) {
   return _instance->_cpu_engine->registerThread(tid) |
          _instance->_wall_engine->registerThread(tid);

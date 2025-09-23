@@ -131,6 +131,12 @@ private:
   void onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
   void onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
 
+  // Virtual thread
+  void onVThreadStart(jvmtiEnv *jvmti, JNIEnv *jni,jthread thread);
+  void onVThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni,jthread thread);
+  void onVThreadMount(jvmtiEnv *jvmti, ...);
+  void onVThreadUnmount(jvmtiEnv *jvmti, ...);
+
   const char *asgctError(int code);
   u32 getLockIndex(int tid);
   bool isAddressInCode(uintptr_t addr);
@@ -295,21 +301,20 @@ public:
     instance()->onThreadEnd(jvmti, jni, thread);
   }
 
-  static void JNICALL VirtualThreadStart(jvmtiEnv *jvmti, JNIEnv *jni,
-                                  jthread thread) {
-//     printf("VirtualThread started\n");
+  static void JNICALL VirtualThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
+    instance()->onVThreadStart(jvmti, jni, thread);
   }
 
   static void JNICALL VirtualThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-//     printf("VirtualThread ended\n");
+    instance()->onVThreadEnd(jvmti, jni, thread);
   }
 
   static void JNICALL VirtualThreadMount(jvmtiEnv *jvmti, ...) {
-//     printf("VirtualThread mounted\n");
+    instance()->onVThreadMount(jvmti);
   }
 
   static void JNICALL VirtualThreadUnmount(jvmtiEnv *jvmti, ...) {
-//     printf("VirtualThread unmounted\n");
+    instance()->onVThreadUnmount(jvmti);
   }
 
   // Keep backward compatibility with the upstream async-profiler
