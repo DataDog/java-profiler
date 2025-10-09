@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        java_version: [ "8", "8-orcl", "8-j9", "8-zing", "8-ibm", "11", "11-j9", "11-zing", "17", "17-j9", "17-zing", "17-graal", "21", "21-zing", "21-graal", "24", "24-graal" ]
+        java_version: [ "8", "8-orcl", "8-j9", "8-zing", "8-ibm", "11", "11-j9", "11-zing", "17", "17-j9", "17-zing", "17-graal", "21", "21-zing", "21-graal", "25", "25-graal" ]
         config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -145,7 +145,7 @@ jobs:
     strategy:
      fail-fast: false
      matrix:
-       java_version: [ "8-librca", "11-librca", "17-librca", "21-librca", "24-librca" ]
+       java_version: [ "8-librca", "11-librca", "17-librca", "21-librca", "25-librca" ]
        config: ${{ fromJson(inputs.configuration) }}
     runs-on: ubuntu-latest
     container:
@@ -270,7 +270,7 @@ jobs:
       matrix:
         # java_version: [ "8", "8-j9", "8-zing", "11", "11-j9", "11-zing", "17", "17-j9", "17-zing", "17-graal", "21", "21-zing", "21-graal", "23", "23-graal" ]
         # FIXME: Hotspot 8 and 11 versions are rather crashy in ASGCT on aarch64, so we are skipping them for now
-        java_version: [ "8-j9", "8-zing", "11-j9", "11-zing", "17", "17-j9", "17-zing", "17-graal", "21", "21-zing", "21-graal", "24", "24-graal" ]
+        java_version: [ "8-j9", "8-zing", "11-j9", "11-zing", "17", "17-j9", "17-zing", "17-graal", "21", "21-zing", "21-graal", "25", "25-graal" ]
         config: ${{ fromJson(inputs.configuration) }}
     runs-on:
       group: ARM LINUX SHARED
@@ -399,7 +399,7 @@ jobs:
      strategy:
        fail-fast: false
        matrix:
-         java_version: [ "8-librca", "11-librca", "17-librca", "21-librca", "24-librca" ]
+         java_version: [ "8-librca", "11-librca", "17-librca", "21-librca", "25-librca" ]
          config: ${{ fromJson(inputs.configuration) }}
      runs-on:
        group: ARM LINUX SHARED
