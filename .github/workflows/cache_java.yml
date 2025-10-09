@@ -16,19 +16,19 @@ on:
 
 env:
   JDKS_DIR: jdks
-  JAVA_8_VERSION: 8.0.452
-  JAVA_8_J9_VERSION: 8.0.452
-  JAVA_11_VERSION: 11.0.27
-  JAVA_11_J9_VERSION: 11.0.27
-  JAVA_17_VERSION: 17.0.15
-  JAVA_17_J9_VERSION: 17.0.15
-  JAVA_21_VERSION: 21.0.7
-  JAVA_21_J9_VERSION: 21.0.7
-  JAVA_24_VERSION: 24.0.1
+  JAVA_8_VERSION: 8.0.462
+  JAVA_8_J9_VERSION: 8.0.462
+  JAVA_11_VERSION: 11.0.28
+  JAVA_11_J9_VERSION: 11.0.28
+  JAVA_17_VERSION: 17.0.16
+  JAVA_17_J9_VERSION: 17.0.16
+  JAVA_21_VERSION: 21.0.8
+  JAVA_21_J9_VERSION: 21.0.8
+  JAVA_25_VERSION: 25
 
   JAVA_17_GRAAL_VERSION: 17.0.12
-  JAVA_21_GRAAL_VERSION: 21.0.7
-  JAVA_24_GRAAL_VERSION: 24.0.1
+  JAVA_21_GRAAL_VERSION: 21.0.8
+  JAVA_25_GRAAL_VERSION: 25
 
   # https://gist.github.com/wavezhang/ba8425f24a968ec9b2a8619d7c2d86a6?permalink_comment_id=4444663#gistcomment-4444663
   # jdk1.8.0_361
@@ -45,16 +45,16 @@ env:
   JAVA_21_ZING_URL        : "https://cdn.azul.com/zing-zvm/ZVM23.10.0.0/zing23.10.0.0-3-jdk21.0.1-linux_x64.tar.gz"
   JAVA_21_ZING_AARCH64_URL: "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk21.0.4.0.101-linux_aarch64.tar.gz"
 
-  JAVA_8_MUSL_URL : "https://download.bell-sw.com/java/8u442+7/bellsoft-jdk8u442+7-linux-x64-musl-lite.tar.gz"
-  JAVA_8_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/8u442+7/bellsoft-jdk8u442+7-linux-aarch64-musl.tar.gz"
-  JAVA_11_MUSL_URL: "https://download.bell-sw.com/java/11.0.26+9/bellsoft-jdk11.0.26+9-linux-x64-musl-lite.tar.gz"
-  JAVA_11_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/11.0.26+9/bellsoft-jdk11.0.26+9-linux-aarch64-musl-lite.tar.gz"
-  JAVA_17_MUSL_URL: "https://download.bell-sw.com/java/17.0.14+10/bellsoft-jdk17.0.14+10-linux-x64-musl-lite.tar.gz"
-  JAVA_17_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/17.0.14+10/bellsoft-jdk17.0.14+10-linux-aarch64-musl-lite.tar.gz"
-  JAVA_21_MUSL_URL: "https://download.bell-sw.com/java/21.0.6+10/bellsoft-jdk21.0.6+10-linux-x64-musl-lite.tar.gz"
-  JAVA_21_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/21.0.6+10/bellsoft-jdk21.0.6+10-linux-aarch64-musl-lite.tar.gz"
-  JAVA_24_MUSL_URL: "https://download.bell-sw.com/java/24+37/bellsoft-jdk24+37-linux-x64-musl-lite.tar.gz"
-  JAVA_24_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/24+37/bellsoft-jdk24+37-linux-aarch64-musl-lite.tar.gz"
+  JAVA_8_MUSL_URL : "https://download.bell-sw.com/java/8u462+11/bellsoft-jdk8u462+11-linux-x64-musl-lite.tar.gz"
+  JAVA_8_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/8u462+11/bellsoft-jdk8u462+11-linux-aarch64-musl-lite.tar.gz"
+  JAVA_11_MUSL_URL: "https://download.bell-sw.com/java/11.0.28+12/bellsoft-jdk11.0.28+12-linux-x64-musl-lite.tar.gz"
+  JAVA_11_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/11.0.28+12/bellsoft-jdk11.0.28+12-linux-aarch64-musl-lite.tar.gz"
+  JAVA_17_MUSL_URL: "https://download.bell-sw.com/java/17.0.16+12/bellsoft-jdk17.0.16+12-linux-x64-musl-lite.tar.gz"
+  JAVA_17_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/17.0.16+12/bellsoft-jdk17.0.16+12-linux-aarch64-musl-lite.tar.gz"
+  JAVA_21_MUSL_URL: "https://download.bell-sw.com/java/21.0.8+12/bellsoft-jdk21.0.8+12-linux-x64-musl-lite.tar.gz"
+  JAVA_21_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/21.0.8+12/bellsoft-jdk21.0.8+12-linux-aarch64-musl-lite.tar.gz"
+  JAVA_25_MUSL_URL: "https://download.bell-sw.com/java/25+37/bellsoft-jdk25+37-linux-x64-musl-lite.tar.gz"
+  JAVA_25_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/25+37/bellsoft-jdk25+37-linux-aarch64-musl-lite.tar.gz"
 
 permissions:
   contents: read
@@ -146,7 +146,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        java_variant: [ "8", "8-orcl", "8-zing", "8-j9", "8-ibm", "11", "11-zing", "11-j9", "17", "17-zing", "17-j9", "17-graal", "21", "21-j9", "21-zing", "21-graal", "24", "24-graal" ]
+        java_variant: [ "8", "8-orcl", "8-zing", "8-j9", "8-ibm", "11", "11-zing", "11-j9", "17", "17-zing", "17-j9", "17-graal", "21", "21-j9", "21-zing", "21-graal", "25", "25-graal" ]
     steps:
       - uses: actions/checkout@v3
       - name: Try restore cache JDK ${{ matrix.java_variant }}
@@ -205,7 +205,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "24-librca" ]
+        java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "25-librca" ]
     steps:
       - uses: actions/checkout@v3
       - name: Setup OS
@@ -255,7 +255,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        java_variant: [ "8", "8-zing", "8-j9", "11", "11-zing", "11-j9", "17", "17-zing", "17-j9", "17-graal", "21", "21-j9", "21-zing", "21-graal", "24", "24-graal" ]
+        java_variant: [ "8", "8-zing", "8-j9", "11", "11-zing", "11-j9", "17", "17-zing", "17-j9", "17-graal", "21", "21-j9", "21-zing", "21-graal", "25", "25-graal" ]
     steps:
       - uses: actions/checkout@v3
       - name: Cache JDK ${{ matrix.java_variant }}
@@ -312,7 +312,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "24-librca" ]
+        java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "25-librca" ]
     steps:
       - uses: actions/checkout@v3
       - name: Setup OS
