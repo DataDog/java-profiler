@@ -49,9 +49,9 @@ public:
 class AllocEvent : public Event {
 public:
   u64 _size;
-  float _weight;
+  double _weight;
 
-  AllocEvent() : _size(0), _weight(1) {}
+  AllocEvent() : _size(0), _weight(1.0) {}
 };
 
 class LockEvent : public Event {

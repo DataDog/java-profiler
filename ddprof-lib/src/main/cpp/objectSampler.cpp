@@ -62,9 +62,9 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
   // allocations or liveness
   if (_record_allocations || _record_liveness) {
     event._size = size;
-    event._weight = (float)((size == 0 || _interval == 0)
-                                ? 1
-                                : 1 / (1 - exp(-size / (double)_interval)));
+    event._weight = (size == 0 || _interval == 0)
+                                ? 1.0
+                                : 1.0 / (1.0 - exp(-size / (double)_interval));
 
     call_trace_id = Profiler::instance()->recordJVMTISample(size, tid, thread, BCI_ALLOC, &event, !_record_allocations);
 
