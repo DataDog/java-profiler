@@ -55,7 +55,7 @@ void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
 
 void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext,
                               u64 last_sample) {
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::currentSignalSafe();
   int tid = current != NULL ? current->tid() : OS::threadId();
   Shims::instance().setSighandlerTid(tid);
   u64 call_trace_id = 0;

@@ -31,7 +31,7 @@ void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (!_enabled)
     return;
   int tid = 0;
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::currentSignalSafe();
   if (current != NULL) {
     current->noteCPUSample(Profiler::instance()->recordingEpoch());
     tid = current->tid();

@@ -204,7 +204,7 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (!_enabled.load(std::memory_order_acquire))
     return;
   int tid = 0;
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::currentSignalSafe();
   assert(current == nullptr || !current->isDeepCrashHandler());
   if (current != NULL) {
     current->noteCPUSample(Profiler::instance()->recordingEpoch());
