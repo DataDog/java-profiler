@@ -270,6 +270,7 @@ public:
 
   static int registerThread(int tid);
   static void unregisterThread(int tid);
+  static void updateNativeThreadName(int tid);
 
   // CompiledMethodLoad is also needed to enable DebugNonSafepoints info by
   // default

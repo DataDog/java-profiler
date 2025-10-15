@@ -4,6 +4,7 @@
 #include "common.h"
 #include "vmStructs.h"
 #include <time.h>
+#include <cstring>
 
 // TLS priming signal number
 static int g_tls_prime_signal = -1;
@@ -108,11 +109,32 @@ void ProfiledThread::doInitExistingThreads() {
   // Start thread directory watcher to prime new threads (no mass-priming of existing threads)
   bool watcher_started = ddprof::OS::startThreadDirectoryWatcher(
     [](int tid) {
+      // Enhanced thread start handling similar to JVMTI callback
+      
       // Prime new thread with TLS signal
       ddprof::OS::signalThread(tid, g_tls_prime_signal);
+      
+      // Update thread name for all threads - this is safe and helpful
+      TEST_LOG("Updating thread name for thread %d via watcher", tid);
+      Profiler::updateNativeThreadName(tid);
+      
+      // Note: We avoid doing thread registration here due to race conditions:
+      // - JVMTI callbacks for Java threads might not have been called yet
+      // - pthread_setspecific_hook in ctimer_linux.cpp already handles registration
+      // - The TLS signal handler will trigger registration when the thread actually runs
     },
     [](int tid) {
-      // No-op for dead threads - cleanup handled elsewhere
+      // Enhanced thread end handling similar to JVMTI callback
+      
+      // Note: We avoid doing thread unregistration here due to race conditions:
+      // - Thread might be in the middle of cleanup by JVMTI or pthread hooks
+      // - pthread_setspecific_hook in ctimer_linux.cpp handles unregistration
+      // - JVMTI callbacks handle Java thread cleanup
+      TEST_LOG("Thread %d ended - cleanup handled by existing mechanisms", tid);
+      
+      // Note: Thread name cleanup and ProfiledThread cleanup are handled 
+      // elsewhere since we can't safely access thread-local storage from 
+      // another thread context
     }
   );
 

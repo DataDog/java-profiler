@@ -157,6 +157,18 @@ void Profiler::unregisterThread(int tid) {
   _instance->_wall_engine->unregisterThread(tid);
 }
 
+void Profiler::updateNativeThreadName(int tid) {
+  constexpr size_t buffer_size = 64;
+  char name_buf[buffer_size];
+  _instance->_thread_info.updateThreadName(
+    tid, [&](int tid) -> std::string {
+      if (OS::threadName(tid, name_buf, buffer_size)) {
+        return std::string(name_buf, strnlen(name_buf, buffer_size));
+      }
+      return std::string();
+    });
+}
+
 const char *Profiler::asgctError(int code) {
   switch (code) {
   case ticks_no_Java_frame:
