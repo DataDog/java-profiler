@@ -8,20 +8,22 @@
 #define _CALLTRACESTORAGE_H
 
 #include "callTraceHashTable.h"
-#include "spinLock.h"
 #include <functional>
 #include <vector>
 #include <memory>
 #include <unordered_set>
+#include <unordered_map>
 #include <atomic>
+#include <thread>
+#include <chrono>
 
 // Forward declaration
 class CallTraceStorage;
 
 // Liveness checker function type
-// Fills the provided vector with 64-bit call_trace_id values that should be preserved
+// Fills the provided set with 64-bit call_trace_id values that should be preserved
 // Using reference parameter avoids malloc() for vector creation and copying
-typedef std::function<void(std::vector<u64>&)> LivenessChecker;
+typedef std::function<void(std::unordered_set<u64>&)> LivenessChecker;
 
 class CallTraceStorage {
 public:
@@ -34,10 +36,20 @@ public:
     static CallTrace* getDroppedTrace();
 
 private:
-    std::unique_ptr<CallTraceHashTable> _active_storage;
-    std::unique_ptr<CallTraceHashTable> _standby_storage;
+    // Triple-buffered storage with atomic pointers  
+    // Rotation: tmp=scratch, scratch=active, active=standby, standby=tmp
+    // New active inherits preserved traces for continuity
+    std::atomic<CallTraceHashTable*> _active_storage;
+    std::atomic<CallTraceHashTable*> _standby_storage;
+    std::atomic<CallTraceHashTable*> _scratch_storage;
+    
+    // Generation counter for ABA protection during table swaps
+    std::atomic<u32> _generation_counter;
+    
+    // Liveness checkers - protected by simple spinlock during registration/clear
+    // Using vector instead of unordered_set since std::function cannot be hashed
     std::vector<LivenessChecker> _liveness_checkers;
-    SpinLock _lock;
+    volatile int _liveness_lock;  // Simple atomic lock for rare liveness operations
     
     // Static atomic for instance ID generation - avoids function-local static initialization issues
     static std::atomic<u64> _next_instance_id;
@@ -45,9 +57,59 @@ private:
     // Lazy initialization helper to avoid global constructor
     static u64 getNextInstanceId();
     
-    // Pre-allocated containers to avoid malloc() during hot path operations
-    mutable std::vector<u64> _preserve_buffer;        // Reusable buffer for 64-bit trace IDs
-    mutable std::unordered_set<u64> _preserve_set;    // Pre-sized hash set for 64-bit trace ID lookups
+    // Thread-local reusable collections for processTraces() to eliminate malloc/free cycles
+    // Each thread gets its own pre-allocated collections to avoid concurrent access issues
+    struct ThreadLocalCollections {
+        std::unordered_set<CallTrace*> traces_buffer;           // Combined traces for JFR processing
+        std::unordered_set<CallTrace*> traces_to_preserve_buffer; // Traces selected for preservation
+        std::unordered_set<CallTrace*> standby_traces_buffer;   // Traces collected from standby
+        std::unordered_set<CallTrace*> active_traces_buffer;    // Traces collected from active/scratch
+        std::unordered_set<u64> preserve_set_buffer;           // Preserve set for current cycle
+        
+        ThreadLocalCollections() {
+            // Pre-allocate and pre-size collections with conservative load factor
+            traces_buffer.max_load_factor(0.75f);
+            traces_buffer.rehash(static_cast<size_t>(2048 / 0.75f));
+            
+            traces_to_preserve_buffer.max_load_factor(0.75f);
+            traces_to_preserve_buffer.rehash(static_cast<size_t>(512 / 0.75f));
+            
+            standby_traces_buffer.max_load_factor(0.75f);
+            standby_traces_buffer.rehash(static_cast<size_t>(512 / 0.75f));
+            
+            active_traces_buffer.max_load_factor(0.75f);
+            active_traces_buffer.rehash(static_cast<size_t>(2048 / 0.75f));
+            
+            preserve_set_buffer.max_load_factor(0.75f);
+            preserve_set_buffer.rehash(static_cast<size_t>(1024 / 0.75f));
+        }
+    };
+    
+    // Thread-local storage per CallTraceStorage instance to avoid cross-contamination
+    // Each thread maintains its own map of instance-specific collections
+    static thread_local std::unordered_map<CallTraceStorage*, std::unique_ptr<ThreadLocalCollections>> _instance_thread_collections;
+    
+    // Per-instance hazard pointer system for safe memory reclamation
+    static constexpr int MAX_THREADS = 256;  // Maximum supported threads
+    std::atomic<CallTraceHashTable*> _hazard_list[MAX_THREADS];  // Per-instance hazard list
+    std::atomic<int> _thread_counter;  // Per-instance thread counter for slot assignment
+    
+    // Thread-local storage for hazard pointer management - now uses instance pointer
+    struct ThreadHazardInfo {
+        CallTraceHashTable* hazard_pointer;
+        int hazard_slot;
+        CallTraceStorage* storage_instance;  // Which storage instance owns this hazard pointer
+    };
+    static thread_local ThreadHazardInfo _thread_hazard_info;
+    
+    // Hazard pointer management - now instance-specific
+    void registerHazardPointer(CallTraceHashTable* table);
+    void clearHazardPointer();
+    void waitForHazardPointersToClear(CallTraceHashTable* table_to_delete);
+    int getThreadHazardSlot();
+    
+    // Get or create thread-local collections for this instance
+    ThreadLocalCollections& getInstanceThreadLocalCollections();
     
 
 
@@ -55,22 +117,31 @@ public:
     CallTraceStorage();
     ~CallTraceStorage();
 
-    // Register a liveness checker
+    // Register a liveness checker (rare operation - uses simple lock)
     void registerLivenessChecker(LivenessChecker checker);
 
-    // Clear liveness checkers
+    // Clear liveness checkers (rare operation - uses simple lock)
     void clearLivenessCheckers();
 
-    // Forward methods to active storage
+    // Lock-free put operation for signal handler safety
+    // Uses hazard pointers and generation counter for ABA protection
     u64 put(int num_frames, ASGCT_CallFrame* frames, bool truncated, u64 weight);
     
-    // Safe trace processing with guaranteed lifetime during callback execution
-    // The callback receives a const reference to traces that are guaranteed to be valid
-    // during the entire callback execution. Cleanup happens automatically after callback returns.
+    // Lock-free trace processing with hazard pointer protection
+    // The callback receives traces that are guaranteed to be valid during execution
+    // Uses atomic table swapping with grace period for safe memory reclamation
     void processTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor);
 
-    // Enhanced clear with liveness preservation
+    // Enhanced clear with liveness preservation (rarely called - uses atomic operations)
     void clear();
+    
+    // Wait for all hazard pointers to clear - needed by CallTraceHashTable::clear()
+    void waitForAllHazardPointersToClear();
+    
+private:
+    // Simple spinlock helpers for rare liveness operations
+    void lockLivenessCheckers();
+    void unlockLivenessCheckers();
 };
 
 #endif // _CALLTRACESTORAGE_H
