@@ -16,6 +16,7 @@
 
 #ifdef __linux__
 
+#include "criticalSection.h"
 #include "ctimer.h"
 #include "debugSupport.h"
 #include "libraries.h"
@@ -197,6 +198,11 @@ void CTimer::stop() {
 }
 
 void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  // Atomically try to enter critical section - prevents all reentrancy races
+  CriticalSection cs;
+  if (!cs.entered()) {
+    return;  // Another critical section is active, defer profiling
+  }
   // Save the current errno value
   int saved_errno = errno;
   // we want to ensure memory order because of the possibility the instance gets

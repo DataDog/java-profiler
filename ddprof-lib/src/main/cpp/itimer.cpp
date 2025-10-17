@@ -21,6 +21,7 @@
 #include "stackWalker.h"
 #include "thread.h"
 #include "vmStructs.h"
+#include "criticalSection.h"
 #include <sys/time.h>
 
 volatile bool ITimer::_enabled = false;
@@ -30,6 +31,12 @@ CStack ITimer::_cstack;
 void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (!_enabled)
     return;
+  
+  // Atomically try to enter critical section - prevents all reentrancy races
+  CriticalSection cs;
+  if (!cs.entered()) {
+    return;  // Another critical section is active, defer profiling
+  }
   int tid = 0;
   ProfiledThread *current = ProfiledThread::current();
   if (current != NULL) {
