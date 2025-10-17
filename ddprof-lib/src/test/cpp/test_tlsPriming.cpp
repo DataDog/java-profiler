@@ -11,6 +11,10 @@
 #include <atomic>
 #include <thread>
 #include <chrono>
+#include "../../main/cpp/gtest_crash_handler.h"
+
+// Test name for crash handler
+static constexpr char TLS_TEST_NAME[] = "TlsPrimingTest";
 
 namespace {
 
@@ -29,9 +33,16 @@ void testTlsSignalHandler(int signo) {
 class TlsPrimingTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        // Install crash handler for debugging potential issues
+        installGtestCrashHandler<TLS_TEST_NAME>();
         g_signal_received.store(0);
         g_threads_primed.store(0);
         g_test_tls = 0;
+    }
+
+    void TearDown() override {
+        // Restore default signal handlers
+        restoreDefaultSignalHandlers();
     }
 };
 

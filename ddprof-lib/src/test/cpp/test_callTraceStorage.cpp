@@ -10,6 +10,10 @@
 #include <thread>
 #include <atomic>
 #include "callTraceHashTable.h"
+#include "../../main/cpp/gtest_crash_handler.h"
+
+// Test name for crash handler
+static constexpr char TEST_NAME[] = "CallTraceStorageTest";
 
 // Helper function to find a CallTrace by trace_id in an unordered_set
 CallTrace* findTraceById(const std::unordered_set<CallTrace*>& traces, u64 trace_id) {
@@ -24,11 +28,15 @@ CallTrace* findTraceById(const std::unordered_set<CallTrace*>& traces, u64 trace
 class CallTraceStorageTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        // Install crash handler for debugging potential issues
+        installGtestCrashHandler<TEST_NAME>();
         storage = std::make_unique<CallTraceStorage>();
     }
 
     void TearDown() override {
         storage.reset();
+        // Restore default signal handlers
+        restoreDefaultSignalHandlers();
     }
 
     std::unique_ptr<CallTraceStorage> storage;
