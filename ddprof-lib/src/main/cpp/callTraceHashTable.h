@@ -8,9 +8,10 @@
 
 #include "arch_dd.h"
 #include "linearAllocator.h"
-// SpinLock removed - synchronization handled at CallTraceStorage level
+#include "spinLock.h"
 #include "vmEntry.h"
 #include <unordered_set>
+#include <atomic>
 
 class LongHashTable;
 
@@ -48,16 +49,24 @@ struct CallTraceSample {
 class CallTraceHashTable {
 private:
   static CallTrace _overflow_trace;
-  u64 _instance_id;  // 64-bit instance ID for this hash table (set externally)
+  std::atomic<u64> _instance_id;  // 64-bit instance ID for this hash table (set externally)
 
   LinearAllocator _allocator;
-  LongHashTable *_current_table;
+  
+  // Single large pre-allocated table - no expansion needed!
+  LongHashTable* _table;  // Simple pointer, no atomics needed
+  
   volatile u64 _overflow;
+  
+  // SpinLock for put() vs collect() synchronization
+  // Shared locks for put() (multiple readers), exclusive lock for collect()
+  SpinLock _access_lock;
 
   u64 calcHash(int num_frames, ASGCT_CallFrame *frames, bool truncated);
   CallTrace *storeCallTrace(int num_frames, ASGCT_CallFrame *frames,
                             bool truncated, u64 trace_id);
   CallTrace *findCallTrace(LongHashTable *table, u64 hash);
+  
 
 public:
   CallTraceHashTable();
@@ -65,11 +74,12 @@ public:
 
   void clear();
   void collect(std::unordered_set<CallTrace *> &traces);
-  void collectAndCopySelective(std::unordered_set<CallTrace *> &traces, const std::unordered_set<u64> &trace_ids_to_preserve, CallTraceHashTable* target);
+  void collectLockFree(std::unordered_set<CallTrace *> &traces);  // For read-only tables after atomic swap
 
   u64 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);
   void putWithExistingId(CallTrace* trace, u64 weight);
-  void setInstanceId(u64 instance_id) { _instance_id = instance_id; }
+  void putWithExistingIdLockFree(CallTrace* trace, u64 weight);  // For standby tables with no contention
+  void setInstanceId(u64 instance_id) { _instance_id.store(instance_id, std::memory_order_release); }
 };
 
 #endif // _CALLTRACEHASHTABLE_H
