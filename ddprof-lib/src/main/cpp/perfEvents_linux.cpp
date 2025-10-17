@@ -18,6 +18,7 @@
 
 #include "arch_dd.h"
 #include "context.h"
+#include "criticalSection.h"
 #include "debugSupport.h"
 #include "libraries.h"
 #include "log.h"
@@ -726,7 +727,11 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     // Looks like an external signal; don't treat as a profiling event
     return;
   }
-
+  // Atomically try to enter critical section - prevents all reentrancy races
+  CriticalSection cs;
+  if (!cs.entered()) {
+    return;  // Another critical section is active, defer profiling
+  }
   ProfiledThread *current = ProfiledThread::currentSignalSafe();
   if (current != NULL) {
     current->noteCPUSample(Profiler::instance()->recordingEpoch());

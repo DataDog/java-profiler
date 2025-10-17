@@ -7,6 +7,7 @@
 #include "profiler.h"
 #include "asyncSampleMutex.h"
 #include "context.h"
+#include "criticalSection.h"
 #include "common.h"
 #include "counters.h"
 #include "ctimer.h"
@@ -608,6 +609,8 @@ void Profiler::fillFrameTypes(ASGCT_CallFrame *frames, int num_frames,
 }
 
 u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event, bool deferred) {
+  // Protect JVMTI sampling operations to prevent signal handler interference
+  CriticalSection cs;
   atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
@@ -789,6 +792,8 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
                                     ASGCT_CallFrame *frames, bool truncated,
                                     jint event_type, Event *event) {
+  // Protect external sampling operations to prevent signal handler interference
+  CriticalSection cs;
   atomicIncRelaxed(_total_samples);
 
   u64 call_trace_id =

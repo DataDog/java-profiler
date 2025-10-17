@@ -7,6 +7,7 @@
 #include <assert.h>
 
 #include "buffers.h"
+#include "callTraceHashTable.h"
 #include "context.h"
 #include "counters.h"
 #include "dictionary.h"
