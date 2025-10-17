@@ -50,8 +50,8 @@ CallTraceStorage::CallTraceStorage() : _generation_counter(1), _liveness_lock(0)
 
     // Pre-allocate containers to avoid malloc() during hot path operations
     _liveness_checkers.reserve(4);      // Typical max: 1-2 checkers, avoid growth
-    _preserve_buffer.reserve(1024);     // Reserve for typical liveness workloads
-    _preserve_set.reserve(1024);        // Pre-size hash buckets for lookups
+    
+    // Thread-local collections are initialized automatically per thread in ThreadLocalCollections constructor
 
     // Initialize counters
     Counters::set(CALLTRACE_STORAGE_BYTES, 0);
@@ -79,7 +79,16 @@ CallTraceStorage::~CallTraceStorage() {
         waitForHazardPointersToClear(scratch);
         delete scratch;
     }
+    
+    // Clean up thread-local collections for this instance in the current thread
+    // Other threads' thread-local maps will clean up automatically when threads exit
+    auto& thread_map = _instance_thread_collections;
+    thread_map.erase(this);
 }
+
+// Thread-local storage definition
+// Thread-local collections per CallTraceStorage instance - prevents cross-contamination
+thread_local std::unordered_map<CallTraceStorage*, std::unique_ptr<CallTraceStorage::ThreadLocalCollections>> CallTraceStorage::_instance_thread_collections;
 
 CallTrace* CallTraceStorage::getDroppedTrace() {
     // Static dropped trace object - created once and reused
@@ -176,6 +185,19 @@ void CallTraceStorage::clearLivenessCheckers() {
     unlockLivenessCheckers();
 }
 
+CallTraceStorage::ThreadLocalCollections& CallTraceStorage::getInstanceThreadLocalCollections() {
+    // Get or create thread-local collections for this specific CallTraceStorage instance
+    auto& thread_map = _instance_thread_collections;
+    auto it = thread_map.find(this);
+    if (it == thread_map.end()) {
+        // Create new collections for this instance
+        auto collections = std::make_unique<ThreadLocalCollections>();
+        auto result = thread_map.emplace(this, std::move(collections));
+        return *result.first->second;
+    }
+    return *it->second;
+}
+
 u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncated, u64 weight) {
     // Signal handlers can run concurrently with destructor
     CallTraceHashTable* active = _active_storage.load(std::memory_order_acquire);
@@ -209,28 +231,26 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
 
 /*
  * Trace processing with signal blocking for simplified concurrency.
- * This function is safe to call concurrently with put() operations, but should not be 
- * called concurrently with itself (FlightRecorder ensures this with recording lock).
+ * This function is safe to call concurrently with put() operations and with itself
+ * (thread-local collections prevent race conditions between concurrent processTraces calls).
  */
 void CallTraceStorage::processTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor) {
     // Critical section for table swap operations - dissalow signals to interrupt
     CriticalSection cs;
-    std::unordered_set<u64> preserve_set;
+    
+    // Get instance-specific thread-local collections - prevents cross-contamination between storage instances
+    ThreadLocalCollections& tl = getInstanceThreadLocalCollections();
 
     // PHASE 1: Collect liveness information with simple lock (rare operation)
     {
         lockLivenessCheckers();
         
         // Use pre-allocated containers to avoid malloc()
-        _preserve_buffer.clear();
-        _preserve_set.clear();
+        tl.preserve_set_buffer.clear();
 
         for (const auto& checker : _liveness_checkers) {
-            checker(_preserve_buffer);
+            checker(tl.preserve_set_buffer);
         }
-
-        _preserve_set.insert(_preserve_buffer.begin(), _preserve_buffer.end());
-        preserve_set = _preserve_set;
         
         unlockLivenessCheckers();
     }
@@ -241,17 +261,19 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
     CallTraceHashTable* current_standby = _standby_storage.load(std::memory_order_acquire);
     CallTraceHashTable* current_scratch = _scratch_storage.load(std::memory_order_acquire);
     
-    std::unordered_set<CallTrace*> traces;
-    std::unordered_set<CallTrace*> traces_to_preserve;
+    // Clear thread-local collections for reuse (no malloc/free)
+    tl.traces_buffer.clear();
+    tl.traces_to_preserve_buffer.clear();
+    tl.standby_traces_buffer.clear();
+    tl.active_traces_buffer.clear();
 
     // Step 1: Collect from current standby FIRST (preserved traces from previous cycle)
-    std::unordered_set<CallTrace*> standby_traces;
-    current_standby->collectLockFree(standby_traces);
+    current_standby->collectLockFree(tl.standby_traces_buffer);
     
     // Immediately preserve standby traces that need to be kept for next cycle
-    for (CallTrace* trace : standby_traces) {
-        if (preserve_set.find(trace->trace_id) != preserve_set.end()) {
-            traces_to_preserve.insert(trace);
+    for (CallTrace* trace : tl.standby_traces_buffer) {
+        if (tl.preserve_set_buffer.find(trace->trace_id) != tl.preserve_set_buffer.end()) {
+            tl.traces_to_preserve_buffer.insert(trace);
         }
     }
     
@@ -268,36 +290,36 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
     _standby_storage.store(old_scratch, std::memory_order_release);
     
     // Step 5: NOW collect from scratch (old active, now read-only)
-    std::unordered_set<CallTrace*> active_traces;
-    old_active->collectLockFree(active_traces);
+    old_active->collectLockFree(tl.active_traces_buffer);
     
     // Preserve traces from old active too
-    for (CallTrace* trace : active_traces) {
-        if (preserve_set.find(trace->trace_id) != preserve_set.end()) {
-            traces_to_preserve.insert(trace);
+    for (CallTrace* trace : tl.active_traces_buffer) {
+        if (tl.preserve_set_buffer.find(trace->trace_id) != tl.preserve_set_buffer.end()) {
+            tl.traces_to_preserve_buffer.insert(trace);
         }
     }
     
     // Step 6: Combine all traces for JFR processing
-    traces.insert(active_traces.begin(), active_traces.end());
-    traces.insert(standby_traces.begin(), standby_traces.end());
+    tl.traces_buffer.insert(tl.active_traces_buffer.begin(), tl.active_traces_buffer.end());
+    tl.traces_buffer.insert(tl.standby_traces_buffer.begin(), tl.standby_traces_buffer.end());
 
     // Always include dropped trace in JFR constant pool
-    traces.insert(getDroppedTrace());
+    tl.traces_buffer.insert(getDroppedTrace());
 
     // PHASE 3: Process traces
-    processor(traces);
+    processor(tl.traces_buffer);
 
     // PHASE 4: Copy all preserved traces to current standby (old scratch, now empty)
     old_scratch->clear();  // Should already be empty, but ensure it
-    for (CallTrace* trace : traces_to_preserve) {
+    for (CallTrace* trace : tl.traces_to_preserve_buffer) {
         old_scratch->putWithExistingIdLockFree(trace, 1);
     }
     
     // PHASE 5: Clear scratch storage (old active)
     old_active->clear();
     
-    // Triple-buffer rotation maintains trace continuity:
+    // Triple-buffer rotation maintains trace continuity with thread-safe malloc-free operations:
+    // - Thread-local pre-allocated collections prevent malloc/free and concurrent access races
     // - Standby traces collected first (safe - no signal handler writes to standby)
     // - New active (old standby, now empty) receives new traces from signal handlers
     // - Old active (now scratch) safely collected after rotation, then cleared

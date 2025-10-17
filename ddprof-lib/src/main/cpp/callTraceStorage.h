@@ -12,6 +12,7 @@
 #include <vector>
 #include <memory>
 #include <unordered_set>
+#include <unordered_map>
 #include <atomic>
 #include <thread>
 #include <chrono>
@@ -20,9 +21,9 @@
 class CallTraceStorage;
 
 // Liveness checker function type
-// Fills the provided vector with 64-bit call_trace_id values that should be preserved
+// Fills the provided set with 64-bit call_trace_id values that should be preserved
 // Using reference parameter avoids malloc() for vector creation and copying
-typedef std::function<void(std::vector<u64>&)> LivenessChecker;
+typedef std::function<void(std::unordered_set<u64>&)> LivenessChecker;
 
 class CallTraceStorage {
 public:
@@ -46,6 +47,7 @@ private:
     std::atomic<u32> _generation_counter;
     
     // Liveness checkers - protected by simple spinlock during registration/clear
+    // Using vector instead of unordered_set since std::function cannot be hashed
     std::vector<LivenessChecker> _liveness_checkers;
     volatile int _liveness_lock;  // Simple atomic lock for rare liveness operations
     
@@ -55,9 +57,37 @@ private:
     // Lazy initialization helper to avoid global constructor
     static u64 getNextInstanceId();
     
-    // Pre-allocated containers to avoid malloc() during hot path operations
-    mutable std::vector<u64> _preserve_buffer;        // Reusable buffer for 64-bit trace IDs
-    mutable std::unordered_set<u64> _preserve_set;    // Pre-sized hash set for 64-bit trace ID lookups
+    // Thread-local reusable collections for processTraces() to eliminate malloc/free cycles
+    // Each thread gets its own pre-allocated collections to avoid concurrent access issues
+    struct ThreadLocalCollections {
+        std::unordered_set<CallTrace*> traces_buffer;           // Combined traces for JFR processing
+        std::unordered_set<CallTrace*> traces_to_preserve_buffer; // Traces selected for preservation
+        std::unordered_set<CallTrace*> standby_traces_buffer;   // Traces collected from standby
+        std::unordered_set<CallTrace*> active_traces_buffer;    // Traces collected from active/scratch
+        std::unordered_set<u64> preserve_set_buffer;           // Preserve set for current cycle
+        
+        ThreadLocalCollections() {
+            // Pre-allocate and pre-size collections with conservative load factor
+            traces_buffer.max_load_factor(0.75f);
+            traces_buffer.rehash(static_cast<size_t>(2048 / 0.75f));
+            
+            traces_to_preserve_buffer.max_load_factor(0.75f);
+            traces_to_preserve_buffer.rehash(static_cast<size_t>(512 / 0.75f));
+            
+            standby_traces_buffer.max_load_factor(0.75f);
+            standby_traces_buffer.rehash(static_cast<size_t>(512 / 0.75f));
+            
+            active_traces_buffer.max_load_factor(0.75f);
+            active_traces_buffer.rehash(static_cast<size_t>(2048 / 0.75f));
+            
+            preserve_set_buffer.max_load_factor(0.75f);
+            preserve_set_buffer.rehash(static_cast<size_t>(1024 / 0.75f));
+        }
+    };
+    
+    // Thread-local storage per CallTraceStorage instance to avoid cross-contamination
+    // Each thread maintains its own map of instance-specific collections
+    static thread_local std::unordered_map<CallTraceStorage*, std::unique_ptr<ThreadLocalCollections>> _instance_thread_collections;
     
     // Per-instance hazard pointer system for safe memory reclamation
     static constexpr int MAX_THREADS = 256;  // Maximum supported threads
@@ -77,6 +107,9 @@ private:
     void clearHazardPointer();
     void waitForHazardPointersToClear(CallTraceHashTable* table_to_delete);
     int getThreadHazardSlot();
+    
+    // Get or create thread-local collections for this instance
+    ThreadLocalCollections& getInstanceThreadLocalCollections();
     
 
 

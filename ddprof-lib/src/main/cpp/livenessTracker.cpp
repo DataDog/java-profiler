@@ -184,7 +184,7 @@ Error LivenessTracker::start(Arguments &args) {
   }
   
   // Self-register with the profiler for liveness checking
-  Profiler::instance()->registerLivenessChecker([this](std::vector<u64>& buffer) {
+  Profiler::instance()->registerLivenessChecker([this](std::unordered_set<u64>& buffer) {
     this->getLiveTraceIds(buffer);
   });
   
@@ -390,7 +390,7 @@ void LivenessTracker::onGC() {
   }
 }
 
-void LivenessTracker::getLiveTraceIds(std::vector<u64>& out_buffer) {
+void LivenessTracker::getLiveTraceIds(std::unordered_set<u64>& out_buffer) {
   out_buffer.clear();
   
   if (!_enabled || !_initialized) {
@@ -401,13 +401,14 @@ void LivenessTracker::getLiveTraceIds(std::vector<u64>& out_buffer) {
   _table_lock.lockShared();
   
   // Reserve space to avoid reallocations during filling
-  out_buffer.reserve(_table_size);
+  // Note: unordered_set uses rehash for capacity management
+  out_buffer.rehash(static_cast<size_t>(_table_size / 0.75f));
   
   // Collect call_trace_id values from all live tracking entries
   for (int i = 0; i < _table_size; i++) {
     TrackingEntry* entry = &_table[i];
     if (entry->ref != nullptr) {
-      out_buffer.push_back(entry->call_trace_id);
+      out_buffer.insert(entry->call_trace_id);
     }
   }
   
