@@ -348,6 +348,60 @@ The project includes JMH-based stress tests:
    - ASan: `libasan`
    - TSan: `libtsan`
 
+## Architectural Tidbits
+
+This section documents important architectural decisions and enhancements made to the profiler core.
+
+### Critical Section Management (2025)
+
+Introduced race-free critical section management using atomic compare-and-swap operations instead of expensive signal blocking syscalls:
+
+- **`CriticalSection` class**: Thread-local atomic flag-based protection against signal handler reentrancy
+- **Lock-free design**: Uses `compare_exchange_strong` for atomic claiming of critical sections
+- **Signal handler safety**: Eliminates race conditions between signal handlers and normal code execution
+- **Performance improvement**: Avoids costly `sigprocmask`/`pthread_sigmask` syscalls in hot paths
+
+**Key files**: `criticalSection.h`, `criticalSection.cpp`
+
+### Triple-Buffered Call Trace Storage (2025)
+
+Enhanced the call trace storage system from double-buffered to triple-buffered architecture with hazard pointer-based memory reclamation:
+
+- **Triple buffering**: Active, standby, and cleanup storage rotation for smoother transitions
+- **Hazard pointer system**: Per-instance thread-safe memory reclamation without global locks  
+- **ABA protection**: Generation counter prevents race conditions during table swaps
+- **Instance-based trace IDs**: 64-bit IDs combining instance ID and slot for collision-free trace management
+- **Lock-free hot paths**: Atomic operations minimize contention during profiling events
+
+**Key changes**:
+- Replaced `SpinLock` with atomic pointers and hazard pointer system
+- Added generation counter for safe table swapping
+- Enhanced liveness preservation across storage rotations
+- Improved thread safety for high-frequency profiling scenarios
+
+**Key files**: `callTraceStorage.h`, `callTraceStorage.cpp`, `callTraceHashTable.h`, `callTraceHashTable.cpp`
+
+### Enhanced Testing Infrastructure (2025)
+
+Comprehensive testing improvements for better debugging and stress testing:
+
+- **GTest crash handler**: Detailed crash reporting with backtraces and register state for native code failures
+- **Stress testing framework**: Multi-threaded stress tests for call trace storage under high contention
+- **Platform-specific debugging**: macOS and Linux register state capture in crash handlers
+- **Async-signal-safe reporting**: Crash handlers use only signal-safe functions for reliable diagnostics
+
+**Key files**: `gtest_crash_handler.h`, `stress_callTraceStorage.cpp`
+
+### TLS Priming Enhancements (2025)
+
+Improved thread-local storage initialization to prevent race conditions:
+
+- **Solid TLS priming**: Enhanced thread-local variable initialization timing
+- **Signal handler compatibility**: Ensures TLS is fully initialized before signal handler access
+- **Cross-platform consistency**: Unified TLS handling across Linux and macOS platforms
+
+These architectural improvements focus on eliminating race conditions, improving performance in high-throughput scenarios, and providing better debugging capabilities for the native profiling engine.
+
 ## Contributing
 1. Fork the repository
 2. Create a feature branch
