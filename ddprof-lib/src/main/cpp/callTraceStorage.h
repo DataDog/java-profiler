@@ -36,11 +36,11 @@ public:
 
 private:
     // Triple-buffered storage with atomic pointers  
-    // Rotation: tmp=cleanup, cleanup=active, active=standby, standby=tmp
+    // Rotation: tmp=scratch, scratch=active, active=standby, standby=tmp
     // New active inherits preserved traces for continuity
     std::atomic<CallTraceHashTable*> _active_storage;
     std::atomic<CallTraceHashTable*> _standby_storage;
-    std::atomic<CallTraceHashTable*> _cleanup_storage;
+    std::atomic<CallTraceHashTable*> _scratch_storage;
     
     // Generation counter for ABA protection during table swaps
     std::atomic<u32> _generation_counter;

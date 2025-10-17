@@ -44,9 +44,9 @@ CallTraceStorage::CallTraceStorage() : _generation_counter(1), _liveness_lock(0)
     // Standby will get its instance ID during swap
     _standby_storage.store(standby_table.release(), std::memory_order_release);
     
-    auto cleanup_table = std::make_unique<CallTraceHashTable>();
-    // Cleanup table will get instance ID when it rotates to standby
-    _cleanup_storage.store(cleanup_table.release(), std::memory_order_release);
+    auto scratch_table = std::make_unique<CallTraceHashTable>();
+    // scratch table will get instance ID when it rotates to standby
+    _scratch_storage.store(scratch_table.release(), std::memory_order_release);
 
     // Pre-allocate containers to avoid malloc() during hot path operations
     _liveness_checkers.reserve(4);      // Typical max: 1-2 checkers, avoid growth
@@ -62,7 +62,7 @@ CallTraceStorage::~CallTraceStorage() {
     // Atomically invalidate storage pointers to prevent new put() operations
     CallTraceHashTable* active = _active_storage.exchange(nullptr, std::memory_order_acq_rel);
     CallTraceHashTable* standby = _standby_storage.exchange(nullptr, std::memory_order_acq_rel);
-    CallTraceHashTable* cleanup = _cleanup_storage.exchange(nullptr, std::memory_order_acq_rel);
+    CallTraceHashTable* scratch = _scratch_storage.exchange(nullptr, std::memory_order_acq_rel);
 
     // Use the original per-table waiting approach but with duplicate detection
     // Wait for any ongoing hazard pointer usage to complete and delete each unique table
@@ -75,9 +75,9 @@ CallTraceStorage::~CallTraceStorage() {
         waitForHazardPointersToClear(standby);
         delete standby;
     }
-    if (cleanup && cleanup != active && cleanup != standby) {
-        waitForHazardPointersToClear(cleanup);
-        delete cleanup;
+    if (scratch && scratch != active && scratch != standby) {
+        waitForHazardPointersToClear(scratch);
+        delete scratch;
     }
 }
 
@@ -213,7 +213,7 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
  * called concurrently with itself (FlightRecorder ensures this with recording lock).
  */
 void CallTraceStorage::processTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor) {
-    // Keep critical section for table swap operations
+    // Critical section for table swap operations - dissalow signals to interrupt
     CriticalSection cs;
     std::unordered_set<u64> preserve_set;
 
@@ -235,69 +235,73 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
         unlockLivenessCheckers();
     }
 
-    // PHASE 2: Atomic swap - old active becomes read-only after swap
+    // PHASE 2: Safe collection sequence - standby first, then rotate, then scratch
     
     CallTraceHashTable* current_active = _active_storage.load(std::memory_order_acquire);
     CallTraceHashTable* current_standby = _standby_storage.load(std::memory_order_acquire);
-    CallTraceHashTable* current_cleanup = _cleanup_storage.load(std::memory_order_acquire);
+    CallTraceHashTable* current_scratch = _scratch_storage.load(std::memory_order_acquire);
     
     std::unordered_set<CallTrace*> traces;
     std::unordered_set<CallTrace*> traces_to_preserve;
 
-    // Step 1: Triple-buffer rotation: tmp=cleanup, cleanup=active, active=standby, standby=tmp
-    CallTraceHashTable* tmp = current_cleanup;
+    // Step 1: Collect from current standby FIRST (preserved traces from previous cycle)
+    std::unordered_set<CallTrace*> standby_traces;
+    current_standby->collectLockFree(standby_traces);
     
-    // Step 2: Prepare standby (with preserved traces) to become new active
+    // Immediately preserve standby traces that need to be kept for next cycle
+    for (CallTrace* trace : standby_traces) {
+        if (preserve_set.find(trace->trace_id) != preserve_set.end()) {
+            traces_to_preserve.insert(trace);
+        }
+    }
+    
+    // Step 2: Clear standby after collection, prepare for rotation
+    current_standby->clear();
     u64 new_instance_id = getNextInstanceId();
     current_standby->setInstanceId(new_instance_id);
     
-    // Step 3: ATOMIC SWAP - standby (with preserved traces) becomes new active
+    // Step 3: ATOMIC SWAP - standby (now empty) becomes new active
     CallTraceHashTable* old_active = _active_storage.exchange(current_standby, std::memory_order_acq_rel);
     
-    // Step 4: Complete the rotation
-    _cleanup_storage.store(old_active, std::memory_order_release);    // old active becomes cleanup
-    _standby_storage.store(tmp, std::memory_order_release);           // old cleanup becomes new standby
+    // Step 4: Complete the rotation: active→scratch, scratch→standby
+    CallTraceHashTable* old_scratch = _scratch_storage.exchange(old_active, std::memory_order_acq_rel);
+    _standby_storage.store(old_scratch, std::memory_order_release);
     
-    // Step 5: Collect traces from old active (now in cleanup)
+    // Step 5: NOW collect from scratch (old active, now read-only)
     std::unordered_set<CallTrace*> active_traces;
     old_active->collectLockFree(active_traces);
     
-    // Step 6: Collect from new standby (old cleanup)
-    std::unordered_set<CallTrace*> cleanup_traces;
-    tmp->collectLockFree(cleanup_traces);
-    
-    // Combine all traces for JFR processing
-    traces.insert(active_traces.begin(), active_traces.end());
-    traces.insert(cleanup_traces.begin(), cleanup_traces.end());
-
-    // Always include dropped trace in JFR constant pool
-    traces.insert(getDroppedTrace());
-
-    // PHASE 3: Identify traces that need to be preserved from active traces only
+    // Preserve traces from old active too
     for (CallTrace* trace : active_traces) {
         if (preserve_set.find(trace->trace_id) != preserve_set.end()) {
             traces_to_preserve.insert(trace);
         }
     }
+    
+    // Step 6: Combine all traces for JFR processing
+    traces.insert(active_traces.begin(), active_traces.end());
+    traces.insert(standby_traces.begin(), standby_traces.end());
 
-    // PHASE 4: Process traces
+    // Always include dropped trace in JFR constant pool
+    traces.insert(getDroppedTrace());
+
+    // PHASE 3: Process traces
     processor(traces);
 
-    // PHASE 5: Copy preserved traces to new standby
-    CallTraceHashTable* preserve_standby = _standby_storage.load(std::memory_order_acquire);
-    preserve_standby->clear();
+    // PHASE 4: Copy all preserved traces to current standby (old scratch, now empty)
+    old_scratch->clear();  // Should already be empty, but ensure it
     for (CallTrace* trace : traces_to_preserve) {
-        preserve_standby->putWithExistingIdLockFree(trace, 1);  // New lock-free method
+        old_scratch->putWithExistingIdLockFree(trace, 1);
     }
     
-    // PHASE 6: Clear cleanup storage
+    // PHASE 5: Clear scratch storage (old active)
     old_active->clear();
     
     // Triple-buffer rotation maintains trace continuity:
-    // - New active contains previously preserved traces
-    // - Signal handlers write to new active with preserved traces  
-    // - Old active (now cleanup) is safely collected and cleared
-    // - New standby (old cleanup) receives newly preserved traces
+    // - Standby traces collected first (safe - no signal handler writes to standby)
+    // - New active (old standby, now empty) receives new traces from signal handlers
+    // - Old active (now scratch) safely collected after rotation, then cleared
+    // - New standby (old scratch) stores preserved traces for next cycle
 }
 
 
