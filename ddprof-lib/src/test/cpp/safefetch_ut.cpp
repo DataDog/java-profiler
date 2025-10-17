@@ -5,6 +5,10 @@
 
 #include "safeAccess.h"
 #include "os_dd.h"
+#include "../../main/cpp/gtest_crash_handler.h"
+
+// Test name for crash handler
+static constexpr char SAFEFETCH_TEST_NAME[] = "SafeFetchTest";
 
 
 static void (*orig_segvHandler)(int signo, siginfo_t *siginfo, void *ucontext);
@@ -17,6 +21,9 @@ void signal_handle_wrapper(int signo, siginfo_t* siginfo, void* context) {
        orig_busHandler(signo, siginfo, context);
     } else if (signo == SIGSEGV && orig_segvHandler != nullptr) {
        orig_segvHandler(signo, siginfo, context);
+    } else {
+       // If no original handler, use crash handler for debugging
+       gtestCrashHandler(signo, siginfo, context, SAFEFETCH_TEST_NAME);
     }
   }
 }

@@ -11,12 +11,30 @@
     #include "threadInfo.h"
     #include "threadLocalData.h"
     #include "vmEntry.h"
+    #include "../../main/cpp/gtest_crash_handler.h"
     #include <map>
     #include <thread>
     #include <vector>
     #include <algorithm>  // For std::sort
     #include <thread>
     #include <atomic>
+
+// Test name for crash handler
+static constexpr char DDPROF_TEST_NAME[] = "DdprofTest";
+
+// Global crash handler installation (since this file uses bare TEST() macros)
+class DdprofGlobalSetup {
+public:
+    DdprofGlobalSetup() {
+        installGtestCrashHandler<DDPROF_TEST_NAME>();
+    }
+    ~DdprofGlobalSetup() {
+        restoreDefaultSignalHandlers();
+    }
+};
+
+// Install global crash handler for all tests in this file
+static DdprofGlobalSetup ddprof_global_setup;
 
     ssize_t callback(char* ptr, int len) {
         return len;
