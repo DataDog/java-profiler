@@ -21,6 +21,7 @@
 
 // Cannot use regular mutexes inside signal handler.
 // This lock is based on CAS busy loop. GCC atomic builtins imply full barrier.
+// Aligned to cache line size (64 bytes) to prevent false sharing between SpinLock instances
 class alignas(DEFAULT_CACHE_LINE_SIZE) SpinLock {
 private:
   //  0 - unlocked
