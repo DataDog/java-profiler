@@ -368,7 +368,7 @@ Introduced race-free critical section management using atomic compare-and-swap o
 Enhanced the call trace storage system from double-buffered to triple-buffered architecture with hazard pointer-based memory reclamation:
 
 - **Triple buffering**: Active, standby, and cleanup storage rotation for smoother transitions
-- **Hazard pointer system**: Per-instance thread-safe memory reclamation without global locks  
+- **Hazard pointer system**: Per-instance thread-safe memory reclamation without global locks
 - **ABA protection**: Generation counter prevents race conditions during table swaps
 - **Instance-based trace IDs**: 64-bit IDs combining instance ID and slot for collision-free trace management
 - **Lock-free hot paths**: Atomic operations minimize contention during profiling events
