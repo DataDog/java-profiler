@@ -14,6 +14,7 @@
 #include <jvmti.h>
 #include <pthread.h>
 #include <set>
+#include <unordered_set>
 
 class Recording;
 
@@ -28,7 +29,9 @@ typedef struct TrackingEntry {
   Context ctx;
 } TrackingEntry;
 
-class LivenessTracker {
+// Aligned to satisfy SpinLock member alignment requirement (64 bytes)
+// Required because this class contains SpinLock _table_lock member
+class alignas(alignof(SpinLock)) LivenessTracker {
   friend Recording;
 
 private:
@@ -94,7 +97,7 @@ public:
   static void JNICALL GarbageCollectionFinish(jvmtiEnv *jvmti_env);
 
 private:
-  void getLiveTraceIds(std::vector<u64>& out_buffer);
+  void getLiveTraceIds(std::unordered_set<u64>& out_buffer);
 };
 
 #endif // _LIVENESSTRACKER_H

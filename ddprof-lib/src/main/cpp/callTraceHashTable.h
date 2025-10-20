@@ -46,7 +46,9 @@ struct CallTraceSample {
   }
 };
 
-class CallTraceHashTable {
+// Aligned to satisfy SpinLock member alignment requirement (64 bytes)
+// Required because this class contains SpinLock _access_lock member
+class alignas(alignof(SpinLock)) CallTraceHashTable {
 private:
   static CallTrace _overflow_trace;
   std::atomic<u64> _instance_id;  // 64-bit instance ID for this hash table (set externally)

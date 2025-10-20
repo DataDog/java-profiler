@@ -60,7 +60,10 @@ class VM;
 
 enum State { NEW, IDLE, RUNNING, TERMINATED };
 
-class Profiler {
+// Aligned to satisfy SpinLock member alignment requirement (64 bytes)  
+// Required because this class contains multiple SpinLock members:
+// _class_map_lock, _locks[], and _stubs_lock
+class alignas(alignof(SpinLock)) Profiler {
   friend VM;
 
 private:
