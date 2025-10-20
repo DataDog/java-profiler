@@ -11,6 +11,7 @@
 #include <atomic>
 #include "callTraceHashTable.h"
 #include "../../main/cpp/gtest_crash_handler.h"
+#include "arch_dd.h"
 
 // Test name for crash handler
 static constexpr char TEST_NAME[] = "CallTraceStorageTest";
@@ -76,9 +77,9 @@ TEST_F(CallTraceStorageTest, LivenessCheckerRegistration) {
     // Register a liveness checker that preserves only trace_id2 and trace_id4
     u64 preserved_trace_id2 = trace_id2;
     u64 preserved_trace_id4 = trace_id4;
-    storage->registerLivenessChecker([&preserved_trace_id2, &preserved_trace_id4](std::vector<u64>& buffer) {
-        buffer.push_back(preserved_trace_id2);
-        buffer.push_back(preserved_trace_id4);
+    storage->registerLivenessChecker([&preserved_trace_id2, &preserved_trace_id4](std::unordered_set<u64>& buffer) {
+        buffer.insert(preserved_trace_id2);
+        buffer.insert(preserved_trace_id4);
     });
     
     // processTraces should preserve trace_id2 and trace_id4 but not trace_id1 and trace_id3
@@ -131,12 +132,12 @@ TEST_F(CallTraceStorageTest, MultipleLivenessCheckers) {
     u64 preserved_id4 = trace_id4;
     
     // Register two liveness checkers that preserve non-consecutive traces
-    storage->registerLivenessChecker([&preserved_id1](std::vector<u64>& buffer) {
-        buffer.push_back(preserved_id1);
+    storage->registerLivenessChecker([&preserved_id1](std::unordered_set<u64>& buffer) {
+        buffer.insert(preserved_id1);
     });
     
-    storage->registerLivenessChecker([&preserved_id4](std::vector<u64>& buffer) {
-        buffer.push_back(preserved_id4);
+    storage->registerLivenessChecker([&preserved_id4](std::unordered_set<u64>& buffer) {
+        buffer.insert(preserved_id4);
     });
     
     // processTraces should preserve specified traces and swap storages
@@ -180,8 +181,8 @@ TEST_F(CallTraceStorageTest, TraceIdPreservation) {
     
     // Register liveness checker to preserve this trace
     u64 preserved_id = original_trace_id;
-    storage->registerLivenessChecker([&preserved_id](std::vector<u64>& buffer) {
-        buffer.push_back(preserved_id);
+    storage->registerLivenessChecker([&preserved_id](std::unordered_set<u64>& buffer) {
+        buffer.insert(preserved_id);
     });
     
     // First process should contain the original trace
@@ -218,8 +219,8 @@ TEST_F(CallTraceStorageTest, ClearMethod) {
     
     // Register a liveness checker (should be ignored by clear())
     u64 preserved_id = trace_id;
-    storage->registerLivenessChecker([&preserved_id](std::vector<u64>& buffer) {
-        buffer.push_back(preserved_id);
+    storage->registerLivenessChecker([&preserved_id](std::unordered_set<u64>& buffer) {
+        buffer.insert(preserved_id);
     });
     
     // clear() should completely clear both storages, ignoring liveness checkers
@@ -264,7 +265,19 @@ TEST_F(CallTraceStorageTest, ConcurrentTableExpansionRegression) {
     // The crash occurred at __sync_bool_compare_and_swap(&_current_table, table, new_table)
     // when multiple threads triggered table expansion simultaneously
     
-    CallTraceHashTable hash_table;
+    // Use heap allocation with proper alignment to avoid ASAN alignment issues
+    // Stack allocation with high alignment requirements (64 bytes) is problematic under ASAN
+    void* aligned_memory = std::aligned_alloc(alignof(CallTraceHashTable), sizeof(CallTraceHashTable));
+    ASSERT_NE(aligned_memory, nullptr) << "Failed to allocate aligned memory for CallTraceHashTable";
+    
+    auto hash_table_ptr = std::unique_ptr<CallTraceHashTable, void(*)(CallTraceHashTable*)>(
+        new(aligned_memory) CallTraceHashTable(), 
+        [](CallTraceHashTable* ptr) {
+            ptr->~CallTraceHashTable();
+            std::free(ptr);
+        }
+    );
+    CallTraceHashTable& hash_table = *hash_table_ptr;
     hash_table.setInstanceId(42);
     
     const int num_threads = 4;  // Reduced from 8 to avoid excessive contention
