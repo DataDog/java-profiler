@@ -57,37 +57,13 @@ private:
     // Lazy initialization helper to avoid global constructor
     static u64 getNextInstanceId();
     
-    // Thread-local reusable collections for processTraces() to eliminate malloc/free cycles
-    // Each thread gets its own pre-allocated collections to avoid concurrent access issues
-    struct ThreadLocalCollections {
-        std::unordered_set<CallTrace*> traces_buffer;           // Combined traces for JFR processing
-        std::unordered_set<CallTrace*> traces_to_preserve_buffer; // Traces selected for preservation
-        std::unordered_set<CallTrace*> standby_traces_buffer;   // Traces collected from standby
-        std::unordered_set<CallTrace*> active_traces_buffer;    // Traces collected from active/scratch
-        std::unordered_set<u64> preserve_set_buffer;           // Preserve set for current cycle
-        
-        ThreadLocalCollections() {
-            // Pre-allocate and pre-size collections with conservative load factor
-            traces_buffer.max_load_factor(0.75f);
-            traces_buffer.rehash(static_cast<size_t>(2048 / 0.75f));
-            
-            traces_to_preserve_buffer.max_load_factor(0.75f);
-            traces_to_preserve_buffer.rehash(static_cast<size_t>(512 / 0.75f));
-            
-            standby_traces_buffer.max_load_factor(0.75f);
-            standby_traces_buffer.rehash(static_cast<size_t>(512 / 0.75f));
-            
-            active_traces_buffer.max_load_factor(0.75f);
-            active_traces_buffer.rehash(static_cast<size_t>(2048 / 0.75f));
-            
-            preserve_set_buffer.max_load_factor(0.75f);
-            preserve_set_buffer.rehash(static_cast<size_t>(1024 / 0.75f));
-        }
-    };
-    
-    // Thread-local storage per CallTraceStorage instance to avoid cross-contamination
-    // Each thread maintains its own map of instance-specific collections
-    static thread_local std::unordered_map<CallTraceStorage*, std::unique_ptr<ThreadLocalCollections>> _instance_thread_collections;
+    // Pre-allocated collections for processTraces (single-threaded operation)
+    // These collections are reused to eliminate malloc/free cycles
+    std::unordered_set<CallTrace*> _traces_buffer;           // Combined traces for JFR processing
+    std::unordered_set<CallTrace*> _traces_to_preserve_buffer; // Traces selected for preservation
+    std::unordered_set<CallTrace*> _standby_traces_buffer;   // Traces collected from standby
+    std::unordered_set<CallTrace*> _active_traces_buffer;    // Traces collected from active/scratch
+    std::unordered_set<u64> _preserve_set_buffer;           // Preserve set for current cycle
     
     // Per-instance hazard pointer system for safe memory reclamation
     static constexpr int MAX_THREADS = 256;  // Maximum supported threads
@@ -108,8 +84,6 @@ private:
     void waitForHazardPointersToClear(CallTraceHashTable* table_to_delete);
     int getThreadHazardSlot();
     
-    // Get or create thread-local collections for this instance
-    ThreadLocalCollections& getInstanceThreadLocalCollections();
     
 
 
