@@ -36,22 +36,25 @@ private:
   }
 
 public:
-  LongHashTable() : _prev(nullptr), _padding0(nullptr), _capacity(0), _size(0) {
+  LongHashTable(LongHashTable *prev = nullptr, u32 capacity = 0, bool should_clean = true) 
+    : _prev(prev), _padding0(nullptr), _capacity(capacity), _size(0) {
     memset(_padding1, 0, sizeof(_padding1));
     memset(_padding2, 0, sizeof(_padding2));
+    if (should_clean) {
+      clear();
+    }
   }
 
   static LongHashTable *allocate(LongHashTable *prev, u32 capacity, LinearAllocator* allocator) {
-    LongHashTable *table = (LongHashTable *)allocator->alloc(getSize(capacity));
-    if (table != nullptr) {
-      table->_prev = prev;
-      table->_capacity = capacity;
-      table->_size = 0;  // Initialize size to 0
+    void *memory = allocator->alloc(getSize(capacity));
+    if (memory != nullptr) {
+      // Use placement new to invoke constructor in-place with parameters
       // LinearAllocator doesn't zero memory like OS::safeAlloc with anon mmap
-      // so we need to explicitly clear the keys and values
-      table->clear();
+      // so we need to explicitly clear the keys and values (should_clean = true)
+      LongHashTable *table = new (memory) LongHashTable(prev, capacity, true);
+      return table;
     }
-    return table;
+    return nullptr;
   }
 
   LongHashTable *prev() { return _prev; }
@@ -67,13 +70,21 @@ public:
 
   CallTraceSample *values() { return (CallTraceSample *)(keys() + _capacity); }
 
+  u32 nextSlot(u32 slot) const { return (slot + 1) & (_capacity - 1); }
+
   void clear() {
     memset(keys(), 0, (sizeof(u64) + sizeof(CallTraceSample)) * _capacity);
     _size = 0;
   }
 };
 
-CallTrace CallTraceHashTable::_overflow_trace = {false, 1, OVERFLOW_TRACE_ID, {BCI_ERROR, LP64_ONLY(0 COMMA) (jmethodID)"storage_overflow"}};
+CallTrace CallTraceHashTable::_overflow_trace(false, 1, OVERFLOW_TRACE_ID);
+
+// Static initializer for overflow trace frame
+__attribute__((constructor))
+static void init_overflow_trace() {
+  CallTraceHashTable::_overflow_trace.frames[0] = {BCI_ERROR, LP64_ONLY(0 COMMA) (jmethodID)"storage_overflow"};
+}
 
 CallTraceHashTable::CallTraceHashTable() : _allocator(CALL_TRACE_CHUNK), _instance_id(0), _parent_storage(nullptr) {
   // Instance ID will be set externally via setInstanceId()
@@ -152,15 +163,15 @@ CallTrace *CallTraceHashTable::storeCallTrace(int num_frames,
                                             bool truncated, u64 trace_id) {
   const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
   const size_t total_size = header_size + num_frames * sizeof(ASGCT_CallFrame);
-  CallTrace *buf = (CallTrace *)_allocator.alloc(total_size);
-  if (buf != nullptr) {
-    buf->num_frames = num_frames;
+  void *memory = _allocator.alloc(total_size);
+  CallTrace *buf = nullptr;
+  if (memory != nullptr) {
+    // Use placement new to invoke constructor in-place
+    buf = new (memory) CallTrace(truncated, num_frames, trace_id);
     // Do not use memcpy inside signal handler
     for (int i = 0; i < num_frames; i++) {
       buf->frames[i] = frames[i];
     }
-    buf->truncated = truncated;
-    buf->trace_id = trace_id;
     Counters::increment(CALLTRACE_STORAGE_BYTES, total_size);
     Counters::increment(CALLTRACE_STORAGE_TRACES);
   }
@@ -340,74 +351,8 @@ void CallTraceHashTable::collect(std::unordered_set<CallTrace *> &traces) {
   }
 }
 
-
 void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) {
-  // This method is rarely used now that we have lock-free preservation
-  u64 hash = calcHash(source_trace->num_frames, source_trace->frames, source_trace->truncated);
-  
-  // First check if trace already exists in any table in the chain
-  for (LongHashTable *search_table = _table; search_table != nullptr; search_table = search_table->prev()) {
-    CallTrace *existing_trace = findCallTrace(search_table, hash);
-    if (existing_trace != nullptr) {
-      // Trace already exists in the chain
-      return;
-    }
-  }
-  
-  LongHashTable *table = _table;
-  if (table == nullptr) {
-    // Table allocation failed or was cleared - drop sample
-    return;
-  }
-  
-  u64 *keys = table->keys();
-  u32 capacity = table->capacity();
-  u32 slot = hash & (capacity - 1);
-  
-  // Look for existing entry or empty slot in current table
-  while (true) {
-    u64 key_value = __atomic_load_n(&keys[slot], __ATOMIC_RELAXED);
-    if (key_value == hash) {
-      // Found existing entry - just use it
-      break;
-    }
-    if (key_value == 0) {
-      // Found empty slot - claim it
-      u64 expected = 0;
-      if (!__atomic_compare_exchange_n(&keys[slot], &expected, hash, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
-        continue; // another thread claimed it, try next slot
-      }
-      
-      // Create a copy of the source trace preserving its exact ID
-      const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
-      const size_t total_size = header_size + source_trace->num_frames * sizeof(ASGCT_CallFrame);
-      CallTrace* copied_trace = (CallTrace*)_allocator.alloc(total_size);
-      if (copied_trace != nullptr) {
-        copied_trace->truncated = source_trace->truncated;
-        copied_trace->num_frames = source_trace->num_frames;
-        copied_trace->trace_id = source_trace->trace_id; // Preserve exact trace ID
-        // memcpy safe since not in signal handler
-        memcpy(copied_trace->frames, source_trace->frames, source_trace->num_frames * sizeof(ASGCT_CallFrame));
-        table->values()[slot].setTrace(copied_trace);
-        Counters::increment(CALLTRACE_STORAGE_BYTES, total_size);
-        Counters::increment(CALLTRACE_STORAGE_TRACES);
-      } else {
-        // Allocation failure - clear the key we claimed and return
-        __atomic_store_n(&keys[slot], 0, __ATOMIC_RELEASE);
-        return;
-      }
-      
-      // Increment table size
-      table->incSize();
-      break;
-    }
-    
-    slot = (slot + 1) & (capacity - 1);
-  }
-}
-
-void CallTraceHashTable::putWithExistingIdLockFree(CallTrace* source_trace, u64 weight) {
-  // Lock-free trace preservation for standby tables (no contention with new puts)
+  // Trace preservation for standby tables (no contention with new puts)
   // This is safe because new put() operations go to the new active table
   
   u64 hash = calcHash(source_trace->num_frames, source_trace->frames, source_trace->truncated);
@@ -441,17 +386,18 @@ void CallTraceHashTable::putWithExistingIdLockFree(CallTrace* source_trace, u64 
       // Found empty slot - claim it atomically
       u64 expected = 0;
       if (!__atomic_compare_exchange_n(&keys[slot], &expected, hash, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
-        continue; // Another thread claimed it, try next slot
+        // Another thread claimed it, try next slot
+        slot = table->nextSlot(slot);
+        continue;
       }
       
       // Create a copy of the source trace preserving its exact ID
       const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
       const size_t total_size = header_size + source_trace->num_frames * sizeof(ASGCT_CallFrame);
-      CallTrace* copied_trace = (CallTrace*)_allocator.alloc(total_size);
-      if (copied_trace != nullptr) {
-        copied_trace->truncated = source_trace->truncated;
-        copied_trace->num_frames = source_trace->num_frames;
-        copied_trace->trace_id = source_trace->trace_id; // Preserve exact trace ID
+      void *memory = _allocator.alloc(total_size);
+      if (memory != nullptr) {
+        // Use placement new to invoke constructor in-place
+        CallTrace* copied_trace = new (memory) CallTrace(source_trace->truncated, source_trace->num_frames, source_trace->trace_id);
         // memcpy safe since not in signal handler
         memcpy(copied_trace->frames, source_trace->frames, source_trace->num_frames * sizeof(ASGCT_CallFrame));
         table->values()[slot].setTrace(copied_trace);
@@ -467,6 +413,6 @@ void CallTraceHashTable::putWithExistingIdLockFree(CallTrace* source_trace, u64 
       break;
     }
     
-    slot = (slot + 1) & (capacity - 1);
+    slot = table->nextSlot(slot);
   }
 }

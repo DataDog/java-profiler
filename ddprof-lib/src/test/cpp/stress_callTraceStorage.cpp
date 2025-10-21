@@ -1063,6 +1063,12 @@ void pressure_signal_handler(int sig) {
     if (!signal_pressure_active.load()) {
         return;
     }
+    CriticalSection cs;
+
+    if (!cs.entered()) {
+        // behave like the real-life signal handler
+        return;
+    }
     
     signals_delivered.fetch_add(1, std::memory_order_relaxed);
     
@@ -1084,9 +1090,10 @@ void pressure_signal_handler(int sig) {
 // Realistic signal handler for profiler stress test
 void realistic_profiler_signal_handler(int sig) {
     if (!realistic_test_running.load()) return;
-    
+    CriticalSection cs;
+
     // Critical: Check if critical section is active (storage swap in progress)
-    if (CriticalSection::isInCriticalSection()) {
+    if (!cs.entered()) {
         return;  // Skip this signal - storage operation in progress
     }
     
@@ -1547,12 +1554,7 @@ static void realProfilerSignalStressImpl(int signal_barrage_count, int num_worke
                         frame.bci = work;
                         frame.method_id = reinterpret_cast<jmethodID>(0x2000 + t * 100 + work);
                         
-                        u64 trace_id = signal_storage->put(1, &frame, false, 1);
-                        
-                        // Note: In real usage, processTraces() is never called from worker threads
-                        // Only the single dump thread calls processTraces() with mutex protection
-                        // So we remove this unrealistic concurrent processTraces() call
-                        
+                        u64 trace_id = realistic_shared_storage->put(1, &frame, false, 1);
                         // Small delay to allow signal interference
                         if (work % 10 == 0) {
                             std::this_thread::yield();

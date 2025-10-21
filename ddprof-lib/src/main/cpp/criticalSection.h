@@ -42,13 +42,9 @@ public:
     // Check if this instance successfully entered the critical section
     bool entered() const { return _entered; }
     
-    // Static method for signal handlers to check critical section status
-    // Returns true if ANY critical section is active on this thread
-    static bool isInCriticalSection();
-    
 private:
     // Safe accessor for thread-local atomic flag
-    static std::atomic<sig_atomic_t>& getThreadLocalFlag();
+    sig_atomic_t& getThreadLocalFlag();
 };
 
 #endif // _CRITICALSECTION_H
