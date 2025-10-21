@@ -19,6 +19,10 @@ struct CallTrace {
   int num_frames;
   u64 trace_id;  // 64-bit for JFR constant pool compatibility
   ASGCT_CallFrame frames[1];
+
+  CallTrace(bool truncated, int num_frames, u64 trace_id) 
+    : truncated(truncated), num_frames(num_frames), trace_id(trace_id) {
+  }
 };
 
 struct CallTraceSample {
@@ -49,8 +53,10 @@ struct CallTraceSample {
 class CallTraceStorage;
 
 class CallTraceHashTable {
-private:
+public:
   static CallTrace _overflow_trace;
+
+private:
   u64 _instance_id;  // 64-bit instance ID for this hash table (set externally)
   CallTraceStorage* _parent_storage;  // Parent storage for hazard pointer access
 
@@ -75,8 +81,7 @@ public:
   void collect(std::unordered_set<CallTrace *> &traces);
 
   u64 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);
-  void putWithExistingId(CallTrace* trace, u64 weight);
-  void putWithExistingIdLockFree(CallTrace* trace, u64 weight);  // For standby tables with no contention
+  void putWithExistingId(CallTrace* trace, u64 weight);  // For standby tables with no contention
   void setInstanceId(u64 instance_id) { _instance_id = instance_id; }
   void setParentStorage(CallTraceStorage* storage) { _parent_storage = storage; }
 };

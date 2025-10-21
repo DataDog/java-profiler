@@ -96,7 +96,13 @@ thread_local std::unordered_map<CallTraceStorage*, std::unique_ptr<CallTraceStor
 CallTrace* CallTraceStorage::getDroppedTrace() {
     // Static dropped trace object - created once and reused
     // Use same pattern as storage_overflow trace for consistent platform handling
-    static CallTrace dropped_trace = {false, 1, DROPPED_TRACE_ID, {BCI_ERROR, LP64_ONLY(0 COMMA) (jmethodID)"<dropped>"}};
+    static CallTrace dropped_trace(false, 1, DROPPED_TRACE_ID);
+    // Initialize frame data only once
+    static bool initialized = false;
+    if (!initialized) {
+        dropped_trace.frames[0] = {BCI_ERROR, LP64_ONLY(0 COMMA) (jmethodID)"<dropped>"};
+        initialized = true;
+    }
 
     return &dropped_trace;
 }
@@ -344,7 +350,7 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
     // PHASE 4: Copy all preserved traces to current standby (old scratch, now empty)
     old_scratch->clear();  // Should already be empty, but ensure it
     for (CallTrace* trace : tl.traces_to_preserve_buffer) {
-        old_scratch->putWithExistingIdLockFree(trace, 1);
+        old_scratch->putWithExistingId(trace, 1);
     }
     
     // Triple-buffer rotation maintains trace continuity with thread-safe malloc-free operations:
