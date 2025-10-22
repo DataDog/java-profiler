@@ -61,8 +61,8 @@ public:
     HazardPointer(HazardPointer&& other) noexcept;
     HazardPointer& operator=(HazardPointer&& other) noexcept;
     
-    // Wait for specific hazard pointers to clear (used during shutdown)
-    static void waitForAllHazardPointersToClear(CallTraceHashTable* table_to_delete);
+    // Wait for hazard pointers pointing to specific table to clear (used during shutdown)
+    static void waitForHazardPointersToClear(CallTraceHashTable* table_to_delete);
     
     // Wait for ALL hazard pointers to clear (used by CallTraceHashTable::clear())
     static void waitForAllHazardPointersToClear();

@@ -67,7 +67,7 @@ HazardPointer& HazardPointer::operator=(HazardPointer&& other) noexcept {
     return *this;
 }
 
-void HazardPointer::waitForAllHazardPointersToClear(CallTraceHashTable* table_to_delete) {
+void HazardPointer::waitForHazardPointersToClear(CallTraceHashTable* table_to_delete) {
     const int MAX_WAIT_ITERATIONS = 5000;
     int wait_count = 0;
 
@@ -189,15 +189,15 @@ CallTraceStorage::~CallTraceStorage() {
 
     // Wait for any ongoing hazard pointer usage to complete and delete each unique table
     // Note: In triple-buffering, all three pointers should be unique, but check anyway
-    HazardPointer::waitForAllHazardPointersToClear(active);
+    HazardPointer::waitForHazardPointersToClear(active);
     delete active;
 
     if (standby != active) {
-        HazardPointer::waitForAllHazardPointersToClear(standby);
+        HazardPointer::waitForHazardPointersToClear(standby);
         delete standby;
     }
     if (scratch != active && scratch != standby) {
-        HazardPointer::waitForAllHazardPointersToClear(scratch);
+        HazardPointer::waitForHazardPointersToClear(scratch);
         delete scratch;
     }
 
