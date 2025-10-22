@@ -75,6 +75,34 @@ void HazardPointer::waitForHazardPointersToClear(CallTraceHashTable* table_to_de
         bool all_clear = true;
 
         // Check global hazard list for the table we want to delete
+        //
+        // TRIPLE-BUFFER PROTECTION MECHANISM:
+        // 
+        // The CallTraceStorage triple-buffer rotation provides architectural protection 
+        // against race conditions. Here's why no race condition can occur:
+        //
+        // Timeline during CallTraceStorage::~CallTraceStorage():
+        // 
+        // T0: [ACTIVE=TableA] [STANDBY=TableB] [SCRATCH=TableC]
+        //     │
+        //     │ put() creates hazard pointers → TableA only
+        //     │
+        // T1: _active_storage.exchange(nullptr)  ← ATOMIC BARRIER
+        //     [ACTIVE=nullptr] [STANDBY=nullptr] [SCRATCH=nullptr]
+        //     │
+        //     │ NEW put() calls after T1:
+        //     │ ├─ active = nullptr
+        //     │ ├─ return DROPPED_TRACE_ID  ← NO hazard pointer created!
+        //     │
+        // T2: waitForHazardPointersToClear(TableA)  ← We are here
+        //     │ ← Only PRE-EXISTING hazard pointers can exist (from before T1)
+        //     │ ← No NEW hazard pointers possible (active=nullptr) 
+        //     │
+        // T3: delete TableA  ← SAFE!
+        //
+        // Key insight: Hazard pointers are ONLY created for the ACTIVE table via put().
+        // After nullification, put() returns early - no new hazard pointers possible.
+        // We only need to wait for pre-existing hazard pointers to clear.
         for (int i = 0; i < MAX_THREADS; ++i) {
             CallTraceHashTable* hazard = global_hazard_list[i].load(std::memory_order_acquire);
             if (hazard == table_to_delete) {
