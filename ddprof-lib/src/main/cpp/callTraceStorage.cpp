@@ -308,8 +308,8 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
 
     // PHASE 2: Safe collection sequence - standby first, then rotate, then scratch
     
-    CallTraceHashTable* current_active = _active_storage.load(std::memory_order_acquire);
-    CallTraceHashTable* current_standby = _standby_storage.load(std::memory_order_acquire);
+    CallTraceHashTable* current_active = _active_storage.load(std::memory_order_relaxed);
+    CallTraceHashTable* current_standby = _standby_storage.load(std::memory_order_relaxed);
     CallTraceHashTable* current_scratch = _scratch_storage.load(std::memory_order_acquire);
     
     // Clear process collections for reuse (no malloc/free)
@@ -380,7 +380,7 @@ void CallTraceStorage::clear() {
     
     // Load current table pointers - simple operation with critical section protection
     CallTraceHashTable* active = _active_storage.load(std::memory_order_relaxed);
-    CallTraceHashTable* standby = _standby_storage.load(std::memory_order_relaxed);
+    CallTraceHashTable* standby = _standby_storage.load(std::memory_order_acquire);
     
     // Direct clear operations with critical section protection
     if (active) {
