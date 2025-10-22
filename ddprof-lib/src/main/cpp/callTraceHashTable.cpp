@@ -105,9 +105,7 @@ CallTraceHashTable::~CallTraceHashTable() {
 
 void CallTraceHashTable::clear() {
   // Wait for all hazard pointers to clear before deallocation to prevent races
-  if (_parent_storage != nullptr) {
-    _parent_storage->waitForAllHazardPointersToClear();
-  }
+  HazardPointer::waitForAllHazardPointersToClear();
   
   // Clear previous chain pointers to prevent traversal during deallocation
   for (LongHashTable *table = _table; table != nullptr; table = table->prev()) {

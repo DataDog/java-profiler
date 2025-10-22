@@ -14,13 +14,125 @@
 #include <string.h>
 #include <atomic>
 
+// HazardPointer static members
+std::atomic<CallTraceHashTable*> HazardPointer::global_hazard_list[HazardPointer::MAX_THREADS];
+
+// HazardPointer implementation
+int HazardPointer::getThreadHazardSlot() {
+    // Signal-safe: use thread ID hash to assign slots
+    // This avoids thread_local allocation issues in signal handlers
+    std::thread::id tid = std::this_thread::get_id();
+    
+    // Apply Knuth multiplicative hash directly to thread ID hash
+    size_t hash = std::hash<std::thread::id>{}(tid) * KNUTH_MULTIPLICATIVE_CONSTANT;
+    
+    // Use high bits for better distribution (shift right to get top bits)
+    return static_cast<int>((hash >> (sizeof(size_t) * 8 - 8)) % MAX_THREADS);
+}
+
+HazardPointer::HazardPointer(CallTraceHashTable* resource) : active_(true) {
+    // Get thread hazard slot using signal-safe method
+    my_slot_ = getThreadHazardSlot();
+    
+    // Update global hazard list
+    global_hazard_list[my_slot_].store(resource, std::memory_order_release);
+    
+    // Memory fence to ensure hazard pointer is visible before any subsequent reads
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+}
+
+HazardPointer::~HazardPointer() {
+    if (active_) {
+        // Clear global hazard list using our assigned slot
+        global_hazard_list[my_slot_].store(nullptr, std::memory_order_release);
+    }
+}
+
+HazardPointer::HazardPointer(HazardPointer&& other) noexcept : active_(other.active_), my_slot_(other.my_slot_) {
+    other.active_ = false;
+}
+
+HazardPointer& HazardPointer::operator=(HazardPointer&& other) noexcept {
+    if (this != &other) {
+        // Clean up current state
+        if (active_) {
+            global_hazard_list[my_slot_].store(nullptr, std::memory_order_release);
+        }
+        
+        // Move from other
+        active_ = other.active_;
+        my_slot_ = other.my_slot_;
+        
+        // Clear other
+        other.active_ = false;
+    }
+    return *this;
+}
+
+void HazardPointer::waitForAllHazardPointersToClear(CallTraceHashTable* table_to_delete) {
+    const int MAX_WAIT_ITERATIONS = 5000;
+    int wait_count = 0;
+    
+    while (wait_count < MAX_WAIT_ITERATIONS) {
+        bool all_clear = true;
+        
+        // Check global hazard list for the table we want to delete
+        for (int i = 0; i < MAX_THREADS; ++i) {
+            CallTraceHashTable* hazard = global_hazard_list[i].load(std::memory_order_acquire);
+            if (hazard == table_to_delete) {
+                all_clear = false;
+                break;
+            }
+        }
+        
+        if (all_clear) {
+            return; // All hazard pointers have cleared
+        }
+        
+        // Small delay before next check
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+        wait_count++;
+    }
+    
+    // If we reach here, some hazard pointers didn't clear in time
+    // This shouldn't happen in normal operation but we log it for debugging
+}
+
+void HazardPointer::waitForAllHazardPointersToClear() {
+    const int MAX_WAIT_ITERATIONS = 5000;
+    int wait_count = 0;
+    
+    while (wait_count < MAX_WAIT_ITERATIONS) {
+        bool any_hazards = false;
+        
+        // Check ALL global hazard pointers
+        for (int i = 0; i < MAX_THREADS; ++i) {
+            CallTraceHashTable* hazard = global_hazard_list[i].load(std::memory_order_acquire);
+            if (hazard != nullptr) {
+                any_hazards = true;
+                break;
+            }
+        }
+        
+        if (!any_hazards) {
+            return; // All hazard pointers have cleared
+        }
+        
+        // Small delay before next check
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+        wait_count++;
+    }
+    
+    // If we reach here, some hazard pointers didn't clear in time
+    // This shouldn't happen in normal operation but we continue cleanup anyway
+}
+
+
 static const u64 OVERFLOW_TRACE_ID = 0x7fffffffffffffffULL;  // Max 64-bit signed value
 
 // Static atomic for instance ID generation - explicit initialization avoids function-local static issues
 std::atomic<u64> CallTraceStorage::_next_instance_id{1};  // Start from 1, 0 is reserved
 
-// Thread-local hazard pointer info - now tracks which storage instance owns the hazard pointer
-thread_local CallTraceStorage::ThreadHazardInfo CallTraceStorage::_thread_hazard_info = {nullptr, -1, nullptr};
 
 // Lazy initialization helper to avoid global constructor race conditions
 u64 CallTraceStorage::getNextInstanceId() {
@@ -28,11 +140,7 @@ u64 CallTraceStorage::getNextInstanceId() {
     return instance_id;
 }
 
-CallTraceStorage::CallTraceStorage() : _generation_counter(1), _liveness_lock(0), _thread_counter(0) {
-    // Initialize per-instance hazard pointer list
-    for (int i = 0; i < MAX_THREADS; ++i) {
-        _hazard_list[i].store(nullptr, std::memory_order_relaxed);
-    }
+CallTraceStorage::CallTraceStorage() : _generation_counter(1), _liveness_lock(0) {
     
     // Initialize triple-buffered storage
     auto active_table = std::make_unique<CallTraceHashTable>();
@@ -67,19 +175,18 @@ CallTraceStorage::~CallTraceStorage() {
     CallTraceHashTable* standby = _standby_storage.exchange(nullptr, std::memory_order_acq_rel);
     CallTraceHashTable* scratch = _scratch_storage.exchange(nullptr, std::memory_order_acq_rel);
 
-    // Use the original per-table waiting approach but with duplicate detection
     // Wait for any ongoing hazard pointer usage to complete and delete each unique table
     // Note: In triple-buffering, all three pointers should be unique, but check anyway
     if (active) {
-        waitForHazardPointersToClear(active);
+        HazardPointer::waitForAllHazardPointersToClear(active);
         delete active;
     }
     if (standby && standby != active) {
-        waitForHazardPointersToClear(standby);
+        HazardPointer::waitForAllHazardPointersToClear(standby);
         delete standby;
     }
     if (scratch && scratch != active && scratch != standby) {
-        waitForHazardPointersToClear(scratch);
+        HazardPointer::waitForAllHazardPointersToClear(scratch);
         delete scratch;
     }
     
@@ -107,98 +214,7 @@ CallTrace* CallTraceStorage::getDroppedTrace() {
     return &dropped_trace;
 }
 
-// Per-instance hazard pointer system implementation
-int CallTraceStorage::getThreadHazardSlot() {
-    // Check if current thread already has a hazard slot for this storage instance
-    if (_thread_hazard_info.storage_instance != this || _thread_hazard_info.hazard_slot == -1) {
-        // Allocate new slot for this storage instance
-        _thread_hazard_info.hazard_slot = _thread_counter.fetch_add(1, std::memory_order_relaxed) % MAX_THREADS;
-        _thread_hazard_info.storage_instance = this;
-    }
-    return _thread_hazard_info.hazard_slot;
-}
 
-void CallTraceStorage::registerHazardPointer(CallTraceHashTable* table) {
-    int slot = getThreadHazardSlot();
-    
-    // Update thread-local info for this storage instance
-    _thread_hazard_info.hazard_pointer = table;
-    _thread_hazard_info.storage_instance = this;
-    
-    // Update this storage instance's hazard list
-    _hazard_list[slot].store(table, std::memory_order_release);
-    
-    // Memory barrier to ensure hazard pointer is visible before any table access
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-}
-
-void CallTraceStorage::clearHazardPointer() {
-    // Only clear if this thread's hazard pointer belongs to this storage instance
-    if (_thread_hazard_info.storage_instance == this) {
-        int slot = _thread_hazard_info.hazard_slot;
-        
-        // Clear thread-local info for this storage instance
-        _thread_hazard_info.hazard_pointer = nullptr;
-        _hazard_list[slot].store(nullptr, std::memory_order_release);
-    }
-}
-
-void CallTraceStorage::waitForHazardPointersToClear(CallTraceHashTable* table_to_delete) {
-    // Check only this storage instance's hazard pointers
-    const int MAX_WAIT_ITERATIONS = 5000;
-    int wait_count = 0;
-    
-    while (wait_count < MAX_WAIT_ITERATIONS) {
-        bool any_hazards = false;
-        
-        // Check this storage instance's hazard pointers
-        for (int i = 0; i < MAX_THREADS; ++i) {
-            CallTraceHashTable* current_hazard = _hazard_list[i].load(std::memory_order_acquire);
-            if (current_hazard == table_to_delete) {
-                any_hazards = true;
-                break;
-            }
-        }
-        
-        if (!any_hazards) {
-            break;
-        }
-        
-        // Brief pause
-        struct timespec ts = {0, 10000};  // 10 microseconds
-        nanosleep(&ts, nullptr);
-        wait_count++;
-    }
-}
-
-void CallTraceStorage::waitForAllHazardPointersToClear() {
-    // Wait for ALL hazard pointers to clear - needed before deallocating chain memory
-    // This ensures no signal handler is traversing any hash table chains
-    const int MAX_WAIT_ITERATIONS = 5000;
-    int wait_count = 0;
-    
-    while (wait_count < MAX_WAIT_ITERATIONS) {
-        bool any_hazards = false;
-        
-        // Check this storage instance's hazard pointers
-        for (int i = 0; i < MAX_THREADS; ++i) {
-            CallTraceHashTable* current_hazard = _hazard_list[i].load(std::memory_order_acquire);
-            if (current_hazard != nullptr) {
-                any_hazards = true;
-                break;
-            }
-        }
-        
-        if (!any_hazards) {
-            break;
-        }
-        
-        // Brief pause
-        struct timespec ts = {0, 10000};  // 10 microseconds
-        nanosleep(&ts, nullptr);
-        wait_count++;
-    }
-}
 
 // Simple spinlock helpers for rare liveness operations
 void CallTraceStorage::lockLivenessCheckers() {
@@ -246,23 +262,19 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
         return DROPPED_TRACE_ID;
     }
     
-    // Register hazard pointer to prevent deletion during table access
-    registerHazardPointer(active);
+    // RAII hazard pointer guard automatically manages hazard pointer lifecycle
+    HazardPointer guard(active);
     
     // Check again after registering hazard pointer - storage might have been nullified
     CallTraceHashTable* current_active = _active_storage.load(std::memory_order_acquire);
     if (current_active != active || current_active == nullptr) {
-        // Storage was swapped or nullified, clear hazard pointer and return dropped
-        clearHazardPointer();
+        // Storage was swapped or nullified, return dropped
         Counters::increment(CALLTRACE_STORAGE_DROPPED);
         return DROPPED_TRACE_ID;
     }
     
     // Hazard pointer prevents deletion
     u64 result = active->put(num_frames, frames, truncated, weight);
-    
-    // Clear hazard pointer
-    clearHazardPointer();
     
     return result;
 }
