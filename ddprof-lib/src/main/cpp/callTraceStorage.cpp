@@ -36,10 +36,7 @@ HazardPointer::HazardPointer(CallTraceHashTable* resource) : active_(true) {
     my_slot_ = getThreadHazardSlot();
 
     // Update global hazard list
-    global_hazard_list[my_slot_].store(resource, std::memory_order_release);
-
-    // Memory fence to ensure hazard pointer is visible before any subsequent reads
-    std::atomic_thread_fence(std::memory_order_seq_cst);
+    global_hazard_list[my_slot_].store(resource, std::memory_order_seq_cst);
 }
 
 HazardPointer::~HazardPointer() {
@@ -186,21 +183,20 @@ CallTraceStorage::CallTraceStorage() : _generation_counter(1), _liveness_lock(0)
 
 CallTraceStorage::~CallTraceStorage() {
     // Atomically invalidate storage pointers to prevent new put() operations
-    CallTraceHashTable* active = _active_storage.exchange(nullptr, std::memory_order_acq_rel);
-    CallTraceHashTable* standby = _standby_storage.exchange(nullptr, std::memory_order_acq_rel);
+    CallTraceHashTable* active = _active_storage.exchange(nullptr, std::memory_order_relaxed);
+    CallTraceHashTable* standby = _standby_storage.exchange(nullptr, std::memory_order_relaxed);
     CallTraceHashTable* scratch = _scratch_storage.exchange(nullptr, std::memory_order_acq_rel);
 
     // Wait for any ongoing hazard pointer usage to complete and delete each unique table
     // Note: In triple-buffering, all three pointers should be unique, but check anyway
-    if (active) {
-        HazardPointer::waitForAllHazardPointersToClear(active);
-        delete active;
-    }
-    if (standby && standby != active) {
+    HazardPointer::waitForAllHazardPointersToClear(active);
+    delete active;
+
+    if (standby != active) {
         HazardPointer::waitForAllHazardPointersToClear(standby);
         delete standby;
     }
-    if (scratch && scratch != active && scratch != standby) {
+    if (scratch != active && scratch != standby) {
         HazardPointer::waitForAllHazardPointersToClear(scratch);
         delete scratch;
     }
@@ -222,29 +218,14 @@ CallTrace* CallTraceStorage::getDroppedTrace() {
     return &dropped_trace;
 }
 
-
-
-// Simple spinlock helpers for rare liveness operations
-void CallTraceStorage::lockLivenessCheckers() {
-    while (__sync_bool_compare_and_swap(&_liveness_lock, 0, 1) == false) {
-        // Busy wait - these operations are rare
-    }
-}
-
-void CallTraceStorage::unlockLivenessCheckers() {
-    __sync_bool_compare_and_swap(&_liveness_lock, 1, 0);
-}
-
 void CallTraceStorage::registerLivenessChecker(LivenessChecker checker) {
-    lockLivenessCheckers();
+    ExclusiveLockGuard lock(&_liveness_lock);
     _liveness_checkers.push_back(checker);
-    unlockLivenessCheckers();
 }
 
 void CallTraceStorage::clearLivenessCheckers() {
-    lockLivenessCheckers();
+    ExclusiveLockGuard lock(&_liveness_lock);
     _liveness_checkers.clear();
-    unlockLivenessCheckers();
 }
 
 
@@ -287,7 +268,7 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
 
     // PHASE 1: Collect liveness information with simple lock (rare operation)
     {
-        lockLivenessCheckers();
+        SharedLockGuard lock(&_liveness_lock);
         
         // Use pre-allocated containers to avoid malloc()
         _preserve_set_buffer.clear();
@@ -295,8 +276,6 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
         for (const auto& checker : _liveness_checkers) {
             checker(_preserve_set_buffer);
         }
-        
-        unlockLivenessCheckers();
     }
 
     // PHASE 2: Safe collection sequence - standby first, then rotate, then scratch

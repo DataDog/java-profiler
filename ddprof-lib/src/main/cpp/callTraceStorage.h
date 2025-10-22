@@ -8,6 +8,7 @@
 #define _CALLTRACESTORAGE_H
 
 #include "callTraceHashTable.h"
+#include "spinLock.h"
 #include <functional>
 #include <vector>
 #include <memory>
@@ -91,7 +92,7 @@ private:
     // Liveness checkers - protected by simple spinlock during registration/clear
     // Using vector instead of unordered_set since std::function cannot be hashed
     std::vector<LivenessChecker> _liveness_checkers;
-    volatile int _liveness_lock;  // Simple atomic lock for rare liveness operations
+    SpinLock _liveness_lock;  // Simple atomic lock for rare liveness operations
     
     // Static atomic for instance ID generation - avoids function-local static initialization issues
     static std::atomic<u64> _next_instance_id;
@@ -109,7 +110,7 @@ private:
     
     
 private:
-    
+
     
 
 
@@ -134,12 +135,6 @@ public:
 
     // Enhanced clear with liveness preservation (rarely called - uses atomic operations)
     void clear();
-    
-    
-private:
-    // Simple spinlock helpers for rare liveness operations
-    void lockLivenessCheckers();
-    void unlockLivenessCheckers();
 };
 
 #endif // _CALLTRACESTORAGE_H
