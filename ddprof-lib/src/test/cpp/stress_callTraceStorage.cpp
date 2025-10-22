@@ -1658,12 +1658,13 @@ TEST_F(StressTestSuite, InstanceIdTraceIdStressTest) {
     std::atomic<uint64_t> zero_trace_ids{0};
     std::atomic<uint64_t> max_instance_id_seen{0};
     
-    // Set to track all generated trace IDs for collision detection
+    // Set to track all generated trace IDs and stack trace hashes for analysis
     std::mutex trace_id_mutex;
     std::unordered_set<u64> all_trace_ids;
+    std::unordered_set<u64> all_stack_hashes;  // Track unique stack trace hashes
     
     // Use single shared storage instance - matches production pattern
-    // Note: NUM_STORAGE_INSTANCES threads will contend on the same storage
+    // Note: NUM_THREADS threads will contend on the same storage instance
     CallTraceStorage* storage_instance = shared_storage.get();
     
     std::cout << "Testing instance ID and trace ID generation under extreme concurrency..." << std::endl;
@@ -1686,6 +1687,9 @@ TEST_F(StressTestSuite, InstanceIdTraceIdStressTest) {
                     ASGCT_CallFrame frame;
                     frame.bci = bci_dis(gen) + t * 1000000 + op;  // Ensure uniqueness
                     frame.method_id = reinterpret_cast<jmethodID>(method_dis(gen) + t * 0x1000000);
+                    
+                    // Calculate stack trace hash for analysis (simplified hash of frame data)
+                    u64 stack_hash = (u64)frame.bci ^ ((u64)frame.method_id << 32);
                     
                     // Generate trace ID
                     u64 trace_id = storage->put(1, &frame, false, 1);
@@ -1727,9 +1731,11 @@ TEST_F(StressTestSuite, InstanceIdTraceIdStressTest) {
                         // Loop continues if instance_id is still greater than the updated current_max
                     }
                     
-                    // Check for trace ID collisions
+                    // Check for trace ID collisions and track stack hashes
                     {
                         std::lock_guard<std::mutex> lock(trace_id_mutex);
+                        all_stack_hashes.insert(stack_hash);  // Track all stack hashes
+                        
                         if (all_trace_ids.find(trace_id) != all_trace_ids.end()) {
                             duplicate_trace_ids.fetch_add(1, std::memory_order_relaxed);
                         } else {
@@ -1795,13 +1801,16 @@ TEST_F(StressTestSuite, InstanceIdTraceIdStressTest) {
     
     // Analyze results
     u64 unique_trace_ids = 0;
+    u64 unique_stack_hashes = 0;
     {
         std::lock_guard<std::mutex> lock(trace_id_mutex);
         unique_trace_ids = all_trace_ids.size();
+        unique_stack_hashes = all_stack_hashes.size();
     }
     
     std::cout << "Instance ID/Trace ID stress test completed:" << std::endl;
     std::cout << "  Total trace IDs generated: " << total_trace_ids_generated.load() << std::endl;
+    std::cout << "  Unique stack traces: " << unique_stack_hashes << std::endl;
     std::cout << "  Unique trace IDs: " << unique_trace_ids << std::endl;
     std::cout << "  Duplicate trace IDs: " << duplicate_trace_ids.load() << std::endl;
     std::cout << "  Zero trace IDs: " << zero_trace_ids.load() << std::endl;
@@ -1816,11 +1825,22 @@ TEST_F(StressTestSuite, InstanceIdTraceIdStressTest) {
     EXPECT_GT(total_trace_ids_generated.load(), 0) << "No trace IDs generated";
     EXPECT_GT(max_instance_id_seen.load(), 0) << "No valid instance IDs seen";
     
-    // Check for excessive duplication (some is expected due to hash collisions)
+    // Calculate duplication metrics
     double duplication_rate = (double)duplicate_trace_ids.load() / total_trace_ids_generated.load();
-    EXPECT_LT(duplication_rate, 0.1) << "Excessive trace ID duplication: " << duplication_rate;
+    double stack_uniqueness_rate = (double)unique_stack_hashes / total_trace_ids_generated.load();
     
     std::cout << "  Duplication rate: " << (duplication_rate * 100.0) << "%" << std::endl;
+    std::cout << "  Stack trace uniqueness: " << (stack_uniqueness_rate * 100.0) << "%" << std::endl;
+    
+    // Only fail if trace IDs are more duplicated than stack traces (indicates a bug)
+    // If stack traces themselves have duplicates, then trace ID duplicates are expected
+    EXPECT_GE(unique_trace_ids, unique_stack_hashes) 
+        << "Trace IDs less unique than stack traces - indicates trace ID generation bug";
+    
+    // Allow legitimate deduplication but warn if uniqueness is surprisingly low
+    if (stack_uniqueness_rate < 0.9) {
+        std::cout << "  WARNING: Low stack trace uniqueness suggests frame generation issues" << std::endl;
+    }
 }
 
 // Test 12: Hash Table Spin-Wait Edge Cases Stress Test

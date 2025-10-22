@@ -4,33 +4,51 @@
  */
 
 #include "criticalSection.h"
+#include "thread.h"
+#include "os.h"
 
-CriticalSection::CriticalSection() : _entered(false) {
-    // Use safe accessor to ensure TLS is fully initialized
-    sig_atomic_t& flag = getThreadLocalFlag();
-    
-    sig_atomic_t expected = 0;
-    if (!flag) {
-        flag = 1;
-        _entered = 1;
+// Static bitmap storage for fallback cases
+std::atomic<uint64_t> CriticalSection::_fallback_bitmap[CriticalSection::FALLBACK_BITMAP_WORDS] = {};
+
+CriticalSection::CriticalSection() : _entered(false), _using_fallback(false), _word_index(0), _bit_mask(0) {
+    ProfiledThread* current = ProfiledThread::current();
+    if (current != nullptr) {
+        // Primary path: Use ProfiledThread storage (fast and memory-efficient)
+        _entered = current->tryEnterCriticalSection();
+    } else {
+        // Fallback path: Use hash-based bitmap for stress tests and edge cases
+        _using_fallback = true;
+        int tid = OS::threadId();
+
+        // Hash TID to distribute across bitmap words, reducing clustering
+        // We are OK with false colision for the fallback - it should be used only for testing when we don't have full profiler initialized
+        _word_index = hash_tid(tid) % FALLBACK_BITMAP_WORDS;
+        uint32_t bit_index = tid % 64;
+        _bit_mask = 1ULL << bit_index;
+
+        // Atomically try to set the bit
+        uint64_t old_word = _fallback_bitmap[_word_index].fetch_or(_bit_mask, std::memory_order_acquire);
+        _entered = !(old_word & _bit_mask);  // Success if bit was previously 0
     }
-    
-    // If the attempt failed, another critical section (likely signal handler) is already active
-    // We don't throw or error - we just track that we didn't get ownership
-    // The caller can check entered() if needed, but typically signal handlers
-    // will use isInCriticalSection() and return early
 }
 
 CriticalSection::~CriticalSection() {
-    // Only release if we successfully entered
     if (_entered) {
-        getThreadLocalFlag() = 0;
+        if (_using_fallback) {
+            // Clear the bit atomically for fallback bitmap
+            _fallback_bitmap[_word_index].fetch_and(~_bit_mask, std::memory_order_release);
+        } else {
+            // Release ProfiledThread flag
+            ProfiledThread* current = ProfiledThread::current();
+            if (current != nullptr) {
+                current->exitCriticalSection();
+            }
+        }
     }
 }
 
-sig_atomic_t& CriticalSection::getThreadLocalFlag() {
-    // Force TLS initialization with explicit initialization
-    // This ensures the atomic is fully constructed before any signal handler can access it
-    static thread_local sig_atomic_t flag{0};
-    return flag;
+uint32_t CriticalSection::hash_tid(int tid) {
+    // Knuth's multiplicative hash - spreads consecutive TIDs across different bitmap words
+    // The constant 2654435769U is (2^32 / golden_ratio), chosen to minimize clustering
+    return static_cast<uint32_t>(tid * 2654435769U);
 }
