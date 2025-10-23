@@ -23,10 +23,10 @@ sourceSets {
 }
 
 jmh {
-    iterations = 3
-    timeOnIteration = '3s'
-    warmup = '1s'
-    warmupIterations = 3
+  iterations = 3
+  timeOnIteration = '3s'
+  warmup = '1s'
+  warmupIterations = 3
 }
 
 jmhJar {
