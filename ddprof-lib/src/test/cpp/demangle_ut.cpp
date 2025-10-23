@@ -1,8 +1,26 @@
 #include <gtest/gtest.h>
 
 #include "rustDemangler.h"
+#include "../../main/cpp/gtest_crash_handler.h"
 
 #include <cxxabi.h>
+
+// Test name for crash handler
+static constexpr char DEMANGLE_TEST_NAME[] = "DemangleTest";
+
+// Global crash handler installation (since this file uses bare TEST() macros)
+class DemangleGlobalSetup {
+public:
+    DemangleGlobalSetup() {
+        installGtestCrashHandler<DEMANGLE_TEST_NAME>();
+    }
+    ~DemangleGlobalSetup() {
+        restoreDefaultSignalHandlers();
+    }
+};
+
+// Install global crash handler for all tests in this file
+static DemangleGlobalSetup demangle_global_setup;
 
 #ifndef __APPLE__
 

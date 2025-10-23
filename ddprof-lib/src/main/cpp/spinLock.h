@@ -21,6 +21,7 @@
 
 // Cannot use regular mutexes inside signal handler.
 // This lock is based on CAS busy loop. GCC atomic builtins imply full barrier.
+// Aligned to cache line size (64 bytes) to prevent false sharing between SpinLock instances
 class alignas(DEFAULT_CACHE_LINE_SIZE) SpinLock {
 private:
   //  0 - unlocked
@@ -65,6 +66,41 @@ public:
   }
 
   void unlockShared() { __sync_fetch_and_add(&_lock, 1); }
+};
+
+// RAII guard classes for automatic lock management
+class SharedLockGuard {
+private:
+  SpinLock* _lock;
+public:
+  explicit SharedLockGuard(SpinLock* lock) : _lock(lock) {
+    _lock->lockShared();
+  }
+  ~SharedLockGuard() {
+    _lock->unlockShared();
+  }
+  // Non-copyable and non-movable
+  SharedLockGuard(const SharedLockGuard&) = delete;
+  SharedLockGuard& operator=(const SharedLockGuard&) = delete;
+  SharedLockGuard(SharedLockGuard&&) = delete;
+  SharedLockGuard& operator=(SharedLockGuard&&) = delete;
+};
+
+class ExclusiveLockGuard {
+private:
+  SpinLock* _lock;
+public:
+  explicit ExclusiveLockGuard(SpinLock* lock) : _lock(lock) {
+    _lock->lock();
+  }
+  ~ExclusiveLockGuard() {
+    _lock->unlock();
+  }
+  // Non-copyable and non-movable
+  ExclusiveLockGuard(const ExclusiveLockGuard&) = delete;
+  ExclusiveLockGuard& operator=(const ExclusiveLockGuard&) = delete;
+  ExclusiveLockGuard(ExclusiveLockGuard&&) = delete;
+  ExclusiveLockGuard& operator=(ExclusiveLockGuard&&) = delete;
 };
 
 #endif // _SPINLOCK_H

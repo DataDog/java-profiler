@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 #include "threadFilter.h"
+#include "../../main/cpp/gtest_crash_handler.h"
 #include <thread>
 #include <vector>
 #include <atomic>
@@ -23,15 +24,22 @@
 #include <set>
 #include <chrono>
 
+// Test name for crash handler
+static constexpr char THREAD_FILTER_TEST_NAME[] = "ThreadFilterTest";
+
 class ThreadFilterTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        // Install crash handler for debugging potential issues
+        installGtestCrashHandler<THREAD_FILTER_TEST_NAME>();
         filter = std::make_unique<ThreadFilter>();
         filter->init("");  // Enable filtering
     }
 
     void TearDown() override {
         filter.reset();
+        // Restore default signal handlers
+        restoreDefaultSignalHandlers();
     }
 
     std::unique_ptr<ThreadFilter> filter;

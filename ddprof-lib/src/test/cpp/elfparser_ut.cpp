@@ -8,6 +8,7 @@
 #include "symbols.h"
 #include "symbols_linux.h"
 #include "log.h"
+#include "../../main/cpp/gtest_crash_handler.h"
 
 #include <unistd.h>
 #include <limits.h> // For PATH_MAX
@@ -23,6 +24,23 @@
 #include <signal.h>
 #include <unistd.h>
 #include <cstdio>
+
+// Test name for crash handler
+static constexpr char ELF_TEST_NAME[] = "ElfParserTest";
+
+// Global crash handler installation (since this file uses bare TEST() macros)
+class ElfParserGlobalSetup {
+public:
+    ElfParserGlobalSetup() {
+        installGtestCrashHandler<ELF_TEST_NAME>();
+    }
+    ~ElfParserGlobalSetup() {
+        restoreDefaultSignalHandlers();
+    }
+};
+
+// Install global crash handler for all tests in this file
+static ElfParserGlobalSetup global_setup;
 
 TEST(Elf, readSymTable) {
     char cwd[PATH_MAX - 64];
