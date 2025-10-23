@@ -147,8 +147,8 @@ static constexpr int PRIME_STEPS[16] = {
 };
 
 int getThreadHazardSlot() {
-    std::thread::id tid = std::this_thread::get_id();
-    size_t hash = std::hash<std::thread::id>{}(tid) * KNUTH_MULTIPLICATIVE_CONSTANT;
+    int tid = OS::threadId();  // Signal-safe cached thread ID
+    size_t hash = static_cast<size_t>(tid) * KNUTH_MULTIPLICATIVE_CONSTANT;
     int base_slot = (hash >> (sizeof(size_t) * 8 - 13)) % MAX_THREADS;
 
     // Semi-random prime step probing eliminates secondary clustering
@@ -160,7 +160,7 @@ int getThreadHazardSlot() {
         int slot = (base_slot + i * prime_step) % MAX_THREADS;
         
         // Atomic slot claiming with thread ID verification
-        std::thread::id expected = std::thread::id{};
+        int expected = 0;  // Empty slot (no thread ID)
         if (slot_owners[slot].compare_exchange_strong(expected, tid)) {
             return slot; // Successfully claimed
         }
@@ -178,7 +178,7 @@ int getThreadHazardSlot() {
 **Performance Characteristics:**
 - **Collision Probability**: <3% with 2000 concurrent threads
 - **Memory Cost**: 64KB total (negligible compared to thread stacks)
-- **Signal Handler Safe**: No allocation, bounded execution time
+- **Signal Handler Safe**: No allocation, bounded execution time, uses OS::threadId()
 - **Secondary Clustering Elimination**: Different prime steps prevent identical probe sequences
 
 **Mathematical Benefits of Semi-Random Prime Steps:**

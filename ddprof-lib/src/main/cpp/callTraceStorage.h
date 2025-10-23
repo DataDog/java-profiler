@@ -9,6 +9,7 @@
 
 #include "callTraceHashTable.h"
 #include "spinLock.h"
+#include "os_dd.h"
 #include <functional>
 #include <vector>
 #include <memory>
@@ -52,7 +53,7 @@ public:
     };
     
     static std::atomic<CallTraceHashTable*> global_hazard_list[MAX_THREADS];
-    static std::atomic<std::thread::id> slot_owners[MAX_THREADS];  // Thread ID ownership verification
+    static std::atomic<int> slot_owners[MAX_THREADS];  // Thread ID ownership verification
 
 private:
     bool active_;

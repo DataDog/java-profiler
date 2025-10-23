@@ -17,16 +17,16 @@
 
 // HazardPointer static members
 std::atomic<CallTraceHashTable*> HazardPointer::global_hazard_list[HazardPointer::MAX_THREADS];
-std::atomic<std::thread::id> HazardPointer::slot_owners[HazardPointer::MAX_THREADS];
+std::atomic<int> HazardPointer::slot_owners[HazardPointer::MAX_THREADS];
 
 // HazardPointer implementation
 int HazardPointer::getThreadHazardSlot() {
-    // Signal-safe collision resolution: use thread ID hash with semi-random prime step probing
-    // This avoids thread_local allocation issues in signal handlers
-    std::thread::id tid = std::this_thread::get_id();
+    // Signal-safe collision resolution: use OS::threadId() with semi-random prime step probing
+    // This avoids thread_local allocation issues
+    int tid = OS::threadId();
 
-    // Apply Knuth multiplicative hash directly to thread ID hash
-    size_t hash = std::hash<std::thread::id>{}(tid) * KNUTH_MULTIPLICATIVE_CONSTANT;
+    // Apply Knuth multiplicative hash directly to thread ID
+    size_t hash = static_cast<size_t>(tid) * KNUTH_MULTIPLICATIVE_CONSTANT;
 
     // Use high bits for better distribution (shift right to get top bits)
     int base_slot = static_cast<int>((hash >> (sizeof(size_t) * 8 - 13)) % MAX_THREADS);
@@ -40,7 +40,7 @@ int HazardPointer::getThreadHazardSlot() {
         int slot = (base_slot + i * prime_step) % MAX_THREADS;
         
         // Try to claim this slot atomically
-        std::thread::id expected = std::thread::id{};  // Default-constructed (empty) thread ID
+        int expected = 0;  // Empty slot (no thread ID)
         if (slot_owners[slot].compare_exchange_strong(expected, tid, std::memory_order_acq_rel)) {
             // Successfully claimed the slot
             return slot;
@@ -77,7 +77,7 @@ HazardPointer::~HazardPointer() {
         global_hazard_list[my_slot_].store(nullptr, std::memory_order_release);
         
         // Release slot ownership
-        slot_owners[my_slot_].store(std::thread::id{}, std::memory_order_release);
+        slot_owners[my_slot_].store(0, std::memory_order_release);
     }
 }
 
@@ -90,7 +90,7 @@ HazardPointer& HazardPointer::operator=(HazardPointer&& other) noexcept {
         // Clean up current state
         if (active_ && my_slot_ >= 0) {
             global_hazard_list[my_slot_].store(nullptr, std::memory_order_release);
-            slot_owners[my_slot_].store(std::thread::id{}, std::memory_order_release);
+            slot_owners[my_slot_].store(0, std::memory_order_release);
         }
 
         // Move from other
