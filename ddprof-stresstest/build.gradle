@@ -27,7 +27,6 @@ jmh {
     timeOnIteration = '3s'
     warmup = '1s'
     warmupIterations = 3
-    jvmArgsAppend = ['-XX:+CriticalJNINatives']
 }
 
 jmhJar {
