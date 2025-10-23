@@ -1135,14 +1135,40 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   ProfiledThread::initExistingThreads();
-  _omit_stacktraces = args._lightweight;
-  _event_mask =
-      ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
-                                                                     : 0) |
-      (args._cpu >= 0 ? EM_CPU : 0) | (args._wall >= 0 ? EM_WALL : 0) |
-      (args._record_allocations || args._record_liveness || args._gc_generations
-           ? EM_ALLOC
-           : 0);
+  
+  // Validate TLS priming for signal-based profiling safety
+  if (ProfiledThread::wasTlsPrimingAttempted() && !ProfiledThread::isTlsPrimingAvailable()) {
+    _omit_stacktraces = args._lightweight;
+    _event_mask =
+        ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
+                                                                       : 0) |
+        (args._cpu >= 0 ? EM_CPU : 0) | (args._wall >= 0 ? EM_WALL : 0) |
+        (args._record_allocations || args._record_liveness || args._gc_generations
+             ? EM_ALLOC
+             : 0);
+    
+    // Check if signal-based profiling is requested without TLS priming
+    if (_event_mask & (EM_CPU | EM_WALL)) {
+      return Error("CRITICAL: Signal-based profiling (CPU/Wall) requested but TLS priming failed. "
+                   "This would cause crashes in signal handlers due to unsafe TLS allocation. "
+                   "Profiling disabled for safety. Check system RT signal availability.");
+    }
+    
+    // Allow allocation profiling since it doesn't use signals
+    if (_event_mask == EM_ALLOC) {
+      writeLog(LOG_WARN, "TLS priming failed but continuing with allocation-only profiling (no signals)", 92);
+    }
+  } else {
+    _omit_stacktraces = args._lightweight;
+    _event_mask =
+        ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
+                                                                       : 0) |
+        (args._cpu >= 0 ? EM_CPU : 0) | (args._wall >= 0 ? EM_WALL : 0) |
+        (args._record_allocations || args._record_liveness || args._gc_generations
+             ? EM_ALLOC
+             : 0);
+  }
+  
   if (_event_mask == 0) {
     return Error("No profiling events specified");
   }
