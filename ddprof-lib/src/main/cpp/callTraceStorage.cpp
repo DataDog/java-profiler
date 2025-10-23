@@ -17,10 +17,11 @@
 
 // HazardPointer static members
 std::atomic<CallTraceHashTable*> HazardPointer::global_hazard_list[HazardPointer::MAX_THREADS];
+std::atomic<std::thread::id> HazardPointer::slot_owners[HazardPointer::MAX_THREADS];
 
 // HazardPointer implementation
 int HazardPointer::getThreadHazardSlot() {
-    // Signal-safe: use thread ID hash to assign slots
+    // Signal-safe collision resolution: use thread ID hash with semi-random prime step probing
     // This avoids thread_local allocation issues in signal handlers
     std::thread::id tid = std::this_thread::get_id();
 
@@ -28,21 +29,55 @@ int HazardPointer::getThreadHazardSlot() {
     size_t hash = std::hash<std::thread::id>{}(tid) * KNUTH_MULTIPLICATIVE_CONSTANT;
 
     // Use high bits for better distribution (shift right to get top bits)
-    return static_cast<int>((hash >> (sizeof(size_t) * 8 - 8)) % MAX_THREADS);
+    int base_slot = static_cast<int>((hash >> (sizeof(size_t) * 8 - 13)) % MAX_THREADS);
+
+    // Semi-random prime step probing to eliminate secondary clustering
+    // Each thread gets a different prime step size for unique probe sequences
+    int step_index = (hash >> 4) % PRIME_STEP_COUNT;  // Use different bits for step selection
+    int prime_step = PRIME_STEPS[step_index];
+    
+    for (int i = 0; i < MAX_PROBE_DISTANCE; i++) {
+        int slot = (base_slot + i * prime_step) % MAX_THREADS;
+        
+        // Try to claim this slot atomically
+        std::thread::id expected = std::thread::id{};  // Default-constructed (empty) thread ID
+        if (slot_owners[slot].compare_exchange_strong(expected, tid, std::memory_order_acq_rel)) {
+            // Successfully claimed the slot
+            return slot;
+        }
+        
+        // Check if we already own this slot (for reentrant calls)
+        if (slot_owners[slot].load(std::memory_order_acquire) == tid) {
+            return slot;
+        }
+    }
+    
+    // All probing attempts failed - return -1 to indicate failure
+    // Caller must handle graceful degradation
+    return -1;
 }
 
-HazardPointer::HazardPointer(CallTraceHashTable* resource) : active_(true) {
-    // Get thread hazard slot using signal-safe method
+HazardPointer::HazardPointer(CallTraceHashTable* resource) : active_(true), my_slot_(-1) {
+    // Get thread hazard slot using signal-safe collision resolution
     my_slot_ = getThreadHazardSlot();
+    
+    if (my_slot_ == -1) {
+        // Slot allocation failed - hazard pointer is inactive
+        active_ = false;
+        return;
+    }
 
-    // Update global hazard list
+    // Update global hazard list for the successfully claimed slot
     global_hazard_list[my_slot_].store(resource, std::memory_order_seq_cst);
 }
 
 HazardPointer::~HazardPointer() {
-    if (active_) {
+    if (active_ && my_slot_ >= 0) {
         // Clear global hazard list using our assigned slot
         global_hazard_list[my_slot_].store(nullptr, std::memory_order_release);
+        
+        // Release slot ownership
+        slot_owners[my_slot_].store(std::thread::id{}, std::memory_order_release);
     }
 }
 
@@ -53,8 +88,9 @@ HazardPointer::HazardPointer(HazardPointer&& other) noexcept : active_(other.act
 HazardPointer& HazardPointer::operator=(HazardPointer&& other) noexcept {
     if (this != &other) {
         // Clean up current state
-        if (active_) {
+        if (active_ && my_slot_ >= 0) {
             global_hazard_list[my_slot_].store(nullptr, std::memory_order_release);
+            slot_owners[my_slot_].store(std::thread::id{}, std::memory_order_release);
         }
 
         // Move from other
@@ -269,6 +305,13 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
     
     // RAII hazard pointer guard automatically manages hazard pointer lifecycle
     HazardPointer guard(active);
+    
+    // Check if hazard pointer allocation failed (slot exhaustion)
+    if (!guard.isActive()) {
+        // No hazard protection available - return dropped trace ID
+        Counters::increment(CALLTRACE_STORAGE_DROPPED);
+        return DROPPED_TRACE_ID;
+    }
     
     // Check again after registering hazard pointer - storage might have been nullified
     CallTraceHashTable* current_active = _active_storage.load(std::memory_order_acquire);

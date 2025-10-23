@@ -13,7 +13,8 @@
       "Bash(grep:*)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(./.claude/commands/build-and-summarize:*)"
     ],
     "deny": [],
     "ask": []
