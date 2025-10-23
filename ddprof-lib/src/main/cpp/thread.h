@@ -29,7 +29,11 @@ private:
   static pthread_key_t _tls_key;
   static int _buffer_size;
   static std::atomic<int> _running_buffer_pos;
-  static std::vector<ProfiledThread *> _buffer;
+  static ProfiledThread** _buffer;
+
+  // Free slot recycling - lock-free stack of available buffer slots
+  static std::atomic<int> _free_stack_top;
+  static int* _free_slots;  // Array to store free slot indices
 
   static void initTLSKey();
   static void doInitTLSKey();
@@ -37,7 +41,11 @@ private:
   static void initCurrentThreadWithBuffer();
   static void doInitExistingThreads();
   static void prepareBuffer(int size);
-  static void *delayedUninstallUSR1(void *unused);
+  static void cleanupBuffer();
+
+  // Free slot management - lock-free operations
+  static int popFreeSlot();    // Returns -1 if no free slots
+  static void pushFreeSlot(int slot_index);
 
   u64 _pc;
   u64 _span_id;
@@ -69,8 +77,13 @@ public:
   static void release();
 
   static ProfiledThread *current();
+  static ProfiledThread *currentSignalSafe(); // Signal-safe version that never allocates
   static int currentTid();
 
+  // TLS priming status checks
+  static bool isTlsPrimingAvailable();
+  static bool wasTlsPrimingAttempted();
+  
   inline int tid() { return _tid; }
 
   inline u64 noteCPUSample(u32 recording_epoch) {
@@ -125,7 +138,7 @@ public:
     return &_unwind_failures;
   }
 
-  static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
+  static void simpleTlsSignalHandler(int signo);
 
   int filterSlotId() { return _filter_slot_id; }
   void setFilterSlotId(int slotId) { _filter_slot_id = slotId; }
