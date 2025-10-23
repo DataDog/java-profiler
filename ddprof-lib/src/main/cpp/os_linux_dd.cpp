@@ -30,13 +30,11 @@ namespace {
   static std::atomic<bool> g_watcher_running{false};
   static std::atomic<int> g_watcher_fd{-1};
   static pthread_t g_watcher_thread;
+  static bool g_watcher_thread_valid{false};
   static std::function<void(int)> g_on_new_thread;
   static std::function<void(int)> g_on_dead_thread;
 
   static void* threadDirectoryWatcherLoop(void* arg);
-  static int tgkill(pid_t tgid, pid_t tid, int sig) {
-    return syscall(SYS_tgkill, tgid, tid, sig);
-  }
 }
 
 int ddprof::OS::truncateFile(int fd) {
@@ -72,9 +70,9 @@ bool ddprof::OS::isTlsPrimingAvailable() {
 
 int ddprof::OS::installTlsPrimeSignalHandler(SigHandler handler, int signal_offset) {
   int signal_num = SIGRTMIN + signal_offset;
-  if (signal_num > SIGRTMAX) {
-    TEST_LOG("No available RT signal for TLS priming: offset %d exceeds range (SIGRTMIN=%d, SIGRTMAX=%d)", 
-             signal_offset, SIGRTMIN, SIGRTMAX);
+  if (signal_num > SIGRTMAX || signal_num < SIGRTMIN) {
+    TEST_LOG("RT signal %d out of range [%d,%d] for TLS priming (offset=%d)", 
+             signal_num, SIGRTMIN, SIGRTMAX, signal_offset);
     return -1;
   }
   
@@ -130,11 +128,6 @@ void ddprof::OS::enumerateThreadIds(const std::function<void(int)>& callback) {
   closedir(task_dir);
 }
 
-void ddprof::OS::signalThread(int tid, int signum) {
-  if (syscall(SYS_tgkill, getpid(), tid, signum) != 0 && errno != ESRCH) {
-    TEST_LOG("Failed to signal thread %d with signal %d: %s", tid, signum, strerror(errno));
-  }
-}
 
 int ddprof::OS::getThreadCount() {
   FILE *status = fopen("/proc/self/status", "r");
@@ -155,8 +148,11 @@ int ddprof::OS::getThreadCount() {
 
 bool ddprof::OS::startThreadDirectoryWatcher(const std::function<void(int)>& on_new_thread, const std::function<void(int)>& on_dead_thread) {
   if (g_watcher_running.load()) {
+    TEST_LOG("Thread directory watcher already running, skipping start");
     return true; // Already running
   }
+  
+  TEST_LOG("Initializing thread directory watcher...");
   
   int inotify_fd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
   if (inotify_fd == -1) {
@@ -184,7 +180,7 @@ bool ddprof::OS::startThreadDirectoryWatcher(const std::function<void(int)>& on_
     return false;
   }
   
-  pthread_detach(g_watcher_thread);
+  g_watcher_thread_valid = true;
   TEST_LOG("Started thread directory watcher");
   return true;
 }
@@ -198,6 +194,17 @@ void ddprof::OS::stopThreadDirectoryWatcher() {
   int fd = g_watcher_fd.exchange(-1);
   if (fd >= 0) {
     close(fd);
+  }
+  
+  // Wait for thread to complete
+  if (g_watcher_thread_valid) {
+    void* result;
+    if (pthread_join(g_watcher_thread, &result) == 0) {
+      TEST_LOG("Thread directory watcher joined successfully");
+    } else {
+      TEST_LOG("Failed to join thread directory watcher: %s", strerror(errno));
+    }
+    g_watcher_thread_valid = false;
   }
   TEST_LOG("Stopped thread directory watcher");
 }

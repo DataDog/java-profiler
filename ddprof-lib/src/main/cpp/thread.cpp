@@ -31,13 +31,19 @@ inline void ProfiledThread::freeKey(void *key) {
 
 void ProfiledThread::initCurrentThread() {
   if (ddprof::OS::isTlsPrimingAvailable()) {
+    TEST_LOG("Initializing TLS for current thread TID=%d", OS::threadId());
     initCurrentThreadWithBuffer();
+  } else {
+    TEST_LOG("TLS priming not available, skipping init for thread TID=%d", OS::threadId());
   }
 }
 
 void ProfiledThread::initExistingThreads() {
   if (ddprof::OS::isTlsPrimingAvailable()) {
+    TEST_LOG("TLS priming available, initializing existing threads...");
     doInitExistingThreads();
+  } else {
+    TEST_LOG("TLS priming not available, skipping existing thread initialization");
   }
 }
 
@@ -89,37 +95,47 @@ ProfiledThread::initCurrentThreadWithBuffer() {
 void ProfiledThread::doInitExistingThreads() {
   static bool initialized = false;
   if (initialized) {
+    TEST_LOG("TLS priming already initialized, skipping");
     return; // Avoid double initialization
   }
+
+  TEST_LOG("Starting TLS priming initialization...");
 
   // Install TLS priming signal handler
   g_tls_prime_signal = ddprof::OS::installTlsPrimeSignalHandler(simpleTlsSignalHandler, 4);
   if (g_tls_prime_signal <= 0) {
-    TEST_LOG("Failed to install TLS priming signal handler");
+    TEST_LOG("CRITICAL: Failed to install TLS priming signal handler (signal=%d)", g_tls_prime_signal);
     return;
   }
 
-  TEST_LOG("Successfully installed TLS priming handler on RT signal %d", g_tls_prime_signal);
+  TEST_LOG("TLS priming signal handler installed successfully (RT signal %d)", g_tls_prime_signal);
 
   // Use a modest buffer size since we're only handling new threads via watcher
   // 256 should be more than enough for concurrent new thread creation
   prepareBuffer(256);
 
   // Start thread directory watcher to prime new threads (no mass-priming of existing threads)
+  TEST_LOG("Attempting to start thread directory watcher for TLS priming...");
   bool watcher_started = ddprof::OS::startThreadDirectoryWatcher(
     [](int tid) {
       // Prime new thread with TLS signal
-      ddprof::OS::signalThread(tid, g_tls_prime_signal);
+      TEST_LOG("New thread detected: TID=%d, signaling with RT signal %d", tid, g_tls_prime_signal);
+      if (!OS::sendSignalToThread(tid, g_tls_prime_signal) && errno != ESRCH) {
+        TEST_LOG("FAILED to prime TLS for thread %d with signal %d: %s", tid, g_tls_prime_signal, strerror(errno));
+      } else {
+        TEST_LOG("Successfully primed TLS for thread %d", tid);
+      }
     },
     [](int tid) {
       // No-op for dead threads - cleanup handled elsewhere
+      TEST_LOG("Thread exited: TID=%d (no cleanup needed)", tid);
     }
   );
 
   if (!watcher_started) {
-    TEST_LOG("Failed to start thread directory watcher for TLS priming");
+    TEST_LOG("CRITICAL: Failed to start thread directory watcher for TLS priming");
   } else {
-    TEST_LOG("Started thread directory watcher for TLS priming");
+    TEST_LOG("Thread directory watcher started successfully for TLS priming");
   }
 
   initialized = true;
@@ -295,7 +311,14 @@ void ProfiledThread::cleanupBuffer() {
 void ProfiledThread::simpleTlsSignalHandler(int signo) {
   // Only prime threads that are not Java threads
   // Java threads are handled by JVMTI ThreadStart events
-  if (VMThread::current() == nullptr) {
+  int tid = OS::threadId();
+  VMThread* vm_thread = VMThread::current();
+  
+  if (vm_thread == nullptr) {
+    TEST_LOG("TLS priming signal received: TID=%d, signal=%d, priming non-Java thread", tid, signo);
     initCurrentThreadWithBuffer();
+    TEST_LOG("TLS priming completed for non-Java thread TID=%d", tid);
+  } else {
+    TEST_LOG("TLS priming signal received: TID=%d, signal=%d, skipping Java thread (VM thread present)", tid, signo);
   }
 }

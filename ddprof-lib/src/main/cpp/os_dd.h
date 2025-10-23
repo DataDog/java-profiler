@@ -23,7 +23,6 @@ public:
   static int installTlsPrimeSignalHandler(SigHandler handler, int signal_offset = 4);
   static void uninstallTlsPrimeSignalHandler(int signal_num);
   static void enumerateThreadIds(const std::function<void(int)>& callback);
-  static void signalThread(int tid, int signum);
   static bool startThreadDirectoryWatcher(const std::function<void(int)>& on_new_thread, const std::function<void(int)>& on_dead_thread);
   static int getThreadCount();
   static void stopThreadDirectoryWatcher();

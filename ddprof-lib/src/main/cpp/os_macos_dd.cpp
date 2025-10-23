@@ -72,15 +72,6 @@ void ddprof::OS::enumerateThreadIds(const std::function<void(int)>& callback) {
   vm_deallocate(task, (vm_address_t)thread_list, thread_count * sizeof(thread_t));
 }
 
-void ddprof::OS::signalThread(int tid, int signum) {
-  // On macOS, tid is actually a mach thread port
-  thread_t thread = static_cast<thread_t>(tid);
-  
-  // Convert mach thread to pthread for signaling
-  // This is a limitation - we can't easily signal arbitrary mach threads
-  // In practice, this is mainly used for TLS priming which is disabled on macOS
-  TEST_LOG("Thread signaling not fully supported on macOS (thread=%d, signal=%d)", tid, signum);
-}
 
 bool ddprof::OS::startThreadDirectoryWatcher(const std::function<void(int)>& on_new_thread, const std::function<void(int)>& on_dead_thread) {
   return false; // Thread directory watching not supported on macOS
