@@ -44,6 +44,7 @@ namespace ddprof {
     initOffsets();
     initJvmFunctions();
     initUnsafeFunctions();
+    initCriticalJNINatives();
   }
 
   void VMStructs_::initOffsets() {
@@ -96,6 +97,16 @@ namespace ddprof {
                             blob->_name, true);
       }
     }
+  }
+
+  void VMStructs_::initCriticalJNINatives() {
+#ifdef __aarch64__
+    // aarch64 does not support CriticalJNINatives
+    JVMFlag* flag = JVMFlag::find("CriticalJNINatives", {JVMFlag::Type::Bool});
+    if (flag != nullptr && flag->get()) {
+        flag->set(0);
+    }
+#endif // __aarch64__
   }
 
   const void *VMStructs_::findHeapUsageFunc() {
