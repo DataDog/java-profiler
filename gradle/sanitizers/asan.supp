@@ -1,0 +1,3 @@
+# Suppress all AddressSanitizer errors in libjvm
+# This is JVM internal code that we cannot fix
+interceptor_via_lib:libjvm
