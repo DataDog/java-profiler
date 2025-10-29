@@ -472,8 +472,6 @@ public final class JavaProfiler {
 
     private native void filterThreadAdd0();
     private native void filterThreadRemove0();
-    // Backward compatibility for existing code
-    private native void filterThread0(boolean enable);
 
     private static native int getTid0();
     private static native ByteBuffer getContextPage0(int tid);
