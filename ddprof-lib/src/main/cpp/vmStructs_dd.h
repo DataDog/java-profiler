@@ -52,6 +52,7 @@ namespace ddprof {
     static void initOffsets();
     static void initJvmFunctions();
     static void initUnsafeFunctions();
+    static void initCriticalJNINatives();
 
     static void checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni, jmethodID method,
                                   void *address);

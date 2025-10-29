@@ -78,7 +78,7 @@ Java_com_datadoghq_profiler_JavaProfiler_stop0(JNIEnv *env, jobject unused) {
 }
 
 extern "C" DLLEXPORT jint JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_getTid0(JNIEnv *env, jobject unused) {
+Java_com_datadoghq_profiler_JavaProfiler_getTid0(JNIEnv *env, jclass unused) {
   return OS::threadId();
 }
 
@@ -113,7 +113,7 @@ Java_com_datadoghq_profiler_JavaProfiler_execute0(JNIEnv *env, jobject unused,
 
 extern "C" DLLEXPORT jstring JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getStatus0(JNIEnv* env,
-                                                    jobject unused) {
+                                                    jclass unused) {
   char msg[2048];
   int ret = Profiler::instance()->status((char*)msg, sizeof(msg) - 1);
   return env->NewStringUTF(msg);
@@ -121,14 +121,18 @@ Java_com_datadoghq_profiler_JavaProfiler_getStatus0(JNIEnv* env,
 
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
-                                                    jobject unused) {
+                                                    jclass unused) {
   return (jlong)Profiler::instance()->total_samples();
 }
 
 // some duplication between add and remove, though we want to avoid having an extra branch in the hot path
+
+// JavaCritical is faster JNI, but more restrictive - parameters and return value have to be
+// primitives or arrays of primitive types.
+// We direct corresponding JNI calls to JavaCritical to make sure the parameters/return value
+// still compatible in the event of signature changes in the future.
 extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0(JNIEnv *env,
-                                                          jobject unused) {
+JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
   ProfiledThread *current = ProfiledThread::current();
   if (unlikely(current == nullptr)) {
     assert(false);
@@ -158,8 +162,7 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0(JNIEnv *env,
 }
 
 extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0(JNIEnv *env,
-                                                             jobject unused) {
+JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
   ProfiledThread *current = ProfiledThread::current();
   if (unlikely(current == nullptr)) {
     assert(false);
@@ -173,7 +176,7 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0(JNIEnv *env,
   if (unlikely(!thread_filter->enabled())) {
     return;
   }
-  
+
   int slot_id = current->filterSlotId();
   if (unlikely(slot_id == -1)) {
     // Thread doesn't have a slot ID yet - nothing to remove
@@ -182,10 +185,23 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0(JNIEnv *env,
   thread_filter->remove(slot_id);
 }
 
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0(JNIEnv *env,
+                                                          jclass unused) {
+  JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0();
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0(JNIEnv *env,
+                                                             jclass unused) {
+  JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0();
+}
+
 // Backward compatibility for existing code
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_filterThread0(JNIEnv *env,
-                                                       jobject unused,
+                                                       jclass unused,
                                                        jboolean enable) {
   ProfiledThread *current = ProfiledThread::current();
   if (unlikely(current == nullptr)) {
@@ -200,7 +216,7 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThread0(JNIEnv *env,
   if (unlikely(!thread_filter->enabled())) {
     return;
   }
-  
+
   int slot_id = current->filterSlotId();
   if (unlikely(slot_id == -1)) {
     if (enable) {
@@ -213,11 +229,11 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThread0(JNIEnv *env,
       return;
     }
   }
-  
+
   if (unlikely(slot_id == -1)) {
     return;  // Failed to register thread
   }
-  
+
   if (enable) {
     thread_filter->add(tid, slot_id);
   } else {
@@ -227,7 +243,7 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThread0(JNIEnv *env,
 
 extern "C" DLLEXPORT jobject JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getContextPage0(JNIEnv *env,
-                                                         jobject unused,
+                                                         jclass unused,
                                                          jint tid) {
   ContextPage page = Contexts::getPage((int)tid);
   if (page.storage == 0) {
@@ -238,7 +254,7 @@ Java_com_datadoghq_profiler_JavaProfiler_getContextPage0(JNIEnv *env,
 
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getContextPageOffset0(JNIEnv *env,
-                                                               jobject unused,
+                                                               jclass unused,
                                                                jint tid) {
   ContextPage page = Contexts::getPage((int)tid);
   return (jlong)page.storage;
@@ -246,13 +262,14 @@ Java_com_datadoghq_profiler_JavaProfiler_getContextPageOffset0(JNIEnv *env,
 
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getMaxContextPages0(JNIEnv *env,
-                                                             jobject unused) {
+                                                             jclass unused) {
   return (jint)Contexts::getMaxPages();
 }
 
+
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
-    JNIEnv *env, jobject unused, jlong rootSpanId, jstring endpoint,
+    JNIEnv *env, jclass unused, jlong rootSpanId, jstring endpoint,
     jstring operation, jint sizeLimit) {
   JniString endpoint_str(env, endpoint);
   u32 endpointLabel = Profiler::instance()->stringLabelMap()->bounded_lookup(
@@ -274,7 +291,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
 
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_registerConstant0(JNIEnv *env,
-                                                           jobject unused,
+                                                           jclass unused,
                                                            jstring value) {
   JniString value_str(env, value);
   u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
@@ -283,7 +300,7 @@ Java_com_datadoghq_profiler_JavaProfiler_registerConstant0(JNIEnv *env,
 }
 
 extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_dump0(JNIEnv *env, jobject unused,
+Java_com_datadoghq_profiler_JavaProfiler_dump0(JNIEnv *env, jclass unused,
                                                jstring path) {
   JniString path_str(env, path);
   Profiler::instance()->dump(path_str.c_str(), path_str.length());
@@ -291,7 +308,7 @@ Java_com_datadoghq_profiler_JavaProfiler_dump0(JNIEnv *env, jobject unused,
 
 extern "C" DLLEXPORT jobject JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getDebugCounters0(JNIEnv *env,
-                                                           jobject unused) {
+                                                           jclass unused) {
 #ifdef COUNTERS
   return env->NewDirectByteBuffer((void *)Counters::getCounters(),
                                   (jlong)Counters::size());
@@ -302,7 +319,7 @@ Java_com_datadoghq_profiler_JavaProfiler_getDebugCounters0(JNIEnv *env,
 
 extern "C" DLLEXPORT jobjectArray JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_describeDebugCounters0(
-    JNIEnv *env, jobject unused) {
+    JNIEnv *env, jclass unused) {
 #ifdef COUNTERS
   std::vector<const char *> counter_names = Counters::describeCounters();
   jobjectArray array = (jobjectArray)env->NewObjectArray(
@@ -320,7 +337,7 @@ Java_com_datadoghq_profiler_JavaProfiler_describeDebugCounters0(
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(
-    JNIEnv *env, jobject unused, jstring name, jstring value, jstring unit) {
+    JNIEnv *env, jclass unused, jstring name, jstring value, jstring unit) {
   int tid = ProfiledThread::currentTid();
   if (tid < 0) {
     return;
@@ -343,7 +360,7 @@ static int dictionarizeClassName(JNIEnv* env, jstring className) {
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
-    JNIEnv *env, jobject unused, jlong startTime, jlong endTime, jstring task,
+    JNIEnv *env, jclass unused, jlong startTime, jlong endTime, jstring task,
     jstring scheduler, jthread origin, jstring queueType, jint queueLength) {
   int tid = ProfiledThread::currentTid();
   if (tid < 0) {
@@ -379,19 +396,20 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
 
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_currentTicks0(JNIEnv *env,
-                                                       jobject unused) {
+                                                       jclass unused) {
   return TSC::ticks();
 }
 
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_tscFrequency0(JNIEnv *env,
-                                                       jobject unused) {
+                                                       jclass unused) {
   return TSC::frequency();
 }
 
+
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_mallocArenaMax0(JNIEnv *env,
-                                                         jobject unused,
+                                                         jclass unused,
                                                          jint maxArenas) {
   ddprof::OS::mallocArenaMax(maxArenas);
 }
