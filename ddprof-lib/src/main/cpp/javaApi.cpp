@@ -401,20 +401,11 @@ Java_com_datadoghq_profiler_JavaProfiler_currentTicks0(JNIEnv *env,
 }
 
 extern "C" DLLEXPORT jlong JNICALL
-JavaCritical_com_datadoghq_profiler_JavaProfiler_currentTicks0() {
-  return TSC::ticks();
-}
-
-extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_tscFrequency0(JNIEnv *env,
                                                        jclass unused) {
   return TSC::frequency();
 }
 
-extern "C" DLLEXPORT jlong JNICALL
-JavaCritical_com_datadoghq_profiler_JavaProfiler_tscFrequency0() {
-  return TSC::frequency();
-}
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_mallocArenaMax0(JNIEnv *env,
@@ -422,12 +413,6 @@ Java_com_datadoghq_profiler_JavaProfiler_mallocArenaMax0(JNIEnv *env,
                                                          jint maxArenas) {
   ddprof::OS::mallocArenaMax(maxArenas);
 }
-
-extern "C" DLLEXPORT void JNICALL
-JavaCritical_com_datadoghq_profiler_JavaProfiler_mallocArenaMax0(jint maxArenas) {
-  ddprof::OS::mallocArenaMax(maxArenas);
-}
-
 
 extern "C" DLLEXPORT jstring JNICALL
 Java_com_datadoghq_profiler_JVMAccess_findStringJVMFlag0(JNIEnv *env,
