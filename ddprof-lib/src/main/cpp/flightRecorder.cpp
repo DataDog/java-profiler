@@ -1489,9 +1489,8 @@ Error FlightRecorder::newRecording(bool reset) {
 }
 
 void FlightRecorder::stop() {
+  ExclusiveLockGuard locker(&_rec_lock);
   if (_rec != NULL) {
-    _rec_lock.lock();
-
     Recording *tmp = _rec;
     // NULL first, deallocate later
     _rec = NULL;
@@ -1500,8 +1499,8 @@ void FlightRecorder::stop() {
 }
 
 Error FlightRecorder::dump(const char *filename, const int length) {
+  ExclusiveLockGuard locker(&_rec_lock);
   if (_rec != NULL) {
-    _rec_lock.lock();
     if (_filename.length() != length ||
         strncmp(filename, _filename.c_str(), length) != 0) {
       // if the filename to dump the recording to is specified move the current
@@ -1509,9 +1508,7 @@ Error FlightRecorder::dump(const char *filename, const int length) {
       int copy_fd = open(filename, O_CREAT | O_RDWR | O_TRUNC, 0644);
       _rec->switchChunk(copy_fd);
       close(copy_fd);
-      _rec_lock.unlock();
     } else {
-      _rec_lock.unlock();
       return Error(
           "Can not dump recording to itself. Provide a different file name!");
     }
