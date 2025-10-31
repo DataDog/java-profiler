@@ -291,7 +291,7 @@ class FlightRecorder {
 private:
   std::string _filename;
   Arguments _args;
-  Recording *_rec;
+  Recording* volatile _rec;
 
   Error newRecording(bool reset);
 

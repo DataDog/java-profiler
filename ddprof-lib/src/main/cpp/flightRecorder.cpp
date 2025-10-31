@@ -40,7 +40,7 @@
 #include <vector>
 #include <unistd.h>
 
-static SpinLock _rec_lock(1);
+static SpinLock _rec_lock(0);
 
 static const char *const SETTING_RING[] = {NULL, "kernel", "user", "any"};
 static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
@@ -1460,6 +1460,7 @@ void Recording::addThread(int lock_index, int tid) {
 }
 
 Error FlightRecorder::start(Arguments &args, bool reset) {
+  ExclusiveLockGuard locker(&_rec_lock);
   const char *file = args.file();
   if (file == NULL || file[0] == 0) {
     _filename = "";
@@ -1473,7 +1474,6 @@ Error FlightRecorder::start(Arguments &args, bool reset) {
   }
 
   Error ret = newRecording(reset);
-  _rec_lock.unlock();
   return ret;
 }
 
@@ -1484,23 +1484,27 @@ Error FlightRecorder::newRecording(bool reset) {
     return Error("Could not open Flight Recorder output file");
   }
 
-  _rec = new Recording(fd, _args);
+  // Given some of reads are not protected by _rec_lock,
+  // we want to publish _rec with full fence, so that read
+  // side cannot see partially initialized recording.
+  Recording* tmp = new Recording(fd, _args);
+  __atomic_store_n(&_rec, tmp, __ATOMIC_SEQ_CST);
   return Error::OK;
 }
 
 void FlightRecorder::stop() {
   ExclusiveLockGuard locker(&_rec_lock);
   if (_rec != NULL) {
-    Recording *tmp = _rec;
+    volatile Recording *tmp = _rec;
     // NULL first, deallocate later
-    _rec = NULL;
+    __atomic_store_n(&_rec, nullptr, __ATOMIC_RELAXED);
     delete tmp;
   }
 }
 
 Error FlightRecorder::dump(const char *filename, const int length) {
-  ExclusiveLockGuard locker(&_rec_lock);
   if (_rec != NULL) {
+    ExclusiveLockGuard locker(&_rec_lock);
     if (_filename.length() != length ||
         strncmp(filename, _filename.c_str(), length) != 0) {
       // if the filename to dump the recording to is specified move the current
@@ -1521,7 +1525,7 @@ Error FlightRecorder::dump(const char *filename, const int length) {
 
 void FlightRecorder::flush() {
   if (_rec != NULL) {
-    _rec_lock.lock();
+    ExclusiveLockGuard locker(&_rec_lock);
 
     jvmtiEnv *jvmti = VM::jvmti();
     JNIEnv *env = VM::jni();
@@ -1539,7 +1543,6 @@ void FlightRecorder::flush() {
         jvmti->Deallocate((unsigned char *)classes[i]);
       }
     }
-    _rec_lock.unlock();
   }
 }
 
