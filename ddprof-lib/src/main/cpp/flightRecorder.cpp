@@ -1503,8 +1503,8 @@ void FlightRecorder::stop() {
 }
 
 Error FlightRecorder::dump(const char *filename, const int length) {
+  ExclusiveLockGuard locker(&_rec_lock);
   if (_rec != NULL) {
-    ExclusiveLockGuard locker(&_rec_lock);
     if (_filename.length() != length ||
         strncmp(filename, _filename.c_str(), length) != 0) {
       // if the filename to dump the recording to is specified move the current
@@ -1524,9 +1524,8 @@ Error FlightRecorder::dump(const char *filename, const int length) {
 }
 
 void FlightRecorder::flush() {
+  ExclusiveLockGuard locker(&_rec_lock);
   if (_rec != NULL) {
-    ExclusiveLockGuard locker(&_rec_lock);
-
     jvmtiEnv *jvmti = VM::jvmti();
     JNIEnv *env = VM::jni();
 
