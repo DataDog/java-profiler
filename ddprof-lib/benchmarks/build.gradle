@@ -17,7 +17,7 @@ application {
 
 // Include the main library headers
 tasks.withType(CppCompile).configureEach {
-  dependsOn ':ddprof-lib:copyUpstreamFiles'
+  dependsOn ':ddprof-lib:patchUpstreamFiles'
 
   includes file('../src/main/cpp').toString()
   includes file('../src/main/cpp-external').toString()
