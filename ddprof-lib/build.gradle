@@ -374,6 +374,11 @@ def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
   into "${projectDir}/src/main/cpp-external"
 }
 
+tasks.named("spotlessMisc") {
+  configure {
+    dependsOn patchUpstreamFiles
+  }
+}
 
 // Load patch configuration from external file
 apply from: "${rootDir}/gradle/patching.gradle"
@@ -530,6 +535,10 @@ configurations {
 // added by the cpp-library plugin
 tasks.whenTaskAdded { task ->
   if (task instanceof CppCompile) {
+    configure {
+      dependsOn patchUpstreamFiles
+    }
+
     if (!task.name.startsWith('compileLib') && task.name.contains('Release')) {
       buildConfigurations.each { config ->
         if (config.os == osIdentifier() && config.arch == archIdentifier()) {
