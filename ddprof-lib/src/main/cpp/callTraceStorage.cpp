@@ -215,19 +215,18 @@ CallTraceStorage::CallTraceStorage() : _generation_counter(1), _liveness_lock(0)
 
     // Initialize triple-buffered storage
     auto active_table = std::make_unique<CallTraceHashTable>();
-    u64 initial_instance_id = getNextInstanceId();
-    active_table->setInstanceId(initial_instance_id);
+    active_table->setInstanceId(getNextInstanceId());
     active_table->setParentStorage(this);
     _active_storage.store(active_table.release(), std::memory_order_release);
 
     auto standby_table = std::make_unique<CallTraceHashTable>();
     standby_table->setParentStorage(this);
-    // Standby will get its instance ID during swap
+    standby_table->setInstanceId(getNextInstanceId());
     _standby_storage.store(standby_table.release(), std::memory_order_release);
     
     auto scratch_table = std::make_unique<CallTraceHashTable>();
     scratch_table->setParentStorage(this);
-    // scratch table will get instance ID when it rotates to standby
+    scratch_table->setInstanceId(getNextInstanceId());
     _scratch_storage.store(scratch_table.release(), std::memory_order_release);
 
     // Pre-allocate containers to avoid malloc() during hot path operations
