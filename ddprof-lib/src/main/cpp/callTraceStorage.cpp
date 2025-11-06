@@ -12,6 +12,7 @@
 #include "vmEntry.h" // For BCI_ERROR constant
 #include "arch_dd.h" // For LP64_ONLY macro and COMMA macro
 #include "criticalSection.h" // For table swap critical sections
+#include "primeProbing.h"
 #include <string.h>
 #include <atomic>
 
@@ -33,8 +34,7 @@ int HazardPointer::getThreadHazardSlot() {
 
     // Semi-random prime step probing to eliminate secondary clustering
     // Each thread gets a different prime step size for unique probe sequences
-    int step_index = (hash >> 4) % PRIME_STEP_COUNT;  // Use different bits for step selection
-    int prime_step = PRIME_STEPS[step_index];
+    int prime_step = getPrimeStep(hash);
     
     for (int i = 0; i < MAX_PROBE_DISTANCE; i++) {
         int slot = (base_slot + i * prime_step) % MAX_THREADS;
@@ -378,8 +378,7 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
     });
 
     // Step 7: Update the instance id for the recently retired active buffer
-    u64 new_instance_id = getNextInstanceId();
-    old_active->setInstanceId(new_instance_id);
+    old_active->setInstanceId(getNextInstanceId());
     
     // Step 8: Add dropped trace and call processor
     _traces_buffer.insert(getDroppedTrace());

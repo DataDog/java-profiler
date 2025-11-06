@@ -9,6 +9,7 @@
 #include "os.h"
 #include "arch_dd.h"
 #include "common.h"
+#include "primeProbing.h"
 #include <string.h>
 #include <signal.h>
 #include <pthread.h>
@@ -70,7 +71,9 @@ public:
 
   CallTraceSample *values() { return (CallTraceSample *)(keys() + _capacity); }
 
-  u32 nextSlot(u32 slot) const { return (slot + 1) & (_capacity - 1); }
+  u32 nextSlot(u32 slot, u64 hash) const { 
+    return advanceSlotPrime(slot, hash, _capacity);
+  }
 
   void clear() {
     memset(keys(), 0, (sizeof(u64) + sizeof(CallTraceSample)) * _capacity);
@@ -189,7 +192,7 @@ CallTrace *CallTraceHashTable::findCallTrace(LongHashTable *table, u64 hash) {
     if (++step >= capacity) {
       return nullptr;
     }
-    slot = (slot + step) & (capacity - 1);
+    slot = table->nextSlot(slot, hash);
   }
 
   return table->values()[slot].trace;
@@ -319,13 +322,13 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
       atomicIncRelaxed(_overflow);
       return OVERFLOW_TRACE_ID;
     }
-    // Linear probing with step increment
-    slot = (slot + step) & (capacity - 1);
+    // Prime probing for better distribution
+    slot = table->nextSlot(slot, hash);
   }
 }
 
 void CallTraceHashTable::collect(std::unordered_set<CallTrace *> &traces, std::function<void(CallTrace*)> trace_hook) {
-  // Lock-free collection for read-only tables (after atomic swap)
+  // Lock-free collection for read-only tables
   // No new put() operations can occur, so no synchronization needed
   
   // Collect from all tables in the chain (current and previous tables)
@@ -383,16 +386,12 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
   // Look for existing entry or empty slot - no locking needed
   while (true) {
     u64 key_value = __atomic_load_n(&keys[slot], __ATOMIC_RELAXED);
-    if (key_value == hash) {
-      // Found existing entry - just use it (trace already preserved)
-      break;
-    }
     if (key_value == 0) {
       // Found empty slot - claim it atomically
       u64 expected = 0;
       if (!__atomic_compare_exchange_n(&keys[slot], &expected, hash, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
         // Another thread claimed it, try next slot
-        slot = table->nextSlot(slot);
+        slot = table->nextSlot(slot, hash);
         continue;
       }
       
@@ -418,6 +417,6 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
       break;
     }
     
-    slot = table->nextSlot(slot);
+    slot = table->nextSlot(slot, hash);
   }
 }
