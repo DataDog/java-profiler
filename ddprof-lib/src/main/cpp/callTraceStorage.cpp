@@ -34,10 +34,15 @@ int HazardPointer::getThreadHazardSlot() {
 
     // Semi-random prime step probing to eliminate secondary clustering
     // Each thread gets a different prime step size for unique probe sequences
-    int prime_step = getPrimeStep(hash);
+    HashProbe probe(hash, MAX_THREADS);
+    
+    // Position probe at base_slot
+    while (probe.slot() != static_cast<u32>(base_slot) && probe.hasNext()) {
+        probe.next();
+    }
     
     for (int i = 0; i < MAX_PROBE_DISTANCE; i++) {
-        int slot = (base_slot + i * prime_step) % MAX_THREADS;
+        int slot = static_cast<int>(probe.slot());
         
         // Try to claim this slot atomically
         int expected = 0;  // Empty slot (no thread ID)
@@ -49,6 +54,11 @@ int HazardPointer::getThreadHazardSlot() {
         // Check if we already own this slot (for reentrant calls)
         if (slot_owners[slot].load(std::memory_order_acquire) == tid) {
             return slot;
+        }
+        
+        // Move to next slot using probe
+        if (probe.hasNext()) {
+            probe.next();
         }
     }
     

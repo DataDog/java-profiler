@@ -72,7 +72,22 @@ public:
   CallTraceSample *values() { return (CallTraceSample *)(keys() + _capacity); }
 
   u32 nextSlot(u32 slot, u64 hash) const { 
-    return advanceSlotPrime(slot, hash, _capacity);
+    // Create probe and advance it to find the slot after the given slot
+    HashProbe probe(hash, _capacity);
+    
+    // Find the current slot in the probe sequence
+    while (probe.slot() != slot && probe.hasNext()) {
+      probe.next();
+    }
+    
+    // Move to next slot
+    if (probe.hasNext()) {
+      probe.next();
+      return probe.slot();
+    }
+    
+    // Fallback: wrap around
+    return (slot + 1) & (_capacity - 1);
   }
 
   void clear() {
@@ -181,21 +196,20 @@ CallTrace *CallTraceHashTable::storeCallTrace(int num_frames,
 
 CallTrace *CallTraceHashTable::findCallTrace(LongHashTable *table, u64 hash) {
   u64 *keys = table->keys();
-  u32 capacity = table->capacity();
-  u32 slot = hash & (capacity - 1);
-  u32 step = 0;
+  HashProbe probe(hash, table->capacity());
 
-  while (keys[slot] != hash) {
+  do {
+    u32 slot = probe.slot();
+    if (keys[slot] == hash) {
+      return table->values()[slot].trace;
+    }
     if (keys[slot] == 0) {
       return nullptr;
     }
-    if (++step >= capacity) {
-      return nullptr;
-    }
-    slot = table->nextSlot(slot, hash);
-  }
+    probe.next();
+  } while (probe.hasNext());
 
-  return table->values()[slot].trace;
+  return nullptr;
 }
 
 u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
@@ -210,11 +224,10 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
   }
   
   u64 *keys = table->keys();
-  u32 capacity = table->capacity();
-  u32 slot = hash & (capacity - 1);
-  u32 step = 0;
+  HashProbe probe(hash, table->capacity());
   
   while (true) {
+    u32 slot = probe.slot();
     u64 key_value = __atomic_load_n(&keys[slot], __ATOMIC_RELAXED);
     if (key_value == hash) { 
       // Hash matches - wait for the preparing thread to complete
@@ -317,13 +330,13 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
       return trace->trace_id;
     }
 
-    if (++step >= capacity) {
+    if (!probe.hasNext()) {
       // Table overflow - very unlikely with expansion logic
       atomicIncRelaxed(_overflow);
       return OVERFLOW_TRACE_ID;
     }
     // Prime probing for better distribution
-    slot = table->nextSlot(slot, hash);
+    probe.next();
   }
 }
 
