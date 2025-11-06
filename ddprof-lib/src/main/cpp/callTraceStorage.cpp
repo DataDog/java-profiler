@@ -351,6 +351,9 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
     _traces_buffer.clear();
 
     // Step 1: Collect from current standby directly to _traces_buffer with hook for immediate preservation
+    // Only 'original_active' can be used from multuple threads at this moment.
+    // Both 'original_standby' and 'original_scratch' can be used only from the single threa executing 'processTraces' 
+    // so we can iterate the first one and at the same time add new elements to the second one safely
     original_standby->collect(_traces_buffer, [&](CallTrace* trace) {
         if (_preserve_set_buffer.find(trace->trace_id) != _preserve_set_buffer.end()) {
             original_scratch->putWithExistingId(trace, 1);
@@ -359,10 +362,8 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
     
     // Step 3: Clear original_standby after collection
     original_standby->clear();
-    // u64 new_instance_id = getNextInstanceId();
-    // original_standby->setInstanceId(new_instance_id);
     
-    // Step 4: ATOMIC SWAP - standby (now empty) becomes new active
+    // Step 4: Atomic swap - standby (now empty) becomes new active
     CallTraceHashTable* old_active = _active_storage.exchange(original_standby, std::memory_order_acq_rel);
     
     // Step 5: Complete the rotation: active→scratch, scratch→standby
