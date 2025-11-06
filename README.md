@@ -19,7 +19,7 @@ If you need a full-fledged Java profiler head back to [async-profiler](https://g
    - On Alpine: `apk add gtest-dev`
 6. clang-format 11 (for code formatting)
    - On Ubuntu/Debian: `sudo apt install clang-format-11`
-   - On macOS: `brew install clang-format-11`
+   - On macOS: `brew install clang-format@11`
    - On Alpine: `apk add clang-format-11`
 
 ### Building the Project

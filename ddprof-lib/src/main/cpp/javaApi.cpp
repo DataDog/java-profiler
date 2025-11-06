@@ -131,7 +131,6 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0(JNIEnv *env,
                                                           jobject unused) {
   ProfiledThread *current = ProfiledThread::current();
   if (unlikely(current == nullptr)) {
-    assert(false);
     return;
   }
   int tid = current->tid();
@@ -162,7 +161,6 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0(JNIEnv *env,
                                                              jobject unused) {
   ProfiledThread *current = ProfiledThread::current();
   if (unlikely(current == nullptr)) {
-    assert(false);
     return;
   }
   int tid = current->tid();
@@ -180,49 +178,6 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0(JNIEnv *env,
     return;
   }
   thread_filter->remove(slot_id);
-}
-
-// Backward compatibility for existing code
-extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_filterThread0(JNIEnv *env,
-                                                       jobject unused,
-                                                       jboolean enable) {
-  ProfiledThread *current = ProfiledThread::current();
-  if (unlikely(current == nullptr)) {
-    assert(false);
-    return;
-  }
-  int tid = current->tid();
-  if (unlikely(tid < 0)) {
-    return;
-  }
-  ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
-  if (unlikely(!thread_filter->enabled())) {
-    return;
-  }
-  
-  int slot_id = current->filterSlotId();
-  if (unlikely(slot_id == -1)) {
-    if (enable) {
-      // Thread doesn't have a slot ID yet, so register it
-      assert(thread_filter->enabled() && "ThreadFilter should be enabled when trying to register thread");
-      slot_id = thread_filter->registerThread();
-      current->setFilterSlotId(slot_id);
-    } else {
-      // Thread doesn't have a slot ID yet - nothing to remove
-      return;
-    }
-  }
-  
-  if (unlikely(slot_id == -1)) {
-    return;  // Failed to register thread
-  }
-  
-  if (enable) {
-    thread_filter->add(tid, slot_id);
-  } else {
-    thread_filter->remove(slot_id);
-  }
 }
 
 extern "C" DLLEXPORT jobject JNICALL

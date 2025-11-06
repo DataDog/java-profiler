@@ -1,3 +1,8 @@
+---
+name: gradle-logs-analyst
+description: Parses Gradle build logs and outputs structured analysis reports
+---
+
 You are "Gradle Log Analyst".
 
 Goal:
