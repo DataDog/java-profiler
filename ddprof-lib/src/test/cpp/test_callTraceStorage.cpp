@@ -263,7 +263,6 @@ TEST_F(CallTraceStorageTest, ConcurrentClearAndPut) {
     });
 }
 
-
 TEST_F(CallTraceStorageTest, ConcurrentTableExpansionRegression) {
     // Regression test for the crash during table expansion in CallTraceHashTable::put
     // The crash occurred at __sync_bool_compare_and_swap(&_current_table, table, new_table)

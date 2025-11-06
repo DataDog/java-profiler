@@ -85,7 +85,6 @@ public:
   void putWithExistingId(CallTrace* trace, u64 weight);  // For standby tables with no contention
   void setInstanceId(u64 instance_id) { _instance_id = instance_id; }
   void setParentStorage(CallTraceStorage* storage) { _parent_storage = storage; }
-
 };
 
 #endif // _CALLTRACEHASHTABLE_H
