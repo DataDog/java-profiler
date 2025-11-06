@@ -220,8 +220,16 @@ ext.upstreamPatches = [
 
   // Symbol implementation patches for DataDog-specific API extensions
   "symbols_linux.cpp": [
-    validations: [[contains: "#ifdef __linux__"], [contains: "_parsed_inodes"]],
+    validations: [[contains: "#ifdef __linux__"], [contains: "_parsed_inodes"], [contains: "loadSymbolTable"]],
     operations: [
+      [
+        type: "expression_replace",
+        name: "Fix pointer overflow in loadSymbolTable",
+        description: "Replace unsafe pointer arithmetic with overflow-safe version to prevent ASAN failures while preserving original semantics",
+        find: "const char\\* addr = base != NULL \\? base \\+ sym->st_value : \\(const char\\*\\)sym->st_value;",
+        replace: "// Use safe pointer arithmetic to avoid ASAN overflow while preserving original NULL base semantics\n                const char* addr = base != NULL ? (const char*)((uintptr_t)base + (uintptr_t)sym->st_value) : (const char*)sym->st_value;",
+        idempotent_check: "// Use safe pointer arithmetic to avoid ASAN overflow while preserving original NULL base semantics"
+      ],
       [
         type: "method_implementation",
         name: "Add clearParsingCaches method implementation",
@@ -229,6 +237,21 @@ ext.upstreamPatches = [
         find: "(#endif \\/\\/ __linux__\\s*\$)",
         replace: "// Implementation of clearParsingCaches for test compatibility\nvoid Symbols::clearParsingCaches() {\n    _parsed_inodes.clear();\n}\n\n\$1",
         idempotent_check: "void Symbols::clearParsingCaches()"
+      ]
+    ]
+  ],
+
+  // Symbol implementation patches for macOS (DataDog-specific API extensions and ASan compatibility)
+  "symbols_macos.cpp": [
+    validations: [[contains: "#ifdef __APPLE__"], [contains: "loadSymbols"], [contains: "n_value"]],
+    operations: [
+      [
+        type: "expression_replace",
+        name: "Fix pointer overflow in loadSymbols for macOS",
+        description: "Replace unsafe pointer arithmetic with overflow-safe version to prevent ASAN failures on macOS",
+        find: "const char\\* addr = _vmaddr_slide \\+ sym->n_value;",
+        replace: "// Use safer arithmetic to avoid ASAN overflow while preserving all symbols\n                const char* addr = (const char*)((uintptr_t)_vmaddr_slide + (uintptr_t)sym->n_value);",
+        idempotent_check: "// Use safer arithmetic to avoid ASAN overflow while preserving all symbols"
       ]
     ]
   ],
