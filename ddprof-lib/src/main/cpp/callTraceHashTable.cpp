@@ -324,7 +324,7 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
   }
 }
 
-void CallTraceHashTable::collect(std::unordered_set<CallTrace *> &traces) {
+void CallTraceHashTable::collect(std::unordered_set<CallTrace *> &traces, std::function<void(CallTrace*)> trace_hook) {
   // Lock-free collection for read-only tables (after atomic swap)
   // No new put() operations can occur, so no synchronization needed
   
@@ -337,6 +337,9 @@ void CallTraceHashTable::collect(std::unordered_set<CallTrace *> &traces) {
       if (keys[slot] != 0) {
         CallTrace *trace = values[slot].acquireTrace();
         if (trace != nullptr && trace != CallTraceSample::PREPARING) {
+          if (trace_hook) {
+            trace_hook(trace);  // Call hook first if provided
+          }
           traces.insert(trace);
         }
       }
@@ -345,9 +348,13 @@ void CallTraceHashTable::collect(std::unordered_set<CallTrace *> &traces) {
   
   // Handle overflow trace
   if (_overflow > 0) {
+    if (trace_hook) {
+      trace_hook(&_overflow_trace);  // Call hook for overflow trace too
+    }
     traces.insert(&_overflow_trace);
   }
 }
+
 
 void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) {
   // Trace preservation for standby tables (no contention with new puts)

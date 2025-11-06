@@ -208,14 +208,7 @@ CallTraceStorage::CallTraceStorage() : _generation_counter(1), _liveness_lock(0)
     _traces_buffer.max_load_factor(0.75f);
     _traces_buffer.rehash(static_cast<size_t>(2048 / 0.75f));
 
-    _traces_to_preserve_buffer.max_load_factor(0.75f);
-    _traces_to_preserve_buffer.rehash(static_cast<size_t>(512 / 0.75f));
 
-    _standby_traces_buffer.max_load_factor(0.75f);
-    _standby_traces_buffer.rehash(static_cast<size_t>(512 / 0.75f));
-
-    _active_traces_buffer.max_load_factor(0.75f);
-    _active_traces_buffer.rehash(static_cast<size_t>(2048 / 0.75f));
 
     _preserve_set_buffer.max_load_factor(0.75f);
     _preserve_set_buffer.rehash(static_cast<size_t>(1024 / 0.75f));
@@ -314,8 +307,8 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
     }
     
     // Check again after registering hazard pointer - storage might have been nullified
-    CallTraceHashTable* current_active = _active_storage.load(std::memory_order_acquire);
-    if (current_active != active || current_active == nullptr) {
+    CallTraceHashTable* original_active = _active_storage.load(std::memory_order_acquire);
+    if (original_active != active || original_active == nullptr) {
         // Storage was swapped or nullified, return dropped
         Counters::increment(CALLTRACE_STORAGE_DROPPED);
         return DROPPED_TRACE_ID;
@@ -349,65 +342,52 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
         }
     }
 
-    // PHASE 2: Safe collection sequence - standby first, then rotate, then scratch
+    // PHASE 2: 8-Step Triple-Buffer Rotation - eliminates use-after-free
     
-    CallTraceHashTable* current_active = _active_storage.load(std::memory_order_relaxed);
-    CallTraceHashTable* current_standby = _standby_storage.load(std::memory_order_relaxed);
-    CallTraceHashTable* current_scratch = _scratch_storage.load(std::memory_order_acquire);
+    CallTraceHashTable* original_active = _active_storage.load(std::memory_order_relaxed);
+    CallTraceHashTable* original_standby = _standby_storage.load(std::memory_order_relaxed);
+    CallTraceHashTable* original_scratch = _scratch_storage.load(std::memory_order_acquire);
     
-    // Clear process collections for reuse (no malloc/free)
+    // Clear process collection for reuse (no malloc/free)
     _traces_buffer.clear();
-    _traces_to_preserve_buffer.clear();
-    _standby_traces_buffer.clear();
-    _active_traces_buffer.clear();
 
-    // Step 1: Collect from current standby FIRST (preserved traces from previous cycle)
-    current_standby->collect(_standby_traces_buffer);
-    
-    // Immediately preserve standby traces that need to be kept for next cycle
-    for (CallTrace* trace : _standby_traces_buffer) {
+    // Step 1: Collect from current standby directly to _traces_buffer with hook for immediate preservation
+    original_standby->collect(_traces_buffer, [&](CallTrace* trace) {
         if (_preserve_set_buffer.find(trace->trace_id) != _preserve_set_buffer.end()) {
-            _traces_to_preserve_buffer.insert(trace);
+            original_scratch->putWithExistingId(trace, 1);
         }
-    }
+    });
     
-    // Step 2: Clear standby after collection, prepare for rotation
-    current_standby->clear();
-    u64 new_instance_id = getNextInstanceId();
-    current_standby->setInstanceId(new_instance_id);
+    // Step 3: Clear original_standby after collection
+    original_standby->clear();
+    // u64 new_instance_id = getNextInstanceId();
+    // original_standby->setInstanceId(new_instance_id);
     
-    // Step 3: ATOMIC SWAP - standby (now empty) becomes new active
-    CallTraceHashTable* old_active = _active_storage.exchange(current_standby, std::memory_order_acq_rel);
+    // Step 4: ATOMIC SWAP - standby (now empty) becomes new active
+    CallTraceHashTable* old_active = _active_storage.exchange(original_standby, std::memory_order_acq_rel);
     
-    // Step 4: Complete the rotation: active→scratch, scratch→standby
+    // Step 5: Complete the rotation: active→scratch, scratch→standby
     CallTraceHashTable* old_scratch = _scratch_storage.exchange(old_active, std::memory_order_acq_rel);
     _standby_storage.store(old_scratch, std::memory_order_release);
     
-    // Step 5: NOW collect from scratch (old active, now read-only)
-    old_active->collect(_active_traces_buffer);
-    
-    // Preserve traces from old active too
-    for (CallTrace* trace : _active_traces_buffer) {
+    // Step 6: Collect from old active directly to _traces_buffer with hook for immediate preservation
+    old_active->collect(_traces_buffer, [&](CallTrace* trace) {
         if (_preserve_set_buffer.find(trace->trace_id) != _preserve_set_buffer.end()) {
-            _traces_to_preserve_buffer.insert(trace);
+            original_scratch->putWithExistingId(trace, 1);
         }
-    }
-    
-    // Step 6: Combine all traces for JFR processing
-    _traces_buffer.insert(_active_traces_buffer.begin(), _active_traces_buffer.end());
-    _traces_buffer.insert(_standby_traces_buffer.begin(), _standby_traces_buffer.end());
+    });
 
-    // Always include dropped trace in JFR constant pool
+    // Step 7: Update the instance id for the recently retired active buffer
+    u64 new_instance_id = getNextInstanceId();
+    old_active->setInstanceId(new_instance_id);
+    
+    // Step 8: Add dropped trace and call processor
     _traces_buffer.insert(getDroppedTrace());
 
-    // PHASE 3: Process traces
     processor(_traces_buffer);
 
-    // PHASE 4: Copy all preserved traces to current standby (old scratch, now empty)
-    old_scratch->clear();  // Should already be empty, but ensure it
-    for (CallTrace* trace : _traces_to_preserve_buffer) {
-        old_scratch->putWithExistingId(trace, 1);
-    }
+    // Step 9: Clear the original active area (now scratch)
+    original_active->clear();
     
     // Triple-buffer rotation maintains trace continuity with thread-safe malloc-free operations:
     // - Pre-allocated collections prevent malloc/free during processTraces
@@ -437,4 +417,3 @@ void CallTraceStorage::clear() {
     Counters::set(CALLTRACE_STORAGE_BYTES, 0);
     Counters::set(CALLTRACE_STORAGE_TRACES, 0);
 }
-

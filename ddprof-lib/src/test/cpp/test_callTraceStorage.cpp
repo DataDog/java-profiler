@@ -204,6 +204,9 @@ TEST_F(CallTraceStorageTest, TraceIdPreservation) {
         preserved_trace_id = preserved_trace->trace_id;
         // Critical test: trace ID must be exactly the same after preservation
         EXPECT_EQ(preserved_trace->trace_id, original_trace_id);
+        // Regression test: access frame content to detect use-after-free (ASan will crash if bug exists)
+        EXPECT_EQ(preserved_trace->frames[0].bci, 10);
+        EXPECT_EQ(preserved_trace->frames[0].method_id, (jmethodID)0x1234);
     });
     
     printf("Original trace ID: %llu, Preserved trace ID: %llu\n", 
@@ -259,6 +262,7 @@ TEST_F(CallTraceStorageTest, ConcurrentClearAndPut) {
         // The key test is that we don't crash
     });
 }
+
 
 TEST_F(CallTraceStorageTest, ConcurrentTableExpansionRegression) {
     // Regression test for the crash during table expansion in CallTraceHashTable::put

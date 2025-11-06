@@ -11,6 +11,7 @@
 #include "vmEntry.h"
 #include <unordered_set>
 #include <atomic>
+#include <functional>
 
 class LongHashTable;
 
@@ -78,12 +79,13 @@ public:
   ~CallTraceHashTable();
 
   void clear();
-  void collect(std::unordered_set<CallTrace *> &traces);
+  void collect(std::unordered_set<CallTrace *> &traces, std::function<void(CallTrace*)> trace_hook = nullptr);
 
   u64 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);
   void putWithExistingId(CallTrace* trace, u64 weight);  // For standby tables with no contention
   void setInstanceId(u64 instance_id) { _instance_id = instance_id; }
   void setParentStorage(CallTraceStorage* storage) { _parent_storage = storage; }
+
 };
 
 #endif // _CALLTRACEHASHTABLE_H

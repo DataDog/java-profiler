@@ -117,10 +117,7 @@ private:
     
     // Pre-allocated collections for processTraces (single-threaded operation)
     // These collections are reused to eliminate malloc/free cycles
-    std::unordered_set<CallTrace*> _traces_buffer;           // Combined traces for JFR processing
-    std::unordered_set<CallTrace*> _traces_to_preserve_buffer; // Traces selected for preservation
-    std::unordered_set<CallTrace*> _standby_traces_buffer;   // Traces collected from standby
-    std::unordered_set<CallTrace*> _active_traces_buffer;    // Traces collected from active/scratch
+    std::unordered_set<CallTrace*> _traces_buffer;           // All traces for JFR processing
     std::unordered_set<u64> _preserve_set_buffer;           // Preserve set for current cycle
     
     
