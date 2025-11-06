@@ -23,6 +23,11 @@ sourceSets {
 }
 
 jmh {
+  def javaHome = System.getenv("JAVA_TEST_HOME")
+  if (javaHome == null) {
+    javaHome = System.getenv("JAVA_HOME")
+  }
+  jvm = "${javaHome}/bin/java"
   iterations = 3
   timeOnIteration = '3s'
   warmup = '1s'
