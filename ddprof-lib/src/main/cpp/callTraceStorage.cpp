@@ -325,14 +325,10 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
  * It is not designed to be called concurrently with itself.
  */
 void CallTraceStorage::processTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor) {
-    // Critical section for table swap operations - disallow signals to interrupt
-    CriticalSection cs;
-
-
     // PHASE 1: Collect liveness information with simple lock (rare operation)
     {
         SharedLockGuard lock(&_liveness_lock);
-        
+
         // Use pre-allocated containers to avoid malloc()
         _preserve_set_buffer.clear();
 
@@ -341,44 +337,55 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
         }
     }
 
-    // PHASE 2: 8-Step Triple-Buffer Rotation - eliminates use-after-free
-    
+    // PHASE 2: 8-Step Triple-Buffer Rotation
+
     CallTraceHashTable* original_active = _active_storage.load(std::memory_order_relaxed);
     CallTraceHashTable* original_standby = _standby_storage.load(std::memory_order_relaxed);
     CallTraceHashTable* original_scratch = _scratch_storage.load(std::memory_order_acquire);
-    
+
     // Clear process collection for reuse (no malloc/free)
     _traces_buffer.clear();
 
     // Step 1: Collect from current standby directly to _traces_buffer with hook for immediate preservation
-    // Only 'original_active' can be used from multuple threads at this moment.
-    // Both 'original_standby' and 'original_scratch' can be used only from the single threa executing 'processTraces' 
+    // Only 'original_active' can be used from multiple threads at this moment.
+    // Both 'original_standby' and 'original_scratch' can be used only from the single thread executing 'processTraces'
     // so we can iterate the first one and at the same time add new elements to the second one safely
     original_standby->collect(_traces_buffer, [&](CallTrace* trace) {
         if (_preserve_set_buffer.find(trace->trace_id) != _preserve_set_buffer.end()) {
             original_scratch->putWithExistingId(trace, 1);
         }
     });
-    
-    // Step 3: Clear original_standby after collection
+
+    // Step 3: Clear original_standby after collection -> it will become the new active
     original_standby->clear();
-    
-    // Step 4: Atomic swap - standby (now empty) becomes new active
-    CallTraceHashTable* old_active = _active_storage.exchange(original_standby, std::memory_order_acq_rel);
-    
-    // Step 5: Complete the rotation: active→scratch, scratch→standby
-    CallTraceHashTable* old_scratch = _scratch_storage.exchange(old_active, std::memory_order_acq_rel);
-    _standby_storage.store(old_scratch, std::memory_order_release);
-    
+
+    {
+        // Critical section for table swap operations - disallow signals to interrupt
+        // Minimize the critical section by using the lexical scope around the critical code
+        CriticalSection cs;
+        
+        // Step 4: standby (now empty) becomes new active
+        // SYNCHRONIZATION POINT: After this store, new put() operations will target original_standby
+        // but ongoing put() operations may still be accessing original_active via hazard pointers
+        _active_storage.store(original_standby, std::memory_order_release);
+
+        // Step 5: Complete the rotation: active→scratch, scratch→standby  
+        _scratch_storage.exchange(original_active, std::memory_order_release);
+        _standby_storage.store(original_scratch, std::memory_order_release);
+
+        // Just make sure all puts to the original_active are done before proceeding
+        HazardPointer::waitForHazardPointersToClear(original_active);
+    }
+
     // Step 6: Collect from old active directly to _traces_buffer with hook for immediate preservation
-    old_active->collect(_traces_buffer, [&](CallTrace* trace) {
+    original_active->collect(_traces_buffer, [&](CallTrace* trace) {
         if (_preserve_set_buffer.find(trace->trace_id) != _preserve_set_buffer.end()) {
             original_scratch->putWithExistingId(trace, 1);
         }
     });
 
     // Step 7: Update the instance id for the recently retired active buffer
-    old_active->setInstanceId(getNextInstanceId());
+    original_active->setInstanceId(getNextInstanceId());
     
     // Step 8: Add dropped trace and call processor
     _traces_buffer.insert(getDroppedTrace());
