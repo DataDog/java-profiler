@@ -7,8 +7,10 @@
 #ifndef _FLIGHTRECORDER_H
 #define _FLIGHTRECORDER_H
 
-#include <shared_mutex>
+#include <functional>
 #include <map>
+#include <mutex>
+#include <shared_mutex>
 #include <unordered_set>
 
 #include <limits.h>

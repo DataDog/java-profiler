@@ -1497,7 +1497,8 @@ void FlightRecorder::stop() {
 }
 
 Error FlightRecorder::dump(const char *filename, const int length) {
-  OptionalSharedLocker locker(_rec_lock, [&]() {
+  SharedLocker locker(_rec_lock);
+  if (locker.owns_lock()) {
     Recording* rec = _rec;
     if (rec != nullptr) {
       if (_filename.length() != length ||
@@ -1512,8 +1513,7 @@ Error FlightRecorder::dump(const char *filename, const int length) {
       return Error(
           "Can not dump recording to itself. Provide a different file name!");
     }
-    return Error("No active recording");
-  });
+  }
   return Error("No active recording");
 }
 
