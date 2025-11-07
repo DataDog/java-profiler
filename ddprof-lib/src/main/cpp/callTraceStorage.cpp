@@ -13,6 +13,7 @@
 #include "arch_dd.h" // For LP64_ONLY macro and COMMA macro
 #include "criticalSection.h" // For table swap critical sections
 #include "primeProbing.h"
+#include "thread.h"
 #include <string.h>
 #include <atomic>
 
@@ -24,26 +25,15 @@ std::atomic<int> HazardPointer::slot_owners[HazardPointer::MAX_THREADS];
 int HazardPointer::getThreadHazardSlot() {
     // Signal-safe collision resolution: use OS::threadId() with semi-random prime step probing
     // This avoids thread_local allocation issues
-    int tid = OS::threadId();
-
-    // Apply Knuth multiplicative hash directly to thread ID
-    size_t hash = static_cast<size_t>(tid) * KNUTH_MULTIPLICATIVE_CONSTANT;
-
-    // Use high bits for better distribution (shift right to get top bits)
-    int base_slot = static_cast<int>((hash >> (sizeof(size_t) * 8 - 13)) % MAX_THREADS);
+    ProfiledThread* thrd = ProfiledThread::current();
+    int tid = thrd != nullptr ? thrd->tid() : OS::threadId();
 
     // Semi-random prime step probing to eliminate secondary clustering
     // Each thread gets a different prime step size for unique probe sequences
-    HashProbe probe(hash, MAX_THREADS);
-    
-    // Position probe at base_slot
-    while (probe.slot() != static_cast<u32>(base_slot) && probe.hasNext()) {
-        probe.next();
-    }
-    
+    HashProbe probe(static_cast<u64>(tid), MAX_THREADS);
+
+    int slot = probe.slot();
     for (int i = 0; i < MAX_PROBE_DISTANCE; i++) {
-        int slot = static_cast<int>(probe.slot());
-        
         // Try to claim this slot atomically
         int expected = 0;  // Empty slot (no thread ID)
         if (slot_owners[slot].compare_exchange_strong(expected, tid, std::memory_order_acq_rel)) {
@@ -58,7 +48,7 @@ int HazardPointer::getThreadHazardSlot() {
         
         // Move to next slot using probe
         if (probe.hasNext()) {
-            probe.next();
+            slot = probe.next();
         }
     }
     

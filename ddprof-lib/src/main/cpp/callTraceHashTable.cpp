@@ -71,25 +71,6 @@ public:
 
   CallTraceSample *values() { return (CallTraceSample *)(keys() + _capacity); }
 
-  u32 nextSlot(u32 slot, u64 hash) const { 
-    // Create probe and advance it to find the slot after the given slot
-    HashProbe probe(hash, _capacity);
-    
-    // Find the current slot in the probe sequence
-    while (probe.slot() != slot && probe.hasNext()) {
-      probe.next();
-    }
-    
-    // Move to next slot
-    if (probe.hasNext()) {
-      probe.next();
-      return probe.slot();
-    }
-    
-    // Fallback: wrap around
-    return (slot + 1) & (_capacity - 1);
-  }
-
   void clear() {
     memset(keys(), 0, (sizeof(u64) + sizeof(CallTraceSample)) * _capacity);
     _size = 0;
@@ -198,16 +179,19 @@ CallTrace *CallTraceHashTable::findCallTrace(LongHashTable *table, u64 hash) {
   u64 *keys = table->keys();
   HashProbe probe(hash, table->capacity());
 
-  do {
-    u32 slot = probe.slot();
+  u32 slot = probe.slot();
+  while (true) {
     if (keys[slot] == hash) {
       return table->values()[slot].trace;
     }
     if (keys[slot] == 0) {
       return nullptr;
     }
-    probe.next();
-  } while (probe.hasNext());
+    if (!probe.hasNext()) {
+      break;
+    }
+    slot = probe.next();
+  };
 
   return nullptr;
 }
@@ -225,9 +209,9 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
   
   u64 *keys = table->keys();
   HashProbe probe(hash, table->capacity());
-  
+
+  u32 slot = probe.slot();
   while (true) {
-    u32 slot = probe.slot();
     u64 key_value = __atomic_load_n(&keys[slot], __ATOMIC_RELAXED);
     if (key_value == hash) { 
       // Hash matches - wait for the preparing thread to complete
@@ -294,6 +278,8 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
       u32 new_size = table->incSize();
       u32 capacity = table->capacity();
 
+      probe.updateCapacity(new_size);
+
       // EXPANSION LOGIC: Check if 75% capacity reached after incrementing size
       if (new_size == capacity * 3 / 4) {
         // Allocate new table with double capacity using LinearAllocator
@@ -336,7 +322,7 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
       return OVERFLOW_TRACE_ID;
     }
     // Prime probing for better distribution
-    probe.next();
+    slot = probe.next();
   }
 }
 
@@ -394,8 +380,10 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
   
   u64 *keys = table->keys();
   u32 capacity = table->capacity();
-  u32 slot = hash & (capacity - 1);
-  
+
+  HashProbe probe(hash, capacity);
+  u32 slot = probe.slot();
+
   // Look for existing entry or empty slot - no locking needed
   while (true) {
     u64 key_value = __atomic_load_n(&keys[slot], __ATOMIC_RELAXED);
@@ -404,8 +392,10 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
       u64 expected = 0;
       if (!__atomic_compare_exchange_n(&keys[slot], &expected, hash, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
         // Another thread claimed it, try next slot
-        slot = table->nextSlot(slot, hash);
-        continue;
+        if (probe.hasNext()) {
+          slot = probe.next();
+          continue;
+        }
       }
       
       // Create a copy of the source trace preserving its exact ID
@@ -422,7 +412,8 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
         Counters::increment(CALLTRACE_STORAGE_TRACES);
         
         // Increment table size
-        table->incSize();
+        u32 new_size = table->incSize();
+        probe.updateCapacity(new_size);
       } else {
         // Allocation failure - clear the key we claimed
         __atomic_store_n(&keys[slot], 0, __ATOMIC_RELEASE);
@@ -430,6 +421,6 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
       break;
     }
     
-    slot = table->nextSlot(slot, hash);
+    slot = probe.next();
   }
 }
