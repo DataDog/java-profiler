@@ -68,7 +68,8 @@ HazardPointer::HazardPointer(CallTraceHashTable* resource) : active_(true), my_s
     }
 
     // Update global hazard list for the successfully claimed slot
-    global_hazard_list[my_slot_].store(resource, std::memory_order_seq_cst);
+    // Release ordering ensures hazard pointer visibility to other threads
+    global_hazard_list[my_slot_].store(resource, std::memory_order_release);
 }
 
 HazardPointer::~HazardPointer() {
@@ -239,9 +240,10 @@ CallTraceStorage::CallTraceStorage() : _generation_counter(1), _liveness_lock(0)
 
 CallTraceStorage::~CallTraceStorage() {
     // Atomically invalidate storage pointers to prevent new put() operations
+    // Relaxed ordering is sufficient since no concurrent readers exist during destruction
     CallTraceHashTable* active = _active_storage.exchange(nullptr, std::memory_order_relaxed);
     CallTraceHashTable* standby = _standby_storage.exchange(nullptr, std::memory_order_relaxed);
-    CallTraceHashTable* scratch = _scratch_storage.exchange(nullptr, std::memory_order_acq_rel);
+    CallTraceHashTable* scratch = _scratch_storage.exchange(nullptr, std::memory_order_relaxed);
 
     // Wait for any ongoing hazard pointer usage to complete and delete each unique table
     // Note: In triple-buffering, all three pointers should be unique, but check anyway
@@ -287,6 +289,7 @@ void CallTraceStorage::clearLivenessCheckers() {
 
 u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncated, u64 weight) {
     // Signal handlers can run concurrently with destructor
+    // MEMORY_ORDER_ACQUIRE: Critical - synchronizes with release stores in processTraces()
     CallTraceHashTable* active = _active_storage.load(std::memory_order_acquire);
     
     // Safety check - if null, system is shutting down
@@ -306,6 +309,7 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
     }
     
     // Check again after registering hazard pointer - storage might have been nullified
+    // MEMORY_ORDER_ACQUIRE: Ensures we see any concurrent storage swaps
     CallTraceHashTable* original_active = _active_storage.load(std::memory_order_acquire);
     if (original_active != active || original_active == nullptr) {
         // Storage was swapped or nullified, return dropped
@@ -339,9 +343,10 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
 
     // PHASE 2: 8-Step Triple-Buffer Rotation
 
+    // Load storage pointers - relaxed ordering sufficient in single-threaded processTraces context
     CallTraceHashTable* original_active = _active_storage.load(std::memory_order_relaxed);
     CallTraceHashTable* original_standby = _standby_storage.load(std::memory_order_relaxed);
-    CallTraceHashTable* original_scratch = _scratch_storage.load(std::memory_order_acquire);
+    CallTraceHashTable* original_scratch = _scratch_storage.load(std::memory_order_relaxed);
 
     // Clear process collection for reuse (no malloc/free)
     _traces_buffer.clear();
@@ -367,9 +372,11 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
         // Step 4: standby (now empty) becomes new active
         // SYNCHRONIZATION POINT: After this store, new put() operations will target original_standby
         // but ongoing put() operations may still be accessing original_active via hazard pointers
+        // MEMORY_ORDER_RELEASE: Critical - synchronizes with acquire loads in put() method
         _active_storage.store(original_standby, std::memory_order_release);
 
-        // Step 5: Complete the rotation: active→scratch, scratch→standby  
+        // Step 5: Complete the rotation: active→scratch, scratch→standby
+        // MEMORY_ORDER_RELEASE: Ensures visibility of storage state changes to hazard pointer system
         _scratch_storage.exchange(original_active, std::memory_order_release);
         _standby_storage.store(original_scratch, std::memory_order_release);
     }
@@ -408,9 +415,9 @@ void CallTraceStorage::clear() {
     // Mark critical section during clear operation for consistency
     CriticalSection cs;
     
-    // Load current table pointers - simple operation with critical section protection
+    // Load current table pointers - relaxed ordering sufficient within critical section
     CallTraceHashTable* active = _active_storage.load(std::memory_order_relaxed);
-    CallTraceHashTable* standby = _standby_storage.load(std::memory_order_acquire);
+    CallTraceHashTable* standby = _standby_storage.load(std::memory_order_relaxed);
     
     // Direct clear operations with critical section protection
     if (active) {
