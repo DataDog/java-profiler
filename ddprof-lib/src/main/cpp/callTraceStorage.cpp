@@ -372,10 +372,11 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
         // Step 5: Complete the rotation: active→scratch, scratch→standby  
         _scratch_storage.exchange(original_active, std::memory_order_release);
         _standby_storage.store(original_scratch, std::memory_order_release);
-
-        // Just make sure all puts to the original_active are done before proceeding
-        HazardPointer::waitForHazardPointersToClear(original_active);
     }
+
+    // Just make sure all puts to the original_active are done before proceeding
+    // Do this outside of the critical section not to block the new active area needlessly
+    HazardPointer::waitForHazardPointersToClear(original_active);
 
     // Step 6: Collect from old active directly to _traces_buffer with hook for immediate preservation
     original_active->collect(_traces_buffer, [&](CallTrace* trace) {
