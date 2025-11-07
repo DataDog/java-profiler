@@ -40,8 +40,6 @@
 #include <vector>
 #include <unistd.h>
 
-static SpinLock _rec_lock(0);
-
 static const char *const SETTING_RING[] = {NULL, "kernel", "user", "any"};
 static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 
@@ -1460,7 +1458,7 @@ void Recording::addThread(int lock_index, int tid) {
 }
 
 Error FlightRecorder::start(Arguments &args, bool reset) {
-  ExclusiveLockGuard locker(&_rec_lock);
+  ExclusiveLocker locker(_rec_lock);
   const char *file = args.file();
   if (file == NULL || file[0] == 0) {
     _filename = "";
@@ -1484,33 +1482,30 @@ Error FlightRecorder::newRecording(bool reset) {
     return Error("Could not open Flight Recorder output file");
   }
 
-  // Given some of reads are not protected by _rec_lock,
-  // we want to publish _rec with full fence, so that read
-  // side cannot see partially initialized recording.
-  Recording* tmp = new Recording(fd, _args);
-  __atomic_store_n(&_rec, tmp, __ATOMIC_SEQ_CST);
+  _rec = new Recording(fd, _args);
   return Error::OK;
 }
 
 void FlightRecorder::stop() {
-  ExclusiveLockGuard locker(&_rec_lock);
-  if (_rec != NULL) {
-    volatile Recording *tmp = _rec;
+  ExclusiveLocker locker(_rec_lock);
+  Recording* rec = _rec;
+  if (rec != nullptr) {
     // NULL first, deallocate later
-    __atomic_store_n(&_rec, nullptr, __ATOMIC_RELAXED);
-    delete tmp;
+    _rec = nullptr;
+    delete rec;
   }
 }
 
 Error FlightRecorder::dump(const char *filename, const int length) {
-  ExclusiveLockGuard locker(&_rec_lock);
-  if (_rec != NULL) {
+  ExclusiveLocker locker(_rec_lock);
+  Recording* rec = _rec;
+  if (rec != nullptr) {
     if (_filename.length() != length ||
         strncmp(filename, _filename.c_str(), length) != 0) {
       // if the filename to dump the recording to is specified move the current
       // working file there
       int copy_fd = open(filename, O_CREAT | O_RDWR | O_TRUNC, 0644);
-      _rec->switchChunk(copy_fd);
+      rec->switchChunk(copy_fd);
       close(copy_fd);
     } else {
       return Error(
@@ -1524,8 +1519,9 @@ Error FlightRecorder::dump(const char *filename, const int length) {
 }
 
 void FlightRecorder::flush() {
-  ExclusiveLockGuard locker(&_rec_lock);
-  if (_rec != NULL) {
+  ExclusiveLocker locker(_rec_lock);
+  Recording* rec = _rec;
+  if (rec != nullptr) {
     jvmtiEnv *jvmti = VM::jvmti();
     JNIEnv *env = VM::jni();
 
@@ -1534,7 +1530,7 @@ void FlightRecorder::flush() {
     // obtaining the class list will create local refs to all loaded classes,
     // effectively preventing them from being unloaded while flushing
     jvmtiError err = jvmti->GetLoadedClasses(&count, classes);
-    _rec->switchChunk(-1);
+    rec->switchChunk(-1);
     if (!err) {
       // deallocate all loaded classes
       for (int i = 0; i < count; i++) {
@@ -1547,96 +1543,112 @@ void FlightRecorder::flush() {
 
 void FlightRecorder::wallClockEpoch(int lock_index,
                                     WallClockEpochEvent *event) {
-  if (_rec != NULL) {
-    Buffer *buf = _rec->buffer(lock_index);
-    _rec->recordWallClockEpoch(buf, event);
-  }
+  OptionalSharedLocker locker(_rec_lock, [&]() {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->recordWallClockEpoch(buf, event);
+    }
+  });
 }
 
 void FlightRecorder::recordTraceRoot(int lock_index, int tid,
                                      TraceRootEvent *event) {
-  if (_rec != NULL) {
-    Buffer *buf = _rec->buffer(lock_index);
-    _rec->recordTraceRoot(buf, tid, event);
-  }
+  OptionalSharedLocker locker(_rec_lock, [&]() {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->recordTraceRoot(buf, tid, event);
+    }
+  });
 }
 
 void FlightRecorder::recordQueueTime(int lock_index, int tid,
                                      QueueTimeEvent *event) {
-  if (_rec != NULL) {
-    Buffer *buf = _rec->buffer(lock_index);
-    _rec->recordQueueTime(buf, tid, event);
-  }
+  OptionalSharedLocker locker(_rec_lock, [&]() {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->recordQueueTime(buf, tid, event);
+    }
+  });
 }
 
 void FlightRecorder::recordDatadogSetting(int lock_index, int length,
                                           const char *name, const char *value,
                                           const char *unit) {
-  if (_rec != NULL) {
-    Buffer *buf = _rec->buffer(lock_index);
-    _rec->writeDatadogSetting(buf, length, name, value, unit);
-  }
+  OptionalSharedLocker locker(_rec_lock, [&]() {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->writeDatadogSetting(buf, length, name, value, unit);
+    }
+  });
 }
 
 void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
-  if (_rec != NULL) {
-    Buffer *buf = _rec->buffer(lock_index);
-    _rec->writeHeapUsage(buf, value, live);
-  }
+  OptionalSharedLocker locker(_rec_lock, [&]() {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->writeHeapUsage(buf, value, live);
+    }
+  });
 }
 
 void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
                                  int event_type, Event *event) {
-  if (_rec != NULL) {
-    RecordingBuffer *buf = _rec->buffer(lock_index);
-    switch (event_type) {
-    case 0:
-      _rec->recordExecutionSample(buf, tid, call_trace_id,
+  OptionalSharedLocker locker(_rec_lock, [&]() {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      RecordingBuffer *buf = rec->buffer(lock_index);
+      switch (event_type) {
+      case 0:
+          rec->recordExecutionSample(buf, tid, call_trace_id,
+                                     (ExecutionEvent *)event);
+          break;
+        case BCI_WALL:
+          rec->recordMethodSample(buf, tid, call_trace_id,
                                   (ExecutionEvent *)event);
-      break;
-    case BCI_WALL:
-      _rec->recordMethodSample(buf, tid, call_trace_id,
-                               (ExecutionEvent *)event);
-      break;
-    case BCI_ALLOC:
-      _rec->recordAllocation(buf, tid, call_trace_id, (AllocEvent *)event);
-      break;
-    case BCI_LIVENESS:
-      _rec->recordHeapLiveObject(buf, tid, call_trace_id,
-                                 (ObjectLivenessEvent *)event);
-      break;
-    case BCI_LOCK:
-      _rec->recordMonitorBlocked(buf, tid, call_trace_id, (LockEvent *)event);
-      break;
-    case BCI_PARK:
-      _rec->recordThreadPark(buf, tid, call_trace_id, (LockEvent *)event);
-      break;
-    }
-    _rec->flushIfNeeded(buf);
-    _rec->addThread(lock_index, tid);
-  }
-}
+          break;
+        case BCI_ALLOC:
+          rec->recordAllocation(buf, tid, call_trace_id, (AllocEvent *)event);
+          break;
+        case BCI_LIVENESS:
+          rec->recordHeapLiveObject(buf, tid, call_trace_id,
+                                    (ObjectLivenessEvent *)event);
+          break;
+        case BCI_LOCK:
+          rec->recordMonitorBlocked(buf, tid, call_trace_id, (LockEvent *)event);
+          break;
+        case BCI_PARK:
+          rec->recordThreadPark(buf, tid, call_trace_id, (LockEvent *)event);
+          break;
+        }
+        rec->flushIfNeeded(buf);
+        rec->addThread(lock_index, tid);
+      }
+  });
+[]}
 
 void FlightRecorder::recordLog(LogLevel level, const char *message,
                                size_t len) {
-  if (!_rec_lock.tryLockShared()) {
-    // No active recording
-    return;
-  }
+  OptionalSharedLocker locker(_rec_lock, [&]() {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      if (len > MAX_STRING_LENGTH)
+        len = MAX_STRING_LENGTH;
+      // cppcheck-suppress obsoleteFunctions
+      Buffer *buf = (Buffer *)alloca(len + 40);
+      buf->reset();
 
-  if (len > MAX_STRING_LENGTH)
-    len = MAX_STRING_LENGTH;
-  // cppcheck-suppress obsoleteFunctions
-  Buffer *buf = (Buffer *)alloca(len + 40);
-  buf->reset();
-
-  int start = buf->skip(5);
-  buf->putVar64(T_LOG);
-  buf->putVar64(TSC::ticks());
-  buf->putVar64(level);
-  buf->putUtf8(message, len);
-  buf->putVar32(start, buf->offset() - start);
-  _rec->flush(buf);
-
-  _rec_lock.unlockShared();
+      int start = buf->skip(5);
+      buf->putVar64(T_LOG);
+      buf->putVar64(TSC::ticks());
+      buf->putVar64(level);
+      buf->putUtf8(message, len);
+      buf->putVar32(start, buf->offset() - start);
+      _rec->flush(buf);
+    }
+  });
 }
