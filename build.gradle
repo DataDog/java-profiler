@@ -14,7 +14,7 @@ plugins {
   id "com.diffplug.spotless" version "6.11.0"
 }
 
-version = "1.34.1"
+version = "1.34.2"
 
 apply plugin: "com.dipien.semantic-version"
 version = project.findProperty("ddprof_version") ?: version
