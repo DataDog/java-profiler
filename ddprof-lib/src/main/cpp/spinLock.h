@@ -17,6 +17,8 @@
 #ifndef _SPINLOCK_H
 #define _SPINLOCK_H
 
+#include <functional>
+
 #include "arch_dd.h"
 
 // Cannot use regular mutexes inside signal handler.
@@ -84,6 +86,31 @@ public:
   SharedLockGuard& operator=(const SharedLockGuard&) = delete;
   SharedLockGuard(SharedLockGuard&&) = delete;
   SharedLockGuard& operator=(SharedLockGuard&&) = delete;
+};
+
+class OptionalSharedLockGuard {
+  SpinLock* _lock;
+public:
+  OptionalSharedLockGuard(SpinLock* lock, const std::function<void()>& code) : _lock(lock) {
+    if (_lock->tryLockShared()) {
+      code();
+    } else {
+      // Locking failed, no need to unlock.
+      _lock = nullptr;
+    }
+  }
+  ~OptionalSharedLockGuard() {
+    if (_lock != nullptr) {
+      _lock->unlockShared();
+    }
+  }
+  bool ownsLock() { return _lock != nullptr; }
+
+  // Non-copyable and non-movable
+  OptionalSharedLockGuard(const OptionalSharedLockGuard&) = delete;
+  OptionalSharedLockGuard& operator=(const OptionalSharedLockGuard&) = delete;
+  OptionalSharedLockGuard(OptionalSharedLockGuard&&) = delete;
+  OptionalSharedLockGuard& operator=(OptionalSharedLockGuard&&) = delete;
 };
 
 class ExclusiveLockGuard {

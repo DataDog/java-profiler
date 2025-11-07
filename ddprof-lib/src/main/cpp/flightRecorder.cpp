@@ -1458,7 +1458,7 @@ void Recording::addThread(int lock_index, int tid) {
 }
 
 Error FlightRecorder::start(Arguments &args, bool reset) {
-  ExclusiveLocker locker(_rec_lock);
+  ExclusiveLockGuard locker(&_rec_lock);
   const char *file = args.file();
   if (file == NULL || file[0] == 0) {
     _filename = "";
@@ -1487,7 +1487,7 @@ Error FlightRecorder::newRecording(bool reset) {
 }
 
 void FlightRecorder::stop() {
-  ExclusiveLocker locker(_rec_lock);
+  ExclusiveLockGuard locker(&_rec_lock);
   Recording* rec = _rec;
   if (rec != nullptr) {
     // NULL first, deallocate later
@@ -1497,8 +1497,8 @@ void FlightRecorder::stop() {
 }
 
 Error FlightRecorder::dump(const char *filename, const int length) {
-  SharedLocker locker(_rec_lock);
-  if (locker.owns_lock()) {
+  OptionalSharedLockGuard locker(&_rec_lock, [&](){});
+  if (locker.ownsLock()) {
     Recording* rec = _rec;
     if (rec != nullptr) {
       if (_filename.length() != length ||
@@ -1518,7 +1518,7 @@ Error FlightRecorder::dump(const char *filename, const int length) {
 }
 
 void FlightRecorder::flush() {
-  OptionalSharedLocker locker(_rec_lock, [&]() {
+  OptionalSharedLockGuard locker(&_rec_lock, [&]() {
     Recording* rec = _rec;
     if (rec != nullptr) {
       jvmtiEnv *jvmti = VM::jvmti();
@@ -1543,7 +1543,7 @@ void FlightRecorder::flush() {
 
 void FlightRecorder::wallClockEpoch(int lock_index,
                                     WallClockEpochEvent *event) {
-  OptionalSharedLocker locker(_rec_lock, [&]() {
+  OptionalSharedLockGuard locker(&_rec_lock, [&]() {
     Recording* rec = _rec;
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
@@ -1554,7 +1554,7 @@ void FlightRecorder::wallClockEpoch(int lock_index,
 
 void FlightRecorder::recordTraceRoot(int lock_index, int tid,
                                      TraceRootEvent *event) {
-  OptionalSharedLocker locker(_rec_lock, [&]() {
+  OptionalSharedLockGuard locker(&_rec_lock, [&]() {
     Recording* rec = _rec;
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
@@ -1565,7 +1565,7 @@ void FlightRecorder::recordTraceRoot(int lock_index, int tid,
 
 void FlightRecorder::recordQueueTime(int lock_index, int tid,
                                      QueueTimeEvent *event) {
-  OptionalSharedLocker locker(_rec_lock, [&]() {
+  OptionalSharedLockGuard locker(&_rec_lock, [&]() {
     Recording* rec = _rec;
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
@@ -1577,7 +1577,7 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid,
 void FlightRecorder::recordDatadogSetting(int lock_index, int length,
                                           const char *name, const char *value,
                                           const char *unit) {
-  OptionalSharedLocker locker(_rec_lock, [&]() {
+  OptionalSharedLockGuard locker(&_rec_lock, [&]() {
     Recording* rec = _rec;
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
@@ -1587,7 +1587,7 @@ void FlightRecorder::recordDatadogSetting(int lock_index, int length,
 }
 
 void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
-  OptionalSharedLocker locker(_rec_lock, [&]() {
+  OptionalSharedLockGuard locker(&_rec_lock, [&]() {
     Recording* rec = _rec;
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
@@ -1598,7 +1598,7 @@ void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
 
 void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
                                  int event_type, Event *event) {
-  OptionalSharedLocker locker(_rec_lock, [&]() {
+  OptionalSharedLockGuard locker(&_rec_lock, [&]() {
     Recording* rec = _rec;
     if (rec != nullptr) {
       RecordingBuffer *buf = rec->buffer(lock_index);
@@ -1633,7 +1633,7 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
 
 void FlightRecorder::recordLog(LogLevel level, const char *message,
                                size_t len) {
-  OptionalSharedLocker locker(_rec_lock, [&]() {
+  OptionalSharedLockGuard locker(&_rec_lock, [&]() {
     Recording* rec = _rec;
     if (rec != nullptr) {
       if (len > MAX_STRING_LENGTH)

@@ -7,10 +7,7 @@
 #ifndef _FLIGHTRECORDER_H
 #define _FLIGHTRECORDER_H
 
-#include <functional>
 #include <map>
-#include <mutex>
-#include <shared_mutex>
 #include <unordered_set>
 
 #include <limits.h>
@@ -30,20 +27,6 @@
 #include "threadFilter.h"
 #include "threadIdTable.h"
 #include "vmEntry.h"
-
-using Lock = std::shared_timed_mutex; // Could be just std::shared_lock with C++17
-using ExclusiveLocker = std::unique_lock<Lock>;
-using SharedLocker = std::shared_lock<Lock>;
-
-class OptionalSharedLocker : SharedLocker {
-public:
-  OptionalSharedLocker(Lock& lock, const std::function<void()>& code) :
-    SharedLocker(lock) {
-    if (owns_lock()) {
-      code();
-    }
-  }
-};
 
 const u64 MAX_JLONG = 0x7fffffffffffffffULL;
 const u64 MIN_JLONG = 0x8000000000000000ULL;
@@ -309,7 +292,7 @@ private:
   std::string _filename;
   Arguments _args;
 
-  Lock _rec_lock;
+  SpinLock _rec_lock;
   Recording* _rec;
 
   Error newRecording(bool reset);
