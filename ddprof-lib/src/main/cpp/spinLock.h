@@ -17,6 +17,7 @@
 #ifndef _SPINLOCK_H
 #define _SPINLOCK_H
 
+#include <atomic>
 #include <functional>
 
 #include "arch_dd.h"
@@ -29,16 +30,19 @@ private:
   //  0 - unlocked
   //  1 - exclusive lock
   // <0 - shared lock
-  volatile int _lock;
+  std::atomic_int _lock;
   char _padding[DEFAULT_CACHE_LINE_SIZE - sizeof(_lock)];
 public:
-  constexpr SpinLock(int initial_state = 0) : _lock(initial_state), _padding() {
+  explicit constexpr SpinLock(int initial_state = 0) : _lock(initial_state), _padding() {
     static_assert(sizeof(SpinLock) == DEFAULT_CACHE_LINE_SIZE);
   }
 
   void reset() { _lock = 0; }
 
-  bool tryLock() { return __sync_bool_compare_and_swap(&_lock, 0, 1); }
+  bool tryLock() {
+    int expected = 0;
+    return _lock.compare_exchange_strong(expected, 1, std::memory_order_acquire, std::memory_order_relaxed);
+  }
 
   void lock() {
     while (!tryLock()) {
@@ -46,13 +50,15 @@ public:
     }
   }
 
-  void unlock() { __sync_fetch_and_sub(&_lock, 1); }
+  void unlock() {
+    _lock.fetch_sub(1, std::memory_order_release);
+  }
 
   bool tryLockShared() {
     int value;
     // we use relaxed as the compare already offers the guarantees we need
-    while ((value = __atomic_load_n(&_lock, __ATOMIC_RELAXED)) <= 0) {
-      if (__sync_bool_compare_and_swap(&_lock, value, value - 1)) {
+    while ((value = _lock.load(std::memory_order_acquire)) <= 0) {
+      if (_lock.compare_exchange_strong(value, value - 1, std::memory_order_acq_rel)) {
         return true;
       }
     }
@@ -61,13 +67,13 @@ public:
 
   void lockShared() {
     int value;
-    while ((value = __atomic_load_n(&_lock, __ATOMIC_RELAXED)) > 0 ||
-           !__sync_bool_compare_and_swap(&_lock, value, value - 1)) {
+    while ((value = _lock.load(std::memory_order_acquire)) > 0 ||
+           !_lock.compare_exchange_strong(value, value - 1, std::memory_order_acq_rel)) {
       spinPause();
     }
   }
 
-  void unlockShared() { __sync_fetch_and_add(&_lock, 1); }
+  void unlockShared() { _lock.fetch_add(1, std::memory_order_release); }
 };
 
 // RAII guard classes for automatic lock management
