@@ -281,7 +281,7 @@ public abstract class AbstractProfilerTest {
     if (testCstack != null) {
       profilerCommand += ",cstack=" + testCstack;
     } else if(!(ALLOW_NATIVE_CSTACKS || profilerCommand.contains("cstack="))) {
-      profilerCommand += ",cstack=fp";
+      profilerCommand += ",cstack=vm";
     }
     // FIXME - test framework doesn't seem to be forking each test, so need to sync
     //  these across test cases for now
