@@ -158,8 +158,9 @@ void ProfiledThread::release() {
   ProfiledThread *tls = (ProfiledThread *)pthread_getspecific(key);
   if (tls != NULL) {
     tls->releaseFromBuffer();
-    delete tls;
+    // Clear TLS pointer BEFORE deleting to prevent use-after-free if signal fires during delete
     pthread_setspecific(key, NULL);
+    delete tls;
   }
 }
 

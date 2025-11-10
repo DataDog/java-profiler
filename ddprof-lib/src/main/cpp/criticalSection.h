@@ -29,6 +29,18 @@
  * 
  * This eliminates race conditions between signal handlers and normal code
  * by ensuring only one can hold the critical section at a time per thread.
+ *
+ * !Warning! This is not a generic critical section implementation.
+ * It relies on the fact that 'put' operations can not be preempted by the 'processing' operation.
+ * That means that each 'put' operation will fully complete before 'processing' proceeds.
+ *
+ * The only preemption sequence is like this:
+ * - processing enter
+ * - processing acquire critical section
+ * - signal interrupts processing; results in calling put
+ * - put tries to acquire the critical section and fails
+ * - put bails out
+ * - processing proceeds and eventually releases the critical section
  */
 class CriticalSection {
 private:
