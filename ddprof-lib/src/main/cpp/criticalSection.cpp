@@ -22,7 +22,7 @@ CriticalSection::CriticalSection() : _entered(false), _using_fallback(false), _w
         int tid = OS::threadId();
 
         // Hash TID to distribute across bitmap words, reducing clustering
-        // We are OK with false colision for the fallback - it should be used only for testing when we don't have full profiler initialized
+        // We are OK with false collision for the fallback - it should be used only for testing when we don't have full profiler initialized
         _word_index = hash_tid(tid) % FALLBACK_BITMAP_WORDS;
         uint32_t bit_index = tid % 64;
         _bit_mask = 1ULL << bit_index;
