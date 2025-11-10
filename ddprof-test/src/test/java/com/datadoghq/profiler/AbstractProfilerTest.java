@@ -174,7 +174,7 @@ public abstract class AbstractProfilerTest {
     Path rootDir = Paths.get("/tmp/recordings");
     Files.createDirectories(rootDir);
 
-    String cstack = (String)testParams.get("cstack");
+    String cstack = getCStack();
 
     if (cstack != null) {
       rootDir = rootDir.resolve(cstack);
@@ -190,6 +190,10 @@ public abstract class AbstractProfilerTest {
     profiler.execute(command);
     stopped = false;
     before();
+  }
+
+  protected String getCStack() {
+      return (String) testParams.get("cstack");
   }
 
   @AfterEach
@@ -277,7 +281,7 @@ public abstract class AbstractProfilerTest {
 
   private String getAmendedProfilerCommand() {
     String profilerCommand = getProfilerCommand();
-    String testCstack = (String)testParams.get("cstack");
+    String testCstack = getCStack();
     if (testCstack != null) {
       profilerCommand += ",cstack=" + testCstack;
     } else if(!(ALLOW_NATIVE_CSTACKS || profilerCommand.contains("cstack="))) {
@@ -337,7 +341,7 @@ public abstract class AbstractProfilerTest {
   }
 
   protected final void verifyCStackSettings() {
-    String cstack = (String)testParams.get("cstack");
+    String cstack = (String)getCStack();
     if (cstack == null) {
       // not a forced cstack mode
       return;
