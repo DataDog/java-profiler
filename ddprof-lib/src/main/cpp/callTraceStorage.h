@@ -29,28 +29,49 @@ class CallTraceHashTable;
 typedef std::function<void(std::unordered_set<u64>&)> LivenessChecker;
 
 /**
+ * Cache-aligned hazard pointer slot to eliminate false sharing.
+ * Each slot occupies a full cache line (64 bytes) to ensure that
+ * updates by one thread do not invalidate cache lines for other threads.
+ */
+struct alignas(DEFAULT_CACHE_LINE_SIZE) HazardSlot {
+    CallTraceHashTable* pointer;
+    char padding[DEFAULT_CACHE_LINE_SIZE - sizeof(pointer)];
+
+    HazardSlot() : pointer(nullptr), padding{} {
+        static_assert(sizeof(HazardSlot) == DEFAULT_CACHE_LINE_SIZE,
+                      "HazardSlot must be exactly one cache line");
+    }
+};
+
+/**
  * RAII guard for hazard pointer management.
- * 
+ *
  * This class encapsulates the hazard pointer mechanism used to protect CallTraceHashTable
  * instances from being deleted while they are being accessed by concurrent threads.
  *
  * Usage:
- *   HazardPointer guard(active_table);
- *   // active_table is now protected from deletion
+ *   HazardPointer guard(_active_table);
+ *   // _active_table is now protected from deletion
  *   // Automatic cleanup when guard goes out of scope
  */
 class HazardPointer {
 public:
     static constexpr int MAX_THREADS = 8192;
     static constexpr int MAX_PROBE_DISTANCE = 32;  // Maximum probing attempts
-    
-    static std::atomic<CallTraceHashTable*> global_hazard_list[MAX_THREADS];
-    static std::atomic<int> slot_owners[MAX_THREADS];  // Thread ID ownership verification
+    static constexpr int BITMAP_WORDS = MAX_THREADS / 64;  // 8192 / 64 = 128 words
+
+    static HazardSlot global_hazard_list[MAX_THREADS];
+    static int slot_owners[MAX_THREADS];  // Thread ID ownership verification
+
+    // Occupied slot bitmap for efficient scanning (avoids iterating 8192 empty slots)
+    // Uses raw uint64_t with GCC atomic builtins to avoid any potential malloc on musl
+    // Each bit represents whether the corresponding slot is occupied
+    static uint64_t occupied_bitmap[BITMAP_WORDS];
 
 private:
-    bool active_;
-    int my_slot_;  // This instance's assigned slot
-    
+    bool _active;
+    int _my_slot;  // This instance's assigned slot
+
     // Signal-safe slot assignment using thread ID hash
     static int getThreadHazardSlot();
     
@@ -66,7 +87,7 @@ public:
     HazardPointer& operator=(HazardPointer&& other) noexcept;
     
     // Check if hazard pointer is active (slot allocation succeeded)
-    bool isActive() const { return active_; }
+    bool isActive() const { return _active; }
     
     // Wait for hazard pointers pointing to specific table to clear (used during shutdown)
     static void waitForHazardPointersToClear(CallTraceHashTable* table_to_delete);
@@ -89,12 +110,12 @@ private:
     // Triple-buffered storage with atomic pointers  
     // Rotation: tmp=scratch, scratch=active, active=standby, standby=tmp
     // New active inherits preserved traces for continuity
-    std::atomic<CallTraceHashTable*> _active_storage;
-    std::atomic<CallTraceHashTable*> _standby_storage;
-    std::atomic<CallTraceHashTable*> _scratch_storage;
+    CallTraceHashTable* _active_storage;
+    CallTraceHashTable* _standby_storage;
+    CallTraceHashTable* _scratch_storage;
     
     // Generation counter for ABA protection during table swaps
-    std::atomic<u32> _generation_counter;
+    u32 _generation_counter;
     
     // Liveness checkers - protected by simple spinlock during registration/clear
     // Using vector instead of unordered_set since std::function cannot be hashed
@@ -102,7 +123,8 @@ private:
     SpinLock _liveness_lock;  // Simple atomic lock for rare liveness operations
     
     // Static atomic for instance ID generation - avoids function-local static initialization issues
-    static std::atomic<u64> _next_instance_id;
+    
+    static u64 _next_instance_id;
     
     // Lazy initialization helper to avoid global constructor
     static u64 getNextInstanceId();
