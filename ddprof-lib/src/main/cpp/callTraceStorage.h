@@ -43,14 +43,6 @@ class HazardPointer {
 public:
     static constexpr int MAX_THREADS = 8192;
     static constexpr int MAX_PROBE_DISTANCE = 32;  // Maximum probing attempts
-    static constexpr int PRIME_STEP_COUNT = 16;    // Number of prime steps for collision resolution
-    
-    // Prime numbers coprime to MAX_THREADS (8192 = 2^13) for semi-random probing
-    // Selected to provide good distribution and avoid patterns
-    static constexpr int PRIME_STEPS[PRIME_STEP_COUNT] = {
-        1009, 1013, 1019, 1021, 1031, 1033, 1039, 1049,
-        1051, 1061, 1063, 1069, 1087, 1091, 1093, 1097
-    };
     
     static std::atomic<CallTraceHashTable*> global_hazard_list[MAX_THREADS];
     static std::atomic<int> slot_owners[MAX_THREADS];  // Thread ID ownership verification
@@ -117,10 +109,7 @@ private:
     
     // Pre-allocated collections for processTraces (single-threaded operation)
     // These collections are reused to eliminate malloc/free cycles
-    std::unordered_set<CallTrace*> _traces_buffer;           // Combined traces for JFR processing
-    std::unordered_set<CallTrace*> _traces_to_preserve_buffer; // Traces selected for preservation
-    std::unordered_set<CallTrace*> _standby_traces_buffer;   // Traces collected from standby
-    std::unordered_set<CallTrace*> _active_traces_buffer;    // Traces collected from active/scratch
+    std::unordered_set<CallTrace*> _traces_buffer;           // All traces for JFR processing
     std::unordered_set<u64> _preserve_set_buffer;           // Preserve set for current cycle
     
     
