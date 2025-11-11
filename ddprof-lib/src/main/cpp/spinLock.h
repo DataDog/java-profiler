@@ -97,10 +97,8 @@ public:
 class OptionalSharedLockGuard {
   SpinLock* _lock;
 public:
-  OptionalSharedLockGuard(SpinLock* lock, const std::function<void()>& code) : _lock(lock) {
-    if (_lock->tryLockShared()) {
-      code();
-    } else {
+  OptionalSharedLockGuard(SpinLock* lock) : _lock(lock) {
+    if (!_lock->tryLockShared()) {
       // Locking failed, no need to unlock.
       _lock = nullptr;
     }
