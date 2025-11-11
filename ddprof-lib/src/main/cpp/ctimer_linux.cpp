@@ -83,7 +83,7 @@ long CTimer::_interval;
 int CTimer::_max_timers = 0;
 int *CTimer::_timers = NULL;
 CStack CTimer::_cstack;
-std::atomic<bool> CTimer::_enabled{false};
+bool CTimer::_enabled = false;
 int CTimer::_signal;
 
 int CTimer::registerThread(int tid) {
@@ -207,7 +207,7 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   int saved_errno = errno;
   // we want to ensure memory order because of the possibility the instance gets
   // cleared
-  if (!_enabled.load(std::memory_order_acquire))
+  if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE))
     return;
   int tid = 0;
   ProfiledThread *current = ProfiledThread::current();
