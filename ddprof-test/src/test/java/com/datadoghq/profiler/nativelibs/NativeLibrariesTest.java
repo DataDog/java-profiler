@@ -52,12 +52,13 @@ public class NativeLibrariesTest extends CStackAwareAbstractProfilerTest {
         super(cstack);
     }
 
-
     @RetryTest(5)
     @TestTemplate
     @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
     public void test(@CStack String cstack) throws ExecutionException, InterruptedException, Exception {
-        test();
+        if (isSupported(cstack)) {
+            test();
+        }
     }
 
     private void test() {

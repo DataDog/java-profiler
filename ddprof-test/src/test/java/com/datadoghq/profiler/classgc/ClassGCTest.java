@@ -24,7 +24,7 @@ import java.util.Collections;
 public class ClassGCTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
-        return "cpu=1ms,wall=1ms,filter=0,memory=524288:L,cstack=vm";
+        return "cpu=1ms,wall=1ms,filter=0,memory=524288:L";
     }
 
     private static final String CLASS_NAME = "code.Worker";

@@ -279,13 +279,24 @@ public abstract class AbstractProfilerTest {
     profiler.addThread();
   }
 
+  protected final String defaultCStack() {
+      return Platform.isJ9() ? "fp" : "vm";
+  }
+
+  protected static boolean isSupported(String cstack) {
+      if (Platform.isJ9()) {
+          return !"vm".equals(cstack) && !"vmx".equals(cstack);
+      }
+      return true;
+  }
+
   private String getAmendedProfilerCommand() {
     String profilerCommand = getProfilerCommand();
     String testCstack = getCStack();
     if (testCstack != null) {
       profilerCommand += ",cstack=" + testCstack;
     } else if(!(ALLOW_NATIVE_CSTACKS || profilerCommand.contains("cstack="))) {
-      profilerCommand += ",cstack=vm";
+      profilerCommand += ",cstack=" + defaultCStack();
     }
     // FIXME - test framework doesn't seem to be forking each test, so need to sync
     //  these across test cases for now
