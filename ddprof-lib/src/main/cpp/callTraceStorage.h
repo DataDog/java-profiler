@@ -34,7 +34,7 @@ typedef std::function<void(std::unordered_set<u64>&)> LivenessChecker;
  * updates by one thread do not invalidate cache lines for other threads.
  */
 struct alignas(DEFAULT_CACHE_LINE_SIZE) HazardSlot {
-    CallTraceHashTable* pointer;
+    volatile CallTraceHashTable* pointer;
     char padding[DEFAULT_CACHE_LINE_SIZE - sizeof(pointer)];
 
     HazardSlot() : pointer(nullptr), padding{} {
@@ -110,9 +110,9 @@ private:
     // Triple-buffered storage with atomic pointers  
     // Rotation: tmp=scratch, scratch=active, active=standby, standby=tmp
     // New active inherits preserved traces for continuity
-    CallTraceHashTable* _active_storage;
-    CallTraceHashTable* _standby_storage;
-    CallTraceHashTable* _scratch_storage;
+    volatile CallTraceHashTable* _active_storage;
+    volatile CallTraceHashTable* _standby_storage;
+    volatile CallTraceHashTable* _scratch_storage;
     
     // Generation counter for ABA protection during table swaps
     u32 _generation_counter;

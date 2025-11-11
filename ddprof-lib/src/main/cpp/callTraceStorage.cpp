@@ -179,7 +179,7 @@ void HazardPointer::waitForHazardPointersToClear(CallTraceHashTable* table_to_de
                 int slot = word_idx * 64 + bit_pos;
 
                 // Check if this occupied slot points to the table we're deleting
-                CallTraceHashTable* hazard = __atomic_load_n(&global_hazard_list[slot].pointer, __ATOMIC_ACQUIRE);
+                CallTraceHashTable* hazard = const_cast<CallTraceHashTable*>(__atomic_load_n(&global_hazard_list[slot].pointer, __ATOMIC_ACQUIRE));
                 if (hazard == table_to_delete) {
                     all_clear = false;
                     break;
@@ -216,7 +216,7 @@ void HazardPointer::waitForHazardPointersToClear(CallTraceHashTable* table_to_de
                 int bit_pos = __builtin_ctzll(occupied_bits);
                 int slot = word_idx * 64 + bit_pos;
 
-                CallTraceHashTable* hazard = __atomic_load_n(&global_hazard_list[slot].pointer, __ATOMIC_ACQUIRE);
+                CallTraceHashTable* hazard = const_cast<CallTraceHashTable*>(__atomic_load_n(&global_hazard_list[slot].pointer, __ATOMIC_ACQUIRE));
                 if (hazard == table_to_delete) {
                     all_clear = false;
                     break;
@@ -257,7 +257,7 @@ void HazardPointer::waitForAllHazardPointersToClear() {
                 int slot = word_idx * 64 + bit_pos;
 
                 // Uses GCC atomic builtin (no malloc, async-signal-safe)
-                CallTraceHashTable* hazard = __atomic_load_n(&global_hazard_list[slot].pointer, __ATOMIC_ACQUIRE);
+                CallTraceHashTable* hazard = const_cast<CallTraceHashTable*>(__atomic_load_n(&global_hazard_list[slot].pointer, __ATOMIC_ACQUIRE));
                 if (hazard != nullptr) {
                     any_hazards = true;
                     break;
@@ -294,7 +294,7 @@ void HazardPointer::waitForAllHazardPointersToClear() {
                 int slot = word_idx * 64 + bit_pos;
 
                 // Uses GCC atomic builtin (no malloc, async-signal-safe)
-                CallTraceHashTable* hazard = __atomic_load_n(&global_hazard_list[slot].pointer, __ATOMIC_ACQUIRE);
+                CallTraceHashTable* hazard = const_cast<CallTraceHashTable*>(__atomic_load_n(&global_hazard_list[slot].pointer, __ATOMIC_ACQUIRE));
                 if (hazard != nullptr) {
                     any_hazards = true;
                     break;
@@ -372,9 +372,9 @@ CallTraceStorage::CallTraceStorage() : _active_storage(nullptr), _standby_storag
 CallTraceStorage::~CallTraceStorage() {
     // Atomically invalidate storage pointers to prevent new put() operations
     // Relaxed ordering is sufficient since no concurrent readers exist during destruction
-    CallTraceHashTable* active = __atomic_exchange_n(&_active_storage, nullptr, __ATOMIC_RELAXED);
-    CallTraceHashTable* standby = __atomic_exchange_n(&_standby_storage, nullptr, __ATOMIC_RELAXED);
-    CallTraceHashTable* scratch = __atomic_exchange_n(&_scratch_storage, nullptr, __ATOMIC_RELAXED);
+    CallTraceHashTable* active = const_cast<CallTraceHashTable*>(__atomic_exchange_n(&_active_storage, nullptr, __ATOMIC_RELAXED));
+    CallTraceHashTable* standby = const_cast<CallTraceHashTable*>(__atomic_exchange_n(&_standby_storage, nullptr, __ATOMIC_RELAXED));
+    CallTraceHashTable* scratch = const_cast<CallTraceHashTable*>(__atomic_exchange_n(&_scratch_storage, nullptr, __ATOMIC_RELAXED));
 
     // Wait for any ongoing hazard pointer usage to complete and delete each unique table
     // Note: In triple-buffering, all three pointers should be unique, but check anyway
@@ -421,7 +421,7 @@ void CallTraceStorage::clearLivenessCheckers() {
 u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncated, u64 weight) {
     // Signal handlers can run concurrently with destructor
     // MEMORY_ORDER_ACQUIRE: Critical - synchronizes with release stores in processTraces()
-    CallTraceHashTable* active = __atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE);
+    CallTraceHashTable* active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE));
     
     // Safety check - if null, system is shutting down
     if (active == nullptr) {
@@ -441,7 +441,7 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
     
     // Check again after registering hazard pointer - storage might have been nullified
     // MEMORY_ORDER_ACQUIRE: Ensures we see any concurrent storage swaps
-    CallTraceHashTable* original_active = __atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE);
+    CallTraceHashTable* original_active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE));
     if (original_active != active || original_active == nullptr) {
         // Storage was swapped or nullified, return dropped
         Counters::increment(CALLTRACE_STORAGE_DROPPED);
@@ -475,9 +475,9 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
     // PHASE 2: 8-Step Triple-Buffer Rotation
 
     // Load storage pointers - relaxed ordering sufficient in single-threaded processTraces context
-    CallTraceHashTable* original_active = __atomic_load_n(&_active_storage, __ATOMIC_RELAXED);
-    CallTraceHashTable* original_standby = __atomic_load_n(&_standby_storage, __ATOMIC_RELAXED);
-    CallTraceHashTable* original_scratch = __atomic_load_n(&_scratch_storage, __ATOMIC_RELAXED);
+    CallTraceHashTable* original_active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_RELAXED));
+    CallTraceHashTable* original_standby = const_cast<CallTraceHashTable*>(__atomic_load_n(&_standby_storage, __ATOMIC_RELAXED));
+    CallTraceHashTable* original_scratch = const_cast<CallTraceHashTable*>(__atomic_load_n(&_scratch_storage, __ATOMIC_RELAXED));
 
     // Clear process collection for reuse (no malloc/free)
     _traces_buffer.clear();
@@ -545,10 +545,10 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
 void CallTraceStorage::clear() {
     // Mark critical section during clear operation for consistency
     CriticalSection cs;
-    
+
     // Load current table pointers - relaxed ordering sufficient within critical section
-    CallTraceHashTable* active = __atomic_load_n(&_active_storage, __ATOMIC_RELAXED);
-    CallTraceHashTable* standby = __atomic_load_n(&_standby_storage, __ATOMIC_RELAXED);
+    CallTraceHashTable* active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_RELAXED));
+    CallTraceHashTable* standby = const_cast<CallTraceHashTable*>(__atomic_load_n(&_standby_storage, __ATOMIC_RELAXED));
     
     // Direct clear operations with critical section protection
     if (active) {
