@@ -17,9 +17,6 @@
 #ifndef _SPINLOCK_H
 #define _SPINLOCK_H
 
-#include <atomic>
-#include <functional>
-
 #include "arch_dd.h"
 
 // Cannot use regular mutexes inside signal handler.
@@ -30,7 +27,7 @@ private:
   //  0 - unlocked
   //  1 - exclusive lock
   // <0 - shared lock
-  std::atomic_int _lock;
+  volatile int _lock;
   char _padding[DEFAULT_CACHE_LINE_SIZE - sizeof(_lock)];
 public:
   explicit constexpr SpinLock(int initial_state = 0) : _lock(initial_state), _padding() {
@@ -39,10 +36,7 @@ public:
 
   void reset() { _lock = 0; }
 
-  bool tryLock() {
-    int expected = 0;
-    return _lock.compare_exchange_strong(expected, 1, std::memory_order_acquire, std::memory_order_relaxed);
-  }
+  bool tryLock() { return __sync_bool_compare_and_swap(&_lock, 0, 1); }
 
   void lock() {
     while (!tryLock()) {
@@ -50,15 +44,12 @@ public:
     }
   }
 
-  void unlock() {
-    _lock.fetch_sub(1, std::memory_order_release);
-  }
+  void unlock() { __sync_fetch_and_sub(&_lock, 1); }
 
   bool tryLockShared() {
     int value;
-    // we use relaxed as the compare already offers the guarantees we need
-    while ((value = _lock.load(std::memory_order_acquire)) <= 0) {
-      if (_lock.compare_exchange_strong(value, value - 1, std::memory_order_acq_rel)) {
+    while ((value = __atomic_load_n(&_lock, __ATOMIC_ACQUIRE)) <= 0) {
+      if (__sync_bool_compare_and_swap(&_lock, value, value - 1)) {
         return true;
       }
     }
@@ -67,13 +58,13 @@ public:
 
   void lockShared() {
     int value;
-    while ((value = _lock.load(std::memory_order_acquire)) > 0 ||
-           !_lock.compare_exchange_strong(value, value - 1, std::memory_order_acq_rel)) {
+    while ((value = __atomic_load_n(&_lock, __ATOMIC_ACQUIRE)) > 0 ||
+           !__sync_bool_compare_and_swap(&_lock, value, value - 1)) {
       spinPause();
     }
   }
 
-  void unlockShared() { _lock.fetch_add(1, std::memory_order_release); }
+  void unlockShared() { __sync_fetch_and_add(&_lock, 1); }
 };
 
 // RAII guard classes for automatic lock management
