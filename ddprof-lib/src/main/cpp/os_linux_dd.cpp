@@ -30,6 +30,7 @@ namespace {
   static std::atomic<bool> g_watcher_running{false};
   static std::atomic<int> g_watcher_fd{-1};
   static pthread_t g_watcher_thread;
+  static std::atomic<bool> g_watcher_thread_created{false};
   static std::function<void(int)> g_on_new_thread;
   static std::function<void(int)> g_on_dead_thread;
 
@@ -183,9 +184,9 @@ bool ddprof::OS::startThreadDirectoryWatcher(const std::function<void(int)>& on_
     close(inotify_fd);
     return false;
   }
-  
-  pthread_detach(g_watcher_thread);
-  TEST_LOG("Started thread directory watcher");
+
+  g_watcher_thread_created.store(true);
+  TEST_LOG("Started thread directory watcher (thread will be joined on cleanup)");
   return true;
 }
 
@@ -193,13 +194,32 @@ void ddprof::OS::stopThreadDirectoryWatcher() {
   if (!g_watcher_running.load()) {
     return;
   }
-  
+
+  TEST_LOG("Stopping thread directory watcher...");
+
+  // Signal the watcher thread to stop
   g_watcher_running.store(false);
+
+  // Close the inotify fd to wake up select()
   int fd = g_watcher_fd.exchange(-1);
   if (fd >= 0) {
     close(fd);
   }
-  TEST_LOG("Stopped thread directory watcher");
+
+  // Wait for the watcher thread to actually terminate
+  if (g_watcher_thread_created.load()) {
+    TEST_LOG("Waiting for watcher thread to terminate...");
+    void* retval;
+    int join_result = pthread_join(g_watcher_thread, &retval);
+    if (join_result != 0) {
+      TEST_LOG("Failed to join watcher thread: %s", strerror(join_result));
+    } else {
+      TEST_LOG("Watcher thread terminated successfully");
+    }
+    g_watcher_thread_created.store(false);
+  }
+
+  TEST_LOG("Thread directory watcher stopped");
 }
 
 namespace {

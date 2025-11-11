@@ -125,6 +125,26 @@ void ProfiledThread::doInitExistingThreads() {
   initialized = true;
 }
 
+void ProfiledThread::cleanupTlsPriming() {
+  if (!ddprof::OS::isTlsPrimingAvailable()) {
+    return;
+  }
+
+  // Stop the thread directory watcher
+  ddprof::OS::stopThreadDirectoryWatcher();
+  TEST_LOG("Stopped thread directory watcher");
+
+  // Uninstall the TLS priming signal handler
+  if (g_tls_prime_signal > 0) {
+    ddprof::OS::uninstallTlsPrimeSignalHandler(g_tls_prime_signal);
+    TEST_LOG("Uninstalled TLS priming signal handler (signal %d)", g_tls_prime_signal);
+    g_tls_prime_signal = -1;
+  }
+
+  // Note: We don't clean up the buffer here because threads may still be using it
+  // The buffer will be cleaned up when the process exits
+}
+
 void ProfiledThread::prepareBuffer(int size) {
   TEST_LOG("Initializing ProfiledThread TLS buffer to %d slots", size);
 

@@ -73,6 +73,7 @@ public:
 
   static void initCurrentThread();
   static void initExistingThreads();
+  static void cleanupTlsPriming();
 
   static void release();
 

@@ -1341,6 +1341,9 @@ Error Profiler::stop() {
   // correct counts in the recording
   _thread_info.reportCounters();
 
+  // Clean up TLS priming infrastructure (watcher thread and signal handler)
+  ProfiledThread::cleanupTlsPriming();
+
   // Acquire all spinlocks to avoid race with remaining signals
   lockAll();
   _jfr.stop();
