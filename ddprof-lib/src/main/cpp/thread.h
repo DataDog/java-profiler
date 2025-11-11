@@ -131,11 +131,14 @@ public:
   void setFilterSlotId(int slotId) { _filter_slot_id = slotId; }
   
   // Signal handler reentrancy protection
-  bool tryEnterCriticalSection() { 
-    return !_in_critical_section.exchange(true, std::memory_order_acquire); 
+  bool tryEnterCriticalSection() {
+    // Uses GCC atomic builtin (no malloc, async-signal-safe)
+    bool expected = false;
+    return __atomic_compare_exchange_n(&_in_critical_section, &expected, true, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
   }
-  void exitCriticalSection() { 
-    _in_critical_section.store(false, std::memory_order_release); 
+  void exitCriticalSection() {
+    // Uses GCC atomic builtin (no malloc, async-signal-safe)
+    __atomic_store_n(&_in_critical_section, false, __ATOMIC_RELEASE);
   }
   
   // Hazard pointer management for lock-free memory reclamation (signal-safe)
@@ -162,7 +165,7 @@ private:
   // and both contexts may attempt to enter the critical section. Without atomic exchange(),
   // both could see the flag as false and both would think they successfully entered.
   // The atomic exchange() is uninterruptible, ensuring only one context succeeds.
-  std::atomic<bool> _in_critical_section{false};
+  bool _in_critical_section{false};
   
   // Hazard pointer instance for signal-safe access (not atomic since only accessed by same thread)
   void* _hazard_instance{nullptr};
