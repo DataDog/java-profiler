@@ -4,10 +4,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -107,8 +109,42 @@ public abstract class AbstractProfilerTest {
     return map;
   }
 
+  protected static class TestConfiguration {
+      String os;        // OS (Linux, musl, MacOSX or Windows)
+      String arch;      // x86 or aarch64
+      String jvm;       // hotspot, J9 or Graal
+      String cstack;    // vm, vmx, fp, dwarf
+
+      protected TestConfiguration(String os, String arch, String jvm, String cstack) {
+          this.os =os;
+          this.arch =arch;
+          this.jvm =jvm;
+          this.cstack =cstack;
+      }
+
+      public boolean match(String os, String arch, String jvm, String cstack) {
+          return (os.equals(this.os) || "*".equals(this.os)) &&
+                  (arch.equals(this.arch) || "*".equals(this.arch)) &&
+                  (jvm.equals(this.jvm) || "*".equals(this.jvm)) &&
+                  (cstack.equals(this.cstack) || "*".equals(this.cstack));
+      }
+  };
+
+  private List<TestConfiguration> blacklist = new ArrayList<>();
+
   protected AbstractProfilerTest(Map<String, Object> testParams) {
     this.testParams = testParams != null ? new HashMap<>(testParams) : Collections.emptyMap();
+
+    /* Black list:
+     * - J9 does not support cstack=vm or vmx
+     *
+     */
+    blacklist.add(new TestConfiguration("*", "*", "J9", "vm"));
+    blacklist.add(new TestConfiguration("*", "*", "J9", "vmx"));
+    appendBlackList(blacklist);
+  }
+
+  protected void appendBlackList(List<TestConfiguration> blackList) {
   }
 
   protected AbstractProfilerTest() {
@@ -283,11 +319,47 @@ public abstract class AbstractProfilerTest {
       return Platform.isJ9() ? "fp" : "vm";
   }
 
-  protected static boolean isSupported(String cstack) {
-      if (Platform.isJ9()) {
-          return !"vm".equals(cstack) && !"vmx".equals(cstack);
+  private static String getOS() {
+      if (Platform.isWindows()) {
+          return "win";
+      } else if (Platform.isMac()) {
+          return "mac";
+      } else if (Platform.isMusl()) {
+          return "musl";
+      } else {
+          return "linux";
       }
-      return true;
+  }
+
+  private static String getArch() {
+      if (Platform.isAarch64()) {
+          return "aarch64";
+      } else {
+          return "x86";
+      }
+  }
+
+  private static String getJVM() {
+      if (Platform.isJ9()) {
+          return "J9";
+      } else if (Platform.isGraal()) {
+          return "graal";
+      } else {
+          return "hostspot";
+      }
+  }
+
+  protected boolean isOnBlackList(String cstack) {
+      String os = getOS();
+      String arch = getArch();
+      String jvm = getJVM();
+
+      for (TestConfiguration c: blacklist) {
+          if (c.match(os, arch, jvm, cstack)) {
+              return true;
+          }
+      }
+      return false;
   }
 
   private String getAmendedProfilerCommand() {

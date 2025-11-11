@@ -24,7 +24,7 @@ public class WallclockDumpSmokeTest extends JfrDumpTest {
     @TestTemplate
     @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
     public void test(@CStack String cstack) throws ExecutionException, InterruptedException, Exception {
-        if (isSupported(cstack)) {
+        if (!isOnBlackList(cstack)) {
             test();
         }
     }

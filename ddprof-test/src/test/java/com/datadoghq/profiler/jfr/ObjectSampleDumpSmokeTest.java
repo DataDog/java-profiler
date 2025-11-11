@@ -30,7 +30,7 @@ public class ObjectSampleDumpSmokeTest extends JfrDumpTest {
     @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
     @Timeout(value = 300)
     public void test(@CStack String cstack) throws ExecutionException, InterruptedException, Exception {
-        if (isSupported(cstack)) {
+        if (!isOnBlackList(cstack)) {
             test();
         }
     }

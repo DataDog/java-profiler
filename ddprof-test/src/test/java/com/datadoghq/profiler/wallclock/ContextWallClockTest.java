@@ -34,7 +34,7 @@ public class ContextWallClockTest extends CStackAwareAbstractProfilerTest {
     @TestTemplate
     @ValueSource(strings = {"vm", "fp"})
     public void test(@CStack String cstack) throws ExecutionException, InterruptedException, Exception {
-        if (isSupported(cstack)) {
+        if (isOnBlackList(cstack)) {
             base.test(this);
         }
     }
