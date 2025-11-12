@@ -1497,46 +1497,42 @@ void FlightRecorder::stop() {
 }
 
 Error FlightRecorder::dump(const char *filename, const int length) {
-  OptionalSharedLockGuard locker(&_rec_lock);
-  if (locker.ownsLock()) {
-    Recording* rec = _rec;
-    if (rec != nullptr) {
-      if (_filename.length() != length ||
-          strncmp(filename, _filename.c_str(), length) != 0) {
-        // if the filename to dump the recording to is specified move the current
-        // working file there
-        int copy_fd = open(filename, O_CREAT | O_RDWR | O_TRUNC, 0644);
-        rec->switchChunk(copy_fd);
-        close(copy_fd);
-        return Error::OK;
-      }
-      return Error(
-          "Can not dump recording to itself. Provide a different file name!");
+  ExclusiveLockGuard locker(&_rec_lock);
+  Recording* rec = _rec;
+  if (rec != nullptr) {
+    if (_filename.length() != length ||
+        strncmp(filename, _filename.c_str(), length) != 0) {
+      // if the filename to dump the recording to is specified move the current
+      // working file there
+      int copy_fd = open(filename, O_CREAT | O_RDWR | O_TRUNC, 0644);
+      rec->switchChunk(copy_fd);
+      close(copy_fd);
+      return Error::OK;
     }
+    return Error(
+      "Can not dump recording to itself. Provide a different file name!");
   }
   return Error("No active recording");
 }
 
 void FlightRecorder::flush() {
-  OptionalSharedLockGuard locker(&_rec_lock);
-  if (locker.ownsLock()) {
-    Recording* rec = _rec;
-    if (rec != nullptr) {
-      jvmtiEnv *jvmti = VM::jvmti();
-      JNIEnv *env = VM::jni();
+  ExclusiveLockGuard locker(&_rec_lock);
+  Recording* rec = _rec;
+  if (rec != nullptr) {
+    jvmtiEnv* jvmti = VM::jvmti();
+    JNIEnv* env = VM::jni();
 
-      jclass **classes = NULL;
-      jint count = 0;
-      // obtaining the class list will create local refs to all loaded classes,
-      // effectively preventing them from being unloaded while flushing
-      jvmtiError err = jvmti->GetLoadedClasses(&count, classes);
-      rec->switchChunk(-1);
-      if (!err) {
-        // deallocate all loaded classes
-        for (int i = 0; i < count; i++) {
-          env->DeleteLocalRef((jobject)classes[i]);
-          jvmti->Deallocate((unsigned char *)classes[i]);
-        }
+    jclass** classes = NULL;
+    jint count = 0;
+    // obtaining the class list will create local refs to all loaded classes,
+    // effectively preventing them from being unloaded while flushing
+    jvmtiError err = jvmti->GetLoadedClasses(&count, classes);
+    rec->switchChunk(-1);
+    if (!err) {
+      // deallocate all loaded classes
+      for (int i = 0; i < count; i++) {
+        env->DeleteLocalRef((jobject) classes[i]);
+        jvmti->Deallocate((unsigned char*) classes[i]);
       }
     }
   }
