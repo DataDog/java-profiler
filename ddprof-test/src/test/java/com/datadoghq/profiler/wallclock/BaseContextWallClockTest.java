@@ -176,11 +176,11 @@ final class BaseContextWallClockTest {
     }
 
     public void method1(int id) throws ExecutionException, InterruptedException {
-        System.out.println(Thread.currentThread().getName() + ">>method1");
+        System.err.println(Thread.currentThread().getName() + ">>method1");
         try (Tracing.Context context = Tracing.newContext(() -> id, profiler)) {
             method1Impl(id, context);
         } finally {
-            System.out.println(Thread.currentThread().getName() + "<<method1");
+            System.err.println(Thread.currentThread().getName() + "<<method1");
         }
     }
 
@@ -197,13 +197,13 @@ final class BaseContextWallClockTest {
     }
 
     public void method2(long id, Object monitor) {
-        System.out.println(Thread.currentThread().getName() + ">>method2");
+        System.err.println(Thread.currentThread().getName() + ">>method2");
         synchronized (monitor) {
             try (Tracing.Context context = Tracing.newContext(() -> id + 1, profiler)) {
                 method2Impl(context);
                 monitor.notify();
             } finally {
-                System.out.println(Thread.currentThread().getName() + "<<method2");
+                System.err.println(Thread.currentThread().getName() + "<<method2");
             }
         }
     }
@@ -214,13 +214,13 @@ final class BaseContextWallClockTest {
     }
 
     public void method3(long id, Object monitor) {
-        System.out.println(Thread.currentThread().getName() + ">>method3");
+        System.err.println(Thread.currentThread().getName() + ">>method3");
         synchronized (monitor) {
             try (Tracing.Context context = Tracing.newContext(() -> id + 2, profiler)) {
                 method3Impl(context);
                 monitor.notify();
             } finally {
-                System.out.println(Thread.currentThread().getName() + "<<method3");
+                System.err.println(Thread.currentThread().getName() + "<<method3");
             }
         }
     }

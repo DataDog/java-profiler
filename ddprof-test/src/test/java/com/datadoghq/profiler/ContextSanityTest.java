@@ -19,15 +19,13 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Sanity tests for JavaProfiler context write-read functionality.
  * Verifies that context values written via setContext() can be read back
- * from the DirectByteBuffer correctly, ensuring proper memory visibility
+ * via getThreadContext() correctly, ensuring proper memory visibility
  * between Java writes and native reads.
  */
 public class ContextSanityTest {
@@ -41,56 +39,6 @@ public class ContextSanityTest {
   }
 
   /**
-   * Knuth's multiplicative hash constant for 64-bit values.
-   * Must match the constant in JavaProfiler.
-   */
-  private static final long KNUTH_CONSTANT = 0x9E3779B97F4A7C15L;
-
-  /**
-   * Computes the expected checksum for given span IDs.
-   * Uses the same Knuth hash algorithm as JavaProfiler.
-   */
-  private static long computeExpectedChecksum(long spanId, long rootSpanId) {
-    long hashSpanId = spanId * KNUTH_CONSTANT;
-    long hashRootSpanId = rootSpanId * KNUTH_CONSTANT;
-    return hashSpanId ^ hashRootSpanId;
-  }
-
-  /**
-   * Helper method to read context values from the DirectByteBuffer.
-   */
-  private static class ContextValues {
-    final long spanId;
-    final long rootSpanId;
-    final long checksum;
-
-    ContextValues(ByteBuffer buffer) {
-      buffer.order(ByteOrder.LITTLE_ENDIAN);
-      this.spanId = buffer.getLong(0);
-      this.rootSpanId = buffer.getLong(8);
-      this.checksum = buffer.getLong(16);
-    }
-
-    /**
-     * Validates that the checksum matches the expected Knuth hash-based value
-     * and that the write is complete (even checksum bit).
-     */
-    void assertChecksumValid() {
-      long expectedChecksum = computeExpectedChecksum(spanId, rootSpanId);
-      // Mask off the low bit for comparison (bit 0 indicates write status)
-      long actualChecksumValue = checksum & ~1L;
-      long expectedChecksumValue = expectedChecksum & ~1L;
-
-      assertEquals(expectedChecksumValue, actualChecksumValue,
-          String.format("Checksum mismatch: span=%d, root=%d, expected=0x%X, actual=0x%X",
-              spanId, rootSpanId, expectedChecksumValue, actualChecksumValue));
-
-      assertTrue((checksum & 1) == 0,
-          String.format("Checksum should be even (write complete), but got 0x%X", checksum));
-    }
-  }
-
-  /**
    * Tests basic context write-read cycle.
    * Writes context values and verifies they can be read back correctly.
    */
@@ -101,14 +49,13 @@ public class ContextSanityTest {
 
     profiler.setContext(expectedSpanId, expectedRootSpanId);
 
-    ByteBuffer buffer = profiler.getContextBufferForTest();
-    ContextValues values = new ContextValues(buffer);
+    ThreadContext values = profiler.getThreadContext();
 
-    assertEquals(expectedSpanId, values.spanId,
+    assertEquals(expectedSpanId, values.getSpanId(),
         "SpanId should match what was written");
-    assertEquals(expectedRootSpanId, values.rootSpanId,
+    assertEquals(expectedRootSpanId, values.getRootSpanId(),
         "RootSpanId should match what was written");
-    values.assertChecksumValid();
+    assertEquals(ThreadContext.computeContextChecksum(expectedSpanId, expectedRootSpanId), values.getChecksum());
   }
 
   /**
@@ -117,28 +64,26 @@ public class ContextSanityTest {
    */
   @Test
   public void testSequentialContextUpdates() {
-    ByteBuffer buffer = profiler.getContextBufferForTest();
-
     // Update 1
     profiler.setContext(1L, 2L);
-    ContextValues values1 = new ContextValues(buffer);
-    assertEquals(1L, values1.spanId);
-    assertEquals(2L, values1.rootSpanId);
-    values1.assertChecksumValid();
+    ThreadContext values1 = profiler.getThreadContext();
+    assertEquals(1L, values1.getSpanId());
+    assertEquals(2L, values1.getRootSpanId());
+    assertEquals(ThreadContext.computeContextChecksum(1L, 2L), values1.getChecksum());
 
     // Update 2
     profiler.setContext(10L, 20L);
-    ContextValues values2 = new ContextValues(buffer);
-    assertEquals(10L, values2.spanId);
-    assertEquals(20L, values2.rootSpanId);
-    values2.assertChecksumValid();
+    ThreadContext values2 = profiler.getThreadContext();
+    assertEquals(10L, values2.getSpanId());
+    assertEquals(20L, values2.getRootSpanId());
+    assertEquals(ThreadContext.computeContextChecksum(10L, 20L), values2.getChecksum());
 
     // Update 3
     profiler.setContext(100L, 200L);
-    ContextValues values3 = new ContextValues(buffer);
-    assertEquals(100L, values3.spanId);
-    assertEquals(200L, values3.rootSpanId);
-    values3.assertChecksumValid();
+    ThreadContext values3 = profiler.getThreadContext();
+    assertEquals(100L, values3.getSpanId());
+    assertEquals(200L, values3.getRootSpanId());
+    assertEquals(ThreadContext.computeContextChecksum(100L, 200L), values3.getChecksum());
   }
 
   /**
@@ -149,12 +94,11 @@ public class ContextSanityTest {
   public void testZeroContext() {
     profiler.setContext(0L, 0L);
 
-    ByteBuffer buffer = profiler.getContextBufferForTest();
-    ContextValues values = new ContextValues(buffer);
+    ThreadContext values = profiler.getThreadContext();
 
-    assertEquals(0L, values.spanId, "SpanId should be zero");
-    assertEquals(0L, values.rootSpanId, "RootSpanId should be zero");
-    values.assertChecksumValid();
+    assertEquals(0L, values.getSpanId(), "SpanId should be zero");
+    assertEquals(0L, values.getRootSpanId(), "RootSpanId should be zero");
+    assertEquals(ThreadContext.computeContextChecksum(0L, 0L), values.getChecksum());
   }
 
   /**
@@ -166,12 +110,11 @@ public class ContextSanityTest {
     long maxValue = Long.MAX_VALUE;
     profiler.setContext(maxValue, maxValue);
 
-    ByteBuffer buffer = profiler.getContextBufferForTest();
-    ContextValues values = new ContextValues(buffer);
+    ThreadContext values = profiler.getThreadContext();
 
-    assertEquals(maxValue, values.spanId, "SpanId should be MAX_VALUE");
-    assertEquals(maxValue, values.rootSpanId, "RootSpanId should be MAX_VALUE");
-    values.assertChecksumValid();
+    assertEquals(maxValue, values.getSpanId(), "SpanId should be MAX_VALUE");
+    assertEquals(maxValue, values.getRootSpanId(), "RootSpanId should be MAX_VALUE");
+    assertEquals(ThreadContext.computeContextChecksum(maxValue, maxValue), values.getChecksum());
   }
 
   /**
@@ -180,8 +123,6 @@ public class ContextSanityTest {
    */
   @Test
   public void testRepeatedContextWrites() {
-    ByteBuffer buffer = profiler.getContextBufferForTest();
-
     // Perform 1000 roundtrips
     for (int i = 0; i < 1000; i++) {
       long spanId = i * 2L;
@@ -189,12 +130,12 @@ public class ContextSanityTest {
 
       profiler.setContext(spanId, rootSpanId);
 
-      ContextValues values = new ContextValues(buffer);
-      assertEquals(spanId, values.spanId,
+      ThreadContext values = profiler.getThreadContext();
+      assertEquals(spanId, values.getSpanId(),
           "SpanId mismatch at iteration " + i);
-      assertEquals(rootSpanId, values.rootSpanId,
+      assertEquals(rootSpanId, values.getRootSpanId(),
           "RootSpanId mismatch at iteration " + i);
-      values.assertChecksumValid();
+      assertEquals(ThreadContext.computeContextChecksum(spanId, rootSpanId), values.getChecksum());
     }
   }
 
@@ -204,8 +145,6 @@ public class ContextSanityTest {
    */
   @Test
   public void testVariedContextValues() {
-    ByteBuffer buffer = profiler.getContextBufferForTest();
-
     // Test various patterns
     long[][] testValues = {
         {0L, 1L},
@@ -221,12 +160,12 @@ public class ContextSanityTest {
 
       profiler.setContext(spanId, rootSpanId);
 
-      ContextValues values = new ContextValues(buffer);
-      assertEquals(spanId, values.spanId,
+      ThreadContext values = profiler.getThreadContext();
+      assertEquals(spanId, values.getSpanId(),
           "SpanId mismatch for test pattern " + i);
-      assertEquals(rootSpanId, values.rootSpanId,
+      assertEquals(rootSpanId, values.getRootSpanId(),
           "RootSpanId mismatch for test pattern " + i);
-      values.assertChecksumValid();
+      assertEquals(ThreadContext.computeContextChecksum(spanId, rootSpanId), values.getChecksum());
     }
   }
 
@@ -237,42 +176,40 @@ public class ContextSanityTest {
    */
   @Test
   public void testNestedContextUpdates() {
-    ByteBuffer buffer = profiler.getContextBufferForTest();
-
     // Set initial context
     profiler.setContext(100L, 100L);
-    ContextValues values1 = new ContextValues(buffer);
-    assertEquals(100L, values1.spanId, "Initial spanId should be 100");
-    assertEquals(100L, values1.rootSpanId, "Initial rootSpanId should be 100");
-    values1.assertChecksumValid();
+    ThreadContext values1 = profiler.getThreadContext();
+    assertEquals(100L, values1.getSpanId(), "Initial spanId should be 100");
+    assertEquals(100L, values1.getRootSpanId(), "Initial rootSpanId should be 100");
+    assertEquals(ThreadContext.computeContextChecksum(100L, 100L), values1.getChecksum());
 
     // Nested update 1 - overwrite with new context
     profiler.setContext(200L, 200L);
-    ContextValues values2 = new ContextValues(buffer);
-    assertEquals(200L, values2.spanId, "Nested spanId should be 200");
-    assertEquals(200L, values2.rootSpanId, "Nested rootSpanId should be 200");
-    values2.assertChecksumValid();
+    ThreadContext values2 = profiler.getThreadContext();
+    assertEquals(200L, values2.getSpanId(), "Nested spanId should be 200");
+    assertEquals(200L, values2.getRootSpanId(), "Nested rootSpanId should be 200");
+    assertEquals(ThreadContext.computeContextChecksum(200L, 200L), values2.getChecksum());
 
     // Nested update 2 - overwrite again
     profiler.setContext(300L, 300L);
-    ContextValues values3 = new ContextValues(buffer);
-    assertEquals(300L, values3.spanId, "Second nested spanId should be 300");
-    assertEquals(300L, values3.rootSpanId, "Second nested rootSpanId should be 300");
-    values3.assertChecksumValid();
+    ThreadContext values3 = profiler.getThreadContext();
+    assertEquals(300L, values3.getSpanId(), "Second nested spanId should be 300");
+    assertEquals(300L, values3.getRootSpanId(), "Second nested rootSpanId should be 300");
+    assertEquals(ThreadContext.computeContextChecksum(300L, 300L), values3.getChecksum());
 
     // Nested update 3 - different spanId and rootSpanId
     profiler.setContext(400L, 350L);
-    ContextValues values4 = new ContextValues(buffer);
-    assertEquals(400L, values4.spanId, "Third nested spanId should be 400");
-    assertEquals(350L, values4.rootSpanId, "Third nested rootSpanId should be 350");
-    values4.assertChecksumValid();
+    ThreadContext values4 = profiler.getThreadContext();
+    assertEquals(400L, values4.getSpanId(), "Third nested spanId should be 400");
+    assertEquals(350L, values4.getRootSpanId(), "Third nested rootSpanId should be 350");
+    assertEquals(ThreadContext.computeContextChecksum(400L, 350L), values4.getChecksum());
 
     // Clear context (set to zero)
     profiler.setContext(0L, 0L);
-    ContextValues values5 = new ContextValues(buffer);
-    assertEquals(0L, values5.spanId, "Cleared spanId should be 0");
-    assertEquals(0L, values5.rootSpanId, "Cleared rootSpanId should be 0");
-    values5.assertChecksumValid();
+    ThreadContext values5 = profiler.getThreadContext();
+    assertEquals(0L, values5.getSpanId(), "Cleared spanId should be 0");
+    assertEquals(0L, values5.getRootSpanId(), "Cleared rootSpanId should be 0");
+    assertEquals(ThreadContext.computeContextChecksum(0L, 0L), values5.getChecksum());
   }
 
   /**
@@ -289,11 +226,10 @@ public class ContextSanityTest {
     profiler.setContext(threadASpanId, threadARootSpanId);
 
     // Verify Thread A can read its context
-    ByteBuffer bufferA = profiler.getContextBufferForTest();
-    ContextValues valuesA1 = new ContextValues(bufferA);
-    assertEquals(threadASpanId, valuesA1.spanId, "Thread A initial spanId");
-    assertEquals(threadARootSpanId, valuesA1.rootSpanId, "Thread A initial rootSpanId");
-    valuesA1.assertChecksumValid();
+    ThreadContext valuesA1 = profiler.getThreadContext();
+    assertEquals(threadASpanId, valuesA1.getSpanId(), "Thread A initial spanId");
+    assertEquals(threadARootSpanId, valuesA1.getRootSpanId(), "Thread A initial rootSpanId");
+    assertEquals(ThreadContext.computeContextChecksum(threadASpanId, threadARootSpanId), valuesA1.getChecksum());
 
     // Holder for Thread B's results
     final long threadBSpanId = 2000L;
@@ -308,13 +244,12 @@ public class ContextSanityTest {
         profiler.setContext(threadBSpanId, threadBRootSpanId);
 
         // Thread B reads its own context
-        ByteBuffer bufferB = profiler.getContextBufferForTest();
-        ContextValues valuesB = new ContextValues(bufferB);
+        ThreadContext valuesB = profiler.getThreadContext();
 
         // Verify Thread B has its own context, not Thread A's
-        assertEquals(threadBSpanId, valuesB.spanId, "Thread B spanId should be its own");
-        assertEquals(threadBRootSpanId, valuesB.rootSpanId, "Thread B rootSpanId should be its own");
-        valuesB.assertChecksumValid();
+        assertEquals(threadBSpanId, valuesB.getSpanId(), "Thread B spanId should be its own");
+        assertEquals(threadBRootSpanId, valuesB.getRootSpanId(), "Thread B rootSpanId should be its own");
+        assertEquals(ThreadContext.computeContextChecksum(threadBSpanId, threadBRootSpanId), valuesB.getChecksum());
 
         threadBSuccess[0] = true;
       } catch (AssertionError e) {
@@ -332,9 +267,9 @@ public class ContextSanityTest {
     assertTrue(threadBSuccess[0], "Thread B should have completed successfully");
 
     // Verify Thread A's context is unchanged after Thread B ran
-    ContextValues valuesA2 = new ContextValues(bufferA);
-    assertEquals(threadASpanId, valuesA2.spanId, "Thread A spanId should be unchanged");
-    assertEquals(threadARootSpanId, valuesA2.rootSpanId, "Thread A rootSpanId should be unchanged");
-    valuesA2.assertChecksumValid();
+    ThreadContext valuesA2 = profiler.getThreadContext();
+    assertEquals(threadASpanId, valuesA2.getSpanId(), "Thread A spanId should be unchanged");
+    assertEquals(threadARootSpanId, valuesA2.getRootSpanId(), "Thread A rootSpanId should be unchanged");
+    assertEquals(ThreadContext.computeContextChecksum(threadASpanId, threadARootSpanId), valuesA2.getChecksum());
   }
 }

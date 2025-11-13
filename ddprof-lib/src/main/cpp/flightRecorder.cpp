@@ -1291,15 +1291,15 @@ void Recording::writeContext(Buffer *buf, Context* context) {
     // Force reload from memory (acquire semantics)
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
 
-    TEST_LOG(">>> Reading Context at %p: spanId=%llu, rootSpanId=%llu, checksum=%llu",
+    TEST_LOG(">>> Reading Context at %p: spanId=%llx, rootSpanId=%llx, checksum=%llx",
              context, context->spanId, context->rootSpanId, context->checksum);
 
     // Seqlock-style read: check generation before and after reading data
-    u64 gen1 = context->checksum;
+    u64 stored = context->checksum;
 
-    if (gen1 & 1) {
+    if (!stored) {
       // Odd generation means write in progress
-      TEST_LOG("!!! Context write in progress (gen=%llu)", gen1);
+      TEST_LOG("!!! Context write in progress");
       buf->putVar64(0);
       buf->putVar64(0);
     } else {
@@ -1308,11 +1308,14 @@ void Recording::writeContext(Buffer *buf, Context* context) {
       u64 rootSpanId = context->rootSpanId;
 
       // Re-read generation to detect concurrent writes
-      u64 gen2 = context->checksum;
+      u64 swappedRootSpanId = ((rootSpanId & 0xFFFFFFFFULL) << 32) | (rootSpanId >> 32);
+      u64 computed = (spanId * KNUTH_MULTIPLICATIVE_CONSTANT) ^ (swappedRootSpanId * KNUTH_MULTIPLICATIVE_CONSTANT);
+      computed = computed == 0 ? 0xffffffffffffffffull : computed;
+      TEST_LOG(">>> computed checksum: %llx", computed);
 
-      if (gen1 != gen2) {
+      if (stored != computed) {
         // Generation changed while we were reading - torn read detected
-        TEST_LOG("!!! Context torn read detected: gen changed %llu -> %llu", gen1, gen2);
+        TEST_LOG("!!! Context torn read detected: checksum changed %llx -> %llx", stored, computed);
         buf->putVar64(0);
         buf->putVar64(0);
       } else {
