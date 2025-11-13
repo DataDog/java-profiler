@@ -17,10 +17,12 @@
 #include "context.h"
 #include "counters.h"
 #include "os_dd.h"
+#include "thread.h"
 #include <cstring>
 
 int Contexts::_max_pages = Contexts::getMaxPages();
 Context **Contexts::_pages = new Context *[_max_pages]();
+DLLEXPORT thread_local void* context_tls_v1 = nullptr;
 
 static Context DD_EMPTY_CONTEXT = {};
 
@@ -108,4 +110,18 @@ int Contexts::getMaxPages(int maxTid) {
   // basis. If this surplus is insufficient for the application, samples from
   // some threads will not have context associated with them.
   return maxPages < 128 ? 128 : maxPages;
+}
+
+void Contexts_1::setContextTls(void* ptr) {
+  context_tls_v1 = ptr;
+  // ProfiledThread::current() will never return nullptr
+  ProfiledThread::current()->markContextTlsInitialized();
+}
+
+Context* Contexts_1::get() {
+  ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+  if (thrd == nullptr || !thrd->isContextTlsInitialized()) {
+    return nullptr;
+  }
+  return static_cast<Context*>(context_tls_v1);
 }

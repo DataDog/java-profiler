@@ -235,7 +235,7 @@ public:
 
   void writeUnwindFailures(Buffer *buf);
 
-  void writeContext(Buffer *buf, Context &context);
+  void writeContext(Buffer *buf, Context *context);
 
   void recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
                              ExecutionEvent *event);

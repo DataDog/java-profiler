@@ -19,6 +19,7 @@
 #include "arch_dd.h"
 #include "context.h"
 #include "counters.h"
+#include "common.h"
 #include "engine.h"
 #include "incbin.h"
 #include "os_dd.h"
@@ -537,3 +538,23 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
   return nullptr;
 #endif
 }
+
+extern "C" DLLEXPORT bool JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_isContextTlsInitialized0(JNIEnv* env, jclass unused) {
+  return ProfiledThread::current()->isContextTlsInitialized();
+}
+
+extern "C" DLLEXPORT jobject JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_initializeContextTls0(JNIEnv* env, jclass unused) {
+  TEST_LOG("Initializing context TLS");
+  Context* ctx = Contexts_1::get();
+  if (ctx == nullptr) {
+    ctx = new Context();
+    TEST_LOG("===> Setting ctx to %p :: %lu, %lu", ctx, ctx->spanId, ctx->rootSpanId);
+    Contexts_1::setContextTls(ctx);
+  } else {
+    TEST_LOG("Context TLS has already been initialized");
+  }
+  return env->NewDirectByteBuffer((void *)ctx, (jlong)sizeof(Context));
+}
+

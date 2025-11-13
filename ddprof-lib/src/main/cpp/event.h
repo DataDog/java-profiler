@@ -68,7 +68,7 @@ public:
   u64 _skipped;
   u64 _start_time;
   u64 _age;
-  Context _ctx;
+  Context* _ctx;
 };
 
 class WallClockEpochEvent {

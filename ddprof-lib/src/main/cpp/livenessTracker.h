@@ -26,7 +26,7 @@ typedef struct TrackingEntry {
   jint tid;
   jlong time;
   jlong age;
-  Context ctx;
+  Context* ctx;
 } TrackingEntry;
 
 // Aligned to satisfy SpinLock member alignment requirement (64 bytes)

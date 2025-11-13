@@ -53,6 +53,7 @@ public class Tracing {
 
         public Context activate() {
             Context context = STACK.get().endMigration(this);
+            System.out.println(Thread.currentThread().getName() + ":: activate migrating: " + context.getRootSpanId() + ", " + context.getSpanId());
             context.notifyProfiler();
             return context;
         }
@@ -82,6 +83,7 @@ public class Tracing {
         }
 
         private void notifyProfiler() {
+            System.out.println(Thread.currentThread().getName() + "::activating: " + rootSpanId + ", " + spanId);
             profiler.setContext(spanId, rootSpanId);
         }
 

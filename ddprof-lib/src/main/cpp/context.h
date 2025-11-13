@@ -20,6 +20,7 @@
 #include "arch_dd.h"
 #include "arguments.h"
 #include "os_dd.h"
+#include "vmEntry.h"
 
 static const u32 DD_TAGS_CAPACITY = 10;
 
@@ -29,9 +30,9 @@ typedef struct {
 
 class Context {
 public:
-  u64 spanId;
-  u64 rootSpanId;
-  u64 checksum;
+  volatile u64 spanId;
+  volatile u64 rootSpanId;
+  volatile u64 checksum;
   Tag tags[DD_TAGS_CAPACITY];
 
   Tag get_tag(int i) { return tags[i]; }
@@ -65,5 +66,14 @@ public:
   // this *MUST* be called only when the profiler is completely stopped
   static void reset();
 };
+
+class Contexts_1 {
+
+public:
+  static void setContextTls(void* ptr);
+  static Context* get();
+};
+
+DLLEXPORT extern thread_local void* context_tls_v1;
 
 #endif /* _CONTEXT_H */

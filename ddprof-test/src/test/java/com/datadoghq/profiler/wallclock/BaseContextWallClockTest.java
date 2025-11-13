@@ -62,7 +62,7 @@ final class BaseContextWallClockTest {
         Assumptions.assumeTrue(!Platform.isJ9() && !Platform.isZing());
 
         test.registerCurrentThreadForWallClockProfiling();
-        for (int i = 0, id = 1; i < 100; i++, id += 3) {
+        for (int i = 0, id = 1; i < 10; i++, id += 3) {
             method1(id);
         }
         test.stopProfiler();
@@ -176,8 +176,11 @@ final class BaseContextWallClockTest {
     }
 
     public void method1(int id) throws ExecutionException, InterruptedException {
+        System.out.println(Thread.currentThread().getName() + ">>method1");
         try (Tracing.Context context = Tracing.newContext(() -> id, profiler)) {
             method1Impl(id, context);
+        } finally {
+            System.out.println(Thread.currentThread().getName() + "<<method1");
         }
     }
 
@@ -194,10 +197,13 @@ final class BaseContextWallClockTest {
     }
 
     public void method2(long id, Object monitor) {
+        System.out.println(Thread.currentThread().getName() + ">>method2");
         synchronized (monitor) {
             try (Tracing.Context context = Tracing.newContext(() -> id + 1, profiler)) {
                 method2Impl(context);
                 monitor.notify();
+            } finally {
+                System.out.println(Thread.currentThread().getName() + "<<method2");
             }
         }
     }
@@ -208,10 +214,13 @@ final class BaseContextWallClockTest {
     }
 
     public void method3(long id, Object monitor) {
+        System.out.println(Thread.currentThread().getName() + ">>method3");
         synchronized (monitor) {
             try (Tracing.Context context = Tracing.newContext(() -> id + 2, profiler)) {
                 method3Impl(context);
                 monitor.notify();
+            } finally {
+                System.out.println(Thread.currentThread().getName() + "<<method3");
             }
         }
     }

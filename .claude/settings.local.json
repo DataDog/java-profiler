@@ -14,7 +14,19 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(./.claude/commands/build-and-summarize:*)"
+      "Bash(./.claude/commands/build-and-summarize:*)",
+      "Bash(chmod:*)",
+      "Bash(./utils/trigger-workflow.sh:*)",
+      "Bash(gh auth:*)",
+      "Bash(echo:*)",
+      "Bash(nm -g:*)",
+      "Bash(g++:*)",
+      "Bash(find:*)",
+      "Bash(xmllint:*)",
+      "Bash(for i in 1 2 3)",
+      "Bash(do echo \"=== RUN $i ===\" ./.claude/commands/build-and-summarize :ddprof-test:testDebug --tests \"com.datadoghq.profiler.wallclock.ContextWallClockTest\")",
+      "Bash(cat:*)",
+      "Bash(ddprof-lib/gtest/build/bin/gtest/debug_context_sanity_ut/context_sanity_ut)"
     ],
     "deny": [],
     "ask": []

@@ -58,10 +58,11 @@ private:
   u32 _recording_epoch;
   int _filter_slot_id; // Slot ID for thread filtering
   UnwindFailures _unwind_failures;
+  bool _ctx_tls_initialized;
 
   ProfiledThread(int buffer_pos, int tid)
       : ThreadLocalData(), _pc(0), _span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
-        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _filter_slot_id(-1) {};
+        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _filter_slot_id(-1), _ctx_tls_initialized(false) {};
 
   void releaseFromBuffer();
 
@@ -172,6 +173,15 @@ public:
   void* getHazardInstance() { return _hazard_instance; }
   void* getHazardPointer() { return _hazard_pointer; }
   int getHazardSlot() { return _hazard_slot; }
+
+  // context sharing TLS
+  inline void markContextTlsInitialized() {
+    _ctx_tls_initialized = true;
+  }
+
+  inline bool isContextTlsInitialized() {
+    return _ctx_tls_initialized;
+  }
   
 private:
   // Atomic flag for signal handler reentrancy protection within the same thread

@@ -1282,12 +1282,54 @@ void Recording::writeUnwindFailures(Buffer *buf) {
   });
 }
 
-void Recording::writeContext(Buffer *buf, Context &context) {
-  buf->putVar64(context.spanId);
-  buf->putVar64(context.rootSpanId);
+void Recording::writeContext(Buffer *buf, Context* context) {
+  if (context == nullptr) {
+    TEST_LOG("!!! Missing context!");
+    buf->putVar64(0);
+    buf->putVar64(0);
+  } else {
+    // Force reload from memory (acquire semantics)
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+
+    TEST_LOG(">>> Reading Context at %p: spanId=%llu, rootSpanId=%llu, checksum=%llu",
+             context, context->spanId, context->rootSpanId, context->checksum);
+
+    // Seqlock-style read: check generation before and after reading data
+    u64 gen1 = context->checksum;
+
+    if (gen1 & 1) {
+      // Odd generation means write in progress
+      TEST_LOG("!!! Context write in progress (gen=%llu)", gen1);
+      buf->putVar64(0);
+      buf->putVar64(0);
+    } else {
+      // Read the data
+      u64 spanId = context->spanId;
+      u64 rootSpanId = context->rootSpanId;
+
+      // Re-read generation to detect concurrent writes
+      u64 gen2 = context->checksum;
+
+      if (gen1 != gen2) {
+        // Generation changed while we were reading - torn read detected
+        TEST_LOG("!!! Context torn read detected: gen changed %llu -> %llu", gen1, gen2);
+        buf->putVar64(0);
+        buf->putVar64(0);
+      } else {
+        // Consistent read - use the values
+        buf->putVar64(spanId);
+        buf->putVar64(rootSpanId);
+      }
+    }
+  }
+
   for (size_t i = 0; i < Profiler::instance()->numContextAttributes(); i++) {
-    Tag tag = context.get_tag(i);
-    buf->putVar32(tag.value);
+    if (context == nullptr) {
+      buf->putVar32(0);
+    } else {
+      Tag tag = context->get_tag(i);
+      buf->putVar32(tag.value);
+    }
   }
 }
 
@@ -1307,7 +1349,7 @@ void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->put8(static_cast<int>(event->_thread_state));
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
-  writeContext(buf, Contexts::get(tid));
+  writeContext(buf, Contexts_1::get());
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1322,7 +1364,7 @@ void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->put8(static_cast<int>(event->_thread_state));
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
-  writeContext(buf, Contexts::get(tid));
+  writeContext(buf, Contexts_1::get());
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1367,7 +1409,7 @@ void Recording::recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event) {
   buf->putVar64(event->_scheduler);
   buf->putVar64(event->_queueType);
   buf->putVar64(event->_queueLength);
-  writeContext(buf, Contexts::get(tid));
+  writeContext(buf, Contexts_1::get());
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1382,7 +1424,7 @@ void Recording::recordAllocation(RecordingBuffer *buf, int tid,
   buf->putVar64(event->_id);
   buf->putVar64(event->_size);
   buf->putFloat(event->_weight);
-  writeContext(buf, Contexts::get(tid));
+  writeContext(buf, Contexts_1::get());
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1420,7 +1462,7 @@ void Recording::recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,
   buf->putVar64(event->_id);
   buf->put8(0);
   buf->putVar64(event->_address);
-  writeContext(buf, Contexts::get(tid));
+  writeContext(buf, Contexts_1::get());
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }

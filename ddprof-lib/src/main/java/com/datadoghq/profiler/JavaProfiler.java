@@ -23,9 +23,11 @@ import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Java API for in-process profiling. Serves as a wrapper around
@@ -68,6 +70,8 @@ public final class JavaProfiler {
     private ByteBuffer[] contextStorage;
     private long[] contextBaseOffsets;
     private static final ByteBuffer SENTINEL = ByteBuffer.allocate(0);
+
+    private final ThreadLocal<ByteBuffer> tlsContextStorage = ThreadLocal.withInitial(JavaProfiler::initializeContextTls0);
 
     private JavaProfiler() {
     }
@@ -221,6 +225,28 @@ public final class JavaProfiler {
     }
 
     /**
+     * Knuth's multiplicative hash constant for 64-bit values.
+     * Based on the golden ratio: 2^64 / φ where φ = (1 + √5) / 2
+     */
+    private static final long KNUTH_CONSTANT = 0x9E3779B97F4A7C15L; // 11400714819323198485
+
+    /**
+     * Computes a hash-based checksum for context validation.
+     * Uses Knuth's multiplicative hash on both spanId and rootSpanId,
+     * then XORs them together. This provides better torn-read detection
+     * than simple XOR alone.
+     *
+     * @param spanId The span identifier
+     * @param rootSpanId The root span identifier
+     * @return The computed checksum
+     */
+    private static long computeContextChecksum(long spanId, long rootSpanId) {
+        long hashSpanId = spanId * KNUTH_CONSTANT;
+        long hashRootSpanId = rootSpanId * KNUTH_CONSTANT;
+        return hashSpanId ^ hashRootSpanId;
+    }
+
+    /**
      * Passing context identifier to a profiler. This ID is thread-local and is dumped in
      * the JFR output only. 0 is a reserved value for "no-context".
      *
@@ -228,12 +254,19 @@ public final class JavaProfiler {
      * @param rootSpanId Root Span identifier that should be stored for current thread
      */
     public void setContext(long spanId, long rootSpanId) {
-        int tid = TID.get();
-        if (UNSAFE != null) {
-            setContextUnsafe(tid, spanId, rootSpanId);
-        } else {
-            setContextByteBuffer(tid, spanId, rootSpanId);
-        }
+//        int tid = TID.get();
+//        if (UNSAFE != null) {
+//            setContextUnsafe(tid, spanId, rootSpanId);
+//        } else {
+//            setContextByteBuffer(tid, spanId, rootSpanId);
+//        }
+        ByteBuffer bb = tlsContextStorage.get().order(ByteOrder.LITTLE_ENDIAN);
+        long checksum = computeContextChecksum(spanId, rootSpanId);
+        bb.putLong(16, checksum | 1);  // Write checksum with odd bit (write in progress)
+        bb.putLong(0, spanId);
+        bb.putLong(8, rootSpanId);
+        bb.putLong(16, checksum & ~1L);  // Write checksum with even bit (write complete)
+        memoryBarrier();
     }
 
     private void setContextUnsafe(int tid, long spanId, long rootSpanId) {
@@ -303,12 +336,18 @@ public final class JavaProfiler {
      * @param value the encoding of the value. Must have been encoded via @see JavaProfiler#registerConstant
      */
     public void setContextValue(int offset, int value) {
-        int tid = TID.get();
-        if (UNSAFE != null) {
-            setContextUnsafe(tid, offset, value);
-        } else {
-            setContextByteBuffer(tid, offset, value);
-        }
+        ByteBuffer bb = tlsContextStorage.get().order(ByteOrder.LITTLE_ENDIAN);
+        long gen = contextGeneration.getAndAdd(2); // Always even, increment by 2
+        bb.putLong(16, gen | 1);  // Write odd generation (write in progress)
+        bb.putInt(DYNAMIC_TAGS_OFFSET + offset * Integer.BYTES, value);
+        bb.putLong(16, gen + 2);  // Write even generation (write complete)
+        memoryBarrier();
+//        int tid = TID.get();
+//        if (UNSAFE != null) {
+//            setContextUnsafe(tid, offset, value);
+//        } else {
+//            setContextByteBuffer(tid, offset, value);
+//        }
     }
 
     private void setContextUnsafe(int tid, int offset, int value) {
@@ -466,6 +505,15 @@ public final class JavaProfiler {
         return counters;
     }
 
+    private final AtomicLong contextGeneration = new AtomicLong(2);
+
+    volatile int memoryBarrierSlot = 1;
+
+    @SuppressWarnings("NonAtomicOperationOnVolatileField")
+    private void memoryBarrier() {
+        memoryBarrierSlot++;
+    }
+
     private static native boolean init0();
     private native void stop0() throws IllegalStateException;
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
@@ -503,4 +551,17 @@ public final class JavaProfiler {
     private static native void mallocArenaMax0(int max);
 
     private static native String getStatus0();
+
+    private static native boolean isContextTlsInitialized0();
+
+    private static native ByteBuffer initializeContextTls0();
+
+    /**
+     * Package-private method for testing purposes.
+     * Returns the thread-local context buffer for verification in tests.
+     * @return the DirectByteBuffer containing the current thread's context
+     */
+    ByteBuffer getContextBufferForTest() {
+        return tlsContextStorage.get();
+    }
 }
