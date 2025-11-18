@@ -6,6 +6,8 @@
 #ifndef _CODECACHE_H
 #define _CODECACHE_H
 
+#include "arch_dd.h"
+
 #include <jvmti.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,7 +64,7 @@ public:
 
   static short libIndex(const char *name) {
     NativeFunc* func = from(name);
-    if (posix_memalign((void**)(&func), sizeof(NativeFunc*), sizeof(NativeFunc)) != 0) {
+    if (!is_aligned(func, sizeof(func))) {
       return -1;
     }
     return func->_lib_index;
