@@ -2,7 +2,7 @@
 #define _UTILS_H
 
 #include <cassert>
-#include <stdlib.h>
+#include <cstdint>
 
 inline bool is_power_of_2(size_t size) {
     return size > 0 && (size & (size - 1)) == 0;
