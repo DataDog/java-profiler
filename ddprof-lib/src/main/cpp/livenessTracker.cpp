@@ -323,7 +323,7 @@ retry:
     _table[idx].skipped = skipped;
     _table[idx].age = 0;
     _table[idx].call_trace_id = call_trace_id;
-    _table[idx].ctx = Contexts::get(tid);
+    _table[idx].ctx = Contexts::get();
   }
 
   _table_lock.unlockShared();
