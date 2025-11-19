@@ -27,7 +27,7 @@ uint64_t HazardPointer::occupied_bitmap[HazardPointer::BITMAP_WORDS] = {};
 int HazardPointer::getThreadHazardSlot() {
     // Signal-safe collision resolution: use OS::threadId() with semi-random prime step probing
     // This avoids thread_local allocation issues
-    ProfiledThread* thrd = ProfiledThread::current();
+    ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
     int tid = thrd != nullptr ? thrd->tid() : OS::threadId();
 
     // Semi-random prime step probing to eliminate secondary clustering

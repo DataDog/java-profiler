@@ -12,7 +12,7 @@
 uint64_t CriticalSection::_fallback_bitmap[CriticalSection::FALLBACK_BITMAP_WORDS] = {};
 
 CriticalSection::CriticalSection() : _entered(false), _using_fallback(false), _word_index(0), _bit_mask(0) {
-    ProfiledThread* current = ProfiledThread::current();
+    ProfiledThread* current = ProfiledThread::currentSignalSafe();
     if (current != nullptr) {
         // Primary path: Use ProfiledThread storage (fast and memory-efficient)
         _entered = current->tryEnterCriticalSection();
@@ -39,7 +39,7 @@ CriticalSection::~CriticalSection() {
             __atomic_fetch_and(&_fallback_bitmap[_word_index], ~_bit_mask, __ATOMIC_RELAXED);
         } else {
             // Release ProfiledThread flag
-            ProfiledThread* current = ProfiledThread::current();
+            ProfiledThread* current = ProfiledThread::currentSignalSafe();
             if (current != nullptr) {
                 current->exitCriticalSection();
             }

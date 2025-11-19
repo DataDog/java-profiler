@@ -28,16 +28,25 @@ private:
   static constexpr u32 CRASH_HANDLER_NESTING_LIMIT = 5;
   static pthread_key_t _tls_key;
   static int _buffer_size;
-  static std::atomic<int> _running_buffer_pos;
-  static std::vector<ProfiledThread *> _buffer;
+  static volatile int _running_buffer_pos;
+  static ProfiledThread** _buffer;
+
+  // Free slot recycling - lock-free stack of available buffer slots
+  // Note: Using plain int with GCC atomic builtins instead of std::atomic
+  // because std::atomic is not guaranteed async-signal-safe (may use mutexes)
+  static volatile int _free_stack_top;
+  static int* _free_slots;  // Array to store free slot indices
 
   static void initTLSKey();
   static void doInitTLSKey();
   static inline void freeKey(void *key);
-  static void initCurrentThreadWithBuffer();
   static void doInitExistingThreads();
   static void prepareBuffer(int size);
-  static void *delayedUninstallUSR1(void *unused);
+  static void cleanupBuffer();
+
+  // Free slot management - lock-free operations
+  static int popFreeSlot();    // Returns -1 if no free slots
+  static void pushFreeSlot(int slot_index);
 
   u64 _pc;
   u64 _span_id;
@@ -50,10 +59,11 @@ private:
   u32 _recording_epoch;
   int _filter_slot_id; // Slot ID for thread filtering
   UnwindFailures _unwind_failures;
+  bool _ctx_tls_initialized;
 
   ProfiledThread(int buffer_pos, int tid)
       : ThreadLocalData(), _pc(0), _span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
-        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _filter_slot_id(-1) {};
+        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _filter_slot_id(-1), _ctx_tls_initialized(false) {};
 
   void releaseFromBuffer();
 
@@ -64,13 +74,20 @@ public:
   }
 
   static void initCurrentThread();
+  static void initCurrentThreadWithBuffer(); // Called by signal handler for native threads
   static void initExistingThreads();
+  static void cleanupTlsPriming();
 
   static void release();
 
   static ProfiledThread *current();
+  static ProfiledThread *currentSignalSafe(); // Signal-safe version that never allocates
   static int currentTid();
 
+  // TLS priming status checks
+  static bool isTlsPrimingAvailable();
+  static bool wasTlsPrimingAttempted();
+  
   inline int tid() { return _tid; }
 
   inline u64 noteCPUSample(u32 recording_epoch) {
@@ -125,7 +142,7 @@ public:
     return &_unwind_failures;
   }
 
-  static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
+  static void simpleTlsSignalHandler(int signo);
 
   int filterSlotId() { return _filter_slot_id; }
   void setFilterSlotId(int slotId) { _filter_slot_id = slotId; }
@@ -158,6 +175,15 @@ public:
   void* getHazardInstance() { return _hazard_instance; }
   void* getHazardPointer() { return _hazard_pointer; }
   int getHazardSlot() { return _hazard_slot; }
+
+  // context sharing TLS
+  inline void markContextTlsInitialized() {
+    _ctx_tls_initialized = true;
+  }
+
+  inline bool isContextTlsInitialized() {
+    return _ctx_tls_initialized;
+  }
   
 private:
   // Atomic flag for signal handler reentrancy protection within the same thread
