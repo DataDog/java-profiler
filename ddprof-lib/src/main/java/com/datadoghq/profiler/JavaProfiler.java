@@ -16,6 +16,8 @@
 
 package com.datadoghq.profiler;
 
+import sun.misc.Unsafe;
+
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
@@ -32,6 +34,21 @@ import java.util.Map;
  * libjavaProfiler.so.
  */
 public final class JavaProfiler {
+    static final Unsafe UNSAFE;
+    static {
+        Unsafe unsafe = null;
+        // a safety and testing valve to disable unsafe access
+        if (!Boolean.getBoolean("ddprof.disable_unsafe")) {
+            try {
+                Field f = Unsafe.class.getDeclaredField("theUnsafe");
+                f.setAccessible(true);
+                unsafe = (Unsafe) f.get(null);
+            } catch (Exception ignore) {
+            }
+        }
+        UNSAFE = unsafe;
+    }
+
     static final class TSCFrequencyHolder {
         /**
          * TSC frequency required to convert ticks into seconds
