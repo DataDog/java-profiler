@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <cstddef>
 
 inline bool is_power_of_2(size_t size) {
     return size > 0 && (size & (size - 1)) == 0;
