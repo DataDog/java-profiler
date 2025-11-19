@@ -6,7 +6,7 @@
 #ifndef _CODECACHE_H
 #define _CODECACHE_H
 
-#include "arch_dd.h"
+#include "utils.h"
 
 #include <jvmti.h>
 #include <stdlib.h>
