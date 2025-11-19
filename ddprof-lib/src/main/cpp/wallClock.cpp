@@ -67,7 +67,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   u64 call_trace_id = 0;
   if (current != NULL && _collapsing) {
     StackFrame frame(ucontext);
-    Context &context = Contexts::get(tid);
+    Context &context = Contexts::get();
     call_trace_id = current->lookupWallclockCallTraceId(
         (u64)frame.pc(), Profiler::instance()->recordingEpoch(),
         context.spanId);

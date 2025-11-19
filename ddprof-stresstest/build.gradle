@@ -23,15 +23,27 @@ sourceSets {
 }
 
 jmh {
-  def javaHome = System.getenv("JAVA_TEST_HOME")
-  if (javaHome == null) {
-    javaHome = System.getenv("JAVA_HOME")
-  }
+  def javaTestHome = System.getenv("JAVA_TEST_HOME")
+  def javaHome = javaTestHome != null ? javaTestHome : System.getenv("JAVA_HOME")
+
+  // Set the JVM executable - this is used by the JMH plugin to fork benchmark processes
   jvm = "${javaHome}/bin/java"
+
+  // Explicitly set fork to use external JVM (not Gradle's JVM)
+  fork = 3
+
   iterations = 3
   timeOnIteration = '3s'
   warmup = '1s'
   warmupIterations = 3
+}
+
+// Configure all JMH-related JavaExec tasks to use the correct JDK
+tasks.withType(JavaExec).matching { it.name.startsWith('jmh') }.configureEach {
+  def javaTestHome = System.getenv("JAVA_TEST_HOME")
+  def javaHome = javaTestHome != null ? javaTestHome : System.getenv("JAVA_HOME")
+
+  executable = "${javaHome}/bin/java"
 }
 
 jmhJar {

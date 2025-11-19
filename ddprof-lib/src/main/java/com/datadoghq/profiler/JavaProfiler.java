@@ -38,7 +38,7 @@ public final class JavaProfiler {
     static {
         Unsafe unsafe = null;
         // a safety and testing valve to disable unsafe access
-        if (!Boolean.getBoolean("ddprof.disable_unsafe")) {
+        if (Platform.isJavaVersion(8) || !Boolean.getBoolean("ddprof.disable_unsafe")) {
             try {
                 Field f = Unsafe.class.getDeclaredField("theUnsafe");
                 f.setAccessible(true);
@@ -68,6 +68,9 @@ public final class JavaProfiler {
     private ByteBuffer[] contextStorage;
     private long[] contextBaseOffsets;
     private static final ByteBuffer SENTINEL = ByteBuffer.allocate(0);
+
+    // Thread-local storage for profiling context
+    private final ThreadLocal<ThreadContext> tlsContextStorage = ThreadLocal.withInitial(JavaProfiler::initializeThreadContext);
 
     private JavaProfiler() {
     }
@@ -110,7 +113,6 @@ public final class JavaProfiler {
         }
         init0();
 
-        profiler.initializeContextStorage();
         instance = profiler;
 
         String maxArenaValue = System.getProperty("ddprof.debug.malloc_arena_max");
@@ -123,15 +125,6 @@ public final class JavaProfiler {
         }
 
         return profiler;
-    }
-
-    private void initializeContextStorage() {
-        if (this.contextStorage == null) {
-            int maxPages = getMaxContextPages0();
-            if (maxPages > 0) {
-                contextStorage = new ByteBuffer[maxPages];
-            }
-        }
     }
 
     /**
@@ -222,38 +215,7 @@ public final class JavaProfiler {
      * @param rootSpanId Root Span identifier that should be stored for current thread
      */
     public void setContext(long spanId, long rootSpanId) {
-        int tid = TID.get();
-        setContextByteBuffer(tid, spanId, rootSpanId);
-    }
-
-    private void setContextByteBuffer(int tid, long spanId, long rootSpanId) {
-        if (contextStorage == null) {
-            return;
-        }
-        ByteBuffer page = getPage(tid);
-        if (page == SENTINEL) {
-            return;
-        }
-        int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
-        page.putLong(index + SPAN_OFFSET, spanId);
-        page.putLong(index + ROOT_SPAN_OFFSET, rootSpanId);
-        page.putLong(index + CHECKSUM_OFFSET, spanId ^ rootSpanId);
-    }
-
-    private ByteBuffer getPage(int tid) {
-        int pageIndex = tid / PAGE_SIZE;
-        ByteBuffer page = contextStorage[pageIndex];
-        if (page == null) {
-            // the underlying page allocation is atomic so we don't care which view we have over it
-            ByteBuffer buffer = getContextPage0(tid);
-            if (buffer == null) {
-                page = SENTINEL;
-            } else {
-                page = buffer.order(ByteOrder.LITTLE_ENDIAN);
-            }
-            contextStorage[pageIndex] = page;
-        }
-        return page;
+        tlsContextStorage.get().put(spanId, rootSpanId);
     }
 
     /**
@@ -269,48 +231,11 @@ public final class JavaProfiler {
      * @param value the encoding of the value. Must have been encoded via @see JavaProfiler#registerConstant
      */
     public void setContextValue(int offset, int value) {
-        int tid = TID.get();
-        setContextByteBuffer(tid, offset, value);
-    }
-
-    public void setContextByteBuffer(int tid, int offset, int value) {
-        if (contextStorage == null) {
-            return;
-        }
-        ByteBuffer page = getPage(tid);
-        if (page == SENTINEL) {
-            return;
-        }
-        page.putInt(addressOf(tid, offset), value);
+        tlsContextStorage.get().putCustom(offset, value);
     }
 
     void copyTags(int[] snapshot) {
-        int tid = TID.get();
-        copyTagsByteBuffer(tid, snapshot);
-    }
-
-    void copyTagsByteBuffer(int tid, int[] snapshot) {
-        if (contextStorage == null) {
-            return;
-        }
-        ByteBuffer page = getPage(tid);
-        if (page == SENTINEL) {
-            return;
-        }
-        int address = addressOf(tid, 0);
-        for (int i = 0; i < snapshot.length; i++) {
-            snapshot[i] = page.getInt(address + i * Integer.BYTES);
-        }
-    }
-
-    private static int addressOf(int tid, int offset) {
-        return ((tid % PAGE_SIZE) * CONTEXT_SIZE + DYNAMIC_TAGS_OFFSET)
-                // TODO - we want to limit cardinality and a great way to enforce that is with the size of these
-                //  fields to a smaller type, say, u16. This would also allow us to pack more data into each thread's
-                //  slot. However, the current implementation of the dictionary trades monotonicity and minimality for
-                //  space, so imposing a limit of 64K values does not impose a limit on the number of bits required per
-                //  value. Condensing this mapping would also result in savings in varint encoded event sizes.
-                + offset * Integer.BYTES;
+        tlsContextStorage.get().copyCustoms(snapshot);
     }
 
     /**
@@ -398,6 +323,11 @@ public final class JavaProfiler {
         return counters;
     }
 
+    private static ThreadContext initializeThreadContext() {
+        ByteBuffer bb = initializeContextTls0();
+        return new ThreadContext(bb);
+    }
+
     private static native boolean init0();
     private native void stop0() throws IllegalStateException;
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
@@ -406,13 +336,6 @@ public final class JavaProfiler {
     private static native void filterThreadRemove0();
 
     private static native int getTid0();
-    private static native ByteBuffer getContextPage0(int tid);
-    // this is only here because ByteBuffer.putLong splits its argument into 8 bytes
-    // before performing the write, which makes it more likely that writing the context
-    // will be interrupted by the signal, leading to more rejected context values on samples
-    // ByteBuffer is simpler and fit for purpose on modern JDKs
-    private static native long getContextPageOffset0(int tid);
-    private static native int getMaxContextPages0();
 
     private static native boolean recordTrace0(long rootSpanId, String endpoint, String operation, int sizeLimit);
 
@@ -435,4 +358,20 @@ public final class JavaProfiler {
     private static native void mallocArenaMax0(int max);
 
     private static native String getStatus0();
+
+    private static native ByteBuffer initializeContextTls0();
+
+    public ThreadContext getThreadContext() {
+        return tlsContextStorage.get();
+    }
+
+// --- test and debug utility methods
+
+    /**
+     * Write the profiler TEST_LOG - the message will be in sequence with other profiler logs
+     * @param msg the log message
+     */
+    public static native void testlog(String msg);
+
+    public static native void dumpContext();
 }

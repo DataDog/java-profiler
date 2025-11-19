@@ -229,10 +229,13 @@ final class BaseContextWallClockTest {
 
 
     private void sleep(long millis) {
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        long target = System.nanoTime() + millis * 1_000_000L;
+        do {
+            try {
+                Thread.sleep((target - System.nanoTime()) / 1_000_000L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        } while (System.nanoTime() < target);
     }
 }
