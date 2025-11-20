@@ -61,7 +61,7 @@ private:
 
   size_t _used_after_last_gc;
 
-  Error initialize(Arguments &args);
+  Error initialize(ddprof::Arguments &args);
   Error initialize_table(JNIEnv *jni, int sampling_interval);
 
   void cleanup_table(bool force = false);
@@ -89,7 +89,7 @@ public:
         _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0),
         _used_after_last_gc(0) {}
 
-  Error start(Arguments &args);
+  Error start(ddprof::Arguments &args);
   void stop();
   void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u64 call_trace_id);
   void flush(std::set<int> &tracked_thread_ids);

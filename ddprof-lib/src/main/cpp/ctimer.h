@@ -48,8 +48,8 @@ public:
 
   long interval() const { return _interval; }
 
-  Error check(Arguments &args);
-  Error start(Arguments &args);
+  Error check(ddprof::Arguments &args);
+  Error start(ddprof::Arguments &args);
   void stop();
 
   inline void enableEvents(bool enabled) {
@@ -61,11 +61,11 @@ public:
 
 class CTimer : public Engine {
 public:
-  Error check(Arguments &args) {
+  Error check(ddprof::Arguments &args) {
     return Error("CTimer is not supported on this platform");
   }
 
-  Error start(Arguments &args) {
+  Error start(ddprof::Arguments &args) {
     return Error("CTimer is not supported on this platform");
   }
 

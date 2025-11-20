@@ -708,11 +708,13 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     ASGCT_CallFrame *native_stop = frames + num_frames;
     num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
                                  &java_ctx, &truncated);
-    if (_cstack == CSTACK_VMX) {
-      num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_EXPERT, &truncated);
-    } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
+    // CSTACK_VMX is not currently supported (commented out in arguments_dd.h)
+    // if (_cstack == CSTACK_VMX) {
+    //   num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_EXPERT, &truncated);
+    // } else
+    if (event_type == BCI_CPU || event_type == BCI_WALL) {
       if (_cstack == CSTACK_VM) {
-        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_NORMAL, &truncated);
+        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, &truncated);
       } else {
         // Async events
         AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());
@@ -1009,9 +1011,9 @@ void Profiler::updateNativeThreadNames() {
     delete thread_list;
 }
 
-Engine *Profiler::selectCpuEngine(Arguments &args) {
+Engine *Profiler::selectCpuEngine(ddprof::Arguments &args) {
   if (args._cpu < 0 &&
-      (args._event == NULL || strcmp(args._event, EVENT_NOOP) == 0)) {
+      (args._event == NULL || strcmp(args._event, ddprof::EVENT_NOOP) == 0)) {
     return &noop_engine;
   } else if (args._cpu >= 0 || strcmp(args._event, EVENT_CPU) == 0) {
     if (VM::isOpenJ9()) {
@@ -1041,13 +1043,13 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
   }
 }
 
-Engine *Profiler::selectWallEngine(Arguments &args) {
+Engine *Profiler::selectWallEngine(ddprof::Arguments &args) {
   if (args._wall < 0 &&
       (args._event == NULL || strcmp(args._event, EVENT_WALL) != 0)) {
     return &noop_engine;
   }
   if (VM::isOpenJ9()) {
-    if (args._wallclock_sampler == JVMTI || !J9Ext::shouldUseAsgct() || !J9Ext::can_use_ASGCT()) {
+    if (args._wallclock_sampler == ddprof::JVMTI || !J9Ext::shouldUseAsgct() || !J9Ext::can_use_ASGCT()) {
       if (!J9Ext::is_jvmti_jmethodid_safe()) {
         fprintf(stderr, "[ddprof] [WARN] Safe jmethodID access is not available on this JVM. Using "
                   "wallclock profiler on your own risk. Use -XX:+KeepJNIIDs=true JVM "
@@ -1062,15 +1064,15 @@ Engine *Profiler::selectWallEngine(Arguments &args) {
     }
   }
   switch (args._wallclock_sampler) {
-        case JVMTI:
+        case ddprof::JVMTI:
             return (Engine*)&wall_jvmti_engine;
-        case ASGCT:
+        case ddprof::ASGCT:
         default:
             return (Engine*)&wall_asgct_engine;
     }
 }
 
-Engine *Profiler::selectAllocEngine(Arguments &args) {
+Engine *Profiler::selectAllocEngine(ddprof::Arguments &args) {
   if (VM::canSampleObjects()) {
     return static_cast<Engine *>(ObjectSampler::instance());
   } else {
@@ -1123,7 +1125,7 @@ void Profiler::check_JDK_8313796_workaround() {
 }
 
 
-Error Profiler::start(Arguments &args, bool reset) {
+Error Profiler::start(ddprof::Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
   if (_state > IDLE) {
     return Error("Profiler already started");
@@ -1140,7 +1142,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (ProfiledThread::wasTlsPrimingAttempted() && !ProfiledThread::isTlsPrimingAvailable()) {
     _omit_stacktraces = args._lightweight;
     _event_mask =
-        ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
+        ((args._event != NULL && strcmp(args._event, ddprof::EVENT_NOOP) != 0) ? EM_CPU
                                                                        : 0) |
         (args._cpu >= 0 ? EM_CPU : 0) | (args._wall >= 0 ? EM_WALL : 0) |
         (args._record_allocations || args._record_liveness || args._gc_generations
@@ -1161,7 +1163,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   } else {
     _omit_stacktraces = args._lightweight;
     _event_mask =
-        ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
+        ((args._event != NULL && strcmp(args._event, ddprof::EVENT_NOOP) != 0) ? EM_CPU
                                                                        : 0) |
         (args._cpu >= 0 ? EM_CPU : 0) | (args._wall >= 0 ? EM_WALL : 0) |
         (args._record_allocations || args._record_liveness || args._gc_generations
@@ -1249,7 +1251,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   // Kernel symbols are useful only for perf_events without --all-user
-  _libs->updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
+  _libs->updateSymbols(_cpu_engine == &perf_events && (args._ring & ddprof::RING_KERNEL));
 
   enableEngines();
 
@@ -1353,7 +1355,7 @@ Error Profiler::stop() {
   return Error::OK;
 }
 
-Error Profiler::check(Arguments &args) {
+Error Profiler::check(ddprof::Arguments &args) {
   MutexLocker ml(_state_lock);
   if (_state > IDLE) {
     return Error("Profiler already started");
@@ -1468,7 +1470,7 @@ void Profiler::switchThreadEvents(jvmtiEventMode mode) {
   }
 }
 
-Error Profiler::runInternal(Arguments &args, std::ostream &out) {
+Error Profiler::runInternal(ddprof::Arguments &args, std::ostream &out) {
   switch (args._action) {
   case ACTION_START:
   case ACTION_RESUME: {
@@ -1533,9 +1535,9 @@ Error Profiler::runInternal(Arguments &args, std::ostream &out) {
   return Error::OK;
 }
 
-Error Profiler::run(Arguments &args) { return runInternal(args, std::cout); }
+Error Profiler::run(ddprof::Arguments &args) { return runInternal(args, std::cout); }
 
-Error Profiler::restart(Arguments &args) {
+Error Profiler::restart(ddprof::Arguments &args) {
   MutexLocker ml(_state_lock);
 
   Error error = stop();
@@ -1546,7 +1548,7 @@ Error Profiler::restart(Arguments &args) {
   return Error::OK;
 }
 
-void Profiler::shutdown(Arguments &args) {
+void Profiler::shutdown(ddprof::Arguments &args) {
   MutexLocker ml(_state_lock);
 
   // The last chance to dump profile before VM terminates

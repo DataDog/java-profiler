@@ -107,7 +107,7 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
   }
 }
 
-Error ObjectSampler::check(Arguments &args) {
+Error ObjectSampler::check(ddprof::Arguments &args) {
   if (!VM::canSampleObjects()) {
     return Error("Allocation Sampling is not supported on this JVM");
   }
@@ -126,7 +126,7 @@ Error ObjectSampler::check(Arguments &args) {
   return Error::OK;
 }
 
-Error ObjectSampler::start(Arguments &args) {
+Error ObjectSampler::start(ddprof::Arguments &args) {
   Error error = check(args);
   if (error) {
     return error;

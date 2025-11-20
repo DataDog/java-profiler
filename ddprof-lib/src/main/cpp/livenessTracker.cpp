@@ -173,7 +173,7 @@ Error LivenessTracker::initialize_table(JNIEnv *jni, int sampling_interval) {
   return Error::OK;
 }
 
-Error LivenessTracker::start(Arguments &args) {
+Error LivenessTracker::start(ddprof::Arguments &args) {
   Error err = initialize(args);
   if (err) {
     return err;
@@ -210,7 +210,7 @@ void LivenessTracker::stop() {
 
 static int _min(int a, int b) { return a < b ? a : b; }
 
-Error LivenessTracker::initialize(Arguments &args) {
+Error LivenessTracker::initialize(ddprof::Arguments &args) {
   _enabled = args._gc_generations || args._record_liveness;
 
   if (!_enabled) {

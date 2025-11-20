@@ -8,7 +8,7 @@
 #define _PROFILER_H
 
 #include "arch_dd.h"
-#include "arguments.h"
+#include "arguments_dd.h"
 #include "callTraceStorage.h"
 #include "codeCache.h"
 #include "common.h"
@@ -45,8 +45,6 @@ static const char* force_stackwalk_crash_env = getenv("DDPROF_FORCE_STACKWALK_CR
 
 const int MAX_NATIVE_FRAMES = 128;
 const int RESERVED_FRAMES   = 10;  // for synthetic frames
-
-enum EventMask { EM_CPU = 1 << 0, EM_WALL = 1 << 1, EM_ALLOC = 1 << 2 };
 
 union CallTraceBuffer {
   ASGCT_CallFrame _asgct_frames[1];
@@ -149,9 +147,9 @@ private:
   void updateNativeThreadNames();
   void mangle(const char *name, char *buf, size_t size);
 
-  Engine *selectCpuEngine(Arguments &args);
-  Engine *selectWallEngine(Arguments &args);
-  Engine *selectAllocEngine(Arguments &args);
+  Engine *selectCpuEngine(ddprof::Arguments &args);
+  Engine *selectWallEngine(ddprof::Arguments &args);
+  Engine *selectAllocEngine(ddprof::Arguments &args);
   Error checkJvmCapabilities();
 
   void lockAll();
@@ -194,7 +192,6 @@ public:
       case CSTACK_DWARF: return "dwarf";
       case CSTACK_LBR: return "lbr";
       case CSTACK_VM: return "vm";
-      case CSTACK_VMX: return "vmx";
       default: return "default";
     }
   }
@@ -231,12 +228,12 @@ public:
     return __atomic_load_n(&_epoch, __ATOMIC_RELAXED);
   }
 
-  Error run(Arguments &args);
-  Error runInternal(Arguments &args, std::ostream &out);
-  Error restart(Arguments &args);
-  void shutdown(Arguments &args);
-  Error check(Arguments &args);
-  Error start(Arguments &args, bool reset);
+  Error run(ddprof::Arguments &args);
+  Error runInternal(ddprof::Arguments &args, std::ostream &out);
+  Error restart(ddprof::Arguments &args);
+  void shutdown(ddprof::Arguments &args);
+  Error check(ddprof::Arguments &args);
+  Error start(ddprof::Arguments &args, bool reset);
   Error stop();
   Error flushJfr();
   Error dump(const char *path, const int length);

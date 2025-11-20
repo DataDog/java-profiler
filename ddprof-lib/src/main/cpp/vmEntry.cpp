@@ -5,7 +5,7 @@
 
 #include "common.h"
 #include "vmEntry.h"
-#include "arguments.h"
+#include "arguments_dd.h"
 #include "context.h"
 #include "j9Ext.h"
 #include "jniHelper.h"
@@ -24,7 +24,7 @@
 const int ARGUMENTS_ERROR = 100;
 const int COMMAND_ERROR = 200;
 
-static Arguments _agent_args(true);
+static ddprof::Arguments _agent_args(true);
 
 JavaVM *VM::_vm;
 jvmtiEnv *VM::_jvmti = NULL;

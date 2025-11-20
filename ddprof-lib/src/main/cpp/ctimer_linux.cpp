@@ -134,7 +134,7 @@ void CTimer::unregisterThread(int tid) {
   }
 }
 
-Error CTimer::check(Arguments &args) {
+Error CTimer::check(ddprof::Arguments &args) {
   if (_pthread_entry == NULL &&
       (_pthread_entry = lookupThreadEntry()) == NULL) {
     return Error("Could not set pthread hook");
@@ -149,7 +149,7 @@ Error CTimer::check(Arguments &args) {
   return Error::OK;
 }
 
-Error CTimer::start(Arguments &args) {
+Error CTimer::start(ddprof::Arguments &args) {
   if (args._interval < 0) {
     return Error("interval must be positive");
   }

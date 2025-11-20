@@ -32,7 +32,7 @@ class BaseWallClock : public Engine {
 
       pthread_t _thread;
       virtual void timerLoop() = 0;
-      virtual void initialize(Arguments& args) {};
+      virtual void initialize(ddprof::Arguments& args) {};
 
     static void *threadEntry(void *wall_clock) {
       ((BaseWallClock *)wall_clock)->timerLoop();
@@ -132,7 +132,7 @@ public:
         _enabled.store(enabled, std::memory_order_release);
     }
 
-    Error start(Arguments& args);
+    Error start(ddprof::Arguments& args);
     void stop();
 };
 
@@ -145,7 +145,7 @@ class WallClockASGCT : public BaseWallClock {
     static void sharedSignalHandler(int signo, siginfo_t* siginfo, void* ucontext);
     void signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64 last_sample);
 
-    void initialize(Arguments& args) override;
+    void initialize(ddprof::Arguments& args) override;
     void timerLoop() override;
 
   public:

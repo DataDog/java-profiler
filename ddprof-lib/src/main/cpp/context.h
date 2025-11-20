@@ -18,7 +18,7 @@
 #define _CONTEXT_H
 
 #include "arch_dd.h"
-#include "arguments.h"
+#include "arguments_dd.h"
 #include "os_dd.h"
 
 static const u32 DD_TAGS_CAPACITY = 10;
