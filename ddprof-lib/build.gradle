@@ -377,13 +377,23 @@ def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
   }
   description = 'Copy shared upstream files'
   from("${projectDir}/build/async-profiler/src") {
+    include "arguments.h"
+    include "arguments.cpp"
     include "arch.h"
+    include "asprof.h"
+    include "cpuEngine.h"
     include "dwarf.h"
+    include "fdtransfer.h"
+    include "fdtransferClient.h"
+    include "fdtransferClient_linux.cpp"
     include "incbin.h"
+    include "j9StackTraces.h"
+    include "log.h"
     include "mutex.h"
     include "mutex.cpp"
     include "os.h"
     include "os_*.cpp"
+    include "spinLock.h"
     include "stackFrame.h"
     include "stackWalker.h"
     include "stackWalker.cpp"
@@ -392,6 +402,8 @@ def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
     include "symbols_*.cpp"
     include "trap.h"
     include "trap.cpp"
+    include "tsc.h"
+    include "tsc.cpp"
     include "vmStructs.h"
     include "vmStructs.cpp"
   }

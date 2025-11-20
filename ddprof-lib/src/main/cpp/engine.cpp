@@ -16,8 +16,8 @@
 
 #include "engine.h"
 
-Error Engine::check(Arguments &args) { return Error::OK; }
+Error Engine::check(ddprof::Arguments &args) { return Error::OK; }
 
-Error Engine::start(Arguments &args) { return Error::OK; }
+Error Engine::start(ddprof::Arguments &args) { return Error::OK; }
 
 void Engine::stop() {}

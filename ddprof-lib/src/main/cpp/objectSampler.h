@@ -60,8 +60,8 @@ protected:
 public:
   static ObjectSampler *const instance() { return _instance; }
 
-  Error check(Arguments &args);
-  Error start(Arguments &args);
+  Error check(ddprof::Arguments &args);
+  Error start(ddprof::Arguments &args);
   void stop();
 
   virtual long interval() const { return _interval; }

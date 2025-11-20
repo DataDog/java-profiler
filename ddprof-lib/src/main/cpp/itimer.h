@@ -35,8 +35,8 @@ public:
 
   long interval() const { return _interval; }
 
-  Error check(Arguments &args);
-  Error start(Arguments &args);
+  Error check(ddprof::Arguments &args);
+  Error start(ddprof::Arguments &args);
   void stop();
 
   inline void enableEvents(bool enabled) { _enabled = enabled; }

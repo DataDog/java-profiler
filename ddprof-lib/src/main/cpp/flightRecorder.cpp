@@ -317,7 +317,7 @@ char *Recording::_jvm_args = NULL;
 char *Recording::_jvm_flags = NULL;
 char *Recording::_java_command = NULL;
 
-Recording::Recording(int fd, Arguments &args)
+Recording::Recording(int fd, ddprof::Arguments &args)
     : _fd(fd), _method_map() {
 
   args.save(_args);
@@ -717,7 +717,7 @@ void Recording::writeRecordingInfo(Buffer *buf) {
   flushIfNeeded(buf);
 }
 
-void Recording::writeSettings(Buffer *buf, Arguments &args) {
+void Recording::writeSettings(Buffer *buf, ddprof::Arguments &args) {
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "asyncprofiler", true);
   writeStringSetting(buf, T_ACTIVE_RECORDING, "version", PROFILER_VERSION);
   writeIntSetting(buf, T_ACTIVE_RECORDING, "tscfrequency", TSC::frequency());
@@ -730,7 +730,7 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
                        attribute.c_str());
   }
 
-  if (!((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ||
+  if (!((args._event != NULL && strcmp(args._event, ddprof::EVENT_NOOP) != 0) ||
         args._cpu >= 0)) {
     writeBoolSetting(buf, T_EXECUTION_SAMPLE, "enabled", false);
   } else {
@@ -1471,7 +1471,7 @@ void Recording::addThread(int lock_index, int tid) {
     _thread_ids[lock_index][active].insert(tid);
 }
 
-Error FlightRecorder::start(Arguments &args, bool reset) {
+Error FlightRecorder::start(ddprof::Arguments &args, bool reset) {
   ExclusiveLockGuard locker(&_rec_lock);
   const char *file = args.file();
   if (file == NULL || file[0] == 0) {

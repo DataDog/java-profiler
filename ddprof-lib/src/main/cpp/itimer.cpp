@@ -57,7 +57,7 @@ void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   Shims::instance().setSighandlerTid(-1);
 }
 
-Error ITimer::check(Arguments &args) {
+Error ITimer::check(ddprof::Arguments &args) {
   OS::installSignalHandler(SIGPROF, NULL, SIG_IGN);
 
   struct itimerval tv_on = {{1, 0}, {1, 0}};
@@ -71,7 +71,7 @@ Error ITimer::check(Arguments &args) {
   return Error::OK;
 }
 
-Error ITimer::start(Arguments &args) {
+Error ITimer::start(ddprof::Arguments &args) {
   _interval = args.cpuSamplerInterval();
   _cstack = args._cstack;
 

@@ -107,7 +107,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   Shims::instance().setSighandlerTid(-1);
 }
 
-Error BaseWallClock::start(Arguments &args) {
+Error BaseWallClock::start(ddprof::Arguments &args) {
   int interval = args._event != NULL ? args._interval : args._wall;
   if (interval < 0) {
     return Error("interval must be positive");
@@ -145,7 +145,7 @@ bool BaseWallClock::isEnabled() const {
   return _enabled.load(std::memory_order_acquire);
 }
 
-void WallClockASGCT::initialize(Arguments& args) {
+void WallClockASGCT::initialize(ddprof::Arguments& args) {
   _collapsing = args._wall_collapsing;
   OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
 }

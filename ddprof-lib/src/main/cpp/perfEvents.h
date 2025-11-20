@@ -20,6 +20,7 @@
 #ifdef __linux__
 
 #include "arch_dd.h"
+#include "arguments_dd.h"
 #include "engine.h"
 #include <signal.h>
 
@@ -34,7 +35,7 @@ private:
   static PerfEvent *_events;
   static PerfEventType *_event_type;
   static long _interval;
-  static Ring _ring;
+  static ddprof::Ring _ring;
   static CStack _cstack;
   static bool _use_mmap_page;
 
@@ -44,8 +45,8 @@ private:
   static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
 
 public:
-  Error check(Arguments &args);
-  Error start(Arguments &args);
+  Error check(ddprof::Arguments &args);
+  Error start(ddprof::Arguments &args);
   void stop();
 
   virtual int registerThread(int tid);
@@ -72,11 +73,11 @@ class StackContext;
 
 class PerfEvents : public Engine {
 public:
-  Error check(Arguments &args) {
+  Error check(ddprof::Arguments &args) {
     return Error("PerfEvents are unsupported on this platform");
   }
 
-  Error start(Arguments &args) {
+  Error start(ddprof::Arguments &args) {
     return Error("PerfEvents are unsupported on this platform");
   }
 

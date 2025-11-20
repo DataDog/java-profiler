@@ -14,7 +14,7 @@
 #include <string.h>
 
 #include "arch_dd.h"
-#include "arguments.h"
+#include "arguments_dd.h"
 #include "buffers.h"
 #include "counters.h"
 #include "dictionary.h"
@@ -128,7 +128,7 @@ private:
   off_t _chunk_start;
   MethodMap _method_map;
 
-  Arguments _args;
+  ddprof::Arguments _args;
   u64 _start_time;
   u64 _recording_start_time;
   u64 _start_ticks;
@@ -152,7 +152,7 @@ private:
   }
 
 public:
-  Recording(int fd, Arguments &args);
+  Recording(int fd, ddprof::Arguments &args);
   ~Recording();
 
   void copyTo(int target_fd);
@@ -180,7 +180,7 @@ public:
 
   void writeRecordingInfo(Buffer *buf);
 
-  void writeSettings(Buffer *buf, Arguments &args);
+  void writeSettings(Buffer *buf, ddprof::Arguments &args);
 
   void writeStringSetting(Buffer *buf, int category, const char *key,
                           const char *value);
@@ -290,7 +290,7 @@ class FlightRecorder {
 
 private:
   std::string _filename;
-  Arguments _args;
+  ddprof::Arguments _args;
 
   SpinLock _rec_lock;
   Recording* _rec;
@@ -299,7 +299,7 @@ private:
 
 public:
   FlightRecorder() : _rec(NULL) {}
-  Error start(Arguments &args, bool reset);
+  Error start(ddprof::Arguments &args, bool reset);
   void stop();
   Error dump(const char *filename, const int length);
   void flush();
