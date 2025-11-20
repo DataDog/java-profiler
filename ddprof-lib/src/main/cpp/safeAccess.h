@@ -45,11 +45,11 @@ public:
 
   static bool handle_safefetch(int sig, void* context);
 
-  static inline void *load(void **ptr) {
+  static inline void *load(void **ptr, void* default_value = nullptr) {
     return loadPtr(ptr, nullptr);
   }
 
-  static inline u32 load32(u32 *ptr, u32 default_value) {
+  static inline u32 load32(u32 *ptr, u32 default_value = 0) {
     int res = safefetch32_impl((int*)ptr, (int)default_value);
     return static_cast<u32>(res);
   }
