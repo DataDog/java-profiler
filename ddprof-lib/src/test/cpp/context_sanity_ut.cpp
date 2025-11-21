@@ -1,17 +1,6 @@
 /*
- * Copyright 2025, Datadog, Inc
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Copyright 2025, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include <gtest/gtest.h>
@@ -87,49 +76,39 @@ TEST(ContextSanityTest, SequentialWriteReadCycles) {
 }
 
 /**
- * Test using Contexts_1 TLS mechanism (actual production usage).
+ * Test using Contexts TLS mechanism (actual production usage).
  * This simulates the real flow:
- * 1. Allocate Context
- * 2. Store in TLS via Contexts_1::setContextTls()
- * 3. Write values (simulating Java DirectByteBuffer writes)
- * 4. Read via Contexts_1::get() (simulating signal handler reads)
+ * 1. Initialize context TLS via Contexts::initializeContextTls()
+ * 2. Write values (simulating Java DirectByteBuffer writes)
+ * 3. Read via Contexts::get() (simulating signal handler reads)
  */
 TEST(ContextSanityTest, TlsBasedAccess) {
-  // Allocate context (matches JavaProfiler.initializeContextTls0)
-  Context* ctx = new Context();
-  ctx->spanId = 0;
-  ctx->rootSpanId = 0;
-  ctx->checksum = 0;
+  // Initialize context TLS (matches JavaProfiler.initializeContextTls0)
+  // This also marks ProfiledThread as having context TLS initialized
+  Context& ctx = Contexts::initializeContextTls();
 
-  // Store in TLS (matches JavaProfiler.initializeContextTls0)
-  Contexts_1::setContextTls(ctx);
+  // Initialize to zero
+  ctx.spanId = 0;
+  ctx.rootSpanId = 0;
+  ctx.checksum = 0;
 
-  // Verify we can retrieve it
-  Context* retrievedCtx = Contexts_1::get();
-  ASSERT_NE(retrievedCtx, nullptr);
-  EXPECT_EQ(retrievedCtx, ctx);
-
-  // Write values via pointer (simulating Java DirectByteBuffer.putLong())
-  ctx->spanId = 123;
-  ctx->rootSpanId = 456;
-  ctx->checksum = 789;
+  // Write values (simulating Java DirectByteBuffer.putLong())
+  ctx.spanId = 123;
+  ctx.rootSpanId = 456;
+  ctx.checksum = 789;
 
   // Read via TLS getter
   __atomic_thread_fence(__ATOMIC_ACQUIRE);
-  Context* readCtx = Contexts_1::get();
-  ASSERT_NE(readCtx, nullptr);
+  Context& readCtx = Contexts::get();
 
-  u64 readSpanId = readCtx->spanId;
-  u64 readRootSpanId = readCtx->rootSpanId;
-  u64 readChecksum = readCtx->checksum;
+  u64 readSpanId = readCtx.spanId;
+  u64 readRootSpanId = readCtx.rootSpanId;
+  u64 readChecksum = readCtx.checksum;
 
   // Verify values match
   EXPECT_EQ(readSpanId, 123ULL);
   EXPECT_EQ(readRootSpanId, 456ULL);
   EXPECT_EQ(readChecksum, 789ULL);
-
-  // Cleanup
-  delete ctx;
 }
 
 /**
@@ -138,44 +117,38 @@ TEST(ContextSanityTest, TlsBasedAccess) {
  * during a thread's lifetime and read by signal handlers.
  */
 TEST(ContextSanityTest, TlsMultipleUpdates) {
-  Context* ctx = new Context();
-  ctx->spanId = 0;
-  ctx->rootSpanId = 0;
-  ctx->checksum = 0;
-
-  Contexts_1::setContextTls(ctx);
+  // Initialize context TLS
+  Context& ctx = Contexts::initializeContextTls();
+  ctx.spanId = 0;
+  ctx.rootSpanId = 0;
+  ctx.checksum = 0;
 
   // Update 1
-  ctx->spanId = 1;
-  ctx->rootSpanId = 2;
-  ctx->checksum = 4;
+  ctx.spanId = 1;
+  ctx.rootSpanId = 2;
+  ctx.checksum = 4;
   __atomic_thread_fence(__ATOMIC_ACQUIRE);
-  Context* readCtx = Contexts_1::get();
-  ASSERT_NE(readCtx, nullptr);
-  EXPECT_EQ(readCtx->spanId, 1ULL);
-  EXPECT_EQ(readCtx->rootSpanId, 2ULL);
-  EXPECT_EQ(readCtx->checksum, 4ULL);
+  Context& readCtx = Contexts::get();
+  EXPECT_EQ(readCtx.spanId, 1ULL);
+  EXPECT_EQ(readCtx.rootSpanId, 2ULL);
+  EXPECT_EQ(readCtx.checksum, 4ULL);
 
   // Update 2
-  ctx->spanId = 10;
-  ctx->rootSpanId = 20;
-  ctx->checksum = 40;
-  readCtx = Contexts_1::get();
-  ASSERT_NE(readCtx, nullptr);
-  EXPECT_EQ(readCtx->spanId, 10ULL);
-  EXPECT_EQ(readCtx->rootSpanId, 20ULL);
-  EXPECT_EQ(readCtx->checksum, 40ULL);
+  ctx.spanId = 10;
+  ctx.rootSpanId = 20;
+  ctx.checksum = 40;
+  Context& readCtx2 = Contexts::get();
+  EXPECT_EQ(readCtx2.spanId, 10ULL);
+  EXPECT_EQ(readCtx2.rootSpanId, 20ULL);
+  EXPECT_EQ(readCtx2.checksum, 40ULL);
 
   // Update 3
-  ctx->spanId = 100;
-  ctx->rootSpanId = 200;
-  ctx->checksum = 400;
+  ctx.spanId = 100;
+  ctx.rootSpanId = 200;
+  ctx.checksum = 400;
 
-  readCtx = Contexts_1::get();
-  ASSERT_NE(readCtx, nullptr);
-  EXPECT_EQ(readCtx->spanId, 100ULL);
-  EXPECT_EQ(readCtx->rootSpanId, 200ULL);
-  EXPECT_EQ(readCtx->checksum, 400ULL);
-
-  delete ctx;
+  Context& readCtx3 = Contexts::get();
+  EXPECT_EQ(readCtx3.spanId, 100ULL);
+  EXPECT_EQ(readCtx3.rootSpanId, 200ULL);
+  EXPECT_EQ(readCtx3.checksum, 400ULL);
 }
