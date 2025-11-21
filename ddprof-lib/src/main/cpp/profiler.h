@@ -192,7 +192,9 @@ public:
       case CSTACK_FP: return "fp";
       case CSTACK_DWARF: return "dwarf";
       case CSTACK_LBR: return "lbr";
-      case CSTACK_VM: return "vm";
+      case CSTACK_VM: {
+        return _features.mixed ? "vmx" : "vm";
+      }
       default: return "default";
     }
   }
