@@ -19,7 +19,9 @@
 
 #include "arch_dd.h"
 #include "arguments.h"
+#include "common.h"
 #include "os_dd.h"
+#include "vmEntry.h"
 
 static const u32 DD_TAGS_CAPACITY = 10;
 
@@ -27,43 +29,31 @@ typedef struct {
   u32 value;
 } Tag;
 
-class Context {
+class alignas(DEFAULT_CACHE_LINE_SIZE) Context {
 public:
-  u64 spanId;
-  u64 rootSpanId;
-  u64 checksum;
+  volatile u64 spanId;
+  volatile u64 rootSpanId;
+  volatile u64 checksum;
   Tag tags[DD_TAGS_CAPACITY];
 
   Tag get_tag(int i) { return tags[i]; }
 };
 
-// must be kept in sync with PAGE_SIZE in JavaProfiler.java
-const int DD_CONTEXT_PAGE_SIZE = 1024;
-const int DD_CONTEXT_PAGE_MASK = DD_CONTEXT_PAGE_SIZE - 1;
-const int DD_CONTEXT_PAGE_SHIFT = __builtin_popcount(DD_CONTEXT_PAGE_MASK);
-
-typedef struct {
-  const int capacity;
-  const Context *storage;
-} ContextPage;
+static Context DD_EMPTY_CONTEXT = {};
 
 class Contexts {
 
-private:
-  static int _max_pages;
-  static Context **_pages;
-  static bool initialize(int pageIndex);
-
 public:
-  // get must not allocate
-  static Context &get(int tid);
-  static Context &empty();
-  // not to be called except to share with Java callers as a DirectByteBuffer
-  static ContextPage getPage(int tid);
-  static int getMaxPages(int maxTid = OS::getMaxThreadId());
+  static Context& initializeContextTls();
+  static Context& get();
 
-  // this *MUST* be called only when the profiler is completely stopped
-  static void reset();
+  inline static u64 checksum(u64 spanId, u64 rootSpanId) {
+    u64 swappedRootSpanId = ((rootSpanId & 0xFFFFFFFFULL) << 32) | (rootSpanId >> 32);
+    u64 computed = (spanId * KNUTH_MULTIPLICATIVE_CONSTANT) ^ (swappedRootSpanId * KNUTH_MULTIPLICATIVE_CONSTANT);
+    return computed == 0 ? 0xffffffffffffffffull : computed;
+  }
 };
+
+DLLEXPORT extern thread_local Context context_tls_v1;
 
 #endif /* _CONTEXT_H */

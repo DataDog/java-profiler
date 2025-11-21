@@ -19,6 +19,7 @@
 #include "arch_dd.h"
 #include "context.h"
 #include "counters.h"
+#include "common.h"
 #include "engine.h"
 #include "incbin.h"
 #include "os_dd.h"
@@ -178,31 +179,6 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0(JNIEnv *env,
     return;
   }
   thread_filter->remove(slot_id);
-}
-
-extern "C" DLLEXPORT jobject JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_getContextPage0(JNIEnv *env,
-                                                         jobject unused,
-                                                         jint tid) {
-  ContextPage page = Contexts::getPage((int)tid);
-  if (page.storage == 0) {
-    return NULL;
-  }
-  return env->NewDirectByteBuffer((void *)page.storage, (jlong)page.capacity);
-}
-
-extern "C" DLLEXPORT jlong JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_getContextPageOffset0(JNIEnv *env,
-                                                               jobject unused,
-                                                               jint tid) {
-  ContextPage page = Contexts::getPage((int)tid);
-  return (jlong)page.storage;
-}
-
-extern "C" DLLEXPORT jint JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_getMaxContextPages0(JNIEnv *env,
-                                                             jobject unused) {
-  return (jint)Contexts::getMaxPages();
 }
 
 extern "C" DLLEXPORT jboolean JNICALL
@@ -536,4 +512,43 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
   // If OTEL_PROCESS_CTX_NO_READ is defined, return null
   return nullptr;
 #endif
+}
+
+extern "C" DLLEXPORT jobject JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_initializeContextTls0(JNIEnv* env, jclass unused) {
+  Context& ctx = Contexts::initializeContextTls();
+  return env->NewDirectByteBuffer((void *)&ctx, (jlong)sizeof(Context));
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_ThreadContext_setContext0(JNIEnv* env, jclass unused, jlong spanId, jlong rootSpanId) {
+  Context& ctx = Contexts::get();
+
+  ctx.spanId = spanId;
+  ctx.rootSpanId = rootSpanId;
+  ctx.checksum = Contexts::checksum(spanId, rootSpanId);
+
+  return ctx.checksum;
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_ThreadContext_setContextSlot0(JNIEnv* env, jclass unused, jint offset, jint value) {
+  Context& ctx = Contexts::get();
+  ctx.tags[offset].value = (u32)value;
+  return offset * value;
+}
+
+// ---- test and debug utilities
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_testlog(JNIEnv* env, jclass unused, jstring msg) {
+  JniString msg_str(env, msg);
+
+  TEST_LOG("%s", msg_str.c_str());
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused) {
+  Context& ctx = Contexts::get();
+
+  TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu, checksum=%lu", OS::threadId(), ctx.spanId, ctx.rootSpanId, ctx.checksum);
 }

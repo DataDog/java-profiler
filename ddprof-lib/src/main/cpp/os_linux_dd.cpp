@@ -96,22 +96,22 @@ bool ddprof::OS::isTlsPrimingAvailable() {
 int ddprof::OS::installTlsPrimeSignalHandler(SigHandler handler, int signal_offset) {
   int signal_num = SIGRTMIN + signal_offset;
   if (signal_num > SIGRTMAX) {
-    TEST_LOG("No available RT signal for TLS priming: offset %d exceeds range (SIGRTMIN=%d, SIGRTMAX=%d)", 
+    TEST_LOG("No available RT signal for TLS priming: offset %d exceeds range (SIGRTMIN=%d, SIGRTMAX=%d)",
              signal_offset, SIGRTMIN, SIGRTMAX);
     return -1;
   }
-  
+
   struct sigaction sa;
   sa.sa_handler = handler;
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = SA_RESTART;
-  
+
   if (sigaction(signal_num, &sa, NULL) != 0) {
-    TEST_LOG("Failed to install RT signal %d for TLS priming: %s (signal may be in use)", 
+    TEST_LOG("Failed to install RT signal %d for TLS priming: %s (signal may be in use)",
              signal_num, strerror(errno));
     return -1;
   }
-  
+
   TEST_LOG("Successfully installed TLS priming handler on RT signal %d", signal_num);
   return signal_num;
 }
@@ -120,14 +120,14 @@ void ddprof::OS::uninstallTlsPrimeSignalHandler(int signal_num) {
   if (signal_num <= 0) {
     return;
   }
-  
+
   struct sigaction sa;
   sa.sa_handler = SIG_DFL;
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = 0;
-  
+
   if (sigaction(signal_num, &sa, NULL) != 0) {
-    TEST_LOG("Failed to uninstall RT signal %d for TLS priming: %s", 
+    TEST_LOG("Failed to uninstall RT signal %d for TLS priming: %s",
              signal_num, strerror(errno));
   } else {
     TEST_LOG("Successfully uninstalled TLS priming handler for RT signal %d", signal_num);
@@ -140,7 +140,7 @@ void ddprof::OS::enumerateThreadIds(const std::function<void(int)>& callback) {
     TEST_LOG("Failed to open /proc/self/task: %s", strerror(errno));
     return;
   }
-  
+
   struct dirent *entry;
   while ((entry = readdir(task_dir)) != nullptr) {
     if (entry->d_name[0] >= '1' && entry->d_name[0] <= '9') {
@@ -164,7 +164,7 @@ int ddprof::OS::getThreadCount() {
   if (!status) {
     return -1;
   }
-  
+
   char line[256];
   int thread_count = -1;
   while (fgets(line, sizeof(line), status)) {
@@ -189,19 +189,19 @@ bool ddprof::OS::startThreadDirectoryWatcher(const std::function<void(int)>& on_
     TEST_LOG("Failed to initialize inotify: %s", strerror(errno));
     return false;
   }
-  
+
   int watch_fd = inotify_add_watch(inotify_fd, "/proc/self/task", IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
   if (watch_fd == -1) {
     TEST_LOG("Failed to add inotify watch on /proc/self/task: %s", strerror(errno));
     close(inotify_fd);
     return false;
   }
-  
+
   g_on_new_thread = on_new_thread;
   g_on_dead_thread = on_dead_thread;
   g_watcher_fd.store(inotify_fd);
   g_watcher_running.store(true);
-  
+
   if (pthread_create(&g_watcher_thread, nullptr, threadDirectoryWatcherLoop, nullptr) != 0) {
     TEST_LOG("Failed to create thread directory watcher thread: %s", strerror(errno));
     g_watcher_running.store(false);

@@ -38,6 +38,6 @@ public class ContextWallClockTest extends CStackAwareAbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=~1ms,filter=0,loglevel=warn";
+        return "wall=1ms,filter=0,loglevel=warn";
     }
 }
