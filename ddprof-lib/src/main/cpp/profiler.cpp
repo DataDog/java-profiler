@@ -24,7 +24,7 @@
 #include "stackWalker_dd.h"
 #include "symbols.h"
 #include "thread.h"
-#include "tsc.h"
+#include "tsc_dd.h"
 #include "vmStructs_dd.h"
 #include "wallClock.h"
 #include <algorithm>
@@ -708,13 +708,11 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     ASGCT_CallFrame *native_stop = frames + num_frames;
     num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
                                  &java_ctx, &truncated);
-    // CSTACK_VMX is not currently supported (commented out in arguments_dd.h)
-    // if (_cstack == CSTACK_VMX) {
-    //   num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_EXPERT, &truncated);
-    // } else
-    if (event_type == BCI_CPU || event_type == BCI_WALL) {
+    if (_features.mixed) {
+        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, _features, static_cast<EventType>(event_type), &truncated);
+    } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
       if (_cstack == CSTACK_VM) {
-        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, &truncated);
+        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, _features, static_cast<EventType>(event_type), &truncated);
       } else {
         // Async events
         AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());
@@ -1215,6 +1213,17 @@ Error Profiler::start(ddprof::Arguments &args, bool reset) {
     }
   }
 
+  _features = args._features;
+  if (VM::hotspot_version() < 8) {
+      _features.java_anchor = 0;
+      _features.gc_traces = 0;
+  }
+  if (!VMStructs::hasClassNames()) {
+      _features.vtable_target = 0;
+  }
+  if (!VMStructs::hasCompilerStructs()) {
+      _features.comp_task = 0;
+  }
   _safe_mode = args._safe_mode;
   if (VM::hotspot_version() < 8 || VM::isZing()) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
