@@ -148,7 +148,7 @@ public final class JavaProfiler {
      *
      * @return Number of samples
      */
-    public native long getSamples();
+    public static native long getSamples();
 
     /**
      * Get profiler agent version, e.g. "1.0"
@@ -402,8 +402,8 @@ public final class JavaProfiler {
     private native void stop0() throws IllegalStateException;
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
 
-    private native void filterThreadAdd0();
-    private native void filterThreadRemove0();
+    private static native void filterThreadAdd0();
+    private static native void filterThreadRemove0();
 
     private static native int getTid0();
     private static native ByteBuffer getContextPage0(int tid);
