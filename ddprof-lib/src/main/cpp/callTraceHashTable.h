@@ -8,9 +8,10 @@
 
 #include "arch_dd.h"
 #include "linearAllocator.h"
-// SpinLock removed - synchronization handled at CallTraceStorage level
 #include "vmEntry.h"
 #include <unordered_set>
+#include <atomic>
+#include <functional>
 
 class LongHashTable;
 
@@ -19,6 +20,10 @@ struct CallTrace {
   int num_frames;
   u64 trace_id;  // 64-bit for JFR constant pool compatibility
   ASGCT_CallFrame frames[1];
+
+  CallTrace(bool truncated, int num_frames, u64 trace_id) 
+    : truncated(truncated), num_frames(num_frames), trace_id(trace_id) {
+  }
 };
 
 struct CallTraceSample {
@@ -45,31 +50,41 @@ struct CallTraceSample {
   }
 };
 
+// Forward declaration for circular dependency
+class CallTraceStorage;
+
 class CallTraceHashTable {
-private:
+public:
   static CallTrace _overflow_trace;
+
+private:
   u64 _instance_id;  // 64-bit instance ID for this hash table (set externally)
+  CallTraceStorage* _parent_storage;  // Parent storage for hazard pointer access
 
   LinearAllocator _allocator;
-  LongHashTable *_current_table;
+  
+  // Single large pre-allocated table - no expansion needed!
+  LongHashTable* _table;  // Simple pointer, no atomics needed
+  
   volatile u64 _overflow;
 
   u64 calcHash(int num_frames, ASGCT_CallFrame *frames, bool truncated);
   CallTrace *storeCallTrace(int num_frames, ASGCT_CallFrame *frames,
                             bool truncated, u64 trace_id);
   CallTrace *findCallTrace(LongHashTable *table, u64 hash);
+  
 
 public:
   CallTraceHashTable();
   ~CallTraceHashTable();
 
   void clear();
-  void collect(std::unordered_set<CallTrace *> &traces);
-  void collectAndCopySelective(std::unordered_set<CallTrace *> &traces, const std::unordered_set<u64> &trace_ids_to_preserve, CallTraceHashTable* target);
+  void collect(std::unordered_set<CallTrace *> &traces, std::function<void(CallTrace*)> trace_hook = nullptr);
 
   u64 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);
-  void putWithExistingId(CallTrace* trace, u64 weight);
+  void putWithExistingId(CallTrace* trace, u64 weight);  // For standby tables with no contention
   void setInstanceId(u64 instance_id) { _instance_id = instance_id; }
+  void setParentStorage(CallTraceStorage* storage) { _parent_storage = storage; }
 };
 
 #endif // _CALLTRACEHASHTABLE_H

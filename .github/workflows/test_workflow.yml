@@ -124,7 +124,7 @@ jobs:
           name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64
           path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
       - name: Prepare reports
-        if: always()
+        if: steps.set_enabled.outputs.enabled == 'true'
         run: |
           .github/scripts/prepare_reports.sh
       - name: Upload unwinding reports
@@ -247,7 +247,7 @@ jobs:
           name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64
           path: failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
       - name: Prepare reports
-        if: always()
+        if: steps.set_enabled.outputs.enabled == 'true'
         run: |
           .github/scripts/prepare_reports.sh
       - name: Upload unwinding reports
@@ -378,7 +378,7 @@ jobs:
           name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
           path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
       - name: Prepare reports
-        if: always()
+        if: steps.set_enabled.outputs.enabled == 'true'
         run: |
           .github/scripts/prepare_reports.sh
       - name: Upload unwinding reports
@@ -480,7 +480,7 @@ jobs:
            name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
            path: failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
        - name: Prepare reports
-         if: always()
+         if: steps.set_enabled.outputs.enabled == 'true'
          run: |
            .github/scripts/prepare_reports.sh
        - name: Upload unwinding reports

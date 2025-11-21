@@ -14,6 +14,7 @@
 #include "stackFrame.h"
 #include "thread.h"
 #include "vmStructs_dd.h"
+#include "criticalSection.h"
 #include <math.h>
 #include <random>
 #include <algorithm> // For std::sort and std::binary_search
@@ -55,7 +56,12 @@ void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
 
 void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext,
                               u64 last_sample) {
-  ProfiledThread *current = ProfiledThread::current();
+  // Atomically try to enter critical section - prevents all reentrancy races
+  CriticalSection cs;
+  if (!cs.entered()) {
+    return;  // Another critical section is active, defer profiling
+  }
+  ProfiledThread *current = ProfiledThread::currentSignalSafe();
   int tid = current != NULL ? current->tid() : OS::threadId();
   Shims::instance().setSighandlerTid(tid);
   u64 call_trace_id = 0;

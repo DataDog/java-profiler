@@ -26,7 +26,8 @@
 
 class CTimer : public Engine {
 private:
-  static std::atomic<bool> _enabled;
+  // This is accessed from signal handlers, so must be async-signal-safe
+  static bool _enabled;
   static long _interval;
   static CStack _cstack;
   static int _signal;
@@ -52,7 +53,7 @@ public:
   void stop();
 
   inline void enableEvents(bool enabled) {
-    _enabled.store(enabled, std::memory_order_release);
+    __atomic_store_n(&_enabled, enabled, __ATOMIC_RELEASE);
   }
 };
 

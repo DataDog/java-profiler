@@ -10,9 +10,9 @@
       "Bash(./gradlew:*)",
       "Bash(sh:*)",
       "Bash(ls:*)",
-      "Bash/date:*",
-      "Bash/mkdir:*",
-      "Bash/tee:*"
+      "Bash(date:*)",
+      "Bash(mkdir:*)",
+      "Bash(tee:*)"
     ],
     "ask": [],
     "deny": [
@@ -23,9 +23,11 @@
   "hooks": {
     "SubagentStop": [
       {
-        "matcher": "gradle-log-analyst",
         "hooks": [
-          "echo '[gradle-log-analyst] Wrote build/reports/claude/gradle-summary.{md,json}' >&2"
+          {
+            "type": "command",
+            "command": "echo '[gradle-log-analyst] Wrote build/reports/claude/gradle-summary.{md,json}' >&2"
+          }
         ]
       }
     ]

@@ -129,13 +129,7 @@ public final class JavaProfiler {
         if (this.contextStorage == null) {
             int maxPages = getMaxContextPages0();
             if (maxPages > 0) {
-                if (UNSAFE != null) {
-                    contextBaseOffsets = new long[maxPages];
-                    // be sure to choose an illegal address as a sentinel value
-                    Arrays.fill(contextBaseOffsets, Long.MIN_VALUE);
-                } else {
-                    contextStorage = new ByteBuffer[maxPages];
-                }
+                contextStorage = new ByteBuffer[maxPages];
             }
         }
     }
@@ -229,26 +223,7 @@ public final class JavaProfiler {
      */
     public void setContext(long spanId, long rootSpanId) {
         int tid = TID.get();
-        if (UNSAFE != null) {
-            setContextUnsafe(tid, spanId, rootSpanId);
-        } else {
-            setContextByteBuffer(tid, spanId, rootSpanId);
-        }
-    }
-
-    private void setContextUnsafe(int tid, long spanId, long rootSpanId) {
-        if (contextBaseOffsets == null) {
-            return;
-        }
-        long pageOffset = getPageUnsafe(tid);
-        if (pageOffset == 0) {
-            return;
-        }
-        int index = (tid % PAGE_SIZE) * CONTEXT_SIZE;
-        long base = pageOffset + index;
-        UNSAFE.putLong(base + SPAN_OFFSET, spanId);
-        UNSAFE.putLong(base + ROOT_SPAN_OFFSET, rootSpanId);
-        UNSAFE.putLong(base + CHECKSUM_OFFSET, spanId ^ rootSpanId);
+        setContextByteBuffer(tid, spanId, rootSpanId);
     }
 
     private void setContextByteBuffer(int tid, long spanId, long rootSpanId) {
@@ -281,15 +256,6 @@ public final class JavaProfiler {
         return page;
     }
 
-    private long getPageUnsafe(int tid) {
-        int pageIndex = tid / PAGE_SIZE;
-        long offset = contextBaseOffsets[pageIndex];
-        if (offset == Long.MIN_VALUE) {
-            contextBaseOffsets[pageIndex] = offset = getContextPageOffset0(tid);
-        }
-        return offset;
-    }
-
     /**
      * Clears context identifier for current thread.
      */
@@ -304,22 +270,7 @@ public final class JavaProfiler {
      */
     public void setContextValue(int offset, int value) {
         int tid = TID.get();
-        if (UNSAFE != null) {
-            setContextUnsafe(tid, offset, value);
-        } else {
-            setContextByteBuffer(tid, offset, value);
-        }
-    }
-
-    private void setContextUnsafe(int tid, int offset, int value) {
-        if (contextBaseOffsets == null) {
-            return;
-        }
-        long pageOffset = getPageUnsafe(tid);
-        if (pageOffset == 0) {
-            return;
-        }
-        UNSAFE.putInt(pageOffset + addressOf(tid, offset), value);
+        setContextByteBuffer(tid, offset, value);
     }
 
     public void setContextByteBuffer(int tid, int offset, int value) {
@@ -335,26 +286,7 @@ public final class JavaProfiler {
 
     void copyTags(int[] snapshot) {
         int tid = TID.get();
-        if (UNSAFE != null) {
-            copyTagsUnsafe(tid, snapshot);
-        } else {
-            copyTagsByteBuffer(tid, snapshot);
-        }
-    }
-
-    void copyTagsUnsafe(int tid, int[] snapshot) {
-        if (contextBaseOffsets == null) {
-            return;
-        }
-        long pageOffset = getPageUnsafe(tid);
-        if (pageOffset == 0) {
-            return;
-        }
-        long address = pageOffset + addressOf(tid, 0);
-        for (int i = 0; i < snapshot.length; i++) {
-            snapshot[i] = UNSAFE.getInt(address);
-            address += Integer.BYTES;
-        }
+        copyTagsByteBuffer(tid, snapshot);
     }
 
     void copyTagsByteBuffer(int tid, int[] snapshot) {
@@ -472,8 +404,6 @@ public final class JavaProfiler {
 
     private static native void filterThreadAdd0();
     private static native void filterThreadRemove0();
-    // Backward compatibility for existing code
-    private static native void filterThread0(boolean enable);
 
     private static native int getTid0();
     private static native ByteBuffer getContextPage0(int tid);

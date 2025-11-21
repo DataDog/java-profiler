@@ -41,7 +41,7 @@ You are the **Main Orchestrator** for this repository.
   “Use `gradle-log-analyst` to parse LOG_PATH; write the two reports; reply with only a 3–6 line status and the two relative file paths.”
 
 ### Shortcuts I Expect
-- `/build-and-summarize <gradle-task...>` to do everything in one step.
+- `./gradlew <gradle-task...>` to do everything in one step.
 - If I just say “build assembleDebugJar”, interpret that as the shortcut above.
 
 ## Build Commands
@@ -50,74 +50,74 @@ Never use 'gradle' or 'gradlew' directly. Instead, use the '/build-and-summarize
 ### Main Build Tasks
 ```bash
 # Build release version (primary artifact)
-/build-and-summarize buildRelease
+./gradlew buildRelease
 
 # Build all configurations
-/build-and-summarize assembleAll
+./gradlew assembleAll
 
 # Clean build
-/build-and-summarize clean
+./gradlew clean
 ```
 
 ### Development Builds
 ```bash
 # Debug build with symbols
-/build-and-summarize buildDebug
+./gradlew buildDebug
 
 # ASan build (if available)
-/build-and-summarize buildAsan
+./gradlew buildAsan
 
 # TSan build (if available)
-/build-and-summarize buildTsan
+./gradlew buildTsan
 ```
 
 ### Testing
 ```bash
 # Run specific test configurations
-/build-and-summarize testRelease
-/build-and-summarize testDebug
-/build-and-summarize testAsan
-/build-and-summarize testTsan
+./gradlew testRelease
+./gradlew testDebug
+./gradlew testAsan
+./gradlew testTsan
 
 # Run C++ unit tests only
-/build-and-summarize gtestDebug
-/build-and-summarize gtestRelease
+./gradlew gtestDebug
+./gradlew gtestRelease
 
 # Cross-JDK testing
-JAVA_TEST_HOME=/path/to/test/jdk /build-and-summarize testDebug
+JAVA_TEST_HOME=/path/to/test/jdk ./gradlew testDebug
 ```
 
 ### Build Options
 ```bash
 # Skip native compilation
-/build-and-summarize buildDebug -Pskip-native
+./gradlew buildDebug -Pskip-native
 
 # Skip all tests
-/build-and-summarize buildDebug -Pskip-tests
+./gradlew buildDebug -Pskip-tests
 
 # Skip C++ tests
-/build-and-summarize buildDebug -Pskip-gtest
+./gradlew buildDebug -Pskip-gtest
 
 # Keep JFR recordings after tests
-/build-and-summarize testDebug -PkeepJFRs
+./gradlew testDebug -PkeepJFRs
 
 # Skip debug symbol extraction
-/build-and-summarize buildRelease -Pskip-debug-extraction=true
+./gradlew buildRelease -Pskip-debug-extraction=true
 ```
 
 ### Code Quality
 ```bash
 # Format code
-/build-and-summarize spotlessApply
+./gradlew spotlessApply
 
 # Static analysis
-/build-and-summarize scanBuild
+./gradlew scanBuild
 
 # Run stress tests
-/build-and-summarize :ddprof-stresstest:runStressTests
+./gradlew :ddprof-stresstest:runStressTests
 
 # Run benchmarks
-/build-and-summarize runBenchmarks
+./gradlew runBenchmarks
 ```
 
 ## Architecture
@@ -338,3 +338,39 @@ With separate debug symbol packages for production debugging support.
 
 - Run tests with 'testdebug' gradle task
 - Use at most Java 21 to build and run tests
+
+## Agentic Work
+
+- Never run `./gradlew` directly.
+- Always invoke the wrapper command: `./.claude/commands/build-and-summarize`.
+- Pass through all arguments exactly as you would to `./gradlew`.
+- Examples:
+    - Instead of:
+      ```bash
+      ./gradlew build
+      ```
+      use:
+      ```bash
+      ./.claude/commands/build-and-summarize build
+      ```
+    - Instead of:
+      ```bash
+      ./gradlew :prof-utils:test --tests "UpscaledMethodSampleEventSinkTest"
+      ```
+      use:
+      ```bash
+      ./.claude/commands/build-and-summarize :prof-utils:test --tests "UpscaledMethodSampleEventSinkTest"
+      ```
+
+- This ensures the full build log is captured to a file and only a summary is shown in the main session.
+
+## Ground rules
+- Never replace the code you work on with stubs
+- Never 'fix' the tests by testing constants against constants
+- Never claim success until all affected tests are passing
+- Always provide javadoc for public classes and methods
+- Provide javadoc for non-trivial private and package private code
+- Always provide comprehensive tests for new functionality
+- Always provide tests for bug fixes - test fails before the fix, passes after the fix
+- All code needs to strive to be lean in terms of resources consumption and easy to follow -
+    do not shy away from factoring out self containing code to shorter functions with explicit name

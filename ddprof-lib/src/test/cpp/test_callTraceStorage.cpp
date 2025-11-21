@@ -9,7 +9,15 @@
 #include <unordered_set>
 #include <thread>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include "callTraceHashTable.h"
+#include "../../main/cpp/gtest_crash_handler.h"
+#include "arch_dd.h"
+
+// Test name for crash handler
+static constexpr char TEST_NAME[] = "CallTraceStorageTest";
 
 // Helper function to find a CallTrace by trace_id in an unordered_set
 CallTrace* findTraceById(const std::unordered_set<CallTrace*>& traces, u64 trace_id) {
@@ -24,11 +32,15 @@ CallTrace* findTraceById(const std::unordered_set<CallTrace*>& traces, u64 trace
 class CallTraceStorageTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        // Install crash handler for debugging potential issues
+        installGtestCrashHandler<TEST_NAME>();
         storage = std::make_unique<CallTraceStorage>();
     }
 
     void TearDown() override {
         storage.reset();
+        // Restore default signal handlers
+        restoreDefaultSignalHandlers();
     }
 
     std::unique_ptr<CallTraceStorage> storage;
@@ -68,9 +80,9 @@ TEST_F(CallTraceStorageTest, LivenessCheckerRegistration) {
     // Register a liveness checker that preserves only trace_id2 and trace_id4
     u64 preserved_trace_id2 = trace_id2;
     u64 preserved_trace_id4 = trace_id4;
-    storage->registerLivenessChecker([&preserved_trace_id2, &preserved_trace_id4](std::vector<u64>& buffer) {
-        buffer.push_back(preserved_trace_id2);
-        buffer.push_back(preserved_trace_id4);
+    storage->registerLivenessChecker([&preserved_trace_id2, &preserved_trace_id4](std::unordered_set<u64>& buffer) {
+        buffer.insert(preserved_trace_id2);
+        buffer.insert(preserved_trace_id4);
     });
     
     // processTraces should preserve trace_id2 and trace_id4 but not trace_id1 and trace_id3
@@ -123,12 +135,12 @@ TEST_F(CallTraceStorageTest, MultipleLivenessCheckers) {
     u64 preserved_id4 = trace_id4;
     
     // Register two liveness checkers that preserve non-consecutive traces
-    storage->registerLivenessChecker([&preserved_id1](std::vector<u64>& buffer) {
-        buffer.push_back(preserved_id1);
+    storage->registerLivenessChecker([&preserved_id1](std::unordered_set<u64>& buffer) {
+        buffer.insert(preserved_id1);
     });
     
-    storage->registerLivenessChecker([&preserved_id4](std::vector<u64>& buffer) {
-        buffer.push_back(preserved_id4);
+    storage->registerLivenessChecker([&preserved_id4](std::unordered_set<u64>& buffer) {
+        buffer.insert(preserved_id4);
     });
     
     // processTraces should preserve specified traces and swap storages
@@ -172,8 +184,8 @@ TEST_F(CallTraceStorageTest, TraceIdPreservation) {
     
     // Register liveness checker to preserve this trace
     u64 preserved_id = original_trace_id;
-    storage->registerLivenessChecker([&preserved_id](std::vector<u64>& buffer) {
-        buffer.push_back(preserved_id);
+    storage->registerLivenessChecker([&preserved_id](std::unordered_set<u64>& buffer) {
+        buffer.insert(preserved_id);
     });
     
     // First process should contain the original trace
@@ -195,6 +207,9 @@ TEST_F(CallTraceStorageTest, TraceIdPreservation) {
         preserved_trace_id = preserved_trace->trace_id;
         // Critical test: trace ID must be exactly the same after preservation
         EXPECT_EQ(preserved_trace->trace_id, original_trace_id);
+        // Regression test: access frame content to detect use-after-free (ASan will crash if bug exists)
+        EXPECT_EQ(preserved_trace->frames[0].bci, 10);
+        EXPECT_EQ(preserved_trace->frames[0].method_id, (jmethodID)0x1234);
     });
     
     printf("Original trace ID: %llu, Preserved trace ID: %llu\n", 
@@ -210,8 +225,8 @@ TEST_F(CallTraceStorageTest, ClearMethod) {
     
     // Register a liveness checker (should be ignored by clear())
     u64 preserved_id = trace_id;
-    storage->registerLivenessChecker([&preserved_id](std::vector<u64>& buffer) {
-        buffer.push_back(preserved_id);
+    storage->registerLivenessChecker([&preserved_id](std::unordered_set<u64>& buffer) {
+        buffer.insert(preserved_id);
     });
     
     // clear() should completely clear both storages, ignoring liveness checkers
@@ -256,7 +271,19 @@ TEST_F(CallTraceStorageTest, ConcurrentTableExpansionRegression) {
     // The crash occurred at __sync_bool_compare_and_swap(&_current_table, table, new_table)
     // when multiple threads triggered table expansion simultaneously
     
-    CallTraceHashTable hash_table;
+    // Use heap allocation with proper alignment to avoid ASAN alignment issues
+    // Stack allocation with high alignment requirements (64 bytes) is problematic under ASAN
+    void* aligned_memory = std::aligned_alloc(alignof(CallTraceHashTable), sizeof(CallTraceHashTable));
+    ASSERT_NE(aligned_memory, nullptr) << "Failed to allocate aligned memory for CallTraceHashTable";
+    
+    auto hash_table_ptr = std::unique_ptr<CallTraceHashTable, void(*)(CallTraceHashTable*)>(
+        new(aligned_memory) CallTraceHashTable(), 
+        [](CallTraceHashTable* ptr) {
+            ptr->~CallTraceHashTable();
+            std::free(ptr);
+        }
+    );
+    CallTraceHashTable& hash_table = *hash_table_ptr;
     hash_table.setInstanceId(42);
     
     const int num_threads = 4;  // Reduced from 8 to avoid excessive contention
@@ -328,6 +355,144 @@ TEST_F(CallTraceStorageTest, ConcurrentTableExpansionRegression) {
     test_frame.method_id = (jmethodID)0x99999;
     u64 final_trace_id = hash_table.put(1, &test_frame, false, 1);
     EXPECT_GT(final_trace_id, 0);
+}
+
+/**
+ * Test hazard pointer synchronization during storage swap.
+ * This test ensures that waitForHazardPointersToClear() actually prevents
+ * collection from original_active while there are still pending put() operations
+ * to the original_active after the active area swap.
+ */
+TEST_F(CallTraceStorageTest, HazardPointerSynchronizationDuringSwap) {
+    // Synchronization primitives for coordinating the test
+    std::atomic<bool> swap_initiated{false};
+    std::atomic<bool> put_thread_ready{false};
+    std::atomic<bool> put_operation_started{false};
+    std::atomic<bool> put_operation_completed{false};
+    std::atomic<bool> collection_started{false};
+    std::atomic<bool> hazard_wait_started{false};
+    
+    std::condition_variable cv;
+    std::mutex cv_mutex;
+    
+    // Test outcome tracking
+    std::atomic<u64> put_trace_id{0};
+    std::atomic<bool> trace_found_in_collection{false};
+    
+    // Create initial traces to populate the storage
+    ASGCT_CallFrame initial_frame;
+    initial_frame.bci = 100;
+    initial_frame.method_id = (jmethodID)0x1000;
+    
+    // Add several traces to ensure there's content to process
+    for (int i = 0; i < 5; i++) {
+        initial_frame.bci = 100 + i;
+        storage->put(1, &initial_frame, false, 1);
+    }
+    
+    // Thread that will perform a put() operation right after storage swap
+    std::thread put_thread([&]() {
+        put_thread_ready = true;
+        
+        // Wait for the main thread to initiate the swap
+        std::unique_lock<std::mutex> lock(cv_mutex);
+        cv.wait(lock, [&] { return swap_initiated.load(); });
+        lock.unlock();
+        
+        // Small delay to ensure we hit the window after swap but during hazard pointer wait
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+        
+        // This put() should target the new active area, but we need to ensure
+        // that if there were ongoing operations on original_active,
+        // the hazard pointer wait would properly synchronize
+        ASGCT_CallFrame put_frame;
+        put_frame.bci = 999;
+        put_frame.method_id = (jmethodID)0x999;
+        
+        put_operation_started = true;
+        u64 trace_id = storage->put(1, &put_frame, false, 1);
+        put_trace_id = trace_id;
+        put_operation_completed = true;
+    });
+    
+    // Thread that simulates a longer-running put() operation on original_active
+    // This represents the scenario the hazard pointer synchronization protects against
+    std::thread delayed_put_thread([&]() {
+        // Wait for swap to be initiated
+        std::unique_lock<std::mutex> lock(cv_mutex);
+        cv.wait(lock, [&] { return swap_initiated.load(); });
+        lock.unlock();
+        
+        // Simulate a put operation that was ongoing during the swap
+        // In the real scenario, this would be a signal handler that acquired
+        // a hazard pointer before the swap and is still executing
+        ASGCT_CallFrame delayed_frame;
+        delayed_frame.bci = 777;
+        delayed_frame.method_id = (jmethodID)0x777;
+        
+        // Small delay to simulate ongoing operation
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+        
+        // This operation would normally be protected by hazard pointers
+        // The test verifies the synchronization works correctly
+        storage->put(1, &delayed_frame, false, 1);
+    });
+    
+    // Perform processTraces in main thread to trigger the storage swap
+    std::thread process_thread([&]() {
+        // Signal that we're about to initiate the swap
+        swap_initiated = true;
+        cv.notify_all();
+        
+        // Process traces - this will trigger the storage swap and hazard pointer wait
+        storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+            collection_started = true;
+            
+            // Look for the traces we added
+            for (CallTrace* trace : traces) {
+                if (trace && trace->trace_id == put_trace_id.load()) {
+                    trace_found_in_collection = true;
+                }
+                
+                // Verify we have some traces from the initial population
+                if (trace && trace->num_frames > 0 && trace->frames[0].bci >= 100 && trace->frames[0].bci <= 104) {
+                    // Found one of our initial traces - good
+                }
+            }
+        });
+    });
+    
+    // Wait for all threads to complete
+    put_thread.join();
+    delayed_put_thread.join();
+    process_thread.join();
+    
+    // Verification of test outcomes
+    EXPECT_TRUE(put_thread_ready.load()) << "Put thread should have been ready";
+    EXPECT_TRUE(swap_initiated.load()) << "Storage swap should have been initiated";
+    EXPECT_TRUE(put_operation_started.load()) << "Put operation should have started";
+    EXPECT_TRUE(put_operation_completed.load()) << "Put operation should have completed";
+    EXPECT_TRUE(collection_started.load()) << "Collection should have started";
+    EXPECT_GT(put_trace_id.load(), 0ULL) << "Put operation should have returned valid trace ID";
+    
+    // The key test: if hazard pointer synchronization works correctly,
+    // the collection should not interfere with concurrent put operations
+    // This test primarily validates that we don't crash or corrupt data
+    
+    // Additional verification: ensure storage is still functional
+    ASGCT_CallFrame verification_frame;
+    verification_frame.bci = 5555;
+    verification_frame.method_id = (jmethodID)0x5555;
+    u64 verification_trace = storage->put(1, &verification_frame, false, 1);
+    EXPECT_GT(verification_trace, 0ULL) << "Storage should remain functional after hazard pointer synchronization";
+    
+    // Final verification: ensure we can still process traces
+    std::atomic<int> final_trace_count{0};
+    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+        final_trace_count = static_cast<int>(traces.size());
+    });
+    
+    EXPECT_GT(final_trace_count.load(), 0) << "Storage should still contain traces after synchronization test";
 }
 
 

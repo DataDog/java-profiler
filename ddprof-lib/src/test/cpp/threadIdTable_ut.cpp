@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 #include "threadIdTable.h"
+#include "../../main/cpp/gtest_crash_handler.h"
 #include <thread>
 #include <vector>
 #include <atomic>
@@ -23,14 +24,21 @@
 #include <set>
 #include <unordered_set>
 
+// Test name for crash handler
+static constexpr char THREAD_ID_TABLE_TEST_NAME[] = "ThreadIdTableTest";
+
 class ThreadIdTableTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        // Install crash handler for debugging potential issues
+        installGtestCrashHandler<THREAD_ID_TABLE_TEST_NAME>();
         table = std::make_unique<ThreadIdTable>();
     }
 
     void TearDown() override {
         table.reset();
+        // Restore default signal handlers
+        restoreDefaultSignalHandlers();
     }
 
     std::unique_ptr<ThreadIdTable> table;

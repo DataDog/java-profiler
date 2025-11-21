@@ -81,6 +81,7 @@ private:
     std::atomic<SlotID> _next_index{0};
     std::unique_ptr<FreeListNode[]> _free_list;
 
+    // Cache line aligned to prevent false sharing between shards
     struct alignas(DEFAULT_CACHE_LINE_SIZE) ShardHead { std::atomic<int> head{-1}; };
     static ShardHead _free_heads[kShardCount];         // one cache-line each
 

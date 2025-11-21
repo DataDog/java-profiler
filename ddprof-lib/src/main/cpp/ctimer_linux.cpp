@@ -16,6 +16,7 @@
 
 #ifdef __linux__
 
+#include "criticalSection.h"
 #include "ctimer.h"
 #include "debugSupport.h"
 #include "libraries.h"
@@ -82,7 +83,7 @@ long CTimer::_interval;
 int CTimer::_max_timers = 0;
 int *CTimer::_timers = NULL;
 CStack CTimer::_cstack;
-std::atomic<bool> CTimer::_enabled{false};
+bool CTimer::_enabled = false;
 int CTimer::_signal;
 
 int CTimer::registerThread(int tid) {
@@ -197,14 +198,19 @@ void CTimer::stop() {
 }
 
 void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  // Atomically try to enter critical section - prevents all reentrancy races
+  CriticalSection cs;
+  if (!cs.entered()) {
+    return;  // Another critical section is active, defer profiling
+  }
   // Save the current errno value
   int saved_errno = errno;
   // we want to ensure memory order because of the possibility the instance gets
   // cleared
-  if (!_enabled.load(std::memory_order_acquire))
+  if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE))
     return;
   int tid = 0;
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::currentSignalSafe();
   assert(current == nullptr || !current->isDeepCrashHandler());
   if (current != NULL) {
     current->noteCPUSample(Profiler::instance()->recordingEpoch());
