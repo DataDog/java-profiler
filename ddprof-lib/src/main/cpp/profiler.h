@@ -104,6 +104,7 @@ private:
   SpinLock _locks[CONCURRENCY_LEVEL];
   CallTraceBuffer *_calltrace_buffer[CONCURRENCY_LEVEL];
   int _max_stack_depth;
+  StackWalkFeatures _features;
   int _safe_mode;
   CStack _cstack;
 

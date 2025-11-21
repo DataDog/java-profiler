@@ -26,7 +26,7 @@
 #include "otel_process_ctx.h"
 #include "profiler.h"
 #include "thread.h"
-#include "tsc.h"
+#include "tsc_dd.h"
 #include "vmEntry.h"
 #include "vmStructs_dd.h"
 #include "wallClock.h"
