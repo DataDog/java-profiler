@@ -96,6 +96,8 @@ Error Arguments::parse(const char *args) {
   if (args == NULL) {
     return Error::OK;
   }
+  // delegate to the upstream args parser first
+  ::Arguments::parse(args);
 
   size_t len = strlen(args);
   if (_buf != NULL) {
@@ -241,21 +243,6 @@ Error Arguments::parse(const char *args) {
       CASE("safemode")
       _safe_mode = value == NULL ? INT_MAX : (int)strtol(value, NULL, 0);
 
-      CASE("cstack")
-      if (value != NULL) {
-        if (strcmp(value, "fp") == 0) {
-          _cstack = CSTACK_FP;
-        } else if (strcmp(value, "dwarf") == 0) {
-          _cstack = CSTACK_DWARF;
-        } else if (strcmp(value, "lbr") == 0) {
-          _cstack = CSTACK_LBR;
-        } else if (strcmp(value, "vm") == 0) {
-          _cstack = CSTACK_VM;
-        } else {
-          _cstack = CSTACK_NO;
-        }
-      }
-
       CASE("file")
       if (value == NULL || value[0] == 0) {
         msg = "file must not be empty";
@@ -298,17 +285,17 @@ Error Arguments::parse(const char *args) {
           _lightweight = false;
         }
       }
-            CASE("wallsampler")
-                if (value != NULL) {
-                    switch (value[0]) {
-                        case 'j':
-                            _wallclock_sampler = JVMTI;
-                            break;
-                        case 'a':
-                        default:
-                            _wallclock_sampler = ASGCT;
-                    }
-                }
+      CASE("wallsampler")
+          if (value != NULL) {
+              switch (value[0]) {
+                  case 'j':
+                      _wallclock_sampler = JVMTI;
+                      break;
+                  case 'a':
+                  default:
+                      _wallclock_sampler = ASGCT;
+              }
+          }
 
       CASE("allkernel")
       _ring = RING_KERNEL;
