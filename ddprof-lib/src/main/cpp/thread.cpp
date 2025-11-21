@@ -1,14 +1,19 @@
 #include "thread.h"
 #include "os_dd.h"
 #include "profiler.h"
+#include "common.h"
+#include "vmStructs.h"
 #include <time.h>
 
-static SigAction old_handler;
+// TLS priming signal number
+static int g_tls_prime_signal = -1;
 
 pthread_key_t ProfiledThread::_tls_key;
 int ProfiledThread::_buffer_size = 0;
-std::atomic<int> ProfiledThread::_running_buffer_pos(0);
-std::vector<ProfiledThread *> ProfiledThread::_buffer;
+volatile int ProfiledThread::_running_buffer_pos = 0;
+ProfiledThread** ProfiledThread::_buffer = nullptr;
+volatile int ProfiledThread::_free_stack_top = -1;
+int* ProfiledThread::_free_slots = nullptr;
 
 void ProfiledThread::initTLSKey() {
   static pthread_once_t tls_initialized = PTHREAD_ONCE_INIT;
@@ -20,24 +25,38 @@ void ProfiledThread::doInitTLSKey() { pthread_key_create(&_tls_key, freeKey); }
 inline void ProfiledThread::freeKey(void *key) {
   ProfiledThread *tls_ref = (ProfiledThread *)(key);
   if (tls_ref != NULL) {
-    delete tls_ref;
+    // Check if this is a buffer-allocated thread (has valid buffer_pos)
+    bool is_buffer_allocated = (tls_ref->_buffer_pos >= 0);
+
+    if (is_buffer_allocated) {
+      // Buffer-allocated: reset and return to buffer for reuse
+      tls_ref->releaseFromBuffer();
+    } else {
+      // Non-buffer (JVMTI-allocated): delete the instance
+      delete tls_ref;
+    }
   }
 }
 
 void ProfiledThread::initCurrentThread() {
+  // JVMTI callback path - does NOT use buffer
+  // Allocate dedicated ProfiledThread for Java threads (not from buffer)
+  // This MUST happen here to prevent lazy allocation in signal handler
   initTLSKey();
 
-  ProfiledThread *tls = (ProfiledThread *)pthread_getspecific(_tls_key);
-  if (tls == NULL) {
-    int tid = OS::threadId();
-    tls = ProfiledThread::forTid(tid);
-    pthread_setspecific(_tls_key, (const void *)tls);
+  if (pthread_getspecific(_tls_key) != NULL) {
+    return; // Already initialized
   }
+
+  int tid = OS::threadId();
+  ProfiledThread *tls = ProfiledThread::forTid(tid);
+  pthread_setspecific(_tls_key, (const void *)tls);
 }
 
 void ProfiledThread::initExistingThreads() {
-  static pthread_once_t initialized = PTHREAD_ONCE_INIT;
-  pthread_once(&initialized, doInitExistingThreads);
+  if (ddprof::OS::isTlsPrimingAvailable()) {
+    doInitExistingThreads();
+  }
 }
 
 // The lifetime of this vector requires stronger guarantees.
@@ -48,105 +67,157 @@ __attribute__((no_sanitize("thread"))) void
 ProfiledThread::initCurrentThreadWithBuffer() {
   initTLSKey();
 
+  // Early check - if already initialized, return immediately
   if (pthread_getspecific(_tls_key) != NULL) {
-    // if there is already a TLS value associated just bail out
     return;
   }
 
   ProfiledThread *tls_ref = NULL;
-  int pos = _running_buffer_pos++;
-  if (pos < _buffer_size) {
-    tls_ref = _buffer[pos];
-    tls_ref->_tid = OS::threadId();
+  int pos = -1;
+
+  // First try to reuse a freed slot
+  pos = popFreeSlot();
+
+  if (pos == -1) {
+    // No free slots available, allocate a new one
+    // Use atomic fetch-and-add to safely increment position
+    pos = __atomic_fetch_add(&_running_buffer_pos, 1, __ATOMIC_RELAXED);
   }
+
+  if (pos < _buffer_size && _buffer != nullptr) {
+    tls_ref = _buffer[pos];
+    if (tls_ref != nullptr) {
+      tls_ref->_tid = OS::threadId();
+    }
+  }
+
   if (tls_ref != NULL) {
-    pthread_setspecific(_tls_key, (const void *)tls_ref);
+    // Race condition check: another thread might have set TLS between our first check and here
+    // pthread_setspecific is safe to call multiple times, but we want to avoid consuming buffer slots
+    if (pthread_getspecific(_tls_key) == NULL) {
+      pthread_setspecific(_tls_key, (const void *)tls_ref);
+    }
+    // If someone else already set it, we "waste" this buffer slot, but that's acceptable
+    // since concurrent priming should be rare and buffer is sized generously
   } else {
-    const char *msg = "ProfiledThread TLS buffer too small.";
-    Profiler::instance()->writeLog(LOG_WARN, msg, strlen(msg));
+    TEST_LOG("ProfiledThread TLS buffer too small.");
   }
 }
 
-void *ProfiledThread::delayedUninstallUSR1(void *unused) {
-  initTLSKey();
+// Fork handler to reset TLS priming state in child process
+static void resetTlsPrimingStateInChild() {
+  // After fork(), reset signal number to prevent cleanup attempts
+  g_tls_prime_signal = -1;
 
-  int res = 0;
-  struct timespec ts;
-  ts.tv_sec = 0;
-  ts.tv_nsec = 1000000;
-  // wait for the TLS to be set
-  while ((!res || errno == EINTR) && pthread_getspecific(_tls_key) == NULL) {
-    res = nanosleep(&ts, &ts);
+  // Note: The watcher state is reset by os_linux_dd.cpp fork handler
+  // This just ensures we don't try to uninstall signals or cleanup resources
+}
+
+// Register fork handler on first initialization
+static void ensureTlsForkHandlerRegistered() {
+  static bool registered = false;
+  if (!registered) {
+    pthread_atfork(nullptr, nullptr, resetTlsPrimingStateInChild);
+    registered = true;
   }
-
-  /*
-   Wait 5 secs to finish other threads initialization - should be more than
-   enough. This is the best we can do - we can not use any synchronization
-   between the signal handler running in threads to eg. have a countdown latch
-   and uninstall only when all threads completed the init. In addition to that
-   the threads from the initial list can be terminated by the time they should
-   process the signal and we would need to synchronize with the thread-end event
-   captured by JVMTI, otherwise we might be waiting forever.
-
-   A fixed timeout approach sounds like an acceptable compromise - in the worst
-   case there will be a few outliers without the TLS instance associated with
-   them and they will have to take the slow path to resolve the thread id and
-   will not be able to use anything depending on data stored in that TLS
-   instance.
-
-   In real life, though, the 5 secs timeout should be more than enough.
-  */
-  ts.tv_sec = 5;
-  ts.tv_nsec = 0;
-  do {
-    res = nanosleep(&ts, &ts);
-  } while (res == -1 && errno == EINTR);
-  // now remove the TLS init signal handler
-  OS::installSignalHandler(SIGUSR1, old_handler);
-  return NULL;
 }
 
 void ProfiledThread::doInitExistingThreads() {
-  pthread_t thrd;
-  if (pthread_create(&thrd, NULL, delayedUninstallUSR1, NULL) == 0) {
-    std::unique_ptr<ThreadList> tlist{OS::listThreads()};
-    /*
-    Here is a bit of trickery - we need the TLS variable initialized for all
-    existing threads but we can not do this from outside. Therefore, we need to
-    install signal handler to perform the initialization. However, the signal
-    handler can not allocate - in order to work around that limitation we
-    pre-allocate an array of ProfiledThread instances for all existing threads.
-    This array will be used by the threads when handling the signal to pick the
-    pre-allocated instance which can be stored in the TLS slot.
-
-    Any newly started threads will be handled by the JVMTI callback so we need
-    to worry only about the existing threads here.
-    */
-    prepareBuffer(tlist->count());
-
-    old_handler =
-        OS::installSignalHandler(SIGUSR1, ProfiledThread::signalHandler);
-    int cntr = 0;
-    ThreadList *thread_list = OS::listThreads();
-    while (thread_list->hasNext()) { 
-      int tid = thread_list->next(); 
-      if (tlist->count() <= cntr++) {
-        break;
-      }
-      OS::sendSignalToThread(tid, SIGUSR1);
-    }
-    pthread_detach(thrd);
+  static bool initialized = false;
+  if (initialized) {
+    return; // Avoid double initialization
   }
+
+  // Register fork handler to prevent issues in forked child processes
+  ensureTlsForkHandlerRegistered();
+
+  // Install TLS priming signal handler
+  g_tls_prime_signal = ddprof::OS::installTlsPrimeSignalHandler(simpleTlsSignalHandler, 4);
+  if (g_tls_prime_signal <= 0) {
+    TEST_LOG("Failed to install TLS priming signal handler");
+    return;
+  }
+
+  TEST_LOG("Successfully installed TLS priming handler on RT signal %d", g_tls_prime_signal);
+
+  // Use a modest buffer size since we're only handling new threads via watcher
+  // 256 should be more than enough for concurrent new thread creation
+  prepareBuffer(256);
+
+  // Start thread directory watcher to prime new threads (no mass-priming of existing threads)
+  bool watcher_started = ddprof::OS::startThreadDirectoryWatcher(
+    [](int tid) {
+      // Prime new thread with TLS signal
+      ddprof::OS::signalThread(tid, g_tls_prime_signal);
+    },
+    [](int tid) {
+      // No-op for dead threads - cleanup handled elsewhere
+    }
+  );
+
+  if (!watcher_started) {
+    TEST_LOG("Failed to start thread directory watcher for TLS priming");
+  } else {
+    TEST_LOG("Started thread directory watcher for TLS priming");
+  }
+
+  initialized = true;
+}
+
+void ProfiledThread::cleanupTlsPriming() {
+  if (!ddprof::OS::isTlsPrimingAvailable()) {
+    return;
+  }
+
+  // Stop the thread directory watcher
+  ddprof::OS::stopThreadDirectoryWatcher();
+  TEST_LOG("Stopped thread directory watcher");
+
+  // Uninstall the TLS priming signal handler
+  if (g_tls_prime_signal > 0) {
+    ddprof::OS::uninstallTlsPrimeSignalHandler(g_tls_prime_signal);
+    TEST_LOG("Uninstalled TLS priming signal handler (signal %d)", g_tls_prime_signal);
+    g_tls_prime_signal = -1;
+  }
+
+  // Note: We don't clean up the buffer here because threads may still be using it
+  // The buffer will be cleaned up when the process exits
 }
 
 void ProfiledThread::prepareBuffer(int size) {
-  Log::debug("Initializing ProfiledThread TLS buffer to %d slots", size);
+  TEST_LOG("Initializing ProfiledThread TLS buffer to %d slots", size);
 
   _running_buffer_pos = 0;
+
+  // Clean up existing buffer if any
+  if (_buffer != nullptr) {
+    for (int i = 0; i < _buffer_size; i++) {
+      if (_buffer[i] != nullptr) {
+        delete _buffer[i];
+      }
+    }
+    free(_buffer);
+    _buffer = nullptr;
+  }
+
+  if (_free_slots != nullptr) {
+    free(_free_slots);
+    _free_slots = nullptr;
+  }
+
   _buffer_size = size;
-  _buffer.reserve(size);
+  _running_buffer_pos = 0;
+  _free_stack_top = -1;
+
+  // Allocate plain array for ProfiledThread pointers
+  _buffer = (ProfiledThread**)calloc(size, sizeof(ProfiledThread*));
+
+  // Allocate array for free slot stack
+  _free_slots = (int*)malloc(size * sizeof(int));
+
+  // Initialize buffer with ProfiledThread objects
   for (int i = 0; i < size; i++) {
-    _buffer.push_back(ProfiledThread::inBuffer(i));
+    _buffer[i] = ProfiledThread::inBuffer(i);
   }
 }
 
@@ -157,16 +228,42 @@ void ProfiledThread::release() {
   }
   ProfiledThread *tls = (ProfiledThread *)pthread_getspecific(key);
   if (tls != NULL) {
-    tls->releaseFromBuffer();
-    // Clear TLS pointer BEFORE deleting to prevent use-after-free if signal fires during delete
     pthread_setspecific(key, NULL);
-    delete tls;
+
+    // Check if this is a buffer-allocated thread (has valid buffer_pos)
+    bool is_buffer_allocated = (tls->_buffer_pos >= 0);
+
+    tls->releaseFromBuffer();
+
+    // Only delete non-buffer threads (e.g., created via forTid())
+    if (!is_buffer_allocated) {
+      pthread_setspecific(key, NULL);
+      delete tls;
+    }
+    // Buffer-allocated threads are kept for reuse and will be deleted in cleanupBuffer()
   }
 }
 
 void ProfiledThread::releaseFromBuffer() {
-  if (_buffer_pos >= 0) {
-    _buffer[_buffer_pos] = NULL;
+  if (_buffer_pos >= 0 && _buffer != nullptr && _buffer_pos < _buffer_size) {
+    // Reset the thread object for reuse (clear thread-specific data)
+    _tid = 0;
+    _pc = 0;
+    _span_id = 0;
+    _crash_depth = 0;
+    _cpu_epoch = 0;
+    _wall_epoch = 0;
+    _call_trace_id = 0;
+    _recording_epoch = 0;
+    _filter_slot_id = -1;
+    _unwind_failures.clear();
+
+    // Put this ProfiledThread object back in the buffer for reuse
+    _buffer[_buffer_pos] = this;
+
+    // Push this slot back to the free list for reuse
+    pushFreeSlot(_buffer_pos);
+
     _buffer_pos = -1;
   }
 }
@@ -180,13 +277,87 @@ int ProfiledThread::currentTid() {
 }
 
 ProfiledThread *ProfiledThread::current() {
-  pthread_key_t key = _tls_key;
-  return key != 0 ? (ProfiledThread *)pthread_getspecific(key) : NULL;
+  initTLSKey();
+
+  ProfiledThread *tls = (ProfiledThread *)pthread_getspecific(_tls_key);
+  if (tls == NULL) {
+    // Lazy allocation - safe since current() is never called from signal handlers
+    int tid = OS::threadId();
+    tls = ProfiledThread::forTid(tid);
+    pthread_setspecific(_tls_key, (const void *)tls);
+  }
+  return tls;
 }
 
-void ProfiledThread::signalHandler(int signo, siginfo_t *siginfo,
-                                   void *ucontext) {
-  if (signo == SIGUSR1) {
+ProfiledThread *ProfiledThread::currentSignalSafe() {
+  // Signal-safe: never allocate, just return existing TLS or null
+  pthread_key_t key = _tls_key;
+  return key != 0 ? (ProfiledThread *)pthread_getspecific(key) : nullptr;
+}
+
+bool ProfiledThread::isTlsPrimingAvailable() {
+  return ddprof::OS::isTlsPrimingAvailable() && g_tls_prime_signal > 0;
+}
+
+bool ProfiledThread::wasTlsPrimingAttempted() {
+  return ddprof::OS::isTlsPrimingAvailable() && g_tls_prime_signal > 0;
+}
+
+int ProfiledThread::popFreeSlot() {
+  int current_top;
+  int new_top;
+
+  do {
+    current_top = __atomic_load_n(&_free_stack_top, __ATOMIC_ACQUIRE);
+    if (current_top == -1) {
+      return -1; // Stack is empty
+    }
+    new_top = _free_slots[current_top];
+  } while (!__atomic_compare_exchange_n(&_free_stack_top, &current_top, new_top,
+                                         true, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
+
+  return current_top;
+}
+
+void ProfiledThread::pushFreeSlot(int slot_index) {
+  if (slot_index < 0 || slot_index >= _buffer_size || _free_slots == nullptr) {
+    return; // Invalid slot index
+  }
+
+  int current_top;
+  do {
+    current_top = __atomic_load_n(&_free_stack_top, __ATOMIC_ACQUIRE);
+    _free_slots[slot_index] = current_top;
+  } while (!__atomic_compare_exchange_n(&_free_stack_top, &current_top, slot_index,
+                                         true, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
+}
+
+void ProfiledThread::cleanupBuffer() {
+  if (_buffer != nullptr) {
+    for (int i = 0; i < _buffer_size; i++) {
+      if (_buffer[i] != nullptr) {
+        delete _buffer[i];
+        _buffer[i] = nullptr;
+      }
+    }
+    free(_buffer);
+    _buffer = nullptr;
+  }
+
+  if (_free_slots != nullptr) {
+    free(_free_slots);
+    _free_slots = nullptr;
+  }
+
+  _buffer_size = 0;
+  _running_buffer_pos = 0;
+  _free_stack_top = -1;
+}
+
+void ProfiledThread::simpleTlsSignalHandler(int signo) {
+  // Only prime threads that are not Java threads
+  // Java threads are handled by JVMTI ThreadStart events
+  if (VMThread::current() == nullptr) {
     initCurrentThreadWithBuffer();
   }
 }
