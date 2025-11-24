@@ -32,7 +32,6 @@ Context& Contexts::initializeContextTls() {
 Context& Contexts::get() {
   ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
   if (thrd == nullptr || !thrd->isContextTlsInitialized()) {
-    TEST_LOG("Empty context!");
     return DD_EMPTY_CONTEXT;
   }
   return context_tls_v1;

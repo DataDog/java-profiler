@@ -1299,10 +1299,9 @@ void Recording::writeContext(Buffer *buf, Context &context) {
       spanId = 0;
       rootSpanId = 0;
     }
-
-    buf->putVar64(spanId);
-    buf->putVar64(rootSpanId);
   }
+  buf->putVar64(spanId);
+  buf->putVar64(rootSpanId);
 
   for (size_t i = 0; i < Profiler::instance()->numContextAttributes(); i++) {
     Tag tag = context.get_tag(i);

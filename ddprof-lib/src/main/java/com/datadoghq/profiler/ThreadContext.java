@@ -83,13 +83,16 @@ public final class ThreadContext {
         if (offset >= MAX_CUSTOM_SLOTS) {
             throw new IllegalArgumentException("Invalid offset: " + offset + " (max " +  MAX_CUSTOM_SLOTS + ")");
         }
+        // JNI path uses array indexing (offset is tag index)
+        // Java path uses byte buffer (offset needs to be multiplied by 4 for byte positioning)
         return useJNI ? setContextSlot0(offset, value) : setContextSlotJava(offset, value);
     }
 
     public void copyCustoms(int[] value) {
         int len = Math.min(value.length, MAX_CUSTOM_SLOTS);
         for  (int i = 0; i < len; i++) {
-            value[i] = buffer.getInt(CUSTOM_TAGS_OFFSET + i);
+            // custom tags are spaced by 4 bytes (32 bits)
+            value[i] = buffer.getInt(CUSTOM_TAGS_OFFSET + i * 4);
         }
     }
 
