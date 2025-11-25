@@ -25,7 +25,8 @@ DLLEXPORT thread_local Context context_tls_v1;
 Context& Contexts::initializeContextTls() {
   // ProfiledThread::current() will never return nullptr
   Context& ctx = context_tls_v1;
-  ProfiledThread::current()->markContextTlsInitialized();
+  // Store pointer for signal-safe access
+  ProfiledThread::current()->markContextTlsInitialized(&ctx);
   return ctx;
 }
 
@@ -34,5 +35,7 @@ Context& Contexts::get() {
   if (thrd == nullptr || !thrd->isContextTlsInitialized()) {
     return DD_EMPTY_CONTEXT;
   }
-  return context_tls_v1;
+  // Return via stored pointer - never access context_tls_v1 from signal handler
+  // This avoids triggering TLS lazy initialization which can deadlock in malloc
+  return *thrd->getContextTlsPtr();
 }

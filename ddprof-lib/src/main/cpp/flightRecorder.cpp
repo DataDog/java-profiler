@@ -1285,10 +1285,8 @@ void Recording::writeContext(Buffer *buf, Context &context) {
   u64 rootSpanId = 0;
   u64 stored = context.checksum;
   if (stored) {
-    // Read the data with acquire semantics to synchronize with Java's release stores
     spanId = context.spanId;
     rootSpanId = context.rootSpanId;
-
 
     u64 swappedRootSpanId = ((rootSpanId & 0xFFFFFFFFULL) << 32) | (rootSpanId >> 32);
     u64 computed = (spanId * KNUTH_MULTIPLICATIVE_CONSTANT) ^ (swappedRootSpanId * KNUTH_MULTIPLICATIVE_CONSTANT);
