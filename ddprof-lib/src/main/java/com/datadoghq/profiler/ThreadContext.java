@@ -98,15 +98,15 @@ public final class ThreadContext {
 
     private long putContextJava(long spanId, long rootSpanId) {
         long checksum = computeContextChecksum(spanId, rootSpanId);
-        BUFFER_WRITER.writeLong(buffer, CHECKSUM_OFFSET, 0); // mark in progress
-        BUFFER_WRITER.writeLong(buffer, SPAN_ID_OFFSET, spanId);
-        BUFFER_WRITER.writeLong(buffer, ROOT_SPAN_ID_OFFSET, rootSpanId);
+        BUFFER_WRITER.writeOrderedLong(buffer, CHECKSUM_OFFSET, 0); // mark in progress
+        BUFFER_WRITER.writeOrderedLong(buffer, SPAN_ID_OFFSET, spanId);
+        BUFFER_WRITER.writeOrderedLong(buffer, ROOT_SPAN_ID_OFFSET, rootSpanId);
         BUFFER_WRITER.writeVolatileLong(buffer, CHECKSUM_OFFSET, checksum);
         return checksum;
     }
 
     private long setContextSlotJava(int offset, int value) {
-        BUFFER_WRITER.writeInt(buffer, CUSTOM_TAGS_OFFSET + offset, value);
+        BUFFER_WRITER.writeOrderedInt(buffer, CUSTOM_TAGS_OFFSET + offset, value);
         return (long) value * offset;
     }
 

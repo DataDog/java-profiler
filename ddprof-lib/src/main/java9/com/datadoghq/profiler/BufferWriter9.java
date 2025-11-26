@@ -23,27 +23,29 @@ public final class BufferWriter9 implements BufferWriter.Impl {
     }
 
     @Override
-    public long writeLong(ByteBuffer buffer, int offset, long value) {
-        // setOpaque provides ordered write semantics without a memory fence
-        LONG_VIEW_VH.setOpaque(buffer, offset, value);
-        return 1;
+    public long writeOrderedLong(ByteBuffer buffer, int offset, long value) {
+        // setRelease provides ordered write semantics (matches Unsafe.putOrderedLong)
+        LONG_VIEW_VH.setRelease(buffer, offset, value);
+        return (long) LONG_VIEW_VH.get(buffer, offset);
     }
 
     @Override
-    public long writeVolatileLong(ByteBuffer buffer, int offset, long value) {
-        // properly release the write
-        LONG_VIEW_VH.setRelease(buffer, offset, value);
-        return 2;
+    public long writeAndReleaseLong(ByteBuffer buffer, int offset, long value) {
+        // setVolatile provides full volatile semantics (matches Unsafe.putLongVolatile)
+        LONG_VIEW_VH.setVolatile(buffer, offset, value);
+        return (long) LONG_VIEW_VH.get(buffer, offset);
     }
 
     @Override
     public void writeInt(ByteBuffer buffer, int offset, int value) {
-        INT_VIEW_VH.setOpaque(buffer, offset, value);
+        // setRelease provides ordered write semantics (matches Unsafe.putOrderedInt)
+        INT_VIEW_VH.setRelease(buffer, offset, value);
     }
 
     @Override
-    public void writeVolatileInt(ByteBuffer buffer, int offset, int value) {
-        LONG_VIEW_VH.setRelease(buffer, offset, value);
+    public void writeAndReleaseInt(ByteBuffer buffer, int offset, int value) {
+        // setVolatile provides full volatile semantics (matches Unsafe.putIntVolatile)
+        INT_VIEW_VH.setVolatile(buffer, offset, value);
     }
 
     @Override

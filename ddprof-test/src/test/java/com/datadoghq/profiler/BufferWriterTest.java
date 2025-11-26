@@ -33,24 +33,27 @@ import static org.junit.jupiter.api.Assertions.*;
  * <p>This test validates:
  * <ul>
  *   <li>Correct implementation selection based on Java version</li>
- *   <li>Basic write and read operations</li>
- *   <li>Volatile (release) semantics ensuring visibility across threads</li>
+ *   <li>Basic write and read operations (ordered and volatile semantics)</li>
+ *   <li>Release (ordered) semantics for single-threaded signal handler safety</li>
+ *   <li>Volatile (full barrier) semantics ensuring visibility across threads</li>
+ *   <li>Return value validation</li>
+ *   <li>Int and long write operations</li>
  *   <li>Various offsets and buffer positions</li>
  *   <li>Edge cases and boundary conditions</li>
  * </ul>
  */
 public class BufferWriterTest {
 
-    private BufferWriter volatileWrite;
+    private BufferWriter bufferWriter;
 
     @BeforeEach
     public void setUp() {
-        volatileWrite = new BufferWriter();
+        bufferWriter = new BufferWriter();
     }
 
     /**
      * Helper method to create a direct ByteBuffer with native byte order.
-     * VolatileWrite implementations use native byte order, so tests must read in the same order.
+     * BufferWriter implementations use native byte order, so tests must read in the same order.
      */
     private ByteBuffer createBuffer(int capacity) {
         return ByteBuffer.allocateDirect(capacity).order(ByteOrder.nativeOrder());
@@ -61,33 +64,77 @@ public class BufferWriterTest {
      */
     @Test
     public void testCorrectImplementationLoaded() {
-        assertNotNull(volatileWrite, "VolatileWrite instance should not be null");
+        assertNotNull(bufferWriter, "BufferWriter instance should not be null");
 
         // Verify implementation can be used without throwing exceptions
         ByteBuffer buffer = createBuffer(16);
-        assertDoesNotThrow(() -> volatileWrite.writeLong(buffer, 0, 42L));
+        assertDoesNotThrow(() -> bufferWriter.writeOrderedLong(buffer, 0, 42L));
+        assertDoesNotThrow(() -> bufferWriter.writeVolatileLong(buffer, 8, 99L));
     }
 
     /**
-     * Tests basic write and read functionality at offset 0.
+     * Tests basic ordered long write and read functionality at offset 0.
      */
     @Test
-    public void testWriteAndReadAtOffsetZero() {
+    public void testWriteOrderedLongAtOffsetZero() {
         ByteBuffer buffer = createBuffer(16);
         long expectedValue = 0x123456789ABCDEF0L;
 
-        volatileWrite.writeLong(buffer, 0, expectedValue);
+        long returnedValue = bufferWriter.writeOrderedLong(buffer, 0, expectedValue);
         long actualValue = buffer.getLong(0);
 
-        assertEquals(expectedValue, actualValue,
-                "Written value should match read value");
+        assertEquals(expectedValue, returnedValue, "Return value should match written value");
+        assertEquals(expectedValue, actualValue, "Buffer value should match written value");
     }
 
     /**
-     * Tests write operations at various offsets within the buffer.
+     * Tests basic volatile long write and read functionality at offset 0.
      */
     @Test
-    public void testWriteAtVariousOffsets() {
+    public void testWriteVolatileLongAtOffsetZero() {
+        ByteBuffer buffer = createBuffer(16);
+        long expectedValue = 0xFEDCBA9876543210L;
+
+        long returnedValue = bufferWriter.writeVolatileLong(buffer, 0, expectedValue);
+        long actualValue = buffer.getLong(0);
+
+        assertEquals(expectedValue, returnedValue, "Return value should match written value");
+        assertEquals(expectedValue, actualValue, "Buffer value should match written value");
+    }
+
+    /**
+     * Tests basic ordered int write and read functionality.
+     */
+    @Test
+    public void testWriteOrderedInt() {
+        ByteBuffer buffer = createBuffer(16);
+        int expectedValue = 0x12345678;
+
+        bufferWriter.writeOrderedInt(buffer, 0, expectedValue);
+        int actualValue = buffer.getInt(0);
+
+        assertEquals(expectedValue, actualValue, "Buffer value should match written int value");
+    }
+
+    /**
+     * Tests basic volatile int write and read functionality.
+     */
+    @Test
+    public void testWriteVolatileInt() {
+        ByteBuffer buffer = createBuffer(16);
+        int expectedValue = 0xABCDEF01;
+
+        bufferWriter.writeVolatileInt(buffer, 0, expectedValue);
+        int actualValue = buffer.getInt(0);
+
+        assertEquals(expectedValue, actualValue, "Buffer value should match written int value");
+    }
+
+    /**
+     * Tests ordered long write operations at various offsets within the buffer.
+     */
+    @Test
+    public void testWriteOrderedLongAtVariousOffsets() {
         ByteBuffer buffer = createBuffer(64);
 
         // Test at different 8-byte aligned offsets
@@ -104,13 +151,46 @@ public class BufferWriterTest {
         };
 
         for (int i = 0; i < offsets.length; i++) {
-            volatileWrite.writeLong(buffer, offsets[i], expectedValues[i]);
+            long returnedValue = bufferWriter.writeOrderedLong(buffer, offsets[i], expectedValues[i]);
+            assertEquals(expectedValues[i], returnedValue,
+                String.format("Return value at offset %d should match", offsets[i]));
         }
 
         for (int i = 0; i < offsets.length; i++) {
             long actualValue = buffer.getLong(offsets[i]);
             assertEquals(expectedValues[i], actualValue,
-                    String.format("Value at offset %d should match", offsets[i]));
+                    String.format("Buffer value at offset %d should match", offsets[i]));
+        }
+    }
+
+    /**
+     * Tests int write operations at various offsets within the buffer.
+     */
+    @Test
+    public void testWriteIntAtVariousOffsets() {
+        ByteBuffer buffer = createBuffer(64);
+
+        // Test at different 4-byte aligned offsets
+        int[] offsets = {0, 4, 8, 12, 16, 20, 24, 28};
+        int[] expectedValues = {
+                0x11111111,
+                0x22222222,
+                0x33333333,
+                0x44444444,
+                0x55555555,
+                0x66666666,
+                0x77777777,
+                0x88888888
+        };
+
+        for (int i = 0; i < offsets.length; i++) {
+            bufferWriter.writeOrderedInt(buffer, offsets[i], expectedValues[i]);
+        }
+
+        for (int i = 0; i < offsets.length; i++) {
+            int actualValue = buffer.getInt(offsets[i]);
+            assertEquals(expectedValues[i], actualValue,
+                    String.format("Int value at offset %d should match", offsets[i]));
         }
     }
 
@@ -118,7 +198,7 @@ public class BufferWriterTest {
      * Tests writing special long values (min, max, zero, negative).
      */
     @Test
-    public void testSpecialValues() {
+    public void testSpecialLongValues() {
         ByteBuffer buffer = createBuffer(40);
         long[] specialValues = {
                 0L,                  // Zero
@@ -130,10 +210,36 @@ public class BufferWriterTest {
 
         for (int i = 0; i < specialValues.length; i++) {
             int offset = i * 8;
-            volatileWrite.writeLong(buffer, offset, specialValues[i]);
+            long returnedValue = bufferWriter.writeOrderedLong(buffer, offset, specialValues[i]);
             long actualValue = buffer.getLong(offset);
+            assertEquals(specialValues[i], returnedValue,
+                    String.format("Return value 0x%X should match written value", specialValues[i]));
             assertEquals(specialValues[i], actualValue,
                     String.format("Special value 0x%X should be written correctly", specialValues[i]));
+        }
+    }
+
+    /**
+     * Tests writing special int values (min, max, zero, negative).
+     */
+    @Test
+    public void testSpecialIntValues() {
+        ByteBuffer buffer = createBuffer(24);
+        int[] specialValues = {
+                0,                  // Zero
+                Integer.MIN_VALUE,  // Minimum int
+                Integer.MAX_VALUE,  // Maximum int
+                -1,                 // All bits set
+                0xDEADBEEF,        // Arbitrary pattern
+                0x12345678         // Another pattern
+        };
+
+        for (int i = 0; i < specialValues.length; i++) {
+            int offset = i * 4;
+            bufferWriter.writeOrderedInt(buffer, offset, specialValues[i]);
+            int actualValue = buffer.getInt(offset);
+            assertEquals(specialValues[i], actualValue,
+                    String.format("Special int value 0x%X should be written correctly", specialValues[i]));
         }
     }
 
@@ -146,13 +252,13 @@ public class BufferWriterTest {
         int offset = 0;
 
         // Write multiple times to the same offset
-        volatileWrite.writeLong(buffer, offset, 100L);
+        bufferWriter.writeOrderedLong(buffer, offset, 100L);
         assertEquals(100L, buffer.getLong(offset));
 
-        volatileWrite.writeLong(buffer, offset, 200L);
+        bufferWriter.writeOrderedLong(buffer, offset, 200L);
         assertEquals(200L, buffer.getLong(offset));
 
-        volatileWrite.writeLong(buffer, offset, 300L);
+        bufferWriter.writeVolatileLong(buffer, offset, 300L);
         assertEquals(300L, buffer.getLong(offset));
     }
 
@@ -160,7 +266,8 @@ public class BufferWriterTest {
      * Tests volatile write semantics across threads.
      *
      * <p>This test verifies that writes performed by one thread are visible to another thread,
-     * ensuring the release semantics of the volatile write are working correctly.
+     * ensuring the full volatile barrier semantics (writeVolatileLong) are working correctly
+     * for cross-thread visibility.
      */
     @Test
     public void testVolatileSemantics() throws InterruptedException {
@@ -174,11 +281,11 @@ public class BufferWriterTest {
 
         long expectedValue = 0xCAFEBABEDEADBEEFL;
 
-        // Writer thread
+        // Writer thread - must use writeVolatileLong for cross-thread visibility
         Thread writer = new Thread(() -> {
             try {
                 writerLatch.await(5, TimeUnit.SECONDS);
-                volatileWrite.writeLong(buffer, offset, expectedValue);
+                bufferWriter.writeVolatileLong(buffer, offset, expectedValue);
                 writerReady.set(true);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -233,9 +340,9 @@ public class BufferWriterTest {
         long value2 = 0x2222222222222222L;
         long value3 = 0x3333333333333333L;
 
-        volatileWrite.writeLong(buffer, 0, value1);
-        volatileWrite.writeLong(buffer, 8, value2);
-        volatileWrite.writeLong(buffer, 16, value3);
+        bufferWriter.writeOrderedLong(buffer, 0, value1);
+        bufferWriter.writeOrderedLong(buffer, 8, value2);
+        bufferWriter.writeOrderedLong(buffer, 16, value3);
 
         assertEquals(value1, buffer.getLong(0), "First value should not be affected");
         assertEquals(value2, buffer.getLong(8), "Second value should not be affected");
@@ -243,20 +350,37 @@ public class BufferWriterTest {
     }
 
     /**
-     * Tests writing to a buffer at maximum valid offset.
+     * Tests writing to a buffer at maximum valid offset for longs.
      */
     @Test
-    public void testMaximumValidOffset() {
+    public void testMaximumValidOffsetLong() {
         int bufferSize = 1024;
         ByteBuffer buffer = createBuffer(bufferSize);
         int maxValidOffset = bufferSize - 8; // 8 bytes for a long
 
         long expectedValue = 0xFEDCBA9876543210L;
-        volatileWrite.writeLong(buffer, maxValidOffset, expectedValue);
+        bufferWriter.writeOrderedLong(buffer, maxValidOffset, expectedValue);
 
         long actualValue = buffer.getLong(maxValidOffset);
         assertEquals(expectedValue, actualValue,
                 "Value at maximum offset should be written correctly");
+    }
+
+    /**
+     * Tests writing to a buffer at maximum valid offset for ints.
+     */
+    @Test
+    public void testMaximumValidOffsetInt() {
+        int bufferSize = 1024;
+        ByteBuffer buffer = createBuffer(bufferSize);
+        int maxValidOffset = bufferSize - 4; // 4 bytes for an int
+
+        int expectedValue = 0xFEDCBA98;
+        bufferWriter.writeOrderedInt(buffer, maxValidOffset, expectedValue);
+
+        int actualValue = buffer.getInt(maxValidOffset);
+        assertEquals(expectedValue, actualValue,
+                "Int value at maximum offset should be written correctly");
     }
 
     /**
@@ -268,20 +392,21 @@ public class BufferWriterTest {
         int offset = 0;
 
         // Write initial pattern
-        volatileWrite.writeLong(buffer, offset, 0xAAAAAAAAAAAAAAAAL);
+        bufferWriter.writeOrderedLong(buffer, offset, 0xAAAAAAAAAAAAAAAAL);
         assertEquals(0xAAAAAAAAAAAAAAAAL, buffer.getLong(offset));
 
         // Overwrite with different pattern
-        volatileWrite.writeLong(buffer, offset, 0x5555555555555555L);
+        bufferWriter.writeOrderedLong(buffer, offset, 0x5555555555555555L);
         assertEquals(0x5555555555555555L, buffer.getLong(offset));
 
         // Overwrite with zeros
-        volatileWrite.writeLong(buffer, offset, 0L);
+        bufferWriter.writeVolatileLong(buffer, offset, 0L);
         assertEquals(0L, buffer.getLong(offset));
     }
 
     /**
      * Tests parallel writes to different offsets from multiple threads.
+     * Uses writeVolatileLong for cross-thread visibility guarantees.
      */
     @Test
     public void testParallelWrites() throws InterruptedException {
@@ -299,7 +424,8 @@ public class BufferWriterTest {
             threads[i] = new Thread(() -> {
                 try {
                     startLatch.await(5, TimeUnit.SECONDS);
-                    volatileWrite.writeLong(buffer, offset, expectedValue);
+                    // Use volatile write for cross-thread visibility
+                    bufferWriter.writeVolatileLong(buffer, offset, expectedValue);
                     doneLatch.countDown();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -330,7 +456,7 @@ public class BufferWriterTest {
     }
 
     /**
-     * Tests that the buffer's original position and limit are not affected by volatile writes.
+     * Tests that the buffer's original position and limit are not affected by writes.
      */
     @Test
     public void testBufferStatePreservation() {
@@ -341,11 +467,14 @@ public class BufferWriterTest {
         int originalPosition = buffer.position();
         int originalLimit = buffer.limit();
 
-        volatileWrite.writeLong(buffer, 16, 0x123456789ABCDEF0L);
+        bufferWriter.writeOrderedLong(buffer, 16, 0x123456789ABCDEF0L);
+        bufferWriter.writeVolatileLong(buffer, 24, 0xFEDCBA9876543210L);
+        bufferWriter.writeOrderedInt(buffer, 32, 0x12345678);
+        bufferWriter.writeVolatileInt(buffer, 36, 0x9ABCDEF0);
 
         assertEquals(originalPosition, buffer.position(),
-                "Buffer position should not be affected by volatile write");
+                "Buffer position should not be affected by writes");
         assertEquals(originalLimit, buffer.limit(),
-                "Buffer limit should not be affected by volatile write");
+                "Buffer limit should not be affected by writes");
     }
 }
