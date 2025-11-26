@@ -1287,11 +1287,7 @@ void Recording::writeContext(Buffer *buf, Context &context) {
   if (stored) {
     spanId = context.spanId;
     rootSpanId = context.rootSpanId;
-
-    u64 swappedRootSpanId = ((rootSpanId & 0xFFFFFFFFULL) << 32) | (rootSpanId >> 32);
-    u64 computed = (spanId * KNUTH_MULTIPLICATIVE_CONSTANT) ^ (swappedRootSpanId * KNUTH_MULTIPLICATIVE_CONSTANT);
-    computed = computed == 0 ? 0xffffffffffffffffull : computed;
-
+    u64 computed = Contexts::checksum(spanId, rootSpanId);
     if (stored != computed) {
       TEST_LOG("Invalid context checksum: ctx=%p, tid=%d", &context, OS::threadId());
       spanId = 0;
