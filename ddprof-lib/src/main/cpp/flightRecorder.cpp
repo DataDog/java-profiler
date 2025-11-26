@@ -1284,7 +1284,7 @@ void Recording::writeContext(Buffer *buf, Context &context) {
   u64 spanId = 0;
   u64 rootSpanId = 0;
   u64 stored = context.checksum;
-  if (stored) {
+  if (stored != 0) {
     spanId = context.spanId;
     rootSpanId = context.rootSpanId;
     u64 computed = Contexts::checksum(spanId, rootSpanId);

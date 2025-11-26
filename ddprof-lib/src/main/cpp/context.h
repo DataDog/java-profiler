@@ -47,7 +47,7 @@ public:
   static Context& initializeContextTls();
   static Context& get();
 
-  inline static u64 checksum(u64 spanId, u64 rootSpanId) {
+  static u64 checksum(u64 spanId, u64 rootSpanId) {
     u64 swappedRootSpanId = ((rootSpanId & 0xFFFFFFFFULL) << 32) | (rootSpanId >> 32);
     u64 computed = (spanId * KNUTH_MULTIPLICATIVE_CONSTANT) ^ (swappedRootSpanId * KNUTH_MULTIPLICATIVE_CONSTANT);
     return computed == 0 ? 0xffffffffffffffffull : computed;
