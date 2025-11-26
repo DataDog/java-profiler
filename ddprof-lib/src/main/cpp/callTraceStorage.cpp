@@ -371,10 +371,11 @@ CallTraceStorage::CallTraceStorage() : _active_storage(nullptr), _standby_storag
 
 CallTraceStorage::~CallTraceStorage() {
     // Atomically invalidate storage pointers to prevent new put() operations
-    // Relaxed ordering is sufficient since no concurrent readers exist during destruction
-    CallTraceHashTable* active = const_cast<CallTraceHashTable*>(__atomic_exchange_n(&_active_storage, nullptr, __ATOMIC_RELAXED));
-    CallTraceHashTable* standby = const_cast<CallTraceHashTable*>(__atomic_exchange_n(&_standby_storage, nullptr, __ATOMIC_RELAXED));
-    CallTraceHashTable* scratch = const_cast<CallTraceHashTable*>(__atomic_exchange_n(&_scratch_storage, nullptr, __ATOMIC_RELAXED));
+    // ACQ_REL ordering: RELEASE ensures nullptr is visible to put()'s ACQUIRE load,
+    // ACQUIRE ensures we see the latest pointer value for subsequent deletion
+    CallTraceHashTable* active = const_cast<CallTraceHashTable*>(__atomic_exchange_n(&_active_storage, nullptr, __ATOMIC_ACQ_REL));
+    CallTraceHashTable* standby = const_cast<CallTraceHashTable*>(__atomic_exchange_n(&_standby_storage, nullptr, __ATOMIC_ACQ_REL));
+    CallTraceHashTable* scratch = const_cast<CallTraceHashTable*>(__atomic_exchange_n(&_scratch_storage, nullptr, __ATOMIC_ACQ_REL));
 
     // Wait for any ongoing hazard pointer usage to complete and delete each unique table
     // Note: In triple-buffering, all three pointers should be unique, but check anyway
@@ -472,12 +473,13 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
         }
     }
 
-    // PHASE 2: 8-Step Triple-Buffer Rotation
+    // PHASE 2: 10-Step Triple-Buffer Rotation
 
-    // Load storage pointers - relaxed ordering sufficient in single-threaded processTraces context
-    CallTraceHashTable* original_active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_RELAXED));
-    CallTraceHashTable* original_standby = const_cast<CallTraceHashTable*>(__atomic_load_n(&_standby_storage, __ATOMIC_RELAXED));
-    CallTraceHashTable* original_scratch = const_cast<CallTraceHashTable*>(__atomic_load_n(&_scratch_storage, __ATOMIC_RELAXED));
+    // Load storage pointers - ACQUIRE ordering synchronizes with RELEASE stores from
+    // previous processTraces() calls and constructor initialization
+    CallTraceHashTable* original_active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE));
+    CallTraceHashTable* original_standby = const_cast<CallTraceHashTable*>(__atomic_load_n(&_standby_storage, __ATOMIC_ACQUIRE));
+    CallTraceHashTable* original_scratch = const_cast<CallTraceHashTable*>(__atomic_load_n(&_scratch_storage, __ATOMIC_ACQUIRE));
 
     // Clear process collection for reuse (no malloc/free)
     _traces_buffer.clear();
@@ -492,8 +494,11 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
         }
     });
 
-    // Step 3: Clear original_standby after collection -> it will become the new active
-    original_standby->clear();
+    // Step 3: Clear standby table structure but DEFER memory deallocation
+    // The standby traces are now in _traces_buffer as raw pointers.
+    // We must keep the underlying memory alive until processor() finishes.
+    // clearTableOnly() resets the table for reuse but returns the chunks for later freeing.
+    ChunkList standby_chunks = original_standby->clearTableOnly();
 
     {
         // Critical section for table swap operations - disallow signals to interrupt
@@ -531,7 +536,11 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
 
     processor(_traces_buffer);
 
-    // Step 9: Clear the original active area (now scratch)
+    // Step 9: NOW safe to free standby chunks - processor is done accessing those traces
+    // This completes the deferred deallocation that prevents use-after-free
+    LinearAllocator::freeChunks(standby_chunks);
+
+    // Step 10: Clear the original active area (now scratch)
     original_active->clear();
     
     // Triple-buffer rotation maintains trace continuity with thread-safe malloc-free operations:
@@ -546,9 +555,10 @@ void CallTraceStorage::clear() {
     // Mark critical section during clear operation for consistency
     CriticalSection cs;
 
-    // Load current table pointers - relaxed ordering sufficient within critical section
-    CallTraceHashTable* active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_RELAXED));
-    CallTraceHashTable* standby = const_cast<CallTraceHashTable*>(__atomic_load_n(&_standby_storage, __ATOMIC_RELAXED));
+    // Load current table pointers - ACQUIRE ordering synchronizes with RELEASE stores
+    // from processTraces() rotation and constructor initialization
+    CallTraceHashTable* active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE));
+    CallTraceHashTable* standby = const_cast<CallTraceHashTable*>(__atomic_load_n(&_standby_storage, __ATOMIC_ACQUIRE));
     
     // Direct clear operations with critical section protection
     if (active) {
