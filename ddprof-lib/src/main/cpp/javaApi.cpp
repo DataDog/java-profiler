@@ -531,8 +531,19 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
 }
 
 extern "C" DLLEXPORT jobject JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_initializeContextTls0(JNIEnv* env, jclass unused) {
+Java_com_datadoghq_profiler_JavaProfiler_initializeContextTls0(JNIEnv* env, jclass unused, jintArray offsets) {
   Context& ctx = Contexts::initializeContextTls();
+
+  // Populate offsets array with actual struct field offsets
+  if (offsets != nullptr) {
+    jint offsetValues[4];
+    offsetValues[0] = (jint)offsetof(Context, spanId);
+    offsetValues[1] = (jint)offsetof(Context, rootSpanId);
+    offsetValues[2] = (jint)offsetof(Context, checksum);
+    offsetValues[3] = (jint)offsetof(Context, tags);
+    env->SetIntArrayRegion(offsets, 0, 4, offsetValues);
+  }
+
   return env->NewDirectByteBuffer((void *)&ctx, (jlong)sizeof(Context));
 }
 

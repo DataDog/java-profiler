@@ -309,8 +309,9 @@ public final class JavaProfiler {
     }
 
     private static ThreadContext initializeThreadContext() {
-        ByteBuffer bb = initializeContextTls0();
-        return new ThreadContext(bb);
+        int[] offsets = new int[4];
+        ByteBuffer bb = initializeContextTls0(offsets);
+        return new ThreadContext(bb, offsets);
     }
 
     private static native boolean init0();
@@ -344,7 +345,7 @@ public final class JavaProfiler {
 
     private static native String getStatus0();
 
-    private static native ByteBuffer initializeContextTls0();
+    private static native ByteBuffer initializeContextTls0(int[] offsets);
 
     public ThreadContext getThreadContext() {
         return tlsContextStorage.get();

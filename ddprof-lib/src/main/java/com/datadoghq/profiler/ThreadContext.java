@@ -24,15 +24,16 @@ public final class ThreadContext {
      * Based on the golden ratio: 2^64 / φ where φ = (1 + √5) / 2
      */
     private static final long KNUTH_CONSTANT = 0x9E3779B97F4A7C15L; // 11400714819323198485
-    
-    private static final int SPAN_ID_OFFSET = 0;
-    private static final int ROOT_SPAN_ID_OFFSET = SPAN_ID_OFFSET + 8;
-    private static final int CHECKSUM_OFFSET = ROOT_SPAN_ID_OFFSET + 8;
-    private static final int CUSTOM_TAGS_OFFSET = CHECKSUM_OFFSET + 8;
 
     private static final int MAX_CUSTOM_SLOTS = 10;
 
     private static final BufferWriter BUFFER_WRITER = new BufferWriter();
+
+    // Offsets populated from native Context struct using offsetof()
+    private final int spanIdOffset;
+    private final int rootSpanIdOffset;
+    private final int checksumOffset;
+    private final int customTagsOffset;
 
     /**
      * Computes a hash-based checksum for context validation.
@@ -57,22 +58,39 @@ public final class ThreadContext {
 
     private final boolean useJNI;
 
-    public ThreadContext(ByteBuffer buffer) {
+    /**
+     * Creates a ThreadContext with native struct field offsets.
+     *
+     * @param buffer Direct ByteBuffer mapped to native Context struct
+     * @param offsets Array of native struct field offsets:
+     *                [0] = offsetof(Context, spanId)
+     *                [1] = offsetof(Context, rootSpanId)
+     *                [2] = offsetof(Context, checksum)
+     *                [3] = offsetof(Context, tags)
+     */
+    public ThreadContext(ByteBuffer buffer, int[] offsets) {
+        if (offsets == null || offsets.length < 4) {
+            throw new IllegalArgumentException("offsets array must have at least 4 elements");
+        }
         this.buffer = buffer.order(ByteOrder.LITTLE_ENDIAN);
+        this.spanIdOffset = offsets[0];
+        this.rootSpanIdOffset = offsets[1];
+        this.checksumOffset = offsets[2];
+        this.customTagsOffset = offsets[3];
         // For Java 17 and later the cost of downcall to JNI is negligible
         useJNI = Platform.isJavaVersionAtLeast(17);
     }
 
     public long getSpanId() {
-        return buffer.getLong(SPAN_ID_OFFSET);
+        return buffer.getLong(spanIdOffset);
     }
 
     public long getRootSpanId() {
-        return buffer.getLong(ROOT_SPAN_ID_OFFSET);
+        return buffer.getLong(rootSpanIdOffset);
     }
 
     public long getChecksum() {
-        return buffer.getLong(CHECKSUM_OFFSET);
+        return buffer.getLong(checksumOffset);
     }
 
     public long put(long spanId, long rootSpanId) {
@@ -92,21 +110,21 @@ public final class ThreadContext {
         int len = Math.min(value.length, MAX_CUSTOM_SLOTS);
         for  (int i = 0; i < len; i++) {
             // custom tags are spaced by 4 bytes (32 bits)
-            value[i] = buffer.getInt(CUSTOM_TAGS_OFFSET + i * 4);
+            value[i] = buffer.getInt(customTagsOffset + i * 4);
         }
     }
 
     private long putContextJava(long spanId, long rootSpanId) {
         long checksum = computeContextChecksum(spanId, rootSpanId);
-        BUFFER_WRITER.writeOrderedLong(buffer, CHECKSUM_OFFSET, 0); // mark in progress
-        BUFFER_WRITER.writeOrderedLong(buffer, SPAN_ID_OFFSET, spanId);
-        BUFFER_WRITER.writeOrderedLong(buffer, ROOT_SPAN_ID_OFFSET, rootSpanId);
-        BUFFER_WRITER.writeVolatileLong(buffer, CHECKSUM_OFFSET, checksum);
+        BUFFER_WRITER.writeOrderedLong(buffer, checksumOffset, 0); // mark in progress
+        BUFFER_WRITER.writeOrderedLong(buffer, spanIdOffset, spanId);
+        BUFFER_WRITER.writeOrderedLong(buffer, rootSpanIdOffset, rootSpanId);
+        BUFFER_WRITER.writeVolatileLong(buffer, checksumOffset, checksum);
         return checksum;
     }
 
     private long setContextSlotJava(int offset, int value) {
-        BUFFER_WRITER.writeOrderedInt(buffer, CUSTOM_TAGS_OFFSET + offset, value);
+        BUFFER_WRITER.writeOrderedInt(buffer, customTagsOffset + offset * 4, value);
         return (long) value * offset;
     }
 
