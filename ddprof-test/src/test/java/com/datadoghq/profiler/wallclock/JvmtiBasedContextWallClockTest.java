@@ -30,6 +30,6 @@ public class JvmtiBasedContextWallClockTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=~1ms,loglevel=warn,wallsampler=jvmti";
+        return "wall=1ms,loglevel=warn,wallsampler=jvmti";
     }
 }

@@ -1281,8 +1281,22 @@ void Recording::writeUnwindFailures(Buffer *buf) {
 }
 
 void Recording::writeContext(Buffer *buf, Context &context) {
-  buf->putVar64(context.spanId);
-  buf->putVar64(context.rootSpanId);
+  u64 spanId = 0;
+  u64 rootSpanId = 0;
+  u64 stored = context.checksum;
+  if (stored != 0) {
+    spanId = context.spanId;
+    rootSpanId = context.rootSpanId;
+    u64 computed = Contexts::checksum(spanId, rootSpanId);
+    if (stored != computed) {
+      TEST_LOG("Invalid context checksum: ctx=%p, tid=%d", &context, OS::threadId());
+      spanId = 0;
+      rootSpanId = 0;
+    }
+  }
+  buf->putVar64(spanId);
+  buf->putVar64(rootSpanId);
+
   for (size_t i = 0; i < Profiler::instance()->numContextAttributes(); i++) {
     Tag tag = context.get_tag(i);
     buf->putVar32(tag.value);
@@ -1305,7 +1319,7 @@ void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->put8(static_cast<int>(event->_thread_state));
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
-  writeContext(buf, Contexts::get(tid));
+  writeContext(buf, Contexts::get());
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1320,7 +1334,7 @@ void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->put8(static_cast<int>(event->_thread_state));
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
-  writeContext(buf, Contexts::get(tid));
+  writeContext(buf, Contexts::get());
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1365,7 +1379,7 @@ void Recording::recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event) {
   buf->putVar64(event->_scheduler);
   buf->putVar64(event->_queueType);
   buf->putVar64(event->_queueLength);
-  writeContext(buf, Contexts::get(tid));
+  writeContext(buf, Contexts::get());
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1380,7 +1394,7 @@ void Recording::recordAllocation(RecordingBuffer *buf, int tid,
   buf->putVar64(event->_id);
   buf->putVar64(event->_size);
   buf->putFloat(event->_weight);
-  writeContext(buf, Contexts::get(tid));
+  writeContext(buf, Contexts::get());
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1418,7 +1432,7 @@ void Recording::recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,
   buf->putVar64(event->_id);
   buf->put8(0);
   buf->putVar64(event->_address);
-  writeContext(buf, Contexts::get(tid));
+  writeContext(buf, Contexts::get());
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }

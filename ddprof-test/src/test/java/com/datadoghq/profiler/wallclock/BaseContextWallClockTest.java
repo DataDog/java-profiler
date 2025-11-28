@@ -97,6 +97,7 @@ final class BaseContextWallClockTest {
                 // a method call. E.g. not finding method2Impl in the stack trace doesn't mean the sample wasn't
                 // taken in the part of method2 between activation and invoking method2Impl, which complicates
                 // assertions when we only find method1Impl
+                boolean attributed = false;
                 if (stackTrace.contains("method3Impl")) {
                     if (assertContext) {
                         // method3 is scheduled after method2, and method1 blocks on it, so spanId == rootSpanId + 2
@@ -104,6 +105,7 @@ final class BaseContextWallClockTest {
                         assertTrue(spanId == 0 || method3SpanIds.contains(spanId), stackTrace);
                     }
                     method3Weight += weight;
+                    attributed = true;
                 } else if (stackTrace.contains("method2Impl")) {
                     if (assertContext) {
                         // method2 is called next, so spanId == rootSpanId + 1
@@ -111,6 +113,7 @@ final class BaseContextWallClockTest {
                         assertTrue(spanId == 0 || method2SpanIds.contains(spanId), stackTrace);
                     }
                     method2Weight += weight;
+                    attributed = true;
                 } else if (stackTrace.contains("method1Impl")
                         && !stackTrace.contains("method2") && !stackTrace.contains("method3")) {
                     if (assertContext) {
@@ -120,9 +123,13 @@ final class BaseContextWallClockTest {
                         assertTrue(spanId == 0 || method1SpanIds.contains(spanId), stackTrace);
                     }
                     method1Weight += weight;
+                    attributed = true;
                 }
                 assertTrue(weight <= 10 && weight > 0);
-                if (spanId == 0) {
+                // Only count as unattributed if spanId is 0 AND we couldn't attribute by stack trace
+                // This prevents double-counting samples that have valid stack traces but no context
+                // (e.g., JVMTI samples when using TLS context which can't be read cross-thread)
+                if (spanId == 0 && !attributed) {
                     unattributedWeight += weight;
                 }
             }
@@ -229,10 +236,13 @@ final class BaseContextWallClockTest {
 
 
     private void sleep(long millis) {
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        long target = System.nanoTime() + millis * 1_000_000L;
+        do {
+            try {
+                Thread.sleep((target - System.nanoTime()) / 1_000_000L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        } while (System.nanoTime() < target);
     }
 }

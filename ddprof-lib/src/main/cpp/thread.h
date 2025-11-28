@@ -17,6 +17,9 @@
 #include <sys/types.h>
 #include <vector>
 
+// Forward declaration to avoid circular dependency
+class Context;
+
 class ProfiledThread : public ThreadLocalData {
 private:
   // We are allowing several levels of nesting because we can be
@@ -60,10 +63,11 @@ private:
   int _filter_slot_id; // Slot ID for thread filtering
   UnwindFailures _unwind_failures;
   bool _ctx_tls_initialized;
+  Context* _ctx_tls_ptr;
 
   ProfiledThread(int buffer_pos, int tid)
       : ThreadLocalData(), _pc(0), _span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
-        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _filter_slot_id(-1), _ctx_tls_initialized(false) {};
+        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _filter_slot_id(-1), _ctx_tls_initialized(false), _ctx_tls_ptr(nullptr) {};
 
   void releaseFromBuffer();
 
@@ -177,12 +181,17 @@ public:
   int getHazardSlot() { return _hazard_slot; }
 
   // context sharing TLS
-  inline void markContextTlsInitialized() {
+  inline void markContextTlsInitialized(Context* ctx_ptr) {
+    _ctx_tls_ptr = ctx_ptr;
     _ctx_tls_initialized = true;
   }
 
   inline bool isContextTlsInitialized() {
     return _ctx_tls_initialized;
+  }
+
+  inline Context* getContextTlsPtr() {
+    return _ctx_tls_ptr;
   }
   
 private:

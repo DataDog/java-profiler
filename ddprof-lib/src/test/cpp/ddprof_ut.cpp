@@ -113,34 +113,6 @@ static DdprofGlobalSetup ddprof_global_setup;
         EXPECT_FALSE(OS::getMaxThreadId() < 0);
     }
 
-    TEST(Context, maxtid_sanity) {
-        int maxTid = OS::getMaxThreadId();
-
-        Context& ctx1 = Contexts::get(0);
-        Context& ctx2 = Contexts::get(maxTid - 1);
-
-        if (maxTid >= DD_CONTEXT_PAGE_SIZE) {
-            Context& ctx3 = Contexts::get(DD_CONTEXT_PAGE_SIZE);
-        }
-    }
-
-    TEST(Context, maxpages) {
-        // floored at 128 to mitigate unusual pid_max settings
-        int minMaxPages = 128;
-        EXPECT_EQ(minMaxPages, Contexts::getMaxPages(0));
-        EXPECT_EQ(minMaxPages, Contexts::getMaxPages(1));
-        EXPECT_EQ(minMaxPages, Contexts::getMaxPages(DD_CONTEXT_PAGE_SIZE / 2));
-        EXPECT_EQ(minMaxPages, Contexts::getMaxPages(DD_CONTEXT_PAGE_SIZE));
-        EXPECT_EQ(minMaxPages, Contexts::getMaxPages(DD_CONTEXT_PAGE_SIZE + 1));
-        int floor = minMaxPages * DD_CONTEXT_PAGE_SIZE;
-        EXPECT_EQ(minMaxPages, Contexts::getMaxPages(floor + 0));
-        EXPECT_EQ(minMaxPages + 1, Contexts::getMaxPages(floor + 1));
-        EXPECT_EQ(minMaxPages + 1, Contexts::getMaxPages(floor + DD_CONTEXT_PAGE_SIZE / 2));
-        EXPECT_EQ(minMaxPages + 1, Contexts::getMaxPages(floor + DD_CONTEXT_PAGE_SIZE));
-        EXPECT_EQ(minMaxPages + 2, Contexts::getMaxPages(floor + DD_CONTEXT_PAGE_SIZE + 1));
-        EXPECT_EQ(2048, Contexts::getMaxPages(2097152));
-    }
-
     TEST(ThreadInfoTest, testThreadInfoCleanupAllDead) {
         ThreadInfo info;
         info.set(1, "main", 1);

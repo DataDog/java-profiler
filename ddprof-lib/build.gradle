@@ -247,6 +247,27 @@ ext {
 sourceCompatibility = JavaVersion.VERSION_1_8
 targetCompatibility = JavaVersion.VERSION_1_8
 
+// Configure Java 9+ source set for multi-release JAR
+sourceSets {
+  java9 {
+    java {
+      srcDirs = ['src/main/java9']
+    }
+  }
+}
+
+// Configure Java 9 compilation with Java 11 toolchain
+tasks.named('compileJava9Java') {
+  javaCompiler = javaToolchains.compilerFor {
+    languageVersion = JavaLanguageVersion.of(11)
+  }
+  options.release = 9
+
+  // Add main source set output to classpath
+  classpath = sourceSets.main.output + configurations.compileClasspath
+  dependsOn tasks.named('compileJava')
+}
+
 def isGitlabCI = System.getenv("GITLAB_CI") != null
 def buildTempDir = "${projectDir}/build/tmp"
 
@@ -500,11 +521,13 @@ buildConfigNames().each { name ->
     group = 'build'
     description = "Assemble the ${name} build of the library"
     dependsOn copyExternalLibs
+    dependsOn tasks.named('compileJava9Java')
     if (!project.hasProperty('skip-native')) {
       dependsOn copyTask
     }
 
     from sourceSets.main.output.classesDirs
+    from sourceSets.java9.output.classesDirs
     from files(libraryTargetBase(name)) {
       include "**/*"
     }
@@ -656,10 +679,14 @@ tasks.withType(StripSymbols).configureEach {
   }
 }
 
-jar.dependsOn copyExternalLibs
+jar {
+  dependsOn copyExternalLibs
+  dependsOn tasks.named('compileJava9Java')
+}
 
 tasks.register('sourcesJar', Jar) {
   from sourceSets.main.allJava
+  from sourceSets.java9.allJava
   archiveBaseName = libraryName
   archiveClassifier = "sources"
   archiveVersion = component_version
