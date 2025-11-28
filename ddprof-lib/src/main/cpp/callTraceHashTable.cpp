@@ -102,10 +102,10 @@ CallTraceHashTable::~CallTraceHashTable() {
 }
 
 
-void CallTraceHashTable::clear() {
-  // Wait for all hazard pointers to clear before deallocation to prevent races
+ChunkList CallTraceHashTable::clearTableOnly() {
+  // Wait for all hazard pointers to clear before detaching chunks
   HazardPointer::waitForAllHazardPointersToClear();
-  
+
   // Clear previous chain pointers to prevent traversal during deallocation
   for (LongHashTable *table = _table; table != nullptr; table = table->prev()) {
     LongHashTable *prev_table = table->prev();
@@ -113,13 +113,21 @@ void CallTraceHashTable::clear() {
       table->setPrev(nullptr);  // Clear link before deallocation
     }
   }
-  
-  // Now safe to deallocate all memory
-  _allocator.clear();
-  
-  // Reinitialize with fresh table
+
+  // Detach chunks for deferred deallocation - keeps trace memory alive
+  ChunkList detached_chunks = _allocator.detachChunks();
+
+  // Reinitialize with fresh table (using the new chunk from detachChunks)
   _table = LongHashTable::allocate(nullptr, INITIAL_CAPACITY, &_allocator);
   _overflow = 0;
+
+  return detached_chunks;
+}
+
+void CallTraceHashTable::clear() {
+  // Clear table and immediately free chunks (original behavior)
+  ChunkList chunks = clearTableOnly();
+  LinearAllocator::freeChunks(chunks);
 }
 
 // Adaptation of MurmurHash64A by Austin Appleby

@@ -17,6 +17,23 @@
 #include "linearAllocator.h"
 #include "counters.h"
 #include "os_dd.h"
+#include "common.h"
+#include <stdio.h>
+
+// Enable ASan memory poisoning for better use-after-free detection
+#ifdef __has_feature
+  #if __has_feature(address_sanitizer)
+    #define ASAN_ENABLED 1
+  #endif
+#endif
+
+#ifdef __SANITIZE_ADDRESS__
+  #define ASAN_ENABLED 1
+#endif
+
+#ifdef ASAN_ENABLED
+  #include <sanitizer/asan_interface.h>
+#endif
 
 LinearAllocator::LinearAllocator(size_t chunk_size) {
   _chunk_size = chunk_size;
@@ -32,6 +49,27 @@ void LinearAllocator::clear() {
   if (_reserve->prev == _tail) {
     freeChunk(_reserve);
   }
+
+  // ASAN POISONING: Mark all allocated memory as poisoned BEFORE freeing chunks
+  // This catches use-after-free even when memory isn't munmap'd (kept in _tail)
+  #ifdef ASAN_ENABLED
+  int chunk_count = 0;
+  size_t total_poisoned = 0;
+  for (Chunk *chunk = _tail; chunk != NULL; chunk = chunk->prev) {
+    // Poison from the start of usable data to the current offset
+    size_t used_size = chunk->offs - sizeof(Chunk);
+    if (used_size > 0) {
+      void* data_start = (char*)chunk + sizeof(Chunk);
+      ASAN_POISON_MEMORY_REGION(data_start, used_size);
+      chunk_count++;
+      total_poisoned += used_size;
+    }
+  }
+  if (chunk_count > 0) {
+    TEST_LOG("[LinearAllocator::clear] ASan poisoned %d chunks, %zu bytes total", chunk_count, total_poisoned);
+  }
+  #endif
+
   while (_tail->prev != NULL) {
     Chunk *current = _tail;
     _tail = _tail->prev;
@@ -39,6 +77,57 @@ void LinearAllocator::clear() {
   }
   _reserve = _tail;
   _tail->offs = sizeof(Chunk);
+
+  // DON'T UNPOISON HERE - let alloc() do it on-demand!
+  // This ensures ASan can catch use-after-free bugs when code accesses
+  // memory that was cleared but not yet reallocated.
+}
+
+ChunkList LinearAllocator::detachChunks() {
+  // Capture current state before detaching
+  ChunkList result(_tail, _chunk_size);
+
+  // Handle reserve chunk: if it's ahead of tail, it needs special handling
+  if (_reserve->prev == _tail) {
+    // Reserve is a separate chunk ahead of tail - it becomes part of detached list
+    // We need to include it in the chain by making it the new head
+    result.head = _reserve;
+  }
+
+  // Allocate a fresh chunk for new allocations
+  Chunk* fresh = allocateChunk(NULL);
+  if (fresh != NULL) {
+    _tail = fresh;
+    _reserve = fresh;
+  } else {
+    // Allocation failed - restore original state and return empty list
+    // This maintains the invariant that the allocator is always usable
+    _reserve = _tail;
+    _tail->offs = sizeof(Chunk);
+    return ChunkList();
+  }
+
+  return result;
+}
+
+void LinearAllocator::freeChunks(ChunkList& chunks) {
+  if (chunks.head == nullptr || chunks.chunk_size == 0) {
+    return;
+  }
+
+  // Walk the chain and free each chunk
+  Chunk* current = chunks.head;
+  while (current != nullptr) {
+    Chunk* prev = current->prev;
+    OS::safeFree(current, chunks.chunk_size);
+    Counters::decrement(LINEAR_ALLOCATOR_BYTES, chunks.chunk_size);
+    Counters::decrement(LINEAR_ALLOCATOR_CHUNKS);
+    current = prev;
+  }
+
+  // Mark as freed to prevent double-free
+  chunks.head = nullptr;
+  chunks.chunk_size = 0;
 }
 
 void *LinearAllocator::alloc(size_t size) {
@@ -49,11 +138,20 @@ void *LinearAllocator::alloc(size_t size) {
          offs + size <= _chunk_size;
          offs = __atomic_load_n(&chunk->offs, __ATOMIC_ACQUIRE)) {
       if (__sync_bool_compare_and_swap(&chunk->offs, offs, offs + size)) {
+        void* allocated_ptr = (char *)chunk + offs;
+
+        // ASAN UNPOISONING: Unpoison ONLY the allocated region on-demand
+        // This allows ASan to detect use-after-free of memory that was cleared
+        // but not yet reallocated
+        #ifdef ASAN_ENABLED
+        ASAN_UNPOISON_MEMORY_REGION(allocated_ptr, size);
+        #endif
+
         if (_chunk_size / 2 - offs < size) {
           // Stepped over a middle of the chunk - it's time to prepare a new one
           reserveChunk(chunk);
         }
-        return (char *)chunk + offs;
+        return allocated_ptr;
       }
     }
   } while ((chunk = getNextChunk(chunk)) != NULL);
@@ -66,6 +164,16 @@ Chunk *LinearAllocator::allocateChunk(Chunk *current) {
   if (chunk != NULL) {
     chunk->prev = current;
     chunk->offs = sizeof(Chunk);
+
+    // ASAN UNPOISONING: New chunks from mmap are clean, unpoison them for use
+    // mmap returns memory that ASan may track as unallocated, so we need to
+    // explicitly unpoison it to allow allocations
+    #ifdef ASAN_ENABLED
+    size_t usable_size = _chunk_size - sizeof(Chunk);
+    void* data_start = (char*)chunk + sizeof(Chunk);
+    ASAN_UNPOISON_MEMORY_REGION(data_start, usable_size);
+    #endif
+
     Counters::increment(LINEAR_ALLOCATOR_BYTES, _chunk_size);
     Counters::increment(LINEAR_ALLOCATOR_CHUNKS);
   }
