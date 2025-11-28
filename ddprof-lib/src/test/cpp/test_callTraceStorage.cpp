@@ -495,4 +495,134 @@ TEST_F(CallTraceStorageTest, HazardPointerSynchronizationDuringSwap) {
     EXPECT_GT(final_trace_count.load(), 0) << "Storage should still contain traces after synchronization test";
 }
 
+/**
+ * Reproducer test for use-after-free bug in processTraces().
+ *
+ * BUG DESCRIPTION:
+ * In processTraces(), traces are collected from standby into _traces_buffer (raw pointers),
+ * then standby->clear() frees all memory, but processor(_traces_buffer) is called AFTER
+ * the clear, accessing freed memory.
+ *
+ * Timeline of the bug:
+ *   1. original_standby->collect(_traces_buffer, ...) - collects raw pointers from STANDBY
+ *   2. original_standby->clear() - FREES ALL MEMORY including CallTrace objects!
+ *   3. processor(_traces_buffer) - accesses freed memory (USE-AFTER-FREE)
+ *
+ * KEY INSIGHT: The bug only affects traces from STANDBY, not ACTIVE.
+ * - Active traces are cleared AFTER the processor runs (safe)
+ * - Standby traces are cleared BEFORE the processor runs (BUG!)
+ *
+ * To trigger the bug, we need traces IN STANDBY at the start of processTraces().
+ * Traces get into standby via the liveness preservation mechanism:
+ *   1. Register a liveness checker that marks traces as "live"
+ *   2. During processTraces(), live traces are copied to SCRATCH
+ *   3. After rotation, SCRATCH becomes the new STANDBY
+ *   4. Next processTraces() will have those preserved traces in STANDBY
+ *   5. Those traces are collected, then FREED, then ACCESSED → USE-AFTER-FREE!
+ *
+ * This test should FAIL (crash or ASan error) before the fix and PASS after.
+ */
+TEST_F(CallTraceStorageTest, UseAfterFreeInProcessTraces) {
+    // Create multiple traces with varying frame counts to increase memory footprint
+    const int NUM_TRACES = 100;
+    const int MAX_FRAMES = 20;
 
+    std::vector<u64> trace_ids;
+    trace_ids.reserve(NUM_TRACES);
+
+    // Create traces with multiple frames to use more memory
+    for (int i = 0; i < NUM_TRACES; i++) {
+        std::vector<ASGCT_CallFrame> frames(MAX_FRAMES);
+        for (int j = 0; j < MAX_FRAMES; j++) {
+            frames[j].bci = i * 1000 + j;
+            frames[j].method_id = (jmethodID)(0x10000 + i * 100 + j);
+        }
+
+        u64 trace_id = storage->put(MAX_FRAMES, frames.data(), false, 1);
+        ASSERT_GT(trace_id, 0) << "Failed to store trace " << i;
+        trace_ids.push_back(trace_id);
+    }
+
+    // CRITICAL: Register a liveness checker that preserves ALL traces.
+    // This causes traces to be copied to SCRATCH during processTraces().
+    // After rotation, SCRATCH becomes STANDBY, so the NEXT processTraces()
+    // will have these traces in STANDBY where the bug manifests.
+    storage->registerLivenessChecker([&trace_ids](std::unordered_set<u64>& buffer) {
+        for (u64 id : trace_ids) {
+            buffer.insert(id);
+        }
+    });
+
+    // First processTraces: traces are in ACTIVE, get collected and preserved to SCRATCH.
+    // After rotation: SCRATCH becomes STANDBY (now contains preserved traces)
+    int first_count = 0;
+    storage->processTraces([&first_count](const std::unordered_set<CallTrace*>& traces) {
+        first_count = traces.size();
+        printf("First processTraces: %d traces collected\n", first_count);
+    });
+    EXPECT_GT(first_count, NUM_TRACES) << "First processTraces should collect all traces";
+
+    // Second processTraces: THIS IS WHERE THE BUG OCCURS!
+    // 1. STANDBY now contains the preserved traces (from first call's scratch)
+    // 2. Standby traces are collected into _traces_buffer (raw pointers)
+    // 3. original_standby->clear() - FREES the trace memory!
+    // 4. processor(_traces_buffer) - accesses FREED memory (USE-AFTER-FREE!)
+    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+        int total_frames = 0;
+        int total_bci_sum = 0;
+        int trace_count = 0;
+
+        for (CallTrace* trace : traces) {
+            if (trace == nullptr) continue;
+            if (trace->trace_id == CallTraceStorage::DROPPED_TRACE_ID) continue;
+
+            trace_count++;
+
+            // Deep access to detect use-after-free:
+            // After standby->clear(), this memory is FREED but we're accessing it!
+            // ASan will catch this. Without ASan, we might read garbage.
+            EXPECT_GE(trace->num_frames, 1) << "Corrupted num_frames (use-after-free?)";
+            EXPECT_LE(trace->num_frames, MAX_FRAMES) << "Corrupted num_frames (use-after-free?)";
+            EXPECT_FALSE(trace->truncated) << "Corrupted truncated flag (use-after-free?)";
+            EXPECT_GT(trace->trace_id, 0) << "Corrupted trace_id (use-after-free?)";
+
+            total_frames += trace->num_frames;
+
+            // Access every frame - this maximizes chance of detecting corruption
+            for (int i = 0; i < trace->num_frames; i++) {
+                int bci = trace->frames[i].bci;
+                total_bci_sum += bci;
+                EXPECT_GE(bci, 0) << "Corrupted BCI at frame " << i << " (use-after-free?)";
+
+                jmethodID method = trace->frames[i].method_id;
+                EXPECT_NE(method, nullptr) << "Null method_id at frame " << i << " (use-after-free?)";
+            }
+        }
+
+        printf("Second processTraces: %d traces, %d total frames, bci_sum=%d\n",
+               trace_count, total_frames, total_bci_sum);
+
+        // This is the key assertion: we expect to find the preserved traces
+        // If the bug exists, we're reading freed memory here!
+        EXPECT_GE(trace_count, NUM_TRACES) << "Should find preserved traces from standby";
+    });
+
+    // Third processTraces: traces should still be preserved (copied to new scratch)
+    // This further exercises the use-after-free if the bug exists
+    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+        int trace_count = 0;
+        for (CallTrace* trace : traces) {
+            if (trace == nullptr) continue;
+            if (trace->trace_id == CallTraceStorage::DROPPED_TRACE_ID) continue;
+            trace_count++;
+
+            // Access all frame data
+            volatile int sum = 0;
+            for (int i = 0; i < trace->num_frames; i++) {
+                sum += trace->frames[i].bci;
+            }
+        }
+        printf("Third processTraces: %d traces\n", trace_count);
+        EXPECT_GE(trace_count, NUM_TRACES) << "Should still find preserved traces";
+    });
+}
