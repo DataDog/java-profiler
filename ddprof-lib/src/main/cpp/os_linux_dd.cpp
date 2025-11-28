@@ -1,6 +1,7 @@
 #ifdef __linux__
 
 #include "os_dd.h"
+#include "thread.h"
 #include "common.h"
 #include <signal.h>
 #include <unistd.h>
@@ -292,7 +293,15 @@ static void* threadDirectoryWatcherLoop(void* arg) {
         int tid = atoi(event->name);
         if (tid > 0) {
           if (event->mask & (IN_CREATE | IN_MOVED_TO)) {
-            if (g_on_new_thread) g_on_new_thread(tid);
+            // Small delay (20ms) to allow JVMTI ThreadStart callback to register Java threads
+            // This virtually eliminates the race condition between thread creation and JVMTI callback
+            struct timespec delay = {0, 20000000}; // 20ms
+            nanosleep(&delay, nullptr);
+
+            // Skip sending signal to likely Java threads
+            if (!ProfiledThread::isLikelyJavaThread(tid) && g_on_new_thread) {
+              g_on_new_thread(tid);
+            }
           } else if (event->mask & (IN_DELETE | IN_MOVED_FROM)) {
             if (g_on_dead_thread) g_on_dead_thread(tid);
           }

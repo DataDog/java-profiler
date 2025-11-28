@@ -1,12 +1,24 @@
+#include "arch_dd.h"
+#include "lockFree.h"
 #include "thread.h"
 #include "os_dd.h"
 #include "profiler.h"
 #include "common.h"
 #include "vmStructs.h"
+#include "vmEntry.h"
 #include <time.h>
+#include <cstdlib>
+#include <cstring>
 
 // TLS priming signal number
 static int g_tls_prime_signal = -1;
+
+// Define ProfiledThread static members for Java thread tracking
+LockFreeBitset<ProfiledThread::JAVA_THREAD_BITSET_SIZE> ProfiledThread::_java_thread_bitset;
+
+void ProfiledThread::initJavaThreadBitset() {
+  _java_thread_bitset.init();
+}
 
 pthread_key_t ProfiledThread::_tls_key;
 int ProfiledThread::_buffer_size = 0;
@@ -32,7 +44,8 @@ inline void ProfiledThread::freeKey(void *key) {
       // Buffer-allocated: reset and return to buffer for reuse
       tls_ref->releaseFromBuffer();
     } else {
-      // Non-buffer (JVMTI-allocated): delete the instance
+      // Non-buffer (JVMTI-allocated): unregister Java thread and delete the instance
+      ProfiledThread::unregisterJavaThread(tls_ref->_tid);
       delete tls_ref;
     }
   }
@@ -51,6 +64,9 @@ void ProfiledThread::initCurrentThread() {
   int tid = OS::threadId();
   ProfiledThread *tls = ProfiledThread::forTid(tid);
   pthread_setspecific(_tls_key, (const void *)tls);
+
+  // Register this thread as a Java thread for TLS priming optimization
+  ProfiledThread::registerJavaThread(tid);
 }
 
 void ProfiledThread::initExistingThreads() {
@@ -128,6 +144,9 @@ void ProfiledThread::doInitExistingThreads() {
     return; // Avoid double initialization
   }
 
+  // Initialize Java thread bitset
+  initJavaThreadBitset();
+
   // Register fork handler to prevent issues in forked child processes
   ensureTlsForkHandlerRegistered();
 
@@ -144,21 +163,42 @@ void ProfiledThread::doInitExistingThreads() {
   // 256 should be more than enough for concurrent new thread creation
   prepareBuffer(256);
 
-  // Start thread directory watcher to prime new threads (no mass-priming of existing threads)
-  bool watcher_started = ddprof::OS::startThreadDirectoryWatcher(
-    [](int tid) {
-      // Prime new thread with TLS signal
-      ddprof::OS::signalThread(tid, g_tls_prime_signal);
-    },
-    [](int tid) {
-      // No-op for dead threads - cleanup handled elsewhere
-    }
-  );
+  // Check if watcher is enabled via environment variable or system property
+  // Default: disabled (watcher adds per-thread overhead that affects throughput benchmarks)
+  // Set DD_PROFILER_TLS_WATCHER=1 to enable for native thread priming
+  // Supports both environment variable and system property (for JMH forked JVMs)
+  const char* watcher_env = std::getenv("DD_PROFILER_TLS_WATCHER");
+  bool watcher_enabled = (watcher_env == nullptr || std::strcmp(watcher_env, "1") == 0);
 
-  if (!watcher_started) {
-    TEST_LOG("Failed to start thread directory watcher for TLS priming");
+   // If not set via environment variable, check system property (for JMH compatibility)
+   if (watcher_enabled) {
+     char* watcher_prop = nullptr;
+     jvmtiEnv *jvmti = VM::jvmti();
+     if (jvmti != nullptr && jvmti->GetSystemProperty("DD_PROFILER_TLS_WATCHER", &watcher_prop) == 0 && watcher_prop != nullptr) {
+       watcher_enabled = (std::strcmp(watcher_prop, "1") != 0);
+       jvmti->Deallocate((unsigned char*)watcher_prop);
+     }
+   }
+
+  if (watcher_enabled) {
+    // Start thread directory watcher to prime new threads (no mass-priming of existing threads)
+    bool watcher_started = ddprof::OS::startThreadDirectoryWatcher(
+      [](int tid) {
+        // Prime new thread with TLS signal
+        ddprof::OS::signalThread(tid, g_tls_prime_signal);
+      },
+      [](int tid) {
+        // No-op for dead threads - cleanup handled elsewhere
+      }
+    );
+
+    if (!watcher_started) {
+      TEST_LOG("Failed to start thread directory watcher for TLS priming");
+    } else {
+      TEST_LOG("Started thread directory watcher for TLS priming");
+    }
   } else {
-    TEST_LOG("Started thread directory watcher for TLS priming");
+    TEST_LOG("TLS watcher enabled (set DD_PROFILER_TLS_WATCHER=0 to enable)");
   }
 
   initialized = true;
@@ -355,9 +395,26 @@ void ProfiledThread::cleanupBuffer() {
 }
 
 void ProfiledThread::simpleTlsSignalHandler(int signo) {
+  // Quick check: if TLS already set, return immediately (avoids VMThread lookup)
+  if (pthread_getspecific(_tls_key) != nullptr) {
+    return;
+  }
+
   // Only prime threads that are not Java threads
   // Java threads are handled by JVMTI ThreadStart events
   if (VMThread::current() == nullptr) {
     initCurrentThreadWithBuffer();
   }
+}
+
+void ProfiledThread::registerJavaThread(int tid) {
+  _java_thread_bitset.set(static_cast<size_t>(tid));
+}
+
+bool ProfiledThread::isLikelyJavaThread(int tid) {
+  return _java_thread_bitset.test(static_cast<size_t>(tid));
+}
+
+void ProfiledThread::unregisterJavaThread(int tid) {
+  _java_thread_bitset.clear(static_cast<size_t>(tid));
 }

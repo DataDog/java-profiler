@@ -105,7 +105,6 @@ void Profiler::addRuntimeStub(const void *address, int length,
 }
 
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  ProfiledThread::initCurrentThread();
   ProfiledThread *current = ProfiledThread::current();
   int tid = current->tid();
   if (_thread_filter.enabled()) {
@@ -120,7 +119,7 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 }
 
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::currentSignalSafe();
   int tid = -1;
   
   if (current != nullptr) {
