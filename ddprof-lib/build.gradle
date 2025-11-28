@@ -256,10 +256,13 @@ sourceSets {
   }
 }
 
+def current = JavaVersion.current().majorVersion.toInteger()
+def requested = current >= 11 ? current : 11
+
 // Configure Java 9 compilation with Java 11 toolchain
 tasks.named('compileJava9Java') {
   javaCompiler = javaToolchains.compilerFor {
-    languageVersion = JavaLanguageVersion.of(11)
+    languageVersion = JavaLanguageVersion.of(requested)
   }
   options.release = 9
 
