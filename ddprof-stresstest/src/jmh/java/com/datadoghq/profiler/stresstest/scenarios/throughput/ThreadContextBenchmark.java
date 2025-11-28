@@ -62,9 +62,9 @@ public class ThreadContextBenchmark {
     @Measurement(iterations = 5, time = 3)
     @Threads(1)
     @OutputTimeUnit(TimeUnit.MICROSECONDS)
-    public void setContext01(Blackhole bh) {
+    public void setContext01() {
         ThreadContext ctx = profiler.getThreadContext();
-        bh.consume(ctx.put(0x123456789ABCDEFL, 0xFEDCBA987654321L));
+        ctx.put(0x123456789ABCDEFL, 0xFEDCBA987654321L);
     }
 
     // Multi-threaded benchmark: 2 threads
@@ -75,8 +75,8 @@ public class ThreadContextBenchmark {
     @Measurement(iterations = 5, time = 3)
     @Threads(2)
     @OutputTimeUnit(TimeUnit.MICROSECONDS)
-    public void setContext02(Blackhole bh) {
+    public void setContext02() {
         ThreadContext ctx = profiler.getThreadContext();
-        bh.consume(ctx.put(0x123456789ABCDEFL, 0xFEDCBA987654321L));
+        ctx.put(0x123456789ABCDEFL, 0xFEDCBA987654321L);
     }
 }

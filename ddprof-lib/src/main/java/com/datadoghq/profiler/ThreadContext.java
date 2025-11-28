@@ -97,13 +97,17 @@ public final class ThreadContext {
         return useJNI ? setContext0(spanId, rootSpanId) : putContextJava(spanId, rootSpanId);
     }
 
-    public long putCustom(int offset, int value) {
+    public void putCustom(int offset, int value) {
         if (offset >= MAX_CUSTOM_SLOTS) {
             throw new IllegalArgumentException("Invalid offset: " + offset + " (max " +  MAX_CUSTOM_SLOTS + ")");
         }
         // JNI path uses array indexing (offset is tag index)
         // Java path uses byte buffer (offset needs to be multiplied by 4 for byte positioning)
-        return useJNI ? setContextSlot0(offset, value) : setContextSlotJava(offset, value);
+        if (useJNI) {
+            setContextSlot0(offset, value);
+        } else {
+            setContextSlotJava(offset, value);
+        }
     }
 
     public void copyCustoms(int[] value) {
@@ -129,5 +133,5 @@ public final class ThreadContext {
     }
 
     private static native long setContext0(long spanId, long rootSpanId);
-    private static native long setContextSlot0(int offset, int value);
+    private static native void setContextSlot0(int offset, int value);
 }

@@ -558,11 +558,10 @@ Java_com_datadoghq_profiler_ThreadContext_setContext0(JNIEnv* env, jclass unused
   return ctx.checksum;
 }
 
-extern "C" DLLEXPORT jlong JNICALL
+extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_ThreadContext_setContextSlot0(JNIEnv* env, jclass unused, jint offset, jint value) {
   Context& ctx = Contexts::get();
   ctx.tags[offset].value = (u32)value;
-  return offset * value;
 }
 
 // ---- test and debug utilities
