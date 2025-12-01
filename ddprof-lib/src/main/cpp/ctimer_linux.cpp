@@ -50,14 +50,11 @@ static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
   }
 
   if (value != NULL) {
-    ProfiledThread::initCurrentThread();
-    int result = pthread_setspecific(key, value);
-    Profiler::registerThread(ProfiledThread::currentTid());
-    return result;
+    Profiler::registerCurrentThread();
+    return pthread_setspecific(key, value);
   } else {
     int tid = ProfiledThread::currentTid();
     Profiler::unregisterThread(tid);
-    ProfiledThread::release();
     return pthread_setspecific(key, value);
   }
 }
@@ -88,8 +85,6 @@ int CTimer::_signal;
 
 int CTimer::registerThread(int tid) {
   if (tid >= _max_timers) {
-    Log::warn("tid[%d] > pid_max[%d]. Restart profiler after changing pid_max",
-              tid, _max_timers);
     return -1;
   }
 
@@ -210,7 +205,7 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE))
     return;
   int tid = 0;
-  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  ProfiledThread *current = ProfiledThread::get();
   assert(current == nullptr || !current->isDeepCrashHandler());
   if (current != NULL) {
     current->noteCPUSample(Profiler::instance()->recordingEpoch());

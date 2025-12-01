@@ -78,16 +78,17 @@ public:
     return new ProfiledThread(buffer_pos, 0);
   }
 
-  static void initCurrentThread();
   static void initCurrentThreadWithBuffer(); // Called by signal handler for native threads
   static void initExistingThreads();
   static void cleanupTlsPriming();
 
-  static void release();
+  static void release(ProfiledThread* thread);
 
-  static ProfiledThread *current();
-  static ProfiledThread *currentSignalSafe(); // Signal-safe version that never allocates
-  static int currentTid();
+  static ProfiledThread* getOrCreate(bool* created = nullptr);
+  // Returns current thread's ProfiledThread or nullptr if not initialized.
+  // Async-signal-safe: never allocates, safe to call from signal handlers.
+  static ProfiledThread *get();
+  static int currentTid(); // Not signal safe, may allocate
 
   // TLS priming status checks
   static bool isTlsPrimingAvailable();

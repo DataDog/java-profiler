@@ -569,7 +569,7 @@ Java threads get initialized via JVMTI callback and registered in the bitset:
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     // Initialize TLS and register as Java thread
     ProfiledThread::initCurrentThread();
-    ProfiledThread *current = ProfiledThread::current();
+    ProfiledThread *current = ProfiledThread::getOrCreate();
 
     // Register with profiling engines
     _cpu_engine->registerThread(current->tid());
@@ -627,7 +627,7 @@ JVMTI ThreadStart fires
 
 **Key Distinction: Two Separate Initialization Strategies**
 
-1. **JVMTI Path** (`initCurrentThread()`):
+1. **JVMTI/pthread hook Path** (`init via current()`):
    - Used for: New Java threads created after profiler starts
    - Allocation: `ProfiledThread::forTid(tid)` → uses `new` operator
    - Not from buffer: Java threads get dedicated allocations
@@ -641,7 +641,7 @@ JVMTI ThreadStart fires
 
 **Why Two Strategies?**
 
-Java threads are managed via JVMTI callbacks (safe context), so they can use `new` operator. Native threads have no interception point, so they must use pre-allocated buffer slots claimed via async-signal-safe operations.
+Java threads are managed via JVMTI/pthread hook callbacks (safe context), so they can use `new` operator. Native threads have no interception point, so they must use pre-allocated buffer slots claimed via async-signal-safe operations.
 
 ## Platform-Specific Behavior
 
@@ -654,13 +654,6 @@ Java threads are managed via JVMTI callbacks (safe context), so they can use `ne
 - ✅ Filesystem watching with inotify
 - ✅ Thread count via `/proc/self/status`
 
-**Implementation:**
-```cpp
-bool OS::isTlsPrimingAvailable() {
-    return true; // Full support on Linux
-}
-```
-
 ### macOS (Limited TLS Priming)
 
 **Limitations:**
@@ -668,26 +661,6 @@ bool OS::isTlsPrimingAvailable() {
 - ❌ No `/proc` filesystem
 - ❌ No inotify equivalent
 - ✅ JVMTI ThreadStart still works for Java threads
-
-**Implementation:**
-```cpp
-bool OS::isTlsPrimingAvailable() {
-    return false; // Filesystem watching unavailable
-}
-
-// JVMTI still initializes Java threads
-void initCurrentThread() {
-    if (OS::isTlsPrimingAvailable()) {
-        initCurrentThreadWithBuffer();  // Not called on macOS
-    }
-    // Java threads still work via JVMTI
-}
-```
-
-**macOS Behavior:**
-- Java threads: Initialized via JVMTI (works normally)
-- Native threads: Lazy initialization on first signal (may allocate in handler)
-- Acceptable tradeoff: macOS profiling is less critical for production
 
 ## Performance Characteristics
 

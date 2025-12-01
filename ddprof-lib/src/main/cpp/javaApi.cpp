@@ -134,7 +134,8 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 // still compatible in the event of signature changes in the future.
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
-  ProfiledThread *current = ProfiledThread::current();
+  // TLS is guaranteed to be set up by onThreadStart() before any Java code runs
+  ProfiledThread *current = ProfiledThread::get();
   if (unlikely(current == nullptr)) {
     return;
   }
@@ -163,7 +164,8 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
 
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
-  ProfiledThread *current = ProfiledThread::current();
+  // TLS is guaranteed to be set up by onThreadStart() before any Java code runs
+  ProfiledThread *current = ProfiledThread::get();
   if (unlikely(current == nullptr)) {
     return;
   }

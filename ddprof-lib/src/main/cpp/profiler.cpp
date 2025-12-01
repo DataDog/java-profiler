@@ -105,8 +105,13 @@ void Profiler::addRuntimeStub(const void *address, int length,
 }
 
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  ProfiledThread *current = ProfiledThread::current();
+  bool created = false;
+  ProfiledThread *current = ProfiledThread::getOrCreate(&created);
+  if (current == nullptr) {
+    return;
+  }
   int tid = current->tid();
+
   if (_thread_filter.enabled()) {
     int slot_id = _thread_filter.registerThread();
     current->setFilterSlotId(slot_id);
@@ -114,47 +119,69 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   }
   updateThreadName(jvmti, jni, thread, true);
 
-  _cpu_engine->registerThread(tid);
-  _wall_engine->registerThread(tid);
+  if (created) {
+    _cpu_engine->registerThread(tid);
+    _wall_engine->registerThread(tid);
+  }
 }
 
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  ProfiledThread *current = ProfiledThread::currentSignalSafe();
-  int tid = -1;
-  
+  ProfiledThread *current = ProfiledThread::get();
+
   if (current != nullptr) {
-    // ProfiledThread is alive - do full cleanup and use efficient tid access
-    int slot_id = current->filterSlotId();
-    tid = current->tid();
-    
+    // Thread filter cleanup
     if (_thread_filter.enabled()) {
+      int slot_id = current->filterSlotId();
       _thread_filter.unregisterThread(slot_id);
       current->setFilterSlotId(-1);
     }
-    
-    ProfiledThread::release();
-  } else {
-    // ProfiledThread already cleaned up - try to get tid from JVMTI as fallback
-    tid = VMThread::nativeThreadId(jni, thread);
-    if (tid < 0) {
-      // No ProfiledThread AND can't get tid from JVMTI - nothing we can do
-      return;
-    }
+
+    // Release TLS - this also unregisters from engines via freeKey()
+    ProfiledThread::release(current);
   }
-  
-  // These can run if we have a valid tid
-  updateThreadName(jvmti, jni, thread, false);  // false = not self
-  _cpu_engine->unregisterThread(tid);
-  _wall_engine->unregisterThread(tid);
+  // If TLS is null, cleanup already happened via pthread destructor
+  // which called Profiler::unregisterThread()
+
+  // Update thread name while we still have access
+  updateThreadName(jvmti, jni, thread, false);
 }
 
+// registers the current thread for profiling
+// not async-signal-safe when called with 'init == true'
+int Profiler::registerCurrentThread(bool init) {
+  bool created = false;
+  ProfiledThread* current = init ? ProfiledThread::getOrCreate(&created) : ProfiledThread::get();
+
+  if (current != nullptr && created) {
+    return registerThread(current->tid());
+  }
+  return 0;
+}
+void Profiler::unregisterCurrentThread() {
+  ProfiledThread* current = ProfiledThread::get();
+  if (current != nullptr) {
+    _instance->_cpu_engine->unregisterThread(current->tid());
+    _instance->_wall_engine->unregisterThread(current->tid());
+    ProfiledThread::release(current);
+  }
+}
 int Profiler::registerThread(int tid) {
-  return _instance->_cpu_engine->registerThread(tid) |
-         _instance->_wall_engine->registerThread(tid);
+  int result = 0;
+  if (_instance->_cpu_engine != nullptr) {
+    result |= _instance->_cpu_engine->registerThread(tid);
+  }
+  if (_instance->_wall_engine != nullptr) {
+    result |= _instance->_wall_engine->registerThread(tid);
+  }
+  return result;
 }
 void Profiler::unregisterThread(int tid) {
-  _instance->_cpu_engine->unregisterThread(tid);
-  _instance->_wall_engine->unregisterThread(tid);
+  if (_instance->_cpu_engine != nullptr) {
+    _instance->_cpu_engine->unregisterThread(tid);
+  }
+  if (_instance->_wall_engine != nullptr) {
+    _instance->_wall_engine->unregisterThread(tid);
+  }
 }
 
 const char *Profiler::asgctError(int code) {
@@ -717,7 +744,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
           num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, max_remaining, VM_NORMAL, &truncated);
         } else {
           // Async events
-          AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());
+          AsyncSampleMutex mutex(ProfiledThread::get());
           int java_frames = 0;
           if (mutex.acquired()) {
             java_frames = getJavaTraceAsync(ucontext, frames + num_frames, max_remaining, &java_ctx, &truncated);
@@ -744,7 +771,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
 
     call_trace_id =
         _call_trace_storage.put(num_frames, frames, truncated, counter);
-    ProfiledThread *thread = ProfiledThread::currentSignalSafe();
+    ProfiledThread *thread = ProfiledThread::get();
     if (thread != nullptr) {
       thread->recordCallTraceId(call_trace_id);
     }
@@ -889,7 +916,7 @@ void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 }
 
 bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+  ProfiledThread* thrd = ProfiledThread::get();
   if (thrd != nullptr && !thrd->enterCrashHandler()) {
     // we are already in a crash handler; don't recurse!
     return false;
@@ -1222,10 +1249,11 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   // TODO: Current way of setting filter is weird with the recent changes
   _thread_filter.init(args._filter ? args._filter : "0");
-  
-  // Minor optim: Register the current thread (start thread won't be called)
+
+  // Register the current thread for filtering
+  // TLS is guaranteed to be set up by onThreadStart() before any Java code runs
   if (_thread_filter.enabled()) {
-    ProfiledThread *current = ProfiledThread::current();
+    ProfiledThread *current = ProfiledThread::get();
     if (current != nullptr) {
       int slot_id = _thread_filter.registerThread();
       current->setFilterSlotId(slot_id);

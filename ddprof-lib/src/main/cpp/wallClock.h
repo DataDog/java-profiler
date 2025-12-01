@@ -60,7 +60,7 @@ class BaseWallClock : public Engine {
       ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
       
       // We don't want to profile ourselves in wall time
-      ProfiledThread* current = ProfiledThread::current();
+      ProfiledThread* current = ProfiledThread::getOrCreate();
       if (current != nullptr) {
         int slot_id = current->filterSlotId();
         if (slot_id != -1) {
