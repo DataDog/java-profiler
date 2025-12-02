@@ -49,6 +49,8 @@ static func_pthread_setspecific *_pthread_setspecific_entry = nullptr;
 static func_pthread_create *_pthread_create_entry = nullptr;
 static func_dlopen* _dlopen_entry = nullptr;
 
+static func_pthread_create *jnilib_pthread_create_entry = nullptr;
+
 // Intercept thread creation/termination by patching libjvm's GOT entry for
 // pthread_setspecific(). HotSpot puts VMThread into TLS on thread start, and
 // resets on thread end.
@@ -100,6 +102,14 @@ static void **lookupThreadEntry(enum ImportId im_id) {
 
   CodeCache *lib = Libraries::instance()->findJvmLibrary("libj9thr");
   return lib != NULL ? lib->findImport(im_id) : NULL;
+}
+
+static void** lookupLibraryEntry(const char* libname, enum ImportId im_id) {
+  CodeCache *lib = Libraries::instance()->findJvmLibrary(libname);
+  if (lib != nullptr) {
+    return lib->findImport(im_id);
+  }
+  return nullptr;
 }
 
 long CTimer::_interval;
@@ -173,6 +183,11 @@ Error CTimer::check(Arguments &args) {
       return Error("Could not set dlopen hook");
   }
 
+  if (jnilib_pthread_create_entry == nullptr &&
+     (jnilib_pthread_create_entry = (func_pthread_create*)lookupLibraryEntry("ddproftest", im_pthread_create)) == nullptr) {
+      return Error("Could not set jni library hook");
+  }
+
   timer_t timer;
   if (timer_create(CLOCK_THREAD_CPUTIME_ID, NULL, &timer) < 0) {
     return Error("Failed to create CPU timer");
@@ -202,6 +217,11 @@ Error CTimer::start(Arguments &args) {
       return Error("Could not set dlopen hook");
   }
 
+  if (jnilib_pthread_create_entry == nullptr &&
+     (jnilib_pthread_create_entry = (func_pthread_create*)lookupLibraryEntry("ddproftest", im_pthread_create)) == nullptr) {
+      return Error("Could not set jni library hook");
+  }
+
   _interval = args.cpuSamplerInterval();
   _cstack = args._cstack;
   _signal = SIGPROF;
@@ -220,6 +240,7 @@ Error CTimer::start(Arguments &args) {
                    __ATOMIC_RELAXED);
   __atomic_store_n(_dlopen_entry, (void*)dlopen_hook, __ATOMIC_RELAXED);
   __atomic_store_n(_pthread_create_entry, (void*)pthread_create_hook, __ATOMIC_SEQ_CST);
+  __atomic_store_n(jnilib_pthread_create_entry, (void*)pthread_create_hook, __ATOMIC_SEQ_CST);
 
   // Register all existing threads
   Error result = Error::OK;
@@ -242,6 +263,7 @@ void CTimer::stop() {
   __atomic_store_n(_dlopen_entry, (void*)dlopen_hook, __ATOMIC_RELAXED);
   __atomic_store_n(_pthread_create_entry, (void *)pthread_create,
                    __ATOMIC_RELAXED);
+  __atomic_store_n(jnilib_pthread_create_entry, (void*)pthread_create_hook, __ATOMIC_SEQ_CST);
   for (int i = 0; i < _max_timers; i++) {
     unregisterThread(i);
   }
