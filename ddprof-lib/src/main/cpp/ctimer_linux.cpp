@@ -36,7 +36,15 @@ static inline clockid_t thread_cpu_clock(unsigned int tid) {
   return ((~tid) << 3) | 6; // CPUCLOCK_SCHED | CPUCLOCK_PERTHREAD_MASK
 }
 
-static void **_pthread_entry = NULL;
+typedef void* (*func_start_routine)(void*);
+typedef int (*func_pthread_create)(pthread_t* thread,
+                          	   const pthread_attr_t* attr,
+                          	   func_start_routine start_routine,
+                                   void* targ);
+typedef int (*func_pthread_setspecific)(pthread_key_t key, const void *value);
+
+static func_pthread_setspecific *_pthread_setspecific_entry = nullptr;
+static func_pthread_create *_pthread_create_entry = nullptr;
 
 // Intercept thread creation/termination by patching libjvm's GOT entry for
 // pthread_setspecific(). HotSpot puts VMThread into TLS on thread start, and
@@ -51,7 +59,7 @@ static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
 
   if (value != NULL) {
     ProfiledThread::initCurrentThread();
-    int result = pthread_setspecific(key, value);
+    int result = (*_pthread_setspecific_entry)(key, value);
     Profiler::registerThread(ProfiledThread::currentTid());
     return result;
   } else {
@@ -62,13 +70,22 @@ static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
   }
 }
 
-static void **lookupThreadEntry() {
+static int pthread_create_hook(pthread_t* thread,
+                          const pthread_attr_t* attr,
+                          func_start_routine start_routine,
+                          void* arg) {
+  int* p = nullptr;
+  *p = 1;
+  return pthread_create(thread, attr, start_routine, arg);
+}
+
+static void **lookupThreadEntry(enum ImportId im_id) {
   // Depending on Zing version, pthread_setspecific is called either from
   // libazsys.so or from libjvm.so
   if (VM::isZing()) {
     CodeCache *libazsys = Libraries::instance()->findLibraryByName("libazsys");
     if (libazsys != NULL) {
-      void **entry = libazsys->findImport(im_pthread_setspecific);
+      void **entry = libazsys->findImport(im_id);
       if (entry != NULL) {
         return entry;
       }
@@ -76,7 +93,7 @@ static void **lookupThreadEntry() {
   }
 
   CodeCache *lib = Libraries::instance()->findJvmLibrary("libj9thr");
-  return lib != NULL ? lib->findImport(im_pthread_setspecific) : NULL;
+  return lib != NULL ? lib->findImport(im_id) : NULL;
 }
 
 long CTimer::_interval;
@@ -135,9 +152,14 @@ void CTimer::unregisterThread(int tid) {
 }
 
 Error CTimer::check(Arguments &args) {
-  if (_pthread_entry == NULL &&
-      (_pthread_entry = lookupThreadEntry()) == NULL) {
-    return Error("Could not set pthread hook");
+  if (_pthread_setspecific_entry == nullptr &&
+      (_pthread_setspecific_entry = (func_pthread_setspecific*)lookupThreadEntry(im_pthread_setspecific)) == NULL) {
+    return Error("Could not set pthread_setspecific hook");
+  }
+
+  if (_pthread_create_entry == nullptr &&
+      (_pthread_create_entry = (func_pthread_create*)lookupThreadEntry(im_pthread_create)) == NULL) {
+    return Error("Could not set pthread_create hook");
   }
 
   timer_t timer;
@@ -153,10 +175,17 @@ Error CTimer::start(Arguments &args) {
   if (args._interval < 0) {
     return Error("interval must be positive");
   }
-  if (_pthread_entry == NULL &&
-      (_pthread_entry = lookupThreadEntry()) == NULL) {
-    return Error("Could not set pthread hook");
+
+  if (_pthread_setspecific_entry == nullptr &&
+      (_pthread_setspecific_entry = (func_pthread_setspecific*)lookupThreadEntry(im_pthread_setspecific)) == NULL) {
+    return Error("Could not set pthread_setspecific hook");
   }
+
+  if (_pthread_create_entry == nullptr &&
+      (_pthread_create_entry = (func_pthread_create*)lookupThreadEntry(im_pthread_create)) == NULL) {
+    return Error("Could not set pthread_create hook");
+  }
+
   _interval = args.cpuSamplerInterval();
   _cstack = args._cstack;
   _signal = SIGPROF;
@@ -171,8 +200,9 @@ Error CTimer::start(Arguments &args) {
   OS::installSignalHandler(_signal, signalHandler);
 
   // Enable pthread hook before traversing currently running threads
-  __atomic_store_n(_pthread_entry, (void *)pthread_setspecific_hook,
-                   __ATOMIC_RELEASE);
+  __atomic_store_n(_pthread_setspecific_entry, (void *)pthread_setspecific_hook,
+                   __ATOMIC_RELAXED);
+  __atomic_store_n(_pthread_create_entry, (void*)pthread_create_hook, __ATOMIC_SEQ_CST);
 
   // Register all existing threads
   Error result = Error::OK;
@@ -190,8 +220,11 @@ Error CTimer::start(Arguments &args) {
 }
 
 void CTimer::stop() {
-  __atomic_store_n(_pthread_entry, (void *)pthread_setspecific,
-                   __ATOMIC_RELEASE);
+  __atomic_store_n(_pthread_setspecific_entry, (void *)pthread_setspecific,
+                   __ATOMIC_RELAXED);
+
+  __atomic_store_n(_pthread_create_entry, (void *)pthread_create,
+                   __ATOMIC_RELAXED);
   for (int i = 0; i < _max_timers; i++) {
     unregisterThread(i);
   }

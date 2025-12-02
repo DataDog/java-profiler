@@ -1,5 +1,6 @@
 plugins {
   id 'java'
+  id 'java-library'
   id 'application'
 }
 
@@ -7,7 +8,54 @@ repositories {
   mavenCentral()
 }
 
+// 1. Define paths and properties
+def nativeSrcDir = file('src/test/cpp')
+def jniHeadersDir = layout.buildDirectory.dir("generated/jni-headers").get().asFile
+def outputLibDir = layout.buildDirectory.dir("libs/native").get().asFile
+// Define the name of your JNI library (e.g., "ddproftest" becomes libddproftest.so/ddproftest.dll/libddproftest.dylib)
+def libraryName = "ddproftest"
+
+// Determine OS-specific file extensions and library names
+def osName = org.gradle.internal.os.OperatingSystem.current()
+def libFileExtension = (os().isMacOsX() ? "dylib" : "so")
+def libraryFileName = "lib${libraryName}.${libFileExtension}"
+
+// 2. Generate JNI headers using javac
+tasks.named('compileJava') {
+  // Tell javac to generate the JNI headers into the specified directory
+  options.compilerArgs += ['-h', jniHeadersDir]
+}
+
+// 3. Define a task to compile the native code
+tasks.register('buildNativeJniLibrary', Exec) {
+  description 'Compiles the JNI C/C++ sources into a shared library'
+  group 'build'
+
+  // Ensure Java compilation (and thus header generation) happens first
+  dependsOn tasks.named('compileJava')
+
+  // Clean up previous build artifacts
+  doFirst {
+    outputLibDir.mkdirs()
+  }
+
+  // Assume GCC/Clang on Linux/macOS
+  commandLine 'gcc'
+  args nativeSrcDir.listFiles()*.getAbsolutePath() // Source files
+  args "-I${System.getenv('JAVA_HOME')}/include" // Standard JNI includes
+  if (os().isMacOsX()) {
+    args "-I${System.getenv('JAVA_HOME')}/include" // macOS-specific includes
+    args "-I${System.getenv('JAVA_HOME')}/include/darwin" // macOS-specific includes
+    args "-dynamiclib" // Build a dynamic library on macOS
+  } else if (os().isLinux()) {
+    args "-I${System.getenv('JAVA_HOME')}/include/linux" // Linux-specific includes
+    args "-shared" // Build a shared library on Linux
+  }
+  args "-o", "${outputLibDir.absolutePath}/${libraryFileName}" // Output file path
+}
+
 apply from: rootProject.file('common.gradle')
+
 
 def addCommonTestDependencies(Configuration configuration) {
   configuration.dependencies.add(project.dependencies.create('org.junit.jupiter:junit-jupiter-api:5.9.2'))
@@ -217,6 +265,8 @@ task unwindingReport {
 }
 
 tasks.withType(Test).configureEach {
+  dependsOn tasks.named('buildNativeJniLibrary')
+
   // this is a shared configuration for all test tasks
   onlyIf {
     !project.hasProperty('skip-tests')
@@ -229,7 +279,7 @@ tasks.withType(Test).configureEach {
 
   jvmArgs "-Dddprof_test.keep_jfrs=${keepRecordings}", '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true',
     "-Dddprof_test.config=${config}", "-Dddprof_test.ci=${project.hasProperty('CI')}", "-Dddprof.disable_unsafe=true", '-XX:ErrorFile=build/hs_err_pid%p.log', '-XX:+ResizeTLAB',
-    '-Xmx512m', '-XX:OnError=/tmp/do_stuff.sh'
+    '-Xmx512m', '-XX:OnError=/tmp/do_stuff.sh', "-Djava.library.path=${outputLibDir.absolutePath}"
 
   def javaHome = System.getenv("JAVA_TEST_HOME")
   if (javaHome == null) {
