@@ -41,16 +41,16 @@ tasks.register('buildNativeJniLibrary', Exec) {
 
   // Assume GCC/Clang on Linux/macOS
   commandLine 'gcc'
-  args nativeSrcDir.listFiles()*.getAbsolutePath() // Source files
   args "-I${System.getenv('JAVA_HOME')}/include" // Standard JNI includes
   if (os().isMacOsX()) {
-    args "-I${System.getenv('JAVA_HOME')}/include" // macOS-specific includes
     args "-I${System.getenv('JAVA_HOME')}/include/darwin" // macOS-specific includes
     args "-dynamiclib" // Build a dynamic library on macOS
   } else if (os().isLinux()) {
     args "-I${System.getenv('JAVA_HOME')}/include/linux" // Linux-specific includes
+    args "-fPIC"
     args "-shared" // Build a shared library on Linux
   }
+  args nativeSrcDir.listFiles()*.getAbsolutePath() // Source files
   args "-o", "${outputLibDir.absolutePath}/${libraryFileName}" // Output file path
 }
 

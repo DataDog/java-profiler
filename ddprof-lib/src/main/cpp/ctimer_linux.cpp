@@ -43,8 +43,11 @@ typedef int (*func_pthread_create)(pthread_t* thread,
                                    void* targ);
 typedef int (*func_pthread_setspecific)(pthread_key_t key, const void *value);
 
+typedef void* (*func_dlopen)(const char *path, int flags);
+
 static func_pthread_setspecific *_pthread_setspecific_entry = nullptr;
 static func_pthread_create *_pthread_create_entry = nullptr;
+static func_dlopen* _dlopen_entry = nullptr;
 
 // Intercept thread creation/termination by patching libjvm's GOT entry for
 // pthread_setspecific(). HotSpot puts VMThread into TLS on thread start, and
@@ -59,7 +62,7 @@ static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
 
   if (value != NULL) {
     ProfiledThread::initCurrentThread();
-    int result = (*_pthread_setspecific_entry)(key, value);
+    int result = pthread_setspecific(key, value);
     Profiler::registerThread(ProfiledThread::currentTid());
     return result;
   } else {
@@ -70,12 +73,15 @@ static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
   }
 }
 
+static void* dlopen_hook(const char *path, int flags) {
+  printf("dl_open: %s\n", path);
+  return dlopen(path, flags);
+}
+
 static int pthread_create_hook(pthread_t* thread,
                           const pthread_attr_t* attr,
                           func_start_routine start_routine,
                           void* arg) {
-  int* p = nullptr;
-  *p = 1;
   return pthread_create(thread, attr, start_routine, arg);
 }
 
@@ -162,6 +168,11 @@ Error CTimer::check(Arguments &args) {
     return Error("Could not set pthread_create hook");
   }
 
+  if (_dlopen_entry == nullptr &&
+      _dlopen_entry = (func_dlopen*)lookupThreadEntry(im_dlopen) == nullptr) {
+      return Error("Could not set dlopen hook");
+  }
+
   timer_t timer;
   if (timer_create(CLOCK_THREAD_CPUTIME_ID, NULL, &timer) < 0) {
     return Error("Failed to create CPU timer");
@@ -186,6 +197,11 @@ Error CTimer::start(Arguments &args) {
     return Error("Could not set pthread_create hook");
   }
 
+  if (_dlopen_entry == nullptr &&
+      _dlopen_entry = (func_dlopen*)lookupThreadEntry(im_dlopen) == nullptr) {
+      return Error("Could not set dlopen hook");
+  }
+
   _interval = args.cpuSamplerInterval();
   _cstack = args._cstack;
   _signal = SIGPROF;
@@ -202,6 +218,7 @@ Error CTimer::start(Arguments &args) {
   // Enable pthread hook before traversing currently running threads
   __atomic_store_n(_pthread_setspecific_entry, (void *)pthread_setspecific_hook,
                    __ATOMIC_RELAXED);
+  __atomic_store_n(_dlopen_entry, (void*)dlopen_hook, __ATOMIC_RELAXED);
   __atomic_store_n(_pthread_create_entry, (void*)pthread_create_hook, __ATOMIC_SEQ_CST);
 
   // Register all existing threads
@@ -222,7 +239,7 @@ Error CTimer::start(Arguments &args) {
 void CTimer::stop() {
   __atomic_store_n(_pthread_setspecific_entry, (void *)pthread_setspecific,
                    __ATOMIC_RELAXED);
-
+  __atomic_store_n(_dlopen_entry, (void*)dlopen_hook, __ATOMIC_RELAXED);
   __atomic_store_n(_pthread_create_entry, (void *)pthread_create,
                    __ATOMIC_RELAXED);
   for (int i = 0; i < _max_timers; i++) {
