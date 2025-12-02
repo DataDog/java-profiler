@@ -364,6 +364,25 @@ With separate debug symbol packages for production debugging support.
 
 - This ensures the full build log is captured to a file and only a summary is shown in the main session.
 
+## GitHub Operations
+
+### Updating PR Descriptions
+
+The `gh pr edit` command may fail with a GraphQL error about "Projects (classic)" deprecation. Use the GitHub API directly instead:
+
+```bash
+# 1. Write the PR body to a file (e.g., pr-body.md)
+
+# 2. Convert to JSON and update via API
+jq -Rs '{body: .}' pr-body.md > /tmp/pr-update.json
+gh api repos/DataDog/java-profiler/pulls/<PR_NUMBER> -X PATCH --input /tmp/pr-update.json
+
+# 3. Verify the update
+gh pr view <PR_NUMBER> --json body -q '.body' | head -30
+```
+
+This workaround properly escapes the markdown content and avoids the GraphQL Projects deprecation error.
+
 ## Ground rules
 - Never replace the code you work on with stubs
 - Never 'fix' the tests by testing constants against constants

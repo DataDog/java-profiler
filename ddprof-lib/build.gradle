@@ -695,6 +695,11 @@ tasks.register('sourcesJar', Jar) {
   archiveVersion = component_version
 }
 
+javadoc {
+  // Exclude classes that use internal JDK APIs not visible to javadoc
+  exclude '**/BufferWriter8.java'
+}
+
 tasks.register('javadocJar', Jar) {
   dependsOn javadoc
   archiveBaseName = libraryName

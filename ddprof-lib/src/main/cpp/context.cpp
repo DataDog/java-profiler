@@ -23,15 +23,16 @@
 DLLEXPORT thread_local Context context_tls_v1;
 
 Context& Contexts::initializeContextTls() {
-  // ProfiledThread::current() will never return nullptr
   Context& ctx = context_tls_v1;
   // Store pointer for signal-safe access
-  ProfiledThread::current()->markContextTlsInitialized(&ctx);
+  // Use getOrCreate() because this can be called before profiling starts
+  // (e.g., context TLS init during library loading, before onThreadStart callback)
+  ProfiledThread::getOrCreate()->markContextTlsInitialized(&ctx);
   return ctx;
 }
 
 Context& Contexts::get() {
-  ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+  ProfiledThread* thrd = ProfiledThread::get();
   if (thrd == nullptr || !thrd->isContextTlsInitialized()) {
     return DD_EMPTY_CONTEXT;
   }

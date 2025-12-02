@@ -9,6 +9,7 @@
 #include "os_dd.h"
 #include "threadLocalData.h"
 #include "unwindStats.h"
+#include "lockFree.h"
 #include <atomic>
 #include <cstdint>
 #include <jvmti.h>
@@ -77,16 +78,17 @@ public:
     return new ProfiledThread(buffer_pos, 0);
   }
 
-  static void initCurrentThread();
   static void initCurrentThreadWithBuffer(); // Called by signal handler for native threads
   static void initExistingThreads();
   static void cleanupTlsPriming();
 
-  static void release();
+  static void release(ProfiledThread* thread);
 
-  static ProfiledThread *current();
-  static ProfiledThread *currentSignalSafe(); // Signal-safe version that never allocates
-  static int currentTid();
+  static ProfiledThread* getOrCreate(bool* created = nullptr);
+  // Returns current thread's ProfiledThread or nullptr if not initialized.
+  // Async-signal-safe: never allocates, safe to call from signal handlers.
+  static ProfiledThread *get();
+  static int currentTid(); // Not signal safe, may allocate
 
   // TLS priming status checks
   static bool isTlsPrimingAvailable();
@@ -193,8 +195,24 @@ public:
   inline Context* getContextTlsPtr() {
     return _ctx_tls_ptr;
   }
-  
+
+
+  // Java thread tracking for TLS priming optimization
+  static void registerJavaThread(int tid);
+  static void unregisterJavaThread(int tid);
+  static bool isLikelyJavaThread(int tid);
+
 private:
+  // Lock-free bitset for Java thread tracking using double-hashing.
+  // False positive probability ≈ (M/16384)² where M = number of registered Java threads.
+  // Examples: 100 threads → 0.003%, 500 threads → 0.09%, 1000 threads → 0.37%
+  // Memory: 256 words × 2 arrays × 64 bytes (cache-line padding) = 32 KB (fits in L1 cache)
+  // Uses interleaved layout for cache locality: [word1_0, word2_0, word1_1, word2_1, ...]
+  // False positives cause native threads to be skipped for TLS priming, making them
+  // invisible to the profiler. Double-hashing minimizes this risk.
+  static constexpr size_t JAVA_THREAD_BITSET_SIZE = 16384;
+  static LockFreeBitset<JAVA_THREAD_BITSET_SIZE> _java_thread_bitset;
+  static void initJavaThreadBitset();
   // Atomic flag for signal handler reentrancy protection within the same thread
   // Must be atomic because a signal handler can interrupt normal execution mid-instruction,
   // and both contexts may attempt to enter the critical section. Without atomic exchange(),

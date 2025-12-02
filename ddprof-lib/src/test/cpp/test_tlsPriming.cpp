@@ -172,11 +172,8 @@ TEST_F(TlsPrimingTest, JvmtiThreadCleanup) {
 
     // Create a thread that simulates JVMTI initialization
     std::thread test_thread([&]() {
-        // Simulate JVMTI callback: initCurrentThread()
-        ProfiledThread::initCurrentThread();
-
         // Verify TLS is initialized
-        ProfiledThread* tls = ProfiledThread::current();
+        ProfiledThread* tls = ProfiledThread::getOrCreate();
         ASSERT_NE(tls, nullptr);
 
         tid_observed.store(tls->tid());
@@ -216,7 +213,7 @@ TEST_F(TlsPrimingTest, BufferThreadCleanup) {
         ProfiledThread::initCurrentThreadWithBuffer();
 
         // Verify TLS is initialized from buffer
-        ProfiledThread* tls = ProfiledThread::currentSignalSafe();
+        ProfiledThread* tls = ProfiledThread::get();
         if (tls != nullptr) {
             tid_observed.store(tls->tid());
             thread_initialized.store(true);
@@ -256,7 +253,7 @@ TEST_F(TlsPrimingTest, BufferSlotRecycling) {
 
         std::thread test_thread([&]() {
             ProfiledThread::initCurrentThreadWithBuffer();
-            ProfiledThread* tls = ProfiledThread::currentSignalSafe();
+            ProfiledThread* tls = ProfiledThread::get();
             if (tls != nullptr) {
                 tid.store(tls->tid());
             }
@@ -300,8 +297,7 @@ TEST_F(TlsPrimingTest, MixedThreadCleanup) {
         if (i % 2 == 0) {
             // JVMTI-style thread
             threads.emplace_back([&]() {
-                ProfiledThread::initCurrentThread();
-                ProfiledThread* tls = ProfiledThread::current();
+                ProfiledThread* tls = ProfiledThread::getOrCreate();
                 if (tls != nullptr) {
                     jvmti_count++;
                 }
@@ -310,7 +306,7 @@ TEST_F(TlsPrimingTest, MixedThreadCleanup) {
             // Buffer-style thread
             threads.emplace_back([&]() {
                 ProfiledThread::initCurrentThreadWithBuffer();
-                ProfiledThread* tls = ProfiledThread::currentSignalSafe();
+                ProfiledThread* tls = ProfiledThread::get();
                 if (tls != nullptr) {
                     buffer_count++;
                 }

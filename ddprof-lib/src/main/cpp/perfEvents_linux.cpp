@@ -174,14 +174,11 @@ static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
   }
 
   if (value != NULL) {
-    ProfiledThread::initCurrentThread();
-    int result = pthread_setspecific(key, value);
-    Profiler::registerThread(ProfiledThread::currentTid());
-    return result;
+    Profiler::registerCurrentThread();
+    return pthread_setspecific(key, value);
   } else {
     int tid = ProfiledThread::currentTid();
     Profiler::unregisterThread(tid);
-    ProfiledThread::release();
     return pthread_setspecific(key, value);
   }
 }
@@ -572,13 +569,11 @@ int PerfEvents::registerThread(int tid) {
     return 0;
   }
   if (tid >= _max_events) {
-    Log::warn("tid[%d] > pid_max[%d]. Restart profiler after changing pid_max",
-              tid, _max_events);
     return -1;
   }
 
   if (__atomic_load_n(&_events[tid]._fd, __ATOMIC_ACQUIRE) > 0) {
-    Log::debug("Thread %d is already registered for perf_event_open", tid);
+    // Already registered
     return 0;
   }
 
@@ -661,7 +656,6 @@ int PerfEvents::registerThread(int tid) {
                                  PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)
                           : NULL;
     if (page == MAP_FAILED) {
-      Log::info("perf_event mmap failed: %s", strerror(errno));
       page = NULL;
     }
   }
@@ -732,7 +726,7 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }
-  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  ProfiledThread *current = ProfiledThread::get();
   if (current != NULL) {
     current->noteCPUSample(Profiler::instance()->recordingEpoch());
   }

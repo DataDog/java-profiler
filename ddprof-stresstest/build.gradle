@@ -36,6 +36,54 @@ jmh {
   timeOnIteration = '3s'
   warmup = '1s'
   warmupIterations = 3
+
+  // Add support for includes with multiple patterns
+  if (project.hasProperty('jmh.includes')) {
+    def patternsString = project.property('jmh.includes')
+    includes = patternsString.split(',').collect { it.trim() }
+  }
+
+  // Add support for excludes with multiple patterns
+  if (project.hasProperty('jmh.excludes')) {
+    def patternsString = project.property('jmh.excludes')
+    excludes = patternsString.split(',').collect { it.trim() }
+  }
+
+  // Support passing environment variables as system properties to the forked JVM
+  // Usage: -Pjmh.env.VAR_NAME=value or -Pjmh.env="VAR1=val1,VAR2=val2"
+  def jvmArgsList = []
+
+  // Option 1: Individual env vars via -Pjmh.env.VAR_NAME=value
+  project.properties.each { key, value ->
+    if (key.startsWith('jmh.env.')) {
+      def envVarName = key.substring('jmh.env.'.length())
+      jvmArgsList.add("-D${envVarName}=${value}")
+    }
+  }
+
+  // Option 2: Multiple env vars via -Pjmh.env="VAR1=val1,VAR2=val2"
+  if (project.hasProperty('jmh.env')) {
+    def envString = project.property('jmh.env')
+    envString.split(',').each { pair ->
+      def trimmedPair = pair.trim()
+      if (trimmedPair.contains('=')) {
+        def parts = trimmedPair.split('=', 2)
+        jvmArgsList.add("-D${parts[0].trim()}=${parts[1].trim()}")
+      }
+    }
+  }
+
+  // Option 3: Pass JVM args directly via -Pjmh.jvmArgs
+  if (project.hasProperty('jmh.jvmArgs')) {
+    def argsString = project.property('jmh.jvmArgs')
+    argsString.split(',').each { arg ->
+      jvmArgsList.add(arg.trim())
+    }
+  }
+
+  if (!jvmArgsList.isEmpty()) {
+    jvmArgsAppend = jvmArgsList
+  }
 }
 
 // Configure all JMH-related JavaExec tasks to use the correct JDK
@@ -63,7 +111,72 @@ task runStressTests(type: Exec) {
   }
   group = 'Execution'
   description = 'Run JMH stresstests'
-  commandLine "${javaHome}/bin/java", '-jar', 'build/libs/stresstests.jar', '-prof', 'com.datadoghq.profiler.stresstest.WhiteboxProfiler', 'counters.*'
+
+  // Build command line with support for passing JVM args
+  def cmd = ["${javaHome}/bin/java"]
+
+  // Add JVM args if specified
+  if (project.hasProperty('jmh.jvmArgs')) {
+    project.property('jmh.jvmArgs').split(',').each { arg ->
+      cmd.add(arg.trim())
+    }
+  }
+
+  // Add env vars as system properties (for Java code that uses System.getProperty)
+  project.properties.each { key, value ->
+    if (key.startsWith('jmh.env.')) {
+      def envVarName = key.substring('jmh.env.'.length())
+      cmd.add("-D${envVarName}=${value}")
+    }
+  }
+
+  if (project.hasProperty('jmh.env')) {
+    def envString = project.property('jmh.env')
+    envString.split(',').each { pair ->
+      def trimmedPair = pair.trim()
+      if (trimmedPair.contains('=')) {
+        def parts = trimmedPair.split('=', 2)
+        cmd.add("-D${parts[0].trim()}=${parts[1].trim()}")
+      }
+    }
+  }
+
+  cmd.addAll([
+    '-jar',
+    'build/libs/stresstests.jar',
+    '-prof',
+    'com.datadoghq.profiler.stresstest.WhiteboxProfiler',
+    'counters.*'
+  ])
+
+  commandLine cmd
+
+  // Set actual environment variables for the forked process (for native code that uses getenv())
+  // This allows native C++ code to read them via std::getenv()
+  def envVars = [:]
+
+  // Copy specific env vars from current process
+  project.properties.each { key, value ->
+    if (key.startsWith('jmh.env.')) {
+      def envVarName = key.substring('jmh.env.'.length())
+      envVars[envVarName] = value
+    }
+  }
+
+  if (project.hasProperty('jmh.env')) {
+    def envString = project.property('jmh.env')
+    envString.split(',').each { pair ->
+      def trimmedPair = pair.trim()
+      if (trimmedPair.contains('=')) {
+        def parts = trimmedPair.split('=', 2)
+        envVars[parts[0].trim()] = parts[1].trim()
+      }
+    }
+  }
+
+  if (!envVars.isEmpty()) {
+    environment envVars
+  }
 }
 
 tasks.withType(JavaCompile).configureEach {

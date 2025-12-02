@@ -271,6 +271,8 @@ public:
   static void busHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void setupSignalHandlers();
 
+  static int registerCurrentThread(bool init = false);
+  static void unregisterCurrentThread();
   static int registerThread(int tid);
   static void unregisterThread(int tid);
 

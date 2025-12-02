@@ -38,7 +38,7 @@ void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return;  // Another critical section is active, defer profiling
   }
   int tid = 0;
-  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  ProfiledThread *current = ProfiledThread::get();
   if (current != NULL) {
     current->noteCPUSample(Profiler::instance()->recordingEpoch());
     tid = current->tid();

@@ -428,7 +428,7 @@ Context& ctx = context_tls_v1;  // May trigger TLS lazy initialization
 ```cpp
 // SAFE - Pre-initialized pointer, no TLS access
 Context& Contexts::get() {
-    ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+    ProfiledThread* thrd = ProfiledThread::get();
     if (thrd == nullptr || !thrd->isContextTlsInitialized()) {
         return DD_EMPTY_CONTEXT;  // Safe fallback
     }
@@ -446,7 +446,7 @@ Context& Contexts::initializeContextTls() {
     Context& ctx = context_tls_v1;
 
     // Store pointer in ProfiledThread for signal-safe access
-    ProfiledThread::current()->markContextTlsInitialized(&ctx);
+    ProfiledThread::getOrCreate()->markContextTlsInitialized(&ctx);
 
     return ctx;
 }

@@ -1,12 +1,24 @@
+#include "arch_dd.h"
+#include "lockFree.h"
 #include "thread.h"
 #include "os_dd.h"
 #include "profiler.h"
 #include "common.h"
 #include "vmStructs.h"
+#include "vmEntry.h"
 #include <time.h>
+#include <cstdlib>
+#include <cstring>
 
 // TLS priming signal number
 static int g_tls_prime_signal = -1;
+
+// Define ProfiledThread static members for Java thread tracking
+LockFreeBitset<ProfiledThread::JAVA_THREAD_BITSET_SIZE> ProfiledThread::_java_thread_bitset;
+
+void ProfiledThread::initJavaThreadBitset() {
+  _java_thread_bitset.init();
+}
 
 pthread_key_t ProfiledThread::_tls_key;
 int ProfiledThread::_buffer_size = 0;
@@ -20,37 +32,33 @@ void ProfiledThread::initTLSKey() {
   pthread_once(&tls_initialized, doInitTLSKey);
 }
 
-void ProfiledThread::doInitTLSKey() { pthread_key_create(&_tls_key, freeKey); }
+void ProfiledThread::doInitTLSKey() {
+  pthread_key_create(&_tls_key, freeKey);
+  // Initialize Java thread bitset early to ensure it's ready for any thread cleanup
+  initJavaThreadBitset();
+}
 
 inline void ProfiledThread::freeKey(void *key) {
   ProfiledThread *tls_ref = (ProfiledThread *)(key);
   if (tls_ref != NULL) {
-    // Check if this is a buffer-allocated thread (has valid buffer_pos)
+    int tid = tls_ref->_tid;
     bool is_buffer_allocated = (tls_ref->_buffer_pos >= 0);
+
+    // Unregister from profiling engines before cleanup
+    // This ensures cleanup happens even if pthread destructor runs before JVMTI ThreadEnd
+    if (tid > 0) {
+      Profiler::unregisterThread(tid);
+    }
 
     if (is_buffer_allocated) {
       // Buffer-allocated: reset and return to buffer for reuse
       tls_ref->releaseFromBuffer();
     } else {
-      // Non-buffer (JVMTI-allocated): delete the instance
+      // Non-buffer (JVMTI-allocated): unregister Java thread and delete the instance
+      ProfiledThread::unregisterJavaThread(tid);
       delete tls_ref;
     }
   }
-}
-
-void ProfiledThread::initCurrentThread() {
-  // JVMTI callback path - does NOT use buffer
-  // Allocate dedicated ProfiledThread for Java threads (not from buffer)
-  // This MUST happen here to prevent lazy allocation in signal handler
-  initTLSKey();
-
-  if (pthread_getspecific(_tls_key) != NULL) {
-    return; // Already initialized
-  }
-
-  int tid = OS::threadId();
-  ProfiledThread *tls = ProfiledThread::forTid(tid);
-  pthread_setspecific(_tls_key, (const void *)tls);
 }
 
 void ProfiledThread::initExistingThreads() {
@@ -144,21 +152,42 @@ void ProfiledThread::doInitExistingThreads() {
   // 256 should be more than enough for concurrent new thread creation
   prepareBuffer(256);
 
-  // Start thread directory watcher to prime new threads (no mass-priming of existing threads)
-  bool watcher_started = ddprof::OS::startThreadDirectoryWatcher(
-    [](int tid) {
-      // Prime new thread with TLS signal
-      ddprof::OS::signalThread(tid, g_tls_prime_signal);
-    },
-    [](int tid) {
-      // No-op for dead threads - cleanup handled elsewhere
-    }
-  );
+  // Check if watcher is enabled via environment variable or system property
+  // Default: disabled (watcher adds per-thread overhead that affects throughput benchmarks)
+  // Set DD_PROFILER_TLS_WATCHER=1 to enable for native thread priming
+  // Supports both environment variable and system property (for JMH forked JVMs)
+  const char* watcher_env = std::getenv("DD_PROFILER_TLS_WATCHER");
+  bool watcher_enabled = false; //(watcher_env == nullptr || std::strcmp(watcher_env, "1") == 0);
 
-  if (!watcher_started) {
-    TEST_LOG("Failed to start thread directory watcher for TLS priming");
+  // If not set via environment variable, check system property (for JMH compatibility)
+//  if (watcher_enabled) {
+//    char* watcher_prop = nullptr;
+//    jvmtiEnv *jvmti = VM::jvmti();
+//    if (jvmti != nullptr && jvmti->GetSystemProperty("DD_PROFILER_TLS_WATCHER", &watcher_prop) == 0 && watcher_prop != nullptr) {
+//      watcher_enabled = (std::strcmp(watcher_prop, "1") != 0);
+//      jvmti->Deallocate((unsigned char*)watcher_prop);
+//    }
+//  }
+
+  if (watcher_enabled) {
+    // Start thread directory watcher to prime new threads (no mass-priming of existing threads)
+    bool watcher_started = ddprof::OS::startThreadDirectoryWatcher(
+      [](int tid) {
+        // Prime new thread with TLS signal
+        ddprof::OS::signalThread(tid, g_tls_prime_signal);
+      },
+      [](int tid) {
+        // No-op for dead threads - cleanup handled elsewhere
+      }
+    );
+
+    if (!watcher_started) {
+      TEST_LOG("Failed to start thread directory watcher for TLS priming");
+    } else {
+      TEST_LOG("Started thread directory watcher for TLS priming");
+    }
   } else {
-    TEST_LOG("Started thread directory watcher for TLS priming");
+    TEST_LOG("TLS watcher enabled (set DD_PROFILER_TLS_WATCHER=0 to enable)");
   }
 
   initialized = true;
@@ -221,26 +250,24 @@ void ProfiledThread::prepareBuffer(int size) {
   }
 }
 
-void ProfiledThread::release() {
+void ProfiledThread::release(ProfiledThread* tls) {
+  if (tls == nullptr) {
+    return;
+  }
   pthread_key_t key = _tls_key;
   if (key == 0) {
     return;
   }
-  ProfiledThread *tls = (ProfiledThread *)pthread_getspecific(key);
-  if (tls != NULL) {
-    pthread_setspecific(key, NULL);
+  pthread_setspecific(key, NULL);
 
-    // Check if this is a buffer-allocated thread (has valid buffer_pos)
-    bool is_buffer_allocated = (tls->_buffer_pos >= 0);
+  // Check if this is a buffer-allocated thread (has valid buffer_pos)
+  bool is_buffer_allocated = (tls->_buffer_pos >= 0);
 
-    tls->releaseFromBuffer();
+  tls->releaseFromBuffer();
 
-    // Only delete non-buffer threads (e.g., created via forTid())
-    if (!is_buffer_allocated) {
-      pthread_setspecific(key, NULL);
-      delete tls;
-    }
-    // Buffer-allocated threads are kept for reuse and will be deleted in cleanupBuffer()
+  // Only delete non-buffer threads (e.g., created via forTid())
+  if (!is_buffer_allocated) {
+    delete tls;
   }
 }
 
@@ -269,28 +296,33 @@ void ProfiledThread::releaseFromBuffer() {
 }
 
 int ProfiledThread::currentTid() {
-  ProfiledThread *tls = current();
+  ProfiledThread *tls = getOrCreate();
   if (tls != NULL) {
     return tls->tid();
   }
   return OS::threadId();
 }
 
-ProfiledThread *ProfiledThread::current() {
+ProfiledThread* ProfiledThread::getOrCreate(bool* created) {
   initTLSKey();
 
-  ProfiledThread *tls = (ProfiledThread *)pthread_getspecific(_tls_key);
+  ProfiledThread* tls = (ProfiledThread *)pthread_getspecific(_tls_key);
+  int tid = 0;
   if (tls == NULL) {
-    // Lazy allocation - safe since current() is never called from signal handlers
-    int tid = OS::threadId();
+    // Lazy allocation - safe since getOrCreate() is never called from signal handlers
+    tid = OS::threadId();
     tls = ProfiledThread::forTid(tid);
     pthread_setspecific(_tls_key, (const void *)tls);
+    ProfiledThread::registerJavaThread(tid);
+    if (created != nullptr) *created = true;
+  } else {
+    tid = tls->tid();
   }
   return tls;
 }
 
-ProfiledThread *ProfiledThread::currentSignalSafe() {
-  // Signal-safe: never allocate, just return existing TLS or null
+ProfiledThread *ProfiledThread::get() {
+  // Async-signal-safe: never allocates, just returns existing TLS or nullptr
   pthread_key_t key = _tls_key;
   return key != 0 ? (ProfiledThread *)pthread_getspecific(key) : nullptr;
 }
@@ -355,9 +387,31 @@ void ProfiledThread::cleanupBuffer() {
 }
 
 void ProfiledThread::simpleTlsSignalHandler(int signo) {
+  // Quick check: if TLS already set, return immediately (avoids VMThread lookup)
+  if (pthread_getspecific(_tls_key) != nullptr) {
+    return;
+  }
+
   // Only prime threads that are not Java threads
   // Java threads are handled by JVMTI ThreadStart events
   if (VMThread::current() == nullptr) {
     initCurrentThreadWithBuffer();
+    // Register thread with profiling engines after TLS is initialized
+    ProfiledThread *tls = (ProfiledThread *)pthread_getspecific(_tls_key);
+    if (tls != nullptr) {
+      Profiler::registerThread(tls->tid());
+    }
   }
+}
+
+void ProfiledThread::registerJavaThread(int tid) {
+  _java_thread_bitset.set(static_cast<size_t>(tid));
+}
+
+bool ProfiledThread::isLikelyJavaThread(int tid) {
+  return _java_thread_bitset.test(static_cast<size_t>(tid));
+}
+
+void ProfiledThread::unregisterJavaThread(int tid) {
+  _java_thread_bitset.clear(static_cast<size_t>(tid));
 }
