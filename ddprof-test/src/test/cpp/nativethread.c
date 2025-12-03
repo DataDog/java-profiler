@@ -29,7 +29,7 @@ void* thread_function(void* arg) {
     pthread_exit(NULL); // Terminate the thread, optionally returning a value
 }
 
-void JNICALL Java_com_datadoghq_profiler_nativethread_NativeThreadTest_createNativeThread
+jlong JNICALL Java_com_datadoghq_profiler_nativethread_NativeThreadTest_createNativeThread
   (JNIEnv * env, jclass clz) {
 
     char* message = "Hello from the new thread!"; // Message to pass to the thread
@@ -40,22 +40,25 @@ void JNICALL Java_com_datadoghq_profiler_nativethread_NativeThreadTest_createNat
     // 2. NULL: Pointer to thread attributes (using default attributes here).
     // 3. thread_function: Pointer to the function the new thread will execute.
     // 4. (void*)message: Pointer to the argument to pass to the thread_function.
+     pthread_t thread_id;
     int result = pthread_create(&thread_id, NULL, thread_function, (void*)message);
 
     if (result != 0) {
         perror("Error creating thread");
-        return;
+        return -1L;
     }
 
     printf("Main thread created a new thread with ID: %lu\n", (unsigned long)thread_id);
-
+    return (jlong) thread_id;
 }
 
 void JNICALL Java_com_datadoghq_profiler_nativethread_NativeThreadTest_waitNativeThread
-  (JNIEnv * env, jclass clz) {
+  (JNIEnv * env, jclass clz, jlong threadId) {
+    pthread_t thread_id = (pthread_t)threadId;
     // Wait for the created thread to finish
     // Arguments:
     // 1. thread_id: The ID of the thread to wait for.
     // 2. NULL: Pointer to store the return value of the joined thread (not used here).
     pthread_join(thread_id, NULL);
+    printf("Thread %lu exited\n", (unsigned long)thread_id);
 }

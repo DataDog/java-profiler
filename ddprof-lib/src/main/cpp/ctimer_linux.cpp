@@ -41,15 +41,13 @@ typedef int (*func_pthread_create)(pthread_t* thread,
                           	   const pthread_attr_t* attr,
                           	   func_start_routine start_routine,
                                    void* targ);
+typedef void (*func_pthread_exit)(void *retval);
 typedef int (*func_pthread_setspecific)(pthread_key_t key, const void *value);
 
-typedef void* (*func_dlopen)(const char *path, int flags);
 
 static func_pthread_setspecific *_pthread_setspecific_entry = nullptr;
-static func_pthread_create *_pthread_create_entry = nullptr;
-static func_dlopen* _dlopen_entry = nullptr;
-
 static func_pthread_create *jnilib_pthread_create_entry = nullptr;
+static func_pthread_exit* jnilib_pthread_exit_entry = nullptr;
 
 // Intercept thread creation/termination by patching libjvm's GOT entry for
 // pthread_setspecific(). HotSpot puts VMThread into TLS on thread start, and
@@ -84,10 +82,31 @@ static int pthread_create_hook(pthread_t* thread,
                           const pthread_attr_t* attr,
                           func_start_routine start_routine,
                           void* arg) {
+  ProfiledThread::initCurrentThread();
+  Profiler::registerThread(ProfiledThread::currentTid());
+
   return pthread_create(thread, attr, start_routine, arg);
 }
 
-static void **lookupThreadEntry(enum ImportId im_id) {
+
+static void pthread_exit_hook(void* retval) {
+  int tid = ProfiledThread::currentTid();
+  Profiler::unregisterThread(tid);
+  ProfiledThread::release();
+  pthread_exit(retval);
+}
+
+static void** lookupLibraryEntry(const char* libname, enum ImportId im_id) {
+  CodeCache *lib = Libraries::instance()->findJvmLibrary(libname);
+  if (lib != nullptr) {
+    return lib->findImport(im_id);
+  }
+  printf("No library: %s founded\n", libname);
+  return nullptr;
+}
+
+
+static void **lookupJVMEntry(enum ImportId im_id) {
   // Depending on Zing version, pthread_setspecific is called either from
   // libazsys.so or from libjvm.so
   if (VM::isZing()) {
@@ -169,23 +188,16 @@ void CTimer::unregisterThread(int tid) {
 
 Error CTimer::check(Arguments &args) {
   if (_pthread_setspecific_entry == nullptr &&
-      (_pthread_setspecific_entry = (func_pthread_setspecific*)lookupThreadEntry(im_pthread_setspecific)) == NULL) {
+      (_pthread_setspecific_entry = (func_pthread_setspecific*)lookupJVMEntry(im_pthread_setspecific)) == NULL) {
     return Error("Could not set pthread_setspecific hook");
   }
 
-  if (_pthread_create_entry == nullptr &&
-      (_pthread_create_entry = (func_pthread_create*)lookupThreadEntry(im_pthread_create)) == NULL) {
-    return Error("Could not set pthread_create hook");
+  if (jnilib_pthread_create_entry == nullptr) {
+     jnilib_pthread_create_entry = (func_pthread_create*)lookupLibraryEntry("ddproftest", im_pthread_create);
   }
 
-  if (_dlopen_entry == nullptr &&
-      _dlopen_entry = (func_dlopen*)lookupThreadEntry(im_dlopen) == nullptr) {
-      return Error("Could not set dlopen hook");
-  }
-
-  if (jnilib_pthread_create_entry == nullptr &&
-     (jnilib_pthread_create_entry = (func_pthread_create*)lookupLibraryEntry("ddproftest", im_pthread_create)) == nullptr) {
-      return Error("Could not set jni library hook");
+  if (jnilib_pthread_exit_entry == nullptr) {
+    jnilib_pthread_exit_entry = (func_pthread_exit*)lookupLibraryEntry("ddproftest", im_pthread_exit);
   }
 
   timer_t timer;
@@ -203,23 +215,16 @@ Error CTimer::start(Arguments &args) {
   }
 
   if (_pthread_setspecific_entry == nullptr &&
-      (_pthread_setspecific_entry = (func_pthread_setspecific*)lookupThreadEntry(im_pthread_setspecific)) == NULL) {
+      (_pthread_setspecific_entry = (func_pthread_setspecific*)lookupJVMEntry(im_pthread_setspecific)) == NULL) {
     return Error("Could not set pthread_setspecific hook");
   }
 
-  if (_pthread_create_entry == nullptr &&
-      (_pthread_create_entry = (func_pthread_create*)lookupThreadEntry(im_pthread_create)) == NULL) {
-    return Error("Could not set pthread_create hook");
+  if (jnilib_pthread_create_entry == nullptr) {
+     jnilib_pthread_create_entry = (func_pthread_create*)lookupLibraryEntry("ddproftest", im_pthread_create);
   }
 
-  if (_dlopen_entry == nullptr &&
-      _dlopen_entry = (func_dlopen*)lookupThreadEntry(im_dlopen) == nullptr) {
-      return Error("Could not set dlopen hook");
-  }
-
-  if (jnilib_pthread_create_entry == nullptr &&
-     (jnilib_pthread_create_entry = (func_pthread_create*)lookupLibraryEntry("ddproftest", im_pthread_create)) == nullptr) {
-      return Error("Could not set jni library hook");
+  if (jnilib_pthread_exit_entry == nullptr) {
+    jnilib_pthread_exit_entry = (func_pthread_exit*)lookupLibraryEntry("ddproftest", im_pthread_exit);
   }
 
   _interval = args.cpuSamplerInterval();
@@ -238,9 +243,18 @@ Error CTimer::start(Arguments &args) {
   // Enable pthread hook before traversing currently running threads
   __atomic_store_n(_pthread_setspecific_entry, (void *)pthread_setspecific_hook,
                    __ATOMIC_RELAXED);
-  __atomic_store_n(_dlopen_entry, (void*)dlopen_hook, __ATOMIC_RELAXED);
-  __atomic_store_n(_pthread_create_entry, (void*)pthread_create_hook, __ATOMIC_SEQ_CST);
-  __atomic_store_n(jnilib_pthread_create_entry, (void*)pthread_create_hook, __ATOMIC_SEQ_CST);
+  if (jnilib_pthread_create_entry != nullptr) {
+    __atomic_store_n(jnilib_pthread_create_entry, (void*)pthread_create_hook, __ATOMIC_SEQ_CST);
+    printf("pthread_create_hook installed\n");
+  } else {
+    printf("failed to install pthread_create_hook\n");
+  }
+  if (jnilib_pthread_exit_entry != nullptr) {
+    __atomic_store_n(jnilib_pthread_exit_entry, (void*)pthread_exit_hook, __ATOMIC_SEQ_CST);
+    printf("pthread_exit_hook installed\n");
+  } else {
+       printf("failed to install pthread_exit_hook\n");
+  }
 
   // Register all existing threads
   Error result = Error::OK;
@@ -260,10 +274,12 @@ Error CTimer::start(Arguments &args) {
 void CTimer::stop() {
   __atomic_store_n(_pthread_setspecific_entry, (void *)pthread_setspecific,
                    __ATOMIC_RELAXED);
-  __atomic_store_n(_dlopen_entry, (void*)dlopen_hook, __ATOMIC_RELAXED);
-  __atomic_store_n(_pthread_create_entry, (void *)pthread_create,
-                   __ATOMIC_RELAXED);
-  __atomic_store_n(jnilib_pthread_create_entry, (void*)pthread_create_hook, __ATOMIC_SEQ_CST);
+  if (jnilib_pthread_create_entry != nullptr) {
+    __atomic_store_n(jnilib_pthread_create_entry, (void*)pthread_create_hook, __ATOMIC_SEQ_CST);
+  }
+  if (jnilib_pthread_exit_entry != nullptr) {
+    __atomic_store_n(jnilib_pthread_exit_entry, (void*)pthread_exit_hook, __ATOMIC_SEQ_CST);
+  }
   for (int i = 0; i < _max_timers; i++) {
     unregisterThread(i);
   }

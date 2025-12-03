@@ -38,24 +38,17 @@ public class NativeThreadTest extends AbstractProfilerTest {
     return "cpu=1ms,wall=1ms";
   }
 
-  @Override
-  protected void before() throws Exception {
-      createNativeThread();
-  }
-
-  @Override
-  protected void after() throws Exception {
-      waitNativeThread();
-  }
-
   @RetryingTest(3)
   public void test() {
-      try {
-          Thread.sleep(100);
-      } catch (Exception e) {
+      long[] threads = new long[128];
+      for (int index = 0; index < threads.length; index++) {
+          threads[index] = createNativeThread();
       }
 
-      stopProfiler();
+      for (int index = 0; index < threads.length; index++) {
+          waitNativeThread(threads[index]);
+      }
+
       Map<String, AtomicInteger> modeCounters = new HashMap<>();
       Map<String, AtomicInteger> libraryCounters = new HashMap<>();
       for (IItemIterable cpuSamples : verifyEvents("datadog.ExecutionSample")) {
@@ -71,6 +64,6 @@ public class NativeThreadTest extends AbstractProfilerTest {
 
   }
 
-  private static native void createNativeThread();
-  private static native void waitNativeThread();
+  private static native long createNativeThread();
+  private static native void waitNativeThread(long threadId);
 }

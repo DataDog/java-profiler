@@ -178,7 +178,7 @@ buildConfigurations.each { config ->
 
       jvmArgs '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true',
         '-XX:ErrorFile=build/hs_err_pid%p.log', '-XX:+ResizeTLAB',
-        '-Xmx512m'
+        '-Xmx1G'
     }
 
     // Configure arguments for runUnwindingValidator task
