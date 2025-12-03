@@ -40,14 +40,12 @@ typedef void* (*func_start_routine)(void*);
 typedef int (*func_pthread_create)(pthread_t* thread,
                           	   const pthread_attr_t* attr,
                           	   func_start_routine start_routine,
-                                   void* targ);
-typedef void (*func_pthread_exit)(void *retval);
+                                   void* arg);
 typedef int (*func_pthread_setspecific)(pthread_key_t key, const void *value);
 
 
 static func_pthread_setspecific *_pthread_setspecific_entry = nullptr;
 static func_pthread_create *jnilib_pthread_create_entry = nullptr;
-static func_pthread_exit* jnilib_pthread_exit_entry = nullptr;
 
 // Intercept thread creation/termination by patching libjvm's GOT entry for
 // pthread_setspecific(). HotSpot puts VMThread into TLS on thread start, and
@@ -73,31 +71,36 @@ static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
   }
 }
 
-static void* dlopen_hook(const char *path, int flags) {
-  printf("dl_open: %s\n", path);
-  return dlopen(path, flags);
+typedef struct startRoutineData {
+    func_start_routine _func;
+    void*              _arg;
+} StartRoutineData;
+
+
+static void* start_routine_wrapper(void* args) {
+    StartRoutineData* data = (StartRoutineData*)args;
+    ProfiledThread::initCurrentThread();
+    int tid = ProfiledThread::currentTid();
+    Profiler::registerThread(tid);
+    data->_func(data->_arg);
+    Profiler::unregisterThread(tid);
+    ProfiledThread::release();
+    free(args)
 }
 
 static int pthread_create_hook(pthread_t* thread,
                           const pthread_attr_t* attr,
                           func_start_routine start_routine,
                           void* arg) {
-  ProfiledThread::initCurrentThread();
-  Profiler::registerThread(ProfiledThread::currentTid());
-
-  return pthread_create(thread, attr, start_routine, arg);
+  StartRoutineData* data = (StartRoutineData*)malloc(sizeof(StartRoutineData));
+  data->_func = start_routine;
+  data->_arg = arg;
+  return pthread_create(thread, attr, start_routine_wrapper, (void*)data);
 }
 
-
-static void pthread_exit_hook(void* retval) {
-  int tid = ProfiledThread::currentTid();
-  Profiler::unregisterThread(tid);
-  ProfiledThread::release();
-  pthread_exit(retval);
-}
 
 static void** lookupLibraryEntry(const char* libname, enum ImportId im_id) {
-  CodeCache *lib = Libraries::instance()->findJvmLibrary(libname);
+  CodeCache *lib = Libraries::instance()->findLibraryByName(libname);
   if (lib != nullptr) {
     return lib->findImport(im_id);
   }
@@ -121,14 +124,6 @@ static void **lookupJVMEntry(enum ImportId im_id) {
 
   CodeCache *lib = Libraries::instance()->findJvmLibrary("libj9thr");
   return lib != NULL ? lib->findImport(im_id) : NULL;
-}
-
-static void** lookupLibraryEntry(const char* libname, enum ImportId im_id) {
-  CodeCache *lib = Libraries::instance()->findJvmLibrary(libname);
-  if (lib != nullptr) {
-    return lib->findImport(im_id);
-  }
-  return nullptr;
 }
 
 long CTimer::_interval;
@@ -193,11 +188,7 @@ Error CTimer::check(Arguments &args) {
   }
 
   if (jnilib_pthread_create_entry == nullptr) {
-     jnilib_pthread_create_entry = (func_pthread_create*)lookupLibraryEntry("ddproftest", im_pthread_create);
-  }
-
-  if (jnilib_pthread_exit_entry == nullptr) {
-    jnilib_pthread_exit_entry = (func_pthread_exit*)lookupLibraryEntry("ddproftest", im_pthread_exit);
+     jnilib_pthread_create_entry = (func_pthread_create*)lookupLibraryEntry("libddproftest", im_pthread_create);
   }
 
   timer_t timer;
@@ -220,11 +211,7 @@ Error CTimer::start(Arguments &args) {
   }
 
   if (jnilib_pthread_create_entry == nullptr) {
-     jnilib_pthread_create_entry = (func_pthread_create*)lookupLibraryEntry("ddproftest", im_pthread_create);
-  }
-
-  if (jnilib_pthread_exit_entry == nullptr) {
-    jnilib_pthread_exit_entry = (func_pthread_exit*)lookupLibraryEntry("ddproftest", im_pthread_exit);
+     jnilib_pthread_create_entry = (func_pthread_create*)lookupLibraryEntry("libddproftest", im_pthread_create);
   }
 
   _interval = args.cpuSamplerInterval();
@@ -249,12 +236,6 @@ Error CTimer::start(Arguments &args) {
   } else {
     printf("failed to install pthread_create_hook\n");
   }
-  if (jnilib_pthread_exit_entry != nullptr) {
-    __atomic_store_n(jnilib_pthread_exit_entry, (void*)pthread_exit_hook, __ATOMIC_SEQ_CST);
-    printf("pthread_exit_hook installed\n");
-  } else {
-       printf("failed to install pthread_exit_hook\n");
-  }
 
   // Register all existing threads
   Error result = Error::OK;
@@ -276,9 +257,6 @@ void CTimer::stop() {
                    __ATOMIC_RELAXED);
   if (jnilib_pthread_create_entry != nullptr) {
     __atomic_store_n(jnilib_pthread_create_entry, (void*)pthread_create_hook, __ATOMIC_SEQ_CST);
-  }
-  if (jnilib_pthread_exit_entry != nullptr) {
-    __atomic_store_n(jnilib_pthread_exit_entry, (void*)pthread_exit_hook, __ATOMIC_SEQ_CST);
   }
   for (int i = 0; i < _max_timers; i++) {
     unregisterThread(i);

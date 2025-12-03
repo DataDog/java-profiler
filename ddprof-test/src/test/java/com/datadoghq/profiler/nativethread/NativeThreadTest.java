@@ -48,7 +48,7 @@ public class NativeThreadTest extends AbstractProfilerTest {
       for (int index = 0; index < threads.length; index++) {
           waitNativeThread(threads[index]);
       }
-
+      stopProfiler();
       Map<String, AtomicInteger> modeCounters = new HashMap<>();
       Map<String, AtomicInteger> libraryCounters = new HashMap<>();
       for (IItemIterable cpuSamples : verifyEvents("datadog.ExecutionSample")) {

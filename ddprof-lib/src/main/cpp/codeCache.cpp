@@ -271,6 +271,10 @@ void CodeCache::findSymbolsByPrefix(std::vector<const char *> &prefixes,
 }
 
 void CodeCache::saveImport(ImportId id, void** entry) {
+    if (id == im_pthread_exit) {
+        printf("SaveImport pthread exit to %s\n", _name);
+    }
+
     for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {
         if (_imports[id][ty] == nullptr) {
             _imports[id][ty] = entry;
