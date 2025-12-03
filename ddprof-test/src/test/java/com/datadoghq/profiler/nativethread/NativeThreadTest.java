@@ -24,7 +24,7 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 
 public class NativeThreadTest extends AbstractProfilerTest {
@@ -35,7 +35,7 @@ public class NativeThreadTest extends AbstractProfilerTest {
 
   @Override
   protected String getProfilerCommand() {
-    return "cpu=1ms,wall=1ms";
+    return "cpu=1ms";
   }
 
   @RetryingTest(3)
@@ -55,7 +55,7 @@ public class NativeThreadTest extends AbstractProfilerTest {
           IMemberAccessor<String, IItem> modeAccessor = THREAD_EXECUTION_MODE.getAccessor(cpuSamples.getType());
           for (IItem item : cpuSamples) {
               String stacktrace = stacktraceAccessor.getMember(item);
-              if (stacktrace.indexOf("do_primes()")) != -1) {
+              if (stacktrace.indexOf("do_primes()") != -1) {
                 count++;
               }
           }
