@@ -82,10 +82,11 @@ static void* start_routine_wrapper(void* args) {
     ProfiledThread::initCurrentThread();
     int tid = ProfiledThread::currentTid();
     Profiler::registerThread(tid);
-    data->_func(data->_arg);
+    void* result = data->_func(data->_arg);
     Profiler::unregisterThread(tid);
     ProfiledThread::release();
-    free(args)
+    free(args);
+    return result;
 }
 
 static int pthread_create_hook(pthread_t* thread,

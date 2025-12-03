@@ -19,13 +19,21 @@
 
 #include <jni.h>
 
+#define MAX_PRIME 100000
 
-static pthread_t thread_id = { 0 };
+// Burn CPU
+static void do_primes() {
+    unsigned long i, num, primes = 0;
+    for (num = 1; num <= MAX_PRIME; ++num) {
+        for (i = 2; (i <= num) && (num % i != 0); ++i);
+        if (i == num)
+            ++primes;
+    }
+}
 
 // Function to be executed by the new thread
 void* thread_function(void* arg) {
-    char* message = (char*)arg; // Cast the void* argument back to a string
-    printf("Thread received message: %s\n", message);
+    do_primes();
     pthread_exit(NULL); // Terminate the thread, optionally returning a value
 }
 
@@ -48,7 +56,6 @@ jlong JNICALL Java_com_datadoghq_profiler_nativethread_NativeThreadTest_createNa
         return -1L;
     }
 
-    printf("Main thread created a new thread with ID: %lu\n", (unsigned long)thread_id);
     return (jlong) thread_id;
 }
 
@@ -60,5 +67,4 @@ void JNICALL Java_com_datadoghq_profiler_nativethread_NativeThreadTest_waitNativ
     // 1. thread_id: The ID of the thread to wait for.
     // 2. NULL: Pointer to store the return value of the joined thread (not used here).
     pthread_join(thread_id, NULL);
-    printf("Thread %lu exited\n", (unsigned long)thread_id);
 }

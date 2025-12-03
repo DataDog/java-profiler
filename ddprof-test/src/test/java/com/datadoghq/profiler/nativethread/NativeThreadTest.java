@@ -40,7 +40,7 @@ public class NativeThreadTest extends AbstractProfilerTest {
 
   @RetryingTest(3)
   public void test() {
-      long[] threads = new long[128];
+      long[] threads = new long[8];
       for (int index = 0; index < threads.length; index++) {
           threads[index] = createNativeThread();
       }
@@ -49,19 +49,18 @@ public class NativeThreadTest extends AbstractProfilerTest {
           waitNativeThread(threads[index]);
       }
       stopProfiler();
-      Map<String, AtomicInteger> modeCounters = new HashMap<>();
-      Map<String, AtomicInteger> libraryCounters = new HashMap<>();
+      int count = 0;
       for (IItemIterable cpuSamples : verifyEvents("datadog.ExecutionSample")) {
           IMemberAccessor<String, IItem> stacktraceAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
           IMemberAccessor<String, IItem> modeAccessor = THREAD_EXECUTION_MODE.getAccessor(cpuSamples.getType());
           for (IItem item : cpuSamples) {
               String stacktrace = stacktraceAccessor.getMember(item);
-              String mode = modeAccessor.getMember(item);
-              modeCounters.computeIfAbsent(mode, x -> new AtomicInteger()).incrementAndGet();
-              System.out.println(stacktrace);
+              if (stacktrace.indexOf("do_primes()")) != -1) {
+                count++;
+              }
           }
       }
-
+      assertTrue(count > 0, "no native thread sample");
   }
 
   private static native long createNativeThread();

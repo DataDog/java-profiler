@@ -27,7 +27,6 @@ CodeCache::CodeCache(const char *name, short lib_index,
                      const void *min_address, const void *max_address,
                      const char* image_base, bool imports_patchable) {
   _name = NativeFunc::create(name, -1);
-  printf("CodeCache: %s\n", name);
   _lib_index = lib_index;
   _min_address = min_address;
   _max_address = max_address;
@@ -127,8 +126,6 @@ void CodeCache::expand() {
 void CodeCache::add(const void *start, int length, const char *name,
                     bool update_bounds) {
   char *name_copy = NativeFunc::create(name, _lib_index);
-  printf("Adding: %s\n", name);
-
 
   // Replace non-printable characters
   for (char *s = name_copy; *s != 0; s++) {
@@ -271,10 +268,6 @@ void CodeCache::findSymbolsByPrefix(std::vector<const char *> &prefixes,
 }
 
 void CodeCache::saveImport(ImportId id, void** entry) {
-    if (id == im_pthread_exit) {
-        printf("SaveImport pthread exit to %s\n", _name);
-    }
-
     for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {
         if (_imports[id][ty] == nullptr) {
             _imports[id][ty] = entry;
