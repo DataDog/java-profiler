@@ -229,10 +229,10 @@ Error CTimer::start(Arguments &args) {
   OS::installSignalHandler(_signal, signalHandler);
 
   // Enable pthread hook before traversing currently running threads
-  __atomic_store_n(_pthread_setspecific_entry, (void *)pthread_setspecific_hook,
+  __atomic_store_n(_pthread_setspecific_entry, (func_pthread_setspecific)pthread_setspecific_hook,
                    __ATOMIC_RELAXED);
   if (jnilib_pthread_create_entry != nullptr) {
-    __atomic_store_n(jnilib_pthread_create_entry, (void*)pthread_create_hook, __ATOMIC_SEQ_CST);
+    __atomic_store_n(jnilib_pthread_create_entry, (func_pthread_create)pthread_create_hook, __ATOMIC_SEQ_CST);
     printf("pthread_create_hook installed\n");
   } else {
     printf("failed to install pthread_create_hook\n");
@@ -254,10 +254,10 @@ Error CTimer::start(Arguments &args) {
 }
 
 void CTimer::stop() {
-  __atomic_store_n(_pthread_setspecific_entry, (void *)pthread_setspecific,
+  __atomic_store_n(_pthread_setspecific_entry, (func_pthread_setspecific)pthread_setspecific,
                    __ATOMIC_RELAXED);
   if (jnilib_pthread_create_entry != nullptr) {
-    __atomic_store_n(jnilib_pthread_create_entry, (void*)pthread_create_hook, __ATOMIC_SEQ_CST);
+    __atomic_store_n(jnilib_pthread_create_entry, (func_pthread_create)pthread_create_hook, __ATOMIC_SEQ_CST);
   }
   for (int i = 0; i < _max_timers; i++) {
     unregisterThread(i);

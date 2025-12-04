@@ -40,16 +40,14 @@ void* thread_function(void* arg) {
 jlong JNICALL Java_com_datadoghq_profiler_nativethread_NativeThreadTest_createNativeThread
   (JNIEnv * env, jclass clz) {
 
-    char* message = "Hello from the new thread!"; // Message to pass to the thread
-
     // Create a new thread
     // Arguments:
     // 1. &thread_id: Pointer to the pthread_t variable where the new thread's ID will be stored.
     // 2. NULL: Pointer to thread attributes (using default attributes here).
     // 3. thread_function: Pointer to the function the new thread will execute.
-    // 4. (void*)message: Pointer to the argument to pass to the thread_function.
+    // 4. NULL: Pointer to the argument to pass to the thread_function.
      pthread_t thread_id;
-    int result = pthread_create(&thread_id, NULL, thread_function, (void*)message);
+    int result = pthread_create(&thread_id, NULL, thread_function, NULL);
 
     if (result != 0) {
         perror("Error creating thread");
