@@ -38,6 +38,7 @@ bool VM::_zing = false;
 bool VM::_can_sample_objects = false;
 bool VM::_can_intercept_binding = false;
 bool VM::_is_adaptive_gc_boundary_flag_set = false;
+const char* VM::_java_home = nullptr;
 
 jvmtiError(JNICALL *VM::_orig_RedefineClasses)(jvmtiEnv *, jint,
                                                const jvmtiClassDefinition *);
@@ -283,6 +284,13 @@ bool VM::initShared(JavaVM* vm) {
     }
     _hotspot_version = JavaVersionAccess::get_hotspot_version(prop);
     _jvmti->Deallocate((unsigned char *)prop);
+    prop = NULL;
+  }
+
+  if (_jvmti->GetSystemProperty("java.home", &prop) == 0) {
+    TEST_LOG("java.home: %s", prop);
+    _java_home = strdup(prop);
+    _jvmti->Deallocate((unsigned char*)prop);
     prop = NULL;
   }
 

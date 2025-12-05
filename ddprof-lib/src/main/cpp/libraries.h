@@ -24,6 +24,10 @@ class Libraries {
     return &instance;
   }
 
+  const CodeCacheArray& native_libs() {
+    return _native_libs;
+  }
+
   // Delete copy constructor and assignment operator to prevent copies
   Libraries(const Libraries&) = delete;
   Libraries& operator=(const Libraries&) = delete;

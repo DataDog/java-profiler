@@ -106,6 +106,7 @@ private:
   static bool _can_sample_objects;
   static bool _can_intercept_binding;
   static bool _is_adaptive_gc_boundary_flag_set;
+  static const char* _java_home;
 
   static jvmtiError(JNICALL *_orig_RedefineClasses)(
       jvmtiEnv *, jint, const jvmtiClassDefinition *);
@@ -153,6 +154,7 @@ public:
     return _getManagement != NULL ? _getManagement(0x20030000) : NULL;
   }
 
+  static const char* java_home() { return _java_home; }
   static int java_version() { return _java_version; }
 
   static int hotspot_version() { return isHotspot() ? _hotspot_version : -1; }

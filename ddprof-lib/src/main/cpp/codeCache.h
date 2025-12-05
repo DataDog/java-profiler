@@ -226,12 +226,16 @@ public:
 
   CodeCache *operator[](int index) { return _libs[index]; }
 
-  int count() { return __atomic_load_n(&_count, __ATOMIC_ACQUIRE); }
+  int count() const { return __atomic_load_n(&_count, __ATOMIC_ACQUIRE); }
 
   void add(CodeCache *lib) {
     int index = __atomic_load_n(&_count, __ATOMIC_ACQUIRE);
     _libs[index] = lib;
     __atomic_store_n(&_count, index + 1, __ATOMIC_RELEASE);
+  }
+
+  CodeCache* at(int index) const {
+    return _libs[index];
   }
 
   long long memoryUsage() {

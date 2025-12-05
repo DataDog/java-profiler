@@ -45,7 +45,6 @@ typedef int (*func_pthread_setspecific)(pthread_key_t key, const void *value);
 
 
 static func_pthread_setspecific *_pthread_setspecific_entry = nullptr;
-static func_pthread_create *jnilib_pthread_create_entry = nullptr;
 
 // Intercept thread creation/termination by patching libjvm's GOT entry for
 // pthread_setspecific(). HotSpot puts VMThread into TLS on thread start, and
@@ -98,17 +97,6 @@ static int pthread_create_hook(pthread_t* thread,
   data->_arg = arg;
   return pthread_create(thread, attr, start_routine_wrapper, (void*)data);
 }
-
-
-static void** lookupLibraryEntry(const char* libname, enum ImportId im_id) {
-  CodeCache *lib = Libraries::instance()->findLibraryByName(libname);
-  if (lib != nullptr) {
-    return lib->findImport(im_id);
-  }
-  printf("No library: %s founded\n", libname);
-  return nullptr;
-}
-
 
 static void **lookupJVMEntry(enum ImportId im_id) {
   // Depending on Zing version, pthread_setspecific is called either from
@@ -183,15 +171,6 @@ void CTimer::unregisterThread(int tid) {
 }
 
 Error CTimer::check(Arguments &args) {
-  if (_pthread_setspecific_entry == nullptr &&
-      (_pthread_setspecific_entry = (func_pthread_setspecific*)lookupJVMEntry(im_pthread_setspecific)) == NULL) {
-    return Error("Could not set pthread_setspecific hook");
-  }
-
-  if (jnilib_pthread_create_entry == nullptr) {
-     jnilib_pthread_create_entry = (func_pthread_create*)lookupLibraryEntry("libddproftest", im_pthread_create);
-  }
-
   timer_t timer;
   if (timer_create(CLOCK_THREAD_CPUTIME_ID, NULL, &timer) < 0) {
     return Error("Failed to create CPU timer");
@@ -201,18 +180,88 @@ Error CTimer::check(Arguments &args) {
   return Error::OK;
 }
 
-Error CTimer::start(Arguments &args) {
-  if (args._interval < 0) {
-    return Error("interval must be positive");
-  }
+struct PatchedEntry {
+   func_pthread_create* _location;
+   func_pthread_create  _original_func;
+};
 
+static PatchedEntry* patched_entries = nullptr;
+static volatile int entry_count = 0;
+static const char* excluded_libraries[] = {"libstdc++.so", "libjavaProfiler"};
+
+static bool exclude_library(const char* libname) {
+ const char* java_home = VM::java_home();
+  // exclude JDK libraries
+  if (strstr(libname, java_home) != nullptr) {
+    return true;
+  }
+  size_t count = sizeof(excluded_libraries) / sizeof(const char*);
+
+  for (int index = 0; index < count; index++) {
+     if (strstr(libname, excluded_libraries[index]) != nullptr) {
+       return true;
+     }
+  }
+  return false;
+}
+
+static Error patch_libraries() {
+  // Patch JVM
   if (_pthread_setspecific_entry == nullptr &&
       (_pthread_setspecific_entry = (func_pthread_setspecific*)lookupJVMEntry(im_pthread_setspecific)) == NULL) {
     return Error("Could not set pthread_setspecific hook");
   }
 
-  if (jnilib_pthread_create_entry == nullptr) {
-     jnilib_pthread_create_entry = (func_pthread_create*)lookupLibraryEntry("libddproftest", im_pthread_create);
+  // Enable pthread hook before traversing currently running threads
+  __atomic_store_n(_pthread_setspecific_entry, (func_pthread_setspecific)pthread_setspecific_hook,
+                   __ATOMIC_RELAXED);
+
+  const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
+  int count = native_libs.count();
+  size_t size = count * sizeof(PatchedEntry);
+  patched_entries = (struct PatchedEntry*)malloc(size);
+  memset((void*)patched_entries, 0, size);
+  TEST_LOG("Patching libraris\n");
+  const char* java_home = VM::java_home();
+  size_t java_home_len = strlen(java_home);
+
+  for (int index = 0; index < count; index++) {
+     CodeCache* lib = native_libs.at(index);
+     if (exclude_library(lib->name())) continue;
+
+     func_pthread_create* pthread_create_addr = (func_pthread_create*)lib->findImport(im_pthread_create);
+     if (pthread_create_addr != nullptr) {
+       TEST_LOG("Patching %s\n", lib->name());
+
+       patched_entries[index]._location = pthread_create_addr;
+       patched_entries[index]._original_func = (func_pthread_create)__atomic_load_n(pthread_create_addr, __ATOMIC_RELAXED);
+        __atomic_store_n(pthread_create_addr, (func_pthread_create)pthread_create_hook, __ATOMIC_RELAXED);
+     }
+  }
+  __atomic_store_n(&entry_count, count, __ATOMIC_SEQ_CST);
+  return Error::OK;
+}
+
+static void unpatch_libraries() {
+   __atomic_store_n(_pthread_setspecific_entry, (func_pthread_setspecific)pthread_setspecific,
+                    __ATOMIC_RELAXED);
+  int count = __atomic_load_n(&entry_count, __ATOMIC_RELAXED);
+  __atomic_store_n(&entry_count, 0, __ATOMIC_SEQ_CST);
+
+  for (int index = 0; index < count; index++) {
+     if (patched_entries[index]._location != nullptr) {
+       __atomic_store_n(patched_entries[index]._location, patched_entries[index]._original_func, __ATOMIC_RELAXED);
+     }
+  }
+  PatchedEntry* tmp = patched_entries;
+  patched_entries = nullptr;
+  __atomic_thread_fence(__ATOMIC_SEQ_CST);
+  free((void*)tmp);
+}
+
+Error CTimer::start(Arguments &args) {
+  if (args._interval < 0) {
+    return Error("interval must be positive");
   }
 
   _interval = args.cpuSamplerInterval();
@@ -226,17 +275,12 @@ Error CTimer::start(Arguments &args) {
     _max_timers = max_timers;
   }
 
-  OS::installSignalHandler(_signal, signalHandler);
-
-  // Enable pthread hook before traversing currently running threads
-  __atomic_store_n(_pthread_setspecific_entry, (func_pthread_setspecific)pthread_setspecific_hook,
-                   __ATOMIC_RELAXED);
-  if (jnilib_pthread_create_entry != nullptr) {
-    __atomic_store_n(jnilib_pthread_create_entry, (func_pthread_create)pthread_create_hook, __ATOMIC_SEQ_CST);
-    printf("pthread_create_hook installed\n");
-  } else {
-    printf("failed to install pthread_create_hook\n");
+  Error res = patch_libraries();
+  if (res != Error::OK) {
+    return res;
   }
+
+  OS::installSignalHandler(_signal, signalHandler);
 
   // Register all existing threads
   Error result = Error::OK;
@@ -254,11 +298,7 @@ Error CTimer::start(Arguments &args) {
 }
 
 void CTimer::stop() {
-  __atomic_store_n(_pthread_setspecific_entry, (func_pthread_setspecific)pthread_setspecific,
-                   __ATOMIC_RELAXED);
-  if (jnilib_pthread_create_entry != nullptr) {
-    __atomic_store_n(jnilib_pthread_create_entry, (func_pthread_create)pthread_create_hook, __ATOMIC_SEQ_CST);
-  }
+  unpatch_libraries();
   for (int i = 0; i < _max_timers; i++) {
     unregisterThread(i);
   }
