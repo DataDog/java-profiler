@@ -6,13 +6,15 @@
 #include "codeCache.h"
 #include "dwarf_dd.h"
 #include "os_dd.h"
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 
 char *NativeFunc::create(const char *name, short lib_index) {
-  NativeFunc *f = (NativeFunc *)malloc(sizeof(NativeFunc) + 1 + strlen(name));
+  size_t size = align_up(sizeof(NativeFunc) + 1 + strlen(name), sizeof(NativeFunc*));
+  NativeFunc *f = (NativeFunc *)aligned_alloc(sizeof(NativeFunc*), size);
   f->_lib_index = lib_index;
   f->_mark = 0;
   // cppcheck-suppress memleak
