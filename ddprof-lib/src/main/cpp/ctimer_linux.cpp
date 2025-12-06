@@ -275,12 +275,12 @@ Error CTimer::start(Arguments &args) {
     _max_timers = max_timers;
   }
 
+  OS::installSignalHandler(_signal, signalHandler);
+
   Error res = patch_libraries();
-  if (res != Error::OK) {
+  if (!res) {
     return res;
   }
-
-  OS::installSignalHandler(_signal, signalHandler);
 
   // Register all existing threads
   Error result = Error::OK;
