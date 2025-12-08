@@ -1,0 +1,192 @@
+name: Validated Release
+run-name: "${{ inputs.dry_run && 'Dry-run for ' || 'Perform ' }}${{ inputs.release_type }} release of ${{ github.ref_name }} branch"
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        type: choice
+        description: The release type
+        options:
+          - "major"
+          - "minor"
+          - "patch"
+        default: "minor"
+      dry_run:
+        description: Perform the release dry-run
+        required: true
+        type: boolean
+        default: true
+      skip_tests:
+        description: Skip pre-release tests (emergency releases only)
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  validate-inputs:
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.compute-version.outputs.release_version }}
+      next_version: ${{ steps.compute-version.outputs.next_version }}
+      release_branch: ${{ steps.compute-version.outputs.release_branch }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Validate branch and compute versions
+        id: compute-version
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          TYPE="${{ inputs.release_type }}"
+
+          echo "Current branch: $BRANCH"
+          echo "Release type: $TYPE"
+
+          # Branch validation
+          if [ "$TYPE" != "patch" ]; then
+            if [ "$BRANCH" != "main" ]; then
+              echo "::error::Major or minor releases can only be performed from 'main' branch"
+              exit 1
+            fi
+          else
+            if [[ ! $BRANCH =~ ^release/[0-9]+\.[0-9]+\._$ ]]; then
+              echo "::error::Patch releases can only be performed from 'release/*' branches (format: release/X.Y._)"
+              exit 1
+            fi
+          fi
+
+          # Get current version
+          BASE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
+          echo "Current version: $BASE"
+
+          # Compute release version
+          if [ "$TYPE" == "MAJOR" ] || [ "$TYPE" == "major" ]; then
+            RELEASE_VERSION=$BASE
+          elif [ "$TYPE" == "MINOR" ] || [ "$TYPE" == "minor" ]; then
+            RELEASE_VERSION=$BASE
+          else
+            RELEASE_VERSION=$BASE
+          fi
+
+          # Compute release branch
+          RELEASE_BRANCH="release/${RELEASE_VERSION%.*}._"
+
+          # Check if tag already exists
+          if git rev-parse "v_${RELEASE_VERSION}" >/dev/null 2>&1; then
+            echo "::error::Tag v_${RELEASE_VERSION} already exists"
+            exit 1
+          fi
+
+          echo "Release version: $RELEASE_VERSION"
+          echo "Release branch: $RELEASE_BRANCH"
+
+          # Set outputs
+          echo "release_version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
+          echo "release_branch=$RELEASE_BRANCH" >> $GITHUB_OUTPUT
+
+          # Output summary
+          echo "## Release Validation" >> $GITHUB_STEP_SUMMARY
+          echo "- **Release Type**: $TYPE" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: $BRANCH" >> $GITHUB_STEP_SUMMARY
+          echo "- **Release Version**: $RELEASE_VERSION" >> $GITHUB_STEP_SUMMARY
+          echo "- **Release Branch**: $RELEASE_BRANCH" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: v_$RELEASE_VERSION" >> $GITHUB_STEP_SUMMARY
+          echo "- **Dry Run**: ${{ inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Skip Tests**: ${{ inputs.skip_tests }}" >> $GITHUB_STEP_SUMMARY
+
+  pre-release-tests:
+    needs: validate-inputs
+    if: ${{ inputs.dry_run != true && inputs.skip_tests != true }}
+    uses: ./.github/workflows/test_workflow.yml
+    with:
+      configuration: '["debug", "asan"]'
+
+  create-release:
+    needs: [validate-inputs, pre-release-tests]
+    if: always() && needs.validate-inputs.result == 'success' && (needs.pre-release-tests.result == 'success' || needs.pre-release-tests.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check test results
+        if: ${{ inputs.skip_tests != true && needs.pre-release-tests.result != 'success' }}
+        run: |
+          echo "::error::Pre-release tests failed. Cannot proceed with release."
+          exit 1
+
+      - uses: webfactory/ssh-agent@v0.7.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PUSH_SECRET }}
+
+      - name: Checkout repository
+        run: git clone git@github.com:$GITHUB_REPOSITORY.git java-profiler
+
+      - name: Configure git
+        run: |
+          cd java-profiler
+          git config --global user.email "java-profiler@datadoghq.com"
+          git config --global user.name "Datadog Java Profiler"
+          git checkout $GITHUB_REF_NAME
+
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd java-profiler
+
+          if [ "${{ inputs.dry_run }}" == "true" ]; then
+            DRY_RUN="--dry-run"
+          else
+            DRY_RUN=""
+          fi
+
+          TYPE="${{ inputs.release_type }}"
+          ./.github/scripts/release.sh ${TYPE^^} $DRY_RUN
+
+      - name: Output Release Summary
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          echo "## ✅ Release Created Successfully" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Release Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: v_${{ needs.validate-inputs.outputs.release_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ needs.validate-inputs.outputs.release_branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps (Automatic)" >> $GITHUB_STEP_SUMMARY
+          echo "1. 🔨 GitLab pipeline will build multi-platform artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "2. 📦 GitLab will publish to Maven Central" >> $GITHUB_STEP_SUMMARY
+          echo "3. 🚀 GitHub workflows will create release when Maven artifacts are available" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Monitoring" >> $GITHUB_STEP_SUMMARY
+          echo "- GitHub Releases: ${{ github.server_url }}/${{ github.repository }}/releases" >> $GITHUB_STEP_SUMMARY
+          echo "- Maven Central: https://repo1.maven.org/maven2/com/datadoghq/ddprof/${{ needs.validate-inputs.outputs.release_version }}/" >> $GITHUB_STEP_SUMMARY
+
+      - name: Output Dry-Run Summary
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          echo "## 🔍 Dry-Run Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This was a dry-run. No changes were made." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Would have created:" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: v_${{ needs.validate-inputs.outputs.release_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ needs.validate-inputs.outputs.release_branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "To perform the actual release, run this workflow again with **dry_run = false**" >> $GITHUB_STEP_SUMMARY
