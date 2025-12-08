@@ -27,6 +27,7 @@
 #include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
+#include <dlfcn.h>
 
 #ifndef SIGEV_THREAD_ID
 #define SIGEV_THREAD_ID 4
@@ -180,7 +181,7 @@ static Error patch_libraries() {
   for (int index = 0; index < count; index++) {
      CodeCache* lib = native_libs.at(index);
      // Don't patch self
-     if (strstr(lib->name, info.dli_name) != nullptr) {
+     if (strstr(lib->name(), info.dli_fname) != nullptr) {
         continue;
      }
 
@@ -198,8 +199,6 @@ static Error patch_libraries() {
 }
 
 static void unpatch_libraries() {
-   __atomic_store_n(_pthread_setspecific_entry, (func_pthread_setspecific)pthread_setspecific,
-                    __ATOMIC_RELAXED);
   int count = __atomic_load_n(&entry_count, __ATOMIC_RELAXED);
   __atomic_store_n(&entry_count, 0, __ATOMIC_SEQ_CST);
 
