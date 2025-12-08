@@ -41,35 +41,6 @@ typedef int (*func_pthread_create)(pthread_t* thread,
                           	   const pthread_attr_t* attr,
                           	   func_start_routine start_routine,
                                    void* arg);
-typedef int (*func_pthread_setspecific)(pthread_key_t key, const void *value);
-
-
-static func_pthread_setspecific *_pthread_setspecific_entry = nullptr;
-
-// Intercept thread creation/termination by patching libjvm's GOT entry for
-// pthread_setspecific(). HotSpot puts VMThread into TLS on thread start, and
-// resets on thread end.
-static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
-  if (key != static_cast<pthread_key_t>(VMThread::key())) {
-    return pthread_setspecific(key, value);
-  }
-  if (pthread_getspecific(key) == value) {
-    return 0;
-  }
-
-  if (value != NULL) {
-    ProfiledThread::initCurrentThread();
-    int result = pthread_setspecific(key, value);
-    Profiler::registerThread(ProfiledThread::currentTid());
-    return result;
-  } else {
-    int tid = ProfiledThread::currentTid();
-    Profiler::unregisterThread(tid);
-    ProfiledThread::release();
-    return pthread_setspecific(key, value);
-  }
-}
-
 typedef struct startRoutineData {
     func_start_routine _func;
     void*              _arg;
@@ -96,23 +67,6 @@ static int pthread_create_hook(pthread_t* thread,
   data->_func = start_routine;
   data->_arg = arg;
   return pthread_create(thread, attr, start_routine_wrapper, (void*)data);
-}
-
-static void **lookupJVMEntry(enum ImportId im_id) {
-  // Depending on Zing version, pthread_setspecific is called either from
-  // libazsys.so or from libjvm.so
-  if (VM::isZing()) {
-    CodeCache *libazsys = Libraries::instance()->findLibraryByName("libazsys");
-    if (libazsys != NULL) {
-      void **entry = libazsys->findImport(im_id);
-      if (entry != NULL) {
-        return entry;
-      }
-    }
-  }
-
-  CodeCache *lib = Libraries::instance()->findJvmLibrary("libj9thr");
-  return lib != NULL ? lib->findImport(im_id) : NULL;
 }
 
 long CTimer::_interval;
@@ -206,15 +160,13 @@ static bool exclude_library(const char* libname) {
 }
 
 static Error patch_libraries() {
-  // Patch JVM
-  if (_pthread_setspecific_entry == nullptr &&
-      (_pthread_setspecific_entry = (func_pthread_setspecific*)lookupJVMEntry(im_pthread_setspecific)) == NULL) {
-    return Error("Could not set pthread_setspecific hook");
-  }
+   Dl_info info;
+   void* caller_address = __builtin_return_address(0); // Get return address of caller
 
-  // Enable pthread hook before traversing currently running threads
-  __atomic_store_n(_pthread_setspecific_entry, (func_pthread_setspecific)pthread_setspecific_hook,
-                   __ATOMIC_RELAXED);
+   if (!dladdr(caller_address, &info)) {
+      return Error("Cannot resolve current library name");
+   }
+   TEST_LOG("Profiler library name: %s\n", info.dli_fname );
 
   const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
   int count = native_libs.count();
@@ -227,7 +179,10 @@ static Error patch_libraries() {
 
   for (int index = 0; index < count; index++) {
      CodeCache* lib = native_libs.at(index);
-     if (exclude_library(lib->name())) continue;
+     // Don't patch self
+     if (strstr(lib->name, info.dli_name) != nullptr) {
+        continue;
+     }
 
      func_pthread_create* pthread_create_addr = (func_pthread_create*)lib->findImport(im_pthread_create);
      if (pthread_create_addr != nullptr) {
