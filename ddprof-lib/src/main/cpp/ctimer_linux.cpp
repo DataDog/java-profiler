@@ -23,6 +23,7 @@
 #include "profiler.h"
 #include "vmStructs.h"
 #include <assert.h>
+#include <dlfcn.h>
 #include <stdlib.h>
 #include <sys/syscall.h>
 #include <time.h>
@@ -32,51 +33,105 @@
 #define SIGEV_THREAD_ID 4
 #endif
 
-static inline clockid_t thread_cpu_clock(unsigned int tid) {
-  return ((~tid) << 3) | 6; // CPUCLOCK_SCHED | CPUCLOCK_PERTHREAD_MASK
-}
+typedef void* (*func_start_routine)(void*);
+typedef int (*func_pthread_create)(pthread_t* thread,
+                                   const pthread_attr_t* attr,
+                                   func_start_routine start_routine,
+                                   void* arg);
 
-static void **_pthread_entry = NULL;
+//  Patching libraries' pthread_create() @plt entries
+typedef struct _patchEntry {
+    // library's @plt location
+    func_pthread_create* _location;
+    // original function
+    func_pthread_create  _func;
+} PatchEntry;
 
-// Intercept thread creation/termination by patching libjvm's GOT entry for
-// pthread_setspecific(). HotSpot puts VMThread into TLS on thread start, and
-// resets on thread end.
-static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
-  if (key != static_cast<pthread_key_t>(VMThread::key())) {
-    return pthread_setspecific(key, value);
-  }
-  if (pthread_getspecific(key) == value) {
-    return 0;
-  }
+static PatchEntry* patched_entries = nullptr;
+static volatile int num_of_entries = 0;
 
-  if (value != NULL) {
+typedef struct _startRoutineArg {
+    func_start_routine _func;
+    void*              _arg;
+} StartRoutineArg;
+
+static void* start_routine_wrapper(void* args) {
+    StartRoutineArg* data = (StartRoutineArg*)args;
     ProfiledThread::initCurrentThread();
-    int result = pthread_setspecific(key, value);
-    Profiler::registerThread(ProfiledThread::currentTid());
-    return result;
-  } else {
     int tid = ProfiledThread::currentTid();
+    Profiler::registerThread(tid);
+    void* result = data->_func(data->_arg);
     Profiler::unregisterThread(tid);
     ProfiledThread::release();
-    return pthread_setspecific(key, value);
-  }
+    free(args);
+    return result;
 }
 
-static void **lookupThreadEntry() {
-  // Depending on Zing version, pthread_setspecific is called either from
-  // libazsys.so or from libjvm.so
-  if (VM::isZing()) {
-    CodeCache *libazsys = Libraries::instance()->findLibraryByName("libazsys");
-    if (libazsys != NULL) {
-      void **entry = libazsys->findImport(im_pthread_setspecific);
-      if (entry != NULL) {
-        return entry;
-      }
-    }
-  }
+static int pthread_create_hook(pthread_t* thread,
+                          const pthread_attr_t* attr,
+                          func_start_routine start_routine,
+                          void* arg) {
+  StartRoutineArg* data = (StartRoutineArg*)malloc(sizeof(StartRoutineArg));
+  data->_func = start_routine;
+  data->_arg = arg;
+  return pthread_create(thread, attr, start_routine_wrapper, (void*)data);
+}
 
-  CodeCache *lib = Libraries::instance()->findJvmLibrary("libj9thr");
-  return lib != NULL ? lib->findImport(im_pthread_setspecific) : NULL;
+static Error patch_libraries() {
+   Dl_info info;
+   void* caller_address = __builtin_return_address(0); // Get return address of caller
+
+   if (!dladdr(caller_address, &info)) {
+      return Error("Cannot resolve current library name");
+   }
+   TEST_LOG("Profiler library name: %s\n", info.dli_fname );
+
+  const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
+  int count = native_libs.count();
+  size_t size = count * sizeof(PatchEntry);
+  patched_entries = (PatchEntry*)malloc(size);
+  memset((void*)patched_entries, 0, size);
+  TEST_LOG("Patching libraries\n");
+
+  for (int index = 0; index < count; index++) {
+     CodeCache* lib = native_libs.at(index);
+     // Don't patch self
+     if (strcmp(lib->name(), info.dli_fname) == 0) {
+        continue;
+     }
+
+     func_pthread_create* pthread_create_addr = (func_pthread_create*)lib->findImport(im_pthread_create);
+     if (pthread_create_addr != nullptr) {
+       TEST_LOG("Patching %s\n", lib->name());
+
+       patched_entries[index]._location = pthread_create_addr;
+       patched_entries[index]._func = (func_pthread_create)__atomic_load_n(pthread_create_addr, __ATOMIC_RELAXED);
+        __atomic_store_n(pthread_create_addr, (func_pthread_create)pthread_create_hook, __ATOMIC_RELAXED);
+     }
+  }
+  // Publish everything, including patched entries
+  __atomic_store_n(&num_of_entries, count, __ATOMIC_SEQ_CST);
+  return Error::OK;
+}
+
+static void unpatch_libraries() {
+  int count = __atomic_load_n(&num_of_entries, __ATOMIC_RELAXED);
+  PatchEntry* tmp = patched_entries;
+  patched_entries = nullptr;
+  __atomic_store_n(&entry_count, 0, __ATOMIC_SEQ_CST);
+
+  for (int index = 0; index < count; index++) {
+     if (tmp[index]._location != nullptr) {
+       __atomic_store_n(tmp[index]._location, tmp[index]._func, __ATOMIC_RELAXED);
+     }
+  }
+  __atomic_thread_fence(__ATOMIC_SEQ_CST);
+  free((void*)tmp);
+}
+
+
+static inline clockid_t thread_cpu_clock(unsigned int tid) {
+  return ((~tid) << 3) | 6; // CPUCLOCK_SCHED | CPUCLOCK_PERTHREAD_MASK
 }
 
 long CTimer::_interval;
@@ -135,11 +190,6 @@ void CTimer::unregisterThread(int tid) {
 }
 
 Error CTimer::check(Arguments &args) {
-  if (_pthread_entry == NULL &&
-      (_pthread_entry = lookupThreadEntry()) == NULL) {
-    return Error("Could not set pthread hook");
-  }
-
   timer_t timer;
   if (timer_create(CLOCK_THREAD_CPUTIME_ID, NULL, &timer) < 0) {
     return Error("Failed to create CPU timer");
@@ -153,10 +203,7 @@ Error CTimer::start(Arguments &args) {
   if (args._interval < 0) {
     return Error("interval must be positive");
   }
-  if (_pthread_entry == NULL &&
-      (_pthread_entry = lookupThreadEntry()) == NULL) {
-    return Error("Could not set pthread hook");
-  }
+
   _interval = args.cpuSamplerInterval();
   _cstack = args._cstack;
   _signal = SIGPROF;
@@ -170,9 +217,10 @@ Error CTimer::start(Arguments &args) {
 
   OS::installSignalHandler(_signal, signalHandler);
 
-  // Enable pthread hook before traversing currently running threads
-  __atomic_store_n(_pthread_entry, (void *)pthread_setspecific_hook,
-                   __ATOMIC_RELEASE);
+  Error err = patch_libraries();
+  if (err) {
+    return err;
+  }
 
   // Register all existing threads
   Error result = Error::OK;
@@ -190,8 +238,7 @@ Error CTimer::start(Arguments &args) {
 }
 
 void CTimer::stop() {
-  __atomic_store_n(_pthread_entry, (void *)pthread_setspecific,
-                   __ATOMIC_RELEASE);
+  unpatch_libraries();
   for (int i = 0; i < _max_timers; i++) {
     unregisterThread(i);
   }
