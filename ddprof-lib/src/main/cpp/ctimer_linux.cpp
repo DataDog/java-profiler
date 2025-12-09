@@ -118,7 +118,7 @@ static void unpatch_libraries() {
   int count = __atomic_load_n(&num_of_entries, __ATOMIC_RELAXED);
   PatchEntry* tmp = patched_entries;
   patched_entries = nullptr;
-  __atomic_store_n(&entry_count, 0, __ATOMIC_SEQ_CST);
+  __atomic_store_n(&num_of_entries, 0, __ATOMIC_SEQ_CST);
 
   for (int index = 0; index < count; index++) {
      if (tmp[index]._location != nullptr) {
