@@ -84,16 +84,16 @@ static Error patch_libraries() {
    if (!dladdr(caller_address, &info)) {
       return Error("Cannot resolve current library name");
    }
-   TEST_LOG("Profiler library name: %s\n", info.dli_fname );
+   TEST_LOG("Profiler library name: %s", info.dli_fname );
 
   const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
-  int count = native_libs.count();
+  int count = 0;
   size_t size = count * sizeof(PatchEntry);
   patched_entries = (PatchEntry*)malloc(size);
   memset((void*)patched_entries, 0, size);
-  TEST_LOG("Patching libraries\n");
+  TEST_LOG("Patching libraries");
 
-  for (int index = 0; index < count; index++) {
+  for (int index = 0; index < native_libs.count(); index++) {
      CodeCache* lib = native_libs.at(index);
      // Don't patch self
      if (strcmp(lib->name(), info.dli_fname) == 0) {
@@ -102,11 +102,12 @@ static Error patch_libraries() {
 
      func_pthread_create* pthread_create_addr = (func_pthread_create*)lib->findImport(im_pthread_create);
      if (pthread_create_addr != nullptr) {
-       TEST_LOG("Patching %s\n", lib->name());
+       TEST_LOG("Patching %s", lib->name());
 
-       patched_entries[index]._location = pthread_create_addr;
-       patched_entries[index]._func = (func_pthread_create)__atomic_load_n(pthread_create_addr, __ATOMIC_RELAXED);
+       patched_entries[count]._location = pthread_create_addr;
+       patched_entries[count]._func = (func_pthread_create)__atomic_load_n(pthread_create_addr, __ATOMIC_RELAXED);
         __atomic_store_n(pthread_create_addr, (func_pthread_create)pthread_create_hook, __ATOMIC_RELAXED);
+        count++;
      }
   }
   // Publish everything, including patched entries
