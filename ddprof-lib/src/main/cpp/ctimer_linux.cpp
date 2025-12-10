@@ -88,12 +88,13 @@ static Error patch_libraries() {
 
   const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
   int count = 0;
-  size_t size = count * sizeof(PatchEntry);
+  int num_of_libs = native_libs.count();
+  size_t size = num_of_libs * sizeof(PatchEntry);
   patched_entries = (PatchEntry*)malloc(size);
   memset((void*)patched_entries, 0, size);
   TEST_LOG("Patching libraries");
 
-  for (int index = 0; index < native_libs.count(); index++) {
+  for (int index = 0; index < num_of_libs; index++) {
      CodeCache* lib = native_libs.at(index);
      // Don't patch self
      if (strcmp(lib->name(), info.dli_fname) == 0) {
