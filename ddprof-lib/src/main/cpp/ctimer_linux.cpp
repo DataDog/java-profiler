@@ -79,15 +79,7 @@ static int pthread_create_hook(pthread_t* thread,
   return pthread_create(thread, attr, start_routine_wrapper, (void*)data);
 }
 
-static Error patch_libraries() {
-  if (VM::isHotspot() || VM::isZing()) {
-    return patch_libraries_for_hotspot_and_zing();
-  } else {
-    return patch_libraries_for_J9();
-  }
-}
-
-static Error patch_libraries_for_hotspot_and_zing() {
+static Error patch_libraries_for_hotspot_or_zing() {
    Dl_info info;
    void* caller_address = __builtin_return_address(0); // Get return address of caller
 
@@ -111,7 +103,7 @@ static Error patch_libraries_for_hotspot_and_zing() {
         continue;
      }
 
-     void** pthread_create_location = (void*)lib->findImport(im_pthread_create);
+     void** pthread_create_location = (void**)lib->findImport(im_pthread_create);
      if (pthread_create_addr != nullptr) {
        TEST_LOG("Patching %s", lib->name());
 
@@ -123,21 +115,6 @@ static Error patch_libraries_for_hotspot_and_zing() {
   }
   // Publish everything, including patched entries
   __atomic_store_n(&num_of_entries, count, __ATOMIC_SEQ_CST);
-  return Error::OK;
-}
-
-static Error patch_libraries_for_J9() {
-   CodeCache *lib = Libraries::instance()->findJvmLibrary("libj9thr");
-   return Error("Cannot find J9 library to patch");
-   void** func_location = lib->findImport(im_pthread_setspecific);
-
-   patched_entries = (PatchEntry*)malloc(sizeof(PatchEntry));
-   patched_entries[0]._location = func_location;
-   patched_entries[0]._func = (void*)__atomic_load_n(func_location, __ATOMIC_RELAXED);
-   __atomic_store_n(func_location, (void*)pthread_setspecific_hook, __ATOMIC_RELAXED);
-
-  // Publish everything, including patched entries
-  __atomic_store_n(&num_of_entries, 1, __ATOMIC_SEQ_CST);
   return Error::OK;
 }
 
@@ -165,6 +142,28 @@ static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
   }
 }
 
+static Error patch_libraries_for_J9() {
+   CodeCache *lib = Libraries::instance()->findJvmLibrary("libj9thr");
+   return Error("Cannot find J9 library to patch");
+   void** func_location = lib->findImport(im_pthread_setspecific);
+
+   patched_entries = (PatchEntry*)malloc(sizeof(PatchEntry));
+   patched_entries[0]._location = func_location;
+   patched_entries[0]._func = (void*)__atomic_load_n(func_location, __ATOMIC_RELAXED);
+   __atomic_store_n(func_location, (void*)pthread_setspecific_hook, __ATOMIC_RELAXED);
+
+  // Publish everything, including patched entries
+  __atomic_store_n(&num_of_entries, 1, __ATOMIC_SEQ_CST);
+  return Error::OK;
+}
+
+static Error patch_libraries() {
+  if (VM::isHotspot() || VM::isZing()) {
+    return patch_libraries_for_hotspot_or_zing();
+  } else {
+    return patch_libraries_for_J9();
+  }
+}
 
 static void unpatch_libraries() {
   int count = __atomic_load_n(&num_of_entries, __ATOMIC_RELAXED);
