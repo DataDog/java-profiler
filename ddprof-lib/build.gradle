@@ -695,6 +695,11 @@ tasks.register('sourcesJar', Jar) {
   archiveVersion = component_version
 }
 
+tasks.withType(Javadoc).configureEach {
+  // Allow javadoc to access internal sun.nio.ch package used by BufferWriter8
+  options.addStringOption('-add-exports', 'java.base/sun.nio.ch=ALL-UNNAMED')
+}
+
 tasks.register('javadocJar', Jar) {
   dependsOn javadoc
   archiveBaseName = libraryName
