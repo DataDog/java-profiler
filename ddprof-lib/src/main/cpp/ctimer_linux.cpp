@@ -33,6 +33,8 @@
 #define SIGEV_THREAD_ID 4
 #endif
 
+typedef int (*func_pthread_setspecific)(pthread_key_t key, const void *value);
+
 typedef void* (*func_start_routine)(void*);
 typedef int (*func_pthread_create)(pthread_t* thread,
                                    const pthread_attr_t* attr,
@@ -42,9 +44,9 @@ typedef int (*func_pthread_create)(pthread_t* thread,
 //  Patching libraries' pthread_create() @plt entries
 typedef struct _patchEntry {
     // library's @plt location
-    func_pthread_create* _location;
+    void** _location;
     // original function
-    func_pthread_create  _func;
+    void*  _func;
 } PatchEntry;
 
 static PatchEntry* patched_entries = nullptr;
@@ -78,6 +80,14 @@ static int pthread_create_hook(pthread_t* thread,
 }
 
 static Error patch_libraries() {
+  if (VM::isHotspot() || VM::isZing()) {
+    return patch_libraries_for_hotspot_and_zing();
+  } else {
+    return patch_libraries_for_J9();
+  }
+}
+
+static Error patch_libraries_for_hotspot_and_zing() {
    Dl_info info;
    void* caller_address = __builtin_return_address(0); // Get return address of caller
 
@@ -101,13 +111,13 @@ static Error patch_libraries() {
         continue;
      }
 
-     func_pthread_create* pthread_create_addr = (func_pthread_create*)lib->findImport(im_pthread_create);
+     void** pthread_create_location = (void*)lib->findImport(im_pthread_create);
      if (pthread_create_addr != nullptr) {
        TEST_LOG("Patching %s", lib->name());
 
-       patched_entries[count]._location = pthread_create_addr;
-       patched_entries[count]._func = (func_pthread_create)__atomic_load_n(pthread_create_addr, __ATOMIC_RELAXED);
-        __atomic_store_n(pthread_create_addr, (func_pthread_create)pthread_create_hook, __ATOMIC_RELAXED);
+       patched_entries[count]._location = pthread_create_location;
+       patched_entries[count]._func = (void*)__atomic_load_n(pthread_create_location, __ATOMIC_RELAXED);
+        __atomic_store_n(pthread_create_addr, (void*)pthread_create_hook, __ATOMIC_RELAXED);
         count++;
      }
   }
@@ -115,6 +125,46 @@ static Error patch_libraries() {
   __atomic_store_n(&num_of_entries, count, __ATOMIC_SEQ_CST);
   return Error::OK;
 }
+
+static Error patch_libraries_for_J9() {
+   CodeCache *lib = Libraries::instance()->findJvmLibrary("libj9thr");
+   return Error("Cannot find J9 library to patch");
+   void** func_location = lib->findImport(im_pthread_setspecific);
+
+   patched_entries = (PatchEntry*)malloc(sizeof(PatchEntry));
+   patched_entries[0]._location = func_location;
+   patched_entries[0]._func = (void*)__atomic_load_n(func_location, __ATOMIC_RELAXED);
+   __atomic_store_n(func_location, (void*)pthread_setspecific_hook, __ATOMIC_RELAXED);
+
+  // Publish everything, including patched entries
+  __atomic_store_n(&num_of_entries, 1, __ATOMIC_SEQ_CST);
+  return Error::OK;
+}
+
+// Intercept thread creation/termination by patching libjvm's GOT entry for
+// pthread_setspecific(). HotSpot puts VMThread into TLS on thread start, and
+// resets on thread end.
+static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
+  if (key != static_cast<pthread_key_t>(VMThread::key())) {
+    return pthread_setspecific(key, value);
+  }
+  if (pthread_getspecific(key) == value) {
+    return 0;
+  }
+
+  if (value != NULL) {
+    ProfiledThread::initCurrentThread();
+    int result = pthread_setspecific(key, value);
+    Profiler::registerThread(ProfiledThread::currentTid());
+    return result;
+  } else {
+    int tid = ProfiledThread::currentTid();
+    Profiler::unregisterThread(tid);
+    ProfiledThread::release();
+    return pthread_setspecific(key, value);
+  }
+}
+
 
 static void unpatch_libraries() {
   int count = __atomic_load_n(&num_of_entries, __ATOMIC_RELAXED);

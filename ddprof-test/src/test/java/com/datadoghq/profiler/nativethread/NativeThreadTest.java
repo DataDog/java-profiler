@@ -35,7 +35,7 @@ public class NativeThreadTest extends AbstractProfilerTest {
 
   @Override
   protected String getProfilerCommand() {
-    return "cpu=1ms,cstack=dwarf";
+    return "cpu=1ms";
   }
 
   @RetryingTest(3)
