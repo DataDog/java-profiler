@@ -16,6 +16,8 @@
 package com.datadoghq.profiler.nativethread;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.Platform;
+
 import org.junitpioneer.jupiter.RetryingTest;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemIterable;
@@ -40,6 +42,10 @@ public class NativeThreadTest extends AbstractProfilerTest {
 
   @RetryingTest(3)
   public void test() {
+      // Exclude J9 for now
+      if (Platform.isJ9()) {
+          return;
+      }
       long[] threads = new long[8];
       for (int index = 0; index < threads.length; index++) {
           threads[index] = createNativeThread();
