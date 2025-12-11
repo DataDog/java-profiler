@@ -33,15 +33,9 @@
 #define SIGEV_THREAD_ID 4
 #endif
 
-typedef int (*func_pthread_setspecific)(pthread_key_t key, const void *value);
-
 typedef void* (*func_start_routine)(void*);
-typedef int (*func_pthread_create)(pthread_t* thread,
-                                   const pthread_attr_t* attr,
-                                   func_start_routine start_routine,
-                                   void* arg);
 
-//  Patching libraries' pthread_create() @plt entries
+// Patch libraries' @plt entries
 typedef struct _patchEntry {
     // library's @plt location
     void** _location;
