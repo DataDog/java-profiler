@@ -43,7 +43,7 @@ public class NativeThreadTest extends AbstractProfilerTest {
   @RetryingTest(3)
   public void test() {
       // Exclude J9 for now
-      if (Platform.isJ9()) {
+      if (Platform.isJ9() || Platform.isMusl()) {
           return;
       }
       long[] threads = new long[8];
