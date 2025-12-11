@@ -104,12 +104,12 @@ static Error patch_libraries_for_hotspot_or_zing() {
      }
 
      void** pthread_create_location = (void**)lib->findImport(im_pthread_create);
-     if (pthread_create_addr != nullptr) {
+     if (pthread_create_location != nullptr) {
        TEST_LOG("Patching %s", lib->name());
 
        patched_entries[count]._location = pthread_create_location;
        patched_entries[count]._func = (void*)__atomic_load_n(pthread_create_location, __ATOMIC_RELAXED);
-        __atomic_store_n(pthread_create_addr, (void*)pthread_create_hook, __ATOMIC_RELAXED);
+        __atomic_store_n(pthread_create_location, (void*)pthread_create_hook, __ATOMIC_RELAXED);
         count++;
      }
   }
