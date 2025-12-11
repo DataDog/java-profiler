@@ -142,10 +142,10 @@ static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
   }
 }
 
-static Error patch_libraries_for_J9() {
+static Error patch_libraries_for_J9_or_musl() {
    CodeCache *lib = Libraries::instance()->findJvmLibrary("libj9thr");
    if (lib == nullptr) {
-     return Error("Cannot find J9 library to patch");
+     lib = VMStructs::libjvm();
    }
    void** func_location = lib->findImport(im_pthread_setspecific);
    if (func_location != nullptr) {
@@ -161,10 +161,10 @@ static Error patch_libraries_for_J9() {
 }
 
 static Error patch_libraries() {
-  if (VM::isHotspot() || VM::isZing()) {
+  if ((VM::isHotspot() || VM::isZing()) && !OS::isMusl()) {
     return patch_libraries_for_hotspot_or_zing();
   } else {
-    return patch_libraries_for_J9();
+    return patch_libraries_for_J9_or_musl();
   }
 }
 
