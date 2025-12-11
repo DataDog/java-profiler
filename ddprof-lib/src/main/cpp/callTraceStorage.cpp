@@ -20,7 +20,7 @@
 
 // HazardPointer static members
 HazardSlot HazardPointer::global_hazard_list[HazardPointer::MAX_THREADS];
-int HazardPointer::slot_owners[HazardPointer::MAX_THREADS];
+alignas(DEFAULT_CACHE_LINE_SIZE) int HazardPointer::slot_owners[HazardPointer::MAX_THREADS];
 uint64_t HazardPointer::occupied_bitmap[HazardPointer::BITMAP_WORDS] = {};
 
 // HazardPointer implementation
@@ -70,7 +70,8 @@ HazardPointer::HazardPointer(CallTraceHashTable* resource) : _active(true), _my_
     }
 
     // CRITICAL ORDERING: Set bitmap bit BEFORE storing pointer
-    // This ensures scanners using ACQUIRE on bitmap will see the pointer via RELEASE ordering
+    // This ensures scanners (background threads checking hazard slots via waitForHazardPointersToClear)
+    // using ACQUIRE on bitmap will see the pointer via RELEASE ordering
     // If we stored pointer first, scanner could:
     //   1. Load bitmap (doesn't see bit yet)
     //   2. Skip slot entirely
@@ -84,10 +85,23 @@ HazardPointer::HazardPointer(CallTraceHashTable* resource) : _active(true), _my_
     __atomic_store_n(&global_hazard_list[_my_slot].pointer, resource, __ATOMIC_RELEASE);
 }
 
+// Fast-path constructor using pre-allocated slot (thread-local caching optimization)
+HazardPointer::HazardPointer(CallTraceHashTable* resource, int slot) : _active(true), _my_slot(slot) {
+    // CRITICAL ORDERING: Set bitmap bit BEFORE storing pointer
+    // Ensures scanners see pointer after observing the bitmap bit (same reasoning as above)
+    int word_index = _my_slot / 64;
+    uint64_t bit_mask = 1ULL << (_my_slot % 64);
+    __atomic_fetch_or(&occupied_bitmap[word_index], bit_mask, __ATOMIC_RELEASE);
+
+    // Store pointer - scanner's ACQUIRE on bitmap guarantees visibility of this pointer
+    __atomic_store_n(&global_hazard_list[_my_slot].pointer, resource, __ATOMIC_RELEASE);
+}
+
 HazardPointer::~HazardPointer() {
     if (_active && _my_slot >= 0) {
         // CRITICAL ORDERING: Clear pointer BEFORE clearing bitmap bit
-        // This ensures scanners that see the bitmap bit will get nullptr for pointer
+        // This ensures scanners (background threads in waitForHazardPointersToClear) that see
+        // the bitmap bit will get nullptr for pointer
         // Even if scanner loads bitmap before we clear bit, it will see nullptr pointer (safe)
         __atomic_store_n(&global_hazard_list[_my_slot].pointer, nullptr, __ATOMIC_RELEASE);
 
@@ -423,23 +437,34 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
     // Signal handlers can run concurrently with destructor
     // MEMORY_ORDER_ACQUIRE: Critical - synchronizes with release stores in processTraces()
     CallTraceHashTable* active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE));
-    
+
     // Safety check - if null, system is shutting down
     if (active == nullptr) {
         Counters::increment(CALLTRACE_STORAGE_DROPPED);
         return DROPPED_TRACE_ID;
     }
-    
-    // RAII hazard pointer guard automatically manages hazard pointer lifecycle
-    HazardPointer guard(active);
-    
+
+    // Thread-local slot caching optimization: Check if current thread has a cached hazard slot
+    ProfiledThread* pThread = ProfiledThread::currentSignalSafe();
+    int cached_slot = (pThread != nullptr) ? pThread->getHazardSlot() : -1;
+
+    // Create hazard pointer guard using fast path (cached slot) or slow path (allocation)
+    HazardPointer guard = (cached_slot >= 0)
+        ? HazardPointer(active, cached_slot)  // Fast path: reuse cached slot (no probing)
+        : HazardPointer(active);              // Slow path: allocate slot via probing
+
     // Check if hazard pointer allocation failed (slot exhaustion)
     if (!guard.isActive()) {
         // No hazard protection available - return dropped trace ID
         Counters::increment(CALLTRACE_STORAGE_DROPPED);
         return DROPPED_TRACE_ID;
     }
-    
+
+    // Cache the slot for next time if this was the first allocation
+    if (pThread != nullptr && cached_slot == -1 && guard.slot() >= 0) {
+        pThread->setHazardPointer(nullptr, nullptr, guard.slot());
+    }
+
     // Check again after registering hazard pointer - storage might have been nullified
     // MEMORY_ORDER_ACQUIRE: Ensures we see any concurrent storage swaps
     CallTraceHashTable* original_active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE));
@@ -448,7 +473,7 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
         Counters::increment(CALLTRACE_STORAGE_DROPPED);
         return DROPPED_TRACE_ID;
     }
-    
+
     // Hazard pointer prevents deletion
     u64 result = active->put(num_frames, frames, truncated, weight);
 

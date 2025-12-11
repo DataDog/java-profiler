@@ -61,7 +61,7 @@ public:
     static constexpr int BITMAP_WORDS = MAX_THREADS / 64;  // 8192 / 64 = 128 words
 
     static HazardSlot global_hazard_list[MAX_THREADS];
-    static int slot_owners[MAX_THREADS];  // Thread ID ownership verification
+    alignas(DEFAULT_CACHE_LINE_SIZE) static int slot_owners[MAX_THREADS];  // Thread ID ownership verification
 
     // Occupied slot bitmap for efficient scanning (avoids iterating 8192 empty slots)
     // Uses raw uint64_t with GCC atomic builtins to avoid any potential malloc on musl
@@ -76,18 +76,26 @@ private:
     static int getThreadHazardSlot();
     
 public:
+    // Constructor with slot allocation (slow path)
     HazardPointer(CallTraceHashTable* resource);
+
+    // Constructor with pre-allocated slot (fast path for thread-local slot caching)
+    HazardPointer(CallTraceHashTable* resource, int slot);
+
     ~HazardPointer();
-    
+
     // Non-copyable, movable for efficiency
     HazardPointer(const HazardPointer&) = delete;
     HazardPointer& operator=(const HazardPointer&) = delete;
-    
+
     HazardPointer(HazardPointer&& other) noexcept;
     HazardPointer& operator=(HazardPointer&& other) noexcept;
-    
+
     // Check if hazard pointer is active (slot allocation succeeded)
     bool isActive() const { return _active; }
+
+    // Get the allocated slot number (for caching)
+    int slot() const { return _my_slot; }
     
     // Wait for hazard pointers pointing to specific table to clear (used during shutdown)
     static void waitForHazardPointersToClear(CallTraceHashTable* table_to_delete);
