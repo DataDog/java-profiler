@@ -144,16 +144,19 @@ static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
 
 static Error patch_libraries_for_J9() {
    CodeCache *lib = Libraries::instance()->findJvmLibrary("libj9thr");
-   return Error("Cannot find J9 library to patch");
+   if (lib == nullptr) {
+     return Error("Cannot find J9 library to patch");
+   }
    void** func_location = lib->findImport(im_pthread_setspecific);
+   if (func_location != nullptr) {
+       patched_entries = (PatchEntry*)malloc(sizeof(PatchEntry));
+       patched_entries[0]._location = func_location;
+       patched_entries[0]._func = (void*)__atomic_load_n(func_location, __ATOMIC_RELAXED);
+       __atomic_store_n(func_location, (void*)pthread_setspecific_hook, __ATOMIC_RELAXED);
 
-   patched_entries = (PatchEntry*)malloc(sizeof(PatchEntry));
-   patched_entries[0]._location = func_location;
-   patched_entries[0]._func = (void*)__atomic_load_n(func_location, __ATOMIC_RELAXED);
-   __atomic_store_n(func_location, (void*)pthread_setspecific_hook, __ATOMIC_RELAXED);
-
-  // Publish everything, including patched entries
-  __atomic_store_n(&num_of_entries, 1, __ATOMIC_SEQ_CST);
+      // Publish everything, including patched entries
+      __atomic_store_n(&num_of_entries, 1, __ATOMIC_SEQ_CST);
+  }
   return Error::OK;
 }
 
@@ -177,7 +180,9 @@ static void unpatch_libraries() {
      }
   }
   __atomic_thread_fence(__ATOMIC_SEQ_CST);
-  free((void*)tmp);
+  if (tmp != nullptr) {
+    free((void*)tmp);
+  }
 }
 
 
