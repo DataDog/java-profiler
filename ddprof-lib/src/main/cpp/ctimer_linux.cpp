@@ -138,9 +138,6 @@ static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
 
 static Error patch_libraries_for_J9_or_musl() {
    CodeCache *lib = Libraries::instance()->findJvmLibrary("libj9thr");
-   if (lib == nullptr) {
-     lib = VMStructs::libjvm();
-   }
    void** func_location = lib->findImport(im_pthread_setspecific);
    if (func_location != nullptr) {
        patched_entries = (PatchEntry*)malloc(sizeof(PatchEntry));
