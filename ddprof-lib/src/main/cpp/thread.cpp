@@ -108,9 +108,6 @@ ProfiledThread::initCurrentThreadWithBuffer() {
 static void resetTlsPrimingStateInChild() {
   // After fork(), reset signal number to prevent cleanup attempts
   g_tls_prime_signal = -1;
-
-  // Note: The watcher state is reset by os_linux_dd.cpp fork handler
-  // This just ensures we don't try to uninstall signals or cleanup resources
 }
 
 // Register fork handler on first initialization
@@ -140,26 +137,9 @@ void ProfiledThread::doInitExistingThreads() {
 
   TEST_LOG("Successfully installed TLS priming handler on RT signal %d", g_tls_prime_signal);
 
-  // Use a modest buffer size since we're only handling new threads via watcher
-  // 256 should be more than enough for concurrent new thread creation
+  // Use a modest buffer size for concurrent thread TLS initialization
+  // 256 should be more than enough for typical workloads
   prepareBuffer(256);
-
-  // Start thread directory watcher to prime new threads (no mass-priming of existing threads)
-  bool watcher_started = ddprof::OS::startThreadDirectoryWatcher(
-    [](int tid) {
-      // Prime new thread with TLS signal
-      ddprof::OS::signalThread(tid, g_tls_prime_signal);
-    },
-    [](int tid) {
-      // No-op for dead threads - cleanup handled elsewhere
-    }
-  );
-
-  if (!watcher_started) {
-    TEST_LOG("Failed to start thread directory watcher for TLS priming");
-  } else {
-    TEST_LOG("Started thread directory watcher for TLS priming");
-  }
 
   initialized = true;
 }
@@ -168,10 +148,6 @@ void ProfiledThread::cleanupTlsPriming() {
   if (!ddprof::OS::isTlsPrimingAvailable()) {
     return;
   }
-
-  // Stop the thread directory watcher
-  ddprof::OS::stopThreadDirectoryWatcher();
-  TEST_LOG("Stopped thread directory watcher");
 
   // Uninstall the TLS priming signal handler
   if (g_tls_prime_signal > 0) {

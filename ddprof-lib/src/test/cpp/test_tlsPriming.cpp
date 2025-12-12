@@ -85,11 +85,11 @@ TEST_F(TlsPrimingTest, GetThreadCount) {
 
 TEST_F(TlsPrimingTest, SignalCurrentThread) {
     int signal_num = ddprof::OS::installTlsPrimeSignalHandler(testTlsSignalHandler, 6);
-    
+
 #ifdef __linux__
     if (signal_num > 0) {
         TEST_LOG("Signaling current thread with signal %d", signal_num);
-        
+
         // Get the first thread ID from enumeration
         std::atomic<int> first_tid{-1};
         ddprof::OS::enumerateThreadIds([&](int tid) {
@@ -97,18 +97,18 @@ TEST_F(TlsPrimingTest, SignalCurrentThread) {
                 first_tid.store(tid);
             }
         });
-        
+
         int tid = first_tid.load();
         if (tid >= 0) {
             ddprof::OS::signalThread(tid, signal_num);
-            
+
             // Wait a bit for signal to be delivered
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            
+
             EXPECT_GT(g_signal_received.load(), 0);
             EXPECT_GT(g_threads_primed.load(), 0);
             EXPECT_EQ(g_test_tls, 0x1234ABCD);
-            
+
             TEST_LOG("Signal delivered successfully, TLS primed");
         } else {
             TEST_LOG("No threads found for signaling");
@@ -122,45 +122,6 @@ TEST_F(TlsPrimingTest, SignalCurrentThread) {
     TEST_LOG("TLS prime signaling not supported on this platform");
     EXPECT_EQ(signal_num, -1);
 #endif
-}
-
-TEST_F(TlsPrimingTest, ThreadDirectoryWatcher) {
-    std::atomic<int> new_threads{0};
-    std::atomic<int> dead_threads{0};
-    
-    bool started = ddprof::OS::startThreadDirectoryWatcher(
-        [&](int tid) {
-            TEST_LOG("New thread detected: %d", tid);
-            new_threads++;
-        },
-        [&](int tid) {
-            TEST_LOG("Thread died: %d", tid);
-            dead_threads++;
-        }
-    );
-    
-    if (started) {
-        TEST_LOG("Thread directory watcher started successfully");
-        
-        // Create a short-lived thread to trigger the watcher
-        std::thread test_thread([]() {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        });
-        
-        test_thread.join();
-        
-        // Wait for watcher to detect changes
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        
-        ddprof::OS::stopThreadDirectoryWatcher();
-        TEST_LOG("Thread directory watcher stopped");
-        
-        // We might see events, but it's not guaranteed due to timing
-        TEST_LOG("Detected %d new threads, %d dead threads", 
-                new_threads.load(), dead_threads.load());
-    } else {
-        TEST_LOG("Thread directory watcher not supported on this platform");
-    }
 }
 
 // Test TLS cleanup for JVMTI-allocated threads (non-buffer)
