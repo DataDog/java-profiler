@@ -162,24 +162,6 @@ public:
     __atomic_store_n(&_in_critical_section, false, __ATOMIC_RELEASE);
   }
   
-  // Hazard pointer management for lock-free memory reclamation (signal-safe)
-  // 
-  // How hazard pointers work:
-  // 1. Before accessing a shared data structure, threads register a "hazard pointer" to it
-  // 2. When deleting the structure, the deleter waits for all hazard pointers to clear
-  // 3. This ensures no thread accesses freed memory, even in signal handler contexts
-  // 4. Alternative to locks that avoids malloc/deadlock issues in signal handlers
-  //
-  // Currently used only in CallTraceStorage for safe table swapping during profiling
-  void setHazardPointer(void* instance, void* hazard_pointer, int hazard_slot) {
-    _hazard_instance = instance;
-    _hazard_pointer = hazard_pointer;
-    _hazard_slot = hazard_slot;
-  }
-  void* getHazardInstance() { return _hazard_instance; }
-  void* getHazardPointer() { return _hazard_pointer; }
-  int getHazardSlot() { return _hazard_slot; }
-
   // context sharing TLS
   inline void markContextTlsInitialized(Context* ctx_ptr) {
     _ctx_tls_ptr = ctx_ptr;
@@ -201,11 +183,6 @@ private:
   // both could see the flag as false and both would think they successfully entered.
   // The atomic exchange() is uninterruptible, ensuring only one context succeeds.
   bool _in_critical_section{false};
-  
-  // Hazard pointer instance for signal-safe access (not atomic since only accessed by same thread)
-  void* _hazard_instance{nullptr};
-  void* _hazard_pointer{nullptr};
-  int _hazard_slot{-1};
 };
 
 #endif // _THREAD_H

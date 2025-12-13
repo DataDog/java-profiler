@@ -358,53 +358,53 @@ TEST_F(CallTraceStorageTest, ConcurrentTableExpansionRegression) {
 }
 
 /**
- * Test hazard pointer synchronization during storage swap.
- * This test ensures that waitForHazardPointersToClear() actually prevents
+ * Test RefCountGuard synchronization during storage swap.
+ * This test ensures that waitForRefCountToClear() actually prevents
  * collection from original_active while there are still pending put() operations
  * to the original_active after the active area swap.
  */
-TEST_F(CallTraceStorageTest, HazardPointerSynchronizationDuringSwap) {
+TEST_F(CallTraceStorageTest, RefCountGuardSynchronizationDuringSwap) {
     // Synchronization primitives for coordinating the test
     std::atomic<bool> swap_initiated{false};
     std::atomic<bool> put_thread_ready{false};
     std::atomic<bool> put_operation_started{false};
     std::atomic<bool> put_operation_completed{false};
     std::atomic<bool> collection_started{false};
-    std::atomic<bool> hazard_wait_started{false};
-    
+    std::atomic<bool> refcount_wait_started{false};
+
     std::condition_variable cv;
     std::mutex cv_mutex;
-    
+
     // Test outcome tracking
     std::atomic<u64> put_trace_id{0};
     std::atomic<bool> trace_found_in_collection{false};
-    
+
     // Create initial traces to populate the storage
     ASGCT_CallFrame initial_frame;
     initial_frame.bci = 100;
     initial_frame.method_id = (jmethodID)0x1000;
-    
+
     // Add several traces to ensure there's content to process
     for (int i = 0; i < 5; i++) {
         initial_frame.bci = 100 + i;
         storage->put(1, &initial_frame, false, 1);
     }
-    
+
     // Thread that will perform a put() operation right after storage swap
     std::thread put_thread([&]() {
         put_thread_ready = true;
-        
+
         // Wait for the main thread to initiate the swap
         std::unique_lock<std::mutex> lock(cv_mutex);
         cv.wait(lock, [&] { return swap_initiated.load(); });
         lock.unlock();
-        
-        // Small delay to ensure we hit the window after swap but during hazard pointer wait
+
+        // Small delay to ensure we hit the window after swap but during refcount wait
         std::this_thread::sleep_for(std::chrono::microseconds(100));
-        
+
         // This put() should target the new active area, but we need to ensure
         // that if there were ongoing operations on original_active,
-        // the hazard pointer wait would properly synchronize
+        // the refcount wait would properly synchronize
         ASGCT_CallFrame put_frame;
         put_frame.bci = 999;
         put_frame.method_id = (jmethodID)0x999;
@@ -416,35 +416,35 @@ TEST_F(CallTraceStorageTest, HazardPointerSynchronizationDuringSwap) {
     });
     
     // Thread that simulates a longer-running put() operation on original_active
-    // This represents the scenario the hazard pointer synchronization protects against
+    // This represents the scenario the RefCountGuard synchronization protects against
     std::thread delayed_put_thread([&]() {
         // Wait for swap to be initiated
         std::unique_lock<std::mutex> lock(cv_mutex);
         cv.wait(lock, [&] { return swap_initiated.load(); });
         lock.unlock();
-        
+
         // Simulate a put operation that was ongoing during the swap
         // In the real scenario, this would be a signal handler that acquired
-        // a hazard pointer before the swap and is still executing
+        // a RefCountGuard before the swap and is still executing
         ASGCT_CallFrame delayed_frame;
         delayed_frame.bci = 777;
         delayed_frame.method_id = (jmethodID)0x777;
-        
+
         // Small delay to simulate ongoing operation
         std::this_thread::sleep_for(std::chrono::microseconds(50));
-        
-        // This operation would normally be protected by hazard pointers
+
+        // This operation would normally be protected by RefCountGuards
         // The test verifies the synchronization works correctly
         storage->put(1, &delayed_frame, false, 1);
     });
-    
+
     // Perform processTraces in main thread to trigger the storage swap
     std::thread process_thread([&]() {
         // Signal that we're about to initiate the swap
         swap_initiated = true;
         cv.notify_all();
-        
-        // Process traces - this will trigger the storage swap and hazard pointer wait
+
+        // Process traces - this will trigger the storage swap and refcount wait
         storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
             collection_started = true;
             
@@ -475,16 +475,16 @@ TEST_F(CallTraceStorageTest, HazardPointerSynchronizationDuringSwap) {
     EXPECT_TRUE(collection_started.load()) << "Collection should have started";
     EXPECT_GT(put_trace_id.load(), 0ULL) << "Put operation should have returned valid trace ID";
     
-    // The key test: if hazard pointer synchronization works correctly,
+    // The key test: if RefCountGuard synchronization works correctly,
     // the collection should not interfere with concurrent put operations
     // This test primarily validates that we don't crash or corrupt data
-    
+
     // Additional verification: ensure storage is still functional
     ASGCT_CallFrame verification_frame;
     verification_frame.bci = 5555;
     verification_frame.method_id = (jmethodID)0x5555;
     u64 verification_trace = storage->put(1, &verification_frame, false, 1);
-    EXPECT_GT(verification_trace, 0ULL) << "Storage should remain functional after hazard pointer synchronization";
+    EXPECT_GT(verification_trace, 0ULL) << "Storage should remain functional after RefCountGuard synchronization";
     
     // Final verification: ensure we can still process traces
     std::atomic<int> final_trace_count{0};
