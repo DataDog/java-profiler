@@ -35,19 +35,22 @@ import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
 
 /**
- * Baseline benchmark for profiler throughput with stable thread pools.
+ * Full benchmark for profiler throughput with comprehensive thread counts and statistical rigor.
  *
  * <p>This benchmark measures end-to-end profiling overhead including:
  * - Signal handler interrupts (cpu=100us, wall=100us)
  * - Stack walking via ASGCT
- * - CallTraceStorage::put() operations with hazard pointer management
- * - Atomic operations in the hazard pointer lifecycle
+ * - CallTraceStorage::put() operations with RefCountGuard memory reclamation
+ * - Atomic operations in the refcount guard lifecycle
  * - JFR background processing
  *
- * <p>Tests the complete profiling pipeline, not just isolated CallTraceStorage operations.
+ * <p>Tests the complete profiling pipeline across 7 thread counts (1,2,4,8,16,32,64) with
+ * high statistical confidence (3 forks, 5 measurement iterations). Runtime: ~45-60 minutes.
+ *
+ * <p>Use {@link ProfilerThroughputQuickBenchmark} for rapid development iteration (~2 minutes).
  */
 @State(Scope.Benchmark)
-public class ProfilerThroughputBaselineBenchmark {
+public class ProfilerThroughputFullBenchmark {
 
     @Param({"cpu=100us,wall=100us"})
     public String command;

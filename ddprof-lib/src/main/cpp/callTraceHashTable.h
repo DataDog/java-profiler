@@ -59,7 +59,7 @@ public:
 
 private:
   u64 _instance_id;  // 64-bit instance ID for this hash table (set externally)
-  CallTraceStorage* _parent_storage;  // Parent storage for hazard pointer access
+  CallTraceStorage* _parent_storage;  // Parent storage for RefCountGuard access
 
   LinearAllocator _allocator;
   

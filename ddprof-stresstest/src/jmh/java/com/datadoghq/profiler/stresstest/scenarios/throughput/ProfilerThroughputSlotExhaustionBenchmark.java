@@ -38,7 +38,7 @@ import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
 
 /**
- * Benchmark testing HazardPointer slot allocation under extreme concurrency.
+ * Benchmark testing RefCountGuard slot allocation under extreme concurrency.
  *
  * <p>This benchmark stress-tests the slot allocation mechanism by creating
  * large numbers of concurrent threads, approaching or exceeding typical usage
@@ -51,7 +51,7 @@ import org.openjdk.jmh.infra.Blackhole;
  *   <li>Cache line contention effects
  * </ul>
  *
- * <p>The HazardPointer::getThreadHazardSlot() function uses prime probing with
+ * <p>The RefCountGuard::getThreadRefCountSlot() function uses prime probing with
  * MAX_PROBE_DISTANCE=32 attempts. Under high concurrency, probing distance
  * increases and may reach the limit, causing allocation failures.
  *

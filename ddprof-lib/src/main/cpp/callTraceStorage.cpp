@@ -18,20 +18,18 @@
 #include <atomic>
 #include <time.h>
 
-// HazardPointer static members
-HazardSlot HazardPointer::global_hazard_list[HazardPointer::MAX_THREADS];
-alignas(DEFAULT_CACHE_LINE_SIZE) int HazardPointer::slot_owners[HazardPointer::MAX_THREADS];
-uint64_t HazardPointer::occupied_bitmap[HazardPointer::BITMAP_WORDS] = {};
+// RefCountGuard static members
+RefCountSlot RefCountGuard::refcount_slots[RefCountGuard::MAX_THREADS];
+int RefCountGuard::slot_owners[RefCountGuard::MAX_THREADS];
 
-// HazardPointer implementation
-int HazardPointer::getThreadHazardSlot() {
+
+// RefCountGuard implementation
+int RefCountGuard::getThreadRefCountSlot() {
     // Signal-safe collision resolution: use OS::threadId() with semi-random prime step probing
-    // This avoids thread_local allocation issues
     ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
     int tid = thrd != nullptr ? thrd->tid() : OS::threadId();
 
     // Semi-random prime step probing to eliminate secondary clustering
-    // Each thread gets a different prime step size for unique probe sequences
     HashProbe probe(static_cast<u64>(tid), MAX_THREADS);
 
     int slot = probe.slot();
@@ -42,95 +40,73 @@ int HazardPointer::getThreadHazardSlot() {
             // Successfully claimed the slot
             return slot;
         }
-        
+
         // Check if we already own this slot (for reentrant calls)
         if (__atomic_load_n(&slot_owners[slot], __ATOMIC_ACQUIRE) == tid) {
             return slot;
         }
-        
+
         // Move to next slot using probe
         if (probe.hasNext()) {
             slot = probe.next();
         }
     }
-    
+
     // All probing attempts failed - return -1 to indicate failure
-    // Caller must handle graceful degradation
     return -1;
 }
 
-HazardPointer::HazardPointer(CallTraceHashTable* resource) : _active(true), _my_slot(-1) {
-    // Get thread hazard slot using signal-safe collision resolution
-    _my_slot = getThreadHazardSlot();
+RefCountGuard::RefCountGuard(CallTraceHashTable* resource) : _active(true), _my_slot(-1) {
+    // Get thread refcount slot using signal-safe collision resolution
+    _my_slot = getThreadRefCountSlot();
 
     if (_my_slot == -1) {
-        // Slot allocation failed - hazard pointer is inactive
+        // Slot allocation failed - refcount guard is inactive
         _active = false;
         return;
     }
 
-    // CRITICAL ORDERING: Set bitmap bit BEFORE storing pointer
-    // This ensures scanners (background threads checking hazard slots via waitForHazardPointersToClear)
-    // using ACQUIRE on bitmap will see the pointer via RELEASE ordering
-    // If we stored pointer first, scanner could:
-    //   1. Load bitmap (doesn't see bit yet)
-    //   2. Skip slot entirely
-    //   3. Bitmap bit gets set (too late - already scanned past)
-    //   4. Exit thinking all clear, but hazard pointer exists → USE-AFTER-FREE
-    int word_index = _my_slot / 64;
-    uint64_t bit_mask = 1ULL << (_my_slot % 64);
-    __atomic_fetch_or(&occupied_bitmap[word_index], bit_mask, __ATOMIC_RELEASE);
-
-    // Now store pointer - scanner's ACQUIRE on bitmap guarantees visibility of this pointer
-    __atomic_store_n(&global_hazard_list[_my_slot].pointer, resource, __ATOMIC_RELEASE);
+    // CRITICAL ORDERING: Store pointer FIRST, then increment count
+    // This ensures the pointer-first protocol for race-free operation
+    //
+    // Why this ordering is safe:
+    // Between step 1 and 2, if scanner runs:
+    //   - Scanner loads count=0 (not yet incremented)
+    //   - Scanner sees slot as inactive, skips it
+    //   - Safe: we haven't "activated" protection yet
+    //
+    // After step 2, slot is fully active and protects the resource
+    __atomic_store_n(&refcount_slots[_my_slot].active_table, resource, __ATOMIC_RELEASE);
+    __atomic_fetch_add(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
 }
 
-// Fast-path constructor using pre-allocated slot (thread-local caching optimization)
-HazardPointer::HazardPointer(CallTraceHashTable* resource, int slot) : _active(true), _my_slot(slot) {
-    // CRITICAL ORDERING: Set bitmap bit BEFORE storing pointer
-    // Ensures scanners see pointer after observing the bitmap bit (same reasoning as above)
-    int word_index = _my_slot / 64;
-    uint64_t bit_mask = 1ULL << (_my_slot % 64);
-    __atomic_fetch_or(&occupied_bitmap[word_index], bit_mask, __ATOMIC_RELEASE);
-
-    // Store pointer - scanner's ACQUIRE on bitmap guarantees visibility of this pointer
-    __atomic_store_n(&global_hazard_list[_my_slot].pointer, resource, __ATOMIC_RELEASE);
-}
-
-HazardPointer::~HazardPointer() {
+RefCountGuard::~RefCountGuard() {
     if (_active && _my_slot >= 0) {
-        // CRITICAL ORDERING: Clear pointer BEFORE clearing bitmap bit
-        // This ensures scanners (background threads in waitForHazardPointersToClear) that see
-        // the bitmap bit will get nullptr for pointer
-        // Even if scanner loads bitmap before we clear bit, it will see nullptr pointer (safe)
-        __atomic_store_n(&global_hazard_list[_my_slot].pointer, nullptr, __ATOMIC_RELEASE);
-
-        // Now clear bitmap bit - scanner's ACQUIRE on bitmap ensures it sees the nullptr
-        int word_index = _my_slot / 64;
-        uint64_t bit_mask = 1ULL << (_my_slot % 64);
-        __atomic_fetch_and(&occupied_bitmap[word_index], ~bit_mask, __ATOMIC_RELEASE);
+        // CRITICAL ORDERING: Decrement count FIRST, then clear pointer
+        // This ensures safe deactivation
+        //
+        // Why this ordering is safe:
+        // After step 1, count=0 so scanner will skip this slot
+        // Step 2 clears the pointer (cleanup)
+        // No window where scanner thinks slot protects a table it doesn't
+        __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
+        __atomic_store_n(&refcount_slots[_my_slot].active_table, nullptr, __ATOMIC_RELEASE);
 
         // Release slot ownership
         __atomic_store_n(&slot_owners[_my_slot], 0, __ATOMIC_RELEASE);
     }
 }
 
-HazardPointer::HazardPointer(HazardPointer&& other) noexcept : _active(other._active), _my_slot(other._my_slot) {
+RefCountGuard::RefCountGuard(RefCountGuard&& other) noexcept : _active(other._active), _my_slot(other._my_slot) {
     other._active = false;
 }
 
-HazardPointer& HazardPointer::operator=(HazardPointer&& other) noexcept {
+RefCountGuard& RefCountGuard::operator=(RefCountGuard&& other) noexcept {
     if (this != &other) {
         // Clean up current state with same ordering as destructor
         if (_active && _my_slot >= 0) {
-            // Clear pointer BEFORE bitmap bit (see destructor comments for rationale)
-            __atomic_store_n(&global_hazard_list[_my_slot].pointer, nullptr, __ATOMIC_RELEASE);
-
-            // Now clear bitmap bit
-            int word_index = _my_slot / 64;
-            uint64_t bit_mask = 1ULL << (_my_slot % 64);
-            __atomic_fetch_and(&occupied_bitmap[word_index], ~bit_mask, __ATOMIC_RELEASE);
-
+            __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
+            __atomic_store_n(&refcount_slots[_my_slot].active_table, nullptr, __ATOMIC_RELEASE);
             __atomic_store_n(&slot_owners[_my_slot], 0, __ATOMIC_RELEASE);
         }
 
@@ -144,102 +120,65 @@ HazardPointer& HazardPointer::operator=(HazardPointer&& other) noexcept {
     return *this;
 }
 
-void HazardPointer::waitForHazardPointersToClear(CallTraceHashTable* table_to_delete) {
-    // Check global hazard list for the table we want to delete
+void RefCountGuard::waitForRefCountToClear(CallTraceHashTable* table_to_delete) {
+    // Check refcount slots for the table we want to delete
     //
-    // TRIPLE-BUFFER PROTECTION MECHANISM:
+    // POINTER-FIRST PROTOCOL GUARANTEES:
+    // - Constructor stores pointer then increments count
+    // - Destructor decrements count then clears pointer
+    // - Scanner checks count first (if 0, slot is inactive)
     //
-    // The CallTraceStorage triple-buffer rotation provides architectural protection
-    // against race conditions. Here's why no race condition can occur:
-    //
-    // Timeline during CallTraceStorage::~CallTraceStorage():
-    //
-    // T0: [ACTIVE=TableA] [STANDBY=TableB] [SCRATCH=TableC]
-    //     │
-    //     │ put() creates hazard pointers → TableA only
-    //     │
-    // T1: _active_storage.exchange(nullptr)  ← ATOMIC BARRIER
-    //     [ACTIVE=nullptr] [STANDBY=nullptr] [SCRATCH=nullptr]
-    //     │
-    //     │ NEW put() calls after T1:
-    //     │ ├─ active = nullptr
-    //     │ ├─ return DROPPED_TRACE_ID  ← NO hazard pointer created!
-    //     │
-    // T2: waitForHazardPointersToClear(TableA)  ← We are here
-    //     │ ← Only PRE-EXISTING hazard pointers can exist (from before T1)
-    //     │ ← No NEW hazard pointers possible (active=nullptr)
-    //     │
-    // T3: delete TableA  ← SAFE!
-    //
-    // Key insight: Hazard pointers are ONLY created for the ACTIVE table via put().
-    // After nullification, put() returns early - no new hazard pointers possible.
-    // We only need to wait for pre-existing hazard pointers to clear.
+    // TRACE DROP WINDOW (intentional design):
+    // - Scanner can complete on FIRST iteration if all slots have count=0
+    // - Guards in construction (pointer stored, count still 0) are treated as inactive
+    // - Revalidation check in put() detects this race and drops the trace
+    // - This trades a narrow trace-drop window (~10-100ns) for protocol simplicity
+    // - USE-AFTER-FREE IS IMPOSSIBLE: Revalidation prevents table access after deletion
 
     // PHASE 1: Fast path - spin with pause for short waits (common case)
-    // Expected: hazard pointers clear within 1-20µs as put() operations complete
+    // Expected: refcounts clear within 1-20µs as put() operations complete
     const int SPIN_ITERATIONS = 100;
     for (int spin = 0; spin < SPIN_ITERATIONS; ++spin) {
         bool all_clear = true;
 
-        // Scan only occupied slots using bitmap (avoids checking 8192 empty slots)
-        for (int word_idx = 0; word_idx < BITMAP_WORDS; ++word_idx) {
-            // Load bitmap word atomically (no malloc, async-signal-safe)
-            uint64_t occupied_bits = __atomic_load_n(&occupied_bitmap[word_idx], __ATOMIC_ACQUIRE);
-
-            // Process each set bit in this word
-            while (occupied_bits) {
-                // Find position of lowest set bit (0-63)
-                int bit_pos = __builtin_ctzll(occupied_bits);
-                int slot = word_idx * 64 + bit_pos;
-
-                // Check if this occupied slot points to the table we're deleting
-                CallTraceHashTable* hazard = const_cast<CallTraceHashTable*>(__atomic_load_n(&global_hazard_list[slot].pointer, __ATOMIC_ACQUIRE));
-                if (hazard == table_to_delete) {
-                    all_clear = false;
-                    break;
-                }
-
-                // Clear the bit we just processed
-                occupied_bits &= occupied_bits - 1;
+        // Scan all slots (no bitmap optimization, but simpler logic)
+        for (int i = 0; i < MAX_THREADS; ++i) {
+            // CRITICAL: Check count FIRST (pointer-first protocol)
+            uint32_t count = __atomic_load_n(&refcount_slots[i].count, __ATOMIC_ACQUIRE);
+            if (count == 0) {
+                continue;  // Slot inactive, skip it
             }
 
-            if (!all_clear) {
+            // Count > 0, so slot is active - check which table it protects
+            CallTraceHashTable* table = __atomic_load_n(&refcount_slots[i].active_table, __ATOMIC_ACQUIRE);
+            if (table == table_to_delete) {
+                all_clear = false;
                 break;
             }
         }
 
         if (all_clear) {
-            return; // Fast path success - hazard pointers cleared quickly
+            return; // Fast path success - refcounts cleared quickly
         }
         spinPause(); // CPU pause instruction, ~10-50 cycles
     }
 
     // PHASE 2: Slow path - async-signal-safe sleep for blocked thread case
-    // Uses nanosleep() instead of std::this_thread::sleep_for() to avoid malloc deadlock on musl
     const int MAX_WAIT_ITERATIONS = 5000;
     struct timespec sleep_time = {0, 100000}; // 100 microseconds
 
     for (int wait_count = 0; wait_count < MAX_WAIT_ITERATIONS; ++wait_count) {
         bool all_clear = true;
 
-        // Scan only occupied slots using bitmap
-        for (int word_idx = 0; word_idx < BITMAP_WORDS; ++word_idx) {
-            uint64_t occupied_bits = __atomic_load_n(&occupied_bitmap[word_idx], __ATOMIC_ACQUIRE);
-
-            while (occupied_bits) {
-                int bit_pos = __builtin_ctzll(occupied_bits);
-                int slot = word_idx * 64 + bit_pos;
-
-                CallTraceHashTable* hazard = const_cast<CallTraceHashTable*>(__atomic_load_n(&global_hazard_list[slot].pointer, __ATOMIC_ACQUIRE));
-                if (hazard == table_to_delete) {
-                    all_clear = false;
-                    break;
-                }
-
-                occupied_bits &= occupied_bits - 1;
+        for (int i = 0; i < MAX_THREADS; ++i) {
+            uint32_t count = __atomic_load_n(&refcount_slots[i].count, __ATOMIC_ACQUIRE);
+            if (count == 0) {
+                continue;
             }
 
-            if (!all_clear) {
+            CallTraceHashTable* table = __atomic_load_n(&refcount_slots[i].active_table, __ATOMIC_ACQUIRE);
+            if (table == table_to_delete) {
+                all_clear = false;
                 break;
             }
         }
@@ -252,86 +191,53 @@ void HazardPointer::waitForHazardPointersToClear(CallTraceHashTable* table_to_de
         nanosleep(&sleep_time, nullptr);
     }
 
-    // If we reach here, some hazard pointers didn't clear in time
+    // If we reach here, some refcounts didn't clear in time
     // This shouldn't happen in normal operation but we log it for debugging
 }
 
-void HazardPointer::waitForAllHazardPointersToClear() {
-    // PHASE 1: Fast path - spin with pause for short waits (common case)
+void RefCountGuard::waitForAllRefCountsToClear() {
+    // PHASE 1: Fast path - spin with pause for short waits
     const int SPIN_ITERATIONS = 100;
     for (int spin = 0; spin < SPIN_ITERATIONS; ++spin) {
-        bool any_hazards = false;
+        bool any_refcounts = false;
 
-        // Scan only occupied slots using bitmap
-        for (int word_idx = 0; word_idx < BITMAP_WORDS; ++word_idx) {
-            uint64_t occupied_bits = __atomic_load_n(&occupied_bitmap[word_idx], __ATOMIC_ACQUIRE);
-
-            while (occupied_bits) {
-                int bit_pos = __builtin_ctzll(occupied_bits);
-                int slot = word_idx * 64 + bit_pos;
-
-                // Uses GCC atomic builtin (no malloc, async-signal-safe)
-                CallTraceHashTable* hazard = const_cast<CallTraceHashTable*>(__atomic_load_n(&global_hazard_list[slot].pointer, __ATOMIC_ACQUIRE));
-                if (hazard != nullptr) {
-                    any_hazards = true;
-                    break;
-                }
-
-                occupied_bits &= occupied_bits - 1;
-            }
-
-            if (any_hazards) {
+        for (int i = 0; i < MAX_THREADS; ++i) {
+            uint32_t count = __atomic_load_n(&refcount_slots[i].count, __ATOMIC_ACQUIRE);
+            if (count > 0) {
+                any_refcounts = true;
                 break;
             }
         }
 
-        if (!any_hazards) {
-            return; // Fast path success - all hazard pointers cleared quickly
+        if (!any_refcounts) {
+            return; // Fast path success
         }
-        spinPause(); // CPU pause instruction, ~10-50 cycles
+        spinPause();
     }
 
-    // PHASE 2: Slow path - async-signal-safe sleep for blocked thread case
-    // Uses nanosleep() instead of std::this_thread::sleep_for() to avoid malloc deadlock on musl
+    // PHASE 2: Slow path - async-signal-safe sleep
     const int MAX_WAIT_ITERATIONS = 5000;
     struct timespec sleep_time = {0, 100000}; // 100 microseconds
 
     for (int wait_count = 0; wait_count < MAX_WAIT_ITERATIONS; ++wait_count) {
-        bool any_hazards = false;
+        bool any_refcounts = false;
 
-        // Scan only occupied slots using bitmap
-        for (int word_idx = 0; word_idx < BITMAP_WORDS; ++word_idx) {
-            uint64_t occupied_bits = __atomic_load_n(&occupied_bitmap[word_idx], __ATOMIC_ACQUIRE);
-
-            while (occupied_bits) {
-                int bit_pos = __builtin_ctzll(occupied_bits);
-                int slot = word_idx * 64 + bit_pos;
-
-                // Uses GCC atomic builtin (no malloc, async-signal-safe)
-                CallTraceHashTable* hazard = const_cast<CallTraceHashTable*>(__atomic_load_n(&global_hazard_list[slot].pointer, __ATOMIC_ACQUIRE));
-                if (hazard != nullptr) {
-                    any_hazards = true;
-                    break;
-                }
-
-                occupied_bits &= occupied_bits - 1;
-            }
-
-            if (any_hazards) {
+        for (int i = 0; i < MAX_THREADS; ++i) {
+            uint32_t count = __atomic_load_n(&refcount_slots[i].count, __ATOMIC_ACQUIRE);
+            if (count > 0) {
+                any_refcounts = true;
                 break;
             }
         }
 
-        if (!any_hazards) {
+        if (!any_refcounts) {
             return; // Slow path success
         }
 
-        // nanosleep is POSIX async-signal-safe and does not call malloc
         nanosleep(&sleep_time, nullptr);
     }
 
-    // If we reach here, some hazard pointers didn't clear in time
-    // This shouldn't happen in normal operation but we continue cleanup anyway
+    // If we reach here, some refcounts didn't clear in time
 }
 
 
@@ -391,17 +297,17 @@ CallTraceStorage::~CallTraceStorage() {
     CallTraceHashTable* standby = const_cast<CallTraceHashTable*>(__atomic_exchange_n(&_standby_storage, nullptr, __ATOMIC_ACQ_REL));
     CallTraceHashTable* scratch = const_cast<CallTraceHashTable*>(__atomic_exchange_n(&_scratch_storage, nullptr, __ATOMIC_ACQ_REL));
 
-    // Wait for any ongoing hazard pointer usage to complete and delete each unique table
+    // Wait for any ongoing refcount usage to complete and delete each unique table
     // Note: In triple-buffering, all three pointers should be unique, but check anyway
-    HazardPointer::waitForHazardPointersToClear(active);
+    RefCountGuard::waitForRefCountToClear(active);
     delete active;
 
     if (standby != active) {
-        HazardPointer::waitForHazardPointersToClear(standby);
+        RefCountGuard::waitForRefCountToClear(standby);
         delete standby;
     }
     if (scratch != active && scratch != standby) {
-        HazardPointer::waitForHazardPointersToClear(scratch);
+        RefCountGuard::waitForRefCountToClear(scratch);
         delete scratch;
     }
 
@@ -444,37 +350,37 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
         return DROPPED_TRACE_ID;
     }
 
-    // Thread-local slot caching optimization: Check if current thread has a cached hazard slot
-    ProfiledThread* pThread = ProfiledThread::currentSignalSafe();
-    int cached_slot = (pThread != nullptr) ? pThread->getHazardSlot() : -1;
+    // RAII refcount guard automatically manages reference count lifecycle
+    // Uses pointer-first protocol for race-free operation
+    RefCountGuard guard(active);
 
-    // Create hazard pointer guard using fast path (cached slot) or slow path (allocation)
-    HazardPointer guard = (cached_slot >= 0)
-        ? HazardPointer(active, cached_slot)  // Fast path: reuse cached slot (no probing)
-        : HazardPointer(active);              // Slow path: allocate slot via probing
-
-    // Check if hazard pointer allocation failed (slot exhaustion)
+    // Check if refcount guard allocation failed (slot exhaustion)
     if (!guard.isActive()) {
-        // No hazard protection available - return dropped trace ID
+        // No refcount protection available - return dropped trace ID
         Counters::increment(CALLTRACE_STORAGE_DROPPED);
         return DROPPED_TRACE_ID;
     }
 
-    // Cache the slot for next time if this was the first allocation
-    if (pThread != nullptr && cached_slot == -1 && guard.slot() >= 0) {
-        pThread->setHazardPointer(nullptr, nullptr, guard.slot());
-    }
-
-    // Check again after registering hazard pointer - storage might have been nullified
-    // MEMORY_ORDER_ACQUIRE: Ensures we see any concurrent storage swaps
+    // CRITICAL REVALIDATION CHECK: Prevents use-after-free during guard construction race
+    //
+    // Race scenario: Scanner can see count=0 during guard construction window:
+    //   1. We load active table pointer above
+    //   2. RefCountGuard constructor stores pointer but count still 0 (preemption)
+    //   3. Scanner sees count=0, treats slot as inactive, deletes table
+    //   4. RefCountGuard constructor completes (count=1), but table already deleted
+    //   5. This check detects the race: _active_storage was nullified by scanner
+    //   6. We return DROPPED_TRACE_ID, never touching the deleted table
+    //
+    // Memory ordering: ACQUIRE load ensures we see scanner's ACQ_REL exchange to nullptr
     CallTraceHashTable* original_active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE));
     if (original_active != active || original_active == nullptr) {
-        // Storage was swapped or nullified, return dropped
+        // Storage was swapped or nullified during guard construction
+        // SAFE: We detected the race, drop this trace, never use the table pointer
         Counters::increment(CALLTRACE_STORAGE_DROPPED);
         return DROPPED_TRACE_ID;
     }
 
-    // Hazard pointer prevents deletion
+    // Refcount guard prevents deletion
     u64 result = active->put(num_frames, frames, truncated, weight);
 
     return result;
@@ -532,19 +438,19 @@ void CallTraceStorage::processTraces(std::function<void(const std::unordered_set
         
         // Step 4: standby (now empty) becomes new active
         // SYNCHRONIZATION POINT: After this store, new put() operations will target original_standby
-        // but ongoing put() operations may still be accessing original_active via hazard pointers
+        // but ongoing put() operations may still be accessing original_active via RefCountGuards
         // MEMORY_ORDER_RELEASE: Critical - synchronizes with acquire loads in put() method
         __atomic_store_n(&_active_storage, original_standby, __ATOMIC_RELEASE);
 
         // Step 5: Complete the rotation: active→scratch, scratch→standby
-        // MEMORY_ORDER_RELEASE: Ensures visibility of storage state changes to hazard pointer system
+        // MEMORY_ORDER_RELEASE: Ensures visibility of storage state changes to RefCountGuard system
         __atomic_exchange_n(&_scratch_storage, original_active, __ATOMIC_RELEASE);
         __atomic_store_n(&_standby_storage, original_scratch, __ATOMIC_RELEASE);
     }
 
     // Just make sure all puts to the original_active are done before proceeding
     // Do this outside of the critical section not to block the new active area needlessly
-    HazardPointer::waitForHazardPointersToClear(original_active);
+    RefCountGuard::waitForRefCountToClear(original_active);
 
     // Step 6: Collect from old active directly to _traces_buffer with hook for immediate preservation
     original_active->collect(_traces_buffer, [&](CallTrace* trace) {

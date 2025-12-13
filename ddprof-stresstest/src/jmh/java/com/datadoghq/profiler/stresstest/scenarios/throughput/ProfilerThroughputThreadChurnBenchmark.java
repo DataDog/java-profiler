@@ -45,14 +45,14 @@ import org.openjdk.jmh.infra.Blackhole;
  * <ul>
  *   <li>Signal handler interrupts (cpu/wall profiling)
  *   <li>Stack walking via ASGCT
- *   <li>HazardPointer slot allocation (prime probing with up to 32 attempts)
+ *   <li>RefCountGuard slot allocation (prime probing with up to 32 attempts)
  *   <li>CallTraceStorage::put() operations (5 atomic ops per call)
  *   <li>JFR background processing
  *   <li>Slot cleanup and reuse efficiency
  * </ul>
  *
  * <p>Each short-lived thread:
- * 1. Acquires a HazardPointer slot via getThreadHazardSlot()
+ * 1. Acquires a RefCountGuard slot via getThreadRefCountSlot()
  * 2. Performs work that may be sampled by the profiler (full stack walking)
  * 3. Releases the slot in the destructor
  *
