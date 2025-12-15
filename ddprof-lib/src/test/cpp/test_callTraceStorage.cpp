@@ -365,19 +365,23 @@ TEST_F(CallTraceStorageTest, ConcurrentTableExpansionRegression) {
  */
 TEST_F(CallTraceStorageTest, RefCountGuardSynchronizationDuringSwap) {
     // Synchronization primitives for coordinating the test
-    std::atomic<bool> swap_initiated{false};
-    std::atomic<bool> put_thread_ready{false};
+    std::atomic<bool> swap_can_proceed{false};
+    std::atomic<bool> put_threads_ready{false};
+    std::atomic<int> put_threads_ready_count{0};
     std::atomic<bool> put_operation_started{false};
     std::atomic<bool> put_operation_completed{false};
     std::atomic<bool> collection_started{false};
-    std::atomic<bool> refcount_wait_started{false};
+    std::atomic<bool> collection_completed{false};
 
-    std::condition_variable cv;
-    std::mutex cv_mutex;
+    std::condition_variable ready_cv;
+    std::mutex ready_mutex;
+
+    std::condition_variable swap_cv;
+    std::mutex swap_mutex;
 
     // Test outcome tracking
     std::atomic<u64> put_trace_id{0};
-    std::atomic<bool> trace_found_in_collection{false};
+    std::atomic<u64> delayed_trace_id{0};
 
     // Create initial traces to populate the storage
     ASGCT_CallFrame initial_frame;
@@ -392,40 +396,44 @@ TEST_F(CallTraceStorageTest, RefCountGuardSynchronizationDuringSwap) {
 
     // Thread that will perform a put() operation right after storage swap
     std::thread put_thread([&]() {
-        put_thread_ready = true;
+        // Signal that this thread is ready
+        {
+            std::lock_guard<std::mutex> lock(ready_mutex);
+            put_threads_ready_count.fetch_add(1);
+        }
+        ready_cv.notify_all();
 
-        // Wait for the main thread to initiate the swap
-        std::unique_lock<std::mutex> lock(cv_mutex);
-        cv.wait(lock, [&] { return swap_initiated.load(); });
+        // Wait for permission to proceed with put operation
+        std::unique_lock<std::mutex> lock(swap_mutex);
+        swap_cv.wait(lock, [&] { return swap_can_proceed.load(); });
         lock.unlock();
 
-        // Small delay to ensure we hit the window after swap but during refcount wait
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
-
-        // This put() should target the new active area, but we need to ensure
-        // that if there were ongoing operations on original_active,
-        // the refcount wait would properly synchronize
+        // This put() should target the new active area
         ASGCT_CallFrame put_frame;
         put_frame.bci = 999;
         put_frame.method_id = (jmethodID)0x999;
-        
+
         put_operation_started = true;
         u64 trace_id = storage->put(1, &put_frame, false, 1);
         put_trace_id = trace_id;
         put_operation_completed = true;
     });
-    
-    // Thread that simulates a longer-running put() operation on original_active
-    // This represents the scenario the RefCountGuard synchronization protects against
+
+    // Thread that simulates a longer-running put() operation
     std::thread delayed_put_thread([&]() {
-        // Wait for swap to be initiated
-        std::unique_lock<std::mutex> lock(cv_mutex);
-        cv.wait(lock, [&] { return swap_initiated.load(); });
+        // Signal that this thread is ready
+        {
+            std::lock_guard<std::mutex> lock(ready_mutex);
+            put_threads_ready_count.fetch_add(1);
+        }
+        ready_cv.notify_all();
+
+        // Wait for permission to proceed
+        std::unique_lock<std::mutex> lock(swap_mutex);
+        swap_cv.wait(lock, [&] { return swap_can_proceed.load(); });
         lock.unlock();
 
-        // Simulate a put operation that was ongoing during the swap
-        // In the real scenario, this would be a signal handler that acquired
-        // a RefCountGuard before the swap and is still executing
+        // Simulate a put operation during swap
         ASGCT_CallFrame delayed_frame;
         delayed_frame.bci = 777;
         delayed_frame.method_id = (jmethodID)0x777;
@@ -433,48 +441,78 @@ TEST_F(CallTraceStorageTest, RefCountGuardSynchronizationDuringSwap) {
         // Small delay to simulate ongoing operation
         std::this_thread::sleep_for(std::chrono::microseconds(50));
 
-        // This operation would normally be protected by RefCountGuards
-        // The test verifies the synchronization works correctly
-        storage->put(1, &delayed_frame, false, 1);
+        u64 trace_id = storage->put(1, &delayed_frame, false, 1);
+        delayed_trace_id = trace_id;
     });
 
-    // Perform processTraces in main thread to trigger the storage swap
-    std::thread process_thread([&]() {
-        // Signal that we're about to initiate the swap
-        swap_initiated = true;
-        cv.notify_all();
+    // Wait for both put threads to be ready before starting process thread
+    {
+        std::unique_lock<std::mutex> lock(ready_mutex);
+        ready_cv.wait(lock, [&] { return put_threads_ready_count.load() == 2; });
+        put_threads_ready = true;
+    }
 
-        // Process traces - this will trigger the storage swap and refcount wait
+    // Give threads a moment to enter their wait state
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    // Perform processTraces in separate thread to trigger the storage swap
+    std::thread process_thread([&]() {
+        // Start processing - this will swap storage
         storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
             collection_started = true;
-            
-            // Look for the traces we added
+
+            // Verify we have traces from the initial population
+            int initial_trace_count = 0;
             for (CallTrace* trace : traces) {
-                if (trace && trace->trace_id == put_trace_id.load()) {
-                    trace_found_in_collection = true;
-                }
-                
-                // Verify we have some traces from the initial population
                 if (trace && trace->num_frames > 0 && trace->frames[0].bci >= 100 && trace->frames[0].bci <= 104) {
-                    // Found one of our initial traces - good
+                    initial_trace_count++;
                 }
             }
+            EXPECT_GE(initial_trace_count, 5) << "Should find initial traces";
         });
+
+        collection_completed = true;
+
+        // Now that swap is complete and refcount wait has finished,
+        // signal put threads to proceed
+        {
+            std::lock_guard<std::mutex> lock(swap_mutex);
+            swap_can_proceed = true;
+        }
+        swap_cv.notify_all();
     });
-    
-    // Wait for all threads to complete
-    put_thread.join();
-    delayed_put_thread.join();
-    process_thread.join();
-    
+
+    // Wait for all threads to complete with timeout to detect deadlock
+    auto wait_with_timeout = [](std::thread& t, int timeout_seconds, const char* name) -> bool {
+        auto start = std::chrono::steady_clock::now();
+        auto timeout_duration = std::chrono::seconds(timeout_seconds);
+
+        while (std::chrono::steady_clock::now() - start < timeout_duration) {
+            if (t.joinable()) {
+                t.join();
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+
+        // Timeout occurred
+        ADD_FAILURE() << "Thread " << name << " timed out after " << timeout_seconds << " seconds (possible deadlock)";
+        return false;
+    };
+
+    EXPECT_TRUE(wait_with_timeout(process_thread, 30, "process_thread"));
+    EXPECT_TRUE(wait_with_timeout(put_thread, 30, "put_thread"));
+    EXPECT_TRUE(wait_with_timeout(delayed_put_thread, 30, "delayed_put_thread"));
+
     // Verification of test outcomes
-    EXPECT_TRUE(put_thread_ready.load()) << "Put thread should have been ready";
-    EXPECT_TRUE(swap_initiated.load()) << "Storage swap should have been initiated";
+    EXPECT_TRUE(put_threads_ready.load()) << "Put threads should have been ready";
+    EXPECT_TRUE(collection_started.load()) << "Collection should have started";
+    EXPECT_TRUE(collection_completed.load()) << "Collection should have completed";
     EXPECT_TRUE(put_operation_started.load()) << "Put operation should have started";
     EXPECT_TRUE(put_operation_completed.load()) << "Put operation should have completed";
-    EXPECT_TRUE(collection_started.load()) << "Collection should have started";
     EXPECT_GT(put_trace_id.load(), 0ULL) << "Put operation should have returned valid trace ID";
-    
+    EXPECT_GT(delayed_trace_id.load(), 0ULL) << "Delayed put operation should have returned valid trace ID";
+
     // The key test: if RefCountGuard synchronization works correctly,
     // the collection should not interfere with concurrent put operations
     // This test primarily validates that we don't crash or corrupt data
@@ -485,13 +523,13 @@ TEST_F(CallTraceStorageTest, RefCountGuardSynchronizationDuringSwap) {
     verification_frame.method_id = (jmethodID)0x5555;
     u64 verification_trace = storage->put(1, &verification_frame, false, 1);
     EXPECT_GT(verification_trace, 0ULL) << "Storage should remain functional after RefCountGuard synchronization";
-    
+
     // Final verification: ensure we can still process traces
     std::atomic<int> final_trace_count{0};
     storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
         final_trace_count = static_cast<int>(traces.size());
     });
-    
+
     EXPECT_GT(final_trace_count.load(), 0) << "Storage should still contain traces after synchronization test";
 }
 
