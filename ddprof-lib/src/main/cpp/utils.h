@@ -16,12 +16,12 @@ inline bool is_aligned(const T* ptr, size_t alignment) noexcept {
     auto iptr = reinterpret_cast<uintptr_t>(ptr);
 
     // Check if the integer value is a multiple of the alignment
-    return (iptr & ~(alignment - 1) == 0);
+    return ((iptr & (~(alignment - 1))) == 0);
 }
 
 inline size_t align_down(size_t size, size_t alignment) noexcept {
     assert(is_power_of_2(alignment));
-    return size & ~(alignment - 1);
+    return size & (~(alignment - 1));
 }
 
 inline size_t align_up(size_t size, size_t alignment) noexcept {
