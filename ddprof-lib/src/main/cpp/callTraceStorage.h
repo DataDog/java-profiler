@@ -29,71 +29,79 @@ class CallTraceHashTable;
 typedef std::function<void(std::unordered_set<u64>&)> LivenessChecker;
 
 /**
- * Cache-aligned hazard pointer slot to eliminate false sharing.
- * Each slot occupies a full cache line (64 bytes) to ensure that
- * updates by one thread do not invalidate cache lines for other threads.
+ * Cache-aligned reference counting slot for thread-local reference counting.
+ * Each slot occupies a full cache line (64 bytes) to eliminate false sharing.
+ *
+ * CORRECTNESS: The pointer-first protocol ensures race-free operation:
+ * - Constructor: Store pointer first, then increment count
+ * - Destructor: Decrement count first, then clear pointer
+ * - Scanner: Check count first (if 0, slot is inactive)
+ *
+ * This ordering ensures no window where scanner incorrectly believes a slot
+ * is inactive when it should be protecting a table.
  */
-struct alignas(DEFAULT_CACHE_LINE_SIZE) HazardSlot {
-    volatile CallTraceHashTable* pointer;
-    char padding[DEFAULT_CACHE_LINE_SIZE - sizeof(pointer)];
+struct alignas(DEFAULT_CACHE_LINE_SIZE) RefCountSlot {
+    volatile uint32_t count;          // Reference count (0 = inactive)
+    char _padding1[4];                // Alignment padding for pointer
+    CallTraceHashTable* active_table; // Which table is being referenced (8 bytes on 64-bit)
+    char padding[DEFAULT_CACHE_LINE_SIZE - 16];  // Remaining padding (64 - 16 = 48 bytes)
 
-    HazardSlot() : pointer(nullptr), padding{} {
-        static_assert(sizeof(HazardSlot) == DEFAULT_CACHE_LINE_SIZE,
-                      "HazardSlot must be exactly one cache line");
+    RefCountSlot() : count(0), _padding1{}, active_table(nullptr), padding{} {
+        static_assert(sizeof(RefCountSlot) == DEFAULT_CACHE_LINE_SIZE,
+                      "RefCountSlot must be exactly one cache line");
     }
 };
 
 /**
- * RAII guard for hazard pointer management.
+ * RAII guard for thread-local reference counting.
  *
- * This class encapsulates the hazard pointer mechanism used to protect CallTraceHashTable
- * instances from being deleted while they are being accessed by concurrent threads.
+ * This class provides lock-free memory reclamation for CallTraceHashTable instances.
+ * Uses the pointer-first protocol to avoid race conditions during slot activation/deactivation.
  *
- * Usage:
- *   HazardPointer guard(_active_table);
- *   // _active_table is now protected from deletion
- *   // Automatic cleanup when guard goes out of scope
+ * Performance characteristics:
+ * - Hot path: ~44-94 cycles
+ * - Thread-local cache line access (zero contention)
+ * - No bitmap operations required
+ *
+ * Correctness:
+ * - Pointer stored BEFORE count increment (activation)
+ * - Count decremented BEFORE pointer cleared (deactivation)
+ * - Scanner checks count first, ensuring consistent view
  */
-class HazardPointer {
+class RefCountGuard {
 public:
     static constexpr int MAX_THREADS = 8192;
     static constexpr int MAX_PROBE_DISTANCE = 32;  // Maximum probing attempts
-    static constexpr int BITMAP_WORDS = MAX_THREADS / 64;  // 8192 / 64 = 128 words
 
-    static HazardSlot global_hazard_list[MAX_THREADS];
+    static RefCountSlot refcount_slots[MAX_THREADS];
     static int slot_owners[MAX_THREADS];  // Thread ID ownership verification
-
-    // Occupied slot bitmap for efficient scanning (avoids iterating 8192 empty slots)
-    // Uses raw uint64_t with GCC atomic builtins to avoid any potential malloc on musl
-    // Each bit represents whether the corresponding slot is occupied
-    static uint64_t occupied_bitmap[BITMAP_WORDS];
 
 private:
     bool _active;
     int _my_slot;  // This instance's assigned slot
 
-    // Signal-safe slot assignment using thread ID hash
-    static int getThreadHazardSlot();
-    
+    // Signal-safe slot assignment using thread ID hash with prime probing
+    static int getThreadRefCountSlot();
+
 public:
-    HazardPointer(CallTraceHashTable* resource);
-    ~HazardPointer();
-    
+    RefCountGuard(CallTraceHashTable* resource);
+    ~RefCountGuard();
+
     // Non-copyable, movable for efficiency
-    HazardPointer(const HazardPointer&) = delete;
-    HazardPointer& operator=(const HazardPointer&) = delete;
-    
-    HazardPointer(HazardPointer&& other) noexcept;
-    HazardPointer& operator=(HazardPointer&& other) noexcept;
-    
-    // Check if hazard pointer is active (slot allocation succeeded)
+    RefCountGuard(const RefCountGuard&) = delete;
+    RefCountGuard& operator=(const RefCountGuard&) = delete;
+
+    RefCountGuard(RefCountGuard&& other) noexcept;
+    RefCountGuard& operator=(RefCountGuard&& other) noexcept;
+
+    // Check if refcount guard is active (slot allocation succeeded)
     bool isActive() const { return _active; }
-    
-    // Wait for hazard pointers pointing to specific table to clear (used during shutdown)
-    static void waitForHazardPointersToClear(CallTraceHashTable* table_to_delete);
-    
-    // Wait for ALL hazard pointers to clear (used by CallTraceHashTable::clear())
-    static void waitForAllHazardPointersToClear();
+
+    // Wait for reference counts pointing to specific table to clear
+    static void waitForRefCountToClear(CallTraceHashTable* table_to_delete);
+
+    // Wait for ALL reference counts to clear
+    static void waitForAllRefCountsToClear();
 };
 
 class CallTraceStorage {
@@ -151,10 +159,10 @@ public:
     void clearLivenessCheckers();
 
     // Lock-free put operation for signal handler safety
-    // Uses hazard pointers and generation counter for ABA protection
+    // Uses RefCountGuard and generation counter for ABA protection
     u64 put(int num_frames, ASGCT_CallFrame* frames, bool truncated, u64 weight);
     
-    // Lock-free trace processing with hazard pointer protection
+    // Lock-free trace processing with RefCountGuard protection
     // The callback receives traces that are guaranteed to be valid during execution
     // Uses atomic table swapping with grace period for safe memory reclamation
     void processTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor);

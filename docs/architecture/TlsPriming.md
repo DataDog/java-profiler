@@ -4,16 +4,15 @@
 
 The TLS (Thread-Local Storage) Priming system ensures that thread-local profiling data structures are initialized before signal handlers access them. This prevents allocation and initialization from occurring within async-signal-unsafe contexts (signal handlers), eliminating potential deadlocks and crashes.
 
-The system uses a dual-path initialization strategy combining JVMTI callbacks for Java threads and filesystem-based monitoring for native threads, with careful deduplication to prevent double-initialization overhead.
+The system uses JVMTI callbacks for Java threads to initialize thread-local storage. Native threads will be initialized through future lib patching mechanisms (the previous filesystem-based monitoring approach has been removed due to performance concerns).
 
 ## Core Design Principles
 
 1. **Signal Handler Safety**: Never allocate or initialize TLS within signal handlers
-2. **Dual-Path Coverage**: JVMTI for Java threads, filesystem watching for native threads
-3. **Deduplication**: Prevent wasteful double-initialization
-4. **Lock-Free Buffer Management**: Use GCC atomic builtins instead of `std::atomic`
-5. **Graceful Degradation**: Handle slot exhaustion without crashing
-6. **Platform Specificity**: Linux gets full priming, macOS gets simplified approach
+2. **JVMTI-Based Initialization**: Java threads initialized via JVMTI callbacks
+3. **Lock-Free Buffer Management**: Use GCC atomic builtins instead of `std::atomic`
+4. **Graceful Degradation**: Handle slot exhaustion without crashing
+5. **Platform Specificity**: TLS priming supported on Linux, simplified approach on macOS
 
 ## Problem Statement
 
@@ -129,44 +128,31 @@ void pushFreeSlot(int slot_index) {
 2. GCC `__atomic_*` builtins are **guaranteed lock-free** for aligned types
 3. Signal handlers require strict async-signal-safety guarantees
 
-### 3. Dual-Path Initialization
+### 3. JVMTI-Based Initialization
 
-The system uses two complementary initialization paths:
+The system initializes Java threads via JVMTI callbacks:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                   Thread Lifecycle                            │
 ├──────────────────────────────────────────────────────────────┤
 │                                                               │
-│  Java Thread Created                  Native Thread Created  │
-│          │                                     │              │
-│          ├─ JVMTI ThreadStart                │              │
-│          │      │                              │              │
-│          │      └─ initCurrentThread()        │              │
-│          │              │                      │              │
-│          │              │               ┌──────┘              │
-│          │              │               │                     │
-│          │              │        /proc/self/task watcher     │
-│          │              │               │                     │
-│          │              │       detects new thread           │
-│          │              │               │                     │
-│          │              │      sends RT signal               │
-│          │              │               │                     │
-│          │              │       simpleTlsSignalHandler()     │
-│          │              │               │                     │
-│          │              │      checks: VMThread::current()   │
-│          │              │               │                     │
-│          │              │        NULL? (native thread)       │
-│          │              │               │                     │
-│          │              │      initCurrentThreadWithBuffer() │
-│          │              │               │                     │
-│          └──────────────┴───────────────┘                     │
-│                         │                                     │
-│                 TLS Initialized                               │
-│                         │                                     │
-│           ProfiledThread* set via pthread_setspecific()      │
-│                         │                                     │
-│                Signal handlers safe                           │
+│  Java Thread Created                                          │
+│          │                                                     │
+│          ├─ JVMTI ThreadStart                                │
+│          │      │                                             │
+│          │      └─ initCurrentThread()                       │
+│          │              │                                     │
+│          │              └─ TLS Initialized                   │
+│          │                                                     │
+│          │           ProfiledThread* set via                 │
+│          │           pthread_setspecific()                   │
+│          │                                                     │
+│          └─ Signal handlers safe                             │
+│                                                               │
+│  Note: Native threads currently use lazy initialization       │
+│        Future lib patching will address native thread         │
+│        initialization before signal handlers access TLS      │
 │                                                               │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -203,99 +189,11 @@ int installTlsPrimeSignalHandler(SigHandler handler, int signal_offset) {
 - Multiple available (SIGRTMIN to SIGRTMAX)
 - Separate from profiling signals (SIGPROF, SIGALRM)
 
-#### Filesystem Watching with inotify
+**Note:** The filesystem-based thread monitoring with inotify has been removed due to performance concerns. Future implementations will use lib patching for native thread TLS initialization.
 
-Monitors `/proc/self/task` for new threads:
+### 5. Signal Handler Implementation
 
-```cpp
-bool startThreadDirectoryWatcher(
-    const std::function<void(int)>& on_new_thread,
-    const std::function<void(int)>& on_dead_thread)
-{
-    int inotify_fd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
-    if (inotify_fd == -1) return false;
-
-    int watch_fd = inotify_add_watch(inotify_fd, "/proc/self/task",
-                                     IN_CREATE | IN_DELETE |
-                                     IN_MOVED_FROM | IN_MOVED_TO);
-    if (watch_fd == -1) {
-        close(inotify_fd);
-        return false;
-    }
-
-    // Create watcher thread
-    pthread_create(&g_watcher_thread, nullptr, threadDirectoryWatcherLoop, nullptr);
-
-    return true;
-}
-```
-
-**Watcher Thread Loop:**
-
-```cpp
-void* threadDirectoryWatcherLoop(void* arg) {
-    char buffer[4096];
-    fd_set readfds;
-    struct timeval timeout;
-
-    while (g_watcher_running.load()) {
-        FD_ZERO(&readfds);
-        FD_SET(fd, &readfds);
-        timeout.tv_sec = 1;
-        timeout.tv_usec = 0;
-
-        int ret = select(fd + 1, &readfds, nullptr, nullptr, &timeout);
-        if (ret <= 0) continue;
-
-        ssize_t len = read(fd, buffer, sizeof(buffer));
-
-        // Parse inotify events
-        for (ssize_t i = 0; i < len;) {
-            struct inotify_event *event = (struct inotify_event *)(buffer + i);
-
-            if (event->len > 0 && event->name[0] >= '1' && event->name[0] <= '9') {
-                int tid = atoi(event->name);
-
-                if (event->mask & (IN_CREATE | IN_MOVED_TO)) {
-                    if (g_on_new_thread) g_on_new_thread(tid);
-                } else if (event->mask & (IN_DELETE | IN_MOVED_FROM)) {
-                    if (g_on_dead_thread) g_on_dead_thread(tid);
-                }
-            }
-
-            i += sizeof(struct inotify_event) + event->len;
-        }
-    }
-
-    return nullptr;
-}
-```
-
-**New Thread Detection Flow:**
-
-```
-New Native Thread Started
-         │
-         ├─ /proc/self/task/{tid} directory created
-         │
-         ├─ inotify fires IN_CREATE event
-         │
-         ├─ Watcher thread parses event
-         │
-         ├─ Extracts TID from directory name
-         │
-         ├─ Sends RT signal to TID
-         │
-         ├─ simpleTlsSignalHandler() executes
-         │
-         ├─ Checks: VMThread::current() == nullptr?
-         │
-         └─ Yes → initCurrentThreadWithBuffer()
-```
-
-### 5. Signal Handler with Deduplication
-
-The signal handler prevents double-initialization for Java threads:
+The signal handler infrastructure remains in place for potential future use:
 
 ```cpp
 void simpleTlsSignalHandler(int signo) {
@@ -307,34 +205,7 @@ void simpleTlsSignalHandler(int signo) {
 }
 ```
 
-**Deduplication Logic:**
-
-```
-Signal arrives on Java thread:
-    │
-    ├─ VMThread::current() → returns JavaThread*
-    │
-    └─ Handler does nothing (already initialized by JVMTI)
-
-Signal arrives on native thread:
-    │
-    ├─ VMThread::current() → returns nullptr
-    │
-    └─ Handler calls initCurrentThreadWithBuffer()
-```
-
-**Additional Safety Check:**
-
-```cpp
-void initCurrentThreadWithBuffer() {
-    // Early check - if already initialized, return immediately
-    if (pthread_getspecific(_tls_key) != NULL) {
-        return;
-    }
-
-    // ... claim slot and initialize ...
-}
-```
+**Note:** With the removal of filesystem-based thread monitoring, this signal handler is currently not actively used. It remains available for future lib patching implementations that may signal threads explicitly.
 
 ### 6. JVMTI Integration
 
@@ -368,18 +239,10 @@ JVMTI ThreadStart fires
          │      │
          │      └─ TLS now initialized with dedicated allocation
          │
-         ├─ Later: filesystem watcher detects thread (Linux only)
-         │
-         ├─ Sends RT signal to thread
-         │
-         ├─ simpleTlsSignalHandler() fires
-         │
-         ├─ VMThread::current() != nullptr (Java thread)
-         │
-         └─ Handler exits without action (already initialized)
+         └─ Thread ready for profiling
 ```
 
-**Key Distinction: Two Separate Initialization Strategies**
+**Key Characteristics:**
 
 1. **JVMTI Path** (`initCurrentThread()`):
    - Used for: New Java threads created after profiler starts
@@ -387,61 +250,51 @@ JVMTI ThreadStart fires
    - Not from buffer: Java threads get dedicated allocations
    - Safe context: Called from JVMTI callback (not signal handler)
 
-2. **Signal Priming Path** (`initCurrentThreadWithBuffer()`):
-   - Used for: Native threads and existing Java threads at startup
-   - Allocation: Claims pre-allocated buffer slot
-   - Signal-safe: No malloc, just atomic slot claim
-   - Buffer reuse: Slots recycled when threads die
-
-**Why Two Strategies?**
-
-Java threads are managed via JVMTI callbacks (safe context), so they can use `new` operator. Native threads have no interception point, so they must use pre-allocated buffer slots claimed via async-signal-safe operations.
+2. **Native Threads:**
+   - Currently use lazy initialization (may allocate in signal handler)
+   - Future lib patching will enable pre-initialization of native threads
+   - Buffer-based priming infrastructure remains available for future use
 
 ## Platform-Specific Behavior
 
-### Linux (Full TLS Priming)
+### Linux (TLS Priming)
 
 **Capabilities:**
 - ✅ RT signal handler installation
 - ✅ Thread enumeration via `/proc/self/task`
 - ✅ Per-thread signaling via `tgkill()`
-- ✅ Filesystem watching with inotify
 - ✅ Thread count via `/proc/self/status`
+- ✅ JVMTI ThreadStart for Java threads
 
 **Implementation:**
 ```cpp
 bool OS::isTlsPrimingAvailable() {
-    return true; // Full support on Linux
+    return true; // TLS priming supported on Linux
 }
 ```
+
+**Current Behavior:**
+- Java threads: Fully initialized via JVMTI callbacks
+- Native threads: Use lazy initialization (awaiting lib patching implementation)
 
 ### macOS (Limited TLS Priming)
 
 **Limitations:**
 - ❌ No RT signals (SIGRTMIN/SIGRTMAX unavailable)
 - ❌ No `/proc` filesystem
-- ❌ No inotify equivalent
 - ✅ JVMTI ThreadStart still works for Java threads
 
 **Implementation:**
 ```cpp
 bool OS::isTlsPrimingAvailable() {
-    return false; // Filesystem watching unavailable
-}
-
-// JVMTI still initializes Java threads
-void initCurrentThread() {
-    if (OS::isTlsPrimingAvailable()) {
-        initCurrentThreadWithBuffer();  // Not called on macOS
-    }
-    // Java threads still work via JVMTI
+    return false; // TLS priming not available on macOS
 }
 ```
 
 **macOS Behavior:**
 - Java threads: Initialized via JVMTI (works normally)
 - Native threads: Lazy initialization on first signal (may allocate in handler)
-- Acceptable tradeoff: macOS profiling is less critical for production
+- Acceptable tradeoff: macOS profiling is primarily for development
 
 ## Performance Characteristics
 
@@ -464,23 +317,9 @@ Total Memory: ~33 KB (negligible)
 - 1 pthread_setspecific call
 - **Total: ~100-200 CPU cycles**
 
-**Native Thread (Signal Path):**
-- Signal delivery latency: ~1-10 μs
-- Handler execution: ~100-200 cycles
-- **Total: ~1-10 μs per thread**
-
-### Watcher Thread Overhead
-
-```
-Idle State:
-- select() with 1-second timeout
-- ~0% CPU usage
-
-Active State (new threads):
-- inotify read + parse: ~1-5 μs per event
-- Signal send: ~1-5 μs per thread
-- **Total: ~2-10 μs per new thread**
-```
+**Native Thread:**
+- Currently uses lazy initialization
+- Future lib patching will provide pre-initialization with minimal overhead
 
 ## Signal Safety Guarantees
 
@@ -548,24 +387,18 @@ Thread A (Java, JVMTI)          Thread B (Native, Signal)
 ```cpp
 // 1. Profiler initialization
 Profiler::start() {
-    // 2. Initialize existing threads (if priming available)
+    // 2. Initialize TLS infrastructure (if priming available)
     ProfiledThread::initExistingThreads();
 }
 
-// 3. Install signal handler and start watcher
+// 3. Install signal handler and prepare buffer
 void initExistingThreads() {
     // Install RT signal handler (Linux only)
     g_tls_prime_signal = OS::installTlsPrimeSignalHandler(
         simpleTlsSignalHandler, 4);
 
-    // Prepare buffer
+    // Prepare buffer for future use
     prepareBuffer(256);
-
-    // Start filesystem watcher (Linux only)
-    OS::startThreadDirectoryWatcher(
-        [](int tid) { OS::signalThread(tid, g_tls_prime_signal); },
-        [](int tid) { /* thread death - no-op */ }
-    );
 }
 ```
 
@@ -573,13 +406,10 @@ void initExistingThreads() {
 
 ```cpp
 void cleanupTlsPriming() {
-    // 1. Stop watcher thread
-    OS::stopThreadDirectoryWatcher();  // Joins watcher thread
-
-    // 2. Uninstall signal handler
+    // 1. Uninstall signal handler
     OS::uninstallTlsPrimeSignalHandler(g_tls_prime_signal);
 
-    // 3. Note: Don't clean buffer (threads may still be using it)
+    // 2. Note: Don't clean buffer (threads may still be using it)
     //    Buffer cleaned up on process exit
 }
 ```
@@ -588,27 +418,21 @@ void cleanupTlsPriming() {
 
 ### Unit Tests
 
-**Signal Handler Installation** (`test_tlsPriming.cpp:38-57`):
+**Signal Handler Installation** (`test_tlsPriming.cpp`):
 - Verifies RT signal allocation
 - Checks signal number range (SIGRTMIN to SIGRTMAX)
 - Platform-specific expectations
 
-**Thread Enumeration** (`test_tlsPriming.cpp:59-74`):
+**Thread Enumeration** (`test_tlsPriming.cpp`):
 - Enumerates current threads
 - Validates TID values
 - Ensures at least 1 thread found
 
-**Signal Delivery** (`test_tlsPriming.cpp:84-123`):
+**Signal Delivery** (`test_tlsPriming.cpp`):
 - Installs handler
 - Signals thread
 - Verifies TLS modification
 - Confirms signal delivery
-
-**Filesystem Watcher** (`test_tlsPriming.cpp:125-162`):
-- Starts watcher
-- Creates short-lived thread
-- Detects thread creation/destruction
-- Validates cleanup
 
 ### Integration Tests
 
@@ -617,31 +441,38 @@ void cleanupTlsPriming() {
 - Slot reuse
 - Concurrent initialization
 - Thread isolation
+- JVMTI vs buffer-based initialization
 
 ## Key Architectural Benefits
 
-1. **Crash Prevention**: Eliminates malloc() in signal handlers
+1. **Crash Prevention**: Eliminates malloc() in signal handlers for Java threads
 2. **Deadlock Avoidance**: No locks in signal handler paths
-3. **Platform Optimization**: Full support on Linux, graceful degradation on macOS
+3. **Platform Optimization**: JVMTI-based initialization on both Linux and macOS
 4. **Efficient Memory**: Small fixed overhead (33 KB)
 5. **Scalability**: Lock-free operations scale with thread count
 6. **Reliability**: Handles race conditions without corruption
 
 ## Future Enhancements
 
-### Potential Improvements
+### Planned Improvements
 
-1. **Dynamic Buffer Sizing**: Grow buffer if 256 slots exhausted
-2. **macOS Native Support**: Explore kqueue for thread monitoring
+1. **Lib Patching for Native Threads**: Replace filesystem monitoring with library patching to pre-initialize native threads
+2. **Dynamic Buffer Sizing**: Grow buffer if 256 slots exhausted
 3. **Metrics**: Track slot utilization and initialization latency
-4. **Proactive Priming**: Prime threads during profiler start
-5. **Buffer Compaction**: Defragment free slots periodically
+4. **Buffer Compaction**: Defragment free slots periodically
 
 ### Known Limitations
 
-1. **Fixed Buffer Size**: 256 slots may be insufficient for extreme workloads
-2. **macOS Gap**: Native threads not pre-initialized
-3. **Watcher Latency**: ~1-10 μs delay between thread start and priming
-4. **Signal Exhaustion**: RT signals limited (typically 32 available)
+1. **Native Thread Gap**: Native threads currently use lazy initialization (awaiting lib patching)
+2. **Fixed Buffer Size**: 256 slots may be insufficient for extreme workloads (unlikely for native threads)
+3. **macOS Gap**: Native threads not pre-initialized
+4. **Signal Exhaustion**: RT signals limited (typically 32 available, unlikely to happen)
 
-This architecture provides a robust, platform-aware solution to the TLS initialization problem, ensuring signal handlers can safely access thread-local data without risk of deadlock or crash.
+### Recent Changes
+
+**Removed Filesystem Monitoring (2025):**
+- Filesystem-based thread monitoring via inotify has been removed due to performance concerns
+- The thread directory watcher caused overhead in production environments
+- Future implementations will use lib patching instead for native thread initialization
+
+This architecture provides a robust, platform-aware solution to the TLS initialization problem for Java threads, ensuring signal handlers can safely access thread-local data without risk of deadlock or crash. Native thread support will be enhanced through future lib patching implementations.
