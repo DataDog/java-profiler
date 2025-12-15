@@ -103,8 +103,8 @@ CallTraceHashTable::~CallTraceHashTable() {
 
 
 ChunkList CallTraceHashTable::clearTableOnly() {
-  // Wait for all hazard pointers to clear before detaching chunks
-  HazardPointer::waitForAllHazardPointersToClear();
+  // Wait for all refcount guards to clear before detaching chunks
+  RefCountGuard::waitForAllRefCountsToClear();
 
   // Clear previous chain pointers to prevent traversal during deallocation
   for (LongHashTable *table = _table; table != nullptr; table = table->prev()) {
