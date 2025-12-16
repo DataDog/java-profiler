@@ -18,15 +18,15 @@ int        LibraryPatcher::_size = 0;
 bool       LibraryPatcher::_patch_pthread_create = false;
 
 void LibraryPatcher::initialize() {
-  assert(_profiler_name == nullptr);
-  Dl_info info;
-  void* caller_address = __builtin_return_address(0); // Get return address of caller
-  bool ret = dladdr(caller_address, &info);
-  assert(ret);
-  _profiler_name = strdup(info.dli_fname);
-  _size = 0;
-
-  _patch_pthread_create = (VM::isHotspot() || VM::isZing()) && !OS::isMusl();
+  if (_profiler_name == nullptr) {
+    Dl_info info;
+    void* caller_address = __builtin_return_address(0); // Get return address of caller
+    bool ret = dladdr(caller_address, &info);
+    assert(ret);
+    _profiler_name = strdup(info.dli_fname);
+    _size = 0;
+    _patch_pthread_create = (VM::isHotspot() || VM::isZing()) && !OS::isMusl();
+  }
 }
 
 typedef struct _startRoutineArg {
