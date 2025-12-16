@@ -30,7 +30,6 @@ private:
 public:
   static void initialize();
   static void patch_libraries();
-  static void patch_library(CodeCache* lib);
   static void unpatch_libraries();
 };
 

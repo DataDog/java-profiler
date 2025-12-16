@@ -18,19 +18,20 @@ int        LibraryPatcher::_size = 0;
 bool       LibraryPatcher::_patch_pthread_create = false;
 
 void LibraryPatcher::initialize() {
-   Dl_info info;
-   void* caller_address = __builtin_return_address(0); // Get return address of caller
-   bool ret = dladdr(caller_address, &info);
-   assert(ret);
-   _profiler_name = strdup(info.dli_fname);
-   _size = 0;
+  assert(_profiler_name == nullptr);
+  Dl_info info;
+  void* caller_address = __builtin_return_address(0); // Get return address of caller
+  bool ret = dladdr(caller_address, &info);
+  assert(ret);
+  _profiler_name = strdup(info.dli_fname);
+  _size = 0;
 
-   _patch_pthread_create = (VM::isHotspot() || VM::isZing()) && !OS::isMusl();
+  _patch_pthread_create = (VM::isHotspot() || VM::isZing()) && !OS::isMusl();
 }
 
 typedef struct _startRoutineArg {
-    func_start_routine _func;
-    void*              _arg;
+  func_start_routine _func;
+  void*              _arg;
 } StartRoutineArg;
 
 static void* start_routine_wrapper(void* args) {
@@ -58,20 +59,18 @@ static int pthread_create_hook(pthread_t* thread,
 
 
 void LibraryPatcher::patch_libraries() {
+   // LibraryPatcher has yet initialized, only happens in Gtest
+   if (_profiler_name == nullptr) {
+     return;
+   }
+
+   TEST_LOG("Patching libraries");
    if (_patch_pthread_create) {
      patch_pthread_create();
    } else {
      patch_pthread_setspecific();
    }
-}
-
-void LibraryPatcher::patch_library(CodeCache* lib) {
-  if (_patch_pthread_create) {
-    ExclusiveLockGuard locker(&_lock);
-    patch_library_unlocked(lib);
-  } else if (Libraries::instance()->findJvmLibrary("libj9thr") == lib) {
-    patch_pthread_setspecific();
-  }
+   TEST_LOG("%d libraries patched", _size);
 }
 
 void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
@@ -89,7 +88,7 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
         return;
       }
     }
-
+    TEST_LOG("Patching: %s", lib->name());
     _patched_entries[_size]._lib = lib;
     _patched_entries[_size]._location = pthread_create_location;
     _patched_entries[_size]._func = (void*)__atomic_load_n(pthread_create_location, __ATOMIC_RELAXED);
@@ -99,6 +98,7 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
 }
 
 void LibraryPatcher::unpatch_libraries() {
+  TEST_LOG("Restore libraries");
   ExclusiveLockGuard locker(&_lock);
   for (int index = 0; index < _size; index++) {
     __atomic_store_n(_patched_entries[index]._location, _patched_entries[index]._func, __ATOMIC_RELAXED);
@@ -109,11 +109,7 @@ void LibraryPatcher::unpatch_libraries() {
 void LibraryPatcher::patch_pthread_create() {
   const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
   int num_of_libs = native_libs.count();
-  size_t size = num_of_libs * sizeof(PatchEntry);
-  TEST_LOG("Patching libraries");
-
   ExclusiveLockGuard locker(&_lock);
-
   for (int index = 0; index < num_of_libs; index++) {
      CodeCache* lib = native_libs.at(index);
      patch_library_unlocked(lib);
@@ -151,6 +147,7 @@ void LibraryPatcher::patch_pthread_setspecific() {
    CodeCache *lib = Libraries::instance()->findJvmLibrary("libj9thr");
    void** func_location = lib->findImport(im_pthread_setspecific);
    if (func_location != nullptr) {
+     TEST_LOG("Patching %s", lib->name());
      _patched_entries[0]._lib = lib;
      _patched_entries[0]._location = func_location;
      _patched_entries[0]._func = (void*)__atomic_load_n(func_location, __ATOMIC_RELAXED);
@@ -162,7 +159,6 @@ void LibraryPatcher::patch_pthread_setspecific() {
 #else
 void LibraryPatcher::initialize() { }
 void LibraryPatcher::patch_libraries() { }
-void LibraryPatcher::patch_library(CodeCache* lib) { }
 void LibraryPatcher::unpatch_libraries() { }
 
 #endif // __linux__
