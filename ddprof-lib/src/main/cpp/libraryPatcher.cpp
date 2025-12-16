@@ -75,8 +75,10 @@ void LibraryPatcher::patch_libraries() {
 
 void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
   if (_patch_pthread_create) {
-    // Cannot load profiler lazily
-    assert(strcmp(lib->name(), _profiler_name) != 0);
+    // Don't patch self
+    if(strcmp(lib->name(), _profiler_name) == 0) {
+      return;
+    }
     void** pthread_create_location = (void**)lib->findImport(im_pthread_create);
     if (pthread_create_location == nullptr) {
       return;
