@@ -78,9 +78,21 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
 
   ExecutionEvent event;
   ddprof::VMThread *vm_thread = ddprof::VMThread::current();
-  bool is_java_thread = vm_thread && VM::jni();
-  int raw_thread_state = vm_thread && is_java_thread ? vm_thread->state() : 0;
-  bool is_initialized = raw_thread_state >= 4 && raw_thread_state < 12;
+  // Check thread state to distinguish Java threads from JVM internal threads.
+  // Java threads have states in [4, 12) range (_thread_in_native to _thread_max_state).
+  // JVM internal threads (GC, Compiler) have state 0 or outside this range.
+  //
+  // We MUST NOT call VM::jni() here because it calls JavaVM->GetEnv(), which triggers
+  // __tls_get_addr for thread-local JNIEnv lookup. If the signal interrupts during
+  // TLS initialization (e.g., ForkJoinWorkerThread startup), this causes re-entrant
+  // TLS allocation and heap corruption.
+  //
+  // Thread states defined in OpenJDK:
+  // https://github.com/openjdk/jdk/blob/master/src/hotspot/share/utilities/globalDefinitions.hpp
+  // Search for "enum JavaThreadState"
+  int raw_thread_state = vm_thread ? vm_thread->state() : 0;
+  bool is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
+  bool is_initialized = is_java_thread;
   OSThreadState state = OSThreadState::UNKNOWN;
   ExecutionMode mode = ExecutionMode::UNKNOWN;
   if (vm_thread && is_initialized) {
