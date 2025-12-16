@@ -217,7 +217,7 @@ public:
 class CodeCacheArray {
 private:
   CodeCache *_libs[MAX_NATIVE_LIBS];
-  int _count;
+  volatile int _count;
 
 public:
   CodeCacheArray() : _count(0) {
@@ -226,23 +226,30 @@ public:
 
   CodeCache *operator[](int index) { return _libs[index]; }
 
-  int count() const { return __atomic_load_n(&_count, __ATOMIC_ACQUIRE); }
+  int count() const { return __atomic_load_n(&_count, __ATOMIC_RELAXED); }
 
   void add(CodeCache *lib) {
-    int index = __atomic_load_n(&_count, __ATOMIC_ACQUIRE);
-    _libs[index] = lib;
-    __atomic_store_n(&_count, index + 1, __ATOMIC_RELEASE);
+    int index = __atomic_fetch_add(&_count, 1, __ATOMIC_RELAXED);
+    if (index < MAX_NATIVE_LIBS) {
+       __atomic_store_n(&_libs[index], lib, __ATOMIC_RELEASE);
+    }
   }
 
   CodeCache* at(int index) const {
-    return _libs[index];
+    if (index >= MAX_NATIVE_LIBS) {
+        return nullptr;
+    }
+    CodeCache* lib = nullptr;
+    while ((lib = __atomic_load_n(&_libs[index], __ATOMIC_ACQUIRE)) == nullptr);
+
+    return lib;
   }
 
   long long memoryUsage() {
-    int count = __atomic_load_n(&_count, __ATOMIC_ACQUIRE);
+    int len = count();
     long long totalUsage = 0;
-    for (int i = 0; i < count; i++) {
-      totalUsage += _libs[i]->memoryUsage();
+    for (int i = 0; i < len; i++) {
+      totalUsage += at(i)->memoryUsage();
     }
     return totalUsage;
   }
