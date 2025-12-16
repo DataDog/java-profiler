@@ -67,7 +67,7 @@ static ExecutionMode convertJvmExecutionState(int state) {
  *         or the appropriate execution mode for Java threads
  */
 template<typename VMThreadType>
-static inline ExecutionMode getThreadExecutionMode(const VMThreadType* vm_thread) {
+static inline ExecutionMode getThreadExecutionMode(VMThreadType* vm_thread) {
   if (vm_thread == nullptr) {
     return ExecutionMode::UNKNOWN;
   }
