@@ -106,9 +106,6 @@ Error CTimer::start(Arguments &args) {
     return Error("interval must be positive");
   }
 
-  int* p = nullptr;
-  *p = 1;
-
   _interval = args.cpuSamplerInterval();
   _cstack = args._cstack;
   _signal = SIGPROF;
