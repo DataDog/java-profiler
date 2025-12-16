@@ -45,4 +45,41 @@ static ExecutionMode convertJvmExecutionState(int state) {
   }
 }
 
+/**
+ * Determines the execution mode from a VMThread's state.
+ *
+ * This function distinguishes Java threads from JVM internal threads based on their state.
+ * Java threads have states in [_thread_in_native, _thread_max_state) range [4, 12).
+ * JVM internal threads (GC, Compiler) have state 0 or outside this range.
+ *
+ * CRITICAL: This function is safe to call from signal handlers. It does NOT call VM::jni()
+ * which would trigger __tls_get_addr for thread-local JNIEnv lookup. If the signal interrupts
+ * during TLS initialization (e.g., ForkJoinWorkerThread startup), VM::jni() would cause
+ * re-entrant TLS allocation and heap corruption.
+ *
+ * Thread states are defined in OpenJDK:
+ * https://github.com/openjdk/jdk/blob/master/src/hotspot/share/utilities/globalDefinitions.hpp
+ * Search for "enum JavaThreadState"
+ *
+ * @param vm_thread The VMThread pointer (can be null)
+ * @return ExecutionMode::UNKNOWN if vm_thread is null,
+ *         ExecutionMode::JVM for JVM internal threads,
+ *         or the appropriate execution mode for Java threads
+ */
+template<typename VMThreadType>
+static inline ExecutionMode getThreadExecutionMode(const VMThreadType* vm_thread) {
+  if (vm_thread == nullptr) {
+    return ExecutionMode::UNKNOWN;
+  }
+
+  int raw_thread_state = vm_thread->state();
+
+  // Java threads: [4, 12) = [_thread_in_native, _thread_max_state)
+  // JVM internal threads: 0 or outside this range
+  bool is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
+
+  return is_java_thread ? convertJvmExecutionState(raw_thread_state)
+                        : ExecutionMode::JVM;
+}
+
 #endif // JAVA_PROFILER_LIBRARY_THREAD_STATE_H
