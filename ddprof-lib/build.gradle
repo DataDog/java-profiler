@@ -556,7 +556,7 @@ configurations {
 }
 
 // We need this trickery to reuse the toolchain and system config from tasks created by the cpp-library plugin
-// Basically, we are listening when the default 'comile' and 'link' (eg. 'compileReleaseCpp') is added and then
+// Basically, we are listening when the default 'compile' and 'link' (eg. 'compileReleaseCpp') is added and then
 // we are adding our own tasks for each build configuration, inheriting the part of the configuration which was
 // added by the cpp-library plugin
 tasks.whenTaskAdded { task ->

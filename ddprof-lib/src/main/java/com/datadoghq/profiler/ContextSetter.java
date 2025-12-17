@@ -1,94 +1,97 @@
+/*
+ * Copyright 2025, Datadog, Inc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.datadoghq.profiler;
 
-import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.HashSet;
 
+/**
+ * Helper class for setting profiling context values.
+ *
+ * <p>This class provides a simplified interface for setting custom labels
+ * on the current thread's profiling context.
+ *
+ * <p>Note: Custom labels are limited to 8 slots (indices 2-9), as indices
+ * 0 and 1 are reserved for trace context (span-id and root-span-id).
+ */
 public class ContextSetter {
-
-    private static final int TAGS_STORAGE_LIMIT = 10;
-    private final List<String> attributes;
     private final JavaProfiler profiler;
+    private final Set<String> allowedAttributes;
 
-    private final ConcurrentHashMap<String, Integer> jniCache = new ConcurrentHashMap<>();
-
+    /**
+     * Creates a ContextSetter with a whitelist of allowed attribute names.
+     *
+     * @param profiler The JavaProfiler instance
+     * @param attributes List of attribute names that are allowed to be set.
+     *                   Only attributes in this list can be set via this ContextSetter.
+     *                   If null or empty, all attributes are allowed.
+     */
     public ContextSetter(JavaProfiler profiler, List<String> attributes) {
         this.profiler = profiler;
-        Set<String> unique = new HashSet<>(attributes);
-        this.attributes = new ArrayList<>(unique.size());
-        for (int i = 0; i < Math.min(attributes.size(), TAGS_STORAGE_LIMIT); i++) {
-            String attribute = attributes.get(i);
-            if (unique.remove(attribute)) {
-                this.attributes.add(attribute);
-            }
+        if (attributes == null || attributes.isEmpty()) {
+            this.allowedAttributes = Collections.emptySet();
+        } else {
+            this.allowedAttributes = new HashSet<>(attributes);
         }
     }
 
-    public int encode(String key) {
-        if (key != null) {
-            Integer encoding = jniCache.get(key);
-            if (encoding != null) {
-                return encoding;
-            } else if (jniCache.size() <= 1 << 16) {
-                int e = profiler.registerConstant(key);
-                if (e > 0 && jniCache.putIfAbsent(key, e) == null) {
-                    return e;
-                }
-            }
-        }
-        return 0;
-    }
-
-    public int[] snapshotTags() {
-        int[] snapshot = new int[attributes.size()];
-        snapshotTags(snapshot);
-        return snapshot;
-    }
-
-    public void snapshotTags(int[] snapshot) {
-        if (snapshot.length <= attributes.size()) {
-            profiler.copyTags(snapshot);
-        }
-    }
-
-    public int offsetOf(String attribute) {
-        return attributes.indexOf(attribute);
-    }
-
+    /**
+     * Sets a context value for the current thread.
+     *
+     * <p>If a whitelist of attributes was provided in the constructor,
+     * only attributes in that whitelist can be set.
+     *
+     * @param attribute The attribute name (label key)
+     * @param value The attribute value (label value)
+     * @return true if the label was set successfully, false if the attribute
+     *         is not in the whitelist or if the operation failed
+     */
     public boolean setContextValue(String attribute, String value) {
-        return setContextValue(offsetOf(attribute), value);
-    }
-
-    public boolean setContextValue(int offset, String value) {
-        if (offset >= 0) {
-            int encoding = encode(value);
-            if (encoding >= 0) {
-                setContextValue(offset, encoding);
-                return true;
-            }
+        if (attribute == null || value == null) {
+            return false;
         }
-        return false;
-    }
 
-    public boolean setContextValue(int offset, int encoding) {
-        if (offset >= 0 && encoding >= 0) {
-            profiler.setContextValue(offset, encoding);
-            return true;
+        // Check whitelist if configured
+        if (!allowedAttributes.isEmpty() && !allowedAttributes.contains(attribute)) {
+            return false;
         }
-        return false;
+
+        ThreadContext context = profiler.getThreadContext();
+        return context.setLabel(attribute, value);
     }
 
+    /**
+     * Clears a context value for the current thread.
+     *
+     * @param attribute The attribute name (label key) to clear
+     * @return true if the label was cleared successfully, false otherwise
+     */
     public boolean clearContextValue(String attribute) {
-        return clearContextValue(offsetOf(attribute));
-    }
-
-    public boolean clearContextValue(int offset) {
-        if (offset >= 0) {
-            profiler.setContextValue(offset, 0);
-            return true;
+        if (attribute == null) {
+            return false;
         }
-        return false;
+
+        // Check whitelist if configured
+        if (!allowedAttributes.isEmpty() && !allowedAttributes.contains(attribute)) {
+            return false;
+        }
+
+        ThreadContext context = profiler.getThreadContext();
+        return context.removeLabel(attribute);
     }
 }

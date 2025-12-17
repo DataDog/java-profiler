@@ -116,7 +116,8 @@ def commonLinuxCompilerArgs = [
   "-ffunction-sections",
   "-std=c++17",
   "-DPROFILER_VERSION=\"${version}\"",
-  "-DCOUNTERS"
+  "-DCOUNTERS",
+  "-ftls-model=global-dynamic"
 ]
 
 def commonLinuxLinkerArgs = ["-ldl", "-Wl,-z,defs", "--verbose", "-lpthread", "-lm", "-lrt", "-v", "-Wl,--build-id"]

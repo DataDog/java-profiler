@@ -1281,25 +1281,18 @@ void Recording::writeUnwindFailures(Buffer *buf) {
 }
 
 void Recording::writeContext(Buffer *buf, Context &context) {
-  u64 spanId = 0;
-  u64 rootSpanId = 0;
-  u64 stored = context.checksum;
-  if (stored != 0) {
-    spanId = context.spanId;
-    rootSpanId = context.rootSpanId;
-    u64 computed = Contexts::checksum(spanId, rootSpanId);
-    if (stored != computed) {
-      TEST_LOG("Invalid context checksum: ctx=%p, tid=%d", &context, OS::threadId());
-      spanId = 0;
-      rootSpanId = 0;
-    }
-  }
+  // Extract span IDs from custom labels
+  u64 spanId = context.getSpanId();
+  u64 rootSpanId = context.getRootSpanId();
+
   buf->putVar64(spanId);
   buf->putVar64(rootSpanId);
 
+  // Custom labels (indices 2+) are not written to JFR
+  // They are available via TLS for external profilers to read
   for (size_t i = 0; i < Profiler::instance()->numContextAttributes(); i++) {
-    Tag tag = context.get_tag(i);
-    buf->putVar32(tag.value);
+    // Write 0 for backward compatibility
+    buf->putVar32(0);
   }
 }
 

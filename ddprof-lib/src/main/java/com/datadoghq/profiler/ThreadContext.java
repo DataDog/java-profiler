@@ -15,123 +15,107 @@
  */
 package com.datadoghq.profiler;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-
+/**
+ * Thread-local context storage with custom labels support.
+ *
+ * <p>This class provides access to thread-local profiling context including:
+ * <ul>
+ *   <li>Trace context (span ID and root span ID)</li>
+ *   <li>Custom labels (key-value pairs)</li>
+ * </ul>
+ *
+ * <p>All operations delegate to native code for performance and ABI compliance
+ * with the Custom Label ABI v1 specification.
+ *
+ * <p>The implementation uses a fixed-size pre-allocated buffer per thread:
+ * <ul>
+ *   <li>Maximum 10 labels per thread</li>
+ *   <li>Maximum key length: 128 bytes (UTF-8)</li>
+ *   <li>Maximum value length: 256 bytes (UTF-8)</li>
+ * </ul>
+ *
+ * <p>Labels at indices 0 and 1 are reserved for trace context:
+ * <ul>
+ *   <li>Label 0: "span-id" → current span ID</li>
+ *   <li>Label 1: "root-span-id" → root span ID</li>
+ * </ul>
+ *
+ * @see <a href="../../../../../docs/custom-labels-v1.md">Custom Label ABI v1</a>
+ * @see <a href="../../../../../docs/custom-labels-implementation.md">Implementation Details</a>
+ */
 public final class ThreadContext {
     /**
-     * Knuth's multiplicative hash constant for 64-bit values.
-     * Based on the golden ratio: 2^64 / φ where φ = (1 + √5) / 2
+     * Creates a ThreadContext instance.
+     *
+     * <p>This constructor is package-private and should only be called by
+     * {@link JavaProfiler#initializeThreadContext()}.
      */
-    private static final long KNUTH_CONSTANT = 0x9E3779B97F4A7C15L; // 11400714819323198485
-
-    private static final int MAX_CUSTOM_SLOTS = 10;
-
-    private static final BufferWriter BUFFER_WRITER = new BufferWriter();
-
-    // Offsets populated from native Context struct using offsetof()
-    private final int spanIdOffset;
-    private final int rootSpanIdOffset;
-    private final int checksumOffset;
-    private final int customTagsOffset;
+    ThreadContext() {
+        // Context initialization is handled entirely in native code
+    }
 
     /**
-     * Computes a hash-based checksum for context validation.
-     * Uses Knuth's multiplicative hash on both spanId and rootSpanId,
-     * then XORs them together. This provides better torn-read detection
-     * than simple XOR alone.
+     * Sets the trace context for the current thread.
+     *
+     * <p>This updates labels 0 and 1 with the span ID and root span ID,
+     * formatted as decimal strings.
      *
      * @param spanId The span identifier
      * @param rootSpanId The root span identifier
-     * @return The computed checksum
      */
-    public static long computeContextChecksum(long spanId, long rootSpanId) {
-        long hashSpanId = spanId * KNUTH_CONSTANT;
-        long swappedRootSpanId = ((rootSpanId & 0xFFFFFFFFL) << 32) | (rootSpanId >>> 32);
-        long hashRootSpanId = swappedRootSpanId * KNUTH_CONSTANT;
-        long computed = hashSpanId ^ hashRootSpanId;
-        computed = computed == 0 ? 0xffffffffffffffffL : computed;
-        return computed;
+    public void put(long spanId, long rootSpanId) {
+        setContext0(spanId, rootSpanId);
     }
-
-    private final ByteBuffer buffer;
-
-    private final boolean useJNI;
 
     /**
-     * Creates a ThreadContext with native struct field offsets.
+     * Sets a custom label for the current thread.
      *
-     * @param buffer Direct ByteBuffer mapped to native Context struct
-     * @param offsets Array of native struct field offsets:
-     *                [0] = offsetof(Context, spanId)
-     *                [1] = offsetof(Context, rootSpanId)
-     *                [2] = offsetof(Context, checksum)
-     *                [3] = offsetof(Context, tags)
+     * <p>If a label with the given key already exists, its value is updated.
+     * Otherwise, a new label is added (up to the maximum capacity of 10 labels).
+     *
+     * <p>Keys and values exceeding their maximum lengths (128 and 256 bytes
+     * respectively) will be silently truncated.
+     *
+     * @param key The label key (must not be null or empty)
+     * @param value The label value (must not be null)
+     * @return true if the label was set successfully, false if the label
+     *         capacity was exceeded or parameters were invalid
      */
-    public ThreadContext(ByteBuffer buffer, int[] offsets) {
-        if (offsets == null || offsets.length < 4) {
-            throw new IllegalArgumentException("offsets array must have at least 4 elements");
+    public boolean setLabel(String key, String value) {
+        if (key == null || key.isEmpty() || value == null) {
+            return false;
         }
-        this.buffer = buffer.order(ByteOrder.LITTLE_ENDIAN);
-        this.spanIdOffset = offsets[0];
-        this.rootSpanIdOffset = offsets[1];
-        this.checksumOffset = offsets[2];
-        this.customTagsOffset = offsets[3];
-        // For Java 17 and later the cost of downcall to JNI is negligible
-        useJNI = Platform.isJavaVersionAtLeast(17);
+        return setLabel0(key, value);
     }
 
-    public long getSpanId() {
-        return buffer.getLong(spanIdOffset);
-    }
-
-    public long getRootSpanId() {
-        return buffer.getLong(rootSpanIdOffset);
-    }
-
-    public long getChecksum() {
-        return buffer.getLong(checksumOffset);
-    }
-
-    public long put(long spanId, long rootSpanId) {
-        return useJNI ? setContext0(spanId, rootSpanId) : putContextJava(spanId, rootSpanId);
-    }
-
-    public void putCustom(int offset, int value) {
-        if (offset >= MAX_CUSTOM_SLOTS) {
-            throw new IllegalArgumentException("Invalid offset: " + offset + " (max " +  MAX_CUSTOM_SLOTS + ")");
+    /**
+     * Removes a custom label by key.
+     *
+     * <p>Reserved labels ("span-id" and "root-span-id") cannot be removed.
+     *
+     * @param key The label key to remove
+     * @return true if the label was found and removed, false otherwise
+     */
+    public boolean removeLabel(String key) {
+        if (key == null || key.isEmpty()) {
+            return false;
         }
-        // JNI path uses array indexing (offset is tag index)
-        // Java path uses byte buffer (offset needs to be multiplied by 4 for byte positioning)
-        if (useJNI) {
-            setContextSlot0(offset, value);
-        } else {
-            setContextSlotJava(offset, value);
-        }
+        return removeLabel0(key);
     }
 
-    public void copyCustoms(int[] value) {
-        int len = Math.min(value.length, MAX_CUSTOM_SLOTS);
-        for  (int i = 0; i < len; i++) {
-            // custom tags are spaced by 4 bytes (32 bits)
-            value[i] = buffer.getInt(customTagsOffset + i * 4);
-        }
+    /**
+     * Clears all custom labels while preserving trace context.
+     *
+     * <p>This removes labels at indices 2-9 but preserves the reserved
+     * labels "span-id" and "root-span-id" at indices 0 and 1.
+     */
+    public void clearLabels() {
+        clearLabels0();
     }
 
-    private long putContextJava(long spanId, long rootSpanId) {
-        long checksum = computeContextChecksum(spanId, rootSpanId);
-        BUFFER_WRITER.writeOrderedLong(buffer, checksumOffset, 0); // mark in progress
-        BUFFER_WRITER.writeOrderedLong(buffer, spanIdOffset, spanId);
-        BUFFER_WRITER.writeOrderedLong(buffer, rootSpanIdOffset, rootSpanId);
-        BUFFER_WRITER.writeVolatileLong(buffer, checksumOffset, checksum);
-        return checksum;
-    }
-
-    private long setContextSlotJava(int offset, int value) {
-        BUFFER_WRITER.writeOrderedInt(buffer, customTagsOffset + offset * 4, value);
-        return (long) value * offset;
-    }
-
-    private static native long setContext0(long spanId, long rootSpanId);
-    private static native void setContextSlot0(int offset, int value);
+    // Native method declarations
+    private static native void setContext0(long spanId, long rootSpanId);
+    private static native boolean setLabel0(String key, String value);
+    private static native boolean removeLabel0(String key);
+    private static native void clearLabels0();
 }

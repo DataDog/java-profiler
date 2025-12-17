@@ -16,14 +16,10 @@
 
 package com.datadoghq.profiler;
 
-import sun.misc.Unsafe;
-
 import java.io.IOException;
-import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -210,26 +206,6 @@ public final class JavaProfiler {
         setContext(0, 0);
     }
 
-    /**
-     * Sets a context value
-     * @param offset the offset
-     * @param value the encoding of the value. Must have been encoded via @see JavaProfiler#registerConstant
-     */
-    public void setContextValue(int offset, int value) {
-        tlsContextStorage.get().putCustom(offset, value);
-    }
-
-    void copyTags(int[] snapshot) {
-        tlsContextStorage.get().copyCustoms(snapshot);
-    }
-
-    /**
-     * Registers a constant so that its encoding can be used in place of the string
-     * @param key the key to be written into the attribute value constant pool
-     */
-    int registerConstant(String key) {
-        return registerConstant0(key);
-    }
 
     /**
      * Dumps the JFR recording at the provided path
@@ -309,9 +285,8 @@ public final class JavaProfiler {
     }
 
     private static ThreadContext initializeThreadContext() {
-        int[] offsets = new int[4];
-        ByteBuffer bb = initializeContextTls0(offsets);
-        return new ThreadContext(bb, offsets);
+        initializeContextTls0();
+        return new ThreadContext();
     }
 
     private static native boolean init0();
@@ -324,8 +299,6 @@ public final class JavaProfiler {
     private static native int getTid0();
 
     private static native boolean recordTrace0(long rootSpanId, String endpoint, String operation, int sizeLimit);
-
-    private static native int registerConstant0(String value);
 
     private static native void dump0(String recordingFilePath);
 
@@ -345,7 +318,7 @@ public final class JavaProfiler {
 
     private static native String getStatus0();
 
-    private static native ByteBuffer initializeContextTls0(int[] offsets);
+    private static native void initializeContextTls0();
 
     public ThreadContext getThreadContext() {
         return tlsContextStorage.get();

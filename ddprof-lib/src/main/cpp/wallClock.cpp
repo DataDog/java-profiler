@@ -71,7 +71,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     Context &context = Contexts::get();
     call_trace_id = current->lookupWallclockCallTraceId(
         (u64)frame.pc(), Profiler::instance()->recordingEpoch(),
-        context.spanId);
+        context.getSpanId());
     if (call_trace_id != 0) {
       Counters::increment(SKIPPED_WALLCLOCK_UNWINDS);
     }

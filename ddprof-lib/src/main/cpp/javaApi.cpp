@@ -219,16 +219,6 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
   return acceptValue;
 }
 
-extern "C" DLLEXPORT jint JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_registerConstant0(JNIEnv *env,
-                                                           jclass unused,
-                                                           jstring value) {
-  JniString value_str(env, value);
-  u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
-      value_str.c_str(), value_str.length(), 1 << 16);
-  return encoding == INT_MAX ? -1 : encoding;
-}
-
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_dump0(JNIEnv *env, jclass unused,
                                                jstring path) {
@@ -530,38 +520,49 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
 #endif
 }
 
-extern "C" DLLEXPORT jobject JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_initializeContextTls0(JNIEnv* env, jclass unused, jintArray offsets) {
-  Context& ctx = Contexts::initializeContextTls();
-
-  // Populate offsets array with actual struct field offsets
-  if (offsets != nullptr) {
-    jint offsetValues[4];
-    offsetValues[0] = (jint)offsetof(Context, spanId);
-    offsetValues[1] = (jint)offsetof(Context, rootSpanId);
-    offsetValues[2] = (jint)offsetof(Context, checksum);
-    offsetValues[3] = (jint)offsetof(Context, tags);
-    env->SetIntArrayRegion(offsets, 0, 4, offsetValues);
-  }
-
-  return env->NewDirectByteBuffer((void *)&ctx, (jlong)sizeof(Context));
-}
-
-extern "C" DLLEXPORT jlong JNICALL
-Java_com_datadoghq_profiler_ThreadContext_setContext0(JNIEnv* env, jclass unused, jlong spanId, jlong rootSpanId) {
-  Context& ctx = Contexts::get();
-
-  ctx.spanId = spanId;
-  ctx.rootSpanId = rootSpanId;
-  ctx.checksum = Contexts::checksum(spanId, rootSpanId);
-
-  return ctx.checksum;
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_initializeContextTls0(JNIEnv* env, jclass unused) {
+  Contexts::initializeContextTls();
 }
 
 extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_ThreadContext_setContextSlot0(JNIEnv* env, jclass unused, jint offset, jint value) {
+Java_com_datadoghq_profiler_ThreadContext_setContext0(JNIEnv* env, jclass unused, jlong spanId, jlong rootSpanId) {
   Context& ctx = Contexts::get();
-  ctx.tags[offset].value = (u32)value;
+  ctx.setTraceContext(spanId, rootSpanId);
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_ThreadContext_setLabel0(JNIEnv* env, jclass unused, jstring key, jstring value) {
+  if (key == nullptr || value == nullptr) {
+    return JNI_FALSE;
+  }
+
+  JniString key_str(env, key);
+  JniString value_str(env, value);
+
+  Context& ctx = Contexts::get();
+  bool success = ctx.setLabel(key_str.c_str(), key_str.length(), value_str.c_str(), value_str.length());
+
+  return success ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_ThreadContext_removeLabel0(JNIEnv* env, jclass unused, jstring key) {
+  if (key == nullptr) {
+    return JNI_FALSE;
+  }
+
+  JniString key_str(env, key);
+  Context& ctx = Contexts::get();
+  bool success = ctx.removeLabel(key_str.c_str(), key_str.length());
+
+  return success ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_ThreadContext_clearLabels0(JNIEnv* env, jclass unused) {
+  Context& ctx = Contexts::get();
+  ctx.clearCustomLabels();
 }
 
 // ---- test and debug utilities
@@ -575,6 +576,5 @@ Java_com_datadoghq_profiler_JavaProfiler_testlog(JNIEnv* env, jclass unused, jst
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused) {
   Context& ctx = Contexts::get();
-
-  TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu, checksum=%lu", OS::threadId(), ctx.spanId, ctx.rootSpanId, ctx.checksum);
+  ctx.dumpLabels();
 }
