@@ -35,7 +35,8 @@ public class DynamicNativeThread extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "cpu=1ms";
+        // set cstack=dwarf to enable dlopen hook
+        return "cpu=1ms,cstack=dwarf";
     }
 
     @Override
