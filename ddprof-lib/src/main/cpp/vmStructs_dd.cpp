@@ -328,8 +328,11 @@ namespace ddprof {
   }
 
   bool VMStructs_::isSafeToWalk(uintptr_t pc) {
-    return !(_unsafe_to_walk.contains((const void *)pc) &&
-            _unsafe_to_walk.findFrameDesc((const void *)pc));
+    // Check if PC is in the unsafe-to-walk code region
+    // Note: findFrameDesc now returns by value instead of pointer, but it always returns
+    // a valid FrameDesc (either from table or default_frame), so the old pointer check
+    // was always true. The effective logic is simply checking if pc is in _unsafe_to_walk.
+    return !_unsafe_to_walk.contains((const void *)pc);
   }
 
   void VMStructs_::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
