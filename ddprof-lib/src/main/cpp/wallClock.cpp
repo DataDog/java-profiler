@@ -13,6 +13,7 @@
 #include "profiler.h"
 #include "stackFrame.h"
 #include "thread.h"
+#include "threadState.h"
 #include "vmStructs_dd.h"
 #include "criticalSection.h"
 #include <math.h>
@@ -78,9 +79,9 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
 
   ExecutionEvent event;
   ddprof::VMThread *vm_thread = ddprof::VMThread::current();
-  bool is_java_thread = vm_thread && VM::jni();
-  int raw_thread_state = vm_thread && is_java_thread ? vm_thread->state() : 0;
-  bool is_initialized = raw_thread_state >= 4 && raw_thread_state < 12;
+  int raw_thread_state = vm_thread ? vm_thread->state() : 0;
+  bool is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
+  bool is_initialized = is_java_thread;
   OSThreadState state = OSThreadState::UNKNOWN;
   ExecutionMode mode = ExecutionMode::UNKNOWN;
   if (vm_thread && is_initialized) {
@@ -88,8 +89,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     if (os_state != OSThreadState::UNKNOWN) {
       state = os_state;
     }
-    mode = is_java_thread ? convertJvmExecutionState(raw_thread_state)
-                          : ExecutionMode::JVM;
+    mode = getThreadExecutionMode(vm_thread);
   }
   if (state == OSThreadState::UNKNOWN) {
     if (inSyscall(ucontext)) {
@@ -239,7 +239,7 @@ void WallClockJVMTI::timerLoop() {
     } else {
       state = os_state;
     }
-    mode = convertJvmExecutionState(raw_thread_state);
+    mode = getThreadExecutionMode(vm_thread);
 
     event._thread_state = state;
     event._execution_mode = mode;
