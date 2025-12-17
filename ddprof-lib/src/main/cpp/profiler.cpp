@@ -1252,6 +1252,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   }
 
+  LibraryPatcher::initialize();
 
   // Kernel symbols are useful only for perf_events without --all-user
   _libs->updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
@@ -1300,8 +1301,6 @@ Error Profiler::start(Arguments &args, bool reset) {
       }
     }
   }
-
-  LibraryPatcher::initialize();
 
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
