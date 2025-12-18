@@ -87,11 +87,13 @@ Try to hit the crash as quickly as possible:
   --threads 500 \
   --min-threads 1 \
   --idle-ms 25 \
-  --churn-ms 0.5 \
+  --churn-ms 0 \
   --allocations 20 \
   --alloc-size 200000 \
   --duration-sec 300"
 ```
+
+**Note**: `--churn-ms 0` submits tasks as fast as possible (maximum rate)
 
 ### Scenario 2: Steady State Load
 
