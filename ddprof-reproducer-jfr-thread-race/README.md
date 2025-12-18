@@ -35,6 +35,8 @@ The reproducer creates conditions that maximize the chance of hitting this race:
 
 ## Building
 
+### For Development
+
 ```bash
 # Build the debug profiler library (required for TEST_LOG)
 ./gradlew :ddprof-lib:buildDebug
@@ -43,18 +45,44 @@ The reproducer creates conditions that maximize the chance of hitting this race:
 ./gradlew :ddprof-reproducer-jfr-thread-race:build
 ```
 
+### For Distribution (Fat JAR)
+
+```bash
+# Build standalone fat JAR with all dependencies
+./gradlew :ddprof-reproducer-jfr-thread-race:distJar
+```
+
+This creates `ddprof-reproducer-jfr-thread-race/build/libs/jfr-thread-race-reproducer-1.0-all.jar` (~3MB) that can be copied to any machine and run standalone.
+
 ## Running
 
-### Basic Execution
+### With Gradle (Development)
 
 ```bash
 ./gradlew :ddprof-reproducer-jfr-thread-race:runReproducer
 ```
 
-### With Custom Parameters
-
+With custom parameters:
 ```bash
 ./gradlew :ddprof-reproducer-jfr-thread-race:runReproducer --args="--threads 300 --duration-sec 120"
+```
+
+### With Fat JAR (Production/Distribution)
+
+```bash
+# Basic execution
+java -Xmx2g \
+  -XX:ErrorFile=hs_err_reproducer_%p.log \
+  -XX:-OmitStackTraceInFastThrow \
+  -XX:StartFlightRecording=filename=reproducer.jfr,settings=profile \
+  -jar jfr-thread-race-reproducer-1.0-all.jar
+
+# With custom parameters
+java -jar jfr-thread-race-reproducer-1.0-all.jar \
+  --threads 300 --idle-ms 25 --churn-ms 0 --duration-sec 120
+
+# Show help
+java -jar jfr-thread-race-reproducer-1.0-all.jar --help
 ```
 
 ### Available Options

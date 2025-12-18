@@ -51,7 +51,7 @@ public class JfrThreadRaceReproducer implements Callable<Integer> {
     private long durationSeconds = 60;
 
     @Option(names = "--profiler-config", description = "Datadog profiler configuration (default: ${DEFAULT-VALUE})")
-    private String profilerConfig = "start,event=cpu,alloc,memory=256k:a";
+    private String profilerConfig = "start,event=cpu,alloc,memory=256k:a,file=ddprof-output.jfr";
 
     private QueuedThreadPool threadPool;
     private ThreadLifecycleTracker tracker;

@@ -6,6 +6,7 @@
 plugins {
   id 'java'
   id 'application'
+  id 'com.github.johnrengelman.shadow' version '8.1.1'
 }
 
 repositories {
@@ -55,4 +56,61 @@ tasks.register('runReproducer', JavaExec) {
 
 tasks.withType(JavaCompile).configureEach {
   options.release = 8
+}
+
+// Configure shadow JAR for standalone distribution
+shadowJar {
+  archiveBaseName = 'jfr-thread-race-reproducer'
+  archiveClassifier = 'all'
+  archiveVersion = '1.0'
+
+  manifest {
+    attributes(
+      'Main-Class': application.mainClass.get(),
+      'Implementation-Title': 'JFR Thread Race Reproducer',
+      'Implementation-Version': '1.0'
+    )
+  }
+
+  // Merge service files
+  mergeServiceFiles()
+
+  // Exclude signature files to avoid issues
+  exclude 'META-INF/*.SF'
+  exclude 'META-INF/*.DSA'
+  exclude 'META-INF/*.RSA'
+}
+
+// Task to create distributable JAR with instructions
+tasks.register('distJar') {
+  dependsOn shadowJar
+  description = 'Creates distributable fat JAR with all dependencies'
+  group = 'distribution'
+
+  doLast {
+    def jarFile = shadowJar.archiveFile.get().asFile
+    println("")
+    println("=" * 80)
+    println("FAT JAR CREATED: ${jarFile}")
+    println("=" * 80)
+    println("")
+    println("To run on another machine:")
+    println("")
+    println("  java -Xmx2g \\")
+    println("    -XX:ErrorFile=hs_err_reproducer_%p.log \\")
+    println("    -XX:-OmitStackTraceInFastThrow \\")
+    println("    -XX:StartFlightRecording=filename=reproducer.jfr,settings=profile \\")
+    println("    -jar ${jarFile.name}")
+    println("")
+    println("With options:")
+    println("")
+    println("  java -jar ${jarFile.name} \\")
+    println("    --threads 300 --idle-ms 25 --churn-ms 0 --duration-sec 120")
+    println("")
+    println("For help:")
+    println("")
+    println("  java -jar ${jarFile.name} --help")
+    println("")
+    println("=" * 80)
+  }
 }
