@@ -610,6 +610,7 @@ void Profiler::fillFrameTypes(ASGCT_CallFrame *frames, int num_frames,
 }
 
 u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event, bool deferred) {
+  TEST_LOG("Profiler::recordJVMTISample TID=%d TYPE=%d DEFERRED=%d", tid, event_type, deferred);
   // Protect JVMTI sampling operations to prevent signal handler interference
   CriticalSection cs;
   atomicIncRelaxed(_total_samples);

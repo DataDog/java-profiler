@@ -49,8 +49,10 @@ void ProfiledThread::initCurrentThread() {
   }
 
   int tid = OS::threadId();
+  TEST_LOG("ProfiledThread::initCurrentThread TID=%d START", tid);
   ProfiledThread *tls = ProfiledThread::forTid(tid);
   pthread_setspecific(_tls_key, (const void *)tls);
+  TEST_LOG("ProfiledThread::initCurrentThread TID=%d COMPLETE tls=%p", tid, tls);
 }
 
 void ProfiledThread::initExistingThreads() {
@@ -259,8 +261,10 @@ ProfiledThread *ProfiledThread::current() {
   if (tls == NULL) {
     // Lazy allocation - safe since current() is never called from signal handlers
     int tid = OS::threadId();
+    TEST_LOG("ProfiledThread::current LAZY_ALLOC TID=%d", tid);
     tls = ProfiledThread::forTid(tid);
     pthread_setspecific(_tls_key, (const void *)tls);
+    TEST_LOG("ProfiledThread::current LAZY_ALLOC TID=%d COMPLETE tls=%p", tid, tls);
   }
   return tls;
 }
@@ -268,7 +272,9 @@ ProfiledThread *ProfiledThread::current() {
 ProfiledThread *ProfiledThread::currentSignalSafe() {
   // Signal-safe: never allocate, just return existing TLS or null
   pthread_key_t key = _tls_key;
-  return key != 0 ? (ProfiledThread *)pthread_getspecific(key) : nullptr;
+  ProfiledThread *tls = key != 0 ? (ProfiledThread *)pthread_getspecific(key) : nullptr;
+  TEST_LOG("ProfiledThread::currentSignalSafe TID=%d tls=%p", OS::threadId(), tls);
+  return tls;
 }
 
 bool ProfiledThread::isTlsPrimingAvailable() {

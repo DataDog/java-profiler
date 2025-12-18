@@ -38,6 +38,7 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
   }
 
   int tid = ProfiledThread::currentTid();
+  TEST_LOG("ObjectSampler::recordAllocation TID=%d SIZE=%ld", tid, (long)size);
 
   AllocEvent event;
 

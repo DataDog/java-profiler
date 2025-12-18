@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Copyright 2025, Datadog, Inc.
+  SPDX-License-Identifier: Apache-2.0
+
+  JFR configuration for thread race reproducer.
+  Enables aggressive allocation sampling to maximize race window detection.
+-->
+<configuration version="2.0" label="Reproducer - Aggressive Allocation Sampling">
+    <event name="jdk.ObjectAllocationSample">
+        <setting name="enabled">true</setting>
+        <setting name="throttle">off</setting>
+        <setting name="stackTrace">true</setting>
+    </event>
+    <event name="jdk.ThreadStart">
+        <setting name="enabled">true</setting>
+        <setting name="stackTrace">true</setting>
+    </event>
+    <event name="jdk.ThreadEnd">
+        <setting name="enabled">true</setting>
+        <setting name="stackTrace">true</setting>
+    </event>
+</configuration>

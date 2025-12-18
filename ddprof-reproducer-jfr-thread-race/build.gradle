@@ -1,0 +1,58 @@
+/*
+ * Copyright 2025, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+plugins {
+  id 'java'
+  id 'application'
+}
+
+repositories {
+  mavenCentral()
+}
+
+apply from: rootProject.file('common.gradle')
+
+dependencies {
+  implementation 'org.eclipse.jetty:jetty-util:11.0.24'
+  implementation project(path: ':ddprof-lib', configuration: 'debug')
+  implementation 'org.openjdk.jmc:flightrecorder:8.1.0'
+  implementation 'info.picocli:picocli:4.7.5'
+  implementation 'org.slf4j:slf4j-simple:1.7.32'
+}
+
+application {
+  mainClass = 'com.datadoghq.profiler.reproducer.JfrThreadRaceReproducer'
+}
+
+tasks.register('runReproducer', JavaExec) {
+  dependsOn compileJava
+  description = 'Run JFR thread race reproducer'
+  group = 'execution'
+  mainClass = application.mainClass.get()
+  classpath = sourceSets.main.runtimeClasspath
+
+  def javaHome = System.getenv("JAVA_TEST_HOME") ?: System.getenv("JAVA_HOME")
+  if (javaHome != null) {
+    executable = "${javaHome}/bin/java"
+  }
+
+  jvmArgs = [
+    '-Xmx2g',
+    '-XX:ErrorFile=build/hs_err_reproducer_%p.log',
+    '-XX:-OmitStackTraceInFastThrow',
+    '-XX:StartFlightRecording=filename=build/reproducer.jfr,settings=profile'
+  ]
+
+  doFirst {
+    file('build').mkdirs()
+    println("[REPRODUCER] Starting JFR Thread Race Reproducer")
+    println("[REPRODUCER] Java executable: ${executable}")
+    println("[REPRODUCER] JVM Args: ${jvmArgs}")
+  }
+}
+
+tasks.withType(JavaCompile).configureEach {
+  options.release = 8
+}
