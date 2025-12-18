@@ -35,7 +35,7 @@ public class JfrThreadRaceReproducer implements Callable<Integer> {
     @Option(names = "--min-threads", description = "Minimum threads in pool (default: ${DEFAULT-VALUE})")
     private int minThreads = 5;
 
-    @Option(names = "--churn-ms", description = "Task submission interval in ms (default: ${DEFAULT-VALUE})")
+    @Option(names = "--churn-ms", description = "Task submission interval in ms, 0=max rate (default: ${DEFAULT-VALUE})")
     private long taskSubmissionIntervalMs = 1;
 
     @Option(names = "--idle-ms", description = "Thread idle timeout in ms (default: ${DEFAULT-VALUE})")
@@ -99,19 +99,40 @@ public class JfrThreadRaceReproducer implements Callable<Integer> {
             // Submit continuous workload
             System.out.println("[REPRODUCER] Starting workload submission...");
             ScheduledExecutorService submitter = Executors.newSingleThreadScheduledExecutor();
-            submitter.scheduleAtFixedRate(() -> {
-                try {
-                    threadPool.execute(new AllocationWorker(
-                        allocationsPerTask,
-                        allocationSize,
-                        tracker,
-                        tasksCompleted
-                    ));
-                    tasksSubmitted.incrementAndGet();
-                } catch (Exception e) {
-                    System.err.println("[REPRODUCER] Error submitting task: " + e.getMessage());
-                }
-            }, 0, taskSubmissionIntervalMs, TimeUnit.MILLISECONDS);
+
+            if (taskSubmissionIntervalMs == 0) {
+                // Maximum rate mode - submit as fast as possible in a tight loop
+                submitter.submit(() -> {
+                    while (!Thread.currentThread().isInterrupted()) {
+                        try {
+                            threadPool.execute(new AllocationWorker(
+                                allocationsPerTask,
+                                allocationSize,
+                                tracker,
+                                tasksCompleted
+                            ));
+                            tasksSubmitted.incrementAndGet();
+                        } catch (Exception e) {
+                            System.err.println("[REPRODUCER] Error submitting task: " + e.getMessage());
+                        }
+                    }
+                });
+            } else {
+                // Scheduled mode with fixed interval
+                submitter.scheduleAtFixedRate(() -> {
+                    try {
+                        threadPool.execute(new AllocationWorker(
+                            allocationsPerTask,
+                            allocationSize,
+                            tracker,
+                            tasksCompleted
+                        ));
+                        tasksSubmitted.incrementAndGet();
+                    } catch (Exception e) {
+                        System.err.println("[REPRODUCER] Error submitting task: " + e.getMessage());
+                    }
+                }, 0, taskSubmissionIntervalMs, TimeUnit.MILLISECONDS);
+            }
 
             // Monitor statistics
             long startTime = System.currentTimeMillis();
