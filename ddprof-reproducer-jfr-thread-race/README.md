@@ -29,9 +29,10 @@ The reproducer creates conditions that maximize the chance of hitting this race:
 
 1. **Jetty QueuedThreadPool** - Uses the exact thread pool from production stack traces
 2. **Aggressive Thread Churn** - Short-lived threads (50ms idle timeout, immediate shutdown)
-3. **Immediate Allocation** - Workers allocate large byte arrays immediately upon thread start
-4. **High Task Rate** - Submits 1000+ tasks per second
-5. **Native Instrumentation** - TEST_LOG calls track thread initialization and allocation sampling
+3. **Immediate Allocation** - Workers allocate byte arrays immediately upon thread start
+4. **Randomized Allocation Sizes** - Sizes vary around average (±50%), capped at 1KB-10MB, creating realistic patterns
+5. **High Task Rate** - Submits 1000+ tasks per second
+6. **Native Instrumentation** - TEST_LOG calls track thread initialization and allocation sampling
 
 ## Building
 
@@ -90,13 +91,21 @@ java -jar jfr-thread-race-reproducer-1.0-all.jar --help
 ```
 --threads <N>           Maximum threads in pool (default: 200)
 --min-threads <N>       Minimum threads in pool (default: 5)
---churn-ms <N>          Task submission interval in ms (default: 1)
+--churn-ms <N>          Task submission interval in ms, 0=max (default: 1)
 --idle-ms <N>           Thread idle timeout in ms (default: 50)
 --allocations <N>       Allocations per task (default: 10)
---alloc-size <N>        Allocation size in bytes (default: 100000)
+--alloc-size <N>        Average allocation size in bytes (default: 100000)
+                        Actual sizes randomized ±50% (capped: 1KB-10MB)
 --duration-sec <N>      Run duration in seconds (default: 60)
---profiler-config <S>   Datadog profiler config (default: start,event=cpu,alloc,memory=256k:a)
+--profiler-config <S>   Datadog profiler config (default: start,event=cpu,alloc,memory=256k:a,file=ddprof-output.jfr)
 ```
+
+**Allocation Size Distribution**:
+The `--alloc-size` parameter specifies the average. Actual sizes are randomized to create realistic patterns:
+- 50% within ±25% of average
+- 45% between average/2 and 2x average
+- 5% outliers (very small or up to 3x average)
+- All capped between 1KB min and 10MB max
 
 ### Running with Specific Java Version
 
