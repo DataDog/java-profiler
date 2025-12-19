@@ -4,6 +4,8 @@
 #include "codeCache.h"
 #include "spinLock.h"
 
+#ifdef __linux__
+
 // Patch libraries' @plt entries
 typedef struct _patchEntry {
   CodeCache* _lib;
@@ -15,7 +17,6 @@ typedef struct _patchEntry {
 
 
 class LibraryPatcher {
-#ifdef __linux__
 private:
   static SpinLock    _lock;
   static const char* _profiler_name;
@@ -26,12 +27,21 @@ private:
   static void patch_library_unlocked(CodeCache* lib);
   static void patch_pthread_create();
   static void patch_pthread_setspecific();
-#endif // __linux
 public:
   static void initialize();
   static void patch_libraries();
   static void unpatch_libraries();
 };
 
+#else
 
-  #endif // _LIBRARYPATCHER_H
+class LibraryPatcher {
+public:
+  static void initialize() { }
+  static void patch_libraries() { }
+  static void unpatch_libraries() { }
+};
+
+#endif
+
+#endif // _LIBRARYPATCHER_H

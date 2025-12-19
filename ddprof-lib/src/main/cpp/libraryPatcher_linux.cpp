@@ -157,12 +157,6 @@ void LibraryPatcher::patch_pthread_setspecific() {
      _size = 1;
   }
 }
-
-#else
-void LibraryPatcher::initialize() { }
-void LibraryPatcher::patch_libraries() { }
-void LibraryPatcher::unpatch_libraries() { }
-
 #endif // __linux__
 
 
