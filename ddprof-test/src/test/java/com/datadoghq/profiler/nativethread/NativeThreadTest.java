@@ -40,7 +40,7 @@ public class NativeThreadTest extends AbstractProfilerTest {
 
   @RetryingTest(3)
   public void test() {
-      // Exclude J9 for now
+      // Exclude J9 for now due to a bug inherited from async-profiler
       if (Platform.isJ9() || Platform.isMusl()) {
           return;
       }

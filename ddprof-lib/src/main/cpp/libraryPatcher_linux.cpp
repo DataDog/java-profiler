@@ -34,6 +34,11 @@ typedef struct _startRoutineArg {
   void*              _arg;
 } StartRoutineArg;
 
+// Wrapper around the real start routine.
+// The wrapper:
+// 1. Register the newly created thread to profiler
+// 2. Call real start routine
+// 3. Unregister the thread from profiler once the routine is completed.
 static void* start_routine_wrapper(void* args) {
     StartRoutineArg* data = (StartRoutineArg*)args;
     ProfiledThread::initCurrentThread();
