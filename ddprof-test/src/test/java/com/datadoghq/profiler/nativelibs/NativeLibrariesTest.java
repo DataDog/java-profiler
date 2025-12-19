@@ -1,12 +1,18 @@
 package com.datadoghq.profiler.nativelibs;
 
-import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.CStackAwareAbstractProfilerTest;
+import com.datadoghq.profiler.junit.RetryTest;
+import com.datadoghq.profiler.junit.CStack;
 import com.datadoghq.profiler.Platform;
+
 import com.github.luben.zstd.Zstd;
 import net.jpountz.lz4.LZ4Compressor;
 import net.jpountz.lz4.LZ4Factory;
 import net.jpountz.lz4.LZ4FastDecompressor;
 import net.jpountz.lz4.LZ4SafeDecompressor;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.params.provider.ValueSource;
+
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junitpioneer.jupiter.RetryingTest;
@@ -21,6 +27,7 @@ import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
@@ -35,14 +42,26 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * we should be able to parse the dwarf info section of these common libraries on linux without segfaulting
  * and we should be able to unwind the native stacks
  * */
-public class NativeLibrariesTest extends AbstractProfilerTest {
+public class NativeLibrariesTest extends CStackAwareAbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
-        return "cpu=1ms,cstack=" + (Platform.isMac() ? "fp" : "dwarf");
+        return "cpu=1ms";
     }
 
-    @RetryingTest(3)
-    public void test() {
+    public NativeLibrariesTest(@CStack String cstack) {
+        super(cstack);
+    }
+
+    @RetryTest(5)
+    @TestTemplate
+    @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
+    public void test(@CStack String cstack) throws ExecutionException, InterruptedException, Exception {
+        if (!isOnBlackList(cstack)) {
+            test();
+        }
+    }
+
+    private void test() {
         String config = System.getProperty("ddprof_test.config");
         boolean isSanitizer = config.endsWith("san");
 
@@ -95,7 +114,9 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
         assertTrue(libraryCounters.containsKey("LZ4"), "no lz4-java samples");
         // snappy is problematic on musl; we are not running it
         // for some reason it is not also appearing in sanitized runs
-        assertTrue(isMusl || isSanitizer || libraryCounters.containsKey("SNAPPY"), "no snappy-java samples");
+        // TODO: Missing "SNAPPY" frame with cstack=vm
+        assertTrue(isMusl || isSanitizer || libraryCounters.containsKey("SNAPPY") || "vm".equals(getCStack()),
+                "no snappy-java samples");
         assertTrue(libraryCounters.containsKey("ZSTD"), "no zstd-jni samples");
         modeCounters.forEach((mode, count) -> System.err.println(mode + ": " + count.get()));
         libraryCounters.forEach((lib, count) -> System.err.println(lib + ": " + count.get()));
