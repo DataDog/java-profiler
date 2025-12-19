@@ -1,5 +1,6 @@
 /*
  * Copyright 2018 Andrei Pangin
+ * Copyright 2025, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +21,7 @@
 #include "profiler.h"
 #include "stackWalker.h"
 #include "thread.h"
+#include "threadState.h"
 #include "vmStructs.h"
 #include "criticalSection.h"
 #include <sys/time.h>
@@ -49,11 +51,7 @@ void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 
   ExecutionEvent event;
   VMThread *vm_thread = VMThread::current();
-  if (vm_thread) {
-    event._execution_mode = VM::jni() != NULL
-                                ? convertJvmExecutionState(vm_thread->state())
-                                : ExecutionMode::JVM;
-  }
+  event._execution_mode = getThreadExecutionMode(vm_thread);
   Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,
                                      &event);
   Shims::instance().setSighandlerTid(-1);

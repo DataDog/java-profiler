@@ -363,7 +363,7 @@ void CodeCache::setDwarfTable(FrameDesc *table, int length) {
   _dwarf_table_length = length;
 }
 
-FrameDesc *CodeCache::findFrameDesc(const void *pc) {
+FrameDesc CodeCache::findFrameDesc(const void *pc) {
   u32 target_loc = (const char *)pc - _text_base;
   int low = 0;
   int high = _dwarf_table_length - 1;
@@ -375,15 +375,15 @@ FrameDesc *CodeCache::findFrameDesc(const void *pc) {
     } else if (_dwarf_table[mid].loc > target_loc) {
       high = mid - 1;
     } else {
-      return &_dwarf_table[mid];
+      return _dwarf_table[mid];
     }
   }
 
   if (low > 0) {
-    return &_dwarf_table[low - 1];
+    return _dwarf_table[low - 1];
   } else if (target_loc - _plt_offset < _plt_size) {
-    return &FrameDesc::empty_frame;
+    return FrameDesc::empty_frame;
   } else {
-    return &FrameDesc::default_frame;
+    return FrameDesc::default_frame;
   }
 }

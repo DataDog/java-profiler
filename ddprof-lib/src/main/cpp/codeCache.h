@@ -202,7 +202,7 @@ public:
                            std::vector<const void *> &symbols);
 
   void setDwarfTable(FrameDesc *table, int length);
-  FrameDesc *findFrameDesc(const void *pc);
+  FrameDesc findFrameDesc(const void *pc);
 
   long long memoryUsage() {
     return _capacity * sizeof(CodeBlob *) + _count * sizeof(NativeFunc);
