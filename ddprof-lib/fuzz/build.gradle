@@ -121,6 +121,25 @@ def findClangResourceDir(String llvmPath) {
 
 def clangResourceDir = findClangResourceDir(homebrewLLVM)
 
+// Configure toolchains to use Clang for libFuzzer support
+model {
+  toolChains {
+    clang(Clang) {
+      // Explicitly use clang++ for fuzzing targets
+      // libFuzzer requires clang as g++ doesn't support -fsanitize=fuzzer
+
+      // On macOS, prefer Homebrew LLVM if available to match the libFuzzer library ABI
+      if (os().isMacOsX() && homebrewLLVM != null) {
+        path "${homebrewLLVM}/bin"
+        eachPlatform {
+          cppCompiler.executable = "clang++"
+          linker.executable = "clang++"
+        }
+      }
+    }
+  }
+}
+
 def fuzzAll = tasks.register("fuzz") {
   onlyIf {
     hasFuzzer() && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native') && !project.hasProperty('skip-fuzz')
@@ -131,6 +150,12 @@ def fuzzAll = tasks.register("fuzz") {
   if (!hasFuzzer()) {
     logger.warn("WARNING: libFuzzer not available - skipping fuzz tests (requires clang with -fsanitize=fuzzer)")
   }
+}
+
+// Helper to get the Clang toolchain from the model
+def getClangToolChain() {
+  def toolChains = project.modelRegistry.realize("toolChains", org.gradle.nativeplatform.toolchain.internal.NativeToolChainRegistryInternal)
+  return toolChains.find { it instanceof org.gradle.nativeplatform.toolchain.Clang }
 }
 
 // We need this trickery to reuse the toolchain and system config from tasks created by the cpp-application plugin
@@ -166,7 +191,8 @@ tasks.whenTaskAdded { task ->
                   // Add fuzzer-specific compile flags (but not -fsanitize=fuzzer for compilation)
                   compilerArgs.add('-DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION')
 
-                  toolChain = task.toolChain
+                  // Use Clang toolchain explicitly for libFuzzer support
+                  toolChain = getClangToolChain()
                   targetPlatform = task.targetPlatform
                   includes task.includes
                   includes project(':ddprof-lib').file('src/main/cpp-external').toString()
@@ -257,7 +283,8 @@ tasks.whenTaskAdded { task ->
                   if (os().isLinux()) {
                     linkerArgs.add("-lrt")
                   }
-                  toolChain = task.toolChain
+                  // Use Clang toolchain explicitly for libFuzzer support
+                  toolChain = getClangToolChain()
                   targetPlatform = task.targetPlatform
                   libs = task.libs
                   inputs.files source
