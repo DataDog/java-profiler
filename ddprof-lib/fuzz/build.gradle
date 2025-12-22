@@ -1,0 +1,343 @@
+/*
+ * Copyright 2025, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Gradle build file for libFuzzer-based fuzz testing.
+ * This module compiles and runs fuzz targets against the profiler's C++ code
+ * to discover bugs through automated input generation.
+ */
+
+plugins {
+  id 'cpp-application'
+}
+
+// Access to common utilities and build configurations
+if (rootDir.toString().endsWith("ddprof-lib/fuzz")) {
+  apply from: rootProject.file('../../common.gradle')
+  apply from: rootProject.file('../../gradle/configurations.gradle')
+}
+
+// disable the default compile and link tasks not to interfere with our custom ones
+tasks.withType(CppCompile).configureEach { task ->
+  if (task.name.startsWith('compileRelease') || task.name.startsWith('compileDebug')) {
+    task.onlyIf {
+      false
+    }
+  }
+}
+
+tasks.withType(LinkExecutable).configureEach { task ->
+  if (task.name.startsWith('linkRelease') || task.name.startsWith('linkDebug')) {
+    task.onlyIf {
+      false
+    }
+  }
+}
+
+tasks.withType(ExtractSymbols).configureEach { task ->
+  task.onlyIf {
+    false
+  }
+}
+
+tasks.withType(StripSymbols).configureEach { task ->
+  task.onlyIf {
+    false
+  }
+}
+
+// Default fuzz duration in seconds (can be overridden with -Pfuzz-duration=N)
+def fuzzDuration = project.hasProperty('fuzz-duration') ? project.getProperty('fuzz-duration').toInteger() : 60
+
+// Directory for crash artifacts
+def crashDir = file("${buildDir}/fuzz-crashes")
+
+// Directory for seed corpus
+def corpusDir = project(':ddprof-lib').file('src/test/fuzz/corpus')
+
+// Helper to detect Homebrew LLVM on macOS
+def findHomebrewLLVM() {
+  if (!os().isMacOsX()) {
+    return null
+  }
+
+  def possiblePaths = [
+    "/opt/homebrew/opt/llvm",  // Apple Silicon
+    "/usr/local/opt/llvm"       // Intel Mac
+  ]
+
+  for (path in possiblePaths) {
+    def llvmDir = file(path)
+    if (llvmDir.exists() && file("${path}/bin/clang++").exists()) {
+      logger.info("Found Homebrew LLVM at: ${path}")
+      return path
+    }
+  }
+
+  // Try using brew command
+  try {
+    def process = ["brew", "--prefix", "llvm"].execute()
+    process.waitFor()
+    if (process.exitValue() == 0) {
+      def brewPath = process.in.text.trim()
+      if (file("${brewPath}/bin/clang++").exists()) {
+        logger.info("Found Homebrew LLVM via brew command at: ${brewPath}")
+        return brewPath
+      }
+    }
+  } catch (Exception e) {
+    // brew not available or failed
+  }
+
+  return null
+}
+
+def homebrewLLVM = findHomebrewLLVM()
+
+// Find the clang version directory within Homebrew LLVM
+def findClangResourceDir(String llvmPath) {
+  if (llvmPath == null) {
+    return null
+  }
+
+  def clangLibDir = file("${llvmPath}/lib/clang")
+  if (!clangLibDir.exists()) {
+    return null
+  }
+
+  // Find the version directory (e.g., 18.1.8 or 19)
+  def versions = clangLibDir.listFiles()?.findAll { it.isDirectory() }?.sort { a, b ->
+    b.name <=> a.name  // Sort descending to get latest version
+  }
+
+  if (versions && versions.size() > 0) {
+    def resourceDir = "${llvmPath}/lib/clang/${versions[0].name}"
+    logger.info("Using clang resource directory: ${resourceDir}")
+    return resourceDir
+  }
+
+  return null
+}
+
+def clangResourceDir = findClangResourceDir(homebrewLLVM)
+
+def fuzzAll = tasks.register("fuzz") {
+  onlyIf {
+    hasFuzzer() && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native') && !project.hasProperty('skip-fuzz')
+  }
+  group = 'verification'
+  description = "Run all fuzz targets"
+
+  if (!hasFuzzer()) {
+    logger.warn("WARNING: libFuzzer not available - skipping fuzz tests (requires clang with -fsanitize=fuzzer)")
+  }
+}
+
+// We need this trickery to reuse the toolchain and system config from tasks created by the cpp-application plugin
+tasks.whenTaskAdded { task ->
+  if (task instanceof CppCompile) {
+    if (!task.name.startsWith('compileFuzz') && task.name.contains('Release')) {
+      // Only create fuzz tasks for the 'fuzzer' configuration
+      buildConfigurations.findAll { it.name == 'fuzzer' }.each { config ->
+        if (config.os == osIdentifier() && config.arch == archIdentifier()) {
+          def fuzzSrcDir = project(':ddprof-lib').file("src/test/fuzz/")
+          if (fuzzSrcDir.exists()) {
+            fuzzSrcDir.eachFile { fuzzFile ->
+              if (fuzzFile.name.endsWith('.cpp')) {
+                def fullName = fuzzFile.name.substring(0, fuzzFile.name.lastIndexOf('.'))
+                // Strip "fuzz_" prefix from filename to get the target name
+                def fuzzName = fullName.startsWith('fuzz_') ? fullName.substring(5) : fullName
+                def fuzzCompileTask = tasks.register("compileFuzz_${fuzzName}", CppCompile) {
+                  onlyIf {
+                    config.active && hasFuzzer() && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native') && !project.hasProperty('skip-fuzz')
+                  }
+                  group = 'build'
+                  description = "Compile the fuzz target ${fuzzName}"
+                  objectFileDir = file("$buildDir/obj/fuzz/${fuzzName}")
+                  // Use fuzzer config's compiler args, but we need to use clang
+                  compilerArgs.addAll(config.compilerArgs.findAll {
+                    // drop -std flag to add our own
+                    it != '-std=c++17' && it != '-DNDEBUG'
+                  })
+                  if (os().isLinux() && isMusl()) {
+                    compilerArgs.add('-D__musl__')
+                  }
+                  compilerArgs.add('-std=c++17')
+                  // Add fuzzer-specific compile flags (but not -fsanitize=fuzzer for compilation)
+                  compilerArgs.add('-DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION')
+
+                  toolChain = task.toolChain
+                  targetPlatform = task.targetPlatform
+                  includes task.includes
+                  includes project(':ddprof-lib').file('src/main/cpp-external').toString()
+                  includes project(':ddprof-lib').file('src/main/cpp').toString()
+                  includes "${javaHome()}/include"
+                  includes project(':malloc-shim').file('src/main/public').toString()
+                  if (os().isMacOsX()) {
+                    includes "${javaHome()}/include/darwin"
+                  } else if (os().isLinux()) {
+                    includes "${javaHome()}/include/linux"
+                  }
+                  includes task.systemIncludes
+                  // Compile main profiler sources (needed for fuzzing the actual code)
+                  source project(':ddprof-lib').fileTree('src/main/cpp') {
+                    include '**/*'
+                  }
+                  source project(':ddprof-lib').fileTree('src/main/cpp-external') {
+                    include '**/*'
+                  }
+                  // Compile the fuzz target itself
+                  source fuzzFile
+
+                  inputs.files source
+                  outputs.dir objectFileDir
+                }
+                def linkTask = tasks.findByName("linkFuzz_${fuzzName}".toString())
+                if (linkTask != null) {
+                  linkTask.dependsOn fuzzCompileTask
+                }
+                def subrepoInitTask = project(':ddprof-lib').tasks.named("initSubrepo")
+                if (subrepoInitTask != null) {
+                  fuzzCompileTask.configure {
+                    dependsOn subrepoInitTask
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } else if (task instanceof LinkExecutable) {
+    if (!task.name.startsWith('linkFuzz') && task.name.contains('Release')) {
+      buildConfigurations.findAll { it.name == 'fuzzer' }.each { config ->
+        if (config.os == osIdentifier() && config.arch == archIdentifier()) {
+          def fuzzSrcDir = project(':ddprof-lib').file("src/test/fuzz/")
+          if (fuzzSrcDir.exists()) {
+            fuzzSrcDir.eachFile { fuzzFile ->
+              if (fuzzFile.name.endsWith('.cpp')) {
+                def fullName = fuzzFile.name.substring(0, fuzzFile.name.lastIndexOf('.'))
+                // Strip "fuzz_" prefix from filename to get the target name
+                def fuzzName = fullName.startsWith('fuzz_') ? fullName.substring(5) : fullName
+                def binary = file("$buildDir/bin/fuzz/${fuzzName}/${fuzzName}")
+                def fuzzLinkTask = tasks.register("linkFuzz_${fuzzName}", LinkExecutable) {
+                  onlyIf {
+                    config.active && hasFuzzer() && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native') && !project.hasProperty('skip-fuzz')
+                  }
+                  group = 'build'
+                  description = "Link the fuzz target ${fuzzName}"
+                  source = fileTree("$buildDir/obj/fuzz/${fuzzName}")
+                  linkedFile = binary
+                  // Add linker args from config
+                  linkerArgs.addAll(config.linkerArgs)
+
+                  // libFuzzer linking strategy:
+                  // On macOS with Homebrew LLVM, explicitly link the library file
+                  // because system clang looks in the wrong location
+                  if (os().isMacOsX() && clangResourceDir != null) {
+                    def fuzzerLib = "${clangResourceDir}/lib/darwin/libclang_rt.fuzzer_osx.a"
+                    if (file(fuzzerLib).exists()) {
+                      logger.info("Using Homebrew libFuzzer: ${fuzzerLib}")
+                      // Explicitly link the fuzzer library file
+                      linkerArgs.add(fuzzerLib)
+                      // Also link Homebrew's libc++ to match the fuzzer library's ABI
+                      linkerArgs.add("-L${homebrewLLVM}/lib/c++")
+                      linkerArgs.add("-lc++")
+                      linkerArgs.add("-Wl,-rpath,${homebrewLLVM}/lib/c++")
+                    } else {
+                      logger.warn("Homebrew libFuzzer not found, falling back to -fsanitize=fuzzer")
+                      linkerArgs.add("-fsanitize=fuzzer")
+                    }
+                  } else {
+                    // Standard libFuzzer linkage for Linux or when Homebrew not available
+                    linkerArgs.add("-fsanitize=fuzzer")
+                  }
+
+                  linkerArgs.addAll("-ldl", "-lpthread", "-lm")
+                  if (os().isLinux()) {
+                    linkerArgs.add("-lrt")
+                  }
+                  toolChain = task.toolChain
+                  targetPlatform = task.targetPlatform
+                  libs = task.libs
+                  inputs.files source
+                  outputs.file linkedFile
+                }
+
+                // Create corpus directory for this fuzz target
+                def targetCorpusDir = file("${corpusDir}/${fuzzName}")
+
+                def fuzzExecuteTask = tasks.register("fuzz_${fuzzName}", Exec) {
+                  onlyIf {
+                    config.active && hasFuzzer() && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native') && !project.hasProperty('skip-fuzz')
+                  }
+                  group = 'verification'
+                  description = "Run the fuzz target ${fuzzName} for ${fuzzDuration} seconds"
+                  dependsOn fuzzLinkTask
+
+                  doFirst {
+                    // Ensure crash directory exists
+                    crashDir.mkdirs()
+                    // Ensure corpus directory exists (even if empty)
+                    targetCorpusDir.mkdirs()
+                  }
+
+                  executable binary
+                  // libFuzzer arguments:
+                  // - corpus directory (positional)
+                  // - max_total_time: stop after N seconds
+                  // - artifact_prefix: where to save crash files
+                  // - print_final_stats: show coverage stats at end
+                  args targetCorpusDir.absolutePath,
+                       "-max_total_time=${fuzzDuration}",
+                       "-artifact_prefix=${crashDir.absolutePath}/${fuzzName}-",
+                       "-print_final_stats=1"
+
+                  config.testEnv.each { key, value ->
+                    environment key, value
+                  }
+
+                  inputs.files binary
+                  // Fuzz tasks should run every time
+                  outputs.upToDateWhen { false }
+                }
+
+                def compileTask = tasks.findByName("compileFuzz_${fuzzName}")
+                if (compileTask != null) {
+                  fuzzLinkTask.get().dependsOn compileTask
+                }
+                fuzzAll.get().dependsOn fuzzExecuteTask.get()
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// Task to list available fuzz targets
+tasks.register("listFuzzTargets") {
+  group = 'help'
+  description = "List all available fuzz targets"
+  doLast {
+    def fuzzSrcDir = project(':ddprof-lib').file("src/test/fuzz/")
+    if (fuzzSrcDir.exists()) {
+      println "Available fuzz targets:"
+      fuzzSrcDir.eachFile { fuzzFile ->
+        if (fuzzFile.name.endsWith('.cpp')) {
+          def fullName = fuzzFile.name.substring(0, fuzzFile.name.lastIndexOf('.'))
+          // Strip "fuzz_" prefix from filename to get the target name
+          def fuzzName = fullName.startsWith('fuzz_') ? fullName.substring(5) : fullName
+          println "  - fuzz_${fuzzName}"
+        }
+      }
+      println ""
+      println "Run individual targets with: ./gradlew :ddprof-lib:fuzz:fuzz_<name>"
+      println "Run all targets with: ./gradlew :ddprof-lib:fuzz:fuzz"
+      println "Configure duration with: -Pfuzz-duration=<seconds> (default: 60)"
+    } else {
+      println "No fuzz targets found. Create .cpp files in ddprof-lib/src/test/fuzz/"
+    }
+  }
+}

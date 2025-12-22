@@ -61,14 +61,36 @@ def locateLibtsan() {
   return locateLibrary('libtsan')
 }
 
+def checkFuzzerSupport() {
+  // libFuzzer requires clang - check if clang supports -fsanitize=fuzzer
+  try {
+    def testFile = File.createTempFile("fuzzer_check", ".cpp")
+    testFile.text = "extern \"C\" int LLVMFuzzerTestOneInput(const char*, long) { return 0; }"
+    testFile.deleteOnExit()
+
+    def process = ["clang++", "-fsanitize=fuzzer", "-c", testFile.absolutePath, "-o", "/dev/null"].execute()
+    process.waitFor()
+    testFile.delete()
+
+    return process.exitValue() == 0
+  } catch (Exception e) {
+    logger.debug("Exception when checking fuzzer support: ${e.message}")
+    return false
+  }
+}
+
 ext.libasan = locateLibasan()
 ext.libtsan = locateLibtsan()
+ext.hasFuzzerSupport = checkFuzzerSupport()
 
 if (ext.libasan == null) {
   logger.debug("Asan library not found")
 }
 if (ext.libtsan == null) {
   logger.debug("Tsan library not found")
+}
+if (!ext.hasFuzzerSupport) {
+  logger.debug("libFuzzer not available (requires clang with -fsanitize=fuzzer support)")
 }
 
 def hasAsan() {
@@ -77,6 +99,10 @@ def hasAsan() {
 
 def hasTsan() {
   return isMusl() ? false : ext.libtsan != null
+}
+
+def hasFuzzer() {
+  return isMusl() ? false : ext.hasFuzzerSupport
 }
 
 def isActive(def name) {
@@ -96,6 +122,7 @@ ext.addBuildConfiguration = { String name, String os, String arch, List<String> 
 ext {
   hasAsan = this.&hasAsan
   hasTsan = this.&hasTsan
+  hasFuzzer = this.&hasFuzzer
   buildConfigNames = this.&buildConfigNames
   buildConfigs = this.&buildConfigs
   locateLibasan = this.&locateLibasan
@@ -248,6 +275,50 @@ addBuildConfiguration 'tsan', 'linux', 'arm64',
   commonLinuxLinkerArgs + tsanLinkerArgs,
   tsanEnv
 
+// Fuzzer configuration (requires clang with libFuzzer support)
+// Note: Fuzzers are compiled separately and linked as executables, not shared libraries.
+// The fuzzer build config provides common compiler flags; actual fuzzer linking happens
+// in the fuzz subproject with -fsanitize=fuzzer added at link time.
+def fuzzerCompilerArgs = hasFuzzer() ? [
+  '-g',
+  // Generate debug information for crash analysis
+  '-DDEBUG',
+  // Enable debug mode and assertions
+  '-fPIC',
+  // Position-independent code
+  '-fsanitize=address',
+  // AddressSanitizer for memory errors
+  '-fsanitize=undefined',
+  // UndefinedBehaviorSanitizer for undefined behavior
+  '-fno-sanitize-recover=all',
+  // Halt on sanitizer errors for reliable crash detection
+  '-fno-omit-frame-pointer',
+  // Keep frame pointer for stack traces
+  '-fno-optimize-sibling-calls'
+  // Disable tail call optimization for better stack traces
+] : []
+
+def fuzzerLinkerArgs = hasFuzzer() ? [
+  "-fsanitize=address",
+  "-fsanitize=undefined",
+  "-fno-omit-frame-pointer"
+] : []
+
+def fuzzerEnv = hasFuzzer() ?
+  ["ASAN_OPTIONS" : "allocator_may_return_null=1:detect_stack_use_after_return=0:handle_segv=0:abort_on_error=1:symbolize=1:suppressions=${rootDir}/gradle/sanitizers/asan.supp",
+   "UBSAN_OPTIONS" : "halt_on_error=1:abort_on_error=1:print_stacktrace=1:suppressions=${rootDir}/gradle/sanitizers/ubsan.supp"
+  ] : [:]
+
+addBuildConfiguration 'fuzzer', 'linux', 'x64',
+  fuzzerCompilerArgs + commonLinuxCompilerArgs,
+  commonLinuxLinkerArgs + fuzzerLinkerArgs,
+  fuzzerEnv
+
+addBuildConfiguration 'fuzzer', 'linux', 'arm64',
+  fuzzerCompilerArgs + commonLinuxCompilerArgs,
+  commonLinuxLinkerArgs + fuzzerLinkerArgs,
+  fuzzerEnv
+
 // MacOS
 addBuildConfiguration 'release', 'macos', 'arm64',
   commonMacosCompilerArgs + ['-O3', '-DNDEBUG'],
@@ -255,3 +326,25 @@ addBuildConfiguration 'release', 'macos', 'arm64',
 addBuildConfiguration 'debug', 'macos', 'arm64',
   commonMacosCompilerArgs + ['-O0', '-g', '-DDEBUG'],
   []
+
+// macOS fuzzer configuration
+def fuzzerMacosCompilerArgs = hasFuzzer() ? [
+  '-g', '-DDEBUG', '-fPIC',
+  '-fsanitize=address', '-fsanitize=undefined',
+  '-fno-sanitize-recover=all', '-fno-omit-frame-pointer',
+  '-fno-optimize-sibling-calls'
+] : []
+
+def fuzzerMacosLinkerArgs = hasFuzzer() ? [
+  "-fsanitize=address", "-fsanitize=undefined"
+] : []
+
+def fuzzerMacosEnv = hasFuzzer() ?
+  ["ASAN_OPTIONS" : "allocator_may_return_null=1:detect_stack_use_after_return=0:abort_on_error=1:symbolize=1",
+   "UBSAN_OPTIONS" : "halt_on_error=1:abort_on_error=1:print_stacktrace=1"
+  ] : [:]
+
+addBuildConfiguration 'fuzzer', 'macos', 'arm64',
+  fuzzerMacosCompilerArgs + commonMacosCompilerArgs,
+  fuzzerMacosLinkerArgs,
+  fuzzerMacosEnv
