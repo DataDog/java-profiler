@@ -16,6 +16,7 @@
 #include "itimer.h"
 #include "j9Ext.h"
 #include "j9WallClock.h"
+#include "libraryPatcher.h"
 #include "objectSampler.h"
 #include "os_dd.h"
 #include "perfEvents.h"
@@ -1251,6 +1252,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   }
 
+  LibraryPatcher::initialize();
+
   // Kernel symbols are useful only for perf_events without --all-user
   _libs->updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
 
@@ -1325,6 +1328,8 @@ Error Profiler::stop() {
   if (_state != RUNNING) {
     return Error("Profiler is not active");
   }
+
+  LibraryPatcher::unpatch_libraries();
 
   disableEngines();
 

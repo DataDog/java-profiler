@@ -17,6 +17,7 @@ package com.datadoghq.profiler.nativethread;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
+import com.datadoghq.profiler.nativethread.NativeThreadCreator;
 
 import org.junitpioneer.jupiter.RetryingTest;
 import org.openjdk.jmc.common.item.IItem;
@@ -26,14 +27,11 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 import java.util.HashMap;
 import java.util.Map;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class NativeThreadTest extends AbstractProfilerTest {
 
-  static {
-      System.loadLibrary("ddproftest");
-  }
 
   @Override
   protected String getProfilerCommand() {
@@ -42,17 +40,17 @@ public class NativeThreadTest extends AbstractProfilerTest {
 
   @RetryingTest(3)
   public void test() {
-      // Exclude J9 for now
+      // Exclude J9 for now due to a bug inherited from async-profiler
       if (Platform.isJ9() || Platform.isMusl()) {
           return;
       }
       long[] threads = new long[8];
       for (int index = 0; index < threads.length; index++) {
-          threads[index] = createNativeThread();
+          threads[index] = NativeThreadCreator.createNativeThread();
       }
 
       for (int index = 0; index < threads.length; index++) {
-          waitNativeThread(threads[index]);
+          NativeThreadCreator.waitNativeThread(threads[index]);
       }
       stopProfiler();
       int count = 0;
@@ -75,6 +73,4 @@ public class NativeThreadTest extends AbstractProfilerTest {
       assertTrue(count > 0, "no native thread sample");
   }
 
-  private static native long createNativeThread();
-  private static native void waitNativeThread(long threadId);
 }

@@ -37,7 +37,7 @@ void* thread_function(void* arg) {
     pthread_exit(NULL); // Terminate the thread, optionally returning a value
 }
 
-jlong JNICALL Java_com_datadoghq_profiler_nativethread_NativeThreadTest_createNativeThread
+jlong JNICALL Java_com_datadoghq_profiler_nativethread_NativeThreadCreator_createNativeThread
   (JNIEnv * env, jclass clz) {
 
     // Create a new thread
@@ -57,7 +57,7 @@ jlong JNICALL Java_com_datadoghq_profiler_nativethread_NativeThreadTest_createNa
     return (jlong) thread_id;
 }
 
-void JNICALL Java_com_datadoghq_profiler_nativethread_NativeThreadTest_waitNativeThread
+void JNICALL Java_com_datadoghq_profiler_nativethread_NativeThreadCreator_waitNativeThread
   (JNIEnv * env, jclass clz, jlong threadId) {
     pthread_t thread_id = (pthread_t)threadId;
     // Wait for the created thread to finish
