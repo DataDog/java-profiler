@@ -15,6 +15,10 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(./.claude/commands/build-and-summarize:*)"
+      "Bash(../gradlew spotlessApply compileJava --console=plain)",
+      "WebFetch(domain:github.com)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr diff:*)"
     ],
     "deny": [],
     "ask": []
