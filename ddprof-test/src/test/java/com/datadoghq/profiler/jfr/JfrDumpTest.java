@@ -1,6 +1,8 @@
 package com.datadoghq.profiler.jfr;
 
-import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.CStackAwareAbstractProfilerTest;
+import com.datadoghq.profiler.junit.RetryTest;
+import com.datadoghq.profiler.junit.CStack;
 import com.datadoghq.profiler.Platform;
 
 import java.io.File;
@@ -9,7 +11,10 @@ import java.nio.file.Path;
 
 import org.junit.jupiter.api.Assumptions;
 
-public abstract class JfrDumpTest extends AbstractProfilerTest {
+public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
+    public JfrDumpTest(@CStack String cstack) {
+        super(cstack);
+    }
 
     public void runTest(String eventName) throws Exception {
         runTest(eventName, "method1", "method2", "method3");
