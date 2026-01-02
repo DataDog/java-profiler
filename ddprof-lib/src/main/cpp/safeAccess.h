@@ -49,9 +49,9 @@ public:
     return loadPtr(ptr, nullptr);
   }
 
-  static inline u32 load32(u32 *ptr, u32 default_value = 0) {
+  static inline int32_t load32(int32_t *ptr, int32_t default_value = 0) {
     int res = safefetch32_impl((int*)ptr, (int)default_value);
-    return static_cast<u32>(res);
+    return static_cast<int32_t>(res);
   }
 
   static inline void *loadPtr(void** ptr, void* default_value) {
