@@ -243,7 +243,11 @@ ext.upstreamPatches = [
 
   // VM structures patches for safe memory access
   "vmStructs.cpp": [
-    validations: [[contains: "VMMethod::id()"], [contains: "const_method + _constmethod_constants_offset"], [contains: "VMThread::osThreadId()"]],
+    validations: [
+      [contains: "VMMethod::id()"],
+      [contains: "const_method + _constmethod_constants_offset"],
+      [contains: "VMThread::osThreadId()"]
+    ],
     operations: [
       [
         type: "expression_replace",
