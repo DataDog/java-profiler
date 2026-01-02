@@ -25,7 +25,7 @@
 #include "stackWalker_dd.h"
 #include "symbols.h"
 #include "thread.h"
-#include "tsc.h"
+#include "tsc_dd.h"
 #include "vmStructs_dd.h"
 #include "wallClock.h"
 #include <algorithm>
@@ -711,29 +711,22 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
                                  &java_ctx, &truncated);
     if (num_frames < _max_stack_depth) {
-      int max_remaining = _max_stack_depth - num_frames;
-      if (_cstack == CSTACK_VMX) {
-        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, max_remaining, VM_EXPERT, &truncated);
+      if (_features.mixed) {
+        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, _features, static_cast<EventType>(event_type), &truncated);
       } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
-        if (_cstack == CSTACK_VM) {
-          num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, max_remaining, VM_NORMAL, &truncated);
+        if (_cstack >= CSTACK_VM) {
+          num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, _features, static_cast<EventType>(event_type), &truncated);
         } else {
           // Async events
           AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());
           int java_frames = 0;
           if (mutex.acquired()) {
-            java_frames = getJavaTraceAsync(ucontext, frames + num_frames, max_remaining, &java_ctx, &truncated);
+            java_frames = getJavaTraceAsync(ucontext, frames + num_frames, _max_stack_depth, &java_ctx, &truncated);
             if (java_frames > 0 && java_ctx.pc != NULL && VMStructs::hasMethodStructs()) {
               NMethod* nmethod = CodeHeap::findNMethod(java_ctx.pc);
               if (nmethod != NULL) {
                 fillFrameTypes(frames + num_frames, java_frames, nmethod);
               }
-            }
-          }
-          if (java_frames > 0 && java_ctx.pc != NULL) {
-            NMethod *nmethod = CodeHeap::findNMethod(java_ctx.pc);
-            if (nmethod != NULL) {
-              fillFrameTypes(frames + num_frames, java_frames, nmethod);
             }
           }
           num_frames += java_frames;
@@ -1013,9 +1006,9 @@ void Profiler::updateNativeThreadNames() {
     delete thread_list;
 }
 
-Engine *Profiler::selectCpuEngine(Arguments &args) {
+Engine *Profiler::selectCpuEngine(ddprof::Arguments &args) {
   if (args._cpu < 0 &&
-      (args._event == NULL || strcmp(args._event, EVENT_NOOP) == 0)) {
+      (args._event == NULL || strcmp(args._event, ddprof::EVENT_NOOP) == 0)) {
     return &noop_engine;
   } else if (args._cpu >= 0 || strcmp(args._event, EVENT_CPU) == 0) {
     if (VM::isOpenJ9()) {
@@ -1045,13 +1038,13 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
   }
 }
 
-Engine *Profiler::selectWallEngine(Arguments &args) {
+Engine *Profiler::selectWallEngine(ddprof::Arguments &args) {
   if (args._wall < 0 &&
       (args._event == NULL || strcmp(args._event, EVENT_WALL) != 0)) {
     return &noop_engine;
   }
   if (VM::isOpenJ9()) {
-    if (args._wallclock_sampler == JVMTI || !J9Ext::shouldUseAsgct() || !J9Ext::can_use_ASGCT()) {
+    if (args._wallclock_sampler == ddprof::JVMTI || !J9Ext::shouldUseAsgct() || !J9Ext::can_use_ASGCT()) {
       if (!J9Ext::is_jvmti_jmethodid_safe()) {
         fprintf(stderr, "[ddprof] [WARN] Safe jmethodID access is not available on this JVM. Using "
                   "wallclock profiler on your own risk. Use -XX:+KeepJNIIDs=true JVM "
@@ -1066,15 +1059,15 @@ Engine *Profiler::selectWallEngine(Arguments &args) {
     }
   }
   switch (args._wallclock_sampler) {
-        case JVMTI:
+        case ddprof::JVMTI:
             return (Engine*)&wall_jvmti_engine;
-        case ASGCT:
+        case ddprof::ASGCT:
         default:
             return (Engine*)&wall_asgct_engine;
     }
 }
 
-Engine *Profiler::selectAllocEngine(Arguments &args) {
+Engine *Profiler::selectAllocEngine(ddprof::Arguments &args) {
   if (VM::canSampleObjects()) {
     return static_cast<Engine *>(ObjectSampler::instance());
   } else {
@@ -1127,7 +1120,7 @@ void Profiler::check_JDK_8313796_workaround() {
 }
 
 
-Error Profiler::start(Arguments &args, bool reset) {
+Error Profiler::start(ddprof::Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
   if (_state > IDLE) {
     return Error("Profiler already started");
@@ -1144,7 +1137,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (ProfiledThread::wasTlsPrimingAttempted() && !ProfiledThread::isTlsPrimingAvailable()) {
     _omit_stacktraces = args._lightweight;
     _event_mask =
-        ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
+        ((args._event != NULL && strcmp(args._event, ddprof::EVENT_NOOP) != 0) ? EM_CPU
                                                                        : 0) |
         (args._cpu >= 0 ? EM_CPU : 0) | (args._wall >= 0 ? EM_WALL : 0) |
         (args._record_allocations || args._record_liveness || args._gc_generations
@@ -1165,7 +1158,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   } else {
     _omit_stacktraces = args._lightweight;
     _event_mask =
-        ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
+        ((args._event != NULL && strcmp(args._event, ddprof::EVENT_NOOP) != 0) ? EM_CPU
                                                                        : 0) |
         (args._cpu >= 0 ? EM_CPU : 0) | (args._wall >= 0 ? EM_WALL : 0) |
         (args._record_allocations || args._record_liveness || args._gc_generations
@@ -1217,6 +1210,17 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   }
 
+  _features = args._features;
+  if (VM::hotspot_version() < 8) {
+      _features.java_anchor = 0;
+      _features.gc_traces = 0;
+  }
+  if (!VMStructs::hasClassNames()) {
+      _features.vtable_target = 0;
+  }
+  if (!VMStructs::hasCompilerStructs()) {
+      _features.comp_task = 0;
+  }
   _safe_mode = args._safe_mode;
   if (VM::hotspot_version() < 8 || VM::isZing()) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
@@ -1255,7 +1259,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   LibraryPatcher::initialize();
 
   // Kernel symbols are useful only for perf_events without --all-user
-  _libs->updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
+  _libs->updateSymbols(_cpu_engine == &perf_events && (args._ring & ddprof::RING_KERNEL));
 
   enableEngines();
 
@@ -1361,7 +1365,7 @@ Error Profiler::stop() {
   return Error::OK;
 }
 
-Error Profiler::check(Arguments &args) {
+Error Profiler::check(ddprof::Arguments &args) {
   MutexLocker ml(_state_lock);
   if (_state > IDLE) {
     return Error("Profiler already started");
@@ -1476,7 +1480,7 @@ void Profiler::switchThreadEvents(jvmtiEventMode mode) {
   }
 }
 
-Error Profiler::runInternal(Arguments &args, std::ostream &out) {
+Error Profiler::runInternal(ddprof::Arguments &args, std::ostream &out) {
   switch (args._action) {
   case ACTION_START:
   case ACTION_RESUME: {
@@ -1541,9 +1545,9 @@ Error Profiler::runInternal(Arguments &args, std::ostream &out) {
   return Error::OK;
 }
 
-Error Profiler::run(Arguments &args) { return runInternal(args, std::cout); }
+Error Profiler::run(ddprof::Arguments &args) { return runInternal(args, std::cout); }
 
-Error Profiler::restart(Arguments &args) {
+Error Profiler::restart(ddprof::Arguments &args) {
   MutexLocker ml(_state_lock);
 
   Error error = stop();
@@ -1554,7 +1558,7 @@ Error Profiler::restart(Arguments &args) {
   return Error::OK;
 }
 
-void Profiler::shutdown(Arguments &args) {
+void Profiler::shutdown(ddprof::Arguments &args) {
   MutexLocker ml(_state_lock);
 
   // The last chance to dump profile before VM terminates

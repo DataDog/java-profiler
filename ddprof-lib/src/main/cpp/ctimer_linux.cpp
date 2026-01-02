@@ -93,7 +93,7 @@ void CTimer::unregisterThread(int tid) {
   }
 }
 
-Error CTimer::check(Arguments &args) {
+Error CTimer::check(ddprof::Arguments &args) {
   timer_t timer;
   if (timer_create(CLOCK_THREAD_CPUTIME_ID, NULL, &timer) < 0) {
     return Error("Failed to create CPU timer");
@@ -103,7 +103,7 @@ Error CTimer::check(Arguments &args) {
   return Error::OK;
 }
 
-Error CTimer::start(Arguments &args) {
+Error CTimer::start(ddprof::Arguments &args) {
   if (args._interval < 0) {
     return Error("interval must be positive");
   }

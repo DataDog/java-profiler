@@ -14,7 +14,7 @@
 #include "thread.h"
 #include "threadFilter.h"
 #include "threadState.h"
-#include "tsc.h"
+#include "tsc_dd.h"
 #include "vmStructs_dd.h"
 
 class BaseWallClock : public Engine {
@@ -32,7 +32,7 @@ class BaseWallClock : public Engine {
 
       pthread_t _thread;
       virtual void timerLoop() = 0;
-      virtual void initialize(Arguments& args) {};
+      virtual void initialize(ddprof::Arguments& args) {};
 
     static void *threadEntry(void *wall_clock) {
       ((BaseWallClock *)wall_clock)->timerLoop();
@@ -91,8 +91,8 @@ class BaseWallClock : public Engine {
         epoch.updateNumSuccessfulSamples(sample.size() - num_failures);
         epoch.updateNumExitedThreads(threads_already_exited);
         epoch.updateNumPermissionDenied(permission_denied);
-        u64 endTime = TSC::ticks();
-        u64 duration = TSC::ticks_to_millis(endTime - startTime);
+        u64 endTime = ddprof::TSC::ticks();
+        u64 duration = ddprof::TSC::ticks_to_millis(endTime - startTime);
         if (epoch.hasChanged() || duration >= 1000) {
           epoch.endEpoch(duration);
           Profiler::instance()->recordWallClockEpoch(self, &epoch);
@@ -132,7 +132,7 @@ public:
         _enabled.store(enabled, std::memory_order_release);
     }
 
-    Error start(Arguments& args);
+    Error start(ddprof::Arguments& args);
     void stop();
 };
 
@@ -145,7 +145,7 @@ class WallClockASGCT : public BaseWallClock {
     static void sharedSignalHandler(int signo, siginfo_t* siginfo, void* ucontext);
     void signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64 last_sample);
 
-    void initialize(Arguments& args) override;
+    void initialize(ddprof::Arguments& args) override;
     void timerLoop() override;
 
   public:

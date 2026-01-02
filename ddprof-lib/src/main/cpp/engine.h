@@ -17,7 +17,7 @@
 #ifndef _ENGINE_H
 #define _ENGINE_H
 
-#include "arguments.h"
+#include "arguments_dd.h"
 
 class Engine {
 protected:
@@ -46,8 +46,8 @@ protected:
 public:
   virtual const char *name() { return "None"; }
 
-  virtual Error check(Arguments &args);
-  virtual Error start(Arguments &args);
+  virtual Error check(ddprof::Arguments &args);
+  virtual Error start(ddprof::Arguments &args);
   virtual void stop();
   virtual long interval() const { return 0L; }
 

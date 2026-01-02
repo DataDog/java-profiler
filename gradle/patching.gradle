@@ -243,14 +243,17 @@ ext.upstreamPatches = [
 
   // VM structures patches for safe memory access
   "vmStructs.cpp": [
-    validations: [[contains: "VMMethod::id()"], [contains: "const_method + _constmethod_constants_offset"]],
+    validations: [
+      [contains: "VMMethod::id()"],
+      [contains: "const_method + _constmethod_constants_offset"]
+    ],
     operations: [
       [
         type: "expression_replace",
         name: "Fix unsafe memory access in VMMethod::id",
         description: "Replace direct pointer dereference with SafeAccess::load to prevent ASan errors during crash-protected memory access",
         find: "const char\\* cpool = \\*\\(const char\\*\\*\\) \\(const_method \\+ _constmethod_constants_offset\\);\\s*unsigned short num = \\*\\(unsigned short\\*\\) \\(const_method \\+ _constmethod_idnum_offset\\);",
-        replace: "const char* cpool = (const char*) SafeAccess::load((void**)(const_method + _constmethod_constants_offset));\n    unsigned short num = (unsigned short) SafeAccess::load32((u32*)(const_method + _constmethod_idnum_offset), 0);",
+        replace: "const char* cpool = (const char*) SafeAccess::load((void**)(const_method + _constmethod_constants_offset));\n    unsigned short num = (unsigned short) SafeAccess::load32((int32_t*)(const_method + _constmethod_idnum_offset), 0);",
         idempotent_check: "SafeAccess::load((void**)(const_method + _constmethod_constants_offset))"
       ]
     ]

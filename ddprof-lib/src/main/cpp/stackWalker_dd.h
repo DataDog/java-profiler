@@ -49,8 +49,9 @@ namespace ddprof {
         }
         return walked;
       }
-      inline static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, StackDetail detail, bool* truncated) {
-        int walked = ::StackWalker::walkVM(ucontext, frames, max_depth + 1, detail);
+
+      inline static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, StackWalkFeatures features, EventType event_type, bool* truncated) {
+        int walked = ::StackWalker::walkVM(ucontext, frames, max_depth + 1, features, event_type);
         if (walked > max_depth) {
           *truncated = true;
           walked = max_depth;
@@ -63,8 +64,8 @@ namespace ddprof {
         return walked;
       }
 
-      inline static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, JavaFrameAnchor* anchor, bool* truncated) {
-        int walked = ::StackWalker::walkVM(ucontext, frames, max_depth + 1, anchor);
+      inline static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, JavaFrameAnchor* anchor, EventType event_type, bool* truncated) {
+        int walked = ::StackWalker::walkVM(ucontext, frames, max_depth + 1, anchor, event_type);
         if (walked > max_depth) {
           *truncated = true;
           walked = max_depth;

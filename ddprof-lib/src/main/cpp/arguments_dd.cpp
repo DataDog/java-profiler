@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "arguments.h"
+#include "arguments_dd.h"
 #include "vmEntry.h"
 
 #include <limits.h>
@@ -25,21 +25,8 @@
 #include <time.h>
 #include <unistd.h>
 
-// Predefined value that denotes successful operation
-const Error Error::OK(NULL);
-
 // Extra buffer space for expanding file pattern
 const size_t EXTRA_BUF_SIZE = 512;
-
-static const Multiplier NANOS[] = {
-    {'n', 1}, {'u', 1000}, {'m', 1000000}, {'s', 1000000000}, {0, 0}};
-static const Multiplier BYTES[] = {
-    {'b', 1}, {'k', 1024}, {'m', 1048576}, {'g', 1073741824}, {0, 0}};
-static const Multiplier SECONDS[] = {
-    {'s', 1}, {'m', 60}, {'h', 3600}, {'d', 86400}, {0, 0}};
-static const Multiplier UNIVERSAL[] = {
-    {'n', 1}, {'u', 1000}, {'m', 1000000},    {'s', 1000000000},
-    {'b', 1}, {'k', 1024}, {'g', 1073741824}, {0, 0}};
 
 // Statically compute hash code of a string containing up to 12 [a-z] letters
 #define HASH(s)                                                                \
@@ -103,10 +90,14 @@ static const Multiplier UNIVERSAL[] = {
 //     alluser            - include only user-mode events
 //
 
+namespace ddprof {
+
 Error Arguments::parse(const char *args) {
   if (args == NULL) {
     return Error::OK;
   }
+  // delegate to the upstream args parser first
+  ::Arguments::parse(args);
 
   size_t len = strlen(args);
   if (_buf != NULL) {
@@ -271,29 +262,6 @@ Error Arguments::parse(const char *args) {
       CASE("filter")
       _filter = value == NULL ? "" : value;
 
-      CASE("allkernel")
-      _ring = RING_KERNEL;
-
-      CASE("alluser")
-      _ring = RING_USER;
-
-      CASE("cstack")
-      if (value != NULL) {
-        if (strcmp(value, "fp") == 0) {
-          _cstack = CSTACK_FP;
-        } else if (strcmp(value, "dwarf") == 0) {
-          _cstack = CSTACK_DWARF;
-        } else if (strcmp(value, "lbr") == 0) {
-          _cstack = CSTACK_LBR;
-        } else if (strcmp(value, "vm") == 0) {
-          _cstack = CSTACK_VM;
-        } else if (strcmp(value, "vmx") == 0) {
-          _cstack = CSTACK_VMX;
-        } else {
-          _cstack = CSTACK_NO;
-        }
-      }
-
       CASE("attributes")
       if (value != NULL) {
         std::string input(value);
@@ -317,17 +285,23 @@ Error Arguments::parse(const char *args) {
           _lightweight = false;
         }
       }
-            CASE("wallsampler")
-                if (value != NULL) {
-                    switch (value[0]) {
-                        case 'j':
-                            _wallclock_sampler = JVMTI;
-                            break;
-                        case 'a':
-                        default:
-                            _wallclock_sampler = ASGCT;
-                    }
-                }
+      CASE("wallsampler")
+          if (value != NULL) {
+              switch (value[0]) {
+                  case 'j':
+                      _wallclock_sampler = JVMTI;
+                      break;
+                  case 'a':
+                  default:
+                      _wallclock_sampler = ASGCT;
+              }
+          }
+
+      CASE("allkernel")
+      _ring = RING_KERNEL;
+
+      CASE("alluser")
+      _ring = RING_USER;
 
       DEFAULT()
       if (_unknown_arg == NULL)
@@ -452,3 +426,5 @@ void Arguments::save(Arguments &other) {
   other._buf = NULL;
   other._shared = true;
 }
+
+}  // namespace ddprof

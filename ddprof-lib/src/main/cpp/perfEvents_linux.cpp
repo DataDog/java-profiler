@@ -18,6 +18,7 @@
 #ifdef __linux__
 
 #include "arch_dd.h"
+#include "arguments_dd.h"
 #include "context.h"
 #include "criticalSection.h"
 #include "debugSupport.h"
@@ -559,7 +560,7 @@ int PerfEvents::_max_events = -1;
 PerfEvent *PerfEvents::_events = NULL;
 PerfEventType *PerfEvents::_event_type = NULL;
 long PerfEvents::_interval;
-Ring PerfEvents::_ring;
+ddprof::Ring PerfEvents::_ring;
 CStack PerfEvents::_cstack;
 bool PerfEvents::_use_mmap_page;
 
@@ -618,10 +619,10 @@ int PerfEvents::registerThread(int tid) {
   attr.wakeup_events = 1;
   attr.exclude_callchain_user = 1;
 
-  if (!(_ring & RING_KERNEL)) {
+  if (!(_ring & ddprof::RING_KERNEL)) {
     attr.exclude_kernel = 1;
   }
-  if (!(_ring & RING_USER)) {
+  if (!(_ring & ddprof::RING_USER)) {
     attr.exclude_user = 1;
   }
 
@@ -657,7 +658,7 @@ int PerfEvents::registerThread(int tid) {
   }
 
   void *page = NULL;
-  if ((_ring & RING_KERNEL)) {
+  if ((_ring & ddprof::RING_KERNEL)) {
     page = _use_mmap_page ? mmap(NULL, 2 * OS::page_size,
                                  PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)
                           : NULL;
@@ -756,7 +757,7 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   ioctl(siginfo->si_fd, PERF_EVENT_IOC_REFRESH, 1);
 }
 
-Error PerfEvents::check(Arguments &args) {
+Error PerfEvents::check(ddprof::Arguments &args) {
   // The official way of knowing if perf_event_open() support is enabled
   // is checking for the existence of the file
   // /proc/sys/kernel/perf_event_paranoid
@@ -794,13 +795,13 @@ Error PerfEvents::check(Arguments &args) {
   attr.sample_type = PERF_SAMPLE_CALLCHAIN;
   attr.disabled = 1;
 
-  if (!(_ring & RING_KERNEL)) {
+  if (!(_ring & ddprof::RING_KERNEL)) {
     attr.exclude_kernel = 1;
   } else if (!Symbols::haveKernelSymbols()) {
     Libraries::instance()->updateSymbols(true);
     attr.exclude_kernel = Symbols::haveKernelSymbols() ? 0 : 1;
   }
-  if (!(_ring & RING_USER)) {
+  if (!(_ring & ddprof::RING_USER)) {
     attr.exclude_user = 1;
   }
 
@@ -830,7 +831,7 @@ Error PerfEvents::check(Arguments &args) {
   return Error::OK;
 }
 
-Error PerfEvents::start(Arguments &args) {
+Error PerfEvents::start(ddprof::Arguments &args) {
   _event_type =
       PerfEventType::forName(args._event == NULL ? EVENT_CPU : args._event);
   ;
@@ -858,7 +859,7 @@ Error PerfEvents::start(Arguments &args) {
   _interval = interval ? interval : _event_type->default_interval;
 
   _ring = args._ring;
-  if ((_ring & RING_KERNEL) && !Symbols::haveKernelSymbols()) {
+  if ((_ring & ddprof::RING_KERNEL) && !Symbols::haveKernelSymbols()) {
     static bool logged = false;
     if (!logged) {
       Log::info("Kernel symbols are unavailable due to restrictions. Try\n"
@@ -866,11 +867,11 @@ Error PerfEvents::start(Arguments &args) {
                 "  sysctl kernel.perf_event_paranoid=1");
       logged = true;
     }
-    _ring = RING_USER;
+    _ring = ddprof::RING_USER;
   }
   _cstack = args._cstack;
   _use_mmap_page = _cstack != CSTACK_NO &&
-                   (_ring != RING_USER || _cstack == CSTACK_DEFAULT ||
+                   (_ring != ddprof::RING_USER || _cstack == CSTACK_DEFAULT ||
                     _cstack == CSTACK_LBR);
 
   int max_events = OS::getMaxThreadId();
@@ -960,7 +961,7 @@ void PerfEvents::stop() {
 
 int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
                            StackContext *java_ctx) {
-  if (!(_ring & RING_KERNEL)) {
+  if (!(_ring & ddprof::RING_KERNEL)) {
     // we are not capturing kernel stacktraces
     return 0;
   }

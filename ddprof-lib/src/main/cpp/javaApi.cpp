@@ -26,7 +26,7 @@
 #include "otel_process_ctx.h"
 #include "profiler.h"
 #include "thread.h"
-#include "tsc.h"
+#include "tsc_dd.h"
 #include "vmEntry.h"
 #include "vmStructs_dd.h"
 #include "wallClock.h"
@@ -86,7 +86,7 @@ Java_com_datadoghq_profiler_JavaProfiler_getTid0(JNIEnv *env, jclass unused) {
 extern "C" DLLEXPORT jstring JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_execute0(JNIEnv *env, jobject unused,
                                                   jstring command) {
-  Arguments args;
+  ddprof::Arguments args;
   JniString command_str(env, command);
   Error error = args.parse(command_str.c_str());
 
