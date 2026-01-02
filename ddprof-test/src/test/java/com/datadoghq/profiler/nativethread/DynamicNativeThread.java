@@ -51,8 +51,8 @@ public class DynamicNativeThread extends AbstractProfilerTest {
 
     @RetryingTest(3)
     public void test() {
-        // Exclude J9 for now due to a bug inherited from async-profiler
-        if (Platform.isJ9() || Platform.isMusl()) {
+        // Exclude Musl for now due to a crash on aarch64
+        if (Platform.isMusl()) {
             return;
         }
         long[] threads = new long[8];
