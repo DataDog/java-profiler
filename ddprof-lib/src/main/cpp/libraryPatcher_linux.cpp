@@ -41,12 +41,12 @@ typedef struct _startRoutineArg {
 // 3. Unregister the thread from profiler once the routine is completed.
 static void* start_routine_wrapper(void* args) {
     StartRoutineArg* data = (StartRoutineArg*)args;
-    ProfiledThread::initCurrentThread();
-    int tid = ProfiledThread::currentTid();
-    Profiler::registerThread(tid);
+//    ProfiledThread::initCurrentThread();
+//    int tid = ProfiledThread::currentTid();
+//    Profiler::registerThread(tid);
     void* result = data->_func(data->_arg);
-    Profiler::unregisterThread(tid);
-    ProfiledThread::release();
+//    Profiler::unregisterThread(tid);
+//    ProfiledThread::release();
     free(args);
     return result;
 }
@@ -58,7 +58,7 @@ static int pthread_create_hook(pthread_t* thread,
   StartRoutineArg* data = (StartRoutineArg*)malloc(sizeof(StartRoutineArg));
   data->_func = start_routine;
   data->_arg = arg;
-  return pthread_create(thread, attr, start_routine, (void*)arg);
+  return pthread_create(thread, attr, start_routine, (void*)data);
 }
 
 
