@@ -43,7 +43,7 @@ public class ContendedCallTraceStorageTest extends AbstractProfilerTest {
 
     @Override
     protected boolean isPlatformSupported() {
-        return !Platform.isJ9() && !Platform.isMusl(); // Avoid J9-specific issues
+        return !Platform.isJ9(); // Avoid J9-specific issues
     }
 
     @Test
