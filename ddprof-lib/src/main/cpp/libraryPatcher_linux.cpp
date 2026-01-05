@@ -58,7 +58,7 @@ static int pthread_create_hook(pthread_t* thread,
 //  StartRoutineArg* data = (StartRoutineArg*)malloc(sizeof(StartRoutineArg));
 //  data->_func = start_routine;
 //  data->_arg = arg;
-  return pthread_create(thread, attr, start_routine, (void*)data);
+  return pthread_create(thread, attr, start_routine, (void*)arg);
 }
 
 
