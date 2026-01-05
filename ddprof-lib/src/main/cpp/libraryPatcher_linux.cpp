@@ -30,8 +30,8 @@ void LibraryPatcher::initialize() {
 }
 
 typedef struct _startRoutineArg {
-  func_start_routine _func;
   void*              _arg;
+  func_start_routine _func;
 } StartRoutineArg;
 
 // Wrapper around the real start routine.
