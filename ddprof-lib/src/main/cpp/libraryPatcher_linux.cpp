@@ -30,8 +30,8 @@ void LibraryPatcher::initialize() {
 }
 
 typedef struct _startRoutineArg {
-  void*              _arg;
   func_start_routine _func;
+  void*              _arg;
 } StartRoutineArg;
 
 // Wrapper around the real start routine.
@@ -44,10 +44,10 @@ static void* start_routine_wrapper(void* args) {
 //    ProfiledThread::initCurrentThread();
 //    int tid = ProfiledThread::currentTid();
 //    Profiler::registerThread(tid);
-    void* result = data->_func(data->_arg);
+    void* result = data->_func(nullptr);
 //    Profiler::unregisterThread(tid);
 //    ProfiledThread::release();
-    free(args);
+//    free(args);
     return result;
 }
 
