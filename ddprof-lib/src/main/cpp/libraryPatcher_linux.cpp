@@ -44,7 +44,7 @@ static void* start_routine_wrapper(void* args) {
 //    ProfiledThread::initCurrentThread();
 //    int tid = ProfiledThread::currentTid();
 //    Profiler::registerThread(tid);
-    void* result = data->_func(nullptr);
+    void* result = data->_func(data->_arg);
 //    Profiler::unregisterThread(tid);
 //    ProfiledThread::release();
 //    free(args);
