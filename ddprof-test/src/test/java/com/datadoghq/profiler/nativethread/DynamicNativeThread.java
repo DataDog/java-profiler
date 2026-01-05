@@ -51,10 +51,6 @@ public class DynamicNativeThread extends AbstractProfilerTest {
 
     @RetryingTest(3)
     public void test() {
-        // Exclude Musl for now due to a crash on aarch64
-        if (Platform.isMusl()) {
-            return;
-        }
         long[] threads = new long[8];
         for (int index = 0; index < threads.length; index++) {
             threads[index] = threadCreator.createThread();
