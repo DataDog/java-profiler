@@ -27,12 +27,12 @@ void LibraryPatcher::initialize() {
   }
 }
 
-class ThreadInfo {
+class RoutineInfo {
 private:
   func_start_routine _routine;
   void* const _args;
 public:
-  ThreadInfo(func_start_routine routine, void* args) {
+  RoutineInfo(func_start_routine routine, void* args) {
     _routine = routine;
     _args = args;
   }
@@ -52,15 +52,15 @@ public:
 // 2. Call real start routine
 // 3. Unregister the thread from profiler once the routine is completed.
 static void* start_routine_wrapper(void* args) {
-    ThreadInfo* thr = (ThreadInfo*)args;
+    RoutineInfo* thr = (RoutineInfo*)args;
     func_start_routine routine = thr->routine();
-    void* const args = thr->args();
+    void* const params = thr->args();
     delete thr;
 
     ProfiledThread::initCurrentThread();
     int tid = ProfiledThread::currentTid();
     Profiler::registerThread(tid);
-    void* result = routine(args);
+    void* result = routine(params);
     Profiler::unregisterThread(tid);
     ProfiledThread::release();
     return result;
@@ -69,8 +69,8 @@ static void* start_routine_wrapper(void* args) {
 static int pthread_create_hook(pthread_t* thread,
                           const pthread_attr_t* attr,
                           func_start_routine start_routine,
-                          void* arg) {
-  ThreadInfo* thr = new ThreadInfo(start_routine, args);
+                          void* args) {
+  RoutineInfo* thr = new RoutineInfo(start_routine, args);
   return pthread_create(thread, attr, start_routine_wrapper, (void*)thr);
 }
 
