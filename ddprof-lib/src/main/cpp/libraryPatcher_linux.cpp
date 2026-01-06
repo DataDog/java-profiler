@@ -25,7 +25,7 @@ void LibraryPatcher::initialize() {
     assert(ret);
     _profiler_name = strdup(info.dli_fname);
     _size = 0;
-    _patch_pthread_create = (VM::isHotspot() || VM::isZing()) && !OS::isMusl();
+    _patch_pthread_create = !OS::isMusl();
   }
 }
 
