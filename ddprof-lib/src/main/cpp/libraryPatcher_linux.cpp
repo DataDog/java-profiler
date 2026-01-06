@@ -32,9 +32,8 @@ private:
   func_start_routine _routine;
   void* const _args;
 public:
-  RoutineInfo(func_start_routine routine, void* args) {
-    _routine = routine;
-    _args = args;
+  RoutineInfo(func_start_routine routine, void* args) :
+    _routine(routine), _args(args) {
   }
 
   func_start_routine routine() const {
