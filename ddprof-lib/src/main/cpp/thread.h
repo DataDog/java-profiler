@@ -52,7 +52,9 @@ private:
   static void pushFreeSlot(int slot_index);
 
   u64 _pc;
+  u64 _sp;
   u64 _span_id;
+  u64 _root_span_id;
   volatile u32 _crash_depth;
   int _buffer_pos;
   int _tid;
@@ -66,7 +68,7 @@ private:
   Context* _ctx_tls_ptr;
 
   ProfiledThread(int buffer_pos, int tid)
-      : ThreadLocalData(), _pc(0), _span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
+      : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _root_span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _filter_slot_id(-1), _ctx_tls_initialized(false), _ctx_tls_ptr(nullptr) {};
 
   void releaseFromBuffer();
@@ -99,13 +101,29 @@ public:
     return ++_cpu_epoch;
   }
 
-  u64 lookupWallclockCallTraceId(u64 pc, u32 recording_epoch, u64 span_id) {
-    if (_wall_epoch == _cpu_epoch && _pc == pc && _span_id == span_id &&
-        _recording_epoch == recording_epoch && _call_trace_id != 0) {
+  /**
+   * Attempts to reuse a cached call trace ID for wallclock sample collapsing.
+   * Collapsing is allowed only when the execution state (PC, SP) and trace
+   * context (spanId, rootSpanId) are identical to the previous sample.
+   *
+   * @param pc Program counter from ucontext
+   * @param sp Stack pointer from ucontext
+   * @param recording_epoch Current profiling session epoch
+   * @param span_id Current trace span ID
+   * @param root_span_id Current trace root span ID
+   * @return Cached call_trace_id if collapsing is allowed, 0 otherwise
+   */
+  u64 lookupWallclockCallTraceId(u64 pc, u64 sp, u32 recording_epoch,
+                                  u64 span_id, u64 root_span_id) {
+    if (_pc == pc && _sp == sp && _span_id == span_id &&
+        _root_span_id == root_span_id && _recording_epoch == recording_epoch &&
+        _call_trace_id != 0) {
       return _call_trace_id;
     }
-    _wall_epoch = _cpu_epoch;
     _pc = pc;
+    _sp = sp;
+    _span_id = span_id;
+    _root_span_id = root_span_id;
     _recording_epoch = recording_epoch;
     return 0;
   }
