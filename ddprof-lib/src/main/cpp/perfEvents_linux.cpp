@@ -18,6 +18,7 @@
 #ifdef __linux__
 
 #include "arch_dd.h"
+#include "arguments.h"
 #include "context.h"
 #include "criticalSection.h"
 #include "debugSupport.h"

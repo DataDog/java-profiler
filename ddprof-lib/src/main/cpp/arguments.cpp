@@ -288,7 +288,9 @@ Error Arguments::parse(const char *args) {
         } else if (strcmp(value, "vm") == 0) {
           _cstack = CSTACK_VM;
         } else if (strcmp(value, "vmx") == 0) {
-          _cstack = CSTACK_VMX;
+          // cstack=vmx is a shorthand for cstack=vm,features=mixed
+          _cstack = CSTACK_VM;
+          _features.mixed = 1;
         } else {
           _cstack = CSTACK_NO;
         }

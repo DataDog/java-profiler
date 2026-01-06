@@ -27,6 +27,23 @@ using namespace std;
 
 #define MAX_STRING_LEN 8191
 
+// The order is important: look for event_type comparison
+enum EventType {
+    PERF_SAMPLE,
+    EXECUTION_SAMPLE,
+    WALL_CLOCK_SAMPLE,
+    MALLOC_SAMPLE,
+    INSTRUMENTED_METHOD,
+    METHOD_TRACE,
+    ALLOC_SAMPLE,
+    ALLOC_OUTSIDE_TLAB,
+    LIVE_OBJECT,
+    LOCK_SAMPLE,
+    PARK_SAMPLE,
+    PROFILING_WINDOW,
+    USER_EVENT,
+};
+
 class Event {
 public:
   u32 _id;

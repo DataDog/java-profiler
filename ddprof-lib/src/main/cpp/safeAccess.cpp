@@ -166,3 +166,25 @@ bool SafeAccess::handle_safefetch(int sig, void* context) {
   }
   return false;
 }
+
+// NOINLINE implementations using safefetch infrastructure
+// These provide stable function addresses for JVM patching in vmStructs.cpp
+void* SafeAccess::load(void** ptr, void* default_value) {
+  return loadPtr(ptr, default_value);
+}
+
+int32_t SafeAccess::load32(int32_t* ptr, int32_t default_value) {
+  int res = safefetch32_impl((int*)ptr, (int)default_value);
+  return static_cast<int32_t>(res);
+}
+
+void* SafeAccess::loadPtr(void** ptr, void* default_value) {
+#if defined(__x86_64__) || defined(__aarch64__)
+  int64_t res = safefetch64_impl((int64_t*)ptr, (int64_t)reinterpret_cast<uintptr_t>(default_value));
+  return (void*)static_cast<uintptr_t>(res);
+#elif defined(__i386__) || defined(__arm__) || defined(__thumb__)
+  int res = safefetch32_impl((int*)ptr, (int)default_value);
+  return (void*)res;
+#endif
+  return *ptr;
+}

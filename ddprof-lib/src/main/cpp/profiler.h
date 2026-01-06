@@ -46,8 +46,6 @@ static const char* force_stackwalk_crash_env = getenv("DDPROF_FORCE_STACKWALK_CR
 const int MAX_NATIVE_FRAMES = 128;
 const int RESERVED_FRAMES   = 10;  // for synthetic frames
 
-enum EventMask { EM_CPU = 1 << 0, EM_WALL = 1 << 1, EM_ALLOC = 1 << 2 };
-
 union CallTraceBuffer {
   ASGCT_CallFrame _asgct_frames[1];
   jvmtiFrameInfo _jvmti_frames[1];
@@ -106,6 +104,7 @@ private:
   SpinLock _locks[CONCURRENCY_LEVEL];
   CallTraceBuffer *_calltrace_buffer[CONCURRENCY_LEVEL];
   int _max_stack_depth;
+  StackWalkFeatures _features;
   int _safe_mode;
   CStack _cstack;
 
@@ -193,8 +192,9 @@ public:
       case CSTACK_FP: return "fp";
       case CSTACK_DWARF: return "dwarf";
       case CSTACK_LBR: return "lbr";
-      case CSTACK_VM: return "vm";
-      case CSTACK_VMX: return "vmx";
+      case CSTACK_VM: {
+        return _features.mixed ? "vmx" : "vm";
+      }
       default: return "default";
     }
   }
