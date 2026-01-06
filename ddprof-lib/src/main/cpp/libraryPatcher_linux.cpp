@@ -29,10 +29,25 @@ void LibraryPatcher::initialize() {
   }
 }
 
-typedef struct _startRoutineArg {
-  func_start_routine _func;
-  void*              _arg;
-} StartRoutineArg;
+class ThreadInfo {
+private:
+  const func_start_routine _start_routine;
+  void* const        _args;
+
+public:
+  ThreadInfo(func_start_routine routine, void* const args) {
+    _start_routine = routine;
+    _args = args;
+  }
+
+  const func_start_routine routine() const {
+    return _start_routine;
+  }
+
+  void* const args() const {
+    return _args;
+  }
+}
 
 // Wrapper around the real start routine.
 // The wrapper:
@@ -40,14 +55,17 @@ typedef struct _startRoutineArg {
 // 2. Call real start routine
 // 3. Unregister the thread from profiler once the routine is completed.
 static void* start_routine_wrapper(void* args) {
-    StartRoutineArg* data = (StartRoutineArg*)args;
+    ThreadInfo* thr = (ThreadInfo*)args;
+    const func_start_routine routine = thr->start_routine();
+    void* args = thr->args();
+    delete thr;
+
     ProfiledThread::initCurrentThread();
     int tid = ProfiledThread::currentTid();
     Profiler::registerThread(tid);
-    void* result = data->_func(data->_arg);
+    void* result = routine(args);
     Profiler::unregisterThread(tid);
     ProfiledThread::release();
-//    free(args);
     return result;
 }
 
@@ -55,10 +73,8 @@ static int pthread_create_hook(pthread_t* thread,
                           const pthread_attr_t* attr,
                           func_start_routine start_routine,
                           void* arg) {
-  StartRoutineArg* data = (StartRoutineArg*)malloc(sizeof(StartRoutineArg));
-  data->_func = start_routine;
-  data->_arg = arg;
-  return pthread_create(thread, attr, start_routine_wrapper, (void*)data);
+  ThreadInfo* thr = new ThreadInfo(start_routine, arg)
+  return pthread_create(thread, attr, start_routine_wrapper, (void*)thr);
 }
 
 
