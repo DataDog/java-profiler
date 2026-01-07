@@ -7,6 +7,7 @@ package com.datadoghq.profiler.cpu;
 
 import com.datadoghq.profiler.CStackAwareAbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
+import com.datadoghq.profiler.RemoteSymHelper;
 import com.datadoghq.profiler.junit.CStack;
 import com.datadoghq.profiler.junit.RetryTest;
 import org.junit.jupiter.api.Assumptions;
@@ -52,6 +53,10 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
         try (ProfiledCode profiledCode = new ProfiledCode(profiler)) {
             for (int i = 0, id = 1; i < 100; i++, id += 3) {
                 profiledCode.method1(id);
+                // Call native functions from our test library to ensure
+                // native frames with build-id appear in the samples
+                RemoteSymHelper.burnCpu(10000, 5);
+                RemoteSymHelper.computeFibonacci(30);
             }
             stopProfiler();
 
