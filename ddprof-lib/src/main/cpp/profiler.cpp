@@ -337,7 +337,11 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
     if (_remote_symbolication) {
       // Remote symbolication mode: store build-id and PC offset
       CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
+      TEST_LOG("Remote symbolication: pc=0x%lx, lib=%p, hasBuildId=%d",
+               pc, lib, lib != nullptr ? lib->hasBuildId() : -1);
       if (lib != nullptr && lib->hasBuildId()) {
+        TEST_LOG("Using remote symbolication for lib=%s, build-id=%s",
+                 lib->name(), lib->buildId());
         // Check if this is a marked C++ interpreter frame before using remote format
         const char *method_name = nullptr;
         lib->binarySearch(callchain[i], &method_name);
