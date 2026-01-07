@@ -45,25 +45,15 @@ public:
 
   static bool handle_safefetch(int sig, void* context);
 
-  static inline void *load(void **ptr, void* default_value = nullptr) {
-    return loadPtr(ptr, nullptr);
-  }
+  // NOINLINE functions with stable addresses for JVM patching (vmStructs.cpp)
+  NOINLINE __attribute__((aligned(16)))
+  static void *load(void **ptr, void* default_value = nullptr);
 
-  static inline u32 load32(u32 *ptr, u32 default_value = 0) {
-    int res = safefetch32_impl((int*)ptr, (int)default_value);
-    return static_cast<u32>(res);
-  }
+  NOINLINE __attribute__((aligned(16)))
+  static int32_t load32(int32_t *ptr, int32_t default_value = 0);
 
-  static inline void *loadPtr(void** ptr, void* default_value) {
-  #if defined(__x86_64__) || defined(__aarch64__)
-    int64_t res = safefetch64_impl((int64_t*)ptr, (int64_t)reinterpret_cast<uintptr_t>(default_value));
-    return (void*)static_cast<uintptr_t>(res);
-  #elif defined(__i386__) || defined(__arm__) || defined(__thumb__)
-    int res = safefetch32_impl((int*)ptr, (int)default_value);
-    return (void*)res;
-  #endif
-    return *ptr;
-  }
+  NOINLINE __attribute__((aligned(16)))
+  static void *loadPtr(void** ptr, void* default_value);
 };
 
 #endif // _SAFEACCESS_H

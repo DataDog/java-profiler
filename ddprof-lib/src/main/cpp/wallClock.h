@@ -14,7 +14,7 @@
 #include "thread.h"
 #include "threadFilter.h"
 #include "threadState.h"
-#include "tsc.h"
+#include "tsc_dd.h"
 #include "vmStructs_dd.h"
 
 class BaseWallClock : public Engine {
@@ -91,8 +91,8 @@ class BaseWallClock : public Engine {
         epoch.updateNumSuccessfulSamples(sample.size() - num_failures);
         epoch.updateNumExitedThreads(threads_already_exited);
         epoch.updateNumPermissionDenied(permission_denied);
-        u64 endTime = TSC::ticks();
-        u64 duration = TSC::ticks_to_millis(endTime - startTime);
+        u64 endTime = ddprof::TSC::ticks();
+        u64 duration = ddprof::TSC::ticks_to_millis(endTime - startTime);
         if (epoch.hasChanged() || duration >= 1000) {
           epoch.endEpoch(duration);
           Profiler::instance()->recordWallClockEpoch(self, &epoch);

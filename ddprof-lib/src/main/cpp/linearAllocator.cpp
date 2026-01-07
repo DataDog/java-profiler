@@ -1,5 +1,6 @@
 /*
  * Copyright 2020 Andrei Pangin
+ * Copyright 2026, Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -100,11 +101,13 @@ ChunkList LinearAllocator::detachChunks() {
     _tail = fresh;
     _reserve = fresh;
   } else {
-    // Allocation failed - restore original state and return empty list
-    // This maintains the invariant that the allocator is always usable
-    _reserve = _tail;
-    _tail->offs = sizeof(Chunk);
-    return ChunkList();
+    // CRITICAL FIX: Allocation failed, but we MUST still detach to prevent double-free.
+    // Leave the allocator in an unusable state (nullptr) rather than keeping old chunks
+    // attached. This is safer than silently returning empty while chunks remain attached.
+    // The allocator will need fresh allocation before it can be used again.
+    _tail = nullptr;
+    _reserve = nullptr;
+    // Note: We still return the detached chunks in result, which will be freed by caller
   }
 
   return result;
@@ -132,6 +135,13 @@ void LinearAllocator::freeChunks(ChunkList& chunks) {
 
 void *LinearAllocator::alloc(size_t size) {
   Chunk *chunk = __atomic_load_n(&_tail, __ATOMIC_ACQUIRE);
+
+  // CRITICAL FIX: After detachChunks() fails, _tail may be nullptr.
+  // We must handle this gracefully to prevent crash.
+  if (chunk == nullptr) {
+    return nullptr;
+  }
+
   do {
     // Fast path: bump a pointer with CAS
     for (size_t offs = __atomic_load_n(&chunk->offs, __ATOMIC_ACQUIRE);

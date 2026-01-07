@@ -46,8 +46,6 @@ static const char* force_stackwalk_crash_env = getenv("DDPROF_FORCE_STACKWALK_CR
 const int MAX_NATIVE_FRAMES = 128;
 const int RESERVED_FRAMES   = 10;  // for synthetic frames
 
-enum EventMask { EM_CPU = 1 << 0, EM_WALL = 1 << 1, EM_ALLOC = 1 << 2 };
-
 union CallTraceBuffer {
   ASGCT_CallFrame _asgct_frames[1];
   jvmtiFrameInfo _jvmti_frames[1];
@@ -59,6 +57,43 @@ class StackContext;
 class VM;
 
 enum State { NEW, IDLE, RUNNING, TERMINATED };
+
+/**
+ * Converts a BCI_* frame type value to the corresponding EventType enum value.
+ *
+ * This conversion is necessary because Datadog's implementation uses BCI_* values
+ * (from ASGCT_CallFrameType) directly as event type identifiers, while upstream
+ * StackWalker::walkVM() expects EventType enum values for its logic.
+ *
+ * BCI_* values are special frame types with negative values (except BCI_CPU=0)
+ * that indicate non-standard frame information in call traces. EventType values
+ * are positive enum indices used for event categorization in the upstream code.
+ *
+ * @param bci_type A BCI_* value (e.g., BCI_CPU, BCI_WALL, BCI_ALLOC)
+ * @return The corresponding EventType enum value
+ */
+inline EventType eventTypeFromBCI(jint bci_type) {
+    switch (bci_type) {
+        case BCI_CPU:
+            return EXECUTION_SAMPLE;  // CPU samples map to execution samples
+        case BCI_WALL:
+            return WALL_CLOCK_SAMPLE;
+        case BCI_ALLOC:
+            return ALLOC_SAMPLE;
+        case BCI_ALLOC_OUTSIDE_TLAB:
+            return ALLOC_OUTSIDE_TLAB;
+        case BCI_LIVENESS:
+            return LIVE_OBJECT;
+        case BCI_LOCK:
+            return LOCK_SAMPLE;
+        case BCI_PARK:
+            return PARK_SAMPLE;
+        default:
+            // For unknown or invalid BCI types, default to EXECUTION_SAMPLE
+            // This maintains backward compatibility and prevents undefined behavior
+            return EXECUTION_SAMPLE;
+    }
+}
 
 // Aligned to satisfy SpinLock member alignment requirement (64 bytes)  
 // Required because this class contains multiple SpinLock members:
@@ -106,6 +141,7 @@ private:
   SpinLock _locks[CONCURRENCY_LEVEL];
   CallTraceBuffer *_calltrace_buffer[CONCURRENCY_LEVEL];
   int _max_stack_depth;
+  StackWalkFeatures _features;
   int _safe_mode;
   CStack _cstack;
 
@@ -193,8 +229,9 @@ public:
       case CSTACK_FP: return "fp";
       case CSTACK_DWARF: return "dwarf";
       case CSTACK_LBR: return "lbr";
-      case CSTACK_VM: return "vm";
-      case CSTACK_VMX: return "vmx";
+      case CSTACK_VM: {
+        return _features.mixed ? "vmx" : "vm";
+      }
       default: return "default";
     }
   }

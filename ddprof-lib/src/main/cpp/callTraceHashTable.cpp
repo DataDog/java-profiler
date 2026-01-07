@@ -118,6 +118,10 @@ ChunkList CallTraceHashTable::clearTableOnly() {
   ChunkList detached_chunks = _allocator.detachChunks();
 
   // Reinitialize with fresh table (using the new chunk from detachChunks)
+  // Note: If detachChunks() failed to allocate a fresh chunk, the allocator's
+  // _tail will be nullptr. LongHashTable::allocate will try to allocate,
+  // which will call LinearAllocator::alloc(), which needs to handle nullptr _tail.
+  // This is already handled in alloc() by checking _tail before use.
   _table = LongHashTable::allocate(nullptr, INITIAL_CAPACITY, &_allocator);
   _overflow = 0;
 

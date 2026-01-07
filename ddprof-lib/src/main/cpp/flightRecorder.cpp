@@ -24,7 +24,7 @@
 #include "symbols.h"
 #include "threadFilter.h"
 #include "threadState.h"
-#include "tsc.h"
+#include "tsc_dd.h"
 #include "vmStructs_dd.h"
 #include <arpa/inet.h>
 #include <cxxabi.h>
@@ -1481,9 +1481,7 @@ Error FlightRecorder::start(Arguments &args, bool reset) {
   _filename = file;
   _args = args;
 
-  if (!TSC::initialized()) {
-    TSC::initialize();
-  }
+  ddprof::TSC::enable(args._clock);
 
   Error ret = newRecording(reset);
   return ret;
@@ -1620,7 +1618,7 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
     if (rec != nullptr) {
       RecordingBuffer *buf = rec->buffer(lock_index);
       switch (event_type) {
-      case 0:
+      case BCI_CPU:
           rec->recordExecutionSample(buf, tid, call_trace_id,
                                      (ExecutionEvent *)event);
           break;
