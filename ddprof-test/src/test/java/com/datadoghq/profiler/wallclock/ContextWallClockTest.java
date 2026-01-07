@@ -33,7 +33,7 @@ public class ContextWallClockTest extends CStackAwareAbstractProfilerTest {
     @TestTemplate
     @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
     public void test(@CStack String cstack) throws ExecutionException, InterruptedException, Exception {
-        base.test(this);
+        base.test(this, cstack);
     }
 
     @Override
