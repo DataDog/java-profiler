@@ -711,17 +711,18 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
                                  &java_ctx, &truncated);
     if (num_frames < _max_stack_depth) {
+      int max_remaining = _max_stack_depth - num_frames;
       if (_features.mixed) {
-        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, _features, eventTypeFromBCI(event_type), &truncated);
+        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, max_remaining, _features, eventTypeFromBCI(event_type), &truncated);
       } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
         if (_cstack >= CSTACK_VM) {
-          num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, _features, eventTypeFromBCI(event_type), &truncated);
+          num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, max_remaining, _features, eventTypeFromBCI(event_type), &truncated);
         } else {
           // Async events
           AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());
           int java_frames = 0;
           if (mutex.acquired()) {
-            java_frames = getJavaTraceAsync(ucontext, frames + num_frames, _max_stack_depth, &java_ctx, &truncated);
+            java_frames = getJavaTraceAsync(ucontext, frames + num_frames, max_remaining, &java_ctx, &truncated);
             if (java_frames > 0 && java_ctx.pc != NULL && VMStructs::hasMethodStructs()) {
               NMethod* nmethod = CodeHeap::findNMethod(java_ctx.pc);
               if (nmethod != NULL) {
