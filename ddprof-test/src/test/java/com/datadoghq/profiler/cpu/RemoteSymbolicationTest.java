@@ -48,7 +48,7 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
 
     @RetryTest(10)
     @TestTemplate
-    @ValueSource(strings = {"vmx", "fp", "dwarf"})
+    @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
     public void testRemoteSymbolicationEnabled(@CStack String cstack) throws Exception {
         try (ProfiledCode profiledCode = new ProfiledCode(profiler)) {
             for (int i = 0, id = 1; i < 100; i++, id += 3) {
