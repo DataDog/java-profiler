@@ -5,7 +5,7 @@
 
 #ifdef __linux__
 
-#include "elfBuildId.h"
+#include "symbols_linux_dd.h"
 #include <elf.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -19,7 +19,9 @@
 #define NT_GNU_BUILD_ID 3
 #define GNU_BUILD_ID_NAME "GNU"
 
-char* ElfBuildIdExtractor::extractBuildId(const char* file_path, size_t* build_id_len) {
+namespace ddprof {
+
+char* SymbolsLinux::extractBuildId(const char* file_path, size_t* build_id_len) {
     if (!file_path || !build_id_len) {
         return nullptr;
     }
@@ -48,7 +50,7 @@ char* ElfBuildIdExtractor::extractBuildId(const char* file_path, size_t* build_i
     return result;
 }
 
-char* ElfBuildIdExtractor::extractBuildIdFromMemory(const void* elf_base, size_t elf_size, size_t* build_id_len) {
+char* SymbolsLinux::extractBuildIdFromMemory(const void* elf_base, size_t elf_size, size_t* build_id_len) {
     if (!elf_base || !build_id_len || elf_size < sizeof(Elf64_Ehdr)) {
         return nullptr;
     }
@@ -93,7 +95,7 @@ char* ElfBuildIdExtractor::extractBuildIdFromMemory(const void* elf_base, size_t
     return nullptr;
 }
 
-const uint8_t* ElfBuildIdExtractor::findBuildIdInNotes(const void* note_data, size_t note_size, size_t* build_id_len) {
+const uint8_t* SymbolsLinux::findBuildIdInNotes(const void* note_data, size_t note_size, size_t* build_id_len) {
     const char* data = static_cast<const char*>(note_data);
     size_t offset = 0;
 
@@ -127,7 +129,7 @@ const uint8_t* ElfBuildIdExtractor::findBuildIdInNotes(const void* note_data, si
     return nullptr;
 }
 
-char* ElfBuildIdExtractor::buildIdToHex(const uint8_t* build_id_bytes, size_t byte_len) {
+char* SymbolsLinux::buildIdToHex(const uint8_t* build_id_bytes, size_t byte_len) {
     if (!build_id_bytes || byte_len == 0) {
         return nullptr;
     }
@@ -145,5 +147,7 @@ char* ElfBuildIdExtractor::buildIdToHex(const uint8_t* build_id_bytes, size_t by
     hex_str[byte_len * 2] = '\0';
     return hex_str;
 }
+
+} // namespace ddprof
 
 #endif // __linux__

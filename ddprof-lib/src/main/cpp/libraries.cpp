@@ -1,9 +1,9 @@
 #include "codeCache.h"
-#include "elfBuildId.h"
 #include "libraries.h"
 #include "libraryPatcher.h"
 #include "log.h"
 #include "symbols.h"
+#include "symbols_linux_dd.h"
 #include "vmEntry.h"
 #include "vmStructs.h"
 
@@ -56,7 +56,7 @@ void Libraries::updateBuildIds() {
 
     // Extract build-id from library file
     size_t build_id_len;
-    char* build_id = ElfBuildIdExtractor::extractBuildId(lib_name, &build_id_len);
+    char* build_id = ddprof::SymbolsLinux::extractBuildId(lib_name, &build_id_len);
 
     if (build_id != nullptr) {
       // Set build-id and calculate load bias

@@ -3,23 +3,25 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef _ELF_BUILD_ID_H
-#define _ELF_BUILD_ID_H
+#ifndef _SYMBOLS_LINUX_DD_H
+#define _SYMBOLS_LINUX_DD_H
 
 #ifdef __linux__
 
 #include <cstddef>
-#include <cstdint>
+
+namespace ddprof {
 
 /**
- * Utility class for extracting GNU build-id from ELF files.
- * Build-id is stored in .note.gnu.build-id section and provides
- * unique identification for libraries/executables for remote symbolication.
+ * Datadog-specific extensions to Linux symbol handling.
+ * Provides build-id extraction for remote symbolication support.
  */
-class ElfBuildIdExtractor {
+class SymbolsLinux {
 public:
     /**
      * Extract GNU build-id from ELF file on disk.
+     * Build-id is stored in .note.gnu.build-id section and provides
+     * unique identification for libraries/executables for remote symbolication.
      *
      * @param file_path Path to ELF file
      * @param build_id_len Output parameter for build-id length in bytes
@@ -58,6 +60,8 @@ private:
     static const uint8_t* findBuildIdInNotes(const void* note_data, size_t note_size, size_t* build_id_len);
 };
 
+} // namespace ddprof
+
 #endif // __linux__
 
-#endif // _ELF_BUILD_ID_H
+#endif // _SYMBOLS_LINUX_DD_H
