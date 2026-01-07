@@ -58,6 +58,43 @@ class VM;
 
 enum State { NEW, IDLE, RUNNING, TERMINATED };
 
+/**
+ * Converts a BCI_* frame type value to the corresponding EventType enum value.
+ *
+ * This conversion is necessary because Datadog's implementation uses BCI_* values
+ * (from ASGCT_CallFrameType) directly as event type identifiers, while upstream
+ * StackWalker::walkVM() expects EventType enum values for its logic.
+ *
+ * BCI_* values are special frame types with negative values (except BCI_CPU=0)
+ * that indicate non-standard frame information in call traces. EventType values
+ * are positive enum indices used for event categorization in the upstream code.
+ *
+ * @param bci_type A BCI_* value (e.g., BCI_CPU, BCI_WALL, BCI_ALLOC)
+ * @return The corresponding EventType enum value
+ */
+inline EventType eventTypeFromBCI(jint bci_type) {
+    switch (bci_type) {
+        case BCI_CPU:
+            return EXECUTION_SAMPLE;  // CPU samples map to execution samples
+        case BCI_WALL:
+            return WALL_CLOCK_SAMPLE;
+        case BCI_ALLOC:
+            return ALLOC_SAMPLE;
+        case BCI_ALLOC_OUTSIDE_TLAB:
+            return ALLOC_OUTSIDE_TLAB;
+        case BCI_LIVENESS:
+            return LIVE_OBJECT;
+        case BCI_LOCK:
+            return LOCK_SAMPLE;
+        case BCI_PARK:
+            return PARK_SAMPLE;
+        default:
+            // For unknown or invalid BCI types, default to EXECUTION_SAMPLE
+            // This maintains backward compatibility and prevents undefined behavior
+            return EXECUTION_SAMPLE;
+    }
+}
+
 // Aligned to satisfy SpinLock member alignment requirement (64 bytes)  
 // Required because this class contains multiple SpinLock members:
 // _class_map_lock, _locks[], and _stubs_lock

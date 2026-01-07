@@ -712,10 +712,10 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
                                  &java_ctx, &truncated);
     if (num_frames < _max_stack_depth) {
       if (_features.mixed) {
-        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, _features, static_cast<EventType>(event_type), &truncated);
+        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, _features, eventTypeFromBCI(event_type), &truncated);
       } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
         if (_cstack >= CSTACK_VM) {
-          num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, _features, static_cast<EventType>(event_type), &truncated);
+          num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, _features, eventTypeFromBCI(event_type), &truncated);
         } else {
           // Async events
           AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());

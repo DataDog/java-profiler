@@ -1618,7 +1618,7 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
     if (rec != nullptr) {
       RecordingBuffer *buf = rec->buffer(lock_index);
       switch (event_type) {
-      case 0:
+      case BCI_CPU:
           rec->recordExecutionSample(buf, tid, call_trace_id,
                                      (ExecutionEvent *)event);
           break;
