@@ -7,7 +7,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include "elfBuildId.h"
+#include "symbols_linux_dd.h"
 #include "vmEntry.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 
@@ -67,7 +67,7 @@ TEST_F(RemoteSymbolicationTest, BuildIdExtractionBasic) {
     // For now, just test the function doesn't crash on invalid input
 
     size_t build_id_len = 0;
-    char* build_id = ElfBuildIdExtractor::extractBuildId("/nonexistent", &build_id_len);
+    char* build_id = ddprof::SymbolsLinux::extractBuildId("/nonexistent", &build_id_len);
 
     // Should return null for non-existent file
     EXPECT_EQ(build_id, nullptr);
@@ -78,10 +78,10 @@ TEST_F(RemoteSymbolicationTest, BuildIdExtractionInvalidInput) {
     size_t build_id_len = 0;
 
     // Test null inputs
-    char* build_id1 = ElfBuildIdExtractor::extractBuildId(nullptr, &build_id_len);
+    char* build_id1 = ddprof::SymbolsLinux::extractBuildId(nullptr, &build_id_len);
     EXPECT_EQ(build_id1, nullptr);
 
-    char* build_id2 = ElfBuildIdExtractor::extractBuildId("/some/file", nullptr);
+    char* build_id2 = ddprof::SymbolsLinux::extractBuildId("/some/file", nullptr);
     EXPECT_EQ(build_id2, nullptr);
 
     // Test non-ELF file
@@ -93,7 +93,7 @@ TEST_F(RemoteSymbolicationTest, BuildIdExtractionInvalidInput) {
         write(fd, test_content, strlen(test_content));
         close(fd);
 
-        char* build_id3 = ElfBuildIdExtractor::extractBuildId(temp_file, &build_id_len);
+        char* build_id3 = ddprof::SymbolsLinux::extractBuildId(temp_file, &build_id_len);
         EXPECT_EQ(build_id3, nullptr);
 
         unlink(temp_file);
@@ -104,16 +104,16 @@ TEST_F(RemoteSymbolicationTest, BuildIdFromMemoryInvalidInput) {
     size_t build_id_len = 0;
 
     // Test null pointer
-    char* build_id1 = ElfBuildIdExtractor::extractBuildIdFromMemory(nullptr, 100, &build_id_len);
+    char* build_id1 = ddprof::SymbolsLinux::extractBuildIdFromMemory(nullptr, 100, &build_id_len);
     EXPECT_EQ(build_id1, nullptr);
 
     // Test invalid size
     char dummy_data[10] = {0};
-    char* build_id2 = ElfBuildIdExtractor::extractBuildIdFromMemory(dummy_data, 0, &build_id_len);
+    char* build_id2 = ddprof::SymbolsLinux::extractBuildIdFromMemory(dummy_data, 0, &build_id_len);
     EXPECT_EQ(build_id2, nullptr);
 
     // Test null output parameter
-    char* build_id3 = ElfBuildIdExtractor::extractBuildIdFromMemory(dummy_data, 10, nullptr);
+    char* build_id3 = ddprof::SymbolsLinux::extractBuildIdFromMemory(dummy_data, 10, nullptr);
     EXPECT_EQ(build_id3, nullptr);
 }
 

@@ -24,6 +24,7 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
 
 /**
@@ -65,12 +66,11 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
 
             verifyCStackSettings();
 
-            // First check if any native libraries have build-ids
+            // First verify that our test library (libddproftest) has a build-id
             // We use the extended jdk.NativeLibrary event which now includes buildId and loadBias fields
             IItemCollection libraryEvents = verifyEvents("jdk.NativeLibrary");
-            boolean hasLibrariesWithBuildId = false;
-            int totalLibraries = 0;
-            int librariesWithBuildId = 0;
+            String testLibBuildId = null;
+            boolean foundTestLib = false;
 
             // Create attributes for the custom fields we added to jdk.NativeLibrary
             IAttribute<String> buildIdAttr = Attribute.attr("buildId", "buildId", "GNU Build ID", PLAIN_TEXT);
@@ -81,33 +81,36 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
                 IMemberAccessor<String, IItem> nameAccessor = nameAttr.getAccessor(libItems.getType());
 
                 for (IItem libItem : libItems) {
-                    totalLibraries++;
-                    String buildId = buildIdAccessor.getMember(libItem);
                     String name = nameAccessor.getMember(libItem);
-                    if (buildId != null && !buildId.isEmpty()) {
-                        librariesWithBuildId++;
-                        hasLibrariesWithBuildId = true;
-                        System.out.println("Library with build-id: " + name + " -> " + buildId);
+                    String buildId = buildIdAccessor.getMember(libItem);
+
+                    System.out.println("Library: " + name + " -> build-id: " +
+                        (buildId != null && !buildId.isEmpty() ? buildId : "<none>"));
+
+                    // Check if this is our test library
+                    if (name != null && name.contains("libddproftest")) {
+                        foundTestLib = true;
+                        testLibBuildId = buildId;
+                        System.out.println("Found test library: " + name + " with build-id: " + buildId);
                     }
                 }
             }
 
-            System.out.println("Total libraries: " + totalLibraries);
-            System.out.println("Libraries with build-id: " + librariesWithBuildId);
-
-            // If no libraries have build-ids, remote symbolication will fall back to in-situ symbolication
-            // Skip the test in this case
-            Assumptions.assumeTrue(hasLibrariesWithBuildId,
-                "No native libraries have build-ids. Remote symbolication requires build-ids to work. "
-                + "Found " + totalLibraries + " libraries, none with build-ids.");
+            // Our test library MUST be present and have a build-id
+            Assumptions.assumeTrue(foundTestLib,
+                "Test library libddproftest not found in jdk.NativeLibrary events. "
+                + "The test needs this library to verify remote symbolication.");
+            Assumptions.assumeTrue(testLibBuildId != null && !testLibBuildId.isEmpty(),
+                "Test library libddproftest found but has no build-id. "
+                + "Cannot test remote symbolication without build-id.");
 
             IItemCollection events = verifyEvents("datadog.ExecutionSample");
 
-            boolean foundRemoteFrame = false;
-            boolean foundBuildId = false;
-            boolean foundPcOffset = false;
+            boolean foundTestLibFrame = false;
+            boolean foundTestLibRemoteFrame = false;
             int sampleCount = 0;
             int printCount = 0;
+            int testLibFrameCount = 0;
 
             for (IItemIterable cpuSamples : events) {
                 IMemberAccessor<String, IItem> frameAccessor =
@@ -118,58 +121,60 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
                     assertFalse(stackTrace.contains("jvmtiError"));
 
                     sampleCount++;
-                    // Print first 3 stack traces for debugging
-                    if (printCount < 3) {
-                        System.out.println("=== Stack trace " + (printCount + 1) + " ===");
-                        System.out.println(stackTrace);
-                        System.out.println("==================");
-                        printCount++;
-                    }
 
-                    // In remote symbolication mode, native frames are formatted as:
-                    // <build-id>.<remote>(0x<offset>)
-                    // where build-id is the hex string stored in the class field
-                    // and 0x<offset> is the PC offset stored in the signature field
+                    // Check if this sample contains frames from our test library
+                    boolean hasTestLibInStack = stackTrace.contains("burn_cpu") ||
+                                               stackTrace.contains("compute_fibonacci") ||
+                                               stackTrace.contains("libddproftest");
 
-                    // Check for the <remote> method marker
-                    if (stackTrace.contains("<remote>")) {
-                        foundRemoteFrame = true;
+                    if (hasTestLibInStack) {
+                        testLibFrameCount++;
+                        foundTestLibFrame = true;
 
-                        // If we found a remote frame, verify it has the expected format
-                        // Should contain 0x prefix for PC offset in the signature/parameter position
-                        if (stackTrace.contains("(0x")) {
-                            foundPcOffset = true;
+                        // Print samples containing test lib frames for debugging
+                        if (printCount < 5) {
+                            System.out.println("=== Sample with test lib frame " + (printCount + 1) + " ===");
+                            System.out.println(stackTrace);
+                            System.out.println("==================");
+                            printCount++;
                         }
 
-                        // The build-id should be in the class name position (before the dot)
-                        // Look for hex pattern before .<remote>
-                        if (stackTrace.matches(".*[0-9a-f]{8,}\\.<remote>.*")) {
-                            foundBuildId = true;
-                        }
-                    }
+                        // In remote symbolication mode, frames from libddproftest MUST be formatted as:
+                        // <build-id>.<remote>(0x<offset>)
+                        // They should NOT show resolved symbol names like burn_cpu or compute_fibonacci
 
-                    // Remote frames should NOT contain traditional resolved symbol names
-                    // If we found remote frames, verify no C++ symbols are present
-                    if (foundRemoteFrame) {
-                        assertFalse(stackTrace.matches(".*\\w+::\\w+\\(\\).*"),
-                            "Remote symbolication mode should not show resolved C++ symbol names");
+                        // If we see resolved symbol names from our test library, that's a FAILURE
+                        if (stackTrace.contains("burn_cpu") || stackTrace.contains("compute_fibonacci")) {
+                            fail("Found resolved symbol names (burn_cpu/compute_fibonacci) from libddproftest in stack trace. "
+                                + "Remote symbolication should use <build-id>.<remote>(0x<offset>) format instead. "
+                                + "Stack trace:\n" + stackTrace);
+                        }
+
+                        // Check if this sample has the expected remote symbolication format with our test lib's build-id
+                        if (stackTrace.contains(testLibBuildId + ".<remote>")) {
+                            foundTestLibRemoteFrame = true;
+                        }
                     }
                 }
             }
 
             System.out.println("Total samples analyzed: " + sampleCount);
-            System.out.println("Found remote frames: " + foundRemoteFrame);
-            System.out.println("Found build-ids: " + foundBuildId);
-            System.out.println("Found PC offsets: " + foundPcOffset);
+            System.out.println("Samples with test lib frames: " + testLibFrameCount);
+            System.out.println("Found test lib frames: " + foundTestLibFrame);
+            System.out.println("Found test lib remote frames: " + foundTestLibRemoteFrame);
+            System.out.println("Test library build-id: " + testLibBuildId);
 
-            // Since we verified libraries with build-ids exist, we should find remote frames
-            assertTrue(foundRemoteFrame,
-                "Should find at least one frame with <remote> marker. Libraries with build-ids exist, "
-                + "so remote symbolication should be working. Analyzed " + sampleCount + " samples.");
-            assertTrue(foundBuildId,
-                "Found remote frames but missing build-id in class position");
-            assertTrue(foundPcOffset,
-                "Found remote frames but missing PC offset in signature position");
+            // We call the test library functions extensively, so we MUST see frames from it
+            assertTrue(foundTestLibFrame,
+                "No frames from libddproftest found in any samples. "
+                + "The test called RemoteSymHelper.burnCpu() and computeFibonacci() extensively. "
+                + "Analyzed " + sampleCount + " samples.");
+
+            // Those frames MUST be in remote symbolication format (not resolved)
+            assertTrue(foundTestLibRemoteFrame,
+                "Found frames from libddproftest but they are not in remote symbolication format. "
+                + "Expected format: " + testLibBuildId + ".<remote>(0x<offset>). "
+                + "Analyzed " + testLibFrameCount + " samples with test lib frames.");
         }
     }
 
