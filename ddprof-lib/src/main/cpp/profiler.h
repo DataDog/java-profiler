@@ -150,7 +150,6 @@ private:
   Libraries* _libs;
   SpinLock _stubs_lock;
   CodeCache _runtime_stubs;
-  CodeCacheArray _native_libs;
   const void *_call_stub_begin;
   const void *_call_stub_end;
   u32 _num_context_attributes;
@@ -205,7 +204,7 @@ public:
         _notify_class_unloaded_func(NULL), _thread_filter(), _call_trace_storage(), _jfr(),
         _start_time(0), _epoch(0), _timer_id(NULL),
         _max_stack_depth(0), _safe_mode(0), _thread_events_state(JVMTI_DISABLE),
-        _libs(Libraries::instance()), _stubs_lock(), _runtime_stubs("[stubs]"), _native_libs(),
+        _libs(Libraries::instance()), _stubs_lock(), _runtime_stubs("[stubs]"),
         _call_stub_begin(NULL), _call_stub_end(NULL), _dlopen_entry(NULL),
         _num_context_attributes(0), _class_map(1), _string_label_map(2),
         _context_value_map(3), _cpu_engine(), _alloc_engine(), _event_mask(0),

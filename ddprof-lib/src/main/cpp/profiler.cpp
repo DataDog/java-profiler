@@ -233,17 +233,18 @@ const void *Profiler::resolveSymbol(const char *name) {
   }
 
   size_t len = strlen(name);
-  int native_lib_count = _native_libs.count();
+  const CodeCacheArray& native_libs = _libs->native_libs();
+  int native_lib_count = native_libs.count();
   if (len > 0 && name[len - 1] == '*') {
     for (int i = 0; i < native_lib_count; i++) {
-      const void *address = _native_libs[i]->findSymbolByPrefix(name, len - 1);
+      const void *address = native_libs[i]->findSymbolByPrefix(name, len - 1);
       if (address != NULL) {
         return address;
       }
     }
   } else {
     for (int i = 0; i < native_lib_count; i++) {
-      const void *address = _native_libs[i]->findSymbol(name);
+      const void *address = native_libs[i]->findSymbol(name);
       if (address != NULL) {
         return address;
       }
@@ -256,8 +257,9 @@ const void *Profiler::resolveSymbol(const char *name) {
 // For BCI_NATIVE_FRAME, library index is encoded ahead of the symbol name
 const char *Profiler::getLibraryName(const char *native_symbol) {
   short lib_index = NativeFunc::libIndex(native_symbol);
-  if (lib_index >= 0 && lib_index < _native_libs.count()) {
-    const char *s = _native_libs[lib_index]->name();
+  const CodeCacheArray& native_libs = _libs->native_libs();
+  if (lib_index >= 0 && lib_index < native_libs.count()) {
+    const char *s = native_libs[lib_index]->name();
     if (s != NULL) {
       const char *p = strrchr(s, '/');
       return p != NULL ? p + 1 : s;
@@ -1473,10 +1475,11 @@ Error Profiler::dump(const char *path, const int length) {
     updateJavaThreadNames();
     updateNativeThreadNames();
 
-    Counters::set(CODECACHE_NATIVE_COUNT, _native_libs.count());
-    Counters::set(CODECACHE_NATIVE_SIZE_BYTES, _native_libs.memoryUsage());
+    const CodeCacheArray& native_libs = _libs->native_libs();
+    Counters::set(CODECACHE_NATIVE_COUNT, native_libs.count());
+    Counters::set(CODECACHE_NATIVE_SIZE_BYTES, native_libs.memoryUsage());
     Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
-                  _native_libs.memoryUsage());
+                  native_libs.memoryUsage());
 
     lockAll();
     Error err = _jfr.dump(path, length);
