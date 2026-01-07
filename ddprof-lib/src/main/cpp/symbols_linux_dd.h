@@ -9,6 +9,7 @@
 #ifdef __linux__
 
 #include <cstddef>
+#include <cstdint>
 
 namespace ddprof {
 
