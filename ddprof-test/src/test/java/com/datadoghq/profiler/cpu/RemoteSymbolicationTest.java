@@ -71,23 +71,30 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
                     String stackTrace = frameAccessor.getMember(sample);
                     assertFalse(stackTrace.contains("jvmtiError"));
 
-                    // In remote symbolication mode, native frames should contain:
-                    // - Build-ID (hex string) instead of symbol name
-                    // - PC offset (0x...) instead of absolute address
+                    // In remote symbolication mode, native frames are formatted as:
+                    // <build-id>.<remote>(0x<offset>)
+                    // where build-id is the hex string stored in the class field
+                    // and 0x<offset> is the PC offset stored in the signature field
 
-                    // Check for hex build-id patterns (typically 40-char hex for SHA-1)
-                    if (stackTrace.matches(".*[0-9a-f]{20,}.*")) {
-                        foundBuildId = true;
+                    // Check for the <remote> method marker
+                    if (stackTrace.contains("<remote>")) {
                         foundRemoteFrame = true;
+
+                        // If we found a remote frame, verify it has the expected format
+                        // Should contain 0x prefix for PC offset in the signature/parameter position
+                        if (stackTrace.contains("(0x")) {
+                            foundPcOffset = true;
+                        }
+
+                        // The build-id should be in the class name position (before the dot)
+                        // Look for hex pattern before .<remote>
+                        if (stackTrace.matches(".*[0-9a-f]{8,}\\.<remote>.*")) {
+                            foundBuildId = true;
+                        }
                     }
 
-                    // Check for PC offset format (0x followed by hex)
-                    if (stackTrace.matches(".*0x[0-9a-f]+.*")) {
-                        foundPcOffset = true;
-                    }
-
-                    // Remote frames should NOT contain traditional symbol names
-                    // like "JavaCalls::call_virtual()" - they should have build-ids instead
+                    // Remote frames should NOT contain traditional resolved symbol names
+                    // If we found remote frames, verify no C++ symbols are present
                     if (foundRemoteFrame) {
                         assertFalse(stackTrace.matches(".*\\w+::\\w+\\(\\).*"),
                             "Remote symbolication mode should not show resolved C++ symbol names");
@@ -96,8 +103,12 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
             }
 
             // Verify we found remote symbolication data
-            assertTrue(foundRemoteFrame || foundBuildId,
-                "Should find at least one frame with remote symbolication data (build-id)");
+            assertTrue(foundRemoteFrame,
+                "Should find at least one frame with <remote> marker indicating remote symbolication");
+            assertTrue(foundBuildId,
+                "Should find at least one frame with build-id in class position");
+            assertTrue(foundPcOffset,
+                "Should find at least one frame with PC offset in signature position");
         }
     }
 
