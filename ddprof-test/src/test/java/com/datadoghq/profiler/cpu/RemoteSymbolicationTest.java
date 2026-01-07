@@ -62,6 +62,8 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
             boolean foundRemoteFrame = false;
             boolean foundBuildId = false;
             boolean foundPcOffset = false;
+            int sampleCount = 0;
+            int printCount = 0;
 
             for (IItemIterable cpuSamples : events) {
                 IMemberAccessor<String, IItem> frameAccessor =
@@ -70,6 +72,15 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
                 for (IItem sample : cpuSamples) {
                     String stackTrace = frameAccessor.getMember(sample);
                     assertFalse(stackTrace.contains("jvmtiError"));
+
+                    sampleCount++;
+                    // Print first 3 stack traces for debugging
+                    if (printCount < 3) {
+                        System.out.println("=== Stack trace " + (printCount + 1) + " ===");
+                        System.out.println(stackTrace);
+                        System.out.println("==================");
+                        printCount++;
+                    }
 
                     // In remote symbolication mode, native frames are formatted as:
                     // <build-id>.<remote>(0x<offset>)
@@ -102,9 +113,14 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
                 }
             }
 
+            System.out.println("Total samples analyzed: " + sampleCount);
+            System.out.println("Found remote frames: " + foundRemoteFrame);
+            System.out.println("Found build-ids: " + foundBuildId);
+            System.out.println("Found PC offsets: " + foundPcOffset);
+
             // Verify we found remote symbolication data
             assertTrue(foundRemoteFrame,
-                "Should find at least one frame with <remote> marker indicating remote symbolication");
+                "Should find at least one frame with <remote> marker indicating remote symbolication. Analyzed " + sampleCount + " samples.");
             assertTrue(foundBuildId,
                 "Should find at least one frame with build-id in class position");
             assertTrue(foundPcOffset,
