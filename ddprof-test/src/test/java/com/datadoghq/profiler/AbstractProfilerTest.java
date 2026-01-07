@@ -4,10 +4,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -107,8 +109,42 @@ public abstract class AbstractProfilerTest {
     return map;
   }
 
+  protected static class TestConfiguration {
+      String os;        // OS (Linux, musl, MacOSX or Windows)
+      String arch;      // x86 or aarch64
+      String jvm;       // hotspot, J9 or Graal
+      String cstack;    // vm, vmx, fp, dwarf
+
+      protected TestConfiguration(String os, String arch, String jvm, String cstack) {
+          this.os =os;
+          this.arch =arch;
+          this.jvm =jvm;
+          this.cstack =cstack;
+      }
+
+      public boolean match(String os, String arch, String jvm, String cstack) {
+          return (os.equals(this.os) || "*".equals(this.os)) &&
+                  (arch.equals(this.arch) || "*".equals(this.arch)) &&
+                  (jvm.equals(this.jvm) || "*".equals(this.jvm)) &&
+                  (cstack.equals(this.cstack) || "*".equals(this.cstack));
+      }
+  };
+
+  private List<TestConfiguration> blacklist = new ArrayList<>();
+
   protected AbstractProfilerTest(Map<String, Object> testParams) {
     this.testParams = testParams != null ? new HashMap<>(testParams) : Collections.emptyMap();
+
+    /* Black list:
+     * - J9 does not support cstack=vm or vmx
+     *
+     */
+    blacklist.add(new TestConfiguration("*", "*", "J9", "vm"));
+    blacklist.add(new TestConfiguration("*", "*", "J9", "vmx"));
+    appendBlackList(blacklist);
+  }
+
+  protected void appendBlackList(List<TestConfiguration> blackList) {
   }
 
   protected AbstractProfilerTest() {
@@ -174,7 +210,7 @@ public abstract class AbstractProfilerTest {
     Path rootDir = Paths.get("/tmp/recordings");
     Files.createDirectories(rootDir);
 
-    String cstack = (String)testParams.get("cstack");
+    String cstack = getCStack();
 
     if (cstack != null) {
       rootDir = rootDir.resolve(cstack);
@@ -190,6 +226,10 @@ public abstract class AbstractProfilerTest {
     profiler.execute(command);
     stopped = false;
     before();
+  }
+
+  protected String getCStack() {
+      return (String) testParams.get("cstack");
   }
 
   @AfterEach
@@ -275,13 +315,60 @@ public abstract class AbstractProfilerTest {
     profiler.addThread();
   }
 
+  protected final String defaultCStack() {
+      return Platform.isJ9() ? "fp" : "vm";
+  }
+
+  private static String getOS() {
+      if (Platform.isWindows()) {
+          return "win";
+      } else if (Platform.isMac()) {
+          return "mac";
+      } else if (Platform.isMusl()) {
+          return "musl";
+      } else {
+          return "linux";
+      }
+  }
+
+  private static String getArch() {
+      if (Platform.isAarch64()) {
+          return "aarch64";
+      } else {
+          return "x86";
+      }
+  }
+
+  private static String getJVM() {
+      if (Platform.isJ9()) {
+          return "J9";
+      } else if (Platform.isGraal()) {
+          return "graal";
+      } else {
+          return "hostspot";
+      }
+  }
+
+  protected boolean isOnBlackList(String cstack) {
+      String os = getOS();
+      String arch = getArch();
+      String jvm = getJVM();
+
+      for (TestConfiguration c: blacklist) {
+          if (c.match(os, arch, jvm, cstack)) {
+              return true;
+          }
+      }
+      return false;
+  }
+
   private String getAmendedProfilerCommand() {
     String profilerCommand = getProfilerCommand();
-    String testCstack = (String)testParams.get("cstack");
+    String testCstack = getCStack();
     if (testCstack != null) {
       profilerCommand += ",cstack=" + testCstack;
     } else if(!(ALLOW_NATIVE_CSTACKS || profilerCommand.contains("cstack="))) {
-      profilerCommand += ",cstack=fp";
+      profilerCommand += ",cstack=" + defaultCStack();
     }
     // FIXME - test framework doesn't seem to be forking each test, so need to sync
     //  these across test cases for now
@@ -340,7 +427,7 @@ public abstract class AbstractProfilerTest {
   }
 
   protected final void verifyCStackSettings() {
-    String cstack = (String)testParams.get("cstack");
+    String cstack = (String)getCStack();
     if (cstack == null) {
       // not a forced cstack mode
       return;
