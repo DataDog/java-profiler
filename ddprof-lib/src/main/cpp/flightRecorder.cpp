@@ -1063,13 +1063,18 @@ void Recording::writeNativeLibraries(Buffer *buf) {
   int native_lib_count = native_libs.count();
 
   for (int i = _recorded_lib_count; i < native_lib_count; i++) {
+    CodeCache* lib = native_libs[i];
+
+    // Emit jdk.NativeLibrary event with extended fields (buildId and loadBias)
     flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - MAX_STRING_LENGTH);
     int start = buf->skip(5);
     buf->putVar64(T_NATIVE_LIBRARY);
     buf->putVar64(_start_ticks);
-    buf->putUtf8(native_libs[i]->name());
-    buf->putVar64((uintptr_t)native_libs[i]->minAddress());
-    buf->putVar64((uintptr_t)native_libs[i]->maxAddress());
+    buf->putUtf8(lib->name());
+    buf->putVar64((uintptr_t)lib->minAddress());
+    buf->putVar64((uintptr_t)lib->maxAddress());
+    buf->putUtf8(lib->hasBuildId() ? lib->buildId() : "");
+    buf->putVar64((uintptr_t)lib->loadBias());
     buf->putVar32(start, buf->offset() - start);
     flushIfNeeded(buf);
   }

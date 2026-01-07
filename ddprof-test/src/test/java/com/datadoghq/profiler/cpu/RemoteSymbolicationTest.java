@@ -57,6 +57,40 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
 
             verifyCStackSettings();
 
+            // First check if any native libraries have build-ids
+            // We use the extended jdk.NativeLibrary event which now includes buildId and loadBias fields
+            IItemCollection libraryEvents = verifyEvents("jdk.NativeLibrary");
+            boolean hasLibrariesWithBuildId = false;
+            int totalLibraries = 0;
+            int librariesWithBuildId = 0;
+
+            for (IItemIterable libItems : libraryEvents) {
+                IMemberAccessor<String, IItem> buildIdAccessor =
+                    libItems.getType().getAccessor("buildId", String.class);
+                IMemberAccessor<String, IItem> nameAccessor =
+                    libItems.getType().getAccessor("name", String.class);
+
+                for (IItem libItem : libItems) {
+                    totalLibraries++;
+                    String buildId = buildIdAccessor.getMember(libItem);
+                    String name = nameAccessor.getMember(libItem);
+                    if (buildId != null && !buildId.isEmpty()) {
+                        librariesWithBuildId++;
+                        hasLibrariesWithBuildId = true;
+                        System.out.println("Library with build-id: " + name + " -> " + buildId);
+                    }
+                }
+            }
+
+            System.out.println("Total libraries: " + totalLibraries);
+            System.out.println("Libraries with build-id: " + librariesWithBuildId);
+
+            // If no libraries have build-ids, remote symbolication will fall back to in-situ symbolication
+            // Skip the test in this case
+            Assumptions.assumeTrue(hasLibrariesWithBuildId,
+                "No native libraries have build-ids. Remote symbolication requires build-ids to work. "
+                + "Found " + totalLibraries + " libraries, none with build-ids.");
+
             IItemCollection events = verifyEvents("datadog.ExecutionSample");
 
             boolean foundRemoteFrame = false;
@@ -118,13 +152,14 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
             System.out.println("Found build-ids: " + foundBuildId);
             System.out.println("Found PC offsets: " + foundPcOffset);
 
-            // Verify we found remote symbolication data
+            // Since we verified libraries with build-ids exist, we should find remote frames
             assertTrue(foundRemoteFrame,
-                "Should find at least one frame with <remote> marker indicating remote symbolication. Analyzed " + sampleCount + " samples.");
+                "Should find at least one frame with <remote> marker. Libraries with build-ids exist, "
+                + "so remote symbolication should be working. Analyzed " + sampleCount + " samples.");
             assertTrue(foundBuildId,
-                "Should find at least one frame with build-id in class position");
+                "Found remote frames but missing build-id in class position");
             assertTrue(foundPcOffset,
-                "Should find at least one frame with PC offset in signature position");
+                "Found remote frames but missing PC offset in signature position");
         }
     }
 
