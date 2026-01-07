@@ -124,9 +124,12 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
                     sampleCount++;
 
                     // Check if this sample contains frames from our test library
+                    // In remote symbolication mode, frames will have format: <build-id>.<remote>(0x<offset>)
+                    // In fallback mode (or non-remote), they might have resolved symbols or lib names
                     boolean hasTestLibInStack = stackTrace.contains("burn_cpu") ||
                                                stackTrace.contains("compute_fibonacci") ||
-                                               stackTrace.contains("libddproftest");
+                                               stackTrace.contains("libddproftest") ||
+                                               (testLibBuildId != null && stackTrace.contains(testLibBuildId));
 
                     if (hasTestLibInStack) {
                         testLibFrameCount++;
