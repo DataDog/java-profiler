@@ -1058,8 +1058,8 @@ void Recording::writeNativeLibraries(Buffer *buf) {
   if (_recorded_lib_count < 0)
     return;
 
-  Profiler *profiler = Profiler::instance();
-  CodeCacheArray &native_libs = profiler->_native_libs;
+  Libraries *libraries = Libraries::instance();
+  const CodeCacheArray &native_libs = libraries->native_libs();
   int native_lib_count = native_libs.count();
 
   for (int i = _recorded_lib_count; i < native_lib_count; i++) {
