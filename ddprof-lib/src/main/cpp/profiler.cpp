@@ -12,6 +12,7 @@
 #include "counters.h"
 #include "ctimer.h"
 #include "dwarf_dd.h"
+#include "elfBuildId.h"
 #include "flightRecorder.h"
 #include "itimer.h"
 #include "j9Ext.h"
@@ -327,21 +328,56 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
   jmethodID prev_method = NULL;
 
   for (int i = 0; i < native_frames; i++) {
-    const char *current_method_name = findNativeMethod(callchain[i]);
-    if (current_method_name != NULL &&
-        NativeFunc::isMarked(current_method_name)) {
+    uintptr_t pc = (uintptr_t)callchain[i];
+
+    // Check if this is a marked C++ interpreter frame
+    const char *method_name = findNativeMethod(callchain[i]);
+    if (method_name != NULL && NativeFunc::isMarked(method_name)) {
       // This is C++ interpreter frame, this and later frames should be reported
       // as Java frames returned by AGCT. Terminate the scan here.
       return depth;
     }
 
-    jmethodID current_method = (jmethodID)current_method_name;
-    if (current_method == prev_method && _cstack == CSTACK_LBR) {
-      // Skip duplicates in LBR stack, where branch_stack[N].from ==
-      // branch_stack[N+1].to
-      prev_method = NULL;
+    jmethodID current_method;
+    int current_bci;
+
+    if (_remote_symbolication) {
+      // Remote symbolication mode: store build-id and PC offset
+      CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
+      if (lib != nullptr && lib->hasBuildId()) {
+        // Calculate PC offset within the library
+        uintptr_t offset = pc - (uintptr_t)lib->imageBase();
+
+        // Allocate RemoteFrameInfo (TODO: optimize with LinearAllocator)
+        RemoteFrameInfo* rfi = static_cast<RemoteFrameInfo*>(malloc(sizeof(RemoteFrameInfo)));
+        if (rfi != nullptr) {
+          rfi->build_id = lib->buildId();
+          rfi->pc_offset = offset;
+          rfi->lib_index = lib->libIndex();
+
+          current_method = (jmethodID)rfi;
+          current_bci = BCI_NATIVE_FRAME_REMOTE;
+        } else {
+          // Fallback to resolved symbol if allocation failed
+          current_method = (jmethodID)method_name;
+          current_bci = BCI_NATIVE_FRAME;
+        }
+      } else {
+        // Library not found or no build-id, fallback to resolved symbol
+        current_method = (jmethodID)method_name;
+        current_bci = BCI_NATIVE_FRAME;
+      }
     } else {
-      frames[depth].bci = BCI_NATIVE_FRAME;
+      // Traditional mode: store resolved symbol name
+      current_method = (jmethodID)method_name;
+      current_bci = BCI_NATIVE_FRAME;
+    }
+
+    // Skip duplicates in LBR stack
+    if (current_method == prev_method && _cstack == CSTACK_LBR) {
+      prev_method = NULL;
+    } else if (current_method != NULL) {
+      frames[depth].bci = current_bci;
       frames[depth].method_id = prev_method = current_method;
       depth++;
     }
@@ -1137,6 +1173,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Validate TLS priming for signal-based profiling safety
   if (ProfiledThread::wasTlsPrimingAttempted() && !ProfiledThread::isTlsPrimingAvailable()) {
     _omit_stacktraces = args._lightweight;
+    _remote_symbolication = args._remote_symbolication;
     _event_mask =
         ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
                                                                        : 0) |
@@ -1158,6 +1195,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   } else {
     _omit_stacktraces = args._lightweight;
+    _remote_symbolication = args._remote_symbolication;
     _event_mask =
         ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
                                                                        : 0) |
@@ -1261,6 +1299,11 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   // Kernel symbols are useful only for perf_events without --all-user
   _libs->updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
+
+  // Extract build-ids for remote symbolication if enabled
+  if (_remote_symbolication) {
+    _libs->updateBuildIds();
+  }
 
   enableEngines();
 

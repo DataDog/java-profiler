@@ -114,6 +114,25 @@ void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
   }
 }
 
+void Lookup::fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi) {
+  // Store build-id in the class name field
+  mi->_class = _classes->lookup(rfi->build_id);
+
+  // Store PC offset in hex format in the signature field
+  char offset_hex[32];
+  snprintf(offset_hex, sizeof(offset_hex), "0x%lx", rfi->pc_offset);
+  mi->_sig = _symbols.lookup(offset_hex);
+
+  // Use same modifiers as regular native frames (0x100 = ACC_NATIVE for consistency)
+  mi->_modifiers = 0x100;
+  // Use FRAME_NATIVE_REMOTE type to indicate remote symbolication
+  mi->_type = FRAME_NATIVE_REMOTE;
+  mi->_line_number_table = nullptr;
+
+  // Method name indicates need for remote symbolication
+  mi->_name = _symbols.lookup("<remote>");
+}
+
 void Lookup::cutArguments(char *func) {
   char *p = strrchr(func, ')');
   if (p == NULL)
@@ -322,6 +341,9 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
       const char *name = (const char *)method;
       fillNativeMethodInfo(mi, name,
                            Profiler::instance()->getLibraryName(name));
+    } else if (frame.bci == BCI_NATIVE_FRAME_REMOTE) {
+      const RemoteFrameInfo *rfi = (const RemoteFrameInfo *)method;
+      fillRemoteFrameInfo(mi, rfi);
     } else {
       fillJavaMethodInfo(mi, method, first_time);
     }

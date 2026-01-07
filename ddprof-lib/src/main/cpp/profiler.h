@@ -155,6 +155,7 @@ private:
   const void *_call_stub_end;
   u32 _num_context_attributes;
   bool _omit_stacktraces;
+  bool _remote_symbolication;  // Enable remote symbolication for native frames
 
   // dlopen() hook support
   void **_dlopen_entry;

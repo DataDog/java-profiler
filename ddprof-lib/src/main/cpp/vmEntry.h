@@ -32,6 +32,7 @@ enum ASGCT_CallFrameType {
   BCI_PARK = -16,               // class name of the park() blocker
   BCI_THREAD_ID = -17,          // method_id designates a thread
   BCI_ERROR = -18,              // method_id is an error string
+  BCI_NATIVE_FRAME_REMOTE = -19, // method_id points to RemoteFrameInfo for remote symbolication
 };
 
 // See hotspot/src/share/vm/prims/forte.cpp
@@ -57,6 +58,21 @@ typedef struct {
     jmethodID method_id;
 } ASGCT_CallFrame;
 
+/**
+ * Information for native frames requiring remote symbolication.
+ * Used when bci == BCI_NATIVE_FRAME_REMOTE.
+ */
+typedef struct RemoteFrameInfo {
+    const char* build_id;      // GNU build-id for library identification (null-terminated hex string)
+    uintptr_t pc_offset;       // PC offset within the library/module
+    short lib_index;           // Index into CodeCache library table for fast lookup
+
+#ifdef __cplusplus
+    // Constructor for C++ convenience
+    RemoteFrameInfo(const char* bid, uintptr_t offset, short lib_idx)
+        : build_id(bid), pc_offset(offset), lib_index(lib_idx) {}
+#endif
+} RemoteFrameInfo;
 
 typedef struct {
   JNIEnv *env;

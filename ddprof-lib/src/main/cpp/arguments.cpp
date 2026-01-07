@@ -88,7 +88,10 @@ static const Multiplier UNIVERSAL[] = {
 //                          samples
 //     generations        - track surviving generations
 //     lightweight[=BOOL] - enable lightweight profiling - events without
-//     stacktraces (default: true) jfr                - dump events in Java
+//     stacktraces (default: true)
+//     remotesymbolication[=BOOL] - enable remote symbolication for native frames
+//                          (stores build-id and PC offset instead of symbol names)
+//     jfr                - dump events in Java
 //     Flight Recorder format interval=N         - sampling interval in ns
 //     (default: 10'000'000, i.e. 10 ms) jstackdepth=N      - maximum Java stack
 //     depth (default: 2048) safemode=BITS      - disable stack recovery
@@ -339,16 +342,28 @@ Error Arguments::parse(const char *args) {
         _enable_method_cleanup = true;
       }
 
-      CASE("wallsampler")
+      CASE("remotesym")
       if (value != NULL) {
         switch (value[0]) {
-        case 'j':
-          _wallclock_sampler = JVMTI;
+        case 'y': // yes
+        case 't': // true
+          _remote_symbolication = true;
           break;
-        case 'a':
         default:
-          _wallclock_sampler = ASGCT;
+          _remote_symbolication = false;
         }
+      }
+
+      CASE("wallsampler")
+      if (value != NULL) {
+          switch (value[0]) {
+              case 'j':
+                  _wallclock_sampler = JVMTI;
+                  break;
+              case 'a':
+              default:
+                  _wallclock_sampler = ASGCT;
+          }
       }
 
       DEFAULT()

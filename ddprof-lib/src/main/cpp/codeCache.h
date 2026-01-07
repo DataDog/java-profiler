@@ -116,6 +116,11 @@ private:
   unsigned int _plt_offset;
   unsigned int _plt_size;
 
+  // Build-ID and load bias for remote symbolication
+  char *_build_id;           // GNU build-id (hex string, null if not available)
+  size_t _build_id_len;      // Build-id length in bytes (raw, not hex string length)
+  uintptr_t _load_bias;      // Load bias (image_base - file_base address)
+
   void **_imports[NUM_IMPORTS][NUM_IMPORT_TYPES];
   bool _imports_patchable;
   bool _debug_symbols;
@@ -168,6 +173,19 @@ public:
   bool hasDebugSymbols() const { return _debug_symbols; }
 
   void setDebugSymbols(bool debug_symbols) { _debug_symbols = debug_symbols; }
+
+  // Build-ID and remote symbolication support
+  const char* buildId() const { return _build_id; }
+  size_t buildIdLen() const { return _build_id_len; }
+  bool hasBuildId() const { return _build_id != nullptr; }
+  uintptr_t loadBias() const { return _load_bias; }
+  short libIndex() const { return _lib_index; }
+
+  // Sets the build-id (hex string) and stores the original byte length
+  // build_id: null-terminated hex string (e.g., "abc123..." for 40-char string)
+  // build_id_len: original byte length before hex conversion (e.g., 20 bytes)
+  void setBuildId(const char* build_id, size_t build_id_len);
+  void setLoadBias(uintptr_t load_bias) { _load_bias = load_bias; }
 
   void add(const void *start, int length, const char *name,
            bool update_bounds = false);

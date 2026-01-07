@@ -1,4 +1,5 @@
 #include "codeCache.h"
+#include "elfBuildId.h"
 #include "libraries.h"
 #include "libraryPatcher.h"
 #include "log.h"
@@ -36,6 +37,43 @@ end:
 void Libraries::updateSymbols(bool kernel_symbols) {
   Symbols::parseLibraries(&_native_libs, kernel_symbols);
   LibraryPatcher::patch_libraries();
+}
+
+void Libraries::updateBuildIds() {
+#ifdef __linux__
+  int lib_count = _native_libs.count();
+
+  for (int i = 0; i < lib_count; i++) {
+    CodeCache* lib = _native_libs.at(i);
+    if (lib == nullptr || lib->hasBuildId()) {
+      continue; // Skip null libraries or those that already have build-id
+    }
+
+    const char* lib_name = lib->name();
+    if (lib_name == nullptr) {
+      continue;
+    }
+
+    // Extract build-id from library file
+    size_t build_id_len;
+    char* build_id = ElfBuildIdExtractor::extractBuildId(lib_name, &build_id_len);
+
+    if (build_id != nullptr) {
+      // Set build-id and calculate load bias
+      lib->setBuildId(build_id, build_id_len);
+
+      // Calculate load bias: difference between runtime address and file base
+      // For now, use image_base as the load bias base
+      if (lib->imageBase() != nullptr) {
+        lib->setLoadBias((uintptr_t)lib->imageBase());
+      }
+
+      free(build_id); // setBuildId makes its own copy
+
+      Log::debug("Extracted build-id for %s: %s", lib_name, lib->buildId());
+    }
+  }
+#endif // __linux__
 }
 
 const void *Libraries::resolveSymbol(const char *name) {
