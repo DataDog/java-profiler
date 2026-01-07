@@ -14,6 +14,8 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.openjdk.jmc.common.item.Attribute;
+import org.openjdk.jmc.common.item.IAttribute;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
@@ -22,6 +24,7 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
 
 /**
  * Integration test for remote symbolication feature.
@@ -69,11 +72,13 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
             int totalLibraries = 0;
             int librariesWithBuildId = 0;
 
+            // Create attributes for the custom fields we added to jdk.NativeLibrary
+            IAttribute<String> buildIdAttr = Attribute.attr("buildId", "buildId", "GNU Build ID", PLAIN_TEXT);
+            IAttribute<String> nameAttr = Attribute.attr("name", "name", "Name", PLAIN_TEXT);
+
             for (IItemIterable libItems : libraryEvents) {
-                IMemberAccessor<String, IItem> buildIdAccessor =
-                    libItems.getType().getAccessor("buildId", String.class);
-                IMemberAccessor<String, IItem> nameAccessor =
-                    libItems.getType().getAccessor("name", String.class);
+                IMemberAccessor<String, IItem> buildIdAccessor = buildIdAttr.getAccessor(libItems.getType());
+                IMemberAccessor<String, IItem> nameAccessor = nameAttr.getAccessor(libItems.getType());
 
                 for (IItem libItem : libItems) {
                     totalLibraries++;
