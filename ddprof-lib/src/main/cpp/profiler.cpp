@@ -331,14 +331,6 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
   for (int i = 0; i < native_frames; i++) {
     uintptr_t pc = (uintptr_t)callchain[i];
 
-    // Check if this is a marked C++ interpreter frame
-    const char *method_name = findNativeMethod(callchain[i]);
-    if (method_name != NULL && NativeFunc::isMarked(method_name)) {
-      // This is C++ interpreter frame, this and later frames should be reported
-      // as Java frames returned by AGCT. Terminate the scan here.
-      return depth;
-    }
-
     jmethodID current_method;
     int current_bci;
 
@@ -346,6 +338,15 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
       // Remote symbolication mode: store build-id and PC offset
       CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
       if (lib != nullptr && lib->hasBuildId()) {
+        // Check if this is a marked C++ interpreter frame before using remote format
+        const char *method_name = nullptr;
+        lib->binarySearch(callchain[i], &method_name);
+        if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
+          // This is C++ interpreter frame, this and later frames should be reported
+          // as Java frames returned by AGCT. Terminate the scan here.
+          return depth;
+        }
+
         // Calculate PC offset within the library
         uintptr_t offset = pc - (uintptr_t)lib->imageBase();
 
@@ -360,16 +361,31 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
           current_bci = BCI_NATIVE_FRAME_REMOTE;
         } else {
           // Fallback to resolved symbol if allocation failed
-          current_method = (jmethodID)method_name;
+          // Need to resolve the symbol now since we didn't do it earlier
+          const char *fallback_name = nullptr;
+          lib->binarySearch(callchain[i], &fallback_name);
+          current_method = (jmethodID)fallback_name;
           current_bci = BCI_NATIVE_FRAME;
         }
       } else {
         // Library not found or no build-id, fallback to resolved symbol
+        const char *method_name = findNativeMethod(callchain[i]);
+        if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
+          // This is C++ interpreter frame, this and later frames should be reported
+          // as Java frames returned by AGCT. Terminate the scan here.
+          return depth;
+        }
         current_method = (jmethodID)method_name;
         current_bci = BCI_NATIVE_FRAME;
       }
     } else {
-      // Traditional mode: store resolved symbol name
+      // Traditional mode: resolve and store symbol name
+      const char *method_name = findNativeMethod(callchain[i]);
+      if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
+        // This is C++ interpreter frame, this and later frames should be reported
+        // as Java frames returned by AGCT. Terminate the scan here.
+        return depth;
+      }
       current_method = (jmethodID)method_name;
       current_bci = BCI_NATIVE_FRAME;
     }
