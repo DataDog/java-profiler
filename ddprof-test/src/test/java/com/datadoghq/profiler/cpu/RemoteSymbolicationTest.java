@@ -59,8 +59,9 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
                 profiledCode.method1(id);
                 // Call native functions from our test library to ensure
                 // native frames with build-id appear in the samples
-                RemoteSymHelper.burnCpu(10000, 5);
-                RemoteSymHelper.computeFibonacci(30);
+                // Increased iterations to ensure profiler captures these frames
+                RemoteSymHelper.burnCpu(1000000, 10);
+                RemoteSymHelper.computeFibonacci(35);
             }
             stopProfiler();
 
