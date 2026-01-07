@@ -1,4 +1,5 @@
 #include "codeCache.h"
+#include "common.h"
 #include "libraries.h"
 #include "libraryPatcher.h"
 #include "log.h"
