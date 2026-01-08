@@ -323,6 +323,123 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
   return convertNativeTrace(native_frames, callchain, frames);
 }
 
+void Profiler::applyRemoteSymbolicationToVMFrames(ASGCT_CallFrame *frames, int num_frames) {
+  for (int i = 0; i < num_frames; i++) {
+    // Only process native frames (not Java frames or special frames)
+    if (frames[i].bci != BCI_NATIVE_FRAME) {
+      continue;
+    }
+
+    // method_id contains the resolved symbol name (const char*)
+    const char* symbol_name = (const char*)frames[i].method_id;
+    if (symbol_name == nullptr) {
+      continue;
+    }
+
+    // Find the library containing this symbol to get the PC
+    // We search all libraries for this symbol
+    uintptr_t pc = 0;
+    CodeCache* lib = nullptr;
+    const CodeCacheArray& native_libs = _libs->native_libs();
+    int lib_count = native_libs.count();
+    for (int lib_idx = 0; lib_idx < lib_count; lib_idx++) {
+      CodeCache* candidate_lib = native_libs[lib_idx];
+      if (candidate_lib == nullptr) {
+        continue;
+      }
+
+      // Search for the symbol in this library
+      const void* symbol_addr = candidate_lib->findSymbol(symbol_name);
+      if (symbol_addr != nullptr) {
+        lib = candidate_lib;
+        pc = (uintptr_t)symbol_addr;
+        TEST_LOG("Found symbol %s in lib %s at pc=0x%lx", symbol_name, lib->name(), pc);
+        break;
+      }
+    }
+
+    // If we found the PC and the library has a build-id, apply remote symbolication
+    if (pc != 0 && lib != nullptr && lib->hasBuildId()) {
+      TEST_LOG("Applying remote symbolication to VM frame: symbol=%s, lib=%s, build-id=%s",
+               symbol_name, lib->name(), lib->buildId());
+
+      // Calculate PC offset within the library
+      uintptr_t offset = pc - (uintptr_t)lib->imageBase();
+
+      // Allocate RemoteFrameInfo
+      RemoteFrameInfo* rfi = static_cast<RemoteFrameInfo*>(malloc(sizeof(RemoteFrameInfo)));
+      if (rfi != nullptr) {
+        rfi->build_id = lib->buildId();
+        rfi->pc_offset = offset;
+        rfi->lib_index = lib->libIndex();
+
+        // Replace the frame with remote symbolication format
+        frames[i].method_id = (jmethodID)rfi;
+        frames[i].bci = BCI_NATIVE_FRAME_REMOTE;
+        TEST_LOG("Converted VM frame to remote format: build-id=%s, offset=0x%lx", rfi->build_id, rfi->pc_offset);
+      }
+    }
+  }
+}
+
+Profiler::NativeFrameResolution Profiler::resolveNativeFrame(uintptr_t pc) {
+  if (_remote_symbolication) {
+    // Remote symbolication mode: store build-id and PC offset
+    CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
+    TEST_LOG("Remote symbolication: pc=0x%lx, lib=%p, hasBuildId=%d",
+             pc, lib, lib != nullptr ? lib->hasBuildId() : -1);
+    if (lib != nullptr && lib->hasBuildId()) {
+      TEST_LOG("Using remote symbolication for lib=%s, build-id=%s",
+               lib->name(), lib->buildId());
+      // Check if this is a marked C++ interpreter frame before using remote format
+      const char *method_name = nullptr;
+      lib->binarySearch((void*)pc, &method_name);
+      if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
+        // This is C++ interpreter frame, this and later frames should be reported
+        // as Java frames returned by AGCT. Terminate the scan here.
+        return {nullptr, BCI_NATIVE_FRAME, true};
+      }
+
+      // Calculate PC offset within the library
+      uintptr_t offset = pc - (uintptr_t)lib->imageBase();
+
+      // Allocate RemoteFrameInfo (TODO: optimize with LinearAllocator)
+      RemoteFrameInfo* rfi = static_cast<RemoteFrameInfo*>(malloc(sizeof(RemoteFrameInfo)));
+      if (rfi != nullptr) {
+        rfi->build_id = lib->buildId();
+        rfi->pc_offset = offset;
+        rfi->lib_index = lib->libIndex();
+
+        return {(jmethodID)rfi, BCI_NATIVE_FRAME_REMOTE, false};
+      } else {
+        // Fallback to resolved symbol if allocation failed
+        // Need to resolve the symbol now since we didn't do it earlier
+        const char *fallback_name = nullptr;
+        lib->binarySearch((void*)pc, &fallback_name);
+        return {(jmethodID)fallback_name, BCI_NATIVE_FRAME, false};
+      }
+    } else {
+      // Library not found or no build-id, fallback to resolved symbol
+      const char *method_name = findNativeMethod((void*)pc);
+      if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
+        // This is C++ interpreter frame, this and later frames should be reported
+        // as Java frames returned by AGCT. Terminate the scan here.
+        return {nullptr, BCI_NATIVE_FRAME, true};
+      }
+      return {(jmethodID)method_name, BCI_NATIVE_FRAME, false};
+    }
+  } else {
+    // Traditional mode: resolve and store symbol name
+    const char *method_name = findNativeMethod((void*)pc);
+    if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
+      // This is C++ interpreter frame, this and later frames should be reported
+      // as Java frames returned by AGCT. Terminate the scan here.
+      return {nullptr, BCI_NATIVE_FRAME, true};
+    }
+    return {(jmethodID)method_name, BCI_NATIVE_FRAME, false};
+  }
+}
+
 int Profiler::convertNativeTrace(int native_frames, const void **callchain,
                                  ASGCT_CallFrame *frames) {
   int depth = 0;
@@ -331,68 +448,16 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
   for (int i = 0; i < native_frames; i++) {
     uintptr_t pc = (uintptr_t)callchain[i];
 
-    jmethodID current_method;
-    int current_bci;
+    // Resolve native frame using shared logic
+    NativeFrameResolution resolution = resolveNativeFrame(pc);
 
-    if (_remote_symbolication) {
-      // Remote symbolication mode: store build-id and PC offset
-      CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
-      TEST_LOG("Remote symbolication: pc=0x%lx, lib=%p, hasBuildId=%d",
-               pc, lib, lib != nullptr ? lib->hasBuildId() : -1);
-      if (lib != nullptr && lib->hasBuildId()) {
-        TEST_LOG("Using remote symbolication for lib=%s, build-id=%s",
-                 lib->name(), lib->buildId());
-        // Check if this is a marked C++ interpreter frame before using remote format
-        const char *method_name = nullptr;
-        lib->binarySearch(callchain[i], &method_name);
-        if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
-          // This is C++ interpreter frame, this and later frames should be reported
-          // as Java frames returned by AGCT. Terminate the scan here.
-          return depth;
-        }
-
-        // Calculate PC offset within the library
-        uintptr_t offset = pc - (uintptr_t)lib->imageBase();
-
-        // Allocate RemoteFrameInfo (TODO: optimize with LinearAllocator)
-        RemoteFrameInfo* rfi = static_cast<RemoteFrameInfo*>(malloc(sizeof(RemoteFrameInfo)));
-        if (rfi != nullptr) {
-          rfi->build_id = lib->buildId();
-          rfi->pc_offset = offset;
-          rfi->lib_index = lib->libIndex();
-
-          current_method = (jmethodID)rfi;
-          current_bci = BCI_NATIVE_FRAME_REMOTE;
-        } else {
-          // Fallback to resolved symbol if allocation failed
-          // Need to resolve the symbol now since we didn't do it earlier
-          const char *fallback_name = nullptr;
-          lib->binarySearch(callchain[i], &fallback_name);
-          current_method = (jmethodID)fallback_name;
-          current_bci = BCI_NATIVE_FRAME;
-        }
-      } else {
-        // Library not found or no build-id, fallback to resolved symbol
-        const char *method_name = findNativeMethod(callchain[i]);
-        if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
-          // This is C++ interpreter frame, this and later frames should be reported
-          // as Java frames returned by AGCT. Terminate the scan here.
-          return depth;
-        }
-        current_method = (jmethodID)method_name;
-        current_bci = BCI_NATIVE_FRAME;
-      }
-    } else {
-      // Traditional mode: resolve and store symbol name
-      const char *method_name = findNativeMethod(callchain[i]);
-      if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
-        // This is C++ interpreter frame, this and later frames should be reported
-        // as Java frames returned by AGCT. Terminate the scan here.
-        return depth;
-      }
-      current_method = (jmethodID)method_name;
-      current_bci = BCI_NATIVE_FRAME;
+    // Check if this is a marked frame (terminate scan)
+    if (resolution.is_marked) {
+      return depth;
     }
+
+    jmethodID current_method = resolution.method_id;
+    int current_bci = resolution.bci;
 
     // Skip duplicates in LBR stack
     if (current_method == prev_method && _cstack == CSTACK_LBR) {
@@ -770,10 +835,22 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     if (num_frames < _max_stack_depth) {
       int max_remaining = _max_stack_depth - num_frames;
       if (_features.mixed) {
-        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, max_remaining, _features, eventTypeFromBCI(event_type), &truncated);
+        int vm_start = num_frames;
+        int vm_frames = ddprof::StackWalker::walkVM(ucontext, frames + vm_start, max_remaining, _features, eventTypeFromBCI(event_type), &truncated);
+        num_frames += vm_frames;
+        // Apply remote symbolication to VM frames if enabled
+        if (_remote_symbolication) {
+          applyRemoteSymbolicationToVMFrames(frames + vm_start, vm_frames);
+        }
       } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
         if (_cstack >= CSTACK_VM) {
-          num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, max_remaining, _features, eventTypeFromBCI(event_type), &truncated);
+          int vm_start = num_frames;
+          int vm_frames = ddprof::StackWalker::walkVM(ucontext, frames + vm_start, max_remaining, _features, eventTypeFromBCI(event_type), &truncated);
+          num_frames += vm_frames;
+          // Apply remote symbolication to VM frames if enabled
+          if (_remote_symbolication) {
+            applyRemoteSymbolicationToVMFrames(frames + vm_start, vm_frames);
+          }
         } else {
           // Async events
           AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());

@@ -279,6 +279,16 @@ public:
   Error dump(const char *path, const int length);
   void logStats();
     void switchThreadEvents(jvmtiEventMode mode);
+
+  // Result of resolving a native frame for symbolication
+  struct NativeFrameResolution {
+    jmethodID method_id;  // RemoteFrameInfo* or const char* symbol name, or nullptr if marked
+    int bci;              // BCI_NATIVE_FRAME_REMOTE or BCI_NATIVE_FRAME
+    bool is_marked;       // true if this is a marked C++ interpreter frame (stop processing)
+  };
+
+  NativeFrameResolution resolveNativeFrame(uintptr_t pc);
+  void applyRemoteSymbolicationToVMFrames(ASGCT_CallFrame *frames, int num_frames);
   int convertNativeTrace(int native_frames, const void **callchain,
                          ASGCT_CallFrame *frames);
   void recordSample(void *ucontext, u64 weight, int tid, jint event_type,
