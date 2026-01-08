@@ -122,6 +122,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   }
   jvmtiEnv *jvmti = VM::jvmti();
 
+
   jvmtiPhase phase;
   jclass method_class = NULL;
   // invariant: these strings must remain null, or be assigned by JVMTI
@@ -150,11 +151,12 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         ((!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) && jvmti->GetClassSignature(method_class, &class_name, NULL) == 0) &&
         jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
 
+/*
       if (first_time) {
         jvmti->GetLineNumberTable(method, &line_number_table_size,
                                   &line_number_table);
       }
-
+*/
       // Check if the frame is Thread.run or inherits from it
       if (strncmp(method_name, "run", 4) == 0 &&
           strncmp(method_sig, "()V", 3) == 0) {
@@ -247,11 +249,12 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
     mi->_sig = method_sig_id;
     mi->_type = FRAME_INTERPRETED;
     mi->_is_entry = entry;
+    /*
     if (line_number_table != nullptr) {
       mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
           line_number_table_size, line_number_table);
     }
-
+*/
     // strings are null or came from JVMTI
     if (method_name) {
       jvmti->Deallocate((unsigned char *)method_name);
