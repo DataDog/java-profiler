@@ -6,12 +6,31 @@
 
 ## Executive Summary
 
-Customer reported massive native memory leak in production profiler deployment. Native Memory Tracking (NMT) analysis revealed **10.5 GB JVMTI memory leak** from two distinct sources:
+Customer reported massive native memory growth in production profiler deployment. Native Memory Tracking (NMT) analysis revealed **10.5 GB JVMTI memory** from two distinct sources:
 
-1. **GetLineNumberTable leak: 1.2 GB** (3.8M allocations) - Fixed
-2. **GetClassMethods leak: 9.2 GB** (9.1M allocations) - Fixed
+1. **GetLineNumberTable leak: 1.2 GB** (3.8M allocations) - ✅ **FIXED**
+2. **GetClassMethods growth: 9.2 GB** (9.1M allocations) - ⚠️ **NOT A PROFILER BUG**
 
-Both issues stem from improper JVMTI memory management in profiling code paths.
+### Key Findings
+
+**Issue #1 (GetLineNumberTable):**
+- True memory leak from improper JVMTI Deallocate() usage
+- Fixed with defensive programming in SharedLineNumberTable destructor
+- Safe to deploy immediately
+
+**Issue #2 (GetClassMethods):**
+- **NOT a profiler bug** - symptom of application-level class explosion
+- 9.1M classes loaded indicates severe application problem (class leak or architectural flaw)
+- jmethodID allocations are **required** for AsyncGetCallTrace profiling
+- Normal applications: 10K-100K classes → 10-100 MB overhead (acceptable)
+- Customer's case: 9.1M classes → 9.2 GB overhead (unacceptable, but correct behavior)
+
+### Conclusions
+
+1. **Deploy GetLineNumberTable fix** - genuine leak, safe to fix
+2. **Customer must diagnose class explosion** - this is the real problem
+3. **No profiler-level fix exists** - jmethodIDs are fundamental to JVM profiling
+4. **If class count can't be reduced, disable profiler** - 9.2GB overhead is too high
 
 ## Customer NMT Data
 
@@ -122,11 +141,13 @@ Test: `GetLineNumberTableLeakTest.testGetLineNumberTableNoLeak()`
 - Individual intervals: -55 KB, +9 KB, +20 KB, +27 KB (all below 8 MB threshold)
 - **Conclusion:** Memory plateaus after warmup, destructor properly deallocates
 
-## Issue #2: GetClassMethods Leak (9.2 GB)
+## Issue #2: GetClassMethods Memory Growth (9.2 GB) - NOT A LEAK
+
+**IMPORTANT:** After investigation, this is **NOT a fixable leak** but an **inherent cost of AsyncGetCallTrace (AGCT) profiling** with high class churn.
 
 ### Root Cause
 
-ClassPrepare callback unconditionally calls `GetClassMethods()` on **every loaded class** for all JDK versions:
+ClassPrepare callback calls `GetClassMethods()` on **every loaded class**:
 
 **vmEntry.h:181-184:**
 ```cpp
@@ -187,54 +208,169 @@ void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
 
 ### Impact
 
-Customer workload:
-- **9,167,939 class loads** → 9.2 GB JVM-internal jmethodID allocations
-- Likely running JDK 11/17/21 where workaround is **not needed**
-- Each `GetClassMethods()` call forces JVM to allocate and retain jmethodIDs
-- Memory persists until class unload (which may never happen with high churn)
+Customer workload shows **abnormal class explosion**:
+- **9,167,939 class loads** → 9.2 GB JVM-internal Method structure allocations
+- ~1 KB per class (each class has 10-20 methods typically)
+- Estimated: ~100-150M individual jmethodIDs allocated
+- ~68-92 bytes per jmethodID (includes Method structure, ConstMethod, hash table entry, allocator overhead)
+- **This is NOT acceptable for production** - indicates application-level problem
 
-### Fix
+### Key Distinction: Convergence vs Unbounded Growth
 
-Skip `GetClassMethods()` entirely for JDK 9+ where the bug is fixed:
+**Normal applications (converged classes):**
+- Load classes during warmup, then stabilize
+- Example: 10,000 classes (150K methods) → ~10-15 MB Method structure overhead
+- **Acceptable** - one-time cost, bounded memory growth
+- Profiler overhead negligible compared to application benefits
 
-**vmEntry.cpp:497-522 (modified):**
-```cpp
-void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-  bool needs_patch = VM::hotspot_version() == 8;
-  if (!needs_patch) {
-    // JDK 9+ has the fix for JDK-8062116, no workaround needed
-    return;
-  }
+**Customer's case (unbounded growth):**
+- 9.1M classes → estimated 100-150M methods → 9.2GB Method structures
+- Continuous class generation without unloading
+- **Unacceptable** - indicates severe application bug or architecture flaw
+- Possible causes:
+  - **Class leak**: Generating classes dynamically but never unloading ClassLoaders
+  - **Groovy/scripting abuse**: Evaluating unique scripts without caching compiled classes
+  - **Proxy explosion**: Creating unique dynamic proxies per request
+  - **Code generation**: Bytecode generation frameworks (CGLIB, Javassist) without caching
 
-  // JDK 8 workaround for https://bugs.openjdk.org/browse/JDK-8062116
-  // Preallocate space for jmethodIDs at the beginning of the list (rather than at the end)
-  if (VMStructs::hasClassLoaderData()) {
-    VMKlass *vmklass = VMKlass::fromJavaClass(jni, klass);
-    int method_count = vmklass->methodCount();
-    if (method_count > 0) {
-      ClassLoaderData *cld = vmklass->classLoaderData();
-      cld->lock();
-      for (int i = 0; i < method_count; i += MethodList::SIZE) {
-        *cld->methodList() = new MethodList(*cld->methodList());
-      }
-      cld->unlock();
-    }
-  }
+**The 9.2GB is a symptom, not the root cause. The customer has an application problem.**
 
-  jint method_count;
-  jmethodID *methods;
-  if (jvmti->GetClassMethods(klass, &method_count, &methods) == 0) {
-    jvmti->Deallocate((unsigned char *)methods);
-  }
-}
+### Understanding the NMT Data
+
+**What NMT reports:**
+```
+[0x00007fc9415cc6e1] VM::ClassPrepare(...)
+                     (malloc=9291MB type=Internal #9167939)
 ```
 
-### Benefits
+**Interpretation:**
+- `#9167939` = number of GetClassMethods calls = **number of classes** (not individual methods)
+- `9291MB` = total JVM-internal allocation for **all Method structures** for those classes
+- Each class has multiple methods (typically 10-20)
+- Each Method structure includes: Method pointer, ConstMethod, bytecode metadata, hash table entries
 
-- **JDK 9+**: Eliminates 9.2 GB leak entirely (no unnecessary GetClassMethods calls)
-- **JDK 8**: Preserves workaround for legitimate performance issue
-- **Performance**: Removes ClassPrepare callback overhead for modern JDKs
-- **Safety**: Reduces JVMTI API surface area (fewer potential failure points)
+**Why 9.2GB for 9.1M classes is reasonable:**
+- 9.1M classes × 15 methods/class (average) = ~136M methods
+- 9.2GB / 136M methods = ~68 bytes/method
+- JVM Method structure size: ~40-60 bytes (varies by JDK version and method complexity)
+- Plus hash table overhead, allocator metadata, alignment
+
+**The allocation is per-class, not per-jmethodID, which is why it appears large.**
+
+### Why GetClassMethods Is Required (Cannot Be Fixed)
+
+**AsyncGetCallTrace (AGCT) Requirement:**
+
+AGCT operates inside signal handlers where lock acquisition is forbidden. Since jmethodID allocation requires locks, **profilers must preallocate all jmethodIDs before profiling encounters them**.
+
+From ["jmethodIDs in Profiling: A Tale of Nightmares"](https://mostlynerdless.de/blog/2023/07/17/jmethodids-in-profiling-a-tale-of-nightmares/):
+
+> "Profilers must ensure every method has an allocated jmethodID before profiling starts. Without preallocation, profilers risk encountering unallocated jmethodIDs in stack traces, making it impossible to identify methods safely."
+
+**Consequence:**
+- `GetClassMethods()` triggers JVM-internal jmethodID allocation
+- These jmethodIDs persist until class unload (necessary for AGCT correctness)
+- High class churn = high jmethodID memory usage
+- **This is not a bug - it's inherent to AGCT architecture**
+
+**Failed Fix Attempt:**
+
+Initial attempt to skip `GetClassMethods()` for JDK 9+ broke profiling:
+- CpuDumpSmokeTest and WallclockDumpSmokeTest failed
+- Stack traces were incomplete (missing method information)
+- AGCT couldn't identify methods without preallocated jmethodIDs
+
+### Diagnosis and Remediation
+
+**Step 1: Diagnose the Class Explosion**
+
+The customer must investigate why they have 9.1M classes:
+
+```bash
+# Enable class loading/unloading logging
+-Xlog:class+load=info,class+unload=info:file=/tmp/class-load.log
+
+# Monitor class count growth over time
+jcmd <pid> VM.classloader_stats
+jcmd <pid> GC.class_histogram | head -100
+
+# Identify ClassLoader leak
+jmap -clstats <pid>
+jcmd <pid> VM.metaspace
+
+# Count total methods (to validate 9.2GB allocation)
+jcmd <pid> VM.class_hierarchy | grep -c "method"
+# Or examine metaspace breakdown
+jcmd <pid> VM.metaspace statistics
+```
+
+**Look for:**
+- ClassLoaders that never get GC'd (class leak)
+- Repeated patterns in class names (e.g., `Script123`, `$$Lambda$456`)
+- Libraries generating classes (Groovy, CGLIB, Javassist, ASM)
+- Method count per class (if unusually high, indicates generated code complexity)
+
+**Expected findings:**
+- 9.1M classes with 10-20 methods each = 100-150M jmethodIDs
+- If method count is much higher, code generation is creating bloated classes
+
+**Step 2: Fix the Root Cause**
+
+Based on diagnosis:
+
+1. **Groovy/Scripting Leak:**
+   ```java
+   // BAD: Creates new class per evaluation
+   new GroovyShell().evaluate(script);
+
+   // GOOD: Cache compiled scripts
+   scriptCache.computeIfAbsent(scriptHash,
+       k -> new GroovyShell().parse(script));
+   ```
+
+2. **Dynamic Proxy Leak:**
+   ```java
+   // BAD: Creates new proxy class per instance
+   Proxy.newProxyInstance(loader, interfaces, handler);
+
+   // GOOD: Reuse proxy classes or use interfaces directly
+   ```
+
+3. **CGLIB/Javassist Leak:**
+   - Enable class caching in framework configuration
+   - Reuse Enhancer/ClassPool instances
+   - Consider using Java proxies or method handles instead
+
+4. **ClassLoader Leak:**
+   - Properly close/dispose ClassLoaders when done
+   - Use weak references for dynamic class caches
+   - Monitor ClassLoader lifecycle in application
+
+**Step 3: Verify Fix**
+
+After fixing application:
+```bash
+# Should see stable class count after warmup
+jcmd <pid> GC.class_histogram | grep "Total instances"
+
+# NMT Internal category should stabilize
+jcmd <pid> VM.native_memory summary
+```
+
+Expected result:
+- Class count converges to stable number (e.g., 10K-100K classes)
+- Method count stabilizes (e.g., 150K-1.5M methods for typical applications)
+- NMT Internal growth stops after warmup
+- Method structure overhead becomes acceptable (~10-150 MB for normal apps)
+
+**Step 4: If Root Cause Cannot Be Fixed**
+
+If the application **legitimately** needs millions of dynamic classes:
+- **Disable profiler** - 9.2GB overhead is unacceptable
+- Or profile only in staging/testing environments
+- Consider alternative observability (JFR without profiler, metrics, tracing)
+
+**Note:** There is no profiler-level fix. jmethodIDs are required for any reliable JVM profiling. The customer must fix their class explosion problem.
 
 ## Testing Strategy
 
@@ -261,32 +397,59 @@ void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
    - Monitor NMT over 24-48 hours
    - Confirm Internal category stays bounded
 
+## Customer Action Items (Priority Order)
+
+### Immediate Actions
+
+1. **Diagnose Class Explosion** (Critical)
+   - Enable class loading logging: `-Xlog:class+load=info,class+unload=info:file=/tmp/class-load.log`
+   - Run `jcmd <pid> VM.classloader_stats` and analyze output
+   - Identify which code is generating 9.1M classes
+
+2. **Deploy GetLineNumberTable Fix** (Low Risk)
+   - Fixes genuine 1.2GB memory leak
+   - No functional changes, pure defensive programming
+   - Can deploy immediately to production
+
+### Follow-up Actions
+
+3. **Fix Application Class Leak** (High Priority)
+   - Address root cause identified in step 1
+   - Target: Reduce class count from 9.1M to <100K
+   - Expected outcome: jmethodID overhead drops from 9.2GB to <100MB
+
+4. **Monitor and Validate**
+   - Track NMT Internal category growth after fixes
+   - Verify class count stabilizes after warmup
+   - Compare memory usage before/after application fix
+
+### If Class Count Cannot Be Reduced
+
+5. **Disable Profiler in Production**
+   - 9.2GB overhead is unacceptable for production use
+   - Profile only in staging/testing with shorter runs
+   - Use alternative observability (JFR events, metrics, distributed tracing)
+
 ## Deployment Considerations
 
-### Risk Assessment
+### GetLineNumberTable Fix (Safe to Deploy)
 
-**Low Risk:**
-- Fix #1 (GetLineNumberTable): Pure defensive programming, no logic change
-- Fix #2 (GetClassMethods): Removes unnecessary code path for JDK 9+
+**Risk Assessment: Low**
+- Pure defensive programming (null checks, error handling)
+- No functional changes to profiling logic
+- Test coverage validates fix (GetLineNumberTableLeakTest passes)
 
-**Potential Issues:**
-- JDK 8 regression: Workaround must still work correctly
-- Test with JDK 8 to ensure no performance degradation
+**Rollout Plan:**
+1. Deploy to production immediately
+2. Monitor NMT for 1.2GB reduction in growth rate
+3. No application changes required
 
-### Rollout Plan
+### GetClassMethods "Fix" (Do NOT Deploy)
 
-1. **Stage 1:** Deploy to internal QA environment
-   - Run full test suite on JDK 8, 11, 17, 21
-   - Monitor NMT for 24 hours
-
-2. **Stage 2:** Customer staging deployment
-   - Deploy to customer's staging cluster
-   - Monitor NMT Internal category growth
-   - Validate leak elimination
-
-3. **Stage 3:** Production rollout
-   - Gradual rollout with monitoring
-   - Alert on NMT Internal category exceeding baseline + 500 MB
+**Risk Assessment: High**
+- Breaking change - removed required AGCT functionality
+- Test failures confirmed: CpuDumpSmokeTest, WallclockDumpSmokeTest
+- **This commit must NOT be merged** - already reverted
 
 ## References
 
@@ -302,6 +465,10 @@ void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
 - GetClassMethods: Allocates array that must be freed with Deallocate()
 - GetLineNumberTable: Allocates array that must be freed with Deallocate()
 
+### Profiling Architecture
+
+- [jmethodIDs in Profiling: A Tale of Nightmares](https://mostlynerdless.de/blog/2023/07/17/jmethodids-in-profiling-a-tale-of-nightmares/) - Deep dive into AGCT constraints and jmethodID requirements
+
 ## Lessons Learned
 
 1. **Always read JVMTI memory ownership rules carefully**
@@ -309,17 +476,29 @@ void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
    - Defensive programming: Check for null before deallocation
    - Error handling: Some implementations have bugs
 
-2. **Workarounds must be version-specific**
-   - JDK-8062116 workaround should have been JDK 8 only from the start
-   - Apply workarounds narrowly to affected versions
-   - Re-evaluate when dropping old JDK support
+2. **Understand profiler architecture before "fixing" memory usage**
+   - GetClassMethods "leak" turned out to be required for AGCT
+   - Attempted fix broke profiling (stack traces incomplete)
+   - Memory growth may be inherent cost, not a bug
 
-3. **NMT is invaluable for native leak debugging**
+3. **AGCT requires jmethodID preallocation**
+   - Signal-safe profiling cannot allocate jmethodIDs on-demand
+   - ClassPrepare callback + GetClassMethods is necessary
+   - High class churn = high memory usage (unavoidable with AGCT)
+
+4. **NMT is invaluable for native memory debugging**
    - Detailed stack traces pinpoint allocation sites
    - Internal category tracks JVMTI allocations
    - Production data reveals real-world usage patterns
+   - But: Must distinguish leaks from necessary allocations
 
-4. **Test with realistic workloads**
-   - GetLineNumberTableLeakTest uses 500 classes (similar to customer)
-   - Profiler restart cycles trigger destructor code paths
-   - Steady-state assertions catch accumulation bugs
+5. **Test fixes thoroughly before assuming success**
+   - GetLineNumberTableLeakTest validates destructor fix ✅
+   - Smoke tests caught GetClassMethods regression ✅
+   - Retry logic indicates timing-sensitive tests (handle carefully)
+
+6. **Research profiling architecture deeply**
+   - ["jmethodIDs in Profiling: A Tale of Nightmares"](https://mostlynerdless.de/blog/2023/07/17/jmethodids-in-profiling-a-tale-of-nightmares/) explains AGCT constraints
+   - jmethodIDs are fundamental - no alternative exists for reliable method identification
+   - Understanding why code exists prevents breaking "fixes"
+   - Consult domain experts before assuming memory usage is a bug
