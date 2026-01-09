@@ -31,7 +31,7 @@ Added fields to store build-id information:
 ### 3. **Remote Frame Information** (`vmEntry.h`)
 
 - **RemoteFrameInfo**: New structure containing:
-  - `build_id`: Library build-id
+  - `build_id_hex`: Library build-id as hex string pointer
   - `pc_offset`: PC offset within library
   - `lib_index`: Library table index
 - **BCI_NATIVE_FRAME_REMOTE**: New frame encoding (-19)
