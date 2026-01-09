@@ -314,7 +314,6 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
     int dwarf_frames = ddprof::StackWalker::walkDwarf(ucontext, callchain + native_frames,
                                             max_depth - native_frames,
                                             java_ctx, truncated);
-    TEST_LOG("getNativeTrace: walkDwarf returned %d frames", dwarf_frames);
     native_frames += dwarf_frames;
   } else {
     native_frames += ddprof::StackWalker::walkFP(ucontext, callchain + native_frames,
@@ -323,7 +322,6 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
   }
 
   int converted_frames = convertNativeTrace(native_frames, callchain, frames, lock_index);
-  TEST_LOG("getNativeTrace: returning %d frames (from %d native frames)", converted_frames, native_frames);
   return converted_frames;
 }
 
@@ -408,7 +406,6 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrame(uintptr_t pc) {
 
 int Profiler::convertNativeTrace(int native_frames, const void **callchain,
                                  ASGCT_CallFrame *frames, int lock_index) {
-  TEST_LOG("convertNativeTrace: converting %d native frames, remotesym=%d", native_frames, _remote_symbolication);
   int depth = 0;
   jmethodID prev_method = NULL;
 
@@ -420,7 +417,6 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
 
     // Check if this is a marked frame (terminate scan)
     if (resolution.is_marked) {
-      TEST_LOG("convertNativeTrace: found marked frame at i=%d, stopping", i);
       return depth;
     }
 
@@ -437,7 +433,6 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
     }
   }
 
-  TEST_LOG("convertNativeTrace: converted to %d frames", depth);
   return depth;
 }
 
