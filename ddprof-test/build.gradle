@@ -68,6 +68,7 @@ def addCommonTestDependencies(Configuration configuration) {
   configuration.dependencies.add(project.dependencies.create('org.lz4:lz4-java:1.8.0'))
   configuration.dependencies.add(project.dependencies.create('org.xerial.snappy:snappy-java:1.1.10.1'))
   configuration.dependencies.add(project.dependencies.create('com.github.luben:zstd-jni:1.5.5-4'))
+  configuration.dependencies.add(project.dependencies.create('org.ow2.asm:asm:9.6'))
   configuration.dependencies.add(project.dependencies.project(path: ":ddprof-test-tracer"))
 }
 
@@ -277,9 +278,27 @@ tasks.withType(Test).configureEach {
   def keepRecordings = project.hasProperty("keepJFRs") || Boolean.parseBoolean(System.getenv("KEEP_JFRS"))
   environment("CI", project.hasProperty("CI") || Boolean.parseBoolean(System.getenv("CI")))
 
-  jvmArgs "-Dddprof_test.keep_jfrs=${keepRecordings}", '-Djdk.attach.allowAttachSelf', '-Djol.tryWithSudo=true',
-    "-Dddprof_test.config=${config}", "-Dddprof_test.ci=${project.hasProperty('CI')}", "-Dddprof.disable_unsafe=true", '-XX:ErrorFile=build/hs_err_pid%p.log', '-XX:+ResizeTLAB',
-    '-Xmx512m', '-XX:OnError=/tmp/do_stuff.sh', "-Djava.library.path=${outputLibDir.absolutePath}"
+  // Base JVM arguments
+  def jvmArgsList = [
+    "-Dddprof_test.keep_jfrs=${keepRecordings}",
+    '-Djdk.attach.allowAttachSelf',
+    '-Djol.tryWithSudo=true',
+    "-Dddprof_test.config=${config}",
+    "-Dddprof_test.ci=${project.hasProperty('CI')}",
+    "-Dddprof.disable_unsafe=true",
+    '-XX:ErrorFile=build/hs_err_pid%p.log',
+    '-XX:+ResizeTLAB',
+    '-Xmx512m',
+    '-XX:OnError=/tmp/do_stuff.sh',
+    "-Djava.library.path=${outputLibDir.absolutePath}"
+  ]
+
+  // Enable Native Memory Tracking for leak detection tests if requested
+  if (project.hasProperty('enableNMT') || Boolean.parseBoolean(System.getenv("ENABLE_NMT"))) {
+    jvmArgsList.add('-XX:NativeMemoryTracking=detail')
+  }
+
+  jvmArgs jvmArgsList
 
   def javaHome = System.getenv("JAVA_TEST_HOME")
   if (javaHome == null) {
