@@ -113,12 +113,27 @@ void Lookup::fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi) {
   // Build method name: <build-id>.<remote> (one entry per build-id in constant pool)
   // Stack buffers for formatting - no heap allocation
   char method_name[128] = {0};
-  snprintf(method_name, sizeof(method_name), "%s.<remote>", rfi->build_id_hex);
+  int method_name_len =
+      snprintf(method_name, sizeof(method_name), "%s.<remote>", rfi->build_id_hex);
+  if (method_name_len < 0 || (size_t)method_name_len >= sizeof(method_name)) {
+    // Truncation or encoding error: fall back to a safe, short name
+    const char *fallback_method_name = "unknown.<remote>";
+    // Guaranteed to fit into method_name (128 bytes)
+    strncpy(method_name, fallback_method_name, sizeof(method_name) - 1);
+    method_name[sizeof(method_name) - 1] = '\0';
+  }
 
   // Build signature: (0x<offset>) (one entry per offset in constant pool)
   // This splits build-id and PC to reduce string cardinality
   char sig_buffer[32] = {0};
-  snprintf(sig_buffer, sizeof(sig_buffer), "(0x%lx)", rfi->pc_offset);
+  int sig_len =
+      snprintf(sig_buffer, sizeof(sig_buffer), "(0x%lx)", rfi->pc_offset);
+  if (sig_len < 0 || (size_t)sig_len >= sizeof(sig_buffer)) {
+    // Truncation or encoding error: fall back to a minimal, valid signature
+    const char *fallback_sig = "(0x0)";
+    strncpy(sig_buffer, fallback_sig, sizeof(sig_buffer) - 1);
+    sig_buffer[sizeof(sig_buffer) - 1] = '\0';
+  }
 
   TEST_LOG("fillRemoteFrameInfo: method_name='%s', sig='%s'", method_name, sig_buffer);
 
