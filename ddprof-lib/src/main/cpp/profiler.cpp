@@ -342,11 +342,30 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrame(uintptr_t pc, int l
       // Calculate PC offset within the library
       uintptr_t offset = pc - (uintptr_t)lib->imageBase();
 
-      // Allocate from pre-allocated pool (signal-safe, no malloc!)
-      int frame_idx = _remote_frame_count[lock_index];
+      // Atomically reserve a frame index from pre-allocated pool (signal-safe, no malloc!)
+      int frame_idx;
+      for (;;) {
+        int current = __atomic_load_n(&_remote_frame_count[lock_index], __ATOMIC_RELAXED);
+        if (current >= MAX_NATIVE_FRAMES) {
+          frame_idx = current;  // Pool exhausted
+          break;
+        }
+        int expected = current;
+        int desired = current + 1;
+        if (__atomic_compare_exchange_n(&_remote_frame_count[lock_index],
+                                        &expected,
+                                        desired,
+                                        false,
+                                        __ATOMIC_RELAXED,
+                                        __ATOMIC_RELAXED)) {
+          frame_idx = current;  // Successfully reserved this index
+          break;
+        }
+        // CAS failed, retry with updated current value
+      }
+
       if (frame_idx < MAX_NATIVE_FRAMES) {
         RemoteFrameInfo* rfi = &_remote_frame_pool[lock_index][frame_idx];
-        _remote_frame_count[lock_index]++;
 
         // Store pointer to build-id hex string (signal-safe, no copy needed)
         // CodeCache objects persist during profiling, so pointer remains valid

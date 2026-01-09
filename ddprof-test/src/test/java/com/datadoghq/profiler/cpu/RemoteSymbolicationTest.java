@@ -79,6 +79,8 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
 
     @RetryTest(10)
     @TestTemplate
+    // @ValueSource is read by CStackInjector (TestTemplateInvocationContextProvider)
+    // to generate parameterized test invocations with platform-specific filtering
     @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
     public void testRemoteSymbolicationEnabled(@CStack String cstack) throws Exception {
         try (ProfiledCode profiledCode = new ProfiledCode(profiler)) {

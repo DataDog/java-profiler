@@ -67,15 +67,19 @@ CodeCache::CodeCache(const CodeCache &other) {
   _debug_symbols = other._debug_symbols;
 
   // Copy build-id information
-  _build_id_len = other._build_id_len;
   if (other._build_id != nullptr && other._build_id_len > 0) {
     size_t hex_str_len = strlen(other._build_id);
     _build_id = static_cast<char*>(malloc(hex_str_len + 1));
     if (_build_id != nullptr) {
       strcpy(_build_id, other._build_id);
+      _build_id_len = other._build_id_len;
+    } else {
+      // malloc failed - set consistent state
+      _build_id_len = 0;
     }
   } else {
     _build_id = nullptr;
+    _build_id_len = 0;
   }
   _load_bias = other._load_bias;
 
@@ -114,15 +118,20 @@ CodeCache &CodeCache::operator=(const CodeCache &other) {
     _debug_symbols = other._debug_symbols;
 
     // Copy build-id information
-    _build_id_len = other._build_id_len;
     if (other._build_id != nullptr && other._build_id_len > 0) {
       size_t hex_str_len = strlen(other._build_id);
       _build_id = static_cast<char*>(malloc(hex_str_len + 1));
       if (_build_id != nullptr) {
         strcpy(_build_id, other._build_id);
+        _build_id_len = other._build_id_len;
+      } else {
+        // malloc failed - set consistent state
+        _build_id = nullptr;
+        _build_id_len = 0;
       }
     } else {
       _build_id = nullptr;
+      _build_id_len = 0;
     }
     _load_bias = other._load_bias;
 

@@ -117,9 +117,9 @@ private:
   // --
 
   ThreadInfo _thread_info;
-  Dictionary _class_map = Dictionary(1);          // Increments DICTIONARY_CLASSES_KEYS
-  Dictionary _string_label_map = Dictionary(2);   // Increments DICTIONARY_ENDPOINTS_KEYS
-  Dictionary _context_value_map = Dictionary(3);  // Increments DICTIONARY_CONTEXT_KEYS
+  Dictionary _class_map;          // Increments DICTIONARY_CLASSES_KEYS (initialized in constructor with ID=1)
+  Dictionary _string_label_map;   // Increments DICTIONARY_ENDPOINTS_KEYS (initialized in constructor with ID=2)
+  Dictionary _context_value_map;  // Increments DICTIONARY_CONTEXT_KEYS (initialized in constructor with ID=3)
   ThreadFilter _thread_filter;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;

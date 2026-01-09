@@ -73,6 +73,8 @@ char* SymbolsLinux::extractBuildIdFromMemory(const void* elf_base, size_t elf_si
     }
 
     const char* base = static_cast<const char*>(elf_base);
+    // Safe to cast to Elf64_Phdr because we verified ELFCLASS64 above
+    // 32-bit binaries are rejected at line 66, so all program headers here are 64-bit
     const Elf64_Phdr* phdr = reinterpret_cast<const Elf64_Phdr*>(base + ehdr->e_phoff);
 
     // Search for PT_NOTE segments
@@ -99,7 +101,8 @@ const uint8_t* SymbolsLinux::findBuildIdInNotes(const void* note_data, size_t no
     const char* data = static_cast<const char*>(note_data);
     size_t offset = 0;
 
-    while (offset + sizeof(Elf64_Nhdr) < note_size) {
+    // Ensure we can safely read the entire Elf64_Nhdr before dereferencing
+    while (offset + sizeof(Elf64_Nhdr) <= note_size) {
         const Elf64_Nhdr* nhdr = reinterpret_cast<const Elf64_Nhdr*>(data + offset);
 
         // Calculate aligned sizes
