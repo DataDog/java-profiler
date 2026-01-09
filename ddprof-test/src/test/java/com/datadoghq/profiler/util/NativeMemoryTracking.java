@@ -188,6 +188,51 @@ public class NativeMemoryTracking {
   }
 
   /**
+   * Asserts that Internal category memory growth between two snapshots is bounded.
+   * JVMTI allocations (like GetLineNumberTable) appear in the Internal category.
+   *
+   * @param before snapshot taken before the operation
+   * @param after snapshot taken after the operation
+   * @param maxGrowthBytes maximum allowed growth in bytes
+   * @param failureMessage message to display if assertion fails
+   */
+  public static void assertInternalMemoryBounded(
+      NMTSnapshot before, NMTSnapshot after, long maxGrowthBytes, String failureMessage) {
+    long growth = after.getInternalReservedBytes() - before.getInternalReservedBytes();
+
+    if (growth > maxGrowthBytes) {
+      String diagnostic =
+          String.format(
+              "Internal category memory grew by %d bytes (%.2f MB), exceeds limit of %d bytes (%.2f MB)\n"
+                  + "Before: %d KB reserved, %d KB committed\n"
+                  + "After: %d KB reserved (+%d KB), %d KB committed (+%d KB)\n"
+                  + "malloc before: %d KB (%d allocations)\n"
+                  + "malloc after: %d KB (+%d KB, %d allocations, +%d)\n\n"
+                  + "=== NMT Before ===\n%s\n\n"
+                  + "=== NMT After ===\n%s",
+              growth,
+              growth / (1024.0 * 1024.0),
+              maxGrowthBytes,
+              maxGrowthBytes / (1024.0 * 1024.0),
+              before.internalReservedKB,
+              before.internalCommittedKB,
+              after.internalReservedKB,
+              after.internalReservedKB - before.internalReservedKB,
+              after.internalCommittedKB,
+              after.internalCommittedKB - before.internalCommittedKB,
+              before.mallocKB,
+              before.mallocCount,
+              after.mallocKB,
+              after.mallocKB - before.mallocKB,
+              after.mallocCount,
+              after.mallocCount - before.mallocCount,
+              before.fullOutput,
+              after.fullOutput);
+      fail(failureMessage + "\n" + diagnostic);
+    }
+  }
+
+  /**
    * Asserts that JVMTI memory growth between two snapshots is bounded.
    * Legacy method - JVMTI category doesn't exist in modern JVMs.
    *
