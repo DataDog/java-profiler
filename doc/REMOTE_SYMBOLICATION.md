@@ -45,7 +45,7 @@ Modified `convertNativeTrace()` to support dual modes:
 ### 5. **JFR Serialization** (`flightRecorder.cpp/h`)
 
 - **fillRemoteFrameInfo()**: Serializes remote frame data to JFR format
-- Stores build-id in class name field
+- Stores build-id in method name field
 - Stores PC offset in signature field
 - Uses the native modifier flag (0x100 / ACC_NATIVE) and the FRAME_NATIVE_REMOTE frame type (BCI_NATIVE_FRAME_REMOTE) to indicate remote symbolication
 
