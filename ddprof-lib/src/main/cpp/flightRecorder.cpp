@@ -98,6 +98,43 @@ void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
   }
 }
 
+void Lookup::fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi) {
+  // Validate input
+  if (rfi == nullptr || rfi->build_id_hex == nullptr) {
+    // Fallback to unknown frame if invalid
+    mi->_name = _symbols.lookup("unknown");
+    mi->_sig = _symbols.lookup("");
+    mi->_modifiers = 0x100;
+    mi->_type = FRAME_NATIVE;
+    mi->_line_number_table = nullptr;
+    return;
+  }
+
+  // Build method name: <build-id>.<remote> (one entry per build-id in constant pool)
+  // Stack buffers for formatting - no heap allocation
+  char method_name[128] = {0};
+  snprintf(method_name, sizeof(method_name), "%s.<remote>", rfi->build_id_hex);
+
+  // Build signature: (0x<offset>) (one entry per offset in constant pool)
+  // This splits build-id and PC to reduce string cardinality
+  char sig_buffer[32] = {0};
+  snprintf(sig_buffer, sizeof(sig_buffer), "(0x%lx)", rfi->pc_offset);
+
+  TEST_LOG("fillRemoteFrameInfo: method_name='%s', sig='%s'", method_name, sig_buffer);
+
+  // Store in JFR constant pools (lookup() interns strings via malloc)
+  // Safe to allocate here - we're outside the signal handler during JFR flush
+  mi->_class = _classes->lookup("");          // Empty class like regular native frames
+  mi->_name = _symbols.lookup(method_name);   // Method = <build-id>.<remote>
+  mi->_sig = _symbols.lookup(sig_buffer);     // Sig = (0x<offset>)
+
+  // Use same modifiers as regular native frames (0x100 = ACC_NATIVE for consistency)
+  mi->_modifiers = 0x100;
+  // Use FRAME_NATIVE_REMOTE type to indicate remote symbolication
+  mi->_type = FRAME_NATIVE_REMOTE;
+  mi->_line_number_table = nullptr;
+}
+
 void Lookup::cutArguments(char *func) {
   char *p = strrchr(func, ')');
   if (p == NULL)
@@ -284,6 +321,10 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
       const char *name = (const char *)method;
       fillNativeMethodInfo(mi, name,
                            Profiler::instance()->getLibraryName(name));
+    } else if (frame.bci == BCI_NATIVE_FRAME_REMOTE) {
+      RemoteFrameInfo *rfi = (RemoteFrameInfo *)method;
+      fillRemoteFrameInfo(mi, rfi);
+      // Note: RemoteFrameInfo is from pre-allocated pool, no need to free
     } else {
       fillJavaMethodInfo(mi, method, first_time);
     }
@@ -946,18 +987,23 @@ void Recording::writeNativeLibraries(Buffer *buf) {
   if (_recorded_lib_count < 0)
     return;
 
-  Profiler *profiler = Profiler::instance();
-  CodeCacheArray &native_libs = profiler->_native_libs;
+  Libraries *libraries = Libraries::instance();
+  const CodeCacheArray &native_libs = libraries->native_libs();
   int native_lib_count = native_libs.count();
 
   for (int i = _recorded_lib_count; i < native_lib_count; i++) {
+    CodeCache* lib = native_libs[i];
+
+    // Emit jdk.NativeLibrary event with extended fields (buildId and loadBias)
     flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - MAX_STRING_LENGTH);
     int start = buf->skip(5);
     buf->putVar64(T_NATIVE_LIBRARY);
     buf->putVar64(_start_ticks);
-    buf->putUtf8(native_libs[i]->name());
-    buf->putVar64((uintptr_t)native_libs[i]->minAddress());
-    buf->putVar64((uintptr_t)native_libs[i]->maxAddress());
+    buf->putUtf8(lib->name());
+    buf->putVar64((uintptr_t)lib->minAddress());
+    buf->putVar64((uintptr_t)lib->maxAddress());
+    buf->putUtf8(lib->hasBuildId() ? lib->buildId() : "");
+    buf->putVar64((uintptr_t)lib->loadBias());
     buf->putVar32(start, buf->offset() - start);
     flushIfNeeded(buf);
   }
@@ -998,7 +1044,7 @@ void Recording::writeCpool(Buffer *buf) {
 
 void Recording::writeFrameTypes(Buffer *buf) {
   buf->putVar32(T_FRAME_TYPE);
-  buf->putVar32(7);
+  buf->putVar32(8);
   buf->putVar32(FRAME_INTERPRETED);
   buf->putUtf8("Interpreted");
   buf->putVar32(FRAME_JIT_COMPILED);
@@ -1013,6 +1059,8 @@ void Recording::writeFrameTypes(Buffer *buf) {
   buf->putUtf8("Kernel");
   buf->putVar32(FRAME_C1_COMPILED);
   buf->putUtf8("C1 compiled");
+  buf->putVar32(FRAME_NATIVE_REMOTE);
+  buf->putUtf8("Native (remote)");
   flushIfNeeded(buf);
 }
 

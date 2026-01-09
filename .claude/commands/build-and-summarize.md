@@ -1,7 +1,11 @@
 # build-and-summarize
 
-Runs `./gradlew` with full output captured to a timestamped log, shows minimal live progress (task starts + final build/test summary), then asks the `gradle-logs-analyst` agent to produce structured artifacts from the log.
+Execute the bash script `~/.claude/commands/build-and-summarize` with all provided arguments.
 
-## Usage
-```bash
-./.claude/commands/build-and-summarize [<gradle-args>...]
+This script will:
+- Run `./gradlew` with the specified arguments (defaults to 'build' if none provided)
+- Capture full output to a timestamped log in `build/logs/`
+- Show minimal live progress in the console
+- Delegate to the `gradle-logs-analyst` agent for structured analysis
+
+Pass through all arguments exactly as provided by the user.

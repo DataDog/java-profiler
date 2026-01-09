@@ -269,8 +269,13 @@ public:
   Dictionary _symbols;
 
 private:
+  // Reusable buffers to avoid repeated stack allocations per frame
+  char _hex_build_id_buffer[65];     // Max 32 bytes * 2 hex chars + null terminator
+  char _method_name_buffer[128];     // For remote symbolication format: <build-id>.<remote>(0x<offset>)
+
   void fillNativeMethodInfo(MethodInfo *mi, const char *name,
                             const char *lib_name);
+  void fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi);
   void cutArguments(char *func);
   void fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time);
   bool has_prefix(const char *str, const char *prefix) const {

@@ -122,7 +122,8 @@ struct StackWalkFeatures {
     unsigned short vtable_target : 1;  // show receiver classes of vtable/itable stubs
     unsigned short comp_task     : 1;  // display current compilation task for JIT threads
     unsigned short pc_addr       : 1;  // record exact PC address for each sample
-    unsigned short _padding      : 3;  // pad structure to 16 bits
+    unsigned short remote_sym    : 1;  // use remote symbolication (store build-id + offset instead of symbol names)
+    unsigned short _padding      : 2;  // pad structure to 16 bits
 };
 
 struct Multiplier {
@@ -187,6 +188,7 @@ public:
   int _jfr_options;
   std::vector<std::string> _context_attributes;
   bool _lightweight;
+  bool _remote_symbolication;  // Enable remote symbolication for native frames
 
   Arguments(bool persistent = false)
       : _buf(NULL),
@@ -219,7 +221,8 @@ public:
         _jfr_options(0),
         _context_attributes({}),
         _wallclock_sampler(ASGCT),
-        _lightweight(false) {}
+        _lightweight(false),
+        _remote_symbolication(false) {}
 
   ~Arguments();
 
