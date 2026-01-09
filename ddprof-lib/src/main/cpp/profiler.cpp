@@ -1504,6 +1504,14 @@ Error Profiler::stop() {
   _jfr.stop();
   unlockAll();
 
+  // Free remote frame pool
+  for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+    if (_remote_frame_pool[i] != NULL) {
+      free(_remote_frame_pool[i]);
+      _remote_frame_pool[i] = NULL;
+    }
+  }
+
   _state = IDLE;
   return Error::OK;
 }

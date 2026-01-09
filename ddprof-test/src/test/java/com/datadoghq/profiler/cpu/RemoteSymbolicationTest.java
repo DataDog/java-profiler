@@ -38,7 +38,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
     /**
      * Force load libddproftest BEFORE any test runs to ensure library is discovered
-     * during profiler's initial updateSymbols() scan (profiler.cpp:1377).
+     * during profiler's initial updateSymbols() scan.
      * This runs before @BeforeEach, ensuring the library is loaded before profiler.execute().
      */
     @BeforeAll

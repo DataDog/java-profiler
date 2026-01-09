@@ -131,4 +131,4 @@ When adding custom modifiers in the future:
 
 - Java Virtual Machine Specification (JVMS §4.1, §4.5, §4.6)
 - JFR Format Specification
-- Original Implementation: [elfBuildId.cpp, flightRecorder.cpp]
+- Original Implementation: [symbols_linux_dd.cpp, flightRecorder.cpp]

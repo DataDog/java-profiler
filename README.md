@@ -417,7 +417,7 @@ Added support for remote symbolication to enable offloading symbol resolution fr
 - Enables centralized symbol resolution with better caching
 - Supports scenarios where debug symbols are not available locally
 
-**Key files**: `elfBuildId.h`, `elfBuildId.cpp`, `profiler.cpp`, `flightRecorder.cpp`
+**Key files**: `symbols_linux_dd.h`, `symbols_linux_dd.cpp`, `profiler.cpp`, `flightRecorder.cpp`
 
 For detailed documentation, see [doc/REMOTE_SYMBOLICATION.md](doc/REMOTE_SYMBOLICATION.md).
 
