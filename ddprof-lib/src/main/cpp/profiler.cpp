@@ -325,6 +325,13 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
   return converted_frames;
 }
 
+// Check if method name represents a marked C++ interpreter frame.
+// Marked frames indicate we should terminate native stack scanning as subsequent
+// frames will be reported as Java frames by AGCT.
+static inline bool isMarkedInterpreterFrame(const char* method_name) {
+  return method_name != nullptr && NativeFunc::isMarked(method_name);
+}
+
 Profiler::NativeFrameResolution Profiler::resolveNativeFrame(uintptr_t pc, int lock_index) {
   if (_remote_symbolication) {
     // Remote symbolication mode: store build-id and PC offset
@@ -333,9 +340,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrame(uintptr_t pc, int l
       // Check if this is a marked C++ interpreter frame before using remote format
       const char *method_name = nullptr;
       lib->binarySearch((void*)pc, &method_name);
-      if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
-        // This is C++ interpreter frame, this and later frames should be reported
-        // as Java frames returned by AGCT. Terminate the scan here.
+      if (isMarkedInterpreterFrame(method_name)) {
         return {nullptr, BCI_NATIVE_FRAME, true};
       }
 
@@ -397,9 +402,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrame(uintptr_t pc, int l
       const char *method_name = findNativeMethod((void*)pc);
       TEST_LOG("resolveNativeFrame: PC 0x%lx -> symbol: %s (lib=%p, has_build_id=%d)",
                pc, method_name, lib, lib ? lib->hasBuildId() : 0);
-      if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
-        // This is C++ interpreter frame, this and later frames should be reported
-        // as Java frames returned by AGCT. Terminate the scan here.
+      if (isMarkedInterpreterFrame(method_name)) {
         return {nullptr, BCI_NATIVE_FRAME, true};
       }
       return {(jmethodID)method_name, BCI_NATIVE_FRAME, false};
@@ -407,9 +410,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrame(uintptr_t pc, int l
   } else {
     // Traditional mode: resolve and store symbol name
     const char *method_name = findNativeMethod((void*)pc);
-    if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
-      // This is C++ interpreter frame, this and later frames should be reported
-      // as Java frames returned by AGCT. Terminate the scan here.
+    if (isMarkedInterpreterFrame(method_name)) {
       return {nullptr, BCI_NATIVE_FRAME, true};
     }
     return {(jmethodID)method_name, BCI_NATIVE_FRAME, false};
