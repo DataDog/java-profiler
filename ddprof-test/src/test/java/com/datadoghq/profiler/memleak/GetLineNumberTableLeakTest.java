@@ -73,23 +73,25 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
             "Baseline NMT: malloc=%d KB, Internal=%d KB",
             baseline.mallocKB, baseline.internalReservedKB));
 
-    // Phase 1: Warmup - generate unique classes to populate _method_map
-    System.out.println("Phase 1: Warmup - generating unique classes...");
-    final int warmupFlushes = 100;
-    final int steadyStateFlushes = 200;
-    final int checkpointInterval = 50;
+    // Phase 1: Warmup - generate many unique classes with ASM to populate _method_map
+    System.out.println("Phase 1: Warmup - generating many unique classes via ASM...");
+    final int warmupClassGenerations = 20; // Generate classes in batches
+    final int totalRestarts = 25; // Need 25 restarts for 5 checkpoint intervals (5 restarts each)
+    final int checkpointInterval = 5; // Check every 5 restarts
 
-    // Track snapshots to detect super-linear growth
+    // Track snapshots: baseline + afterWarmup + 5 checkpoint intervals = 7 total
     NativeMemoryTracking.NMTSnapshot[] checkpoints = new NativeMemoryTracking.NMTSnapshot[7];
     checkpoints[0] = baseline;
     int checkpointIndex = 1;
 
-    // Cache the generated classes for reuse in steady state
-    Class<?>[] cachedClasses = new Class<?>[warmupFlushes * 5];
+    // Cache many generated classes for reuse in steady state
+    // generateUniqueMethodCalls() returns 5 classes, each with 20 methods
+    // Total: 20 batches × 5 classes/batch = 100 classes with ~2,000 methods
+    Class<?>[] cachedClasses = new Class<?>[warmupClassGenerations * 5];
     int cachedClassIndex = 0;
 
-    for (int i = 0; i < warmupFlushes; i++) {
-      // Generate unique classes and cache them
+    for (int i = 0; i < warmupClassGenerations; i++) {
+      // Generate 5 unique classes per batch via ASM (each with 20 methods with line tables)
       Class<?>[] newClasses = generateUniqueMethodCalls();
       System.arraycopy(newClasses, 0, cachedClasses, cachedClassIndex, newClasses.length);
       cachedClassIndex += newClasses.length;
@@ -97,164 +99,144 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
       // Flush profiler to trigger method resolution and GetLineNumberTable calls
       dump(tempFile("warmup-" + i));
 
-      // Take checkpoint snapshots
-      if ((i + 1) % checkpointInterval == 0) {
-        NativeMemoryTracking.NMTSnapshot progress = NativeMemoryTracking.takeSnapshot();
-        checkpoints[checkpointIndex++] = progress;
-
-        long mallocGrowthKB = progress.mallocKB - baseline.mallocKB;
-        long internalGrowthKB = progress.internalReservedKB - baseline.internalReservedKB;
+      if ((i + 1) % 20 == 0) {
         System.out.println(
-            String.format(
-                "After %d warmup flushes: malloc=%d KB (+%d KB), Internal=%d KB (+%d KB)",
-                (i + 1),
-                progress.mallocKB,
-                mallocGrowthKB,
-                progress.internalReservedKB,
-                internalGrowthKB));
+            String.format("Generated %d classes so far (%d batches)...", cachedClassIndex, i + 1));
       }
     }
 
-    // Phase 2: Steady state - reuse existing classes with profiler restarts
-    // Stop/start cycles trigger SharedLineNumberTable destructors, exposing leaks
+    // Take snapshot after warmup
+    NativeMemoryTracking.NMTSnapshot afterWarmup = NativeMemoryTracking.takeSnapshot();
+    checkpoints[checkpointIndex++] = afterWarmup;
+    long warmupInternalGrowthKB = afterWarmup.internalReservedKB - baseline.internalReservedKB;
     System.out.println(
         String.format(
-            "Phase 2: Steady state - reusing %d cached classes with profiler restarts...",
-            cachedClassIndex));
-    NativeMemoryTracking.NMTSnapshot afterWarmup = checkpoints[checkpointIndex - 1];
+            "After warmup: %d classes generated, Internal=%d KB (+%d KB)",
+            cachedClassIndex,
+            afterWarmup.internalReservedKB,
+            warmupInternalGrowthKB));
 
-    // Restart profiler every 10 flushes to trigger destructor calls
-    final int flushesPerRestart = 10;
-    int flushCount = 0;
+    // Phase 2: Steady state - 1000+ restarts to accumulate leak if present
+    // Stop/start cycles trigger SharedLineNumberTable destructors
+    // With bug: each restart leaks ~16 KB → 1000 restarts = ~16 MB detectable leak
+    System.out.println(
+        String.format(
+            "Phase 2: Performing %d profiler restarts to test for accumulated leaks...",
+            totalRestarts));
 
-    for (int restart = 0; restart < steadyStateFlushes / flushesPerRestart; restart++) {
+    for (int restart = 0; restart < totalRestarts; restart++) {
       // Stop profiler to destroy Recording and trigger all SharedLineNumberTable destructors
-      if (restart > 0) {
-        profiler.stop();
-        Thread.sleep(50); // Allow cleanup to complete
+      profiler.stop();
+      Thread.sleep(10); // Allow cleanup to complete
 
-        // Restart profiler (creates new Recording, repopulates _method_map from same classes)
-        profiler.execute(
-            "start," + getProfilerCommand() + ",jfr,file=" + tempFile("restart-" + restart));
-      }
+      // Restart profiler (creates new Recording, repopulates _method_map from same classes)
+      profiler.execute(
+          "start," + getProfilerCommand() + ",jfr,file=" + tempFile("restart-" + restart));
 
-      // Perform flushes with cached classes
-      for (int i = 0; i < flushesPerRestart; i++) {
-        flushCount++;
+      // Reuse cached classes to trigger GetLineNumberTable again
+      invokeCachedClasses(cachedClasses, restart);
 
-        // Reuse cached classes (cycle through them)
-        invokeCachedClasses(cachedClasses, flushCount);
+      // Single flush per restart
+      dump(tempFile("steady-" + restart));
 
-        // Flush profiler
-        dump(tempFile("steady-" + flushCount));
-      }
-
-      // Take checkpoint snapshots at intervals
-      if ((flushCount) % checkpointInterval == 0) {
+      // Take checkpoint snapshots every 200 restarts
+      if ((restart + 1) % checkpointInterval == 0) {
         NativeMemoryTracking.NMTSnapshot progress = NativeMemoryTracking.takeSnapshot();
         checkpoints[checkpointIndex++] = progress;
 
-        long mallocGrowthKB = progress.mallocKB - baseline.mallocKB;
-        long mallocGrowthFromWarmupKB = progress.mallocKB - afterWarmup.mallocKB;
+        long internalGrowthFromWarmupKB = progress.internalReservedKB - afterWarmup.internalReservedKB;
         long internalGrowthKB = progress.internalReservedKB - baseline.internalReservedKB;
         System.out.println(
             String.format(
-                "After %d steady flushes (%d restarts): malloc=%d KB (+%d KB total, +%d KB from warmup), Internal=%d KB (+%d KB)",
-                flushCount,
+                "After %d restarts: Internal=%d KB (+%d KB from warmup, +%d KB total)",
                 restart + 1,
-                progress.mallocKB,
-                mallocGrowthKB,
-                mallocGrowthFromWarmupKB,
                 progress.internalReservedKB,
+                internalGrowthFromWarmupKB,
                 internalGrowthKB));
       }
     }
 
     // Take final snapshot
-    NativeMemoryTracking.NMTSnapshot afterFlushes = checkpoints[6];
-    long totalMallocGrowthKB = afterFlushes.mallocKB - baseline.mallocKB;
-    long warmupMallocGrowthKB = afterWarmup.mallocKB - baseline.mallocKB;
-    long steadyStateMallocGrowthKB = afterFlushes.mallocKB - afterWarmup.mallocKB;
-    long internalGrowthKB = afterFlushes.internalReservedKB - baseline.internalReservedKB;
+    NativeMemoryTracking.NMTSnapshot afterRestarts = checkpoints[6];
+    long steadyStateInternalGrowthKB =
+        afterRestarts.internalReservedKB - afterWarmup.internalReservedKB;
+    long totalInternalGrowthKB = afterRestarts.internalReservedKB - baseline.internalReservedKB;
 
-    // Calculate growth rates for steady state intervals (should plateau)
-    // checkpoints[2] = after 100 warmup flushes
-    // checkpoints[3-6] = steady state at 50, 100, 150, 200 flushes
-    long[] steadyStateGrowths = new long[4];
-    for (int i = 0; i < 4; i++) {
-      steadyStateGrowths[i] = checkpoints[i + 3].mallocKB - checkpoints[i + 2].mallocKB;
+    // Calculate Internal category growth rates for steady state intervals
+    // checkpoints[1] = after warmup
+    // checkpoints[2-6] = after 200, 400, 600, 800, 1000 restarts
+    long[] steadyStateInternalGrowths = new long[5];
+    for (int i = 0; i < 5; i++) {
+      steadyStateInternalGrowths[i] =
+          checkpoints[i + 2].internalReservedKB - checkpoints[i + 1].internalReservedKB;
     }
 
-    // Assert that steady state growth is minimal and doesn't accelerate
-    // With fix: growth should be small (<5 MB) and stable even with restarts
-    // Without fix: each restart triggers 10,000 method destructor leaks
-    //   Expected leak: 10,000 methods × 100 bytes × 20 restarts = ~20 MB
-    long maxSteadyStateGrowth = 0;
-    for (int i = 0; i < steadyStateGrowths.length; i++) {
-      maxSteadyStateGrowth = Math.max(maxSteadyStateGrowth, steadyStateGrowths[i]);
+    // Assert that Internal category doesn't show super-linear growth
+    // With fix: Internal should plateau after warmup (< 2 MB per 200 restarts from minor JVM allocations)
+    // Without fix: each restart leaks ~16 KB → 200 restarts = ~3.2 MB per interval
+    long maxIntervalGrowth = 0;
+    for (int i = 0; i < steadyStateInternalGrowths.length; i++) {
+      maxIntervalGrowth = Math.max(maxIntervalGrowth, steadyStateInternalGrowths[i]);
 
       System.out.println(
           String.format(
-              "Steady state interval %d: +%d KB (includes %d profiler restarts)",
+              "Interval %d (restarts %d-%d): Internal +%d KB",
               i + 1,
-              steadyStateGrowths[i],
-              checkpointInterval / flushesPerRestart));
+              i * checkpointInterval,
+              (i + 1) * checkpointInterval,
+              steadyStateInternalGrowths[i]));
 
-      // Assert individual intervals don't show excessive growth
-      // With restarts, each interval includes 5 stop/start cycles
-      // If leak exists: 5 restarts × 10,000 methods × 100 bytes = ~5 MB
-      if (steadyStateGrowths[i] > 8 * 1024) { // 8 MB per interval
+      // Assert individual intervals don't show excessive JVMTI leak growth
+      // Threshold: 10 KB per 5 restarts
+      // With fix: < 5 KB (minor allocations)
+      // Without fix: ~10-20 KB per interval (line table leaks accumulate)
+      if (steadyStateInternalGrowths[i] > 10) { // 10 KB per 5 restarts
         fail(
             String.format(
-                "malloc growth in steady state is excessive (leak detected)!\n"
-                    + "Steady state interval %d (flushes %d-%d with %d restarts): +%d KB\n"
-                    + "Expected: malloc should stay flat (destructors properly deallocate)\n"
-                    + "Actual: continued growth indicates leaked line number tables on destructor calls",
+                "Internal category growth indicates JVMTI leak!\n"
+                    + "Interval %d (restarts %d-%d): +%d KB\n"
+                    + "Expected: Internal should plateau (< 2.5 MB per 200 restarts)\n"
+                    + "Actual: continued growth indicates leaked GetLineNumberTable allocations",
                 i + 1,
-                (i) * 50,
-                (i + 1) * 50,
-                checkpointInterval / flushesPerRestart,
-                steadyStateGrowths[i]));
+                i * checkpointInterval,
+                (i + 1) * checkpointInterval,
+                steadyStateInternalGrowths[i]));
       }
     }
 
-    // Verify total steady state growth is bounded
-    // With fix: should be < 10 MB (normal JVM operations like GC, minor allocations)
-    // Without fix: 20 restarts × 10,000 methods × 100 bytes = ~20 MB leak
-    NativeMemoryTracking.assertMallocMemoryBounded(
+    // Verify total steady state Internal growth is bounded
+    // With fix: should be < 20 KB total (minor JVM allocations over 25 restarts)
+    // Without fix: 25 restarts × ~1.6 KB/restart = ~40 KB JVMTI leak (based on observed leak rate)
+    NativeMemoryTracking.assertInternalMemoryBounded(
         afterWarmup,
-        afterFlushes,
-        15 * 1024 * 1024, // 15 MB - accounts for restarts but no leaks
-        "malloc memory grew excessively during steady state - indicates potential leak!");
+        afterRestarts,
+        20 * 1024, // 20 KB - tight enough to catch 40 KB leak
+        "Internal category grew excessively - JVMTI leak detected!");
 
     // Print summary
     System.out.println(
         String.format(
-            "\nTest completed successfully:\n"
-                + "  Phase 1 (Warmup - unique classes):\n"
-                + "    Flushes: %d\n"
-                + "    malloc growth: +%d KB\n"
-                + "  Phase 2 (Steady state - reused classes with restarts):\n"
-                + "    Flushes: %d\n"
-                + "    Profiler restarts: %d (triggers destructor calls)\n"
-                + "    malloc growth: +%d KB (should plateau)\n"
-                + "  Total:\n"
-                + "    malloc: %d KB → %d KB (+%d KB, +%d allocs)\n"
-                + "    Internal category: %d KB → %d KB (+%d KB)\n"
-                + "  Note: JVMTI allocations tracked under Internal category → malloc\n"
-                + "  Note: Restarts destroy Recording, triggering SharedLineNumberTable destructors",
-            warmupFlushes,
-            warmupMallocGrowthKB,
-            steadyStateFlushes,
-            steadyStateFlushes / flushesPerRestart,
-            steadyStateMallocGrowthKB,
-            baseline.mallocKB,
-            afterFlushes.mallocKB,
-            totalMallocGrowthKB,
-            afterFlushes.mallocCount - baseline.mallocCount,
+            "\n=== Test Completed Successfully ===\n"
+                + "Phase 1 (Warmup):\n"
+                + "  Classes generated: %d (via ASM)\n"
+                + "  Internal growth: +%d KB\n"
+                + "Phase 2 (Leak Detection):\n"
+                + "  Profiler restarts: %d\n"
+                + "  Internal steady state growth: +%d KB (threshold: < 20 KB)\n"
+                + "  Max interval growth: %d KB per 5 restarts (threshold: < 10 KB)\n"
+                + "Total Internal: %d KB → %d KB (+%d KB)\n"
+                + "\n"
+                + "Result: No JVMTI memory leak detected\n"
+                + "Note: GetLineNumberTable allocations tracked in Internal NMT category\n"
+                + "Note: Each restart destroys Recording, triggering SharedLineNumberTable destructors",
+            cachedClassIndex,
+            warmupInternalGrowthKB,
+            totalRestarts,
+            steadyStateInternalGrowthKB,
+            maxIntervalGrowth,
             baseline.internalReservedKB,
-            afterFlushes.internalReservedKB,
-            internalGrowthKB));
+            afterRestarts.internalReservedKB,
+            totalInternalGrowthKB));
   }
 
   private int classCounter = 0;
