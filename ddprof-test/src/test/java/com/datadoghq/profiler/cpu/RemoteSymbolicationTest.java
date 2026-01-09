@@ -61,8 +61,20 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
         Assumptions.assumeTrue(Platform.isLinux(), "Remote symbolication test requires Linux");
         // Zing JVM forces cstack=no which disables native stack walking
         Assumptions.assumeFalse(Platform.isZing(), "Remote symbolication test requires native stack walking (incompatible with Zing)");
-        // J9/OpenJ9 has limited native stack walking and most J9 libraries lack GNU build-ids
-        Assumptions.assumeFalse(Platform.isJ9(), "Remote symbolication test requires reliable native stack walking and build-ids (not available on J9)");
+        // OpenJ9 does not support remote symbolication due to its dual-stack architecture.
+        // OpenJ9 maintains separate Java and native stacks with VM-managed switching during
+        // JNI transitions. DWARF unwinding cannot traverse across this stack boundary as
+        // there is no frame pointer chain linking the two stacks. When profiling signals
+        // fire in native code, DWARF captures VM internal frames from the Java stack
+        // (like VM_BytecodeInterpreterCompressed, JIT frames) but never reaches the actual
+        // JNI library frames on the separate native stack.
+        //
+        // Additionally, J9 >= 21 uses JVMTI-based profiling exclusively (no signal-based
+        // sampling), which means DWARF unwinding is never invoked at all.
+        //
+        // This is an architectural limitation, not a profiler bug. See doc/J9_LIMITATIONS.md
+        // for detailed explanation and references to OpenJ9 documentation.
+        Assumptions.assumeFalse(Platform.isJ9(), "OpenJ9's dual-stack architecture prevents DWARF unwinding across JNI boundaries");
     }
 
     @RetryTest(10)
