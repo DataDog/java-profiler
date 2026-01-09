@@ -311,16 +311,20 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
   if (_cstack >= CSTACK_VM) {
     return 0;
   } else if (_cstack == CSTACK_DWARF) {
-    native_frames += ddprof::StackWalker::walkDwarf(ucontext, callchain + native_frames,
+    int dwarf_frames = ddprof::StackWalker::walkDwarf(ucontext, callchain + native_frames,
                                             max_depth - native_frames,
                                             java_ctx, truncated);
+    TEST_LOG("getNativeTrace: walkDwarf returned %d frames", dwarf_frames);
+    native_frames += dwarf_frames;
   } else {
     native_frames += ddprof::StackWalker::walkFP(ucontext, callchain + native_frames,
                                          max_depth - native_frames,
                                          java_ctx, truncated);
   }
 
-  return convertNativeTrace(native_frames, callchain, frames, lock_index);
+  int converted_frames = convertNativeTrace(native_frames, callchain, frames, lock_index);
+  TEST_LOG("getNativeTrace: returning %d frames (from %d native frames)", converted_frames, native_frames);
+  return converted_frames;
 }
 
 Profiler::NativeFrameResolution Profiler::resolveNativeFrame(uintptr_t pc, int lock_index) {

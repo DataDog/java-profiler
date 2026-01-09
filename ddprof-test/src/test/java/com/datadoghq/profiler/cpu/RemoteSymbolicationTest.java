@@ -61,6 +61,8 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
         Assumptions.assumeTrue(Platform.isLinux(), "Remote symbolication test requires Linux");
         // Zing JVM forces cstack=no which disables native stack walking
         Assumptions.assumeFalse(Platform.isZing(), "Remote symbolication test requires native stack walking (incompatible with Zing)");
+        // J9/OpenJ9 has limited native stack walking and most J9 libraries lack GNU build-ids
+        Assumptions.assumeFalse(Platform.isJ9(), "Remote symbolication test requires reliable native stack walking and build-ids (not available on J9)");
     }
 
     @RetryTest(10)

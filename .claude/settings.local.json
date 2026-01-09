@@ -41,7 +41,8 @@
       "WebFetch(domain:central.sonatype.com)",
       "Bash(jfr-shell:*)",
       "Bash(java -cp:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(git restore:*)"
     ],
     "deny": [],
     "ask": []
