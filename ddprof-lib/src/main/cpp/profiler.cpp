@@ -1302,22 +1302,28 @@ Error Profiler::start(Arguments &args, bool reset) {
     size_t nelem = _max_stack_depth + RESERVED_FRAMES;
 
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
-      free(_calltrace_buffer[i]);
+      if (_calltrace_buffer[i] != NULL) {
+        free(_calltrace_buffer[i]);
+      }
       _calltrace_buffer[i] = (CallTraceBuffer*)calloc(nelem, sizeof(CallTraceBuffer));
       if (_calltrace_buffer[i] == NULL) {
         _max_stack_depth = 0;
         return Error("Not enough memory to allocate stack trace buffers (try "
                      "smaller jstackdepth)");
       }
-
-      // Allocate pre-allocated pool for RemoteFrameInfo (signal-safe storage)
-      free(_remote_frame_pool[i]);
-      _remote_frame_pool[i] = (RemoteFrameInfo*)calloc(MAX_NATIVE_FRAMES, sizeof(RemoteFrameInfo));
-      if (_remote_frame_pool[i] == NULL) {
-        return Error("Not enough memory to allocate remote frame pool");
-      }
-      _remote_frame_count[i] = 0;  // Reset allocation counter
     }
+  }
+
+  // Allocate remote frame pool on every start to ensure clean state
+  for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+    if (_remote_frame_pool[i] != NULL) {
+      free(_remote_frame_pool[i]);
+    }
+    _remote_frame_pool[i] = (RemoteFrameInfo*)calloc(MAX_NATIVE_FRAMES, sizeof(RemoteFrameInfo));
+    if (_remote_frame_pool[i] == NULL) {
+      return Error("Not enough memory to allocate remote frame pool");
+    }
+    _remote_frame_count[i] = 0;  // Reset allocation counter
   }
 
   _features = args._features;

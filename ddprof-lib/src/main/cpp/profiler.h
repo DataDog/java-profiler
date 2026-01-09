@@ -139,9 +139,9 @@ private:
 
   SpinLock _class_map_lock;
   SpinLock _locks[CONCURRENCY_LEVEL];
-  CallTraceBuffer *_calltrace_buffer[CONCURRENCY_LEVEL];
-  RemoteFrameInfo *_remote_frame_pool[CONCURRENCY_LEVEL];  // Pre-allocated pool for signal-safe RemoteFrameInfo storage
-  int _remote_frame_count[CONCURRENCY_LEVEL];  // Current allocation count per lock
+  CallTraceBuffer *_calltrace_buffer[CONCURRENCY_LEVEL] = {};
+  RemoteFrameInfo *_remote_frame_pool[CONCURRENCY_LEVEL] = {};  // Pre-allocated pool for signal-safe RemoteFrameInfo storage
+  int _remote_frame_count[CONCURRENCY_LEVEL] = {};  // Current allocation count per lock
   int _max_stack_depth;
   StackWalkFeatures _features;
   int _safe_mode;

@@ -40,7 +40,8 @@
       "WebFetch(domain:mvnrepository.com)",
       "WebFetch(domain:central.sonatype.com)",
       "Bash(jfr-shell:*)",
-      "Bash(java -cp:*)"
+      "Bash(java -cp:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []
