@@ -163,7 +163,7 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
 
     // Calculate Internal category growth rates for steady state intervals
     // checkpoints[1] = after warmup
-    // checkpoints[2-6] = after 200, 400, 600, 800, 1000 restarts
+    // checkpoints[2-6] = after 5, 10, 15, 20, 25 restarts (with checkpointInterval = 5)
     long[] steadyStateInternalGrowths = new long[5];
     for (int i = 0; i < 5; i++) {
       steadyStateInternalGrowths[i] =
