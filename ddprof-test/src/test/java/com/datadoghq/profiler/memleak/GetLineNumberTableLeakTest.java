@@ -187,15 +187,15 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
               steadyStateInternalGrowths[i]));
 
       // Assert individual intervals don't show excessive JVMTI leak growth
-      // Threshold: 10 KB per 5 restarts
-      // With fix: < 5 KB (minor allocations)
+      // Threshold: 10 KB per interval
+      // With fix: typically < 5 KB (minor allocations)
       // Without fix: ~10-20 KB per interval (line table leaks accumulate)
-      if (steadyStateInternalGrowths[i] > 10) { // 10 KB per 5 restarts
+      if (steadyStateInternalGrowths[i] > 10) { // 10 KB per interval
         fail(
             String.format(
                 "Internal category growth indicates JVMTI leak!\n"
                     + "Interval %d (restarts %d-%d): +%d KB\n"
-                    + "Expected: Internal should plateau (< 2.5 MB per 200 restarts)\n"
+                    + "Expected: Internal should plateau; no significant growth across intervals\n"
                     + "Actual: continued growth indicates leaked GetLineNumberTable allocations",
                 i + 1,
                 i * checkpointInterval,
