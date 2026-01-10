@@ -139,7 +139,7 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
       // Single flush per restart
       dump(tempFile("steady-" + restart));
 
-      // Take checkpoint snapshots every 200 restarts
+      // Take checkpoint snapshots every checkpointInterval restarts
       if ((restart + 1) % checkpointInterval == 0) {
         NativeMemoryTracking.NMTSnapshot progress = NativeMemoryTracking.takeSnapshot();
         checkpoints[checkpointIndex++] = progress;
