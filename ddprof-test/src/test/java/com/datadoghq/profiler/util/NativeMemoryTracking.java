@@ -120,8 +120,12 @@ public class NativeMemoryTracking {
     long mallocCount = 0;
     Matcher mallocMatcher = MALLOC_PATTERN.matcher(output);
     if (mallocMatcher.find()) {
-      mallocKB = Long.parseLong(mallocMatcher.group(1));
-      mallocCount = Long.parseLong(mallocMatcher.group(2));
+      try {
+        mallocKB = Long.parseLong(mallocMatcher.group(1));
+        mallocCount = Long.parseLong(mallocMatcher.group(2));
+      } catch (NumberFormatException e) {
+        throw new IOException("Failed to parse malloc values from NMT output: " + e.getMessage(), e);
+      }
     }
 
     // Parse Internal category (where JVMTI is tracked)
@@ -129,8 +133,12 @@ public class NativeMemoryTracking {
     long internalCommitted = 0;
     Matcher internalMatcher = INTERNAL_PATTERN.matcher(output);
     if (internalMatcher.find()) {
-      internalReserved = Long.parseLong(internalMatcher.group(1));
-      internalCommitted = Long.parseLong(internalMatcher.group(2));
+      try {
+        internalReserved = Long.parseLong(internalMatcher.group(1));
+        internalCommitted = Long.parseLong(internalMatcher.group(2));
+      } catch (NumberFormatException e) {
+        throw new IOException("Failed to parse Internal category values from NMT output: " + e.getMessage(), e);
+      }
     }
 
     // Parse JVMTI line (legacy - not present in modern JVMs)
@@ -138,8 +146,12 @@ public class NativeMemoryTracking {
     long jvmtiCommitted = 0;
     Matcher jvmtiMatcher = JVMTI_PATTERN.matcher(output);
     if (jvmtiMatcher.find()) {
-      jvmtiReserved = Long.parseLong(jvmtiMatcher.group(1));
-      jvmtiCommitted = Long.parseLong(jvmtiMatcher.group(2));
+      try {
+        jvmtiReserved = Long.parseLong(jvmtiMatcher.group(1));
+        jvmtiCommitted = Long.parseLong(jvmtiMatcher.group(2));
+      } catch (NumberFormatException e) {
+        throw new IOException("Failed to parse JVMTI category values from NMT output: " + e.getMessage(), e);
+      }
     }
 
     return new NMTSnapshot(
