@@ -1345,6 +1345,15 @@ Error Profiler::start(Arguments &args, bool reset) {
       }
       _remote_frame_count[i] = 0;  // Reset allocation counter
     }
+  } else {
+    // Remote symbolication disabled: free any previously allocated remote frame pools
+    for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+      if (_remote_frame_pool[i] != NULL) {
+        free(_remote_frame_pool[i]);
+        _remote_frame_pool[i] = NULL;
+      }
+      _remote_frame_count[i] = 0;
+    }
   }
 
   _features = args._features;

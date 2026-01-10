@@ -72,6 +72,11 @@ char* SymbolsLinux::extractBuildIdFromMemory(const void* elf_base, size_t elf_si
         return nullptr;
     }
 
+    // Verify program header table is within file bounds
+    if (ehdr->e_phoff + ehdr->e_phnum * sizeof(Elf64_Phdr) > elf_size) {
+        return nullptr;
+    }
+
     const char* base = static_cast<const char*>(elf_base);
     // Safe to cast to Elf64_Phdr because we verified ELFCLASS64 above
     // 32-bit binaries are rejected at line 66, so all program headers here are 64-bit
@@ -134,6 +139,11 @@ const uint8_t* SymbolsLinux::findBuildIdInNotes(const void* note_data, size_t no
 
 char* SymbolsLinux::buildIdToHex(const uint8_t* build_id_bytes, size_t byte_len) {
     if (!build_id_bytes || byte_len == 0) {
+        return nullptr;
+    }
+
+    // Check for potential integer overflow in allocation size calculation
+    if (byte_len > SIZE_MAX / 2 - 1) {
         return nullptr;
     }
 
