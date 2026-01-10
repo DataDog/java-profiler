@@ -383,11 +383,6 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
     return cw.toByteArray();
   }
 
-  private int fibonacciRecursive(int n) {
-    if (n <= 1) return n;
-    return fibonacciRecursive(n - 1) + fibonacciRecursive(n - 2);
-  }
-
   private Path tempFile(String name) throws IOException {
     Path dir = Paths.get("/tmp/recordings");
     Files.createDirectories(dir);
