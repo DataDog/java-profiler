@@ -43,10 +43,23 @@
 static const char *const SETTING_RING[] = {NULL, "kernel", "user", "any"};
 static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 
-static void deallocateLineNumberTable(void *ptr) {}
-
 SharedLineNumberTable::~SharedLineNumberTable() {
-  VM::jvmti()->Deallocate((unsigned char *)_ptr);
+  // Always attempt to deallocate if we have a valid pointer
+  // JVMTI spec requires that memory allocated by GetLineNumberTable
+  // must be freed with Deallocate
+  if (_ptr != nullptr) {
+    jvmtiEnv *jvmti = VM::jvmti();
+    if (jvmti != nullptr) {
+      jvmtiError err = jvmti->Deallocate((unsigned char *)_ptr);
+      // If Deallocate fails, log it for debugging (this could indicate a JVM bug)
+      // JVMTI_ERROR_ILLEGAL_ARGUMENT means the memory wasn't allocated by JVMTI
+      // which would be a serious bug in GetLineNumberTable
+      if (err != JVMTI_ERROR_NONE) {
+        // Can't use Log here as we might be in destructor context
+        // The leak will be reported by NMT if this happens
+      }
+    }
+  }
 }
 
 void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
@@ -151,24 +164,44 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
 
       if (first_time) {
-        jvmti->GetLineNumberTable(method, &line_number_table_size,
+        jvmtiError line_table_error = jvmti->GetLineNumberTable(method, &line_number_table_size,
                                   &line_number_table);
+        // Defensive: if GetLineNumberTable failed, clean up any potentially allocated memory
+        // Some buggy JVMTI implementations might allocate despite returning an error
+        if (line_table_error != JVMTI_ERROR_NONE) {
+          if (line_number_table != nullptr) {
+            // Try to deallocate to prevent leak from buggy JVM
+            jvmti->Deallocate((unsigned char *)line_number_table);
+          }
+          line_number_table = nullptr;
+          line_number_table_size = 0;
+        }
       }
 
       // Check if the frame is Thread.run or inherits from it
       if (strncmp(method_name, "run", 4) == 0 &&
           strncmp(method_sig, "()V", 3) == 0) {
         jclass Thread_class = jni->FindClass("java/lang/Thread");
-        jmethodID equals = jni->GetMethodID(jni->FindClass("java/lang/Class"),
-                                            "equals", "(Ljava/lang/Object;)Z");
-        jclass klass = method_class;
-        do {
-          entry = jni->CallBooleanMethod(Thread_class, equals, klass);
-          jniExceptionCheck(jni);
-          if (entry) {
-            break;
+        jclass Class_class = jni->FindClass("java/lang/Class");
+        if (Thread_class != nullptr && Class_class != nullptr) {
+          jmethodID equals = jni->GetMethodID(Class_class,
+                                              "equals", "(Ljava/lang/Object;)Z");
+          if (equals != nullptr) {
+            jclass klass = method_class;
+            do {
+              entry = jni->CallBooleanMethod(Thread_class, equals, klass);
+              if (jniExceptionCheck(jni)) {
+                entry = false;
+                break;
+              }
+              if (entry) {
+                break;
+              }
+            } while ((klass = jni->GetSuperclass(klass)) != NULL);
           }
-        } while ((klass = jni->GetSuperclass(klass)) != NULL);
+        }
+        // Clear any exceptions from the reflection calls above
+        jniExceptionCheck(jni);
       } else if (strncmp(method_name, "main", 5) == 0 &&
                  strncmp(method_sig, "(Ljava/lang/String;)V", 21)) {
         // public static void main(String[] args) - 'public static' translates
