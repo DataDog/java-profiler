@@ -49,6 +49,7 @@ tasks.register('buildNativeJniLibrary', Exec) {
     args "-I${System.getenv('JAVA_HOME')}/include/linux" // Linux-specific includes
     args "-fPIC"
     args "-shared" // Build a shared library on Linux
+    args "-Wl,--build-id" // Embed GNU build-id for remote symbolication testing
   }
   args nativeSrcDir.listFiles()*.getAbsolutePath() // Source files
   args "-o", "${outputLibDir.absolutePath}/${libraryFileName}" // Output file path
@@ -68,6 +69,7 @@ def addCommonTestDependencies(Configuration configuration) {
   configuration.dependencies.add(project.dependencies.create('org.lz4:lz4-java:1.8.0'))
   configuration.dependencies.add(project.dependencies.create('org.xerial.snappy:snappy-java:1.1.10.1'))
   configuration.dependencies.add(project.dependencies.create('com.github.luben:zstd-jni:1.5.5-4'))
+  configuration.dependencies.add(project.dependencies.create('io.btrace:jafar-parser:0.7.0'))
   configuration.dependencies.add(project.dependencies.project(path: ":ddprof-test-tracer"))
 }
 

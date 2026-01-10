@@ -12,6 +12,7 @@ class Libraries {
  public:
   Libraries() : _native_libs(), _runtime_stubs("runtime stubs") {}
   void updateSymbols(bool kernel_symbols);
+  void updateBuildIds();  // Extract build-ids for all loaded libraries
   const void *resolveSymbol(const char *name);
   // In J9 the 'libjvm' functionality is spread across multiple libraries
   // This function will return the 'libjvm' on non-J9 VMs and the library with the given name on J9 VMs

@@ -92,7 +92,7 @@ public abstract class AbstractProfilerTest {
   public static final IAttribute<IQuantity> COUNT = attr("count", "", "", NUMBER);
 
   protected JavaProfiler profiler;
-  private Path jfrDump;
+  protected Path jfrDump;
 
   private Duration cpuInterval;
   private Duration wallInterval;

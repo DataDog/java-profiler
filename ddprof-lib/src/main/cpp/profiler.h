@@ -117,9 +117,9 @@ private:
   // --
 
   ThreadInfo _thread_info;
-  Dictionary _class_map;
-  Dictionary _string_label_map;
-  Dictionary _context_value_map;
+  Dictionary _class_map;          // Increments DICTIONARY_CLASSES_KEYS (initialized in constructor with ID=1)
+  Dictionary _string_label_map;   // Increments DICTIONARY_ENDPOINTS_KEYS (initialized in constructor with ID=2)
+  Dictionary _context_value_map;  // Increments DICTIONARY_CONTEXT_KEYS (initialized in constructor with ID=3)
   ThreadFilter _thread_filter;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
@@ -139,7 +139,9 @@ private:
 
   SpinLock _class_map_lock;
   SpinLock _locks[CONCURRENCY_LEVEL];
-  CallTraceBuffer *_calltrace_buffer[CONCURRENCY_LEVEL];
+  CallTraceBuffer *_calltrace_buffer[CONCURRENCY_LEVEL] = {};
+  RemoteFrameInfo *_remote_frame_pool[CONCURRENCY_LEVEL] = {};  // Pre-allocated pool for signal-safe RemoteFrameInfo storage
+  int _remote_frame_count[CONCURRENCY_LEVEL] = {};  // Current allocation count per lock
   int _max_stack_depth;
   StackWalkFeatures _features;
   int _safe_mode;
@@ -150,11 +152,11 @@ private:
   Libraries* _libs;
   SpinLock _stubs_lock;
   CodeCache _runtime_stubs;
-  CodeCacheArray _native_libs;
   const void *_call_stub_begin;
   const void *_call_stub_end;
   u32 _num_context_attributes;
   bool _omit_stacktraces;
+  bool _remote_symbolication;  // Enable remote symbolication for native frames
 
   // dlopen() hook support
   void **_dlopen_entry;
@@ -174,7 +176,7 @@ private:
   u32 getLockIndex(int tid);
   bool isAddressInCode(uintptr_t addr);
   int getNativeTrace(void *ucontext, ASGCT_CallFrame *frames, int event_type,
-                     int tid, StackContext *java_ctx, bool *truncated);
+                     int tid, StackContext *java_ctx, bool *truncated, int lock_index);
   int getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
                         StackContext *java_ctx, bool *truncated);
   void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames,
@@ -204,7 +206,7 @@ public:
         _notify_class_unloaded_func(NULL), _thread_filter(), _call_trace_storage(), _jfr(),
         _start_time(0), _epoch(0), _timer_id(NULL),
         _max_stack_depth(0), _safe_mode(0), _thread_events_state(JVMTI_DISABLE),
-        _libs(Libraries::instance()), _stubs_lock(), _runtime_stubs("[stubs]"), _native_libs(),
+        _libs(Libraries::instance()), _stubs_lock(), _runtime_stubs("[stubs]"),
         _call_stub_begin(NULL), _call_stub_end(NULL), _dlopen_entry(NULL),
         _num_context_attributes(0), _class_map(1), _string_label_map(2),
         _context_value_map(3), _cpu_engine(), _alloc_engine(), _event_mask(0),
@@ -279,8 +281,19 @@ public:
   Error dump(const char *path, const int length);
   void logStats();
     void switchThreadEvents(jvmtiEventMode mode);
+
+  // Result of resolving a native frame for symbolication
+  struct NativeFrameResolution {
+    jmethodID method_id;  // RemoteFrameInfo* or const char* symbol name, or nullptr if marked
+    int bci;              // BCI_NATIVE_FRAME_REMOTE or BCI_NATIVE_FRAME
+    bool is_marked;       // true if this is a marked C++ interpreter frame (stop processing)
+  };
+
+  NativeFrameResolution resolveNativeFrame(uintptr_t pc, int lock_index);
+  // Overload for walkVM that computes lock_index internally
+  NativeFrameResolution resolveNativeFrame(uintptr_t pc);
   int convertNativeTrace(int native_frames, const void **callchain,
-                         ASGCT_CallFrame *frames);
+                         ASGCT_CallFrame *frames, int lock_index);
   void recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event);
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
