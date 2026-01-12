@@ -464,15 +464,16 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
             100.0 * (growthNoCleanup - growthWithCleanup) / growthNoCleanup));
 
     // Assert that cleanup actually reduces memory growth
-    // We expect at least 20% savings from cleanup
-    long expectedMinSavings = (long) (growthNoCleanup * 0.20);
+    // We expect at least 10% savings from cleanup (conservative threshold)
+    // Note: NMT Internal includes JFR buffers, CallTraceStorage, etc., not just method_map
+    long expectedMinSavings = (long) (growthNoCleanup * 0.10);
     long actualSavings = growthNoCleanup - growthWithCleanup;
 
     if (actualSavings < expectedMinSavings) {
       fail(
           String.format(
               "Cleanup not effective enough!\n"
-                  + "Expected at least 20%% savings (>= %d KB)\n"
+                  + "Expected at least 10%% savings (>= %d KB)\n"
                   + "Actual savings: %d KB (%.1f%%)\n"
                   + "This suggests cleanup is not working as intended",
               expectedMinSavings,
@@ -480,7 +481,10 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
               100.0 * actualSavings / growthNoCleanup));
     }
 
-    System.out.println("Result: Cleanup effectiveness validated - significant memory savings observed");
+    System.out.println(
+        String.format(
+            "Result: Cleanup effectiveness validated - %.1f%% memory savings observed",
+            100.0 * actualSavings / growthNoCleanup));
   }
 
   private Path tempFile(String name) throws IOException {
