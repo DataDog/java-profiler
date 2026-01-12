@@ -88,6 +88,7 @@ static inline int makeFrame(ASGCT_CallFrame *frames, jint type,
 
 void Profiler::addJavaMethod(const void *address, int length,
                              jmethodID method) {
+                             printf("Add compiled method: %ld\n", (long)method);
   CodeHeap::updateBounds(address, (const char *)address + length);
 }
 

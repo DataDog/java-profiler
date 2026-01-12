@@ -180,7 +180,13 @@ public:
 
   static void JNICALL ClassPrepare(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                                    jclass klass) {
-    loadMethodIDs(jvmti, jni, klass);
+//    loadMethodIDs(jvmti, jni, klass);
+  }
+
+  static void JNICALL MethodEntry(jvmtiEnv *jvmti_env,
+                                  JNIEnv* jni_env,
+                                  jthread thread,
+                                  jmethodID method) {
   }
 
   static jvmtiError JNICALL
