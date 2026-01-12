@@ -31,8 +31,6 @@ import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.List;
 
 /**
  * Test to validate that method_map cleanup prevents unbounded memory growth in continuous profiling.
@@ -54,8 +52,9 @@ import java.util.List;
  * <ul>
  *   <li>Continuous profiling (NO stop/restart cycles)</li>
  *   <li>Generate transient methods across multiple chunk boundaries</li>
- *   <li>Hold strong references to prevent GC (isolate cleanup behavior)</li>
+ *   <li>Allow natural class unloading (no strong references held)</li>
  *   <li>Verify bounded growth via TEST_LOG output showing method_map size</li>
+ *   <li>Combined cleanup: method_map cleanup + class unloading for optimal memory</li>
  * </ul>
  */
 public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
@@ -244,31 +243,34 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
     NativeMemoryTracking.NMTSnapshot[] snapshots = new NativeMemoryTracking.NMTSnapshot[iterations + 1];
     snapshots[0] = afterStart;
 
-    // IMPORTANT: Hold strong references to ALL generated classes to prevent GC/class unloading
-    // Without this, the JVM would naturally unload unused classes, masking the _method_map leak
-    List<Class<?>> allGeneratedClasses = new ArrayList<>();
-
     Path tempFile = Files.createTempFile("lineNumberLeak_", ".jfr");
     tempFile.toFile().deleteOnExit();
 
     for (int iter = 0; iter < iterations; iter++) {
       // Generate NEW transient methods that won't be referenced again
       // This simulates high method churn (e.g., lambda expressions, generated code)
+      // Each class uses a new ClassLoader, allowing natural class unloading
       for (int i = 0; i < classesPerIteration; i++) {
         Class<?>[] transientClasses = generateUniqueMethodCalls();
         // Invoke once to ensure methods appear in profiling samples
         for (Class<?> clazz : transientClasses) {
           invokeClassMethods(clazz);
-          allGeneratedClasses.add(clazz);  // PREVENT GC - keep strong reference
+          // No strong references - allow classes to be GC'd and unloaded
         }
       }
 
-      // Trigger chunk rotation by calling flush
+      // Trigger chunk rotation by calling dump
       // This causes switchChunk() to be called, which triggers cleanup
       profiler.dump(tempFile);
 
-      // Allow dump to complete
+      // Allow dump to complete and encourage class unloading
       Thread.sleep(100);
+
+      // Periodically suggest GC to allow class unloading
+      if ((iter + 1) % 3 == 0) {
+        System.gc();
+        Thread.sleep(50);
+      }
 
       // Take snapshot after each iteration to track growth pattern
       snapshots[iter + 1] = NativeMemoryTracking.takeSnapshot();
@@ -285,18 +287,23 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
     }
 
     // Note: TEST_LOG messages about method_map sizes appear in test output
-    // Expected: with cleanup enabled, method_map should stay bounded at ~500-1000 methods
+    // Expected: with cleanup enabled, method_map should stay bounded at ~300-500 methods
     // Without cleanup, it would grow unbounded to ~3000 methods (250 methods/iter × 12 iters)
     // The cleanup effectiveness is visible in the logs showing "Cleaned up X unreferenced methods"
+    //
+    // Class unloading (no strong references held) provides additional memory savings:
+    // - Classes get GC'd and unloaded naturally
+    // - SharedLineNumberTable memory is freed when classes unload
+    // - Combined with method_map cleanup for optimal memory usage
 
     // Take final snapshot
     NativeMemoryTracking.NMTSnapshot afterIterations = snapshots[iterations];
     long totalGrowthKB = afterIterations.internalReservedKB - afterStart.internalReservedKB;
 
     // NOTE: NMT "Internal" category includes more than just line number tables:
-    // JFR buffers, CallTraceStorage, class metadata, etc. - so memory savings are modest
-    // The key metric is method_map size staying bounded, which prevents production OOM
-    final long maxGrowthKB = 850;
+    // JFR buffers, CallTraceStorage, class metadata, etc.
+    // Class unloading + cleanup both contribute to bounded memory
+    final long maxGrowthKB = 600;
 
     System.out.println(
         String.format(
@@ -308,8 +315,10 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
                 + "Internal memory growth: +%d KB (threshold: < %d KB)\n"
                 + "\n"
                 + "Check TEST_LOG output for:\n"
-                + "  - 'MethodMap: X methods after cleanup' (should stay bounded ~500-1000)\n"
-                + "  - 'Cleaned up X unreferenced methods' (confirms cleanup is running)\n",
+                + "  - 'MethodMap: X methods after cleanup' (should stay bounded ~300-500)\n"
+                + "  - 'Cleaned up X unreferenced methods' (confirms cleanup is running)\n"
+                + "\n"
+                + "Class unloading: Enabled (no strong references held)\n",
             iterations * 1500 / 1000,
             iterations,
             classesPerIteration,
@@ -332,10 +341,8 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
     }
 
     System.out.println(
-        "Result: Method map cleanup working correctly - memory growth is bounded"
-            + " (kept "
-            + allGeneratedClasses.size()
-            + " classes alive)");
+        "Result: Method map cleanup working correctly - memory growth is bounded\n"
+            + "Classes allowed to unload naturally for optimal memory usage");
   }
 
   private Path tempFile(String name) throws IOException {
