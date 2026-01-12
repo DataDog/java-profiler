@@ -187,6 +187,7 @@ public:
   int _jfr_options;
   std::vector<std::string> _context_attributes;
   bool _lightweight;
+  bool _enable_method_cleanup;
 
   Arguments(bool persistent = false)
       : _buf(NULL),
@@ -219,7 +220,8 @@ public:
         _jfr_options(0),
         _context_attributes({}),
         _wallclock_sampler(ASGCT),
-        _lightweight(false) {}
+        _lightweight(false),
+        _enable_method_cleanup(true) {}
 
   ~Arguments();
 

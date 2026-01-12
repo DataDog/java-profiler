@@ -319,6 +319,23 @@ Error Arguments::parse(const char *args) {
           _lightweight = false;
         }
       }
+
+      CASE("method-cleanup")
+      _enable_method_cleanup = true;
+      if (value != NULL) {
+        switch (value[0]) {
+        case 'n': // no
+        case 'f': // false
+          _enable_method_cleanup = false;
+          break;
+        default:
+          _enable_method_cleanup = true;
+        }
+      }
+
+      CASE("no-method-cleanup")
+      _enable_method_cleanup = false;
+
             CASE("wallsampler")
                 if (value != NULL) {
                     switch (value[0]) {

@@ -515,7 +515,15 @@ off_t Recording::finishChunk(bool end_recording) {
 }
 
 void Recording::switchChunk(int fd) {
+  size_t methods_before = _method_map.size();
+
   _chunk_start = finishChunk(fd > -1);
+
+  // Cleanup unreferenced methods after finishing the chunk
+  cleanupUnreferencedMethods();
+
+  TEST_LOG("MethodMap: %zu methods after cleanup", _method_map.size());
+
   _start_time = _stop_time;
   _start_ticks = _stop_ticks;
   _bytes_written = 0;
@@ -588,6 +596,47 @@ void Recording::cpuMonitorCycle() {
   flushIfNeeded(&_cpu_monitor_buf, BUFFER_LIMIT);
 
   _last_times = times;
+}
+
+void Recording::cleanupUnreferencedMethods() {
+  if (!_args._enable_method_cleanup) {
+    return;  // Feature disabled
+  }
+
+  const int AGE_THRESHOLD = 3;  // Remove after 3 consecutive chunks without reference
+  size_t removed_count = 0;
+  size_t total_before = _method_map.size();
+  size_t referenced_count = 0;
+  size_t aged_count = 0;
+
+  for (MethodMap::iterator it = _method_map.begin(); it != _method_map.end(); ) {
+    MethodInfo& mi = it->second;
+
+    if (!mi._referenced && !mi._mark) {
+      // Method not referenced in this chunk
+      mi._age++;
+      aged_count++;
+
+      if (mi._age >= AGE_THRESHOLD) {
+        // Method hasn't been used for N chunks, safe to remove
+        // SharedLineNumberTable will be automatically deallocated via shared_ptr destructor
+        it = _method_map.erase(it);
+        removed_count++;
+        continue;
+      }
+    } else {
+      // Method was referenced, reset age
+      referenced_count++;
+      mi._age = 0;
+    }
+
+    ++it;
+  }
+
+  if (removed_count > 0) {
+    TEST_LOG("Cleaned up %zu unreferenced methods (age >= %d chunks, total: %zu -> %zu)",
+            removed_count, AGE_THRESHOLD, total_before, _method_map.size());
+  }
 }
 
 void Recording::appendRecording(const char *target_file, size_t size) {
@@ -1145,6 +1194,11 @@ void Recording::writeThreads(Buffer *buf) {
 }
 
 void Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
+  // Reset all referenced flags before processing
+  for (MethodMap::iterator it = _method_map.begin(); it != _method_map.end(); ++it) {
+    it->second._referenced = false;
+  }
+
   // Use safe trace processing with guaranteed lifetime during callback execution
   Profiler::instance()->processCallTraces([this, buf, lookup](const std::unordered_set<CallTrace*>& traces) {
     buf->putVar64(T_STACK_TRACE);
@@ -1156,6 +1210,7 @@ void Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
       if (trace->num_frames > 0) {
         MethodInfo *mi =
             lookup->resolveMethod(trace->frames[trace->num_frames - 1]);
+        mi->_referenced = true;  // Mark method as referenced
         if (mi->_type < FRAME_NATIVE) {
           buf->put8(mi->_is_entry ? 0 : 1);
         } else {
@@ -1165,6 +1220,7 @@ void Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
       buf->putVar64(trace->num_frames);
       for (int i = 0; i < trace->num_frames; i++) {
         MethodInfo *mi = lookup->resolveMethod(trace->frames[i]);
+        mi->_referenced = true;  // Mark method as referenced
         buf->putVar64(mi->_key);
         jint bci = trace->frames[i].bci;
         if (mi->_type < FRAME_NATIVE) {
