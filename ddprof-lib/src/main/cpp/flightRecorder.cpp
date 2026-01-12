@@ -55,8 +55,7 @@ SharedLineNumberTable::~SharedLineNumberTable() {
       // JVMTI_ERROR_ILLEGAL_ARGUMENT means the memory wasn't allocated by JVMTI
       // which would be a serious bug in GetLineNumberTable
       if (err != JVMTI_ERROR_NONE) {
-        // Can't use Log here as we might be in destructor context
-        // The leak will be reported by NMT if this happens
+        TEST_LOG("Unexpected error while deallocating linenumber table: %d", err);
       }
     }
   }
