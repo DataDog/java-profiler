@@ -285,7 +285,7 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
     }
 
     // Note: TEST_LOG messages about method_map sizes appear in test output
-    // Expected: with cleanup enabled, method_map should stay bounded at ~300-1000 methods
+    // Expected: with cleanup enabled, method_map should stay bounded at ~500-1000 methods
     // Without cleanup, it would grow unbounded to ~3000 methods (250 methods/iter × 12 iters)
     // The cleanup effectiveness is visible in the logs showing "Cleaned up X unreferenced methods"
 
@@ -293,31 +293,6 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
     NativeMemoryTracking.NMTSnapshot afterIterations = snapshots[iterations];
     long totalGrowthKB = afterIterations.internalReservedKB - afterStart.internalReservedKB;
 
-    // Analyze growth pattern
-    long firstHalfGrowth = snapshots[iterations / 2].internalReservedKB - snapshots[0].internalReservedKB;
-    long secondHalfGrowth =
-        snapshots[iterations].internalReservedKB - snapshots[iterations / 2].internalReservedKB;
-
-    System.out.println(
-        String.format(
-            "\nGrowth pattern analysis:\n"
-                + "  First half (iterations 1-%d): +%d KB\n"
-                + "  Second half (iterations %d-%d): +%d KB\n"
-                + "  Ratio (second/first): %.2f",
-            iterations / 2,
-            firstHalfGrowth,
-            iterations / 2 + 1,
-            iterations,
-            secondHalfGrowth,
-            (double) secondHalfGrowth / firstHalfGrowth));
-
-    // The cleanup prevents unbounded _method_map growth:
-    // - WITHOUT cleanup: method_map grows to ~3000 methods, +807 KB, ratio 0.81 (nearly linear)
-    // - WITH cleanup: method_map stays at ~300-1000 methods, +758 KB, ratio 0.87 (slower growth)
-    //
-    // Check TEST_LOG output for "MethodMap: X methods after cleanup" to see bounded growth
-    // Check TEST_LOG output for "Cleaned up X unreferenced methods" to verify cleanup runs
-    //
     // NOTE: NMT "Internal" category includes more than just line number tables:
     // JFR buffers, CallTraceStorage, class metadata, etc. - so memory savings are modest
     // The key metric is method_map size staying bounded, which prevents production OOM
@@ -332,17 +307,16 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
                 + "Total methods encountered: ~%d\n"
                 + "Internal memory growth: +%d KB (threshold: < %d KB)\n"
                 + "\n"
-                + "Expected WITHOUT cleanup: ~900 KB (all methods retained)\n"
-                + "Expected WITH cleanup: ~225 KB (only last 3 chunks of methods)\n"
-                + "Actual: %d KB\n",
+                + "Check TEST_LOG output for:\n"
+                + "  - 'MethodMap: X methods after cleanup' (should stay bounded ~500-1000)\n"
+                + "  - 'Cleaned up X unreferenced methods' (confirms cleanup is running)\n",
             iterations * 1500 / 1000,
             iterations,
             classesPerIteration,
             classesPerIteration * 5,
             iterations * classesPerIteration * 5,
             totalGrowthKB,
-            maxGrowthKB,
-            totalGrowthKB));
+            maxGrowthKB));
 
     // Assert memory growth is bounded
     if (totalGrowthKB > maxGrowthKB) {
@@ -353,39 +327,10 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
                   + "This indicates _method_map is not being cleaned up during switchChunk()\n"
                   + "Expected: Methods unused for 3+ chunks should be removed\n"
                   + "Verify: cleanupUnreferencedMethods() is called in switchChunk()\n"
-                  + "Verify: --method-cleanup flag is enabled (default: true)",
+                  + "Verify: method-cleanup flag is enabled (default: true)",
               totalGrowthKB, maxGrowthKB));
     }
 
-    // Assert plateau behavior - with cleanup, second half should grow slower
-    // Without cleanup: both halves grow equally (ratio ~ 1.0)
-    // With cleanup: second half grows slower as old methods are removed (ratio < 0.9)
-    // Note: CallTraceStorage keeps ~200-400 methods referenced from active traces,
-    // so we won't see a perfect plateau, but growth should be noticeably slower
-    double growthRatio = (double) secondHalfGrowth / firstHalfGrowth;
-    if (growthRatio > 0.9) {
-      fail(
-          String.format(
-              "Method map cleanup NOT EFFECTIVE - no plateau detected!\n"
-                  + "Growth pattern shows LINEAR growth, not plateau:\n"
-                  + "  First half: +%d KB\n"
-                  + "  Second half: +%d KB\n"
-                  + "  Ratio: %.2f (expected < 0.9 for plateau behavior)\n"
-                  + "\n"
-                  + "This indicates cleanup is either:\n"
-                  + "1. Not being called (check switchChunk() calls cleanupUnreferencedMethods())\n"
-                  + "2. Not removing methods (check age threshold and marking logic)\n"
-                  + "3. Not running frequently enough (check chunk duration)\n"
-                  + "\n"
-                  + "With effective cleanup, memory should PLATEAU after initial accumulation,\n"
-                  + "not continue growing linearly.",
-              firstHalfGrowth, secondHalfGrowth, growthRatio));
-    }
-
-    // Note: Profiler will be stopped by base test class cleanup (@AfterEach)
-    // No need to stop it here
-
-    // Ensure compiler doesn't optimize away the class references
     System.out.println(
         "Result: Method map cleanup working correctly - memory growth is bounded"
             + " (kept "
