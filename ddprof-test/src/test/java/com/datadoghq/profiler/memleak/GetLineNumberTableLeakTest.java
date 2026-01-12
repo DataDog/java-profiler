@@ -38,14 +38,15 @@ import java.nio.file.Paths;
  * <p>This test focuses on the production scenario where the profiler runs continuously for
  * extended periods without stop/restart cycles. In production, Recording objects live for the
  * entire application lifetime (days/weeks), and without cleanup, _method_map would accumulate
- * ALL methods encountered, causing unbounded growth (observed: 3.8M methods × ~300 bytes = 1.2 GB).
+ * ALL methods encountered, causing unbounded growth (observed: 1.2 GB line number table leak).
  *
  * <p><b>What This Test Validates:</b>
  * <ul>
  *   <li>Age-based cleanup removes methods unused for 3+ consecutive chunks</li>
- *   <li>method_map size stays bounded (500-1000 methods vs 3000 without cleanup)</li>
+ *   <li>method_map size stays bounded (~300-500 methods vs 3000 without cleanup)</li>
  *   <li>Cleanup runs during switchChunk() triggered by dump() operations</li>
- *   <li>Memory growth plateaus after initial warmup (not linear growth)</li>
+ *   <li>Memory growth stays under threshold (< 600 KB for 3000 methods generated)</li>
+ *   <li>Class unloading frees SharedLineNumberTable memory naturally</li>
  * </ul>
  *
  * <p><b>Test Strategy:</b>
@@ -53,8 +54,8 @@ import java.nio.file.Paths;
  *   <li>Continuous profiling (NO stop/restart cycles)</li>
  *   <li>Generate transient methods across multiple chunk boundaries</li>
  *   <li>Allow natural class unloading (no strong references held)</li>
- *   <li>Verify bounded growth via TEST_LOG output showing method_map size</li>
- *   <li>Combined cleanup: method_map cleanup + class unloading for optimal memory</li>
+ *   <li>Verify bounded growth via TEST_LOG output and NMT measurements</li>
+ *   <li>Combined cleanup: method_map cleanup + class unloading</li>
  * </ul>
  */
 public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
