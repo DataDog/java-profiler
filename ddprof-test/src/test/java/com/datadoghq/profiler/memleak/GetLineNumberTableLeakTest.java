@@ -346,6 +346,143 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
             + "Classes allowed to unload naturally for optimal memory usage");
   }
 
+  /**
+   * Comparison test that validates cleanup effectiveness by running the same workload
+   * twice: once without cleanup (no-method-cleanup) and once with cleanup (default).
+   * This provides empirical evidence that the cleanup mechanism actually prevents
+   * unbounded growth.
+   */
+  @Test
+  public void testCleanupEffectivenessComparison() throws Exception {
+    // Verify NMT is enabled
+    Assumptions.assumeTrue(
+        NativeMemoryTracking.isEnabled(), "Test requires -XX:NativeMemoryTracking=detail");
+
+    // Stop the default profiler from AbstractProfilerTest
+    // We need to manage our own profiler instances for this comparison
+    stopProfiler();
+
+    final int iterations = 8; // Fewer iterations but enough to see difference
+    final int classesPerIteration = 50; // 250 methods per iteration
+
+    // ===== Phase 1: WITHOUT cleanup (no-method-cleanup) =====
+    System.out.println("\n=== Phase 1: WITHOUT cleanup (no-method-cleanup) ===");
+
+    NativeMemoryTracking.NMTSnapshot beforeNoCleanup = NativeMemoryTracking.takeSnapshot();
+
+    Path noCleanupFile = tempFile("no-cleanup");
+    profiler.execute(
+        "start," + getProfilerCommand() + ",jfr,no-method-cleanup,file=" + noCleanupFile);
+
+    Thread.sleep(500); // Stabilize
+    NativeMemoryTracking.NMTSnapshot afterStartNoCleanup =
+        NativeMemoryTracking.takeSnapshot();
+
+    // Run workload without cleanup
+    for (int iter = 0; iter < iterations; iter++) {
+      for (int i = 0; i < classesPerIteration; i++) {
+        Class<?>[] transientClasses = generateUniqueMethodCalls();
+        for (Class<?> clazz : transientClasses) {
+          invokeClassMethods(clazz);
+        }
+      }
+
+      profiler.dump(noCleanupFile);
+      Thread.sleep(100);
+
+      if ((iter + 1) % 3 == 0) {
+        System.gc();
+        Thread.sleep(50);
+      }
+    }
+
+    NativeMemoryTracking.NMTSnapshot afterNoCleanup = NativeMemoryTracking.takeSnapshot();
+    long growthNoCleanup =
+        afterNoCleanup.internalReservedKB - afterStartNoCleanup.internalReservedKB;
+    System.out.println(
+        String.format(
+            "WITHOUT cleanup: Internal memory growth = +%d KB\n"
+                + "Check TEST_LOG: MethodMap should grow unbounded (no cleanup logs)",
+            growthNoCleanup));
+
+    profiler.stop();
+    Thread.sleep(500); // Allow cleanup
+
+    // ===== Phase 2: WITH cleanup (default) =====
+    System.out.println("\n=== Phase 2: WITH cleanup (default) ===");
+
+    // Reset class counter to generate same classes
+    classCounter = 0;
+
+    NativeMemoryTracking.NMTSnapshot beforeWithCleanup = NativeMemoryTracking.takeSnapshot();
+
+    Path withCleanupFile = tempFile("with-cleanup");
+    profiler.execute(
+        "start," + getProfilerCommand() + ",jfr,method-cleanup,file=" + withCleanupFile);
+
+    Thread.sleep(500); // Stabilize
+    NativeMemoryTracking.NMTSnapshot afterStartWithCleanup =
+        NativeMemoryTracking.takeSnapshot();
+
+    // Run same workload with cleanup
+    for (int iter = 0; iter < iterations; iter++) {
+      for (int i = 0; i < classesPerIteration; i++) {
+        Class<?>[] transientClasses = generateUniqueMethodCalls();
+        for (Class<?> clazz : transientClasses) {
+          invokeClassMethods(clazz);
+        }
+      }
+
+      profiler.dump(withCleanupFile);
+      Thread.sleep(100);
+
+      if ((iter + 1) % 3 == 0) {
+        System.gc();
+        Thread.sleep(50);
+      }
+    }
+
+    NativeMemoryTracking.NMTSnapshot afterWithCleanup = NativeMemoryTracking.takeSnapshot();
+    long growthWithCleanup =
+        afterWithCleanup.internalReservedKB - afterStartWithCleanup.internalReservedKB;
+    System.out.println(
+        String.format(
+            "WITH cleanup: Internal memory growth = +%d KB\n"
+                + "Check TEST_LOG: MethodMap should stay bounded, cleanup logs should appear",
+            growthWithCleanup));
+
+    profiler.stop();
+
+    // ===== Comparison =====
+    System.out.println("\n=== Comparison ===");
+    System.out.println(
+        String.format(
+            "WITHOUT cleanup: +%d KB\n" + "WITH cleanup:    +%d KB\n" + "Savings:         %d KB (%.1f%%)",
+            growthNoCleanup,
+            growthWithCleanup,
+            growthNoCleanup - growthWithCleanup,
+            100.0 * (growthNoCleanup - growthWithCleanup) / growthNoCleanup));
+
+    // Assert that cleanup actually reduces memory growth
+    // We expect at least 20% savings from cleanup
+    long expectedMinSavings = (long) (growthNoCleanup * 0.20);
+    long actualSavings = growthNoCleanup - growthWithCleanup;
+
+    if (actualSavings < expectedMinSavings) {
+      fail(
+          String.format(
+              "Cleanup not effective enough!\n"
+                  + "Expected at least 20%% savings (>= %d KB)\n"
+                  + "Actual savings: %d KB (%.1f%%)\n"
+                  + "This suggests cleanup is not working as intended",
+              expectedMinSavings,
+              actualSavings,
+              100.0 * actualSavings / growthNoCleanup));
+    }
+
+    System.out.println("Result: Cleanup effectiveness validated - significant memory savings observed");
+  }
+
   private Path tempFile(String name) throws IOException {
     Path dir = Paths.get("/tmp/recordings");
     Files.createDirectories(dir);
