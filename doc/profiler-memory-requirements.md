@@ -1,6 +1,6 @@
 # Profiler Memory Requirements and Limitations
 
-**Last Updated:** 2026-01-09
+**Last Updated:** 2026-01-12
 
 ## Overview
 
@@ -195,6 +195,7 @@ Total allocation:
 **What it is:**
 - std::map<jmethodID, MethodInfo> storing metadata for sampled methods
 - Only methods that appear in stack traces are stored (lazy allocation)
+- Implements age-based cleanup to prevent unbounded growth in continuous profiling
 
 **Memory cost:**
 ```
@@ -210,14 +211,25 @@ Typical overhead:
 ```
 
 **Growth patterns:**
-- Grows with sampled method diversity
+- Grows with sampled method diversity during warmup
 - Converges once all hot methods are encountered
 - Bounded by unique methods in active code paths
+- **With cleanup enabled (default):** Methods unused for 3+ chunks are automatically removed
+- **Without cleanup:** Would grow unboundedly in applications with high method churn
 
 **Lifecycle:**
 - Allocated during JFR flush when methods are first sampled
-- Persists until profiler stop/restart
+- Age counter incremented for unreferenced methods at each chunk boundary
+- Methods with age >= 3 chunks are removed during switchChunk()
 - Line number tables deallocated via shared_ptr when MethodInfo is destroyed
+- Cleanup can be disabled with `--no-method-cleanup` flag (not recommended)
+
+**Cleanup behavior:**
+- Triggered during switchChunk() (typically every 10-60 seconds)
+- Mark phase: Reset all _referenced flags before serialization
+- Reference phase: Mark methods in active stack traces during writeStackTraces()
+- Sweep phase: Increment age for unreferenced methods, remove if age >= 3
+- Conservative strategy: Methods must be unused for 3 consecutive chunks before removal
 
 ### 9. Thread-Local Context Storage (Tracer Integration)
 
@@ -293,7 +305,8 @@ TOTAL (including jmethodID):       1+ GB (dominated by jmethodID)
 - For normal applications: Total overhead is 24-206 MB (acceptable)
 - For high class churn: jmethodID dominates memory usage (1+ GB)
 - Most non-jmethodID memory converges after warmup
-- Only jmethodID and CallTraceStorage can grow unbounded
+- Only jmethodID and CallTraceStorage can grow unbounded (jmethodID requires class unloading)
+- MethodMap now bounded by age-based cleanup (enabled by default)
 - Tracer context overhead is negligible (< 256 KB even with 1000+ threads)
 
 ## Limitations and Restrictions
@@ -612,8 +625,14 @@ jcmd <pid> GC.class_histogram | head -1
 
 **8. MethodMap:**
 - `ddprof-lib/src/main/cpp/flightRecorder.h:107-110` - MethodMap (std::map<jmethodID, MethodInfo>)
-- `ddprof-lib/src/main/cpp/flightRecorder.h:68-105` - MethodInfo structure
+- `ddprof-lib/src/main/cpp/flightRecorder.h:68-105` - MethodInfo structure (_referenced, _age fields)
+- `ddprof-lib/src/main/cpp/flightRecorder.cpp:601-640` - cleanupUnreferencedMethods() implementation
+- `ddprof-lib/src/main/cpp/flightRecorder.cpp:517-563` - switchChunk() calls cleanup after finishChunk()
+- `ddprof-lib/src/main/cpp/flightRecorder.cpp:1196-1242` - writeStackTraces() marks referenced methods
+- `ddprof-lib/src/main/cpp/arguments.h:191` - _enable_method_cleanup flag (default: true)
+- `ddprof-lib/src/main/cpp/arguments.cpp` - --method-cleanup / --no-method-cleanup parsing
 - Stores metadata for sampled methods with lazy allocation
+- Age-based cleanup removes methods unused for 3+ consecutive chunks
 
 **9. Thread-local Context storage:**
 - `ddprof-lib/src/main/cpp/context.h:32-40` - Context structure (cache-line aligned, 64 bytes)
@@ -629,6 +648,15 @@ jcmd <pid> GC.class_histogram | head -1
 - Fix: Added null checks and error handling in destructor
 - Test: `GetLineNumberTableLeakTest` validates memory plateaus during steady state
 
+**MethodMap unbounded growth (Fixed):**
+- Recording._method_map accumulated ALL methods forever in long-running applications
+- Impact: 3.8M methods × ~300 bytes = 1.2 GB over days in production
+- Root cause: Recording objects live for entire app lifetime, never freed methods
+- Fix: Age-based cleanup removes methods unused for 3+ consecutive chunks
+- Implementation: Mark-and-sweep during switchChunk(), enabled by default
+- Test: `GetLineNumberTableLeakTest.testMethodMapCleanupDuringContinuousProfile()` validates bounded growth
+- Feature flag: `--method-cleanup` (default: enabled), `--no-method-cleanup` to disable
+
 **Previous investigation findings:**
-- See git history for detailed investigation (commits 8ffdb30e, a9fa649c)
+- See git history for detailed investigation (commits 8ffdb30e, a9fa649c, 2ab1d263)
 - Investigation confirmed jmethodID preallocation is required, not a bug
