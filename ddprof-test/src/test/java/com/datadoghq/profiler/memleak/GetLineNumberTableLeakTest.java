@@ -172,7 +172,7 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
 
     // Assert that Internal category doesn't show super-linear growth
     // With fix: Internal should plateau after warmup (< 10 KB per 5 restarts from minor JVM allocations)
-    // Without fix: each restart leaks ~2 KB → 5 restarts = ~10 KB per interval
+    // Without fix: each restart leaks ~1.6 KB → 5 restarts = ~8 KB per interval
     long maxIntervalGrowth = 0;
     for (int i = 0; i < steadyStateInternalGrowths.length; i++) {
       maxIntervalGrowth = Math.max(maxIntervalGrowth, steadyStateInternalGrowths[i]);
