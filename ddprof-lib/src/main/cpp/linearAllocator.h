@@ -26,6 +26,19 @@ struct Chunk {
   char _padding[56];
 };
 
+/**
+ * Holds detached chunks from a LinearAllocator for deferred deallocation.
+ * Used to keep trace memory alive during processor execution while allowing
+ * the allocator to be reset for new allocations.
+ */
+struct ChunkList {
+  Chunk *head;
+  size_t chunk_size;
+
+  ChunkList() : head(nullptr), chunk_size(0) {}
+  ChunkList(Chunk *h, size_t sz) : head(h), chunk_size(sz) {}
+};
+
 class LinearAllocator {
 private:
   size_t _chunk_size;
@@ -42,6 +55,22 @@ public:
   ~LinearAllocator();
 
   void clear();
+
+  /**
+   * Detaches all chunks from this allocator, returning them as a ChunkList.
+   * The allocator is reset to an empty state with a fresh chunk for new allocations.
+   * The detached chunks remain allocated and valid until freeChunks() is called.
+   *
+   * This enables deferred deallocation: reset the allocator immediately while
+   * keeping old data alive until it's no longer needed.
+   */
+  ChunkList detachChunks();
+
+  /**
+   * Frees all chunks in a previously detached ChunkList.
+   * Call this after processing is complete to deallocate the memory.
+   */
+  static void freeChunks(ChunkList& chunks);
 
   void *alloc(size_t size);
 };

@@ -6,13 +6,15 @@
 #include "codeCache.h"
 #include "dwarf_dd.h"
 #include "os_dd.h"
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 
 char *NativeFunc::create(const char *name, short lib_index) {
-  NativeFunc *f = (NativeFunc *)malloc(sizeof(NativeFunc) + 1 + strlen(name));
+  size_t size = align_up(sizeof(NativeFunc) + 1 + strlen(name), sizeof(NativeFunc*));
+  NativeFunc *f = (NativeFunc *)aligned_alloc(sizeof(NativeFunc*), size);
   f->_lib_index = lib_index;
   f->_mark = 0;
   // cppcheck-suppress memleak
@@ -361,7 +363,7 @@ void CodeCache::setDwarfTable(FrameDesc *table, int length) {
   _dwarf_table_length = length;
 }
 
-FrameDesc *CodeCache::findFrameDesc(const void *pc) {
+FrameDesc CodeCache::findFrameDesc(const void *pc) {
   u32 target_loc = (const char *)pc - _text_base;
   int low = 0;
   int high = _dwarf_table_length - 1;
@@ -373,15 +375,15 @@ FrameDesc *CodeCache::findFrameDesc(const void *pc) {
     } else if (_dwarf_table[mid].loc > target_loc) {
       high = mid - 1;
     } else {
-      return &_dwarf_table[mid];
+      return _dwarf_table[mid];
     }
   }
 
   if (low > 0) {
-    return &_dwarf_table[low - 1];
+    return _dwarf_table[low - 1];
   } else if (target_loc - _plt_offset < _plt_size) {
-    return &FrameDesc::empty_frame;
+    return FrameDesc::empty_frame;
   } else {
-    return &FrameDesc::default_frame;
+    return FrameDesc::default_frame;
   }
 }

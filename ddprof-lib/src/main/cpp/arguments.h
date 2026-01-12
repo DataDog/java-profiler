@@ -66,8 +66,7 @@ enum CStack {
   CSTACK_FP,       // walk stack using Frame Pointer links
   CSTACK_DWARF,    // use DWARF unwinding info from .eh_frame section
   CSTACK_LBR,      // Last Branch Record hardware capability
-  CSTACK_VM,       // unwind using HotSpot VMStructs
-  CSTACK_VMX       // same as CSTACK_VM but with intermediate native frames
+  CSTACK_VM        // unwind using HotSpot VMStructs (vmx mode uses CSTACK_VM with _features.mixed=1)
 };
 
 enum Output { OUTPUT_NONE, OUTPUT_COLLAPSED, OUTPUT_JFR };
@@ -85,6 +84,45 @@ enum JfrOption {
 enum WallclockSampler {
     ASGCT,
     JVMTI
+};
+
+enum Clock {
+    CLK_DEFAULT,
+    CLK_TSC,
+    CLK_MONOTONIC
+};
+
+// Keep this in sync with JfrSync.java
+enum EventMask {
+    EM_CPU          = 1,
+    EM_ALLOC        = 2,
+    EM_LOCK         = 4,
+    EM_WALL         = 8,
+    EM_NATIVEMEM    = 16,
+    EM_METHOD_TRACE = 32
+};
+constexpr int EVENT_MASK_SIZE = 6;
+
+struct StackWalkFeatures {
+    // Deprecated stack recovery techniques used to workaround AsyncGetCallTrace flaws
+    unsigned short unknown_java  : 1;
+    unsigned short unwind_stub   : 1;
+    unsigned short unwind_comp   : 1;
+    unsigned short unwind_native : 1;
+    unsigned short java_anchor   : 1;
+    unsigned short gc_traces     : 1;
+
+    // Common features
+    unsigned short stats         : 1;  // collect stack walking duration statistics
+
+    // Additional HotSpot-specific features
+    unsigned short jnienv        : 1;  // verify JNIEnv* obtained using VMStructs
+    unsigned short probe_sp      : 1;  // when AsyncGetCallTrace fails, adjust SP and retry
+    unsigned short mixed         : 1;  // mixed stack traces with Java and native frames interleaved
+    unsigned short vtable_target : 1;  // show receiver classes of vtable/itable stubs
+    unsigned short comp_task     : 1;  // display current compilation task for JIT threads
+    unsigned short pc_addr       : 1;  // record exact PC address for each sample
+    unsigned short _padding      : 3;  // pad structure to 16 bits
 };
 
 struct Multiplier {
@@ -138,12 +176,14 @@ public:
   bool _gc_generations;
   int  _jstackdepth;
   int _safe_mode;
+  StackWalkFeatures _features;
   const char* _file;
   const char* _log;
   const char* _loglevel;
   const char* _unknown_arg;
   const char* _filter;
   CStack _cstack;
+  Clock _clock;
   int _jfr_options;
   std::vector<std::string> _context_attributes;
   bool _lightweight;
@@ -168,12 +208,14 @@ public:
         _gc_generations(false),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),
+        _features{1, 1, 1, 1, 1, 1},
         _file(NULL),
         _log(NULL),
         _loglevel(NULL),
         _unknown_arg(NULL),
         _filter(NULL),
         _cstack(CSTACK_DEFAULT),
+        _clock(CLK_DEFAULT),
         _jfr_options(0),
         _context_attributes({}),
         _wallclock_sampler(ASGCT),

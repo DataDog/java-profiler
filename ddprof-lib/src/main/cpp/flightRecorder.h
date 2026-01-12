@@ -35,7 +35,9 @@ const int JFR_EVENT_FLUSH_THRESHOLD = RECORDING_BUFFER_LIMIT;
 const int MAX_VAR64_LENGTH = 10;
 const int MAX_VAR32_LENGTH = 5;
 
+#ifndef CONCURRENCY_LEVEL
 const int CONCURRENCY_LEVEL = 16;
+#endif
 const u16 ACC_SYNTHETIC = 0x1000;
 const u16 ACC_BRIDGE = 0x0040;
 const u16 ACC_HIDDEN = ACC_SYNTHETIC | ACC_BRIDGE;
@@ -291,7 +293,9 @@ class FlightRecorder {
 private:
   std::string _filename;
   Arguments _args;
-  Recording* volatile _rec;
+
+  SpinLock _rec_lock;
+  Recording* _rec;
 
   Error newRecording(bool reset);
 

@@ -1673,21 +1673,17 @@ TEST_F(StressTestSuite, InstanceIdTraceIdStressTest) {
     std::vector<std::thread> workers;
     for (int t = 0; t < NUM_THREADS; ++t) {
         workers.emplace_back([&, t]() {
-            std::mt19937 gen(std::random_device{}() + t);
-            // No longer need storage distribution since we use single instance
-            std::uniform_int_distribution<uint32_t> bci_dis(1, 100000);
-            std::uniform_int_distribution<uintptr_t> method_dis(0x10000, 0xFFFFFF);
-            
             for (int op = 0; op < OPERATIONS_PER_THREAD && !test_failed.load(); ++op) {
                 try {
                     // Use the single shared storage instance
                     CallTraceStorage* storage = storage_instance;
-                    
-                    // Create a unique frame to avoid hash collisions masking trace ID issues
+
+                    // Create a DETERMINISTIC unique frame - no randomness
+                    // Each (thread, operation) pair generates a unique frame
                     ASGCT_CallFrame frame;
-                    frame.bci = bci_dis(gen) + t * 1000000 + op;  // Ensure uniqueness
-                    frame.method_id = reinterpret_cast<jmethodID>(method_dis(gen) + t * 0x1000000);
-                    
+                    frame.bci = t * 1000000 + op;  // Deterministic: thread_id * 1M + op_index
+                    frame.method_id = reinterpret_cast<jmethodID>(0x10000000ULL + (u64)t * 10000000ULL + (u64)op);
+
                     // Calculate stack trace hash for analysis (simplified hash of frame data)
                     u64 stack_hash = (u64)frame.bci ^ ((u64)frame.method_id << 32);
                     

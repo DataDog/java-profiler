@@ -6,6 +6,8 @@
 #ifndef _CODECACHE_H
 #define _CODECACHE_H
 
+#include "utils.h"
+
 #include <jvmti.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,7 +64,7 @@ public:
 
   static short libIndex(const char *name) {
     NativeFunc* func = from(name);
-    if (posix_memalign((void**)(&func), sizeof(NativeFunc*), sizeof(NativeFunc)) != 0) {
+    if (!is_aligned(func, sizeof(func))) {
       return -1;
     }
     return func->_lib_index;
@@ -200,7 +202,7 @@ public:
                            std::vector<const void *> &symbols);
 
   void setDwarfTable(FrameDesc *table, int length);
-  FrameDesc *findFrameDesc(const void *pc);
+  FrameDesc findFrameDesc(const void *pc);
 
   long long memoryUsage() {
     return _capacity * sizeof(CodeBlob *) + _count * sizeof(NativeFunc);
@@ -215,30 +217,38 @@ public:
 class CodeCacheArray {
 private:
   CodeCache *_libs[MAX_NATIVE_LIBS];
-  int _count;
+  volatile int _count;
+  volatile size_t _used_memory;
 
 public:
-  CodeCacheArray() : _count(0) {
+  CodeCacheArray() : _count(0), _used_memory(0) {
     memset(_libs, 0, MAX_NATIVE_LIBS * sizeof(CodeCache *));
   }
 
   CodeCache *operator[](int index) { return _libs[index]; }
 
-  int count() { return __atomic_load_n(&_count, __ATOMIC_ACQUIRE); }
+  int count() const { return __atomic_load_n(&_count, __ATOMIC_RELAXED); }
 
   void add(CodeCache *lib) {
-    int index = __atomic_load_n(&_count, __ATOMIC_ACQUIRE);
-    _libs[index] = lib;
-    __atomic_store_n(&_count, index + 1, __ATOMIC_RELEASE);
+    int index = __atomic_fetch_add(&_count, 1, __ATOMIC_RELAXED);
+    if (index < MAX_NATIVE_LIBS) {
+      __atomic_fetch_add(&_used_memory, lib->memoryUsage(), __ATOMIC_RELAXED);
+       __atomic_store_n(&_libs[index], lib, __ATOMIC_RELEASE);
+    }
   }
 
-  long long memoryUsage() {
-    int count = __atomic_load_n(&_count, __ATOMIC_ACQUIRE);
-    long long totalUsage = 0;
-    for (int i = 0; i < count; i++) {
-      totalUsage += _libs[i]->memoryUsage();
+  CodeCache* at(int index) const {
+    if (index >= MAX_NATIVE_LIBS) {
+        return nullptr;
     }
-    return totalUsage;
+    CodeCache* lib = nullptr;
+    while ((lib = __atomic_load_n(&_libs[index], __ATOMIC_ACQUIRE)) == nullptr);
+
+    return lib;
+  }
+
+  size_t memoryUsage() {
+    return __atomic_load_n(&_used_memory, __ATOMIC_RELAXED);
   }
 };
 

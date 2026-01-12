@@ -30,7 +30,7 @@ private:
   volatile int _lock;
   char _padding[DEFAULT_CACHE_LINE_SIZE - sizeof(_lock)];
 public:
-  constexpr SpinLock(int initial_state = 0) : _lock(initial_state), _padding() {
+  explicit constexpr SpinLock(int initial_state = 0) : _lock(initial_state), _padding() {
     static_assert(sizeof(SpinLock) == DEFAULT_CACHE_LINE_SIZE);
   }
 
@@ -48,8 +48,7 @@ public:
 
   bool tryLockShared() {
     int value;
-    // we use relaxed as the compare already offers the guarantees we need
-    while ((value = __atomic_load_n(&_lock, __ATOMIC_RELAXED)) <= 0) {
+    while ((value = __atomic_load_n(&_lock, __ATOMIC_ACQUIRE)) <= 0) {
       if (__sync_bool_compare_and_swap(&_lock, value, value - 1)) {
         return true;
       }
@@ -59,7 +58,7 @@ public:
 
   void lockShared() {
     int value;
-    while ((value = __atomic_load_n(&_lock, __ATOMIC_RELAXED)) > 0 ||
+    while ((value = __atomic_load_n(&_lock, __ATOMIC_ACQUIRE)) > 0 ||
            !__sync_bool_compare_and_swap(&_lock, value, value - 1)) {
       spinPause();
     }
@@ -84,6 +83,29 @@ public:
   SharedLockGuard& operator=(const SharedLockGuard&) = delete;
   SharedLockGuard(SharedLockGuard&&) = delete;
   SharedLockGuard& operator=(SharedLockGuard&&) = delete;
+};
+
+class OptionalSharedLockGuard {
+  SpinLock* _lock;
+public:
+  OptionalSharedLockGuard(SpinLock* lock) : _lock(lock) {
+    if (!_lock->tryLockShared()) {
+      // Locking failed, no need to unlock.
+      _lock = nullptr;
+    }
+  }
+  ~OptionalSharedLockGuard() {
+    if (_lock != nullptr) {
+      _lock->unlockShared();
+    }
+  }
+  bool ownsLock() { return _lock != nullptr; }
+
+  // Non-copyable and non-movable
+  OptionalSharedLockGuard(const OptionalSharedLockGuard&) = delete;
+  OptionalSharedLockGuard& operator=(const OptionalSharedLockGuard&) = delete;
+  OptionalSharedLockGuard(OptionalSharedLockGuard&&) = delete;
+  OptionalSharedLockGuard& operator=(OptionalSharedLockGuard&&) = delete;
 };
 
 class ExclusiveLockGuard {

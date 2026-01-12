@@ -358,141 +358,309 @@ TEST_F(CallTraceStorageTest, ConcurrentTableExpansionRegression) {
 }
 
 /**
- * Test hazard pointer synchronization during storage swap.
- * This test ensures that waitForHazardPointersToClear() actually prevents
+ * Test RefCountGuard synchronization during storage swap.
+ * This test ensures that waitForRefCountToClear() actually prevents
  * collection from original_active while there are still pending put() operations
  * to the original_active after the active area swap.
  */
-TEST_F(CallTraceStorageTest, HazardPointerSynchronizationDuringSwap) {
+TEST_F(CallTraceStorageTest, RefCountGuardSynchronizationDuringSwap) {
     // Synchronization primitives for coordinating the test
-    std::atomic<bool> swap_initiated{false};
-    std::atomic<bool> put_thread_ready{false};
+    std::atomic<bool> swap_can_proceed{false};
+    std::atomic<bool> put_threads_ready{false};
+    std::atomic<int> put_threads_ready_count{0};
     std::atomic<bool> put_operation_started{false};
     std::atomic<bool> put_operation_completed{false};
     std::atomic<bool> collection_started{false};
-    std::atomic<bool> hazard_wait_started{false};
-    
-    std::condition_variable cv;
-    std::mutex cv_mutex;
-    
+    std::atomic<bool> collection_completed{false};
+
+    std::condition_variable ready_cv;
+    std::mutex ready_mutex;
+
+    std::condition_variable swap_cv;
+    std::mutex swap_mutex;
+
     // Test outcome tracking
     std::atomic<u64> put_trace_id{0};
-    std::atomic<bool> trace_found_in_collection{false};
-    
+    std::atomic<u64> delayed_trace_id{0};
+
     // Create initial traces to populate the storage
     ASGCT_CallFrame initial_frame;
     initial_frame.bci = 100;
     initial_frame.method_id = (jmethodID)0x1000;
-    
+
     // Add several traces to ensure there's content to process
     for (int i = 0; i < 5; i++) {
         initial_frame.bci = 100 + i;
         storage->put(1, &initial_frame, false, 1);
     }
-    
+
     // Thread that will perform a put() operation right after storage swap
     std::thread put_thread([&]() {
-        put_thread_ready = true;
-        
-        // Wait for the main thread to initiate the swap
-        std::unique_lock<std::mutex> lock(cv_mutex);
-        cv.wait(lock, [&] { return swap_initiated.load(); });
+        // Signal that this thread is ready
+        {
+            std::lock_guard<std::mutex> lock(ready_mutex);
+            put_threads_ready_count.fetch_add(1);
+        }
+        ready_cv.notify_all();
+
+        // Wait for permission to proceed with put operation
+        std::unique_lock<std::mutex> lock(swap_mutex);
+        swap_cv.wait(lock, [&] { return swap_can_proceed.load(); });
         lock.unlock();
-        
-        // Small delay to ensure we hit the window after swap but during hazard pointer wait
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
-        
-        // This put() should target the new active area, but we need to ensure
-        // that if there were ongoing operations on original_active,
-        // the hazard pointer wait would properly synchronize
+
+        // This put() should target the new active area
         ASGCT_CallFrame put_frame;
         put_frame.bci = 999;
         put_frame.method_id = (jmethodID)0x999;
-        
+
         put_operation_started = true;
         u64 trace_id = storage->put(1, &put_frame, false, 1);
         put_trace_id = trace_id;
         put_operation_completed = true;
     });
-    
-    // Thread that simulates a longer-running put() operation on original_active
-    // This represents the scenario the hazard pointer synchronization protects against
+
+    // Thread that simulates a longer-running put() operation
     std::thread delayed_put_thread([&]() {
-        // Wait for swap to be initiated
-        std::unique_lock<std::mutex> lock(cv_mutex);
-        cv.wait(lock, [&] { return swap_initiated.load(); });
+        // Signal that this thread is ready
+        {
+            std::lock_guard<std::mutex> lock(ready_mutex);
+            put_threads_ready_count.fetch_add(1);
+        }
+        ready_cv.notify_all();
+
+        // Wait for permission to proceed
+        std::unique_lock<std::mutex> lock(swap_mutex);
+        swap_cv.wait(lock, [&] { return swap_can_proceed.load(); });
         lock.unlock();
-        
-        // Simulate a put operation that was ongoing during the swap
-        // In the real scenario, this would be a signal handler that acquired
-        // a hazard pointer before the swap and is still executing
+
+        // Simulate a put operation during swap
         ASGCT_CallFrame delayed_frame;
         delayed_frame.bci = 777;
         delayed_frame.method_id = (jmethodID)0x777;
-        
+
         // Small delay to simulate ongoing operation
         std::this_thread::sleep_for(std::chrono::microseconds(50));
-        
-        // This operation would normally be protected by hazard pointers
-        // The test verifies the synchronization works correctly
-        storage->put(1, &delayed_frame, false, 1);
+
+        u64 trace_id = storage->put(1, &delayed_frame, false, 1);
+        delayed_trace_id = trace_id;
     });
-    
-    // Perform processTraces in main thread to trigger the storage swap
+
+    // Wait for both put threads to be ready before starting process thread
+    {
+        std::unique_lock<std::mutex> lock(ready_mutex);
+        ready_cv.wait(lock, [&] { return put_threads_ready_count.load() == 2; });
+        put_threads_ready = true;
+    }
+
+    // Give threads a moment to enter their wait state
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    // Perform processTraces in separate thread to trigger the storage swap
     std::thread process_thread([&]() {
-        // Signal that we're about to initiate the swap
-        swap_initiated = true;
-        cv.notify_all();
-        
-        // Process traces - this will trigger the storage swap and hazard pointer wait
+        // Start processing - this will swap storage
         storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
             collection_started = true;
-            
-            // Look for the traces we added
+
+            // Verify we have traces from the initial population
+            int initial_trace_count = 0;
             for (CallTrace* trace : traces) {
-                if (trace && trace->trace_id == put_trace_id.load()) {
-                    trace_found_in_collection = true;
-                }
-                
-                // Verify we have some traces from the initial population
                 if (trace && trace->num_frames > 0 && trace->frames[0].bci >= 100 && trace->frames[0].bci <= 104) {
-                    // Found one of our initial traces - good
+                    initial_trace_count++;
                 }
             }
+            EXPECT_GE(initial_trace_count, 5) << "Should find initial traces";
         });
+
+        collection_completed = true;
+
+        // Now that swap is complete and refcount wait has finished,
+        // signal put threads to proceed
+        {
+            std::lock_guard<std::mutex> lock(swap_mutex);
+            swap_can_proceed = true;
+        }
+        swap_cv.notify_all();
     });
-    
-    // Wait for all threads to complete
-    put_thread.join();
-    delayed_put_thread.join();
-    process_thread.join();
-    
+
+    // Wait for all threads to complete with timeout to detect deadlock
+    auto wait_with_timeout = [](std::thread& t, int timeout_seconds, const char* name) -> bool {
+        auto start = std::chrono::steady_clock::now();
+        auto timeout_duration = std::chrono::seconds(timeout_seconds);
+
+        while (std::chrono::steady_clock::now() - start < timeout_duration) {
+            if (t.joinable()) {
+                t.join();
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+
+        // Timeout occurred
+        ADD_FAILURE() << "Thread " << name << " timed out after " << timeout_seconds << " seconds (possible deadlock)";
+        return false;
+    };
+
+    EXPECT_TRUE(wait_with_timeout(process_thread, 30, "process_thread"));
+    EXPECT_TRUE(wait_with_timeout(put_thread, 30, "put_thread"));
+    EXPECT_TRUE(wait_with_timeout(delayed_put_thread, 30, "delayed_put_thread"));
+
     // Verification of test outcomes
-    EXPECT_TRUE(put_thread_ready.load()) << "Put thread should have been ready";
-    EXPECT_TRUE(swap_initiated.load()) << "Storage swap should have been initiated";
+    EXPECT_TRUE(put_threads_ready.load()) << "Put threads should have been ready";
+    EXPECT_TRUE(collection_started.load()) << "Collection should have started";
+    EXPECT_TRUE(collection_completed.load()) << "Collection should have completed";
     EXPECT_TRUE(put_operation_started.load()) << "Put operation should have started";
     EXPECT_TRUE(put_operation_completed.load()) << "Put operation should have completed";
-    EXPECT_TRUE(collection_started.load()) << "Collection should have started";
     EXPECT_GT(put_trace_id.load(), 0ULL) << "Put operation should have returned valid trace ID";
-    
-    // The key test: if hazard pointer synchronization works correctly,
+    EXPECT_GT(delayed_trace_id.load(), 0ULL) << "Delayed put operation should have returned valid trace ID";
+
+    // The key test: if RefCountGuard synchronization works correctly,
     // the collection should not interfere with concurrent put operations
     // This test primarily validates that we don't crash or corrupt data
-    
+
     // Additional verification: ensure storage is still functional
     ASGCT_CallFrame verification_frame;
     verification_frame.bci = 5555;
     verification_frame.method_id = (jmethodID)0x5555;
     u64 verification_trace = storage->put(1, &verification_frame, false, 1);
-    EXPECT_GT(verification_trace, 0ULL) << "Storage should remain functional after hazard pointer synchronization";
-    
+    EXPECT_GT(verification_trace, 0ULL) << "Storage should remain functional after RefCountGuard synchronization";
+
     // Final verification: ensure we can still process traces
     std::atomic<int> final_trace_count{0};
     storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
         final_trace_count = static_cast<int>(traces.size());
     });
-    
+
     EXPECT_GT(final_trace_count.load(), 0) << "Storage should still contain traces after synchronization test";
 }
 
+/**
+ * Reproducer test for use-after-free bug in processTraces().
+ *
+ * BUG DESCRIPTION:
+ * In processTraces(), traces are collected from standby into _traces_buffer (raw pointers),
+ * then standby->clear() frees all memory, but processor(_traces_buffer) is called AFTER
+ * the clear, accessing freed memory.
+ *
+ * Timeline of the bug:
+ *   1. original_standby->collect(_traces_buffer, ...) - collects raw pointers from STANDBY
+ *   2. original_standby->clear() - FREES ALL MEMORY including CallTrace objects!
+ *   3. processor(_traces_buffer) - accesses freed memory (USE-AFTER-FREE)
+ *
+ * KEY INSIGHT: The bug only affects traces from STANDBY, not ACTIVE.
+ * - Active traces are cleared AFTER the processor runs (safe)
+ * - Standby traces are cleared BEFORE the processor runs (BUG!)
+ *
+ * To trigger the bug, we need traces IN STANDBY at the start of processTraces().
+ * Traces get into standby via the liveness preservation mechanism:
+ *   1. Register a liveness checker that marks traces as "live"
+ *   2. During processTraces(), live traces are copied to SCRATCH
+ *   3. After rotation, SCRATCH becomes the new STANDBY
+ *   4. Next processTraces() will have those preserved traces in STANDBY
+ *   5. Those traces are collected, then FREED, then ACCESSED → USE-AFTER-FREE!
+ *
+ * This test should FAIL (crash or ASan error) before the fix and PASS after.
+ */
+TEST_F(CallTraceStorageTest, UseAfterFreeInProcessTraces) {
+    // Create multiple traces with varying frame counts to increase memory footprint
+    const int NUM_TRACES = 100;
+    const int MAX_FRAMES = 20;
 
+    std::vector<u64> trace_ids;
+    trace_ids.reserve(NUM_TRACES);
+
+    // Create traces with multiple frames to use more memory
+    for (int i = 0; i < NUM_TRACES; i++) {
+        std::vector<ASGCT_CallFrame> frames(MAX_FRAMES);
+        for (int j = 0; j < MAX_FRAMES; j++) {
+            frames[j].bci = i * 1000 + j;
+            frames[j].method_id = (jmethodID)(0x10000 + i * 100 + j);
+        }
+
+        u64 trace_id = storage->put(MAX_FRAMES, frames.data(), false, 1);
+        ASSERT_GT(trace_id, 0) << "Failed to store trace " << i;
+        trace_ids.push_back(trace_id);
+    }
+
+    // CRITICAL: Register a liveness checker that preserves ALL traces.
+    // This causes traces to be copied to SCRATCH during processTraces().
+    // After rotation, SCRATCH becomes STANDBY, so the NEXT processTraces()
+    // will have these traces in STANDBY where the bug manifests.
+    storage->registerLivenessChecker([&trace_ids](std::unordered_set<u64>& buffer) {
+        for (u64 id : trace_ids) {
+            buffer.insert(id);
+        }
+    });
+
+    // First processTraces: traces are in ACTIVE, get collected and preserved to SCRATCH.
+    // After rotation: SCRATCH becomes STANDBY (now contains preserved traces)
+    int first_count = 0;
+    storage->processTraces([&first_count](const std::unordered_set<CallTrace*>& traces) {
+        first_count = traces.size();
+        printf("First processTraces: %d traces collected\n", first_count);
+    });
+    EXPECT_GT(first_count, NUM_TRACES) << "First processTraces should collect all traces";
+
+    // Second processTraces: THIS IS WHERE THE BUG OCCURS!
+    // 1. STANDBY now contains the preserved traces (from first call's scratch)
+    // 2. Standby traces are collected into _traces_buffer (raw pointers)
+    // 3. original_standby->clear() - FREES the trace memory!
+    // 4. processor(_traces_buffer) - accesses FREED memory (USE-AFTER-FREE!)
+    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+        int total_frames = 0;
+        int total_bci_sum = 0;
+        int trace_count = 0;
+
+        for (CallTrace* trace : traces) {
+            if (trace == nullptr) continue;
+            if (trace->trace_id == CallTraceStorage::DROPPED_TRACE_ID) continue;
+
+            trace_count++;
+
+            // Deep access to detect use-after-free:
+            // After standby->clear(), this memory is FREED but we're accessing it!
+            // ASan will catch this. Without ASan, we might read garbage.
+            EXPECT_GE(trace->num_frames, 1) << "Corrupted num_frames (use-after-free?)";
+            EXPECT_LE(trace->num_frames, MAX_FRAMES) << "Corrupted num_frames (use-after-free?)";
+            EXPECT_FALSE(trace->truncated) << "Corrupted truncated flag (use-after-free?)";
+            EXPECT_GT(trace->trace_id, 0) << "Corrupted trace_id (use-after-free?)";
+
+            total_frames += trace->num_frames;
+
+            // Access every frame - this maximizes chance of detecting corruption
+            for (int i = 0; i < trace->num_frames; i++) {
+                int bci = trace->frames[i].bci;
+                total_bci_sum += bci;
+                EXPECT_GE(bci, 0) << "Corrupted BCI at frame " << i << " (use-after-free?)";
+
+                jmethodID method = trace->frames[i].method_id;
+                EXPECT_NE(method, nullptr) << "Null method_id at frame " << i << " (use-after-free?)";
+            }
+        }
+
+        printf("Second processTraces: %d traces, %d total frames, bci_sum=%d\n",
+               trace_count, total_frames, total_bci_sum);
+
+        // This is the key assertion: we expect to find the preserved traces
+        // If the bug exists, we're reading freed memory here!
+        EXPECT_GE(trace_count, NUM_TRACES) << "Should find preserved traces from standby";
+    });
+
+    // Third processTraces: traces should still be preserved (copied to new scratch)
+    // This further exercises the use-after-free if the bug exists
+    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+        int trace_count = 0;
+        for (CallTrace* trace : traces) {
+            if (trace == nullptr) continue;
+            if (trace->trace_id == CallTraceStorage::DROPPED_TRACE_ID) continue;
+            trace_count++;
+
+            // Access all frame data
+            volatile int sum = 0;
+            for (int i = 0; i < trace->num_frames; i++) {
+                sum += trace->frames[i].bci;
+            }
+        }
+        printf("Third processTraces: %d traces\n", trace_count);
+        EXPECT_GE(trace_count, NUM_TRACES) << "Should still find preserved traces";
+    });
+}

@@ -17,6 +17,9 @@
 #include <sys/types.h>
 #include <vector>
 
+// Forward declaration to avoid circular dependency
+class Context;
+
 class ProfiledThread : public ThreadLocalData {
 private:
   // We are allowing several levels of nesting because we can be
@@ -28,19 +31,30 @@ private:
   static constexpr u32 CRASH_HANDLER_NESTING_LIMIT = 5;
   static pthread_key_t _tls_key;
   static int _buffer_size;
-  static std::atomic<int> _running_buffer_pos;
-  static std::vector<ProfiledThread *> _buffer;
+  static volatile int _running_buffer_pos;
+  static ProfiledThread** _buffer;
+
+  // Free slot recycling - lock-free stack of available buffer slots
+  // Note: Using plain int with GCC atomic builtins instead of std::atomic
+  // because std::atomic is not guaranteed async-signal-safe (may use mutexes)
+  static volatile int _free_stack_top;
+  static int* _free_slots;  // Array to store free slot indices
 
   static void initTLSKey();
   static void doInitTLSKey();
   static inline void freeKey(void *key);
-  static void initCurrentThreadWithBuffer();
   static void doInitExistingThreads();
   static void prepareBuffer(int size);
-  static void *delayedUninstallUSR1(void *unused);
+  static void cleanupBuffer();
+
+  // Free slot management - lock-free operations
+  static int popFreeSlot();    // Returns -1 if no free slots
+  static void pushFreeSlot(int slot_index);
 
   u64 _pc;
+  u64 _sp;
   u64 _span_id;
+  u64 _root_span_id;
   volatile u32 _crash_depth;
   int _buffer_pos;
   int _tid;
@@ -50,10 +64,12 @@ private:
   u32 _recording_epoch;
   int _filter_slot_id; // Slot ID for thread filtering
   UnwindFailures _unwind_failures;
+  bool _ctx_tls_initialized;
+  Context* _ctx_tls_ptr;
 
   ProfiledThread(int buffer_pos, int tid)
-      : ThreadLocalData(), _pc(0), _span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
-        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _filter_slot_id(-1) {};
+      : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _root_span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
+        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _filter_slot_id(-1), _ctx_tls_initialized(false), _ctx_tls_ptr(nullptr) {};
 
   void releaseFromBuffer();
 
@@ -64,13 +80,20 @@ public:
   }
 
   static void initCurrentThread();
+  static void initCurrentThreadWithBuffer(); // Called by signal handler for native threads
   static void initExistingThreads();
+  static void cleanupTlsPriming();
 
   static void release();
 
   static ProfiledThread *current();
+  static ProfiledThread *currentSignalSafe(); // Signal-safe version that never allocates
   static int currentTid();
 
+  // TLS priming status checks
+  static bool isTlsPrimingAvailable();
+  static bool wasTlsPrimingAttempted();
+  
   inline int tid() { return _tid; }
 
   inline u64 noteCPUSample(u32 recording_epoch) {
@@ -78,13 +101,29 @@ public:
     return ++_cpu_epoch;
   }
 
-  u64 lookupWallclockCallTraceId(u64 pc, u32 recording_epoch, u64 span_id) {
-    if (_wall_epoch == _cpu_epoch && _pc == pc && _span_id == span_id &&
-        _recording_epoch == recording_epoch && _call_trace_id != 0) {
+  /**
+   * Attempts to reuse a cached call trace ID for wallclock sample collapsing.
+   * Collapsing is allowed only when the execution state (PC, SP) and trace
+   * context (spanId, rootSpanId) are identical to the previous sample.
+   *
+   * @param pc Program counter from ucontext
+   * @param sp Stack pointer from ucontext
+   * @param recording_epoch Current profiling session epoch
+   * @param span_id Current trace span ID
+   * @param root_span_id Current trace root span ID
+   * @return Cached call_trace_id if collapsing is allowed, 0 otherwise
+   */
+  u64 lookupWallclockCallTraceId(u64 pc, u64 sp, u32 recording_epoch,
+                                  u64 span_id, u64 root_span_id) {
+    if (_pc == pc && _sp == sp && _span_id == span_id &&
+        _root_span_id == root_span_id && _recording_epoch == recording_epoch &&
+        _call_trace_id != 0) {
       return _call_trace_id;
     }
-    _wall_epoch = _cpu_epoch;
     _pc = pc;
+    _sp = sp;
+    _span_id = span_id;
+    _root_span_id = root_span_id;
     _recording_epoch = recording_epoch;
     return 0;
   }
@@ -125,36 +164,35 @@ public:
     return &_unwind_failures;
   }
 
-  static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
+  static void simpleTlsSignalHandler(int signo);
 
   int filterSlotId() { return _filter_slot_id; }
   void setFilterSlotId(int slotId) { _filter_slot_id = slotId; }
   
   // Signal handler reentrancy protection
-  bool tryEnterCriticalSection() { 
-    return !_in_critical_section.exchange(true, std::memory_order_acquire); 
+  bool tryEnterCriticalSection() {
+    // Uses GCC atomic builtin (no malloc, async-signal-safe)
+    bool expected = false;
+    return __atomic_compare_exchange_n(&_in_critical_section, &expected, true, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
   }
-  void exitCriticalSection() { 
-    _in_critical_section.store(false, std::memory_order_release); 
+  void exitCriticalSection() {
+    // Uses GCC atomic builtin (no malloc, async-signal-safe)
+    __atomic_store_n(&_in_critical_section, false, __ATOMIC_RELEASE);
   }
   
-  // Hazard pointer management for lock-free memory reclamation (signal-safe)
-  // 
-  // How hazard pointers work:
-  // 1. Before accessing a shared data structure, threads register a "hazard pointer" to it
-  // 2. When deleting the structure, the deleter waits for all hazard pointers to clear
-  // 3. This ensures no thread accesses freed memory, even in signal handler contexts
-  // 4. Alternative to locks that avoids malloc/deadlock issues in signal handlers
-  //
-  // Currently used only in CallTraceStorage for safe table swapping during profiling
-  void setHazardPointer(void* instance, void* hazard_pointer, int hazard_slot) {
-    _hazard_instance = instance;
-    _hazard_pointer = hazard_pointer;
-    _hazard_slot = hazard_slot;
+  // context sharing TLS
+  inline void markContextTlsInitialized(Context* ctx_ptr) {
+    _ctx_tls_ptr = ctx_ptr;
+    _ctx_tls_initialized = true;
   }
-  void* getHazardInstance() { return _hazard_instance; }
-  void* getHazardPointer() { return _hazard_pointer; }
-  int getHazardSlot() { return _hazard_slot; }
+
+  inline bool isContextTlsInitialized() {
+    return _ctx_tls_initialized;
+  }
+
+  inline Context* getContextTlsPtr() {
+    return _ctx_tls_ptr;
+  }
   
 private:
   // Atomic flag for signal handler reentrancy protection within the same thread
@@ -162,12 +200,7 @@ private:
   // and both contexts may attempt to enter the critical section. Without atomic exchange(),
   // both could see the flag as false and both would think they successfully entered.
   // The atomic exchange() is uninterruptible, ensuring only one context succeeds.
-  std::atomic<bool> _in_critical_section{false};
-  
-  // Hazard pointer instance for signal-safe access (not atomic since only accessed by same thread)
-  void* _hazard_instance{nullptr};
-  void* _hazard_pointer{nullptr};
-  int _hazard_slot{-1};
+  bool _in_critical_section{false};
 };
 
 #endif // _THREAD_H

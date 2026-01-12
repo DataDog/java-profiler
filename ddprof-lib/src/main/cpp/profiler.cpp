@@ -16,6 +16,7 @@
 #include "itimer.h"
 #include "j9Ext.h"
 #include "j9WallClock.h"
+#include "libraryPatcher.h"
 #include "objectSampler.h"
 #include "os_dd.h"
 #include "perfEvents.h"
@@ -24,7 +25,7 @@
 #include "stackWalker_dd.h"
 #include "symbols.h"
 #include "thread.h"
-#include "tsc.h"
+#include "tsc_dd.h"
 #include "vmStructs_dd.h"
 #include "wallClock.h"
 #include <algorithm>
@@ -296,23 +297,24 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
        _cstack == CSTACK_DEFAULT)) {
     return 0;
   }
-  const void *callchain[MAX_NATIVE_FRAMES + 1]; // we can read one frame past when trying to figure out whether the result is truncated
+  int max_depth = min(_max_stack_depth, MAX_NATIVE_FRAMES);
+  const void *callchain[max_depth + 1]; // we can read one frame past when trying to figure out whether the result is truncated
   int native_frames = 0;
 
   if (event_type == BCI_CPU && _cpu_engine == &perf_events) {
     native_frames +=
         PerfEvents::walkKernel(tid, callchain + native_frames,
-                               MAX_NATIVE_FRAMES - native_frames, java_ctx);
+                               max_depth - native_frames, java_ctx);
   }
   if (_cstack >= CSTACK_VM) {
     return 0;
   } else if (_cstack == CSTACK_DWARF) {
     native_frames += ddprof::StackWalker::walkDwarf(ucontext, callchain + native_frames,
-                                            MAX_NATIVE_FRAMES - native_frames,
+                                            max_depth - native_frames,
                                             java_ctx, truncated);
   } else {
     native_frames += ddprof::StackWalker::walkFP(ucontext, callchain + native_frames,
-                                         MAX_NATIVE_FRAMES - native_frames,
+                                         max_depth - native_frames,
                                          java_ctx, truncated);
   }
 
@@ -708,41 +710,37 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     ASGCT_CallFrame *native_stop = frames + num_frames;
     num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
                                  &java_ctx, &truncated);
-    if (_cstack == CSTACK_VMX) {
-      num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_EXPERT, &truncated);
-    } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
-      if (_cstack == CSTACK_VM) {
-        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, _max_stack_depth, VM_NORMAL, &truncated);
-      } else {
-        // Async events
-        AsyncSampleMutex mutex(ProfiledThread::current());
-        int java_frames = 0;
-        if (mutex.acquired()) {
-          java_frames = getJavaTraceAsync(ucontext, frames + num_frames, _max_stack_depth, &java_ctx, &truncated);
-          if (java_frames > 0 && java_ctx.pc != NULL && VMStructs::hasMethodStructs()) {
+    if (num_frames < _max_stack_depth) {
+      int max_remaining = _max_stack_depth - num_frames;
+      if (_features.mixed) {
+        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, max_remaining, _features, eventTypeFromBCI(event_type), &truncated);
+      } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
+        if (_cstack >= CSTACK_VM) {
+          num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, max_remaining, _features, eventTypeFromBCI(event_type), &truncated);
+        } else {
+          // Async events
+          AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());
+          int java_frames = 0;
+          if (mutex.acquired()) {
+            java_frames = getJavaTraceAsync(ucontext, frames + num_frames, max_remaining, &java_ctx, &truncated);
+            if (java_frames > 0 && java_ctx.pc != NULL && VMStructs::hasMethodStructs()) {
               NMethod* nmethod = CodeHeap::findNMethod(java_ctx.pc);
               if (nmethod != NULL) {
-                  fillFrameTypes(frames + num_frames, java_frames, nmethod);
+                fillFrameTypes(frames + num_frames, java_frames, nmethod);
               }
+            }
           }
+          num_frames += java_frames;
         }
-        if (java_frames > 0 && java_ctx.pc != NULL) {
-          NMethod *nmethod = CodeHeap::findNMethod(java_ctx.pc);
-          if (nmethod != NULL) {
-            fillFrameTypes(frames + num_frames, java_frames, nmethod);
-          }
-        }
-        num_frames += java_frames;
       }
     }
-
     if (num_frames == 0) {
       num_frames += makeFrame(frames + num_frames, BCI_ERROR, "no_Java_frame");
     }
 
     call_trace_id =
         _call_trace_storage.put(num_frames, frames, truncated, counter);
-    ProfiledThread *thread = ProfiledThread::current();
+    ProfiledThread *thread = ProfiledThread::currentSignalSafe();
     if (thread != nullptr) {
       thread->recordCallTraceId(call_trace_id);
     }
@@ -887,7 +885,7 @@ void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 }
 
 bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  ProfiledThread* thrd = ProfiledThread::current();
+  ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
   if (thrd != nullptr && !thrd->enterCrashHandler()) {
     // we are already in a crash handler; don't recurse!
     return false;
@@ -1135,14 +1133,40 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   ProfiledThread::initExistingThreads();
-  _omit_stacktraces = args._lightweight;
-  _event_mask =
-      ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
-                                                                     : 0) |
-      (args._cpu >= 0 ? EM_CPU : 0) | (args._wall >= 0 ? EM_WALL : 0) |
-      (args._record_allocations || args._record_liveness || args._gc_generations
-           ? EM_ALLOC
-           : 0);
+  
+  // Validate TLS priming for signal-based profiling safety
+  if (ProfiledThread::wasTlsPrimingAttempted() && !ProfiledThread::isTlsPrimingAvailable()) {
+    _omit_stacktraces = args._lightweight;
+    _event_mask =
+        ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
+                                                                       : 0) |
+        (args._cpu >= 0 ? EM_CPU : 0) | (args._wall >= 0 ? EM_WALL : 0) |
+        (args._record_allocations || args._record_liveness || args._gc_generations
+             ? EM_ALLOC
+             : 0);
+    
+    // Check if signal-based profiling is requested without TLS priming
+    if (_event_mask & (EM_CPU | EM_WALL)) {
+      return Error("CRITICAL: Signal-based profiling (CPU/Wall) requested but TLS priming failed. "
+                   "This would cause crashes in signal handlers due to unsafe TLS allocation. "
+                   "Profiling disabled for safety. Check system RT signal availability.");
+    }
+    
+    // Allow allocation profiling since it doesn't use signals
+    if (_event_mask == EM_ALLOC) {
+      writeLog(LOG_WARN, "TLS priming failed but continuing with allocation-only profiling (no signals)", 92);
+    }
+  } else {
+    _omit_stacktraces = args._lightweight;
+    _event_mask =
+        ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
+                                                                       : 0) |
+        (args._cpu >= 0 ? EM_CPU : 0) | (args._wall >= 0 ? EM_WALL : 0) |
+        (args._record_allocations || args._record_liveness || args._gc_generations
+             ? EM_ALLOC
+             : 0);
+  }
+  
   if (_event_mask == 0) {
     return Error("No profiling events specified");
   }
@@ -1174,7 +1198,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   // (Re-)allocate calltrace buffers
   if (_max_stack_depth != args._jstackdepth) {
     _max_stack_depth = args._jstackdepth;
-    size_t nelem = _max_stack_depth + MAX_NATIVE_FRAMES + RESERVED_FRAMES;
+    size_t nelem = _max_stack_depth + RESERVED_FRAMES;
 
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       free(_calltrace_buffer[i]);
@@ -1187,6 +1211,17 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   }
 
+  _features = args._features;
+  if (VM::hotspot_version() < 8) {
+      _features.java_anchor = 0;
+      _features.gc_traces = 0;
+  }
+  if (!VMStructs::hasClassNames()) {
+      _features.vtable_target = 0;
+  }
+  if (!VMStructs::hasCompilerStructs()) {
+      _features.comp_task = 0;
+  }
   _safe_mode = args._safe_mode;
   if (VM::hotspot_version() < 8 || VM::isZing()) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
@@ -1221,6 +1256,8 @@ Error Profiler::start(Arguments &args, bool reset) {
           "VMStructs stack walking is not supported on this JVM/platform");
     }
   }
+
+  LibraryPatcher::initialize();
 
   // Kernel symbols are useful only for perf_events without --all-user
   _libs->updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
@@ -1297,6 +1334,8 @@ Error Profiler::stop() {
     return Error("Profiler is not active");
   }
 
+  LibraryPatcher::unpatch_libraries();
+
   disableEngines();
 
   if (_event_mask & EM_ALLOC)
@@ -1314,6 +1353,9 @@ Error Profiler::stop() {
   // writing these out before stopping the JFR recording allows to report the
   // correct counts in the recording
   _thread_info.reportCounters();
+
+  // Clean up TLS priming infrastructure (watcher thread and signal handler)
+  ProfiledThread::cleanupTlsPriming();
 
   // Acquire all spinlocks to avoid race with remaining signals
   lockAll();

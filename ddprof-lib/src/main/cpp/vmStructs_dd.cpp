@@ -44,6 +44,7 @@ namespace ddprof {
     initOffsets();
     initJvmFunctions();
     initUnsafeFunctions();
+    initCriticalJNINatives();
   }
 
   void VMStructs_::initOffsets() {
@@ -96,6 +97,16 @@ namespace ddprof {
                             blob->_name, true);
       }
     }
+  }
+
+  void VMStructs_::initCriticalJNINatives() {
+#ifdef __aarch64__
+    // aarch64 does not support CriticalJNINatives
+    JVMFlag* flag = JVMFlag::find("CriticalJNINatives", {JVMFlag::Type::Bool});
+    if (flag != nullptr && flag->get()) {
+        flag->set(0);
+    }
+#endif // __aarch64__
   }
 
   const void *VMStructs_::findHeapUsageFunc() {
@@ -317,8 +328,11 @@ namespace ddprof {
   }
 
   bool VMStructs_::isSafeToWalk(uintptr_t pc) {
-    return !(_unsafe_to_walk.contains((const void *)pc) &&
-            _unsafe_to_walk.findFrameDesc((const void *)pc));
+    // Check if PC is in the unsafe-to-walk code region
+    // Note: findFrameDesc now returns by value instead of pointer, but it always returns
+    // a valid FrameDesc (either from table or default_frame), so the old pointer check
+    // was always true. The effective logic is simply checking if pc is in _unsafe_to_walk.
+    return !_unsafe_to_walk.contains((const void *)pc);
   }
 
   void VMStructs_::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,

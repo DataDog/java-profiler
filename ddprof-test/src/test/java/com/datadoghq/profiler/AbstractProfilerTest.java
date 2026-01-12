@@ -372,7 +372,10 @@ public abstract class AbstractProfilerTest {
     }
     // FIXME - test framework doesn't seem to be forking each test, so need to sync
     //  these across test cases for now
-    profilerCommand += ",attributes=tag1;tag2;tag3";
+    // Only add attributes if not already specified
+    if (!profilerCommand.contains("attributes=")) {
+      profilerCommand += ",attributes=tag1;tag2;tag3";
+    }
     return profilerCommand;
   }
 

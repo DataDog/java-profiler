@@ -9,10 +9,10 @@
 #include "thread.h"
 
 // Static bitmap storage for fallback cases
-std::atomic<uint64_t> CriticalSection::_fallback_bitmap[CriticalSection::FALLBACK_BITMAP_WORDS] = {};
+uint64_t CriticalSection::_fallback_bitmap[CriticalSection::FALLBACK_BITMAP_WORDS] = {};
 
 CriticalSection::CriticalSection() : _entered(false), _using_fallback(false), _word_index(0), _bit_mask(0) {
-    ProfiledThread* current = ProfiledThread::current();
+    ProfiledThread* current = ProfiledThread::currentSignalSafe();
     if (current != nullptr) {
         // Primary path: Use ProfiledThread storage (fast and memory-efficient)
         _entered = current->tryEnterCriticalSection();
@@ -27,8 +27,7 @@ CriticalSection::CriticalSection() : _entered(false), _using_fallback(false), _w
         uint32_t bit_index = tid % 64;
         _bit_mask = 1ULL << bit_index;
 
-        // Atomically try to set the bit
-        uint64_t old_word = _fallback_bitmap[_word_index].fetch_or(_bit_mask, std::memory_order_relaxed);
+        uint64_t old_word = __atomic_fetch_or(&_fallback_bitmap[_word_index], _bit_mask, __ATOMIC_RELAXED);
         _entered = !(old_word & _bit_mask);  // Success if bit was previously 0
     }
 }
@@ -37,10 +36,10 @@ CriticalSection::~CriticalSection() {
     if (_entered) {
         if (_using_fallback) {
             // Clear the bit atomically for fallback bitmap
-            _fallback_bitmap[_word_index].fetch_and(~_bit_mask, std::memory_order_relaxed);
+            __atomic_fetch_and(&_fallback_bitmap[_word_index], ~_bit_mask, __ATOMIC_RELAXED);
         } else {
             // Release ProfiledThread flag
-            ProfiledThread* current = ProfiledThread::current();
+            ProfiledThread* current = ProfiledThread::currentSignalSafe();
             if (current != nullptr) {
                 current->exitCriticalSection();
             }

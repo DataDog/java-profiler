@@ -1,5 +1,6 @@
 #include "codeCache.h"
 #include "libraries.h"
+#include "libraryPatcher.h"
 #include "log.h"
 #include "symbols.h"
 #include "vmEntry.h"
@@ -34,6 +35,7 @@ end:
 
 void Libraries::updateSymbols(bool kernel_symbols) {
   Symbols::parseLibraries(&_native_libs, kernel_symbols);
+  LibraryPatcher::patch_libraries();
 }
 
 const void *Libraries::resolveSymbol(const char *name) {

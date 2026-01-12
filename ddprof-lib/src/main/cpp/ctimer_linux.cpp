@@ -1,5 +1,6 @@
 /*
  * Copyright 2023 Andrei Pangin
+ * Copyright 2025, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +22,7 @@
 #include "debugSupport.h"
 #include "libraries.h"
 #include "profiler.h"
+#include "threadState.h"
 #include "vmStructs.h"
 #include <assert.h>
 #include <stdlib.h>
@@ -36,54 +38,11 @@ static inline clockid_t thread_cpu_clock(unsigned int tid) {
   return ((~tid) << 3) | 6; // CPUCLOCK_SCHED | CPUCLOCK_PERTHREAD_MASK
 }
 
-static void **_pthread_entry = NULL;
-
-// Intercept thread creation/termination by patching libjvm's GOT entry for
-// pthread_setspecific(). HotSpot puts VMThread into TLS on thread start, and
-// resets on thread end.
-static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
-  if (key != static_cast<pthread_key_t>(VMThread::key())) {
-    return pthread_setspecific(key, value);
-  }
-  if (pthread_getspecific(key) == value) {
-    return 0;
-  }
-
-  if (value != NULL) {
-    ProfiledThread::initCurrentThread();
-    int result = pthread_setspecific(key, value);
-    Profiler::registerThread(ProfiledThread::currentTid());
-    return result;
-  } else {
-    int tid = ProfiledThread::currentTid();
-    Profiler::unregisterThread(tid);
-    ProfiledThread::release();
-    return pthread_setspecific(key, value);
-  }
-}
-
-static void **lookupThreadEntry() {
-  // Depending on Zing version, pthread_setspecific is called either from
-  // libazsys.so or from libjvm.so
-  if (VM::isZing()) {
-    CodeCache *libazsys = Libraries::instance()->findLibraryByName("libazsys");
-    if (libazsys != NULL) {
-      void **entry = libazsys->findImport(im_pthread_setspecific);
-      if (entry != NULL) {
-        return entry;
-      }
-    }
-  }
-
-  CodeCache *lib = Libraries::instance()->findJvmLibrary("libj9thr");
-  return lib != NULL ? lib->findImport(im_pthread_setspecific) : NULL;
-}
-
 long CTimer::_interval;
 int CTimer::_max_timers = 0;
 int *CTimer::_timers = NULL;
 CStack CTimer::_cstack;
-std::atomic<bool> CTimer::_enabled{false};
+bool CTimer::_enabled = false;
 int CTimer::_signal;
 
 int CTimer::registerThread(int tid) {
@@ -135,11 +94,6 @@ void CTimer::unregisterThread(int tid) {
 }
 
 Error CTimer::check(Arguments &args) {
-  if (_pthread_entry == NULL &&
-      (_pthread_entry = lookupThreadEntry()) == NULL) {
-    return Error("Could not set pthread hook");
-  }
-
   timer_t timer;
   if (timer_create(CLOCK_THREAD_CPUTIME_ID, NULL, &timer) < 0) {
     return Error("Failed to create CPU timer");
@@ -153,10 +107,7 @@ Error CTimer::start(Arguments &args) {
   if (args._interval < 0) {
     return Error("interval must be positive");
   }
-  if (_pthread_entry == NULL &&
-      (_pthread_entry = lookupThreadEntry()) == NULL) {
-    return Error("Could not set pthread hook");
-  }
+
   _interval = args.cpuSamplerInterval();
   _cstack = args._cstack;
   _signal = SIGPROF;
@@ -169,10 +120,6 @@ Error CTimer::start(Arguments &args) {
   }
 
   OS::installSignalHandler(_signal, signalHandler);
-
-  // Enable pthread hook before traversing currently running threads
-  __atomic_store_n(_pthread_entry, (void *)pthread_setspecific_hook,
-                   __ATOMIC_RELEASE);
 
   // Register all existing threads
   Error result = Error::OK;
@@ -190,8 +137,6 @@ Error CTimer::start(Arguments &args) {
 }
 
 void CTimer::stop() {
-  __atomic_store_n(_pthread_entry, (void *)pthread_setspecific,
-                   __ATOMIC_RELEASE);
   for (int i = 0; i < _max_timers; i++) {
     unregisterThread(i);
   }
@@ -207,10 +152,10 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   int saved_errno = errno;
   // we want to ensure memory order because of the possibility the instance gets
   // cleared
-  if (!_enabled.load(std::memory_order_acquire))
+  if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE))
     return;
   int tid = 0;
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::currentSignalSafe();
   assert(current == nullptr || !current->isDeepCrashHandler());
   if (current != NULL) {
     current->noteCPUSample(Profiler::instance()->recordingEpoch());
@@ -222,11 +167,7 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 
   ExecutionEvent event;
   VMThread *vm_thread = VMThread::current();
-  if (vm_thread) {
-    event._execution_mode = VM::jni() != NULL
-                                ? convertJvmExecutionState(vm_thread->state())
-                                : ExecutionMode::JVM;
-  }
+  event._execution_mode = getThreadExecutionMode(vm_thread);
   Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,
                                      &event);
   Shims::instance().setSighandlerTid(-1);

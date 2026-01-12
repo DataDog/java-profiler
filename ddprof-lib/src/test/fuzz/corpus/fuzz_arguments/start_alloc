@@ -1,0 +1,1 @@
+start,event=alloc,memory=512k,liveness=true

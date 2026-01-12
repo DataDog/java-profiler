@@ -1,0 +1,1 @@
+start,cstack=dwarf,jstackdepth=512,filter=com.example.*

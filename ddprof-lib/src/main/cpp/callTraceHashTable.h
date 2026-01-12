@@ -59,7 +59,7 @@ public:
 
 private:
   u64 _instance_id;  // 64-bit instance ID for this hash table (set externally)
-  CallTraceStorage* _parent_storage;  // Parent storage for hazard pointer access
+  CallTraceStorage* _parent_storage;  // Parent storage for RefCountGuard access
 
   LinearAllocator _allocator;
   
@@ -79,6 +79,19 @@ public:
   ~CallTraceHashTable();
 
   void clear();
+
+  /**
+   * Resets the hash table structure but defers memory deallocation.
+   * Returns a ChunkList containing the detached memory chunks.
+   * The caller must call LinearAllocator::freeChunks() on the returned
+   * ChunkList after processing is complete.
+   *
+   * This is used to fix use-after-free in processTraces(): the table
+   * structure is reset immediately (allowing rotation), but trace memory
+   * remains valid until the processor finishes accessing it.
+   */
+  ChunkList clearTableOnly();
+
   void collect(std::unordered_set<CallTrace *> &traces, std::function<void(CallTrace*)> trace_hook = nullptr);
 
   u64 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);

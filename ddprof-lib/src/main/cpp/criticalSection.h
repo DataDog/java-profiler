@@ -6,7 +6,6 @@
 #ifndef _CRITICALSECTION_H
 #define _CRITICALSECTION_H
 
-#include <atomic>
 #include <cstdint>
 #include <cstddef>
 
@@ -49,7 +48,7 @@ private:
     // Must be atomic because multiple signal handlers can run concurrently across
     // different threads and attempt to set/clear bits simultaneously. Compare-and-swap
     // operations ensure race-free bit manipulation even during signal interruption.
-    static std::atomic<uint64_t> _fallback_bitmap[FALLBACK_BITMAP_WORDS];
+    static uint64_t _fallback_bitmap[FALLBACK_BITMAP_WORDS];
 
     bool _entered;          // Track if this instance successfully entered
     bool _using_fallback;   // Track which storage mechanism we're using

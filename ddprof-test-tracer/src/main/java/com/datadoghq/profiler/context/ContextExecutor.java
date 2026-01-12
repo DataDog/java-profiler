@@ -25,6 +25,12 @@ public class ContextExecutor extends ThreadPoolExecutor {
     protected void beforeExecute(Thread t, Runnable r) {
         super.beforeExecute(t, r);
         profiler.addThread();
+        // Prime context TLS to avoid race condition with wall clock signals
+        // Context TLS is lazily initialized on first setContext() call, which happens
+        // in ContextTask.run() after this method returns. If a wall clock signal
+        // arrives between now and then, Contexts::get() would return DD_EMPTY_CONTEXT
+        // with spanId=0, breaking call trace deduplication.
+        profiler.setContext(0, 0);
     }
 
     @Override

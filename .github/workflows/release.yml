@@ -23,45 +23,25 @@ permissions:
   actions: read
 
 jobs:
-  release-branch:
+  deprecation-warning:
     runs-on: ubuntu-latest
     steps:
-      - name: Output Inputs
+      - name: Show Deprecation Notice
         run: |
-          echo "${{ toJSON(github.event.inputs) }}"
-          echo "${{ toJSON(inputs) }}"
-          echo "${{ inputs.release_type }}"
-      - uses: webfactory/ssh-agent@v0.7.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_PUSH_SECRET }}
-      - name: Checkout ${{ env.GITHUB_REPOSITORY }}
-        run: git clone git@github.com:$GITHUB_REPOSITORY.git java-profiler
-      - name: Configure git env
-        run: |
-          git config --global user.email "java-profiler@datadoghq.com"
-          git config --global user.name "Datadog Java Profiler"
-      - name: Create release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if [ "${{ inputs.dry_run }}" != "true" ]; then
-            if [ "${{ inputs.release_type }}" != "patch" ]&& [[ ${GITHUB_REF_NAME} =~ release/.* ]]; then
-              echo "::error Only patch release can be performed from a release branch"
-              exit 1
-            fi
-            if [ "${{ inputs.release_type }}" == "patch" ]&& [[ ! ${GITHUB_REF_NAME} =~ release/.* ]]; then
-              echo "::error::A patch release can be performed only from a release branch"
-              exit 1
-            fi
-            if [ "${{ inputs.release_type }}" != "patch" ]&& [[ ! ${GITHUB_REF_NAME} =~ main ]]; then
-              echo "::error::A major or minor release can be performed only from 'main' branch"
-              exit 1
-            fi
-          else
-            DRY_RUN="--dry-run"
-          fi
-
-          TYPE="${{ inputs.release_type }}"
-          cd java-profiler
-          git checkout $GITHUB_REF_NAME
-          ./.github/scripts/release.sh ${TYPE^^} $DRY_RUN
+          echo "::error::=========================================="
+          echo "::error::  This workflow is DEPRECATED"
+          echo "::error::=========================================="
+          echo "::error::"
+          echo "::error::Please use the new workflow:"
+          echo "::error::  'Validated Release'"
+          echo "::error::"
+          echo "::error::Location:"
+          echo "::error::  .github/workflows/release-validated.yml"
+          echo "::error::"
+          echo "::error::The new workflow includes:"
+          echo "::error::  - Pre-release test validation (testDebug + testAsan)"
+          echo "::error::  - Annotated git tags (fixes GitLab trigger)"
+          echo "::error::  - Improved error handling and rollback procedures"
+          echo "::error::"
+          echo "::error::=========================================="
+          exit 1
