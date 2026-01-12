@@ -115,9 +115,9 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
             afterWarmup.internalReservedKB,
             warmupInternalGrowthKB));
 
-    // Phase 2: Steady state - 1000+ restarts to accumulate leak if present
+    // Phase 2: Steady state - repeated restarts to accumulate leak if present
     // Stop/start cycles trigger SharedLineNumberTable destructors
-    // With bug: each restart leaks ~16 KB → 1000 restarts = ~16 MB detectable leak
+    // With bug: each restart leaks ~16 KB; across many restarts this should accumulate into a detectable leak
     System.out.println(
         String.format(
             "Phase 2: Performing %d profiler restarts to test for accumulated leaks...",
