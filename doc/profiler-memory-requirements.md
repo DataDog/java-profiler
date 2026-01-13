@@ -222,7 +222,7 @@ Typical overhead:
 - Age counter incremented for unreferenced methods at each chunk boundary
 - Methods with age >= 3 chunks are removed during switchChunk()
 - Line number tables deallocated via shared_ptr when MethodInfo is destroyed
-- Cleanup can be disabled with `--no-method-cleanup` flag (not recommended)
+- Cleanup can be disabled with `mcleanup=false` (not recommended; default is `mcleanup=true`)
 
 **Cleanup behavior:**
 - Triggered during switchChunk() (typically every 10-60 seconds)
@@ -630,7 +630,7 @@ jcmd <pid> GC.class_histogram | head -1
 - `ddprof-lib/src/main/cpp/flightRecorder.cpp:517-563` - switchChunk() calls cleanup after finishChunk()
 - `ddprof-lib/src/main/cpp/flightRecorder.cpp:1196-1242` - writeStackTraces() marks referenced methods
 - `ddprof-lib/src/main/cpp/arguments.h:191` - _enable_method_cleanup flag (default: true)
-- `ddprof-lib/src/main/cpp/arguments.cpp` - --method-cleanup / --no-method-cleanup parsing
+- `ddprof-lib/src/main/cpp/arguments.cpp` - mcleanup=true/false parsing
 - Stores metadata for sampled methods with lazy allocation
 - Age-based cleanup removes methods unused for 3+ consecutive chunks
 
@@ -655,7 +655,7 @@ jcmd <pid> GC.class_histogram | head -1
 - Fix: Age-based cleanup removes methods unused for 3+ consecutive chunks
 - Implementation: Mark-and-sweep during switchChunk(), enabled by default
 - Test: `GetLineNumberTableLeakTest.testMethodMapCleanupDuringContinuousProfile()` validates bounded growth
-- Feature flag: `--method-cleanup` (default: enabled), `--no-method-cleanup` to disable
+- Feature flag: `mcleanup=true` (default: enabled), `mcleanup=false` to disable
 
 **Previous investigation findings:**
 - See git history for detailed investigation (commits 8ffdb30e, a9fa649c, 2ab1d263)

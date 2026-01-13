@@ -339,17 +339,17 @@ Error Arguments::parse(const char *args) {
         _enable_method_cleanup = true;
       }
 
-            CASE("wallsampler")
-                if (value != NULL) {
-                    switch (value[0]) {
-                        case 'j':
-                            _wallclock_sampler = JVMTI;
-                            break;
-                        case 'a':
-                        default:
-                            _wallclock_sampler = ASGCT;
-                    }
-                }
+      CASE("wallsampler")
+      if (value != NULL) {
+        switch (value[0]) {
+        case 'j':
+          _wallclock_sampler = JVMTI;
+          break;
+        case 'a':
+        default:
+          _wallclock_sampler = ASGCT;
+        }
+      }
 
       DEFAULT()
       if (_unknown_arg == NULL)

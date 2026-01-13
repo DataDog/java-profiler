@@ -27,7 +27,8 @@
       "Bash(gh pr edit:*)",
       "SlashCommand(/build-and-summarize:*)",
       "Bash(~/.claude/commands/build-and-summarize:*)",
-      "Bash(git push)"
+      "Bash(git push)",
+      "Bash(gh api:*)"
     ],
     "deny": [],
     "ask": []

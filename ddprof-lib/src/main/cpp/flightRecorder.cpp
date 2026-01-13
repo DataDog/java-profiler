@@ -56,13 +56,12 @@ SharedLineNumberTable::~SharedLineNumberTable() {
       // which would be a serious bug in GetLineNumberTable
       if (err != JVMTI_ERROR_NONE) {
         TEST_LOG("Unexpected error while deallocating linenumber table: %d", err);
-      } else {
-        // Successfully deallocated - decrement counter
-        Counters::decrement(LINE_NUMBER_TABLES);
       }
     } else {
       TEST_LOG("WARNING: Cannot deallocate line number table - JVMTI is null");
     }
+    // Decrement counter whenever destructor runs (symmetric with increment at creation)
+    Counters::decrement(LINE_NUMBER_TABLES);
   }
 }
 
@@ -522,8 +521,6 @@ off_t Recording::finishChunk(bool end_recording) {
 }
 
 void Recording::switchChunk(int fd) {
-  size_t methods_before = _method_map.size();
-
   _chunk_start = finishChunk(fd > -1);
 
   // Cleanup unreferenced methods after finishing the chunk
@@ -614,16 +611,13 @@ void Recording::cleanupUnreferencedMethods() {
   size_t removed_count = 0;
   size_t removed_with_line_tables = 0;
   size_t total_before = _method_map.size();
-  size_t referenced_count = 0;
-  size_t aged_count = 0;
 
   for (MethodMap::iterator it = _method_map.begin(); it != _method_map.end(); ) {
     MethodInfo& mi = it->second;
 
-    if (!mi._referenced && !mi._mark) {
+    if (!mi._referenced) {
       // Method not referenced in this chunk
       mi._age++;
-      aged_count++;
 
       if (mi._age >= AGE_THRESHOLD) {
         // Method hasn't been used for N chunks, safe to remove
@@ -638,7 +632,6 @@ void Recording::cleanupUnreferencedMethods() {
       }
     } else {
       // Method was referenced, reset age
-      referenced_count++;
       mi._age = 0;
     }
 
