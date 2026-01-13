@@ -72,6 +72,16 @@ char* SymbolsLinux::extractBuildIdFromMemory(const void* elf_base, size_t elf_si
         return nullptr;
     }
 
+    // Verify program header table is within file bounds
+    if (ehdr->e_phoff + ehdr->e_phnum * sizeof(Elf64_Phdr) > elf_size) {
+        return nullptr;
+    }
+
+    // Verify program header offset is properly aligned
+    if (ehdr->e_phoff % alignof(Elf64_Phdr) != 0) {
+        return nullptr;
+    }
+
     const char* base = static_cast<const char*>(elf_base);
     const Elf64_Phdr* phdr = reinterpret_cast<const Elf64_Phdr*>(base + ehdr->e_phoff);
 

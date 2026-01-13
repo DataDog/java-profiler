@@ -243,7 +243,6 @@ public:
     memset(_libs, 0, MAX_NATIVE_LIBS * sizeof(CodeCache *));
   }
 
-  CodeCache *operator[](int index) { return _libs[index]; }
   CodeCache *operator[](int index) const { return __atomic_load_n(&_libs[index], __ATOMIC_ACQUIRE); }
 
   int count() const { return __atomic_load_n(&_count, __ATOMIC_RELAXED); }

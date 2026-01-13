@@ -323,66 +323,6 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
   return convertNativeTrace(native_frames, callchain, frames, lock_index);
 }
 
-void Profiler::applyRemoteSymbolicationToVMFrames(ASGCT_CallFrame *frames, int num_frames, int lock_index) {
-  for (int i = 0; i < num_frames; i++) {
-    // Only process native frames (not Java frames or special frames)
-    if (frames[i].bci != BCI_NATIVE_FRAME) {
-      continue;
-    }
-
-    // method_id contains the resolved symbol name (const char*)
-    const char* symbol_name = (const char*)frames[i].method_id;
-    if (symbol_name == nullptr) {
-      continue;
-    }
-
-    // Find the library containing this symbol to get the PC
-    // We search all libraries for this symbol
-    uintptr_t pc = 0;
-    CodeCache* lib = nullptr;
-    const CodeCacheArray& native_libs = _libs->native_libs();
-    int lib_count = native_libs.count();
-    for (int lib_idx = 0; lib_idx < lib_count; lib_idx++) {
-      CodeCache* candidate_lib = native_libs[lib_idx];
-      if (candidate_lib == nullptr) {
-        continue;
-      }
-
-      // Search for the symbol in this library
-      const void* symbol_addr = candidate_lib->findSymbol(symbol_name);
-      if (symbol_addr != nullptr) {
-        lib = candidate_lib;
-        pc = (uintptr_t)symbol_addr;
-        TEST_LOG("Found symbol %s in lib %s at pc=0x%lx", symbol_name, lib->name(), pc);
-        break;
-      }
-    }
-
-    // If we found the PC and the library has a build-id, apply remote symbolication
-    if (pc != 0 && lib != nullptr && lib->hasBuildId()) {
-      TEST_LOG("Applying remote symbolication to VM frame: symbol=%s, lib=%s, build-id=%s",
-               symbol_name, lib->name(), lib->buildId());
-
-      // Calculate PC offset within the library
-      uintptr_t offset = pc - (uintptr_t)lib->imageBase();
-
-      // Allocate RemoteFrameInfo from pre-allocated pool (signal-safe)
-      RemoteFrameInfo* rfi = allocateRemoteFrameInfo(lock_index);
-      if (rfi != nullptr) {
-        rfi->build_id = lib->buildId();
-        rfi->pc_offset = offset;
-        rfi->lib_index = lib->libIndex();
-
-        // Replace the frame with remote symbolication format
-        frames[i].method_id = (jmethodID)rfi;
-        frames[i].bci = BCI_NATIVE_FRAME_REMOTE;
-        TEST_LOG("Converted VM frame to remote format: build-id=%s, offset=0x%lx", rfi->build_id, rfi->pc_offset);
-      }
-      // If pool exhausted, keep original resolved symbol name
-    }
-  }
-}
-
 /**
  * Allocate a RemoteFrameInfo from the pre-allocated pool for the given lock-strip.
  * This is signal-safe (uses atomic operations, no dynamic allocation).
@@ -467,6 +407,11 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrame(uintptr_t pc, int l
     }
     return {(jmethodID)method_name, BCI_NATIVE_FRAME, false};
   }
+}
+
+Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index) {
+  // Direct pass-through to resolveNativeFrame with lock_index
+  return resolveNativeFrame(pc, lock_index);
 }
 
 int Profiler::convertNativeTrace(int native_frames, const void **callchain,
@@ -865,21 +810,13 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
       int max_remaining = _max_stack_depth - num_frames;
       if (_features.mixed) {
         int vm_start = num_frames;
-        int vm_frames = ddprof::StackWalker::walkVM(ucontext, frames + vm_start, max_remaining, _features, eventTypeFromBCI(event_type), &truncated);
+        int vm_frames = ddprof::StackWalker::walkVM(ucontext, frames + vm_start, max_remaining, _features, eventTypeFromBCI(event_type), &truncated, lock_index);
         num_frames += vm_frames;
-        // Apply remote symbolication to VM frames if enabled
-        if (_remote_symbolication) {
-          applyRemoteSymbolicationToVMFrames(frames + vm_start, vm_frames, lock_index);
-        }
       } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
         if (_cstack >= CSTACK_VM) {
           int vm_start = num_frames;
-          int vm_frames = ddprof::StackWalker::walkVM(ucontext, frames + vm_start, max_remaining, _features, eventTypeFromBCI(event_type), &truncated);
+          int vm_frames = ddprof::StackWalker::walkVM(ucontext, frames + vm_start, max_remaining, _features, eventTypeFromBCI(event_type), &truncated, lock_index);
           num_frames += vm_frames;
-          // Apply remote symbolication to VM frames if enabled
-          if (_remote_symbolication) {
-            applyRemoteSymbolicationToVMFrames(frames + vm_start, vm_frames, lock_index);
-          }
         } else {
           // Async events
           AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());

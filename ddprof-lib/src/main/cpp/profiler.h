@@ -293,7 +293,7 @@ public:
   };
 
   NativeFrameResolution resolveNativeFrame(uintptr_t pc, int lock_index);
-  void applyRemoteSymbolicationToVMFrames(ASGCT_CallFrame *frames, int num_frames, int lock_index);
+  NativeFrameResolution resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index);
   RemoteFrameInfo* allocateRemoteFrameInfo(int lock_index);
   int convertNativeTrace(int native_frames, const void **callchain,
                          ASGCT_CallFrame *frames, int lock_index);
