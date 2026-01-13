@@ -1,6 +1,6 @@
 # Profiler Memory Requirements and Limitations
 
-**Last Updated:** 2026-01-12
+**Last Updated:** 2026-01-13
 
 ## Overview
 
@@ -55,7 +55,8 @@ Typical overhead:
 **Lifecycle:**
 - Allocated during JFR flush when method first appears in samples
 - Stored in SharedLineNumberTable with shared_ptr reference counting
-- Deallocated when MethodInfo is destroyed (profiler stop/restart)
+- Tracked via LINE_NUMBER_TABLES counter (incremented on allocation, decremented on deallocation)
+- Deallocated when MethodInfo is destroyed (profiler stop/restart or age-based cleanup)
 
 ### 3. CallTraceStorage and Hash Tables
 
@@ -524,6 +525,12 @@ watch -n 10 'jcmd <pid> VM.native_memory summary | grep Internal'
 
 ### NMT Metrics to Track
 
+**Note on RSS (Resident Set Size) Measurements:**
+RSS measurements are unreliable for tracking profiler memory usage:
+- GraalVM JVMCI: Can show negative RSS growth due to aggressive GC shrinking heap
+- Zing JDK: Large divergence between NMT and RSS measurements (3.6% vs 82.5%)
+- Recommendation: **Use NMT Internal category only** for accurate profiler memory tracking
+
 ```bash
 # Enable NMT in production (minimal overhead)
 -XX:NativeMemoryTracking=summary
@@ -594,8 +601,10 @@ jcmd <pid> GC.class_histogram | head -1
 
 **2. Line number table management:**
 - `ddprof-lib/src/main/cpp/flightRecorder.cpp:46-63` - `SharedLineNumberTable` destructor
-- `ddprof-lib/src/main/cpp/flightRecorder.cpp:167-178` - Lazy allocation in `fillJavaMethodInfo()`
+- `ddprof-lib/src/main/cpp/flightRecorder.cpp:287-295` - Lazy allocation in `fillJavaMethodInfo()`
+- `ddprof-lib/src/main/cpp/counters.h` - LINE_NUMBER_TABLES counter for tracking live tables
 - Properly deallocates via `jvmti->Deallocate()` (fixed in commit 8ffdb30e)
+- Counter tracking added in commit 257d982d for observable line number table lifecycle
 
 **3. CallTraceStorage:**
 - `ddprof-lib/src/main/cpp/callTraceStorage.h` - Triple-buffered hash table management
@@ -626,13 +635,14 @@ jcmd <pid> GC.class_histogram | head -1
 **8. MethodMap:**
 - `ddprof-lib/src/main/cpp/flightRecorder.h:107-110` - MethodMap (std::map<jmethodID, MethodInfo>)
 - `ddprof-lib/src/main/cpp/flightRecorder.h:68-105` - MethodInfo structure (_referenced, _age fields)
-- `ddprof-lib/src/main/cpp/flightRecorder.cpp:601-640` - cleanupUnreferencedMethods() implementation
+- `ddprof-lib/src/main/cpp/flightRecorder.cpp:601-658` - cleanupUnreferencedMethods() implementation
 - `ddprof-lib/src/main/cpp/flightRecorder.cpp:517-563` - switchChunk() calls cleanup after finishChunk()
 - `ddprof-lib/src/main/cpp/flightRecorder.cpp:1196-1242` - writeStackTraces() marks referenced methods
 - `ddprof-lib/src/main/cpp/arguments.h:191` - _enable_method_cleanup flag (default: true)
 - `ddprof-lib/src/main/cpp/arguments.cpp` - mcleanup=true/false parsing
 - Stores metadata for sampled methods with lazy allocation
 - Age-based cleanup removes methods unused for 3+ consecutive chunks
+- Cleanup logs LINE_NUMBER_TABLES counter value via TEST_LOG for observability
 
 **9. Thread-local Context storage:**
 - `ddprof-lib/src/main/cpp/context.h:32-40` - Context structure (cache-line aligned, 64 bytes)
@@ -645,8 +655,9 @@ jcmd <pid> GC.class_histogram | head -1
 **GetLineNumberTable leak (Fixed):**
 - SharedLineNumberTable destructor was not properly deallocating JVMTI memory
 - Impact: 1.2 GB leak for applications sampling 3.8M methods
-- Fix: Added null checks and error handling in destructor
-- Test: `GetLineNumberTableLeakTest` validates memory plateaus during steady state
+- Fix: Added null checks and error handling in destructor (commit 8ffdb30e)
+- Tracking: LINE_NUMBER_TABLES counter provides observable lifecycle tracking (commit 257d982d)
+- Test: `GetLineNumberTableLeakTest` validates cleanup via TEST_LOG output (RSS unreliable across JVMs)
 
 **MethodMap unbounded growth (Fixed):**
 - Recording._method_map accumulated ALL methods forever in long-running applications
@@ -656,6 +667,11 @@ jcmd <pid> GC.class_histogram | head -1
 - Implementation: Mark-and-sweep during switchChunk(), enabled by default
 - Test: `GetLineNumberTableLeakTest.testMethodMapCleanupDuringContinuousProfile()` validates bounded growth
 - Feature flag: `mcleanup=true` (default: enabled), `mcleanup=false` to disable
+
+**Test validation approach:**
+- Test uses TEST_LOG output for validation (commits 7ed1e7eb, 257d982d)
+- RSS measurements removed due to unreliability across JVMs (commits 33f6c5c0, 4bbfcfe8)
+- Counter infrastructure provides observable line number table lifecycle tracking
 
 **Previous investigation findings:**
 - See git history for detailed investigation (commits 8ffdb30e, a9fa649c, 2ab1d263)
