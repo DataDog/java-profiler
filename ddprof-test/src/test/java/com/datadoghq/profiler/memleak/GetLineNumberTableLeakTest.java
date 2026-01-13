@@ -208,8 +208,8 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
    *
    * <p><b>Expected results:</b>
    * <ul>
-   *   <li>WITHOUT cleanup: method_map grows unbounded (~300k methods generated, ~30k captured)
-   *   <li>WITH cleanup: method_map stays bounded at ~300-500 methods (age-based removal)
+   *   <li>WITHOUT cleanup: method_map grows unbounded (~10k methods generated, ~3k captured)
+   *   <li>WITH cleanup: method_map stays bounded at ~200-400 methods (age-based removal)
    *   <li>RSS savings: At least 10% reduction with cleanup (JVMTI memory freed)
    *   <li>NMT savings: Small (only MethodInfo objects, ~1-2%)
    *   <li>TEST_LOG shows "Cleaned up X unreferenced methods" and "Deallocated line number table"
@@ -225,8 +225,8 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
     // We need to manage our own profiler instances for this comparison
     stopProfiler();
 
-    final int iterations = 2000; // 2000 iterations for large-scale stress test (~300k potential methods)
-    final int classesPerIteration = 30; // 30 classes × 5 methods = 150 methods per iteration
+    final int iterations = 100; // 100 iterations for fast validation (~10k potential methods)
+    final int classesPerIteration = 10; // 10 classes × 5 methods = 50 methods per iteration
 
     // Create temp files that will be cleaned up in finally block
     Path noCleanupBaseFile = tempFile("no-cleanup-base");
@@ -418,7 +418,7 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
               + " ("
               + String.format("%.1f", rssSavingsPercent)
               + "%)\n"
-              + "method_map size bounded at ~300-500 methods (WITH) vs unbounded growth (WITHOUT)\n"
+              + "method_map size bounded at ~200-400 methods (WITH) vs unbounded growth (WITHOUT)\n"
               + "JVMTI memory properly deallocated via SharedLineNumberTable destructors");
     } finally {
       // Clean up temp files

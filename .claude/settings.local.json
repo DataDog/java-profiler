@@ -14,7 +14,19 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(./.claude/commands/build-and-summarize:*)"
+      "Bash(./.claude/commands/build-and-summarize:*)",
+      "Bash(git log:*)",
+      "Bash(git ls-tree:*)",
+      "Bash(while read commit msg)",
+      "Bash(do echo '=== $msg ===')",
+      "Bash(done)",
+      "Bash(find:*)",
+      "Bash(cat:*)",
+      "Bash(touch:*)",
+      "Bash(git commit:*)",
+      "Bash(gh pr edit:*)",
+      "SlashCommand(/build-and-summarize:*)",
+      "Bash(~/.claude/commands/build-and-summarize:*)"
     ],
     "deny": [],
     "ask": []
