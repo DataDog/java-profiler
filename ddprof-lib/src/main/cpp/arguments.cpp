@@ -89,7 +89,7 @@ static const Multiplier UNIVERSAL[] = {
 //     generations        - track surviving generations
 //     lightweight[=BOOL] - enable lightweight profiling - events without
 //     stacktraces (default: true)
-//     remotesymbolication[=BOOL] - enable remote symbolication for native frames
+//     remotesym[=BOOL]   - enable remote symbolication for native frames
 //                          (stores build-id and PC offset instead of symbol names)
 //     jfr                - dump events in Java
 //     Flight Recorder format interval=N         - sampling interval in ns
