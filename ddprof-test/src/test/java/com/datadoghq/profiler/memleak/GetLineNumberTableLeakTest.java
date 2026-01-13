@@ -428,13 +428,34 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
 
       if (!rssReliable) {
         System.out.println("\nWARNING: RSS measurements unreliable on this JVM - skipping RSS assertion");
-        System.out.println("Falling back to NMT Internal validation only");
-        if (nmtShowsCleanup) {
+
+        // Explain why RSS is unreliable
+        if (rssGrowthNoCleanup <= 0) {
           System.out.println(
-              "NMT Internal shows significant cleanup ("
-                  + String.format("%.1f", nmtSavingsPercent)
-                  + "%), validating via NMT instead");
+              "Reason: Phase 1 (WITHOUT cleanup) showed no positive growth: "
+                  + ProcessMemory.formatBytes(rssGrowthNoCleanup));
         }
+        if (rssGrowthWithCleanup <= 0) {
+          System.out.println(
+              "Reason: Phase 2 (WITH cleanup) showed no positive growth: "
+                  + ProcessMemory.formatBytes(rssGrowthWithCleanup)
+                  + " (GC may have shrunk RSS more than profiling grew it)");
+        }
+        if (rssSavings < 0) {
+          System.out.println(
+              "Reason: RSS savings are negative (WITH used MORE than WITHOUT): "
+                  + ProcessMemory.formatBytes(rssSavings));
+        }
+        if (nmtShowsCleanup && !rssShowsCleanup) {
+          System.out.println(
+              "Reason: NMT shows significant cleanup ("
+                  + String.format("%.1f", nmtSavingsPercent)
+                  + "%) but RSS does not ("
+                  + String.format("%.1f", rssSavingsPercent)
+                  + "%)");
+        }
+
+        System.out.println("Falling back to NMT Internal validation only");
 
         // At least verify NMT Internal shows some improvement
         if (nmtSavingsPercent < 0) {
