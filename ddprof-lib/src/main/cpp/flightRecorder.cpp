@@ -50,9 +50,6 @@ SharedLineNumberTable::~SharedLineNumberTable() {
   if (_ptr != nullptr) {
     jvmtiEnv *jvmti = VM::jvmti();
     if (jvmti != nullptr) {
-      // Calculate approximate memory size (each entry is sizeof(jvmtiLineNumberEntry))
-      size_t estimated_bytes = _size * sizeof(jvmtiLineNumberEntry);
-
       jvmtiError err = jvmti->Deallocate((unsigned char *)_ptr);
       // If Deallocate fails, log it for debugging (this could indicate a JVM bug)
       // JVMTI_ERROR_ILLEGAL_ARGUMENT means the memory wasn't allocated by JVMTI
@@ -60,7 +57,8 @@ SharedLineNumberTable::~SharedLineNumberTable() {
       if (err != JVMTI_ERROR_NONE) {
         TEST_LOG("Unexpected error while deallocating linenumber table: %d", err);
       } else {
-        TEST_LOG("Deallocated line number table: %zu entries, ~%zu bytes", (size_t)_size, estimated_bytes);
+        // Successfully deallocated - decrement counter
+        Counters::decrement(LINE_NUMBER_TABLES);
       }
     } else {
       TEST_LOG("WARNING: Cannot deallocate line number table - JVMTI is null");
@@ -289,6 +287,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
     if (line_number_table != nullptr) {
       mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
           line_number_table_size, line_number_table);
+      // Increment counter for tracking live line number tables
+      Counters::increment(LINE_NUMBER_TABLES);
     }
 
     // strings are null or came from JVMTI
@@ -648,6 +648,10 @@ void Recording::cleanupUnreferencedMethods() {
   if (removed_count > 0) {
     TEST_LOG("Cleaned up %zu unreferenced methods (age >= %d chunks, %zu with line tables, total: %zu -> %zu)",
             removed_count, AGE_THRESHOLD, removed_with_line_tables, total_before, _method_map.size());
+
+    // Log current count of live line number tables
+    long long live_tables = Counters::getCounter(LINE_NUMBER_TABLES);
+    TEST_LOG("Live line number tables after cleanup: %lld", live_tables);
   }
 }
 
