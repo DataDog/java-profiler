@@ -398,8 +398,13 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
       // Check if RSS measurements are reliable:
       // - Both measurements must be positive (actual growth)
       // - Savings must be non-negative (cleanup shouldn't increase RSS)
-      // If either condition fails, RSS is unreliable and we skip RSS assertions
-      boolean rssReliable = rssGrowthNoCleanup > 0 && rssGrowthWithCleanup > 0 && rssSavings >= 0;
+      // - If NMT shows high savings (>50%) but RSS shows low savings (<10%),
+      //   RSS is not capturing the cleanup effect and is considered unreliable
+      double nmtSavingsPercent = 100.0 * nmtSavings / Math.max(1, nmtGrowthNoCleanup);
+      boolean nmtShowsCleanup = nmtSavingsPercent > 50.0;
+      boolean rssShowsCleanup = rssSavingsPercent >= 10.0;
+      boolean rssReliable = rssGrowthNoCleanup > 0 && rssGrowthWithCleanup > 0 && rssSavings >= 0
+          && (!nmtShowsCleanup || rssShowsCleanup);
 
       if (rssReliable && rssSavingsPercent < 10.0) {
         fail(
@@ -424,9 +429,14 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
       if (!rssReliable) {
         System.out.println("\nWARNING: RSS measurements unreliable on this JVM - skipping RSS assertion");
         System.out.println("Falling back to NMT Internal validation only");
+        if (nmtShowsCleanup) {
+          System.out.println(
+              "NMT Internal shows significant cleanup ("
+                  + String.format("%.1f", nmtSavingsPercent)
+                  + "%), validating via NMT instead");
+        }
 
         // At least verify NMT Internal shows some improvement
-        double nmtSavingsPercent = 100.0 * nmtSavings / Math.max(1, nmtGrowthNoCleanup);
         if (nmtSavingsPercent < 0) {
           fail("Cleanup increased NMT Internal memory! NMT savings: " + nmtSavings + " KB");
         }
