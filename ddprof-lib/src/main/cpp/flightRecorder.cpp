@@ -1585,10 +1585,6 @@ Error FlightRecorder::start(Arguments &args, bool reset) {
   _filename = file;
   _args = args;
 
-  // Debug: log method cleanup setting
-  fprintf(stderr, "[DEBUG] FlightRecorder::start() - _enable_method_cleanup = %d\n", args._enable_method_cleanup);
-  fflush(stderr);
-
   ddprof::TSC::enable(args._clock);
 
   Error ret = newRecording(reset);
