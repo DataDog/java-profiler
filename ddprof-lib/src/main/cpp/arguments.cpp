@@ -320,21 +320,24 @@ Error Arguments::parse(const char *args) {
         }
       }
 
-      CASE("method-cleanup")
-      _enable_method_cleanup = true;
+      CASE("mcleanup")
       if (value != NULL) {
         switch (value[0]) {
         case 'n': // no
         case 'f': // false
+        case '0': // 0
           _enable_method_cleanup = false;
           break;
+        case 'y': // yes
+        case 't': // true
+        case '1': // 1
         default:
           _enable_method_cleanup = true;
         }
+      } else {
+        // No value means enable
+        _enable_method_cleanup = true;
       }
-
-      CASE("no-method-cleanup")
-      _enable_method_cleanup = false;
 
             CASE("wallsampler")
                 if (value != NULL) {

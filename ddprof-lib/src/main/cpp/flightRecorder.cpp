@@ -50,13 +50,20 @@ SharedLineNumberTable::~SharedLineNumberTable() {
   if (_ptr != nullptr) {
     jvmtiEnv *jvmti = VM::jvmti();
     if (jvmti != nullptr) {
+      // Calculate approximate memory size (each entry is sizeof(jvmtiLineNumberEntry))
+      size_t estimated_bytes = _size * sizeof(jvmtiLineNumberEntry);
+
       jvmtiError err = jvmti->Deallocate((unsigned char *)_ptr);
       // If Deallocate fails, log it for debugging (this could indicate a JVM bug)
       // JVMTI_ERROR_ILLEGAL_ARGUMENT means the memory wasn't allocated by JVMTI
       // which would be a serious bug in GetLineNumberTable
       if (err != JVMTI_ERROR_NONE) {
         TEST_LOG("Unexpected error while deallocating linenumber table: %d", err);
+      } else {
+        TEST_LOG("Deallocated line number table: %zu entries, ~%zu bytes", (size_t)_size, estimated_bytes);
       }
+    } else {
+      TEST_LOG("WARNING: Cannot deallocate line number table - JVMTI is null");
     }
   }
 }
@@ -605,6 +612,7 @@ void Recording::cleanupUnreferencedMethods() {
 
   const int AGE_THRESHOLD = 3;  // Remove after 3 consecutive chunks without reference
   size_t removed_count = 0;
+  size_t removed_with_line_tables = 0;
   size_t total_before = _method_map.size();
   size_t referenced_count = 0;
   size_t aged_count = 0;
@@ -620,6 +628,10 @@ void Recording::cleanupUnreferencedMethods() {
       if (mi._age >= AGE_THRESHOLD) {
         // Method hasn't been used for N chunks, safe to remove
         // SharedLineNumberTable will be automatically deallocated via shared_ptr destructor
+        bool has_line_table = (mi._line_number_table != nullptr && mi._line_number_table->_ptr != nullptr);
+        if (has_line_table) {
+          removed_with_line_tables++;
+        }
         it = _method_map.erase(it);
         removed_count++;
         continue;
@@ -634,8 +646,8 @@ void Recording::cleanupUnreferencedMethods() {
   }
 
   if (removed_count > 0) {
-    TEST_LOG("Cleaned up %zu unreferenced methods (age >= %d chunks, total: %zu -> %zu)",
-            removed_count, AGE_THRESHOLD, total_before, _method_map.size());
+    TEST_LOG("Cleaned up %zu unreferenced methods (age >= %d chunks, %zu with line tables, total: %zu -> %zu)",
+            removed_count, AGE_THRESHOLD, removed_with_line_tables, total_before, _method_map.size());
   }
 }
 
@@ -1568,6 +1580,10 @@ Error FlightRecorder::start(Arguments &args, bool reset) {
   }
   _filename = file;
   _args = args;
+
+  // Debug: log method cleanup setting
+  fprintf(stderr, "[DEBUG] FlightRecorder::start() - _enable_method_cleanup = %d\n", args._enable_method_cleanup);
+  fflush(stderr);
 
   ddprof::TSC::enable(args._clock);
 

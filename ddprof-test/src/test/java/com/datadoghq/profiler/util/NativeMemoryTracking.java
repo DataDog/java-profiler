@@ -272,4 +272,65 @@ public class NativeMemoryTracking {
       return false;
     }
   }
+
+  /**
+   * Takes a detailed NMT snapshot showing allocation sites with stack traces.
+   * Use this to identify specific allocation sites (e.g., JVMTI GetLineNumberTable).
+   *
+   * @return detailed NMT output as string
+   * @throws IOException if jcmd execution fails
+   * @throws InterruptedException if jcmd is interrupted
+   */
+  public static String takeDetailedSnapshot() throws IOException, InterruptedException {
+    String pid = java.lang.management.ManagementFactory.getRuntimeMXBean().getName().split("@")[0];
+    Process jcmd =
+        new ProcessBuilder("jcmd", pid, "VM.native_memory", "detail")
+            .start();
+
+    String output;
+    try (BufferedReader reader =
+        new BufferedReader(new InputStreamReader(jcmd.getInputStream()))) {
+      output = reader.lines().collect(Collectors.joining("\n"));
+    }
+
+    jcmd.waitFor(10, TimeUnit.SECONDS);
+    return output;
+  }
+
+  /**
+   * Extracts JVMTI-related allocations from detailed NMT output.
+   * Looks for GetLineNumberTable and related JVMTI calls.
+   *
+   * @param detailedOutput output from takeDetailedSnapshot()
+   * @return string containing only JVMTI-related allocation sites
+   */
+  public static String extractJVMTIAllocations(String detailedOutput) {
+    StringBuilder result = new StringBuilder();
+    String[] lines = detailedOutput.split("\n");
+    boolean inJvmtiSection = false;
+    int linesInSection = 0;
+
+    for (String line : lines) {
+      // Start capturing when we see JVMTI-related stack frames
+      if (line.contains("GetLineNumberTable") ||
+          line.contains("jvmti_") ||
+          line.contains("JvmtiEnv::")) {
+        inJvmtiSection = true;
+        linesInSection = 0;
+        result.append("\n");
+      }
+
+      if (inJvmtiSection) {
+        result.append(line).append("\n");
+        linesInSection++;
+
+        // Capture a few lines of context after the JVMTI frame
+        if (linesInSection > 10) {
+          inJvmtiSection = false;
+        }
+      }
+    }
+
+    return result.toString();
+  }
 }
