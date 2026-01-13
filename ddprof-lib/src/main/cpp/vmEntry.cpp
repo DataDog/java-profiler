@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -514,6 +515,16 @@ void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
     }
   }
 
+  // CRITICAL: GetClassMethods must be called to preallocate jmethodIDs for AsyncGetCallTrace.
+  // AGCT operates in signal handlers where lock acquisition is forbidden, so jmethodIDs must
+  // exist before profiling encounters them. Without preallocation, AGCT cannot identify methods
+  // in stack traces, breaking profiling functionality.
+  //
+  // JVM-internal allocation: This triggers JVM to allocate jmethodIDs internally, which persist
+  // until class unload. High class churn causes significant memory growth, but this is inherent
+  // to AGCT architecture and necessary for signal-safe profiling.
+  //
+  // See: https://mostlynerdless.de/blog/2023/07/17/jmethodids-in-profiling-a-tale-of-nightmares/
   jint method_count;
   jmethodID *methods;
   if (jvmti->GetClassMethods(klass, &method_count, &methods) == 0) {

@@ -141,6 +141,11 @@ public class CStackInjector implements TestTemplateInvocationContextProvider {
             );
             extensions.add(
                     (TestExecutionExceptionHandler) (extensionContext, throwable) -> {
+                        // Don't retry on assumption failures - they should skip the test
+                        if (throwable instanceof TestAbortedException) {
+                            throw throwable;
+                        }
+
                         int attempt = 0;
                         while (++attempt < retryCount) {
                             System.out.println("[Retrying] Attempt " + attempt + "/" + retryCount + " due to failure: " + throwable.getMessage());

@@ -319,17 +319,37 @@ Error Arguments::parse(const char *args) {
           _lightweight = false;
         }
       }
-            CASE("wallsampler")
-                if (value != NULL) {
-                    switch (value[0]) {
-                        case 'j':
-                            _wallclock_sampler = JVMTI;
-                            break;
-                        case 'a':
-                        default:
-                            _wallclock_sampler = ASGCT;
-                    }
-                }
+
+      CASE("mcleanup")
+      if (value != NULL) {
+        switch (value[0]) {
+        case 'n': // no
+        case 'f': // false
+        case '0': // 0
+          _enable_method_cleanup = false;
+          break;
+        case 'y': // yes
+        case 't': // true
+        case '1': // 1
+        default:
+          _enable_method_cleanup = true;
+        }
+      } else {
+        // No value means enable
+        _enable_method_cleanup = true;
+      }
+
+      CASE("wallsampler")
+      if (value != NULL) {
+        switch (value[0]) {
+        case 'j':
+          _wallclock_sampler = JVMTI;
+          break;
+        case 'a':
+        default:
+          _wallclock_sampler = ASGCT;
+        }
+      }
 
       DEFAULT()
       if (_unknown_arg == NULL)

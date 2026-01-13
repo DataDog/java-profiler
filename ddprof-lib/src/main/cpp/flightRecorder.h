@@ -68,11 +68,13 @@ public:
 class MethodInfo {
 public:
   MethodInfo()
-      : _mark(false), _is_entry(false), _key(0), _class(0),
+      : _mark(false), _is_entry(false), _referenced(false), _age(0), _key(0), _class(0),
         _name(0), _sig(0), _modifiers(0), _line_number_table(nullptr), _type() {}
 
   bool _mark;
   bool _is_entry;
+  bool _referenced;  // Tracked during writeStackTraces() for cleanup
+  int _age;          // Consecutive chunks without reference (0 = recently used)
   u32 _key;
   u32 _class;
   u32 _name;
@@ -258,6 +260,9 @@ public:
                      float machine_total);
 
   void addThread(int lock_index, int tid);
+
+private:
+  void cleanupUnreferencedMethods();
 };
 
 class Lookup {

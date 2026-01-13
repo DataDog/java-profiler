@@ -1,6 +1,6 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026 Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -43,10 +43,26 @@
 static const char *const SETTING_RING[] = {NULL, "kernel", "user", "any"};
 static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 
-static void deallocateLineNumberTable(void *ptr) {}
-
 SharedLineNumberTable::~SharedLineNumberTable() {
-  VM::jvmti()->Deallocate((unsigned char *)_ptr);
+  // Always attempt to deallocate if we have a valid pointer
+  // JVMTI spec requires that memory allocated by GetLineNumberTable
+  // must be freed with Deallocate
+  if (_ptr != nullptr) {
+    jvmtiEnv *jvmti = VM::jvmti();
+    if (jvmti != nullptr) {
+      jvmtiError err = jvmti->Deallocate((unsigned char *)_ptr);
+      // If Deallocate fails, log it for debugging (this could indicate a JVM bug)
+      // JVMTI_ERROR_ILLEGAL_ARGUMENT means the memory wasn't allocated by JVMTI
+      // which would be a serious bug in GetLineNumberTable
+      if (err != JVMTI_ERROR_NONE) {
+        TEST_LOG("Unexpected error while deallocating linenumber table: %d", err);
+      }
+    } else {
+      TEST_LOG("WARNING: Cannot deallocate line number table - JVMTI is null");
+    }
+    // Decrement counter whenever destructor runs (symmetric with increment at creation)
+    Counters::decrement(LINE_NUMBER_TABLES);
+  }
 }
 
 void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
@@ -151,24 +167,44 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
 
       if (first_time) {
-        jvmti->GetLineNumberTable(method, &line_number_table_size,
+        jvmtiError line_table_error = jvmti->GetLineNumberTable(method, &line_number_table_size,
                                   &line_number_table);
+        // Defensive: if GetLineNumberTable failed, clean up any potentially allocated memory
+        // Some buggy JVMTI implementations might allocate despite returning an error
+        if (line_table_error != JVMTI_ERROR_NONE) {
+          if (line_number_table != nullptr) {
+            // Try to deallocate to prevent leak from buggy JVM
+            jvmti->Deallocate((unsigned char *)line_number_table);
+          }
+          line_number_table = nullptr;
+          line_number_table_size = 0;
+        }
       }
 
       // Check if the frame is Thread.run or inherits from it
       if (strncmp(method_name, "run", 4) == 0 &&
           strncmp(method_sig, "()V", 3) == 0) {
         jclass Thread_class = jni->FindClass("java/lang/Thread");
-        jmethodID equals = jni->GetMethodID(jni->FindClass("java/lang/Class"),
-                                            "equals", "(Ljava/lang/Object;)Z");
-        jclass klass = method_class;
-        do {
-          entry = jni->CallBooleanMethod(Thread_class, equals, klass);
-          jniExceptionCheck(jni);
-          if (entry) {
-            break;
+        jclass Class_class = jni->FindClass("java/lang/Class");
+        if (Thread_class != nullptr && Class_class != nullptr) {
+          jmethodID equals = jni->GetMethodID(Class_class,
+                                              "equals", "(Ljava/lang/Object;)Z");
+          if (equals != nullptr) {
+            jclass klass = method_class;
+            do {
+              entry = jni->CallBooleanMethod(Thread_class, equals, klass);
+              if (jniExceptionCheck(jni)) {
+                entry = false;
+                break;
+              }
+              if (entry) {
+                break;
+              }
+            } while ((klass = jni->GetSuperclass(klass)) != NULL);
           }
-        } while ((klass = jni->GetSuperclass(klass)) != NULL);
+        }
+        // Clear any exceptions from the reflection calls above
+        jniExceptionCheck(jni);
       } else if (strncmp(method_name, "main", 5) == 0 &&
                  strncmp(method_sig, "(Ljava/lang/String;)V", 21)) {
         // public static void main(String[] args) - 'public static' translates
@@ -250,6 +286,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
     if (line_number_table != nullptr) {
       mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
           line_number_table_size, line_number_table);
+      // Increment counter for tracking live line number tables
+      Counters::increment(LINE_NUMBER_TABLES);
     }
 
     // strings are null or came from JVMTI
@@ -484,6 +522,12 @@ off_t Recording::finishChunk(bool end_recording) {
 
 void Recording::switchChunk(int fd) {
   _chunk_start = finishChunk(fd > -1);
+
+  // Cleanup unreferenced methods after finishing the chunk
+  cleanupUnreferencedMethods();
+
+  TEST_LOG("MethodMap: %zu methods after cleanup", _method_map.size());
+
   _start_time = _stop_time;
   _start_ticks = _stop_ticks;
   _bytes_written = 0;
@@ -556,6 +600,52 @@ void Recording::cpuMonitorCycle() {
   flushIfNeeded(&_cpu_monitor_buf, BUFFER_LIMIT);
 
   _last_times = times;
+}
+
+void Recording::cleanupUnreferencedMethods() {
+  if (!_args._enable_method_cleanup) {
+    return;  // Feature disabled
+  }
+
+  const int AGE_THRESHOLD = 3;  // Remove after 3 consecutive chunks without reference
+  size_t removed_count = 0;
+  size_t removed_with_line_tables = 0;
+  size_t total_before = _method_map.size();
+
+  for (MethodMap::iterator it = _method_map.begin(); it != _method_map.end(); ) {
+    MethodInfo& mi = it->second;
+
+    if (!mi._referenced) {
+      // Method not referenced in this chunk
+      mi._age++;
+
+      if (mi._age >= AGE_THRESHOLD) {
+        // Method hasn't been used for N chunks, safe to remove
+        // SharedLineNumberTable will be automatically deallocated via shared_ptr destructor
+        bool has_line_table = (mi._line_number_table != nullptr && mi._line_number_table->_ptr != nullptr);
+        if (has_line_table) {
+          removed_with_line_tables++;
+        }
+        it = _method_map.erase(it);
+        removed_count++;
+        continue;
+      }
+    } else {
+      // Method was referenced, reset age
+      mi._age = 0;
+    }
+
+    ++it;
+  }
+
+  if (removed_count > 0) {
+    TEST_LOG("Cleaned up %zu unreferenced methods (age >= %d chunks, %zu with line tables, total: %zu -> %zu)",
+            removed_count, AGE_THRESHOLD, removed_with_line_tables, total_before, _method_map.size());
+
+    // Log current count of live line number tables
+    long long live_tables = Counters::getCounter(LINE_NUMBER_TABLES);
+    TEST_LOG("Live line number tables after cleanup: %lld", live_tables);
+  }
 }
 
 void Recording::appendRecording(const char *target_file, size_t size) {
@@ -1113,6 +1203,11 @@ void Recording::writeThreads(Buffer *buf) {
 }
 
 void Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
+  // Reset all referenced flags before processing
+  for (MethodMap::iterator it = _method_map.begin(); it != _method_map.end(); ++it) {
+    it->second._referenced = false;
+  }
+
   // Use safe trace processing with guaranteed lifetime during callback execution
   Profiler::instance()->processCallTraces([this, buf, lookup](const std::unordered_set<CallTrace*>& traces) {
     buf->putVar64(T_STACK_TRACE);
@@ -1124,6 +1219,7 @@ void Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
       if (trace->num_frames > 0) {
         MethodInfo *mi =
             lookup->resolveMethod(trace->frames[trace->num_frames - 1]);
+        mi->_referenced = true;  // Mark method as referenced
         if (mi->_type < FRAME_NATIVE) {
           buf->put8(mi->_is_entry ? 0 : 1);
         } else {
@@ -1133,6 +1229,7 @@ void Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
       buf->putVar64(trace->num_frames);
       for (int i = 0; i < trace->num_frames; i++) {
         MethodInfo *mi = lookup->resolveMethod(trace->frames[i]);
+        mi->_referenced = true;  // Mark method as referenced
         buf->putVar64(mi->_key);
         jint bci = trace->frames[i].bci;
         if (mi->_type < FRAME_NATIVE) {
