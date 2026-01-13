@@ -292,7 +292,7 @@ bool Profiler::isAddressInCode(const void *pc, bool include_stubs) {
 
 int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
                              int event_type, int tid, StackContext *java_ctx,
-                             bool *truncated) {
+                             bool *truncated, int lock_index) {
   if (_cstack == CSTACK_NO ||
       (event_type == BCI_ALLOC || event_type == BCI_ALLOC_OUTSIDE_TLAB) ||
       (event_type != BCI_CPU && event_type != BCI_WALL &&
@@ -320,10 +320,10 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
                                          java_ctx, truncated);
   }
 
-  return convertNativeTrace(native_frames, callchain, frames);
+  return convertNativeTrace(native_frames, callchain, frames, lock_index);
 }
 
-void Profiler::applyRemoteSymbolicationToVMFrames(ASGCT_CallFrame *frames, int num_frames) {
+void Profiler::applyRemoteSymbolicationToVMFrames(ASGCT_CallFrame *frames, int num_frames, int lock_index) {
   for (int i = 0; i < num_frames; i++) {
     // Only process native frames (not Java frames or special frames)
     if (frames[i].bci != BCI_NATIVE_FRAME) {
@@ -366,8 +366,8 @@ void Profiler::applyRemoteSymbolicationToVMFrames(ASGCT_CallFrame *frames, int n
       // Calculate PC offset within the library
       uintptr_t offset = pc - (uintptr_t)lib->imageBase();
 
-      // Allocate RemoteFrameInfo
-      RemoteFrameInfo* rfi = static_cast<RemoteFrameInfo*>(malloc(sizeof(RemoteFrameInfo)));
+      // Allocate RemoteFrameInfo from pre-allocated pool (signal-safe)
+      RemoteFrameInfo* rfi = allocateRemoteFrameInfo(lock_index);
       if (rfi != nullptr) {
         rfi->build_id = lib->buildId();
         rfi->pc_offset = offset;
@@ -378,11 +378,40 @@ void Profiler::applyRemoteSymbolicationToVMFrames(ASGCT_CallFrame *frames, int n
         frames[i].bci = BCI_NATIVE_FRAME_REMOTE;
         TEST_LOG("Converted VM frame to remote format: build-id=%s, offset=0x%lx", rfi->build_id, rfi->pc_offset);
       }
+      // If pool exhausted, keep original resolved symbol name
     }
   }
 }
 
-Profiler::NativeFrameResolution Profiler::resolveNativeFrame(uintptr_t pc) {
+/**
+ * Allocate a RemoteFrameInfo from the pre-allocated pool for the given lock-strip.
+ * This is signal-safe (uses atomic operations, no dynamic allocation).
+ *
+ * @param lock_index The lock-strip index (0 to CONCURRENCY_LEVEL-1)
+ * @return Pointer to allocated RemoteFrameInfo, or nullptr if pool exhausted
+ */
+RemoteFrameInfo* Profiler::allocateRemoteFrameInfo(int lock_index) {
+  if (lock_index < 0 || lock_index >= CONCURRENCY_LEVEL) {
+    return nullptr;
+  }
+
+  if (_remote_frame_pool[lock_index] == nullptr) {
+    return nullptr;  // Pool not initialized
+  }
+
+  // Atomic fetch-and-add to get next available slot
+  int slot = _remote_frame_count[lock_index].fetch_add(1, std::memory_order_relaxed);
+
+  if (slot >= REMOTE_FRAME_POOL_SIZE) {
+    // Pool exhausted - fallback to symbol resolution
+    // Don't decrement counter as other threads may have succeeded
+    return nullptr;
+  }
+
+  return &_remote_frame_pool[lock_index][slot];
+}
+
+Profiler::NativeFrameResolution Profiler::resolveNativeFrame(uintptr_t pc, int lock_index) {
   if (_remote_symbolication) {
     // Remote symbolication mode: store build-id and PC offset
     CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
@@ -403,8 +432,8 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrame(uintptr_t pc) {
       // Calculate PC offset within the library
       uintptr_t offset = pc - (uintptr_t)lib->imageBase();
 
-      // Allocate RemoteFrameInfo (TODO: optimize with LinearAllocator)
-      RemoteFrameInfo* rfi = static_cast<RemoteFrameInfo*>(malloc(sizeof(RemoteFrameInfo)));
+      // Allocate RemoteFrameInfo from pre-allocated pool (signal-safe)
+      RemoteFrameInfo* rfi = allocateRemoteFrameInfo(lock_index);
       if (rfi != nullptr) {
         rfi->build_id = lib->buildId();
         rfi->pc_offset = offset;
@@ -412,7 +441,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrame(uintptr_t pc) {
 
         return {(jmethodID)rfi, BCI_NATIVE_FRAME_REMOTE, false};
       } else {
-        // Fallback to resolved symbol if allocation failed
+        // Pool exhausted, fallback to resolved symbol
         // Need to resolve the symbol now since we didn't do it earlier
         const char *fallback_name = nullptr;
         lib->binarySearch((void*)pc, &fallback_name);
@@ -441,7 +470,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrame(uintptr_t pc) {
 }
 
 int Profiler::convertNativeTrace(int native_frames, const void **callchain,
-                                 ASGCT_CallFrame *frames) {
+                                 ASGCT_CallFrame *frames, int lock_index) {
   int depth = 0;
   jmethodID prev_method = NULL;
 
@@ -449,7 +478,7 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
     uintptr_t pc = (uintptr_t)callchain[i];
 
     // Resolve native frame using shared logic
-    NativeFrameResolution resolution = resolveNativeFrame(pc);
+    NativeFrameResolution resolution = resolveNativeFrame(pc, lock_index);
 
     // Check if this is a marked frame (terminate scan)
     if (resolution.is_marked) {
@@ -831,7 +860,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     StackContext java_ctx = {0};
     ASGCT_CallFrame *native_stop = frames + num_frames;
     num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
-                                 &java_ctx, &truncated);
+                                 &java_ctx, &truncated, lock_index);
     if (num_frames < _max_stack_depth) {
       int max_remaining = _max_stack_depth - num_frames;
       if (_features.mixed) {
@@ -840,7 +869,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
         num_frames += vm_frames;
         // Apply remote symbolication to VM frames if enabled
         if (_remote_symbolication) {
-          applyRemoteSymbolicationToVMFrames(frames + vm_start, vm_frames);
+          applyRemoteSymbolicationToVMFrames(frames + vm_start, vm_frames, lock_index);
         }
       } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
         if (_cstack >= CSTACK_VM) {
@@ -849,7 +878,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
           num_frames += vm_frames;
           // Apply remote symbolication to VM frames if enabled
           if (_remote_symbolication) {
-            applyRemoteSymbolicationToVMFrames(frames + vm_start, vm_frames);
+            applyRemoteSymbolicationToVMFrames(frames + vm_start, vm_frames, lock_index);
           }
         } else {
           // Async events
@@ -1344,6 +1373,26 @@ Error Profiler::start(Arguments &args, bool reset) {
         return Error("Not enough memory to allocate stack trace buffers (try "
                      "smaller jstackdepth)");
       }
+    }
+  }
+
+  // Allocate/reset remote frame pools if remote symbolication is enabled
+  if (args._remote_symbolication) {
+    for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+      if (_remote_frame_pool[i] == nullptr) {
+        // First-time allocation
+        _remote_frame_pool[i] = (RemoteFrameInfo*)calloc(REMOTE_FRAME_POOL_SIZE, sizeof(RemoteFrameInfo));
+        if (_remote_frame_pool[i] == nullptr) {
+          // Clean up already allocated pools
+          for (int j = 0; j < i; j++) {
+            free(_remote_frame_pool[j]);
+            _remote_frame_pool[j] = nullptr;
+          }
+          return Error("Not enough memory to allocate remote frame pools");
+        }
+      }
+      // Reset counter for this lock-strip (handles both first-time and restart)
+      _remote_frame_count[i].store(0, std::memory_order_relaxed);
     }
   }
 

@@ -13,9 +13,9 @@ The enhancement allows the Java profiler to store raw build-id and PC offset inf
 
 ## Implementation Summary
 
-### 1. **Build-ID Extraction** (`elfBuildId.h/cpp`)
+### 1. **Build-ID Extraction** (`symbols_linux_dd.h/cpp`)
 
-- **ElfBuildIdExtractor**: Utility class to extract GNU build-id from ELF files
+- **SymbolsLinux**: Utility class to extract GNU build-id from ELF files
 - Supports both file-based and memory-based extraction
 - Handles .note.gnu.build-id section parsing
 - Returns hex-encoded build-id strings
@@ -45,9 +45,9 @@ Modified `convertNativeTrace()` to support dual modes:
 ### 5. **JFR Serialization** (`flightRecorder.cpp/h`)
 
 - **fillRemoteFrameInfo()**: Serializes remote frame data to JFR format
-- Stores build-id in class name field
-- Stores PC offset in signature field
-- Uses modifier flag 0x200 to indicate remote symbolication
+- Stores `<build-id>.<remote>` in class name field (e.g., `deadbeef1234567890abcdef.<remote>`)
+- Stores PC offset in signature field (e.g., `(0x1234)`)
+- Uses modifier flag 0x100 (ACC_NATIVE, same as regular native frames)
 
 ### 6. **Configuration** (`arguments.h/cpp`)
 
@@ -66,23 +66,24 @@ Modified `convertNativeTrace()` to support dual modes:
 ### Enable Remote Symbolication
 
 ```bash
-java -javaagent:ddprof.jar=remotesymbolication=true,file=profile.jfr MyApp
+java -agentpath:<path_to>/libjavaProfiler.so=start,cpu,remotesym=true,file=profile.jfr MyApp
 ```
 
 ### Mixed Configuration
 
 ```bash
-java -javaagent:ddprof.jar=event=cpu,interval=1000000,remotesymbolication=true MyApp
+java -agentpath:<path_to>/libjavaProfiler.so=start,event=cpu,interval=1000000,remotesym=true,file=profile.jfr MyApp
 ```
 
 ## JFR Output Format
 
 When remote symbolication is enabled, native frames in the JFR output contain:
 
-- **Method Name**: `<remote>` (indicates remote symbolication needed)
-- **Class Name**: Build-ID (e.g., `deadbeef1234567890abcdef`)
-- **Signature**: PC offset (e.g., `0x1234`)
-- **Modifier**: `0x0100` (ACC_NATIVE, same as regular native frames)
+- **Class Name**: `<build-id>.<remote>` (e.g., `deadbeef1234567890abcdef.<remote>`)
+  - Build-ID hex string followed by `.<remote>` suffix for constant pool deduplication
+- **Signature**: PC offset (e.g., `(0x1234)`)
+- **Method Name**: The `<remote>` suffix from the class name indicates remote symbolication is needed
+- **Modifier**: `0x100` (ACC_NATIVE, same as regular native frames)
 - **Frame Type**: `FRAME_NATIVE_REMOTE` (7) - distinguishes from regular native frames
 
 ## Backward Compatibility
@@ -144,8 +145,8 @@ When remote symbolication is enabled, native frames in the JFR output contain:
 
 ```
 ddprof-lib/src/main/cpp/
-├── elfBuildId.h                 # Build-ID extraction interface
-├── elfBuildId.cpp               # Build-ID extraction implementation
+├── symbols_linux_dd.h           # Build-ID extraction interface (Linux-specific)
+├── symbols_linux_dd.cpp         # Build-ID extraction implementation (Linux-specific)
 ├── vmEntry.h                    # Enhanced with RemoteFrameInfo and BCI constants
 ├── codeCache.h                  # Enhanced with build-id fields
 ├── codeCache.cpp                # Build-id storage implementation
@@ -165,7 +166,7 @@ ddprof-lib/src/test/cpp/
 ## Implementation Notes
 
 - **Thread Safety**: Build-ID extraction occurs during single-threaded startup
-- **Signal Handler Safety**: RemoteFrameInfo allocation uses malloc() (signal-safe)
+- **Signal Handler Safety**: RemoteFrameInfo uses pre-allocated pool (signal-safe, no dynamic allocation)
 - **Error Handling**: Graceful fallback to local symbolication on failures
 - **Logging**: Debug logging for build-ID extraction progress
 

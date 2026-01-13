@@ -156,6 +156,11 @@ private:
   bool _omit_stacktraces;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
 
+  // Remote symbolication frame pool (pre-allocated, signal-safe)
+  static const int REMOTE_FRAME_POOL_SIZE = 128;  // Entries per lock-strip
+  RemoteFrameInfo *_remote_frame_pool[CONCURRENCY_LEVEL];
+  std::atomic<int> _remote_frame_count[CONCURRENCY_LEVEL];
+
   // dlopen() hook support
   void **_dlopen_entry;
   static void *dlopen_hook(const char *filename, int flags);
@@ -174,7 +179,7 @@ private:
   u32 getLockIndex(int tid);
   bool isAddressInCode(uintptr_t addr);
   int getNativeTrace(void *ucontext, ASGCT_CallFrame *frames, int event_type,
-                     int tid, StackContext *java_ctx, bool *truncated);
+                     int tid, StackContext *java_ctx, bool *truncated, int lock_index);
   int getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
                         StackContext *java_ctx, bool *truncated);
   void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames,
@@ -287,10 +292,11 @@ public:
     bool is_marked;       // true if this is a marked C++ interpreter frame (stop processing)
   };
 
-  NativeFrameResolution resolveNativeFrame(uintptr_t pc);
-  void applyRemoteSymbolicationToVMFrames(ASGCT_CallFrame *frames, int num_frames);
+  NativeFrameResolution resolveNativeFrame(uintptr_t pc, int lock_index);
+  void applyRemoteSymbolicationToVMFrames(ASGCT_CallFrame *frames, int num_frames, int lock_index);
+  RemoteFrameInfo* allocateRemoteFrameInfo(int lock_index);
   int convertNativeTrace(int native_frames, const void **callchain,
-                         ASGCT_CallFrame *frames);
+                         ASGCT_CallFrame *frames, int lock_index);
   void recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event);
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
