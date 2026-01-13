@@ -15,12 +15,7 @@
  */
 package com.datadoghq.profiler.memleak;
 
-import static org.junit.jupiter.api.Assertions.fail;
-
 import com.datadoghq.profiler.AbstractProfilerTest;
-import com.datadoghq.profiler.util.NativeMemoryTracking;
-import com.datadoghq.profiler.util.ProcessMemory;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Label;
@@ -55,16 +50,10 @@ import java.nio.file.Paths;
  *   <li>Continuous profiling (NO stop/restart cycles)</li>
  *   <li>Generate transient methods across multiple chunk boundaries</li>
  *   <li>Dump to different file from startup file to trigger switchChunk()</li>
- *   <li>Validate cleanup is running via TEST_LOG output (not memory assertions)</li>
- *   <li>Memory metrics (NMT/RSS) reported for informational purposes only</li>
+ *   <li>Validate cleanup via TEST_LOG output showing bounded method_map</li>
  *   <li>Allow natural class unloading (no strong references held)</li>
  *   <li>Combined cleanup: method_map cleanup + class unloading</li>
  * </ul>
- *
- * <p><b>Why Not Assert on Memory?</b>
- * Memory-based assertions are too fragile in CI environments. Short test duration (17s)
- * combined with GC/JVM memory management noise can overwhelm the cleanup signal, leading
- * to flaky failures. Validation via TEST_LOG output is more reliable.
  */
 public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
 
@@ -203,29 +192,16 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
    * switchChunk(), which is where cleanup happens. Dumping to the same file as the startup file
    * does NOT trigger switchChunk.
    *
-   * <p><b>Memory Tracking:</b>
+   * <p><b>Expected results (validated via TEST_LOG):</b>
    * <ul>
-   *   <li>NMT Internal: Tracks profiler's own malloc allocations (MethodInfo, map nodes)
-   *   <li>RSS (Resident Set Size): Tracks total process memory including JVMTI allocations
-   *   <li>JVMTI memory (GetLineNumberTable) is NOT tracked by NMT - only visible in RSS
-   *   <li>TEST_LOG shows destructor calls deallocating JVMTI memory
-   * </ul>
-   *
-   * <p><b>Expected results:</b>
-   * <ul>
-   *   <li>WITHOUT cleanup: method_map grows unbounded (~10k methods generated, ~3k captured)
+   *   <li>WITHOUT cleanup: method_map grows unbounded (~10k methods generated)
    *   <li>WITH cleanup: method_map stays bounded at ~200-400 methods (age-based removal)
-   *   <li>RSS savings: At least 10% reduction with cleanup (JVMTI memory freed)
-   *   <li>NMT savings: Small (only MethodInfo objects, ~1-2%)
-   *   <li>TEST_LOG shows "Cleaned up X unreferenced methods" and "Deallocated line number table"
+   *   <li>TEST_LOG shows "Cleaned up X unreferenced methods" during cleanup phase
+   *   <li>TEST_LOG shows "Live line number tables after cleanup: N" tracking table count
    * </ul>
    */
   @Test
   public void testCleanupEffectivenessComparison() throws Exception {
-    // Verify NMT is enabled
-    Assumptions.assumeTrue(
-        NativeMemoryTracking.isEnabled(), "Test requires -XX:NativeMemoryTracking=detail");
-
     // Stop the default profiler from AbstractProfilerTest
     // We need to manage our own profiler instances for this comparison
     stopProfiler();
@@ -250,9 +226,6 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
               + noCleanupBaseFile);
 
       Thread.sleep(300); // Stabilize
-      NativeMemoryTracking.NMTSnapshot afterStartNoCleanup =
-          NativeMemoryTracking.takeSnapshot();
-      ProcessMemory.Snapshot rssAfterStartNoCleanup = ProcessMemory.takeSnapshot();
 
       // Run workload without cleanup
       // CRITICAL: Dump to DIFFERENT file from startup to trigger switchChunk()
@@ -274,27 +247,8 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
         }
       }
 
-      NativeMemoryTracking.NMTSnapshot afterNoCleanup = NativeMemoryTracking.takeSnapshot();
-      ProcessMemory.Snapshot rssAfterNoCleanup = ProcessMemory.takeSnapshot();
-
-      // Capture detailed NMT to see JVMTI allocations
-      String detailedNmtNoCleanup = NativeMemoryTracking.takeDetailedSnapshot();
-      String jvmtiAllocationsNoCleanup = NativeMemoryTracking.extractJVMTIAllocations(detailedNmtNoCleanup);
-
-      long nmtGrowthNoCleanup =
-          afterNoCleanup.internalReservedKB - afterStartNoCleanup.internalReservedKB;
-      long rssGrowthNoCleanup = ProcessMemory.calculateGrowth(rssAfterStartNoCleanup, rssAfterNoCleanup);
-
       System.out.println(
-          "WITHOUT cleanup (mcleanup=false):\n"
-              + "  NMT Internal growth = +" + nmtGrowthNoCleanup + " KB\n"
-              + "  RSS growth = " + ProcessMemory.formatBytes(rssGrowthNoCleanup) + "\n"
-              + "Check TEST_LOG: MethodMap should grow unbounded (no cleanup logs expected)");
-
-      if (!jvmtiAllocationsNoCleanup.isEmpty()) {
-        System.out.println("\nJVMTI allocations in NMT (WITHOUT cleanup):");
-        System.out.println(jvmtiAllocationsNoCleanup);
-      }
+          "Phase 1 complete. Check TEST_LOG: MethodMap should grow unbounded (no cleanup logs expected)");
 
       profiler.stop();
       Thread.sleep(300); // Allow cleanup
@@ -309,9 +263,6 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
           "start," + getProfilerCommand() + ",jfr,mcleanup=true,file=" + withCleanupBaseFile);
 
       Thread.sleep(300); // Stabilize
-      NativeMemoryTracking.NMTSnapshot afterStartWithCleanup =
-          NativeMemoryTracking.takeSnapshot();
-      ProcessMemory.Snapshot rssAfterStartWithCleanup = ProcessMemory.takeSnapshot();
 
       // Run same workload with cleanup
       // CRITICAL: Dump to DIFFERENT file from startup to trigger switchChunk()
@@ -333,77 +284,10 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
         }
       }
 
-      NativeMemoryTracking.NMTSnapshot afterWithCleanup = NativeMemoryTracking.takeSnapshot();
-      ProcessMemory.Snapshot rssAfterWithCleanup = ProcessMemory.takeSnapshot();
-
-      // Capture detailed NMT to see JVMTI allocations
-      String detailedNmtWithCleanup = NativeMemoryTracking.takeDetailedSnapshot();
-      String jvmtiAllocationsWithCleanup = NativeMemoryTracking.extractJVMTIAllocations(detailedNmtWithCleanup);
-
-      long nmtGrowthWithCleanup =
-          afterWithCleanup.internalReservedKB - afterStartWithCleanup.internalReservedKB;
-      long rssGrowthWithCleanup = ProcessMemory.calculateGrowth(rssAfterStartWithCleanup, rssAfterWithCleanup);
-
       System.out.println(
-          "WITH cleanup (mcleanup=true):\n"
-              + "  NMT Internal growth = +" + nmtGrowthWithCleanup + " KB\n"
-              + "  RSS growth = " + ProcessMemory.formatBytes(rssGrowthWithCleanup) + "\n"
-              + "Check TEST_LOG: MethodMap should stay bounded, cleanup logs should appear");
-
-      if (!jvmtiAllocationsWithCleanup.isEmpty()) {
-        System.out.println("\nJVMTI allocations in NMT (WITH cleanup):");
-        System.out.println(jvmtiAllocationsWithCleanup);
-      }
+          "Phase 2 complete. Check TEST_LOG: MethodMap should stay bounded, cleanup logs should appear");
 
       profiler.stop();
-
-      // ===== Comparison =====
-      System.out.println("\n=== Comparison ===");
-
-      long nmtSavings = nmtGrowthNoCleanup - nmtGrowthWithCleanup;
-      long rssSavings = rssGrowthNoCleanup - rssGrowthWithCleanup;
-
-      System.out.println("NMT Internal (profiler allocations only):");
-      System.out.println(
-          "  WITHOUT cleanup: +"
-              + nmtGrowthNoCleanup
-              + " KB\n"
-              + "  WITH cleanup:    +"
-              + nmtGrowthWithCleanup
-              + " KB\n"
-              + "  Savings:         "
-              + nmtSavings
-              + " KB ("
-              + String.format("%.1f", 100.0 * nmtSavings / Math.max(1, nmtGrowthNoCleanup))
-              + "%)");
-
-      System.out.println("\nRSS (total process memory including JVMTI):");
-      System.out.println(
-          "  WITHOUT cleanup: "
-              + ProcessMemory.formatBytes(rssGrowthNoCleanup)
-              + "\n"
-              + "  WITH cleanup:    "
-              + ProcessMemory.formatBytes(rssGrowthWithCleanup)
-              + "\n"
-              + "  Savings:         "
-              + ProcessMemory.formatBytes(rssSavings)
-              + " ("
-              + String.format("%.1f", 100.0 * rssSavings / Math.max(1, rssGrowthNoCleanup))
-              + "%)");
-
-      // Memory measurements are informational only - too fragile/flaky in CI
-      // Short test duration (17s) and GC/JVM noise can overwhelm the cleanup signal
-      // Actual validation is via TEST_LOG output showing cleanup is running
-      double rssSavingsPercent = 100.0 * rssSavings / Math.max(1, rssGrowthNoCleanup);
-      double nmtSavingsPercent = 100.0 * nmtSavings / Math.max(1, nmtGrowthNoCleanup);
-
-      System.out.println("\n=== Memory Metrics (Informational Only) ===");
-      System.out.println("NMT savings: " + String.format("%.1f%%", nmtSavingsPercent));
-      System.out.println("RSS savings: " + String.format("%.1f%%", rssSavingsPercent));
-      System.out.println(
-          "NOTE: Memory metrics can be unreliable in short tests due to GC noise");
-      System.out.println(
-          "Cleanup effectiveness is validated via TEST_LOG output (see below)");
 
       System.out.println(
           "\n=== Validation Summary ===\n"

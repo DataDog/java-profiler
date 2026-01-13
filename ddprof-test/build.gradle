@@ -293,11 +293,6 @@ tasks.withType(Test).configureEach {
     "-Djava.library.path=${outputLibDir.absolutePath}"
   ]
 
-  // Enable Native Memory Tracking for leak detection tests
-  // Use IgnoreUnrecognizedVMOptions to silently ignore on JVMs that don't support NMT
-  jvmArgsList.add('-XX:+IgnoreUnrecognizedVMOptions')
-  jvmArgsList.add('-XX:NativeMemoryTracking=detail')
-
   jvmArgs jvmArgsList
 
   def javaHome = System.getenv("JAVA_TEST_HOME")
