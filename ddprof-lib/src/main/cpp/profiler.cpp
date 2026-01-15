@@ -355,11 +355,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrame(uintptr_t pc, int l
   if (_remote_symbolication) {
     // Remote symbolication mode: store build-id and PC offset
     CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
-    TEST_LOG("Remote symbolication: pc=0x%lx, lib=%p, hasBuildId=%d",
-             pc, lib, lib != nullptr ? lib->hasBuildId() : -1);
     if (lib != nullptr && lib->hasBuildId()) {
-      TEST_LOG("Using remote symbolication for lib=%s, build-id=%s",
-               lib->name(), lib->buildId());
       // Check if this is a marked C++ interpreter frame before using remote format
       const char *method_name = nullptr;
       lib->binarySearch((void*)pc, &method_name);
@@ -1341,6 +1337,16 @@ Error Profiler::start(Arguments &args, bool reset) {
         _remote_frame_count[i].store(0, std::memory_order_relaxed);
       }
     }
+
+    // Always reset remote frame pool counters on profiler start
+    // stop() guarantees all standby traces are flushed, so no traces reference old RemoteFrameInfo
+    // This prevents pool exhaustion across multiple start/stop cycles (e.g., in parameterized tests)
+    lockAll();
+    for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+      _remote_frame_count[i].store(0, std::memory_order_relaxed);
+    }
+    unlockAll();
+    TEST_LOG("Reset remote frame pool counters on profiler start");
   }
 
   _features = args._features;
