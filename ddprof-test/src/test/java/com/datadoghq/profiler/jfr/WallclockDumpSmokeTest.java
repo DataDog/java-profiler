@@ -20,7 +20,7 @@ public class WallclockDumpSmokeTest extends JfrDumpTest {
     @RetryingTest(3)
     @Timeout(value = 60)
     @ValueSource(strings = {"vm", "fp", "dwarf"})
-    public void test() throws Exception {
+    public void test(@CStack String cstack) throws Exception {
         registerCurrentThreadForWallClockProfiling();
         runTest("datadog.MethodSample");
     }
