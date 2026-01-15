@@ -273,6 +273,14 @@ ext.upstreamPatches = [
         idempotent_check: "frame_bci, \\(void\\*\\)method_name"
       ],
       [
+        type: "expression_replace",
+        name: "Fix NativeFunc::mark() to check BCI type first",
+        description: "Prevents calling NativeFunc::mark() on RemoteFrameInfo* by checking frame_bci == BCI_NATIVE_FRAME first",
+        find: "char mark;\\s+if \\(method_name != NULL && \\(mark = NativeFunc::mark\\(method_name\\)\\) != 0\\) \\{",
+        replace: "char mark;\n            // Only check NativeFunc::mark() for BCI_NATIVE_FRAME\n            // For BCI_NATIVE_FRAME_REMOTE, method_name is actually a RemoteFrameInfo*, not a string\n            if (frame_bci == BCI_NATIVE_FRAME && method_name != NULL && (mark = NativeFunc::mark(method_name)) != 0) {",
+        idempotent_check: "frame_bci == BCI_NATIVE_FRAME && method_name != NULL"
+      ],
+      [
         type: "method_implementation",
         name: "Add fillFrame overload for void* method_id",
         description: "Adds fillFrame overload that accepts void* method_id to support both symbol names and RemoteFrameInfo pointers",
