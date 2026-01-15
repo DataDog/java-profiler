@@ -1289,6 +1289,16 @@ Error Profiler::start(Arguments &args, bool reset) {
     if (!_omit_stacktraces) {
       lockAll();
       _call_trace_storage.clear();
+
+      // Reset remote frame pool counters when traces are cleared
+      // This prevents pool exhaustion across profiler restarts
+      if (_remote_symbolication) {
+        for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+          _remote_frame_count[i].store(0, std::memory_order_relaxed);
+        }
+        TEST_LOG("Reset remote frame pool counters on trace clear");
+      }
+
       unlockAll();
     }
     Counters::reset();
@@ -1313,11 +1323,11 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   }
 
-  // Allocate/reset remote frame pools if remote symbolication is enabled
+  // Allocate remote frame pools if remote symbolication is enabled
   if (args._remote_symbolication) {
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       if (_remote_frame_pool[i] == nullptr) {
-        // First-time allocation
+        // First-time allocation - allocate the pool
         _remote_frame_pool[i] = (RemoteFrameInfo*)calloc(REMOTE_FRAME_POOL_SIZE, sizeof(RemoteFrameInfo));
         if (_remote_frame_pool[i] == nullptr) {
           // Clean up already allocated pools
@@ -1327,9 +1337,9 @@ Error Profiler::start(Arguments &args, bool reset) {
           }
           return Error("Not enough memory to allocate remote frame pools");
         }
+        // Counter is reset when traces are cleared (see trace clearing logic above)
+        _remote_frame_count[i].store(0, std::memory_order_relaxed);
       }
-      // Reset counter for this lock-strip (handles both first-time and restart)
-      _remote_frame_count[i].store(0, std::memory_order_relaxed);
     }
   }
 
