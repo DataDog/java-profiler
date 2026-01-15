@@ -1,11 +1,11 @@
 package com.datadoghq.profiler.jfr;
 
 import org.junit.jupiter.api.Timeout;
-
-import org.junitpioneer.jupiter.RetryingTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.api.TestTemplate;
 
 import com.datadoghq.profiler.junit.CStack;
+import com.datadoghq.profiler.junit.RetryTest;
 
 public class WallclockDumpSmokeTest extends JfrDumpTest {
     public WallclockDumpSmokeTest(@CStack String cstack) {
@@ -17,8 +17,9 @@ public class WallclockDumpSmokeTest extends JfrDumpTest {
         return "wall=5ms";
     }
 
-    @RetryingTest(3)
+    @RetryTest(3)
     @Timeout(value = 60)
+    @TestTemplate
     @ValueSource(strings = {"vm", "fp", "dwarf"})
     public void test(@CStack String cstack) throws Exception {
         registerCurrentThreadForWallClockProfiling();
