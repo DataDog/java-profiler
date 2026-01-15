@@ -40,42 +40,8 @@ void Libraries::updateSymbols(bool kernel_symbols) {
   LibraryPatcher::patch_libraries();
 }
 
-void Libraries::updateBuildIds() {
-#ifdef __linux__
-  int lib_count = _native_libs.count();
-
-  for (int i = 0; i < lib_count; i++) {
-    CodeCache* lib = _native_libs.at(i);
-    if (lib == nullptr || lib->hasBuildId()) {
-      continue; // Skip null libraries or those that already have build-id
-    }
-
-    const char* lib_name = lib->name();
-    if (lib_name == nullptr) {
-      continue;
-    }
-
-    // Extract build-id from library file
-    size_t build_id_len;
-    char* build_id = ddprof::SymbolsLinux::extractBuildId(lib_name, &build_id_len);
-
-    if (build_id != nullptr) {
-      // Set build-id and calculate load bias
-      lib->setBuildId(build_id, build_id_len);
-
-      // Calculate load bias: difference between runtime address and file base
-      // For now, use image_base as the load bias base
-      if (lib->imageBase() != nullptr) {
-        lib->setLoadBias((uintptr_t)lib->imageBase());
-      }
-
-      free(build_id); // setBuildId makes its own copy
-    } else {
-      TEST_LOG("updateBuildIds: NO build-id found for %s", lib_name);
-    }
-  }
-#endif // __linux__
-}
+// Platform-specific implementation of updateBuildIds() is in libraries_linux.cpp (Linux)
+// or stub implementation for other platforms
 
 const void *Libraries::resolveSymbol(const char *name) {
   char mangled_name[256];
