@@ -157,7 +157,7 @@ private:
   bool _remote_symbolication;  // Enable remote symbolication for native frames
 
   // Remote symbolication frame pool (pre-allocated, signal-safe)
-  static const int REMOTE_FRAME_POOL_SIZE = 128;  // Entries per lock-strip
+  static const int REMOTE_FRAME_POOL_SIZE = 1024;  // Entries per lock-strip
   RemoteFrameInfo *_remote_frame_pool[CONCURRENCY_LEVEL];
   std::atomic<int> _remote_frame_count[CONCURRENCY_LEVEL];
 

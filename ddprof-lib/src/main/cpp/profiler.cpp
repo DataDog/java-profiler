@@ -949,6 +949,11 @@ void *Profiler::dlopen_hook(const char *filename, int flags) {
     // Static function of Profiler -> can not use the instance variable _libs
     // Since Libraries is a singleton, this does not matter
     Libraries::instance()->updateSymbols(false);
+    // Extract build-ids for newly loaded libraries if remote symbolication is enabled
+    Profiler* profiler = instance();
+    if (profiler != nullptr && profiler->_remote_symbolication) {
+      Libraries::instance()->updateBuildIds();
+    }
   }
   return result;
 }
@@ -1407,7 +1412,7 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   enableEngines();
 
-  switchLibraryTrap(_cstack == CSTACK_DWARF);
+  switchLibraryTrap(_cstack == CSTACK_DWARF || _remote_symbolication);
 
   JfrMetadata::initialize(args._context_attributes);
   _num_context_attributes = args._context_attributes.size();
@@ -1477,8 +1482,6 @@ Error Profiler::stop() {
     return Error("Profiler is not active");
   }
 
-  LibraryPatcher::unpatch_libraries();
-
   disableEngines();
 
   if (_event_mask & EM_ALLOC)
@@ -1502,8 +1505,13 @@ Error Profiler::stop() {
 
   // Acquire all spinlocks to avoid race with remaining signals
   lockAll();
-  _jfr.stop();
+  _jfr.stop();  // JFR serialization must complete before unpatching libraries
   unlockAll();
+
+  // Unpatch libraries AFTER JFR serialization completes
+  // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
+  // owned by library metadata, so we must keep library patches active until after serialization
+  LibraryPatcher::unpatch_libraries();
 
   _state = IDLE;
   return Error::OK;

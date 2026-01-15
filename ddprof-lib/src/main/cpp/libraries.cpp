@@ -43,7 +43,6 @@ void Libraries::updateSymbols(bool kernel_symbols) {
 void Libraries::updateBuildIds() {
 #ifdef __linux__
   int lib_count = _native_libs.count();
-  TEST_LOG("updateBuildIds: processing %d libraries", lib_count);
 
   for (int i = 0; i < lib_count; i++) {
     CodeCache* lib = _native_libs.at(i);
@@ -56,7 +55,6 @@ void Libraries::updateBuildIds() {
       continue;
     }
 
-    TEST_LOG("updateBuildIds: extracting build-id for %s", lib_name);
     // Extract build-id from library file
     size_t build_id_len;
     char* build_id = ddprof::SymbolsLinux::extractBuildId(lib_name, &build_id_len);
@@ -72,14 +70,10 @@ void Libraries::updateBuildIds() {
       }
 
       free(build_id); // setBuildId makes its own copy
-
-      TEST_LOG("updateBuildIds: set build-id for %s: %s", lib_name, lib->buildId());
-      Log::debug("Extracted build-id for %s: %s", lib_name, lib->buildId());
     } else {
       TEST_LOG("updateBuildIds: NO build-id found for %s", lib_name);
     }
   }
-  TEST_LOG("updateBuildIds: completed");
 #endif // __linux__
 }
 
