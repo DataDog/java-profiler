@@ -8,7 +8,7 @@ public class CpuDumpSmokeTest extends JfrDumpTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "cpu=1ms,cstack=fp";
+        return "cpu=1ms";
     }
 
     @RetryingTest(3)
