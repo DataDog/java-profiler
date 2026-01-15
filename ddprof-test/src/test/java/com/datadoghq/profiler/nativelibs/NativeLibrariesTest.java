@@ -38,7 +38,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class NativeLibrariesTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
-        return "cpu=1ms";
+        return "cpu=1ms,cstack=" + (Platform.isMac() ? "fp" : "dwarf");
     }
 
     @RetryingTest(3)
