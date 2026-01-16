@@ -15,6 +15,28 @@
 #include <cstdlib>
 #include <cstring>
 
+// GNU build-id extraction implementation
+//
+// The build-id is a unique identifier embedded in ELF binaries and shared libraries.
+// It is stored in a PT_NOTE program header segment as an ELF note with type NT_GNU_BUILD_ID.
+//
+// References:
+// - ELF Specification: https://refspecs.linuxfoundation.org/elf/elf.pdf
+// - ELF Note Section: https://refspecs.linuxfoundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic/noteobject.html
+// - GNU build-id: https://fedoraproject.org/wiki/Releases/FeatureBuildId
+// - GNU binutils ld --build-id: https://sourceware.org/binutils/docs/ld/Options.html
+// - readelf(1) --notes: https://man7.org/linux/man-pages/man1/readelf.1.html
+//
+// Build-ID format:
+// - Located in PT_NOTE program header segments (p_type == PT_NOTE)
+// - Stored as ELF note with:
+//   - n_namesz = 4 (length of "GNU\0")
+//   - n_descsz = build-id length (typically 20 bytes for SHA1)
+//   - n_type = NT_GNU_BUILD_ID (3)
+//   - name = "GNU\0"
+//   - desc = build-id bytes
+// - All fields are 4-byte aligned as per ELF note format
+
 // GNU build-id note constants
 #define NT_GNU_BUILD_ID 3
 #define GNU_BUILD_ID_NAME "GNU"
@@ -109,6 +131,16 @@ const uint8_t* SymbolsLinux::findBuildIdInNotes(const void* note_data, size_t no
     const char* data = static_cast<const char*>(note_data);
     size_t offset = 0;
 
+    // Parse ELF note entries within the PT_NOTE segment
+    // Each note has the structure:
+    //   typedef struct {
+    //     Elf64_Word n_namesz;  // Length of name field (including null terminator)
+    //     Elf64_Word n_descsz;  // Length of descriptor (build-id bytes)
+    //     Elf64_Word n_type;    // Note type (NT_GNU_BUILD_ID == 3)
+    //     // Followed by name (4-byte aligned)
+    //     // Followed by descriptor (4-byte aligned)
+    //   } Elf64_Nhdr;
+    // Reference: https://refspecs.linuxfoundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic/noteobject.html
     while (offset < note_size) {
         // Ensure there is enough space for the note header itself
         if (note_size - offset < sizeof(Elf64_Nhdr)) {
@@ -117,7 +149,7 @@ const uint8_t* SymbolsLinux::findBuildIdInNotes(const void* note_data, size_t no
 
         const Elf64_Nhdr* nhdr = reinterpret_cast<const Elf64_Nhdr*>(data + offset);
 
-        // Calculate aligned sizes
+        // Calculate aligned sizes (4-byte alignment as per ELF spec)
         size_t name_size_aligned = (nhdr->n_namesz + 3) & ~static_cast<size_t>(3);
         size_t desc_size_aligned = (nhdr->n_descsz + 3) & ~static_cast<size_t>(3);
 
