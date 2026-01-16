@@ -54,6 +54,9 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
         Assumptions.assumeTrue(Platform.isLinux(), "Remote symbolication test requires Linux");
         // Zing JVM forces cstack=no which disables native stack walking
         Assumptions.assumeFalse(Platform.isZing(), "Remote symbolication test requires native stack walking (incompatible with Zing)");
+        // OpenJ9 uses JVMTI-based CPU profiling which only captures Java frames, not native library frames
+        // This test requires native frames from libddproftest.so to validate remote symbolication
+        Assumptions.assumeFalse(Platform.isJ9(), "Remote symbolication requires native frames; OpenJ9 JVMTI engine only captures Java frames");
     }
 
     @RetryTest(10)
