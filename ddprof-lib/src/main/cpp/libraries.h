@@ -20,6 +20,14 @@ class Libraries {
   CodeCache *findLibraryByName(const char *lib_name);
   CodeCache *findLibraryByAddress(const void *address);
 
+  // Get library by index (used for remote symbolication unpacking)
+  CodeCache *getLibraryByIndex(uint16_t index) const {
+    if (index < _native_libs.count()) {
+      return _native_libs[index];
+    }
+    return nullptr;
+  }
+
   static Libraries *instance() {
     static Libraries instance;
     return &instance;

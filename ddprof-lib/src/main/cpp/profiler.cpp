@@ -324,117 +324,124 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
 }
 
 /**
- * Allocate a RemoteFrameInfo from the pre-allocated pool for the given lock-strip.
- * This is signal-safe (uses atomic operations, no dynamic allocation).
+ * Populates an ASGCT_CallFrame with remote symbolication data inline.
+ * Stores build-ID, PC offset, and library index directly in the frame union.
+ * This eliminates the need for separate pool allocation.
  *
- * @param lock_index The lock-strip index (0 to CONCURRENCY_LEVEL-1)
- * @return Pointer to allocated RemoteFrameInfo, or nullptr if pool exhausted
+ * @param frame The ASGCT_CallFrame to populate
+ * @param pc The program counter address
+ * @param lib The CodeCache library containing build-ID information
  */
-RemoteFrameInfo* Profiler::allocateRemoteFrameInfo(int lock_index) {
-  if (lock_index < 0 || lock_index >= CONCURRENCY_LEVEL) {
-    return nullptr;
-  }
+/**
+ * Pack remote symbolication data into ASGCT_CallFrame.
+ *
+ * method_id packing (64 bits):
+ *   Bits 0-43:  pc_offset (44 bits = 16 TB address space)
+ *   Bits 44-63: lib_index (20 bits = 1,048,576 libraries)
+ *
+ * Build-ID is retrieved during JFR serialization via lib_index lookup.
+ */
+void Profiler::populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCache* lib) {
+  uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
+  uint32_t lib_index = (uint32_t)lib->libIndex();
 
-  if (_remote_frame_pool[lock_index] == nullptr) {
-    return nullptr;  // Pool not initialized
-  }
+  // Pack lib_index (upper 20 bits) and pc_offset (lower 44 bits)
+  jmethodID packed = (jmethodID)((((uintptr_t)lib_index) << 44) | (pc_offset & 0xFFFFFFFFFFFULL));
 
-  // Atomic fetch-and-add to get next available slot
-  int slot = _remote_frame_count[lock_index].fetch_add(1, std::memory_order_relaxed);
+  TEST_LOG("populateRemoteFrame: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, lib_index=%u, packed=0x%lx",
+           lib->name(), lib->buildId(), pc, pc_offset, lib_index, (uintptr_t)packed);
 
-  if (slot >= REMOTE_FRAME_POOL_SIZE) {
-    // Pool exhausted - fallback to symbol resolution
-    // Don't decrement counter as other threads may have succeeded
-    return nullptr;
-  }
-
-  return &_remote_frame_pool[lock_index][slot];
+  frame->bci = BCI_NATIVE_FRAME_REMOTE;
+  frame->method_id = packed;
 }
 
-Profiler::NativeFrameResolution Profiler::resolveNativeFrame(uintptr_t pc, int lock_index) {
+// Resolve native frame for upstream StackWalker (called from signal handler)
+// Returns resolution decision without writing to ASGCT_CallFrame
+Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index) {
   if (_remote_symbolication) {
-    // Remote symbolication mode: store build-id and PC offset
     CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
     if (lib != nullptr && lib->hasBuildId()) {
-      // Check if this is a marked C++ interpreter frame before using remote format
+      // Check for marked C++ interpreter frame
       const char *method_name = nullptr;
       lib->binarySearch((void*)pc, &method_name);
       if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
-        // This is C++ interpreter frame, this and later frames should be reported
-        // as Java frames returned by AGCT. Terminate the scan here.
-        return {nullptr, BCI_NATIVE_FRAME, true};
+        return {nullptr, BCI_NATIVE_FRAME, true};  // Marked - stop processing
       }
 
-      // Calculate PC offset within the library
-      uintptr_t offset = pc - (uintptr_t)lib->imageBase();
+      // Pack remote symbolication data for upstream StackWalker
+      uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
+      uint32_t lib_index = (uint32_t)lib->libIndex();
+      jmethodID packed = (jmethodID)((((uintptr_t)lib_index) << 44) | (pc_offset & 0xFFFFFFFFFFFULL));
 
-      // Allocate RemoteFrameInfo from pre-allocated pool (signal-safe)
-      RemoteFrameInfo* rfi = allocateRemoteFrameInfo(lock_index);
-      if (rfi != nullptr) {
-        rfi->build_id = lib->buildId();
-        rfi->pc_offset = offset;
-        rfi->lib_index = lib->libIndex();
+      TEST_LOG("resolveNativeFrameForWalkVM: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, lib_index=%u, packed=0x%lx",
+               lib->name(), lib->buildId(), pc, pc_offset, lib_index, (uintptr_t)packed);
 
-        return {(jmethodID)rfi, BCI_NATIVE_FRAME_REMOTE, false};
-      } else {
-        // Pool exhausted, fallback to resolved symbol
-        // Need to resolve the symbol now since we didn't do it earlier
-        const char *fallback_name = nullptr;
-        lib->binarySearch((void*)pc, &fallback_name);
-        return {(jmethodID)fallback_name, BCI_NATIVE_FRAME, false};
-      }
-    } else {
-      // Library not found or no build-id, fallback to resolved symbol
-      const char *method_name = findNativeMethod((void*)pc);
-      if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
-        // This is C++ interpreter frame, this and later frames should be reported
-        // as Java frames returned by AGCT. Terminate the scan here.
-        return {nullptr, BCI_NATIVE_FRAME, true};
-      }
-      return {(jmethodID)method_name, BCI_NATIVE_FRAME, false};
+      return {packed, BCI_NATIVE_FRAME_REMOTE, false};
     }
-  } else {
-    // Traditional mode: resolve and store symbol name
-    const char *method_name = findNativeMethod((void*)pc);
-    if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
-      // This is C++ interpreter frame, this and later frames should be reported
-      // as Java frames returned by AGCT. Terminate the scan here.
-      return {nullptr, BCI_NATIVE_FRAME, true};
-    }
-    return {(jmethodID)method_name, BCI_NATIVE_FRAME, false};
   }
+
+  // Fallback: Traditional symbol resolution
+  const char *method_name = findNativeMethod((void*)pc);
+  if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
+    return {nullptr, BCI_NATIVE_FRAME, true};
+  }
+
+  return {(jmethodID)method_name, BCI_NATIVE_FRAME, false};
 }
 
-Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index) {
-  // Direct pass-through to resolveNativeFrame with lock_index
-  return resolveNativeFrame(pc, lock_index);
-}
-
+/**
+ * Converts a native callchain to ASGCT_CallFrame array.
+ * Populates remote symbolication frames inline when build-ID is available.
+ * No pool allocation needed - all data stored directly in ASGCT_CallFrame union.
+ */
 int Profiler::convertNativeTrace(int native_frames, const void **callchain,
                                  ASGCT_CallFrame *frames, int lock_index) {
   int depth = 0;
-  jmethodID prev_method = NULL;
+  void* prev_identifier = NULL;  // Can be jmethodID or frame pointer for remote
 
   for (int i = 0; i < native_frames; i++) {
     uintptr_t pc = (uintptr_t)callchain[i];
 
-    // Resolve native frame using shared logic
-    NativeFrameResolution resolution = resolveNativeFrame(pc, lock_index);
+    // Try remote symbolication first if enabled
+    if (_remote_symbolication) {
+      CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
+      if (lib != nullptr && lib->hasBuildId()) {
+        // Check for marked C++ interpreter frame
+        const char *method_name = nullptr;
+        lib->binarySearch((void*)pc, &method_name);
+        if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
+          // Terminate scan at marked frame
+          return depth;
+        }
 
-    // Check if this is a marked frame (terminate scan)
-    if (resolution.is_marked) {
+        // Populate remote frame inline - no allocation needed!
+        populateRemoteFrame(&frames[depth], pc, lib);
+
+        // Use frame address as identifier for duplicate detection
+        void* current_identifier = (void*)&frames[depth];
+        if (current_identifier != prev_identifier || _cstack != CSTACK_LBR) {
+          prev_identifier = current_identifier;
+          depth++;
+        }
+        continue;
+      }
+    }
+
+    // Fallback: Traditional symbol resolution
+    const char *method_name = findNativeMethod((void*)pc);
+    if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
+      // Terminate scan at marked frame
       return depth;
     }
 
-    jmethodID current_method = resolution.method_id;
-    int current_bci = resolution.bci;
-
-    // Skip duplicates in LBR stack
-    if (current_method == prev_method && _cstack == CSTACK_LBR) {
-      prev_method = NULL;
+    // Store standard frame
+    jmethodID current_method = (jmethodID)method_name;
+    if (current_method == prev_identifier && _cstack == CSTACK_LBR) {
+      prev_identifier = NULL;
     } else if (current_method != NULL) {
-      frames[depth].bci = current_bci;
-      frames[depth].method_id = prev_method = current_method;
+      frames[depth].bci = BCI_NATIVE_FRAME;
+      frames[depth].method_id = current_method;
+      prev_identifier = current_method;
       depth++;
     }
   }
@@ -530,6 +537,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   }
 
   JitWriteProtection jit(false);
+  // AsyncGetCallTrace writes to ASGCT_CallFrame array
   ASGCT_CallTrace trace = {jni, 0, frames};
   VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
 
@@ -792,6 +800,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
   // passage of CPU or wall time, we use the same event definitions but we
   // record a null stacktrace we can skip the unwind if we've got a
   // call_trace_id determined to be reusable at a higher level
+
   if (!_omit_stacktraces && call_trace_id == 0) {
     u64 startTime = TSC::ticks();
     ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
@@ -890,10 +899,16 @@ void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
   CriticalSection cs;
   atomicIncRelaxed(_total_samples);
 
-  u64 call_trace_id =
-      _call_trace_storage.put(num_frames, frames, truncated, weight);
-
+  // Convert ASGCT_CallFrame to ASGCT_CallFrame
+  // External samplers (like ObjectSampler) provide standard frames only
   u32 lock_index = getLockIndex(tid);
+  ASGCT_CallFrame *extended_frames = _calltrace_buffer[lock_index]->_asgct_frames;
+  for (int i = 0; i < num_frames; i++) {
+    extended_frames[i] = frames[i];
+  }
+
+  u64 call_trace_id =
+      _call_trace_storage.put(num_frames, extended_frames, truncated, weight);
   if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
       !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
@@ -1290,16 +1305,6 @@ Error Profiler::start(Arguments &args, bool reset) {
     if (!_omit_stacktraces) {
       lockAll();
       _call_trace_storage.clear();
-
-      // Reset remote frame pool counters when traces are cleared
-      // This prevents pool exhaustion across profiler restarts
-      if (_remote_symbolication) {
-        for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
-          _remote_frame_count[i].store(0, std::memory_order_relaxed);
-        }
-        TEST_LOG("Reset remote frame pool counters on trace clear");
-      }
-
       unlockAll();
     }
     Counters::reset();
@@ -1324,35 +1329,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   }
 
-  // Allocate remote frame pools if remote symbolication is enabled
-  if (args._remote_symbolication) {
-    for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
-      if (_remote_frame_pool[i] == nullptr) {
-        // First-time allocation - allocate the pool
-        _remote_frame_pool[i] = (RemoteFrameInfo*)calloc(REMOTE_FRAME_POOL_SIZE, sizeof(RemoteFrameInfo));
-        if (_remote_frame_pool[i] == nullptr) {
-          // Clean up already allocated pools
-          for (int j = 0; j < i; j++) {
-            free(_remote_frame_pool[j]);
-            _remote_frame_pool[j] = nullptr;
-          }
-          return Error("Not enough memory to allocate remote frame pools");
-        }
-        // Counter is reset when traces are cleared (see trace clearing logic above)
-        _remote_frame_count[i].store(0, std::memory_order_relaxed);
-      }
-    }
-
-    // Always reset remote frame pool counters on profiler start
-    // stop() guarantees all standby traces are flushed, so no traces reference old RemoteFrameInfo
-    // This prevents pool exhaustion across multiple start/stop cycles (e.g., in parameterized tests)
-    lockAll();
-    for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
-      _remote_frame_count[i].store(0, std::memory_order_relaxed);
-    }
-    unlockAll();
-    TEST_LOG("Reset remote frame pool counters on profiler start");
-  }
+  // Remote symbolication is now inline in ASGCT_CallFrame
+  // No separate pool allocation needed!
 
   _features = args._features;
   if (VM::hotspot_version() < 8) {

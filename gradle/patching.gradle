@@ -258,6 +258,14 @@ ext.upstreamPatches = [
       ],
       [
         type: "expression_replace",
+        name: "Guard NativeFunc::mark check for remote frames",
+        description: "Prevents calling NativeFunc::mark on packed remote frame data by checking frame_bci first",
+        find: "if \\(method_name != NULL && \\(mark = NativeFunc::mark\\(method_name\\)\\) != 0\\) \\{",
+        replace: "if (frame_bci != BCI_NATIVE_FRAME_REMOTE && method_name != NULL && (mark = NativeFunc::mark(method_name)) != 0) {",
+        idempotent_check: "frame_bci != BCI_NATIVE_FRAME_REMOTE"
+      ],
+      [
+        type: "expression_replace",
         name: "Update fillFrame call to use dynamic BCI",
         description: "Updates the fillFrame call to use the dynamic frame_bci value determined by remote symbolication mode",
         find: "fillFrame\\(frames\\[depth\\+\\+\\], BCI_NATIVE_FRAME, method_name\\);",

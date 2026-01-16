@@ -324,7 +324,9 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
 }
 
 MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
+  jint bci = frame.bci;
   jmethodID method = frame.method_id;
+
   MethodInfo *mi = &(*_method_map)[method];
 
   if (!mi->_mark) {
@@ -335,15 +337,33 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     }
     if (method == NULL) {
       fillNativeMethodInfo(mi, "unknown", NULL);
-    } else if (frame.bci == BCI_ERROR) {
+    } else if (bci == BCI_ERROR) {
       fillNativeMethodInfo(mi, (const char *)method, NULL);
-    } else if (frame.bci == BCI_NATIVE_FRAME) {
+    } else if (bci == BCI_NATIVE_FRAME) {
       const char *name = (const char *)method;
       fillNativeMethodInfo(mi, name,
                            Profiler::instance()->getLibraryName(name));
-    } else if (frame.bci == BCI_NATIVE_FRAME_REMOTE) {
-      const RemoteFrameInfo *rfi = (const RemoteFrameInfo *)method;
-      fillRemoteFrameInfo(mi, rfi);
+    } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
+      // Unpack remote symbolication data from method_id
+      // Bits 0-43:  pc_offset
+      // Bits 44-63: lib_index
+      uintptr_t packed = (uintptr_t)method;
+      uint32_t lib_index = (uint32_t)(packed >> 44);
+      uintptr_t pc_offset = packed & 0xFFFFFFFFFFFULL;
+
+      TEST_LOG("Unpacking remote frame: packed=0x%lx, lib_index=%u, pc_offset=0x%lx", packed, lib_index, pc_offset);
+
+      // Lookup library by index to get build_id
+      CodeCache* lib = Libraries::instance()->getLibraryByIndex(lib_index);
+      if (lib != nullptr) {
+        TEST_LOG("Found library: %s, build_id=%s", lib->name(), lib->buildId());
+        // Create temporary RemoteFrameInfo for fillRemoteFrameInfo
+        RemoteFrameInfo rfi(lib->buildId(), pc_offset, lib_index);
+        fillRemoteFrameInfo(mi, &rfi);
+      } else {
+        TEST_LOG("WARNING: Library lookup failed for index %u", lib_index);
+        fillNativeMethodInfo(mi, "unknown_library", NULL);
+      }
     } else {
       fillJavaMethodInfo(mi, method, first_time);
     }
