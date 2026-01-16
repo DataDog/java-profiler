@@ -5,6 +5,7 @@
  */
 
 #include <assert.h>
+#include <inttypes.h>
 
 #include "buffers.h"
 #include "callTraceHashTable.h"
@@ -120,7 +121,7 @@ void Lookup::fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi) {
 
   // Store PC offset in hex format in the signature field
   char offset_hex[32];
-  snprintf(offset_hex, sizeof(offset_hex), "0x%lx", rfi->pc_offset);
+  snprintf(offset_hex, sizeof(offset_hex), "0x%" PRIxPTR, rfi->pc_offset);
   mi->_sig = _symbols.lookup(offset_hex);
 
   // Use same modifiers as regular native frames (0x100 = ACC_NATIVE for consistency)
