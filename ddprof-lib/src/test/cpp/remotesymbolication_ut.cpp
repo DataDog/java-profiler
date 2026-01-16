@@ -86,9 +86,9 @@ TEST_F(RemoteSymbolicationTest, BuildIdExtractionInvalidInput) {
 
     // Test non-ELF file
     const char* test_content = "This is not an ELF file";
-    const char* temp_file = "/tmp/not_an_elf";
+    char temp_file[] = "/tmp/not_an_elf_XXXXXX";
 
-    int fd = open(temp_file, O_RDWR | O_CREAT | O_TRUNC, 0600);
+    int fd = mkstemp(temp_file);
     if (fd >= 0) {
         write(fd, test_content, strlen(test_content));
         close(fd);

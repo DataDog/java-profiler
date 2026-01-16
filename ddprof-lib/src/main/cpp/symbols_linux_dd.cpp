@@ -109,15 +109,25 @@ const uint8_t* SymbolsLinux::findBuildIdInNotes(const void* note_data, size_t no
     const char* data = static_cast<const char*>(note_data);
     size_t offset = 0;
 
-    while (offset + sizeof(Elf64_Nhdr) < note_size) {
+    while (offset < note_size) {
+        // Ensure there is enough space for the note header itself
+        if (note_size - offset < sizeof(Elf64_Nhdr)) {
+            break;
+        }
+
         const Elf64_Nhdr* nhdr = reinterpret_cast<const Elf64_Nhdr*>(data + offset);
 
         // Calculate aligned sizes
-        size_t name_size_aligned = (nhdr->n_namesz + 3) & ~3;
-        size_t desc_size_aligned = (nhdr->n_descsz + 3) & ~3;
+        size_t name_size_aligned = (nhdr->n_namesz + 3) & ~static_cast<size_t>(3);
+        size_t desc_size_aligned = (nhdr->n_descsz + 3) & ~static_cast<size_t>(3);
 
-        // Check bounds
-        if (offset + sizeof(Elf64_Nhdr) + name_size_aligned + desc_size_aligned > note_size) {
+        // Check bounds using subtraction to avoid overflow
+        size_t remaining = note_size - offset - sizeof(Elf64_Nhdr);
+        if (name_size_aligned > remaining) {
+            break;
+        }
+        remaining -= name_size_aligned;
+        if (desc_size_aligned > remaining) {
             break;
         }
 
