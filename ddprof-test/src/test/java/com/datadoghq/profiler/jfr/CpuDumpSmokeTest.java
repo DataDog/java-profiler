@@ -20,7 +20,7 @@ public class CpuDumpSmokeTest extends JfrDumpTest {
     @RetryTest(3)
     @Timeout(value = 60)
     @TestTemplate
-    @ValueSource(strings = {"vm", "fp", "dwarf"})
+    @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
     public void test(@CStack String cstack) throws Exception {
         runTest("datadog.ExecutionSample");
     }

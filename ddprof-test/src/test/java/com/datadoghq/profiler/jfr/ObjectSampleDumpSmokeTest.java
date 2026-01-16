@@ -28,7 +28,7 @@ public class ObjectSampleDumpSmokeTest extends JfrDumpTest {
     @RetryTest(5)
     @Timeout(value = 300)
     @TestTemplate
-    @ValueSource(strings = {"vm", "fp", "dwarf"})
+    @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
     public void test(@CStack String cstack) throws Exception {
         runTest("datadog.ObjectSample", 3, "method3");
     }
