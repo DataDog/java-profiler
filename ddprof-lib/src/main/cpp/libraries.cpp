@@ -1,8 +1,10 @@
 #include "codeCache.h"
+#include "common.h"
 #include "libraries.h"
 #include "libraryPatcher.h"
 #include "log.h"
 #include "symbols.h"
+#include "symbols_linux_dd.h"
 #include "vmEntry.h"
 #include "vmStructs.h"
 
@@ -37,6 +39,9 @@ void Libraries::updateSymbols(bool kernel_symbols) {
   Symbols::parseLibraries(&_native_libs, kernel_symbols);
   LibraryPatcher::patch_libraries();
 }
+
+// Platform-specific implementation of updateBuildIds() is in libraries_linux.cpp (Linux)
+// or stub implementation for other platforms
 
 const void *Libraries::resolveSymbol(const char *name) {
   char mangled_name[256];

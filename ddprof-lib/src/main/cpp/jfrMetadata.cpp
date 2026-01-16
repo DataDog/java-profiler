@@ -323,7 +323,9 @@ void JfrMetadata::initialize(
               << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
               << field("name", T_STRING, "Name")
               << field("baseAddress", T_LONG, "Base Address", F_ADDRESS)
-              << field("topAddress", T_LONG, "Top Address", F_ADDRESS))
+              << field("topAddress", T_LONG, "Top Address", F_ADDRESS)
+              << field("buildId", T_STRING, "GNU Build ID")
+              << field("loadBias", T_LONG, "Load Bias", F_ADDRESS))
 
           << (type("profiler.Log", T_LOG, "Log Message")
               << category("Profiler")

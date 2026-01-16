@@ -402,6 +402,25 @@ Improved thread-local storage initialization to prevent race conditions:
 
 These architectural improvements focus on eliminating race conditions, improving performance in high-throughput scenarios, and providing better debugging capabilities for the native profiling engine.
 
+### Remote Symbolication Support (2025)
+
+Added support for remote symbolication to enable offloading symbol resolution from the agent to backend services:
+
+- **Build-ID extraction**: Automatically extracts GNU build-id from ELF binaries on Linux
+- **Raw addressing information**: Stores build-id and PC offset instead of resolved symbol names
+- **Remote symbolication mode**: Enable with `remotesym=true` profiler argument
+- **JFR integration**: Remote frames serialized with build-id and offset for backend resolution
+- **Zero encoding overhead**: Uses dedicated frame type (FRAME_NATIVE_REMOTE) for efficient serialization
+
+**Benefits**:
+- Reduces agent overhead by eliminating local symbol resolution
+- Enables centralized symbol resolution with better caching
+- Supports scenarios where debug symbols are not available locally
+
+**Key files**: `elfBuildId.h`, `elfBuildId.cpp`, `profiler.cpp`, `flightRecorder.cpp`
+
+For detailed documentation, see [doc/RemoteSymbolication.md](doc/RemoteSymbolication.md).
+
 ## Contributing
 1. Fork the repository
 2. Create a feature branch

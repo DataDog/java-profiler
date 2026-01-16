@@ -276,6 +276,7 @@ public:
 private:
   void fillNativeMethodInfo(MethodInfo *mi, const char *name,
                             const char *lib_name);
+  void fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi);
   void cutArguments(char *func);
   void fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time);
   bool has_prefix(const char *str, const char *prefix) const {
