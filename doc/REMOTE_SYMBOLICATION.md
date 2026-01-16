@@ -28,13 +28,18 @@ Added fields to store build-id information:
 - `_load_bias`: Load bias for address calculations
 - Methods: `hasBuildId()`, `buildId()`, `setBuildId()`, etc.
 
-### 3. **Remote Frame Information** (`vmEntry.h`)
+### 3. **Packed Remote Frame Data** (`profiler.h`)
 
-- **RemoteFrameInfo**: New structure containing:
-  - `build_id`: Library build-id
+- **RemoteFramePacker**: Utility struct for packing/unpacking remote symbolication data
+  - Packs into 64-bit jmethodID: `pc_offset (44 bits) | mark (3 bits) | lib_index (17 bits)`
+  - PC offset: 44 bits = 16 TB address range
+  - Mark: 3 bits = 0-7 values (JVM internal frame markers)
+  - Library index: 17 bits = 131K libraries max
+- **RemoteFrameInfo**: Structure for JFR serialization (vmEntry.h):
+  - `build_id`: Library build-id string
   - `pc_offset`: PC offset within library
   - `lib_index`: Library table index
-- **BCI_NATIVE_FRAME_REMOTE**: New frame encoding (-19)
+- **BCI_NATIVE_FRAME_REMOTE**: Frame encoding (-19) indicates packed remote data
 
 ### 4. **Enhanced Frame Collection** (`profiler.cpp`, `stackWalker_dd.h`)
 
@@ -43,21 +48,38 @@ Modified frame collection to support dual modes:
 - **Remote mode**: Stores RemoteFrameInfo with build-id and offset
 
 **Key Functions**:
-- `resolveNativeFrame()`: Determines whether to use local or remote symbolication for a given PC
-- `resolveNativeFrameForWalkVM()`: Helper for walkVM integration, wraps resolveNativeFrame()
-- `allocateRemoteFrameInfo()`: Allocates from pre-allocated signal-safe pool (per lock-strip)
+- `populateRemoteFrame()`: Packs pc_offset, mark, and lib_index into jmethodID field
+- `resolveNativeFrameForWalkVM()`: Resolves native frames for walkVM/walkVMX modes
+  - Performs binarySearch() to get symbol name
+  - Extracts mark via NativeFunc::mark() (O(1))
+  - Packs data using RemoteFramePacker::pack()
 - `convertNativeTrace()`: Converts raw PCs to frames for walkFP/walkDwarf modes
+  - Checks marks to terminate at JVM internal frames
+  - Calls populateRemoteFrame() to pack data
+
+**Mark Checking**:
+- Uses binarySearch() + NativeFunc::mark() approach (O(log n) + O(1))
+- Performance identical to traditional symbolication
+- Simpler than maintaining separate marked ranges index
+- Mark values packed into jmethodID for later unpacking
 
 **Stack Walker Integration**:
-- **walkFP/walkDwarf**: Return raw PCs → `convertNativeTrace()` → `resolveNativeFrame()`
-- **walkVM/walkVMX**: Directly call `resolveNativeFrameForWalkVM(pc, lock_index)` at native frame resolution (patched via gradle/patching.gradle)
+- **walkFP/walkDwarf**: Return raw PCs → `convertNativeTrace()` → `populateRemoteFrame()`
+- **walkVM/walkVMX**: Directly call `resolveNativeFrameForWalkVM(pc, lock_index)` during stack walk (patched via gradle/patching.gradle)
 
 ### 5. **JFR Serialization** (`flightRecorder.cpp/h`)
 
+- **resolveMethod()**: Unpacks remote frame data during JFR serialization
+  - Uses RemoteFramePacker::unpackPcOffset/Mark/LibIndex()
+  - Looks up library by index via Libraries::getLibraryByIndex()
+  - Creates temporary RemoteFrameInfo with build_id and pc_offset
 - **fillRemoteFrameInfo()**: Serializes remote frame data to JFR format
-- Stores `<build-id>.<remote>` in class name field (e.g., `deadbeef1234567890abcdef.<remote>`)
-- Stores PC offset in signature field (e.g., `(0x1234)`)
-- Uses modifier flag 0x100 (ACC_NATIVE, same as regular native frames)
+  - Stores `<build-id>.<remote>` in class name field (e.g., `deadbeef1234567890abcdef.<remote>`)
+  - Stores PC offset in signature field (e.g., `(0x1234)`)
+  - Uses modifier flag 0x100 (ACC_NATIVE, same as regular native frames)
+- **Thread Safety**: Called during JFR serialization with lockAll() held
+  - Library array is stable (no concurrent dlopen_hook modifications)
+  - No additional locking needed
 
 ### 6. **Configuration** (`arguments.h/cpp`)
 
@@ -65,11 +87,17 @@ Modified frame collection to support dual modes:
 - Default: disabled
 - Can be enabled with `remotesym=true` or `remotesym=y`
 
-### 7. **Libraries Integration** (`libraries.h/cpp`)
+### 7. **Libraries Integration** (`libraries.h/cpp`, `libraries_linux.cpp`)
 
 - **updateBuildIds()**: Extracts build-ids for all loaded libraries
-- Called during profiler startup when remote symbolication is enabled
-- Linux-only implementation using ELF parsing
+  - Called during profiler startup when remote symbolication is enabled
+  - Uses O(1) cache lookup via `_build_id_processed` set
+  - Mirrors `_parsed_inodes` pattern from symbols_linux.cpp
+  - Linux-only implementation using ELF parsing
+- **getLibraryByIndex()**: Retrieves CodeCache by library index
+  - Parameter type: uint32_t (matches 17-bit lib_index packing)
+  - Returns nullptr if index out of bounds
+  - Used during JFR serialization to unpack remote frames
 
 ### 8. **Upstream Stack Walker Integration** (`gradle/patching.gradle`)
 
@@ -104,12 +132,21 @@ java -agentpath:<path_to>/libjavaProfiler.so=start,event=cpu,interval=1000000,re
 
 When remote symbolication is enabled, native frames in the JFR output contain:
 
-- **Class Name**: `<build-id>.<remote>` (e.g., `deadbeef1234567890abcdef.<remote>`)
-  - Build-ID hex string followed by `.<remote>` suffix for constant pool deduplication
-- **Signature**: PC offset (e.g., `(0x1234)`)
-- **Method Name**: The `<remote>` suffix from the class name indicates remote symbolication is needed
-- **Modifier**: `0x100` (ACC_NATIVE, same as regular native frames)
-- **Frame Type**: `FRAME_NATIVE_REMOTE` (7) - distinguishes from regular native frames
+- **Class Name**: Build-ID hex string (e.g., `deadbeef1234567890abcdef`)
+  - Stored via `_classes->lookup(rfi->build_id)`
+  - Deduplicated in JFR constant pool
+- **Method Name**: `<remote>`
+  - Constant string indicating remote symbolication needed
+  - Stored via `_symbols.lookup("<remote>")`
+- **Signature**: PC offset in hex (e.g., `0x1a2b`)
+  - Formatted with `snprintf(buf, size, "0x%lx", pc_offset)`
+  - Stored via `_symbols.lookup(offset_hex)`
+  - Note: No parentheses, just hex value
+- **Modifier**: `0x100` (ACC_NATIVE)
+  - Same as regular native frames for consistency
+- **Frame Type**: `FRAME_NATIVE_REMOTE` (7)
+  - Distinguishes from regular native frames (FRAME_NATIVE = 6)
+  - Allows parsers to identify frames needing remote symbolication
 
 ## Backward Compatibility
 
@@ -119,12 +156,17 @@ When remote symbolication is enabled, native frames in the JFR output contain:
 
 ## Memory Management
 
-- **Build-IDs**: Stored once per CodeCache, shared across frames (hex string allocated with malloc)
-- **RemoteFrameInfo**: Pre-allocated pool per lock-strip (128 entries × CONCURRENCY_LEVEL strips = ~32KB total)
-  - Signal-safe allocation using atomic counters
-  - No dynamic allocation in signal handlers
-  - Pool resets on profiler restart
-- **Automatic cleanup**: Handled by CallTrace storage lifecycle
+- **Build-IDs**: Stored once per CodeCache, shared across frames
+  - Hex string allocated with malloc (one-time, ~40 bytes per library)
+  - Freed in CodeCache destructor
+  - Total overhead: < 2 KB for typical applications
+- **Packed Remote Frames**: No separate allocation needed
+  - Data packed directly into 64-bit jmethodID field
+  - Zero additional memory overhead per frame
+  - Eliminates need for signal-safe pool allocation
+- **JFR Serialization**: Temporary RemoteFrameInfo created during unpacking
+  - Stack-allocated, no heap allocation
+  - Only exists during JFR serialization with lockAll() held
 
 ## Testing
 
@@ -143,17 +185,42 @@ When remote symbolication is enabled, native frames in the JFR output contain:
 - **Linux**: Full support with ELF build-id extraction
 - **macOS/Windows**: Framework in place, needs platform-specific implementation
 
+## Observability and Metrics
+
+The following counters track remote symbolication usage (added to `counters.h`):
+
+- **REMOTE_SYMBOLICATION_FRAMES**: Number of frames using remote symbolication
+  - Incremented in `populateRemoteFrame()` each time a remote frame is created
+  - Indicates actual usage of the feature
+- **REMOTE_SYMBOLICATION_LIBS_WITH_BUILD_ID**: Libraries with extracted build-IDs
+  - Incremented in `updateBuildIds()` after successful build-ID extraction
+  - Shows how many libraries are eligible for remote symbolication
+- **REMOTE_SYMBOLICATION_BUILD_ID_CACHE_HITS**: Build-ID cache hit rate
+  - Incremented when `_build_id_processed` cache prevents redundant extraction
+  - Demonstrates effectiveness of O(1) caching strategy
+
+These metrics appear in profiler statistics and can be used to monitor:
+- Feature adoption rate (frames with remote symbolication vs total native frames)
+- Build-ID coverage (libraries with build-IDs vs total libraries)
+- Cache efficiency (cache hits vs total updateBuildIds() calls)
+
 ## Performance Considerations
 
 ### Benefits
-- **Reduced symbol resolution overhead** during profiling
-- **Smaller memory footprint** for symbol tables
-- **Faster profiling** with deferred symbolication
+- **Identical hot-path performance** to traditional symbolication
+  - Same O(log n) binarySearch for mark checking
+  - Zero additional overhead for packed representation
+- **Reduced memory footprint**: 8 bytes per frame vs storing symbol strings
+- **Faster profiling** with deferred full symbolication to post-processing
+- **Eliminated duplicate lookups**: Single binarySearch per frame (was 2x before optimization)
 
 ### Costs
-- **Additional build-id extraction** during startup
-- **Slightly larger frame structures** for remote frames
-- **Build-ID lookup overhead** during frame collection
+- **One-time build-ID extraction** during startup (~ms per library)
+  - Cached with O(1) lookup to prevent redundant work
+  - Only extracted for libraries loaded when profiler starts or via dlopen
+- **Library index lookup** during JFR serialization
+  - O(1) array access with lockAll() held
+  - No contention (serialization is single-threaded)
 
 ## Future Enhancements
 
@@ -205,18 +272,47 @@ ddprof-test/src/test/java/
 
 ## Implementation Notes
 
-- **Thread Safety**: Build-ID extraction occurs during single-threaded startup
-- **Signal Handler Safety**: RemoteFrameInfo uses pre-allocated pool (signal-safe, no dynamic allocation via atomic counters)
-- **Error Handling**: Graceful fallback to local symbolication on failures
-- **Logging**: Debug logging for build-ID extraction progress and remote symbolication usage
-- **ELF Security**:
-  - Bounds checking for program header table (prevents reading beyond mapped region)
-  - Alignment verification for program header offset (prevents misaligned pointer access)
-  - Two-stage validation for note sections (header first, then payload)
-  - ELFCLASS64 verification ensures uniform 64-bit structure sizes
-- **Stack Walker Integration**:
-  - walkFP/walkDwarf return raw PCs, converted by `convertNativeTrace()`
-  - walkVM/walkVMX directly call `resolveNativeFrameForWalkVM()` at native frame resolution point
-  - No post-processing or reverse PC lookup (eliminates broken `applyRemoteSymbolicationToVMFrames` approach)
+### Thread Safety
+- **Build-ID extraction**: Protected by `_build_id_lock` mutex in `updateBuildIds()`
+- **Build-ID cache**: `_build_id_processed` set provides O(1) duplicate detection
+- **JFR serialization**: Called with `lockAll()` held, library array is stable
+  - No concurrent dlopen_hook modifications possible
+  - No additional locking needed for `getLibraryByIndex()`
+
+### Signal Handler Safety
+- **Packed representation**: No allocations in signal handlers
+  - Data packed directly into 64-bit jmethodID field
+  - Zero memory overhead, eliminates need for signal-safe pools
+- **Read-only operations**: binarySearch() and mark checking are signal-safe
+  - No malloc, no locks (except tryLock which is acceptable)
+  - Atomic operations where needed
+
+### Error Handling
+- **Graceful fallback**: Falls back to traditional symbolication when:
+  - Library has no build-ID
+  - Library index out of bounds during unpacking
+  - Build-ID extraction fails
+- **Defensive programming**: Null checks before dereferencing pointers
+- **Logging**: TEST_LOG() for debugging production issues
+
+### ELF Security
+- Bounds checking for program header table (prevents reading beyond mapped region)
+- Alignment verification for program header offset (prevents misaligned pointer access)
+- Two-stage validation for note sections (header first, then payload)
+- ELFCLASS64 verification ensures uniform 64-bit structure sizes
+
+### Stack Walker Integration
+- **walkFP/walkDwarf**: Return raw PCs → `convertNativeTrace()` → `populateRemoteFrame()`
+- **walkVM/walkVMX**: Direct call to `resolveNativeFrameForWalkVM()` during stack walk
+  - No post-processing or reverse PC lookup needed
+  - Mark checking happens inline during frame resolution
+  - Terminates stack walk at JVM internal frames (marks != 0)
+
+### Design Evolution
+- **Original approach**: Separate marked ranges index with O(log n) isMarkedAddress()
+- **Current approach**: Simplified to binarySearch() + NativeFunc::mark()
+  - Same O(log n) performance but ~150 lines less code
+  - Eliminated complexity of maintaining separate index
+  - Marks packed into jmethodID for JFR serialization
 
 This implementation provides a solid foundation for remote symbolication while maintaining full backward compatibility and robust error handling.
