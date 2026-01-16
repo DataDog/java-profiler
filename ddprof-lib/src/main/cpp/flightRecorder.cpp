@@ -354,6 +354,8 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
                (uintptr_t)method, pc_offset, (int)mark, lib_index);
 
       // Lookup library by index to get build_id
+      // Note: This is called during JFR serialization with lockAll() held (see Profiler::dump),
+      // so the library array is stable - no concurrent dlopen_hook calls can modify it.
       CodeCache* lib = Libraries::instance()->getLibraryByIndex(lib_index);
       if (lib != nullptr) {
         TEST_LOG("Found library: %s, build_id=%s", lib->name(), lib->buildId());

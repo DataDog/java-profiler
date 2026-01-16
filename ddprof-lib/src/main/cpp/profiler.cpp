@@ -347,6 +347,9 @@ void Profiler::populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCac
 
   frame->bci = BCI_NATIVE_FRAME_REMOTE;
   frame->method_id = packed;
+
+  // Track remote symbolication usage
+  Counters::increment(REMOTE_SYMBOLICATION_FRAMES);
 }
 
 /**

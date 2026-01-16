@@ -17,6 +17,7 @@
 #ifdef __linux__
 
 #include "common.h"
+#include "counters.h"
 #include "libraries.h"
 #include "symbols_linux_dd.h"
 
@@ -42,6 +43,7 @@ void Libraries::updateBuildIds() {
     // O(1) check: Skip if already processed
     // Mirrors _parsed_inodes pattern from symbols_linux.cpp for optimal performance
     if (_build_id_processed.find(lib) != _build_id_processed.end()) {
+      Counters::increment(REMOTE_SYMBOLICATION_BUILD_ID_CACHE_HITS);
       continue;
     }
 
@@ -73,6 +75,9 @@ void Libraries::updateBuildIds() {
       }
 
       free(build_id); // setBuildId makes its own copy
+
+      // Track libraries with build-IDs
+      Counters::increment(REMOTE_SYMBOLICATION_LIBS_WITH_BUILD_ID);
     } else {
       TEST_LOG("updateBuildIds: NO build-id found for %s", lib_name);
     }
