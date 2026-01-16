@@ -344,14 +344,14 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
       fillNativeMethodInfo(mi, name,
                            Profiler::instance()->getLibraryName(name));
     } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
-      // Unpack remote symbolication data from method_id
-      // Bits 0-43:  pc_offset
-      // Bits 44-63: lib_index
-      uintptr_t packed = (uintptr_t)method;
-      uint32_t lib_index = (uint32_t)(packed >> 44);
-      uintptr_t pc_offset = packed & 0xFFFFFFFFFFFULL;
+      // Unpack remote symbolication data using utility struct
+      // Layout: pc_offset (44 bits) | mark (3 bits) | lib_index (17 bits)
+      uintptr_t pc_offset = Profiler::RemoteFramePacker::unpackPcOffset(method);
+      char mark = Profiler::RemoteFramePacker::unpackMark(method);
+      uint32_t lib_index = Profiler::RemoteFramePacker::unpackLibIndex(method);
 
-      TEST_LOG("Unpacking remote frame: packed=0x%lx, lib_index=%u, pc_offset=0x%lx", packed, lib_index, pc_offset);
+      TEST_LOG("Unpacking remote frame: packed=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u",
+               (uintptr_t)method, pc_offset, (int)mark, lib_index);
 
       // Lookup library by index to get build_id
       CodeCache* lib = Libraries::instance()->getLibraryByIndex(lib_index);

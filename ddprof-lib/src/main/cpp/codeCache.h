@@ -191,6 +191,13 @@ public:
            bool update_bounds = false);
   void updateBounds(const void *start, const void *end);
   void sort();
+
+  /**
+   * Mark symbols matching the predicate with the given mark value.
+   *
+   * This is called during profiler initialization to mark JVM internal functions
+   * (MARK_VM_RUNTIME, MARK_INTERPRETER, MARK_COMPILER_ENTRY, MARK_ASYNC_PROFILER).
+   */
   template <typename NamePredicate>
   inline void mark(NamePredicate predicate, char value) {
       for (int i = 0; i < _count; i++) {

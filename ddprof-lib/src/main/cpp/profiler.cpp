@@ -324,57 +324,64 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
 }
 
 /**
- * Populates an ASGCT_CallFrame with remote symbolication data inline.
- * Stores build-ID, PC offset, and library index directly in the frame union.
- * This eliminates the need for separate pool allocation.
+ * Populates an ASGCT_CallFrame with remote symbolication data.
+ *
+ * Packs pc_offset, mark, and lib_index into the jmethodID field for deferred
+ * symbol resolution during JFR serialization. This approach defers expensive
+ * symbol lookups to post-processing while still capturing marks needed for
+ * correct stack walk termination.
  *
  * @param frame The ASGCT_CallFrame to populate
  * @param pc The program counter address
  * @param lib The CodeCache library containing build-ID information
+ * @param mark The mark value (0 for regular frames, non-zero for JVM internals)
  */
-/**
- * Pack remote symbolication data into ASGCT_CallFrame.
- *
- * method_id packing (64 bits):
- *   Bits 0-43:  pc_offset (44 bits = 16 TB address space)
- *   Bits 44-63: lib_index (20 bits = 1,048,576 libraries)
- *
- * Build-ID is retrieved during JFR serialization via lib_index lookup.
- */
-void Profiler::populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCache* lib) {
+void Profiler::populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCache* lib, char mark) {
   uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
   uint32_t lib_index = (uint32_t)lib->libIndex();
 
-  // Pack lib_index (upper 20 bits) and pc_offset (lower 44 bits)
-  jmethodID packed = (jmethodID)((((uintptr_t)lib_index) << 44) | (pc_offset & 0xFFFFFFFFFFFULL));
+  jmethodID packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
 
-  TEST_LOG("populateRemoteFrame: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, lib_index=%u, packed=0x%lx",
-           lib->name(), lib->buildId(), pc, pc_offset, lib_index, (uintptr_t)packed);
+  TEST_LOG("populateRemoteFrame: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u, packed=0x%lx",
+           lib->name(), lib->buildId(), pc, pc_offset, (int)mark, lib_index, (uintptr_t)packed);
 
   frame->bci = BCI_NATIVE_FRAME_REMOTE;
   frame->method_id = packed;
 }
 
-// Resolve native frame for upstream StackWalker (called from signal handler)
-// Returns resolution decision without writing to ASGCT_CallFrame
+/**
+ * Resolve native frame for upstream StackWalker (called from signal handler).
+ * Returns resolution decision without writing to ASGCT_CallFrame.
+ *
+ * For remote symbolication with build-ID:
+ * - Does symbol resolution to check marks (O(log n) binarySearch + O(1) mark check)
+ * - Packs mark + lib_index + pc_offset into method_id field
+ * - Returns is_marked=true if mark indicates termination (MARK_INTERPRETER, etc.)
+ *
+ * For traditional symbolication:
+ * - Does full symbol resolution via findNativeMethod()
+ * - Checks marks after symbol resolution (same O(log n) + O(1) cost)
+ */
 Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index) {
   if (_remote_symbolication) {
     CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
     if (lib != nullptr && lib->hasBuildId()) {
-      // Check for marked C++ interpreter frame
+      // Get symbol name and check mark
       const char *method_name = nullptr;
       lib->binarySearch((void*)pc, &method_name);
-      if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
+      char mark = (method_name != nullptr) ? NativeFunc::mark(method_name) : 0;
+
+      if (mark != 0) {
         return {nullptr, BCI_NATIVE_FRAME, true};  // Marked - stop processing
       }
 
-      // Pack remote symbolication data for upstream StackWalker
+      // Pack remote symbolication data using utility struct
       uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
       uint32_t lib_index = (uint32_t)lib->libIndex();
-      jmethodID packed = (jmethodID)((((uintptr_t)lib_index) << 44) | (pc_offset & 0xFFFFFFFFFFFULL));
+      jmethodID packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
 
-      TEST_LOG("resolveNativeFrameForWalkVM: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, lib_index=%u, packed=0x%lx",
-               lib->name(), lib->buildId(), pc, pc_offset, lib_index, (uintptr_t)packed);
+      TEST_LOG("resolveNativeFrameForWalkVM: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u, packed=0x%lx",
+               lib->name(), lib->buildId(), pc, pc_offset, (int)mark, lib_index, (uintptr_t)packed);
 
       return {packed, BCI_NATIVE_FRAME_REMOTE, false};
     }
@@ -391,8 +398,12 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
 
 /**
  * Converts a native callchain to ASGCT_CallFrame array.
- * Populates remote symbolication frames inline when build-ID is available.
- * No pool allocation needed - all data stored directly in ASGCT_CallFrame union.
+ *
+ * For libraries with build-IDs, uses remote symbolication (deferred resolution).
+ * For libraries without build-IDs, performs traditional symbol resolution.
+ *
+ * In both cases, performs symbol resolution via binarySearch() to check for
+ * marked frames (JVM internals) that should terminate the stack walk.
  */
 int Profiler::convertNativeTrace(int native_frames, const void **callchain,
                                  ASGCT_CallFrame *frames, int lock_index) {
@@ -406,16 +417,20 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
     if (_remote_symbolication) {
       CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
       if (lib != nullptr && lib->hasBuildId()) {
-        // Check for marked C++ interpreter frame
+        // Check for marked frames via symbol resolution
+        // binarySearch() returns symbol name, then we check mark (O(1))
         const char *method_name = nullptr;
         lib->binarySearch((void*)pc, &method_name);
-        if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
+        char mark = (method_name != nullptr) ? NativeFunc::mark(method_name) : 0;
+
+        if (mark != 0) {
           // Terminate scan at marked frame
           return depth;
         }
 
         // Populate remote frame inline - no allocation needed!
-        populateRemoteFrame(&frames[depth], pc, lib);
+        // Pass the mark we already retrieved to avoid duplicate binarySearch
+        populateRemoteFrame(&frames[depth], pc, lib, mark);
 
         // Use frame address as identifier for duplicate detection
         void* current_identifier = (void*)&frames[depth];
