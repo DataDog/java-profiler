@@ -86,3 +86,51 @@ TEST_F(RemoteArgsTest, RemoteSymbolicationWithOtherFlags) {
     EXPECT_TRUE(args._lightweight);
     EXPECT_TRUE(args._remote_symbolication);
 }
+
+TEST_F(RemoteArgsTest, RemoteSymbolicationNoValue) {
+    Arguments args;
+
+    // Test no value (should enable)
+    Error error = args.parse("remotesym");
+    EXPECT_FALSE(error);
+    EXPECT_TRUE(args._remote_symbolication);
+}
+
+TEST_F(RemoteArgsTest, RemoteSymbolicationNumericValues) {
+    Arguments args;
+
+    // Test numeric 1 (should enable)
+    Error error = args.parse("remotesym=1");
+    EXPECT_FALSE(error);
+    EXPECT_TRUE(args._remote_symbolication);
+
+    // Test numeric 0 (should disable)
+    args = Arguments();
+    error = args.parse("remotesym=0");
+    EXPECT_FALSE(error);
+    EXPECT_FALSE(args._remote_symbolication);
+}
+
+TEST_F(RemoteArgsTest, RemoteSymbolicationNoVariant) {
+    Arguments args;
+
+    // Test "no" (should disable)
+    Error error = args.parse("remotesym=no");
+    EXPECT_FALSE(error);
+    EXPECT_FALSE(args._remote_symbolication);
+
+    // Test "n" (should disable)
+    args = Arguments();
+    error = args.parse("remotesym=n");
+    EXPECT_FALSE(error);
+    EXPECT_FALSE(args._remote_symbolication);
+}
+
+TEST_F(RemoteArgsTest, RemoteSymbolicationInvalidValue) {
+    Arguments args;
+
+    // Test invalid value that starts with unrecognized char (should enable due to default)
+    Error error = args.parse("remotesym=invalid");
+    EXPECT_FALSE(error);
+    EXPECT_TRUE(args._remote_symbolication);
+}

@@ -345,13 +345,20 @@ Error Arguments::parse(const char *args) {
       CASE("remotesym")
       if (value != NULL) {
         switch (value[0]) {
+        case 'n': // no
+        case 'f': // false
+        case '0': // 0
+          _remote_symbolication = false;
+          break;
         case 'y': // yes
         case 't': // true
-          _remote_symbolication = true;
-          break;
+        case '1': // 1
         default:
-          _remote_symbolication = false;
+          _remote_symbolication = true;
         }
+      } else {
+        // No value means enable
+        _remote_symbolication = true;
       }
 
       CASE("wallsampler")
