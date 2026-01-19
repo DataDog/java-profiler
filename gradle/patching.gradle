@@ -188,7 +188,7 @@ ext.upstreamPatches = [
     ]
   ],
 
-  // Stack walker patches for ASan compatibility
+  // Stack walker patches for ASan compatibility and remote symbolication
   "stackWalker.cpp": [
     validations: [[contains: "StackWalker::"], [contains: "StackWalker::walkVM"]],
     operations: [
@@ -199,6 +199,94 @@ ext.upstreamPatches = [
         find: "(int\\s+StackWalker::walkVM\\s*\\()",
         replace: "__attribute__((no_sanitize(\"address\"))) \$1",
         idempotent_check: "__attribute__((no_sanitize(\"address\"))) int StackWalker::walkVM("
+      ],
+      [
+        type: "signature_parameter_add",
+        name: "Add lock_index to public walkVM (features) signature",
+        description: "Adds lock_index parameter to public walkVM overload with features parameter",
+        find: "(__attribute__\\(\\(no_sanitize\\(\"address\"\\)\\)\\) int StackWalker::walkVM\\(void\\* ucontext, ASGCT_CallFrame\\* frames, int max_depth,\\s*StackWalkFeatures features, EventType event_type)\\)",
+        replace: "\$1, int lock_index)",
+        idempotent_check: "EventType event_type, int lock_index\\) \\{"
+      ],
+      [
+        type: "expression_replace",
+        name: "Update first walkVM call in public features overload",
+        description: "Adds lock_index to walkVM call with callerPC/callerSP/callerFP",
+        find: "(return walkVM\\(&empty_ucontext, frames, max_depth, features, event_type,\\s*callerPC\\(\\), \\(uintptr_t\\)callerSP\\(\\), \\(uintptr_t\\)callerFP\\(\\))\\);",
+        replace: "\$1, lock_index);",
+        idempotent_check: "callerFP\\(\\), lock_index\\);"
+      ],
+      [
+        type: "expression_replace",
+        name: "Update second walkVM call in public features overload",
+        description: "Adds lock_index to walkVM call with frame.pc/sp/fp",
+        find: "(return walkVM\\(ucontext, frames, max_depth, features, event_type,\\s*\\(const void\\*\\)frame\\.pc\\(\\), frame\\.sp\\(\\), frame\\.fp\\(\\))\\);",
+        replace: "\$1, lock_index);",
+        idempotent_check: "frame\\.fp\\(\\), lock_index\\);"
+      ],
+      [
+        type: "signature_parameter_add",
+        name: "Add lock_index to public walkVM (anchor) signature",
+        description: "Adds lock_index parameter to public walkVM overload with anchor parameter",
+        find: "(__attribute__\\(\\(no_sanitize\\(\"address\"\\)\\)\\) int StackWalker::walkVM\\(void\\* ucontext, ASGCT_CallFrame\\* frames, int max_depth, JavaFrameAnchor\\* anchor, EventType event_type)\\)",
+        replace: "\$1, int lock_index)",
+        idempotent_check: "EventType event_type, int lock_index\\) \\{"
+      ],
+      [
+        type: "expression_replace",
+        name: "Update walkVM call in public anchor overload",
+        description: "Adds lock_index to walkVM call from anchor overload",
+        find: "(return walkVM\\(ucontext, frames, max_depth, no_features, event_type, pc, sp, fp)\\);",
+        replace: "\$1, lock_index);",
+        idempotent_check: "fp, lock_index\\);"
+      ],
+      [
+        type: "signature_parameter_add",
+        name: "Add lock_index to private walkVM implementation signature",
+        description: "Adds lock_index parameter to private walkVM implementation for remote symbolication pool management",
+        find: "(__attribute__\\(\\(no_sanitize\\(\"address\"\\)\\)\\) int StackWalker::walkVM\\(void\\* ucontext, ASGCT_CallFrame\\* frames, int max_depth,\\s*StackWalkFeatures features, EventType event_type,\\s*const void\\* pc, uintptr_t sp, uintptr_t fp)\\)",
+        replace: "\$1, int lock_index)",
+        idempotent_check: "uintptr_t fp, int lock_index\\)"
+      ],
+      [
+        type: "expression_replace",
+        name: "Add remote symbolication support to walkVM native frame resolution",
+        description: "Replaces direct symbol resolution with resolveNativeFrameForWalkVM call that checks remote symbolication mode",
+        find: "const char\\* method_name = profiler->findNativeMethod\\(pc\\);",
+        replace: "// Check if remote symbolication is enabled\n            Profiler::NativeFrameResolution resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)pc, lock_index);\n            if (resolution.is_marked) {\n                // This is a marked C++ interpreter frame, terminate scan\n                break;\n            }\n            const char* method_name = (const char*)resolution.method_id;\n            int frame_bci = resolution.bci;",
+        idempotent_check: "resolveNativeFrameForWalkVM"
+      ],
+      [
+        type: "expression_replace",
+        name: "Guard NativeFunc::mark check for remote frames",
+        description: "Prevents calling NativeFunc::mark on packed remote frame data by checking frame_bci first",
+        find: "if \\(method_name != NULL && \\(mark = NativeFunc::mark\\(method_name\\)\\) != 0\\) \\{",
+        replace: "if (frame_bci != BCI_NATIVE_FRAME_REMOTE && method_name != NULL && (mark = NativeFunc::mark(method_name)) != 0) {",
+        idempotent_check: "frame_bci != BCI_NATIVE_FRAME_REMOTE"
+      ],
+      [
+        type: "expression_replace",
+        name: "Update fillFrame call to use dynamic BCI",
+        description: "Updates the fillFrame call to use the dynamic frame_bci value determined by remote symbolication mode",
+        find: "fillFrame\\(frames\\[depth\\+\\+\\], BCI_NATIVE_FRAME, method_name\\);",
+        replace: "fillFrame(frames[depth++], frame_bci, (void*)method_name);",
+        idempotent_check: "frame_bci, \\(void\\*\\)method_name"
+      ],
+      [
+        type: "expression_replace",
+        name: "Fix NativeFunc::mark() to check BCI type first",
+        description: "Prevents calling NativeFunc::mark() on RemoteFrameInfo* by checking frame_bci == BCI_NATIVE_FRAME first",
+        find: "char mark;\\s+if \\(method_name != NULL && \\(mark = NativeFunc::mark\\(method_name\\)\\) != 0\\) \\{",
+        replace: "char mark;\n            // Only check NativeFunc::mark() for BCI_NATIVE_FRAME\n            // For BCI_NATIVE_FRAME_REMOTE, method_name is actually a RemoteFrameInfo*, not a string\n            if (frame_bci == BCI_NATIVE_FRAME && method_name != NULL && (mark = NativeFunc::mark(method_name)) != 0) {",
+        idempotent_check: "frame_bci == BCI_NATIVE_FRAME && method_name != NULL"
+      ],
+      [
+        type: "method_implementation",
+        name: "Add fillFrame overload for void* method_id",
+        description: "Adds fillFrame overload that accepts void* method_id to support both symbol names and RemoteFrameInfo pointers",
+        find: "(static inline void fillFrame\\(ASGCT_CallFrame& frame, ASGCT_CallFrameType type, const char\\* name\\) \\{[^}]+\\})",
+        replace: "\$1\n\n// Overload for RemoteFrameInfo* (passed as void* to support both char* and RemoteFrameInfo*)\nstatic inline void fillFrame(ASGCT_CallFrame& frame, int bci, void* method_id_ptr) {\n    frame.bci = bci;\n    frame.method_id = (jmethodID)method_id_ptr;\n}",
+        idempotent_check: "void fillFrame\\(ASGCT_CallFrame& frame, int bci, void\\* method_id_ptr\\)"
       ]
     ]
   ],
@@ -282,6 +370,37 @@ ext.upstreamPatches = [
         find: "(void adjustSP\\(const void\\* entry, const void\\* pc, uintptr_t& sp\\);)",
         replace: "\$1\n\n    // SP baseline helpers for compiled frame unwinding\n    uintptr_t sender_sp_baseline(const NMethod* nm, uintptr_t sp, uintptr_t fp, const void* pc);\n    const void* read_caller_pc_from_sp(uintptr_t sp_base);\n    uintptr_t read_saved_fp_from_sp(uintptr_t sp_base);",
         idempotent_check: "uintptr_t sender_sp_baseline("
+      ]
+    ]
+  ],
+
+  // Stack walker header patches for remote symbolication support
+  "stackWalker.h": [
+    validations: [[contains: "class StackWalker"], [contains: "static int walkVM"]],
+    operations: [
+      [
+        type: "signature_parameter_add",
+        name: "Add lock_index to private walkVM signature",
+        description: "Adds lock_index parameter to private walkVM implementation for remote symbolication pool management",
+        find: "(static int walkVM\\(void\\* ucontext, ASGCT_CallFrame\\* frames, int max_depth,\\s*StackWalkFeatures features, EventType event_type,\\s*const void\\* pc, uintptr_t sp, uintptr_t fp)\\);",
+        replace: "\$1, int lock_index);",
+        idempotent_check: "int lock_index\\);"
+      ],
+      [
+        type: "signature_parameter_add",
+        name: "Add lock_index to public walkVM signature (features overload)",
+        description: "Adds lock_index parameter to public walkVM features-based overload",
+        find: "(static int walkVM\\(void\\* ucontext, ASGCT_CallFrame\\* frames, int max_depth, StackWalkFeatures features, EventType event_type)\\);",
+        replace: "\$1, int lock_index);",
+        idempotent_check: "EventType event_type, int lock_index\\);"
+      ],
+      [
+        type: "signature_parameter_add",
+        name: "Add lock_index to public walkVM signature (anchor overload)",
+        description: "Adds lock_index parameter to public walkVM anchor-based overload",
+        find: "(static int walkVM\\(void\\* ucontext, ASGCT_CallFrame\\* frames, int max_depth, JavaFrameAnchor\\* anchor, EventType event_type)\\);",
+        replace: "\$1, int lock_index);",
+        idempotent_check: "JavaFrameAnchor\\* anchor, EventType event_type, int lock_index\\);"
       ]
     ]
   ]

@@ -9,6 +9,7 @@ enum FrameTypeId {
   FRAME_CPP = 4,
   FRAME_KERNEL = 5,
   FRAME_C1_COMPILED = 6,
+  FRAME_NATIVE_REMOTE = 7,  // Native frame with remote symbolication (build-id + pc-offset)
 };
 
 class FrameType {

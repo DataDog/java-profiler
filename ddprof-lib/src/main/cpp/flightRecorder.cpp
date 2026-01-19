@@ -1,10 +1,11 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2025, 2026 Datadog, Inc.
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #include <assert.h>
+#include <inttypes.h>
 
 #include "buffers.h"
 #include "callTraceHashTable.h"
@@ -112,6 +113,25 @@ void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
     mi->_sig = _symbols.lookup("()L;");
     mi->_type = FRAME_NATIVE;
   }
+}
+
+void Lookup::fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi) {
+  // Store build-id in the class name field
+  mi->_class = _classes->lookup(rfi->build_id);
+
+  // Store PC offset in hex format in the signature field
+  char offset_hex[32];
+  snprintf(offset_hex, sizeof(offset_hex), "0x%" PRIxPTR, rfi->pc_offset);
+  mi->_sig = _symbols.lookup(offset_hex);
+
+  // Use same modifiers as regular native frames (0x100 = ACC_NATIVE for consistency)
+  mi->_modifiers = 0x100;
+  // Use FRAME_NATIVE_REMOTE type to indicate remote symbolication
+  mi->_type = FRAME_NATIVE_REMOTE;
+  mi->_line_number_table = nullptr;
+
+  // Method name indicates need for remote symbolication
+  mi->_name = _symbols.lookup("<remote>");
 }
 
 void Lookup::cutArguments(char *func) {
@@ -305,7 +325,9 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
 }
 
 MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
+  jint bci = frame.bci;
   jmethodID method = frame.method_id;
+
   MethodInfo *mi = &(*_method_map)[method];
 
   if (!mi->_mark) {
@@ -316,12 +338,35 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     }
     if (method == NULL) {
       fillNativeMethodInfo(mi, "unknown", NULL);
-    } else if (frame.bci == BCI_ERROR) {
+    } else if (bci == BCI_ERROR) {
       fillNativeMethodInfo(mi, (const char *)method, NULL);
-    } else if (frame.bci == BCI_NATIVE_FRAME) {
+    } else if (bci == BCI_NATIVE_FRAME) {
       const char *name = (const char *)method;
       fillNativeMethodInfo(mi, name,
                            Profiler::instance()->getLibraryName(name));
+    } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
+      // Unpack remote symbolication data using utility struct
+      // Layout: pc_offset (44 bits) | mark (3 bits) | lib_index (17 bits)
+      uintptr_t pc_offset = Profiler::RemoteFramePacker::unpackPcOffset(method);
+      char mark = Profiler::RemoteFramePacker::unpackMark(method);
+      uint32_t lib_index = Profiler::RemoteFramePacker::unpackLibIndex(method);
+
+      TEST_LOG("Unpacking remote frame: packed=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u",
+               (uintptr_t)method, pc_offset, (int)mark, lib_index);
+
+      // Lookup library by index to get build_id
+      // Note: This is called during JFR serialization with lockAll() held (see Profiler::dump),
+      // so the library array is stable - no concurrent dlopen_hook calls can modify it.
+      CodeCache* lib = Libraries::instance()->getLibraryByIndex(lib_index);
+      if (lib != nullptr) {
+        TEST_LOG("Found library: %s, build_id=%s", lib->name(), lib->buildId());
+        // Create temporary RemoteFrameInfo for fillRemoteFrameInfo
+        RemoteFrameInfo rfi(lib->buildId(), pc_offset, lib_index);
+        fillRemoteFrameInfo(mi, &rfi);
+      } else {
+        TEST_LOG("WARNING: Library lookup failed for index %u", lib_index);
+        fillNativeMethodInfo(mi, "unknown_library", NULL);
+      }
     } else {
       fillJavaMethodInfo(mi, method, first_time);
     }
@@ -1036,18 +1081,23 @@ void Recording::writeNativeLibraries(Buffer *buf) {
   if (_recorded_lib_count < 0)
     return;
 
-  Profiler *profiler = Profiler::instance();
-  CodeCacheArray &native_libs = profiler->_native_libs;
+  Libraries *libraries = Libraries::instance();
+  const CodeCacheArray &native_libs = libraries->native_libs();
   int native_lib_count = native_libs.count();
 
   for (int i = _recorded_lib_count; i < native_lib_count; i++) {
+    CodeCache* lib = native_libs[i];
+
+    // Emit jdk.NativeLibrary event with extended fields (buildId and loadBias)
     flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - MAX_STRING_LENGTH);
     int start = buf->skip(5);
     buf->putVar64(T_NATIVE_LIBRARY);
     buf->putVar64(_start_ticks);
-    buf->putUtf8(native_libs[i]->name());
-    buf->putVar64((uintptr_t)native_libs[i]->minAddress());
-    buf->putVar64((uintptr_t)native_libs[i]->maxAddress());
+    buf->putUtf8(lib->name());
+    buf->putVar64((uintptr_t)lib->minAddress());
+    buf->putVar64((uintptr_t)lib->maxAddress());
+    buf->putUtf8(lib->hasBuildId() ? lib->buildId() : "");
+    buf->putVar64((uintptr_t)lib->loadBias());
     buf->putVar32(start, buf->offset() - start);
     flushIfNeeded(buf);
   }

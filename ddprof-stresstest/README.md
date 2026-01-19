@@ -90,7 +90,7 @@ Measure end-to-end profiling engine performance including signal handlers, stack
   ProfilerThroughputSlotExhaustionBenchmark
 ```
 
-**Documentation**: See `doc/CallTraceStorage.md` for detailed CallTraceStorage architecture, benchmark results analysis, and optimization recommendations.
+**Documentation**: See `doc/architecture/CallTraceStorage.md` for detailed CallTraceStorage architecture, benchmark results analysis, and optimization recommendations.
 
 ### ThreadContext Benchmarks
 
@@ -275,7 +275,7 @@ ddprof-stresstest/
 
 ## Documentation
 
-- **CallTraceStorage Architecture**: `doc/CallTraceStorage.md` - Detailed triple-buffer architecture, benchmark results, and optimization guide
+- **CallTraceStorage Architecture**: `doc/architecture/CallTraceStorage.md` - Detailed triple-buffer architecture, benchmark results, and optimization guide
 - **Main README**: `README.md` (project root) - General project overview
 - **Build Configuration**: `CLAUDE.md` - Build system and development guidelines
 

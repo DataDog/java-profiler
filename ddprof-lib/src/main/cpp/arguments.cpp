@@ -1,5 +1,6 @@
 /*
  * Copyright 2017 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -88,7 +89,10 @@ static const Multiplier UNIVERSAL[] = {
 //                          samples
 //     generations        - track surviving generations
 //     lightweight[=BOOL] - enable lightweight profiling - events without
-//     stacktraces (default: true) jfr                - dump events in Java
+//     stacktraces (default: true)
+//     remotesym[=BOOL]   - enable remote symbolication for native frames
+//                          (stores build-id and PC offset instead of symbol names)
+//     jfr                - dump events in Java
 //     Flight Recorder format interval=N         - sampling interval in ns
 //     (default: 10'000'000, i.e. 10 ms) jstackdepth=N      - maximum Java stack
 //     depth (default: 2048) safemode=BITS      - disable stack recovery
@@ -339,16 +343,35 @@ Error Arguments::parse(const char *args) {
         _enable_method_cleanup = true;
       }
 
-      CASE("wallsampler")
+      CASE("remotesym")
       if (value != NULL) {
         switch (value[0]) {
-        case 'j':
-          _wallclock_sampler = JVMTI;
+        case 'n': // no
+        case 'f': // false
+        case '0': // 0
+          _remote_symbolication = false;
           break;
-        case 'a':
+        case 'y': // yes
+        case 't': // true
+        case '1': // 1
         default:
-          _wallclock_sampler = ASGCT;
+          _remote_symbolication = true;
         }
+      } else {
+        // No value means enable
+        _remote_symbolication = true;
+      }
+
+      CASE("wallsampler")
+      if (value != NULL) {
+          switch (value[0]) {
+              case 'j':
+                  _wallclock_sampler = JVMTI;
+                  break;
+              case 'a':
+              default:
+                  _wallclock_sampler = ASGCT;
+          }
       }
 
       DEFAULT()

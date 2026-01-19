@@ -150,11 +150,11 @@ private:
   Libraries* _libs;
   SpinLock _stubs_lock;
   CodeCache _runtime_stubs;
-  CodeCacheArray _native_libs;
   const void *_call_stub_begin;
   const void *_call_stub_end;
   u32 _num_context_attributes;
   bool _omit_stacktraces;
+  bool _remote_symbolication;  // Enable remote symbolication for native frames
 
   // dlopen() hook support
   void **_dlopen_entry;
@@ -174,7 +174,7 @@ private:
   u32 getLockIndex(int tid);
   bool isAddressInCode(uintptr_t addr);
   int getNativeTrace(void *ucontext, ASGCT_CallFrame *frames, int event_type,
-                     int tid, StackContext *java_ctx, bool *truncated);
+                     int tid, StackContext *java_ctx, bool *truncated, int lock_index);
   int getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
                         StackContext *java_ctx, bool *truncated);
   void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames,
@@ -204,7 +204,7 @@ public:
         _notify_class_unloaded_func(NULL), _thread_filter(), _call_trace_storage(), _jfr(),
         _start_time(0), _epoch(0), _timer_id(NULL),
         _max_stack_depth(0), _safe_mode(0), _thread_events_state(JVMTI_DISABLE),
-        _libs(Libraries::instance()), _stubs_lock(), _runtime_stubs("[stubs]"), _native_libs(),
+        _libs(Libraries::instance()), _stubs_lock(), _runtime_stubs("[stubs]"),
         _call_stub_begin(NULL), _call_stub_end(NULL), _dlopen_entry(NULL),
         _num_context_attributes(0), _class_map(1), _string_label_map(2),
         _context_value_map(3), _cpu_engine(), _alloc_engine(), _event_mask(0),
@@ -279,8 +279,84 @@ public:
   Error dump(const char *path, const int length);
   void logStats();
     void switchThreadEvents(jvmtiEventMode mode);
+
+  /**
+   * Remote symbolication packed data layout (BCI_NATIVE_FRAME_REMOTE):
+   *
+   * When remote symbolication is enabled and a library has a build-ID, we defer
+   * full symbol resolution to post-processing and pack essential data into the
+   * 64-bit jmethodID field:
+   *
+   *   Bits 0-43:   pc_offset (44 bits, 16 TB range)
+   *   Bits 44-46:  mark (3 bits, 0-7 values)
+   *   Bits 47-63:  lib_index (17 bits, 128K libraries)
+   *
+   * Mark values indicate JVM internal frames that should terminate stack walks:
+   *   0 = no mark (regular native frame)
+   *   MARK_VM_RUNTIME = 1
+   *   MARK_INTERPRETER = 2
+   *   MARK_COMPILER_ENTRY = 3
+   *   MARK_ASYNC_PROFILER = 4
+   *
+   * During stack walking, we perform symbol resolution (binarySearch) to check
+   * marks and pack the mark value for later use. The performance is O(log n) for
+   * binarySearch + O(1) for mark extraction, same as traditional symbolication
+   * but simpler than maintaining a separate marked ranges index.
+   */
+  struct RemoteFramePacker {
+    static const int PC_OFFSET_BITS = 44;
+    static const int MARK_BITS = 3;
+    static const int LIB_INDEX_BITS = 17;
+
+    static const uintptr_t PC_OFFSET_MASK = (1ULL << PC_OFFSET_BITS) - 1;  // 0xFFFFFFFFFFF (44 bits)
+    static const uintptr_t MARK_MASK = (1ULL << MARK_BITS) - 1;             // 0x7 (3 bits)
+    static const uintptr_t LIB_INDEX_MASK = (1ULL << LIB_INDEX_BITS) - 1;   // 0x1FFFF (17 bits)
+
+    /**
+     * Pack remote symbolication data into a 64-bit jmethodID.
+     * Layout: pc_offset (44 bits) | mark (3 bits) | lib_index (17 bits)
+     */
+    static inline jmethodID pack(uintptr_t pc_offset, char mark, uint32_t lib_index) {
+      return (jmethodID)(
+        (pc_offset & PC_OFFSET_MASK) |                                              // Bits 0-43
+        (((uintptr_t)mark & MARK_MASK) << PC_OFFSET_BITS) |                        // Bits 44-46
+        (((uintptr_t)lib_index & LIB_INDEX_MASK) << (PC_OFFSET_BITS + MARK_BITS))  // Bits 47-63
+      );
+    }
+
+    /**
+     * Unpack pc_offset from packed data.
+     */
+    static inline uintptr_t unpackPcOffset(jmethodID packed) {
+      return (uintptr_t)packed & PC_OFFSET_MASK;
+    }
+
+    /**
+     * Unpack mark from packed data.
+     */
+    static inline char unpackMark(jmethodID packed) {
+      return (char)(((uintptr_t)packed >> PC_OFFSET_BITS) & MARK_MASK);
+    }
+
+    /**
+     * Unpack lib_index from packed data.
+     */
+    static inline uint32_t unpackLibIndex(jmethodID packed) {
+      return (uint32_t)(((uintptr_t)packed >> (PC_OFFSET_BITS + MARK_BITS)) & LIB_INDEX_MASK);
+    }
+  };
+
+  // Result of resolving a native frame for symbolication
+  struct NativeFrameResolution {
+    jmethodID method_id;  // Packed remote frame data (pc_offset|mark|lib_index) or const char* symbol name
+    int bci;              // BCI_NATIVE_FRAME_REMOTE or BCI_NATIVE_FRAME
+    bool is_marked;       // true if this is a marked C++ interpreter frame (stop processing)
+  };
+
+  void populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCache* lib, char mark);
+  NativeFrameResolution resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index);
   int convertNativeTrace(int native_frames, const void **callchain,
-                         ASGCT_CallFrame *frames);
+                         ASGCT_CallFrame *frames, int lock_index);
   void recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event);
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
