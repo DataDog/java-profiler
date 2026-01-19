@@ -17,10 +17,8 @@ application {
 
 // Include the main library headers
 tasks.withType(CppCompile).configureEach {
-  dependsOn ':ddprof-lib:patchUpstreamFiles'
-
+  // TODO: Do we need this, or is this included by default?
   includes file('../src/main/cpp').toString()
-  includes file('../src/main/cpp-external').toString()
 }
 
 // Add a task to run the benchmark

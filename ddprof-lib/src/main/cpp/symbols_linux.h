@@ -3,7 +3,7 @@
 
 #include "symbols.h"
 
-// Forward declaration for ElfParser functionality from cpp-external/symbols_linux.cpp
+// Forward declaration for ElfParser functionality from symbols_linux.cpp
 // The actual implementation will be available through the patched upstream file
 class ElfParser {
 public:
