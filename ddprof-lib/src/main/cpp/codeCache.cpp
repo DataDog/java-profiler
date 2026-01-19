@@ -53,7 +53,7 @@ CodeCache::CodeCache(const char *name, short lib_index,
   _blobs = new CodeBlob[_capacity];
 }
 
-CodeCache::CodeCache(const CodeCache &other) {
+void CodeCache::copyFrom(const CodeCache& other) {
   _name = NativeFunc::create(other._name, -1);
   _lib_index = other._lib_index;
   _min_address = other._min_address;
@@ -92,54 +92,23 @@ CodeCache::CodeCache(const CodeCache &other) {
   memcpy(_blobs, other._blobs, _count * sizeof(CodeBlob));
 }
 
+CodeCache::CodeCache(const CodeCache &other) {
+  copyFrom(other);
+}
+
 CodeCache &CodeCache::operator=(const CodeCache &other) {
   if (&other == this) {
     return *this;
-  } else {
-    delete _name;
-    delete _dwarf_table;
-    delete _blobs;
-    free(_build_id);  // Free existing build-id
-
-    _name = NativeFunc::create(other._name, -1);
-    _lib_index = other._lib_index;
-    _min_address = other._min_address;
-    _max_address = other._max_address;
-    _text_base = other._text_base;
-    _image_base = other._image_base;
-
-    _plt_offset = other._plt_offset;
-    _plt_size = other._plt_size;
-    _debug_symbols = other._debug_symbols;
-
-    // Copy build-id information
-    _build_id_len = other._build_id_len;
-    if (other._build_id != nullptr && other._build_id_len > 0) {
-      size_t hex_str_len = strlen(other._build_id);
-      _build_id = static_cast<char*>(malloc(hex_str_len + 1));
-      if (_build_id != nullptr) {
-        strcpy(_build_id, other._build_id);
-      }
-    } else {
-      _build_id = nullptr;
-    }
-    _load_bias = other._load_bias;
-
-    memset(_imports, 0, sizeof(_imports));
-    _imports_patchable = other._imports_patchable;
-
-    _dwarf_table_length = other._dwarf_table_length;
-    _dwarf_table = new FrameDesc[_dwarf_table_length];
-    memcpy(_dwarf_table, other._dwarf_table,
-           _dwarf_table_length * sizeof(FrameDesc));
-
-    _capacity = other._capacity;
-    _count = other._count;
-    _blobs = new CodeBlob[_capacity];
-    memcpy(_blobs, other._blobs, _count * sizeof(CodeBlob));
-
-    return *this;
   }
+
+  NativeFunc::destroy(_name);
+  delete[] _dwarf_table;
+  delete[] _blobs;
+  free(_build_id);
+
+  copyFrom(other);
+
+  return *this;
 }
 
 CodeCache::~CodeCache() {
@@ -148,7 +117,7 @@ CodeCache::~CodeCache() {
   }
   NativeFunc::destroy(_name);
   delete[] _blobs;
-  delete _dwarf_table;
+  delete[] _dwarf_table;
   free(_build_id);  // Free build-id memory
 }
 

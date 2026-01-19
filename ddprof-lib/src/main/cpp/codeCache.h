@@ -135,6 +135,7 @@ private:
   void expand();
   void makeImportsPatchable();
   void saveImport(ImportId id, void** entry);
+  void copyFrom(const CodeCache& other);
 
 public:
   explicit CodeCache(const char *name, short lib_index = -1,
