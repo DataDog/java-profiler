@@ -17,7 +17,6 @@ application {
 
 // Include the main library headers
 tasks.withType(CppCompile).configureEach {
-  // TODO: Do we need this, or is this included by default?
   includes file('../src/main/cpp').toString()
 }
 
