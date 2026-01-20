@@ -180,14 +180,6 @@ description = "Datadog Java Profiler Library"
 
 def component_version = project.hasProperty("ddprof_version") ? project.ddprof_version : project.version
 
-def props = new Properties()
-file("${rootDir}/gradle/lock.properties").withInputStream { stream ->
-  props.load(stream)
-}
-
-def ap_branch_lock = props.getProperty("ap.branch")
-def ap_commit_lock = props.getProperty("ap.commit")
-
 // this feels weird but it is the only way invoking `./gradlew :ddprof-lib:*` tasks will work
 if (rootDir.toString().endsWith("ddprof-lib")) {
   apply from: rootProject.file('../common.gradle')
@@ -289,224 +281,6 @@ tasks.register('copyExternalLibs', Copy) {
   }
 }
 
-def cloneAPTask = tasks.register('cloneAsyncProfiler') {
-  description = 'Clones async-profiler repo if directory is missing or updates it if commit hash differs'
-  inputs.file("${rootDir}/gradle/lock.properties")
-  outputs.dir("${projectDir}/build/async-profiler")
-  outputs.upToDateWhen {
-    def targetDir = file("${projectDir}/build/async-profiler")
-    if (!targetDir.exists()) {
-      return false
-    }
-    def currentCommit = ""
-    try {
-      new ByteArrayOutputStream().withStream { os ->
-        exec {
-          workingDir targetDir.absolutePath
-          commandLine 'git', 'rev-parse', 'HEAD'
-          standardOutput = os
-        }
-        currentCommit = os.toString().trim()
-      }
-      return currentCommit == ap_commit_lock
-    } catch (Exception e) {
-      return false
-    }
-  }
-  doLast {
-    // Fix for CI environments where git detects dubious ownership
-    exec {
-      commandLine 'git', 'config', '--global', '--add', 'safe.directory', projectDir.parentFile.absolutePath
-      ignoreExitValue = true  // Don't fail if this command fails
-    }
-
-    def targetDir = file("${projectDir}/build/async-profiler")
-    if (!targetDir.exists()) {
-      println "Cloning missing async-profiler git subdirectory..."
-      exec {
-        commandLine 'git', 'clone', '--branch', ap_branch_lock, 'https://github.com/datadog/async-profiler.git', targetDir.absolutePath
-      }
-      exec {
-        workingDir targetDir.absolutePath
-        commandLine 'git', 'checkout', ap_commit_lock
-      }
-    } else {
-      // Also fix git ownership for existing directory
-      exec {
-        workingDir targetDir.absolutePath
-        commandLine 'git', 'config', '--global', '--add', 'safe.directory', targetDir.absolutePath
-        ignoreExitValue = true
-      }
-
-      def currentCommit = ""
-      new ByteArrayOutputStream().withStream { os ->
-        exec {
-          workingDir targetDir.absolutePath
-          commandLine 'git', 'rev-parse', 'HEAD'
-          standardOutput = os
-        }
-        currentCommit = os.toString().trim()
-      }
-
-      if (currentCommit != ap_commit_lock) {
-        println "async-profiler commit hash differs (current: ${currentCommit}, expected: ${ap_commit_lock}), updating..."
-        exec {
-          workingDir targetDir.absolutePath
-          commandLine 'rm', '-rf', targetDir.absolutePath
-        }
-        exec {
-          commandLine 'git', 'clone', '--branch', ap_branch_lock, 'https://github.com/datadog/async-profiler.git', targetDir.absolutePath
-        }
-        exec {
-          workingDir targetDir.absolutePath
-          commandLine 'git', 'checkout', ap_commit_lock
-        }
-      } else {
-        println "async-profiler git subdirectory present with correct commit hash."
-      }
-    }
-  }
-}
-
-def copyUpstreamFiles = tasks.register('copyUpstreamFiles', Copy) {
-  configure {
-    dependsOn cloneAPTask
-  }
-  onlyIf {
-    !project.hasProperty("debug-ap")
-  }
-  description = 'Copy shared upstream files'
-  from("${projectDir}/build/async-profiler/src") {
-    include "arch.h"
-    include "asprof.h"
-    include "cpuEngine.h"
-    include "dwarf.h"
-    include "incbin.h"
-    include "j9StackTraces.h"
-    include "log.h"
-    include "mutex.h"
-    include "mutex.cpp"
-    include "os.h"
-    include "os_*.cpp"
-    include "spinLock.h"
-    include "stackFrame.h"
-    include "stackWalker.h"
-    include "stackWalker.cpp"
-    include "stackFrame*.cpp"
-    include "symbols.h"
-    include "symbols_*.cpp"
-    include "trap.h"
-    include "trap.cpp"
-    include "tsc.h"
-    include "tsc.cpp"
-    include "vmStructs.h"
-    include "vmStructs.cpp"
-  }
-  into "${projectDir}/src/main/cpp-external"
-}
-
-tasks.named("spotlessMisc") {
-  configure {
-    dependsOn patchUpstreamFiles
-  }
-}
-
-// Load patch configuration from external file
-apply from: "${rootDir}/gradle/patching.gradle"
-
-def patchUpstreamFiles = tasks.register("patchUpstreamFiles") {
-  description = 'Apply all upstream patches via unified configuration system'
-  configure {
-    dependsOn copyUpstreamFiles
-  }
-
-  inputs.file("${rootDir}/gradle/patching.gradle")
-  inputs.files(fileTree("${projectDir}/src/main/cpp-external").include("*.cpp", "*.h"))
-  outputs.files(fileTree("${projectDir}/src/main/cpp-external").include("*.cpp", "*.h"))
-
-  doLast {
-    try {
-      // Use configuration from gradle/patching.gradle
-      def patches = upstreamPatches
-
-      // Apply patches using simplified inline logic
-      def totalFiles = patches.size()
-      def totalOperations = 0
-      patches.each { fileName, fileConfig ->
-        totalOperations += fileConfig.operations?.size() ?: 0
-      }
-
-      logger.quiet("Unified patching system: processing ${totalFiles} files with ${totalOperations} total operations")
-
-      // Apply patches to all configured files
-      patches.each { fileName, fileConfig ->
-        def filePath = "${projectDir}/src/main/cpp-external/${fileName}"
-        def targetFile = file(filePath)
-
-        if (targetFile.exists()) {
-          def content = targetFile.getText('UTF-8')
-          def originalContent = content
-          def patchCount = 0
-
-          // Run validations first
-          fileConfig.validations?.each { validation ->
-            if (validation.contains && !content.contains(validation.contains)) {
-              throw new RuntimeException("Validation failed for ${fileName}: required text '${validation.contains}' not found. Upstream structure may have changed.")
-            }
-          }
-
-          // Apply operations in order
-          fileConfig.operations?.each { operation ->
-            // Check if already applied (idempotent check)
-            if (operation.idempotent_check && content.contains(operation.idempotent_check)) {
-              logger.quiet("Skipped patch '${operation.name ?: operation.type}' for ${fileName} (already applied)")
-              return
-            }
-
-            // Apply regex pattern
-            def pattern = java.util.regex.Pattern.compile(operation.find)
-            def matcher = pattern.matcher(content)
-
-            if (matcher.find()) {
-              def newContent = matcher.replaceAll(operation.replace)
-
-              if (newContent != content) {
-                content = newContent
-                patchCount++
-                logger.quiet("Applied patch '${operation.name ?: operation.type}' to ${fileName}")
-              }
-            } else {
-              logger.warn("Pattern '${operation.find}' not found in ${fileName} for operation: ${operation.name ?: operation.type}")
-            }
-          }
-
-          // Write back if any modifications were made
-          if (patchCount > 0) {
-            targetFile.write(content, 'UTF-8')
-            logger.quiet("Patched ${fileName} with ${patchCount} operations")
-          } else {
-            logger.quiet("No patches applied to ${fileName} (all already present)")
-          }
-        } else {
-          logger.warn("Patch target file not found: ${fileName}")
-        }
-      }
-
-      logger.quiet("Unified patching completed successfully")
-
-    } catch (Exception e) {
-      throw new GradleException("Unified patching failed: ${e.message}", e)
-    }
-  }
-}
-
-
-def initSubrepoTask = tasks.register('initSubrepo') {
-  configure {
-    dependsOn patchUpstreamFiles
-  }
-}
-
 tasks.register('assembleAll') {}
 
 // use the build config names to create configurations, copy lib and asemble jar tasks
@@ -568,10 +342,6 @@ configurations {
 // added by the cpp-library plugin
 tasks.whenTaskAdded { task ->
   if (task instanceof CppCompile) {
-    configure {
-      dependsOn patchUpstreamFiles
-    }
-
     if (!task.name.startsWith('compileLib') && task.name.contains('Release')) {
       buildConfigurations.each { config ->
         if (config.os == osIdentifier() && config.arch == archIdentifier()) {
@@ -589,7 +359,6 @@ tasks.whenTaskAdded { task ->
             toolChain = task.toolChain
             targetPlatform = task.targetPlatform
             includes task.includes
-            includes project(':ddprof-lib').file('src/main/cpp-external').toString()
             includes project(':ddprof-lib').file('src/main/cpp').toString()
             includes "${javaHome()}/include"
             includes project(':malloc-shim').file('src/main/public').toString()
@@ -673,9 +442,7 @@ tasks.withType(LinkSharedLibrary).configureEach {
 library {
   baseName = "javaProfiler"
   source.from file('src/main/cpp')
-  source.from file('src/main/cpp-external')
   privateHeaders.from file('src/main/cpp')
-  privateHeaders.from file('src/main/cpp-external')
 
   // aarch64 support is still incubating
   // for the time being an aarch64 linux machine will match 'machines.linux.x86_64'
@@ -757,10 +524,6 @@ gradle.projectsEvaluated {
     def copyReleaseLibs = tasks.findByName("copyReleaseLibs")
     if (javadocTask != null && copyReleaseLibs != null) {
       javadocTask.dependsOn copyReleaseLibs
-    }
-    def initTask = tasks.findByName("initSubrepo")
-    if (initTask != null) {
-      compileTask.dependsOn initTask
     }
   }
 }
@@ -857,8 +620,4 @@ tasks.withType(AbstractPublishToMaven).configureEach {
   rootProject.subprojects {
     mustRunAfter tasks.matching { it instanceof VerificationTask }
   }
-}
-
-clean {
-  delete "${projectDir}/src/main/cpp-external"
 }

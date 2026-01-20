@@ -110,15 +110,6 @@ jobs:
           restore-keys: |
             gradle-caches-${{ runner.os }}-
 
-      - name: Cache async-profiler
-        uses: actions/cache@v4
-        with:
-          path: ddprof-lib/build/async-profiler
-          key: async-profiler-${{ runner.os }}-${{ hashFiles('gradle/lock.properties') }}
-          enableCrossOsArchive: true
-          restore-keys: |
-            async-profiler-${{ runner.os }}-
-
       - name: Validate Javadoc
         run: |
           # Note: javadoc task depends on copyReleaseLibs which requires building native libraries
