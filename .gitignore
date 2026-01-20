@@ -17,7 +17,6 @@
 .tmp
 *.iml
 /ddprof-stresstest/jmh-result.*
-/ddprof-lib/src/main/cpp-external/**/*
 
 **/.resources/
 

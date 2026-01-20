@@ -136,17 +136,9 @@ The project supports multiple build configurations per platform:
 - **asan**: AddressSanitizer build for memory error detection
 - **tsan**: ThreadSanitizer build for thread safety validation
 
-### Upstream Integration
-The project maintains integration with async-profiler upstream:
-- `cloneAsyncProfiler`: Clones DataDog's async-profiler fork
-- `copyUpstreamFiles`: Copies selected upstream files to `ddprof-lib/src/main/cpp-external`
-- `patchStackFrame`/`patchStackWalker`: Applies necessary patches for ASAN compatibility
-- Lock file: `gradle/ap-lock.properties` specifies branch/commit
-
 ### Key Source Locations
 - Java API: `ddprof-lib/src/main/java/com/datadoghq/profiler/JavaProfiler.java`
 - C++ engine: `ddprof-lib/src/main/cpp/`
-- Upstream C++ code: `ddprof-lib/src/main/cpp-external/` (generated)
 - Native libraries: `ddprof-lib/build/lib/main/{config}/{os}/{arch}/`
 - Test resources: `ddprof-test/src/test/java/`
 
@@ -221,9 +213,7 @@ The profiler uses a sophisticated double-buffered storage system for call traces
 - **Buffer Management**: Thread-local recording buffers with configurable flush thresholds
 
 ### Native Integration Patterns
-- **Upstream Sync**: Uses DataDog fork of async-profiler with branch `dd/master`
 - **Adapter Pattern**: `*_dd.h` files adapt upstream code for Datadog needs
-- **External Code**: Upstream files copied to `cpp-external/` with minimal patches
 - **Signal Handler Safety**: Careful memory management in signal handler contexts
 
 ### Multi-Engine Profiling System
@@ -256,7 +246,7 @@ The profiler uses a sophisticated double-buffered storage system for call traces
 ### Code Organization Principles
 - **Namespace Separation**: Use `ddprof` namespace for adapted upstream classes
 - **File Naming**: Datadog adaptations use `*_dd` suffix (e.g., `stackWalker_dd.h`)
-- **External Dependencies**: Upstream code in `cpp-external/`, local code in `cpp/`
+- **External Dependencies**: Local code in `cpp/`
 
 ### Performance Constraints
 - **Algorithmic Complexity**: Use O(N) or better, max 256 elements for linear scans
@@ -274,14 +264,6 @@ The profiler uses a sophisticated double-buffered storage system for call traces
 - **Sanitizer Builds**: ASan for memory errors, TSan for threading issues
 - **Static Analysis**: `scanBuild` for additional code quality checks
 - **Test Logging**: Use `TEST_LOG` macro for debug output in tests
-
-### Upstream Integration Workflow
-The project maintains a carefully managed relationship with async-profiler upstream:
-1. **Lock File**: `gradle/ap-lock.properties` specifies exact upstream commit
-2. **Branch Tracking**: `dd/master` branch contains safe upstream changes
-3. **File Copying**: `copyUpstreamFiles` task selectively imports upstream code
-4. **Minimal Patching**: Only essential patches for ASan compatibility
-5. **Cherry-pick Strategy**: Rare cherry-picks only for critical fixes
 
 ## Build System Architecture
 

@@ -57,7 +57,7 @@ enum ASGCT_CallFrameType {
 
 Uses `EventType` consistently throughout:
 
-- **Function signature** (cpp-external/profiler.h:213):
+- **Function signature** (cpp/profiler.h:213):
   ```cpp
   u64 recordSample(void* ucontext, u64 counter, EventType event_type, Event* event);
   ```

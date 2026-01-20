@@ -21,7 +21,7 @@
 #include <stdint.h>
 #include <cstring>
 
-// Include the DWARF parser - dwarf.h comes from cpp-external (async-profiler upstream)
+// Include the DWARF parser
 #include "dwarf.h"
 #include "dwarf_dd.h"
 
