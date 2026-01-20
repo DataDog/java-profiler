@@ -6,6 +6,7 @@
 
 #include <cassert>
 #include <dlfcn.h>
+#include <limits.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -22,7 +23,7 @@ void LibraryPatcher::initialize() {
     void* caller_address = __builtin_return_address(0); // Get return address of caller
     bool ret = dladdr(caller_address, &info);
     assert(ret);
-    _profiler_name = strdup(info.dli_fname);
+    _profiler_name = realpath(info.dli_fname, nullptr);
     _size = 0;
   }
 }
@@ -86,7 +87,8 @@ void LibraryPatcher::patch_libraries() {
 
 void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
   // Don't patch self
-  if(strcmp(lib->name(), _profiler_name) == 0) {
+  char resolved_path[PATH_MAX]
+  if(strcmp(realpath(lib->name(), resolved_path), _profiler_name) == 0) {
     return;
   }
   void** pthread_create_location = (void**)lib->findImport(im_pthread_create);
@@ -123,7 +125,7 @@ void LibraryPatcher::patch_pthread_create() {
   ExclusiveLockGuard locker(&_lock);
   for (int index = 0; index < num_of_libs; index++) {
      CodeCache* lib = native_libs.at(index);
-     patch_library_unlocked(lib);
+     patch_library_unlocked(lib, resolved_path);
   }
 }
 #endif // __linux__
