@@ -87,10 +87,13 @@ void LibraryPatcher::patch_libraries() {
 
 void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
   // Don't patch self
-  char resolved_path[PATH_MAX]
-  if(strcmp(realpath(lib->name(), resolved_path), _profiler_name) == 0) {
-    return;
+  char path[PATH_MAX];
+  char* resolved_path = realpath(lib->name(), path);
+  if (resolved_path == nullptr) {
+    // virtual file, e.g. [vdso], etc.
+    resolved_path = lib->name();
   }
+
   void** pthread_create_location = (void**)lib->findImport(im_pthread_create);
   if (pthread_create_location == nullptr) {
     return;
