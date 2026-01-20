@@ -125,7 +125,7 @@ void LibraryPatcher::patch_pthread_create() {
   ExclusiveLockGuard locker(&_lock);
   for (int index = 0; index < num_of_libs; index++) {
      CodeCache* lib = native_libs.at(index);
-     patch_library_unlocked(lib, resolved_path);
+     patch_library_unlocked(lib);
   }
 }
 #endif // __linux__
