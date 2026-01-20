@@ -116,6 +116,11 @@ private:
   unsigned int _plt_offset;
   unsigned int _plt_size;
 
+  // Build-ID and load bias for remote symbolication
+  char *_build_id;           // GNU build-id (hex string, null if not available)
+  size_t _build_id_len;      // Build-id length in bytes (raw, not hex string length)
+  uintptr_t _load_bias;      // Load bias (image_base - file_base address)
+
   void **_imports[NUM_IMPORTS][NUM_IMPORT_TYPES];
   bool _imports_patchable;
   bool _debug_symbols;
@@ -130,6 +135,7 @@ private:
   void expand();
   void makeImportsPatchable();
   void saveImport(ImportId id, void** entry);
+  void copyFrom(const CodeCache& other);
 
 public:
   explicit CodeCache(const char *name, short lib_index = -1,
@@ -169,10 +175,30 @@ public:
 
   void setDebugSymbols(bool debug_symbols) { _debug_symbols = debug_symbols; }
 
+  // Build-ID and remote symbolication support
+  const char* buildId() const { return _build_id; }
+  size_t buildIdLen() const { return _build_id_len; }
+  bool hasBuildId() const { return _build_id != nullptr; }
+  uintptr_t loadBias() const { return _load_bias; }
+  short libIndex() const { return _lib_index; }
+
+  // Sets the build-id (hex string) and stores the original byte length
+  // build_id: null-terminated hex string (e.g., "abc123..." for 40-char string)
+  // build_id_len: original byte length before hex conversion (e.g., 20 bytes)
+  void setBuildId(const char* build_id, size_t build_id_len);
+  void setLoadBias(uintptr_t load_bias) { _load_bias = load_bias; }
+
   void add(const void *start, int length, const char *name,
            bool update_bounds = false);
   void updateBounds(const void *start, const void *end);
   void sort();
+
+  /**
+   * Mark symbols matching the predicate with the given mark value.
+   *
+   * This is called during profiler initialization to mark JVM internal functions
+   * (MARK_VM_RUNTIME, MARK_INTERPRETER, MARK_COMPILER_ENTRY, MARK_ASYNC_PROFILER).
+   */
   template <typename NamePredicate>
   inline void mark(NamePredicate predicate, char value) {
       for (int i = 0; i < _count; i++) {
@@ -225,7 +251,7 @@ public:
     memset(_libs, 0, MAX_NATIVE_LIBS * sizeof(CodeCache *));
   }
 
-  CodeCache *operator[](int index) { return _libs[index]; }
+  CodeCache *operator[](int index) const { return __atomic_load_n(&_libs[index], __ATOMIC_ACQUIRE); }
 
   int count() const { return __atomic_load_n(&_count, __ATOMIC_RELAXED); }
 
@@ -247,7 +273,7 @@ public:
     return lib;
   }
 
-  size_t memoryUsage() {
+  size_t memoryUsage() const {
     return __atomic_load_n(&_used_memory, __ATOMIC_RELAXED);
   }
 };

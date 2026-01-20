@@ -43,6 +43,12 @@ static inline void fillFrame(ASGCT_CallFrame& frame, ASGCT_CallFrameType type, c
     frame.method_id = (jmethodID)name;
 }
 
+// Overload for RemoteFrameInfo* (passed as void* to support both char* and RemoteFrameInfo*)
+static inline void fillFrame(ASGCT_CallFrame& frame, int bci, void* method_id_ptr) {
+    frame.bci = bci;
+    frame.method_id = (jmethodID)method_id_ptr;
+}
+
 static inline void fillFrame(ASGCT_CallFrame& frame, ASGCT_CallFrameType type, u32 class_id) {
     frame.bci = type;
     frame.method_id = (jmethodID)(uintptr_t)class_id;
@@ -204,18 +210,18 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
 }
 
 __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
-                        StackWalkFeatures features, EventType event_type) {
+                        StackWalkFeatures features, EventType event_type, int lock_index) {
     if (ucontext == NULL) {
         return walkVM(&empty_ucontext, frames, max_depth, features, event_type,
-                      callerPC(), (uintptr_t)callerSP(), (uintptr_t)callerFP());
+                      callerPC(), (uintptr_t)callerSP(), (uintptr_t)callerFP(), lock_index);
     } else {
         StackFrame frame(ucontext);
         return walkVM(ucontext, frames, max_depth, features, event_type,
-                      (const void*)frame.pc(), frame.sp(), frame.fp());
+                      (const void*)frame.pc(), frame.sp(), frame.fp(), lock_index);
     }
 }
 
-__attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, JavaFrameAnchor* anchor, EventType event_type) {
+__attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, JavaFrameAnchor* anchor, EventType event_type, int lock_index) {
     uintptr_t sp = anchor->lastJavaSP();
     if (sp == 0) {
         return 0;
@@ -232,12 +238,12 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     }
 
     StackWalkFeatures no_features{};
-    return walkVM(ucontext, frames, max_depth, no_features, event_type, pc, sp, fp);
+    return walkVM(ucontext, frames, max_depth, no_features, event_type, pc, sp, fp, lock_index);
 }
 
 __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                         StackWalkFeatures features, EventType event_type,
-                        const void* pc, uintptr_t sp, uintptr_t fp) {
+                        const void* pc, uintptr_t sp, uintptr_t fp, int lock_index) {
     StackFrame frame(ucontext);
     uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
 
@@ -444,9 +450,16 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 }
             }
         } else {
-            const char* method_name = profiler->findNativeMethod(pc);
+            // Check if remote symbolication is enabled
+            Profiler::NativeFrameResolution resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)pc, lock_index);
+            if (resolution.is_marked) {
+                // This is a marked C++ interpreter frame, terminate scan
+                break;
+            }
+            const char* method_name = (const char*)resolution.method_id;
+            int frame_bci = resolution.bci;
             char mark;
-            if (method_name != NULL && (mark = NativeFunc::mark(method_name)) != 0) {
+            if (frame_bci != BCI_NATIVE_FRAME_REMOTE && method_name != NULL && (mark = NativeFunc::mark(method_name)) != 0) {
                 if (mark == MARK_ASYNC_PROFILER && event_type == MALLOC_SAMPLE) {
                     // Skip all internal frames above malloc_hook functions, leave the hook itself
                     depth = 0;
@@ -496,7 +509,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 fillFrame(frames[depth++], BCI_ERROR, "break_no_anchor");
                 break;
             }
-            fillFrame(frames[depth++], BCI_NATIVE_FRAME, method_name);
+            fillFrame(frames[depth++], frame_bci, (void*)method_name);
         }
 
         uintptr_t prev_sp = sp;

@@ -188,6 +188,7 @@ public:
   std::vector<std::string> _context_attributes;
   bool _lightweight;
   bool _enable_method_cleanup;
+  bool _remote_symbolication;  // Enable remote symbolication for native frames
 
   Arguments(bool persistent = false)
       : _buf(NULL),
@@ -221,7 +222,8 @@ public:
         _context_attributes({}),
         _wallclock_sampler(ASGCT),
         _lightweight(false),
-        _enable_method_cleanup(true) {}
+        _enable_method_cleanup(true),
+        _remote_symbolication(false) {}
 
   ~Arguments();
 

@@ -49,6 +49,7 @@ tasks.register('buildNativeJniLibrary', Exec) {
     args "-I${System.getenv('JAVA_HOME')}/include/linux" // Linux-specific includes
     args "-fPIC"
     args "-shared" // Build a shared library on Linux
+    args "-Wl,--build-id" // Embed GNU build-id for remote symbolication testing
   }
   args nativeSrcDir.listFiles()*.getAbsolutePath() // Source files
   args "-o", "${outputLibDir.absolutePath}/${libraryFileName}" // Output file path

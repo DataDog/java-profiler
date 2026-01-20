@@ -233,17 +233,18 @@ const void *Profiler::resolveSymbol(const char *name) {
   }
 
   size_t len = strlen(name);
-  int native_lib_count = _native_libs.count();
+  const CodeCacheArray& native_libs = _libs->native_libs();
+  int native_lib_count = native_libs.count();
   if (len > 0 && name[len - 1] == '*') {
     for (int i = 0; i < native_lib_count; i++) {
-      const void *address = _native_libs[i]->findSymbolByPrefix(name, len - 1);
+      const void *address = native_libs[i]->findSymbolByPrefix(name, len - 1);
       if (address != NULL) {
         return address;
       }
     }
   } else {
     for (int i = 0; i < native_lib_count; i++) {
-      const void *address = _native_libs[i]->findSymbol(name);
+      const void *address = native_libs[i]->findSymbol(name);
       if (address != NULL) {
         return address;
       }
@@ -256,8 +257,9 @@ const void *Profiler::resolveSymbol(const char *name) {
 // For BCI_NATIVE_FRAME, library index is encoded ahead of the symbol name
 const char *Profiler::getLibraryName(const char *native_symbol) {
   short lib_index = NativeFunc::libIndex(native_symbol);
-  if (lib_index >= 0 && lib_index < _native_libs.count()) {
-    const char *s = _native_libs[lib_index]->name();
+  const CodeCacheArray& native_libs = _libs->native_libs();
+  if (lib_index >= 0 && lib_index < native_libs.count()) {
+    const char *s = native_libs[lib_index]->name();
     if (s != NULL) {
       const char *p = strrchr(s, '/');
       return p != NULL ? p + 1 : s;
@@ -290,7 +292,7 @@ bool Profiler::isAddressInCode(const void *pc, bool include_stubs) {
 
 int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
                              int event_type, int tid, StackContext *java_ctx,
-                             bool *truncated) {
+                             bool *truncated, int lock_index) {
   if (_cstack == CSTACK_NO ||
       (event_type == BCI_ALLOC || event_type == BCI_ALLOC_OUTSIDE_TLAB) ||
       (event_type != BCI_CPU && event_type != BCI_WALL &&
@@ -318,31 +320,146 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
                                          java_ctx, truncated);
   }
 
-  return convertNativeTrace(native_frames, callchain, frames);
+  return convertNativeTrace(native_frames, callchain, frames, lock_index);
 }
 
+/**
+ * Populates an ASGCT_CallFrame with remote symbolication data.
+ *
+ * Packs pc_offset, mark, and lib_index into the jmethodID field for deferred
+ * symbol resolution during JFR serialization. This approach defers expensive
+ * symbol lookups to post-processing while still capturing marks needed for
+ * correct stack walk termination.
+ *
+ * @param frame The ASGCT_CallFrame to populate
+ * @param pc The program counter address
+ * @param lib The CodeCache library containing build-ID information
+ * @param mark The mark value (0 for regular frames, non-zero for JVM internals)
+ */
+void Profiler::populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCache* lib, char mark) {
+  uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
+  uint32_t lib_index = (uint32_t)lib->libIndex();
+
+  jmethodID packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
+
+  TEST_LOG("populateRemoteFrame: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u, packed=0x%lx",
+           lib->name(), lib->buildId(), pc, pc_offset, (int)mark, lib_index, (uintptr_t)packed);
+
+  frame->bci = BCI_NATIVE_FRAME_REMOTE;
+  frame->method_id = packed;
+
+  // Track remote symbolication usage
+  Counters::increment(REMOTE_SYMBOLICATION_FRAMES);
+}
+
+/**
+ * Resolve native frame for upstream StackWalker (called from signal handler).
+ * Returns resolution decision without writing to ASGCT_CallFrame.
+ *
+ * For remote symbolication with build-ID:
+ * - Does symbol resolution to check marks (O(log n) binarySearch + O(1) mark check)
+ * - Packs mark + lib_index + pc_offset into method_id field
+ * - Returns is_marked=true if mark indicates termination (MARK_INTERPRETER, etc.)
+ *
+ * For traditional symbolication:
+ * - Does full symbol resolution via findNativeMethod()
+ * - Checks marks after symbol resolution (same O(log n) + O(1) cost)
+ */
+Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index) {
+  if (_remote_symbolication) {
+    CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
+    if (lib != nullptr && lib->hasBuildId()) {
+      // Get symbol name and check mark
+      const char *method_name = nullptr;
+      lib->binarySearch((void*)pc, &method_name);
+      char mark = (method_name != nullptr) ? NativeFunc::mark(method_name) : 0;
+
+      if (mark != 0) {
+        return {nullptr, BCI_NATIVE_FRAME, true};  // Marked - stop processing
+      }
+
+      // Pack remote symbolication data using utility struct
+      uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
+      uint32_t lib_index = (uint32_t)lib->libIndex();
+      jmethodID packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
+
+      TEST_LOG("resolveNativeFrameForWalkVM: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u, packed=0x%lx",
+               lib->name(), lib->buildId(), pc, pc_offset, (int)mark, lib_index, (uintptr_t)packed);
+
+      return {packed, BCI_NATIVE_FRAME_REMOTE, false};
+    }
+  }
+
+  // Fallback: Traditional symbol resolution
+  const char *method_name = findNativeMethod((void*)pc);
+  if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
+    return {nullptr, BCI_NATIVE_FRAME, true};
+  }
+
+  return {(jmethodID)method_name, BCI_NATIVE_FRAME, false};
+}
+
+/**
+ * Converts a native callchain to ASGCT_CallFrame array.
+ *
+ * For libraries with build-IDs, uses remote symbolication (deferred resolution).
+ * For libraries without build-IDs, performs traditional symbol resolution.
+ *
+ * In both cases, performs symbol resolution via binarySearch() to check for
+ * marked frames (JVM internals) that should terminate the stack walk.
+ */
 int Profiler::convertNativeTrace(int native_frames, const void **callchain,
-                                 ASGCT_CallFrame *frames) {
+                                 ASGCT_CallFrame *frames, int lock_index) {
   int depth = 0;
-  jmethodID prev_method = NULL;
+  void* prev_identifier = NULL;  // Can be jmethodID or frame pointer for remote
 
   for (int i = 0; i < native_frames; i++) {
-    const char *current_method_name = findNativeMethod(callchain[i]);
-    if (current_method_name != NULL &&
-        NativeFunc::isMarked(current_method_name)) {
-      // This is C++ interpreter frame, this and later frames should be reported
-      // as Java frames returned by AGCT. Terminate the scan here.
+    uintptr_t pc = (uintptr_t)callchain[i];
+
+    // Try remote symbolication first if enabled
+    if (_remote_symbolication) {
+      CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
+      if (lib != nullptr && lib->hasBuildId()) {
+        // Check for marked frames via symbol resolution
+        // binarySearch() returns symbol name, then we check mark (O(1))
+        const char *method_name = nullptr;
+        lib->binarySearch((void*)pc, &method_name);
+        char mark = (method_name != nullptr) ? NativeFunc::mark(method_name) : 0;
+
+        if (mark != 0) {
+          // Terminate scan at marked frame
+          return depth;
+        }
+
+        // Populate remote frame inline - no allocation needed!
+        // Pass the mark we already retrieved to avoid duplicate binarySearch
+        populateRemoteFrame(&frames[depth], pc, lib, mark);
+
+        // Use frame address as identifier for duplicate detection
+        void* current_identifier = (void*)&frames[depth];
+        if (current_identifier != prev_identifier || _cstack != CSTACK_LBR) {
+          prev_identifier = current_identifier;
+          depth++;
+        }
+        continue;
+      }
+    }
+
+    // Fallback: Traditional symbol resolution
+    const char *method_name = findNativeMethod((void*)pc);
+    if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
+      // Terminate scan at marked frame
       return depth;
     }
 
-    jmethodID current_method = (jmethodID)current_method_name;
-    if (current_method == prev_method && _cstack == CSTACK_LBR) {
-      // Skip duplicates in LBR stack, where branch_stack[N].from ==
-      // branch_stack[N+1].to
-      prev_method = NULL;
-    } else {
+    // Store standard frame
+    jmethodID current_method = (jmethodID)method_name;
+    if (current_method == prev_identifier && _cstack == CSTACK_LBR) {
+      prev_identifier = NULL;
+    } else if (current_method != NULL) {
       frames[depth].bci = BCI_NATIVE_FRAME;
-      frames[depth].method_id = prev_method = current_method;
+      frames[depth].method_id = current_method;
+      prev_identifier = current_method;
       depth++;
     }
   }
@@ -438,6 +555,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   }
 
   JitWriteProtection jit(false);
+  // AsyncGetCallTrace writes to ASGCT_CallFrame array
   ASGCT_CallTrace trace = {jni, 0, frames};
   VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
 
@@ -700,6 +818,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
   // passage of CPU or wall time, we use the same event definitions but we
   // record a null stacktrace we can skip the unwind if we've got a
   // call_trace_id determined to be reusable at a higher level
+
   if (!_omit_stacktraces && call_trace_id == 0) {
     u64 startTime = TSC::ticks();
     ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
@@ -709,14 +828,18 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     StackContext java_ctx = {0};
     ASGCT_CallFrame *native_stop = frames + num_frames;
     num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
-                                 &java_ctx, &truncated);
+                                 &java_ctx, &truncated, lock_index);
     if (num_frames < _max_stack_depth) {
       int max_remaining = _max_stack_depth - num_frames;
       if (_features.mixed) {
-        num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, max_remaining, _features, eventTypeFromBCI(event_type), &truncated);
+        int vm_start = num_frames;
+        int vm_frames = ddprof::StackWalker::walkVM(ucontext, frames + vm_start, max_remaining, _features, eventTypeFromBCI(event_type), &truncated, lock_index);
+        num_frames += vm_frames;
       } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
         if (_cstack >= CSTACK_VM) {
-          num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames, max_remaining, _features, eventTypeFromBCI(event_type), &truncated);
+          int vm_start = num_frames;
+          int vm_frames = ddprof::StackWalker::walkVM(ucontext, frames + vm_start, max_remaining, _features, eventTypeFromBCI(event_type), &truncated, lock_index);
+          num_frames += vm_frames;
         } else {
           // Async events
           AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());
@@ -794,10 +917,16 @@ void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
   CriticalSection cs;
   atomicIncRelaxed(_total_samples);
 
-  u64 call_trace_id =
-      _call_trace_storage.put(num_frames, frames, truncated, weight);
-
+  // Convert ASGCT_CallFrame to ASGCT_CallFrame
+  // External samplers (like ObjectSampler) provide standard frames only
   u32 lock_index = getLockIndex(tid);
+  ASGCT_CallFrame *extended_frames = _calltrace_buffer[lock_index]->_asgct_frames;
+  for (int i = 0; i < num_frames; i++) {
+    extended_frames[i] = frames[i];
+  }
+
+  u64 call_trace_id =
+      _call_trace_storage.put(num_frames, extended_frames, truncated, weight);
   if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
       !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
@@ -853,6 +982,11 @@ void *Profiler::dlopen_hook(const char *filename, int flags) {
     // Static function of Profiler -> can not use the instance variable _libs
     // Since Libraries is a singleton, this does not matter
     Libraries::instance()->updateSymbols(false);
+    // Extract build-ids for newly loaded libraries if remote symbolication is enabled
+    Profiler* profiler = instance();
+    if (profiler != nullptr && profiler->_remote_symbolication) {
+      Libraries::instance()->updateBuildIds();
+    }
   }
   return result;
 }
@@ -1137,6 +1271,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Validate TLS priming for signal-based profiling safety
   if (ProfiledThread::wasTlsPrimingAttempted() && !ProfiledThread::isTlsPrimingAvailable()) {
     _omit_stacktraces = args._lightweight;
+    _remote_symbolication = args._remote_symbolication;
     _event_mask =
         ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
                                                                        : 0) |
@@ -1158,6 +1293,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   } else {
     _omit_stacktraces = args._lightweight;
+    _remote_symbolication = args._remote_symbolication;
     _event_mask =
         ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
                                                                        : 0) |
@@ -1211,6 +1347,9 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   }
 
+  // Remote symbolication is now inline in ASGCT_CallFrame
+  // No separate pool allocation needed!
+
   _features = args._features;
   if (VM::hotspot_version() < 8) {
       _features.java_anchor = 0;
@@ -1262,9 +1401,14 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Kernel symbols are useful only for perf_events without --all-user
   _libs->updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
 
+  // Extract build-ids for remote symbolication if enabled
+  if (_remote_symbolication) {
+    _libs->updateBuildIds();
+  }
+
   enableEngines();
 
-  switchLibraryTrap(_cstack == CSTACK_DWARF);
+  switchLibraryTrap(_cstack == CSTACK_DWARF || _remote_symbolication);
 
   JfrMetadata::initialize(args._context_attributes);
   _num_context_attributes = args._context_attributes.size();
@@ -1334,8 +1478,6 @@ Error Profiler::stop() {
     return Error("Profiler is not active");
   }
 
-  LibraryPatcher::unpatch_libraries();
-
   disableEngines();
 
   if (_event_mask & EM_ALLOC)
@@ -1359,8 +1501,13 @@ Error Profiler::stop() {
 
   // Acquire all spinlocks to avoid race with remaining signals
   lockAll();
-  _jfr.stop();
+  _jfr.stop();  // JFR serialization must complete before unpatching libraries
   unlockAll();
+
+  // Unpatch libraries AFTER JFR serialization completes
+  // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
+  // owned by library metadata, so we must keep library patches active until after serialization
+  LibraryPatcher::unpatch_libraries();
 
   _state = IDLE;
   return Error::OK;
@@ -1431,10 +1578,11 @@ Error Profiler::dump(const char *path, const int length) {
     updateJavaThreadNames();
     updateNativeThreadNames();
 
-    Counters::set(CODECACHE_NATIVE_COUNT, _native_libs.count());
-    Counters::set(CODECACHE_NATIVE_SIZE_BYTES, _native_libs.memoryUsage());
+    const CodeCacheArray& native_libs = _libs->native_libs();
+    Counters::set(CODECACHE_NATIVE_COUNT, native_libs.count());
+    Counters::set(CODECACHE_NATIVE_SIZE_BYTES, native_libs.memoryUsage());
     Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
-                  _native_libs.memoryUsage());
+                  native_libs.memoryUsage());
 
     lockAll();
     Error err = _jfr.dump(path, length);
