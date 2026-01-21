@@ -291,20 +291,29 @@ if [ -z "$COMMIT_SHA" ]; then
     echo ""
     COMMIT_SHA=$(select_commit "$BRANCH")
     clear
+    print_info "Commit selected. Validating..."
+    echo ""
 fi
 
 # Validate commit exists
+print_info "Validating commit SHA..."
 if ! git rev-parse --verify "$COMMIT_SHA" >/dev/null 2>&1; then
     print_error "Invalid commit SHA: $COMMIT_SHA"
     exit 1
 fi
 
 # Get full commit SHA
-COMMIT_SHA=$(git rev-parse "$COMMIT_SHA")
+print_info "Resolving full commit SHA..."
+COMMIT_SHA=$(git rev-parse "$COMMIT_SHA" 2>&1) || {
+    print_error "Failed to resolve commit SHA: $COMMIT_SHA"
+    exit 1
+}
 SHORT_SHA="${COMMIT_SHA:0:8}"
+print_info "Commit: $SHORT_SHA"
 
 # Verify the commit is on the selected branch
-if ! git merge-base --is-ancestor "$COMMIT_SHA" "$BRANCH" 2>/dev/null; then
+print_info "Verifying commit is on branch $BRANCH..."
+if ! git merge-base --is-ancestor "$COMMIT_SHA" "$BRANCH" 2>&1; then
     print_error "Commit $SHORT_SHA is not on branch '$BRANCH'"
     echo ""
     echo "The selected commit must be part of the branch history."
@@ -312,13 +321,44 @@ if ! git merge-base --is-ancestor "$COMMIT_SHA" "$BRANCH" 2>/dev/null; then
     exit 1
 fi
 
+# Verify the commit exists on remote
+print_info "Verifying commit exists on remote..."
+REMOTE_HEAD=$(git rev-parse "origin/$BRANCH" 2>&1) || {
+    print_error "Failed to get remote branch HEAD"
+    exit 1
+}
+
+if [ "$COMMIT_SHA" != "$REMOTE_HEAD" ]; then
+    print_warning "Selected commit $SHORT_SHA is not at the HEAD of remote branch origin/$BRANCH"
+    echo ""
+    echo "The GitHub Actions workflow will run against the remote HEAD:"
+    echo "  Remote HEAD: ${REMOTE_HEAD:0:8}"
+    echo "  Selected:    $SHORT_SHA"
+    echo ""
+    print_warning "You need to either:"
+    echo "  1. Push your local branch: git push origin $BRANCH"
+    echo "  2. Select the remote HEAD commit: ${REMOTE_HEAD:0:8}"
+    exit 1
+fi
+
 # Get commit info for display
-COMMIT_MESSAGE=$(git log -1 --pretty=format:"%s" "$COMMIT_SHA")
-COMMIT_AUTHOR=$(git log -1 --pretty=format:"%an" "$COMMIT_SHA")
-COMMIT_DATE=$(git log -1 --pretty=format:"%ar" "$COMMIT_SHA")
+print_info "Retrieving commit information..."
+COMMIT_MESSAGE=$(git log -1 --pretty=format:"%s" "$COMMIT_SHA" 2>&1) || {
+    print_error "Failed to get commit message"
+    exit 1
+}
+COMMIT_AUTHOR=$(git log -1 --pretty=format:"%an" "$COMMIT_SHA" 2>&1) || {
+    print_error "Failed to get commit author"
+    exit 1
+}
+COMMIT_DATE=$(git log -1 --pretty=format:"%ar" "$COMMIT_SHA" 2>&1) || {
+    print_error "Failed to get commit date"
+    exit 1
+}
 
 # NOW check GitHub CLI authentication (after commit selection)
 # Check if gh CLI is installed
+print_info "Checking GitHub CLI installation..."
 if ! command -v gh &> /dev/null; then
     print_error "GitHub CLI (gh) is not installed"
     echo "Install it from: https://cli.github.com/"
@@ -326,8 +366,9 @@ if ! command -v gh &> /dev/null; then
 fi
 
 # Check if user is authenticated
+print_info "Checking GitHub authentication..."
 # Note: gh auth status may return non-zero even when authenticated, so check the output
-AUTH_STATUS=$(gh auth status 2>&1)
+AUTH_STATUS=$(gh auth status 2>&1 || true)
 if ! echo "$AUTH_STATUS" | grep -q "Logged in"; then
     print_error "Not authenticated with GitHub CLI"
     echo "Run: gh auth login"
@@ -336,6 +377,7 @@ if ! echo "$AUTH_STATUS" | grep -q "Logged in"; then
     echo "$AUTH_STATUS"
     exit 1
 fi
+print_info "GitHub authentication verified"
 
 # Branch validation already done earlier (before commit selection)
 
@@ -360,7 +402,7 @@ if [ "$DRY_RUN" == "false" ]; then
         print_warning "Tests will be SKIPPED!"
     fi
     echo ""
-    read -p "Are you sure you want to continue? (yes/no): " -r
+    read -p "Are you sure you want to continue? (yes/no): " -r </dev/tty
     if [[ ! $REPLY =~ ^[Yy][Ee][Ss]$ ]]; then
         print_info "Release cancelled"
         exit 0
@@ -377,7 +419,7 @@ WORKFLOW_OUTPUT=$(mktemp)
 WORKFLOW_ERROR=$(mktemp)
 
 if gh workflow run release-validated.yml \
-    --ref "$COMMIT_SHA" \
+    --ref "$BRANCH" \
     --field release_type="$RELEASE_TYPE" \
     --field dry_run="$DRY_RUN" \
     --field skip_tests="$SKIP_TESTS" > "$WORKFLOW_OUTPUT" 2> "$WORKFLOW_ERROR"; then
