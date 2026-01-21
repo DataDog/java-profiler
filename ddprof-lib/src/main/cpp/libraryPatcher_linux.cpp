@@ -16,6 +16,7 @@ SpinLock LibraryPatcher::_lock;
 const char* LibraryPatcher::_profiler_name = nullptr;
 PatchEntry LibraryPatcher::_patched_entries[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_size = 0;
+static char _profiler_path[PATH_MAX];
 
 void LibraryPatcher::initialize() {
   if (_profiler_name == nullptr) {
@@ -23,7 +24,7 @@ void LibraryPatcher::initialize() {
     void* caller_address = __builtin_return_address(0); // Get return address of caller
     bool ret = dladdr(caller_address, &info);
     assert(ret);
-    _profiler_name = realpath(info.dli_fname, nullptr);
+    _profiler_name = realpath(info.dli_fname, _profiler_path);
     _size = 0;
   }
 }
