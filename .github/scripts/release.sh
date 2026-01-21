@@ -61,6 +61,7 @@ if [ "$TYPE" == "PATCH" ]; then
     exit 1
   fi
   RELEASE_BRANCH="release/${BASE%.*}._"
+  create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
 fi
 
 if [ "$BRANCH" != "$RELEASE_BRANCH" ]; then
