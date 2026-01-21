@@ -1,0 +1,4 @@
+# Copyright 2026, Datadog, Inc
+
+# Default owners for all files in the repository
+* @DataDog/profiling-java
