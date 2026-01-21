@@ -6,7 +6,7 @@
 
 #include "callTraceStorage.h"
 #include "counters.h"
-#include "os_dd.h"
+#include "os.h"
 #include "common.h"
 #include "thread.h"
 #include "vmEntry.h" // For BCI_ERROR constant

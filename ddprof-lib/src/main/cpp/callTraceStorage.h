@@ -9,7 +9,7 @@
 
 #include "callTraceHashTable.h"
 #include "spinLock.h"
-#include "os_dd.h"
+#include "os.h"
 #include <functional>
 #include <vector>
 #include <memory>

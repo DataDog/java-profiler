@@ -24,7 +24,7 @@
 #include "debugSupport.h"
 #include "libraries.h"
 #include "log.h"
-#include "os_dd.h"
+#include "os.h"
 #include "perfEvents.h"
 #include "profiler.h"
 #include "spinLock.h"

@@ -12,7 +12,7 @@
 #include "jniHelper.h"
 #include "libraries.h"
 #include "log.h"
-#include "os_dd.h"
+#include "os.h"
 #include "profiler.h"
 #include "safeAccess.h"
 #include "vmStructs_dd.h"

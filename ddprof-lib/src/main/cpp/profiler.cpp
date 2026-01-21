@@ -18,7 +18,7 @@
 #include "j9WallClock.h"
 #include "libraryPatcher.h"
 #include "objectSampler.h"
-#include "os_dd.h"
+#include "os.h"
 #include "perfEvents.h"
 #include "safeAccess.h"
 #include "stackFrame.h"
@@ -1078,8 +1078,8 @@ void Profiler::setupSignalHandlers() {
       if (VM::isHotspot() || VM::isOpenJ9()) {
         // HotSpot and J9 tolerate interposed SIGSEGV/SIGBUS handler; other JVMs
         // probably not
-        orig_segvHandler = ddprof::OS::replaceSigsegvHandler(segvHandler);
-        orig_busHandler = ddprof::OS::replaceSigbusHandler(busHandler);
+        orig_segvHandler = OS::replaceSigsegvHandler(segvHandler);
+        orig_busHandler = OS::replaceSigbusHandler(busHandler);
       }
   }
 }

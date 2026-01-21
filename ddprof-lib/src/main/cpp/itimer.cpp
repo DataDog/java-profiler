@@ -17,7 +17,7 @@
 
 #include "itimer.h"
 #include "debugSupport.h"
-#include "os_dd.h"
+#include "os.h"
 #include "profiler.h"
 #include "stackWalker.h"
 #include "thread.h"

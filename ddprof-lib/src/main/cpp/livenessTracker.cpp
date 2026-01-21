@@ -14,7 +14,7 @@
 #include "jniHelper.h"
 #include "livenessTracker.h"
 #include "log.h"
-#include "os_dd.h"
+#include "os.h"
 #include "profiler.h"
 #include "thread.h"
 #include "tsc_dd.h"

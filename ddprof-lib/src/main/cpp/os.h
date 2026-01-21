@@ -1,11 +1,13 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OS_H
 #define _OS_H
 
+#include <functional>
 #include <signal.h>
 #include <stddef.h>
 #include <sys/types.h>
@@ -145,6 +147,26 @@ class OS {
     static int getProcessIds(int* pids, int max_pids);
     static bool getBasicProcessInfo(int pid, ProcessInfo* info);
     static bool getDetailedProcessInfo(ProcessInfo* info);
+
+    // DataDog-specific extensions
+    static SigAction replaceSigsegvHandler(SigAction action);
+    static SigAction replaceSigbusHandler(SigAction action);
+
+    static int getMaxThreadId(int floor) {
+        int maxThreadId = getMaxThreadId();
+        return maxThreadId < floor ? floor : maxThreadId;
+    }
+
+    static int truncateFile(int fd);
+    static void mallocArenaMax(int arena_max);
+
+    // TLS priming support
+    static bool isTlsPrimingAvailable();
+    static int installTlsPrimeSignalHandler(SigHandler handler, int signal_offset = 4);
+    static void uninstallTlsPrimeSignalHandler(int signal_num);
+    static void enumerateThreadIds(const std::function<void(int)>& callback);
+    static void signalThread(int tid, int signum);
+    static int getThreadCount();
 };
 
 #endif // _OS_H

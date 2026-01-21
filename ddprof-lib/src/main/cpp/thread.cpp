@@ -1,5 +1,5 @@
 #include "thread.h"
-#include "os_dd.h"
+#include "os.h"
 #include "profiler.h"
 #include "common.h"
 #include "vmStructs.h"
@@ -54,7 +54,7 @@ void ProfiledThread::initCurrentThread() {
 }
 
 void ProfiledThread::initExistingThreads() {
-  if (ddprof::OS::isTlsPrimingAvailable()) {
+  if (OS::isTlsPrimingAvailable()) {
     doInitExistingThreads();
   }
 }
@@ -129,7 +129,7 @@ void ProfiledThread::doInitExistingThreads() {
   ensureTlsForkHandlerRegistered();
 
   // Install TLS priming signal handler
-  g_tls_prime_signal = ddprof::OS::installTlsPrimeSignalHandler(simpleTlsSignalHandler, 4);
+  g_tls_prime_signal = OS::installTlsPrimeSignalHandler(simpleTlsSignalHandler, 4);
   if (g_tls_prime_signal <= 0) {
     TEST_LOG("Failed to install TLS priming signal handler");
     return;
@@ -145,13 +145,13 @@ void ProfiledThread::doInitExistingThreads() {
 }
 
 void ProfiledThread::cleanupTlsPriming() {
-  if (!ddprof::OS::isTlsPrimingAvailable()) {
+  if (!OS::isTlsPrimingAvailable()) {
     return;
   }
 
   // Uninstall the TLS priming signal handler
   if (g_tls_prime_signal > 0) {
-    ddprof::OS::uninstallTlsPrimeSignalHandler(g_tls_prime_signal);
+    OS::uninstallTlsPrimeSignalHandler(g_tls_prime_signal);
     TEST_LOG("Uninstalled TLS priming signal handler (signal %d)", g_tls_prime_signal);
     g_tls_prime_signal = -1;
   }
@@ -272,11 +272,11 @@ ProfiledThread *ProfiledThread::currentSignalSafe() {
 }
 
 bool ProfiledThread::isTlsPrimingAvailable() {
-  return ddprof::OS::isTlsPrimingAvailable() && g_tls_prime_signal > 0;
+  return OS::isTlsPrimingAvailable() && g_tls_prime_signal > 0;
 }
 
 bool ProfiledThread::wasTlsPrimingAttempted() {
-  return ddprof::OS::isTlsPrimingAvailable() && g_tls_prime_signal > 0;
+  return OS::isTlsPrimingAvailable() && g_tls_prime_signal > 0;
 }
 
 int ProfiledThread::popFreeSlot() {
