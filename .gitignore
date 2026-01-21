@@ -34,3 +34,4 @@ datadog/maven/resources
 .history
 .claude/settings.local.json
 /jmh-*
+build_output.log
