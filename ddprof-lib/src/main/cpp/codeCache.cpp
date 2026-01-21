@@ -4,7 +4,7 @@
  */
 
 #include "codeCache.h"
-#include "dwarf_dd.h"
+#include "dwarf.h"
 #include "os.h"
 
 #include <stdint.h>
