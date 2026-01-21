@@ -25,7 +25,7 @@
 #include "stackWalker_dd.h"
 #include "symbols.h"
 #include "thread.h"
-#include "tsc_dd.h"
+#include "tsc.h"
 #include "vmStructs_dd.h"
 #include "wallClock.h"
 #include <algorithm>

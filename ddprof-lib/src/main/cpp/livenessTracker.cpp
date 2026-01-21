@@ -17,7 +17,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "thread.h"
-#include "tsc_dd.h"
+#include "tsc.h"
 #include "vmStructs_dd.h"
 #include <jni.h>
 #include <string.h>

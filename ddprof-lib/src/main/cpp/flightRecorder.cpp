@@ -25,7 +25,7 @@
 #include "symbols.h"
 #include "threadFilter.h"
 #include "threadState.h"
-#include "tsc_dd.h"
+#include "tsc.h"
 #include "vmStructs_dd.h"
 #include <arpa/inet.h>
 #include <cxxabi.h>
@@ -1628,7 +1628,7 @@ Error FlightRecorder::start(Arguments &args, bool reset) {
   _filename = file;
   _args = args;
 
-  ddprof::TSC::enable(args._clock);
+  TSC::enable(args._clock);
 
   Error ret = newRecording(reset);
   return ret;
