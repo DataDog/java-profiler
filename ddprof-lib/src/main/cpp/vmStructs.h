@@ -11,6 +11,7 @@
 #include <string.h>
 #include <type_traits>
 #include "codeCache.h"
+#include "safeAccess.h"
 
 
 class VMStructs {
@@ -311,7 +312,7 @@ class JavaFrameAnchor : VMStructs {
 
   public:
     static JavaFrameAnchor* fromEntryFrame(uintptr_t fp) {
-        const char* call_wrapper = *(const char**)(fp + _entry_frame_call_wrapper_offset);
+        const char* call_wrapper = (const char*) SafeAccess::loadPtr((void**)(fp + _entry_frame_call_wrapper_offset), nullptr);
         if (!goodPtr(call_wrapper) || (uintptr_t)call_wrapper - fp > MAX_CALL_WRAPPER_DISTANCE) {
             return NULL;
         }
@@ -319,15 +320,15 @@ class JavaFrameAnchor : VMStructs {
     }
 
     uintptr_t lastJavaSP() {
-        return *(uintptr_t*) at(_anchor_sp_offset);
+        return (uintptr_t) SafeAccess::loadPtr((void**) at(_anchor_sp_offset), nullptr);
     }
 
     uintptr_t lastJavaFP() {
-        return *(uintptr_t*) at(_anchor_fp_offset);
+        return (uintptr_t) SafeAccess::loadPtr((void**) at(_anchor_fp_offset), nullptr);
     }
 
     const void* lastJavaPC() {
-        return *(const void**) at(_anchor_pc_offset);
+        return SafeAccess::loadPtr((void**) at(_anchor_pc_offset), nullptr);
     }
 
     void setLastJavaPC(const void* pc) {
@@ -382,7 +383,7 @@ class VMThread : VMStructs {
     }
 
     int state() {
-        return _thread_state_offset >= 0 ? *(int*) at(_thread_state_offset) : 0;
+        return _thread_state_offset >= 0 ? SafeAccess::load32((int32_t*) at(_thread_state_offset), 0) : 0;
     }
 
     bool inJava() {
@@ -390,7 +391,7 @@ class VMThread : VMStructs {
     }
 
     bool inDeopt() {
-        return *(void**) at(_thread_vframe_offset) != NULL;
+        return SafeAccess::loadPtr((void**) at(_thread_vframe_offset), nullptr) != NULL;
     }
 
     void*& exception() {
