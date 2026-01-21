@@ -25,6 +25,10 @@ void LibraryPatcher::initialize() {
     bool ret = dladdr(caller_address, &info);
     assert(ret);
     _profiler_name = realpath(info.dli_fname, _profiler_path);
+    if (_profiler_name == nullptr) {
+      // realpath() failed, fall back to original path
+      _profiler_name = info.dli_fname;
+    }
     _size = 0;
   }
 }
