@@ -72,13 +72,23 @@ jobs:
           BASE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
           echo "Current version: $BASE"
 
-          # Compute release version
-          if [ "$TYPE" == "MAJOR" ] || [ "$TYPE" == "major" ]; then
-            RELEASE_VERSION=$BASE
-          elif [ "$TYPE" == "MINOR" ] || [ "$TYPE" == "minor" ]; then
-            RELEASE_VERSION=$BASE
+          # Parse version components
+          if [[ $BASE =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            MAJOR="${BASH_REMATCH[1]}"
+            MINOR="${BASH_REMATCH[2]}"
+            PATCH="${BASH_REMATCH[3]}"
           else
-            RELEASE_VERSION=$BASE
+            echo "::error::Invalid version format: $BASE (expected X.Y.Z)"
+            exit 1
+          fi
+
+          # Compute release version based on type
+          if [ "$TYPE" == "MAJOR" ] || [ "$TYPE" == "major" ]; then
+            RELEASE_VERSION="$((MAJOR + 1)).0.0"
+          elif [ "$TYPE" == "MINOR" ] || [ "$TYPE" == "minor" ]; then
+            RELEASE_VERSION="$MAJOR.$((MINOR + 1)).0"
+          else
+            RELEASE_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
           fi
 
           # Compute release branch
