@@ -160,7 +160,7 @@ class WallClockJVMTI : public BaseWallClock {
     void timerLoop() override;
   public:
     struct ThreadEntry {
-        ddprof::VMThread* native;
+        VMThread* native;
         jthread java;
         int tid;
     };

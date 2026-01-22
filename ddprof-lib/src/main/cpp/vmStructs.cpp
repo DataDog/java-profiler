@@ -1049,3 +1049,38 @@ bool VMMethod::check_jmethodID_J9(jmethodID id) {
     // the J9 jmethodid check is not working properly, so we just check for NULL
     return id != NULL && *((void **)id) != NULL;
 }
+
+OSThreadState VMThread::osThreadState() {
+    if (VMStructs::thread_osthread_offset() >= 0 && VMStructs::osthread_state_offset() >= 0) {
+        const char *osthread = *(char **)at(VMStructs::thread_osthread_offset());
+        if (osthread != nullptr) {
+            // If the location is not accessible, the thread must have been terminated
+            int value = SafeAccess::safeFetch32((int*)(osthread + VMStructs::osthread_state_offset()),
+                                              static_cast<int>(OSThreadState::TERMINATED));
+            // Checking for bad data
+            if (value > static_cast<int>(OSThreadState::SYSCALL)) {
+                return OSThreadState::TERMINATED;
+            }
+            return static_cast<OSThreadState>(value);
+        }
+    }
+    return OSThreadState::UNKNOWN;
+}
+
+int VMThread::state() {
+    int offset = VMStructs::thread_state_offset();
+    if (offset >= 0) {
+        int* state = (int*)at(offset);
+        if (state == nullptr) {
+            return 0;
+        } else {
+            int value = SafeAccess::safeFetch32(state, 0);
+            // Checking for bad data
+            if (value > _thread_max_state) {
+                value = 0;
+            }
+            return value;
+        }
+    }
+    return 0;
+}

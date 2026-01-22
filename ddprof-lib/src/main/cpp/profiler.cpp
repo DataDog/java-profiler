@@ -473,7 +473,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   // Workaround for JDK-8132510: it's not safe to call GetEnv() inside a signal
   // handler since JDK 9, so we do it only for threads already registered in
   // ThreadLocalStorage
-  ddprof::VMThread *vm_thread = ddprof::VMThread::current();
+  VMThread *vm_thread = VMThread::current();
   if (vm_thread == NULL) {
     Counters::increment(AGCT_NOT_REGISTERED_IN_TLS);
     return 0;

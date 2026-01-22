@@ -21,87 +21,10 @@
 #include "jniHelper.h"
 #include "jvmHeap.h"
 #include "safeAccess.h"
-#include "threadState.h"
 #include "vmEntry.h"
 #include "vmStructs.h"
 
 namespace ddprof {
-  class HeapUsage;
-
-  // Copied from JDK's globalDefinitions.hpp 'JavaThreadState' enum
-  enum JVMJavaThreadState {
-    _thread_uninitialized     =  0, // should never happen (missing initialization)
-    _thread_new               =  2, // just starting up, i.e., in process of being initialized
-    _thread_new_trans         =  3, // corresponding transition state (not used, included for completeness)
-    _thread_in_native         =  4, // running in native code
-    _thread_in_native_trans   =  5, // corresponding transition state
-    _thread_in_vm             =  6, // running in VM
-    _thread_in_vm_trans       =  7, // corresponding transition state
-    _thread_in_Java           =  8, // running in Java or in stub code
-    _thread_in_Java_trans     =  9, // corresponding transition state (not used, included for completeness)
-    _thread_blocked           = 10, // blocked in vm
-    _thread_blocked_trans     = 11, // corresponding transition state
-    _thread_max_state         = 12  // maximum thread state+1 - used for statistics allocation
-  };
-
-  class VMThread : public ::VMThread {
-  private:
-    const char* at(int offset) {
-      return (const char*)this + offset;
-    }
-  public:
-    static ddprof::VMThread* current() {
-      return static_cast<ddprof::VMThread*>(::VMThread::current());
-    }
-
-    OSThreadState osThreadState() {
-      if (VMStructs::thread_osthread_offset() >= 0 && VMStructs::osthread_state_offset() >= 0) {
-        const char *osthread = *(char **)at(VMStructs::thread_osthread_offset());
-        if (osthread != nullptr) {
-          // If the location is not accessible, the thread must have been terminated
-          int value = SafeAccess::safeFetch32((int*)(osthread + VMStructs::osthread_state_offset()),
-                                            static_cast<int>(OSThreadState::TERMINATED));
-          // Checking for bad data
-          if (value > static_cast<int>(OSThreadState::SYSCALL)) {
-            return OSThreadState::TERMINATED;
-          }
-          return static_cast<OSThreadState>(value);
-        }
-     }
-     return OSThreadState::UNKNOWN;
-    }
-
-    int osThreadId() {
-      if (VMStructs::thread_osthread_offset() >= 0 && VMStructs::osthread_id_offset() >=0) {
-        const char* osthread = *(const char**) at(VMStructs::thread_osthread_offset());
-        if (osthread == nullptr) {
-          return -1;
-        } else {
-          return SafeAccess::safeFetch32((int*)(osthread + VMStructs::osthread_id_offset()), -1);
-        }
-      }
-      return -1;
-    }
-
-    int state() {
-      int offset = VMStructs::thread_state_offset();
-      if (offset >= 0) {
-          int* state = (int*)at(offset);
-          if (state == nullptr) {
-            return 0;
-          } else {
-            int value = SafeAccess::safeFetch32(state, 0);
-            // Checking for bad data
-            if (value > _thread_max_state) {
-              value = 0;
-            }
-            return value;
-          }
-      }
-      return 0;
-    }
-  };
-
   class HeapUsage : VMStructs {
   private:
     static bool is_jmx_attempted;
