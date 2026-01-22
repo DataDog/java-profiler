@@ -28,19 +28,6 @@
 namespace ddprof {
   class HeapUsage;
 
-  class VMMethod : public ::VMMethod {
-  private:
-    static bool check_jmethodID_J9(jmethodID id);
-    static bool check_jmethodID_hotspot(jmethodID id);
-
-  public:
-    static ddprof::VMMethod *fromMethodID(jmethodID id) {
-      return static_cast<ddprof::VMMethod*>(VMMethod::fromMethodID(id));
-    }
-
-    static bool check_jmethodID(jmethodID id);
-  };
-
   // Copied from JDK's globalDefinitions.hpp 'JavaThreadState' enum
   enum JVMJavaThreadState {
     _thread_uninitialized     =  0, // should never happen (missing initialization)

@@ -488,6 +488,10 @@ class VMThread : public /* TODO make private when consolidating VMThread? */ VMS
 };
 
 class VMMethod : public /* TODO make private when consolidating VMMethod? */ VMStructs {
+  private:
+    static bool check_jmethodID_J9(jmethodID id);
+    static bool check_jmethodID_hotspot(jmethodID id);
+
   public:
     jmethodID id();
 
@@ -508,6 +512,8 @@ class VMMethod : public /* TODO make private when consolidating VMMethod? */ VMS
     NMethod* code() {
         return *(NMethod**) at(_method_code_offset);
     }
+
+    static bool check_jmethodID(jmethodID id);
 };
 
 class NMethod : VMStructs {
