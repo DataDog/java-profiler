@@ -37,13 +37,11 @@ cd java-profiler
 The resulting artifact will be in `ddprof-lib/build/libs/ddprof-<version>.jar`
 
 #### Gritty details
-Since the upstream code might not be 100% compatible with the current version of the project, we need to provide adapters.
-The adapters are sharing the same file name as the upstream files but are suffixed with `_dd` (e.g. `arch_dd.h`).
+Since the upstream code might not be 100% compatible with the current version of the project, we extend the base classes
+with Datadog-specific functionality. These extensions are integrated directly into the base files (e.g., `stackWalker.h`)
+with optional parameters and backward-compatible interfaces.
 
-In case we need to adapt a class from the upstream codebase, we put the adapter class into `ddprof` namespace to avoid
-conflicts with the upstream code. This allows us to use the upstream code as-is while still providing the necessary modifications for our use case.
-
-See [ddprof-lib/src/main/cpp/stackWalker_dd.h](ddprof-lib/src/main/cpp/stackWalker_dd.h) for an example of how we adapt the upstream code to fit our needs.
+See [ddprof-lib/src/main/cpp/stackWalker.h](ddprof-lib/src/main/cpp/stackWalker.h) for an example of how we extend the upstream code with additional features like truncation detection.
 
 ## Claude Code Integration
 

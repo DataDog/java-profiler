@@ -41,7 +41,7 @@ Added fields to store build-id information:
   - `lib_index`: Library table index
 - **BCI_NATIVE_FRAME_REMOTE**: Frame encoding (-19) indicates packed remote data
 
-### 4. **Enhanced Frame Collection** (`profiler.cpp`, `stackWalker_dd.h`)
+### 4. **Enhanced Frame Collection** (`profiler.cpp`, `stackWalker.h`)
 
 Modified frame collection to support dual modes:
 - **Traditional mode**: Stores resolved symbol names (existing behavior)
@@ -247,20 +247,14 @@ ddprof-lib/src/main/cpp/
 ├── codeCache.cpp                # Build-id storage implementation
 ├── profiler.h                   # Added resolveNativeFrame/ForWalkVM, RemoteFrameInfo pool
 ├── profiler.cpp                 # Remote symbolication logic and pool allocation
-├── stackWalker_dd.h             # DataDog wrappers with lock_index parameter
+├── stackWalker.h                # Enhanced with lock_index and truncated parameters
+├── stackWalker.cpp              # Remote symbolication and truncation detection logic
 ├── flightRecorder.h             # Added fillRemoteFrameInfo declaration
 ├── flightRecorder.cpp           # Remote frame JFR serialization
 ├── arguments.h                  # Added _remote_symbolication field
 ├── arguments.cpp                # Remote symbolication argument parsing
 ├── libraries.h                  # Added updateBuildIds method
 └── libraries.cpp                # Build-id extraction for loaded libraries
-
-gradle/
-└── patching.gradle              # Upstream stackWalker.h/cpp patches for remote symbolication
-
-ddprof-lib/src/main/cpp-external/
-├── stackWalker.h                # Patched: lock_index parameter added to all walkVM signatures
-└── stackWalker.cpp              # Patched: resolveNativeFrameForWalkVM integration at line 454
 
 ddprof-lib/src/test/cpp/
 ├── remotesymbolication_ut.cpp   # Unit tests for remote symbolication

@@ -244,8 +244,7 @@ The profiler uses a sophisticated double-buffered storage system for call traces
 ## Development Guidelines
 
 ### Code Organization Principles
-- **Namespace Separation**: Use `ddprof` namespace for adapted upstream classes
-- **File Naming**: Datadog adaptations use `*_dd` suffix (e.g., `stackWalker_dd.h`)
+- **Code Integration**: Datadog-specific extensions are integrated directly into base files (e.g., `stackWalker.h`)
 - **External Dependencies**: Local code in `cpp/`
 
 ### Performance Constraints

@@ -134,9 +134,9 @@ inline EventType eventTypeFromBCI(jint bci_type) {
 Usage in profiler.cpp:
 
 ```cpp
-num_frames += ddprof::StackWalker::walkVM(ucontext, frames + num_frames,
-                                          max_remaining, _features,
-                                          eventTypeFromBCI(event_type), &truncated);
+num_frames += StackWalker::walkVM(ucontext, frames + num_frames,
+                                  max_remaining, _features,
+                                  eventTypeFromBCI(event_type), &truncated);
 ```
 
 ## Type Mapping

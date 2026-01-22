@@ -22,11 +22,11 @@
 #include "perfEvents.h"
 #include "safeAccess.h"
 #include "stackFrame.h"
-#include "stackWalker_dd.h"
+#include "stackWalker.h"
 #include "symbols.h"
 #include "thread.h"
 #include "tsc.h"
-#include "vmStructs_dd.h"
+#include "vmStructs.h"
 #include "wallClock.h"
 #include <algorithm>
 #include <dlfcn.h>
@@ -311,11 +311,11 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
   if (_cstack >= CSTACK_VM) {
     return 0;
   } else if (_cstack == CSTACK_DWARF) {
-    native_frames += ddprof::StackWalker::walkDwarf(ucontext, callchain + native_frames,
+    native_frames += StackWalker::walkDwarf(ucontext, callchain + native_frames,
                                             max_depth - native_frames,
                                             java_ctx, truncated);
   } else {
-    native_frames += ddprof::StackWalker::walkFP(ucontext, callchain + native_frames,
+    native_frames += StackWalker::walkFP(ucontext, callchain + native_frames,
                                          max_depth - native_frames,
                                          java_ctx, truncated);
   }
@@ -833,12 +833,12 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
       int max_remaining = _max_stack_depth - num_frames;
       if (_features.mixed) {
         int vm_start = num_frames;
-        int vm_frames = ddprof::StackWalker::walkVM(ucontext, frames + vm_start, max_remaining, _features, eventTypeFromBCI(event_type), &truncated, lock_index);
+        int vm_frames = StackWalker::walkVM(ucontext, frames + vm_start, max_remaining, _features, eventTypeFromBCI(event_type), lock_index, &truncated);
         num_frames += vm_frames;
       } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
         if (_cstack >= CSTACK_VM) {
           int vm_start = num_frames;
-          int vm_frames = ddprof::StackWalker::walkVM(ucontext, frames + vm_start, max_remaining, _features, eventTypeFromBCI(event_type), &truncated, lock_index);
+          int vm_frames = StackWalker::walkVM(ucontext, frames + vm_start, max_remaining, _features, eventTypeFromBCI(event_type), lock_index, &truncated);
           num_frames += vm_frames;
         } else {
           // Async events
@@ -1053,7 +1053,7 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (VM::isHotspot()) {
     // the following checks require vmstructs and therefore HotSpot
 
-    ddprof::StackWalker::checkFault(thrd);
+    StackWalker::checkFault(thrd);
 
     // Workaround for JDK-8313796 if needed. Setting cstack=dwarf also helps
     if (_need_JDK_8313796_workaround &&
