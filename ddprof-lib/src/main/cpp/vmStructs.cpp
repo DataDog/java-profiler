@@ -686,6 +686,16 @@ jmethodID VMMethod::id() {
     return NULL;
 }
 
+VMKlass* VMMethod::method_holder() {
+    // We may find a bogus NMethod during stack walking, it does not always point to a valid VMMethod
+    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
+    assert(goodPtr(const_method));    
+    const char* cpool = (const char*) SafeAccess::load((void**)(const_method + _constmethod_constants_offset));
+    assert(goodPtr(cpool));
+    return *(VMKlass**)(cpool + _pool_holder_offset);
+}
+
+
 jmethodID VMMethod::validatedId() {
     jmethodID method_id = id();
     if (!_can_dereference_jmethod_id || (goodPtr(method_id) && *(VMMethod**)method_id == this)) {
