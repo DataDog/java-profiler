@@ -11,6 +11,7 @@
 #include "stackFrame.h"
 #include "symbols.h"
 #include "vmStructs.h"
+#include "vmStructs_dd.h"
 
 
 const uintptr_t SAME_STACK_DISTANCE = 8192;
@@ -370,6 +371,8 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
                 if (is_plausible_interpreter_frame) {
                     VMMethod* method = ((VMMethod**)fp)[InterpreterFrame::method_offset];
+                    assert(ddprof::BootstrapClassLoader::loaded_by(method));
+
                     jmethodID method_id = getMethodId(method);
                     if (method_id != NULL) {
                         const char* bytecode_start = method->bytecode();
@@ -386,6 +389,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
                 if (depth == 0) {
                     VMMethod* method = (VMMethod*)frame.method();
+                    assert(ddprof::BootstrapClassLoader::loaded_by(method));
                     jmethodID method_id = getMethodId(method);
                     if (method_id != NULL) {
                         fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id);

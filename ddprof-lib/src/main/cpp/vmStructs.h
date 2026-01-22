@@ -434,6 +434,8 @@ class VMMethod : VMStructs {
     NMethod* code() {
         return *(NMethod**) at(_method_code_offset);
     }
+
+    VMKlass* method_holder();
 };
 
 class NMethod : VMStructs {
