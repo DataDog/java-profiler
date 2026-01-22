@@ -21,11 +21,14 @@
 #  define LP64_ONLY(code)
 #endif // _LP64
 
+#define COMMA ,
 
 typedef unsigned char u8;
 typedef unsigned short u16;
 typedef unsigned int u32;
 typedef unsigned long long u64;
+
+constexpr int DEFAULT_CACHE_LINE_SIZE = 64;
 
 static inline u64 atomicInc(volatile u64& var, u64 increment = 1) {
     return __sync_fetch_and_add(&var, increment);
@@ -39,14 +42,46 @@ static inline int atomicInc(volatile int& var, int increment = 1) {
     return __sync_fetch_and_add(&var, increment);
 }
 
+static inline long long atomicInc(volatile long long &var,
+                                  long long increment = 1) {
+    return __sync_fetch_and_add(&var, increment);
+}
+
+template <typename T>
+static inline long long atomicIncRelaxed(volatile T &var,
+                                         T increment = 1) {
+    return __atomic_fetch_add(&var, increment, __ATOMIC_RELAXED);
+}
+
+// Atomic load/store (unordered)
+template <typename T>
+static inline T load(volatile T& var) {
+    return __atomic_load_n(&var, __ATOMIC_RELAXED);
+}
+
 static inline u64 loadAcquire(u64& var) {
     return __atomic_load_n(&var, __ATOMIC_ACQUIRE);
+}
+
+// Atomic load-acquire/release-store
+template <typename T>
+static inline T loadAcquire(volatile T& var) {
+    return __atomic_load_n(&var, __ATOMIC_ACQUIRE);
+}
+
+template <typename T>
+static inline void store(volatile T& var, T value) {
+    return __atomic_store_n(&var, value, __ATOMIC_RELAXED);
 }
 
 static inline void storeRelease(u64& var, u64 value) {
     return __atomic_store_n(&var, value, __ATOMIC_RELEASE);
 }
 
+template <typename T>
+static inline void storeRelease(volatile T& var, T value) {
+    return __atomic_store_n(&var, value, __ATOMIC_RELEASE);
+}
 
 #if defined(__x86_64__) || defined(__i386__)
 

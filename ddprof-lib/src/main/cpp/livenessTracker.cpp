@@ -8,7 +8,7 @@
 #include <set>
 #include <thread>
 
-#include "arch_dd.h"
+#include "arch.h"
 #include "context.h"
 #include "incbin.h"
 #include "jniHelper.h"

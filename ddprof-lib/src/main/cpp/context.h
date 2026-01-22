@@ -17,7 +17,7 @@
 #ifndef _CONTEXT_H
 #define _CONTEXT_H
 
-#include "arch_dd.h"
+#include "arch.h"
 #include "arguments.h"
 #include "common.h"
 #include "os.h"

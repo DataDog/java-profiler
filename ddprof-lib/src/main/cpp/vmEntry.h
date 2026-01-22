@@ -8,9 +8,9 @@
 #define _VMENTRY_H
 
 #include <jvmti.h>
-#include "arch_dd.h"
+#include "arch.h"
 
-#include "arch_dd.h"
+#include "arch.h"
 #include "codeCache.h"
 #include "frame.h"
 

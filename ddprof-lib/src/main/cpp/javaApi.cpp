@@ -16,7 +16,7 @@
 
 #include <assert.h>
 
-#include "arch_dd.h"
+#include "arch.h"
 #include "context.h"
 #include "counters.h"
 #include "common.h"

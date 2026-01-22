@@ -5,7 +5,7 @@
 
 #ifndef REVERSE_BITS_H
 #define REVERSE_BITS_H
-#include "arch_dd.h"
+#include "arch.h"
 #include <stdint.h>
 
 static constexpr u32 rep_5555 = static_cast<u32>(UINT64_C(0x5555555555555555));

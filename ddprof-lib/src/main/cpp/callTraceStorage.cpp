@@ -10,7 +10,7 @@
 #include "common.h"
 #include "thread.h"
 #include "vmEntry.h" // For BCI_ERROR constant
-#include "arch_dd.h" // For LP64_ONLY macro and COMMA macro
+#include "arch.h" // For LP64_ONLY macro and COMMA macro
 #include "criticalSection.h" // For table swap critical sections
 #include "primeProbing.h"
 #include "thread.h"

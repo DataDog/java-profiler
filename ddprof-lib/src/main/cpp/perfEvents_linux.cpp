@@ -17,7 +17,7 @@
 
 #ifdef __linux__
 
-#include "arch_dd.h"
+#include "arch.h"
 #include "arguments.h"
 #include "context.h"
 #include "criticalSection.h"

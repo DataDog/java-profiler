@@ -17,7 +17,7 @@
 #ifndef _OBJECTSAMPLER_H
 #define _OBJECTSAMPLER_H
 
-#include "arch_dd.h"
+#include "arch.h"
 #include "engine.h"
 #include "jfrMetadata.h"
 #include "livenessTracker.h"

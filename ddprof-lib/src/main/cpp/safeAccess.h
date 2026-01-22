@@ -17,7 +17,7 @@
 #ifndef _SAFEACCESS_H
 #define _SAFEACCESS_H
 
-#include "arch_dd.h"
+#include "arch.h"
 #include "codeCache.h"
 #include <cassert>
 #include <stdint.h>

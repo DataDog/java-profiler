@@ -20,7 +20,7 @@
 // - These methods assume slot_id comes from registerThread() (undefined behavior otherwise)
 
 #include "threadFilter.h"
-#include "arch_dd.h"
+#include "arch.h"
 #include "os.h"
 #include <cassert>
 #include <cstdlib>

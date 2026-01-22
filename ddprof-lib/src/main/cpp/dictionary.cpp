@@ -15,7 +15,7 @@
  */
 
 #include "dictionary.h"
-#include "arch_dd.h"
+#include "arch.h"
 #include "counters.h"
 #include <climits>
 #include <stdlib.h>

@@ -6,7 +6,7 @@
 #ifndef PRIME_PROBING_H
 #define PRIME_PROBING_H
 
-#include "arch_dd.h"
+#include "arch.h"
 #include "common.h"
 
 // Hash table probe iterator for efficient collision resolution

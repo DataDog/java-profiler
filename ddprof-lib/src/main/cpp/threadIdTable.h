@@ -19,7 +19,7 @@
 
 #include <atomic>
 #include <unordered_set>
-#include "arch_dd.h"
+#include "arch.h"
 
 // Simple fixed size thread ID table
 class ThreadIdTable {

@@ -17,7 +17,7 @@
 #ifndef _PIDCONTROLLER_H
 #define _PIDCONTROLLER_H
 
-#include "arch_dd.h"
+#include "arch.h"
 #include <cmath>
 
 /*
