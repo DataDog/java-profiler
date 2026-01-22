@@ -9,6 +9,7 @@
 #include "vmEntry.h"
 #include "j9Ext.h"
 #include "safeAccess.h"
+#include "spinLock.h"
 
 
 CodeCache* VMStructs::_libjvm = NULL;
@@ -119,6 +120,15 @@ void* VMStructs::_java_thread_vtbl[6];
 VMStructs::LockFunc VMStructs::_lock_func;
 VMStructs::LockFunc VMStructs::_unlock_func;
 
+// Datadog-specific static variables
+int VMStructs::_osthread_state_offset = -1;
+int VMStructs::_flag_type_offset = -1;
+CodeCache VMStructs::_unsafe_to_walk("unwalkable code");
+VMStructs::HeapUsageFunc VMStructs::_heap_usage_func = NULL;
+VMStructs::MemoryUsageFunc VMStructs::_memory_usage_func = NULL;
+VMStructs::GCHeapSummaryFunc VMStructs::_gc_heap_summary_func = NULL;
+VMStructs::IsValidMethodFunc VMStructs::_is_valid_method_func = NULL;
+
 
 uintptr_t VMStructs::readSymbol(const char* symbol_name) {
     const void* symbol = _libjvm->findSymbol(symbol_name);
@@ -135,6 +145,8 @@ void VMStructs::init(CodeCache* libjvm) {
         _libjvm = libjvm;
         initOffsets();
         initJvmFunctions();
+        initUnsafeFunctions();
+        initCriticalJNINatives();
     }
 }
 
@@ -271,6 +283,8 @@ void VMStructs::initOffsets() {
             } else if (strcmp(type, "OSThread") == 0) {
                 if (strcmp(field, "_thread_id") == 0) {
                     _osthread_id_offset = *(int*)(entry + offset_offset);
+                } else if (strcmp(field, "_state") == 0) {
+                    _osthread_state_offset = *(int*)(entry + offset_offset);
                 }
             } else if (strcmp(type, "CompilerThread") == 0) {
                 if (strcmp(field, "_env") == 0) {
@@ -371,6 +385,8 @@ void VMStructs::initOffsets() {
                     _flags_addr = **(char***)(entry + address_offset);
                 } else if (strcmp(field, "numFlags") == 0) {
                     _flag_count = **(int**)(entry + address_offset);
+                } else if (strcmp(field, "_type") == 0 || strcmp(field, "type") == 0) {
+                    _flag_type_offset = *(int *)(entry + offset_offset);
                 }
             } else if (strcmp(type, "PcDesc") == 0) {
                 // TODO
@@ -575,6 +591,13 @@ void VMStructs::initJvmFunctions() {
             _interpreted_frame_valid_end = blob->_end;
         }
     }
+
+    // Datadog-specific function pointer resolution
+    _heap_usage_func = (HeapUsageFunc)findHeapUsageFunc();
+    _gc_heap_summary_func = (GCHeapSummaryFunc)_libjvm->findSymbol(
+        "_ZN13CollectedHeap19create_heap_summaryEv");
+    _is_valid_method_func = (IsValidMethodFunc)_libjvm->findSymbol(
+        "_ZN6Method15is_valid_methodEPKS_");
 }
 
 void VMStructs::patchSafeFetch() {
@@ -635,6 +658,133 @@ void VMStructs::initThreadBridge() {
             memcpy(_java_thread_vtbl, vm_thread->vtable(), sizeof(_java_thread_vtbl));
         }
     }
+}
+
+// ===== Datadog-specific VMStructs extensions =====
+
+void VMStructs::initUnsafeFunctions() {
+    // see
+    // https://github.com/openjdk/jdk/blob/master/src/hotspot/share/gc/z/zBarrierSetRuntime.hpp#L33
+    // https://bugs.openjdk.org/browse/JDK-8302317
+    std::vector<const char *> unsafeMangledPrefixes{"_ZN18ZBarrierSetRuntime",
+                                                    "_ZN9JavaCalls11call_helper",
+                                                    "_ZN14MM_RootScanner"};
+
+    std::vector<const void *> symbols;
+    _libjvm->findSymbolsByPrefix(unsafeMangledPrefixes, symbols);
+    for (const void *symbol : symbols) {
+        CodeBlob *blob = _libjvm->findBlobByAddress(symbol);
+        if (blob) {
+            _unsafe_to_walk.add(blob->_start,
+                                ((uintptr_t)blob->_end - (uintptr_t)blob->_start),
+                                blob->_name, true);
+        }
+    }
+}
+
+void VMStructs::initCriticalJNINatives() {
+#ifdef __aarch64__
+    // aarch64 does not support CriticalJNINatives
+    JVMFlag* flag = JVMFlag::find("CriticalJNINatives", {JVMFlag::Type::Bool});
+    if (flag != nullptr && flag->get()) {
+        flag->set(0);
+    }
+#endif // __aarch64__
+}
+
+const void *VMStructs::findHeapUsageFunc() {
+    if (VM::hotspot_version() < 17) {
+        // For JDK 11 it is really unreliable to find the memory_usage function -
+        // just disable it
+        return nullptr;
+    } else {
+        JVMFlag* flag = JVMFlag::find("UseG1GC", {JVMFlag::Type::Bool});
+        if (flag != NULL && flag->get()) {
+            // The CollectedHeap::memory_usage function is a virtual one -
+            // G1, Shenandoah and ZGC are overriding it and calling the base class
+            // method results in asserts triggering. Therefore, we try to locate the
+            // concrete overridden method form.
+            return _libjvm->findSymbol("_ZN15G1CollectedHeap12memory_usageEv");
+        }
+        flag = JVMFlag::find("UseShenandoahGC", {JVMFlag::Type::Bool});
+        if (flag != NULL && flag->get()) {
+            return _libjvm->findSymbol("_ZN14ShenandoahHeap12memory_usageEv");
+        }
+        flag = JVMFlag::find("UseZGC", {JVMFlag::Type::Bool});
+        if (flag != NULL && flag->get() && VM::hotspot_version() < 21) {
+            // acessing this method in JDK 21 (generational ZGC) wil cause SIGSEGV
+            return _libjvm->findSymbol("_ZN14ZCollectedHeap12memory_usageEv");
+        }
+        return _libjvm->findSymbol("_ZN13CollectedHeap12memory_usageEv");
+    }
+}
+
+bool VMStructs::isSafeToWalk(uintptr_t pc) {
+    // Check if PC is in the unsafe-to-walk code region
+    // Note: findFrameDesc now returns by value instead of pointer, but it always returns
+    // a valid FrameDesc (either from table or default_frame), so the old pointer check
+    // was always true. The effective logic is simply checking if pc is in _unsafe_to_walk.
+    return !_unsafe_to_walk.contains((const void *)pc);
+}
+
+void JNICALL VMStructs::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                                         jmethodID method, void *address,
+                                         void **new_address_ptr) {
+    static SpinLock _lock;
+    static int delayedCounter = 0;
+    static void **delayed = (void **)malloc(512 * sizeof(void *) * 2);
+
+    if (_memory_usage_func == NULL) {
+        if (jvmti != NULL && jni != NULL) {
+            checkNativeBinding(jvmti, jni, method, address);
+            void **tmpDelayed = NULL;
+            int tmpCounter = 0;
+            _lock.lock();
+            if (delayed != NULL && delayedCounter > 0) {
+                // in order to minimize the lock time, we copy the delayed list, free it
+                // and release the lock
+                tmpCounter = delayedCounter;
+                tmpDelayed = (void **)malloc(tmpCounter * sizeof(void *) * 2);
+                memcpy(tmpDelayed, delayed, tmpCounter * sizeof(void *) * 2);
+                delayedCounter = 0;
+                delayed = NULL;
+                free(delayed);
+            }
+            _lock.unlock();
+            // if there was a delayed list, we check it now, not blocking on the lock
+            if (tmpDelayed != NULL) {
+                for (int i = 0; i < tmpCounter; i += 2) {
+                    checkNativeBinding(jvmti, jni, (jmethodID)tmpDelayed[i],
+                                      tmpDelayed[i + 1]);
+                }
+                // don't forget to free the tmp list
+                free(tmpDelayed);
+            }
+        } else {
+            _lock.unlock();
+            if (delayed != NULL) {
+                delayed[delayedCounter] = method;
+                delayed[delayedCounter + 1] = address;
+                delayedCounter += 2;
+            }
+            _lock.unlock();
+        }
+    }
+}
+
+void VMStructs::checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni,
+                                   jmethodID method, void *address) {
+    char *method_name;
+    char *method_sig;
+    int error = 0;
+    if ((error = jvmti->GetMethodName(method, &method_name, &method_sig, NULL)) == 0) {
+        if (strcmp(method_name, "getMemoryUsage0") == 0 &&
+            strcmp(method_sig, "(Z)Ljava/lang/management/MemoryUsage;") == 0) {
+            _memory_usage_func = (MemoryUsageFunc)address;
+        }
+    }
+    jvmti->Deallocate((unsigned char *)method_sig);
+    jvmti->Deallocate((unsigned char *)method_name);
 }
 
 VMThread* VMThread::current() {
@@ -710,18 +860,6 @@ NMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
     return *block ? align<NMethod*>(block + sizeof(uintptr_t)) : NULL;
 }
 
-JVMFlag* JVMFlag::find(const char* name) {
-    if (_flags_addr != NULL && _flag_size > 0) {
-        for (int i = 0; i < _flag_count; i++) {
-            JVMFlag* f = (JVMFlag*)(_flags_addr + i * _flag_size);
-            if (f->name() != NULL && strcmp(f->name(), name) == 0 && f->addr() != NULL) {
-                return f;
-            }
-        }
-    }
-    return NULL;
-}
-
 int NMethod::findScopeOffset(const void* pc) {
     intptr_t pc_offset = (const char*)pc - code();
     if (pc_offset < 0 || pc_offset > 0x7fffffff) {
@@ -759,4 +897,80 @@ int ScopeDesc::readInt() {
         }
     }
     return n;
+}
+
+JVMFlag* JVMFlag::find(const char* name) {
+    if (_flags_addr != NULL && _flag_size > 0) {
+        for (int i = 0; i < _flag_count; i++) {
+            JVMFlag* f = (JVMFlag*)(_flags_addr + i * _flag_size);
+            if (f->name() != NULL && strcmp(f->name(), name) == 0 && f->addr() != NULL) {
+                return f;
+            }
+        }
+    }
+    return NULL;
+}
+
+JVMFlag *JVMFlag::find(const char *name, std::initializer_list<JVMFlag::Type> types) {
+    int mask = 0;
+    for (int type : types) {
+        mask |= 0x1 << type;
+    }
+    return find(name, mask);
+}
+
+JVMFlag *JVMFlag::find(const char *name, int type_mask) {
+    if (_flags_addr != NULL && _flag_size > 0) {
+        for (int i = 0; i < _flag_count; i++) {
+            JVMFlag *f = (JVMFlag *)(_flags_addr + i * _flag_size);
+            if (f->name() != NULL && strcmp(f->name(), name) == 0) {
+                int masked = 0x1 << f->type();
+                if (masked & type_mask) {
+                    return (JVMFlag*)f;
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
+int JVMFlag::type() {
+    if (VM::hotspot_version() < 16) { // in JDK 16 the JVM flag implementation has changed
+        char* type_name = *(char **)at(_flag_type_offset);
+        if (type_name == NULL) {
+            return Unknown;
+        }
+        if (strcmp(type_name, "bool") == 0) {
+            return Bool;
+        }
+        if (strcmp(type_name, "int") == 0) {
+            return Int;
+        }
+        if (strcmp(type_name, "uint") == 0) {
+            return Uint;
+        }
+        if (strcmp(type_name, "intx") == 0) {
+            return Intx;
+        }
+        if (strcmp(type_name, "uintx") == 0) {
+            return Uintx;
+        }
+        if (strcmp(type_name, "uint64_t") == 0) {
+            return Uint64_t;
+        }
+        if (strcmp(type_name, "size_t") == 0) {
+            return Size_t;
+        }
+        if (strcmp(type_name, "double") == 0) {
+            return Double;
+        }
+        if (strcmp(type_name, "ccstr") == 0) {
+            return String;
+        }
+        if (strcmp(type_name, "ccstrlist") == 0) {
+            return Stringlist;
+        }
+        return Unknown;
+    }
+    return *(int *)at(_flag_type_offset);
 }

@@ -26,83 +26,9 @@
 #include "vmStructs.h"
 
 namespace ddprof {
-  using VMStructsBase = ::VMStructs;
-  using VMMethodBase = ::VMMethod;
-
   class HeapUsage;
 
-  class VMStructs : public VMStructsBase {
-  public:
-    typedef bool (*IsValidMethodFunc)(void *);
-  protected:
-    static CodeCache _unsafe_to_walk;
-    static int _osthread_state_offset;
-    static int _flag_type_offset;
-    typedef HeapUsage (*HeapUsageFunc)(const void *);
-    static HeapUsageFunc _heap_usage_func;
-
-    typedef void *(*MemoryUsageFunc)(void *, void *, bool);
-    static MemoryUsageFunc _memory_usage_func;
-
-    typedef GCHeapSummary (*GCHeapSummaryFunc)(void *);
-    static GCHeapSummaryFunc _gc_heap_summary_func;
-
-    static IsValidMethodFunc _is_valid_method_func;
-  private:
-    static void initOffsets();
-    static void initJvmFunctions();
-    static void initUnsafeFunctions();
-    static void initCriticalJNINatives();
-
-    static void checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni, jmethodID method,
-                                  void *address);
-    static const void *findHeapUsageFunc();
-  public:
-    static void init(CodeCache* libjvm);
-    static bool isSafeToWalk(uintptr_t pc);
-
-    static void JNICALL NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni,
-                                        jthread thread, jmethodID method,
-                                        void *address, void **new_address_ptr);
-
-    inline static int thread_osthread_offset() {
-      return _thread_osthread_offset;
-    }
-
-    inline static int osthread_state_offset() {
-      return _osthread_state_offset;
-    }
-
-    inline static int osthread_id_offset() {
-      return _osthread_id_offset;
-    }
-
-    inline static int thread_state_offset() {
-      return _thread_state_offset;
-    }
-
-    inline static int flag_type_offset() {
-      return _flag_type_offset;
-    }
-    inline static int method_constmethod_offset() {
-      return _method_constmethod_offset;
-    }
-    inline static int constmethod_constants_offset() {
-      return _constmethod_constants_offset;
-    }
-    inline static int pool_holder_offset() {
-      return _pool_holder_offset;
-    }
-    inline static int class_loader_data_offset() {
-      return _class_loader_data_offset;
-    }
-    inline static IsValidMethodFunc is_valid_method_func() {
-      return _is_valid_method_func;
-    }
-
-  };
-
-  class VMMethod : public VMMethodBase {
+  class VMMethod : public ::VMMethod {
   private:
     static bool check_jmethodID_J9(jmethodID id);
     static bool check_jmethodID_hotspot(jmethodID id);
@@ -142,11 +68,11 @@ namespace ddprof {
     }
 
     OSThreadState osThreadState() {
-      if (ddprof::VMStructs::thread_osthread_offset() >= 0 && ddprof::VMStructs::osthread_state_offset() >= 0) {
-        const char *osthread = *(char **)at(ddprof::VMStructs::thread_osthread_offset());
+      if (VMStructs::thread_osthread_offset() >= 0 && VMStructs::osthread_state_offset() >= 0) {
+        const char *osthread = *(char **)at(VMStructs::thread_osthread_offset());
         if (osthread != nullptr) {
           // If the location is not accessible, the thread must have been terminated
-          int value = SafeAccess::safeFetch32((int*)(osthread + ddprof::VMStructs::osthread_state_offset()),
+          int value = SafeAccess::safeFetch32((int*)(osthread + VMStructs::osthread_state_offset()),
                                             static_cast<int>(OSThreadState::TERMINATED));
           // Checking for bad data
           if (value > static_cast<int>(OSThreadState::SYSCALL)) {
@@ -159,19 +85,19 @@ namespace ddprof {
     }
 
     int osThreadId() {
-      if (ddprof::VMStructs::thread_osthread_offset() >= 0 && ddprof::VMStructs::osthread_id_offset() >=0) {
-        const char* osthread = *(const char**) at(ddprof::VMStructs::thread_osthread_offset());
+      if (VMStructs::thread_osthread_offset() >= 0 && VMStructs::osthread_id_offset() >=0) {
+        const char* osthread = *(const char**) at(VMStructs::thread_osthread_offset());
         if (osthread == nullptr) {
           return -1;
         } else {
-          return SafeAccess::safeFetch32((int*)(osthread + ddprof::VMStructs::osthread_id_offset()), -1);
+          return SafeAccess::safeFetch32((int*)(osthread + VMStructs::osthread_id_offset()), -1);
         }
       }
       return -1;
     }
 
     int state() {
-      int offset = ddprof::VMStructs::thread_state_offset();
+      int offset = VMStructs::thread_state_offset();
       if (offset >= 0) {
           int* state = (int*)at(offset);
           if (state == nullptr) {
@@ -186,60 +112,6 @@ namespace ddprof {
           }
       }
       return 0;
-    }
-  };
-
-  class JVMFlag : public VMStructs {
-  private:
-    enum {
-        ORIGIN_DEFAULT = 0,
-        ORIGIN_MASK    = 15,
-        SET_ON_CMDLINE = 1 << 17
-    };
-    static JVMFlag* find(const char *name, int type_mask);
-  public:
-    enum Type {
-      Bool = 0,
-      Int = 1,
-      Uint = 2,
-      Intx = 3,
-      Uintx = 4,
-      Uint64_t = 5,
-      Size_t = 6,
-      Double = 7,
-      String = 8,
-      Stringlist = 9,
-      Unknown = -1
-    };
-
-    static JVMFlag* find(const char *name);
-    static JVMFlag *find(const char *name, std::initializer_list<Type> types);
-
-    const char *name() { return *(const char **)at(_flag_name_offset); }
-    int type();
-
-    void *addr() { return *(void **)at(_flag_addr_offset); }
-
-    char origin() {
-        return _flag_origin_offset >= 0 ? (*(char*) at(_flag_origin_offset)) & 15 : 0;
-    }
-
-    bool isDefault() {
-        return _flag_origin_offset < 0 || (*(int*) at(_flag_origin_offset) & ORIGIN_MASK) == ORIGIN_DEFAULT;
-    }
-
-    void setCmdline() {
-        if (_flag_origin_offset >= 0) {
-            *(int*) at(_flag_origin_offset) |= SET_ON_CMDLINE;
-        }
-    }
-
-    char get() {
-        return *((char*)addr());
-    }
-
-    void set(char value) {
-        *((char*)addr()) = value;
     }
   };
 

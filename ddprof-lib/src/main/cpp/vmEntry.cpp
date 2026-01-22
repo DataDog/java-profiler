@@ -303,7 +303,7 @@ bool VM::initShared(JavaVM* vm) {
     return false;
   }
 
-  ddprof::VMStructs::init(lib);
+  VMStructs::init(lib);
   if (isOpenJ9()) {
       Libraries* libraries = Libraries::instance();
       lib->mark(isOpenJ9InterpreterMethod, MARK_INTERPRETER);
@@ -405,7 +405,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.ThreadEnd = Profiler::ThreadEnd;
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
   callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;
-  callbacks.NativeMethodBind = ddprof::VMStructs::NativeMethodBind;
+  callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
@@ -424,7 +424,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   } else {
     // DebugNonSafepoints is automatically enabled with CompiledMethodLoad,
     // otherwise we set the flag manually
-    ddprof::JVMFlag* f = ddprof::JVMFlag::find("DebugNonSafepoints", {ddprof::JVMFlag::Type::Bool});
+    JVMFlag* f = JVMFlag::find("DebugNonSafepoints", {JVMFlag::Type::Bool});
     if (f != NULL && f->isDefault()) {
       f->set(1);
     }
@@ -434,7 +434,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   // profiler to avoid the risk of crashing flag was made obsolete (inert) in 15
   // (see JDK-8228991) and removed in 16 (see JDK-8231560)
   if (hotspot_version() < 15) {
-    ddprof::JVMFlag *f = ddprof::JVMFlag::find("UseAdaptiveGCBoundary", {ddprof::JVMFlag::Type::Bool});
+    JVMFlag *f = JVMFlag::find("UseAdaptiveGCBoundary", {JVMFlag::Type::Bool});
     _is_adaptive_gc_boundary_flag_set = f != NULL && f->get();
   }
 

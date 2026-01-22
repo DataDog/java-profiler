@@ -501,7 +501,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       return 1;
     }
 
-    if (!ddprof::VMStructs::isSafeToWalk(saved_pc)) {
+    if (!VMStructs::isSafeToWalk(saved_pc)) {
       frames->bci = BCI_NATIVE_FRAME;
       CodeBlob *codeBlob =
           VMStructs::libjvm()->findBlobByAddress((const void *)saved_pc);

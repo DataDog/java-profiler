@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026 Datadog, Inc
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -13,8 +14,16 @@
 #include "codeCache.h"
 #include "safeAccess.h"
 
+namespace ddprof {
+    class HeapUsage;
+}
+
+class GCHeapSummary;
 
 class VMStructs {
+  public:
+    typedef bool (*IsValidMethodFunc)(void *);
+
   protected:
     enum { MONITOR_BIT = 2 };
 
@@ -127,6 +136,18 @@ class VMStructs {
     static LockFunc _lock_func;
     static LockFunc _unlock_func;
 
+    // Datadog-specific extensions
+    static CodeCache _unsafe_to_walk;
+    static int _osthread_state_offset;
+    static int _flag_type_offset;
+    typedef ddprof::HeapUsage (*HeapUsageFunc)(const void *);
+    static HeapUsageFunc _heap_usage_func;
+    typedef void *(*MemoryUsageFunc)(void *, void *, bool);
+    static MemoryUsageFunc _memory_usage_func;
+    typedef GCHeapSummary (*GCHeapSummaryFunc)(void *);
+    static GCHeapSummaryFunc _gc_heap_summary_func;
+    static IsValidMethodFunc _is_valid_method_func;
+
     static uintptr_t readSymbol(const char* symbol_name);
     static void initOffsets();
     static void resolveOffsets();
@@ -134,6 +155,12 @@ class VMStructs {
     static void initJvmFunctions();
     static void initTLS(void* vm_thread);
     static void initThreadBridge();
+
+    // Datadog-specific private methods
+    static void initUnsafeFunctions();
+    static void initCriticalJNINatives();
+    static void checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni, jmethodID method, void *address);
+    static const void *findHeapUsageFunc();
 
     const char* at(int offset) {
         return (const char*)this + offset;
@@ -187,6 +214,52 @@ class VMStructs {
 
     static bool isInterpretedFrameValidFunc(const void* pc) {
         return pc >= _interpreted_frame_valid_start && pc < _interpreted_frame_valid_end;
+    }
+
+    // Datadog-specific extensions
+    static bool isSafeToWalk(uintptr_t pc);
+    static void JNICALL NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni,
+                                         jthread thread, jmethodID method,
+                                         void *address, void **new_address_ptr);
+
+    static int thread_osthread_offset() {
+        return _thread_osthread_offset;
+    }
+
+    static int osthread_state_offset() {
+        return _osthread_state_offset;
+    }
+
+    static int osthread_id_offset() {
+        return _osthread_id_offset;
+    }
+
+    static int thread_state_offset() {
+        return _thread_state_offset;
+    }
+
+    static int flag_type_offset() {
+        return _flag_type_offset;
+    }
+
+    static int method_constmethod_offset() {
+      return _method_constmethod_offset;
+    }
+
+    static int constmethod_constants_offset() {
+      return _constmethod_constants_offset;
+    }
+
+    static int pool_holder_offset() {
+      return _pool_holder_offset;
+    }
+
+    static int class_loader_data_offset() {
+      return _class_loader_data_offset;
+    }
+
+    static IsValidMethodFunc is_valid_method_func() {
+        return _is_valid_method_func;
     }
 };
 
@@ -346,7 +419,7 @@ class JavaFrameAnchor : VMStructs {
     }
 };
 
-class VMThread : VMStructs {
+class VMThread : public /* TODO make private when consolidating VMThread? */ VMStructs {
   public:
     static VMThread* current();
 
@@ -414,7 +487,7 @@ class VMThread : VMStructs {
     }
 };
 
-class VMMethod : VMStructs {
+class VMMethod : public /* TODO make private when consolidating VMMethod? */ VMStructs {
   public:
     jmethodID id();
 
@@ -619,16 +692,38 @@ class JVMFlag : VMStructs {
         ORIGIN_MASK    = 15,
         SET_ON_CMDLINE = 1 << 17
     };
+    static JVMFlag* find(const char *name, int type_mask);
 
   public:
+    enum Type {
+        Bool = 0,
+        Int = 1,
+        Uint = 2,
+        Intx = 3,
+        Uintx = 4,
+        Uint64_t = 5,
+        Size_t = 6,
+        Double = 7,
+        String = 8,
+        Stringlist = 9,
+        Unknown = -1
+    };
+
     static JVMFlag* find(const char* name);
+    static JVMFlag *find(const char* name, std::initializer_list<Type> types);
 
     const char* name() {
         return *(const char**) at(_flag_name_offset);
     }
 
-    char* addr() {
-        return *(char**) at(_flag_addr_offset);
+    int type();
+
+    void* addr() {
+        return *(void**) at(_flag_addr_offset);
+    }
+
+    char origin() {
+        return _flag_origin_offset >= 0 ? (*(char*) at(_flag_origin_offset)) & 15 : 0;
     }
 
     bool isDefault() {
@@ -642,11 +737,11 @@ class JVMFlag : VMStructs {
     }
 
     char get() {
-        return *addr();
+        return *((char*)addr());
     }
 
     void set(char value) {
-        *addr() = value;
+        *((char*)addr()) = value;
     }
 };
 
