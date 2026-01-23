@@ -40,7 +40,6 @@ OUTPUT FILES:
     JSON report:
         - Machine-readable format
         - Structured data for automation
-        - Used by Slack notifications
 
 EXAMPLES:
     # Basic usage
