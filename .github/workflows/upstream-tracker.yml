@@ -53,19 +53,24 @@ jobs:
       - name: Get last checked commit
         if: steps.clone-upstream.outcome == 'success'
         id: get-last-commit
-        env:
-          GITHUB_TOKEN: ${{ steps.octo-sts.outputs.token }}
         run: |
-          # Try to get the last commit from Actions variables
-          API_RESPONSE=$(gh api repos/${{ github.repository }}/actions/variables/UPSTREAM_LAST_COMMIT 2>&1 || true)
+          # Try to get the last commit from state file
+          STATE_FILE=".github/upstream-tracker-state.txt"
 
-          # Check if the response is valid JSON with a value field
-          LAST_COMMIT=$(echo "$API_RESPONSE" | jq -r '.value' 2>/dev/null || echo "")
+          if [ -f "$STATE_FILE" ]; then
+            LAST_COMMIT=$(cat "$STATE_FILE" | tr -d '[:space:]')
 
-          # Validate that LAST_COMMIT is a valid commit SHA (40 hex characters)
-          if ! echo "$LAST_COMMIT" | grep -qE '^[0-9a-f]{40}$'; then
-            echo "No valid last commit found (API response: ${API_RESPONSE:0:100})"
-            echo "First run detected, using current HEAD as baseline"
+            # Validate that LAST_COMMIT is a valid commit SHA (40 hex characters)
+            if ! echo "$LAST_COMMIT" | grep -qE '^[0-9a-f]{40}$'; then
+              echo "Invalid commit SHA in state file: ${LAST_COMMIT}"
+              echo "First run detected, using current HEAD as baseline"
+              LAST_COMMIT="${UPSTREAM_HEAD}"
+            else
+              echo "Last checked commit from state file: ${LAST_COMMIT}"
+            fi
+          else
+            echo "No state file found, first run detected"
+            echo "Using current HEAD as baseline"
             LAST_COMMIT="${UPSTREAM_HEAD}"
           fi
 
@@ -128,16 +133,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.octo-sts.outputs.token }}
         run: |
-          # Update the variable, creating it if it doesn't exist
-          gh api \
-            --method PATCH \
-            repos/${{ github.repository }}/actions/variables/UPSTREAM_LAST_COMMIT \
-            -f value="${UPSTREAM_HEAD}" \
-            2>/dev/null || \
-          gh api \
-            --method POST \
-            repos/${{ github.repository }}/actions/variables \
-            -f name=UPSTREAM_LAST_COMMIT \
-            -f value="${UPSTREAM_HEAD}"
+          # Update state file with current commit
+          STATE_FILE=".github/upstream-tracker-state.txt"
+          echo "${UPSTREAM_HEAD}" > "$STATE_FILE"
 
-          echo "Updated last checked commit to ${UPSTREAM_HEAD}"
+          # Commit and push the state file
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$STATE_FILE"
+
+          if git diff --staged --quiet; then
+            echo "No changes to state file"
+          else
+            git commit -m "Update upstream tracker state to ${UPSTREAM_HEAD:0:7}
+
+Automated commit by upstream-tracker workflow to persist last checked commit."
+            git push origin main
+            echo "Updated last checked commit to ${UPSTREAM_HEAD}"
+          fi
