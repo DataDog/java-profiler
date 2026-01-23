@@ -73,6 +73,8 @@ class VMStructs {
     static int _constmethod_constants_offset;
     static int _constmethod_idnum_offset;
     static int _constmethod_size;
+    static int _constmethod_flags_offset;
+    static int _constmethod_code_size;
     static int _pool_holder_offset;
     static int _array_len_offset;
     static int _array_data_offset;
@@ -414,6 +416,31 @@ class VMThread : VMStructs {
     }
 };
 
+// constMethod
+class VMConstMethod : VMStructs {
+  public:
+    bool has_linenumber_table() {
+        unsigned int flags = *(unsigned int*)at(_constmethod_flags_offset);
+        return (flags & 0x01) == 0x01;
+    }
+
+    unsigned short code_size() {
+        return *(unsigned short*)at(_constmethod_code_size);
+    }
+
+    int size() {
+        return *(int*)at(_constmethod_size);
+    }
+
+    bool get_linenumber_table(jint* entry_count_ptr, jvmtiLineNumberEntry** table_ptr);
+
+private:
+    unsigned char* code_base() const {
+        return (unsigned char*)(this + 1);
+    }
+};
+
+
 class VMMethod : VMStructs {
   public:
     jmethodID id();
@@ -432,9 +459,15 @@ class VMMethod : VMStructs {
         return *(const char**) at(_method_constmethod_offset) + _constmethod_size;
     }
 
+    VMConstMethod* constMethod() {
+        return *(VMConstMethod**)at(_method_constmethod_offset);
+    }
+
     NMethod* code() {
         return *(NMethod**) at(_method_code_offset);
     }
+
+    VMKlass* method_holder();
 };
 
 class NMethod : VMStructs {

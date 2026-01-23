@@ -537,7 +537,11 @@ void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
     jclass *classes;
     if (jvmti->GetLoadedClasses(&class_count, &classes) == 0) {
       for (int i = 0; i < class_count; i++) {
-        loadMethodIDs(jvmti, jni, classes[i]);
+        jclass klass = classes[i];
+        // Only populates jmethodID for classes loaded by a unknown classloader
+        if (!ddprof::ClassLoader::loaded_by_known_classloader(jni, klass)) {
+          loadMethodIDs(jvmti, jni, classes[i]);
+        }
       }
       jvmti->Deallocate((unsigned char *)classes);
     }

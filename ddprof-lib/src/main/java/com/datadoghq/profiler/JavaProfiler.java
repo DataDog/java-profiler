@@ -318,6 +318,11 @@ public final class JavaProfiler {
     private native void stop0() throws IllegalStateException;
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
 
+    // Populates platform and application classloaders
+    private void populateClassloaders() {
+        populateClassloaders0(ClassLoader.getPlatformClassLoader().getClass(), ClassLoader.getSystemClassLoader().getClass());
+    }
+
     private static native void filterThreadAdd0();
     private static native void filterThreadRemove0();
 
@@ -346,6 +351,8 @@ public final class JavaProfiler {
     private static native String getStatus0();
 
     private static native ByteBuffer initializeContextTls0(int[] offsets);
+
+    private static native void populateClassloaders0(Class platformClassLoader, Class applicationClassLoader);
 
     public ThreadContext getThreadContext() {
         return tlsContextStorage.get();

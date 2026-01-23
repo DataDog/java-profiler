@@ -36,7 +36,9 @@ namespace ddprof {
   VMStructs_::MemoryUsageFunc VMStructs_::_memory_usage_func = NULL;
   VMStructs_::GCHeapSummaryFunc VMStructs_::_gc_heap_summary_func = NULL;
   VMStructs_::IsValidMethodFunc VMStructs_::_is_valid_method_func = NULL;
-
+  ::VMKlass** BootstrapClassLoader::_object_klass_addr = nullptr;
+  ::VMKlass* PlatformClassLoader::_class_loader = nullptr;
+  ::VMKlass* ApplicationClassLoader::_class_loader = nullptr;
 
   // Run at agent load time
   void VMStructs_::init(CodeCache* libjvm) {
@@ -66,6 +68,13 @@ namespace ddprof {
         break;
       }
 
+      if (strcmp(type, "vmClasses") == 0) {
+        // java/lang/Object must be loaded by bootstrap class loader, we use it to locate
+        // its CLD
+        if (strcmp(field, "_klasses[static_cast<int>(vmClassID::Object_klass_knum)]") == 0) {
+          BootstrapClassLoader::set_object_klass_location(*(::VMKlass***)(entry + address_offset));
+        }
+      }
       if (strcmp(type, "OSThread") == 0) {
         if (strcmp(field, "_state") == 0) {
           TEST_LOG("Setting _osthread_state_offset value");

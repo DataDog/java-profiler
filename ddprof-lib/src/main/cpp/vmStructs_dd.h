@@ -118,7 +118,6 @@ namespace ddprof {
   // Copied from JDK's globalDefinitions.hpp 'JavaThreadState' enum
   enum JVMJavaThreadState {
     _thread_uninitialized     =  0, // should never happen (missing initialization)
-    _thread_new               =  2, // just starting up, i.e., in process of being initialized
     _thread_new_trans         =  3, // corresponding transition state (not used, included for completeness)
     _thread_in_native         =  4, // running in native code
     _thread_in_native_trans   =  5, // corresponding transition state
@@ -187,6 +186,83 @@ namespace ddprof {
       }
       return 0;
     }
+  };
+
+  // Bootstrape class loader is immortal. Therefore, classes/methods
+  // that are loaded by it, are safe to walk.
+  class BootstrapClassLoader : public ::VMStructs {
+    private:
+      // java.lang.Object must be loaded by bootstrap class loader.
+      // _object_klass points to java/lang/Object instanceKlass stored in vmClasses,
+      // and we use it to figure out if classes/methods are loaded by bootstrap classloader
+      static ::VMKlass** _object_klass_addr;
+    
+    public:
+      static void set_object_klass_location(::VMKlass** addr) {
+        _object_klass_addr = addr;
+      }
+
+      // If a Method is loaded by BootstrapClassLoader
+      static bool loaded_by(::VMMethod* method) {
+        return loaded_by(method->method_holder());
+      }
+
+      static bool loaded_by(::VMKlass* klass) {
+        VMKlass* object_klass = *_object_klass_addr;
+        assert(object_klass != nullptr);
+        assert(klass != nullptr);
+        return object_klass->classLoaderData() == klass->classLoaderData();
+      }
+  };
+
+  class PlatformClassLoader : public ::VMStructs {
+    private:
+      static ::VMKlass* _class_loader;
+    
+    public:
+      static void set_platform_classloader(JNIEnv* env, jclass cls) {
+        _class_loader = ::VMKlass::fromJavaClass(env, cls);
+      }
+      static bool loaded_by(::VMKlass* klass) {
+        return _class_loader != nullptr && _class_loader->classLoaderData() == klass->classLoaderData();
+      }
+      static bool loaded_by(::VMMethod* method) {
+        return loaded_by(method->method_holder());
+      }
+  };
+
+  class ApplicationClassLoader : public ::VMStructs {
+    private:
+      static ::VMKlass* _class_loader;
+    
+    public:
+      static void set_application_classloader(JNIEnv* env, jclass cls) {
+        _class_loader = ::VMKlass::fromJavaClass(env, cls);
+      }
+
+      static bool loaded_by(::VMKlass* klass) {
+        return _class_loader != nullptr && _class_loader->classLoaderData() == klass->classLoaderData();
+      }
+
+      static bool loaded_by(::VMMethod* method) {
+        return loaded_by(method->method_holder());
+      }
+  };
+
+  class ClassLoader {
+    public:
+      static bool loaded_by_known_classloader(JNIEnv* env, jclass cls) {
+        ::VMKlass* klass = ::VMKlass::fromJavaClass(env, cls);
+        return BootstrapClassLoader::loaded_by(klass) ||
+               PlatformClassLoader::loaded_by(klass) ||
+               ApplicationClassLoader::loaded_by(klass);
+      }
+
+      static bool loaded_by_known_classloader(::VMMethod* method) {
+        return BootstrapClassLoader::loaded_by(method) ||
+               PlatformClassLoader::loaded_by(method) ||
+               ApplicationClassLoader::loaded_by(method);
+      }
   };
 
   class JVMFlag : public VMStructs {
