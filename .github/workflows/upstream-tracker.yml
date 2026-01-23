@@ -120,18 +120,27 @@ jobs:
 
       - name: Update last checked commit
         if: success() && steps.clone-upstream.outcome == 'success'
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh api \
+          # Try to update the variable, but don't fail the workflow if we can't
+          if gh api \
             --method PATCH \
             repos/${{ github.repository }}/actions/variables/UPSTREAM_LAST_COMMIT \
             -f value="${UPSTREAM_HEAD}" \
-            2>/dev/null || \
-          gh api \
+            2>/dev/null; then
+            echo "Updated last checked commit to ${UPSTREAM_HEAD}"
+          elif gh api \
             --method POST \
             repos/${{ github.repository }}/actions/variables \
             -f name=UPSTREAM_LAST_COMMIT \
-            -f value="${UPSTREAM_HEAD}"
-
-          echo "Updated last checked commit to ${UPSTREAM_HEAD}"
+            -f value="${UPSTREAM_HEAD}" \
+            2>/dev/null; then
+            echo "Created last checked commit variable with value ${UPSTREAM_HEAD}"
+          else
+            echo "::warning::Unable to persist last checked commit. This may be due to insufficient repository Actions permissions."
+            echo "::warning::The workflow will continue to work but will always compare from the current HEAD as baseline."
+            echo "::warning::To enable state persistence, a repository admin needs to configure Actions permissions."
+            exit 1
+          fi
