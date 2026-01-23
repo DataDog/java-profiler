@@ -100,10 +100,16 @@ jobs:
           fi
 
       - name: Create GitHub Issue
-        if: (steps.track-changes.outputs.has_changes == 'true' || inputs.force_report) && steps.clone-upstream.outcome == 'success'
+        if: steps.track-changes.outputs.has_changes == 'true' && steps.clone-upstream.outcome == 'success'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Verify report file exists before creating issue
+          if [ ! -f /tmp/change_report.md ]; then
+            echo "Error: Report file not found, skipping issue creation"
+            exit 0
+          fi
+
           ISSUE_TITLE="Upstream async-profiler changes detected ($(date +%Y-%m-%d))"
 
           gh issue create \
