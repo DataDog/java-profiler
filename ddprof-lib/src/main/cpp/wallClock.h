@@ -15,7 +15,7 @@
 #include "threadFilter.h"
 #include "threadState.h"
 #include "tsc.h"
-#include "vmStructs_dd.h"
+#include "vmStructs.h"
 
 class BaseWallClock : public Engine {
   private:

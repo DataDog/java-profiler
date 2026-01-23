@@ -14,12 +14,10 @@
 #include "codeCache.h"
 #include "safeAccess.h"
 #include "threadState.h"
-
-namespace ddprof {
-    class HeapUsage;
-}
+#include "vmEntry.h"
 
 class GCHeapSummary;
+class HeapUsage;
 
 class VMStructs {
   public:
@@ -141,7 +139,7 @@ class VMStructs {
     static CodeCache _unsafe_to_walk;
     static int _osthread_state_offset;
     static int _flag_type_offset;
-    typedef ddprof::HeapUsage (*HeapUsageFunc)(const void *);
+    typedef HeapUsage (*HeapUsageFunc)(const void *);
     static HeapUsageFunc _heap_usage_func;
     typedef void *(*MemoryUsageFunc)(void *, void *, bool);
     static MemoryUsageFunc _memory_usage_func;
@@ -264,6 +262,30 @@ class VMStructs {
     }
 };
 
+class HeapUsage : VMStructs {
+private:
+    static bool is_jmx_attempted;
+    static bool is_jmx_supported; // default to not-supported
+public:
+    size_t _initSize = -1;
+    size_t _used = -1;
+    size_t _committed = -1;
+    size_t _maxSize = -1;
+    size_t _used_at_last_gc = -1;
+
+    static void initJMXUsage(JNIEnv* env);
+
+    static bool isJMXSupported() {
+        initJMXUsage(VM::jni());
+        return is_jmx_supported;
+    }
+
+    static bool isLastGCUsageSupported();
+    static bool needsNativeBindingInterception();
+    static jlong getMaxHeap(JNIEnv *env);
+    static HeapUsage get();
+    static HeapUsage get(bool allow_jmx);
+};
 
 class MethodList {
   public:

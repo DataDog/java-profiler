@@ -15,7 +15,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "safeAccess.h"
-#include "vmStructs_dd.h"
+#include "vmStructs.h"
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
@@ -372,7 +372,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
       (!_hotspot || hotspot_version() >= 11);
   _can_intercept_binding =
       potential_capabilities.can_generate_native_method_bind_events &&
-      ddprof::HeapUsage::needsNativeBindingInterception();
+      HeapUsage::needsNativeBindingInterception();
 
   jvmtiCapabilities capabilities = {0};
   capabilities.can_generate_all_class_hook_events = 1;
@@ -548,7 +548,7 @@ void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     loadAllMethodIDs(jvmti, jni);
 
     // initialize the heap usage tracking only after the VM is ready
-    ddprof::HeapUsage::initJMXUsage(VM::jni());
+    HeapUsage::initJMXUsage(VM::jni());
 
     // Delayed start of profiler if agent has been loaded at VM bootstrap
     Error error = Profiler::instance()->run(_agent_args);

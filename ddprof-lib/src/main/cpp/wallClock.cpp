@@ -14,7 +14,7 @@
 #include "stackFrame.h"
 #include "thread.h"
 #include "threadState.h"
-#include "vmStructs_dd.h"
+#include "vmStructs.h"
 #include "criticalSection.h"
 #include <math.h>
 #include <random>

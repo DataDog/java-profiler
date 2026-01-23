@@ -26,7 +26,7 @@
 #include "threadFilter.h"
 #include "threadState.h"
 #include "tsc.h"
-#include "vmStructs_dd.h"
+#include "vmStructs.h"
 #include <arpa/inet.h>
 #include <cxxabi.h>
 #include <errno.h>

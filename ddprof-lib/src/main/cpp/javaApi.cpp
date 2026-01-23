@@ -28,7 +28,7 @@
 #include "thread.h"
 #include "tsc.h"
 #include "vmEntry.h"
-#include "vmStructs_dd.h"
+#include "vmStructs.h"
 #include "wallClock.h"
 #include <errno.h>
 #include <fstream>
