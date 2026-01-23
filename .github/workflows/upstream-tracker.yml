@@ -13,13 +13,18 @@ on:
 permissions:
   contents: read
   issues: write
-  actions: write
-  # Note: Actions variables API requires repository-level Actions permissions
+  id-token: write # Needed for octo-sts token federation
 
 jobs:
   track-upstream:
     runs-on: ubuntu-latest
     steps:
+      - uses: DataDog/dd-octo-sts-action@acaa02eee7e3bb0839e4272dacb37b8f3b58ba80 # v1.0.3
+        id: octo-sts
+        with:
+          scope: DataDog/java-profiler
+          policy: self.upstream-tracker.manage-variables
+
       - name: Checkout repository
         uses: actions/checkout@v3
 
@@ -49,7 +54,7 @@ jobs:
         if: steps.clone-upstream.outcome == 'success'
         id: get-last-commit
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.octo-sts.outputs.token }}
         run: |
           # Try to get the last commit from Actions variables
           API_RESPONSE=$(gh api repos/${{ github.repository }}/actions/variables/UPSTREAM_LAST_COMMIT 2>&1 || true)
@@ -102,7 +107,7 @@ jobs:
       - name: Create GitHub Issue
         if: steps.track-changes.outputs.has_changes == 'true' && steps.clone-upstream.outcome == 'success'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.octo-sts.outputs.token }}
         run: |
           # Verify report file exists before creating issue
           if [ ! -f /tmp/change_report.md ]; then
@@ -120,27 +125,19 @@ jobs:
 
       - name: Update last checked commit
         if: success() && steps.clone-upstream.outcome == 'success'
-        continue-on-error: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.octo-sts.outputs.token }}
         run: |
-          # Try to update the variable, but don't fail the workflow if we can't
-          if gh api \
+          # Update the variable, creating it if it doesn't exist
+          gh api \
             --method PATCH \
             repos/${{ github.repository }}/actions/variables/UPSTREAM_LAST_COMMIT \
             -f value="${UPSTREAM_HEAD}" \
-            2>/dev/null; then
-            echo "Updated last checked commit to ${UPSTREAM_HEAD}"
-          elif gh api \
+            2>/dev/null || \
+          gh api \
             --method POST \
             repos/${{ github.repository }}/actions/variables \
             -f name=UPSTREAM_LAST_COMMIT \
-            -f value="${UPSTREAM_HEAD}" \
-            2>/dev/null; then
-            echo "Created last checked commit variable with value ${UPSTREAM_HEAD}"
-          else
-            echo "::warning::Unable to persist last checked commit. This may be due to insufficient repository Actions permissions."
-            echo "::warning::The workflow will continue to work but will always compare from the current HEAD as baseline."
-            echo "::warning::To enable state persistence, a repository admin needs to configure Actions permissions."
-            exit 1
-          fi
+            -f value="${UPSTREAM_HEAD}"
+
+          echo "Updated last checked commit to ${UPSTREAM_HEAD}"
