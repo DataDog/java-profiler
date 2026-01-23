@@ -1,0 +1,124 @@
+name: Upstream Async-Profiler Change Tracker
+
+on:
+  schedule:
+    - cron: '0 3 * * *'  # Daily at 3 AM UTC
+  workflow_dispatch:
+    inputs:
+      force_report:
+        description: 'Generate report even if no changes detected'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+  actions: write
+
+jobs:
+  track-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Clone upstream async-profiler
+        id: clone-upstream
+        continue-on-error: true
+        run: |
+          git clone --depth 50 https://github.com/async-profiler/async-profiler.git /tmp/async-profiler
+          cd /tmp/async-profiler
+          git fetch origin master
+          UPSTREAM_HEAD=$(git rev-parse origin/master)
+          echo "UPSTREAM_HEAD=${UPSTREAM_HEAD}" >> $GITHUB_ENV
+          echo "Upstream HEAD: ${UPSTREAM_HEAD}"
+
+      - name: Handle clone failure
+        if: steps.clone-upstream.outcome == 'failure'
+        run: |
+          echo "::warning::Failed to clone upstream repository. Will retry on next run."
+          exit 0
+
+      - name: Get last checked commit
+        if: steps.clone-upstream.outcome == 'success'
+        id: get-last-commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LAST_COMMIT=$(gh api repos/${{ github.repository }}/actions/variables/UPSTREAM_LAST_COMMIT --jq '.value' 2>/dev/null || echo "")
+
+          if [ -z "$LAST_COMMIT" ]; then
+            echo "First run detected, using current HEAD as baseline"
+            LAST_COMMIT="${UPSTREAM_HEAD}"
+          fi
+
+          echo "last_commit=${LAST_COMMIT}" >> $GITHUB_OUTPUT
+          echo "Last checked commit: ${LAST_COMMIT}"
+
+      - name: Generate tracked files list
+        if: steps.clone-upstream.outcome == 'success'
+        id: tracked-files
+        run: |
+          ./utils/generate_tracked_files.sh \
+            ddprof-lib/src/main/cpp \
+            /tmp/async-profiler/src \
+            > /tmp/tracked_files.txt
+
+          echo "Tracking $(wc -l < /tmp/tracked_files.txt) files"
+          cat /tmp/tracked_files.txt
+
+      - name: Track upstream changes
+        if: steps.clone-upstream.outcome == 'success'
+        id: track-changes
+        run: |
+          ./utils/track_upstream_changes.sh \
+            /tmp/async-profiler \
+            "${{ steps.get-last-commit.outputs.last_commit }}" \
+            "${{ env.UPSTREAM_HEAD }}" \
+            /tmp/tracked_files.txt \
+            /tmp/change_report.md \
+            /tmp/change_report.json
+
+          if [ -f /tmp/change_report.json ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Changes detected!"
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No changes detected"
+          fi
+
+      - name: Create GitHub Issue
+        if: (steps.track-changes.outputs.has_changes == 'true' || inputs.force_report) && steps.clone-upstream.outcome == 'success'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE_TITLE="Upstream async-profiler changes detected ($(date +%Y-%m-%d))"
+
+          gh issue create \
+            --title "$ISSUE_TITLE" \
+            --body-file /tmp/change_report.md \
+            --label "upstream-tracking,needs-review" \
+            --repo ${{ github.repository }}
+
+      - name: Update last checked commit
+        if: success() && steps.clone-upstream.outcome == 'success'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api \
+            --method PATCH \
+            repos/${{ github.repository }}/actions/variables/UPSTREAM_LAST_COMMIT \
+            -f value="${UPSTREAM_HEAD}" \
+            2>/dev/null || \
+          gh api \
+            --method POST \
+            repos/${{ github.repository }}/actions/variables \
+            -f name=UPSTREAM_LAST_COMMIT \
+            -f value="${UPSTREAM_HEAD}"
+
+          echo "Updated last checked commit to ${UPSTREAM_HEAD}"
