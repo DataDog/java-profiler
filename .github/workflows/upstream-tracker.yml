@@ -54,23 +54,29 @@ jobs:
         if: steps.clone-upstream.outcome == 'success'
         id: get-last-commit
         run: |
-          # Try to get the last commit from state file
-          STATE_FILE=".github/upstream-tracker-state.txt"
+          # Try to get the last commit from gh-pages branch
+          STATE_FILE="upstream-tracker-state.txt"
 
-          if [ -f "$STATE_FILE" ]; then
-            LAST_COMMIT=$(cat "$STATE_FILE" | tr -d '[:space:]')
+          # Fetch gh-pages branch
+          if git fetch origin gh-pages:gh-pages 2>/dev/null; then
+            # Check if state file exists in gh-pages
+            if git show gh-pages:"$STATE_FILE" 2>/dev/null > /tmp/state.txt; then
+              LAST_COMMIT=$(cat /tmp/state.txt | tr -d '[:space:]')
 
-            # Validate that LAST_COMMIT is a valid commit SHA (40 hex characters)
-            if ! echo "$LAST_COMMIT" | grep -qE '^[0-9a-f]{40}$'; then
-              echo "Invalid commit SHA in state file: ${LAST_COMMIT}"
-              echo "First run detected, using current HEAD as baseline"
-              LAST_COMMIT="${UPSTREAM_HEAD}"
+              # Validate that LAST_COMMIT is a valid commit SHA (40 hex characters)
+              if ! echo "$LAST_COMMIT" | grep -qE '^[0-9a-f]{40}$'; then
+                echo "Invalid commit SHA in state file: ${LAST_COMMIT}"
+                echo "First run detected, using current HEAD as baseline"
+                LAST_COMMIT="${UPSTREAM_HEAD}"
+              else
+                echo "Last checked commit from gh-pages: ${LAST_COMMIT}"
+              fi
             else
-              echo "Last checked commit from state file: ${LAST_COMMIT}"
+              echo "No state file in gh-pages, first run detected"
+              LAST_COMMIT="${UPSTREAM_HEAD}"
             fi
           else
-            echo "No state file found, first run detected"
-            echo "Using current HEAD as baseline"
+            echo "gh-pages branch not found, first run detected"
             LAST_COMMIT="${UPSTREAM_HEAD}"
           fi
 
@@ -133,21 +139,32 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.octo-sts.outputs.token }}
         run: |
-          # Update state file with current commit
-          STATE_FILE=".github/upstream-tracker-state.txt"
-          echo "${UPSTREAM_HEAD}" > "$STATE_FILE"
+          # Update state file in gh-pages branch
+          STATE_FILE="upstream-tracker-state.txt"
 
-          # Commit and push the state file
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Fetch or create gh-pages branch
+          if git fetch origin gh-pages:gh-pages 2>/dev/null; then
+            git checkout gh-pages
+          else
+            echo "Creating new gh-pages branch"
+            git checkout --orphan gh-pages
+            git rm -rf . 2>/dev/null || true
+          fi
+
+          # Update state file
+          echo "${UPSTREAM_HEAD}" > "$STATE_FILE"
           git add "$STATE_FILE"
 
           if git diff --staged --quiet; then
             echo "No changes to state file"
           else
-            git commit -m "Update upstream tracker state to ${UPSTREAM_HEAD:0:7}
-
-Automated commit by upstream-tracker workflow to persist last checked commit."
-            git push origin main
+            git commit -m "Update upstream tracker state to ${UPSTREAM_HEAD:0:7}"
+            git push origin gh-pages
             echo "Updated last checked commit to ${UPSTREAM_HEAD}"
           fi
+
+          # Return to main branch
+          git checkout main
