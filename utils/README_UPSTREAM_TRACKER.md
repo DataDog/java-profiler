@@ -94,7 +94,6 @@ gh workflow run upstream-tracker.yml -f force_report=true
 ### JSON Report
 - Machine-readable format for automation
 - Contains file list, commit counts, date ranges
-- Used by Slack notification formatting
 
 ## Example Output
 
