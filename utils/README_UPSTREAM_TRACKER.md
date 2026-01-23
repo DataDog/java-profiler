@@ -69,8 +69,28 @@ A GitHub Actions workflow runs daily at 3 AM UTC (see `.github/workflows/upstrea
 
 - Compares against async-profiler master branch HEAD
 - Creates GitHub issues with labels: `upstream-tracking`, `needs-review`
-- Posts notifications to Slack
+- Posts notifications to Slack (if configured)
 - Tracks state using GitHub repository variable: `UPSTREAM_LAST_COMMIT`
+
+### Required Configuration
+
+**GitHub Secret: SLACK_WEBHOOK**
+- The workflow requires a Slack Incoming Webhook URL
+- The webhook URL determines which Slack channel receives notifications
+- If not configured, the workflow will skip Slack notifications with a warning
+
+To set up:
+1. Create a Slack Incoming Webhook in your workspace
+2. Configure it to post to your desired channel
+3. Add the webhook URL as a repository secret named `SLACK_WEBHOOK`
+
+```bash
+# Add the secret via gh CLI
+gh secret set SLACK_WEBHOOK
+# Paste the webhook URL when prompted
+```
+
+**Note**: The workflow will continue successfully even if Slack notifications fail.
 
 **Manual trigger:**
 ```bash

@@ -107,7 +107,14 @@ jobs:
 
       - name: Post to Slack
         if: (steps.track-changes.outputs.has_changes == 'true' || inputs.force_report) && steps.clone-upstream.outcome == 'success'
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
         run: |
+          if [ -z "$SLACK_WEBHOOK" ]; then
+            echo "::warning::SLACK_WEBHOOK secret not configured, skipping Slack notification"
+            exit 0
+          fi
+
           SUMMARY=$(jq -r '.summary' /tmp/change_report.json)
           FILES_CHANGED=$(jq -r '.files_changed' /tmp/change_report.json)
           COMMIT_COUNT=$(jq -r '.commit_count' /tmp/change_report.json)
@@ -166,9 +173,11 @@ jobs:
           EOF
           )
 
-          curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+          curl -X POST "$SLACK_WEBHOOK" \
                -H 'Content-Type: application/json' \
-               -d "$SLACK_PAYLOAD"
+               -d "$SLACK_PAYLOAD" || {
+            echo "::warning::Failed to post to Slack, but continuing workflow"
+          }
 
       - name: Update last checked commit
         if: success() && steps.clone-upstream.outcome == 'success'
