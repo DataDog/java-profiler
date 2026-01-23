@@ -373,6 +373,11 @@ void CodeCache::setDwarfTable(FrameDesc *table, int length) {
 }
 
 FrameDesc CodeCache::findFrameDesc(const void *pc) {
+  // Check if DWARF table is missing or empty - return no_dwarf_frame to signal fallback
+  if (_dwarf_table == NULL || _dwarf_table_length == 0) {
+    return FrameDesc::no_dwarf_frame;
+  }
+
   u32 target_loc = (const char *)pc - _text_base;
   int low = 0;
   int high = _dwarf_table_length - 1;

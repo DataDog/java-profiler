@@ -81,6 +81,7 @@ struct FrameDesc {
     static FrameDesc empty_frame;
     static FrameDesc default_frame;
     static FrameDesc default_clang_frame;
+    static FrameDesc no_dwarf_frame;
 
     static int comparator(const void* p1, const void* p2) {
         FrameDesc* fd1 = (FrameDesc*)p1;

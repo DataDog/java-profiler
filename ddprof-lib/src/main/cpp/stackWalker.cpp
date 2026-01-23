@@ -507,10 +507,39 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     }
                 }
                 const char* prev_symbol = prev_native_pc != NULL ? profiler->findNativeMethod(prev_native_pc) : NULL;
-                if (prev_symbol != NULL && strstr(prev_symbol, "thread_start")) {
-                    // Unwinding from Rust 'thread_start' but not having enough info to do it correctly
-                    // Rather, just assume that this is the root frame
-                    break;
+                if (prev_symbol != NULL) {
+                    // Check for Rust thread roots
+                    if (strstr(prev_symbol, "thread_start")) {
+                        // Unwinding from Rust 'thread_start' but not having enough info to do it correctly
+                        // Rather, just assume that this is the root frame
+                        break;
+                    }
+                    // Check for JVM thread entry points - treat as root frames
+                    if (strstr(prev_symbol, "thread_native_entry") ||
+                        strstr(prev_symbol, "JavaThread::") ||
+                        strstr(prev_symbol, "_ZN10JavaThread")) {
+                        // Previous frame is thread entry - current frame is root, stop here
+                        break;
+                    }
+                }
+                // Before giving up, check if current PC is actually a thread entry point
+                if (method_name == NULL) {
+                    CodeCache* cc_check = profiler->findLibraryByAddress(pc);
+                    if (cc_check != NULL) {
+                        // Try to find symbol via CodeCache when normal resolution failed
+                        CodeBlob* blob = cc_check->findBlobByAddress(pc);
+                        if (blob != NULL && blob->_name != NULL) {
+                            const char* name = blob->_name;
+                            // Check if this is a JVM thread entry point
+                            if (strstr(name, "thread_native_entry") ||
+                                strstr(name, "JavaThread::") ||
+                                strstr(name, "_ZN10JavaThread")) {
+                                // Recovered thread entry symbol - this is the root frame
+                                fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
+                                break;
+                            }
+                        }
+                    }
                 }
                 if (Symbols::isLibcOrPthreadAddress((uintptr_t)pc)) {
                     // We might not have the libc symbols available

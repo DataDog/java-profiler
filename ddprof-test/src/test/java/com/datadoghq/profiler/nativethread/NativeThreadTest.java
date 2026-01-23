@@ -28,8 +28,14 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 import java.util.HashMap;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/**
+ * Tests native thread profiling to ensure proper stack unwinding without error frames.
+ * This test validates Theory 1 (thread entry point detection) by verifying that
+ * native threads no longer produce break_no_anchor or other error frames.
+ */
 public class NativeThreadTest extends AbstractProfilerTest {
 
 
@@ -49,13 +55,26 @@ public class NativeThreadTest extends AbstractProfilerTest {
           NativeThreadCreator.waitNativeThread(threads[index]);
       }
       stopProfiler();
+
       int count = 0;
+      int totalSamples = 0;
       boolean stacktrace_printed = false;
+
       for (IItemIterable cpuSamples : verifyEvents("datadog.ExecutionSample")) {
           IMemberAccessor<String, IItem> stacktraceAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
           IMemberAccessor<String, IItem> modeAccessor = THREAD_EXECUTION_MODE.getAccessor(cpuSamples.getType());
+
           for (IItem item : cpuSamples) {
               String stacktrace = stacktraceAccessor.getMember(item);
+              totalSamples++;
+
+              // Primary verification: Assert NO error frames in any sample
+              assertFalse(stacktrace.contains("break_no_anchor"),
+                  "Found break_no_anchor error frame in stacktrace: " + stacktrace);
+              assertFalse(stacktrace.contains("no_Java_frame"),
+                  "Found no_Java_frame error in stacktrace: " + stacktrace);
+
+              // Secondary verification: Check for expected native frames
               if (stacktrace.indexOf("do_primes()") != -1) {
                 if (!stacktrace_printed) {
                     stacktrace_printed = true;
@@ -66,6 +85,8 @@ public class NativeThreadTest extends AbstractProfilerTest {
               }
           }
       }
+
+      System.out.println("Total samples: " + totalSamples + ", samples with do_primes(): " + count);
       assertTrue(count > 0, "no native thread sample");
   }
 
