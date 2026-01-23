@@ -215,6 +215,56 @@ namespace ddprof {
       }
   };
 
+  class PlatformClassLoader : public ::VMStructs {
+    private:
+      static ::VMKlass* _class_loader;
+    
+    public:
+      static void set_platform_classloader(JNIEnv* env, jclass cls) {
+        _class_loader = ::VMKlass::fromJavaClass(env, cls);
+      }
+      static bool loaded_by(::VMKlass* klass) {
+        return _class_loader != nullptr && _class_loader->classLoaderData() == klass->classLoaderData();
+      }
+      static bool loaded_by(::VMMethod* method) {
+        return loaded_by(method->method_holder());
+      }
+  };
+
+  class ApplicationClassLoader : public ::VMStructs {
+    private:
+      static ::VMKlass* _class_loader;
+    
+    public:
+      static void set_application_classloader(JNIEnv* env, jclass cls) {
+        _class_loader = ::VMKlass::fromJavaClass(env, cls);
+      }
+
+      static bool loaded_by(::VMKlass* klass) {
+        return _class_loader != nullptr && _class_loader->classLoaderData() == klass->classLoaderData();
+      }
+
+      static bool loaded_by(::VMMethod* method) {
+        return loaded_by(method->method_holder());
+      }
+  };
+
+  class ClassLoader {
+    public:
+      static bool loaded_by_known_classloader(JNIEnv* env, jclass cls) {
+        ::VMKlass* klass = ::VMKlass::fromJavaClass(env, cls);
+        return BootstrapClassLoader::loaded_by(klass) ||
+               PlatformClassLoader::loaded_by(klass) ||
+               ApplicationClassLoader::loaded_by(klass);
+      }
+
+      static bool loaded_by_known_classloader(::VMMethod* method) {
+        return BootstrapClassLoader::loaded_by(method) ||
+               PlatformClassLoader::loaded_by(method) ||
+               ApplicationClassLoader::loaded_by(method);
+      }
+  };
+
   class JVMFlag : public VMStructs {
   private:
     enum {

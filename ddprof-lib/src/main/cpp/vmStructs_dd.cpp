@@ -36,8 +36,9 @@ namespace ddprof {
   VMStructs_::MemoryUsageFunc VMStructs_::_memory_usage_func = NULL;
   VMStructs_::GCHeapSummaryFunc VMStructs_::_gc_heap_summary_func = NULL;
   VMStructs_::IsValidMethodFunc VMStructs_::_is_valid_method_func = NULL;
-  VMKlass** BootstrapClassLoader::_object_klass_addr = nullptr;
-
+  ::VMKlass** BootstrapClassLoader::_object_klass_addr = nullptr;
+  ::VMKlass* PlatformClassLoader::_class_loader = nullptr;
+  ::VMKlass* ApplicationClassLoader::_class_loader = nullptr;
 
   // Run at agent load time
   void VMStructs_::init(CodeCache* libjvm) {
