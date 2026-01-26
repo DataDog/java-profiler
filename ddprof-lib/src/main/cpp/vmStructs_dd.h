@@ -188,9 +188,44 @@ namespace ddprof {
     }
   };
 
+  class OopDesc : ::VMStructs {
+    private:
+      static int _klass_offset;
+      static int _narrow_klass_offset;
+      static unsigned char* _narrow_klass_base;
+      static int _narrow_klass_shift;
+
+    public:
+      static void set_klass_offset(int offset) { _klass_offset = offset; }
+      static void set_narrow_klass_offset(int offset) { _narrow_klass_offset = offset; }
+      static void set_narrow_klass_base(unsigned char* base) { _narrow_klass_base = base; }
+      static void set_narrow_klass_shift(int shift) { _narrow_klass_shift = shift; }
+
+      ::VMKlass* klass() {
+        if (_narrow_klass_shift >= 0) {
+          unsigned char* narrow_klass = (unsigned char*)at(_narrow_klass_offset);
+          return (::VMKlass*)((uintptr_t)_narrow_klass_base + ((uintptr_t)narrow_klass << _narrow_klass_shift));
+        } else {
+          return (::VMKlass*)at(_klass_offset);
+        }
+      }
+  };
+
+  class OopHandle : ::VMStructs {
+    private:
+      static int _obj_offset;
+
+    public:
+      static void set_object_offset(int offset) { _obj_offset = offset; }
+
+      OopDesc* oop() { 
+        return (OopDesc*)at(_obj_offset);
+      }
+  };
+
   // Bootstrape class loader is immortal. Therefore, classes/methods
   // that are loaded by it, are safe to walk.
-  class BootstrapClassLoader : public ::VMStructs {
+  class BootstrapClassLoader : ::VMStructs {
     private:
       // java.lang.Object must be loaded by bootstrap class loader.
       // _object_klass points to java/lang/Object instanceKlass stored in vmClasses,
@@ -215,7 +250,7 @@ namespace ddprof {
       }
   };
 
-  class PlatformClassLoader : public ::VMStructs {
+  class PlatformClassLoader : ::VMStructs {
     private:
       static ::VMKlass* _class_loader;
     
@@ -231,7 +266,7 @@ namespace ddprof {
       }
   };
 
-  class ApplicationClassLoader : public ::VMStructs {
+  class ApplicationClassLoader : ::VMStructs {
     private:
       static ::VMKlass* _class_loader;
     
@@ -252,7 +287,9 @@ namespace ddprof {
   class ClassLoader {
     public:
       static bool loaded_by_known_classloader(JNIEnv* env, jclass cls) {
-        ::VMKlass* klass = ::VMKlass::fromJavaClass(env, cls);
+        OopHandle* handle = (OopHandle*)cls;
+        OopDesc* obj = handle->oop();
+        ::VMKlass* klass = obj->klass();
         return BootstrapClassLoader::loaded_by(klass) ||
                PlatformClassLoader::loaded_by(klass) ||
                ApplicationClassLoader::loaded_by(klass);

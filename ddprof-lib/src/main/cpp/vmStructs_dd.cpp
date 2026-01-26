@@ -39,6 +39,11 @@ namespace ddprof {
   ::VMKlass** BootstrapClassLoader::_object_klass_addr = nullptr;
   ::VMKlass* PlatformClassLoader::_class_loader = nullptr;
   ::VMKlass* ApplicationClassLoader::_class_loader = nullptr;
+  int OopDesc::_klass_offset = -1;
+  int OopDesc::_narrow_klass_offset = -1;
+  unsigned char* OopDesc::_narrow_klass_base = nullptr;
+  int OopDesc::_narrow_klass_shift = -1;
+  int OopHandle::_obj_offset = -1;
 
   // Run at agent load time
   void VMStructs_::init(CodeCache* libjvm) {
@@ -74,8 +79,17 @@ namespace ddprof {
         if (strcmp(field, "_klasses[static_cast<int>(vmClassID::Object_klass_knum)]") == 0) {
           BootstrapClassLoader::set_object_klass_location(*(::VMKlass***)(entry + address_offset));
         }
-      }
-      if (strcmp(type, "OSThread") == 0) {
+      } else if (strcmp(type, "oopDesc") == 0) {
+        if (strcmp(field, "_metadata._klass") == 0) {
+          OopDesc::set_klass_offset(*(int*)(entry + offset_offset));
+        } else if (strcmp(field, "_metadata._compressed_klass") == 0) {
+          OopDesc::set_narrow_klass_offset(*(int*)(entry + offset_offset));
+        }
+      } else if (strcmp(type, "OopHandle") == 0) {
+        if (strcmp(field, "_obj") == 0) {
+          OopHandle::set_object_offset(*(int*)(entry + offset_offset));
+        }
+      } else if (strcmp(type, "OSThread") == 0) {
         if (strcmp(field, "_state") == 0) {
           TEST_LOG("Setting _osthread_state_offset value");
           _osthread_state_offset = *(int *)(entry + offset_offset);
@@ -83,6 +97,14 @@ namespace ddprof {
       } else if (strcmp(type, "JVMFlag") == 0 || strcmp(type, "Flag") == 0) {
         if (strcmp(field, "_type") == 0 || strcmp(field, "type") == 0) {
           _flag_type_offset = *(int *)(entry + offset_offset);
+        }
+      } else if (strcmp(type, "Universe") == 0 || strcmp(type, "CompressedKlassPointers") == 0) {
+        if (strcmp(field, "_narrow_klass._base") == 0 || strcmp(field, "_base") == 0) {
+          unsigned char** narrow_klass_base_addr = *(unsigned char***)(entry + address_offset);
+          OopDesc::set_narrow_klass_base(*narrow_klass_base_addr);
+        } else if (strcmp(field, "_narrow_klass._shift") == 0 || strcmp(field, "_shift") == 0) {
+           int* narrow_klass_shift_addr = *(int**)(entry + address_offset);
+          OopDesc::set_narrow_klass_shift(*narrow_klass_shift_addr);
         }
       }
     }
