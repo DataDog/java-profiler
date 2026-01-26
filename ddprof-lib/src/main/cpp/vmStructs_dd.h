@@ -192,19 +192,19 @@ namespace ddprof {
     private:
       static int _klass_offset;
       static int _narrow_klass_offset;
-      static unsigned char* _narrow_klass_base;
-      static int _narrow_klass_shift;
+      static unsigned char** _narrow_klass_base_addr;
+      static int* _narrow_klass_shift_addr;
 
     public:
       static void set_klass_offset(int offset) { _klass_offset = offset; }
       static void set_narrow_klass_offset(int offset) { _narrow_klass_offset = offset; }
-      static void set_narrow_klass_base(unsigned char* base) { _narrow_klass_base = base; }
-      static void set_narrow_klass_shift(int shift) { _narrow_klass_shift = shift; }
+      static void set_narrow_klass_base_addr(unsigned char** addr) { _narrow_klass_base_addr = addr; }
+      static void set_narrow_klass_shift_addr(int* addr) { _narrow_klass_shift_addr = addr; }
 
       ::VMKlass* klass() {
-        if (_narrow_klass_shift >= 0) {
-          unsigned char* narrow_klass = (unsigned char*)at(_narrow_klass_offset);
-          return (::VMKlass*)((uintptr_t)_narrow_klass_base + ((uintptr_t)narrow_klass << _narrow_klass_shift));
+        if (*_narrow_klass_shift_addr >= 0) {
+          unsigned char* narrow_klass = *(unsigned char**)at(_narrow_klass_offset);
+          return (::VMKlass*)((intptr_t)*_narrow_klass_base_addr + ((uintptr_t)narrow_klass << *_narrow_klass_shift_addr));
         } else {
           return (::VMKlass*)at(_klass_offset);
         }
@@ -219,7 +219,7 @@ namespace ddprof {
       static void set_object_offset(int offset) { _obj_offset = offset; }
 
       OopDesc* oop() { 
-        return (OopDesc*)at(_obj_offset);
+        return *(OopDesc**)at(_obj_offset);
       }
   };
 
@@ -290,6 +290,7 @@ namespace ddprof {
         OopHandle* handle = (OopHandle*)cls;
         OopDesc* obj = handle->oop();
         ::VMKlass* klass = obj->klass();
+        klass->print();
         return BootstrapClassLoader::loaded_by(klass) ||
                PlatformClassLoader::loaded_by(klass) ||
                ApplicationClassLoader::loaded_by(klass);

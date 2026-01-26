@@ -41,8 +41,8 @@ namespace ddprof {
   ::VMKlass* ApplicationClassLoader::_class_loader = nullptr;
   int OopDesc::_klass_offset = -1;
   int OopDesc::_narrow_klass_offset = -1;
-  unsigned char* OopDesc::_narrow_klass_base = nullptr;
-  int OopDesc::_narrow_klass_shift = -1;
+  unsigned char** OopDesc::_narrow_klass_base_addr = nullptr;
+  int* OopDesc::_narrow_klass_shift_addr = nullptr;
   int OopHandle::_obj_offset = -1;
 
   // Run at agent load time
@@ -98,13 +98,21 @@ namespace ddprof {
         if (strcmp(field, "_type") == 0 || strcmp(field, "type") == 0) {
           _flag_type_offset = *(int *)(entry + offset_offset);
         }
-      } else if (strcmp(type, "Universe") == 0 || strcmp(type, "CompressedKlassPointers") == 0) {
+      } else if (strcmp(type, "Universe") == 0) { // } || strcmp(type, "CompressedKlassPointers") == 0) {
         if (strcmp(field, "_narrow_klass._base") == 0 || strcmp(field, "_base") == 0) {
           unsigned char** narrow_klass_base_addr = *(unsigned char***)(entry + address_offset);
-          OopDesc::set_narrow_klass_base(*narrow_klass_base_addr);
+          OopDesc::set_narrow_klass_base_addr(narrow_klass_base_addr);
         } else if (strcmp(field, "_narrow_klass._shift") == 0 || strcmp(field, "_shift") == 0) {
-           int* narrow_klass_shift_addr = *(int**)(entry + address_offset);
-          OopDesc::set_narrow_klass_shift(*narrow_klass_shift_addr);
+          int* narrow_klass_shift_addr = *(int**)(entry + address_offset);
+          OopDesc::set_narrow_klass_shift_addr(narrow_klass_shift_addr);
+        }
+      } else if (strcmp(type, "CompressedKlassPointers") == 0) {
+        if (strcmp(field, "_base") == 0) {
+          unsigned char** narrow_klass_base_addr = *(unsigned char***)(entry + address_offset);
+          OopDesc::set_narrow_klass_base_addr(narrow_klass_base_addr);
+        } else if (strcmp(field, "_shift") == 0) {
+          int* narrow_klass_shift_addr = *(int**)(entry + address_offset);
+          OopDesc::set_narrow_klass_shift_addr(narrow_klass_shift_addr);
         }
       }
     }

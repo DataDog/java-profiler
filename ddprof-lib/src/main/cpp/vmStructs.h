@@ -11,6 +11,7 @@
 #include <string.h>
 #include <type_traits>
 #include "codeCache.h"
+#include "common.h"
 
 
 class VMStructs {
@@ -287,6 +288,11 @@ class VMKlass : VMStructs {
         } else {
             return *(VMKlass**)(oop + _oop_klass_offset);
         }
+    }
+
+    void print() {
+        VMSymbol* klass_name = name();
+        TEST_LOG("%.10s\n", klass_name->body());
     }
 
     VMSymbol* name() {
