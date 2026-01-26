@@ -1,0 +1,17 @@
+# Octo-STS Trust Policy for java-profiler-build CI Access                                                                                                                                          
+#                                                                                                                                                                                                  
+# This policy allows GitLab CI from java-profiler-build repository to read                                                                                                                         
+# PR information from this repository (java-profiler) for annotating test reports.                                                                                                                 
+#                                                                                                                                                                                                  
+# Usage: java-profiler-build CI calls with OCTO_STS_POLICY=java-profiler-build-read                                                                                                                
+                                                                                                                                                                                                   
+# GitLab OIDC issuer                                                                                                                                                                               
+issuer: https://gitlab.ddbuild.io                                                                                                                                                                  
+                                                                                                                                                                                                   
+# Match GitLab CI jobs from java-profiler-build repository (any branch)                                                                                                                            
+subject_pattern: project_path:DataDog/java-profiler-build:ref_type:branch:ref:.*                                                                                                                   
+                                                                                                                                                                                                   
+# GitHub API permissions - read-only access to PRs                                                                                                                                                 
+permissions:                                                                                                                                                                                       
+  contents: read                                                                                                                                                                                
+  pull_requests: read               
