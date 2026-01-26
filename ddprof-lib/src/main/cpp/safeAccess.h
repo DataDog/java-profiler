@@ -35,11 +35,30 @@ extern "C" int64_t safefetch64_impl(int64_t* adr, int64_t errValue);
 class SafeAccess {
 public:
 
-  static inline int safeFetch32(int* ptr, int errorValue) {
+  /**
+   * Safely reads a 32-bit value from the given address.
+   *
+   * <p>CRITICAL: This function MUST NOT be inlined. The safefetch mechanism relies on
+   * faults occurring at the exact address of safefetch32_impl. If this function is
+   * inlined, the compiler may optimize the load into the caller's code, bypassing
+   * the fault protection in handle_safefetch().
+   *
+   * @param ptr Address to read from (may be invalid)
+   * @param errorValue Value to return if the read faults
+   * @return The value at ptr, or errorValue if the read faults
+   */
+  NOINLINE
+  static int safeFetch32(int* ptr, int errorValue) {
     return safefetch32_impl(ptr, errorValue);
   }
 
-  static inline int64_t safeFetch64(int64_t* ptr, int64_t errorValue) {
+  /**
+   * Safely reads a 64-bit value from the given address.
+   *
+   * <p>CRITICAL: This function MUST NOT be inlined. See safeFetch32 for details.
+   */
+  NOINLINE
+  static int64_t safeFetch64(int64_t* ptr, int64_t errorValue) {
     return safefetch64_impl(ptr, errorValue);
   }
 
