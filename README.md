@@ -134,6 +134,51 @@ The project includes both Java and C++ unit tests. You can run them using:
 ### Cross-JDK Testing
 `JAVA_TEST_HOME=<path to test JDK> ./gradlew testDebug`
 
+### Docker-Based Testing (musl/glibc)
+Run tests in Docker containers to test on different libc implementations. Uses two-level Docker image caching for fast subsequent runs:
+1. **Base image** (`java-profiler-base:<libc>-<arch>`) - OS with all build tools + sanitizers
+2. **JDK image** (`java-profiler-test:<libc>-jdk<version>-<arch>`) - Adds JDK + Gradle
+
+By default, the script clones the repository at the current commit for clean builds. Use `--mount` to mount the local directory instead (faster but may have stale artifacts).
+
+```bash
+# Run specific test on musl (Alpine) with JDK 21 (clone mode - clean build)
+./utils/run-docker-tests.sh --libc=musl --jdk=21 --tests="CTimerGCStressTest"
+
+# Run all tests on glibc (Ubuntu) with JDK 17
+./utils/run-docker-tests.sh --libc=glibc --jdk=17
+
+# Run tests on aarch64 architecture (requires Docker with multi-arch support)
+./utils/run-docker-tests.sh --libc=musl --jdk=21 --arch=aarch64
+
+# Mount local repo for faster iteration (may have stale artifacts)
+./utils/run-docker-tests.sh --libc=musl --jdk=21 --mount --tests="MyTest"
+
+# Drop to interactive shell in musl container
+./utils/run-docker-tests.sh --libc=musl --jdk=21 --shell
+
+# Force rebuild of all cached Docker images
+./utils/run-docker-tests.sh --libc=musl --jdk=21 --rebuild
+
+# Force rebuild of base image only (useful after Alpine/Ubuntu updates)
+./utils/run-docker-tests.sh --libc=musl --rebuild-base
+
+# Show options
+./utils/run-docker-tests.sh --help
+```
+
+Supported options:
+- `--libc=glibc|musl` (default: glibc)
+- `--jdk=8|11|17|21|25` (default: 21)
+- `--arch=x64|aarch64` (default: auto-detect)
+- `--config=debug|release` (default: debug)
+- `--tests="TestPattern"`
+- `--gtest` (enable C++ gtests, disabled by default for faster runs)
+- `--shell` (interactive shell instead of running tests)
+- `--mount` (mount local repo instead of cloning - faster but may have stale artifacts)
+- `--rebuild` (force rebuild of all Docker images)
+- `--rebuild-base` (force rebuild of base image only)
+
 ## Unwinding Validation Tool
 
 The project includes a comprehensive unwinding validation tool that tests JIT compilation unwinding scenarios to detect stack frame issues. This tool validates the profiler's ability to correctly unwind stack frames during complex JIT compilation scenarios.
