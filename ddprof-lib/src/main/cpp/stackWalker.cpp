@@ -511,22 +511,19 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                         continue;
                     }
                 }
-                const char* prev_symbol = prev_native_pc != NULL ? profiler->findNativeMethod(prev_native_pc) : NULL;
-                if (prev_symbol != NULL) {
-                    // Check for Rust thread roots
-                    if (strstr(prev_symbol, "thread_start")) {
-                        // Unwinding from Rust 'thread_start' but not having enough info to do it correctly
-                        // Rather, just assume that this is the root frame
-                        break;
+                // Check previous frame for thread entry points (Rust, libc/pthread)
+                if (prev_native_pc != NULL) {
+                    Profiler::NativeFrameResolution prev_resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)prev_native_pc, lock_index);
+                    const char* prev_method_name = (const char*)prev_resolution.method_id;
+                    if (prev_method_name != NULL) {
+                        char prev_mark = NativeFunc::mark(prev_method_name);
+                        if (prev_mark == MARK_THREAD_ENTRY) {
+                            // Thread entry point detected in previous frame (Rust thread_start, libc start_thread, etc.)
+                            // This is the root frame - stop unwinding
+                            Counters::increment(THREAD_ENTRY_MARK_DETECTIONS);
+                            break;
+                        }
                     }
-                    // JVM thread entry points are now detected via MARK_THREAD_ENTRY
-                    // No need for expensive string matching here
-                }
-                if (Symbols::isLibcOrPthreadAddress((uintptr_t)pc)) {
-                    // We might not have the libc symbols available
-                    // The unwinding is also not super reliable; best to jump out if this is not the leaf
-                    fillFrame(frames[depth++], BCI_NATIVE_FRAME, "[libc/pthread]");
-                    break;
                 }
                 fillFrame(frames[depth++], BCI_ERROR, "break_no_anchor");
                 break;
