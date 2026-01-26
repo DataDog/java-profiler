@@ -213,7 +213,6 @@ The profiler uses a sophisticated double-buffered storage system for call traces
 - **Buffer Management**: Thread-local recording buffers with configurable flush thresholds
 
 ### Native Integration Patterns
-- **Adapter Pattern**: `*_dd.h` files adapt upstream code for Datadog needs
 - **Signal Handler Safety**: Careful memory management in signal handler contexts
 
 ### Multi-Engine Profiling System
@@ -244,8 +243,7 @@ The profiler uses a sophisticated double-buffered storage system for call traces
 ## Development Guidelines
 
 ### Code Organization Principles
-- **Namespace Separation**: Use `ddprof` namespace for adapted upstream classes
-- **File Naming**: Datadog adaptations use `*_dd` suffix (e.g., `stackWalker_dd.h`)
+- **Code Integration**: Datadog-specific extensions are integrated directly into base files (e.g., `stackWalker.h`)
 - **External Dependencies**: Local code in `cpp/`
 
 ### Performance Constraints

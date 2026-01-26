@@ -7,7 +7,7 @@
 #ifndef _PROFILER_H
 #define _PROFILER_H
 
-#include "arch_dd.h"
+#include "arch.h"
 #include "arguments.h"
 #include "callTraceStorage.h"
 #include "codeCache.h"

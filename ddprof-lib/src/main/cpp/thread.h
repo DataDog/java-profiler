@@ -6,7 +6,7 @@
 #ifndef _THREAD_H
 #define _THREAD_H
 
-#include "os_dd.h"
+#include "os.h"
 #include "threadLocalData.h"
 #include "unwindStats.h"
 #include <atomic>

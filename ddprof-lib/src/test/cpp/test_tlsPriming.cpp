@@ -4,7 +4,7 @@
  */
 
 #include "gtest/gtest.h"
-#include "os_dd.h"
+#include "os.h"
 #include "common.h"
 #include "thread.h"
 #include <signal.h>
@@ -38,7 +38,7 @@ protected:
 };
 
 TEST_F(TlsPrimingTest, InstallSignalHandler) {
-    int signal_num = ddprof::OS::installTlsPrimeSignalHandler(testTlsSignalHandler, 5);
+    int signal_num = OS::installTlsPrimeSignalHandler(testTlsSignalHandler, 5);
     
 #ifdef __linux__
     if (signal_num > 0) {
@@ -61,7 +61,7 @@ TEST_F(TlsPrimingTest, InstallSignalHandler) {
 TEST_F(TlsPrimingTest, EnumerateThreadIds) {
     std::atomic<int> thread_count{0};
     
-    ddprof::OS::enumerateThreadIds([&](int tid) {
+    OS::enumerateThreadIds([&](int tid) {
         TEST_LOG("Found thread ID: %d", tid);
 #ifdef __linux__
         EXPECT_GT(tid, 0);  // Linux uses actual thread IDs > 0
@@ -76,7 +76,7 @@ TEST_F(TlsPrimingTest, EnumerateThreadIds) {
 }
 
 TEST_F(TlsPrimingTest, GetThreadCount) {
-    int count = ddprof::OS::getThreadCount();
+    int count = OS::getThreadCount();
     TEST_LOG("Thread count: %d", count);
     
     // Should be at least 1 on platforms that implement thread counting
@@ -84,7 +84,7 @@ TEST_F(TlsPrimingTest, GetThreadCount) {
 }
 
 TEST_F(TlsPrimingTest, SignalCurrentThread) {
-    int signal_num = ddprof::OS::installTlsPrimeSignalHandler(testTlsSignalHandler, 6);
+    int signal_num = OS::installTlsPrimeSignalHandler(testTlsSignalHandler, 6);
 
 #ifdef __linux__
     if (signal_num > 0) {
@@ -92,7 +92,7 @@ TEST_F(TlsPrimingTest, SignalCurrentThread) {
 
         // Get the first thread ID from enumeration
         std::atomic<int> first_tid{-1};
-        ddprof::OS::enumerateThreadIds([&](int tid) {
+        OS::enumerateThreadIds([&](int tid) {
             if (first_tid.load() == -1) {
                 first_tid.store(tid);
             }
@@ -100,7 +100,7 @@ TEST_F(TlsPrimingTest, SignalCurrentThread) {
 
         int tid = first_tid.load();
         if (tid >= 0) {
-            ddprof::OS::signalThread(tid, signal_num);
+            OS::signalThread(tid, signal_num);
 
             // Wait a bit for signal to be delivered
             std::this_thread::sleep_for(std::chrono::milliseconds(100));

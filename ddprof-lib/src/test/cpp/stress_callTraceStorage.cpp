@@ -14,7 +14,7 @@
 #include <random>
 #include <chrono>
 #include <algorithm>
-#include "arch_dd.h"
+#include "arch.h"
 #include <cstring>
 #include <climits>
 #include <stdexcept>

@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2025, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -99,6 +100,11 @@ class TSC {
     // this function will return an incorrect value.
     static u64 frequency() {
         return enabled() ? _frequency : NANOTIME_FREQ;
+    }
+
+    // Convert ticks to milliseconds
+    static u64 ticks_to_millis(u64 ticks) {
+        return TSC_SUPPORTED ? 1000 * ticks / frequency() : ticks / 1000 / 1000;
     }
 };
 

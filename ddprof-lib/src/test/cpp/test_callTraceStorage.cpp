@@ -14,7 +14,7 @@
 #include <mutex>
 #include "callTraceHashTable.h"
 #include "../../main/cpp/gtest_crash_handler.h"
-#include "arch_dd.h"
+#include "arch.h"
 
 // Test name for crash handler
 static constexpr char TEST_NAME[] = "CallTraceStorageTest";

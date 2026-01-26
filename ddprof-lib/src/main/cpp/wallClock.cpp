@@ -14,7 +14,7 @@
 #include "stackFrame.h"
 #include "thread.h"
 #include "threadState.h"
-#include "vmStructs_dd.h"
+#include "vmStructs.h"
 #include "criticalSection.h"
 #include <math.h>
 #include <random>
@@ -79,7 +79,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   }
 
   ExecutionEvent event;
-  ddprof::VMThread *vm_thread = ddprof::VMThread::current();
+  VMThread *vm_thread = VMThread::current();
   int raw_thread_state = vm_thread ? vm_thread->state() : 0;
   bool is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
   bool is_initialized = is_java_thread;
@@ -205,7 +205,7 @@ void WallClockJVMTI::timerLoop() {
       for (int i = 0; i < threads_count; i++) {
         jthread thread = threads_ptr[i];
         if (thread != nullptr) {
-          ddprof::VMThread* nThread = static_cast<ddprof::VMThread*>(VMThread::fromJavaThread(jni, thread));
+          VMThread* nThread = VMThread::fromJavaThread(jni, thread);
           if (nThread == nullptr) {
             continue;
           }
@@ -223,10 +223,10 @@ void WallClockJVMTI::timerLoop() {
     static jint max_stack_depth = (jint)Profiler::instance()->max_stack_depth();
 
     ExecutionEvent event;
-    ddprof::VMThread* vm_thread = thread_entry.native;
+    VMThread* vm_thread = thread_entry.native;
     int raw_thread_state = vm_thread->state();
-    bool is_initialized = raw_thread_state >= ddprof::JVMJavaThreadState::_thread_in_native &&
-                          raw_thread_state < ddprof::JVMJavaThreadState::_thread_max_state;
+    bool is_initialized = raw_thread_state >= JVMJavaThreadState::_thread_in_native &&
+                          raw_thread_state < JVMJavaThreadState::_thread_max_state;
     OSThreadState state = OSThreadState::UNKNOWN;
     ExecutionMode mode = ExecutionMode::UNKNOWN;
     if (vm_thread == nullptr || !is_initialized) {

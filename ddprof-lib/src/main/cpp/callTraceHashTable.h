@@ -6,7 +6,7 @@
 #ifndef _CALLTRACEHASHTABLE_H
 #define _CALLTRACEHASHTABLE_H
 
-#include "arch_dd.h"
+#include "arch.h"
 #include "linearAllocator.h"
 #include "vmEntry.h"
 #include <unordered_set>

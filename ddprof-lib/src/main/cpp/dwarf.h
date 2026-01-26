@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2025, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -29,6 +30,7 @@ const int DW_REG_SP = 7;
 const int DW_REG_PC = 16;
 const int EMPTY_FRAME_SIZE = DW_STACK_SLOT;
 const int LINKED_FRAME_SIZE = 2 * DW_STACK_SLOT;
+const int LINKED_FRAME_CLANG_SIZE = LINKED_FRAME_SIZE;
 const int INITIAL_PC_OFFSET = -EMPTY_FRAME_SIZE;
 
 #elif defined(__i386__)
@@ -40,6 +42,7 @@ const int DW_REG_SP = 4;
 const int DW_REG_PC = 8;
 const int EMPTY_FRAME_SIZE = DW_STACK_SLOT;
 const int LINKED_FRAME_SIZE = 2 * DW_STACK_SLOT;
+const int LINKED_FRAME_CLANG_SIZE = LINKED_FRAME_SIZE;
 const int INITIAL_PC_OFFSET = -EMPTY_FRAME_SIZE;
 
 #elif defined(__aarch64__)
@@ -51,6 +54,7 @@ const int DW_REG_SP = 31;
 const int DW_REG_PC = 30;
 const int EMPTY_FRAME_SIZE = 0;
 const int LINKED_FRAME_SIZE = 0;
+const int LINKED_FRAME_CLANG_SIZE = 2 * DW_STACK_SLOT;  // clang uses different frame layout than GCC
 const int INITIAL_PC_OFFSET = DW_LINK_REGISTER;
 
 #else
@@ -62,6 +66,7 @@ const int DW_REG_SP = 1;
 const int DW_REG_PC = 2;
 const int EMPTY_FRAME_SIZE = 0;
 const int LINKED_FRAME_SIZE = 0;
+const int LINKED_FRAME_CLANG_SIZE = LINKED_FRAME_SIZE;
 const int INITIAL_PC_OFFSET = DW_LINK_REGISTER;
 
 #endif
@@ -75,6 +80,7 @@ struct FrameDesc {
 
     static FrameDesc empty_frame;
     static FrameDesc default_frame;
+    static FrameDesc default_clang_frame;
 
     static int comparator(const void* p1, const void* p2) {
         FrameDesc* fd1 = (FrameDesc*)p1;

@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026 Datadog, Inc
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -11,9 +12,9 @@
 #include "stackFrame.h"
 #include "symbols.h"
 #include "vmStructs.h"
+#include "thread.h"
 
 
-const uintptr_t SAME_STACK_DISTANCE = 8192;
 const uintptr_t MAX_WALK_SIZE = 0x100000;
 const intptr_t MAX_INTERPRETER_FRAME_SIZE = 0x1000;
 
@@ -23,10 +24,8 @@ static ucontext_t empty_ucontext{};
 using StackWalkValidation::inDeadZone;
 using StackWalkValidation::aligned;
 using StackWalkValidation::MAX_FRAME_SIZE;
-
-static inline bool sameStack(void* hi, void* lo) {
-    return (uintptr_t)hi - (uintptr_t)lo < SAME_STACK_DISTANCE;
-}
+using StackWalkValidation::SAME_STACK_DISTANCE;
+using StackWalkValidation::sameStack;
 
 // AArch64: on Linux, frame link is stored at the top of the frame,
 // while on macOS, frame link is at the bottom.
@@ -67,7 +66,7 @@ static jmethodID getMethodId(VMMethod* method) {
 }
 
 
-int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx) {
+int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated) {
     const void* pc;
     uintptr_t fp;
     uintptr_t sp;
@@ -85,9 +84,10 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
     }
 
     int depth = 0;
+    int actual_max_depth = truncated ? max_depth + 1 : max_depth;
 
     // Walk until the bottom of the stack or until the first Java frame
-    while (depth < max_depth) {
+    while (depth < actual_max_depth) {
         if (CodeHeap::contains(pc) && !(depth == 0 && frame.unwindAtomicStub(pc)) &&
             VMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
             java_ctx->set(pc, sp, fp);
@@ -115,10 +115,15 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
         fp = *(uintptr_t*)fp;
     }
 
+    if (truncated && depth > max_depth) {
+        *truncated = true;
+        depth = max_depth;
+    }
+
     return depth;
 }
 
-int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx) {
+int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated) {
     const void* pc;
     uintptr_t fp;
     uintptr_t sp;
@@ -137,9 +142,10 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
 
     int depth = 0;
     Profiler* profiler = Profiler::instance();
+    int actual_max_depth = truncated ? max_depth + 1 : max_depth;
 
     // Walk until the bottom of the stack or until the first Java frame
-    while (depth < max_depth) {
+    while (depth < actual_max_depth) {
         if (CodeHeap::contains(pc) && !(depth == 0 && frame.unwindAtomicStub(pc)) &&
             VMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
             // Don't dereference pc as it may point to unreadable memory
@@ -206,22 +212,27 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         }
     }
 
+    if (truncated && depth > max_depth) {
+        *truncated = true;
+        depth = max_depth;
+    }
+
     return depth;
 }
 
 __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
-                        StackWalkFeatures features, EventType event_type, int lock_index) {
+                        StackWalkFeatures features, EventType event_type, int lock_index, bool* truncated) {
     if (ucontext == NULL) {
         return walkVM(&empty_ucontext, frames, max_depth, features, event_type,
-                      callerPC(), (uintptr_t)callerSP(), (uintptr_t)callerFP(), lock_index);
+                      callerPC(), (uintptr_t)callerSP(), (uintptr_t)callerFP(), lock_index, truncated);
     } else {
         StackFrame frame(ucontext);
         return walkVM(ucontext, frames, max_depth, features, event_type,
-                      (const void*)frame.pc(), frame.sp(), frame.fp(), lock_index);
+                      (const void*)frame.pc(), frame.sp(), frame.fp(), lock_index, truncated);
     }
 }
 
-__attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, JavaFrameAnchor* anchor, EventType event_type, int lock_index) {
+__attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, JavaFrameAnchor* anchor, EventType event_type, int lock_index, bool* truncated) {
     uintptr_t sp = anchor->lastJavaSP();
     if (sp == 0) {
         return 0;
@@ -238,12 +249,12 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     }
 
     StackWalkFeatures no_features{};
-    return walkVM(ucontext, frames, max_depth, no_features, event_type, pc, sp, fp, lock_index);
+    return walkVM(ucontext, frames, max_depth, no_features, event_type, pc, sp, fp, lock_index, truncated);
 }
 
 __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                         StackWalkFeatures features, EventType event_type,
-                        const void* pc, uintptr_t sp, uintptr_t fp, int lock_index) {
+                        const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated) {
     StackFrame frame(ucontext);
     uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
 
@@ -256,6 +267,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
     // Should be preserved across setjmp/longjmp
     volatile int depth = 0;
+    int actual_max_depth = truncated ? max_depth + 1 : max_depth;
 
     JavaFrameAnchor* anchor = NULL;
     if (vm_thread != NULL) {
@@ -281,7 +293,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     unwind_loop:
 
     // Walk until the bottom of the stack or until the first Java frame
-    while (depth < max_depth) {
+    while (depth < actual_max_depth) {
         if (CodeHeap::contains(pc)) {
             // If we're in JVM-generated code but don't have a VMThread, we cannot safely
             // walk the Java stack because crash protection is not set up.
@@ -587,10 +599,22 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
     if (vm_thread != NULL) vm_thread->exception() = saved_exception;
 
+    if (truncated) {
+        if (depth > max_depth) {
+            *truncated = true;
+            depth = max_depth;
+        } else if (depth > 0) {
+            if (frames[depth - 1].bci == BCI_ERROR) {
+                // root frame is error; best guess is that the trace is truncated
+                *truncated = true;
+            }
+        }
+    }
+
     return depth;
 }
 
-void StackWalker::checkFault() {
+void StackWalker::checkFault(ProfiledThread* thrd) {
     if (VMThread::key() < 0) {
         // JVM has not been loaded or VMStructs have not been initialized yet
         return;
@@ -598,6 +622,10 @@ void StackWalker::checkFault() {
 
     VMThread* vm_thread = VMThread::current();
     if (vm_thread != NULL && sameStack(vm_thread->exception(), &vm_thread)) {
+        if (thrd) {
+            // going to longjmp out of the signal handler, reset the crash handler depth counter
+            thrd->resetCrashHandler();
+        }
         longjmp(*(jmp_buf*)vm_thread->exception(), 1);
     }
 }

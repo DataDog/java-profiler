@@ -17,7 +17,7 @@
 #include "jfrMetadata.h"
 #include "jniHelper.h"
 #include "jvm.h"
-#include "os_dd.h"
+#include "os.h"
 #include "profiler.h"
 #include "rustDemangler.h"
 #include "spinLock.h"
@@ -25,8 +25,8 @@
 #include "symbols.h"
 #include "threadFilter.h"
 #include "threadState.h"
-#include "tsc_dd.h"
-#include "vmStructs_dd.h"
+#include "tsc.h"
+#include "vmStructs.h"
 #include <arpa/inet.h>
 #include <cxxabi.h>
 #include <errno.h>
@@ -174,7 +174,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   jvmti->GetPhase(&phase);
   if ((phase & (JVMTI_PHASE_START | JVMTI_PHASE_LIVE)) != 0) {
     bool entry = false;
-    if (ddprof::VMMethod::check_jmethodID(method) &&
+    if (VMMethod::check_jmethodID(method) &&
         jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
         // On some older versions of J9, the JVMTI call to GetMethodDeclaringClass will return OK = 0, but when a
         // classloader is unloaded they free all JNIIDs. This means that anyone holding on to a jmethodID is
@@ -579,7 +579,7 @@ void Recording::switchChunk(int fd) {
   if (fd > -1) {
     // move the chunk to external file and reset the continuous recording file
     OS::copyFile(_fd, fd, 0, _chunk_start);
-    ddprof::OS::truncateFile(_fd);
+    OS::truncateFile(_fd);
     // need to reset the file offset here
     _chunk_start = 0;
     _base_id = 0;
@@ -1628,7 +1628,7 @@ Error FlightRecorder::start(Arguments &args, bool reset) {
   _filename = file;
   _args = args;
 
-  ddprof::TSC::enable(args._clock);
+  TSC::enable(args._clock);
 
   Error ret = newRecording(reset);
   return ret;

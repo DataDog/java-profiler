@@ -13,7 +13,7 @@
 #include <limits.h>
 #include <string.h>
 
-#include "arch_dd.h"
+#include "arch.h"
 #include "arguments.h"
 #include "buffers.h"
 #include "counters.h"

@@ -7,7 +7,7 @@
 #include "callTraceStorage.h"
 #include "counters.h"
 #include "os.h"
-#include "arch_dd.h"
+#include "arch.h"
 #include "common.h"
 #include "primeProbing.h"
 #include <string.h>

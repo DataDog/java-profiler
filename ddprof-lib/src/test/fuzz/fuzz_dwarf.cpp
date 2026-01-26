@@ -23,7 +23,7 @@
 
 // Include the DWARF parser
 #include "dwarf.h"
-#include "dwarf_dd.h"
+#include "dwarf.h"
 
 // Provide a minimal stub for Log since dwarf.cpp uses it
 #include "log.h"

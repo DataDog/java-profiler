@@ -25,6 +25,13 @@
 #include <unistd.h>
 #include <cstdio>
 
+// Forward declaration for ElfParser functionality from symbols_linux.cpp
+// The actual implementation will be available through the patched upstream file
+class ElfParser {
+public:
+    static bool parseFile(CodeCache* cc, const char* base, const char* file_name, bool use_debug);
+};
+
 // Test name for crash handler
 static constexpr char ELF_TEST_NAME[] = "ElfParserTest";
 

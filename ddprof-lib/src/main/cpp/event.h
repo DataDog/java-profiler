@@ -18,7 +18,7 @@
 #define _EVENT_H
 
 #include "context.h"
-#include "os_dd.h"
+#include "os.h"
 #include "threadState.h"
 #include <cstring>
 #include <memory>

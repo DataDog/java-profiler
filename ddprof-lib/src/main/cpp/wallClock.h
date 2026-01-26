@@ -8,14 +8,14 @@
 #define _WALLCLOCK_H
 
 #include "engine.h"
-#include "os_dd.h"
+#include "os.h"
 #include "profiler.h"
 #include "reservoirSampler.h"
 #include "thread.h"
 #include "threadFilter.h"
 #include "threadState.h"
-#include "tsc_dd.h"
-#include "vmStructs_dd.h"
+#include "tsc.h"
+#include "vmStructs.h"
 
 class BaseWallClock : public Engine {
   private:
@@ -91,8 +91,8 @@ class BaseWallClock : public Engine {
         epoch.updateNumSuccessfulSamples(sample.size() - num_failures);
         epoch.updateNumExitedThreads(threads_already_exited);
         epoch.updateNumPermissionDenied(permission_denied);
-        u64 endTime = ddprof::TSC::ticks();
-        u64 duration = ddprof::TSC::ticks_to_millis(endTime - startTime);
+        u64 endTime = TSC::ticks();
+        u64 duration = TSC::ticks_to_millis(endTime - startTime);
         if (epoch.hasChanged() || duration >= 1000) {
           epoch.endEpoch(duration);
           Profiler::instance()->recordWallClockEpoch(self, &epoch);
@@ -160,7 +160,7 @@ class WallClockJVMTI : public BaseWallClock {
     void timerLoop() override;
   public:
     struct ThreadEntry {
-        ddprof::VMThread* native;
+        VMThread* native;
         jthread java;
         int tid;
     };

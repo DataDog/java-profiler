@@ -17,10 +17,10 @@
 #ifndef _CONTEXT_H
 #define _CONTEXT_H
 
-#include "arch_dd.h"
+#include "arch.h"
 #include "arguments.h"
 #include "common.h"
-#include "os_dd.h"
+#include "os.h"
 #include "vmEntry.h"
 
 static const u32 DD_TAGS_CAPACITY = 10;

@@ -4,7 +4,7 @@
 #include "libraryPatcher.h"
 #include "log.h"
 #include "symbols.h"
-#include "symbols_linux_dd.h"
+#include "symbols_linux.h"
 #include "vmEntry.h"
 #include "vmStructs.h"
 
