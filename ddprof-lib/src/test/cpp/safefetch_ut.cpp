@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include <climits>
 #include <signal.h>
+#include <sys/mman.h>
 
 #include "safeAccess.h"
 #include "os_dd.h"
@@ -102,4 +103,51 @@ TEST_F(SafeFetchTest, invalidAccessPtr) {
   EXPECT_EQ(res, ap);
   res = SafeAccess::loadPtr(pp, bp);
   EXPECT_EQ(res, bp);
+}
+
+/**
+ * Tests that safeFetch32 correctly handles mprotected memory.
+ *
+ * This test simulates the musl-specific memory layout where certain memory
+ * regions are protected. Without the NOINLINE fix, the compiler may inline
+ * the load under -O3, causing faults to occur at the wrong PC and bypassing
+ * the safefetch fault handler.
+ *
+ * Expected behavior:
+ * - With NOINLINE fix: Returns error value (-999)
+ * - Without NOINLINE fix under -O3: Crashes
+ */
+TEST_F(SafeFetchTest, mprotectedMemory32) {
+  void* page = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  ASSERT_NE(page, MAP_FAILED);
+
+  int* ptr = static_cast<int*>(page);
+  *ptr = 0xDEADBEEF;
+  ASSERT_EQ(mprotect(page, 4096, PROT_NONE), 0);
+
+  // This MUST return error value, not crash
+  int result = SafeAccess::safeFetch32(ptr, -999);
+  EXPECT_EQ(result, -999);
+
+  munmap(page, 4096);
+}
+
+/**
+ * Tests that safeFetch64 correctly handles mprotected memory.
+ * Same rationale as mprotectedMemory32 above.
+ */
+TEST_F(SafeFetchTest, mprotectedMemory64) {
+  void* page = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  ASSERT_NE(page, MAP_FAILED);
+
+  int64_t* ptr = static_cast<int64_t*>(page);
+  *ptr = 0xDEADBEEFCAFEBABE;
+  ASSERT_EQ(mprotect(page, 4096, PROT_NONE), 0);
+
+  int64_t result = SafeAccess::safeFetch64(ptr, -999);
+  EXPECT_EQ(result, -999);
+
+  munmap(page, 4096);
 }
