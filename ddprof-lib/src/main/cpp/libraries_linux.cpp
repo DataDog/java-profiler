@@ -19,7 +19,7 @@
 #include "common.h"
 #include "counters.h"
 #include "libraries.h"
-#include "symbols_linux_dd.h"
+#include "symbols_linux.h"
 
 #include <mutex>
 #include <unordered_set>
@@ -62,7 +62,7 @@ void Libraries::updateBuildIds() {
 
     // Extract build-id from library file (only happens once per library)
     size_t build_id_len;
-    char* build_id = ddprof::SymbolsLinux::extractBuildId(lib_name, &build_id_len);
+    char* build_id = SymbolsLinux::extractBuildId(lib_name, &build_id_len);
 
     if (build_id != nullptr) {
       // Set build-id and calculate load bias
