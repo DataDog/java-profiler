@@ -68,11 +68,10 @@ public class NativeThreadTest extends AbstractProfilerTest {
               String stacktrace = stacktraceAccessor.getMember(item);
               totalSamples++;
 
-              // Primary verification: Assert NO error frames in any sample
+              // Primary verification: Assert NO break_no_anchor errors
+              // Note: no_Java_frame is acceptable for pure native threads that never enter Java
               assertFalse(stacktrace.contains("break_no_anchor"),
                   "Found break_no_anchor error frame in stacktrace: " + stacktrace);
-              assertFalse(stacktrace.contains("no_Java_frame"),
-                  "Found no_Java_frame error in stacktrace: " + stacktrace);
 
               // Secondary verification: Check for expected native frames
               if (stacktrace.indexOf("do_primes()") != -1) {
