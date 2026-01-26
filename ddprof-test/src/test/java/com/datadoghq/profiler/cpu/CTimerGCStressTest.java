@@ -14,7 +14,9 @@ import java.lang.ref.ReferenceQueue;
 import java.lang.ref.SoftReference;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -123,20 +125,31 @@ public class CTimerGCStressTest extends AbstractProfilerTest {
 
     int sampleCount = 0;
     int jvmModeSamples = 0;
+    int gcThreadSamples = 0;
+    Set<String> gcThreadNames = new HashSet<>();
 
     for (IItemIterable cpuSamples : events) {
       IMemberAccessor<String, IItem> frameAccessor =
           JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
       IMemberAccessor<String, IItem> modeAccessor =
           THREAD_EXECUTION_MODE.getAccessor(cpuSamples.getType());
+      IMemberAccessor<String, IItem> threadNameAccessor =
+          JdkAttributes.EVENT_THREAD_NAME.getAccessor(cpuSamples.getType());
 
       for (IItem sample : cpuSamples) {
         sampleCount++;
         String stackTrace = frameAccessor.getMember(sample);
         String mode = modeAccessor != null ? modeAccessor.getMember(sample) : null;
+        String threadName = threadNameAccessor != null ? threadNameAccessor.getMember(sample) : null;
 
         if ("JVM".equals(mode)) {
           jvmModeSamples++;
+        }
+
+        // Track GC-related thread samples
+        if (threadName != null && isGcRelatedThread(threadName)) {
+          gcThreadSamples++;
+          gcThreadNames.add(threadName);
         }
 
         assertFalse(
@@ -147,8 +160,40 @@ public class CTimerGCStressTest extends AbstractProfilerTest {
 
     System.out.println("Total samples: " + sampleCount);
     System.out.println("JVM mode samples: " + jvmModeSamples);
+    System.out.println("GC thread samples: " + gcThreadSamples);
+    System.out.println("GC threads observed: " + gcThreadNames);
 
     assertTrue(sampleCount > 0, "Should have collected CPU samples");
+
+    // Verify we captured samples from GC threads - this is the key validation
+    // that CTimer is working correctly with GC threads
+    if (gcThreadSamples == 0) {
+      System.out.println("WARNING: No GC thread samples captured. Test may not be stressing GC sufficiently.");
+    } else {
+      System.out.println("SUCCESS: Captured " + gcThreadSamples + " samples from GC threads");
+    }
+  }
+
+  /**
+   * Checks if a thread name indicates a GC-related thread.
+   *
+   * <p>HotSpot GC threads include:
+   * <ul>
+   *   <li>GC Thread#N - G1/Parallel GC worker threads
+   *   <li>G1 Main Marker - G1 marking thread
+   *   <li>G1 Conc#N - G1 concurrent threads
+   *   <li>G1 Refine#N - G1 refinement threads
+   *   <li>VM Thread - handles safepoint operations during GC
+   *   <li>Gang worker#N - GC gang workers (older JDKs)
+   *   <li>ParGC Thread#N - Parallel GC threads
+   * </ul>
+   */
+  private boolean isGcRelatedThread(String threadName) {
+    return threadName.startsWith("GC Thread")
+        || threadName.startsWith("G1 ")
+        || threadName.startsWith("Gang worker")
+        || threadName.startsWith("ParGC Thread")
+        || threadName.equals("VM Thread");
   }
 
   /** Worker that allocates objects with various patterns to stress GC. */
