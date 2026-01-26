@@ -110,6 +110,16 @@ static bool isCompilerEntry(const char* blob_name) {
     return strncmp(blob_name, "_ZN13CompileBroker25invoke_compiler_on_method", 45) == 0;
 }
 
+static bool isThreadEntry(const char* blob_name) {
+    // Match thread entry point patterns for JVM threads (both HotSpot and OpenJ9) and Rust threads
+    return strstr(blob_name, "thread_native_entry") != NULL ||
+           strstr(blob_name, "JavaThread::") != NULL ||
+           strstr(blob_name, "_ZN10JavaThread") != NULL ||     // Mangled JavaThread:: names
+           strstr(blob_name, "thread_main_inner") != NULL ||
+           strstr(blob_name, "thread_start") != NULL ||        // Rust thread roots
+           strstr(blob_name, "start_thread") != NULL;          // glibc pthread entry
+}
+
 static void* resolveMethodId(void** mid) {
     return mid == NULL || *mid < (void*)4096 ? NULL : *mid;
 }
@@ -304,8 +314,21 @@ bool VM::initShared(JavaVM* vm) {
   }
 
   VMStructs::init(lib);
+
+  // Mark thread entry points for all JVMs (critical for correct stack unwinding)
+  lib->mark(isThreadEntry, MARK_THREAD_ENTRY);
+
+  // Also mark libc/pthread libraries which contain thread start/exit points
+  CodeCache* libc = libraries->findJvmLibrary("libc");
+  if (libc != NULL) {
+      libc->mark(isThreadEntry, MARK_THREAD_ENTRY);
+  }
+  CodeCache* libpthread = libraries->findJvmLibrary("libpthread");
+  if (libpthread != NULL) {
+      libpthread->mark(isThreadEntry, MARK_THREAD_ENTRY);
+  }
+
   if (isOpenJ9()) {
-      Libraries* libraries = Libraries::instance();
       lib->mark(isOpenJ9InterpreterMethod, MARK_INTERPRETER);
       lib->mark(isOpenJ9Resolve, MARK_VM_RUNTIME);
       CodeCache* libjit = libraries->findJvmLibrary("libj9jit");

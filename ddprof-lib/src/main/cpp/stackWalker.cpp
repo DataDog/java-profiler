@@ -482,6 +482,11 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     if (method_id != NULL) {
                         fillFrame(frames[depth++], FRAME_JIT_COMPILED, 0, method_id);
                     }
+                } else if (mark == MARK_THREAD_ENTRY) {
+                    // Thread entry point detected via pre-computed mark - this is the root frame
+                    // No need for expensive symbol resolution, just stop unwinding
+                    Counters::increment(THREAD_ENTRY_MARK_DETECTIONS);
+                    break;
                 }
             } else if (method_name == NULL && details) {
                 // These workarounds will minimize the number of unknown frames for 'vm'
@@ -506,17 +511,19 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                         continue;
                     }
                 }
-                const char* prev_symbol = prev_native_pc != NULL ? profiler->findNativeMethod(prev_native_pc) : NULL;
-                if (prev_symbol != NULL && strstr(prev_symbol, "thread_start")) {
-                    // Unwinding from Rust 'thread_start' but not having enough info to do it correctly
-                    // Rather, just assume that this is the root frame
-                    break;
-                }
-                if (Symbols::isLibcOrPthreadAddress((uintptr_t)pc)) {
-                    // We might not have the libc symbols available
-                    // The unwinding is also not super reliable; best to jump out if this is not the leaf
-                    fillFrame(frames[depth++], BCI_NATIVE_FRAME, "[libc/pthread]");
-                    break;
+                // Check previous frame for thread entry points (Rust, libc/pthread)
+                if (prev_native_pc != NULL) {
+                    Profiler::NativeFrameResolution prev_resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)prev_native_pc, lock_index);
+                    const char* prev_method_name = (const char*)prev_resolution.method_id;
+                    if (prev_method_name != NULL) {
+                        char prev_mark = NativeFunc::mark(prev_method_name);
+                        if (prev_mark == MARK_THREAD_ENTRY) {
+                            // Thread entry point detected in previous frame (Rust thread_start, libc start_thread, etc.)
+                            // This is the root frame - stop unwinding
+                            Counters::increment(THREAD_ENTRY_MARK_DETECTIONS);
+                            break;
+                        }
+                    }
                 }
                 fillFrame(frames[depth++], BCI_ERROR, "break_no_anchor");
                 break;
@@ -530,14 +537,19 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
         u8 cfa_reg = (u8)f.cfa;
         int cfa_off = f.cfa >> 8;
+
+        // If DWARF is invalid, we cannot continue unwinding reliably
+        // Thread entry points are detected earlier via MARK_THREAD_ENTRY
+        if (cfa_reg == DW_REG_INVALID || cfa_reg > DW_REG_PLT) {
+            break;
+        }
+
         if (cfa_reg == DW_REG_SP) {
             sp = sp + cfa_off;
         } else if (cfa_reg == DW_REG_FP) {
             sp = fp + cfa_off;
         } else if (cfa_reg == DW_REG_PLT) {
             sp += ((uintptr_t)pc & 15) >= 11 ? cfa_off * 2 : cfa_off;
-        } else {
-            break;
         }
 
         // Check if the next frame is below on the current stack
