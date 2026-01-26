@@ -373,9 +373,10 @@ void CodeCache::setDwarfTable(FrameDesc *table, int length) {
 }
 
 FrameDesc CodeCache::findFrameDesc(const void *pc) {
-  // Check if DWARF table is missing or empty - return no_dwarf_frame to signal fallback
   if (_dwarf_table == NULL || _dwarf_table_length == 0) {
-    return FrameDesc::no_dwarf_frame;
+    // No DWARF data available - use default frame pointer unwinding
+    // This handles OpenJ9 and other VMs that don't provide DWARF info
+    return FrameDesc::default_frame;
   }
 
   u32 target_loc = (const char *)pc - _text_base;

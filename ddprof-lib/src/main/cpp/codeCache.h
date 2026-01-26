@@ -45,6 +45,7 @@ enum Mark {
     MARK_INTERPRETER = 2,
     MARK_COMPILER_ENTRY = 3,
     MARK_ASYNC_PROFILER = 4, // async-profiler internals such as native hooks.
+    MARK_THREAD_ENTRY = 5,   // Thread entry points (thread_native_entry, JavaThread::, etc.)
 };
 
 class NativeFunc {

@@ -482,6 +482,11 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     if (method_id != NULL) {
                         fillFrame(frames[depth++], FRAME_JIT_COMPILED, 0, method_id);
                     }
+                } else if (mark == MARK_THREAD_ENTRY) {
+                    // Thread entry point detected via pre-computed mark - this is the root frame
+                    // No need for expensive symbol resolution, just stop unwinding
+                    Counters::increment(THREAD_ENTRY_MARK_DETECTIONS);
+                    break;
                 }
             } else if (method_name == NULL && details) {
                 // These workarounds will minimize the number of unknown frames for 'vm'
@@ -514,32 +519,8 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                         // Rather, just assume that this is the root frame
                         break;
                     }
-                    // Check for JVM thread entry points - treat as root frames
-                    if (strstr(prev_symbol, "thread_native_entry") ||
-                        strstr(prev_symbol, "JavaThread::") ||
-                        strstr(prev_symbol, "_ZN10JavaThread")) {
-                        // Previous frame is thread entry - current frame is root, stop here
-                        break;
-                    }
-                }
-                // Before giving up, check if current PC is actually a thread entry point
-                if (method_name == NULL) {
-                    CodeCache* cc_check = profiler->findLibraryByAddress(pc);
-                    if (cc_check != NULL) {
-                        // Try to find symbol via CodeCache when normal resolution failed
-                        CodeBlob* blob = cc_check->findBlobByAddress(pc);
-                        if (blob != NULL && blob->_name != NULL) {
-                            const char* name = blob->_name;
-                            // Check if this is a JVM thread entry point
-                            if (strstr(name, "thread_native_entry") ||
-                                strstr(name, "JavaThread::") ||
-                                strstr(name, "_ZN10JavaThread")) {
-                                // Recovered thread entry symbol - this is the root frame
-                                fillFrame(frames[depth++], BCI_NATIVE_FRAME, name);
-                                break;
-                            }
-                        }
-                    }
+                    // JVM thread entry points are now detected via MARK_THREAD_ENTRY
+                    // No need for expensive string matching here
                 }
                 if (Symbols::isLibcOrPthreadAddress((uintptr_t)pc)) {
                     // We might not have the libc symbols available
@@ -559,14 +540,19 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
         u8 cfa_reg = (u8)f.cfa;
         int cfa_off = f.cfa >> 8;
+
+        // If DWARF is invalid, we cannot continue unwinding reliably
+        // Thread entry points are detected earlier via MARK_THREAD_ENTRY
+        if (cfa_reg == DW_REG_INVALID || cfa_reg > DW_REG_PLT) {
+            break;
+        }
+
         if (cfa_reg == DW_REG_SP) {
             sp = sp + cfa_off;
         } else if (cfa_reg == DW_REG_FP) {
             sp = fp + cfa_off;
         } else if (cfa_reg == DW_REG_PLT) {
             sp += ((uintptr_t)pc & 15) >= 11 ? cfa_off * 2 : cfa_off;
-        } else {
-            break;
         }
 
         // Check if the next frame is below on the current stack
