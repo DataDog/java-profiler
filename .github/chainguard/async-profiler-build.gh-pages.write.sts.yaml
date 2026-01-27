@@ -1,6 +1,6 @@
 # Allow async-profiler-build CI to publish to gh-pages
 issuer: https://gitlab.ddbuild.io
-issuer_keys: https://gitlab.ddbuild.io/oauth/discovery/keys
+
 subject_pattern: project_path:DataDog/async-profiler-build:ref_type:branch:ref:.*
 permissions:
   contents: write
