@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk17
 
 ## glibc-arm64-openj9-jdk17 - ❌ FAIL
 
-**Date:** 2026-01-27 09:00:57 EST
+**Date:** 2026-01-27 09:51:03 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 48 |
-| Sample Rate | 1.60/sec |
-| Health Score | 100% |
+| CPU Samples | 421 |
+| Sample Rate | 14.03/sec |
+| Health Score | 877% |
 | Threads | 8 |
-| Allocations | 74 |
+| Allocations | 344 |
 
 #### Scenario 2: Tracer+Profiler ❌
 | Metric | Value |
 |--------|-------|
 | Status | FAIL |
-| CPU Samples | 13 |
-| Sample Rate | 0.43/sec |
-| Health Score | 27% |
-| Threads | 6 |
-| Allocations | 10 |
+| CPU Samples | 9 |
+| Sample Rate | 0.30/sec |
+| Health Score | 19% |
+| Threads | 4 |
+| Allocations | 9 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1769514262 24
-1769514267 24
-1769514272 24
-1769514277 24
-1769514282 24
-1769514287 24
-1769514292 24
-1769514297 24
-1769514302 24
-1769514307 24
-1769514312 24
-1769514317 24
-1769514322 24
-1769514327 24
-1769514332 24
-1769514337 24
-1769514342 24
-1769514347 24
-1769514352 24
-1769514357 24
+1769524972 24
+1769524977 24
+1769524982 24
+1769524987 24
+1769524992 24
+1769524997 24
+1769525002 24
+1769525007 24
+1769525012 24
+1769525017 24
+1769525022 24
+1769525027 24
+1769525032 24
+1769525037 24
+1769525042 24
+1769525047 24
+1769525052 24
+1769525057 24
+1769525062 24
+1769525067 24
 ```
 </details>
 
