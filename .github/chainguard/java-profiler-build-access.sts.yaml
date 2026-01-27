@@ -13,5 +13,5 @@ subject_pattern: project_path:DataDog/java-profiler-build:ref_type:branch:ref:.*
                                                                                                                                                                                                    
 # GitHub API permissions - read-only access to PRs                                                                                                                                                 
 permissions:                                                                                                                                                                                       
-  contents: read                                                                                                                                                                                
+  contents: write
   pull_requests: read               
