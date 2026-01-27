@@ -202,6 +202,7 @@ namespace ddprof {
       static void set_narrow_klass_shift_addr(int* addr) { _narrow_klass_shift_addr = addr; }
 
       ::VMKlass* klass() {
+        TEST_LOG("OopDesc::klass narrow_klass_shift: %d\n", (*_narrow_klass_shift_addr));
         if (*_narrow_klass_shift_addr >= 0) {
           unsigned char* narrow_klass = *(unsigned char**)at(_narrow_klass_offset);
           return (::VMKlass*)((intptr_t)*_narrow_klass_base_addr + ((uintptr_t)narrow_klass << *_narrow_klass_shift_addr));
@@ -246,7 +247,12 @@ namespace ddprof {
         VMKlass* object_klass = *_object_klass_addr;
         assert(object_klass != nullptr);
         assert(klass != nullptr);
-        return object_klass->classLoaderData() == klass->classLoaderData();
+
+        TEST_LOG("Loaded by bootstrap classloader: ");
+        object_klass->print();
+
+        bool ret =  object_klass->classLoaderData() == klass->classLoaderData();
+        return ret;
       }
   };
 
@@ -255,8 +261,12 @@ namespace ddprof {
       static ::VMKlass* _class_loader;
     
     public:
-      static void set_platform_classloader(JNIEnv* env, jclass cls) {
-        _class_loader = ::VMKlass::fromJavaClass(env, cls);
+      static void set_platform_classloader(jclass cls) {
+        OopHandle* handle = (OopHandle*)cls;
+        OopDesc* obj = handle->oop();
+        _class_loader = obj->klass();
+        TEST_LOG("Platform Classloader ");
+        _class_loader->print();
       }
       static bool loaded_by(::VMKlass* klass) {
         return _class_loader != nullptr && _class_loader->classLoaderData() == klass->classLoaderData();
@@ -271,8 +281,12 @@ namespace ddprof {
       static ::VMKlass* _class_loader;
     
     public:
-      static void set_application_classloader(JNIEnv* env, jclass cls) {
-        _class_loader = ::VMKlass::fromJavaClass(env, cls);
+      static void set_application_classloader(jclass cls) {
+        OopHandle* handle = (OopHandle*)cls;
+        OopDesc* obj = handle->oop();
+        _class_loader = obj->klass();
+        TEST_LOG("Application Classloader ");
+        _class_loader->print();
       }
 
       static bool loaded_by(::VMKlass* klass) {
@@ -286,7 +300,8 @@ namespace ddprof {
 
   class ClassLoader {
     public:
-      static bool loaded_by_known_classloader(JNIEnv* env, jclass cls) {
+      static bool loaded_by_known_classloader(jclass cls) {
+        TEST_LOG("loaded_by_known_classloader entry\n");
         OopHandle* handle = (OopHandle*)cls;
         OopDesc* obj = handle->oop();
         ::VMKlass* klass = obj->klass();

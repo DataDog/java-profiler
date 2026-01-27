@@ -106,11 +106,11 @@ namespace ddprof {
           int* narrow_klass_shift_addr = *(int**)(entry + address_offset);
           OopDesc::set_narrow_klass_shift_addr(narrow_klass_shift_addr);
         }
-      } else if (strcmp(type, "CompressedKlassPointers") == 0) {
-        if (strcmp(field, "_base") == 0) {
+      } else if (strcmp(type, "CompressedKlassPointers") == 0) { // JDK 21
+        if (strcmp(field, "_base") == 0 || strcmp(field, "_narrow_klass._base") == 0) {
           unsigned char** narrow_klass_base_addr = *(unsigned char***)(entry + address_offset);
           OopDesc::set_narrow_klass_base_addr(narrow_klass_base_addr);
-        } else if (strcmp(field, "_shift") == 0) {
+        } else if (strcmp(field, "_shift") == 0 || strcmp(field, "_narrow_klass._shift") == 0) {
           int* narrow_klass_shift_addr = *(int**)(entry + address_offset);
           OopDesc::set_narrow_klass_shift_addr(narrow_klass_shift_addr);
         }

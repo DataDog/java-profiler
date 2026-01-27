@@ -292,7 +292,7 @@ class VMKlass : VMStructs {
 
     void print() {
         VMSymbol* klass_name = name();
-        TEST_LOG("%.10s\n", klass_name->body());
+        TEST_LOG("%.20s\n", klass_name->body());
     }
 
     VMSymbol* name() {

@@ -347,8 +347,8 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_populateClassloaders0(JNIEnv *env,
                                                          jclass platformClassLoader,
                                                          jclass applicationClassLoader) {
-  ddprof::PlatformClassLoader::set_platform_classloader(env, platformClassLoader);
-  ddprof::ApplicationClassLoader::set_application_classloader(env, applicationClassLoader);
+  ddprof::PlatformClassLoader::set_platform_classloader(platformClassLoader);
+  ddprof::ApplicationClassLoader::set_application_classloader(applicationClassLoader);
 }
 
 

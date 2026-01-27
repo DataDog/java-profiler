@@ -167,6 +167,10 @@ void VMStructs::initOffsets() {
             if (strcmp(type, "Klass") == 0) {
                 if (strcmp(field, "_name") == 0) {
                     _klass_name_offset = *(int*)(entry + offset_offset);
+                } else if (strcmp(field, "_class_loader_data") == 0) {
+                    _class_loader_data_offset = *(int*)(entry + offset_offset);
+                } else if (strcmp(field, "_methods") == 0) {
+                    _methods_offset = *(int*)(entry + offset_offset);
                 }
             } else if (strcmp(type, "Symbol") == 0) {
                 if (strcmp(field, "_length") == 0) {
