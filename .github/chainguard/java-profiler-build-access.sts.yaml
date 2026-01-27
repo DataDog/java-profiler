@@ -9,7 +9,7 @@
 issuer: https://gitlab.ddbuild.io                                                                                                                                                                  
                                                                                                                                                                                                    
 # Match GitLab CI jobs from java-profiler-build repository (any branch)                                                                                                                            
-subject_pattern: project_path:DataDog/java-profiler-build:ref_type:branch:ref:.*                                                                                                                   
+subject_pattern: project_path:DataDog/async-profiler-build:ref_type:branch:ref:.*
                                                                                                                                                                                                    
 # GitHub API permissions - read-only access to PRs                                                                                                                                                 
 permissions:                                                                                                                                                                                       
