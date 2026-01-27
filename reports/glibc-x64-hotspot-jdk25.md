@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk25
 
 ## glibc-x64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-01-27 09:51:04 EST
+**Date:** 2026-01-27 10:22:45 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 569 |
-| Sample Rate | 18.97/sec |
-| Health Score | 1186% |
+| CPU Samples | 537 |
+| Sample Rate | 17.90/sec |
+| Health Score | 1119% |
 | Threads | 8 |
-| Allocations | 388 |
+| Allocations | 381 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 978 |
-| Sample Rate | 32.60/sec |
-| Health Score | 2038% |
+| CPU Samples | 819 |
+| Sample Rate | 27.30/sec |
+| Health Score | 1706% |
 | Threads | 12 |
-| Allocations | 482 |
+| Allocations | 519 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
+<summary>CPU Timeline (2 unique values: 23-32 cores)</summary>
 
 ```
-1769524860 32
-1769524865 32
-1769524870 32
-1769524875 32
-1769524880 32
-1769524885 32
-1769524891 32
-1769524896 32
-1769524901 32
-1769524906 32
-1769524911 32
-1769524916 32
-1769524921 32
-1769524926 32
-1769524931 32
-1769524936 32
-1769524941 32
-1769524946 32
-1769524951 32
-1769524956 32
+1769526893 32
+1769526898 32
+1769526903 23
+1769526908 23
+1769526913 23
+1769526918 23
+1769526923 23
+1769526928 23
+1769526933 23
+1769526938 23
+1769526943 23
+1769526948 23
+1769526953 23
+1769526958 23
+1769526963 23
+1769526968 23
+1769526973 23
+1769526978 23
+1769526983 23
+1769526988 23
 ```
 </details>
 
