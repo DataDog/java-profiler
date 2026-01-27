@@ -678,8 +678,9 @@ JNIEnv* VMThread::jni() {
 
 
 VMClassLoaderData* VMKlass::classLoaderData() {
-        char** pp = (char**)at(_class_loader_data_offset);
-        char* ptr = *pp;
+        void** pp = (void**)at(_class_loader_data_offset);
+        assert(pp != nullptr);
+        void* ptr = *pp;
         VMClassLoaderData* cld = (VMClassLoaderData*)ptr;
         return cld;
 //        return *(ClassLoaderData**) at(_class_loader_data_offset);
