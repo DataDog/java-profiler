@@ -7,6 +7,7 @@
 #include "profiler.h"
 #include "asyncSampleMutex.h"
 #include "context.h"
+#include "context_api.h"
 #include "criticalSection.h"
 #include "common.h"
 #include "counters.h"
@@ -1406,6 +1407,9 @@ Error Profiler::start(Arguments &args, bool reset) {
     _libs->updateBuildIds();
   }
 
+  // Initialize context storage (TLS or OTEL mode based on args)
+  ContextApi::initialize(args);
+
   enableEngines();
 
   switchLibraryTrap(_cstack == CSTACK_DWARF || _remote_symbolication);
@@ -1508,6 +1512,9 @@ Error Profiler::stop() {
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
   // owned by library metadata, so we must keep library patches active until after serialization
   LibraryPatcher::unpatch_libraries();
+
+  // Shutdown context storage (unmaps OTEL buffer if in OTEL mode)
+  ContextApi::shutdown();
 
   _state = IDLE;
   return Error::OK;

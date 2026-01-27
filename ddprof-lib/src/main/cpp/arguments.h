@@ -92,6 +92,17 @@ enum Clock {
     CLK_MONOTONIC
 };
 
+/**
+ * Context storage mode for trace/span context.
+ *
+ * PROFILER: Use existing TLS-based storage (default, proven async-signal safe)
+ * OTEL: Use OTEL ring buffer storage (discoverable by external profilers)
+ */
+enum ContextStorageMode {
+    CTX_STORAGE_PROFILER,  // Default: TLS-based storage
+    CTX_STORAGE_OTEL       // OTEL ring buffer storage
+};
+
 // Keep this in sync with JfrSync.java
 enum EventMask {
     EM_CPU          = 1,
@@ -189,6 +200,7 @@ public:
   bool _lightweight;
   bool _enable_method_cleanup;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
+  ContextStorageMode _context_storage;  // Context storage mode (profiler TLS or OTEL buffer)
 
   Arguments(bool persistent = false)
       : _buf(NULL),
@@ -223,7 +235,8 @@ public:
         _wallclock_sampler(ASGCT),
         _lightweight(false),
         _enable_method_cleanup(true),
-        _remote_symbolication(false) {}
+        _remote_symbolication(false),
+        _context_storage(CTX_STORAGE_PROFILER) {}
 
   ~Arguments();
 

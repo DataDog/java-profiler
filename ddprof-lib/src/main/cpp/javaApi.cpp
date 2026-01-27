@@ -18,6 +18,7 @@
 
 #include "arch.h"
 #include "context.h"
+#include "context_api.h"
 #include "counters.h"
 #include "common.h"
 #include "engine.h"
@@ -549,19 +550,50 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeContextTls0(JNIEnv* env, jcla
 
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_ThreadContext_setContext0(JNIEnv* env, jclass unused, jlong spanId, jlong rootSpanId) {
-  Context& ctx = Contexts::get();
+  // Use ContextApi for mode-agnostic context setting (handles TLS or OTEL storage)
+  ContextApi::set(spanId, rootSpanId);
 
-  ctx.spanId = spanId;
-  ctx.rootSpanId = rootSpanId;
-  ctx.checksum = Contexts::checksum(spanId, rootSpanId);
-
-  return ctx.checksum;
+  // Return checksum for API compatibility
+  // In OTEL mode, return 0 as checksum is not used (OTEL uses in_use flag instead)
+  if (ContextApi::getMode() == CTX_STORAGE_OTEL) {
+    return 0;
+  }
+  return Contexts::checksum(spanId, rootSpanId);
 }
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_ThreadContext_setContextSlot0(JNIEnv* env, jclass unused, jint offset, jint value) {
   Context& ctx = Contexts::get();
   ctx.tags[offset].value = (u32)value;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_ThreadContext_isOtelMode0(JNIEnv* env, jclass unused) {
+  return ContextApi::isInitialized() && ContextApi::getMode() == CTX_STORAGE_OTEL;
+}
+
+extern "C" DLLEXPORT jlongArray JNICALL
+Java_com_datadoghq_profiler_ThreadContext_getContext0(JNIEnv* env, jclass unused) {
+  u64 spanId = 0;
+  u64 rootSpanId = 0;
+
+  // Read context via ContextApi (handles both OTEL and TLS modes)
+  // If read fails (torn read or write in progress), return zeros
+  if (!ContextApi::get(spanId, rootSpanId)) {
+    spanId = 0;
+    rootSpanId = 0;
+  }
+
+  // Create result array [spanId, rootSpanId]
+  jlongArray result = env->NewLongArray(2);
+  if (result == nullptr) {
+    return nullptr;
+  }
+
+  jlong values[2] = {(jlong)spanId, (jlong)rootSpanId};
+  env->SetLongArrayRegion(result, 0, 2, values);
+
+  return result;
 }
 
 // ---- test and debug utilities
