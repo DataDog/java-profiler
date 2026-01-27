@@ -505,7 +505,7 @@ void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
       VMKlass *vmklass = VMKlass::fromJavaClass(jni, klass);
       int method_count = vmklass->methodCount();
       if (method_count > 0) {
-        ClassLoaderData *cld = vmklass->classLoaderData();
+        VMClassLoaderData *cld = vmklass->classLoaderData();
         cld->lock();
         for (int i = 0; i < method_count; i += MethodList::SIZE) {
           *cld->methodList() = new MethodList(*cld->methodList());
@@ -539,6 +539,16 @@ void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
       int count = 0;
       for (int i = 0; i < class_count; i++) {
         jclass klass = classes[i];
+        char* signature_ptr;
+        char* generic_ptr;
+        jobject cld;
+
+        jvmti->GetClassSignature(klass, &signature_ptr, &generic_ptr);
+        jvmti->GetClassLoader(klass, &cld);
+        printf("Klass: %s - %s. class loader: %zu\n", signature_ptr, generic_ptr, (unsigned long)cld);
+
+
+
         // Only populates jmethodID for classes loaded by a unknown classloader
         if (!ddprof::ClassLoader::loaded_by_known_classloader(klass)) {
           loadMethodIDs(jvmti, jni, classes[i]);

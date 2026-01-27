@@ -96,6 +96,7 @@ public final class JavaProfiler {
         if (!result.succeeded) {
             throw new IOException("Failed to load Datadog Java profiler library", result.error);
         }
+        populateClassloaders();
         init0();
 
         instance = profiler;
@@ -319,7 +320,7 @@ public final class JavaProfiler {
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
 
     // Populates platform and application classloaders
-    private void populateClassloaders() {
+    private static void populateClassloaders() {
         populateClassloaders0(ClassLoader.getPlatformClassLoader().getClass(), ClassLoader.getSystemClassLoader().getClass());
     }
 

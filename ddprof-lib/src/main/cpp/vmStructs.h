@@ -230,7 +230,7 @@ class VMSymbol : VMStructs {
     }
 };
 
-class ClassLoaderData : VMStructs {
+class VMClassLoaderData : VMStructs {
   private:
     void* mutex() {
         return *(void**) at(sizeof(uintptr_t) * 3);
@@ -291,17 +291,16 @@ class VMKlass : VMStructs {
     }
 
     void print() {
-        VMSymbol* klass_name = name();
-        TEST_LOG("%.20s\n", klass_name->body());
     }
 
     VMSymbol* name() {
-        return *(VMSymbol**) at(_klass_name_offset);
+        const char *ptr = at(_klass_name_offset);
+        VMSymbol* klass_name = *(VMSymbol**)ptr;
+        return klass_name;
+//        return *(VMSymbol**) at(_klass_name_offset);
     }
 
-    ClassLoaderData* classLoaderData() {
-        return *(ClassLoaderData**) at(_class_loader_data_offset);
-    }
+    VMClassLoaderData* classLoaderData();
 
     int methodCount() {
         int* methods = *(int**) at(_methods_offset);

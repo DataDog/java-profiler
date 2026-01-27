@@ -220,7 +220,7 @@ namespace ddprof {
       static void set_object_offset(int offset) { _obj_offset = offset; }
 
       OopDesc* oop() { 
-        return *(OopDesc**)at(_obj_offset);
+        return (OopDesc*)at(_obj_offset);
       }
   };
 

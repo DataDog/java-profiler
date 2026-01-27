@@ -676,6 +676,16 @@ JNIEnv* VMThread::jni() {
     return isJavaThread() ? (JNIEnv*) at(_env_offset) : NULL;
 }
 
+
+VMClassLoaderData* VMKlass::classLoaderData() {
+        char** pp = (char**)at(_class_loader_data_offset);
+        char* ptr = *pp;
+        VMClassLoaderData* cld = (VMClassLoaderData*)ptr;
+        return cld;
+//        return *(ClassLoaderData**) at(_class_loader_data_offset);
+    }
+
+
 jmethodID VMMethod::id() {
     // We may find a bogus NMethod during stack walking, it does not always point to a valid VMMethod
     const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
