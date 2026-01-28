@@ -98,7 +98,7 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
         if (CodeHeap::contains(pc) && !(depth == 0 && frame.unwindAtomicStub(pc)) &&
-            !is_java_thread) {  // If it is not a Java thread, it cannot have Java frames
+            is_java_thread) {  // If it is not a Java thread, it cannot have Java frames
             java_ctx->set(pc, sp, fp);
             break;
         }
@@ -156,7 +156,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
         if (CodeHeap::contains(pc) && !(depth == 0 && frame.unwindAtomicStub(pc)) &&
-            !is_java_thread()) {  // If it is not a Java thread, it cannot have Java frames
+            is_java_thread()) {  // If it is not a Java thread, it cannot have Java frames
             // Don't dereference pc as it may point to unreadable memory
             // frame.adjustSP(page_start, pc, sp);
             java_ctx->set(pc, sp, fp);
