@@ -5,14 +5,16 @@
 #include "threadState.h"
 #include "vmStructs.h"
 #include "thread.h"
+#include <stdio.h>
 
 inline ExecutionMode getThreadExecutionMode() {
   VMThread* vm_thread = VMThread::current();
   if (vm_thread == nullptr) {
-    return ExecutionMode::UNKNOWN;
+    return ExecutionMode::NATIVE;
   }
   ProfiledThread *prof_thread = ProfiledThread::currentSignalSafe();
   bool is_java_thread = prof_thread != nullptr && prof_thread->isJavaThread();
+
   if (is_java_thread) {
     int raw_thread_state = vm_thread->state();
 
