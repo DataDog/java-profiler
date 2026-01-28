@@ -78,6 +78,15 @@ Java_com_datadoghq_profiler_JavaProfiler_stop0(JNIEnv *env, jobject unused) {
   }
 }
 
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_populateClassloaders0(JNIEnv *env,
+                                                         jclass unused,
+                                                         jclass platformClassLoader,
+                                                         jclass applicationClassLoader) {
+  PlatformClassLoader::set_platform_classloader(platformClassLoader);
+  ApplicationClassLoader::set_application_classloader(applicationClassLoader);
+}
+
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getTid0(JNIEnv *env, jclass unused) {
   return OS::threadId();

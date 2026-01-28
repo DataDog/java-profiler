@@ -80,7 +80,9 @@ class VMStructs {
     static int _method_code_offset;
     static int _constmethod_constants_offset;
     static int _constmethod_idnum_offset;
+    static int _constmethod_flags_offset;
     static int _constmethod_size;
+    static int _constmethod_code_size;
     static int _pool_holder_offset;
     static int _array_len_offset;
     static int _array_data_offset;
@@ -324,7 +326,7 @@ class VMSymbol : VMStructs {
     }
 };
 
-class ClassLoaderData : VMStructs {
+class VMClassLoaderData : VMStructs {
   private:
     void* mutex() {
         return *(void**) at(sizeof(uintptr_t) * 3);
@@ -388,8 +390,8 @@ class VMKlass : VMStructs {
         return *(VMSymbol**) at(_klass_name_offset);
     }
 
-    ClassLoaderData* classLoaderData() {
-        return *(ClassLoaderData**) at(_class_loader_data_offset);
+    VMClassLoaderData* classLoaderData() {
+        return *(VMClassLoaderData**) at(_class_loader_data_offset);
     }
 
     int methodCount() {
