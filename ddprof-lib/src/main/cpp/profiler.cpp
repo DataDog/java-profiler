@@ -108,6 +108,7 @@ void Profiler::addRuntimeStub(const void *address, int length,
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   ProfiledThread::initCurrentThread();
   ProfiledThread *current = ProfiledThread::current();
+  current->setJavaThread();
   int tid = current->tid();
   if (_thread_filter.enabled()) {
     int slot_id = _thread_filter.registerThread();

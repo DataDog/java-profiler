@@ -20,7 +20,7 @@
 // Forward declaration to avoid circular dependency
 class Context;
 
-class ProfiledThread : public ThreadLocalData {
+class ProfiledThread : public ThreadLocalData {     
 private:
   // We are allowing several levels of nesting because we can be
   // eg. in a crash handler when wallclock signal kicks in,
@@ -33,6 +33,9 @@ private:
   static int _buffer_size;
   static volatile int _running_buffer_pos;
   static ProfiledThread** _buffer;
+
+  // Misc flags
+  static constexpr u32 FLAG_JAVA_THREAD = 0x01;
 
   // Free slot recycling - lock-free stack of available buffer slots
   // Note: Using plain int with GCC atomic builtins instead of std::atomic
@@ -62,6 +65,7 @@ private:
   u32 _wall_epoch;
   u64 _call_trace_id;
   u32 _recording_epoch;
+  u32 _misc_flags;
   int _filter_slot_id; // Slot ID for thread filtering
   UnwindFailures _unwind_failures;
   bool _ctx_tls_initialized;
@@ -69,7 +73,7 @@ private:
 
   ProfiledThread(int buffer_pos, int tid)
       : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _root_span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
-        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _filter_slot_id(-1), _ctx_tls_initialized(false), _ctx_tls_ptr(nullptr) {};
+        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _ctx_tls_initialized(false), _ctx_tls_ptr(nullptr) {};
 
   void releaseFromBuffer();
 
@@ -194,6 +198,15 @@ public:
     return _ctx_tls_ptr;
   }
   
+  // Flags
+  inline void setJavaThread() {
+    _misc_flags |= FLAG_JAVA_THREAD;
+  }
+
+  inline bool isJavaThread() const {
+    return (_misc_flags & FLAG_JAVA_THREAD) == 0x01;
+  }
+
 private:
   // Atomic flag for signal handler reentrancy protection within the same thread
   // Must be atomic because a signal handler can interrupt normal execution mid-instruction,

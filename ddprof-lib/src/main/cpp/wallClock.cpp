@@ -13,7 +13,7 @@
 #include "profiler.h"
 #include "stackFrame.h"
 #include "thread.h"
-#include "threadState.h"
+#include "threadState.inline.h"
 #include "vmStructs.h"
 #include "criticalSection.h"
 #include <math.h>
@@ -90,7 +90,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     if (os_state != OSThreadState::UNKNOWN) {
       state = os_state;
     }
-    mode = getThreadExecutionMode(vm_thread);
+    mode = getThreadExecutionMode();
   }
   if (state == OSThreadState::UNKNOWN) {
     if (inSyscall(ucontext)) {
@@ -240,7 +240,7 @@ void WallClockJVMTI::timerLoop() {
     } else {
       state = os_state;
     }
-    mode = getThreadExecutionMode(vm_thread);
+    mode = getThreadExecutionMode();
 
     event._thread_state = state;
     event._execution_mode = mode;
