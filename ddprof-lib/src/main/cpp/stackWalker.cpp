@@ -37,15 +37,6 @@ static inline uintptr_t defaultSenderSP(uintptr_t sp, uintptr_t fp) {
 #endif
 }
 
-static bool is_java_thread() {
-    VMThread* vm_thread = VMThread::current();
-    if (vm_thread == nullptr) {
-        return false;
-    }
-    ProfiledThread *prof_thread = ProfiledThread::currentSignalSafe();
-    return prof_thread != nullptr && prof_thread->isJavaThread();
-}
-
 static inline void fillFrame(ASGCT_CallFrame& frame, ASGCT_CallFrameType type, const char* name) {
     frame.bci = type;
     frame.method_id = (jmethodID)name;
@@ -98,7 +89,7 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
         if (CodeHeap::contains(pc) && !(depth == 0 && frame.unwindAtomicStub(pc)) &&
-            is_java_thread) {  // If it is not a Java thread, it cannot have Java frames
+            VMThread::current() != nullptr) {  // If it is not a Java thread, it cannot have Java frames
             java_ctx->set(pc, sp, fp);
             break;
         }
@@ -156,7 +147,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
         if (CodeHeap::contains(pc) && !(depth == 0 && frame.unwindAtomicStub(pc)) &&
-            is_java_thread()) {  // If it is not a Java thread, it cannot have Java frames
+            VMThread::current() != nullptr) {  // If it is not a Java thread, it cannot have Java frames
             // Don't dereference pc as it may point to unreadable memory
             // frame.adjustSP(page_start, pc, sp);
             java_ctx->set(pc, sp, fp);

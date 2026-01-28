@@ -74,7 +74,6 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
             for (IItem item : cpuSamples) {
                 String stacktrace = stacktraceAccessor.getMember(item);
                 String mode = modeAccessor.getMember(item);
-//                System.out.println("Mode: " + mode + "\n" + stacktrace + "\n");
                 modeCounters.computeIfAbsent(mode, x -> new AtomicInteger()).incrementAndGet();
                 if ("NATIVE".equals(mode)) {
                     String library = "";
