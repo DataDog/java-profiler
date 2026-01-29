@@ -310,8 +310,10 @@ buildConfigNames().each { name ->
       dependsOn copyTask
     }
 
-    manifest {
-      attributes 'Premain-Class': 'com.datadoghq.profiler.Main'
+    if (name == 'debug') {
+      manifest {
+        attributes 'Premain-Class': 'com.datadoghq.profiler.Main'
+      }
     }
 
     from sourceSets.main.output.classesDirs
@@ -461,9 +463,6 @@ tasks.withType(StripSymbols).configureEach {
 }
 
 jar {
-  manifest {
-    attributes 'Premain-Class': 'com.datadoghq.profiler.Main'
-  }
   dependsOn copyExternalLibs
   dependsOn tasks.named('compileJava9Java')
 }
