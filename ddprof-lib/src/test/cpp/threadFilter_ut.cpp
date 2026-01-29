@@ -33,7 +33,7 @@ protected:
         // Install crash handler for debugging potential issues
         installGtestCrashHandler<THREAD_FILTER_TEST_NAME>();
         filter = std::make_unique<ThreadFilter>();
-        filter->init("");  // Enable filtering
+        filter->init("enabled");  // Enable filtering with non-empty string
     }
 
     void TearDown() override {
@@ -66,12 +66,27 @@ TEST_F(ThreadFilterTest, BasicRegisterAndAccept) {
 
 TEST_F(ThreadFilterTest, DisabledFilterAcceptsAll) {
     ThreadFilter disabled_filter;
-    disabled_filter.init(nullptr);  // Disabled
-    
+    disabled_filter.init(nullptr);  // Disabled with nullptr
+
     EXPECT_FALSE(disabled_filter.enabled());
     EXPECT_TRUE(disabled_filter.accept(-1));
     EXPECT_TRUE(disabled_filter.accept(0));
     EXPECT_TRUE(disabled_filter.accept(999999));
+}
+
+TEST_F(ThreadFilterTest, EmptyStringDisablesFilter) {
+    // Empty string should disable the filter (same as nullptr)
+    // This allows 'no-thread-filter' when 'filter' argument is provided without value
+    ThreadFilter empty_filter;
+    empty_filter.init("");  // Disabled with empty string
+
+    EXPECT_FALSE(empty_filter.enabled());
+    EXPECT_TRUE(empty_filter.accept(-1));
+    EXPECT_TRUE(empty_filter.accept(0));
+    EXPECT_TRUE(empty_filter.accept(999999));
+
+    // When disabled, registerThread() blocks new registrations
+    EXPECT_EQ(empty_filter.registerThread(), -1);
 }
 
 TEST_F(ThreadFilterTest, InvalidSlotHandling) {
