@@ -5,21 +5,21 @@ title: Java Profiler Build - Test Dashboard
 
 # Java Profiler Build - Test Dashboard
 
-> **Last Updated:** 2026-01-29 16:12 UTC
+> **Last Updated:** 2026-01-29 17:19 UTC
 
 ## Quick Status
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](/integration/) | [#93554967](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93554967) | ⚠️ | main | - |
-| [Benchmarks](/benchmarks/) | - | - | - | - |
-| [Reliability](/reliability/) | - | - | - | - |
+| [Integration](integration/) | [#93594940](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93594940) | ⚠️ | main | - |
+| [Benchmarks](benchmarks/) | - | - | - | - |
+| [Reliability](reliability/) | - | - | - | - |
 
 ## Recent Runs (All Types)
 
 | Date | Type | Pipeline | Branch | PR | Status |
 |------|------|----------|--------|-----|--------|
-| 2026-01-29 | Integration | [#93554967](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93554967) | main | - | ⚠️ |
+| - | - | - | - | - | - |
 
 ---
 

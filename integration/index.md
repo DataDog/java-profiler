@@ -5,11 +5,29 @@ title: DD-Trace Integration Test History
 
 # DD-Trace Integration Test History
 
-[← Back to Dashboard](/)
+[← Back to Dashboard](../)
 
 Tests dd-trace-java compatibility with ddprof across multiple JDK versions and platforms.
 
 ## Last 10 Runs
+
+<details>
+<summary>
+<strong>2026-01-29 17:19</strong> | ⚠️ | main | Pipeline [#93594940](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93594940)
+</summary>
+
+**Version:** unknown
+**Commit:** unknown
+
+| Metric | Value |
+|--------|-------|
+| Jobs | 40 |
+| Passed | 37 |
+| Failed | 3 |
+
+**Failed Configs:** glibc-arm64-openj9-jdk21, musl-x64-openj9-jdk11, musl-x64-openj9-jdk17
+
+</details>
 
 <details>
 <summary>
@@ -32,4 +50,4 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 ---
 
-[← Back to Dashboard](/) | [View git history](https://github.com/DataDog/java-profiler/commits/gh-pages)
+[← Back to Dashboard](../) | [View git history](https://github.com/DataDog/java-profiler/commits/gh-pages)
