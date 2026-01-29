@@ -550,6 +550,8 @@ class VMMethod : public /* TODO make private when consolidating VMMethod? */ VMS
         return *(const char**) at(_method_constmethod_offset) + _constmethod_size;
     }
 
+    VMKlass* methodHolder();
+
     NMethod* code() {
         return *(NMethod**) at(_method_code_offset);
     }
@@ -844,5 +846,32 @@ class InterpreterFrame : VMStructs {
         return _interpreter_frame_bcp_offset;
     }
 };
+
+// Datadog-specific classes
+class VMBSClassLoader : VMStructs {
+  private:
+    // java.lang.Object must be loaded by bootstrap class loader.
+    // _object_klass points to java/lang/Object instanceKlass stored in vmClasses,
+    // and we use it to figure out if classes/methods are loaded by bootstrap classloader
+    static VMKlass** _object_klass_addr;
+     
+  public:
+    static void setObjectKlassAddr(VMKlass** addr) {
+       _object_klass_addr = addr;
+    }
+    // If a Method is loaded by BootstrapClassLoader
+    static bool loadedBy(VMMethod* method) {
+      return loadedBy(method->methodHolder());
+    }
+
+    static bool loadedBy(VMKlass* klass) {
+      VMKlass* object_klass = *_object_klass_addr;
+      assert(object_klass != nullptr);
+      assert(klass != nullptr);
+ 
+      return object_klass->classLoaderData() == klass->classLoaderData();
+    }
+};
+
 
 #endif // _VMSTRUCTS_H

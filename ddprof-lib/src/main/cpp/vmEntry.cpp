@@ -528,7 +528,7 @@ void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
       VMKlass *vmklass = VMKlass::fromJavaClass(jni, klass);
       int method_count = vmklass->methodCount();
       if (method_count > 0) {
-        ClassLoaderData *cld = vmklass->classLoaderData();
+        VMClassLoaderData *cld = vmklass->classLoaderData();
         cld->lock();
         for (int i = 0; i < method_count; i += MethodList::SIZE) {
           *cld->methodList() = new MethodList(*cld->methodList());
@@ -558,12 +558,24 @@ void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
 void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
     jint class_count;
     jclass *classes;
+    int loaded_count = 0;
     if (jvmti->GetLoadedClasses(&class_count, &classes) == 0) {
       for (int i = 0; i < class_count; i++) {
-        loadMethodIDs(jvmti, jni, classes[i]);
+        jclass klass = classes[i];
+        jobject cld;
+ 
+        // Loaded by bootstrap class loader
+        if (jvmti->GetClassLoader(klass, &cld) == JVMTI_ERROR_NONE && cld == nullptr) {
+           continue;
+        }
+
+        loadMethodIDs(jvmti, jni, klass);
+        loaded_count++;
       }
       jvmti->Deallocate((unsigned char *)classes);
     }
+
+    TEST_LOG("Preloaded jmethodIDs for %d/%d classes", loaded_count, class_count);
 }
 
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {

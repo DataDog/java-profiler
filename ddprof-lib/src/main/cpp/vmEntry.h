@@ -52,10 +52,14 @@ enum ASGCT_Failure {
   ASGCT_FAILURE_TYPES = 12
 };
 
+class VMMethod;
 typedef struct {
     jint bci;
     LP64_ONLY(jint padding;)
-    jmethodID method_id;
+    union {
+      jmethodID method_id;
+      VMMethod* vm_method;
+    };
 } ASGCT_CallFrame;
 
 /**

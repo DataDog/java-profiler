@@ -58,6 +58,11 @@ static inline void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, 
     frame.method_id = method;
 }
 
+static inline void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, VMMethod* method) {
+    frame.bci = FrameType::encode(type, bci);
+    frame.vm_method = method;
+}
+
 static jmethodID getMethodId(VMMethod* method) {
     if (!inDeadZone(method) && aligned((uintptr_t)method)) {
         return method->validatedId();
@@ -383,35 +388,42 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 if (is_plausible_interpreter_frame) {
                     VMMethod* method = ((VMMethod**)fp)[InterpreterFrame::method_offset];
                     jmethodID method_id = getMethodId(method);
-                    if (method_id != NULL) {
-                        const char* bytecode_start = method->bytecode();
-                        const char* bcp = ((const char**)fp)[bcp_offset];
-                        int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
-                        fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
 
-                        sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
-                        pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
-                        fp = *(uintptr_t*)fp;
-                        continue;
+                    assert(method_id != nullptr || VMBSClassLoader::loadedBy(method));
+                    const char* bytecode_start = method->bytecode();
+                    const char* bcp = ((const char**)fp)[bcp_offset];
+                    int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
+                    if (method_id != nullptr) {
+                      fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
+                    } else {
+                       fillFrame(frames[depth++], FRAME_INTERPRETED_METHOD, bci, method); 
                     }
+                    sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
+                    pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
+                    fp = *(uintptr_t*)fp;
+                    continue;
                 }
 
                 if (depth == 0) {
                     VMMethod* method = (VMMethod*)frame.method();
                     jmethodID method_id = getMethodId(method);
-                    if (method_id != NULL) {
-                        fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id);
-
-                        if (is_plausible_interpreter_frame) {
-                            pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
-                            sp = frame.senderSP();
-                            fp = *(uintptr_t*)fp;
-                        } else {
-                            pc = stripPointer(*(void**)sp);
-                            sp = frame.senderSP();
-                        }
-                        continue;
+                    assert(method_id != nullptr || VMBSClassLoader::loadedBy(method));
+                    if (method_id != nullptr) {
+                      fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id);
+                    } else {
+                       fillFrame(frames[depth++], FRAME_INTERPRETED_METHOD, 0, method); 
                     }
+                    fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id);
+
+                    if (is_plausible_interpreter_frame) {
+                        pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
+                        sp = frame.senderSP();
+                        fp = *(uintptr_t*)fp;
+                    } else {
+                        pc = stripPointer(*(void**)sp);
+                        sp = frame.senderSP();
+                    }
+                    continue;
                 }
 
                 fillFrame(frames[depth++], BCI_ERROR, "break_interpreted");

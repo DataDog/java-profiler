@@ -83,8 +83,8 @@ Java_com_datadoghq_profiler_JavaProfiler_populateClassloaders0(JNIEnv *env,
                                                          jclass unused,
                                                          jclass platformClassLoader,
                                                          jclass applicationClassLoader) {
-  PlatformClassLoader::set_platform_classloader(platformClassLoader);
-  ApplicationClassLoader::set_application_classloader(applicationClassLoader);
+//  PlatformClassLoader::set_platform_classloader(platformClassLoader);
+//  ApplicationClassLoader::set_application_classloader(applicationClassLoader);
 }
 
 extern "C" DLLEXPORT jint JNICALL

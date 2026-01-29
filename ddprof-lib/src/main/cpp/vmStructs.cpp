@@ -395,6 +395,14 @@ void VMStructs::initOffsets() {
             } else if (strcmp(type, "PermGen") == 0) {
                 _has_perm_gen = true;
             }
+            // Datadog-specific:
+            else if (strcmp(type, "vmClasses") == 0) {
+                // java/lang/Object must be loaded by bootstrap class loader, we use it to locate
+                // its CLD
+                if (strcmp(field, "_klasses[static_cast<int>(vmClassID::Object_klass_knum)]") == 0) {
+                    VMBSClassLoader::setObjectKlassAddr(*(::VMKlass***)(entry + address_offset));
+                }
+            }
         }
     }
 
@@ -827,7 +835,7 @@ jmethodID VMMethod::id() {
     const char* cpool = (const char*) SafeAccess::load((void**)(const_method + _constmethod_constants_offset));
     unsigned short num = (unsigned short) SafeAccess::load32((int32_t*)(const_method + _constmethod_idnum_offset), 0);
     if (goodPtr(cpool)) {
-        VMKlass* holder = *(VMKlass**)(cpool + _pool_holder_offset);
+        VMKlass* holder = methodHolder();
         if (goodPtr(holder)) {
             jmethodID* ids = holder->jmethodIDs();
             if (ids != NULL && num < (size_t)ids[0]) {
@@ -844,6 +852,15 @@ jmethodID VMMethod::validatedId() {
         return method_id;
     }
     return NULL;
+}
+
+VMKlass* VMMethod::methodHolder() {
+    // We may find a bogus NMethod during stack walking, it does not always point to a valid VMMethod
+    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
+    assert(goodPtr(const_method));    
+    const char* cpool = (const char*) SafeAccess::load((void**)(const_method + _constmethod_constants_offset));
+    assert(goodPtr(cpool));
+    return *(VMKlass**)(cpool + _pool_holder_offset);
 }
 
 NMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
@@ -1216,3 +1233,6 @@ HeapUsage HeapUsage::get(bool allow_jmx) {
     }
     return usage;
 }
+
+// Datadgog-specific:
+VMKlass** VMBSClassLoader::_object_klass_addr = nullptr;
