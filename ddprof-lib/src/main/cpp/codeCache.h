@@ -64,6 +64,9 @@ public:
   static void destroy(char *name);
 
   static short libIndex(const char *name) {
+    if (name == nullptr) {
+      return -1;
+    }
     NativeFunc* func = from(name);
     if (!is_aligned(func, sizeof(func))) {
       return -1;
@@ -71,14 +74,37 @@ public:
     return func->_lib_index;
   }
 
-  static bool isMarked(const char *name) { return from(name)->_mark != 0; }
+  static bool isMarked(const char *name) {
+    if (name == nullptr) {
+      return false;
+    }
+    NativeFunc* func = from(name);
+    if (!is_aligned(func, sizeof(func))) {
+      return false;
+    }
+    return func->_mark != 0;
+  }
 
   static char mark(const char* name) {
-      return from(name)->_mark;
+    if (name == nullptr) {
+      return 0;
+    }
+    NativeFunc* func = from(name);
+    if (!is_aligned(func, sizeof(func))) {
+      return 0;
+    }
+    return func->_mark;
   }
 
   static void mark(const char* name, char value) {
-      from(name)->_mark = value;
+    if (name == nullptr) {
+      return;
+    }
+    NativeFunc* func = from(name);
+    if (!is_aligned(func, sizeof(func))) {
+      return;
+    }
+    func->_mark = value;
   }
 };
 
