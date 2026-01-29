@@ -1,12 +1,12 @@
 // Unless explicitly stated otherwise all files in this repository are licensed under the Apache License (Version 2.0).
-// This product includes software developed at Datadog (https://www.datadoghq.com/) Copyright 2025 Datadog, Inc.
+// This product includes software developed at Datadog (https://www.datadoghq.com/) Copyright 2026 Datadog, Inc.
 
 #pragma once
 
-#define OTEL_PROCESS_CTX_VERSION_MAJOR 0
+#define OTEL_PROCESS_CTX_VERSION_MAJOR 2
 #define OTEL_PROCESS_CTX_VERSION_MINOR 0
-#define OTEL_PROCESS_CTX_VERSION_PATCH 7
-#define OTEL_PROCESS_CTX_VERSION_STRING "0.0.7"
+#define OTEL_PROCESS_CTX_VERSION_PATCH 0
+#define OTEL_PROCESS_CTX_VERSION_STRING "2.0.0"
 
 #ifdef __cplusplus
 extern "C" {
@@ -23,6 +23,24 @@ extern "C" {
  * This reference implementation is Linux-only, as the specification currently only covers Linux.
  * On non-Linux OS's (or when OTEL_PROCESS_CTX_NOOP is defined) no-op versions of functions are supplied.
  */
+
+/**
+ * TLS context sharing configuration.
+ *
+ * When set in otel_process_ctx_data.tls_config, these fields are encoded as:
+ * - threadlocal.schema_version = schema_version (string, e.g. "tlsdesc_v1_dev")
+ * - threadlocal.max_record_size = max_record_size (int64)
+ * - threadlocal.attribute_key_map = attribute_key_map (array of strings, position = index)
+ *
+ * These fields allow external profilers to discover and decode thread-local context records.
+ */
+typedef struct {
+  char *schema_version;      // TLS schema version string (e.g. "tlsdesc_v1_dev")
+  int max_record_size;       // Maximum bytes per TLS record
+  // Key index to name mapping (NULL-terminated array of key names)
+  // Position in array = key index (e.g. ["method", "route", NULL] means index 0 = "method", index 1 = "route")
+  char **attribute_key_map;
+} otel_tls_config;
 
 /**
  * Data that can be published as a process context.
@@ -69,6 +87,9 @@ typedef struct {
   // Can be NULL if no resources are needed; if non-NULL, this array MUST be terminated with a NULL entry.
   // Every even entry is a key, every odd entry is a value (E.g. "key1", "value1", "key2", "value2", NULL).
   char **resources;
+  // TLS context sharing configuration (optional, set to NULL if not used)
+  // When set, additional threadlocal.* attributes are included in the process context.
+  otel_tls_config *tls_config;
 } otel_process_ctx_data;
 
 /** Number of entries in the `otel_process_ctx_data` struct. Can be used to easily detect when the struct is updated. */

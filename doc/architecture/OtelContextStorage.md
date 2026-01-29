@@ -2,11 +2,107 @@
 
 ## Overview
 
-The OTEL Context Storage system extends the profiler's existing Thread-Local Storage (TLS) context mechanism with an alternative storage mode that is compatible with the OpenTelemetry (OTEL) profiling proposal. This enables external profilers (like DDProf) to discover and read tracing context from the Java profiler without requiring direct integration.
+The OTEL Context Storage system provides two distinct context sharing mechanisms:
 
-The system uses a feature-flagged approach where the storage mode is selected at profiler startup:
-- **profiler mode** (default): Uses the existing TLS-based storage with checksum validation
-- **otel mode**: Uses an OTEL-compatible ring buffer storage discoverable via `/proc/<pid>/maps`
+1. **Thread-Level Context**: Ring buffer storage for per-thread trace/span context (existing implementation)
+2. **Process-Level Context**: Service metadata shared via memory-mapped regions (v2 specification compliant)
+
+This document covers both mechanisms. The process-level context follows the [OpenTelemetry Process Context v2 specification](https://github.com/open-telemetry/opentelemetry-specification/blob/main/oteps/profiles/4719-process-ctx.md).
+
+## Process Context (v2 Specification)
+
+### Header Structure
+
+The process context uses a memory-mapped region with the following v2-compliant header:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    Process Context Header (v2)                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  Offset │ Size  │ Field            │ Description                        │
+├─────────┼───────┼──────────────────┼────────────────────────────────────┤
+│  0x00   │ 8     │ signature        │ "OTEL_CTX" (written last)          │
+│  0x08   │ 4     │ version          │ Protocol version = 2               │
+│  0x0C   │ 4     │ payload_size     │ Size of protobuf payload           │
+│  0x10   │ 8     │ published_at_ns  │ Timestamp (0 = update in progress) │
+│  0x18   │ 8     │ payload          │ Pointer to protobuf data           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Payload Format
+
+The payload is encoded as a Protocol Buffers message following `opentelemetry.proto.resource.v1.Resource`:
+
+```protobuf
+message Resource {
+  repeated KeyValue attributes = 1;  // Service metadata
+}
+
+message KeyValue {
+  string key = 1;
+  AnyValue value = 2;
+}
+
+message AnyValue {
+  oneof value {
+    string string_value = 1;
+    // ... other types
+  }
+}
+```
+
+### Memory Allocation Strategy
+
+Per v2 spec, the implementation prefers `memfd_create` with fallback to anonymous mmap:
+
+1. **memfd_create** (preferred): Creates `/memfd:OTEL_CTX` visible in `/proc/pid/maps`
+2. **Anonymous mmap** (fallback): Creates `[anon:OTEL_CTX]` via `prctl(PR_SET_VMA_ANON_NAME)`
+
+Both methods apply `MADV_DONTFORK` to prevent context inheritance in child processes.
+
+### Publication Protocol
+
+1. Encode payload as protobuf Resource message
+2. Create memory mapping (memfd or anonymous)
+3. Apply `MADV_DONTFORK`
+4. Write header fields (version=2, payload_size, payload pointer)
+5. Memory barrier
+6. Write signature "OTEL_CTX" (last)
+7. Memory barrier
+8. Set `published_at_ns` to current timestamp
+9. Name mapping via `prctl` (for anonymous) or rely on memfd name
+
+**Note:** Per PR #34, mappings remain writable (rw-p or rw-s) to allow in-place updates. The mprotect to read-only has been removed.
+
+### Update Protocol
+
+Per v2 spec, updates use atomic timestamp signaling:
+
+1. Write `0` to `published_at_ns` (signals update in progress)
+2. Memory barrier
+3. Update payload and payload_size
+4. Memory barrier
+5. Write new timestamp to `published_at_ns`
+
+### Reading Protocol
+
+External profilers read the context by:
+
+1. Scan `/proc/<pid>/maps` for `[anon:OTEL_CTX]` or `/memfd:OTEL_CTX`
+2. Validate signature = "OTEL_CTX"
+3. Check version = 2
+4. Read `published_at_ns` (if 0, update in progress - retry)
+5. Read payload bytes
+6. Re-read `published_at_ns` (if changed, data inconsistent - retry)
+7. Decode protobuf payload
+
+---
+
+## Thread-Level Context Storage
+
+The thread-level context system uses a feature-flagged approach where the storage mode is selected at profiler startup:
+- **profiler mode**: Uses the existing TLS-based storage with checksum validation
+- **otel mode** (default): Uses an OTEL-compatible ring buffer storage discoverable via `/proc/<pid>/maps`
 
 ## Core Design Principles
 
@@ -94,7 +190,7 @@ The system uses a feature-flagged approach where the storage mode is selected at
                                     ▼
                     ┌───────────────────────────────┐
                     │  Parse ctxstorage option      │
-                    │  (default: profiler)          │
+                    │  (default: otel)              │
                     └───────────────────────────────┘
                                     │
                     ┌───────────────┴───────────────┐
@@ -316,8 +412,8 @@ for (region in parse_proc_maps(pid)) {
 // context_api.h
 
 enum ContextStorageMode {
-    CTX_STORAGE_PROFILER = 0,  // TLS-based storage (default)
-    CTX_STORAGE_OTEL = 1       // OTEL ring buffer storage
+    CTX_STORAGE_PROFILER = 0,  // TLS-based storage
+    CTX_STORAGE_OTEL = 1       // OTEL ring buffer storage (default)
 };
 
 class ContextApi {
@@ -380,27 +476,30 @@ public class ThreadContext {
 
 | Option | Values | Default | Description |
 |--------|--------|---------|-------------|
-| `ctxstorage` | `profiler`, `otel` | `profiler` | Context storage mode |
+| `ctxstorage` | `profiler`, `otel` | `otel` | Context storage mode |
 
 ### Usage Examples
 
 ```bash
-# Default (profiler mode)
+# Default (OTEL mode)
 java -agentpath:libjavaProfiler.so=start,cpu=1ms,jfr,file=profile.jfr ...
 
-# OTEL mode
-java -agentpath:libjavaProfiler.so=start,cpu=1ms,ctxstorage=otel,jfr,file=profile.jfr ...
+# Explicit profiler mode
+java -agentpath:libjavaProfiler.so=start,cpu=1ms,ctxstorage=profiler,jfr,file=profile.jfr ...
 ```
 
 ```java
-// Programmatic API
+// Programmatic API (default OTEL mode)
 JavaProfiler profiler = JavaProfiler.getInstance();
-profiler.execute("start,cpu=1ms,ctxstorage=otel,jfr,file=profile.jfr");
+profiler.execute("start,cpu=1ms,jfr,file=profile.jfr");
 
 // Check mode
 if (ThreadContext.isOtelMode()) {
     System.out.println("OTEL context storage active");
 }
+
+// Explicitly use profiler mode
+profiler.execute("start,cpu=1ms,ctxstorage=profiler,jfr,file=profile.jfr");
 ```
 
 ## Platform Support

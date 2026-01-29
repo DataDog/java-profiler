@@ -17,24 +17,36 @@
 #include "context_api.h"
 #include "context.h"
 #include "otel_context.h"
+#include "common.h"  // For TEST_LOG
+#include "os.h"      // For OS::threadId()
 
 // Static member initialization
-ContextStorageMode ContextApi::_mode = CTX_STORAGE_PROFILER;
+// Default to OTEL mode for tracer-only usage (when profiler is not started)
+ContextStorageMode ContextApi::_mode = CTX_STORAGE_OTEL;
 bool ContextApi::_initialized = false;
 
 bool ContextApi::initialize(const Arguments& args) {
     if (__atomic_load_n(&_initialized, __ATOMIC_ACQUIRE)) {
+        TEST_LOG("ContextApi::initialize - already initialized, mode=%s",
+                 __atomic_load_n(&_mode, __ATOMIC_ACQUIRE) == CTX_STORAGE_OTEL ? "OTEL" : "PROFILER");
         return true;
     }
 
     ContextStorageMode mode = args._context_storage;
+    TEST_LOG("ContextApi::initialize - requested mode=%s",
+             mode == CTX_STORAGE_OTEL ? "OTEL" : "PROFILER");
+
     if (mode == CTX_STORAGE_OTEL) {
         if (!OtelContexts::initialize()) {
             // Failed to initialize OTEL buffer, fall back to profiler mode
+            TEST_LOG("ContextApi::initialize - OTEL initialization failed, falling back to PROFILER mode");
             mode = CTX_STORAGE_PROFILER;
             __atomic_store_n(&_mode, mode, __ATOMIC_RELEASE);
             return false;
         }
+        TEST_LOG("ContextApi::initialize - OTEL mode initialized successfully");
+    } else {
+        TEST_LOG("ContextApi::initialize - PROFILER mode selected (uses TLS context_tls_v1)");
     }
     // PROFILER mode uses existing TLS (context_tls_v1) - no explicit init needed
 
@@ -48,9 +60,10 @@ void ContextApi::shutdown() {
         return;
     }
 
-    if (__atomic_load_n(&_mode, __ATOMIC_ACQUIRE) == CTX_STORAGE_OTEL) {
-        OtelContexts::shutdown();
-    }
+    // Always shutdown OTEL buffer if it exists, regardless of current mode.
+    // This ensures the buffer is properly cleaned up when switching modes.
+    // OtelContexts::shutdown() is safe to call even if OTEL was never initialized.
+    OtelContexts::shutdown();
 
     __atomic_store_n(&_initialized, false, __ATOMIC_RELEASE);
 }
@@ -72,6 +85,11 @@ void ContextApi::set(u64 span_id, u64 root_span_id) {
 void ContextApi::setOtel(u64 trace_id_high, u64 trace_id_low, u64 span_id) {
     // Use atomic load for mode check - may be called from signal handlers
     ContextStorageMode mode = __atomic_load_n(&_mode, __ATOMIC_ACQUIRE);
+
+    TEST_LOG("ContextApi::setOtel: tid=%d mode=%s trace_high=0x%llx trace_low=0x%llx span=0x%llx",
+             OS::threadId(), mode == CTX_STORAGE_OTEL ? "OTEL" : "PROFILER",
+             (unsigned long long)trace_id_high, (unsigned long long)trace_id_low,
+             (unsigned long long)span_id);
 
     if (mode == CTX_STORAGE_OTEL) {
         OtelContexts::set(trace_id_high, trace_id_low, span_id);
@@ -140,5 +158,12 @@ bool ContextApi::getByTid(int tid, u64& span_id, u64& root_span_id) {
 }
 
 void ContextApi::clear() {
-    set(0, 0);
+    // Clear context based on storage mode
+    if (_mode == CTX_STORAGE_OTEL) {
+        // In OTEL mode, properly clear the V2 record (sets valid=0, pointer=nullptr)
+        OtelContexts::clear();
+    } else {
+        // In PROFILER mode, clear by setting checksum to 0
+        set(0, 0);
+    }
 }

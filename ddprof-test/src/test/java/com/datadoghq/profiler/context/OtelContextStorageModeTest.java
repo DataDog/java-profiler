@@ -37,8 +37,8 @@ import static org.junit.jupiter.api.Assertions.*;
  *
  * <p>The profiler supports two context storage modes controlled by the {@code ctxstorage} option:
  * <ul>
- *   <li>{@code profiler} (default): Uses TLS-based storage with checksum validation</li>
- *   <li>{@code otel}: Uses OTEL-compatible ring buffer storage (Linux only)</li>
+ *   <li>{@code profiler}: Uses TLS-based storage with checksum validation</li>
+ *   <li>{@code otel} (default): Uses OTEL-compatible ring buffer storage (Linux only)</li>
  * </ul>
  *
  * <p>The OTEL mode creates a named mmap region that can be discovered by external
@@ -67,11 +67,11 @@ public class OtelContextStorageModeTest {
     }
 
     /**
-     * Tests that the default (profiler) mode works correctly.
-     * Context values written should be readable back via TLS.
+     * Tests that the default (OTEL) mode works correctly.
+     * Context values written should be readable back.
      */
     @Test
-    public void testDefaultProfilerModeContext() throws Exception {
+    public void testDefaultOtelModeContext() throws Exception {
         Path jfrFile = Files.createTempFile("otel-ctx-default", ".jfr");
 
         profiler.execute(String.format("start,cpu=1ms,jfr,file=%s", jfrFile.toAbsolutePath()));
@@ -83,6 +83,31 @@ public class OtelContextStorageModeTest {
         // Write context
         long spanId = 0x1234567890ABCDEFL;
         long rootSpanId = 0xFEDCBA0987654321L;
+        profiler.setContext(spanId, rootSpanId);
+
+        // Verify context is readable (routes through OTEL buffer by default)
+        ThreadContext ctx = profiler.getThreadContext();
+        assertEquals(spanId, ctx.getSpanId(), "SpanId should match");
+        assertEquals(rootSpanId, ctx.getRootSpanId(), "RootSpanId should match");
+    }
+
+    /**
+     * Tests that the profiler mode works correctly when explicitly specified.
+     * Context values written should be readable back via TLS.
+     */
+    @Test
+    public void testExplicitProfilerModeContext() throws Exception {
+        Path jfrFile = Files.createTempFile("otel-ctx-profiler", ".jfr");
+
+        profiler.execute(String.format("start,cpu=1ms,ctxstorage=profiler,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profilerStarted = true;
+
+        // Clear any previous context
+        profiler.setContext(0, 0);
+
+        // Write context
+        long spanId = 0x9999888877776666L;
+        long rootSpanId = 0x1111222233334444L;
         profiler.setContext(spanId, rootSpanId);
 
         // Verify context is readable from TLS

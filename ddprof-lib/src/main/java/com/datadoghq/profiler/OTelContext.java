@@ -41,6 +41,48 @@ public final class OTelContext {
     }
 
     /**
+     * Represents TLS context sharing configuration.
+     *
+     * <p>This configuration is used to expose thread-local storage context information
+     * to external profilers. The key map maps indices to attribute names, allowing
+     * external readers to decode compact TLS records.
+     */
+    public static final class TlsConfig {
+        /** Default schema version for TLS context sharing (tlsdesc_v1_dev) */
+        public static final String DEFAULT_SCHEMA_VERSION = "tlsdesc_v1_dev";
+
+        /** TLS schema version string (e.g. "tlsdesc_v1_dev") */
+        public final String schemaVersion;
+        /** Maximum bytes per TLS record */
+        public final int maxRecordSize;
+        /** Key names in index order (position = key index, e.g. ["method", "route"]) */
+        public final String[] attributeKeyMap;
+
+        /**
+         * Creates a TLS configuration with the default schema version.
+         *
+         * @param maxRecordSize maximum bytes per TLS record
+         * @param attributeKeyMap key names in index order (position = key index)
+         */
+        public TlsConfig(int maxRecordSize, String[] attributeKeyMap) {
+            this(DEFAULT_SCHEMA_VERSION, maxRecordSize, attributeKeyMap);
+        }
+
+        /**
+         * Creates a TLS configuration with a custom schema version.
+         *
+         * @param schemaVersion TLS schema version string (e.g. "tlsdesc_v1_dev")
+         * @param maxRecordSize maximum bytes per TLS record
+         * @param attributeKeyMap key names in index order (position = key index)
+         */
+        public TlsConfig(String schemaVersion, int maxRecordSize, String[] attributeKeyMap) {
+            this.schemaVersion = schemaVersion;
+            this.maxRecordSize = maxRecordSize;
+            this.attributeKeyMap = attributeKeyMap;
+        }
+    }
+
+    /**
      * Represents the OpenTelemetry process context data.
      */
     public static final class ProcessContext {
@@ -63,7 +105,7 @@ public final class OTelContext {
             this.telemetrySdkVersion = telemetrySdkVersion;
             this.telemetrySdkName = telemetrySdkName;
         }
-        
+
         @Override
         public String toString() {
             return String.format("ProcessContext{deploymentEnvironmentName='%s', hostName='%s', serviceInstanceId='%s', serviceName='%s', serviceVersion='%s', telemetrySdkLanguage='%s', telemetrySdkVersion='%s', telemetrySdkName='%s'}",
@@ -211,17 +253,45 @@ public final class OTelContext {
      * @see <a href="https://opentelemetry.io/docs/specs/semconv/registry/attributes/deployment/">OpenTelemetry Deployment Attributes</a>
      */
     public void setProcessContext(String env, String hostname, String runtimeId, String service, String version, String tracerVersion) {
+        setProcessContext(env, hostname, runtimeId, service, version, tracerVersion, null);
+    }
+
+    /**
+     * Sets the OpenTelemetry process context with optional TLS configuration.
+     *
+     * <p>This overload allows specifying TLS context sharing configuration in addition
+     * to the basic service metadata. The TLS config enables external profilers to
+     * discover and decode thread-local context records.
+     *
+     * @param env the deployment environment name
+     * @param hostname the hostname of the service
+     * @param runtimeId the unique identifier for this service instance
+     * @param service the logical name of the service
+     * @param version the version of the service
+     * @param tracerVersion the version of the tracer
+     * @param tlsConfig TLS context sharing configuration, or null to omit
+     *
+     * @see #setProcessContext(String, String, String, String, String, String)
+     */
+    public void setProcessContext(String env, String hostname, String runtimeId, String service, String version, String tracerVersion, TlsConfig tlsConfig) {
         if (!libraryLoadResult.succeeded) {
             return;
         }
         try {
             lock.writeLock().lock();
-            setProcessCtx0(env, hostname, runtimeId, service, version, tracerVersion);
+            if (tlsConfig != null) {
+                setProcessCtxWithTls0(env, hostname, runtimeId, service, version, tracerVersion,
+                    tlsConfig.schemaVersion, tlsConfig.maxRecordSize, tlsConfig.attributeKeyMap);
+            } else {
+                setProcessCtx0(env, hostname, runtimeId, service, version, tracerVersion);
+            }
         } finally {
             lock.writeLock().unlock();
-        } 
+        }
     }
 
     private static native void setProcessCtx0(String env, String hostname, String runtimeId, String service, String version, String tracerVersion);
+    private static native void setProcessCtxWithTls0(String env, String hostname, String runtimeId, String service, String version, String tracerVersion,
+                                                      String schemaVersion, int maxRecordSize, String[] attributeKeyMap);
     private static native ProcessContext readProcessCtx0();
 }

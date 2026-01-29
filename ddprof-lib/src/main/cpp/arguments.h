@@ -95,12 +95,12 @@ enum Clock {
 /**
  * Context storage mode for trace/span context.
  *
- * PROFILER: Use existing TLS-based storage (default, proven async-signal safe)
- * OTEL: Use OTEL ring buffer storage (discoverable by external profilers)
+ * PROFILER: Use existing TLS-based storage (proven async-signal safe)
+ * OTEL: Use OTEL ring buffer storage (discoverable by external profilers, default)
  */
 enum ContextStorageMode {
-    CTX_STORAGE_PROFILER,  // Default: TLS-based storage
-    CTX_STORAGE_OTEL       // OTEL ring buffer storage
+    CTX_STORAGE_PROFILER,  // TLS-based storage
+    CTX_STORAGE_OTEL       // Default: OTEL ring buffer storage
 };
 
 // Keep this in sync with JfrSync.java
@@ -236,7 +236,7 @@ public:
         _lightweight(false),
         _enable_method_cleanup(true),
         _remote_symbolication(false),
-        _context_storage(CTX_STORAGE_PROFILER) {}
+        _context_storage(CTX_STORAGE_OTEL) {}
 
   ~Arguments();
 

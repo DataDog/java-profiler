@@ -30,6 +30,7 @@ private:
   // Even with 5 levels cap we will need any highly recursing signal handlers
   static constexpr u32 CRASH_HANDLER_NESTING_LIMIT = 5;
   static pthread_key_t _tls_key;
+  static volatile bool _tls_key_initialized;  // Tracks whether _tls_key is valid
   static int _buffer_size;
   static volatile int _running_buffer_pos;
   static ProfiledThread** _buffer;

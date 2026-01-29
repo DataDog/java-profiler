@@ -35,6 +35,7 @@
 #include <fstream>
 #include <sstream>
 #include <string.h>
+#include <vector>
 
 static void throwNew(JNIEnv *env, const char *exception_class,
                      const char *message) {
@@ -461,6 +462,21 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
   JniString version_str(env, version);
   JniString tracer_version_str(env, tracer_version);
 
+  // Default TLS configuration for profiler context slots (0-9)
+  // New format: key names in index order (position = key index)
+  static const char* default_key_map[] = {
+    "tag.0", "tag.1", "tag.2", "tag.3", "tag.4",
+    "tag.5", "tag.6", "tag.7", "tag.8", "tag.9",
+    NULL
+  };
+
+  // Default TLS config: schema version "tlsdesc_v1_dev", max 512 bytes per record
+  static otel_tls_config default_tls_config = {
+    .schema_version = const_cast<char*>("tlsdesc_v1_dev"),
+    .max_record_size = 512,
+    .attribute_key_map = const_cast<char**>(default_key_map)
+  };
+
   otel_process_ctx_data data = {
     .deployment_environment_name = const_cast<char*>(env_str.c_str()),
     .host_name = const_cast<char*>(hostname_str.c_str()),
@@ -470,10 +486,80 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
     .telemetry_sdk_language = const_cast<char*>("java"),
     .telemetry_sdk_version = const_cast<char*>(tracer_version_str.c_str()),
     .telemetry_sdk_name = const_cast<char*>("dd-trace-java"),
-    .resources = NULL // TODO: Arbitrary tags not supported yet for Java
+    .resources = NULL, // TODO: Arbitrary tags not supported yet for Java
+    .tls_config = &default_tls_config
   };
 
   otel_process_ctx_result result = otel_process_ctx_publish(&data);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_OTelContext_setProcessCtxWithTls0(JNIEnv *env,
+                                                               jclass unused,
+                                                               jstring env_data,
+                                                               jstring hostname,
+                                                               jstring runtime_id,
+                                                               jstring service,
+                                                               jstring version,
+                                                               jstring tracer_version,
+                                                               jstring schema_version,
+                                                               jint max_record_size,
+                                                               jobjectArray attribute_key_map
+                                                              ) {
+  JniString env_str(env, env_data);
+  JniString hostname_str(env, hostname);
+  JniString runtime_id_str(env, runtime_id);
+  JniString service_str(env, service);
+  JniString version_str(env, version);
+  JniString tracer_version_str(env, tracer_version);
+  JniString schema_version_str(env, schema_version);
+
+  // Convert Java String[] to char** for attribute_key_map
+  char** key_map = NULL;
+  jsize key_map_len = 0;
+  std::vector<JniString*> key_map_strs;  // Keep JniString objects alive
+
+  if (attribute_key_map != NULL) {
+    key_map_len = env->GetArrayLength(attribute_key_map);
+    key_map = (char**)alloca((key_map_len + 1) * sizeof(char*));
+    for (jsize i = 0; i < key_map_len; i++) {
+      jstring str = (jstring)env->GetObjectArrayElement(attribute_key_map, i);
+      if (str != NULL) {
+        JniString* js = new JniString(env, str);
+        key_map_strs.push_back(js);
+        key_map[i] = const_cast<char*>(js->c_str());
+      } else {
+        key_map[i] = NULL;
+      }
+    }
+    key_map[key_map_len] = NULL;  // NULL-terminate
+  }
+
+  otel_tls_config tls_config = {
+    .schema_version = const_cast<char*>(schema_version_str.c_str()),
+    .max_record_size = max_record_size,
+    .attribute_key_map = key_map
+  };
+
+  otel_process_ctx_data data = {
+    .deployment_environment_name = const_cast<char*>(env_str.c_str()),
+    .host_name = const_cast<char*>(hostname_str.c_str()),
+    .service_instance_id = const_cast<char*>(runtime_id_str.c_str()),
+    .service_name = const_cast<char*>(service_str.c_str()),
+    .service_version = const_cast<char*>(version_str.c_str()),
+    .telemetry_sdk_language = const_cast<char*>("java"),
+    .telemetry_sdk_version = const_cast<char*>(tracer_version_str.c_str()),
+    .telemetry_sdk_name = const_cast<char*>("dd-trace-java"),
+    .resources = NULL,
+    .tls_config = &tls_config
+  };
+
+  otel_process_ctx_result result = otel_process_ctx_publish(&data);
+
+  // Clean up JniString objects
+  for (JniString* js : key_map_strs) {
+    delete js;
+  }
 }
 
 extern "C" DLLEXPORT jobject JNICALL

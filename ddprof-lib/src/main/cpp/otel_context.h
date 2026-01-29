@@ -18,6 +18,7 @@
 #define _OTEL_CONTEXT_H
 
 #include "arch.h"
+#include "vmEntry.h"  // For DLLEXPORT
 #include <cstddef>
 
 /**
@@ -50,6 +51,50 @@ static const u32 OTEL_CONTEXT_VERSION = 1;
 
 // Default capacity (number of thread slots)
 static const size_t OTEL_CONTEXT_DEFAULT_CAPACITY = 65536;
+
+/**
+ * V2 TLS record format for custom-labels compatibility (OTEL profiling context).
+ *
+ * This record format is compatible with the custom-labels v2 specification
+ * (tlsdesc_v1_dev schema), allowing external profilers (like ddprof) to read
+ * thread context using the same code path as the Rust custom-labels library.
+ *
+ * Layout (28-byte header + variable-length attrs_data):
+ *   trace_id[16]       - 128-bit trace ID (bytes, network order)
+ *   span_id[8]         - 64-bit span ID (bytes, network order)
+ *   valid[1]           - Non-zero if record contains valid data
+ *   _padding[1]        - Padding for alignment
+ *   attrs_data_size[2] - Size of attrs_data in bytes (little-endian u16)
+ *   attrs_data[]       - Attribute data: [key_index:1][length:1][value:length]...
+ *
+ * Total header size: 28 bytes (V2_HEADER_SIZE)
+ */
+static const size_t V2_HEADER_SIZE = 28;
+
+#pragma pack(push, 1)
+struct OtelContextV2Record {
+  u8 trace_id[16];      // 128-bit trace ID (bytes, network order)
+  u8 span_id[8];        // 64-bit span ID (bytes, network order)
+  u8 valid;             // Non-zero if valid (byte 24)
+  u8 _padding;          // Padding for alignment (byte 25)
+  u16 attrs_data_size;  // Size of attrs_data in bytes (bytes 26-27, little-endian)
+  u8 attrs_data[];      // Flexible array: [key_index:1][length:1][value:length]...
+};
+#pragma pack(pop)
+
+// Maximum record size for allocation (configurable via process context)
+static const size_t V2_DEFAULT_MAX_RECORD_SIZE = 512;
+
+/**
+ * V2 context record exported for external profiler discovery.
+ *
+ * External profilers search for symbol "custom_labels_current_set_v2" to find
+ * the thread-local context record. This pointer points to a OtelContextV2Record
+ * when context is active, or is NULL when no context is set.
+ *
+ * This symbol is only active when OTEL storage mode is enabled.
+ */
+DLLEXPORT extern thread_local OtelContextV2Record* custom_labels_current_set_v2;
 
 /**
  * Per-thread context slot in the OTEL ring buffer.
