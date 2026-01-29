@@ -310,6 +310,12 @@ buildConfigNames().each { name ->
       dependsOn copyTask
     }
 
+    if (name == 'debug') {
+      manifest {
+        attributes 'Premain-Class': 'com.datadoghq.profiler.Main'
+      }
+    }
+
     from sourceSets.main.output.classesDirs
     from sourceSets.java9.output.classesDirs
     from files(libraryTargetBase(name)) {
