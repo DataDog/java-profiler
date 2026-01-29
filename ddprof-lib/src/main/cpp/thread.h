@@ -204,7 +204,7 @@ public:
   }
 
   inline bool isJavaThread() const {
-    return (_misc_flags & FLAG_JAVA_THREAD) == 0x01;
+    return (_misc_flags & FLAG_JAVA_THREAD) == FLAG_JAVA_THREAD;
   }
 
 private:
