@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-01-29 05:23:32 EST
+**Date:** 2026-01-29 06:14:25 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 187 |
-| Sample Rate | 6.23/sec |
-| Health Score | 389% |
-| Threads | 6 |
+| CPU Samples | 270 |
+| Sample Rate | 9.00/sec |
+| Health Score | 562% |
+| Threads | 7 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 213 |
-| Sample Rate | 7.10/sec |
-| Health Score | 444% |
+| CPU Samples | 259 |
+| Sample Rate | 8.63/sec |
+| Health Score | 539% |
 | Threads | 9 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 31-32 cores)</summary>
+<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1769681925 32
-1769681930 32
-1769681935 31
-1769681940 31
-1769681945 32
-1769681950 32
-1769681955 32
-1769681960 32
-1769681965 32
-1769681970 32
-1769681975 32
-1769681980 32
-1769681985 32
-1769681990 32
-1769681995 32
-1769682000 32
-1769682005 32
-1769682010 32
-1769682015 32
-1769682020 32
+1769684918 32
+1769684923 32
+1769684928 32
+1769684933 32
+1769684938 32
+1769684943 32
+1769684948 32
+1769684953 32
+1769684958 32
+1769684963 32
+1769684968 32
+1769684973 32
+1769684978 32
+1769684983 32
+1769684988 32
+1769684993 32
+1769684998 32
+1769685003 32
+1769685008 32
+1769685013 32
 ```
 </details>
 
