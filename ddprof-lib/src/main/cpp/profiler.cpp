@@ -108,13 +108,16 @@ void Profiler::addRuntimeStub(const void *address, int length,
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   ProfiledThread::initCurrentThread();
   ProfiledThread *current = ProfiledThread::current();
+  current->setJavaThread();
   int tid = current->tid();
   if (_thread_filter.enabled()) {
     int slot_id = _thread_filter.registerThread();
     current->setFilterSlotId(slot_id);
     _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
-  updateThreadName(jvmti, jni, thread, true);
+  if (thread != NULL) {
+    updateThreadName(jvmti, jni, thread, true);
+  }
 
   _cpu_engine->registerThread(tid);
   _wall_engine->registerThread(tid);
@@ -1453,6 +1456,12 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
+
+    // Initialize this thread
+    // Note: passing all nullptrs results in not able to resolve the thread name here.
+    //      However, the thread name will be updated later in updateJavaThreadNames().
+    // TODO: find a better way to resolve the thread name.
+    onThreadStart(nullptr, nullptr, nullptr);
 
     _state = RUNNING;
     _start_time = time(NULL);
