@@ -101,7 +101,6 @@ final class BaseContextWallClockTest {
                 String state = stateAccessor.getMember(sample);
                 assertNotNull(state);
                 states.add(state);
-System.out.println("Mode: " + modeAccessor.getMember(sample) + ", State: " + state + "\n" + stackTrace + "\n");
 
                 // a lot fo care needs to be taken here with samples that fall between a context activation and
                 // a method call. E.g. not finding method2Impl in the stack trace doesn't mean the sample wasn't
