@@ -1458,6 +1458,9 @@ Error Profiler::start(Arguments &args, bool reset) {
     switchThreadEvents(JVMTI_ENABLE);
 
     // Initialize this thread
+    // Note: passing all nullptrs results in not able to resolve the thread name here.
+    //      However, the thread name will be updated later in updateJavaThreadNames().
+    // TODO: find a better way to resolve the thread name.
     onThreadStart(nullptr, nullptr, nullptr);
 
     _state = RUNNING;
