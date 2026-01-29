@@ -82,12 +82,30 @@ jobs:
             exit 1
           fi
 
+          # Check if this version is already released
+          if git rev-parse "v_${BASE}" >/dev/null 2>&1; then
+            ALREADY_RELEASED=true
+            echo "Version $BASE is already released"
+          else
+            ALREADY_RELEASED=false
+            echo "Version $BASE is not yet released"
+          fi
+
           # Compute release version based on type
           if [ "$TYPE" == "MAJOR" ] || [ "$TYPE" == "major" ]; then
-            RELEASE_VERSION="$((MAJOR + 1)).0.0"
+            if [ "$ALREADY_RELEASED" == "true" ]; then
+              RELEASE_VERSION="$((MAJOR + 1)).0.0"
+            else
+              RELEASE_VERSION="$BASE"
+            fi
           elif [ "$TYPE" == "MINOR" ] || [ "$TYPE" == "minor" ]; then
-            RELEASE_VERSION="$MAJOR.$((MINOR + 1)).0"
+            if [ "$ALREADY_RELEASED" == "true" ]; then
+              RELEASE_VERSION="$MAJOR.$((MINOR + 1)).0"
+            else
+              RELEASE_VERSION="$BASE"
+            fi
           else
+            # PATCH always increments
             RELEASE_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
           fi
 

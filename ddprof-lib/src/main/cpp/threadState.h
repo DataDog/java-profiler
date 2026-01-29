@@ -66,20 +66,8 @@ static ExecutionMode convertJvmExecutionState(int state) {
  *         ExecutionMode::JVM for JVM internal threads,
  *         or the appropriate execution mode for Java threads
  */
-template<typename VMThreadType>
-static inline ExecutionMode getThreadExecutionMode(VMThreadType* vm_thread) {
-  if (vm_thread == nullptr) {
-    return ExecutionMode::UNKNOWN;
-  }
+ class VMThread;
 
-  int raw_thread_state = vm_thread->state();
-
-  // Java threads: [4, 12) = [_thread_in_native, _thread_max_state)
-  // JVM internal threads: 0 or outside this range
-  bool is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
-
-  return is_java_thread ? convertJvmExecutionState(raw_thread_state)
-                        : ExecutionMode::JVM;
-}
+inline ExecutionMode getThreadExecutionMode();
 
 #endif // JAVA_PROFILER_LIBRARY_THREAD_STATE_H
