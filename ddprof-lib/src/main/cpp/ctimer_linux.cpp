@@ -22,7 +22,7 @@
 #include "debugSupport.h"
 #include "libraries.h"
 #include "profiler.h"
-#include "threadState.h"
+#include "threadState.inline.h"
 #include "vmStructs.h"
 #include <assert.h>
 #include <stdlib.h>
@@ -166,8 +166,7 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   Shims::instance().setSighandlerTid(tid);
 
   ExecutionEvent event;
-  VMThread *vm_thread = VMThread::current();
-  event._execution_mode = getThreadExecutionMode(vm_thread);
+  event._execution_mode = getThreadExecutionMode();
   Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,
                                      &event);
   Shims::instance().setSighandlerTid(-1);
