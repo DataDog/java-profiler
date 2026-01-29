@@ -11,7 +11,24 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 ## Last 10 Runs
 
-*No test runs recorded yet.*
+<details>
+<summary>
+<strong>2026-01-29 16:12</strong> | ⚠️ | main | Pipeline [#93554967](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93554967)
+</summary>
+
+**Version:** unknown
+**Commit:** unknown
+
+| Metric | Value |
+|--------|-------|
+| Jobs | 40 |
+| Passed | 37 |
+| Failed | 3 |
+
+**Failed Configs:** glibc-x64-openj9-jdk11, musl-arm64-hotspot-jdk17, musl-x64-openj9-jdk17
+
+</details>
+
 
 ---
 
