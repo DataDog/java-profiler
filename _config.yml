@@ -1,3 +1,4 @@
 title: Java Profiler Build - Test Dashboard
 description: Test reports for dd-trace-java integration, benchmarks, and reliability
 theme: jekyll-theme-minimal
+baseurl: /java-profiler
