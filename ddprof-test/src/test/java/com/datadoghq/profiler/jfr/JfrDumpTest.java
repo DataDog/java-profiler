@@ -69,10 +69,13 @@ public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
         long ts = System.nanoTime();
         for (int i = 0; i < 1000; ++i) {
             int cntr = 10;
-            for (String s : new File("/tmp").list()) {
-                value += s.substring(0, Math.min(s.length(), 16) ).hashCode();
-                if (--cntr < 0) {
-                    break;
+            String[] files = new File("/tmp").list();
+            if (files != null) {
+                for (String s : files) {
+                    value += s.substring(0, Math.min(s.length(), 16) ).hashCode();
+                    if (--cntr < 0) {
+                        break;
+                    }
                 }
             }
             if ((System.nanoTime() - ts) > 20000000L) {
