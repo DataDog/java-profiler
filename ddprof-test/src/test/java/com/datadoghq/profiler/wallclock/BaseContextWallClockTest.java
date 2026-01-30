@@ -218,7 +218,7 @@ final class BaseContextWallClockTest {
         Future<?> wait = executor.submit(() -> method3(id, monitor));
         method2(id, monitor);
         synchronized (monitor) {
-            monitor.wait(10);
+            monitor.wait(100);
         }
         wait.get();
         record("method1Impl", context);
@@ -262,12 +262,18 @@ final class BaseContextWallClockTest {
 
     private void sleep(long millis) {
         long target = System.nanoTime() + millis * 1_000_000L;
-        do {
+        while (System.nanoTime() < target) {
             try {
-                Thread.sleep((target - System.nanoTime()) / 1_000_000L);
+                long remaining = (target - System.nanoTime()) / 1_000_000L;
+                if (remaining <= 0) {
+                    break;
+                }
+                Thread.sleep(remaining);
+                break; // Successfully slept
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                break; // Exit on interrupt
             }
-        } while (System.nanoTime() < target);
+        }
     }
 }
