@@ -325,19 +325,34 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
 }
 
 MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
+  static const char* UNKNOWN = "unknown";
+  unsigned long key;
   jint bci = frame.bci;
-  jmethodID method = frame.method_id;
+  FrameTypeId frame_type = FrameType::decode(bci);
 
-  MethodInfo *mi = &(*_method_map)[method];
+  jmethodID method = frame.method_id;
+  if (method == nullptr) {
+    key = MethodMap::makeKey((void*)UNKNOWN);
+  } else if (bci == BCI_ERROR || bci == BCI_NATIVE_FRAME) {
+    key = MethodMap::makeKey((void*)method);
+  } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
+    key = MethodMap::makeRemoteKey((unsigned long)method);
+  } else {
+    assert(frame_type == FRAME_INTERPRETED || frame_type == FRAME_JIT_COMPILED ||
+           frame_type == FRAME_INLINED || frame_type == FRAME_C1_COMPILED);
+    key = MethodMap::makeKey(method);
+  }
+
+  MethodInfo *mi = &(*_method_map)[key];
 
   if (!mi->_mark) {
     mi->_mark = true;
     bool first_time = mi->_key == 0;
     if (first_time) {
-      mi->_key = _method_map->size();
+      mi->_key = _method_map->size() + 1; // avoid zero key
     }
     if (method == NULL) {
-      fillNativeMethodInfo(mi, "unknown", NULL);
+      fillNativeMethodInfo(mi, UNKNOWN, NULL);
     } else if (bci == BCI_ERROR) {
       fillNativeMethodInfo(mi, (const char *)method, NULL);
     } else if (bci == BCI_NATIVE_FRAME) {
@@ -346,7 +361,7 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
                            Profiler::instance()->getLibraryName(name));
     } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
       // Unpack remote symbolication data using utility struct
-      // Layout: pc_offset (44 bits) | mark (3 bits) | lib_index (17 bits)
+      // Layout: pc_offset (44 bits) | mark (3 bits) | lib_index (15 bits)
       uintptr_t pc_offset = Profiler::RemoteFramePacker::unpackPcOffset(method);
       char mark = Profiler::RemoteFramePacker::unpackMark(method);
       uint32_t lib_index = Profiler::RemoteFramePacker::unpackLibIndex(method);

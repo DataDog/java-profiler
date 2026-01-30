@@ -289,7 +289,8 @@ public:
    *
    *   Bits 0-43:   pc_offset (44 bits, 16 TB range)
    *   Bits 44-46:  mark (3 bits, 0-7 values)
-   *   Bits 47-63:  lib_index (17 bits, 128K libraries)
+   *   Bits 47-61:  lib_index (15 bits, 32K libraries)
+   *.  Bits 62-63:  reserved
    *
    * Mark values indicate JVM internal frames that should terminate stack walks:
    *   0 = no mark (regular native frame)
@@ -306,7 +307,7 @@ public:
   struct RemoteFramePacker {
     static const int PC_OFFSET_BITS = 44;
     static const int MARK_BITS = 3;
-    static const int LIB_INDEX_BITS = 17;
+    static const int LIB_INDEX_BITS = 15;
 
     static const uintptr_t PC_OFFSET_MASK = (1ULL << PC_OFFSET_BITS) - 1;  // 0xFFFFFFFFFFF (44 bits)
     static const uintptr_t MARK_MASK = (1ULL << MARK_BITS) - 1;             // 0x7 (3 bits)
