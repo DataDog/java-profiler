@@ -74,7 +74,7 @@ public:
     return func->_lib_index;
   }
 
-  static bool isMarked(const char *name) {
+  static bool is_marked(const char *name) {
     if (name == nullptr) {
       return false;
     }
@@ -85,7 +85,7 @@ public:
     return func->_mark != 0;
   }
 
-  static char mark(const char* name) {
+  static char read_mark(const char* name) {
     if (name == nullptr) {
       return 0;
     }
@@ -96,7 +96,7 @@ public:
     return func->_mark;
   }
 
-  static void mark(const char* name, char value) {
+  static void set_mark(const char* name, char value) {
     if (name == nullptr) {
       return;
     }
@@ -231,13 +231,13 @@ public:
       for (int i = 0; i < _count; i++) {
           const char* blob_name = _blobs[i]._name;
           if (blob_name != NULL && predicate(blob_name)) {
-              NativeFunc::mark(blob_name, value);
+              NativeFunc::set_mark(blob_name, value);
           }
       }
 
       if (value == MARK_VM_RUNTIME && _name != NULL) {
           // In case a library has no debug symbols
-          NativeFunc::mark(_name, value);
+          NativeFunc::set_mark(_name, value);
       }
   }
 

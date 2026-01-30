@@ -375,7 +375,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
       // Get symbol name and check mark
       const char *method_name = nullptr;
       lib->binarySearch((void*)pc, &method_name);
-      char mark = (method_name != nullptr) ? NativeFunc::mark(method_name) : 0;
+      char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
       if (mark != 0) {
         return {nullptr, BCI_NATIVE_FRAME, true};  // Marked - stop processing
@@ -395,7 +395,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
 
   // Fallback: Traditional symbol resolution
   const char *method_name = findNativeMethod((void*)pc);
-  if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
+  if (method_name != nullptr && NativeFunc::is_marked(method_name)) {
     return {nullptr, BCI_NATIVE_FRAME, true};
   }
 
@@ -427,7 +427,7 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
         // binarySearch() returns symbol name, then we check mark (O(1))
         const char *method_name = nullptr;
         lib->binarySearch((void*)pc, &method_name);
-        char mark = (method_name != nullptr) ? NativeFunc::mark(method_name) : 0;
+        char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
         if (mark != 0) {
           // Terminate scan at marked frame
@@ -450,7 +450,7 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
 
     // Fallback: Traditional symbol resolution
     const char *method_name = findNativeMethod((void*)pc);
-    if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
+    if (method_name != nullptr && NativeFunc::is_marked(method_name)) {
       // Terminate scan at marked frame
       return depth;
     }
