@@ -336,7 +336,7 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   } else if (bci == BCI_ERROR || bci == BCI_NATIVE_FRAME) {
     key = MethodMap::makeKey((void*)method);
   } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
-    key = MethodMap::makeRemoteKey((unsigned long)method);
+    key = MethodMap::makeKey((unsigned long)method);
   } else {
     assert(frame_type == FRAME_INTERPRETED || frame_type == FRAME_JIT_COMPILED ||
            frame_type == FRAME_INLINED || frame_type == FRAME_C1_COMPILED);

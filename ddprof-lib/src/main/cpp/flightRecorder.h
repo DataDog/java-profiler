@@ -109,6 +109,15 @@ public:
 #define HIGHEST_BIT_MASK 0x8000000000000000ULL
 #define HIGHEST_2_BITS_MASK 0xC000000000000000ULL
 
+// MethodMap's key can be derived from 3 sources:
+// 1) jmethodID for Java methods
+// 2) void* address for native method names
+// 3) Encoded RemoteFrameInfo
+// The values of the keys are potentially overlapping, so we use 
+// the highest 2 bits to distinguish them.
+// 00 - jmethodID
+// 10 - void* address
+// 11 - RemoteFrameInfo
 class MethodMap : public std::map<unsigned long, MethodInfo> {
 public:
   MethodMap() {}
@@ -122,7 +131,7 @@ public:
     return ((unsigned long)addr | HIGHEST_BIT_MASK);
   }
 
-  static unsigned long makeRemoteKey(unsigned long key) {
+  static unsigned long makeKey(unsigned long key) {
     assert((key & HIGHEST_2_BITS_MASK) == 0);
     return (key | HIGHEST_2_BITS_MASK);
   }
