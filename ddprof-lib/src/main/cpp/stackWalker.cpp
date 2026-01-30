@@ -112,7 +112,7 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
         }
 
         sp = fp + (FRAME_PC_SLOT + 1) * sizeof(void*);
-        fp = *(uintptr_t*)fp;
+        fp = (uintptr_t)SafeAccess::load((void**)fp);
     }
 
     if (truncated && depth > max_depth) {
