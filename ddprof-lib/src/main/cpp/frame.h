@@ -10,6 +10,7 @@ enum FrameTypeId {
   FRAME_KERNEL = 5,
   FRAME_C1_COMPILED = 6,
   FRAME_NATIVE_REMOTE = 7,  // Native frame with remote symbolication (build-id + pc-offset)
+  FRAME_TYPE_MAX = FRAME_NATIVE_REMOTE  // Maximum valid frame type
 };
 
 class FrameType {
@@ -19,7 +20,13 @@ public:
   }
 
   static inline FrameTypeId decode(int bci) {
-    return (bci >> 24) > 0 ? (FrameTypeId)(bci >> 25) : FRAME_JIT_COMPILED;
+    if ((bci >> 24) <= 0) {
+      // Unencoded BCI (bit 24 not set) or negative special BCI values
+      return FRAME_JIT_COMPILED;
+    }
+    // Clamp to valid FrameTypeId range to defend against corrupted values
+    int raw_type = bci >> 25;
+    return (FrameTypeId)(raw_type <= FRAME_TYPE_MAX ? raw_type : FRAME_TYPE_MAX);
   }
 };
 
