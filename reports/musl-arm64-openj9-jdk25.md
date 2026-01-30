@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk25
 
 ## musl-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-01-29 12:43:40 EST
+**Date:** 2026-01-30 04:28:21 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 133 |
-| Sample Rate | 4.43/sec |
-| Health Score | 277% |
-| Threads | 9 |
-| Allocations | 82 |
+| CPU Samples | 118 |
+| Sample Rate | 3.93/sec |
+| Health Score | 246% |
+| Threads | 10 |
+| Allocations | 34 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 101 |
-| Sample Rate | 3.37/sec |
-| Health Score | 211% |
-| Threads | 11 |
-| Allocations | 52 |
+| CPU Samples | 19 |
+| Sample Rate | 0.63/sec |
+| Health Score | 39% |
+| Threads | 8 |
+| Allocations | 15 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1769708341 24
-1769708346 24
-1769708351 24
-1769708356 24
-1769708361 24
-1769708366 24
-1769708371 24
-1769708376 24
-1769708381 24
-1769708386 24
-1769708391 24
-1769708396 24
-1769708401 24
-1769708406 24
-1769708411 24
-1769708416 24
-1769708421 24
-1769708426 24
-1769708431 24
-1769708436 24
+1769765020 24
+1769765025 24
+1769765030 24
+1769765035 24
+1769765040 24
+1769765045 24
+1769765050 24
+1769765055 24
+1769765060 24
+1769765065 24
+1769765070 24
+1769765075 24
+1769765080 24
+1769765085 24
+1769765090 24
+1769765095 24
+1769765100 24
+1769765105 24
+1769765110 24
+1769765115 24
 ```
 </details>
 
