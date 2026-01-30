@@ -9,6 +9,7 @@
 static int g_tls_prime_signal = -1;
 
 pthread_key_t ProfiledThread::_tls_key;
+volatile bool ProfiledThread::_tls_key_initialized = false;
 int ProfiledThread::_buffer_size = 0;
 volatile int ProfiledThread::_running_buffer_pos = 0;
 ProfiledThread** ProfiledThread::_buffer = nullptr;
@@ -20,7 +21,11 @@ void ProfiledThread::initTLSKey() {
   pthread_once(&tls_initialized, doInitTLSKey);
 }
 
-void ProfiledThread::doInitTLSKey() { pthread_key_create(&_tls_key, freeKey); }
+void ProfiledThread::doInitTLSKey() {
+  pthread_key_create(&_tls_key, freeKey);
+  // Use release semantics to ensure the key is visible to other threads
+  __atomic_store_n(&_tls_key_initialized, true, __ATOMIC_RELEASE);
+}
 
 inline void ProfiledThread::freeKey(void *key) {
   ProfiledThread *tls_ref = (ProfiledThread *)(key);
@@ -267,8 +272,11 @@ ProfiledThread *ProfiledThread::current() {
 
 ProfiledThread *ProfiledThread::currentSignalSafe() {
   // Signal-safe: never allocate, just return existing TLS or null
-  pthread_key_t key = _tls_key;
-  return key != 0 ? (ProfiledThread *)pthread_getspecific(key) : nullptr;
+  // Use acquire semantics to synchronize with the release in doInitTLSKey()
+  if (!__atomic_load_n(&_tls_key_initialized, __ATOMIC_ACQUIRE)) {
+    return nullptr;
+  }
+  return (ProfiledThread *)pthread_getspecific(_tls_key);
 }
 
 bool ProfiledThread::isTlsPrimingAvailable() {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2025, Datadog, Inc
+ * Copyright 2025, 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,19 @@ package com.datadoghq.profiler;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
+/**
+ * Thread-local context for trace/span identification.
+ *
+ * <p>Provides access to thread-local context storage used by the profiler to correlate
+ * samples with distributed traces. Supports two storage modes:
+ * <ul>
+ *   <li><b>Profiler mode (default)</b>: Context stored in TLS via direct ByteBuffer mapping</li>
+ *   <li><b>OTEL mode</b>: Context stored in OTEL ring buffer accessible by external profilers</li>
+ * </ul>
+ *
+ * <p>The storage mode is determined at profiler startup via the {@code ctxstorage} option.
+ * Reading and writing context automatically routes to the correct storage via JNI.
+ */
 public final class ThreadContext {
     /**
      * Knuth's multiplicative hash constant for 64-bit values.
@@ -59,6 +72,13 @@ public final class ThreadContext {
     private final boolean useJNI;
 
     /**
+     * True if OTEL context storage mode is active.
+     * In OTEL mode, context reads must go through JNI since the buffer
+     * is a ring buffer indexed by TID, not a direct TLS mapping.
+     */
+    private final boolean otelMode;
+
+    /**
      * Creates a ThreadContext with native struct field offsets.
      *
      * @param buffer Direct ByteBuffer mapped to native Context struct
@@ -79,14 +99,55 @@ public final class ThreadContext {
         this.customTagsOffset = offsets[3];
         // For Java 17 and later the cost of downcall to JNI is negligible
         useJNI = Platform.isJavaVersionAtLeast(17);
+        // Check if OTEL mode is active - if so, reads must go through JNI
+        otelMode = isOtelMode0();
     }
 
+    /**
+     * Cached context values from last JNI call in OTEL mode.
+     * Used to provide atomic reads of spanId and rootSpanId together.
+     * Thread-local by design (ThreadContext is per-thread).
+     */
+    private long[] cachedOtelContext;
+
+    /**
+     * Gets the span ID from the current thread's context.
+     *
+     * <p>In OTEL mode, reads from the OTEL ring buffer via JNI.
+     * In profiler mode, reads directly from the TLS ByteBuffer.
+     *
+     * @return the span ID, or 0 if not set
+     */
     public long getSpanId() {
+        if (otelMode) {
+            refreshOtelContextCache();
+            return cachedOtelContext != null ? cachedOtelContext[0] : 0;
+        }
         return buffer.getLong(spanIdOffset);
     }
 
+    /**
+     * Gets the root span ID from the current thread's context.
+     *
+     * <p>In OTEL mode, reads from the OTEL ring buffer via JNI.
+     * In profiler mode, reads directly from the TLS ByteBuffer.
+     *
+     * @return the root span ID, or 0 if not set
+     */
     public long getRootSpanId() {
+        if (otelMode) {
+            refreshOtelContextCache();
+            return cachedOtelContext != null ? cachedOtelContext[1] : 0;
+        }
         return buffer.getLong(rootSpanIdOffset);
+    }
+
+    /**
+     * Refreshes the cached OTEL context from native storage.
+     * Called before reading spanId or rootSpanId in OTEL mode.
+     */
+    private void refreshOtelContextCache() {
+        cachedOtelContext = getContext0();
     }
 
     public long getChecksum() {
@@ -134,4 +195,21 @@ public final class ThreadContext {
 
     private static native long setContext0(long spanId, long rootSpanId);
     private static native void setContextSlot0(int offset, int value);
+
+    /**
+     * Checks if OTEL context storage mode is active.
+     *
+     * @return true if OTEL mode is active, false for default profiler mode
+     */
+    private static native boolean isOtelMode0();
+
+    /**
+     * Reads context via the native ContextApi.
+     *
+     * <p>This method routes to the appropriate storage backend based on the
+     * active storage mode (OTEL ring buffer or TLS).
+     *
+     * @return array with [spanId, rootSpanId], or null on error
+     */
+    private static native long[] getContext0();
 }

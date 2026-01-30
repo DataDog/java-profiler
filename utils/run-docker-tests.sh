@@ -252,7 +252,13 @@ RUN mkdir -p /gradle-cache
 WORKDIR /workspace
 EOF
     else
-        cat > "$DOCKERFILE_DIR/Dockerfile.base" <<'EOF'
+        # libclang-rt-dev is only available on x64, not arm64
+        if [[ "$ARCH" == "x64" ]]; then
+            CLANG_RT_PKG="libclang-rt-dev"
+        else
+            CLANG_RT_PKG=""
+        fi
+        cat > "$DOCKERFILE_DIR/Dockerfile.base" <<EOF
 FROM ubuntu:22.04
 
 # Avoid interactive prompts
@@ -260,14 +266,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install build dependencies
 # - libasan/libtsan for GCC sanitizers
-# - libclang-rt-dev for clang sanitizers and libFuzzer
+# - libclang-rt-dev for clang sanitizers and libFuzzer (x64 only)
 # - openssh-client for git clone over SSH
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl wget bash make g++ clang git jq cmake \
         libgtest-dev libgmock-dev tar binutils libc6-dbg \
         ca-certificates linux-libc-dev \
-        libasan6 libtsan0 libclang-rt-dev openssh-client && \
+        libasan6 libtsan0 ${CLANG_RT_PKG} openssh-client && \
     rm -rf /var/lib/apt/lists/*
 
 # Set up Gradle cache directory
