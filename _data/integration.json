@@ -1,6 +1,31 @@
 {
   "runs": [
     {
+      "id": "93793548",
+      "timestamp": "2026-01-30T11:15:39Z",
+      "ddprof_branch": "main",
+      "ddprof_sha": "unknown",
+      "ddprof_pr": null,
+      "pipeline": {
+        "id": "93793548",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93793548"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 39,
+        "failed_jobs": 1,
+        "total_scenarios": 80,
+        "passed_scenarios": 79,
+        "failed_scenarios": 1,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "glibc-arm64-hotspot-jdk11"
+        ]
+      }
+    },
+    {
       "id": "93786301",
       "timestamp": "2026-01-30T10:41:38Z",
       "ddprof_branch": "main",

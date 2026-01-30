@@ -13,6 +13,24 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 <details markdown="1">
 <summary>
+<strong>2026-01-30 11:15</strong> | ⚠️ | main | Pipeline [#93793548](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93793548)
+</summary>
+
+**Version:** unknown
+**Commit:** unknown
+
+| Metric | Value |
+|--------|-------|
+| Jobs | 40 |
+| Passed | 39 |
+| Failed | 1 |
+
+**Failed Configs:** glibc-arm64-hotspot-jdk11
+
+</details>
+
+<details markdown="1">
+<summary>
 <strong>2026-01-30 10:41</strong> | ⚠️ | main | Pipeline [#93786301](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93786301)
 </summary>
 
