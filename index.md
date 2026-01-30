@@ -5,21 +5,15 @@ title: Java Profiler Build - Test Dashboard
 
 # Java Profiler Build - Test Dashboard
 
-> **Last Updated:** 2026-01-30 09:28 UTC
+> **Last Updated:** 2026-01-30 10:41 UTC
 
 ## Quick Status
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](integration/) | [#93611036](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93611036) | ✅ | main | - |
+| [Integration](integration/) | [#93786301](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93786301) | ⚠️ | main | - |
 | [Benchmarks](benchmarks/) | - | - | - | - |
 | [Reliability](reliability/) | - | - | - | - |
-
-## Recent Runs (All Types)
-
-| Date | Type | Pipeline | Branch | PR | Status |
-|------|------|----------|--------|-----|--------|
-| - | - | - | - | - | - |
 
 ---
 
@@ -36,6 +30,18 @@ Compares profiler overhead against baseline (no profiling).
 ### Reliability Tests
 Long-running stability tests checking for memory leaks and crashes.
 Tests multiple allocator configurations (gmalloc, tcmalloc, jemalloc).
+
+---
+
+## Recent Runs (All Types)
+
+| Date | Type | Pipeline | Branch | PR | Status |
+|------|------|----------|--------|-----|--------|
+| 2026-01-30 | Integration | [#93786301](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93786301) | main | - | ⚠️ |
+| 2026-01-30 | Integration | [#93611036](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93611036) | main | - | ✅ |
+| 2026-01-29 | Integration | [#93603477](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93603477) | main | - | ⚠️ |
+| 2026-01-29 | Integration | [#93594940](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93594940) | main | - | ⚠️ |
+| 2026-01-29 | Integration | [#93554967](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93554967) | main | - | ⚠️ |
 
 ---
 
