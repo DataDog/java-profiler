@@ -64,6 +64,9 @@ public:
   static void destroy(char *name);
 
   static short libIndex(const char *name) {
+    if (name == nullptr) {
+      return -1;
+    }
     NativeFunc* func = from(name);
     if (!is_aligned(func, sizeof(func))) {
       return -1;
@@ -71,14 +74,30 @@ public:
     return func->_lib_index;
   }
 
-  static bool isMarked(const char *name) { return from(name)->_mark != 0; }
-
-  static char mark(const char* name) {
-      return from(name)->_mark;
+  static bool is_marked(const char *name) {
+    return read_mark(name) != 0;
   }
 
-  static void mark(const char* name, char value) {
-      from(name)->_mark = value;
+  static char read_mark(const char* name) {
+    if (name == nullptr) {
+      return 0;
+    }
+    NativeFunc* func = from(name);
+    if (!is_aligned(func, sizeof(func))) {
+      return 0;
+    }
+    return func->_mark;
+  }
+
+  static void set_mark(const char* name, char value) {
+    if (name == nullptr) {
+      return;
+    }
+    NativeFunc* func = from(name);
+    if (!is_aligned(func, sizeof(func))) {
+      return;
+    }
+    func->_mark = value;
   }
 };
 
@@ -205,13 +224,13 @@ public:
       for (int i = 0; i < _count; i++) {
           const char* blob_name = _blobs[i]._name;
           if (blob_name != NULL && predicate(blob_name)) {
-              NativeFunc::mark(blob_name, value);
+              NativeFunc::set_mark(blob_name, value);
           }
       }
 
       if (value == MARK_VM_RUNTIME && _name != NULL) {
           // In case a library has no debug symbols
-          NativeFunc::mark(_name, value);
+          NativeFunc::set_mark(_name, value);
       }
   }
 
