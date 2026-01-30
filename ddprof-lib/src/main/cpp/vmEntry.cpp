@@ -564,8 +564,10 @@ void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
         jclass klass = classes[i];
         jobject cld;
  
-        // Loaded by bootstrap class loader
-        if (jvmti->GetClassLoader(klass, &cld) == JVMTI_ERROR_NONE && cld == nullptr) {
+        // Hotpsot only: loaded by bootstrap class loader, which is never unloaded,
+        // we use Method instead.
+        if (VM::isHotspot() &&
+            jvmti->GetClassLoader(klass, &cld) == JVMTI_ERROR_NONE && cld == nullptr) {
            continue;
         }
 

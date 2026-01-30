@@ -326,10 +326,12 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
 
 MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   jint bci = frame.bci;
-  jmethodID method = frame.method_id;
+  FrameTypeId type = FrameType::decode(bci);
+  unsigned long key = (type == FRAME_INTERPRETED) ? makeKey(frame.method_id)
+                                                  : makeKey(frame.vm_method);
 
-  MethodInfo *mi = &(*_method_map)[method];
 
+  MethodInfo *mi = &(*_method_map)[key];
   if (!mi->_mark) {
     mi->_mark = true;
     bool first_time = mi->_key == 0;

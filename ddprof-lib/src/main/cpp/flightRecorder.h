@@ -106,9 +106,19 @@ public:
   }
 };
 
-class MethodMap : public std::map<jmethodID, MethodInfo> {
+#define HIGHEST_BIT_MASK 0x8000000000000000ULL
+
+class MethodMap : public std::map<unsigned long, MethodInfo> {
 public:
   MethodMap() {}
+
+  static unsigned long makeKey(jmethodID method) {
+    return (unsigned long)method;
+  }
+
+  static unsigned long makeKey(VMMethod* method) {
+    return ((unsigned long)method | HIGHEST_BIT_MASK);
+  }
 };
 
 class Recording {
