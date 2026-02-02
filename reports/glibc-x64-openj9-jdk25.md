@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-02-02 10:12:17 EST
+**Date:** 2026-02-02 12:03:38 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| CPU Samples | 596 |
+| Sample Rate | 9.93/sec |
+| Health Score | 621% |
+| Threads | 9 |
+| Allocations | 363 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| CPU Samples | 1079 |
+| Sample Rate | 17.98/sec |
+| Health Score | 1124% |
+| Threads | 12 |
+| Allocations | 495 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
+<summary>CPU Timeline (2 unique values: 27-32 cores)</summary>
 
 ```
-1770044804 32
-1770044809 32
-1770044814 32
-1770044819 32
-1770044824 32
-1770044829 32
-1770044834 32
-1770044839 32
-1770044844 32
-1770044849 32
-1770044854 32
-1770044859 32
-1770044864 32
-1770044869 32
-1770044874 32
-1770044879 32
-1770044884 32
-1770044889 32
-1770044894 32
-1770044899 32
+1770051361 32
+1770051366 32
+1770051371 32
+1770051376 32
+1770051381 32
+1770051386 32
+1770051391 32
+1770051396 32
+1770051401 32
+1770051406 32
+1770051411 32
+1770051416 32
+1770051421 32
+1770051426 32
+1770051431 32
+1770051436 32
+1770051441 32
+1770051446 32
+1770051451 32
+1770051456 32
 ```
 </details>
 
