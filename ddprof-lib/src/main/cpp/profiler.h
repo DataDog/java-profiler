@@ -309,49 +309,56 @@ public:
     static const int MARK_BITS = 3;
     static const int LIB_INDEX_BITS = 15;
 
-    static const uintptr_t PC_OFFSET_MASK = (1ULL << PC_OFFSET_BITS) - 1;  // 0xFFFFFFFFFFF (44 bits)
-    static const uintptr_t MARK_MASK = (1ULL << MARK_BITS) - 1;             // 0x7 (3 bits)
-    static const uintptr_t LIB_INDEX_MASK = (1ULL << LIB_INDEX_BITS) - 1;   // 0x1FFFF (17 bits)
+    static const unsigned long PC_OFFSET_MASK = (1ULL << PC_OFFSET_BITS) - 1;  // 0xFFFFFFFFFFF (44 bits)
+    static const unsigned long MARK_MASK = (1ULL << MARK_BITS) - 1;             // 0x7 (3 bits)
+    static const unsigned long LIB_INDEX_MASK = (1ULL << LIB_INDEX_BITS) - 1;   // 0x7FFF (15 bits)
 
     /**
      * Pack remote symbolication data into a 64-bit jmethodID.
      * Layout: pc_offset (44 bits) | mark (3 bits) | lib_index (17 bits)
      */
-    static inline jmethodID pack(uintptr_t pc_offset, char mark, uint32_t lib_index) {
-      return (jmethodID)(
-        (pc_offset & PC_OFFSET_MASK) |                                              // Bits 0-43
-        (((uintptr_t)mark & MARK_MASK) << PC_OFFSET_BITS) |                        // Bits 44-46
-        (((uintptr_t)lib_index & LIB_INDEX_MASK) << (PC_OFFSET_BITS + MARK_BITS))  // Bits 47-63
+    static inline unsigned long pack(uintptr_t pc_offset, char mark, uint32_t lib_index) {
+      return (unsigned long)(
+        (pc_offset & PC_OFFSET_MASK) |                                             // Bits 0-43
+        (((unsigned long)mark & MARK_MASK) << PC_OFFSET_BITS) |                        // Bits 44-46
+        (((unsigned long)lib_index & LIB_INDEX_MASK) << (PC_OFFSET_BITS + MARK_BITS))  // Bits 47-62
       );
     }
 
     /**
      * Unpack pc_offset from packed data.
      */
-    static inline uintptr_t unpackPcOffset(jmethodID packed) {
-      return (uintptr_t)packed & PC_OFFSET_MASK;
+    static inline uintptr_t unpackPcOffset(unsigned long packed) {
+      return (uintptr_t)(packed & PC_OFFSET_MASK);
     }
 
     /**
      * Unpack mark from packed data.
      */
-    static inline char unpackMark(jmethodID packed) {
-      return (char)(((uintptr_t)packed >> PC_OFFSET_BITS) & MARK_MASK);
+    static inline char unpackMark(unsigned long packed) {
+      return (char)((packed >> PC_OFFSET_BITS) & MARK_MASK);
     }
 
     /**
      * Unpack lib_index from packed data.
      */
-    static inline uint32_t unpackLibIndex(jmethodID packed) {
-      return (uint32_t)(((uintptr_t)packed >> (PC_OFFSET_BITS + MARK_BITS)) & LIB_INDEX_MASK);
+    static inline uint32_t unpackLibIndex(unsigned long packed) {
+      return (uint32_t)((packed >> (PC_OFFSET_BITS + MARK_BITS)) & LIB_INDEX_MASK);
     }
   };
 
   // Result of resolving a native frame for symbolication
   struct NativeFrameResolution {
-    jmethodID method_id;  // Packed remote frame data (pc_offset|mark|lib_index) or const char* symbol name
-    int bci;              // BCI_NATIVE_FRAME_REMOTE or BCI_NATIVE_FRAME
-    bool is_marked;       // true if this is a marked C++ interpreter frame (stop processing)
+    union {
+      unsigned long packed_remote_frame;  // Packed remote frame data (pc_offset|mark|lib_index)
+      const char* method_name;            // Resolved method name 
+    };
+    int bci;                            // BCI_NATIVE_FRAME_REMOTE or BCI_NATIVE_FRAME
+    bool is_marked;                     // true if this is a marked C++ interpreter frame (stop processing)
+    NativeFrameResolution(const char* name, int bci_type, bool marked)
+      : method_name(name), bci(bci_type), is_marked(marked) {}
+    NativeFrameResolution(unsigned long packed, int bci_type, bool marked)
+      : packed_remote_frame(packed), bci(bci_type), is_marked(marked) {}
   };
 
   void populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCache* lib, char mark);

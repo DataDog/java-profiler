@@ -468,7 +468,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 // This is a marked C++ interpreter frame, terminate scan
                 break;
             }
-            const char* method_name = (const char*)resolution.method_id;
+            const char* method_name = resolution.method_name;
             int frame_bci = resolution.bci;
             char mark;
             if (frame_bci != BCI_NATIVE_FRAME_REMOTE && method_name != NULL && (mark = NativeFunc::read_mark(method_name)) != 0) {
@@ -514,7 +514,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 // Check previous frame for thread entry points (Rust, libc/pthread)
                 if (prev_native_pc != NULL) {
                     Profiler::NativeFrameResolution prev_resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)prev_native_pc, lock_index);
-                    const char* prev_method_name = (const char*)prev_resolution.method_id;
+                    const char* prev_method_name = (const char*)prev_resolution.method_name;
                     if (prev_method_name != NULL) {
                         char prev_mark = NativeFunc::read_mark(prev_method_name);
                         if (prev_mark == MARK_THREAD_ENTRY) {

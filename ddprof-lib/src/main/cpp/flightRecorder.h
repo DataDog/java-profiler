@@ -106,9 +106,6 @@ public:
   }
 };
 
-#define HIGHEST_BIT_MASK 0x8000000000000000ULL
-#define HIGHEST_2_BITS_MASK 0xC000000000000000ULL
-
 // MethodMap's key can be derived from 3 sources:
 // 1) jmethodID for Java methods
 // 2) void* address for native method names
@@ -117,24 +114,31 @@ public:
 // the highest 2 bits to distinguish them.
 // 00 - jmethodID
 // 10 - void* address
-// 11 - RemoteFrameInfo
+// 01 - RemoteFrameInfo
 class MethodMap : public std::map<unsigned long, MethodInfo> {
 public:
+  static constexpr unsigned long ADDRESS_MARK = 0x8000000000000000ULL;
+  static constexpr unsigned long REMOTE_FRAME_MARK = 0x4000000000000000ULL;
+  static constexpr unsigned long KEY_TYPE_MASK = ADDRESS_MARK | REMOTE_FRAME_MARK;
+
   MethodMap() {}
 
   static unsigned long makeKey(jmethodID method) {
-    return (unsigned long)method;
+    unsigned long key = (unsigned long)method;
+    assert((key & KEY_TYPE_MASK) == 0);
+    return key;
   }
 
-  static unsigned long makeKey(void* addr) {
-    assert(((unsigned long)addr & HIGHEST_BIT_MASK) == 0);
-    return ((unsigned long)addr | HIGHEST_BIT_MASK);
+  static unsigned long makeKey(const char* addr) {
+    unsigned long key = (unsigned long)addr;
+    assert((key & KEY_TYPE_MASK) == 0);
+    return (key | ADDRESS_MARK);
   }
 
-  static unsigned long makeKey(unsigned long key) {
-    assert((key & HIGHEST_2_BITS_MASK) == 0);
-    return (key | HIGHEST_2_BITS_MASK);
-  }
+  static unsigned long makeKey(unsigned long packed_remote_frame) {
+    unsigned long key = packed_remote_frame;
+    assert((key & KEY_TYPE_MASK) == 0);
+    return (key | REMOTE_FRAME_MARK);}
 };
 
 class Recording {
