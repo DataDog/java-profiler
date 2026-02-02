@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk17
 
 ## glibc-arm64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-02-02 09:31:44 EST
+**Date:** 2026-02-02 10:12:16 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-arm64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 86 |
-| Sample Rate | 1.43/sec |
-| Health Score | 89% |
+| CPU Samples | 63 |
+| Sample Rate | 1.05/sec |
+| Health Score | 66% |
 | Threads | 9 |
 | Allocations | 69 |
 
@@ -38,36 +38,36 @@ title: glibc-arm64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 52 |
-| Sample Rate | 0.87/sec |
-| Health Score | 54% |
-| Threads | 11 |
-| Allocations | 39 |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770042255 24
-1770042260 24
-1770042265 24
-1770042270 24
-1770042275 24
-1770042280 24
-1770042285 24
-1770042290 24
-1770042295 24
-1770042300 24
-1770042305 24
-1770042310 24
-1770042315 24
-1770042320 24
-1770042325 24
-1770042330 24
-1770042335 24
-1770042340 24
-1770042345 24
-1770042350 24
+1770044816 24
+1770044821 24
+1770044826 24
+1770044831 24
+1770044836 24
+1770044841 24
+1770044846 24
+1770044851 24
+1770044856 24
+1770044861 24
+1770044866 24
+1770044871 24
+1770044876 24
+1770044881 24
+1770044886 24
+1770044891 24
+1770044896 24
+1770044901 24
+1770044906 24
+1770044911 24
 ```
 </details>
 
