@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk17
 
 ## glibc-arm64-hotspot-jdk17 - ❌ FAIL
 
-**Date:** 2026-02-02 12:03:37 EST
+**Date:** 2026-02-02 12:55:21 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,11 +28,11 @@ title: glibc-arm64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | FAIL |
-| CPU Samples | 58 |
-| Sample Rate | 0.97/sec |
-| Health Score | 61% |
-| Threads | 8 |
-| Allocations | 59 |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 #### Scenario 2: Tracer+Profiler ⚠️
 | Metric | Value |
@@ -48,21 +48,19 @@ title: glibc-arm64-hotspot-jdk17
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770051517 24
-1770051522 24
-1770051527 24
-1770051532 24
-1770051537 24
-1770051542 24
-1770051547 24
-1770051552 24
-1770051557 24
-1770051562 24
-1770051567 24
-1770051572 24
-1770051577 24
-1770051582 24
-1770051587 24
+1770054639 24
+1770054644 24
+1770054649 24
+1770054654 24
+1770054659 24
+1770054664 24
+1770054669 24
+1770054674 24
+1770054679 24
+1770054684 24
+1770054689 24
+1770054694 24
+1770054699 24
 ```
 </details>
 
