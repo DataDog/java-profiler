@@ -1,6 +1,32 @@
 {
   "runs": [
     {
+      "id": "94194515",
+      "timestamp": "2026-02-02T20:17:33Z",
+      "ddprof_branch": "zgu/methodInfo",
+      "ddprof_sha": "unknown",
+      "ddprof_pr": null,
+      "pipeline": {
+        "id": "94194515",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94194515"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 38,
+        "failed_jobs": 2,
+        "total_scenarios": 80,
+        "passed_scenarios": 78,
+        "failed_scenarios": 2,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "glibc-arm64-hotspot-jdk21",
+          "glibc-arm64-openj9-jdk17"
+        ]
+      }
+    },
+    {
       "id": "94156435",
       "timestamp": "2026-02-02T17:55:19Z",
       "ddprof_branch": "zgu/methodInfo",
@@ -207,29 +233,6 @@
       "pipeline": {
         "id": "93840176",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93840176"
-      },
-      "lib_version": "unknown",
-      "status": "unknown",
-      "summary": {
-        "total_jobs": 0,
-        "passed_jobs": 0,
-        "failed_jobs": 0,
-        "total_scenarios": 0,
-        "passed_scenarios": 0,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "93835341",
-      "timestamp": "2026-01-30T16:13:47Z",
-      "ddprof_branch": "jb/fp_safeaccess",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "93835341",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93835341"
       },
       "lib_version": "unknown",
       "status": "unknown",

@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk21
 
 ## glibc-x64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-02-02 12:55:22 EST
+**Date:** 2026-02-02 15:17:36 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 472 |
-| Sample Rate | 7.87/sec |
-| Health Score | 492% |
+| CPU Samples | 448 |
+| Sample Rate | 7.47/sec |
+| Health Score | 467% |
 | Threads | 8 |
-| Allocations | 392 |
+| Allocations | 366 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 662 |
-| Sample Rate | 11.03/sec |
-| Health Score | 689% |
-| Threads | 10 |
-| Allocations | 448 |
+| CPU Samples | 572 |
+| Sample Rate | 9.53/sec |
+| Health Score | 596% |
+| Threads | 8 |
+| Allocations | 446 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
+<summary>CPU Timeline (2 unique values: 27-32 cores)</summary>
 
 ```
-1770054614 32
-1770054619 32
-1770054624 32
-1770054629 32
-1770054634 32
-1770054639 32
-1770054644 32
-1770054649 32
-1770054654 32
-1770054659 32
-1770054664 32
-1770054669 32
-1770054674 32
-1770054679 32
-1770054684 32
-1770054689 32
-1770054694 32
-1770054699 32
-1770054704 32
-1770054709 32
+1770063118 32
+1770063123 32
+1770063128 32
+1770063133 32
+1770063138 32
+1770063143 32
+1770063148 32
+1770063153 32
+1770063158 32
+1770063163 27
+1770063168 27
+1770063173 27
+1770063178 27
+1770063183 27
+1770063188 27
+1770063193 27
+1770063198 27
+1770063203 27
+1770063208 27
+1770063213 32
 ```
 </details>
 
