@@ -1,6 +1,29 @@
 {
   "runs": [
     {
+      "id": "94088612",
+      "timestamp": "2026-02-02T14:31:41Z",
+      "ddprof_branch": "jb/fp_safeaccess",
+      "ddprof_sha": "unknown",
+      "ddprof_pr": null,
+      "pipeline": {
+        "id": "94088612",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94088612"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 36,
+        "passed_jobs": 36,
+        "failed_jobs": 0,
+        "total_scenarios": 72,
+        "passed_scenarios": 72,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "94074680",
       "timestamp": "2026-02-02T13:30:42Z",
       "ddprof_branch": "jb/fp_safeaccess",
@@ -214,33 +237,6 @@
           "musl-x64-hotspot-jdk21",
           "musl-x64-hotspot-jdk8",
           "musl-x64-openj9-jdk21"
-        ]
-      }
-    },
-    {
-      "id": "93594940",
-      "timestamp": "2026-01-29T17:19:48Z",
-      "ddprof_branch": "main",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "93594940",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93594940"
-      },
-      "lib_version": "unknown",
-      "status": "partial",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 37,
-        "failed_jobs": 3,
-        "total_scenarios": 76,
-        "passed_scenarios": 75,
-        "failed_scenarios": 1,
-        "unknown_scenarios": 0,
-        "failed_configs": [
-          "glibc-arm64-openj9-jdk21",
-          "musl-x64-openj9-jdk11",
-          "musl-x64-openj9-jdk17"
         ]
       }
     }
