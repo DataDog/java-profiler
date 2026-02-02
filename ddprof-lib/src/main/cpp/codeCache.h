@@ -78,16 +78,7 @@ public:
     return read_mark(name) != 0;
   }
 
-  static char read_mark(const char* name) {
-    if (name == nullptr) {
-      return 0;
-    }
-    NativeFunc* func = from(name);
-    if (!is_aligned(func, sizeof(func))) {
-      return 0;
-    }
-    return func->_mark;
-  }
+  static char read_mark(const char* name);
 
   static void set_mark(const char* name, char value) {
     if (name == nullptr) {
