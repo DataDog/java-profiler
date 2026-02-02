@@ -5,13 +5,13 @@ title: Java Profiler Build - Test Dashboard
 
 # Java Profiler Build - Test Dashboard
 
-> **Last Updated:** 2026-02-02 15:12 UTC
+> **Last Updated:** 2026-02-02 16:58 UTC
 
 ## Quick Status
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](integration/) | [#94100493](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94100493) | ⚠️ | jb/fp_safeaccess | - |
+| [Integration](integration/) | [#94141639](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94141639) | ❓ | jb/fp_safeaccess | - |
 | [Benchmarks](benchmarks/) | - | - | - | - |
 | [Reliability](reliability/) | - | - | - | - |
 
@@ -37,11 +37,11 @@ Tests multiple allocator configurations (gmalloc, tcmalloc, jemalloc).
 
 | Date | Type | Pipeline | Branch | PR | Status |
 |------|------|----------|--------|-----|--------|
+| 2026-02-02 | Integration | [#94141639](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94141639) | jb/fp_safeaccess | - | ❓ |
 | 2026-02-02 | Integration | [#94100493](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94100493) | jb/fp_safeaccess | - | ⚠️ |
 | 2026-02-02 | Integration | [#94088612](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94088612) | jb/fp_safeaccess | - | ✅ |
 | 2026-02-02 | Integration | [#94074680](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94074680) | jb/fp_safeaccess | - | ❓ |
 | 2026-01-30 | Integration | [#93916016](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93916016) | zgu/methodInfo | - | ❓ |
-| 2026-01-30 | Integration | [#93891497](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93891497) | zgu/methodInfo | - | ❓ |
 
 ---
 
