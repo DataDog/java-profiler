@@ -66,17 +66,21 @@ public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
     }
 
     private static void method3() {
-        long ts = System.nanoTime();
-        for (int i = 0; i < 1000; ++i) {
+        // Fixed iteration count for deterministic workload (was time-based with 20ms timeout)
+        // Increased to 500 iterations to ensure sufficient execution time for CPU sampling
+        for (int i = 0; i < 500; ++i) {
             int cntr = 10;
-            for (String s : new File("/tmp").list()) {
-                value += s.substring(0, Math.min(s.length(), 16) ).hashCode();
-                if (--cntr < 0) {
-                    break;
+            // Null-safe iteration over /tmp directory
+            String[] files = new File("/tmp").list();
+            if (files != null) {
+                for (String s : files) {
+                    if (s != null && !s.isEmpty()) {
+                        value += s.substring(0, Math.min(s.length(), 16)).hashCode();
+                        if (--cntr < 0) {
+                            break;
+                        }
+                    }
                 }
-            }
-            if ((System.nanoTime() - ts) > 20000000L) {
-                break;
             }
         }
     }
