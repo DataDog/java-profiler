@@ -343,13 +343,13 @@ void Profiler::populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCac
   uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
   uint32_t lib_index = (uint32_t)lib->libIndex();
 
-  jmethodID packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
+  unsigned long packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
 
-  TEST_LOG("populateRemoteFrame: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u, packed=0x%lx",
-           lib->name(), lib->buildId(), pc, pc_offset, (int)mark, lib_index, (uintptr_t)packed);
+  TEST_LOG("populateRemoteFrame: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u, packed=0x%zx",
+           lib->name(), lib->buildId(), pc, pc_offset, (int)mark, lib_index, packed);
 
   frame->bci = BCI_NATIVE_FRAME_REMOTE;
-  frame->method_id = packed;
+  frame->packed_remote_frame = packed;
 
   // Track remote symbolication usage
   Counters::increment(REMOTE_SYMBOLICATION_FRAMES);
@@ -384,22 +384,22 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
       // Pack remote symbolication data using utility struct
       uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
       uint32_t lib_index = (uint32_t)lib->libIndex();
-      jmethodID packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
+      unsigned long packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
 
-      TEST_LOG("resolveNativeFrameForWalkVM: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u, packed=0x%lx",
-               lib->name(), lib->buildId(), pc, pc_offset, (int)mark, lib_index, (uintptr_t)packed);
+      TEST_LOG("resolveNativeFrameForWalkVM: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u, packed=0x%zx",
+               lib->name(), lib->buildId(), pc, pc_offset, (int)mark, lib_index, packed);
 
-      return {packed, BCI_NATIVE_FRAME_REMOTE, false};
+      return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
     }
   }
 
   // Fallback: Traditional symbol resolution
   const char *method_name = findNativeMethod((void*)pc);
   if (method_name != nullptr && NativeFunc::is_marked(method_name)) {
-    return {nullptr, BCI_NATIVE_FRAME, true};
+    return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, true);
   }
 
-  return {(jmethodID)method_name, BCI_NATIVE_FRAME, false};
+  return NativeFrameResolution(method_name, BCI_NATIVE_FRAME, false);
 }
 
 /**

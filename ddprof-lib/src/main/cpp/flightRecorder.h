@@ -106,9 +106,39 @@ public:
   }
 };
 
-class MethodMap : public std::map<jmethodID, MethodInfo> {
+// MethodMap's key can be derived from 3 sources:
+// 1) jmethodID for Java methods
+// 2) void* address for native method names
+// 3) Encoded RemoteFrameInfo
+// The values of the keys are potentially overlapping, so we use 
+// the highest 2 bits to distinguish them.
+// 00 - jmethodID
+// 10 - void* address
+// 01 - RemoteFrameInfo
+class MethodMap : public std::map<unsigned long, MethodInfo> {
 public:
+  static constexpr unsigned long ADDRESS_MARK = 0x8000000000000000ULL;
+  static constexpr unsigned long REMOTE_FRAME_MARK = 0x4000000000000000ULL;
+  static constexpr unsigned long KEY_TYPE_MASK = ADDRESS_MARK | REMOTE_FRAME_MARK;
+
   MethodMap() {}
+
+  static unsigned long makeKey(jmethodID method) {
+    unsigned long key = (unsigned long)method;
+    assert((key & KEY_TYPE_MASK) == 0);
+    return key;
+  }
+
+  static unsigned long makeKey(const char* addr) {
+    unsigned long key = (unsigned long)addr;
+    assert((key & KEY_TYPE_MASK) == 0);
+    return (key | ADDRESS_MARK);
+  }
+
+  static unsigned long makeKey(unsigned long packed_remote_frame) {
+    unsigned long key = packed_remote_frame;
+    assert((key & KEY_TYPE_MASK) == 0);
+    return (key | REMOTE_FRAME_MARK);}
 };
 
 class Recording {
