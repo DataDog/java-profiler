@@ -1,6 +1,39 @@
 {
   "runs": [
     {
+      "id": "94260738",
+      "timestamp": "2026-02-03T08:50:21Z",
+      "ddprof_branch": "jb/fp_safeaccess",
+      "ddprof_sha": "unknown",
+      "ddprof_pr": null,
+      "pipeline": {
+        "id": "94260738",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94260738"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 31,
+        "failed_jobs": 9,
+        "total_scenarios": 72,
+        "passed_scenarios": 63,
+        "failed_scenarios": 9,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "glibc-arm64-hotspot-jdk21",
+          "glibc-arm64-openj9-jdk17",
+          "glibc-arm64-openj9-jdk21",
+          "glibc-x64-openj9-jdk11",
+          "musl-arm64-hotspot-jdk17",
+          "musl-arm64-openj9-jdk17",
+          "musl-arm64-openj9-jdk21",
+          "musl-x64-openj9-jdk17",
+          "musl-x64-openj9-jdk21"
+        ]
+      }
+    },
+    {
       "id": "94194515",
       "timestamp": "2026-02-02T20:17:33Z",
       "ddprof_branch": "zgu/methodInfo",
@@ -210,29 +243,6 @@
       "pipeline": {
         "id": "93891497",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93891497"
-      },
-      "lib_version": "unknown",
-      "status": "unknown",
-      "summary": {
-        "total_jobs": 0,
-        "passed_jobs": 0,
-        "failed_jobs": 0,
-        "total_scenarios": 0,
-        "passed_scenarios": 0,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "93840176",
-      "timestamp": "2026-01-30T16:34:54Z",
-      "ddprof_branch": "jb/fp_safeaccess",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "93840176",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/93840176"
       },
       "lib_version": "unknown",
       "status": "unknown",
