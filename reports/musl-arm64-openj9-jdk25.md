@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk25
 
 ## musl-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-02-03 09:47:06 EST
+**Date:** 2026-02-03 09:53:14 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 134 |
-| Sample Rate | 2.23/sec |
-| Health Score | 139% |
+| CPU Samples | 333 |
+| Sample Rate | 5.55/sec |
+| Health Score | 347% |
 | Threads | 10 |
-| Allocations | 53 |
+| Allocations | 146 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 122 |
-| Sample Rate | 2.03/sec |
-| Health Score | 127% |
-| Threads | 12 |
-| Allocations | 37 |
+| CPU Samples | 28 |
+| Sample Rate | 0.47/sec |
+| Health Score | 29% |
+| Threads | 9 |
+| Allocations | 17 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770129808 24
-1770129813 24
-1770129818 24
-1770129823 24
-1770129828 24
-1770129833 24
-1770129838 24
-1770129843 24
-1770129848 24
-1770129853 24
-1770129858 24
-1770129863 24
-1770129868 24
-1770129873 24
-1770129878 24
-1770129883 24
-1770129888 24
-1770129893 24
-1770129898 24
-1770129903 24
+1770130221 24
+1770130226 24
+1770130231 24
+1770130236 24
+1770130241 24
+1770130246 24
+1770130251 24
+1770130256 24
+1770130261 24
+1770130266 24
+1770130271 24
+1770130276 24
+1770130281 24
+1770130286 24
+1770130291 24
+1770130296 24
+1770130301 24
+1770130306 24
+1770130311 24
+1770130316 24
 ```
 </details>
 

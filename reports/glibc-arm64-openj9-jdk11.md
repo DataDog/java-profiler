@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk11
 
 ## glibc-arm64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-02-03 09:47:04 EST
+**Date:** 2026-02-03 09:53:13 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 136 |
-| Sample Rate | 2.27/sec |
-| Health Score | 142% |
+| CPU Samples | 93 |
+| Sample Rate | 1.55/sec |
+| Health Score | 97% |
 | Threads | 8 |
-| Allocations | 58 |
+| Allocations | 52 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 102 |
-| Sample Rate | 1.70/sec |
-| Health Score | 106% |
-| Threads | 13 |
-| Allocations | 68 |
+| CPU Samples | 19 |
+| Sample Rate | 0.32/sec |
+| Health Score | 20% |
+| Threads | 6 |
+| Allocations | 11 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770129839 24
-1770129844 24
-1770129849 24
-1770129854 24
-1770129859 24
-1770129864 24
-1770129869 24
-1770129874 24
-1770129879 24
-1770129884 24
-1770129889 24
-1770129894 24
-1770129899 24
-1770129904 24
-1770129909 24
-1770129914 24
-1770129919 24
-1770129924 24
-1770129929 24
-1770129934 24
+1770130085 24
+1770130090 24
+1770130095 24
+1770130100 24
+1770130105 24
+1770130110 24
+1770130115 24
+1770130120 24
+1770130125 24
+1770130130 24
+1770130135 24
+1770130140 24
+1770130145 24
+1770130150 24
+1770130155 24
+1770130160 24
+1770130165 24
+1770130170 24
+1770130175 24
+1770130180 24
 ```
 </details>
 
