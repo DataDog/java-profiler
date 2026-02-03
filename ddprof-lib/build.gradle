@@ -496,7 +496,7 @@ tasks.register('scanBuild', Exec) {
   args "-o", "${projectDir}/build/reports/scan-build",
     "--force-analyze-debug-code",
     "--use-analyzer", "/usr/bin/clang++",
-    "make", "-j4",  "clean", "all"
+    "make", "-j4", "all"
 }
 
 tasks.withType(Test) {
