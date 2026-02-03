@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk8
 
 ## musl-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-02-03 05:39:38 EST
+**Date:** 2026-02-03 06:18:34 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 152 |
-| Sample Rate | 2.53/sec |
-| Health Score | 158% |
+| CPU Samples | 159 |
+| Sample Rate | 2.65/sec |
+| Health Score | 166% |
 | Threads | 5 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: musl-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 255 |
-| Sample Rate | 4.25/sec |
-| Health Score | 266% |
-| Threads | 10 |
+| CPU Samples | 188 |
+| Sample Rate | 3.13/sec |
+| Health Score | 196% |
+| Threads | 9 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
+<summary>CPU Timeline (2 unique values: 30-32 cores)</summary>
 
 ```
-1770114744 32
-1770114749 32
-1770114754 32
-1770114759 32
-1770114764 32
-1770114769 32
-1770114774 32
-1770114779 32
-1770114784 32
-1770114789 32
-1770114794 32
-1770114799 32
-1770114804 32
-1770114809 32
-1770114814 32
-1770114819 32
-1770114824 32
-1770114829 32
-1770114834 32
-1770114839 32
+1770117211 32
+1770117216 32
+1770117221 32
+1770117226 32
+1770117231 32
+1770117236 32
+1770117241 32
+1770117246 32
+1770117251 32
+1770117256 32
+1770117261 32
+1770117266 32
+1770117271 32
+1770117276 32
+1770117281 32
+1770117286 32
+1770117291 32
+1770117296 32
+1770117301 32
+1770117306 32
 ```
 </details>
 

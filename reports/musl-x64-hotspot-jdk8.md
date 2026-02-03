@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk8
 
 ## musl-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-02-03 05:39:38 EST
+**Date:** 2026-02-03 06:18:34 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 172 |
-| Sample Rate | 2.87/sec |
-| Health Score | 179% |
+| CPU Samples | 163 |
+| Sample Rate | 2.72/sec |
+| Health Score | 170% |
 | Threads | 6 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: musl-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 194 |
-| Sample Rate | 3.23/sec |
-| Health Score | 202% |
+| CPU Samples | 177 |
+| Sample Rate | 2.95/sec |
+| Health Score | 184% |
 | Threads | 7 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
+<summary>CPU Timeline (3 unique values: 30-32 cores)</summary>
 
 ```
-1770114744 32
-1770114749 32
-1770114754 32
-1770114759 32
-1770114764 32
-1770114769 32
-1770114774 32
-1770114779 32
-1770114784 32
-1770114789 32
-1770114794 32
-1770114799 32
-1770114804 32
-1770114809 32
-1770114814 32
-1770114819 32
-1770114824 32
-1770114829 32
-1770114834 32
-1770114839 32
+1770117208 32
+1770117213 32
+1770117218 32
+1770117223 32
+1770117228 32
+1770117233 32
+1770117238 31
+1770117243 31
+1770117248 32
+1770117253 32
+1770117258 32
+1770117263 32
+1770117268 30
+1770117273 30
+1770117278 32
+1770117283 32
+1770117288 32
+1770117293 32
+1770117298 32
+1770117303 32
 ```
 </details>
 

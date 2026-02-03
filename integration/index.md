@@ -13,6 +13,22 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 <details markdown="1">
 <summary>
+<strong>2026-02-03 11:18</strong> | ✅ | main | Pipeline [#94286333](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94286333)
+</summary>
+
+**Version:** unknown
+**Commit:** unknown
+
+| Metric | Value |
+|--------|-------|
+| Jobs | 40 |
+| Passed | 40 |
+| Failed | 0 |
+
+</details>
+
+<details markdown="1">
+<summary>
 <strong>2026-02-03 10:39</strong> | ✅ | jb/fp_safeaccess | PR [#349](https://github.com/DataDog/java-profiler/pull/349) | Pipeline [#94278538](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94278538)
 </summary>
 
@@ -162,24 +178,6 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 | Jobs | 0 |
 | Passed | 0 |
 | Failed | 0 |
-
-</details>
-
-<details markdown="1">
-<summary>
-<strong>2026-02-02 15:12</strong> | ⚠️ | jb/fp_safeaccess | Pipeline [#94100493](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94100493)
-</summary>
-
-**Version:** unknown
-**Commit:** unknown
-
-| Metric | Value |
-|--------|-------|
-| Jobs | 40 |
-| Passed | 37 |
-| Failed | 3 |
-
-**Failed Configs:** glibc-arm64-hotspot-jdk17, glibc-arm64-hotspot-jdk25, musl-arm64-openj9-jdk11
 
 </details>
 
