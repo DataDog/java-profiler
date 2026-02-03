@@ -112,7 +112,24 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
         }
 
         sp = fp + (FRAME_PC_SLOT + 1) * sizeof(void*);
-        fp = *(uintptr_t*)fp;
+        uintptr_t prev_fp = fp;
+        fp = (uintptr_t)SafeAccess::load((void**)fp);
+
+        // Early detection: validate immediately instead of waiting for next iteration.
+        // When FP wanders into local variables (due to -fomit-frame-pointer or
+        // -momit-leaf-frame-pointer), the value read as "next FP" is typically a local
+        // variable that won't form a valid upward chain toward older stack frames.
+        if (fp != 0) {
+            // FP chain must progress toward higher addresses (older frames on stack).
+            // Stack grows downward, so caller's FP must be > current FP.
+            if (fp <= prev_fp) {
+                break;
+            }
+            // Check alignment and upper bound immediately rather than next iteration
+            if (!aligned(fp) || fp >= bottom) {
+                break;
+            }
+        }
     }
 
     if (truncated && depth > max_depth) {
