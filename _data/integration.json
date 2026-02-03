@@ -1,6 +1,33 @@
 {
   "runs": [
     {
+      "id": "94333923",
+      "timestamp": "2026-02-03T15:07:23Z",
+      "ddprof_branch": "jb/fp_safeaccess",
+      "ddprof_sha": "unknown",
+      "ddprof_pr": {
+        "number": 349,
+        "url": "https://github.com/DataDog/java-profiler/pull/349",
+        "title": "Add SafeAccess protection and frame type validation for signal handlers"
+      },
+      "pipeline": {
+        "id": "94333923",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94333923"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 40,
+        "failed_jobs": 0,
+        "total_scenarios": 80,
+        "passed_scenarios": 80,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "94331282",
       "timestamp": "2026-02-03T14:59:27Z",
       "ddprof_branch": "jb/scanbuild_cleanup",
@@ -236,33 +263,6 @@
         "failed_jobs": 0,
         "total_scenarios": 80,
         "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "94292253",
-      "timestamp": "2026-02-03T13:18:00Z",
-      "ddprof_branch": "jb/fp_safeaccess",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": {
-        "number": 349,
-        "url": "https://github.com/DataDog/java-profiler/pull/349",
-        "title": "Add SafeAccess protection and frame type validation for signal handlers"
-      },
-      "pipeline": {
-        "id": "94292253",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94292253"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 39,
-        "passed_jobs": 39,
-        "failed_jobs": 0,
-        "total_scenarios": 78,
-        "passed_scenarios": 78,
         "failed_scenarios": 0,
         "unknown_scenarios": 0,
         "failed_configs": []
