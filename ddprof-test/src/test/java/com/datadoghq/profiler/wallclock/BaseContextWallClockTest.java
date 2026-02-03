@@ -48,7 +48,10 @@ final class BaseContextWallClockTest {
 
     void after() throws InterruptedException {
         executor.shutdownNow();
-        executor.awaitTermination(30, TimeUnit.SECONDS);
+        boolean terminated = executor.awaitTermination(30, TimeUnit.SECONDS);
+        if (!terminated) {
+            throw new IllegalStateException("Executor failed to terminate within 30 seconds");
+        }
         profiler = null;
     }
 
@@ -218,7 +221,11 @@ final class BaseContextWallClockTest {
         Future<?> wait = executor.submit(() -> method3(id, monitor));
         method2(id, monitor);
         synchronized (monitor) {
-            monitor.wait(10);
+            // Increased timeout from 10ms to 150ms to accommodate:
+            // - method2Impl sleep: 10ms
+            // - method3Impl sleep: 10ms
+            // - Thread scheduling/lock contention buffer: 130ms
+            monitor.wait(150);
         }
         wait.get();
         record("method1Impl", context);
@@ -262,12 +269,18 @@ final class BaseContextWallClockTest {
 
     private void sleep(long millis) {
         long target = System.nanoTime() + millis * 1_000_000L;
-        do {
+        while (System.nanoTime() < target) {
             try {
-                Thread.sleep((target - System.nanoTime()) / 1_000_000L);
+                long remaining = (target - System.nanoTime()) / 1_000_000L;
+                if (remaining <= 0) {
+                    break;
+                }
+                Thread.sleep(remaining);
+                break;  // Sleep completed successfully
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                break;  // Exit immediately on interrupt
             }
-        } while (System.nanoTime() < target);
+        }
     }
 }
