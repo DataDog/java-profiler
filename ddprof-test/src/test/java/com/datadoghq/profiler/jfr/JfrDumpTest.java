@@ -67,7 +67,8 @@ public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
 
     private static void method3() {
         // Fixed iteration count for deterministic workload (was time-based with 20ms timeout)
-        for (int i = 0; i < 200; ++i) {
+        // Increased to 500 iterations to ensure sufficient execution time for CPU sampling
+        for (int i = 0; i < 500; ++i) {
             int cntr = 10;
             // Null-safe iteration over /tmp directory
             String[] files = new File("/tmp").list();

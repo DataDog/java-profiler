@@ -276,7 +276,7 @@ final class BaseContextWallClockTest {
                     break;
                 }
                 Thread.sleep(remaining);
-                break;  // Sleep completed successfully
+                // Continue loop to handle spurious wakeups - ensures full sleep duration
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;  // Exit immediately on interrupt
