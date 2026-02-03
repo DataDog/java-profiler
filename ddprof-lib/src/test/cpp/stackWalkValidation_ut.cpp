@@ -90,30 +90,48 @@ TEST_F(StackWalkValidationTest, sameStack_FarApart) {
  * - This violates the fp > prev_fp invariant
  */
 TEST_F(StackWalkValidationTest, FPChainProgression_ValidChain) {
-    // Simulate a valid FP chain where each frame is at a higher address
-    MockFrame frame3 = {0, nullptr};  // Oldest frame (null FP = end)
-    MockFrame frame2 = {(uintptr_t)&frame3, (void*)0x400000};
-    MockFrame frame1 = {(uintptr_t)&frame2, (void*)0x400100};
+    // Allocate frames in a buffer with controlled layout
+    // Frame layout must simulate: frame1 (low addr) -> frame2 -> frame3 (high addr)
+    // where each frame's saved_fp points to the next higher frame
+    alignas(sizeof(uintptr_t)) char buffer[3 * sizeof(MockFrame)];
 
-    uintptr_t fp = (uintptr_t)&frame1;
+    MockFrame* frame1 = (MockFrame*)(buffer);
+    MockFrame* frame2 = (MockFrame*)(buffer + sizeof(MockFrame));
+    MockFrame* frame3 = (MockFrame*)(buffer + 2 * sizeof(MockFrame));
+
+    // Verify ordering: frame1 < frame2 < frame3
+    ASSERT_LT((uintptr_t)frame1, (uintptr_t)frame2);
+    ASSERT_LT((uintptr_t)frame2, (uintptr_t)frame3);
+
+    // Setup chain: frame1 -> frame2 -> frame3 -> null
+    frame3->saved_fp = 0;  // Oldest frame (null FP = end)
+    frame3->return_addr = nullptr;
+
+    frame2->saved_fp = (uintptr_t)frame3;
+    frame2->return_addr = (void*)0x400000;
+
+    frame1->saved_fp = (uintptr_t)frame2;
+    frame1->return_addr = (void*)0x400100;
+
+    uintptr_t fp = (uintptr_t)frame1;
 
     // Walk the chain and verify progression
     uintptr_t prev_fp = fp;
-    fp = *(uintptr_t*)fp;  // Read saved FP
+    fp = *(uintptr_t*)fp;  // Read saved FP from frame1
 
-    // Valid: next FP should be greater than current
+    // Valid: next FP (frame2) should be greater than current (frame1)
     EXPECT_GT(fp, prev_fp);
     EXPECT_TRUE(aligned(fp));
 
     prev_fp = fp;
-    fp = *(uintptr_t*)fp;
+    fp = *(uintptr_t*)fp;  // Read saved FP from frame2
 
-    // Valid: next FP should still be greater
+    // Valid: next FP (frame3) should be greater than current (frame2)
     EXPECT_GT(fp, prev_fp);
 
     // Final frame has null FP (chain terminator)
     prev_fp = fp;
-    fp = *(uintptr_t*)fp;
+    fp = *(uintptr_t*)fp;  // Read saved FP from frame3
     EXPECT_EQ(fp, 0u);
 }
 
