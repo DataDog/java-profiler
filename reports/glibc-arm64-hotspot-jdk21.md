@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk21
 
 ## glibc-arm64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-02-03 09:55:49 EST
+**Date:** 2026-02-03 09:59:30 EST
 
 ### Configuration
 | Setting | Value |
@@ -32,42 +32,42 @@ title: glibc-arm64-hotspot-jdk21
 | Sample Rate | 1.13/sec |
 | Health Score | 71% |
 | Threads | 8 |
-| Allocations | 66 |
+| Allocations | 83 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 67 |
-| Sample Rate | 1.12/sec |
-| Health Score | 70% |
-| Threads | 8 |
-| Allocations | 49 |
+| CPU Samples | 69 |
+| Sample Rate | 1.15/sec |
+| Health Score | 72% |
+| Threads | 9 |
+| Allocations | 43 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770130212 24
-1770130217 24
-1770130222 24
-1770130227 24
-1770130232 24
-1770130237 24
-1770130242 24
-1770130247 24
-1770130252 24
-1770130257 24
-1770130262 24
-1770130267 24
-1770130272 24
-1770130277 24
-1770130282 24
-1770130287 24
-1770130292 24
-1770130297 24
-1770130302 24
-1770130307 24
+1770130535 24
+1770130540 24
+1770130545 24
+1770130550 24
+1770130555 24
+1770130560 24
+1770130565 24
+1770130570 24
+1770130575 24
+1770130580 24
+1770130585 24
+1770130590 24
+1770130595 24
+1770130600 24
+1770130605 24
+1770130610 24
+1770130615 24
+1770130620 24
+1770130625 24
+1770130630 24
 ```
 </details>
 
