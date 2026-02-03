@@ -3,9 +3,9 @@ layout: default
 title: musl-arm64-hotspot-jdk17
 ---
 
-## musl-arm64-hotspot-jdk17 - ❌ FAIL
+## musl-arm64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-02-03 10:44:18 EST
+**Date:** 2026-02-03 11:11:47 EST
 
 ### Configuration
 | Setting | Value |
@@ -24,45 +24,50 @@ title: musl-arm64-hotspot-jdk17
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ❌
+#### Scenario 1: Profiler-Only ✅
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| Status | PASS |
+| CPU Samples | 105 |
+| Sample Rate | 1.75/sec |
+| Health Score | 109% |
+| Threads | 7 |
+| Allocations | 84 |
 
-#### Scenario 2: Tracer+Profiler ⚠️
+#### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| Status | PASS |
+| CPU Samples | 664 |
+| Sample Rate | 11.07/sec |
+| Health Score | 692% |
+| Threads | 9 |
+| Allocations | 468 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770133197 24
-1770133202 24
-1770133207 24
-1770133212 24
-1770133217 24
-1770133222 24
-1770133227 24
-1770133232 24
-1770133237 24
-1770133242 24
-1770133247 24
-1770133252 24
-1770133257 24
-1770133262 24
-1770133267 24
+1770134792 24
+1770134797 24
+1770134802 24
+1770134807 24
+1770134812 24
+1770134817 24
+1770134822 24
+1770134827 24
+1770134832 24
+1770134837 24
+1770134842 24
+1770134847 24
+1770134852 24
+1770134857 24
+1770134862 24
+1770134867 24
+1770134872 24
+1770134877 24
+1770134882 24
+1770134887 24
 ```
 </details>
 
