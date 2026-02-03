@@ -572,14 +572,6 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             }
 
             if (EMPTY_FRAME_SIZE > 0 || f.pc_off != DW_LINK_REGISTER) {
-                pc = stripPointer(SafeAccess::load((void**)(sp + f.pc_off)));
-            } else if (depth == 1) {
-                pc = (const void*)frame.link();
-            } else {
-                break;
-            }
-
-            if (EMPTY_FRAME_SIZE > 0 || f.pc_off != DW_LINK_REGISTER) {
                 pc = stripPointer(*(void**)(sp + f.pc_off));
             } else if (depth == 1) {
                 pc = (const void*)frame.link();

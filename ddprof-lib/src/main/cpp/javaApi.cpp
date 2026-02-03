@@ -116,7 +116,7 @@ extern "C" DLLEXPORT jstring JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getStatus0(JNIEnv* env,
                                                     jclass unused) {
   char msg[2048];
-  int ret = Profiler::instance()->status((char*)msg, sizeof(msg) - 1);
+  Profiler::instance()->status((char*)msg, sizeof(msg) - 1);
   return env->NewStringUTF(msg);
 }
 
@@ -473,6 +473,9 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
   };
 
   otel_process_ctx_result result = otel_process_ctx_publish(&data);
+  if (!result.success) {
+    Log::warn("Failed to publish process context: %s", result.error_message);
+  }
 }
 
 extern "C" DLLEXPORT jobject JNICALL
