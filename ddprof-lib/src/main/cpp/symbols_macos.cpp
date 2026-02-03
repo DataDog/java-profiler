@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026, Datadog, Inc
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -214,6 +215,8 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
             }
             cc->sort();
             array->add(cc);
+            // Update global native code bounds for PC validation in stack walker
+            NativeCodeBounds::updateBounds(cc->minAddress(), cc->maxAddress());
         } else {
             delete cc;
         }

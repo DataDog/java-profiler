@@ -6,6 +6,7 @@
 
 #include <setjmp.h>
 #include "stackWalker.h"
+#include "codeCache.h"
 #include "dwarf.h"
 #include "profiler.h"
 #include "safeAccess.h"
@@ -111,8 +112,32 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
             break;
         }
 
+        // Verify PC points to actual code, not data.
+        // When FP wanders into locals, the value at FRAME_PC_SLOT is a local variable
+        // (object pointer, integer, etc.) that rarely falls within code address ranges.
+        if (!CodeHeap::contains(pc) && !NativeCodeBounds::contains(pc)) {
+            break;
+        }
+
         sp = fp + (FRAME_PC_SLOT + 1) * sizeof(void*);
-        fp = *(uintptr_t*)fp;
+        uintptr_t prev_fp = fp;
+        fp = (uintptr_t)SafeAccess::load((void**)fp);
+
+        // Early detection: validate immediately instead of waiting for next iteration.
+        // When FP wanders into local variables (due to -fomit-frame-pointer or
+        // -momit-leaf-frame-pointer), the value read as "next FP" is typically a local
+        // variable that won't form a valid upward chain toward older stack frames.
+        if (fp != 0) {
+            // FP chain must progress toward higher addresses (older frames on stack).
+            // Stack grows downward, so caller's FP must be > current FP.
+            if (fp <= prev_fp) {
+                break;
+            }
+            // Check alignment and upper bound immediately rather than next iteration
+            if (!aligned(fp) || fp >= bottom) {
+                break;
+            }
+        }
     }
 
     if (truncated && depth > max_depth) {

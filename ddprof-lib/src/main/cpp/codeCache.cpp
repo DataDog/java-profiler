@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026, Datadog, Inc
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -423,3 +424,6 @@ void CodeCache::setBuildId(const char* build_id, size_t build_id_len) {
   }
 }
 
+// NativeCodeBounds static member initialization
+const void* NativeCodeBounds::_min = (const void*)UINTPTR_MAX;
+const void* NativeCodeBounds::_max = (const void*)0;
