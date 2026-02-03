@@ -374,6 +374,15 @@ Error Arguments::parse(const char *args) {
           }
       }
 
+      CASE("ctxstorage")
+      if (value != NULL) {
+          if (strcmp(value, "otel") == 0) {
+              _context_storage = CTX_STORAGE_OTEL;
+          } else {
+              _context_storage = CTX_STORAGE_PROFILER;
+          }
+      }
+
       DEFAULT()
       if (_unknown_arg == NULL)
         _unknown_arg = arg;
