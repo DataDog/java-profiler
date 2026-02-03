@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk25
 
 ## glibc-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-02-03 08:38:35 EST
+**Date:** 2026-02-03 08:38:41 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,34 +28,26 @@ title: glibc-arm64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 336 |
-| Sample Rate | 5.60/sec |
-| Health Score | 350% |
+| CPU Samples | 587 |
+| Sample Rate | 9.78/sec |
+| Health Score | 611% |
 | Threads | 9 |
-| Allocations | 134 |
+| Allocations | 394 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 142 |
-| Sample Rate | 2.37/sec |
-| Health Score | 148% |
-| Threads | 9 |
-| Allocations | 33 |
+| CPU Samples | 321 |
+| Sample Rate | 5.35/sec |
+| Health Score | 334% |
+| Threads | 13 |
+| Allocations | 109 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770125640 24
-1770125645 24
-1770125650 24
-1770125655 24
-1770125660 24
-1770125665 24
-1770125670 24
-1770125675 24
 1770125680 24
 1770125685 24
 1770125690 24
@@ -68,6 +60,14 @@ title: glibc-arm64-openj9-jdk25
 1770125725 24
 1770125730 24
 1770125735 24
+1770125740 24
+1770125745 24
+1770125750 24
+1770125755 24
+1770125760 24
+1770125765 24
+1770125770 24
+1770125775 24
 ```
 </details>
 

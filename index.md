@@ -11,7 +11,7 @@ title: Java Profiler Build - Test Dashboard
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](integration/) | [#94311785](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94311785) | ✅ | main | - |
+| [Integration](integration/) | [#94312750](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94312750) | ⚠️ | jb/flaky_tests | [#352](https://github.com/DataDog/java-profiler/pull/352) |
 | [Benchmarks](benchmarks/) | - | - | - | - |
 | [Reliability](reliability/) | - | - | - | - |
 
@@ -37,11 +37,11 @@ Tests multiple allocator configurations (gmalloc, tcmalloc, jemalloc).
 
 | Date | Type | Pipeline | Branch | PR | Status |
 |------|------|----------|--------|-----|--------|
+| 2026-02-03 | Integration | [#94312750](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94312750) | jb/flaky_tests | [#352](https://github.com/DataDog/java-profiler/pull/352) | ⚠️ |
 | 2026-02-03 | Integration | [#94311785](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94311785) | main | - | ✅ |
 | 2026-02-03 | Integration | [#94309907](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94309907) | jb/flaky_tests | [#352](https://github.com/DataDog/java-profiler/pull/352) | ⚠️ |
 | 2026-02-03 | Integration | [#94308035](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94308035) | jb/fp_safeaccess | [#349](https://github.com/DataDog/java-profiler/pull/349) | ✅ |
 | 2026-02-03 | Integration | [#94292253](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94292253) | jb/fp_safeaccess | [#349](https://github.com/DataDog/java-profiler/pull/349) | ✅ |
-| 2026-02-03 | Integration | [#94303091](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94303091) | jb/fp_safeaccess | [#349](https://github.com/DataDog/java-profiler/pull/349) | ✅ |
 
 ---
 

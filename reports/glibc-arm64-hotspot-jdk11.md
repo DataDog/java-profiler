@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk11
 
 ## glibc-arm64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-02-03 08:38:34 EST
+**Date:** 2026-02-03 08:38:41 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 108 |
-| Sample Rate | 1.80/sec |
-| Health Score | 112% |
-| Threads | 9 |
-| Allocations | 74 |
+| CPU Samples | 94 |
+| Sample Rate | 1.57/sec |
+| Health Score | 98% |
+| Threads | 7 |
+| Allocations | 66 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 97 |
-| Sample Rate | 1.62/sec |
-| Health Score | 101% |
-| Threads | 10 |
-| Allocations | 64 |
+| CPU Samples | 105 |
+| Sample Rate | 1.75/sec |
+| Health Score | 109% |
+| Threads | 8 |
+| Allocations | 49 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770125513 24
-1770125518 24
-1770125523 24
-1770125528 24
-1770125533 24
-1770125538 24
-1770125543 24
-1770125548 24
-1770125553 24
-1770125558 24
-1770125563 24
-1770125568 24
-1770125573 24
-1770125578 24
-1770125583 24
-1770125588 24
-1770125593 24
-1770125599 24
-1770125604 24
-1770125609 24
+1770125710 24
+1770125715 24
+1770125720 24
+1770125725 24
+1770125730 24
+1770125735 24
+1770125740 24
+1770125745 24
+1770125750 24
+1770125755 24
+1770125760 24
+1770125765 24
+1770125770 24
+1770125775 24
+1770125780 24
+1770125785 24
+1770125790 24
+1770125795 24
+1770125800 24
+1770125805 24
 ```
 </details>
 
