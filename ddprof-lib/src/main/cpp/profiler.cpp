@@ -1651,6 +1651,9 @@ Error Profiler::runInternal(Arguments &args, std::ostream &out) {
   }
   case ACTION_STOP: {
     Error error = stop();
+    if (error) {
+      return error;
+    }
     break;
   }
 

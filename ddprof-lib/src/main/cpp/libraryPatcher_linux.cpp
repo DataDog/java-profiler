@@ -90,6 +90,7 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
   char* resolved_path = realpath(lib->name(), path);
   if (resolved_path == nullptr) {
     // virtual file, e.g. [vdso], etc.
+    // scan-build false positive: resolved_path is used at line 96
     resolved_path = (char*)lib->name();
   } else {
     // Don't patch self
