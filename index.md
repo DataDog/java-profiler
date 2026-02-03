@@ -11,7 +11,7 @@ title: Java Profiler Build - Test Dashboard
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](integration/) | [#94382671](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94382671) | ⚠️ | main | - |
+| [Integration](integration/) | [#94383799](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94383799) | ✅ | jb/fp_sanitation | [#351](https://github.com/DataDog/java-profiler/pull/351) |
 | [Benchmarks](benchmarks/) | - | - | - | - |
 | [Reliability](reliability/) | - | - | - | - |
 
@@ -37,11 +37,11 @@ Tests multiple allocator configurations (gmalloc, tcmalloc, jemalloc).
 
 | Date | Type | Pipeline | Branch | PR | Status |
 |------|------|----------|--------|-----|--------|
+| 2026-02-03 | Integration | [#94383799](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94383799) | jb/fp_sanitation | [#351](https://github.com/DataDog/java-profiler/pull/351) | ✅ |
 | 2026-02-03 | Integration | [#94382671](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94382671) | main | - | ⚠️ |
 | 2026-02-03 | Integration | [#94382773](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94382773) | jb/flaky_tests_1 | [#354](https://github.com/DataDog/java-profiler/pull/354) | ❓ |
 | 2026-02-03 | Integration | [#94382986](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94382986) | jb/fp_safeaccess | [#349](https://github.com/DataDog/java-profiler/pull/349) | ❓ |
 | 2026-02-03 | Integration | [#94371746](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94371746) | jb/fp_safeaccess | [#349](https://github.com/DataDog/java-profiler/pull/349) | ✅ |
-| 2026-02-03 | Integration | [#94370690](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94370690) | jb/fp_safeaccess | [#349](https://github.com/DataDog/java-profiler/pull/349) | ✅ |
 
 ---
 

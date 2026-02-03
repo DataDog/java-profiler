@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-02-03 12:32:22 EST
+**Date:** 2026-02-03 12:32:31 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 728 |
-| Sample Rate | 12.13/sec |
-| Health Score | 758% |
+| CPU Samples | 669 |
+| Sample Rate | 11.15/sec |
+| Health Score | 697% |
 | Threads | 10 |
-| Allocations | 364 |
+| Allocations | 395 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 821 |
-| Sample Rate | 13.68/sec |
-| Health Score | 855% |
+| CPU Samples | 897 |
+| Sample Rate | 14.95/sec |
+| Health Score | 934% |
 | Threads | 12 |
-| Allocations | 488 |
+| Allocations | 466 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1770139448 32
-1770139453 32
-1770139458 32
-1770139463 32
-1770139468 32
-1770139473 32
-1770139478 32
-1770139483 32
-1770139488 32
-1770139493 32
-1770139498 32
-1770139503 32
-1770139508 32
-1770139513 32
-1770139518 32
-1770139523 32
-1770139528 32
-1770139533 32
-1770139538 32
-1770139543 32
+1770139630 32
+1770139635 32
+1770139640 32
+1770139645 32
+1770139650 32
+1770139655 32
+1770139660 32
+1770139665 32
+1770139670 32
+1770139675 32
+1770139680 32
+1770139685 32
+1770139690 32
+1770139695 32
+1770139700 32
+1770139705 32
+1770139710 32
+1770139715 32
+1770139720 32
+1770139725 32
 ```
 </details>
 
