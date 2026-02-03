@@ -1,6 +1,33 @@
 {
   "runs": [
     {
+      "id": "94301491",
+      "timestamp": "2026-02-03T12:41:09Z",
+      "ddprof_branch": "jb/fp_sanitation",
+      "ddprof_sha": "unknown",
+      "ddprof_pr": {
+        "number": 351,
+        "url": "https://github.com/DataDog/java-profiler/pull/351",
+        "title": "[WIP] Add early frame pointer reliability detection in walkFP()"
+      },
+      "pipeline": {
+        "id": "94301491",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94301491"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 40,
+        "failed_jobs": 0,
+        "total_scenarios": 80,
+        "passed_scenarios": 80,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "94292278",
       "timestamp": "2026-02-03T11:50:12Z",
       "ddprof_branch": "jb/fp_safeaccess",
@@ -233,36 +260,6 @@
         "failed_configs": [
           "glibc-arm64-hotspot-jdk21",
           "glibc-arm64-openj9-jdk17"
-        ]
-      }
-    },
-    {
-      "id": "94156435",
-      "timestamp": "2026-02-02T17:55:19Z",
-      "ddprof_branch": "zgu/methodInfo",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "94156435",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94156435"
-      },
-      "lib_version": "unknown",
-      "status": "partial",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 34,
-        "failed_jobs": 6,
-        "total_scenarios": 76,
-        "passed_scenarios": 70,
-        "failed_scenarios": 6,
-        "unknown_scenarios": 0,
-        "failed_configs": [
-          "glibc-arm64-hotspot-jdk11",
-          "glibc-arm64-hotspot-jdk17",
-          "glibc-arm64-hotspot-jdk21",
-          "glibc-arm64-openj9-jdk17",
-          "glibc-x64-openj9-jdk17",
-          "musl-x64-openj9-jdk8"
         ]
       }
     }

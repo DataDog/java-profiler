@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk25
 
 ## musl-arm64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-02-03 06:50:16 EST
+**Date:** 2026-02-03 07:41:12 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 87 |
-| Sample Rate | 1.45/sec |
-| Health Score | 91% |
+| CPU Samples | 621 |
+| Sample Rate | 10.35/sec |
+| Health Score | 647% |
 | Threads | 10 |
-| Allocations | 67 |
+| Allocations | 410 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 141 |
-| Sample Rate | 2.35/sec |
-| Health Score | 147% |
-| Threads | 10 |
-| Allocations | 51 |
+| CPU Samples | 25 |
+| Sample Rate | 0.42/sec |
+| Health Score | 26% |
+| Threads | 9 |
+| Allocations | 8 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770119190 24
-1770119195 24
-1770119200 24
-1770119205 24
-1770119210 24
-1770119215 24
-1770119220 24
-1770119225 24
-1770119230 24
-1770119235 24
-1770119240 24
-1770119245 24
-1770119250 24
-1770119255 24
-1770119260 24
-1770119265 24
-1770119270 24
-1770119275 24
-1770119280 24
-1770119286 24
+1770122096 24
+1770122101 24
+1770122106 24
+1770122111 24
+1770122116 24
+1770122121 24
+1770122126 24
+1770122131 24
+1770122136 24
+1770122141 24
+1770122146 24
+1770122151 24
+1770122156 24
+1770122161 24
+1770122166 24
+1770122171 24
+1770122176 24
+1770122181 24
+1770122186 24
+1770122191 24
 ```
 </details>
 
