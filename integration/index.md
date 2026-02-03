@@ -13,6 +13,24 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 <details markdown="1">
 <summary>
+<strong>2026-02-03 16:12</strong> | ⚠️ | zgu/reduce-jmethodID | Pipeline [#94357394](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94357394)
+</summary>
+
+**Version:** unknown
+**Commit:** unknown
+
+| Metric | Value |
+|--------|-------|
+| Jobs | 40 |
+| Passed | 38 |
+| Failed | 2 |
+
+**Failed Configs:** glibc-arm64-hotspot-jdk8, musl-arm64-hotspot-jdk21
+
+</details>
+
+<details markdown="1">
+<summary>
 <strong>2026-02-03 16:11</strong> | ✅ | jb/fp_safeaccess | PR [#349](https://github.com/DataDog/java-profiler/pull/349) | Pipeline [#94357776](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94357776)
 </summary>
 
@@ -160,22 +178,6 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 | Failed | 1 |
 
 **Failed Configs:** musl-x64-hotspot-jdk11
-
-</details>
-
-<details markdown="1">
-<summary>
-<strong>2026-02-03 13:38</strong> | ✅ | main | Pipeline [#94311785](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94311785)
-</summary>
-
-**Version:** unknown
-**Commit:** unknown
-
-| Metric | Value |
-|--------|-------|
-| Jobs | 40 |
-| Passed | 40 |
-| Failed | 0 |
 
 </details>
 
