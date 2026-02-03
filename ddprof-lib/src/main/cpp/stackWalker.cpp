@@ -6,6 +6,7 @@
 
 #include <setjmp.h>
 #include "stackWalker.h"
+#include "codeCache.h"
 #include "dwarf.h"
 #include "profiler.h"
 #include "safeAccess.h"
@@ -108,6 +109,13 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
 
         pc = stripPointer(SafeAccess::load((void**)fp + FRAME_PC_SLOT));
         if (inDeadZone(pc)) {
+            break;
+        }
+
+        // Verify PC points to actual code, not data.
+        // When FP wanders into locals, the value at FRAME_PC_SLOT is a local variable
+        // (object pointer, integer, etc.) that rarely falls within code address ranges.
+        if (!CodeHeap::contains(pc) && !NativeCodeBounds::contains(pc)) {
             break;
         }
 

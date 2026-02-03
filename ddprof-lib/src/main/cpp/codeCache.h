@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026, Datadog, Inc
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -296,6 +297,45 @@ public:
   size_t memoryUsage() const {
     return __atomic_load_n(&_used_memory, __ATOMIC_RELAXED);
   }
+};
+
+/**
+ * Global bounds tracking for all native code regions.
+ * Used by stack walker to quickly validate PC values point to actual code.
+ *
+ * Thread-safety: updateBounds() uses atomic CAS for concurrent updates.
+ * Signal-safety: contains() only reads two pointers (no locks).
+ */
+class NativeCodeBounds {
+  private:
+    static const void* _min;
+    static const void* _max;
+
+  public:
+    /**
+     * Update bounds when a new library is loaded.
+     * Uses atomic CAS loop to handle concurrent updates safely.
+     */
+    static void updateBounds(const void* start, const void* end) {
+        for (const void* m = _min; start < m &&
+             !__sync_bool_compare_and_swap(&_min, m, start); m = _min);
+        for (const void* m = _max; end > m &&
+             !__sync_bool_compare_and_swap(&_max, m, end); m = _max);
+    }
+
+    /**
+     * Check if address falls within any known native code region.
+     * Signal-safe: only two pointer comparisons, no locks.
+     * Returns true if bounds haven't been initialized yet (fail-open).
+     */
+    static bool contains(const void* pc) {
+        // If bounds haven't been initialized yet (_max <= _min), return true
+        // to avoid rejecting valid PCs before libraries are parsed.
+        if (_max <= _min) {
+            return true;
+        }
+        return pc >= _min && pc < _max;
+    }
 };
 
 #endif // _CODECACHE_H
