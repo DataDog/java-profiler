@@ -52,16 +52,6 @@ enum ASGCT_Failure {
   ASGCT_FAILURE_TYPES = 12
 };
 
-class VMMethod;
-typedef struct {
-    jint bci;
-    LP64_ONLY(jint padding;)
-    union {
-      jmethodID method_id;
-      VMMethod* vm_method;
-    };
-} ASGCT_CallFrame;
-
 /**
  * Information for native frames requiring remote symbolication.
  * Used when bci == BCI_NATIVE_FRAME_REMOTE.
@@ -77,6 +67,19 @@ typedef struct RemoteFrameInfo {
         : build_id(bid), pc_offset(offset), lib_index(lib_idx) {}
 #endif
 } RemoteFrameInfo;
+
+class VMMethod;
+
+typedef struct {
+    jint bci;
+    LP64_ONLY(jint padding;)
+    union {
+        jmethodID method_id;
+        unsigned long packed_remote_frame; // packed RemoteFrameInfo data
+        const char* native_function_name;
+        VMMethod* vm_method;
+    };
+} ASGCT_CallFrame;
 
 typedef struct {
   JNIEnv *env;

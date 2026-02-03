@@ -11,6 +11,7 @@ on:
     tags-ignore:
       - v*
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
 permissions:
@@ -24,20 +25,18 @@ jobs:
     outputs:
       skip: ${{ steps.check.outputs.skip }}
     steps:
-      - name: Check if PR exists
+      - name: Check if PR exists for this branch (skip push if PR exists)
         id: check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REF: ${{ github.ref_name }}
         run: |
+          # On push events, base_ref is empty; skip if a PR already exists for this branch
           if [ -z "${{ github.base_ref }}" ]; then
             prs=$(gh pr list \
                 --repo "$GITHUB_REPOSITORY" \
-                --json baseRefName,headRefName \
-                --jq '
-                    map(select(.baseRefName == "${{ github.base_ref }}" and .headRefName == "$HEAD_REF}"))
-                    | length
-                ')
+                --json headRefName \
+                --jq "[.[] | select(.headRefName == env.HEAD_REF)] | length")
             if ((prs > 0)); then
                 echo "skip=true" >> "$GITHUB_OUTPUT"
             fi
@@ -116,19 +115,49 @@ jobs:
           # This ensures javadoc validation matches the exact conditions used during publishing
           ./gradlew :ddprof-lib:javadoc --no-daemon --parallel --build-cache --no-watch-fs
 
+  compute-configurations:
+    runs-on: ubuntu-latest
+    needs: check-for-pr
+    if: needs.check-for-pr.outputs.skip != 'true'
+    outputs:
+      configurations: ${{ steps.compute.outputs.configurations }}
+    steps:
+      - name: Debounce label events
+        if: github.event.action == 'labeled'
+        run: |
+          echo "Waiting 30s to allow adding multiple labels..."
+          sleep 30
+      - name: Compute test configurations from PR labels
+        id: compute
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Always include debug
+          configs='["debug"'
+
+          # For PRs, check labels; for push/workflow_dispatch, use debug only
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            labels=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }} --jq '.labels[].name' 2>/dev/null) || labels=""
+
+            if echo "$labels" | grep -Fq "test:release"; then
+              configs="$configs"',"release"'
+            fi
+            if echo "$labels" | grep -Fq "test:asan"; then
+              configs="$configs"',"asan"'
+            fi
+            if echo "$labels" | grep -Fq "test:tsan"; then
+              configs="$configs"',"tsan"'
+            fi
+          fi
+
+          configs="$configs]"
+          echo "configurations=$configs" >> $GITHUB_OUTPUT
+          echo "Test configurations: $configs"
+
   test-matrix:
-    needs: check-formatting
+    needs: [check-for-pr, check-formatting, compute-configurations]
     if: needs.check-for-pr.outputs.skip != 'true'
     uses: ./.github/workflows/test_workflow.yml
     with:
-      configuration: '["debug"]'
+      configuration: ${{ needs.compute-configurations.outputs.configurations }}
 
-  gh-release:
-    if: startsWith(github.event.ref, 'refs/heads/release/')
-    runs-on: ubuntu-latest
-    needs: [test-matrix]
-    steps:
-      - name: Create Github Release
-        uses: ./.github/workflows/gh_release.yml@gh-release
-        with:
-          release_branch: ${GITHUB_REF_NAME}

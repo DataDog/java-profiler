@@ -51,14 +51,14 @@ Modified frame collection to support dual modes:
 - `populateRemoteFrame()`: Packs pc_offset, mark, and lib_index into jmethodID field
 - `resolveNativeFrameForWalkVM()`: Resolves native frames for walkVM/walkVMX modes
   - Performs binarySearch() to get symbol name
-  - Extracts mark via NativeFunc::mark() (O(1))
+  - Extracts mark via NativeFunc::read_mark() (O(1))
   - Packs data using RemoteFramePacker::pack()
 - `convertNativeTrace()`: Converts raw PCs to frames for walkFP/walkDwarf modes
   - Checks marks to terminate at JVM internal frames
   - Calls populateRemoteFrame() to pack data
 
 **Mark Checking**:
-- Uses binarySearch() + NativeFunc::mark() approach (O(log n) + O(1))
+- Uses binarySearch() + NativeFunc::read_mark() approach (O(log n) + O(1))
 - Performance identical to traditional symbolication
 - Simpler than maintaining separate marked ranges index
 - Mark values packed into jmethodID for later unpacking
@@ -304,7 +304,7 @@ ddprof-test/src/test/java/
 
 ### Design Evolution
 - **Original approach**: Separate marked ranges index with O(log n) isMarkedAddress()
-- **Current approach**: Simplified to binarySearch() + NativeFunc::mark()
+- **Current approach**: Simplified to binarySearch() + NativeFunc::read_mark()
   - Same O(log n) performance but ~150 lines less code
   - Eliminated complexity of maintaining separate index
   - Marks packed into jmethodID for JFR serialization

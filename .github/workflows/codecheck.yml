@@ -52,6 +52,7 @@ jobs:
         uses: ./.github/actions/upsert-pr-comment
         with:
           body-file: comment.html
+          comment-id: scan-build-report
 
   codeql:
     if: needs.check-for-pr.outputs.skip != 'true'
