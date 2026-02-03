@@ -54,34 +54,32 @@ public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
     private static volatile int value;
 
     private static void method1() {
-        for (int i = 0; i < 1000000; ++i) {
-            ++value;
+        // Wall clock profiling tests should use blocking operations to ensure reliable sampling.
+        // Sleep for 100ms to guarantee the method is captured by 5ms wall clock sampling intervals.
+        try {
+            Thread.sleep(100);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
     private static void method2() {
-        for (int i = 0; i < 1000000; ++i) {
-            ++value;
+        // Wall clock profiling tests should use blocking operations to ensure reliable sampling.
+        // Sleep for 100ms to guarantee the method is captured by 5ms wall clock sampling intervals.
+        try {
+            Thread.sleep(100);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
     private static void method3() {
-        // Fixed iteration count for deterministic workload (was time-based with 20ms timeout)
-        // Increased to 500 iterations to ensure sufficient execution time for CPU sampling
-        for (int i = 0; i < 500; ++i) {
-            int cntr = 10;
-            // Null-safe iteration over /tmp directory
-            String[] files = new File("/tmp").list();
-            if (files != null) {
-                for (String s : files) {
-                    if (s != null && !s.isEmpty()) {
-                        value += s.substring(0, Math.min(s.length(), 16)).hashCode();
-                        if (--cntr < 0) {
-                            break;
-                        }
-                    }
-                }
-            }
+        // Wall clock profiling tests should use blocking operations to ensure reliable sampling.
+        // Sleep for 100ms to guarantee the method is captured by 5ms wall clock sampling intervals.
+        try {
+            Thread.sleep(100);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 }

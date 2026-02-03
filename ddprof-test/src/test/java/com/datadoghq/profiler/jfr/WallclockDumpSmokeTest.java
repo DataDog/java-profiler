@@ -4,12 +4,19 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.TestTemplate;
 
+import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.junit.CStack;
 import com.datadoghq.profiler.junit.RetryTest;
 
 public class WallclockDumpSmokeTest extends JfrDumpTest {
     public WallclockDumpSmokeTest(@CStack String cstack) {
         super(cstack);
+    }
+
+    @Override
+    protected boolean isPlatformSupported() {
+        // Zing forces cstack=no which prevents proper stack trace capture for wall clock profiling
+        return !Platform.isZing();
     }
 
     @Override
