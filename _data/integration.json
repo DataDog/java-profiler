@@ -1,6 +1,29 @@
 {
   "runs": [
     {
+      "id": "94274858",
+      "timestamp": "2026-02-03T10:16:41Z",
+      "ddprof_branch": "jb/fp_safeaccess",
+      "ddprof_sha": "unknown",
+      "ddprof_pr": null,
+      "pipeline": {
+        "id": "94274858",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94274858"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 40,
+        "failed_jobs": 0,
+        "total_scenarios": 80,
+        "passed_scenarios": 80,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "94270048",
       "timestamp": "2026-02-03T09:52:42Z",
       "ddprof_branch": "jb/fp_safeaccess",
@@ -233,29 +256,6 @@
         "failed_jobs": 0,
         "total_scenarios": 72,
         "passed_scenarios": 72,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "94074680",
-      "timestamp": "2026-02-02T13:30:42Z",
-      "ddprof_branch": "jb/fp_safeaccess",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "94074680",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94074680"
-      },
-      "lib_version": "unknown",
-      "status": "unknown",
-      "summary": {
-        "total_jobs": 0,
-        "passed_jobs": 0,
-        "failed_jobs": 0,
-        "total_scenarios": 0,
-        "passed_scenarios": 0,
         "failed_scenarios": 0,
         "unknown_scenarios": 0,
         "failed_configs": []
