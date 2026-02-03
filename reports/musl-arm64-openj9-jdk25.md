@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk25
 
 ## musl-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-02-03 07:41:12 EST
+**Date:** 2026-02-03 07:53:27 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 134 |
-| Sample Rate | 2.23/sec |
-| Health Score | 139% |
-| Threads | 10 |
-| Allocations | 49 |
+| CPU Samples | 103 |
+| Sample Rate | 1.72/sec |
+| Health Score | 108% |
+| Threads | 9 |
+| Allocations | 44 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 126 |
-| Sample Rate | 2.10/sec |
-| Health Score | 131% |
-| Threads | 13 |
-| Allocations | 53 |
+| CPU Samples | 24 |
+| Sample Rate | 0.40/sec |
+| Health Score | 25% |
+| Threads | 7 |
+| Allocations | 8 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770122215 24
-1770122220 24
-1770122225 24
-1770122230 24
-1770122235 24
-1770122240 24
-1770122245 24
-1770122250 24
-1770122255 24
-1770122260 24
-1770122265 24
-1770122270 24
-1770122275 24
-1770122280 24
-1770122285 24
-1770122290 24
-1770122295 24
-1770122300 24
-1770122305 24
-1770122310 24
+1770122805 24
+1770122810 24
+1770122815 24
+1770122820 24
+1770122825 24
+1770122830 24
+1770122835 24
+1770122840 24
+1770122845 24
+1770122850 24
+1770122855 24
+1770122860 24
+1770122865 24
+1770122870 24
+1770122875 24
+1770122880 24
+1770122885 24
+1770122890 24
+1770122895 24
+1770122900 24
 ```
 </details>
 

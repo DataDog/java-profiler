@@ -1,6 +1,33 @@
 {
   "runs": [
     {
+      "id": "94303091",
+      "timestamp": "2026-02-03T12:53:22Z",
+      "ddprof_branch": "jb/fp_safeaccess",
+      "ddprof_sha": "unknown",
+      "ddprof_pr": {
+        "number": 349,
+        "url": "https://github.com/DataDog/java-profiler/pull/349",
+        "title": "Add SafeAccess protection and frame type validation for signal handlers"
+      },
+      "pipeline": {
+        "id": "94303091",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94303091"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 40,
+        "failed_jobs": 0,
+        "total_scenarios": 80,
+        "passed_scenarios": 80,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "94301491",
       "timestamp": "2026-02-03T12:41:09Z",
       "ddprof_branch": "jb/fp_sanitation",
@@ -234,32 +261,6 @@
           "musl-arm64-openj9-jdk21",
           "musl-x64-openj9-jdk17",
           "musl-x64-openj9-jdk21"
-        ]
-      }
-    },
-    {
-      "id": "94194515",
-      "timestamp": "2026-02-02T20:17:33Z",
-      "ddprof_branch": "zgu/methodInfo",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "94194515",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94194515"
-      },
-      "lib_version": "unknown",
-      "status": "partial",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 38,
-        "failed_jobs": 2,
-        "total_scenarios": 80,
-        "passed_scenarios": 78,
-        "failed_scenarios": 2,
-        "unknown_scenarios": 0,
-        "failed_configs": [
-          "glibc-arm64-hotspot-jdk21",
-          "glibc-arm64-openj9-jdk17"
         ]
       }
     }

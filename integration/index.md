@@ -13,6 +13,22 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 <details markdown="1">
 <summary>
+<strong>2026-02-03 12:53</strong> | ✅ | jb/fp_safeaccess | PR [#349](https://github.com/DataDog/java-profiler/pull/349) | Pipeline [#94303091](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94303091)
+</summary>
+
+**Version:** unknown
+**Commit:** unknown
+
+| Metric | Value |
+|--------|-------|
+| Jobs | 40 |
+| Passed | 40 |
+| Failed | 0 |
+
+</details>
+
+<details markdown="1">
+<summary>
 <strong>2026-02-03 12:41</strong> | ✅ | jb/fp_sanitation | PR [#351](https://github.com/DataDog/java-profiler/pull/351) | Pipeline [#94301491](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94301491)
 </summary>
 
@@ -156,24 +172,6 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 | Failed | 9 |
 
 **Failed Configs:** glibc-arm64-hotspot-jdk21, glibc-arm64-openj9-jdk17, glibc-arm64-openj9-jdk21, glibc-x64-openj9-jdk11, musl-arm64-hotspot-jdk17, musl-arm64-openj9-jdk17, musl-arm64-openj9-jdk21, musl-x64-openj9-jdk17, musl-x64-openj9-jdk21
-
-</details>
-
-<details markdown="1">
-<summary>
-<strong>2026-02-02 20:17</strong> | ⚠️ | zgu/methodInfo | Pipeline [#94194515](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94194515)
-</summary>
-
-**Version:** unknown
-**Commit:** unknown
-
-| Metric | Value |
-|--------|-------|
-| Jobs | 40 |
-| Passed | 38 |
-| Failed | 2 |
-
-**Failed Configs:** glibc-arm64-hotspot-jdk21, glibc-arm64-openj9-jdk17
 
 </details>
 
