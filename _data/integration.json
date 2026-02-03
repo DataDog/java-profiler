@@ -1,6 +1,33 @@
 {
   "runs": [
     {
+      "id": "94326135",
+      "timestamp": "2026-02-03T14:47:02Z",
+      "ddprof_branch": "jb/fp_safeaccess",
+      "ddprof_sha": "unknown",
+      "ddprof_pr": {
+        "number": 349,
+        "url": "https://github.com/DataDog/java-profiler/pull/349",
+        "title": "Add SafeAccess protection and frame type validation for signal handlers"
+      },
+      "pipeline": {
+        "id": "94326135",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94326135"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 40,
+        "failed_jobs": 0,
+        "total_scenarios": 80,
+        "passed_scenarios": 80,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "94325184",
       "timestamp": "2026-02-03T14:32:51Z",
       "ddprof_branch": "zgu/reduce-jmethodID",
@@ -225,33 +252,6 @@
       "pipeline": {
         "id": "94292278",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94292278"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 40,
-        "failed_jobs": 0,
-        "total_scenarios": 80,
-        "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "94287381",
-      "timestamp": "2026-02-03T11:22:01Z",
-      "ddprof_branch": "jb/fp_safeaccess",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": {
-        "number": 349,
-        "url": "https://github.com/DataDog/java-profiler/pull/349",
-        "title": "Add SafeAccess protection and frame type validation for signal handlers"
-      },
-      "pipeline": {
-        "id": "94287381",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94287381"
       },
       "lib_version": "unknown",
       "status": "passed",

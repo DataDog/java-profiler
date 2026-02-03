@@ -5,13 +5,13 @@ title: Java Profiler Build - Test Dashboard
 
 # Java Profiler Build - Test Dashboard
 
-> **Last Updated:** 2026-02-03 14:32 UTC
+> **Last Updated:** 2026-02-03 14:47 UTC
 
 ## Quick Status
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](integration/) | [#94325184](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94325184) | ❓ | zgu/reduce-jmethodID | - |
+| [Integration](integration/) | [#94326135](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94326135) | ✅ | jb/fp_safeaccess | [#349](https://github.com/DataDog/java-profiler/pull/349) |
 | [Benchmarks](benchmarks/) | - | - | - | - |
 | [Reliability](reliability/) | - | - | - | - |
 
@@ -37,11 +37,11 @@ Tests multiple allocator configurations (gmalloc, tcmalloc, jemalloc).
 
 | Date | Type | Pipeline | Branch | PR | Status |
 |------|------|----------|--------|-----|--------|
+| 2026-02-03 | Integration | [#94326135](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94326135) | jb/fp_safeaccess | [#349](https://github.com/DataDog/java-profiler/pull/349) | ✅ |
 | 2026-02-03 | Integration | [#94325184](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94325184) | zgu/reduce-jmethodID | - | ❓ |
 | 2026-02-03 | Integration | [#94312750](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94312750) | jb/flaky_tests | [#352](https://github.com/DataDog/java-profiler/pull/352) | ⚠️ |
 | 2026-02-03 | Integration | [#94311785](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94311785) | main | - | ✅ |
 | 2026-02-03 | Integration | [#94309907](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94309907) | jb/flaky_tests | [#352](https://github.com/DataDog/java-profiler/pull/352) | ⚠️ |
-| 2026-02-03 | Integration | [#94308035](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94308035) | jb/fp_safeaccess | [#349](https://github.com/DataDog/java-profiler/pull/349) | ✅ |
 
 ---
 
