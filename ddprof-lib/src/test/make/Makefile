@@ -25,7 +25,7 @@ all: $(OBJDIR) $(OBJS)
 $(OBJDIR):
 	mkdir -p $(OBJDIR)
 
-$(OBJDIR)/%.o : ${SRCDIR}/%.cpp
+$(OBJDIR)/%.o : ${SRCDIR}/%.cpp | $(OBJDIR)
 	${CC} ${CFLAGS} -DEBUG -DPROFILER_VERSION=\"snapshot\" ${INCLUDES}   -c  $<  -o  $@
 
 clean :
