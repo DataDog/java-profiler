@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk8
 
 ## musl-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-02-03 08:20:10 EST
+**Date:** 2026-02-03 08:20:47 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 96 |
-| Sample Rate | 1.60/sec |
-| Health Score | 100% |
+| CPU Samples | 298 |
+| Sample Rate | 4.97/sec |
+| Health Score | 311% |
 | Threads | 8 |
 | Allocations | 0 |
 
@@ -38,9 +38,9 @@ title: musl-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 152 |
-| Sample Rate | 2.53/sec |
-| Health Score | 158% |
+| CPU Samples | 97 |
+| Sample Rate | 1.62/sec |
+| Health Score | 101% |
 | Threads | 8 |
 | Allocations | 0 |
 
@@ -48,26 +48,26 @@ title: musl-arm64-openj9-jdk8
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770124463 24
-1770124468 24
-1770124473 24
-1770124478 24
-1770124483 24
-1770124488 24
-1770124493 24
-1770124498 24
-1770124503 24
-1770124508 24
-1770124513 24
-1770124518 24
-1770124523 24
-1770124528 24
-1770124533 24
-1770124538 24
-1770124543 24
-1770124548 24
-1770124553 24
-1770124558 24
+1770124557 24
+1770124562 24
+1770124567 24
+1770124572 24
+1770124577 24
+1770124582 24
+1770124587 24
+1770124592 24
+1770124597 24
+1770124602 24
+1770124607 24
+1770124612 24
+1770124617 24
+1770124622 24
+1770124627 24
+1770124632 24
+1770124637 24
+1770124642 24
+1770124647 24
+1770124652 24
 ```
 </details>
 
