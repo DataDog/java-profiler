@@ -58,7 +58,7 @@ public:
   static CallTrace _overflow_trace;
 
 private:
-  u64 _instance_id;  // 64-bit instance ID for this hash table (set externally)
+  u64 _instance_id;  // 64-bit instance ID for this hash table - MUST use atomic ops (setInstanceId/put)
   CallTraceStorage* _parent_storage;  // Parent storage for RefCountGuard access
 
   LinearAllocator _allocator;
@@ -96,7 +96,10 @@ public:
 
   u64 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);
   void putWithExistingId(CallTrace* trace, u64 weight);  // For standby tables with no contention
-  void setInstanceId(u64 instance_id) { _instance_id = instance_id; }
+  void setInstanceId(u64 instance_id) {
+    // Use atomic store with RELEASE ordering to ensure visibility across threads
+    __atomic_store_n(&_instance_id, instance_id, __ATOMIC_RELEASE);
+  }
   void setParentStorage(CallTraceStorage* storage) { _parent_storage = storage; }
 };
 
