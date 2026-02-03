@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk17
 
 ## musl-x64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-02-03 06:22:08 EST
+**Date:** 2026-02-03 06:50:16 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 460 |
-| Sample Rate | 7.67/sec |
-| Health Score | 479% |
+| CPU Samples | 505 |
+| Sample Rate | 8.42/sec |
+| Health Score | 526% |
 | Threads | 8 |
-| Allocations | 399 |
+| Allocations | 355 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 687 |
-| Sample Rate | 11.45/sec |
-| Health Score | 716% |
+| CPU Samples | 686 |
+| Sample Rate | 11.43/sec |
+| Health Score | 714% |
 | Threads | 9 |
-| Allocations | 473 |
+| Allocations | 506 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1770117433 32
-1770117438 32
-1770117443 32
-1770117448 32
-1770117453 32
-1770117458 32
-1770117463 32
-1770117468 32
-1770117473 32
-1770117478 32
-1770117483 32
-1770117488 32
-1770117493 32
-1770117498 32
-1770117503 32
-1770117508 32
-1770117513 32
-1770117519 32
-1770117524 32
-1770117529 32
+1770119098 32
+1770119103 32
+1770119108 32
+1770119113 32
+1770119118 32
+1770119123 32
+1770119128 32
+1770119133 32
+1770119138 32
+1770119143 32
+1770119148 32
+1770119153 32
+1770119158 32
+1770119163 32
+1770119168 32
+1770119173 32
+1770119178 32
+1770119183 32
+1770119188 32
+1770119193 32
 ```
 </details>
 
