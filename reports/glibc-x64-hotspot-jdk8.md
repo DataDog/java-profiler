@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk8
 
 ## glibc-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-02-03 03:50:23 EST
+**Date:** 2026-02-03 04:27:35 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 272 |
-| Sample Rate | 4.53/sec |
-| Health Score | 283% |
+| CPU Samples | 281 |
+| Sample Rate | 4.68/sec |
+| Health Score | 292% |
 | Threads | 7 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 205 |
-| Sample Rate | 3.42/sec |
-| Health Score | 214% |
-| Threads | 6 |
+| CPU Samples | 266 |
+| Sample Rate | 4.43/sec |
+| Health Score | 277% |
+| Threads | 9 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1770108242 32
-1770108247 32
-1770108252 32
-1770108257 32
-1770108262 32
-1770108267 32
-1770108272 32
-1770108277 32
-1770108282 32
-1770108287 32
-1770108292 32
-1770108297 32
-1770108302 32
-1770108307 32
-1770108312 32
-1770108317 32
-1770108322 32
-1770108327 32
-1770108332 32
-1770108337 32
+1770110485 32
+1770110490 32
+1770110495 32
+1770110500 32
+1770110505 32
+1770110510 32
+1770110515 32
+1770110520 32
+1770110525 32
+1770110530 32
+1770110535 32
+1770110540 32
+1770110545 32
+1770110550 32
+1770110555 32
+1770110560 32
+1770110565 32
+1770110570 32
+1770110575 32
+1770110580 32
 ```
 </details>
 

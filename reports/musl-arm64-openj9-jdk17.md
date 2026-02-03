@@ -3,9 +3,9 @@ layout: default
 title: musl-arm64-openj9-jdk17
 ---
 
-## musl-arm64-openj9-jdk17 - ❌ FAIL
+## musl-arm64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-02-03 03:50:24 EST
+**Date:** 2026-02-03 04:27:38 EST
 
 ### Configuration
 | Setting | Value |
@@ -24,15 +24,15 @@ title: musl-arm64-openj9-jdk17
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ❌
+#### Scenario 1: Profiler-Only ✅
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| Status | PASS |
+| CPU Samples | 69 |
+| Sample Rate | 1.15/sec |
+| Health Score | 72% |
+| Threads | 9 |
+| Allocations | 55 |
 
 #### Scenario 2: Tracer+Profiler ⚠️
 | Metric | Value |
@@ -48,19 +48,26 @@ title: musl-arm64-openj9-jdk17
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770108332 24
-1770108337 24
-1770108342 24
-1770108347 24
-1770108352 24
-1770108357 24
-1770108362 24
-1770108367 24
-1770108372 24
-1770108377 24
-1770108382 24
-1770108387 24
-1770108392 24
+1770110670 24
+1770110675 24
+1770110680 24
+1770110685 24
+1770110690 24
+1770110695 24
+1770110700 24
+1770110705 24
+1770110710 24
+1770110715 24
+1770110720 24
+1770110725 24
+1770110730 24
+1770110735 24
+1770110740 24
+1770110745 24
+1770110750 24
+1770110755 24
+1770110760 24
+1770110765 24
 ```
 </details>
 
