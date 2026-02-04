@@ -24,6 +24,48 @@ public class WallclockDumpSmokeTest extends JfrDumpTest {
         return "wall=5ms";
     }
 
+    @Override
+    protected void method1() {
+        // CPU work for wall clock sampling
+        for (int i = 0; i < 1000000; ++i) {
+            ++value;
+        }
+        // Add brief sleep to ensure wall clock capture
+        try {
+            Thread.sleep(1);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    @Override
+    protected void method2() {
+        // CPU work for wall clock sampling
+        for (int i = 0; i < 1000000; ++i) {
+            ++value;
+        }
+        // Add brief sleep to ensure wall clock capture
+        try {
+            Thread.sleep(1);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    @Override
+    protected void method3() {
+        // CPU work for wall clock sampling
+        for (int i = 0; i < 1000000; ++i) {
+            ++value;
+        }
+        // Add brief sleep to ensure wall clock capture
+        try {
+            Thread.sleep(1);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     @RetryTest(3)
     @Timeout(value = 60)
     @TestTemplate
