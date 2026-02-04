@@ -41,6 +41,7 @@ private:
 
   u64 _last_config_update_ts;
   u64 _alloc_event_count;
+  bool _disable_rate_limiting;
 
   const static int CONFIG_UPDATE_CHECK_PERIOD_SECS = 1;
   int _target_samples_per_window = 100; // ~6k samples per minute by default
@@ -50,7 +51,8 @@ private:
   ObjectSampler()
       : _interval(0), _configured_interval(0), _record_allocations(false),
         _record_liveness(false), _gc_generations(false), _max_stack_depth(0),
-        _last_config_update_ts(0), _alloc_event_count(0) {}
+        _last_config_update_ts(0), _alloc_event_count(0),
+        _disable_rate_limiting(false) {}
 
 protected:
   void recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,

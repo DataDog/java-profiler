@@ -278,6 +278,7 @@ tasks.withType(Test).configureEach {
 
   def keepRecordings = project.hasProperty("keepJFRs") || Boolean.parseBoolean(System.getenv("KEEP_JFRS"))
   environment("CI", project.hasProperty("CI") || Boolean.parseBoolean(System.getenv("CI")))
+  environment("DDPROF_TEST_DISABLE_RATE_LIMIT", "1")  // Disable PID controller rate limiting in tests
 
   // Base JVM arguments
   def jvmArgsList = [
