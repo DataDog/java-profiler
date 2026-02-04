@@ -1,6 +1,33 @@
 {
   "runs": [
     {
+      "id": "94677148",
+      "timestamp": "2026-02-04T18:27:44Z",
+      "ddprof_branch": "jb/flaky_tests_1",
+      "ddprof_sha": "unknown",
+      "ddprof_pr": {
+        "number": 354,
+        "url": "https://github.com/DataDog/java-profiler/pull/354",
+        "title": "Fix flaky InstanceIdTraceIdStressTest on musl/aarch64 with atomic memory ordering"
+      },
+      "pipeline": {
+        "id": "94677148",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94677148"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 26,
+        "passed_jobs": 26,
+        "failed_jobs": 0,
+        "total_scenarios": 52,
+        "passed_scenarios": 52,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "94622638",
       "timestamp": "2026-02-04T15:55:44Z",
       "ddprof_branch": "jb/flaky_tests_1",
@@ -269,33 +296,6 @@
         "failed_configs": [
           "musl-x64-openj9-jdk21"
         ]
-      }
-    },
-    {
-      "id": "94382773",
-      "timestamp": "2026-02-03T17:22:05Z",
-      "ddprof_branch": "jb/flaky_tests_1",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": {
-        "number": 354,
-        "url": "https://github.com/DataDog/java-profiler/pull/354",
-        "title": "Fix flaky InstanceIdTraceIdStressTest on musl/aarch64 with atomic memory ordering"
-      },
-      "pipeline": {
-        "id": "94382773",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94382773"
-      },
-      "lib_version": "unknown",
-      "status": "unknown",
-      "summary": {
-        "total_jobs": 0,
-        "passed_jobs": 0,
-        "failed_jobs": 0,
-        "total_scenarios": 0,
-        "passed_scenarios": 0,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
       }
     }
   ]
