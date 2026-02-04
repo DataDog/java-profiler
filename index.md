@@ -5,13 +5,13 @@ title: Java Profiler Build - Test Dashboard
 
 # Java Profiler Build - Test Dashboard
 
-> **Last Updated:** 2026-02-03 17:51 UTC
+> **Last Updated:** 2026-02-04 12:50 UTC
 
 ## Quick Status
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](integration/) | [#94391097](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94391097) | ✅ | jb/flaky_tests_1 | [#354](https://github.com/DataDog/java-profiler/pull/354) |
+| [Integration](integration/) | [#94571316](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94571316) | ⚠️ | jb/flaky_tests_1 | [#354](https://github.com/DataDog/java-profiler/pull/354) |
 | [Benchmarks](benchmarks/) | - | - | - | - |
 | [Reliability](reliability/) | - | - | - | - |
 
@@ -37,11 +37,11 @@ Tests multiple allocator configurations (gmalloc, tcmalloc, jemalloc).
 
 | Date | Type | Pipeline | Branch | PR | Status |
 |------|------|----------|--------|-----|--------|
+| 2026-02-04 | Integration | [#94571316](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94571316) | jb/flaky_tests_1 | [#354](https://github.com/DataDog/java-profiler/pull/354) | ⚠️ |
 | 2026-02-03 | Integration | [#94391097](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94391097) | jb/flaky_tests_1 | [#354](https://github.com/DataDog/java-profiler/pull/354) | ✅ |
 | 2026-02-03 | Integration | [#94389764](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94389764) | jb/flaky_tests_1 | [#354](https://github.com/DataDog/java-profiler/pull/354) | ⚠️ |
 | 2026-02-03 | Integration | [#94383799](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94383799) | jb/fp_sanitation | [#351](https://github.com/DataDog/java-profiler/pull/351) | ✅ |
 | 2026-02-03 | Integration | [#94382671](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94382671) | main | - | ⚠️ |
-| 2026-02-03 | Integration | [#94382773](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94382773) | jb/flaky_tests_1 | [#354](https://github.com/DataDog/java-profiler/pull/354) | ❓ |
 
 ---
 

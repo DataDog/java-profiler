@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk25
 
 ## musl-x64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-02-03 12:51:46 EST
+**Date:** 2026-02-04 07:50:53 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 661 |
-| Sample Rate | 11.02/sec |
-| Health Score | 689% |
-| Threads | 11 |
-| Allocations | 377 |
+| CPU Samples | 561 |
+| Sample Rate | 9.35/sec |
+| Health Score | 584% |
+| Threads | 10 |
+| Allocations | 405 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 929 |
-| Sample Rate | 15.48/sec |
-| Health Score | 967% |
-| Threads | 12 |
-| Allocations | 523 |
+| CPU Samples | 752 |
+| Sample Rate | 12.53/sec |
+| Health Score | 783% |
+| Threads | 11 |
+| Allocations | 521 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1770140815 32
-1770140820 32
-1770140825 32
-1770140830 32
-1770140835 32
-1770140840 32
-1770140845 32
-1770140850 32
-1770140855 32
-1770140860 32
-1770140865 32
-1770140870 32
-1770140875 32
-1770140880 32
-1770140885 32
-1770140890 32
-1770140895 32
-1770140900 32
-1770140905 32
-1770140910 32
+1770208924 32
+1770208929 32
+1770208934 32
+1770208939 32
+1770208944 32
+1770208949 32
+1770208954 32
+1770208959 32
+1770208964 32
+1770208969 32
+1770208974 32
+1770208979 32
+1770208984 32
+1770208989 32
+1770208994 32
+1770208999 32
+1770209004 32
+1770209009 32
+1770209014 32
+1770209019 32
 ```
 </details>
 

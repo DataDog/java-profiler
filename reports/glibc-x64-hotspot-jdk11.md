@@ -3,9 +3,9 @@ layout: default
 title: glibc-x64-hotspot-jdk11
 ---
 
-## glibc-x64-hotspot-jdk11 - ✅ PASS
+## glibc-x64-hotspot-jdk11 - ❌ FAIL
 
-**Date:** 2026-02-03 12:51:45 EST
+**Date:** 2026-02-04 07:50:51 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,56 +18,56 @@ title: glibc-x64-hotspot-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 32 |
-| CPU Cores (end) | 23 |
+| CPU Cores (start) | 96 |
+| CPU Cores (end) | 91 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ✅
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 483 |
-| Sample Rate | 8.05/sec |
-| Health Score | 503% |
-| Threads | 8 |
-| Allocations | 364 |
+| Status | FAIL |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
-#### Scenario 2: Tracer+Profiler ✅
+#### Scenario 2: Tracer+Profiler ⚠️
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 625 |
-| Sample Rate | 10.42/sec |
-| Health Score | 651% |
-| Threads | 9 |
-| Allocations | 480 |
+| Status | N/A |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 23-32 cores)</summary>
+<summary>CPU Timeline (2 unique values: 91-96 cores)</summary>
 
 ```
-1770140774 32
-1770140779 32
-1770140784 32
-1770140789 32
-1770140794 32
-1770140799 32
-1770140804 32
-1770140809 32
-1770140814 32
-1770140819 32
-1770140824 32
-1770140829 32
-1770140834 32
-1770140839 32
-1770140844 32
-1770140849 32
-1770140854 32
-1770140859 32
-1770140864 32
-1770140869 32
+1770208971 96
+1770208976 96
+1770208981 96
+1770208986 96
+1770208991 96
+1770208996 96
+1770209001 91
+1770209006 91
+1770209011 91
+1770209016 91
+1770209021 91
+1770209026 91
+1770209031 91
+1770209036 91
+1770209041 91
+1770209046 91
+1770209051 91
+1770209056 91
+1770209061 91
+1770209066 91
 ```
 </details>
 

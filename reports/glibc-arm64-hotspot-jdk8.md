@@ -3,9 +3,9 @@ layout: default
 title: glibc-arm64-hotspot-jdk8
 ---
 
-## glibc-arm64-hotspot-jdk8 - ✅ PASS
+## glibc-arm64-hotspot-jdk8 - ❌ FAIL
 
-**Date:** 2026-02-03 12:51:45 EST
+**Date:** 2026-02-04 07:50:51 EST
 
 ### Configuration
 | Setting | Value |
@@ -24,50 +24,48 @@ title: glibc-arm64-hotspot-jdk8
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ✅
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 85 |
-| Sample Rate | 1.42/sec |
-| Health Score | 89% |
-| Threads | 7 |
-| Allocations | 0 |
+| Status | FAIL |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
-#### Scenario 2: Tracer+Profiler ✅
+#### Scenario 2: Tracer+Profiler ⚠️
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 340 |
-| Sample Rate | 5.67/sec |
-| Health Score | 354% |
-| Threads | 8 |
-| Allocations | 0 |
+| Status | N/A |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770140777 24
-1770140782 24
-1770140787 24
-1770140792 24
-1770140797 24
-1770140802 24
-1770140807 24
-1770140812 24
-1770140817 24
-1770140822 24
-1770140827 24
-1770140832 24
-1770140837 24
-1770140842 24
-1770140847 24
-1770140852 24
-1770140857 24
-1770140862 24
-1770140867 24
-1770140872 24
+1770209061 24
+1770209066 24
+1770209071 24
+1770209076 24
+1770209081 24
+1770209086 24
+1770209091 24
+1770209096 24
+1770209101 24
+1770209107 24
+1770209112 24
+1770209117 24
+1770209122 24
+1770209127 24
+1770209132 24
+1770209137 24
+1770209142 24
+1770209147 24
 ```
 </details>
 

@@ -3,9 +3,9 @@ layout: default
 title: glibc-x64-hotspot-jdk21
 ---
 
-## glibc-x64-hotspot-jdk21 - ✅ PASS
+## glibc-x64-hotspot-jdk21 - ❌ FAIL
 
-**Date:** 2026-02-03 12:51:45 EST
+**Date:** 2026-02-04 07:50:52 EST
 
 ### Configuration
 | Setting | Value |
@@ -24,50 +24,50 @@ title: glibc-x64-hotspot-jdk21
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ✅
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 405 |
-| Sample Rate | 6.75/sec |
-| Health Score | 422% |
-| Threads | 8 |
-| Allocations | 350 |
+| Status | FAIL |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
-#### Scenario 2: Tracer+Profiler ✅
+#### Scenario 2: Tracer+Profiler ⚠️
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 609 |
-| Sample Rate | 10.15/sec |
-| Health Score | 634% |
-| Threads | 9 |
-| Allocations | 484 |
+| Status | N/A |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
+<summary>CPU Timeline (3 unique values: 25-32 cores)</summary>
 
 ```
-1770140754 32
-1770140759 32
-1770140764 32
-1770140769 32
-1770140774 32
-1770140779 32
-1770140784 32
-1770140789 32
-1770140794 32
-1770140799 32
-1770140804 32
-1770140809 32
-1770140814 32
-1770140819 32
-1770140824 32
-1770140829 32
-1770140834 32
-1770140839 32
-1770140844 32
-1770140849 32
+1770208925 32
+1770208930 32
+1770208935 32
+1770208940 32
+1770208945 32
+1770208950 32
+1770208955 32
+1770208960 32
+1770208965 32
+1770208970 32
+1770208975 32
+1770208980 32
+1770208985 32
+1770208990 32
+1770208995 32
+1770209000 32
+1770209005 32
+1770209010 27
+1770209015 27
+1770209020 27
 ```
 </details>
 

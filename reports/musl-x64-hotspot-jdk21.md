@@ -3,9 +3,9 @@ layout: default
 title: musl-x64-hotspot-jdk21
 ---
 
-## musl-x64-hotspot-jdk21 - ✅ PASS
+## musl-x64-hotspot-jdk21 - ❌ FAIL
 
-**Date:** 2026-02-03 12:51:46 EST
+**Date:** 2026-02-04 07:50:53 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,56 +18,56 @@ title: musl-x64-hotspot-jdk21
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 26 |
-| CPU Cores (end) | 26 |
+| CPU Cores (start) | 58 |
+| CPU Cores (end) | 58 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ✅
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 595 |
-| Sample Rate | 9.92/sec |
-| Health Score | 620% |
-| Threads | 9 |
-| Allocations | 380 |
+| Status | FAIL |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
-#### Scenario 2: Tracer+Profiler ✅
+#### Scenario 2: Tracer+Profiler ⚠️
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 857 |
-| Sample Rate | 14.28/sec |
-| Health Score | 892% |
-| Threads | 11 |
-| Allocations | 485 |
+| Status | N/A |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 24-26 cores)</summary>
+<summary>CPU Timeline (2 unique values: 58-64 cores)</summary>
 
 ```
-1770140740 26
-1770140745 26
-1770140750 26
-1770140755 26
-1770140760 26
-1770140765 26
-1770140770 26
-1770140775 26
-1770140780 26
-1770140785 26
-1770140790 26
-1770140795 26
-1770140800 26
-1770140805 26
-1770140810 26
-1770140815 26
-1770140820 26
-1770140825 24
-1770140830 24
-1770140835 24
+1770209006 58
+1770209011 58
+1770209016 58
+1770209021 58
+1770209026 58
+1770209031 58
+1770209036 58
+1770209041 58
+1770209046 58
+1770209051 58
+1770209056 58
+1770209061 58
+1770209066 58
+1770209071 58
+1770209076 58
+1770209081 58
+1770209086 58
+1770209091 58
+1770209096 58
+1770209101 58
 ```
 </details>
 
