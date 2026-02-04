@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-02-04 10:23:39 EST
+**Date:** 2026-02-04 10:55:47 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 142 |
-| Sample Rate | 2.37/sec |
-| Health Score | 148% |
+| CPU Samples | 154 |
+| Sample Rate | 2.57/sec |
+| Health Score | 161% |
 | Threads | 5 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 231 |
-| Sample Rate | 3.85/sec |
-| Health Score | 241% |
-| Threads | 6 |
+| CPU Samples | 313 |
+| Sample Rate | 5.22/sec |
+| Health Score | 326% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1770218164 32
-1770218169 32
-1770218174 32
-1770218179 32
-1770218184 32
-1770218189 32
-1770218194 32
-1770218199 32
-1770218204 32
-1770218209 32
-1770218214 32
-1770218219 32
-1770218224 32
-1770218229 32
-1770218234 32
-1770218239 32
-1770218244 32
-1770218249 32
-1770218254 32
-1770218259 32
+1770220114 32
+1770220119 32
+1770220124 32
+1770220129 32
+1770220134 32
+1770220139 32
+1770220144 32
+1770220149 32
+1770220154 32
+1770220159 32
+1770220164 32
+1770220170 32
+1770220175 32
+1770220180 32
+1770220185 32
+1770220190 32
+1770220195 32
+1770220200 32
+1770220205 32
+1770220210 32
 ```
 </details>
 

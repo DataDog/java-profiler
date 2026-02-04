@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk8
 
 ## glibc-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-02-04 10:23:39 EST
+**Date:** 2026-02-04 10:55:47 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 168 |
-| Sample Rate | 2.80/sec |
-| Health Score | 175% |
-| Threads | 6 |
+| CPU Samples | 196 |
+| Sample Rate | 3.27/sec |
+| Health Score | 204% |
+| Threads | 7 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 241 |
-| Sample Rate | 4.02/sec |
-| Health Score | 251% |
+| CPU Samples | 236 |
+| Sample Rate | 3.93/sec |
+| Health Score | 246% |
 | Threads | 9 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
+<summary>CPU Timeline (2 unique values: 30-32 cores)</summary>
 
 ```
-1770218165 32
-1770218170 32
-1770218175 32
-1770218180 32
-1770218185 32
-1770218190 32
-1770218195 32
-1770218200 32
-1770218205 32
-1770218210 32
-1770218215 32
-1770218220 32
-1770218225 32
-1770218230 32
-1770218235 32
-1770218240 32
-1770218245 32
-1770218250 32
-1770218255 32
-1770218260 32
+1770220110 32
+1770220115 32
+1770220120 32
+1770220125 32
+1770220130 32
+1770220135 32
+1770220140 32
+1770220145 30
+1770220150 30
+1770220155 32
+1770220160 32
+1770220165 32
+1770220170 32
+1770220175 32
+1770220180 32
+1770220185 32
+1770220190 32
+1770220195 32
+1770220200 32
+1770220205 32
 ```
 </details>
 
