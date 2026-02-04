@@ -5,6 +5,7 @@
 
 #include <pthread.h>
 #include <unistd.h>
+#include "compressedLinenumberStream.h"
 #include "vmStructs.h"
 #include "vmEntry.h"
 #include "j9Ext.h"
@@ -66,6 +67,8 @@ int VMStructs::_nmethod_metadata_offset = -1;
 int VMStructs::_nmethod_immutable_offset = -1;
 int VMStructs::_method_constmethod_offset = -1;
 int VMStructs::_method_code_offset = -1;
+int VMStructs::_constmethod_code_size = -1;
+int VMStructs::_constmethod_flags_offset = -1;
 int VMStructs::_constmethod_constants_offset = -1;
 int VMStructs::_constmethod_idnum_offset = -1;
 int VMStructs::_constmethod_size = -1;
@@ -178,6 +181,8 @@ void VMStructs::initOffsets() {
             if (strcmp(type, "Klass") == 0) {
                 if (strcmp(field, "_name") == 0) {
                     _klass_name_offset = *(int*)(entry + offset_offset);
+                } else if(strcmp(field, "_class_loader_data") == 0) {
+                    _class_loader_data_offset = *(int*)(entry + offset_offset);
                 }
             } else if (strcmp(type, "Symbol") == 0) {
                 if (strcmp(field, "_length") == 0) {
@@ -242,6 +247,10 @@ void VMStructs::initOffsets() {
                     _constmethod_constants_offset = *(int*)(entry + offset_offset);
                 } else if (strcmp(field, "_method_idnum") == 0) {
                     _constmethod_idnum_offset = *(int*)(entry + offset_offset);
+                } else if (strcmp(field, "_flags._flags") == 0) {
+                    _constmethod_flags_offset = *(int*)(entry + offset_offset);
+                } else if (strcmp(field, "_code_size") == 0) {
+                    _constmethod_code_size = *(int*)(entry + offset_offset);
                 }
             } else if (strcmp(type, "ConstantPool") == 0) {
                 if (strcmp(field, "_pool_holder") == 0) {
@@ -826,6 +835,10 @@ JNIEnv* VMThread::jni() {
 }
 
 jmethodID VMMethod::id() {
+    assert(_method_constmethod_offset >= 0);
+    assert( _constmethod_idnum_offset >= 0);
+    assert(_constmethod_constants_offset >= 0);
+
     // We may find a bogus NMethod during stack walking, it does not always point to a valid VMMethod
     const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
     if (!goodPtr(const_method)) {
@@ -861,6 +874,33 @@ VMKlass* VMMethod::methodHolder() {
     const char* cpool = (const char*) SafeAccess::load((void**)(const_method + _constmethod_constants_offset));
     assert(goodPtr(cpool));
     return *(VMKlass**)(cpool + _pool_holder_offset);
+}
+
+bool VMMethod::getLineNumberTable(jint* entry_count_ptr,
+                                  jvmtiLineNumberEntry** table_ptr) {
+  if (!hasLineNumberTable()) {
+    return false;
+  }
+  assert(entry_count_ptr != nullptr);
+  assert(table_ptr != nullptr);
+  unsigned char* table_start = codeBase() + codeSize();
+  int count = 0;
+  CompressedLineNumberStream stream(table_start);
+  while (stream.read_pair()) {
+    count++;
+  }
+
+  jvmtiLineNumberEntry* table = (jvmtiLineNumberEntry*)malloc(count * sizeof(jvmtiLineNumberEntry));
+  stream.reset();
+  count = 0;
+  while (stream.read_pair()) {
+    table[count].start_location = (jlocation)stream.bci();
+    table[count].line_number = (jint)stream.line();
+  }
+  *table_ptr = table;
+  *entry_count_ptr = count;
+
+  return true;
 }
 
 NMethod* CodeHeap::findNMethod(char* heap, const void* pc) {

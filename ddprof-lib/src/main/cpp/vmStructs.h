@@ -391,6 +391,7 @@ class VMKlass : VMStructs {
     }
 
     VMClassLoaderData* classLoaderData() {
+        assert(_class_loader_data_offset >= 0);
         return *(VMClassLoaderData**) at(_class_loader_data_offset);
     }
 
@@ -533,6 +534,9 @@ class VMMethod : public /* TODO make private when consolidating VMMethod? */ VMS
     static bool check_jmethodID_J9(jmethodID id);
     static bool check_jmethodID_hotspot(jmethodID id);
 
+    // ref: constMethodFlags.hpp in hotspot src
+    static constexpr uint32_t has_linenumber_table = 1 << 0;
+
   public:
     jmethodID id();
 
@@ -547,12 +551,36 @@ class VMMethod : public /* TODO make private when consolidating VMMethod? */ VMS
     }
 
     const char* bytecode() {
+        assert(_method_constmethod_offset >= 0);
+        assert(_constmethod_size >= 0);
         return *(const char**) at(_method_constmethod_offset) + _constmethod_size;
     }
 
+    uint16_t codeSize() {
+        assert(_constmethod_code_size >= 0);
+        return *(uint16_t*) ( *(const char**) at(_method_constmethod_offset) + _constmethod_code_size );
+    }
+
+    uint32_t flags() {
+        assert(_constmethod_flags_offset >= 0);
+        return *(uint32_t*) ( *(const char**) at(_method_constmethod_offset) + _constmethod_flags_offset );
+    }
+
+    bool hasLineNumberTable() {
+        return (flags() & has_linenumber_table) != 0;
+    }
+
+    address codeBase()  {
+        address code_addr = *(const address*) at(_method_constmethod_offset);
+        return (address)(code_addr+1);
+    }
+
     VMKlass* methodHolder();
+    bool getLineNumberTable(jint* entry_count_ptr,
+                            jvmtiLineNumberEntry** table_ptr);
 
     NMethod* code() {
+        assert(_method_code_offset >= 0);
         return *(NMethod**) at(_method_code_offset);
     }
 

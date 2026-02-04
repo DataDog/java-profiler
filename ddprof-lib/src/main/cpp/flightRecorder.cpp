@@ -150,6 +150,10 @@ void Lookup::cutArguments(char *func) {
   }
 }
 
+void Lookup::fillJavaMethodInfo(MethodInfo *mi, VMMethod* method, bool first_time) {
+
+}
+
 void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
                                 bool first_time) {
   JNIEnv *jni = VM::jni();
@@ -384,8 +388,11 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
         TEST_LOG("WARNING: Library lookup failed for index %u", lib_index);
         fillNativeMethodInfo(mi, "unknown_library", nullptr);
       }
-    } else {
+    } else if (type == FRAME_INTERPRETED) {
       fillJavaMethodInfo(mi, method, first_time);
+    } else {
+      assert(type == FRAME_INTERPRETED_METHOD);
+      fillJavaMethodInfo(mi, frame.vm_method, first_time);
     }
   }
 
