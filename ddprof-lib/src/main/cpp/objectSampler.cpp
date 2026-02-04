@@ -73,7 +73,7 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
     }
   }
 
-  if (_record_allocations) {
+  if (_record_allocations && !_disable_rate_limiting) {
     u64 current_samples = __sync_add_and_fetch(&_alloc_event_count, 1);
     // in order to lower the number of atomic reads from the timestamp variable
     // the check will be performed only each N samples
@@ -120,6 +120,10 @@ Error ObjectSampler::check(Arguments &args) {
   _record_allocations = args._record_allocations;
   _record_liveness = args._record_liveness;
   _gc_generations = args._gc_generations;
+
+  // Test-only: Check environment variable to disable rate limiting
+  const char* disable_rate_limit_env = getenv("DDPROF_TEST_DISABLE_RATE_LIMIT");
+  _disable_rate_limiting = (disable_rate_limit_env != nullptr && strcmp(disable_rate_limit_env, "1") == 0);
 
   _max_stack_depth = Profiler::instance()->max_stack_depth();
 

@@ -28,6 +28,10 @@ public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
         Assumptions.assumeFalse(Platform.isJ9());
 
+        // Wait for profiler to reach RUNNING state before workload begins
+        // Use 2000ms timeout to account for slow systems and CI load
+        waitForProfilerReady(2000);
+
         for (int j = 0; j < dumpCnt; j++) {
             Path recording = Files.createTempFile("dump-", ".jfr");
             try {
@@ -51,37 +55,35 @@ public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
         verifyStackTraces(eventName, patterns);
     }
 
-    private static volatile int value;
+    protected static volatile int value;
 
-    private static void method1() {
+    /**
+     * Override this method in subclasses to provide profiler-specific workload.
+     * Default implementation provides CPU-bound work suitable for CPU profiling.
+     */
+    protected void method1() {
         for (int i = 0; i < 1000000; ++i) {
             ++value;
         }
     }
 
-    private static void method2() {
+    /**
+     * Override this method in subclasses to provide profiler-specific workload.
+     * Default implementation provides CPU-bound work suitable for CPU profiling.
+     */
+    protected void method2() {
         for (int i = 0; i < 1000000; ++i) {
             ++value;
         }
     }
 
-    private static void method3() {
-        // Fixed iteration count for deterministic workload (was time-based with 20ms timeout)
-        // Increased to 500 iterations to ensure sufficient execution time for CPU sampling
-        for (int i = 0; i < 500; ++i) {
-            int cntr = 10;
-            // Null-safe iteration over /tmp directory
-            String[] files = new File("/tmp").list();
-            if (files != null) {
-                for (String s : files) {
-                    if (s != null && !s.isEmpty()) {
-                        value += s.substring(0, Math.min(s.length(), 16)).hashCode();
-                        if (--cntr < 0) {
-                            break;
-                        }
-                    }
-                }
-            }
+    /**
+     * Override this method in subclasses to provide profiler-specific workload.
+     * Default implementation provides CPU-bound work suitable for CPU profiling.
+     */
+    protected void method3() {
+        for (int i = 0; i < 1000000; ++i) {
+            ++value;
         }
     }
 }
