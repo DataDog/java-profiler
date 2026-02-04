@@ -8,7 +8,7 @@
 #
 # Usage: ./utils/run-docker-tests.sh [options]
 #   --libc=glibc|musl        (default: glibc)
-#   --jdk=8|11|17|21|25      (default: 21)
+#   --jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9  (default: 21)
 #   --arch=x64|aarch64       (default: auto-detect)
 #   --config=debug|release   (default: debug)
 #   --tests="TestPattern"    (optional, specific test to run)
@@ -94,6 +94,24 @@ get_glibc_jdk_url() {
     esac
 }
 
+# JDK Download URLs (IBM Semeru OpenJ9)
+get_j9_jdk_url() {
+    local version=$1
+    local arch=$2
+
+    case "$version-$arch" in
+        8-x64)      echo "https://github.com/ibmruntimes/semeru8-binaries/releases/download/jdk8u482-b08_openj9-0.57.0/ibm-semeru-open-jdk_x64_linux_8u482b08_openj9-0.57.0.tar.gz" ;;
+        8-aarch64)  echo "https://github.com/ibmruntimes/semeru8-binaries/releases/download/jdk8u482-b08_openj9-0.57.0/ibm-semeru-open-jdk_aarch64_linux_8u482b08_openj9-0.57.0.tar.gz" ;;
+        11-x64)     echo "https://github.com/ibmruntimes/semeru11-binaries/releases/download/jdk-11.0.30%2B7_openj9-0.57.0/ibm-semeru-open-jdk_x64_linux_11.0.30_7_openj9-0.57.0.tar.gz" ;;
+        11-aarch64) echo "https://github.com/ibmruntimes/semeru11-binaries/releases/download/jdk-11.0.30%2B7_openj9-0.57.0/ibm-semeru-open-jdk_aarch64_linux_11.0.30_7_openj9-0.57.0.tar.gz" ;;
+        17-x64)     echo "https://github.com/ibmruntimes/semeru17-binaries/releases/download/jdk-17.0.18%2B8_openj9-0.57.0/ibm-semeru-open-jdk_x64_linux_17.0.18_8_openj9-0.57.0.tar.gz" ;;
+        17-aarch64) echo "https://github.com/ibmruntimes/semeru17-binaries/releases/download/jdk-17.0.18%2B8_openj9-0.57.0/ibm-semeru-open-jdk_aarch64_linux_17.0.18_8_openj9-0.57.0.tar.gz" ;;
+        21-x64)     echo "https://github.com/ibmruntimes/semeru21-binaries/releases/download/jdk-21.0.10%2B7_openj9-0.57.0/ibm-semeru-open-jdk_x64_linux_21.0.9_10_openj9-0.56.0.tar.gz" ;;
+        21-aarch64) echo "https://github.com/ibmruntimes/semeru21-binaries/releases/download/jdk-21.0.10%2B7_openj9-0.57.0/ibm-semeru-open-jdk_aarch64_linux_21.0.9_10_openj9-0.56.0.tar.gz" ;;
+        *)          echo "" ;;
+    esac
+}
+
 usage() {
     head -n 19 "$0" | tail -n 16
     exit 0
@@ -173,15 +191,28 @@ if [[ "$CONFIG" != "debug" && "$CONFIG" != "release" ]]; then
     exit 1
 fi
 
-# Get JDK URL based on libc
-if [[ "$LIBC" == "musl" ]]; then
-    JDK_URL=$(get_musl_jdk_url "$JDK_VERSION" "$ARCH")
+# Parse JDK version and variant (e.g., "21-j9" -> version="21", variant="j9")
+JDK_BASE_VERSION="${JDK_VERSION%%-*}"
+JDK_VARIANT="${JDK_VERSION#*-}"
+if [[ "$JDK_VARIANT" == "$JDK_VERSION" ]]; then
+    JDK_VARIANT=""  # No variant specified
+fi
+
+# Get JDK URL based on variant and libc
+if [[ "$JDK_VARIANT" == "j9" ]]; then
+    if [[ "$LIBC" == "musl" ]]; then
+        echo "Error: J9/OpenJ9 is not available for musl libc"
+        exit 1
+    fi
+    JDK_URL=$(get_j9_jdk_url "$JDK_BASE_VERSION" "$ARCH")
+elif [[ "$LIBC" == "musl" ]]; then
+    JDK_URL=$(get_musl_jdk_url "$JDK_BASE_VERSION" "$ARCH")
 else
-    JDK_URL=$(get_glibc_jdk_url "$JDK_VERSION" "$ARCH")
+    JDK_URL=$(get_glibc_jdk_url "$JDK_BASE_VERSION" "$ARCH")
 fi
 
 if [[ -z "$JDK_URL" ]]; then
-    echo "Error: --jdk must be one of: 8, 11, 17, 21, 25"
+    echo "Error: --jdk must be one of: 8, 11, 17, 21, 25, 8-j9, 11-j9, 17-j9, 21-j9"
     exit 1
 fi
 

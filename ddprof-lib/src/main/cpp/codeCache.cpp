@@ -6,6 +6,7 @@
 #include "codeCache.h"
 #include "dwarf.h"
 #include "os.h"
+#include "safeAccess.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -22,6 +23,21 @@ char *NativeFunc::create(const char *name, short lib_index) {
 }
 
 void NativeFunc::destroy(char *name) { free(from(name)); }
+
+char NativeFunc::read_mark(const char* name) {
+  if (name == nullptr) {
+    return 0;
+  }
+  NativeFunc* func = from(name);
+  if (!is_aligned(func, sizeof(func))) {
+    return 0;
+  }
+  // Use SafeAccess to read the mark field in signal handler context
+  // Read the first 4 bytes (lib_index + mark + reserved) and extract the mark byte
+  int32_t prefix = SafeAccess::safeFetch32((int32_t*)func, 0);
+  // Extract mark byte: shift right by 16 bits to skip lib_index (2 bytes), mask to 1 byte
+  return (char)((prefix >> 16) & 0xFF);
+}
 
 CodeCache::CodeCache(const char *name, short lib_index,
                      const void *min_address, const void *max_address,
