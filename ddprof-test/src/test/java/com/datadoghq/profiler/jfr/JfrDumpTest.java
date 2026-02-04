@@ -54,30 +54,73 @@ public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
     private static volatile int value;
 
     private static void method1() {
-        // Wall clock profiling tests should use blocking operations to ensure reliable sampling.
-        // Sleep for 100ms to guarantee the method is captured by 5ms wall clock sampling intervals.
+        // Mixed workload to support all profiler types (CPU, allocation, wall clock):
+        // 1. CPU work: Tight loop with volatile operations to ensure CPU profiler sampling
+        //    ~5ms on modern CPUs, provides ~5 sample opportunities for cpu=1ms profiler
+        for (int i = 0; i < 500_000; i++) {
+            value++;
+        }
+
+        // 2. Allocations: Create objects to trigger allocation profiler (memory=32:a)
+        //    8KB allocation is large enough to bypass TLAB and trigger sampling
+        byte[] data = new byte[8192];
+        value += data.length;
+
+        // 3. Blocking: Sleep to be captured by wall clock profiler (wall=5ms)
+        //    10ms provides 2 sample opportunities at 5ms interval
         try {
-            Thread.sleep(100);
+            Thread.sleep(10);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
     }
 
     private static void method2() {
-        // Wall clock profiling tests should use blocking operations to ensure reliable sampling.
-        // Sleep for 100ms to guarantee the method is captured by 5ms wall clock sampling intervals.
+        // Mixed workload to support all profiler types (CPU, allocation, wall clock):
+        // 1. CPU work: Tight loop with volatile operations to ensure CPU profiler sampling
+        //    ~5ms on modern CPUs, provides ~5 sample opportunities for cpu=1ms profiler
+        for (int i = 0; i < 500_000; i++) {
+            value++;
+        }
+
+        // 2. Allocations: Create objects to trigger allocation profiler (memory=32:a)
+        //    8KB allocation is large enough to bypass TLAB and trigger sampling
+        byte[] data = new byte[8192];
+        value += data.length;
+
+        // 3. Blocking: Sleep to be captured by wall clock profiler (wall=5ms)
+        //    10ms provides 2 sample opportunities at 5ms interval
         try {
-            Thread.sleep(100);
+            Thread.sleep(10);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
     }
 
     private static void method3() {
-        // Wall clock profiling tests should use blocking operations to ensure reliable sampling.
-        // Sleep for 100ms to guarantee the method is captured by 5ms wall clock sampling intervals.
+        // Mixed workload to support all profiler types (CPU, allocation, wall clock):
+        // 1. CPU work: Tight loop with volatile operations to ensure CPU profiler sampling
+        //    ~5ms on modern CPUs, provides ~5 sample opportunities for cpu=1ms profiler
+        for (int i = 0; i < 500_000; i++) {
+            value++;
+        }
+
+        // 2. Allocations: Create many String objects to trigger allocation profiler (memory=32:a)
+        //    Replicate the allocation pattern from the original File I/O code
+        //    500 iterations × ~10 string allocations = ~5000 allocations, exceeds 32KB threshold
+        for (int i = 0; i < 500; i++) {
+            // Create string array and substring operations similar to original File.list() pattern
+            String[] data = new String[10];
+            for (int j = 0; j < 10; j++) {
+                data[j] = "test_allocation_string_" + i + "_" + j;
+                value += data[j].substring(0, Math.min(data[j].length(), 16)).hashCode();
+            }
+        }
+
+        // 3. Blocking: Sleep to be captured by wall clock profiler (wall=5ms)
+        //    10ms provides 2 sample opportunities at 5ms interval
         try {
-            Thread.sleep(100);
+            Thread.sleep(10);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
