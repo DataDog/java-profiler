@@ -69,6 +69,11 @@ public class CStackInjector implements TestTemplateInvocationContextProvider {
                 //   randomly when doing vm stackwalking
                 return !mode.startsWith("vm");
             }
+            if (Platform.isMusl() && Platform.isAarch64() && "vmx".equals(mode)) {
+                // vmx mode has intermittent initialization timing issues on musl aarch64
+                // causing 0 events in intermediate JFR dumps
+                return false;
+            }
         }
         return true;
     }
