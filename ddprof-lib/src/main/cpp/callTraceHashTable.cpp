@@ -312,7 +312,7 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
         // Generate unique trace ID: upper 32 bits = instance_id, lower 32 bits = slot
         // ACQUIRE ordering synchronizes with RELEASE store in setInstanceId() to ensure
         // visibility of new instance_id on weakly-ordered architectures (aarch64, POWER)
-        u64 instance_id = __atomic_load_n(&_instance_id, __ATOMIC_ACQUIRE);
+        u64 instance_id = _instance_id.load(std::memory_order_acquire);
         u64 trace_id = (instance_id << 32) | slot;
         trace = storeCallTrace(num_frames, frames, truncated, trace_id);
         if (trace == nullptr) {

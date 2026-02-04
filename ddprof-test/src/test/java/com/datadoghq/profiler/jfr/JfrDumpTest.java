@@ -28,8 +28,9 @@ public abstract class JfrDumpTest extends CStackAwareAbstractProfilerTest {
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
         Assumptions.assumeFalse(Platform.isJ9());
 
-        // Allow profiler to initialize and start sampling before workload begins
-        Thread.sleep(100);
+        // Wait for profiler to reach RUNNING state before workload begins
+        // Use 2000ms timeout to account for slow systems and CI load
+        waitForProfilerReady(2000);
 
         for (int j = 0; j < dumpCnt; j++) {
             Path recording = Files.createTempFile("dump-", ".jfr");

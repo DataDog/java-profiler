@@ -271,6 +271,36 @@ public abstract class AbstractProfilerTest {
     }
   }
 
+  /**
+   * Waits for the profiler to reach RUNNING state by polling getStatus().
+   * This ensures all engines are initialized and ready to collect samples
+   * before test workload begins.
+   *
+   * @param timeoutMs Maximum time to wait in milliseconds
+   * @throws IllegalStateException if profiler doesn't reach RUNNING state within timeout
+   * @throws InterruptedException if interrupted while waiting
+   */
+  protected void waitForProfilerReady(long timeoutMs) throws InterruptedException {
+    long deadline = System.currentTimeMillis() + timeoutMs;
+    long waitTime = 0;
+
+    while (System.currentTimeMillis() < deadline) {
+      String status = profiler.getStatus();
+      if (status.contains("Running          : true")) {
+        System.out.println("[Profiler Ready] Took " + waitTime + "ms to initialize");
+        return;
+      }
+      Thread.sleep(10);
+      waitTime += 10;
+    }
+
+    // Timeout reached - throw with diagnostic info
+    String finalStatus = profiler.getStatus();
+    throw new IllegalStateException(
+            "Profiler failed to reach RUNNING state within " + timeoutMs + "ms\n" +
+            "Final status:\n" + finalStatus);
+  }
+
   public final void registerCurrentThreadForWallClockProfiling() {
     profiler.addThread();
   }
