@@ -3,9 +3,9 @@ layout: default
 title: glibc-arm64-openj9-jdk17
 ---
 
-## glibc-arm64-openj9-jdk17 - ❌ FAIL
+## glibc-arm64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-02-04 07:50:51 EST
+**Date:** 2026-02-04 09:03:47 EST
 
 ### Configuration
 | Setting | Value |
@@ -24,44 +24,50 @@ title: glibc-arm64-openj9-jdk17
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ❌
+#### Scenario 1: Profiler-Only ✅
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| Status | PASS |
+| CPU Samples | 419 |
+| Sample Rate | 6.98/sec |
+| Health Score | 436% |
+| Threads | 8 |
+| Allocations | 326 |
 
-#### Scenario 2: Tracer+Profiler ⚠️
+#### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| Status | PASS |
+| CPU Samples | 247 |
+| Sample Rate | 4.12/sec |
+| Health Score | 258% |
+| Threads | 13 |
+| Allocations | 115 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770208968 24
-1770208973 24
-1770208978 24
-1770208983 24
-1770208988 24
-1770208993 24
-1770208998 24
-1770209003 24
-1770209008 24
-1770209013 24
-1770209018 24
-1770209023 24
-1770209028 24
-1770209033 24
+1770213510 24
+1770213515 24
+1770213520 24
+1770213525 24
+1770213530 24
+1770213535 24
+1770213540 24
+1770213545 24
+1770213550 24
+1770213555 24
+1770213560 24
+1770213565 24
+1770213570 24
+1770213575 24
+1770213580 24
+1770213585 24
+1770213590 24
+1770213595 24
+1770213600 24
+1770213605 24
 ```
 </details>
 

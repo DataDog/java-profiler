@@ -1,6 +1,35 @@
 {
   "runs": [
     {
+      "id": "94590373",
+      "timestamp": "2026-02-04T14:03:45Z",
+      "ddprof_branch": "jb/flaky_tests_1",
+      "ddprof_sha": "unknown",
+      "ddprof_pr": {
+        "number": 354,
+        "url": "https://github.com/DataDog/java-profiler/pull/354",
+        "title": "Fix flaky InstanceIdTraceIdStressTest on musl/aarch64 with atomic memory ordering"
+      },
+      "pipeline": {
+        "id": "94590373",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94590373"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 39,
+        "failed_jobs": 1,
+        "total_scenarios": 78,
+        "passed_scenarios": 78,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "musl-x64-hotspot-jdk8"
+        ]
+      }
+    },
+    {
       "id": "94571316",
       "timestamp": "2026-02-04T12:50:49Z",
       "ddprof_branch": "jb/flaky_tests_1",
@@ -259,33 +288,6 @@
       "pipeline": {
         "id": "94370690",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94370690"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 40,
-        "failed_jobs": 0,
-        "total_scenarios": 80,
-        "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "94364564",
-      "timestamp": "2026-02-03T16:36:23Z",
-      "ddprof_branch": "jb/fp_safeaccess",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": {
-        "number": 349,
-        "url": "https://github.com/DataDog/java-profiler/pull/349",
-        "title": "Add SafeAccess protection and frame type validation for signal handlers"
-      },
-      "pipeline": {
-        "id": "94364564",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94364564"
       },
       "lib_version": "unknown",
       "status": "passed",

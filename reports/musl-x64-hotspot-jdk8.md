@@ -3,9 +3,9 @@ layout: default
 title: musl-x64-hotspot-jdk8
 ---
 
-## musl-x64-hotspot-jdk8 - ❌ FAIL
+## musl-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-02-04 07:50:53 EST
+**Date:** 2026-02-04 09:03:49 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: musl-x64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 86 |
-| CPU Cores (end) | 81 |
+| CPU Cores (start) | 87 |
+| CPU Cores (end) | 89 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ❌
+#### Scenario 1: Profiler-Only ⚠️
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
+| Status | N/A |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,23 +45,22 @@ title: musl-x64-hotspot-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 81-86 cores)</summary>
+<summary>CPU Timeline (3 unique values: 87-91 cores)</summary>
 
 ```
-1770208967 86
-1770208972 86
-1770208977 86
-1770208982 86
-1770208987 86
-1770208992 86
-1770208997 86
-1770209002 86
-1770209007 86
-1770209012 86
-1770209017 86
-1770209022 86
-1770209027 81
-1770209032 81
+1770213470 87
+1770213475 89
+1770213480 89
+1770213485 89
+1770213490 89
+1770213495 89
+1770213500 89
+1770213505 89
+1770213510 91
+1770213515 91
+1770213520 91
+1770213525 91
+1770213530 89
 ```
 </details>
 
