@@ -78,6 +78,88 @@ objcopy --add-gnu-debuglink=library.so.debug library.so
 - **Stripped library**: ~1.2MB (production)
 - **Debug file**: ~6MB (.debug)
 
+## Advanced Features
+
+### Source Sets
+
+Source sets allow different parts of the codebase to have different compilation flags. This is useful for:
+- Legacy code requiring older C++ standards
+- Third-party code with specific compiler warnings
+- Platform-specific optimizations
+
+**Example:**
+```kotlin
+tasks.register("compileLib", NativeCompileTask::class) {
+    compiler.set("clang++")
+    compilerArgs.set(listOf("-std=c++17", "-O3"))  // Base flags for all files
+    includes.from("src/main/cpp")
+
+    // Define source sets with per-set compiler flags
+    sourceSets {
+        create("main") {
+            sources.from(fileTree("src/main/cpp"))
+            compilerArgs.add("-fPIC")  // Additional flags for main code
+        }
+        create("legacy") {
+            sources.from(fileTree("src/legacy"))
+            compilerArgs.addAll("-Wno-deprecated", "-std=c++11")  // Different standard
+            excludes.add("**/broken/*.cpp")  // Exclude specific files
+        }
+    }
+
+    objectFileDir.set(file("build/obj"))
+}
+```
+
+**Key features:**
+- **Include/exclude patterns**: Ant-style patterns (e.g., `**/*.cpp`, `**/test_*.cpp`)
+- **Merged compiler args**: Base args + source-set-specific args
+- **Conveniences**: `from()`, `include()`, `exclude()`, `compileWith()` methods
+
+### Symbol Visibility Control
+
+Symbol visibility controls which symbols are exported from shared libraries. This is essential for:
+- Hiding internal implementation details
+- Reducing symbol table size
+- Preventing symbol conflicts
+- Creating clean JNI interfaces
+
+**Example:**
+```kotlin
+tasks.register("linkLib", NativeLinkTask::class) {
+    linker.set("clang++")
+    objectFiles.from(fileTree("build/obj"))
+    outputFile.set(file("build/lib/libjavaProfiler.dylib"))
+
+    // Export only JNI symbols
+    exportSymbols.set(listOf(
+        "Java_*",           // All JNI methods
+        "JNI_OnLoad",       // JNI initialization
+        "JNI_OnUnload"      // JNI cleanup
+    ))
+
+    // Hide specific internal symbols (overrides exports)
+    hideSymbols.set(listOf(
+        "*_internal*",      // Internal functions
+        "*_test*"           // Test utilities
+    ))
+}
+```
+
+**Platform-specific implementation:**
+- **Linux**: Generates version script (`.ver` file) with wildcard pattern support
+- **macOS**: Generates exported symbols list (`.exp` file) with explicit names (auto-adds `_` prefix)
+
+**Generated files** (in `temporaryDir`):
+- Linux: `library.ver` → `-Wl,--version-script=library.ver`
+- macOS: `library.exp` → `-Wl,-exported_symbols_list,library.exp`
+
+**Symbol visibility best practices:**
+1. Start with `-fvisibility=hidden` compiler flag
+2. Mark public API with `__attribute__((visibility("default")))` in source
+3. OR use `exportSymbols` linker flag for pattern-based export
+4. Verify with: `nm -gU library.dylib` (macOS) or `nm -D library.so` (Linux)
+
 ## Task Dependencies
 
 ```

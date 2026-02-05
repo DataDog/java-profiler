@@ -108,12 +108,30 @@ abstract class NativeLinkTask @Inject constructor(
     @get:Optional
     abstract val verbose: Property<Boolean>
 
+    /**
+     * Symbol patterns to export (make visible).
+     * For example: ["Java_*", "JNI_OnLoad", "JNI_OnUnload"]
+     */
+    @get:Input
+    @get:Optional
+    abstract val exportSymbols: ListProperty<String>
+
+    /**
+     * Symbol patterns to hide (make not visible).
+     * Applied after exportSymbols.
+     */
+    @get:Input
+    @get:Optional
+    abstract val hideSymbols: ListProperty<String>
+
     init {
         libraryPaths.convention(emptyList())
         libraries.convention(emptyList())
         stripSymbols.convention(false)
         extractDebugSymbols.convention(false)
         verbose.convention(false)
+        exportSymbols.convention(emptyList())
+        hideSymbols.convention(emptyList())
         group = "build"
         description = "Links object files into a shared library"
     }
@@ -170,6 +188,11 @@ abstract class NativeLinkTask @Inject constructor(
                 }
             }
 
+            // Add symbol visibility control if specified
+            if (exportSymbols.get().isNotEmpty() || hideSymbols.get().isNotEmpty()) {
+                addAll(generateSymbolVisibilityFlags(outFile))
+            }
+
             // Add output file
             add("-o")
             add(outFile.absolutePath)
@@ -216,6 +239,101 @@ abstract class NativeLinkTask @Inject constructor(
 
         val sizeKB = outFile.length() / 1024
         logger.lifecycle("Successfully linked ${outFile.name} (${sizeKB}KB)")
+    }
+
+    /**
+     * Generate platform-specific symbol visibility flags.
+     * Returns linker flags to control symbol export/hiding.
+     */
+    private fun generateSymbolVisibilityFlags(outFile: java.io.File): List<String> {
+        return when (PlatformUtils.currentPlatform) {
+            com.datadoghq.native.model.Platform.LINUX -> {
+                generateLinuxVersionScript(outFile)
+            }
+            com.datadoghq.native.model.Platform.MACOS -> {
+                generateMacOSExportList(outFile)
+            }
+        }
+    }
+
+    /**
+     * Generate Linux version script for symbol visibility control.
+     */
+    private fun generateLinuxVersionScript(outFile: java.io.File): List<String> {
+        val versionScript = java.io.File(temporaryDir, "${outFile.nameWithoutExtension}.ver")
+
+        val scriptContent = buildString {
+            appendLine("{")
+            appendLine("  global:")
+
+            // Export specified symbols
+            exportSymbols.get().forEach { pattern ->
+                appendLine("    $pattern;")
+            }
+
+            // Hide everything else unless it was explicitly exported
+            if (exportSymbols.get().isNotEmpty()) {
+                appendLine("  local:")
+                appendLine("    *;")
+            }
+
+            // Explicitly hide specified symbols (override exports)
+            hideSymbols.get().forEach { pattern ->
+                appendLine("  local:")
+                appendLine("    $pattern;")
+            }
+
+            appendLine("};")
+        }
+
+        versionScript.writeText(scriptContent)
+        logger.lifecycle("Generated version script: ${versionScript.name}")
+
+        return listOf("-Wl,--version-script=${versionScript.absolutePath}")
+    }
+
+    /**
+     * Generate macOS exported symbols list for symbol visibility control.
+     */
+    private fun generateMacOSExportList(outFile: java.io.File): List<String> {
+        val exportList = java.io.File(temporaryDir, "${outFile.nameWithoutExtension}.exp")
+
+        val listContent = buildString {
+            // Export specified symbols (macOS needs leading underscore for C symbols)
+            exportSymbols.get().forEach { pattern ->
+                // Convert glob patterns to exact names or keep as-is
+                // macOS export list doesn't support wildcards like Linux version scripts
+                // For wildcards, we'd need to use -exported_symbols_list with all matching symbols
+                // For now, treat patterns as literal symbol names
+                val symbol = if (pattern.startsWith("_")) pattern else "_$pattern"
+                appendLine(symbol)
+            }
+        }
+
+        exportList.writeText(listContent)
+        logger.lifecycle("Generated export list: ${exportList.name}")
+
+        val flags = mutableListOf<String>()
+
+        // Add export list
+        if (exportSymbols.get().isNotEmpty()) {
+            flags.add("-Wl,-exported_symbols_list,${exportList.absolutePath}")
+        }
+
+        // For hiding, use -unexported_symbols_list if needed
+        if (hideSymbols.get().isNotEmpty()) {
+            val hideList = java.io.File(temporaryDir, "${outFile.nameWithoutExtension}.hide")
+            val hideContent = buildString {
+                hideSymbols.get().forEach { pattern ->
+                    val symbol = if (pattern.startsWith("_")) pattern else "_$pattern"
+                    appendLine(symbol)
+                }
+            }
+            hideList.writeText(hideContent)
+            flags.add("-Wl,-unexported_symbols_list,${hideList.absolutePath}")
+        }
+
+        return flags
     }
 
     private fun extractDebugInfo(libFile: java.io.File) {
