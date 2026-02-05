@@ -278,6 +278,23 @@ The profiler uses a sophisticated double-buffered storage system for call traces
 - **Symbol Processing**: Automatic debug symbol extraction for release builds
 - **Library Packaging**: Final JAR contains all platform-specific native libraries
 
+### Custom Native Build Tasks (buildSrc)
+The project uses custom Gradle task types in `buildSrc/` instead of Gradle's `cpp-library` and `cpp-application` plugins. This is intentional:
+
+**Why not cpp-library/cpp-application plugins:**
+- Gradle's native plugins parse compiler version strings which breaks with newer gcc/clang versions
+- JNI header detection has issues with non-standard JAVA_HOME layouts
+- Plugin maintainers are unresponsive to fixes
+- The plugins use undocumented internals that change between Gradle versions
+
+**Custom task types:**
+- `SimpleCppCompile` - Parallel C++ compilation, directly invokes gcc/clang
+- `SimpleLinkShared` - Links shared libraries (.so/.dylib)
+- `SimpleLinkExecutable` - Links executables (for gtest, fuzz targets)
+- `CompilerUtils` - Simple compiler detection (PATH lookup, no version parsing)
+
+**Key principle:** Direct compiler invocation without version parsing. The tasks simply find `clang++` or `g++` on PATH and invoke them with the flags from `gradle/configurations.gradle`.
+
 ### Artifact Structure
 Final artifacts maintain a specific structure for deployment:
 ```

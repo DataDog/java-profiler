@@ -1,60 +1,79 @@
-plugins {
-  id 'cpp-application'
-}
+/*
+ * Copyright 2026, Datadog, Inc.
+ *
+ * Benchmark for testing unwinding failures.
+ * Uses custom SimpleCppCompile/SimpleLinkExecutable tasks from buildSrc
+ * to avoid Gradle cpp-application plugin's version parsing issues.
+ */
+
+// Note: cpp-application plugin removed - using SimpleCppCompile/SimpleLinkExecutable from buildSrc
 
 // this feels weird but it is the only way invoking `./gradlew :ddprof-lib:*` tasks will work
 if (rootDir.toString().endsWith("ddprof-lib/gradle")) {
   apply from: rootProject.file('../../common.gradle')
 }
 
-application {
-  baseName = "unwind_failures_benchmark"
-  source.from file('src')
-  privateHeaders.from file('src')
+def benchmarkName = "unwind_failures_benchmark"
 
-  targetMachines = [machines.macOS, machines.linux.x86_64]
-}
+// Determine if we should build for this platform
+def shouldBuild = os().isMacOsX() || os().isLinux()
 
-// Include the main library headers
-tasks.withType(CppCompile).configureEach {
-  includes file('../src/main/cpp').toString()
-}
+if (shouldBuild) {
+  def compiler = CompilerUtils.findCxxCompiler()
 
-// Add a task to run the benchmark
-tasks.register('runBenchmark', Exec) {
-  dependsOn 'assemble'
-  workingDir = buildDir
+  // Compile task
+  def compileTask = tasks.register("compileBenchmark", SimpleCppCompile) {
+    onlyIf { shouldBuild && !project.hasProperty('skip-native') }
+    group = 'build'
+    description = "Compile the unwinding failures benchmark"
 
-  doFirst {
-    // Find the executable by looking for it in the build directory
-    def executableName = "unwind_failures_benchmark"
-    def executable = null
-
-    // Search for the executable in the build directory
-    buildDir.eachFileRecurse { file ->
-      if (file.isFile() && file.name == executableName && file.canExecute()) {
-        executable = file
-        return true // Stop searching once found
-      }
-    }
-
-    if (executable == null) {
-      throw new GradleException("Executable '${executableName}' not found in ${buildDir.absolutePath}. Make sure the build was successful.")
-    }
-
-    // Build command line with the executable path and any additional arguments
-    def cmd = [executable.absolutePath]
-
-    // Add any additional arguments passed to the Gradle task
-    if (project.hasProperty('args')) {
-      cmd.addAll(project.args.split(' '))
-    }
-
-    println "Running benchmark using executable at: ${executable.absolutePath}"
-    commandLine = cmd
+    it.compiler = compiler
+    it.compilerArgs = ['-O2', '-g', '-std=c++17']
+    sources = files(project.file('src/unwindFailuresBenchmark.cpp'))
+    includes = files(project(':ddprof-lib').file('src/main/cpp'))
+    objectFileDir = file("$buildDir/obj/benchmark")
   }
 
-  doLast {
-    println "Benchmark completed."
+  // Link task
+  def binary = file("$buildDir/bin/${benchmarkName}")
+  def linkTask = tasks.register("linkBenchmark", SimpleLinkExecutable) {
+    onlyIf { shouldBuild && !project.hasProperty('skip-native') }
+    dependsOn compileTask
+    group = 'build'
+    description = "Link the unwinding failures benchmark"
+
+    linker = compiler
+    linkerArgs = ['-ldl', '-lpthread']
+    if (os().isLinux()) {
+      linkerArgs.add('-lrt')
+    }
+    objectFiles = fileTree("$buildDir/obj/benchmark") { include '*.o' }
+    outputFile = binary
+  }
+
+  // Wire linkBenchmark into the standard assemble lifecycle
+  tasks.named("assemble").configure {
+    dependsOn linkTask
+  }
+
+  // Add a task to run the benchmark
+  tasks.register('runBenchmark', Exec) {
+    dependsOn linkTask
+    group = 'verification'
+    description = "Run the unwinding failures benchmark"
+
+    executable binary
+
+    // Add any additional arguments passed to the Gradle task
+    doFirst {
+      if (project.hasProperty('args')) {
+        args project.args.split(' ')
+      }
+      println "Running benchmark: ${binary.absolutePath}"
+    }
+
+    doLast {
+      println "Benchmark completed."
+    }
   }
 }

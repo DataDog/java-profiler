@@ -1,40 +1,15 @@
-plugins {
-  id 'cpp-application'
-}
+/*
+ * Copyright 2026, Datadog, Inc.
+ *
+ * Google Test build configuration using custom SimpleCppCompile/SimpleLinkExecutable tasks.
+ * This replaces the cpp-application plugin which had toolchain version detection issues.
+ */
+
+// Note: cpp-application plugin removed - using SimpleCppCompile/SimpleLinkExecutable from buildSrc
 
 // this feels weird but it is the only way invoking `./gradlew :ddprof-lib:*` tasks will work
 if (rootDir.toString().endsWith("ddprof-lib/gradle")) {
   apply from: rootProject.file('../../common.gradle')
-}
-
-
-// disable the default compile and link tasks not to interfere with our custom ones
-tasks.withType(CppCompile).configureEach { task ->
-  if (task.name.startsWith('compileRelease') || task.name.startsWith('compileDebug')) {
-    task.onlyIf {
-      false
-    }
-  }
-}
-
-tasks.withType(LinkExecutable).configureEach { task ->
-  if (task.name.startsWith('linkRelease') || task.name.startsWith('linkDebug')) {
-    task.onlyIf {
-      false
-    }
-  }
-}
-
-tasks.withType(ExtractSymbols).configureEach { task ->
-  task.onlyIf {
-    false
-  }
-}
-
-tasks.withType(StripSymbols).configureEach { task ->
-  task.onlyIf {
-    false
-  }
 }
 
 def buildNativeLibsTask = tasks.register("buildNativeLibs") {
@@ -82,129 +57,112 @@ def gtestAll = tasks.register("gtest") {
   }
 }
 
-// we need this trickery to reuse the toolchain and system config from tasks created by the cpp-application plugin
-tasks.whenTaskAdded { task ->
-  if (task instanceof CppCompile) {
-    if (!task.name.startsWith('compileGtest') && task.name.contains('Release')) {
-      buildConfigurations.each { config ->
-        if (config.os == osIdentifier() && config.arch == archIdentifier()) {
-          project(':ddprof-lib').file("src/test/cpp/").eachFile {
-            def testFile = it
-            def testName = it.name.substring(0, it.name.lastIndexOf('.'))
-            def gtestCompileTask = tasks.register("compileGtest${config.name.capitalize()}_${testName}", CppCompile) {
-              onlyIf {
-                config.active && hasGtest && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native') && !project.hasProperty('skip-gtest')
-              }
-              group = 'build'
-              description = "Compile the Google Test ${testName} for the ${config.name} build of the library"
-              objectFileDir = file("$buildDir/obj/gtest/${config.name}/${testName}")
-              compilerArgs.addAll(config.compilerArgs.findAll {
-                // need to drop the -std and -DNDEBUG flags because we need a different standard and assertions enabled
-                it != '-std=c++17' && it != '-DNDEBUG'
-              })
-              if (os().isLinux() && isMusl()) {
-                compilerArgs.add('-D__musl__')
-              }
-              compilerArgs.add('-std=c++17')
-              toolChain = task.toolChain
-              targetPlatform = task.targetPlatform
-              includes task.includes
-              includes project(':ddprof-lib').file('src/main/cpp').toString()
-              includes "${javaHome()}/include"
-              includes project(':malloc-shim').file('src/main/public').toString()
-              if (os().isMacOsX()) {
-                includes "${javaHome()}/include/darwin"
-                includes "/opt/homebrew/opt/googletest/include/"
-              } else if (os().isLinux()) {
-                includes "${javaHome()}/include/linux"
-              }
-              includes task.systemIncludes
-              source project(':ddprof-lib').fileTree('src/main/cpp') {
-                include '**/*'
-              }
-              source testFile
+// Register gtest tasks using custom task types (replaces cpp-application plugin parasite pattern)
+buildConfigurations.each { config ->
+  if (config.os == osIdentifier() && config.arch == archIdentifier()) {
+    // Determine compiler
+    def compiler = CompilerUtils.findCxxCompiler()
 
-              inputs.files source
-              outputs.dir objectFileDir
-            }
-            def linkTask = tasks.named("linkGtest${config.name.capitalize()}_${testName}")
-            if (linkTask != null) {
-              linkTask.get().dependsOn gtestCompileTask
-            }
-          }
-        }
-      }
+    // Build include paths
+    def includeFiles = files(
+      project(':ddprof-lib').file('src/main/cpp'),
+      "${javaHome()}/include",
+      os().isMacOsX() ? "${javaHome()}/include/darwin" : "${javaHome()}/include/linux",
+      project(':malloc-shim').file('src/main/public')
+      )
+    if (os().isMacOsX()) {
+      includeFiles = includeFiles + files('/opt/homebrew/opt/googletest/include/')
     }
-  } else if (task instanceof LinkExecutable) {
-    if (!task.name.startsWith('linkGtest') && task.name.contains('Release')) {
-      buildConfigurations.each { config ->
-        if (config.os == osIdentifier() && config.arch == archIdentifier()) {
-          def gtestTask = tasks.register("gtest${config.name.capitalize()}") {
-            group = 'verification'
-            description = "Run all Google Tests for the ${config.name} build of the library"
-          }
-          project(':ddprof-lib').file("src/test/cpp/").eachFile {
 
-            def testFile = it
-            def testName = it.name.substring(0, it.name.lastIndexOf('.'))
-            def binary = file("$buildDir/bin/gtest/${config.name}_${testName}/${testName}")
-            def gtestLinkTask = tasks.register("linkGtest${config.name.capitalize()}_${testName}", LinkExecutable) {
-              onlyIf {
-                config.active && hasGtest && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native')
-                && !project.hasProperty('skip-gtest')
-              }
-              group = 'build'
-              description = "Link the Google Test for the ${config.name} build of the library"
-              source = fileTree("$buildDir/obj/gtest/${config.name}/${testName}")
-              linkedFile = binary
-              if (config.name != 'release') {
-                // linking the gtests using the minimizing release flags is making gtest unhappy
-                linkerArgs.addAll(config.linkerArgs)
-              }
-              linkerArgs.addAll("-lgtest", "-lgtest_main", "-lgmock", "-lgmock_main", "-ldl", "-lpthread", "-lm")
-              if (os().isMacOsX()) {
-                linkerArgs.addAll("-L/opt/homebrew/opt/googletest/lib")
-              } else {
-                linkerArgs.add("-lrt")
-              }
-              toolChain = task.toolChain
-              targetPlatform = task.targetPlatform
-              libs = task.libs
-              inputs.files source
-              outputs.file linkedFile
-            }
-            def gtestExecuteTask = tasks.register("gtest${config.name.capitalize()}_${testName}", Exec) {
-              onlyIf {
-                config.active && hasGtest && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native')
-                && !project.hasProperty('skip-gtest')
-              }
-              group = 'verification'
-              description = "Run the Google Test ${testName} for the ${config.name} build of the library"
-              dependsOn gtestLinkTask
-              executable binary
+    // Build compiler args - need to drop -DNDEBUG for assertions and adjust std
+    def gtestCompilerArgs = config.compilerArgs.findAll {
+      it != '-std=c++17' && it != '-DNDEBUG'
+    } + ['-std=c++17']
+    if (os().isLinux() && isMusl()) {
+      gtestCompilerArgs = gtestCompilerArgs + ['-D__musl__']
+    }
 
-              config.testEnv.each { key, value ->
-                environment key, value
-              }
+    // Build linker args
+    def gtestLinkerArgs = []
+    if (config.name != 'release') {
+      // linking the gtests using the minimizing release flags is making gtest unhappy
+      gtestLinkerArgs.addAll(config.linkerArgs)
+    }
+    gtestLinkerArgs.addAll('-lgtest', '-lgtest_main', '-lgmock', '-lgmock_main', '-ldl', '-lpthread', '-lm')
+    if (os().isMacOsX()) {
+      gtestLinkerArgs.add('-L/opt/homebrew/opt/googletest/lib')
+    } else {
+      gtestLinkerArgs.add('-lrt')
+    }
 
-              inputs.files binary
-              // Test tasks should run every time the test command is run
-              outputs.upToDateWhen { false }
-            }
+    // Per-config aggregation task
+    def gtestConfigTask = tasks.register("gtest${config.name.capitalize()}") {
+      group = 'verification'
+      description = "Run all Google Tests for the ${config.name} build of the library"
+    }
 
-            def compileTask = tasks.findByName("compileGtest${config.name.capitalize()}_${testName}")
-            if (compileTask != null) {
-              gtestLinkTask.dependsOn compileTask
-            }
-            gtestTask.get().dependsOn gtestExecuteTask.get()
-            if (os().isLinux()) {
-              // custom binaries for tests are built only on linux
-              gtestExecuteTask.get().dependsOn(buildNativeLibs)
-            }
-            gtestAll.get().dependsOn gtestExecuteTask.get()
-          }
+    // Create tasks for each test file
+    project(':ddprof-lib').file("src/test/cpp/").eachFile { testFile ->
+      def testName = testFile.name.substring(0, testFile.name.lastIndexOf('.'))
+
+      // Compile task
+      def compileTask = tasks.register("compileGtest${config.name.capitalize()}_${testName}", SimpleCppCompile) {
+        onlyIf {
+          config.active && hasGtest && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native') && !project.hasProperty('skip-gtest')
         }
+        group = 'build'
+        description = "Compile the Google Test ${testName} for the ${config.name} build of the library"
+
+        it.compiler = compiler
+        it.compilerArgs = gtestCompilerArgs.collect() // copy list
+        sources = project(':ddprof-lib').fileTree('src/main/cpp') { include '**/*.cpp' } + files(testFile)
+        includes = includeFiles
+        objectFileDir = file("$buildDir/obj/gtest/${config.name}/${testName}")
       }
+
+      // Link task
+      def binary = file("$buildDir/bin/gtest/${config.name}_${testName}/${testName}")
+      def linkTask = tasks.register("linkGtest${config.name.capitalize()}_${testName}", SimpleLinkExecutable) {
+        onlyIf {
+          config.active && hasGtest && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native') && !project.hasProperty('skip-gtest')
+        }
+        dependsOn compileTask
+        group = 'build'
+        description = "Link the Google Test ${testName} for the ${config.name} build of the library"
+
+        linker = compiler
+        linkerArgs = gtestLinkerArgs.collect() // copy list
+        objectFiles = fileTree("$buildDir/obj/gtest/${config.name}/${testName}") { include '*.o' }
+        outputFile = binary
+      }
+
+      // Execute task
+      def executeTask = tasks.register("gtest${config.name.capitalize()}_${testName}", Exec) {
+        onlyIf {
+          config.active && hasGtest && !project.hasProperty('skip-tests') && !project.hasProperty('skip-native') && !project.hasProperty('skip-gtest')
+        }
+        dependsOn linkTask
+        group = 'verification'
+        description = "Run the Google Test ${testName} for the ${config.name} build of the library"
+
+        executable binary
+
+        config.testEnv.each { key, value ->
+          environment key, value
+        }
+
+        inputs.files binary
+        // Test tasks should run every time the test command is run
+        outputs.upToDateWhen { false }
+      }
+
+      // Wire up dependencies
+      if (os().isLinux()) {
+        // custom binaries for tests are built only on linux
+        executeTask.configure { dependsOn buildNativeLibsTask }
+      }
+      gtestConfigTask.configure { dependsOn executeTask }
+      gtestAll.configure { dependsOn executeTask }
     }
   }
 }

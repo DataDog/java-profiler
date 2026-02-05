@@ -1,5 +1,4 @@
 plugins {
-  id 'cpp-library'
   id 'java'
   id 'maven-publish'
   id 'signing'
@@ -7,6 +6,9 @@ plugins {
   id 'com.github.ben-manes.versions' version '0.27.0'
   id 'de.undercouch.download' version '4.1.1'
 }
+
+// Import custom native build task types from buildSrc
+// These replace the problematic cpp-library plugin which has version detection issues
 
 // Helper function to check if objcopy is available
 def checkObjcopyAvailable() {
@@ -87,7 +89,7 @@ def createDebugExtractionTask(config, linkTask) {
     outputs.file getDebugFilePath(config)
 
     doFirst {
-      def sourceFile = linkTask.get().linkedFile.get().asFile
+      def sourceFile = linkTask.get().outputFile
       def debugFile = getDebugFilePath(config)
 
       // Ensure debug directory exists
@@ -114,10 +116,10 @@ def createDebugLinkTask(config, linkTask, extractDebugTask) {
     description = 'Add debug link to the original library'
 
     inputs.files linkTask, extractDebugTask
-    outputs.file { linkTask.get().linkedFile.get().asFile }
+    outputs.file { linkTask.get().outputFile }
 
     doFirst {
-      def sourceFile = linkTask.get().linkedFile.get().asFile
+      def sourceFile = linkTask.get().outputFile
       def debugFile = getDebugFilePath(config)
 
       commandLine = ['objcopy', '--add-gnu-debuglink=' + debugFile.absolutePath, sourceFile.absolutePath]
@@ -146,18 +148,35 @@ def setupDebugExtraction(config, linkTask) {
     def extractDebugTask = createDebugExtractionTask(config, linkTask)
     def addDebugLinkTask = createDebugLinkTask(config, linkTask, extractDebugTask)
 
-    // Create the strip task and configure it properly
-    def stripTask = tasks.register('stripLibRelease', StripSymbols) {
-      // No onlyIf needed here - setupDebugExtraction already handles the main conditions
+    // Create a simple strip task using Exec instead of the cpp-library's StripSymbols
+    def stripTask = tasks.register('stripLibRelease', Exec) {
       dependsOn addDebugLinkTask
-    }
+      onlyIf { !shouldSkipDebugExtraction() }
 
-    // Configure the strip task after registration
-    stripTask.configure {
-      targetPlatform = linkTask.get().targetPlatform
-      toolChain = linkTask.get().toolChain
-      binaryFile = linkTask.get().linkedFile.get().asFile
-      outputFile = getStrippedFilePath(config)
+      def strippedFile = getStrippedFilePath(config)
+      outputs.file strippedFile
+
+      doFirst {
+        strippedFile.parentFile.mkdirs()
+        def sourceFile = linkTask.get().outputFile
+
+        if (os().isLinux()) {
+          // Linux: use strip to create a stripped copy
+          commandLine 'cp', sourceFile.absolutePath, strippedFile.absolutePath
+        } else {
+          // macOS: use strip -S to strip debug symbols
+          commandLine 'cp', sourceFile.absolutePath, strippedFile.absolutePath
+        }
+      }
+
+      doLast {
+        def strippedFilePath = strippedFile.absolutePath
+        if (os().isLinux()) {
+          exec { commandLine 'strip', '--strip-debug', strippedFilePath }
+        } else {
+          exec { commandLine 'strip', '-S', strippedFilePath }
+        }
+      }
     }
 
     def copyDebugTask = createDebugCopyTask(config, extractDebugTask)
@@ -342,125 +361,65 @@ configurations {
   }
 }
 
-// We need this trickery to reuse the toolchain and system config from tasks created by the cpp-library plugin
-// Basically, we are listening when the default 'comile' and 'link' (eg. 'compileReleaseCpp') is added and then
-// we are adding our own tasks for each build configuration, inheriting the part of the configuration which was
-// added by the cpp-library plugin
-tasks.whenTaskAdded { task ->
-  if (task instanceof CppCompile) {
-    if (!task.name.startsWith('compileLib') && task.name.contains('Release')) {
-      buildConfigurations.each { config ->
-        if (config.os == osIdentifier() && config.arch == archIdentifier()) {
-          def cppTask = tasks.register("compileLib${config.name.capitalize()}", CppCompile) {
-            onlyIf {
-              config.active
-            }
-            group = 'build'
-            description = "Compile the ${config.name} build of the library"
-            objectFileDir = file("$buildDir/obj/main/${config.name}")
-            compilerArgs.addAll(config.compilerArgs)
-            if (os().isLinux() && isMusl()) {
-              compilerArgs.add('-D__musl__')
-            }
-            toolChain = task.toolChain
-            targetPlatform = task.targetPlatform
-            includes task.includes
-            includes project(':ddprof-lib').file('src/main/cpp').toString()
-            includes "${javaHome()}/include"
-            includes project(':malloc-shim').file('src/main/public').toString()
-            if (os().isMacOsX()) {
-              includes "${javaHome()}/include/darwin"
-            } else if (os().isLinux()) {
-              includes "${javaHome()}/include/linux"
-            }
-            systemIncludes.from task.systemIncludes
-            source task.source
-            inputs.files source
-            outputs.dir objectFileDir
-          }
-          def linkTask = tasks.findByName("linkLib${config.name.capitalize()}".toString())
-          if (linkTask != null) {
-            linkTask.dependsOn cppTask
-          }
-        }
+// Register native compilation and linking tasks using simple custom task types
+// This replaces the cpp-library plugin's parasite pattern that was prone to
+// toolchain detection failures with newer compiler versions
+buildConfigurations.each { config ->
+  if (config.os == osIdentifier() && config.arch == archIdentifier()) {
+    // Determine compiler - prefer clang++ if available
+    def compiler = CompilerUtils.findCxxCompiler()
+    def libExtension = os().isMacOsX() ? 'dylib' : 'so'
+
+    // Build include paths
+    def includeFiles = files(
+      project(':ddprof-lib').file('src/main/cpp'),
+      "${javaHome()}/include",
+      os().isMacOsX() ? "${javaHome()}/include/darwin" : "${javaHome()}/include/linux",
+      project(':malloc-shim').file('src/main/public')
+      )
+
+    // Compile task
+    def cppTask = tasks.register("compileLib${config.name.capitalize()}", SimpleCppCompile) {
+      onlyIf {
+        config.active && !project.hasProperty('skip-native')
       }
-    }
-  } else if (task instanceof LinkSharedLibrary) {
-    if (!task.name.startsWith('linkLib') && task.name.contains('Release')) {
-      buildConfigurations.each { config ->
-        if (config.os == osIdentifier() && config.arch == archIdentifier()) {
-          def linkTask = tasks.register("linkLib${config.name.capitalize()}", LinkSharedLibrary) {
-            onlyIf {
-              config.active
-            }
-            group = 'build'
-            description = "Link the ${config.name} build of the library"
-            source = fileTree("$buildDir/obj/main/${config.name}")
-            linkedFile = file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/libjavaProfiler.${os().isLinux() ? 'so' : 'dylib'}")
-            def compileTask = tasks.findByName("compileLib${config.name.capitalize()}".toString())
-            if (compileTask != null) {
-              dependsOn compileTask
-            }
-            linkerArgs.addAll(config.linkerArgs)
-            toolChain = task.toolChain
-            targetPlatform = task.targetPlatform
-            libs = task.libs
-            inputs.files source
-            outputs.file linkedFile
-          }
-          if (config.name == 'release') {
-            setupDebugExtraction(config, linkTask)
-          }
-        }
+      group = 'build'
+      description = "Compile the ${config.name} build of the library"
+
+      it.compiler = compiler
+      it.compilerArgs = config.compilerArgs.collect() // copy list
+      if (os().isLinux() && isMusl()) {
+        it.compilerArgs.add('-D__musl__')
       }
+      sources = fileTree(project(':ddprof-lib').file('src/main/cpp')) { include '**/*.cpp' }
+      includes = includeFiles
+      objectFileDir = file("$buildDir/obj/main/${config.name}")
+    }
+
+    // Link task
+    def linkTask = tasks.register("linkLib${config.name.capitalize()}", SimpleLinkShared) {
+      onlyIf {
+        config.active && !project.hasProperty('skip-native')
+      }
+      dependsOn cppTask
+      group = 'build'
+      description = "Link the ${config.name} build of the library"
+
+      linker = compiler
+      linkerArgs = config.linkerArgs.collect() // copy list
+      objectFiles = fileTree("$buildDir/obj/main/${config.name}") { include '*.o' }
+      outputFile = file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/libjavaProfiler.${libExtension}")
+    }
+
+    // Setup debug extraction for release builds
+    if (config.name == 'release') {
+      setupDebugExtraction(config, linkTask)
     }
   }
 }
 
-// configure the compiler here
-tasks.withType(CppCompile).configureEach {
-  if (name.startsWith('compileRelease') || name.startsWith('compileDebug')) {
-    onlyIf {
-      // disable the built-in compiler task for release; we are using the custom compiler task
-      false
-    }
-  } else {
-    onlyIf {
-      !project.hasProperty('skip-native')
-    }
-  }
-}
-
-// configure linker
-tasks.withType(LinkSharedLibrary).configureEach {
-  if (name.startsWith('linkRelease') || name.startsWith('linkDebug')) {
-    onlyIf {
-      // disable the built-in linker task for release; we are using the custom linker task
-      false
-    }
-  } else {
-    onlyIf {
-      !project.hasProperty('skip-native')
-    }
-  }
-}
-
-library {
-  baseName = "javaProfiler"
-  source.from file('src/main/cpp')
-  privateHeaders.from file('src/main/cpp')
-
-  // aarch64 support is still incubating
-  // for the time being an aarch64 linux machine will match 'machines.linux.x86_64'
-  targetMachines = [machines.macOS, machines.linux.x86_64]
-  linkage = [Linkage.SHARED]
-}
-
-tasks.withType(StripSymbols).configureEach {
-  onlyIf {
-    name == ("stripLibRelease") && !project.hasProperty('skip-native')
-  }
-}
+// Note: cpp-library plugin removed - using SimpleCppCompile/SimpleLinkShared from buildSrc instead
+// This eliminates toolchain version detection issues with newer gcc/clang versions
 
 jar {
   dependsOn copyExternalLibs
