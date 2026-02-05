@@ -70,9 +70,13 @@ jobs_json=$(gh api "/repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate -q '.jobs
 log "Parsing test job statuses..."
 
 # Arrays to store parsed data
-declare -A job_status
-declare -A job_url
-declare -A job_duration
+# Note: Associative arrays need dummy init+unset to work with 'set -u' when empty
+declare -A job_status=()
+job_status["__init__"]=1; unset 'job_status[__init__]'
+declare -A job_url=()
+job_url["__init__"]=1; unset 'job_url[__init__]'
+declare -A job_duration=()
+job_duration["__init__"]=1; unset 'job_duration[__init__]'
 declare -a failed_jobs=()
 declare -a all_platforms=()
 declare -a all_java_versions=()
@@ -117,9 +121,11 @@ while IFS= read -r job; do
         fi
 
         # Collect unique platforms and java versions
+        # shellcheck disable=SC2076 # Intentional literal match for array membership
         if [[ ! " ${all_platforms[*]} " =~ " ${platform} " ]]; then
             all_platforms+=("$platform")
         fi
+        # shellcheck disable=SC2076 # Intentional literal match for array membership
         if [[ ! " ${all_java_versions[*]} " =~ " ${java_version} " ]]; then
             all_java_versions+=("$java_version")
         fi
@@ -127,12 +133,16 @@ while IFS= read -r job; do
 done < <(echo "$jobs_json" | jq -c '.[]')
 
 # Sort java versions (natural sort for versions like 8, 11, 17, 21, 25)
-IFS=$'\n' sorted_java=($(printf '%s\n' "${all_java_versions[@]}" | sort -t'-' -k1,1n -k2,2))
-unset IFS
+sorted_java=()
+if ((${#all_java_versions[@]} > 0)); then
+    mapfile -t sorted_java < <(printf '%s\n' "${all_java_versions[@]}" | sort -t'-' -k1,1n -k2,2)
+fi
 
 # Sort platforms
-IFS=$'\n' sorted_platforms=($(printf '%s\n' "${all_platforms[@]}" | sort))
-unset IFS
+sorted_platforms=()
+if ((${#all_platforms[@]} > 0)); then
+    mapfile -t sorted_platforms < <(printf '%s\n' "${all_platforms[@]}" | sort)
+fi
 
 # --- Calculate statistics ---
 total_jobs=${#job_status[@]}
@@ -161,7 +171,8 @@ for key in "${!job_status[@]}"; do
 done
 
 # --- Download failure artifacts (if any failures) ---
-declare -A failure_details
+declare -A failure_details=()
+failure_details["__init__"]=1; unset 'failure_details[__init__]'
 
 if ((failed_count > 0)); then
     log "Downloading failure artifacts..."
@@ -193,7 +204,7 @@ if ((failed_count > 0)); then
                             failure_msg=$(echo "$testcase" | grep -oP '<failure[^>]*message="\K[^"]*' | head -c 100 || echo "")
 
                             if [[ -n "$classname" && -n "$testname" ]]; then
-                                short_class=$(echo "$classname" | sed 's/.*\.//')
+                                short_class="${classname##*.}"
                                 failures+="| \`${short_class}.${testname}\` | ${failure_msg:-Test failed} |"$'\n'
                             fi
                         done < <(grep -Pzo '(?s)<testcase[^>]*>.*?</testcase>' "$xml_file" 2>/dev/null | tr '\0' '\n' | grep -E '<(failure|error)' || true)
@@ -215,7 +226,7 @@ log "Generating markdown summary..."
 {
     echo "## CI Test Results"
     echo ""
-    echo "**Run:** [#${RUN_ID}]($RUN_URL) | **Commit:** \`$SHORT_SHA\` | **Duration:** $(format_duration $max_duration) (longest job)"
+    echo "**Run:** [#${RUN_ID}]($RUN_URL) | **Commit:** \`$SHORT_SHA\` | **Duration:** $(format_duration "$max_duration") (longest job)"
     echo ""
 
     # Overall status
