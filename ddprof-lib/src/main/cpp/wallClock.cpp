@@ -15,7 +15,7 @@
 #include "thread.h"
 #include "threadState.inline.h"
 #include "vmStructs.h"
-#include "criticalSection.h"
+#include "guards.h"
 #include <math.h>
 #include <random>
 #include <algorithm> // For std::sort and std::binary_search

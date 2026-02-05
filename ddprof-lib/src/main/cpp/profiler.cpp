@@ -7,7 +7,7 @@
 #include "profiler.h"
 #include "asyncSampleMutex.h"
 #include "context.h"
-#include "criticalSection.h"
+#include "guards.h"
 #include "common.h"
 #include "counters.h"
 #include "ctimer.h"

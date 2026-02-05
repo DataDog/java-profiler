@@ -20,7 +20,7 @@
 #include "arch.h"
 #include "arguments.h"
 #include "context.h"
-#include "criticalSection.h"
+#include "guards.h"
 #include "debugSupport.h"
 #include "libraries.h"
 #include "log.h"

@@ -23,7 +23,7 @@
 #include "thread.h"
 #include "threadState.inline.h"
 #include "vmStructs.h"
-#include "criticalSection.h"
+#include "guards.h"
 #include <sys/time.h>
 
 volatile bool ITimer::_enabled = false;
