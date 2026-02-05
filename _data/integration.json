@@ -1,6 +1,52 @@
 {
   "runs": [
     {
+      "id": "94818116",
+      "timestamp": "2026-02-05T10:01:04Z",
+      "ddprof_branch": "jb/test_reports_ci",
+      "ddprof_sha": "unknown",
+      "ddprof_pr": {
+        "number": 355,
+        "url": "https://github.com/DataDog/java-profiler/pull/355",
+        "title": "Add CI test results summary as PR comment"
+      },
+      "pipeline": {
+        "id": "94818116",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94818116"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 24,
+        "passed_jobs": 6,
+        "failed_jobs": 18,
+        "total_scenarios": 30,
+        "passed_scenarios": 12,
+        "failed_scenarios": 18,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "glibc-arm64-hotspot-jdk11",
+          "glibc-arm64-hotspot-jdk17",
+          "glibc-arm64-hotspot-jdk21",
+          "glibc-arm64-hotspot-jdk8",
+          "glibc-arm64-openj9-jdk11",
+          "glibc-arm64-openj9-jdk17",
+          "glibc-arm64-openj9-jdk21",
+          "glibc-arm64-openj9-jdk8",
+          "glibc-x64-hotspot-jdk8",
+          "glibc-x64-openj9-jdk17",
+          "glibc-x64-openj9-jdk21",
+          "glibc-x64-openj9-jdk8",
+          "musl-arm64-hotspot-jdk21",
+          "musl-arm64-openj9-jdk11",
+          "musl-arm64-openj9-jdk17",
+          "musl-arm64-openj9-jdk21",
+          "musl-x64-openj9-jdk17",
+          "musl-x64-openj9-jdk21"
+        ]
+      }
+    },
+    {
       "id": "94814412",
       "timestamp": "2026-02-05T09:29:51Z",
       "ddprof_branch": "jb/test_reports_ci",
@@ -263,63 +309,6 @@
         "unknown_scenarios": 0,
         "failed_configs": [
           "musl-x64-hotspot-jdk8"
-        ]
-      }
-    },
-    {
-      "id": "94571316",
-      "timestamp": "2026-02-04T12:50:49Z",
-      "ddprof_branch": "jb/flaky_tests_1",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": {
-        "number": 354,
-        "url": "https://github.com/DataDog/java-profiler/pull/354",
-        "title": "Fix flaky InstanceIdTraceIdStressTest on musl/aarch64 with atomic memory ordering"
-      },
-      "pipeline": {
-        "id": "94571316",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94571316"
-      },
-      "lib_version": "unknown",
-      "status": "partial",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 11,
-        "failed_jobs": 29,
-        "total_scenarios": 51,
-        "passed_scenarios": 22,
-        "failed_scenarios": 29,
-        "unknown_scenarios": 0,
-        "failed_configs": [
-          "glibc-arm64-hotspot-jdk11",
-          "glibc-arm64-hotspot-jdk17",
-          "glibc-arm64-hotspot-jdk21",
-          "glibc-arm64-hotspot-jdk8",
-          "glibc-arm64-openj9-jdk17",
-          "glibc-arm64-openj9-jdk21",
-          "glibc-arm64-openj9-jdk8",
-          "glibc-x64-hotspot-jdk11",
-          "glibc-x64-hotspot-jdk17",
-          "glibc-x64-hotspot-jdk21",
-          "glibc-x64-hotspot-jdk8",
-          "glibc-x64-openj9-jdk11",
-          "glibc-x64-openj9-jdk17",
-          "glibc-x64-openj9-jdk21",
-          "glibc-x64-openj9-jdk8",
-          "musl-arm64-hotspot-jdk11",
-          "musl-arm64-hotspot-jdk17",
-          "musl-arm64-hotspot-jdk8",
-          "musl-arm64-openj9-jdk11",
-          "musl-arm64-openj9-jdk17",
-          "musl-arm64-openj9-jdk21",
-          "musl-arm64-openj9-jdk8",
-          "musl-x64-hotspot-jdk11",
-          "musl-x64-hotspot-jdk17",
-          "musl-x64-hotspot-jdk21",
-          "musl-x64-hotspot-jdk8",
-          "musl-x64-openj9-jdk17",
-          "musl-x64-openj9-jdk21",
-          "musl-x64-openj9-jdk8"
         ]
       }
     }

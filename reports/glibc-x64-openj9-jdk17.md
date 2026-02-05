@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk17
 
 ## glibc-x64-openj9-jdk17 - ❌ FAIL
 
-**Date:** 2026-02-05 04:29:54 EST
+**Date:** 2026-02-05 05:01:07 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 30 |
-| CPU Cores (end) | 30 |
+| CPU Cores (start) | 32 |
+| CPU Cores (end) | 32 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,22 +45,22 @@ title: glibc-x64-openj9-jdk17
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 30-30 cores)</summary>
+<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1770283368 30
-1770283373 30
-1770283378 30
-1770283383 30
-1770283388 30
-1770283393 30
-1770283398 30
-1770283403 30
-1770283408 30
-1770283413 30
-1770283418 30
-1770283423 30
-1770283428 30
+1770285100 32
+1770285105 32
+1770285110 32
+1770285115 32
+1770285120 32
+1770285125 32
+1770285130 32
+1770285135 32
+1770285140 32
+1770285145 32
+1770285150 32
+1770285155 32
+1770285160 32
 ```
 </details>
 

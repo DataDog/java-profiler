@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk25
 
 ## glibc-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-02-05 04:29:54 EST
+**Date:** 2026-02-05 05:01:07 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 137 |
-| Sample Rate | 2.28/sec |
-| Health Score | 142% |
+| CPU Samples | 141 |
+| Sample Rate | 2.35/sec |
+| Health Score | 147% |
 | Threads | 10 |
-| Allocations | 45 |
+| Allocations | 47 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 142 |
-| Sample Rate | 2.37/sec |
-| Health Score | 148% |
-| Threads | 13 |
-| Allocations | 39 |
+| CPU Samples | 23 |
+| Sample Rate | 0.38/sec |
+| Health Score | 24% |
+| Threads | 7 |
+| Allocations | 10 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770283405 24
-1770283410 24
-1770283415 24
-1770283420 24
-1770283425 24
-1770283430 24
-1770283435 24
-1770283440 24
-1770283445 24
-1770283450 24
-1770283455 24
-1770283460 24
-1770283465 24
-1770283470 24
-1770283475 24
-1770283480 24
-1770283485 24
-1770283490 24
-1770283495 24
-1770283500 24
+1770285360 24
+1770285365 24
+1770285370 24
+1770285375 24
+1770285380 24
+1770285385 24
+1770285390 24
+1770285395 24
+1770285400 24
+1770285405 24
+1770285410 24
+1770285415 24
+1770285420 24
+1770285425 24
+1770285430 24
+1770285435 24
+1770285440 24
+1770285445 24
+1770285450 24
+1770285455 24
 ```
 </details>
 
