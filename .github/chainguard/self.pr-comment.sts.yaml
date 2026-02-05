@@ -3,8 +3,8 @@ issuer: https://token.actions.githubusercontent.com
 subject: repo:DataDog/java-profiler:pull_request
 claim_pattern:
   event_name: pull_request
-  # target only the codecheck workflow, but we may extend it later
-  job_workflow_ref: DataDog/java-profiler/.github/workflows/codecheck.yml@.*
+  # Allow codecheck.yml (scan-build) and ci.yml (test summary) to post PR comments
+  job_workflow_ref: DataDog/java-profiler/.github/workflows/(codecheck|ci)\.yml@.*
 
 permissions:
   issues: write
