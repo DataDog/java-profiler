@@ -76,6 +76,7 @@ class SimpleCppCompile extends DefaultTask {
 
     /**
      * Number of parallel compilation jobs. Defaults to available processors.
+     * Note: Currently uses default ForkJoinPool parallelism.
      */
     @Input
     @Optional
@@ -108,18 +109,30 @@ class SimpleCppCompile extends DefaultTask {
 
         // Use parallel streams for compilation
         sourceFiles.parallelStream().forEach { sourceFile ->
-            def objectFile = new File(objectFileDir, sourceFile.name.replaceAll(/\.cpp$/, '.o'))
+            // Replace any source extension (.cpp, .c, .cc) with .o
+            def baseName = sourceFile.name.substring(0, sourceFile.name.lastIndexOf('.'))
+            def objectFile = new File(objectFileDir, baseName + '.o')
 
             def cmdLine = [compiler] + compilerArgs + includeArgs + ['-c', sourceFile.absolutePath, '-o', objectFile.absolutePath]
 
             try {
+                def stdout = new ByteArrayOutputStream()
+                def stderr = new ByteArrayOutputStream()
+
                 def result = execOperations.exec { spec ->
                     spec.commandLine cmdLine
+                    spec.standardOutput = stdout
+                    spec.errorOutput = stderr
                     spec.ignoreExitValue = true
                 }
 
                 if (result.exitValue != 0) {
-                    errors.add("Failed to compile ${sourceFile.name}: exit code ${result.exitValue}")
+                    def errorMsg = "Failed to compile ${sourceFile.name}: exit code ${result.exitValue}"
+                    def errorOutput = stderr.toString().trim()
+                    if (errorOutput) {
+                        errorMsg += "\n${errorOutput}"
+                    }
+                    errors.add(errorMsg)
                 } else {
                     def count = compiled.incrementAndGet()
                     if (count % 10 == 0 || count == total) {

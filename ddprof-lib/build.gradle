@@ -77,7 +77,7 @@ def getMissingToolErrorMessage(toolName, installInstructions) {
 
 // Helper function to create debug extraction task
 def createDebugExtractionTask(config, linkTask) {
-  return tasks.register('extractDebugLibRelease', Exec) {
+  return tasks.register("extractDebugLib${config.name.capitalize()}", Exec) {
     onlyIf {
       !shouldSkipDebugExtraction()
     }
@@ -108,7 +108,7 @@ def createDebugExtractionTask(config, linkTask) {
 
 // Helper function to create debug link task (Linux only)
 def createDebugLinkTask(config, linkTask, extractDebugTask) {
-  return tasks.register('addDebugLinkLibRelease', Exec) {
+  return tasks.register("addDebugLinkLib${config.name.capitalize()}", Exec) {
     onlyIf {
       os().isLinux() && !shouldSkipDebugExtraction()
     }
@@ -129,7 +129,7 @@ def createDebugLinkTask(config, linkTask, extractDebugTask) {
 
 // Helper function to create debug file copy task
 def createDebugCopyTask(config, extractDebugTask) {
-  return tasks.register('copyReleaseDebugFiles', Copy) {
+  return tasks.register("copy${config.name.capitalize()}DebugFiles", Copy) {
     onlyIf {
       !shouldSkipDebugExtraction()
     }

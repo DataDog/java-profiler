@@ -93,13 +93,23 @@ class SimpleLinkExecutable extends DefaultTask {
         logger.lifecycle("Linking executable: ${outputFile.name}")
         logger.info("Command: ${cmdLine.join(' ')}")
 
+        def stdout = new ByteArrayOutputStream()
+        def stderr = new ByteArrayOutputStream()
+
         def result = execOperations.exec { spec ->
             spec.commandLine cmdLine
+            spec.standardOutput = stdout
+            spec.errorOutput = stderr
             spec.ignoreExitValue = true
         }
 
         if (result.exitValue != 0) {
-            throw new RuntimeException("Linking failed with exit code ${result.exitValue}")
+            def errorMsg = "Linking failed with exit code ${result.exitValue}"
+            def errorOutput = stderr.toString().trim()
+            if (errorOutput) {
+                errorMsg += "\n${errorOutput}"
+            }
+            throw new RuntimeException(errorMsg)
         }
 
         // Make executable

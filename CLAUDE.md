@@ -9,9 +9,9 @@ This is the Datadog Java Profiler Library, a specialized profiler derived from a
 **Key Technologies:**
 - Java 8+ (main API and library loading)
 - C++17 (native profiling engine)
-- Gradle (build system with custom native compilation)
+- Gradle (build system with custom native compilation tasks)
 - JNI (Java Native Interface for C++ integration)
-- CMake (for C++ unit tests via Google Test)
+- Google Test (for C++ unit tests, compiled via custom Gradle tasks)
 
 ## Project Operating Guide for Claude (Main Session)
 
