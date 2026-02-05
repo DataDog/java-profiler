@@ -79,7 +79,9 @@ fun librarySourcePath(type: String, qualifier: String = ""): String {
     val platform = com.datadoghq.native.util.PlatformUtils.currentPlatform
     val arch = com.datadoghq.native.util.PlatformUtils.currentArchitecture
     val ext = com.datadoghq.native.util.PlatformUtils.sharedLibExtension()
-    return "$projectDir/build/lib/$type/$platform/$arch/$qualifier/libjavaProfiler.$ext"
+    // New plugin uses build/lib/main/{config}/{os}/{arch}/ structure
+    val qualifierPath = if (qualifier.isNotEmpty()) "/$qualifier" else ""
+    return "$projectDir/build/lib/main/$type/$platform/$arch$qualifierPath/libjavaProfiler.$ext"
 }
 
 // Copy external libs task
@@ -132,6 +134,14 @@ buildConfigNames.forEach { name ->
         archiveBaseName.set(libraryName)
         archiveClassifier.set(if (name == "release") "" else name)
         archiveVersion.set(componentVersion)
+    }
+
+    // Create consumable configuration for inter-project dependencies
+    // This allows other projects to depend on specific build configurations
+    configurations.create(name) {
+        isCanBeConsumed = true
+        isCanBeResolved = false
+        outgoing.artifact(assembleJarTask)
     }
 }
 
