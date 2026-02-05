@@ -79,13 +79,81 @@ Never use 'gradle' or 'gradlew' directly. Instead, use the '/build-and-summarize
 ./gradlew testAsan
 ./gradlew testTsan
 
-# Run C++ unit tests only
-./gradlew gtestDebug
-./gradlew gtestRelease
+# Run C++ unit tests only (via GtestPlugin)
+./gradlew :ddprof-lib:gtestDebug        # All debug tests
+./gradlew :ddprof-lib:gtestRelease      # All release tests
+./gradlew :ddprof-lib:gtest             # All tests, all configs
+
+# Run individual C++ test
+./gradlew :ddprof-lib:gtestDebug_test_callTraceStorage
 
 # Cross-JDK testing
 JAVA_TEST_HOME=/path/to/test/jdk ./gradlew testDebug
 ```
+
+#### Google Test Plugin
+
+The project uses a custom `GtestPlugin` (in `buildSrc/`) for C++ unit testing with Google Test. The plugin automatically:
+- Discovers `.cpp` test files in `src/test/cpp/`
+- Creates compilation, linking, and execution tasks for each test
+- Filters configurations by current platform/architecture
+- Integrates with SimpleCppCompile and SimpleLinkExecutable tasks
+
+**Key features:**
+- Platform-aware: Only creates tasks for matching OS/arch
+- Assertion control: Removes `-DNDEBUG` to enable assertions in tests
+- Symbol preservation: Keeps debug symbols in release test builds
+- Task aggregation: Per-config (`gtestDebug`) and master (`gtest`) tasks
+
+**Configuration example (ddprof-lib/build.gradle):**
+```groovy
+apply plugin: GtestPlugin
+
+gtest {
+    testSourceDir = file('src/test/cpp')
+    mainSourceDir = file('src/main/cpp')
+    includes = files('src/main/cpp', "${javaHome()}/include", ...)
+    configurations = buildConfigurations
+
+    // Optional
+    enableAssertions = true    // Remove -DNDEBUG (default: true)
+    keepSymbols = true         // Keep symbols in release (default: true)
+    failFast = false           // Stop on first failure (default: false)
+}
+```
+
+**See:** `buildSrc/README_GTEST_PLUGIN.md` for full documentation
+
+#### Debug Symbols Extraction Plugin
+
+The project uses a custom `DebugSymbolsPlugin` (in `buildSrc/`) for extracting debug symbols from release builds, reducing production binary size (~80% smaller) while maintaining separate debug files.
+
+**Key features:**
+- Platform-aware: Uses `objcopy`/`strip` on Linux, `dsymutil`/`strip` on macOS
+- Automatic workflow: Extract symbols → Add GNU debuglink (Linux) → Strip library → Copy artifacts
+- Size optimization: Strips ~1.2MB production library from ~6.1MB with embedded debug info
+- Debug preservation: Separate `.debug` files (Linux) or `.dSYM` bundles (macOS)
+
+**Usage (applied in ddprof-lib/build.gradle):**
+```groovy
+apply plugin: DebugSymbolsPlugin
+
+// Called after link task creation for release builds
+if (config.name == 'release') {
+    setupDebugExtraction(config, linkTask, "copyReleaseLibs")
+}
+```
+
+**Tool requirements:**
+- Linux: `binutils` package (objcopy, strip)
+- macOS: Xcode Command Line Tools (dsymutil, strip)
+
+**Skip extraction:**
+```bash
+./gradlew buildRelease -Pskip-debug-extraction=true
+```
+
+**See:** `buildSrc/README_DEBUG_SYMBOLS_PLUGIN.md` for full documentation
 
 ### Build Options
 ```bash

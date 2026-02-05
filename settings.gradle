@@ -1,5 +1,4 @@
 include ':ddprof-lib'
-include ':ddprof-lib:gtest'
 include ':ddprof-lib:fuzz'
 include ':ddprof-lib:benchmarks'
 include ':ddprof-test-tracer'

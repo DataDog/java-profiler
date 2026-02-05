@@ -10,189 +10,6 @@ plugins {
 // Import custom native build task types from buildSrc
 // These replace the problematic cpp-library plugin which has version detection issues
 
-// Helper function to check if objcopy is available
-def checkObjcopyAvailable() {
-  try {
-    def process = ['objcopy', '--version'].execute()
-    process.waitFor()
-    return process.exitValue() == 0
-  } catch (Exception e) {
-    return false
-  }
-}
-
-// Helper function to check if dsymutil is available (for macOS)
-def checkDsymutilAvailable() {
-  try {
-    def process = ['dsymutil', '--version'].execute()
-    process.waitFor()
-    return process.exitValue() == 0
-  } catch (Exception e) {
-    return false
-  }
-}
-
-// Helper function to check if debug extraction should be skipped
-def shouldSkipDebugExtraction() {
-  // Skip if explicitly disabled
-  if (project.hasProperty('skip-debug-extraction')) {
-    return true
-  }
-
-  // Skip if required tools are not available
-  if (os().isLinux() && !checkObjcopyAvailable()) {
-    return true
-  }
-
-  if (os().isMacOsX() && !checkDsymutilAvailable()) {
-    return true
-  }
-
-  return false
-}
-
-// Helper function to get debug file path for a given config
-def getDebugFilePath(config) {
-  def extension = os().isLinux() ? 'so' : 'dylib'
-  return file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/debug/libjavaProfiler.${extension}.debug")
-}
-
-// Helper function to get stripped file path for a given config
-def getStrippedFilePath(config) {
-  def extension = os().isLinux() ? 'so' : 'dylib'
-  return file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/stripped/libjavaProfiler.${extension}")
-}
-
-// Helper function to create error message for missing tools
-def getMissingToolErrorMessage(toolName, installInstructions) {
-  return """
-    |${toolName} is not available but is required for split debug information.
-    |
-    |To fix this issue:
-    |${installInstructions}
-    |
-    |If you want to build without split debug info, set -Pskip-debug-extraction=true
-  """.stripMargin()
-}
-
-// Helper function to create debug extraction task
-def createDebugExtractionTask(config, linkTask) {
-  return tasks.register("extractDebugLib${config.name.capitalize()}", Exec) {
-    onlyIf {
-      !shouldSkipDebugExtraction()
-    }
-    dependsOn linkTask
-    description = 'Extract debug symbols from release library'
-    workingDir project.buildDir
-
-    // Declare outputs so Gradle knows what files this task creates
-    outputs.file getDebugFilePath(config)
-
-    doFirst {
-      def sourceFile = linkTask.get().outputFile
-      def debugFile = getDebugFilePath(config)
-
-      // Ensure debug directory exists
-      debugFile.parentFile.mkdirs()
-
-      // Set the command line based on platform
-      if (os().isLinux()) {
-        commandLine = ['objcopy', '--only-keep-debug', sourceFile.absolutePath, debugFile.absolutePath]
-      } else {
-        // For macOS, we'll use dsymutil instead
-        commandLine = ['dsymutil', sourceFile.absolutePath, '-o', debugFile.absolutePath.replace('.debug', '.dSYM')]
-      }
-    }
-  }
-}
-
-// Helper function to create debug link task (Linux only)
-def createDebugLinkTask(config, linkTask, extractDebugTask) {
-  return tasks.register("addDebugLinkLib${config.name.capitalize()}", Exec) {
-    onlyIf {
-      os().isLinux() && !shouldSkipDebugExtraction()
-    }
-    dependsOn extractDebugTask
-    description = 'Add debug link to the original library'
-
-    inputs.files linkTask, extractDebugTask
-    outputs.file { linkTask.get().outputFile }
-
-    doFirst {
-      def sourceFile = linkTask.get().outputFile
-      def debugFile = getDebugFilePath(config)
-
-      commandLine = ['objcopy', '--add-gnu-debuglink=' + debugFile.absolutePath, sourceFile.absolutePath]
-    }
-  }
-}
-
-// Helper function to create debug file copy task
-def createDebugCopyTask(config, extractDebugTask) {
-  return tasks.register("copy${config.name.capitalize()}DebugFiles", Copy) {
-    onlyIf {
-      !shouldSkipDebugExtraction()
-    }
-    dependsOn extractDebugTask
-    from file("$buildDir/lib/main/${config.name}/${osIdentifier()}/${archIdentifier()}/debug")
-    into file(libraryTargetPath(config.name))
-    include '**/*.debug'
-    include '**/*.dSYM/**'
-  }
-}
-
-// Main function to setup debug extraction for release builds
-def setupDebugExtraction(config, linkTask) {
-  if (config.name == 'release' && config.active && !project.hasProperty('skip-native')) {
-    // Create all debug-related tasks
-    def extractDebugTask = createDebugExtractionTask(config, linkTask)
-    def addDebugLinkTask = createDebugLinkTask(config, linkTask, extractDebugTask)
-
-    // Create a simple strip task using Exec instead of the cpp-library's StripSymbols
-    def stripTask = tasks.register('stripLibRelease', Exec) {
-      dependsOn addDebugLinkTask
-      onlyIf { !shouldSkipDebugExtraction() }
-
-      def strippedFile = getStrippedFilePath(config)
-      outputs.file strippedFile
-
-      doFirst {
-        strippedFile.parentFile.mkdirs()
-        def sourceFile = linkTask.get().outputFile
-
-        if (os().isLinux()) {
-          // Linux: use strip to create a stripped copy
-          commandLine 'cp', sourceFile.absolutePath, strippedFile.absolutePath
-        } else {
-          // macOS: use strip -S to strip debug symbols
-          commandLine 'cp', sourceFile.absolutePath, strippedFile.absolutePath
-        }
-      }
-
-      doLast {
-        def strippedFilePath = strippedFile.absolutePath
-        if (os().isLinux()) {
-          exec { commandLine 'strip', '--strip-debug', strippedFilePath }
-        } else {
-          exec { commandLine 'strip', '-S', strippedFilePath }
-        }
-      }
-    }
-
-    def copyDebugTask = createDebugCopyTask(config, extractDebugTask)
-
-    // Wire up the copy task to use stripped binaries
-    def copyTask = tasks.findByName("copyReleaseLibs")
-    if (copyTask != null) {
-      copyTask.dependsOn stripTask
-      copyTask.inputs.files stripTask.get().outputs.files
-
-      // Create an extra folder for the debug symbols
-      copyTask.dependsOn copyDebugTask
-    }
-  }
-}
-
 def libraryName = "ddprof"
 
 description = "Datadog Java Profiler Library"
@@ -204,12 +21,17 @@ if (rootDir.toString().endsWith("ddprof-lib")) {
   apply from: rootProject.file('../common.gradle')
 }
 
+// Apply Google Test plugin from buildSrc
+apply plugin: GtestPlugin
+
+// Apply Debug Symbols plugin from buildSrc
+apply plugin: DebugSymbolsPlugin
+
 dependencies {
   if (os().isLinux()) {
     // the malloc shim works only on linux
     project(':malloc-shim')
   }
-  project(':ddprof-lib:gtest')
 }
 
 // Add a task to run all benchmarks
@@ -361,6 +183,26 @@ configurations {
   }
 }
 
+// === Google Test Configuration ===
+gtest {
+  testSourceDir = file('src/test/cpp')
+  mainSourceDir = file('src/main/cpp')
+
+  includes = files(
+    'src/main/cpp',
+    "${javaHome()}/include",
+    os().isMacOsX() ? "${javaHome()}/include/darwin" : "${javaHome()}/include/linux",
+    project(':malloc-shim').file('src/main/public')
+  )
+
+  configurations = buildConfigurations
+
+  // macOS: Use Homebrew gtest if available
+  if (os().isMacOsX()) {
+    googleTestHome = file('/opt/homebrew/opt/googletest')
+  }
+}
+
 // Register native compilation and linking tasks using simple custom task types
 // This replaces the cpp-library plugin's parasite pattern that was prone to
 // toolchain detection failures with newer compiler versions
@@ -413,7 +255,7 @@ buildConfigurations.each { config ->
 
     // Setup debug extraction for release builds
     if (config.name == 'release') {
-      setupDebugExtraction(config, linkTask)
+      setupDebugExtraction(config, linkTask, "copyReleaseLibs")
     }
   }
 }

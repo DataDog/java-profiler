@@ -335,7 +335,8 @@ gradle.projectsEvaluated {
     }
 
     // Hook C++ gtest tasks to run as part of the corresponding Java test tasks
-    def gtestTask = project(':ddprof-lib:gtest').tasks.findByName("gtest${it.capitalize()}")
+    // Note: gtest tasks are now in ddprof-lib directly via the GtestPlugin
+    def gtestTask = project(':ddprof-lib').tasks.findByName("gtest${it.capitalize()}")
     if (testTask && gtestTask) {
       testTask.dependsOn gtestTask
     }
