@@ -5,6 +5,7 @@ package com.datadoghq.native.tasks
 import com.datadoghq.native.util.PlatformUtils
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.ConfigurableFileCollection
+import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
@@ -87,6 +88,20 @@ abstract class NativeLinkTask @Inject constructor(
     abstract val stripSymbols: Property<Boolean>
 
     /**
+     * Extract debug symbols to separate file before stripping.
+     */
+    @get:Input
+    @get:Optional
+    abstract val extractDebugSymbols: Property<Boolean>
+
+    /**
+     * Output directory for extracted debug symbols.
+     */
+    @get:OutputDirectory
+    @get:Optional
+    abstract val debugSymbolsDir: DirectoryProperty
+
+    /**
      * Show detailed linking output.
      */
     @get:Input
@@ -97,6 +112,7 @@ abstract class NativeLinkTask @Inject constructor(
         libraryPaths.convention(emptyList())
         libraries.convention(emptyList())
         stripSymbols.convention(false)
+        extractDebugSymbols.convention(false)
         verbose.convention(false)
         group = "build"
         description = "Links object files into a shared library"
@@ -188,6 +204,11 @@ abstract class NativeLinkTask @Inject constructor(
             throw RuntimeException(errorMsg)
         }
 
+        // Extract debug symbols before stripping if requested
+        if (extractDebugSymbols.get()) {
+            extractDebugInfo(outFile)
+        }
+
         // Strip symbols if requested
         if (stripSymbols.get()) {
             stripLibrary(outFile)
@@ -195,6 +216,70 @@ abstract class NativeLinkTask @Inject constructor(
 
         val sizeKB = outFile.length() / 1024
         logger.lifecycle("Successfully linked ${outFile.name} (${sizeKB}KB)")
+    }
+
+    private fun extractDebugInfo(libFile: java.io.File) {
+        val debugDir = if (debugSymbolsDir.isPresent) {
+            debugSymbolsDir.get().asFile
+        } else {
+            libFile.parentFile
+        }
+        debugDir.mkdirs()
+
+        when (PlatformUtils.currentPlatform) {
+            com.datadoghq.native.model.Platform.LINUX -> {
+                extractDebugInfoLinux(libFile, debugDir)
+            }
+            com.datadoghq.native.model.Platform.MACOS -> {
+                extractDebugInfoMacOS(libFile, debugDir)
+            }
+        }
+    }
+
+    private fun extractDebugInfoLinux(libFile: java.io.File, debugDir: java.io.File) {
+        val debugFile = java.io.File(debugDir, "${libFile.name}.debug")
+
+        logger.lifecycle("Extracting debug symbols to ${debugFile.name}...")
+
+        // Extract debug symbols
+        val extractResult = execOperations.exec {
+            commandLine("objcopy", "--only-keep-debug", libFile.absolutePath, debugFile.absolutePath)
+            isIgnoreExitValue = true
+        }
+
+        if (extractResult.exitValue != 0) {
+            logger.warn("Failed to extract debug symbols (exit code ${extractResult.exitValue})")
+            return
+        }
+
+        // Add GNU debuglink to stripped library
+        val debuglinkResult = execOperations.exec {
+            commandLine("objcopy", "--add-gnu-debuglink=${debugFile.absolutePath}", libFile.absolutePath)
+            isIgnoreExitValue = true
+        }
+
+        if (debuglinkResult.exitValue != 0) {
+            logger.warn("Failed to add debuglink (exit code ${debuglinkResult.exitValue})")
+        } else {
+            logger.lifecycle("Created debug file: ${debugFile.name} (${debugFile.length() / 1024}KB)")
+        }
+    }
+
+    private fun extractDebugInfoMacOS(libFile: java.io.File, debugDir: java.io.File) {
+        val dsymBundle = java.io.File(debugDir, "${libFile.name}.dSYM")
+
+        logger.lifecycle("Creating dSYM bundle...")
+
+        val result = execOperations.exec {
+            commandLine("dsymutil", libFile.absolutePath, "-o", dsymBundle.absolutePath)
+            isIgnoreExitValue = true
+        }
+
+        if (result.exitValue != 0) {
+            logger.warn("Failed to create dSYM bundle (exit code ${result.exitValue})")
+        } else {
+            logger.lifecycle("Created dSYM bundle: ${dsymBundle.name}")
+        }
     }
 
     private fun stripLibrary(libFile: java.io.File) {

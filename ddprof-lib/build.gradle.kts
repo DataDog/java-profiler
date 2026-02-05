@@ -98,10 +98,10 @@ val copyExternalLibs by tasks.registering(Copy::class) {
 val buildConfigNames = listOf("release", "debug", "asan", "tsan", "fuzzer")
 buildConfigNames.forEach { name ->
     val copyTask = tasks.register("copy${name.replaceFirstChar { it.uppercase() }}Libs", Copy::class) {
-        // TODO: Re-enable stripped qualifier when debug symbol extraction is implemented
-        // val qualifier = if (name == "release") "stripped" else ""
-        val qualifier = ""
-        from(file(librarySourcePath(name, qualifier)).parent)
+        from(file(librarySourcePath(name, "")).parent) {
+            // Exclude debug symbols from production JAR
+            exclude("debug/**", "*.debug", "*.dSYM/**")
+        }
         into(file(libraryTargetPath(name)))
 
         if (name == "release") {
@@ -132,6 +132,8 @@ buildConfigNames.forEach { name ->
         from(sourceSets["java9"].output.classesDirs)
         from(files(libraryTargetBase(name))) {
             include("**/*")
+            // Exclude debug symbols from production JAR
+            exclude("**/debug/**", "**/*.debug", "**/*.dSYM/**")
         }
         archiveBaseName.set(libraryName)
         archiveClassifier.set(if (name == "release") "" else name)

@@ -155,6 +155,13 @@ class NativeBuildPlugin : Plugin<Project> {
                 include("*.o")
             })
             outputFile.set(outputLib)
+
+            // Enable debug symbol extraction for release builds
+            if (config.name == "release") {
+                extractDebugSymbols.set(true)
+                stripSymbols.set(true)
+                debugSymbolsDir.set(project.file("$libDir/debug"))
+            }
         }
 
         // Create assemble task

@@ -69,7 +69,7 @@ object ConfigurationPresets {
             }
             Platform.MACOS -> {
                 config.compilerArgs.set(
-                    commonMacosCompilerArgs(version) + listOf("-O3", "-DNDEBUG")
+                    commonMacosCompilerArgs(version) + listOf("-O3", "-DNDEBUG", "-g")
                 )
                 config.linkerArgs.set(emptyList())
             }
