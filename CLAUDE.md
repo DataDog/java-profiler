@@ -295,6 +295,128 @@ The project uses custom Gradle task types in `buildSrc/` instead of Gradle's `cp
 
 **Key principle:** Direct compiler invocation without version parsing. The tasks simply find `clang++` or `g++` on PATH and invoke them with the flags from `gradle/configurations.gradle`.
 
+#### Configuring Build Tasks
+
+All build tasks support industry-standard configuration options following CMake, Bazel, and Make patterns. Configuration is done using standard Gradle property patterns:
+
+**Basic backward-compatible usage:**
+```groovy
+tasks.register("compileLib", SimpleCppCompile) {
+    compiler = 'g++'
+    compilerArgs = ['-O3', '-std=c++17', '-fPIC']
+    sources = fileTree('src/main/cpp') { include '**/*.cpp' }
+    includes = files('src/main/cpp', "${System.env.JAVA_HOME}/include")
+    objectFileDir = file("build/obj")
+}
+```
+
+**Advanced configuration with source sets:**
+```groovy
+tasks.register("compileLib", SimpleCppCompile) {
+    compiler = 'clang++'
+    compilerArgs = ['-Wall', '-O3']  // Base flags for all files
+
+    // Multiple source directories with per-directory flags
+    sourceSets {
+        main {
+            sources = fileTree('src/main/cpp')
+            compilerArgs = ['-fPIC']  // Additional flags for this set
+        }
+        legacy {
+            sources = fileTree('src/legacy')
+            compilerArgs = ['-Wno-deprecated', '-std=c++11']  // Different flags
+            excludes = ['**/broken/*.cpp']
+        }
+    }
+
+    // Logging and error handling
+    logLevel = CppBuildExtension.LogLevel.VERBOSE  // QUIET, NORMAL, VERBOSE, DEBUG
+    errorHandling = CppBuildExtension.ErrorHandlingMode.COLLECT_ALL  // or FAIL_FAST
+    showCommandLines = true
+
+    // Convenience methods
+    define 'DEBUG', 'VERSION="1.0"'  // Adds -DDEBUG -DVERSION="1.0"
+    standard 'c++20'  // Adds -std=c++20
+
+    objectFileDir = file("build/obj")
+}
+```
+
+**Linking with symbol management and debug extraction:**
+```groovy
+tasks.register("linkLib", SimpleLinkShared) {
+    linker = 'g++'
+    linkerArgs = ['-O3']
+    objectFiles = fileTree("build/obj") { include '*.o' }
+    outputFile = file("build/lib/libjavaProfiler.so")
+
+    // Symbol management
+    soname = 'libjavaProfiler.so.1'  // Linux -Wl,-soname
+    stripSymbols = true
+    exportSymbols = ['Java_*', 'JNI_*']  // Export only JNI symbols
+
+    // Debug symbol extraction (automatic in release builds)
+    generateDebugInfo = true
+    debugInfoFile = file("build/lib/libjavaProfiler.so.debug")
+
+    // Library conveniences
+    lib 'pthread', 'dl', 'm'  // Adds -lpthread -ldl -lm
+    libPath '/usr/local/lib'  // Adds -L/usr/local/lib
+
+    // Logging
+    logLevel = CppBuildExtension.LogLevel.VERBOSE
+    showCommandLine = true
+    checkUndefinedSymbols = true
+}
+```
+
+**Executable linking with rpath:**
+```groovy
+tasks.register("linkTest", SimpleLinkExecutable) {
+    linker = 'g++'
+    objectFiles = fileTree("build/obj/gtest") { include '*.o' }
+    outputFile = file("build/bin/callTrace_test")
+
+    // Library management
+    lib 'gtest', 'gtest_main', 'pthread'
+    libPath '/usr/local/lib'
+    runtimePath '/opt/lib', '/usr/local/lib'  // Adds -Wl,-rpath
+
+    // Debug extraction
+    generateDebugInfo = true
+
+    // Post-link verification
+    checkLdd = true  // Run ldd/otool to check dependencies
+    runSanityTest = true
+    sanityTestArgs = ['--help']
+}
+```
+
+**Configuration properties:**
+
+*SimpleCppCompile:*
+- **Logging**: `logLevel`, `showCommandLines`, `progressReportInterval`, `colorOutput`
+- **Error handling**: `errorHandling` (FAIL_FAST/COLLECT_ALL), `maxErrorsToShow`, `treatWarningsAsErrors`
+- **Source sets**: `sourceSets { name { sources, includes, excludes, compilerArgs, fileFilter } }`
+- **Convenience**: `define()`, `undefine()`, `standard()` methods
+- **Platform**: `targetPlatform`, `targetArch`, `parallelJobs`
+
+*SimpleLinkShared:*
+- **Logging**: `logLevel`, `showCommandLine`, `showLinkerMap`, `linkerMapFile`
+- **Symbols**: `soname`, `installName`, `stripSymbols`, `exportSymbols`, `hideSymbols`
+- **Libraries**: `lib()`, `libPath()` convenience methods
+- **Debug**: `generateDebugInfo`, `debugInfoFile`
+- **Verification**: `checkUndefinedSymbols`, `verifySharedLib`
+
+*SimpleLinkExecutable:*
+- **Logging**: `logLevel`, `showCommandLine`
+- **Executable**: `setExecutablePermission`, `executablePermissions`, `stripSymbols`
+- **Libraries**: `lib()`, `libPath()`, `runtimePath()` convenience methods
+- **Debug**: `generateDebugInfo`, `debugInfoFile`
+- **Verification**: `checkLdd`, `runSanityTest`, `sanityTestArgs`
+
+All properties are **optional** and have sensible defaults that maintain backward compatibility with existing build scripts.
+
 ### Artifact Structure
 Final artifacts maintain a specific structure for deployment:
 ```
