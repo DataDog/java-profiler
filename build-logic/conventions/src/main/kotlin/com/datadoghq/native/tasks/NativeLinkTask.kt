@@ -2,6 +2,7 @@
 
 package com.datadoghq.native.tasks
 
+import com.datadoghq.native.model.LogLevel
 import com.datadoghq.native.util.PlatformUtils
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.ConfigurableFileCollection
@@ -108,6 +109,50 @@ abstract class NativeLinkTask @Inject constructor(
     @get:Optional
     abstract val verbose: Property<Boolean>
 
+    // === Logging and Verbosity ===
+
+    /**
+     * Logging verbosity level.
+     * Default: NORMAL
+     */
+    @get:Input
+    @get:Optional
+    abstract val logLevel: Property<LogLevel>
+
+    /**
+     * Show full command line for the link operation.
+     * Default: false (only shown at DEBUG level)
+     */
+    @get:Input
+    @get:Optional
+    abstract val showCommandLine: Property<Boolean>
+
+    /**
+     * Show linker map (symbol resolution details).
+     * Default: false
+     */
+    @get:Input
+    @get:Optional
+    abstract val showLinkerMap: Property<Boolean>
+
+    /**
+     * Linker map output file (when showLinkerMap is true).
+     * Default: null (stdout/stderr)
+     */
+    @get:OutputFile
+    @get:Optional
+    abstract val linkerMapFile: RegularFileProperty
+
+    /**
+     * Enable ANSI color codes in output.
+     * Default: true
+     */
+    @get:Input
+    @get:Optional
+    abstract val colorOutput: Property<Boolean>
+
+    // === Symbol Management ===
+
     /**
      * Symbol patterns to export (make visible).
      * For example: ["Java_*", "JNI_OnLoad", "JNI_OnUnload"]
@@ -124,14 +169,49 @@ abstract class NativeLinkTask @Inject constructor(
     @get:Optional
     abstract val hideSymbols: ListProperty<String>
 
+    // === Library Path Management ===
+
+    /**
+     * Runtime library search paths (-Wl,-rpath).
+     * Use runtimePath() method to add.
+     */
+    @get:Input
+    @get:Optional
+    abstract val runtimePaths: ListProperty<String>
+
+    // === Verification ===
+
+    /**
+     * Check for undefined symbols after linking.
+     * Default: false
+     */
+    @get:Input
+    @get:Optional
+    abstract val checkUndefinedSymbols: Property<Boolean>
+
+    /**
+     * Verify the shared library after linking (ldd/otool -L).
+     * Default: false
+     */
+    @get:Input
+    @get:Optional
+    abstract val verifySharedLib: Property<Boolean>
+
     init {
         libraryPaths.convention(emptyList())
         libraries.convention(emptyList())
+        runtimePaths.convention(emptyList())
         stripSymbols.convention(false)
         extractDebugSymbols.convention(false)
         verbose.convention(false)
+        logLevel.convention(LogLevel.NORMAL)
+        showCommandLine.convention(false)
+        showLinkerMap.convention(false)
+        colorOutput.convention(true)
         exportSymbols.convention(emptyList())
         hideSymbols.convention(emptyList())
+        checkUndefinedSymbols.convention(false)
+        verifySharedLib.convention(false)
         group = "build"
         description = "Links object files into a shared library"
     }
@@ -142,6 +222,34 @@ abstract class NativeLinkTask @Inject constructor(
 
     fun libPath(vararg paths: String) {
         libraryPaths.addAll(*paths)
+    }
+
+    fun runtimePath(vararg paths: String) {
+        runtimePaths.addAll(*paths)
+    }
+
+    // === Logging Helpers ===
+
+    private fun logNormal(message: String) {
+        if (logLevel.get() >= LogLevel.NORMAL) {
+            logger.lifecycle(message)
+        }
+    }
+
+    private fun logVerbose(message: String) {
+        if (logLevel.get() >= LogLevel.VERBOSE) {
+            logger.lifecycle(message)
+        }
+    }
+
+    private fun logDebug(message: String) {
+        if (logLevel.get() == LogLevel.DEBUG) {
+            logger.lifecycle(message)
+        }
+    }
+
+    private fun shouldShowCommandLine(): Boolean {
+        return showCommandLine.get() || logLevel.get() == LogLevel.DEBUG
     }
 
     @TaskAction
@@ -174,6 +282,11 @@ abstract class NativeLinkTask @Inject constructor(
                 add("-l$lib")
             }
 
+            // Add runtime search paths (-rpath)
+            runtimePaths.get().forEach { path ->
+                add("-Wl,-rpath,$path")
+            }
+
             // Add soname/install_name based on platform
             when (PlatformUtils.currentPlatform) {
                 com.datadoghq.native.model.Platform.LINUX -> {
@@ -198,10 +311,10 @@ abstract class NativeLinkTask @Inject constructor(
             add(outFile.absolutePath)
         }
 
-        logger.lifecycle("Linking shared library: ${outFile.name}")
+        logNormal("Linking shared library: ${outFile.name}")
 
-        if (verbose.get()) {
-            logger.lifecycle("  ${cmdLine.joinToString(" ")}")
+        if (shouldShowCommandLine()) {
+            logDebug("  ${cmdLine.joinToString(" ")}")
         }
 
         // Execute linking
@@ -238,7 +351,7 @@ abstract class NativeLinkTask @Inject constructor(
         }
 
         val sizeKB = outFile.length() / 1024
-        logger.lifecycle("Successfully linked ${outFile.name} (${sizeKB}KB)")
+        logNormal("Successfully linked ${outFile.name} (${sizeKB}KB)")
     }
 
     /**
@@ -287,7 +400,7 @@ abstract class NativeLinkTask @Inject constructor(
         }
 
         versionScript.writeText(scriptContent)
-        logger.lifecycle("Generated version script: ${versionScript.name}")
+        logVerbose("Generated version script: ${versionScript.name}")
 
         return listOf("-Wl,--version-script=${versionScript.absolutePath}")
     }
@@ -311,7 +424,7 @@ abstract class NativeLinkTask @Inject constructor(
         }
 
         exportList.writeText(listContent)
-        logger.lifecycle("Generated export list: ${exportList.name}")
+        logVerbose("Generated export list: ${exportList.name}")
 
         val flags = mutableListOf<String>()
 
@@ -357,7 +470,7 @@ abstract class NativeLinkTask @Inject constructor(
     private fun extractDebugInfoLinux(libFile: java.io.File, debugDir: java.io.File) {
         val debugFile = java.io.File(debugDir, "${libFile.name}.debug")
 
-        logger.lifecycle("Extracting debug symbols to ${debugFile.name}...")
+        logNormal("Extracting debug symbols to ${debugFile.name}...")
 
         // Extract debug symbols
         val extractResult = execOperations.exec {
@@ -379,14 +492,14 @@ abstract class NativeLinkTask @Inject constructor(
         if (debuglinkResult.exitValue != 0) {
             logger.warn("Failed to add debuglink (exit code ${debuglinkResult.exitValue})")
         } else {
-            logger.lifecycle("Created debug file: ${debugFile.name} (${debugFile.length() / 1024}KB)")
+            logNormal("Created debug file: ${debugFile.name} (${debugFile.length() / 1024}KB)")
         }
     }
 
     private fun extractDebugInfoMacOS(libFile: java.io.File, debugDir: java.io.File) {
         val dsymBundle = java.io.File(debugDir, "${libFile.name}.dSYM")
 
-        logger.lifecycle("Creating dSYM bundle...")
+        logNormal("Creating dSYM bundle...")
 
         val result = execOperations.exec {
             commandLine("dsymutil", libFile.absolutePath, "-o", dsymBundle.absolutePath)
@@ -396,12 +509,12 @@ abstract class NativeLinkTask @Inject constructor(
         if (result.exitValue != 0) {
             logger.warn("Failed to create dSYM bundle (exit code ${result.exitValue})")
         } else {
-            logger.lifecycle("Created dSYM bundle: ${dsymBundle.name}")
+            logNormal("Created dSYM bundle: ${dsymBundle.name}")
         }
     }
 
     private fun stripLibrary(libFile: java.io.File) {
-        logger.lifecycle("Stripping symbols from ${libFile.name}...")
+        logNormal("Stripping symbols from ${libFile.name}...")
 
         val stripCmd = when (PlatformUtils.currentPlatform) {
             com.datadoghq.native.model.Platform.LINUX -> listOf("strip", "--strip-debug", libFile.absolutePath)

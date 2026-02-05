@@ -2,6 +2,8 @@
 
 package com.datadoghq.native.tasks
 
+import com.datadoghq.native.model.ErrorHandlingMode
+import com.datadoghq.native.model.LogLevel
 import com.datadoghq.native.model.SourceSet
 import org.gradle.api.DefaultTask
 import org.gradle.api.NamedDomainObjectContainer
@@ -83,9 +85,105 @@ abstract class NativeCompileTask @Inject constructor(
     @get:Optional
     val sourceSets: NamedDomainObjectContainer<SourceSet> = objects.domainObjectContainer(SourceSet::class.java)
 
+    // === Logging and Verbosity ===
+
+    /**
+     * Logging verbosity level.
+     * Default: NORMAL
+     */
+    @get:Input
+    @get:Optional
+    abstract val logLevel: Property<LogLevel>
+
+    /**
+     * Progress reporting interval (log every N files during compilation).
+     * Default: 10
+     */
+    @get:Input
+    @get:Optional
+    abstract val progressReportInterval: Property<Int>
+
+    /**
+     * Show full command line for each file compilation.
+     * Default: false (only shown at DEBUG level)
+     */
+    @get:Input
+    @get:Optional
+    abstract val showCommandLines: Property<Boolean>
+
+    /**
+     * Enable ANSI color codes in output.
+     * Default: true
+     */
+    @get:Input
+    @get:Optional
+    abstract val colorOutput: Property<Boolean>
+
+    // === Error Handling ===
+
+    /**
+     * Error handling mode.
+     * FAIL_FAST: Stop on first compilation error (default)
+     * COLLECT_ALL: Compile all files, collect errors, report at end
+     */
+    @get:Input
+    @get:Optional
+    abstract val errorHandling: Property<ErrorHandlingMode>
+
+    /**
+     * Maximum number of errors to show when using COLLECT_ALL mode.
+     * Default: 10
+     */
+    @get:Input
+    @get:Optional
+    abstract val maxErrorsToShow: Property<Int>
+
+    /**
+     * Treat compiler warnings as errors (-Werror).
+     * Default: false
+     */
+    @get:Input
+    @get:Optional
+    abstract val treatWarningsAsErrors: Property<Boolean>
+
+    // === Convenience Properties ===
+
+    /**
+     * Compiler defines (-D flags).
+     * Use define() method to add: define("DEBUG", "VERSION=\"1.0\"")
+     */
+    @get:Input
+    @get:Optional
+    abstract val defines: ListProperty<String>
+
+    /**
+     * Compiler undefines (-U flags).
+     * Use undefine() method to add: undefine("NDEBUG")
+     */
+    @get:Input
+    @get:Optional
+    abstract val undefines: ListProperty<String>
+
+    /**
+     * C++ standard version (e.g., "c++17", "c++20").
+     * Use standard() method to set: standard("c++20")
+     */
+    @get:Input
+    @get:Optional
+    abstract val standardVersion: Property<String>
+
     init {
         parallelJobs.convention(Runtime.getRuntime().availableProcessors())
         verbose.convention(false)
+        logLevel.convention(LogLevel.NORMAL)
+        progressReportInterval.convention(10)
+        showCommandLines.convention(false)
+        colorOutput.convention(true)
+        errorHandling.convention(ErrorHandlingMode.FAIL_FAST)
+        maxErrorsToShow.convention(10)
+        treatWarningsAsErrors.convention(false)
+        defines.convention(emptyList())
+        undefines.convention(emptyList())
         group = "build"
         description = "Compiles C++ source files"
     }
@@ -97,15 +195,86 @@ abstract class NativeCompileTask @Inject constructor(
         action.execute(sourceSets)
     }
 
+    // === Convenience Methods ===
+
+    /**
+     * Add compiler defines (-D flags).
+     * Example: define("DEBUG", "VERSION=\"1.0\"")
+     */
+    fun define(vararg defs: String) {
+        defines.addAll(*defs)
+    }
+
+    /**
+     * Add compiler undefines (-U flags).
+     * Example: undefine("NDEBUG", "DEBUG")
+     */
+    fun undefine(vararg undefs: String) {
+        undefines.addAll(*undefs)
+    }
+
+    /**
+     * Set C++ standard version.
+     * Example: standard("c++20") generates -std=c++20
+     */
+    fun standard(version: String) {
+        standardVersion.set(version)
+    }
+
+    // === Logging Helpers ===
+
+    private fun logNormal(message: String) {
+        if (logLevel.get() >= LogLevel.NORMAL) {
+            logger.lifecycle(message)
+        }
+    }
+
+    private fun logVerbose(message: String) {
+        if (logLevel.get() >= LogLevel.VERBOSE) {
+            logger.lifecycle(message)
+        }
+    }
+
+    private fun logDebug(message: String) {
+        if (logLevel.get() == LogLevel.DEBUG) {
+            logger.lifecycle(message)
+        }
+    }
+
+    private fun shouldShowCommandLine(): Boolean {
+        return showCommandLines.get() || logLevel.get() == LogLevel.DEBUG
+    }
+
     @TaskAction
     fun compile() {
         val objDir = objectFileDir.get().asFile
         objDir.mkdirs()
 
+        // Build base compiler arguments with convenience properties
         val baseArgs = compilerArgs.get().toMutableList()
-        val includeArgs = mutableListOf<String>()
+
+        // Add C++ standard if specified
+        if (standardVersion.isPresent) {
+            baseArgs.add("-std=${standardVersion.get()}")
+        }
+
+        // Add defines (-D)
+        defines.get().forEach { define ->
+            baseArgs.add("-D$define")
+        }
+
+        // Add undefines (-U)
+        undefines.get().forEach { undefine ->
+            baseArgs.add("-U$undefine")
+        }
+
+        // Add -Werror if warnings should be treated as errors
+        if (treatWarningsAsErrors.get()) {
+            baseArgs.add("-Werror")
+        }
 
         // Build include arguments
+        val includeArgs = mutableListOf<String>()
         includes.files.forEach { dir ->
             if (dir.exists()) {
                 includeArgs.add("-I")
@@ -127,19 +296,20 @@ abstract class NativeCompileTask @Inject constructor(
 
         // Report errors if any
         if (errors.isNotEmpty()) {
+            val maxErrors = maxErrorsToShow.get()
             val errorMsg = buildString {
                 appendLine("Compilation failed with ${errors.size} error(s):")
-                errors.take(10).forEach { error ->
+                errors.take(maxErrors).forEach { error ->
                     appendLine("  - $error")
                 }
-                if (errors.size > 10) {
-                    appendLine("  ... and ${errors.size - 10} more error(s)")
+                if (errors.size > maxErrors) {
+                    appendLine("  ... and ${errors.size - maxErrors} more error(s)")
                 }
             }
             throw RuntimeException(errorMsg)
         }
 
-        logger.lifecycle("Successfully compiled ${compiled.get()} file${if (compiled.get() == 1) "" else "s"}")
+        logNormal("Successfully compiled ${compiled.get()} file${if (compiled.get() == 1) "" else "s"}")
     }
 
     private fun compileSimpleMode(
@@ -151,12 +321,12 @@ abstract class NativeCompileTask @Inject constructor(
     ) {
         val sourceFiles = sources.files.toList()
         if (sourceFiles.isEmpty()) {
-            logger.lifecycle("No source files to compile")
+            logNormal("No source files to compile")
             return
         }
 
         val total = sourceFiles.size
-        logger.lifecycle("Compiling $total C++ source file${if (total == 1) "" else "s"} with ${compiler.get()}...")
+        logNormal("Compiling $total C++ source file${if (total == 1) "" else "s"} with ${compiler.get()}...")
 
         // Compile files in parallel
         sourceFiles.parallelStream().forEach { sourceFile ->
@@ -196,12 +366,12 @@ abstract class NativeCompileTask @Inject constructor(
         }
 
         if (allFiles.isEmpty()) {
-            logger.lifecycle("No source files to compile in source sets")
+            logNormal("No source files to compile in source sets")
             return
         }
 
         val total = allFiles.size
-        logger.lifecycle("Compiling $total C++ source file${if (total == 1) "" else "s"} from ${sourceSets.size} source set${if (sourceSets.size == 1) "" else "s"} with ${compiler.get()}...")
+        logNormal("Compiling $total C++ source file${if (total == 1) "" else "s"} from ${sourceSets.size} source set${if (sourceSets.size == 1) "" else "s"} with ${compiler.get()}...")
 
         // Compile files in parallel with their specific args
         allFiles.parallelStream().forEach { (sourceFile, specificArgs) ->
@@ -237,8 +407,8 @@ abstract class NativeCompileTask @Inject constructor(
             add(objectFile.absolutePath)
         }
 
-        if (verbose.get()) {
-            logger.lifecycle("  ${cmdLine.joinToString(" ")}")
+        if (shouldShowCommandLine()) {
+            logDebug("  ${cmdLine.joinToString(" ")}")
         }
 
         // Execute compilation
@@ -262,10 +432,16 @@ abstract class NativeCompileTask @Inject constructor(
                 }
             }
             errors.add(errorMsg)
+
+            // FAIL_FAST: throw immediately on first error
+            if (errorHandling.get() == ErrorHandlingMode.FAIL_FAST) {
+                throw RuntimeException(errorMsg)
+            }
         } else {
             val count = compiled.incrementAndGet()
-            if (verbose.get() && (count % 10 == 0 || count == total)) {
-                logger.lifecycle("  Compiled $count/$total files...")
+            val interval = progressReportInterval.get()
+            if (logLevel.get() >= LogLevel.VERBOSE && (count % interval == 0 || count == total)) {
+                logVerbose("  Compiled $count/$total files...")
             }
         }
     }
