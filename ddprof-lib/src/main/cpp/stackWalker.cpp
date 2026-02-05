@@ -318,7 +318,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 break;
             }
             prev_native_pc = NULL; // we are in JVM code, no previous 'native' PC
-            NMethod* nm = CodeHeap::findNMethod(pc);
+            VMNMethod* nm = CodeHeap::findNMethod(pc);
             if (nm == NULL) {
                 if (anchor == NULL) {
                     // Add an error frame only if we cannot recover

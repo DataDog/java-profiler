@@ -45,6 +45,8 @@ class VMStructs {
     static int _oop_klass_offset;
     static int _class_loader_data_offset;
     static int _class_loader_data_next_offset;
+    static int _class_loader_data_has_class_mirror_holder_offset; // JDK17 and +
+    static int _class_loader_data_is_anonymous_offset;  // JDK11
     static int _methods_offset;
     static int _jmethod_ids_offset;
     static int _thread_osthread_offset;
@@ -128,6 +130,7 @@ class VMStructs {
     static const void* _call_stub_return;
     static const void* _interpreted_frame_valid_start;
     static const void* _interpreted_frame_valid_end;
+    static int _oop_handle_obj_offset;
 
     static jfieldID _eetop;
     static jfieldID _tid;
@@ -311,7 +314,7 @@ class MethodList {
 };
 
 
-class NMethod;
+class VMNMethod;
 class VMMethod;
 
 class VMSymbol : VMStructs {
@@ -329,6 +332,14 @@ class VMSymbol : VMStructs {
     }
 };
 
+class VMOopHandle : VMStructs {
+  public:
+    uintptr_t oop() {
+        assert(_oop_handle_obj_offset >= 0);
+        return *(uintptr_t*) at(_oop_handle_obj_offset);
+    }
+};
+
 class VMClassLoaderData : VMStructs {
   private:
     void* mutex() {
@@ -342,6 +353,20 @@ class VMClassLoaderData : VMStructs {
 
     void unlock() {
         _unlock_func(mutex());
+    }
+
+    bool hasClassMirrorHolder() {
+        if (_class_loader_data_has_class_mirror_holder_offset >= 0) {             
+            return  *(bool*) at(_class_loader_data_has_class_mirror_holder_offset);
+        }
+        return false;
+    }
+
+    bool isAnonymous() {
+        if (_class_loader_data_is_anonymous_offset >= 0) {
+            return *(bool*) at(_class_loader_data_is_anonymous_offset);
+        }
+        return false;
     }
 
     MethodList** methodList() {
@@ -381,6 +406,7 @@ class VMKlass : VMStructs {
                 }
                 narrow_klass = mark >> _markword_klass_shift;
             } else {
+                assert(_oop_klass_offset >= 0);
                 narrow_klass = *(unsigned int*)(oop + _oop_klass_offset);
             }
             return (VMKlass*)(_narrow_klass_base + (narrow_klass << _narrow_klass_shift));
@@ -416,26 +442,32 @@ class JavaFrameAnchor : VMStructs {
 
   public:
     static JavaFrameAnchor* fromEntryFrame(uintptr_t fp) {
+        assert(_entry_frame_call_wrapper_offset !=  -1);
         const char* call_wrapper = (const char*) SafeAccess::loadPtr((void**)(fp + _entry_frame_call_wrapper_offset), nullptr);
         if (!goodPtr(call_wrapper) || (uintptr_t)call_wrapper - fp > MAX_CALL_WRAPPER_DISTANCE) {
             return NULL;
         }
+        assert(_call_wrapper_anchor_offset != -1);
         return (JavaFrameAnchor*)(call_wrapper + _call_wrapper_anchor_offset);
     }
 
     uintptr_t lastJavaSP() {
+        assert(_anchor_sp_offset >= 0);
         return (uintptr_t) SafeAccess::loadPtr((void**) at(_anchor_sp_offset), nullptr);
     }
 
     uintptr_t lastJavaFP() {
+        assert(_anchor_fp_offset >= 0);
         return (uintptr_t) SafeAccess::loadPtr((void**) at(_anchor_fp_offset), nullptr);
     }
 
     const void* lastJavaPC() {
+        assert(_anchor_pc_offset >= 0);
         return SafeAccess::loadPtr((void**) at(_anchor_pc_offset), nullptr);
     }
 
     void setLastJavaPC(const void* pc) {
+        assert(_anchor_pc_offset >= 0);
         *(const void**) at(_anchor_pc_offset) = pc;
     }
 
@@ -511,28 +543,52 @@ class VMThread : VMStructs {
     }
 
     bool inDeopt() {
+        assert(_thread_state_offset >= 0);
         return SafeAccess::loadPtr((void**) at(_thread_vframe_offset), nullptr) != NULL;
     }
 
     void*& exception() {
+        assert(_thread_exception_offset >= 0);
         return *(void**) at(_thread_exception_offset);
     }
 
     JavaFrameAnchor* anchor() {
+        assert(_thread_anchor_offset >= 0);
         return (JavaFrameAnchor*) at(_thread_anchor_offset);
     }
 
     VMMethod* compiledMethod() {
+        assert(_comp_env_offset >= 0);
         const char* env = *(const char**) at(_comp_env_offset);
         if (env != NULL) {
+            assert(_comp_task_offset >= 0);
             const char* task = *(const char**) (env + _comp_task_offset);
             if (task != NULL) {
+                assert(_comp_method_offset >= 0);
                 return *(VMMethod**) (task + _comp_method_offset);
             }
         }
         return NULL;
     }
 };
+
+class VMConstantPool : VMStructs {
+  public:
+    VMKlass* holder() {
+        assert(_pool_holder_offset >= 0);
+        return *(VMKlass**) at(_pool_holder_offset);
+    }
+
+    VMSymbol* symbolAt(int index) {
+        assert(_constand_pool_size >= 0);
+        return (VMSymbol*)&base()[index];
+    }
+private:
+    intptr_t* base() {
+        assert(_constand_pool_size > 0);
+        return (intptr_t*) (((char*) this) + _constand_pool_size);
+    }
+};  
 
 class VMMethod : public /* TODO make private when consolidating VMMethod? */ VMStructs {
   private:
@@ -576,36 +632,66 @@ class VMMethod : public /* TODO make private when consolidating VMMethod? */ VMS
     }
 
     address codeBase()  {
+        assert(_method_constmethod_offset >= 0);
         address code_addr = *(const address*) at(_method_constmethod_offset);
         return (address)(code_addr+1);
+    }
+
+    VMConstantPool* constantPool() {
+        assert(_method_constmethod_offset >= 0);
+        const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
+        assert(goodPtr(const_method));
+        assert(_constmethod_constants_offset >= 0);
+        VMConstantPool* cpool = *(VMConstantPool**) (const_method + _constmethod_constants_offset);
+        return cpool;
+    }
+
+    VMSymbol* name() {
+        VMConstantPool* cpool = constantPool();
+        assert(_method_constmethod_offset >= 0);
+        const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
+        assert(goodPtr(const_method));
+        assert(_constmethod_name_index_offset >= 0);
+        int name_index = *(uint16_t*) (const_method + _constmethod_name_index_offset);
+        return cpool->symbolAt(name_index);
+    }
+
+    VMSymbol* signature() {
+        VMConstantPool* cpool = constantPool();
+        assert(_method_constmethod_offset >= 0);
+        const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
+        assert(goodPtr(const_method));
+        assert(_constmethod_sig_index_offset >= 0);
+        int signature_index = *(uint16_t*) (const_method + _constmethod_sig_index_offset);
+        return cpool->symbolAt(signature_index);
     }
 
     VMKlass* methodHolder();
     bool getLineNumberTable(jint* entry_count_ptr,
                             jvmtiLineNumberEntry** table_ptr);
     
-    VMSymbol* name();
-    VMSymbol* signature();
-
-    NMethod* code() {
+    VMNMethod* code() {
         assert(_method_code_offset >= 0);
-        return *(NMethod**) at(_method_code_offset);
+        return *(VMNMethod**) at(_method_code_offset);
     }
 
     static bool check_jmethodID(jmethodID id);
 };
 
-class NMethod : VMStructs {
+class VMNMethod : VMStructs {
   public:
     int size() {
+        assert(_blob_size_offset >= 0);
         return *(int*) at(_blob_size_offset);
     }
 
     int frameSize() {
+        assert(_frame_size_offset >= 0);
         return *(int*) at(_frame_size_offset);
     }
 
     short frameCompleteOffset() {
+        assert(_frame_complete_offset >= 0);
         return *(short*) at(_frame_complete_offset);
     }
 
@@ -662,6 +748,7 @@ class NMethod : VMStructs {
     }
 
     const char* name() {
+        assert(_nmethod_name_offset >= 0);
         return *(const char**) at(_nmethod_name_offset);
     }
 
@@ -686,10 +773,12 @@ class NMethod : VMStructs {
     }
 
     VMMethod* method() {
+        assert(_nmethod_method_offset >= 0);
         return *(VMMethod**) at(_nmethod_method_offset);
     }
 
     char state() {
+        assert(_nmethod_state_offset >= 0);
         return *at(_nmethod_state_offset);
     }
 
@@ -704,11 +793,14 @@ class NMethod : VMStructs {
     VMMethod** metadata() {
         if (_mutable_data_offset >= 0) {
             // Since JDK 25
+            assert(_relocation_size_offset >= 0);
             return (VMMethod**) (*(char**) at(_mutable_data_offset) + *(int*) at(_relocation_size_offset));
         } else if (_data_offset > 0) {
             // since JDK 23
+            assert(_nmethod_metadata_offset >= 0);
             return (VMMethod**) at(*(int*) at(_data_offset) + *(unsigned short*) at(_nmethod_metadata_offset));
         }
+        assert(_nmethod_metadata_offset >= 0);
         return (VMMethod**) at(*(int*) at(_nmethod_metadata_offset));
     }
 
@@ -723,7 +815,7 @@ class CodeHeap : VMStructs {
                pc <  *(const void**)(heap + _code_heap_memory_offset + _vs_high_offset);
     }
 
-    static NMethod* findNMethod(char* heap, const void* pc);
+    static VMNMethod* findNMethod(char* heap, const void* pc);
 
   public:
     static bool available() {
@@ -743,7 +835,7 @@ class CodeHeap : VMStructs {
              high = _code_heap_high);
     }
 
-    static NMethod* findNMethod(const void* pc) {
+    static VMNMethod* findNMethod(const void* pc) {
         if (contains(_code_heap[0], pc)) return findNMethod(_code_heap[0], pc);
         if (contains(_code_heap[1], pc)) return findNMethod(_code_heap[1], pc);
         if (contains(_code_heap[2], pc)) return findNMethod(_code_heap[2], pc);
@@ -762,10 +854,12 @@ class CollectedHeap : VMStructs {
     }
 
     uintptr_t start() {
+        assert(_collected_heap_reserved_offset >= 0);
         return *(uintptr_t*) at(_region_start_offset);
     }
 
     uintptr_t size() {
+        assert(_collected_heap_reserved_offset >= 0);
         return (*(uintptr_t*) at(_region_size_offset)) * sizeof(uintptr_t);
     }
 };
@@ -804,6 +898,7 @@ class JVMFlag : VMStructs {
     int type();
 
     void* addr() {
+        assert(_flag_addr_offset >= 0);
         return *(void**) at(_flag_addr_offset);
     }
 
@@ -849,7 +944,7 @@ class ScopeDesc : VMStructs {
     int readInt();
 
   public:
-    ScopeDesc(NMethod* nm) {
+    ScopeDesc(VMNMethod* nm) {
         _scopes = (const unsigned char*)nm->scopes();
         _metadata = nm->metadata();
     }

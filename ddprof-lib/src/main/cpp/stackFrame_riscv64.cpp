@@ -77,7 +77,7 @@ bool StackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& p
     return false;
 }
 
-bool StackFrame::unwindCompiled(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+bool StackFrame::unwindCompiled(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     // Not yet implemented
     return false;
 }
@@ -87,7 +87,7 @@ bool StackFrame::unwindPrologue(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintp
     return false;
 }
 
-bool StackFrame::unwindEpilogue(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+bool StackFrame::unwindEpilogue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     // Not yet implemented
     return false;
 }

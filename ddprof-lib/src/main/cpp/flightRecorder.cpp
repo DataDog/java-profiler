@@ -151,8 +151,10 @@ void Lookup::cutArguments(char *func) {
 }
 
 void Lookup::fillJavaMethodInfo(MethodInfo *mi, VMMethod* method, bool first_time) {
-  
-
+  assert(method != nullptr);
+  VMSymbol* name_sym = method->name();
+  VMSymbol* sig_sym = method->signature();
+  TEST_LOG("VMMethod: name=%.*s, sig=%.*s\n", name_sym->length(), name_sym->body(), sig_sym->length(), sig_sym->body());
 }
 
 void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,

@@ -587,7 +587,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
         VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
       }
     } else if (VMStructs::hasMethodStructs()) {
-      NMethod *nmethod = CodeHeap::findNMethod((const void *)frame.pc());
+      VMNMethod *nmethod = CodeHeap::findNMethod((const void *)frame.pc());
       if (nmethod != NULL && nmethod->isNMethod() && nmethod->isAlive()) {
         VMMethod *method = nmethod->method();
         if (method != NULL) {
@@ -632,7 +632,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       pc = ((const void**)sp)[-1];
       anchor->setLastJavaPC(pc);
 
-      NMethod *m = CodeHeap::findNMethod(pc);
+      VMNMethod *m = CodeHeap::findNMethod(pc);
       if (m != NULL) {
         // AGCT fails if the last Java frame is a Runtime Stub with an invalid
         // _frame_complete_offset. In this case we patch _frame_complete_offset
@@ -656,7 +656,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
     if (sp != 0 && pc != NULL) {
       // Similar to the above: last Java frame is set,
       // but points to a Runtime Stub with an invalid _frame_complete_offset
-      NMethod *m = CodeHeap::findNMethod(pc);
+      VMNMethod *m = CodeHeap::findNMethod(pc);
       if (m != NULL && !m->isNMethod() && m->frameSize() > 0 &&
           m->frameCompleteOffset() == -1) {
         m->setFrameCompleteOffset(0);
@@ -691,9 +691,9 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
 }
 
 void Profiler::fillFrameTypes(ASGCT_CallFrame *frames, int num_frames,
-                              NMethod *nmethod) {
-  if (nmethod->isNMethod() && nmethod->isAlive()) {
-    VMMethod *method = nmethod->method();
+                              VMNMethod *nmthd) {
+  if (nmthd->isNMethod() && nmthd->isAlive()) {
+    VMMethod *method = nmthd->method();
     if (method == NULL) {
       return;
     }
@@ -710,7 +710,7 @@ void Profiler::fillFrameTypes(ASGCT_CallFrame *frames, int num_frames,
         break;
       }
       if (frames[i].method_id == current_method_id) {
-        int level = nmethod->level();
+        int level = nmthd->level();
         frames[i].bci = FrameType::encode(
             level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED,
             frames[i].bci);
@@ -720,7 +720,7 @@ void Profiler::fillFrameTypes(ASGCT_CallFrame *frames, int num_frames,
         break;
       }
     }
-  } else if (nmethod->isInterpreter()) {
+  } else if (nmthd->isInterpreter()) {
     // Mark the first Java frame as INTERPRETED
     for (int i = 0; i < num_frames; i++) {
       if (frames[i].bci > BCI_NATIVE_FRAME) {
@@ -850,7 +850,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
           if (mutex.acquired()) {
             java_frames = getJavaTraceAsync(ucontext, frames + num_frames, max_remaining, &java_ctx, &truncated);
             if (java_frames > 0 && java_ctx.pc != NULL && VMStructs::hasMethodStructs()) {
-              NMethod* nmethod = CodeHeap::findNMethod(java_ctx.pc);
+              VMNMethod* nmethod = CodeHeap::findNMethod(java_ctx.pc);
               if (nmethod != NULL) {
                 fillFrameTypes(frames + num_frames, java_frames, nmethod);
               }

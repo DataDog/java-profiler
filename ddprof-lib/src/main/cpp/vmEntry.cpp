@@ -568,7 +568,19 @@ void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
         // we use Method instead.
         if (VM::isHotspot() &&
             jvmti->GetClassLoader(klass, &cld) == JVMTI_ERROR_NONE && cld == nullptr) {
-           continue;
+            VMOopHandle* klass_handle = (VMOopHandle*)klass;
+            VMKlass* vmklass = VMKlass::fromOop(klass_handle->oop());
+            assert(vmklass != nullptr);
+            VMClassLoaderData* cld = vmklass->classLoaderData();
+            assert(cld != nullptr);
+                char* signature_ptr;
+                jvmti->GetClassSignature(klass, &signature_ptr, nullptr);
+            TEST_LOG("processing bootstrap class %s", signature_ptr);
+            // Lambda classes can be unloaded, exlcude them
+            if (!cld->hasClassMirrorHolder() && !cld->isAnonymous()) {
+                    TEST_LOG("Skipping  class %s",signature_ptr);
+                continue;
+            }
         }
 
         loadMethodIDs(jvmti, jni, klass);

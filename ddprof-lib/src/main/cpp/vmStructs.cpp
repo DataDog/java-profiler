@@ -34,6 +34,8 @@ int VMStructs::_symbol_body_offset = -1;
 int VMStructs::_oop_klass_offset = -1;
 int VMStructs::_class_loader_data_offset = -1;
 int VMStructs::_class_loader_data_next_offset = -1;
+int VMStructs::_class_loader_data_has_class_mirror_holder_offset = -1; // JDK17 and +
+int VMStructs::_class_loader_data_is_anonymous_offset = -1;  // JDK11
 int VMStructs::_methods_offset = -1;
 int VMStructs::_jmethod_ids_offset = -1;
 int VMStructs::_thread_osthread_offset = -1;
@@ -117,6 +119,7 @@ const void** VMStructs::_call_stub_return_addr = NULL;
 const void* VMStructs::_call_stub_return = NULL;
 const void* VMStructs::_interpreted_frame_valid_start = NULL;
 const void* VMStructs::_interpreted_frame_valid_end = NULL;
+int VMStructs::_oop_handle_obj_offset = -1;
 
 jfieldID VMStructs::_eetop;
 jfieldID VMStructs::_tid;
@@ -274,6 +277,10 @@ void VMStructs::initOffsets() {
             } else if (strcmp(type, "ClassLoaderData") == 0) {
                 if (strcmp(field, "_next") == 0) {
                     _class_loader_data_next_offset = *(int*)(entry + offset_offset);
+                } else if (strcmp(field, "_has_class_mirror_holder") == 0) { // JDK17 and +
+                    _class_loader_data_has_class_mirror_holder_offset = *(int*)(entry + offset_offset);
+                } else if (strcmp(field, "_is_anonymous") == 0) { // JDK11
+                    _class_loader_data_is_anonymous_offset = *(int*)(entry + offset_offset);
                 }
             } else if (strcmp(type, "java_lang_Class") == 0) {
                 if (strcmp(field, "_klass_offset") == 0) {
@@ -417,6 +424,10 @@ void VMStructs::initOffsets() {
                 // its CLD
                 if (strcmp(field, "_klasses[static_cast<int>(vmClassID::Object_klass_knum)]") == 0) {
                     VMBSClassLoader::setObjectKlassAddr(*(::VMKlass***)(entry + address_offset));
+                }
+            } else if(strcmp(type, "OopHandle") == 0) {
+                if (strcmp(field, "_obj") == 0) {
+                    _oop_handle_obj_offset = *(int*)(entry + offset_offset);
                 }
             }
         }
@@ -853,16 +864,12 @@ jmethodID VMMethod::id() {
     if (!goodPtr(const_method)) {
         return NULL;
     }
-
-    const char* cpool = (const char*) SafeAccess::load((void**)(const_method + _constmethod_constants_offset));
     unsigned short num = (unsigned short) SafeAccess::load32((int32_t*)(const_method + _constmethod_idnum_offset), 0);
-    if (goodPtr(cpool)) {
-        VMKlass* holder = methodHolder();
-        if (goodPtr(holder)) {
-            jmethodID* ids = holder->jmethodIDs();
-            if (ids != NULL && num < (size_t)ids[0]) {
-                return ids[num + 1];
-            }
+    VMKlass* holder = methodHolder();
+    if (goodPtr(holder)) {
+        jmethodID* ids = holder->jmethodIDs();
+        if (ids != NULL && num < (size_t)ids[0]) {
+            return ids[num + 1];
         }
     }
     return NULL;
@@ -878,11 +885,8 @@ jmethodID VMMethod::validatedId() {
 
 VMKlass* VMMethod::methodHolder() {
     // We may find a bogus NMethod during stack walking, it does not always point to a valid VMMethod
-    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
-    assert(goodPtr(const_method));    
-    const char* cpool = (const char*) SafeAccess::load((void**)(const_method + _constmethod_constants_offset));
-    assert(goodPtr(cpool));
-    return *(VMKlass**)(cpool + _pool_holder_offset);
+    VMConstantPool* cpool = constantPool();
+    return cpool->holder();
 }
 
 bool VMMethod::getLineNumberTable(jint* entry_count_ptr,
@@ -912,7 +916,7 @@ bool VMMethod::getLineNumberTable(jint* entry_count_ptr,
   return true;
 }
 
-NMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
+VMNMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
     unsigned char* heap_start = *(unsigned char**)(heap + _code_heap_memory_offset + _vs_low_offset);
     unsigned char* segmap = *(unsigned char**)(heap + _code_heap_segmap_offset + _vs_low_offset);
     size_t idx = ((unsigned char*)pc - heap_start) >> _code_heap_segment_shift;
@@ -925,10 +929,10 @@ NMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
     }
 
     unsigned char* block = heap_start + (idx << _code_heap_segment_shift) + _heap_block_used_offset;
-    return *block ? align<NMethod*>(block + sizeof(uintptr_t)) : NULL;
+    return *block ? align<VMNMethod*>(block + sizeof(uintptr_t)) : NULL;
 }
 
-int NMethod::findScopeOffset(const void* pc) {
+int VMNMethod::findScopeOffset(const void* pc) {
     intptr_t pc_offset = (const char*)pc - code();
     if (pc_offset < 0 || pc_offset > 0x7fffffff) {
         return -1;
