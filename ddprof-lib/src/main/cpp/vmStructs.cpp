@@ -72,6 +72,9 @@ int VMStructs::_constmethod_flags_offset = -1;
 int VMStructs::_constmethod_constants_offset = -1;
 int VMStructs::_constmethod_idnum_offset = -1;
 int VMStructs::_constmethod_size = -1;
+int VMStructs::_constmethod_name_index_offset = -1;
+int VMStructs::_constmethod_sig_index_offset = -1;
+int VMStructs::_constand_pool_size = -1;
 int VMStructs::_pool_holder_offset = -1;
 int VMStructs::_array_len_offset = 0;
 int VMStructs::_array_data_offset = -1;
@@ -251,6 +254,10 @@ void VMStructs::initOffsets() {
                     _constmethod_flags_offset = *(int*)(entry + offset_offset);
                 } else if (strcmp(field, "_code_size") == 0) {
                     _constmethod_code_size = *(int*)(entry + offset_offset);
+                } else if (strcmp(field, "_name_index") == 0) {
+                    _constmethod_name_index_offset = *(int*)(entry + offset_offset);
+                } else if (strcmp(field, "_signature_index") == 0) {
+                    _constmethod_sig_index_offset = *(int*)(entry + offset_offset);
                 }
             } else if (strcmp(type, "ConstantPool") == 0) {
                 if (strcmp(field, "_pool_holder") == 0) {
@@ -431,6 +438,8 @@ void VMStructs::initOffsets() {
                 _flag_size = *(int*)(entry + size_offset);
             } else if (strcmp(type, "ConstMethod") == 0) {
                 _constmethod_size = *(int*)(entry + size_offset);
+            } else if (strcmp(type, "ConstantPool") == 0) {
+                _constand_pool_size = *(int*)(entry + size_offset);
             }
         }
     }

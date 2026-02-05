@@ -151,6 +151,7 @@ void Lookup::cutArguments(char *func) {
 }
 
 void Lookup::fillJavaMethodInfo(MethodInfo *mi, VMMethod* method, bool first_time) {
+  
 
 }
 
@@ -332,6 +333,7 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   static const char* UNKNOWN = "unknown";
   unsigned long key;
   jint bci = frame.bci;
+  FrameTypeId frame_type = FrameType::decode(bci);
   jmethodID method = frame.method_id;
   FrameTypeId type = FrameType::decode(bci);
   if (method == nullptr) {
@@ -340,14 +342,22 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     key = MethodMap::makeKey(frame.native_function_name);
   } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
     key = MethodMap::makeKey(frame.packed_remote_frame);
+  } else if (type == FRAME_INTERPRETED_METHOD) {
+    key = MethodMap::makeKey(frame.vm_method);
   } else {
     FrameTypeId frame_type = FrameType::decode(bci);
+    bool valid_frame_type = frame_type == FRAME_INTERPRETED ||
+                            frame_type == FRAME_JIT_COMPILED ||
+                            frame_type == FRAME_INLINED ||
+                            frame_type == FRAME_C1_COMPILED;
+    if (!valid_frame_type) {
+    printf(" *** Frame type: %d\n", frame_type);
+    }
     assert(frame_type == FRAME_INTERPRETED || frame_type == FRAME_JIT_COMPILED ||
            frame_type == FRAME_INLINED || frame_type == FRAME_C1_COMPILED ||
            VM::isOpenJ9()); // OpenJ9 may have bugs that produce invalid frame types
     key = MethodMap::makeKey(method);
   }
-
 
   MethodInfo *mi = &(*_method_map)[key];
   if (!mi->_mark) {
@@ -388,11 +398,10 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
         TEST_LOG("WARNING: Library lookup failed for index %u", lib_index);
         fillNativeMethodInfo(mi, "unknown_library", nullptr);
       }
-    } else if (type == FRAME_INTERPRETED) {
-      fillJavaMethodInfo(mi, method, first_time);
-    } else {
-      assert(type == FRAME_INTERPRETED_METHOD);
+    } else if (type == FRAME_INTERPRETED_METHOD) {
       fillJavaMethodInfo(mi, frame.vm_method, first_time);
+    } else {
+      fillJavaMethodInfo(mi, method, first_time);
     }
   }
 

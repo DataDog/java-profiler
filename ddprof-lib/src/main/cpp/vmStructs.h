@@ -83,6 +83,9 @@ class VMStructs {
     static int _constmethod_flags_offset;
     static int _constmethod_size;
     static int _constmethod_code_size;
+    static int _constand_pool_size;
+    static int _constmethod_name_index_offset;
+    static int _constmethod_sig_index_offset;
     static int _pool_holder_offset;
     static int _array_len_offset;
     static int _array_data_offset;
@@ -387,6 +390,7 @@ class VMKlass : VMStructs {
     }
 
     VMSymbol* name() {
+        assert(_klass_name_offset >= 0);
         return *(VMSymbol**) at(_klass_name_offset);
     }
 
@@ -401,6 +405,7 @@ class VMKlass : VMStructs {
     }
 
     jmethodID* jmethodIDs() {
+        assert(_jmethod_ids_offset >= 0);
         return __atomic_load_n((jmethodID**) at(_jmethod_ids_offset), __ATOMIC_ACQUIRE);
     }
 };
@@ -558,7 +563,7 @@ class VMMethod : public /* TODO make private when consolidating VMMethod? */ VMS
 
     uint16_t codeSize() {
         assert(_constmethod_code_size >= 0);
-        return *(uint16_t*) ( *(const char**) at(_method_constmethod_offset) + _constmethod_code_size );
+        return *(uint16_t*) ( *(const char**) at(_method_constmethod_offset) + _constmethod_code_size);
     }
 
     uint32_t flags() {
@@ -578,6 +583,9 @@ class VMMethod : public /* TODO make private when consolidating VMMethod? */ VMS
     VMKlass* methodHolder();
     bool getLineNumberTable(jint* entry_count_ptr,
                             jvmtiLineNumberEntry** table_ptr);
+    
+    VMSymbol* name();
+    VMSymbol* signature();
 
     NMethod* code() {
         assert(_method_code_offset >= 0);
