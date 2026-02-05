@@ -110,9 +110,9 @@ class SimpleLinkShared extends DefaultTask {
 
         if (result.exitValue != 0) {
             def errorMsg = "Linking failed with exit code ${result.exitValue}"
-            def errorOutput = stderr.toString().trim()
-            if (errorOutput) {
-                errorMsg += "\n${errorOutput}"
+            def allOutput = (stdout.toString() + stderr.toString()).trim()
+            if (allOutput) {
+                errorMsg += "\n${allOutput}"
             }
             throw new RuntimeException(errorMsg)
         }

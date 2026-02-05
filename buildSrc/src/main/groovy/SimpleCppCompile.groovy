@@ -33,7 +33,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * tasks.register("compileLibRelease", SimpleCppCompile) {
  *     compiler = 'g++'
  *     compilerArgs = ['-O3', '-fPIC', '-std=c++17']
- *     sources = fileTree('src/main/cpp') { include '**&#47;*.cpp' }
+ *     sources = fileTree('src/main/cpp') { include '**&#47;*.{c,cc,cpp}' }
  *     includes = files('src/main/cpp', "${System.env.JAVA_HOME}/include")
  *     objectFileDir = file("build/obj/release")
  * }
@@ -128,9 +128,9 @@ class SimpleCppCompile extends DefaultTask {
 
                 if (result.exitValue != 0) {
                     def errorMsg = "Failed to compile ${sourceFile.name}: exit code ${result.exitValue}"
-                    def errorOutput = stderr.toString().trim()
-                    if (errorOutput) {
-                        errorMsg += "\n${errorOutput}"
+                    def allOutput = (stdout.toString() + stderr.toString()).trim()
+                    if (allOutput) {
+                        errorMsg += "\n${allOutput}"
                     }
                     errors.add(errorMsg)
                 } else {
