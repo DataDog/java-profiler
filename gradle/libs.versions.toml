@@ -1,0 +1,11 @@
+# Copyright 2026, Datadog, Inc
+
+[versions]
+cpp-standard = "17"
+kotlin = "1.9.22"
+
+[libraries]
+# Build system dependencies (if needed in the future)
+
+[plugins]
+# Plugin references will be added as needed
