@@ -86,7 +86,9 @@ while IFS= read -r job; do
     completed_at=$(echo "$job" | jq -r '.completed_at')
 
     # Only process test jobs (match pattern: test-linux-{libc}-{arch} ({java}, {config}))
-    if [[ "$name" =~ ^test-linux-([a-z]+)-([a-z0-9]+)\ \(([^,]+),\ ([^)]+)\)$ ]]; then
+    # Note: regex stored in variable to avoid bash parsing issues with ) character
+    test_job_pattern='^test-linux-([a-z]+)-([a-z0-9]+) \(([^,]+), ([^)]+)\)$'
+    if [[ "$name" =~ $test_job_pattern ]]; then
         libc="${BASH_REMATCH[1]}"
         arch="${BASH_REMATCH[2]}"
         java_version="${BASH_REMATCH[3]}"
