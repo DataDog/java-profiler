@@ -104,11 +104,10 @@ buildConfigNames.forEach { name ->
         }
         into(file(libraryTargetPath(name)))
 
-        if (name == "release") {
-            val linkTask = tasks.findByName("linkRelease")
-            if (linkTask != null) {
-                dependsOn(linkTask)
-            }
+        // Ensure library is built before copying
+        val linkTask = tasks.findByName("link${name.replaceFirstChar { it.uppercase() }}")
+        if (linkTask != null) {
+            dependsOn(linkTask)
         }
     }
 
