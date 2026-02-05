@@ -98,7 +98,9 @@ val copyExternalLibs by tasks.registering(Copy::class) {
 val buildConfigNames = listOf("release", "debug", "asan", "tsan", "fuzzer")
 buildConfigNames.forEach { name ->
     val copyTask = tasks.register("copy${name.replaceFirstChar { it.uppercase() }}Libs", Copy::class) {
-        val qualifier = if (name == "release") "stripped" else ""
+        // TODO: Re-enable stripped qualifier when debug symbol extraction is implemented
+        // val qualifier = if (name == "release") "stripped" else ""
+        val qualifier = ""
         from(file(librarySourcePath(name, qualifier)).parent)
         into(file(libraryTargetPath(name)))
 
