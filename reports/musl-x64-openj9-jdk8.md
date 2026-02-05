@@ -3,9 +3,9 @@ layout: default
 title: musl-x64-openj9-jdk8
 ---
 
-## musl-x64-openj9-jdk8 - ✅ PASS
+## musl-x64-openj9-jdk8 - ❌ FAIL
 
-**Date:** 2026-02-04 19:34:26 EST
+**Date:** 2026-02-05 04:29:55 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,56 +18,49 @@ title: musl-x64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 93 |
-| CPU Cores (end) | 93 |
+| CPU Cores (start) | 17 |
+| CPU Cores (end) | 26 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ✅
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 244 |
-| Sample Rate | 4.07/sec |
-| Health Score | 254% |
-| Threads | 7 |
-| Allocations | 0 |
+| Status | FAIL |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
-#### Scenario 2: Tracer+Profiler ✅
+#### Scenario 2: Tracer+Profiler ⚠️
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 255 |
-| Sample Rate | 4.25/sec |
-| Health Score | 266% |
-| Threads | 11 |
-| Allocations | 0 |
+| Status | N/A |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 93-93 cores)</summary>
+<summary>CPU Timeline (2 unique values: 17-26 cores)</summary>
 
 ```
-1770251487 93
-1770251492 93
-1770251497 93
-1770251502 93
-1770251507 93
-1770251512 93
-1770251517 93
-1770251522 93
-1770251527 93
-1770251532 93
-1770251538 93
-1770251543 93
-1770251548 93
-1770251553 93
-1770251558 93
-1770251563 93
-1770251568 93
-1770251573 93
-1770251578 93
-1770251583 93
+1770283355 17
+1770283360 17
+1770283365 17
+1770283370 17
+1770283375 17
+1770283380 17
+1770283385 17
+1770283390 17
+1770283395 17
+1770283400 17
+1770283405 17
+1770283410 26
+1770283415 26
 ```
 </details>
 
