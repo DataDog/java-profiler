@@ -5,13 +5,13 @@ title: Java Profiler Build - Test Dashboard
 
 # Java Profiler Build - Test Dashboard
 
-> **Last Updated:** 2026-02-05 10:01 UTC
+> **Last Updated:** 2026-02-05 10:23 UTC
 
 ## Quick Status
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](integration/) | [#94818116](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94818116) | ⚠️ | jb/test_reports_ci | [#355](https://github.com/DataDog/java-profiler/pull/355) |
+| [Integration](integration/) | [#94823236](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94823236) | ✅ | main | - |
 | [Benchmarks](benchmarks/) | - | - | - | - |
 | [Reliability](reliability/) | - | - | - | - |
 
@@ -37,11 +37,11 @@ Tests multiple allocator configurations (gmalloc, tcmalloc, jemalloc).
 
 | Date | Type | Pipeline | Branch | PR | Status |
 |------|------|----------|--------|-----|--------|
+| 2026-02-05 | Integration | [#94823236](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94823236) | main | - | ✅ |
 | 2026-02-05 | Integration | [#94818116](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94818116) | jb/test_reports_ci | [#355](https://github.com/DataDog/java-profiler/pull/355) | ⚠️ |
 | 2026-02-05 | Integration | [#94814412](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94814412) | jb/test_reports_ci | [#355](https://github.com/DataDog/java-profiler/pull/355) | ⚠️ |
 | 2026-02-05 | Integration | [#94779864](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94779864) | zgu/reduce-jmethodID | - | ✅ |
 | 2026-02-04 | Integration | [#94693395](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94693395) | jb/test_reports_ci | [#355](https://github.com/DataDog/java-profiler/pull/355) | ✅ |
-| 2026-02-04 | Integration | [#94687053](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94687053) | main | - | ✅ |
 
 ---
 
