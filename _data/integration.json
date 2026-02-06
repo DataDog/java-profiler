@@ -1,6 +1,29 @@
 {
   "runs": [
     {
+      "id": "95012625",
+      "timestamp": "2026-02-06T15:50:44Z",
+      "ddprof_branch": "main",
+      "ddprof_sha": "002f2448",
+      "ddprof_pr": null,
+      "pipeline": {
+        "id": "95012625",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95012625"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 40,
+        "failed_jobs": 0,
+        "total_scenarios": 80,
+        "passed_scenarios": 80,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "95002956",
       "timestamp": "2026-02-06T14:56:47Z",
       "ddprof_branch": "zgu/validatedId",
@@ -243,46 +266,6 @@
           "musl-arm64-hotspot-jdk8",
           "musl-arm64-openj9-jdk11",
           "musl-arm64-openj9-jdk25",
-          "musl-arm64-openj9-jdk8",
-          "musl-x64-hotspot-jdk11",
-          "musl-x64-hotspot-jdk8",
-          "musl-x64-openj9-jdk11",
-          "musl-x64-openj9-jdk8"
-        ]
-      }
-    },
-    {
-      "id": "94927555",
-      "timestamp": "2026-02-05T20:03:43Z",
-      "ddprof_branch": "zgu/reduce-jmethodID",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "94927555",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94927555"
-      },
-      "lib_version": "unknown",
-      "status": "partial",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 24,
-        "failed_jobs": 16,
-        "total_scenarios": 48,
-        "passed_scenarios": 48,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": [
-          "glibc-arm64-hotspot-jdk11",
-          "glibc-arm64-hotspot-jdk8",
-          "glibc-arm64-openj9-jdk11",
-          "glibc-arm64-openj9-jdk8",
-          "glibc-x64-hotspot-jdk11",
-          "glibc-x64-hotspot-jdk8",
-          "glibc-x64-openj9-jdk11",
-          "glibc-x64-openj9-jdk8",
-          "musl-arm64-hotspot-jdk11",
-          "musl-arm64-hotspot-jdk8",
-          "musl-arm64-openj9-jdk11",
           "musl-arm64-openj9-jdk8",
           "musl-x64-hotspot-jdk11",
           "musl-x64-hotspot-jdk8",

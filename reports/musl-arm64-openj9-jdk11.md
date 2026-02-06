@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk11
 
 ## musl-arm64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-02-06 09:56:50 EST
+**Date:** 2026-02-06 10:50:47 EST
 
 ### Configuration
 | Setting | Value |
@@ -32,42 +32,42 @@ title: musl-arm64-openj9-jdk11
 | Sample Rate | 1.62/sec |
 | Health Score | 101% |
 | Threads | 8 |
-| Allocations | 67 |
+| Allocations | 55 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 86 |
-| Sample Rate | 1.43/sec |
-| Health Score | 89% |
-| Threads | 9 |
-| Allocations | 51 |
+| CPU Samples | 20 |
+| Sample Rate | 0.33/sec |
+| Health Score | 21% |
+| Threads | 4 |
+| Allocations | 7 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770389616 24
-1770389621 24
-1770389626 24
-1770389631 24
-1770389636 24
-1770389641 24
-1770389646 24
-1770389651 24
-1770389656 24
-1770389661 24
-1770389666 24
-1770389671 24
-1770389676 24
-1770389681 24
-1770389686 24
-1770389691 24
-1770389696 24
-1770389701 24
-1770389706 24
-1770389711 24
+1770392779 24
+1770392784 24
+1770392789 24
+1770392794 24
+1770392799 24
+1770392804 24
+1770392809 24
+1770392814 24
+1770392819 24
+1770392824 24
+1770392829 24
+1770392834 24
+1770392839 24
+1770392844 24
+1770392849 24
+1770392854 24
+1770392859 24
+1770392864 24
+1770392869 24
+1770392874 24
 ```
 </details>
 
