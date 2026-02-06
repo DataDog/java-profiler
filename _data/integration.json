@@ -1,6 +1,33 @@
 {
   "runs": [
     {
+      "id": "94984937",
+      "timestamp": "2026-02-06T11:37:30Z",
+      "ddprof_branch": "jb/build_revamp",
+      "ddprof_sha": "unknown",
+      "ddprof_pr": {
+        "number": 358,
+        "url": "https://github.com/DataDog/java-profiler/pull/358",
+        "title": "Migrate build system to Kotlin build-logic"
+      },
+      "pipeline": {
+        "id": "94984937",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94984937"
+      },
+      "lib_version": "unknown",
+      "status": "unknown",
+      "summary": {
+        "total_jobs": 0,
+        "passed_jobs": 0,
+        "failed_jobs": 0,
+        "total_scenarios": 0,
+        "passed_scenarios": 0,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "94983737",
       "timestamp": "2026-02-06T11:33:08Z",
       "ddprof_branch": "main",
@@ -296,33 +323,6 @@
       "pipeline": {
         "id": "94779864",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94779864"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 40,
-        "failed_jobs": 0,
-        "total_scenarios": 80,
-        "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "94693395",
-      "timestamp": "2026-02-04T19:09:38Z",
-      "ddprof_branch": "jb/test_reports_ci",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": {
-        "number": 355,
-        "url": "https://github.com/DataDog/java-profiler/pull/355",
-        "title": "Add CI test results summary as PR comment"
-      },
-      "pipeline": {
-        "id": "94693395",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94693395"
       },
       "lib_version": "unknown",
       "status": "passed",
