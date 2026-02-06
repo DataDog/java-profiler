@@ -21,5 +21,9 @@ gradlePlugin {
             id = "com.datadoghq.gtest"
             implementationClass = "com.datadoghq.native.gtest.GtestPlugin"
         }
+        create("scanbuild") {
+            id = "com.datadoghq.scanbuild"
+            implementationClass = "com.datadoghq.native.scanbuild.ScanBuildPlugin"
+        }
     }
 }

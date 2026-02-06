@@ -8,6 +8,7 @@ plugins {
   id("de.undercouch.download") version "4.1.1"
   id("com.datadoghq.native-build")
   id("com.datadoghq.gtest")
+  id("com.datadoghq.scanbuild")
 }
 
 val libraryName = "ddprof"
