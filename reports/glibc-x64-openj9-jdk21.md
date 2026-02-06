@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk21
 
 ## glibc-x64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-02-06 06:12:50 EST
+**Date:** 2026-02-06 06:33:10 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 412 |
-| Sample Rate | 6.87/sec |
-| Health Score | 429% |
+| CPU Samples | 471 |
+| Sample Rate | 7.85/sec |
+| Health Score | 491% |
 | Threads | 8 |
-| Allocations | 364 |
+| Allocations | 363 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 601 |
-| Sample Rate | 10.02/sec |
-| Health Score | 626% |
-| Threads | 8 |
+| CPU Samples | 684 |
+| Sample Rate | 11.40/sec |
+| Health Score | 712% |
+| Threads | 9 |
 | Allocations | 476 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1770375779 32
-1770375784 32
-1770375789 32
-1770375794 32
-1770375799 32
-1770375804 32
-1770375809 32
-1770375814 32
-1770375819 32
-1770375824 32
-1770375829 32
-1770375834 32
-1770375839 32
-1770375844 32
-1770375849 32
-1770375854 32
-1770375859 32
-1770375864 32
-1770375869 32
-1770375874 32
+1770377259 32
+1770377264 32
+1770377269 32
+1770377274 32
+1770377279 32
+1770377284 32
+1770377289 32
+1770377294 32
+1770377299 32
+1770377304 32
+1770377309 32
+1770377314 32
+1770377319 32
+1770377324 32
+1770377329 32
+1770377334 32
+1770377339 32
+1770377344 32
+1770377349 32
+1770377354 32
 ```
 </details>
 

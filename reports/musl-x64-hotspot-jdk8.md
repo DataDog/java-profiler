@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk8
 
 ## musl-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-02-06 06:12:51 EST
+**Date:** 2026-02-06 06:33:11 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 181 |
-| Sample Rate | 3.02/sec |
-| Health Score | 189% |
+| CPU Samples | 168 |
+| Sample Rate | 2.80/sec |
+| Health Score | 175% |
 | Threads | 5 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: musl-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 403 |
-| Sample Rate | 6.72/sec |
-| Health Score | 420% |
-| Threads | 9 |
+| CPU Samples | 355 |
+| Sample Rate | 5.92/sec |
+| Health Score | 370% |
+| Threads | 7 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1770375794 32
-1770375799 32
-1770375804 32
-1770375809 32
-1770375814 32
-1770375819 32
-1770375824 32
-1770375829 32
-1770375834 32
-1770375839 32
-1770375844 32
-1770375849 32
-1770375854 32
-1770375859 32
-1770375864 32
-1770375869 32
-1770375874 32
-1770375879 32
-1770375884 32
-1770375889 32
+1770377255 32
+1770377260 32
+1770377265 32
+1770377270 32
+1770377275 32
+1770377280 32
+1770377285 32
+1770377290 32
+1770377295 32
+1770377300 32
+1770377305 32
+1770377310 32
+1770377315 32
+1770377320 32
+1770377325 32
+1770377330 32
+1770377335 32
+1770377340 32
+1770377345 32
+1770377350 32
 ```
 </details>
 

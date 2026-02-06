@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk8
 
 ## glibc-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-02-06 06:12:50 EST
+**Date:** 2026-02-06 06:33:10 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 88 |
-| Sample Rate | 1.47/sec |
-| Health Score | 92% |
-| Threads | 9 |
+| CPU Samples | 315 |
+| Sample Rate | 5.25/sec |
+| Health Score | 328% |
+| Threads | 8 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 111 |
-| Sample Rate | 1.85/sec |
-| Health Score | 116% |
-| Threads | 9 |
+| CPU Samples | 187 |
+| Sample Rate | 3.12/sec |
+| Health Score | 195% |
+| Threads | 7 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770375797 24
-1770375802 24
-1770375807 24
-1770375812 24
-1770375817 24
-1770375822 24
-1770375827 24
-1770375832 24
-1770375837 24
-1770375842 24
-1770375847 24
-1770375852 24
-1770375857 24
-1770375862 24
-1770375867 24
-1770375872 24
-1770375877 24
-1770375882 24
-1770375887 24
-1770375892 24
+1770377280 24
+1770377285 24
+1770377290 24
+1770377295 24
+1770377300 24
+1770377305 24
+1770377310 24
+1770377315 24
+1770377320 24
+1770377325 24
+1770377330 24
+1770377335 24
+1770377340 24
+1770377345 24
+1770377350 24
+1770377355 24
+1770377360 24
+1770377365 24
+1770377370 24
+1770377375 24
 ```
 </details>
 
