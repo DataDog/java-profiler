@@ -160,10 +160,10 @@ for key in "${!job_status[@]}"; do
     dur="${job_duration[$key]:-0}"
 
     case "$status" in
-        success)   ((passed_jobs++)) ;;
+        success)   ((++passed_jobs)) ;;
         failure)   ;;  # already counted
-        skipped)   ((skipped_jobs++)) ;;
-        cancelled) ((cancelled_jobs++)) ;;
+        skipped)   ((++skipped_jobs)) ;;
+        cancelled) ((++cancelled_jobs)) ;;
     esac
 
     ((total_duration += dur)) || true
@@ -257,9 +257,9 @@ log "Generating markdown summary..."
         echo ""
 
         # Separator row
-        printf "|----------|"
+        printf "%s" "|----------|"
         for _ in "${sorted_java[@]}"; do
-            printf "--------|"
+            printf "%s" "--------|"
         done
         echo ""
 
