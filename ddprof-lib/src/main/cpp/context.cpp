@@ -1,5 +1,5 @@
 /*
- * Copyright 2021, 2022 Datadog, Inc
+ * Copyright 2021, 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,16 +17,24 @@
 #include "context.h"
 #include "counters.h"
 #include "os.h"
+#include "guards.h"
 #include "thread.h"
 #include <cstring>
 
 DLLEXPORT thread_local Context context_tls_v1;
 
 Context& Contexts::initializeContextTls() {
+  // Block profiling signals during context_tls_v1 first access to prevent
+  // signal handler from interrupting musl's TLS initialization
+  SignalBlocker blocker;
+
+  // FIRST access to context_tls_v1 - triggers musl TLS init on first call
   // ProfiledThread::current() will never return nullptr
   Context& ctx = context_tls_v1;
-  // Store pointer for signal-safe access
+  // Store pointer in ProfiledThread for signal-safe access
   ProfiledThread::current()->markContextTlsInitialized(&ctx);
+
+  // Signal mask automatically restored when blocker goes out of scope
   return ctx;
 }
 

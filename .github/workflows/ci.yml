@@ -161,3 +161,29 @@ jobs:
     with:
       configuration: ${{ needs.compute-configurations.outputs.configurations }}
 
+  summarize-tests:
+    needs: [test-matrix]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Generate test summary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          .github/scripts/generate-test-summary.sh \
+            "${{ github.run_id }}" \
+            "test-summary.md"
+
+      - name: Post PR comment
+        uses: ./.github/actions/upsert-pr-comment
+        with:
+          body-file: test-summary.md
+          comment-id: ci-test-results
+

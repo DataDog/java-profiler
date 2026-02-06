@@ -1,23 +1,36 @@
 /*
- * Copyright 2025, Datadog, Inc.
- * SPDX-License-Identifier: Apache-2.0
+ * Copyright 2025, 2026 Datadog, Inc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
-#ifndef _CRITICALSECTION_H
-#define _CRITICALSECTION_H
+#ifndef _GUARDS_H
+#define _GUARDS_H
 
 #include <cstdint>
 #include <cstddef>
+#include <signal.h>
+#include <pthread.h>
 
 /**
  * Race-free critical section using atomic compare-and-swap.
- * 
+ *
  * Hybrid implementation:
  * - Primary: Uses ProfiledThread storage when available (zero memory overhead)
  * - Fallback: Hash-based bitmap for stress tests and cases without ProfiledThread
  *
  * This approach is async-signal-safe and avoids TLS allocation issues.
- * 
+ *
  * Usage:
  *   {
  *     CriticalSection cs; // Atomically claim critical section
@@ -25,7 +38,7 @@
  *     // Complex data structure operations
  *     // Signal handlers will be blocked from entering
  *   } // Critical section automatically released
- * 
+ *
  * This eliminates race conditions between signal handlers and normal code
  * by ensuring only one can hold the critical section at a time per thread.
  *
@@ -54,17 +67,17 @@ private:
     bool _using_fallback;   // Track which storage mechanism we're using
     uint32_t _word_index;   // For fallback bitmap cleanup
     uint64_t _bit_mask;     // For fallback bitmap cleanup
-    
+
 public:
     CriticalSection();
     ~CriticalSection();
-    
+
     // Non-copyable, non-movable
     CriticalSection(const CriticalSection&) = delete;
     CriticalSection& operator=(const CriticalSection&) = delete;
     CriticalSection(CriticalSection&&) = delete;
     CriticalSection& operator=(CriticalSection&&) = delete;
-    
+
     // Check if this instance successfully entered the critical section
     bool entered() const { return _entered; }
 
@@ -73,4 +86,66 @@ private:
     static uint32_t hash_tid(int tid);
 };
 
-#endif // _CRITICALSECTION_H
+/**
+ * RAII guard to block profiling signals during critical operations.
+ *
+ * Blocks SIGPROF and SIGVTALRM signals on construction and automatically
+ * restores the original signal mask on destruction. This prevents signal
+ * handlers from interrupting operations that are not async-signal-safe,
+ * such as musl libc's TLS initialization.
+ *
+ * !WARNING!
+ * For guarding access to code running as a signal handler use CriticalSection
+ * !WARNING!
+ *
+ * Usage:
+ *   {
+ *     SignalBlocker blocker; // Blocks profiling signals
+ *     // Perform operations that must not be interrupted by signals
+ *     // (e.g., TLS initialization, malloc, etc.)
+ *   } // Signal mask automatically restored
+ *
+ * The blocker is exception-safe: the signal mask will be restored even
+ * if an exception is thrown within the protected scope.
+ *
+ * Note: This only blocks signals for the current thread. Other threads
+ * continue to receive profiling signals normally.
+ */
+class SignalBlocker {
+private:
+  sigset_t _old_mask;
+  bool _active;
+
+public:
+  SignalBlocker() : _active(false) {
+    sigset_t prof_signals;
+    sigemptyset(&prof_signals);
+
+    // Add all profiling signals that could interrupt us
+    sigaddset(&prof_signals, SIGPROF);     // Used by ITimer and CTimer
+    sigaddset(&prof_signals, SIGVTALRM);   // Used by WallClock
+#ifdef __linux__
+    // Block RT signals used by TLS priming and potentially other profilers (Linux-only)
+    // This prevents any RT signal handler from interrupting TLS initialization
+    for (int sig = SIGRTMIN; sig <= SIGRTMIN + 5 && sig <= SIGRTMAX; sig++) {
+      sigaddset(&prof_signals, sig);
+    }
+#endif
+
+    if (pthread_sigmask(SIG_BLOCK, &prof_signals, &_old_mask) == 0) {
+      _active = true;
+    }
+  }
+
+  ~SignalBlocker() {
+    if (_active) {
+      pthread_sigmask(SIG_SETMASK, &_old_mask, nullptr);
+    }
+  }
+
+  // Non-copyable
+  SignalBlocker(const SignalBlocker&) = delete;
+  SignalBlocker& operator=(const SignalBlocker&) = delete;
+};
+
+#endif // _GUARDS_H
