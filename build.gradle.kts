@@ -29,9 +29,8 @@ allprojects {
     gradlePluginPortal()
   }
 
-  // Temporary: Apply configurations.gradle for Groovy modules until they're migrated
-  // ddprof-lib uses the plugin instead, but other modules still need this
-  apply(from = "$rootDir/gradle/configurations.gradle")
+  // Apply configurations.gradle.kts to define build configurations
+  apply(from = "$rootDir/gradle/configurations.gradle.kts")
 }
 
 repositories {
