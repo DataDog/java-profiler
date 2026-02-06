@@ -147,8 +147,8 @@ tasks.register("linkLib", NativeLinkTask::class) {
 ```
 
 **Platform-specific implementation:**
-- **Linux**: Generates version script (`.ver` file) with wildcard pattern support
-- **macOS**: Generates exported symbols list (`.exp` file) with explicit names (auto-adds `_` prefix)
+- **Linux**: Generates version script (`.ver` file) with wildcard pattern support (e.g., `Java_*` matches all JNI methods)
+- **macOS**: Generates exported symbols list (`.exp` file) - **Note:** Wildcards are not supported on macOS. Patterns like `Java_*` are treated as literal symbol names. For JNI exports, you must either list individual symbols or use `-fvisibility` compiler flags instead.
 
 **Generated files** (in `temporaryDir`):
 - Linux: `library.ver` → `-Wl,--version-script=library.ver`

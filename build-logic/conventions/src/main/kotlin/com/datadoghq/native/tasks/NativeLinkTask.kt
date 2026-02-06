@@ -384,16 +384,17 @@ abstract class NativeLinkTask @Inject constructor(
                 appendLine("    $pattern;")
             }
 
-            // Hide everything else unless it was explicitly exported
-            if (exportSymbols.get().isNotEmpty()) {
-                appendLine("  local:")
-                appendLine("    *;")
-            }
+            // Consolidate all hidden symbols in a single local section
+            appendLine("  local:")
 
             // Explicitly hide specified symbols (override exports)
             hideSymbols.get().forEach { pattern ->
-                appendLine("  local:")
                 appendLine("    $pattern;")
+            }
+
+            // Hide everything else unless it was explicitly exported
+            if (exportSymbols.get().isNotEmpty() || hideSymbols.get().isNotEmpty()) {
+                appendLine("    *;")
             }
 
             appendLine("};")

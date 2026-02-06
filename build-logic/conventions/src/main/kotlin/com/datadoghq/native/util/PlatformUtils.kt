@@ -4,7 +4,6 @@ package com.datadoghq.native.util
 
 import com.datadoghq.native.model.Architecture
 import com.datadoghq.native.model.Platform
-import org.gradle.api.Project
 import java.io.File
 
 object PlatformUtils {
@@ -25,7 +24,7 @@ object PlatformUtils {
     fun javaHome(): String {
         return System.getenv("JAVA_HOME")
             ?: System.getProperty("java.home")
-            ?: throw IllegalStateException("JAVA_HOME not set")
+            ?: throw IllegalStateException("Neither JAVA_HOME environment variable nor java.home system property is set")
     }
 
     fun jniIncludePaths(): List<String> {

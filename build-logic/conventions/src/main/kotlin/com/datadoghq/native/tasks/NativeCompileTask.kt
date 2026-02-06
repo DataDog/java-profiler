@@ -328,12 +328,25 @@ abstract class NativeCompileTask @Inject constructor(
         val total = sourceFiles.size
         logNormal("Compiling $total C++ source file${if (total == 1) "" else "s"} with ${compiler.get()}...")
 
-        // Compile files in parallel
-        sourceFiles.parallelStream().forEach { sourceFile ->
-            try {
-                compileFile(sourceFile, objDir, baseArgs, includeArgs, compiled, total, errors)
-            } catch (e: Exception) {
-                errors.add("Exception compiling ${sourceFile.name}: ${e.message}")
+        // Compile files in parallel (or sequentially for FAIL_FAST)
+        if (errorHandling.get() == ErrorHandlingMode.FAIL_FAST) {
+            // Use sequential stream for FAIL_FAST to ensure immediate termination on error
+            sourceFiles.stream().forEach { sourceFile ->
+                try {
+                    compileFile(sourceFile, objDir, baseArgs, includeArgs, compiled, total, errors)
+                } catch (e: Exception) {
+                    errors.add("Exception compiling ${sourceFile.name}: ${e.message}")
+                    throw e  // Re-throw to stop compilation immediately in FAIL_FAST mode
+                }
+            }
+        } else {
+            // Use parallel stream for COLLECT_ALL mode
+            sourceFiles.parallelStream().forEach { sourceFile ->
+                try {
+                    compileFile(sourceFile, objDir, baseArgs, includeArgs, compiled, total, errors)
+                } catch (e: Exception) {
+                    errors.add("Exception compiling ${sourceFile.name}: ${e.message}")
+                }
             }
         }
     }
@@ -373,12 +386,25 @@ abstract class NativeCompileTask @Inject constructor(
         val total = allFiles.size
         logNormal("Compiling $total C++ source file${if (total == 1) "" else "s"} from ${sourceSets.size} source set${if (sourceSets.size == 1) "" else "s"} with ${compiler.get()}...")
 
-        // Compile files in parallel with their specific args
-        allFiles.parallelStream().forEach { (sourceFile, specificArgs) ->
-            try {
-                compileFile(sourceFile, objDir, specificArgs, includeArgs, compiled, total, errors)
-            } catch (e: Exception) {
-                errors.add("Exception compiling ${sourceFile.name}: ${e.message}")
+        // Compile files in parallel (or sequentially for FAIL_FAST) with their specific args
+        if (errorHandling.get() == ErrorHandlingMode.FAIL_FAST) {
+            // Use sequential stream for FAIL_FAST to ensure immediate termination on error
+            allFiles.stream().forEach { (sourceFile, specificArgs) ->
+                try {
+                    compileFile(sourceFile, objDir, specificArgs, includeArgs, compiled, total, errors)
+                } catch (e: Exception) {
+                    errors.add("Exception compiling ${sourceFile.name}: ${e.message}")
+                    throw e  // Re-throw to stop compilation immediately in FAIL_FAST mode
+                }
+            }
+        } else {
+            // Use parallel stream for COLLECT_ALL mode
+            allFiles.parallelStream().forEach { (sourceFile, specificArgs) ->
+                try {
+                    compileFile(sourceFile, objDir, specificArgs, includeArgs, compiled, total, errors)
+                } catch (e: Exception) {
+                    errors.add("Exception compiling ${sourceFile.name}: ${e.message}")
+                }
             }
         }
     }

@@ -39,12 +39,12 @@ abstract class BuildConfiguration @Inject constructor(
     fun identifier(): String {
         val platformStr = platform.get().toString()
         val archStr = architecture.get().toString()
-        return "$configName${platformStr.capitalize()}${archStr.capitalize()}"
+        return "$configName${platformStr.replaceFirstChar { it.titlecase() }}${archStr.replaceFirstChar { it.titlecase() }}"
     }
 
     /**
      * Returns the capitalized name for task generation.
      * Example: "Release" for name "release"
      */
-    fun capitalizedName(): String = configName.capitalize()
+    fun capitalizedName(): String = configName.replaceFirstChar { it.titlecase() }
 }
