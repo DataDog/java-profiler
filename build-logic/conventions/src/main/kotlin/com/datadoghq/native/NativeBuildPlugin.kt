@@ -167,7 +167,7 @@ class NativeBuildPlugin : Plugin<Project> {
         }
 
         // Create assemble task
-        val assembleTask = project.tasks.register("assemble$configName") {
+        project.tasks.register("assemble$configName") {
             group = "build"
             description = "Assembles ${config.name} configuration"
             dependsOn(linkTask)
@@ -176,37 +176,7 @@ class NativeBuildPlugin : Plugin<Project> {
         project.logger.debug("Created tasks for configuration: ${config.name}")
     }
 
-    private fun findCompiler(project: Project): String {
-        // Check for forced compiler override via Gradle property (-Pnative.forceCompiler=clang++)
-        val forcedCompiler = project.findProperty("native.forceCompiler") as? String
-        if (forcedCompiler != null) {
-            project.logger.lifecycle("Using forced compiler from -Pnative.forceCompiler: $forcedCompiler")
-            // Verify the forced compiler is available
-            if (PlatformUtils.isCompilerAvailable(forcedCompiler)) {
-                return forcedCompiler
-            } else {
-                throw org.gradle.api.GradleException(
-                    "Forced compiler '$forcedCompiler' is not available. " +
-                    "Please install it or remove the -Pnative.forceCompiler property."
-                )
-            }
-        }
-
-        // Auto-detect: Try to find clang++ or g++ on PATH
-        val compilers = listOf("clang++", "g++", "c++")
-        for (compiler in compilers) {
-            if (PlatformUtils.isCompilerAvailable(compiler)) {
-                project.logger.lifecycle("Auto-detected compiler: $compiler")
-                return compiler
-            }
-        }
-
-        // No compiler found
-        throw org.gradle.api.GradleException(
-            "No C++ compiler found. Please install clang++ or g++, " +
-            "or specify one with -Pnative.forceCompiler=/path/to/compiler"
-        )
-    }
+    private fun findCompiler(project: Project): String = PlatformUtils.findCompiler(project)
 
     private fun createAggregationTasks(
         project: Project,

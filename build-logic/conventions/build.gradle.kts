@@ -17,5 +17,9 @@ gradlePlugin {
             id = "com.datadoghq.native-build"
             implementationClass = "com.datadoghq.native.NativeBuildPlugin"
         }
+        create("gtest") {
+            id = "com.datadoghq.gtest"
+            implementationClass = "com.datadoghq.native.gtest.GtestPlugin"
+        }
     }
 }

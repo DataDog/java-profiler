@@ -23,22 +23,26 @@ Gradle's native plugins have several problems:
 build-logic/
 └── conventions/
     └── src/main/kotlin/com/datadoghq/native/
-        ├── NativeBuildPlugin.kt      # Main plugin entry point
-        ├── NativeBuildExtension.kt   # DSL extension for configuration
+        ├── NativeBuildPlugin.kt          # Main native build plugin
+        ├── NativeBuildExtension.kt       # DSL extension for configuration
         ├── config/
         │   └── ConfigurationPresets.kt   # Standard build configurations
+        ├── gtest/
+        │   ├── GtestPlugin.kt            # Google Test integration plugin
+        │   └── GtestExtension.kt         # DSL extension for gtest config
         ├── model/
-        │   ├── Architecture.kt       # x64, arm64 enum
-        │   ├── Platform.kt           # linux, macos enum
-        │   ├── BuildConfiguration.kt # Configuration model
-        │   ├── LogLevel.kt           # QUIET, NORMAL, VERBOSE, DEBUG
-        │   ├── ErrorHandlingMode.kt  # FAIL_FAST, COLLECT_ALL
-        │   └── SourceSet.kt          # Per-directory compiler flags
+        │   ├── Architecture.kt           # x64, arm64 enum
+        │   ├── Platform.kt               # linux, macos enum
+        │   ├── BuildConfiguration.kt     # Configuration model
+        │   ├── LogLevel.kt               # QUIET, NORMAL, VERBOSE, DEBUG
+        │   ├── ErrorHandlingMode.kt      # FAIL_FAST, COLLECT_ALL
+        │   └── SourceSet.kt              # Per-directory compiler flags
         ├── tasks/
-        │   ├── NativeCompileTask.kt  # C++ compilation task
-        │   └── NativeLinkTask.kt     # Library linking task
+        │   ├── NativeCompileTask.kt      # C++ compilation task
+        │   ├── NativeLinkTask.kt         # Library linking task
+        │   └── NativeLinkExecutableTask.kt # Executable linking task
         └── util/
-            └── PlatformUtils.kt      # Platform detection utilities
+            └── PlatformUtils.kt          # Platform detection utilities
 ```
 
 ## Plugin Lifecycle
@@ -334,19 +338,42 @@ strip -S library.dylib
 | `hasFuzzer()` | Tests libFuzzer support |
 | `sharedLibExtension()` | Returns "so" or "dylib" |
 
-## Integration with buildSrc
+## Plugin Components
 
-The `build-logic` plugin coexists with legacy `buildSrc` Groovy tasks:
+The `build-logic` directory contains all native build plugins:
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| `NativeBuildPlugin` | build-logic | New Kotlin-based native compilation |
-| `GtestPlugin` | buildSrc | C++ unit testing with Google Test |
-| `DebugSymbolsPlugin` | buildSrc | Debug symbol extraction |
-| `SimpleCppCompile` | buildSrc | Legacy Groovy compile task |
-| `SimpleLinkShared` | buildSrc | Legacy Groovy link task |
+| Component | Plugin ID | Purpose |
+|-----------|-----------|---------|
+| `NativeBuildPlugin` | `com.datadoghq.native-build` | C++ compilation and linking |
+| `GtestPlugin` | `com.datadoghq.gtest` | Google Test integration |
+| `NativeCompileTask` | - | Parallel C++ compilation task |
+| `NativeLinkTask` | - | Shared library linking task |
+| `NativeLinkExecutableTask` | - | Executable linking task (for gtest) |
+| `PlatformUtils` | - | Platform detection and compiler location |
 
-The Kotlin plugin provides the primary build pipeline while `buildSrc` plugins handle testing and debug extraction.
+## GtestPlugin Integration
+
+The `GtestPlugin` consumes configurations from `NativeBuildPlugin`:
+
+```kotlin
+plugins {
+    id("com.datadoghq.native-build")
+    id("com.datadoghq.gtest")
+}
+
+gtest {
+    testSourceDir.set(layout.projectDirectory.dir("src/test/cpp"))
+    mainSourceDir.set(layout.projectDirectory.dir("src/main/cpp"))
+    includes.from("src/main/cpp", "$javaHome/include")
+}
+```
+
+For each test file, GtestPlugin creates:
+- `compileGtest{Config}_{TestName}` - Compile sources with test
+- `linkGtest{Config}_{TestName}` - Link test executable
+- `gtest{Config}_{TestName}` - Execute the test
+
+See `build-logic/README.md` for full GtestPlugin documentation.
 
 ## Error Handling Modes
 
@@ -379,7 +406,5 @@ The Kotlin plugin provides the primary build pipeline while `buildSrc` plugins h
 
 ## Related Documentation
 
-- `build-logic/README.md` - Usage documentation
-- `buildSrc/README_GTEST_PLUGIN.md` - Google Test plugin
-- `buildSrc/README_DEBUG_SYMBOLS_PLUGIN.md` - Debug symbol extraction
+- `build-logic/README.md` - Native build and GtestPlugin usage documentation
 - `CLAUDE.md` - Build commands reference

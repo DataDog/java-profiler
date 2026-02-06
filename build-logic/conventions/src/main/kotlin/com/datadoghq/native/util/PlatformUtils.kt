@@ -4,6 +4,8 @@ package com.datadoghq.native.util
 
 import com.datadoghq.native.model.Architecture
 import com.datadoghq.native.model.Platform
+import org.gradle.api.GradleException
+import org.gradle.api.Project
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -135,5 +137,38 @@ object PlatformUtils {
     fun sharedLibExtension(): String = when (currentPlatform) {
         Platform.LINUX -> "so"
         Platform.MACOS -> "dylib"
+    }
+
+    /**
+     * Find a C++ compiler, respecting -Pnative.forceCompiler property.
+     * Auto-detects clang++ or g++ if not specified.
+     */
+    fun findCompiler(project: Project): String {
+        // Check for forced compiler override
+        val forcedCompiler = project.findProperty("native.forceCompiler") as? String
+        if (forcedCompiler != null) {
+            if (isCompilerAvailable(forcedCompiler)) {
+                project.logger.info("Using forced compiler: $forcedCompiler")
+                return forcedCompiler
+            }
+            throw GradleException(
+                "Forced compiler '$forcedCompiler' is not available. " +
+                "Verify the path or remove -Pnative.forceCompiler to auto-detect."
+            )
+        }
+
+        // Auto-detect: prefer clang++, then g++, then c++
+        val compilers = listOf("clang++", "g++", "c++")
+        for (compiler in compilers) {
+            if (isCompilerAvailable(compiler)) {
+                project.logger.info("Auto-detected compiler: $compiler")
+                return compiler
+            }
+        }
+
+        throw GradleException(
+            "No C++ compiler found. Please install clang++ or g++, " +
+            "or specify one with -Pnative.forceCompiler=/path/to/compiler"
+        )
     }
 }

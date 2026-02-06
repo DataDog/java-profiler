@@ -1,7 +1,7 @@
 // Copyright 2026, Datadog, Inc
 
 pluginManagement {
-    includeBuild("build-logic")
+  includeBuild("build-logic")
 }
 
 rootProject.name = "java-profiler"

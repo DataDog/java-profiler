@@ -1,6 +1,9 @@
-# Native Build Plugin
+# Native Build Plugins
 
-This directory contains a Gradle composite build that provides the `com.datadoghq.native-build` plugin for building C++ libraries.
+This directory contains a Gradle composite build that provides plugins for building C++ libraries and tests:
+
+- **`com.datadoghq.native-build`** - Core C++ compilation and linking
+- **`com.datadoghq.gtest`** - Google Test integration for C++ unit tests
 
 ## Architecture
 
@@ -210,27 +213,134 @@ compileConfig → linkConfig → assembleConfig
               copyConfigLibs → assembleConfigJar
 ```
 
-## Migration from Groovy
+## Design Benefits
 
-The new system replaces:
-- `gradle/configurations.gradle` - Configuration definitions
-- Groovy build scripts - Kotlin DSL (.gradle.kts)
-- `buildSrc` tasks - Type-safe Kotlin plugin
-
-**Benefits:**
-- ✅ Eliminated configuration duplication
-- ✅ Compile-time type checking
-- ✅ Gradle idiomatic (Property API, composite builds)
-- ✅ Debug symbol extraction (69% size reduction)
+The Kotlin-based build system provides:
+- ✅ Compile-time type checking via Kotlin DSL
+- ✅ Gradle idiomatic design (Property API, composite builds)
+- ✅ Automatic debug symbol extraction (69% size reduction)
 - ✅ Clean builds work from scratch
+- ✅ Centralized configuration definitions
+
+---
+
+# Google Test Plugin
+
+The `com.datadoghq.gtest` plugin provides Google Test integration for C++ unit testing.
+
+## Plugin Usage
+
+```kotlin
+plugins {
+    id("com.datadoghq.native-build")  // Required - provides configurations
+    id("com.datadoghq.gtest")
+}
+
+gtest {
+    testSourceDir.set(layout.projectDirectory.dir("src/test/cpp"))
+    mainSourceDir.set(layout.projectDirectory.dir("src/main/cpp"))
+
+    includes.from(
+        "src/main/cpp",
+        "${javaHome}/include",
+        "${javaHome}/include/${platformInclude}"
+    )
+}
+```
+
+## Generated Tasks
+
+For each test file in `testSourceDir`, the plugin creates:
+
+| Task Pattern | Description |
+|--------------|-------------|
+| `compileGtest{Config}_{TestName}` | Compile main sources + test file |
+| `linkGtest{Config}_{TestName}` | Link test executable with gtest libraries |
+| `gtest{Config}_{TestName}` | Execute the test |
+
+Aggregation tasks:
+- `gtest` - Run all tests across all configurations
+- `gtest{Config}` - Run all tests for a specific configuration (e.g., `gtestDebug`)
+
+## Configuration Options
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `testSourceDir` | `DirectoryProperty` | Required | Directory containing test `.cpp` files |
+| `mainSourceDir` | `DirectoryProperty` | Required | Directory containing main source files |
+| `includes` | `ConfigurableFileCollection` | Empty | Include directories for compilation |
+| `googleTestHome` | `DirectoryProperty` | Auto-detected | Google Test installation directory (macOS) |
+| `enableAssertions` | `Property<Boolean>` | `true` | Remove `-DNDEBUG` to enable assertions |
+| `keepSymbols` | `Property<Boolean>` | `true` | Keep debug symbols in release test builds |
+| `failFast` | `Property<Boolean>` | `false` | Stop on first test failure |
+| `alwaysRun` | `Property<Boolean>` | `true` | Ignore up-to-date checks for tests |
+| `buildNativeLibs` | `Property<Boolean>` | `true` | Build native test support libraries (Linux) |
+
+## Platform Detection
+
+The plugin automatically detects Google Test installation:
+
+- **macOS**: `/opt/homebrew/opt/googletest` (Homebrew default)
+- **Linux**: System includes (`/usr/include/gtest`)
+
+Override with `googleTestHome`:
+```kotlin
+gtest {
+    googleTestHome.set(file("/custom/path/to/googletest"))
+}
+```
+
+## Integration with NativeBuildPlugin
+
+GtestPlugin consumes configurations from NativeBuildPlugin:
+
+1. **Shared configurations**: Uses the same release/debug/asan/tsan/fuzzer configs
+2. **Compiler detection**: Uses `PlatformUtils.findCompiler()` with `-Pnative.forceCompiler` support
+3. **Consistent flags**: Inherits compiler/linker args from build configurations
+
+## Example Output
+
+```
+$ ./gradlew gtestDebug
+
+> Task :ddprof-lib:compileGtestDebug_test_callTraceStorage
+Compiling 45 C++ source files with clang++...
+
+> Task :ddprof-lib:linkGtestDebug_test_callTraceStorage
+Linking executable: test_callTraceStorage
+
+> Task :ddprof-lib:gtestDebug_test_callTraceStorage
+[==========] Running 5 tests from 1 test suite.
+...
+[  PASSED  ] 5 tests.
+
+BUILD SUCCESSFUL
+```
+
+## Skip Options
+
+```bash
+# Skip all tests
+./gradlew build -Pskip-tests
+
+# Skip only gtest (keep Java tests)
+./gradlew build -Pskip-gtest
+
+# Skip native compilation entirely
+./gradlew build -Pskip-native
+```
+
+---
 
 ## Files
 
 - `settings.gradle` - Composite build configuration
 - `conventions/build.gradle.kts` - Plugin module
 - `conventions/src/main/kotlin/` - Plugin implementation
-  - `NativeBuildPlugin.kt` - Main plugin
-  - `NativeBuildExtension.kt` - DSL extension
+  - `NativeBuildPlugin.kt` - Native build plugin
+  - `NativeBuildExtension.kt` - Native build DSL extension
+  - `gtest/GtestPlugin.kt` - Google Test plugin
+  - `gtest/GtestExtension.kt` - Google Test DSL extension
   - `model/` - Type-safe configuration models
   - `tasks/` - Compile and link tasks
   - `config/` - Configuration presets

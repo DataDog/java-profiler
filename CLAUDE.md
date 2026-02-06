@@ -93,56 +93,52 @@ JAVA_TEST_HOME=/path/to/test/jdk ./gradlew testDebug
 
 #### Google Test Plugin
 
-The project uses a custom `GtestPlugin` (in `buildSrc/`) for C++ unit testing with Google Test. The plugin automatically:
+The project uses a custom `GtestPlugin` (in `build-logic/`) for C++ unit testing with Google Test. The plugin automatically:
 - Discovers `.cpp` test files in `src/test/cpp/`
 - Creates compilation, linking, and execution tasks for each test
 - Filters configurations by current platform/architecture
-- Integrates with SimpleCppCompile and SimpleLinkExecutable tasks
+- Integrates with NativeCompileTask and NativeLinkExecutableTask
 
 **Key features:**
 - Platform-aware: Only creates tasks for matching OS/arch
 - Assertion control: Removes `-DNDEBUG` to enable assertions in tests
 - Symbol preservation: Keeps debug symbols in release test builds
 - Task aggregation: Per-config (`gtestDebug`) and master (`gtest`) tasks
+- Shared configurations: Uses BuildConfiguration from NativeBuildPlugin
 
-**Configuration example (ddprof-lib/build.gradle):**
-```groovy
-apply plugin: GtestPlugin
+**Configuration example (ddprof-lib/build.gradle.kts):**
+```kotlin
+plugins {
+    id("com.datadoghq.native-build")
+    id("com.datadoghq.gtest")
+}
 
 gtest {
-    testSourceDir = file('src/test/cpp')
-    mainSourceDir = file('src/main/cpp')
-    includes = files('src/main/cpp', "${javaHome()}/include", ...)
-    configurations = buildConfigurations
-
+    testSourceDir.set(layout.projectDirectory.dir("src/test/cpp"))
+    mainSourceDir.set(layout.projectDirectory.dir("src/main/cpp"))
+    includes.from(
+        "src/main/cpp",
+        "${javaHome}/include",
+        "${javaHome}/include/${platformInclude}"
+    )
     // Optional
-    enableAssertions = true    // Remove -DNDEBUG (default: true)
-    keepSymbols = true         // Keep symbols in release (default: true)
-    failFast = false           // Stop on first failure (default: false)
+    enableAssertions.set(true)    // Remove -DNDEBUG (default: true)
+    keepSymbols.set(true)         // Keep symbols in release (default: true)
+    failFast.set(false)           // Stop on first failure (default: false)
 }
 ```
 
-**See:** `buildSrc/README_GTEST_PLUGIN.md` for full documentation
+**See:** `build-logic/README.md` for full documentation
 
-#### Debug Symbols Extraction Plugin
+#### Debug Symbol Extraction
 
-The project uses a custom `DebugSymbolsPlugin` (in `buildSrc/`) for extracting debug symbols from release builds, reducing production binary size (~80% smaller) while maintaining separate debug files.
+Release builds automatically extract debug symbols via `NativeLinkTask`, reducing production binary size (~69% smaller) while maintaining separate debug files for offline debugging.
 
 **Key features:**
 - Platform-aware: Uses `objcopy`/`strip` on Linux, `dsymutil`/`strip` on macOS
 - Automatic workflow: Extract symbols → Add GNU debuglink (Linux) → Strip library → Copy artifacts
-- Size optimization: Strips ~1.2MB production library from ~6.1MB with embedded debug info
+- Size optimization: Stripped ~1.2MB production library from ~6.1MB with embedded debug info
 - Debug preservation: Separate `.debug` files (Linux) or `.dSYM` bundles (macOS)
-
-**Usage (applied in ddprof-lib/build.gradle):**
-```groovy
-apply plugin: DebugSymbolsPlugin
-
-// Called after link task creation for release builds
-if (config.name == 'release') {
-    setupDebugExtraction(config, linkTask, "copyReleaseLibs")
-}
-```
 
 **Tool requirements:**
 - Linux: `binutils` package (objcopy, strip)
@@ -153,7 +149,7 @@ if (config.name == 'release') {
 ./gradlew buildRelease -Pskip-debug-extraction=true
 ```
 
-**See:** `buildSrc/README_DEBUG_SYMBOLS_PLUGIN.md` for full documentation
+**See:** `build-logic/README.md` for full documentation
 
 ### Build Options
 ```bash
@@ -363,8 +359,8 @@ The project includes a Kotlin-based native build plugin (`build-logic/`) for typ
 
 **See:** `build-logic/README.md` for full documentation
 
-### Custom Native Build Tasks (buildSrc)
-The project uses custom Gradle task types in `buildSrc/` instead of Gradle's `cpp-library` and `cpp-application` plugins. This is intentional:
+### Custom Native Build Plugin (build-logic)
+The project uses a custom Kotlin-based native build plugin in `build-logic/` instead of Gradle's `cpp-library` and `cpp-application` plugins. This is intentional:
 
 **Why not cpp-library/cpp-application plugins:**
 - Gradle's native plugins parse compiler version strings which breaks with newer gcc/clang versions
@@ -372,135 +368,115 @@ The project uses custom Gradle task types in `buildSrc/` instead of Gradle's `cp
 - Plugin maintainers are unresponsive to fixes
 - The plugins use undocumented internals that change between Gradle versions
 
-**Custom task types:**
-- `SimpleCppCompile` - Parallel C++ compilation, directly invokes gcc/clang
-- `SimpleLinkShared` - Links shared libraries (.so/.dylib)
-- `SimpleLinkExecutable` - Links executables (for gtest, fuzz targets)
-- `CompilerUtils` - Simple compiler detection (PATH lookup, no version parsing)
+**Plugin components (`com.datadoghq.native-build`):**
+- `NativeCompileTask` - Parallel C++ compilation with source sets support
+- `NativeLinkTask` - Links shared libraries (.so/.dylib) with symbol visibility
+- `PlatformUtils` - Platform detection and compiler location
 
-**Key principle:** Direct compiler invocation without version parsing. The tasks simply find `clang++` or `g++` on PATH and invoke them with the flags from `gradle/configurations.gradle`.
+**Plugin components (`com.datadoghq.gtest`):**
+- `NativeLinkExecutableTask` - Links executables (for gtest)
+- `GtestPlugin` - Google Test integration and task generation
+
+**Key principle:** Direct compiler invocation without version parsing. The tasks simply find `clang++` or `g++` on PATH and invoke them with the configured flags.
 
 #### Configuring Build Tasks
 
-All build tasks support industry-standard configuration options following CMake, Bazel, and Make patterns. Configuration is done using standard Gradle property patterns:
+All build tasks support industry-standard configuration options. Configuration is done using Kotlin DSL:
 
-**Basic backward-compatible usage:**
-```groovy
-tasks.register("compileLib", SimpleCppCompile) {
-    compiler = 'g++'
-    compilerArgs = ['-O3', '-std=c++17', '-fPIC']
-    sources = fileTree('src/main/cpp') { include '**/*.cpp' }
-    includes = files('src/main/cpp', "${System.env.JAVA_HOME}/include")
-    objectFileDir = file("build/obj")
+**Basic compilation:**
+```kotlin
+tasks.register("compileLib", NativeCompileTask::class) {
+    compiler.set("clang++")
+    compilerArgs.set(listOf("-O3", "-std=c++17", "-fPIC"))
+    sources.from(fileTree("src/main/cpp") { include("**/*.cpp") })
+    includes.from("src/main/cpp", "${System.getenv("JAVA_HOME")}/include")
+    objectFileDir.set(file("build/obj"))
 }
 ```
 
 **Advanced configuration with source sets:**
-```groovy
-tasks.register("compileLib", SimpleCppCompile) {
-    compiler = 'clang++'
-    compilerArgs = ['-Wall', '-O3']  // Base flags for all files
+```kotlin
+tasks.register("compileLib", NativeCompileTask::class) {
+    compiler.set("clang++")
+    compilerArgs.set(listOf("-Wall", "-O3"))  // Base flags for all files
 
     // Multiple source directories with per-directory flags
     sourceSets {
-        main {
-            sources = fileTree('src/main/cpp')
-            compilerArgs = ['-fPIC']  // Additional flags for this set
+        create("main") {
+            sources.from(fileTree("src/main/cpp"))
+            compilerArgs.add("-fPIC")
         }
-        legacy {
-            sources = fileTree('src/legacy')
-            compilerArgs = ['-Wno-deprecated', '-std=c++11']  // Different flags
-            excludes = ['**/broken/*.cpp']
+        create("legacy") {
+            sources.from(fileTree("src/legacy"))
+            compilerArgs.addAll("-Wno-deprecated", "-std=c++11")
+            excludes.add("**/broken/*.cpp")
         }
     }
 
-    // Logging and error handling
-    logLevel = CppBuildExtension.LogLevel.VERBOSE  // QUIET, NORMAL, VERBOSE, DEBUG
-    errorHandling = CppBuildExtension.ErrorHandlingMode.COLLECT_ALL  // or FAIL_FAST
-    showCommandLines = true
-
-    // Convenience methods
-    define 'DEBUG', 'VERSION="1.0"'  // Adds -DDEBUG -DVERSION="1.0"
-    standard 'c++20'  // Adds -std=c++20
-
-    objectFileDir = file("build/obj")
-}
-```
-
-**Linking with symbol management and debug extraction:**
-```groovy
-tasks.register("linkLib", SimpleLinkShared) {
-    linker = 'g++'
-    linkerArgs = ['-O3']
-    objectFiles = fileTree("build/obj") { include '*.o' }
-    outputFile = file("build/lib/libjavaProfiler.so")
-
-    // Symbol management
-    soname = 'libjavaProfiler.so.1'  // Linux -Wl,-soname
-    stripSymbols = true
-    exportSymbols = ['Java_*', 'JNI_*']  // Export only JNI symbols
-
-    // Debug symbol extraction (automatic in release builds)
-    generateDebugInfo = true
-    debugInfoFile = file("build/lib/libjavaProfiler.so.debug")
-
-    // Library conveniences
-    lib 'pthread', 'dl', 'm'  // Adds -lpthread -ldl -lm
-    libPath '/usr/local/lib'  // Adds -L/usr/local/lib
-
     // Logging
-    logLevel = CppBuildExtension.LogLevel.VERBOSE
-    showCommandLine = true
-    checkUndefinedSymbols = true
+    logLevel.set(LogLevel.VERBOSE)
+
+    objectFileDir.set(file("build/obj"))
 }
 ```
 
-**Executable linking with rpath:**
-```groovy
-tasks.register("linkTest", SimpleLinkExecutable) {
-    linker = 'g++'
-    objectFiles = fileTree("build/obj/gtest") { include '*.o' }
-    outputFile = file("build/bin/callTrace_test")
+**Linking shared libraries with symbol management:**
+```kotlin
+tasks.register("linkLib", NativeLinkTask::class) {
+    linker.set("clang++")
+    linkerArgs.set(listOf("-O3"))
+    objectFiles.from(fileTree("build/obj") { include("*.o") })
+    outputFile.set(file("build/lib/libjavaProfiler.so"))
+
+    // Symbol visibility control
+    exportSymbols.set(listOf("Java_*", "JNI_OnLoad", "JNI_OnUnload"))
+    hideSymbols.set(listOf("*_internal*"))
+
+    // Libraries
+    lib("pthread", "dl", "m")
+    libPath("/usr/local/lib")
+
+    logLevel.set(LogLevel.VERBOSE)
+}
+```
+
+**Executable linking (for gtest):**
+```kotlin
+tasks.register("linkTest", NativeLinkExecutableTask::class) {
+    linker.set("clang++")
+    objectFiles.from(fileTree("build/obj/gtest") { include("*.o") })
+    outputFile.set(file("build/bin/callTrace_test"))
 
     // Library management
-    lib 'gtest', 'gtest_main', 'pthread'
-    libPath '/usr/local/lib'
-    runtimePath '/opt/lib', '/usr/local/lib'  // Adds -Wl,-rpath
+    lib("gtest", "gtest_main", "pthread")
+    libPath("/usr/local/lib")
+    runtimePath("/opt/lib", "/usr/local/lib")
 
-    // Debug extraction
-    generateDebugInfo = true
-
-    // Post-link verification
-    checkLdd = true  // Run ldd/otool to check dependencies
-    runSanityTest = true
-    sanityTestArgs = ['--help']
+    logLevel.set(LogLevel.VERBOSE)
 }
 ```
 
-**Configuration properties:**
+**Task properties:**
 
-*SimpleCppCompile:*
-- **Logging**: `logLevel`, `showCommandLines`, `progressReportInterval`, `colorOutput`
-- **Error handling**: `errorHandling` (FAIL_FAST/COLLECT_ALL), `maxErrorsToShow`, `treatWarningsAsErrors`
-- **Source sets**: `sourceSets { name { sources, includes, excludes, compilerArgs, fileFilter } }`
-- **Convenience**: `define()`, `undefine()`, `standard()` methods
-- **Platform**: `targetPlatform`, `targetArch`, `parallelJobs`
+*NativeCompileTask:*
+- `compiler`, `compilerArgs` - Compiler and flags
+- `sources`, `includes` - Source files and include paths
+- `sourceSets` - Per-directory compiler flag overrides
+- `objectFileDir` - Output directory for object files
+- `logLevel` - QUIET, NORMAL, VERBOSE, DEBUG
 
-*SimpleLinkShared:*
-- **Logging**: `logLevel`, `showCommandLine`, `showLinkerMap`, `linkerMapFile`
-- **Symbols**: `soname`, `installName`, `stripSymbols`, `exportSymbols`, `hideSymbols`
-- **Libraries**: `lib()`, `libPath()` convenience methods
-- **Debug**: `generateDebugInfo`, `debugInfoFile`
-- **Verification**: `checkUndefinedSymbols`, `verifySharedLib`
+*NativeLinkTask:*
+- `linker`, `linkerArgs` - Linker and flags
+- `objectFiles`, `outputFile` - Input objects and output library
+- `exportSymbols`, `hideSymbols` - Symbol visibility control
+- `lib()`, `libPath()` - Library convenience methods
+- `logLevel`, `showCommandLine` - Logging options
 
-*SimpleLinkExecutable:*
-- **Logging**: `logLevel`, `showCommandLine`
-- **Executable**: `setExecutablePermission`, `executablePermissions`, `stripSymbols`
-- **Libraries**: `lib()`, `libPath()`, `runtimePath()` convenience methods
-- **Debug**: `generateDebugInfo`, `debugInfoFile`
-- **Verification**: `checkLdd`, `runSanityTest`, `sanityTestArgs`
-
-All properties are **optional** and have sensible defaults that maintain backward compatibility with existing build scripts.
+*NativeLinkExecutableTask:*
+- `linker`, `linkerArgs` - Linker and flags
+- `objectFiles`, `outputFile` - Input objects and output executable
+- `lib()`, `libPath()`, `runtimePath()` - Library and rpath convenience methods
+- `logLevel`, `showCommandLine` - Logging options
 
 ### Artifact Structure
 Final artifacts maintain a specific structure for deployment:
@@ -519,7 +495,7 @@ With separate debug symbol packages for production debugging support.
 - For OpenJ9 specific issues consul the openj9 github project
 - don't use assemble task. Use assembleDebug or assembleRelease instead
 - gtest tests are located in ddprof-lib/src/test/cpp
-- Module ddprof-lib/gtest is only containing the gtest build setup
+- GtestPlugin in build-logic handles gtest build setup
 - Java unit tests are in ddprof-test module
 - Always run /build-and-summarize spotlessApply before commiting the changes
 
