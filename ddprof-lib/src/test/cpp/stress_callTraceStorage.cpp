@@ -6,7 +6,7 @@
 #include "gtest/gtest.h"
 #include "callTraceStorage.h"
 #include "callTraceHashTable.h"
-#include "criticalSection.h"
+#include "guards.h"
 #include <vector>
 #include <unordered_set>
 #include <thread>

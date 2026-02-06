@@ -91,7 +91,9 @@ while IFS= read -r job; do
 
     # Only process test jobs (match pattern: test-linux-{libc}-{arch} ({java}, {config}))
     # Note: regex stored in variable to avoid bash parsing issues with ) character
-    test_job_pattern='^test-linux-([a-z]+)-([a-z0-9]+) \(([^,]+), ([^)]+)\)$'
+    # Note: No ^ anchor because reusable workflow jobs are prefixed with caller job name
+    #       e.g., "test-matrix / test-linux-glibc-amd64 (8, debug)"
+    test_job_pattern='test-linux-([a-z]+)-([a-z0-9]+) \(([^,]+), ([^)]+)\)$'
     if [[ "$name" =~ $test_job_pattern ]]; then
         libc="${BASH_REMATCH[1]}"
         arch="${BASH_REMATCH[2]}"
@@ -158,10 +160,10 @@ for key in "${!job_status[@]}"; do
     dur="${job_duration[$key]:-0}"
 
     case "$status" in
-        success)   ((passed_jobs++)) ;;
+        success)   ((++passed_jobs)) ;;
         failure)   ;;  # already counted
-        skipped)   ((skipped_jobs++)) ;;
-        cancelled) ((cancelled_jobs++)) ;;
+        skipped)   ((++skipped_jobs)) ;;
+        cancelled) ((++cancelled_jobs)) ;;
     esac
 
     ((total_duration += dur)) || true
@@ -255,9 +257,9 @@ log "Generating markdown summary..."
         echo ""
 
         # Separator row
-        printf "|----------|"
+        printf "%s" "|----------|"
         for _ in "${sorted_java[@]}"; do
-            printf "--------|"
+            printf "%s" "--------|"
         done
         echo ""
 

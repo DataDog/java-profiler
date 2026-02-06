@@ -55,6 +55,9 @@ public:
   inline void enableEvents(bool enabled) {
     __atomic_store_n(&_enabled, enabled, __ATOMIC_RELEASE);
   }
+
+  // Get the signal number used by CTimer (0 if not initialized)
+  static int getSignal() { return _signal; }
 };
 
 #else

@@ -17,7 +17,7 @@
 
 #ifdef __linux__
 
-#include "criticalSection.h"
+#include "guards.h"
 #include "ctimer.h"
 #include "debugSupport.h"
 #include "libraries.h"
