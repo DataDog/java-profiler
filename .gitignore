@@ -39,3 +39,6 @@ datadog/maven/resources
 
 # Temporary documentation and work state
 doc/temp/
+
+# CLAUDE.md is auto-generated from AGENTS.md bootstrap instructions
+CLAUDE.md
