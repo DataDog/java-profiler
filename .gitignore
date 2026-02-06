@@ -34,3 +34,6 @@ datadog/maven/resources
 .history
 .claude/settings.local.json
 /jmh-*
+
+# Temporary documentation and work state
+doc/temp/
