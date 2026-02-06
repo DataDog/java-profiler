@@ -5,13 +5,13 @@ title: Java Profiler Build - Test Dashboard
 
 # Java Profiler Build - Test Dashboard
 
-> **Last Updated:** 2026-02-06 01:41 UTC
+> **Last Updated:** 2026-02-06 10:14 UTC
 
 ## Quick Status
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](integration/) | [#94957556](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94957556) | ⚠️ | zgu/reduce-jmethodID | - |
+| [Integration](integration/) | [#94973870](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94973870) | ✅ | jb/interrupted_tls | [#356](https://github.com/DataDog/java-profiler/pull/356) |
 | [Benchmarks](benchmarks/) | - | - | - | - |
 | [Reliability](reliability/) | - | - | - | - |
 
@@ -37,11 +37,11 @@ Tests multiple allocator configurations (gmalloc, tcmalloc, jemalloc).
 
 | Date | Type | Pipeline | Branch | PR | Status |
 |------|------|----------|--------|-----|--------|
+| 2026-02-06 | Integration | [#94973870](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94973870) | jb/interrupted_tls | [#356](https://github.com/DataDog/java-profiler/pull/356) | ✅ |
 | 2026-02-06 | Integration | [#94957556](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94957556) | zgu/reduce-jmethodID | - | ⚠️ |
 | 2026-02-05 | Integration | [#94927555](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94927555) | zgu/reduce-jmethodID | - | ⚠️ |
 | 2026-02-05 | Integration | [#94823236](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94823236) | main | - | ✅ |
 | 2026-02-05 | Integration | [#94818116](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94818116) | jb/test_reports_ci | [#355](https://github.com/DataDog/java-profiler/pull/355) | ⚠️ |
-| 2026-02-05 | Integration | [#94814412](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94814412) | jb/test_reports_ci | [#355](https://github.com/DataDog/java-profiler/pull/355) | ⚠️ |
 
 ---
 
