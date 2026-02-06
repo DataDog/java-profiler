@@ -412,6 +412,15 @@ abstract class NativeLinkTask @Inject constructor(
     private fun generateMacOSExportList(outFile: java.io.File): List<String> {
         val exportList = java.io.File(temporaryDir, "${outFile.nameWithoutExtension}.exp")
 
+        // Warn if wildcards are used - macOS doesn't support them
+        exportSymbols.get().forEach { pattern ->
+            if (pattern.contains('*') || pattern.contains('?')) {
+                logger.warn("Symbol pattern '$pattern' contains wildcards which are not supported on macOS. " +
+                           "Pattern will be treated as a literal symbol name. " +
+                           "Consider using -fvisibility compiler flags instead, or list symbols explicitly.")
+            }
+        }
+
         val listContent = buildString {
             // Export specified symbols (macOS needs leading underscore for C symbols)
             exportSymbols.get().forEach { pattern ->

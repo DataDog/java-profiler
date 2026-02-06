@@ -6,7 +6,6 @@ import com.datadoghq.native.model.Architecture
 import com.datadoghq.native.model.BuildConfiguration
 import com.datadoghq.native.model.Platform
 import com.datadoghq.native.util.PlatformUtils
-import org.gradle.api.Project
 import java.io.File
 
 /**
@@ -108,11 +107,12 @@ object ConfigurationPresets {
         platform: Platform,
         architecture: Architecture,
         version: String,
-        rootDir: File
+        rootDir: File,
+        compiler: String = "gcc"
     ) {
         config.platform.set(platform)
         config.architecture.set(architecture)
-        config.active.set(PlatformUtils.hasAsan())
+        config.active.set(PlatformUtils.hasAsan(compiler))
 
         val asanCompilerArgs = listOf(
             "-g",
@@ -137,7 +137,7 @@ object ConfigurationPresets {
             Platform.LINUX -> {
                 config.compilerArgs.set(asanCompilerArgs + commonLinuxCompilerArgs(version))
 
-                val libasan = PlatformUtils.locateLibasan()
+                val libasan = PlatformUtils.locateLibasan(compiler)
                 val asanLinkerArgs = if (libasan != null) {
                     listOf(
                         "-L${File(libasan).parent}",
@@ -174,11 +174,12 @@ object ConfigurationPresets {
         platform: Platform,
         architecture: Architecture,
         version: String,
-        rootDir: File
+        rootDir: File,
+        compiler: String = "gcc"
     ) {
         config.platform.set(platform)
         config.architecture.set(architecture)
-        config.active.set(PlatformUtils.hasTsan())
+        config.active.set(PlatformUtils.hasTsan(compiler))
 
         val tsanCompilerArgs = listOf(
             "-g",
@@ -193,7 +194,7 @@ object ConfigurationPresets {
             Platform.LINUX -> {
                 config.compilerArgs.set(tsanCompilerArgs + commonLinuxCompilerArgs(version))
 
-                val libtsan = PlatformUtils.locateLibtsan()
+                val libtsan = PlatformUtils.locateLibtsan(compiler)
                 val tsanLinkerArgs = if (libtsan != null) {
                     listOf(
                         "-L${File(libtsan).parent}",

@@ -57,10 +57,12 @@ class NativeBuildPlugin : Plugin<Project> {
         val currentArch = PlatformUtils.currentArchitecture
         val version = extension.version.get()
         val rootDir = project.rootDir
+        val compiler = findCompiler(project)
 
         // Only create configurations if none are explicitly defined
         if (extension.buildConfigurations.isEmpty()) {
             project.logger.lifecycle("Setting up standard build configurations for $currentPlatform-$currentArch")
+            project.logger.lifecycle("Using compiler: $compiler")
 
             // Create standard configurations for current platform
             extension.buildConfigurations.apply {
@@ -71,10 +73,10 @@ class NativeBuildPlugin : Plugin<Project> {
                     ConfigurationPresets.configureDebug(this, currentPlatform, currentArch, version, rootDir)
                 }
                 register("asan") {
-                    ConfigurationPresets.configureAsan(this, currentPlatform, currentArch, version, rootDir)
+                    ConfigurationPresets.configureAsan(this, currentPlatform, currentArch, version, rootDir, compiler)
                 }
                 register("tsan") {
-                    ConfigurationPresets.configureTsan(this, currentPlatform, currentArch, version, rootDir)
+                    ConfigurationPresets.configureTsan(this, currentPlatform, currentArch, version, rootDir, compiler)
                 }
                 register("fuzzer") {
                     ConfigurationPresets.configureFuzzer(this, currentPlatform, currentArch, version, rootDir)
@@ -175,21 +177,35 @@ class NativeBuildPlugin : Plugin<Project> {
     }
 
     private fun findCompiler(project: Project): String {
-        // Try to find clang++ or g++ on PATH
-        val compilers = listOf("clang++", "g++", "c++")
-        for (compiler in compilers) {
-            try {
-                val result = Runtime.getRuntime().exec(arrayOf("which", compiler))
-                result.waitFor()
-                if (result.exitValue() == 0) {
-                    return compiler
-                }
-            } catch (e: Exception) {
-                // Continue
+        // Check for forced compiler override via Gradle property (-Pnative.forceCompiler=clang++)
+        val forcedCompiler = project.findProperty("native.forceCompiler") as? String
+        if (forcedCompiler != null) {
+            project.logger.lifecycle("Using forced compiler from -Pnative.forceCompiler: $forcedCompiler")
+            // Verify the forced compiler is available
+            if (PlatformUtils.isCompilerAvailable(forcedCompiler)) {
+                return forcedCompiler
+            } else {
+                throw org.gradle.api.GradleException(
+                    "Forced compiler '$forcedCompiler' is not available. " +
+                    "Please install it or remove the -Pnative.forceCompiler property."
+                )
             }
         }
-        // Default to g++
-        return "g++"
+
+        // Auto-detect: Try to find clang++ or g++ on PATH
+        val compilers = listOf("clang++", "g++", "c++")
+        for (compiler in compilers) {
+            if (PlatformUtils.isCompilerAvailable(compiler)) {
+                project.logger.lifecycle("Auto-detected compiler: $compiler")
+                return compiler
+            }
+        }
+
+        // No compiler found
+        throw org.gradle.api.GradleException(
+            "No C++ compiler found. Please install clang++ or g++, " +
+            "or specify one with -Pnative.forceCompiler=/path/to/compiler"
+        )
     }
 
     private fun createAggregationTasks(

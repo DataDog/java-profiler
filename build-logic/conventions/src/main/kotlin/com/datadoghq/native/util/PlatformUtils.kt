@@ -5,6 +5,7 @@ package com.datadoghq.native.util
 import com.datadoghq.native.model.Architecture
 import com.datadoghq.native.model.Platform
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 object PlatformUtils {
     val currentPlatform: Platform by lazy { Platform.current() }
@@ -40,15 +41,40 @@ object PlatformUtils {
     }
 
     /**
-     * Locate a library using gcc -print-file-name
+     * Check if a compiler is available and functional
      */
-    fun locateLibrary(libName: String): String? {
+    fun isCompilerAvailable(compiler: String): Boolean {
+        return try {
+            val process = ProcessBuilder(compiler, "--version")
+                .redirectErrorStream(true)
+                .start()
+            process.waitFor(5, TimeUnit.SECONDS)
+            process.exitValue() == 0
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Locate a library using compiler's -print-file-name.
+     * Uses the specified compiler, falling back to gcc if not available.
+     */
+    fun locateLibrary(libName: String, compiler: String = "gcc"): String? {
         if (currentPlatform != Platform.LINUX) {
             return null
         }
 
         return try {
-            val process = ProcessBuilder("gcc", "-print-file-name=$libName.so")
+            // Try the specified compiler first, fall back to gcc
+            val compilerToUse = if (isCompilerAvailable(compiler)) {
+                compiler
+            } else if (compiler != "gcc" && isCompilerAvailable("gcc")) {
+                "gcc"
+            } else {
+                return null
+            }
+
+            val process = ProcessBuilder(compilerToUse, "-print-file-name=$libName.so")
                 .redirectErrorStream(true)
                 .start()
 
@@ -65,9 +91,9 @@ object PlatformUtils {
         }
     }
 
-    fun locateLibasan(): String? = locateLibrary("libasan")
+    fun locateLibasan(compiler: String = "gcc"): String? = locateLibrary("libasan", compiler)
 
-    fun locateLibtsan(): String? = locateLibrary("libtsan")
+    fun locateLibtsan(compiler: String = "gcc"): String? = locateLibrary("libtsan", compiler)
 
     fun checkFuzzerSupport(): Boolean {
         return try {
@@ -94,12 +120,12 @@ object PlatformUtils {
         }
     }
 
-    fun hasAsan(): Boolean {
-        return !isMusl() && locateLibasan() != null
+    fun hasAsan(compiler: String = "gcc"): Boolean {
+        return !isMusl() && locateLibasan(compiler) != null
     }
 
-    fun hasTsan(): Boolean {
-        return !isMusl() && locateLibtsan() != null
+    fun hasTsan(compiler: String = "gcc"): Boolean {
+        return !isMusl() && locateLibtsan(compiler) != null
     }
 
     fun hasFuzzer(): Boolean {
