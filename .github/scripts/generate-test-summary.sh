@@ -239,34 +239,29 @@ log "Generating markdown summary..."
     fi
     echo ""
 
-    # Status matrix table
+    # Status matrix table (JDK versions as rows, platforms as columns)
     if ((${#sorted_platforms[@]} > 0 && ${#sorted_java[@]} > 0)); then
         echo "### Status Overview"
         echo ""
 
-        # Header row
-        printf "| Platform |"
-        for java in "${sorted_java[@]}"; do
-            # Shorten java version for header (e.g., "17-graal" -> "17-gr")
-            short_java="${java}"
-            if [[ ${#java} -gt 6 ]]; then
-                short_java="${java:0:6}"
-            fi
-            printf " %s |" "$short_java"
+        # Header row - platforms as columns
+        printf "| JDK |"
+        for platform in "${sorted_platforms[@]}"; do
+            printf " %s |" "$platform"
         done
         echo ""
 
         # Separator row
-        printf "%s" "|----------|"
-        for _ in "${sorted_java[@]}"; do
+        printf "%s" "|-----|"
+        for _ in "${sorted_platforms[@]}"; do
             printf "%s" "--------|"
         done
         echo ""
 
-        # Data rows
-        for platform in "${sorted_platforms[@]}"; do
-            printf "| %s |" "$platform"
-            for java in "${sorted_java[@]}"; do
+        # Data rows - JDK versions as rows
+        for java in "${sorted_java[@]}"; do
+            printf "| %s |" "$java"
+            for platform in "${sorted_platforms[@]}"; do
                 key="${platform}|${java}"
                 status="${job_status[$key]:-}"
                 url="${job_url[$key]:-}"
