@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-02-06 05:14:31 EST
+**Date:** 2026-02-06 06:12:50 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 361 |
-| Sample Rate | 6.02/sec |
-| Health Score | 376% |
-| Threads | 9 |
+| CPU Samples | 283 |
+| Sample Rate | 4.72/sec |
+| Health Score | 295% |
+| Threads | 7 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 266 |
-| Sample Rate | 4.43/sec |
-| Health Score | 277% |
-| Threads | 7 |
+| CPU Samples | 390 |
+| Sample Rate | 6.50/sec |
+| Health Score | 406% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1770372570 32
-1770372575 32
-1770372580 32
-1770372585 32
-1770372590 32
-1770372595 32
-1770372600 32
-1770372605 32
-1770372610 32
-1770372615 32
-1770372620 32
-1770372625 32
-1770372630 32
-1770372635 32
-1770372640 32
-1770372645 32
-1770372650 32
-1770372655 32
-1770372660 32
-1770372665 32
+1770375778 32
+1770375783 32
+1770375788 32
+1770375793 32
+1770375798 32
+1770375803 32
+1770375808 32
+1770375813 32
+1770375818 32
+1770375823 32
+1770375828 32
+1770375833 32
+1770375838 32
+1770375843 32
+1770375848 32
+1770375853 32
+1770375858 32
+1770375863 32
+1770375868 32
+1770375873 32
 ```
 </details>
 

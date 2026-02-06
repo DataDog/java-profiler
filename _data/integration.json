@@ -1,6 +1,33 @@
 {
   "runs": [
     {
+      "id": "94979766",
+      "timestamp": "2026-02-06T11:12:46Z",
+      "ddprof_branch": "jb/interrupted_tls",
+      "ddprof_sha": "unknown",
+      "ddprof_pr": {
+        "number": 356,
+        "url": "https://github.com/DataDog/java-profiler/pull/356",
+        "title": "Fix musl TLS init crash with signal blocking"
+      },
+      "pipeline": {
+        "id": "94979766",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94979766"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 40,
+        "failed_jobs": 0,
+        "total_scenarios": 80,
+        "passed_scenarios": 80,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "94973870",
       "timestamp": "2026-02-06T10:14:29Z",
       "ddprof_branch": "jb/interrupted_tls",
@@ -305,33 +332,6 @@
         "failed_jobs": 0,
         "total_scenarios": 80,
         "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "94677148",
-      "timestamp": "2026-02-04T18:27:44Z",
-      "ddprof_branch": "jb/flaky_tests_1",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": {
-        "number": 354,
-        "url": "https://github.com/DataDog/java-profiler/pull/354",
-        "title": "Fix flaky InstanceIdTraceIdStressTest on musl/aarch64 with atomic memory ordering"
-      },
-      "pipeline": {
-        "id": "94677148",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94677148"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 26,
-        "passed_jobs": 26,
-        "failed_jobs": 0,
-        "total_scenarios": 52,
-        "passed_scenarios": 52,
         "failed_scenarios": 0,
         "unknown_scenarios": 0,
         "failed_configs": []

@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk8
 
 ## musl-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-02-06 05:14:32 EST
+**Date:** 2026-02-06 06:12:51 EST
 
 ### Configuration
 | Setting | Value |
@@ -18,7 +18,7 @@ title: musl-x64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 22 |
+| CPU Cores (start) | 32 |
 | CPU Cores (end) | 32 |
 | Throttling | 0% |
 
@@ -28,9 +28,9 @@ title: musl-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 201 |
-| Sample Rate | 3.35/sec |
-| Health Score | 209% |
+| CPU Samples | 181 |
+| Sample Rate | 3.02/sec |
+| Health Score | 189% |
 | Threads | 5 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: musl-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 232 |
-| Sample Rate | 3.87/sec |
-| Health Score | 242% |
+| CPU Samples | 403 |
+| Sample Rate | 6.72/sec |
+| Health Score | 420% |
 | Threads | 9 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 22-32 cores)</summary>
+<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1770372569 22
-1770372574 22
-1770372579 22
-1770372584 22
-1770372589 22
-1770372594 22
-1770372599 22
-1770372604 22
-1770372609 22
-1770372614 22
-1770372619 22
-1770372624 22
-1770372629 22
-1770372634 32
-1770372639 32
-1770372644 32
-1770372649 32
-1770372654 32
-1770372659 32
-1770372664 32
+1770375794 32
+1770375799 32
+1770375804 32
+1770375809 32
+1770375814 32
+1770375819 32
+1770375824 32
+1770375829 32
+1770375834 32
+1770375839 32
+1770375844 32
+1770375849 32
+1770375854 32
+1770375859 32
+1770375864 32
+1770375869 32
+1770375874 32
+1770375879 32
+1770375884 32
+1770375889 32
 ```
 </details>
 
