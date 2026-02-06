@@ -1,6 +1,31 @@
 {
   "runs": [
     {
+      "id": "95000679",
+      "timestamp": "2026-02-06T14:39:25Z",
+      "ddprof_branch": "zgu/validatedId",
+      "ddprof_sha": "1bbde31e",
+      "ddprof_pr": null,
+      "pipeline": {
+        "id": "95000679",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95000679"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 39,
+        "failed_jobs": 1,
+        "total_scenarios": 79,
+        "passed_scenarios": 79,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "musl-x64-hotspot-jdk8"
+        ]
+      }
+    },
+    {
       "id": "94985044",
       "timestamp": "2026-02-06T11:40:12Z",
       "ddprof_branch": "jb/build_revamp",
@@ -260,52 +285,6 @@
         "failed_scenarios": 0,
         "unknown_scenarios": 0,
         "failed_configs": []
-      }
-    },
-    {
-      "id": "94818116",
-      "timestamp": "2026-02-05T10:01:04Z",
-      "ddprof_branch": "jb/test_reports_ci",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": {
-        "number": 355,
-        "url": "https://github.com/DataDog/java-profiler/pull/355",
-        "title": "Add CI test results summary as PR comment"
-      },
-      "pipeline": {
-        "id": "94818116",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94818116"
-      },
-      "lib_version": "unknown",
-      "status": "partial",
-      "summary": {
-        "total_jobs": 24,
-        "passed_jobs": 6,
-        "failed_jobs": 18,
-        "total_scenarios": 30,
-        "passed_scenarios": 12,
-        "failed_scenarios": 18,
-        "unknown_scenarios": 0,
-        "failed_configs": [
-          "glibc-arm64-hotspot-jdk11",
-          "glibc-arm64-hotspot-jdk17",
-          "glibc-arm64-hotspot-jdk21",
-          "glibc-arm64-hotspot-jdk8",
-          "glibc-arm64-openj9-jdk11",
-          "glibc-arm64-openj9-jdk17",
-          "glibc-arm64-openj9-jdk21",
-          "glibc-arm64-openj9-jdk8",
-          "glibc-x64-hotspot-jdk8",
-          "glibc-x64-openj9-jdk17",
-          "glibc-x64-openj9-jdk21",
-          "glibc-x64-openj9-jdk8",
-          "musl-arm64-hotspot-jdk21",
-          "musl-arm64-openj9-jdk11",
-          "musl-arm64-openj9-jdk17",
-          "musl-arm64-openj9-jdk21",
-          "musl-x64-openj9-jdk17",
-          "musl-x64-openj9-jdk21"
-        ]
       }
     }
   ]
