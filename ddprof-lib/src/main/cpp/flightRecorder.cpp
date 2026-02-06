@@ -9,6 +9,7 @@
 
 #include "buffers.h"
 #include "callTraceHashTable.h"
+#include "common.h"
 #include "context.h"
 #include "counters.h"
 #include "dictionary.h"
@@ -154,8 +155,22 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, VMMethod* method, bool first_tim
   assert(method != nullptr);
   VMSymbol* name_sym = method->name();
   VMSymbol* sig_sym = method->signature();
+  VMKlass* klass = method->methodHolder();
+  TEST_LOG("Method klass: %.*s\n", klass->name()->length(), klass->name()->body());
   TEST_LOG("VMMethod: name=%.*s, sig=%.*s\n", name_sym->length(), name_sym->body(), sig_sym->length(), sig_sym->body());
+  if (method->hasLineNumberTable()) {
+    jint entry_count;
+    jvmtiLineNumberEntry* table;
+    if (method->getLineNumberTable(&entry_count, &table)) {
+      TEST_LOG("Line number table entries: %d\n", entry_count);
+      for (int i = 0; i < entry_count; i++) {
+        TEST_LOG("  bci=%d, line=%d\n", table[i].start_location, table[i].line_number);
+      }
+    }
+  }
 }
+
+
 
 void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
                                 bool first_time) {

@@ -909,6 +909,7 @@ bool VMMethod::getLineNumberTable(jint* entry_count_ptr,
   while (stream.read_pair()) {
     table[count].start_location = (jlocation)stream.bci();
     table[count].line_number = (jint)stream.line();
+    count++;
   }
   *table_ptr = table;
   *entry_count_ptr = count;

@@ -12,6 +12,7 @@
 #include <string.h>
 #include <type_traits>
 #include "codeCache.h"
+#include "common.h"
 #include "safeAccess.h"
 #include "threadState.h"
 #include "vmEntry.h"
@@ -581,7 +582,7 @@ class VMConstantPool : VMStructs {
 
     VMSymbol* symbolAt(int index) {
         assert(_constand_pool_size >= 0);
-        return (VMSymbol*)&base()[index];
+        return *(VMSymbol**)&base()[index];
     }
 private:
     intptr_t* base() {
@@ -619,7 +620,10 @@ class VMMethod : public /* TODO make private when consolidating VMMethod? */ VMS
 
     uint16_t codeSize() {
         assert(_constmethod_code_size >= 0);
-        return *(uint16_t*) ( *(const char**) at(_method_constmethod_offset) + _constmethod_code_size);
+        address code_size_addr =  *(unsigned char**)at(_method_constmethod_offset) + _constmethod_code_size;
+        uint16_t code_size = *(uint16_t*)code_size_addr;
+        TEST_LOG("VMMethod::codeSize(): code_size=%u\n", code_size);
+        return code_size;
     }
 
     uint32_t flags() {
@@ -633,8 +637,8 @@ class VMMethod : public /* TODO make private when consolidating VMMethod? */ VMS
 
     address codeBase()  {
         assert(_method_constmethod_offset >= 0);
-        address code_addr = *(const address*) at(_method_constmethod_offset);
-        return (address)(code_addr+1);
+        const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
+        return (address)(const_method+1);
     }
 
     VMConstantPool* constantPool() {
