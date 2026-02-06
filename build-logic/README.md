@@ -4,6 +4,9 @@ This directory contains a Gradle composite build that provides plugins for build
 
 - **`com.datadoghq.native-build`** - Core C++ compilation and linking
 - **`com.datadoghq.gtest`** - Google Test integration for C++ unit tests
+- **`com.datadoghq.scanbuild`** - Clang static analyzer integration
+
+> **📚 New to these plugins?** Check out [QUICKSTART.md](QUICKSTART.md) for practical examples, common workflows, tips and tricks, and troubleshooting guidance.
 
 ## Architecture
 
@@ -341,7 +344,16 @@ BUILD SUCCESSFUL
   - `NativeBuildExtension.kt` - Native build DSL extension
   - `gtest/GtestPlugin.kt` - Google Test plugin
   - `gtest/GtestExtension.kt` - Google Test DSL extension
+  - `scanbuild/ScanBuildPlugin.kt` - Static analysis plugin
+  - `scanbuild/ScanBuildExtension.kt` - Static analysis DSL extension
   - `model/` - Type-safe configuration models
   - `tasks/` - Compile and link tasks
   - `config/` - Configuration presets
   - `util/` - Platform utilities
+
+---
+
+## Documentation
+
+- **[QUICKSTART.md](QUICKSTART.md)** - Quick start guide with practical examples, workflows, tips and troubleshooting
+- **[README.md](README.md)** (this file) - Architecture details, API reference, and design documentation
