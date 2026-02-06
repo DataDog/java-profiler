@@ -315,20 +315,15 @@ log "Generating markdown summary..."
         done
     fi
 
-    # Summary statistics
-    echo "### Summary"
-    echo ""
-    echo "| Metric | Value |"
-    echo "|--------|-------|"
-    echo "| Total jobs | $total_jobs |"
-    echo "| Passed | $passed_jobs |"
-    echo "| Failed | $failed_count |"
+    # Summary statistics (single line)
+    printf "**Summary:** Total: %d | Passed: %d | Failed: %d" "$total_jobs" "$passed_jobs" "$failed_count"
     if ((skipped_jobs > 0)); then
-        echo "| Skipped | $skipped_jobs |"
+        printf " | Skipped: %d" "$skipped_jobs"
     fi
     if ((cancelled_jobs > 0)); then
-        echo "| Cancelled | $cancelled_jobs |"
+        printf " | Cancelled: %d" "$cancelled_jobs"
     fi
+    echo ""
     echo ""
 
     echo "---"
