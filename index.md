@@ -5,13 +5,13 @@ title: Java Profiler Build - Test Dashboard
 
 # Java Profiler Build - Test Dashboard
 
-> **Last Updated:** 2026-02-06 14:39 UTC
+> **Last Updated:** 2026-02-06 14:56 UTC
 
 ## Quick Status
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](integration/) | [#95000679](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95000679) | ⚠️ | zgu/validatedId | - |
+| [Integration](integration/) | [#95002956](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95002956) | ✅ | zgu/validatedId | [#359](https://github.com/DataDog/java-profiler/pull/359) |
 | [Benchmarks](benchmarks/) | - | - | - | - |
 | [Reliability](reliability/) | - | - | - | - |
 
@@ -37,11 +37,11 @@ Tests multiple allocator configurations (gmalloc, tcmalloc, jemalloc).
 
 | Date | Type | Pipeline | Branch | PR | Status |
 |------|------|----------|--------|-----|--------|
+| 2026-02-06 | Integration | [#95002956](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95002956) | zgu/validatedId | [#359](https://github.com/DataDog/java-profiler/pull/359) | ✅ |
 | 2026-02-06 | Integration | [#95000679](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95000679) | zgu/validatedId | - | ⚠️ |
 | 2026-02-06 | Integration | [#94985044](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94985044) | jb/build_revamp | [#358](https://github.com/DataDog/java-profiler/pull/358) | ❓ |
 | 2026-02-06 | Integration | [#94984980](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94984980) | jb/build_revamp | [#358](https://github.com/DataDog/java-profiler/pull/358) | ❓ |
 | 2026-02-06 | Integration | [#94984937](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94984937) | jb/build_revamp | [#358](https://github.com/DataDog/java-profiler/pull/358) | ❓ |
-| 2026-02-06 | Integration | [#94983737](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94983737) | main | - | ✅ |
 
 ---
 

@@ -1,6 +1,33 @@
 {
   "runs": [
     {
+      "id": "95002956",
+      "timestamp": "2026-02-06T14:56:47Z",
+      "ddprof_branch": "zgu/validatedId",
+      "ddprof_sha": "f934669f",
+      "ddprof_pr": {
+        "number": 359,
+        "url": "https://github.com/DataDog/java-profiler/pull/359",
+        "title": "WIP: Mitigating VMMethod::id() crash"
+      },
+      "pipeline": {
+        "id": "95002956",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95002956"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 40,
+        "failed_jobs": 0,
+        "total_scenarios": 80,
+        "passed_scenarios": 80,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "95000679",
       "timestamp": "2026-02-06T14:39:25Z",
       "ddprof_branch": "zgu/validatedId",
@@ -262,29 +289,6 @@
           "musl-x64-openj9-jdk11",
           "musl-x64-openj9-jdk8"
         ]
-      }
-    },
-    {
-      "id": "94823236",
-      "timestamp": "2026-02-05T10:23:28Z",
-      "ddprof_branch": "main",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "94823236",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94823236"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 40,
-        "failed_jobs": 0,
-        "total_scenarios": 80,
-        "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
       }
     }
   ]

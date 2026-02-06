@@ -13,6 +13,22 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 <details markdown="1">
 <summary>
+<strong>2026-02-06 14:56</strong> | ✅ | zgu/validatedId | PR [#359](https://github.com/DataDog/java-profiler/pull/359) | Pipeline [#95002956](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95002956)
+</summary>
+
+**Version:** unknown
+**Commit:** f934669f
+
+| Metric | Value |
+|--------|-------|
+| Jobs | 40 |
+| Passed | 40 |
+| Failed | 0 |
+
+</details>
+
+<details markdown="1">
+<summary>
 <strong>2026-02-06 14:39</strong> | ⚠️ | zgu/validatedId | Pipeline [#95000679](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95000679)
 </summary>
 
@@ -158,22 +174,6 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 | Failed | 16 |
 
 **Failed Configs:** glibc-arm64-hotspot-jdk11, glibc-arm64-hotspot-jdk8, glibc-arm64-openj9-jdk11, glibc-arm64-openj9-jdk8, glibc-x64-hotspot-jdk11, glibc-x64-hotspot-jdk8, glibc-x64-openj9-jdk11, glibc-x64-openj9-jdk8, musl-arm64-hotspot-jdk11, musl-arm64-hotspot-jdk8, musl-arm64-openj9-jdk11, musl-arm64-openj9-jdk8, musl-x64-hotspot-jdk11, musl-x64-hotspot-jdk8, musl-x64-openj9-jdk11, musl-x64-openj9-jdk8
-
-</details>
-
-<details markdown="1">
-<summary>
-<strong>2026-02-05 10:23</strong> | ✅ | main | Pipeline [#94823236](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94823236)
-</summary>
-
-**Version:** unknown
-**Commit:** unknown
-
-| Metric | Value |
-|--------|-------|
-| Jobs | 40 |
-| Passed | 40 |
-| Failed | 0 |
 
 </details>
 
