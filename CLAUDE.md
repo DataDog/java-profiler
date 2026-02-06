@@ -171,6 +171,11 @@ if (config.name == 'release') {
 
 # Skip debug symbol extraction
 ./gradlew buildRelease -Pskip-debug-extraction=true
+
+# Force specific compiler (auto-detects clang++ or g++ by default)
+./gradlew build -Pnative.forceCompiler=clang++
+./gradlew build -Pnative.forceCompiler=g++
+./gradlew build -Pnative.forceCompiler=/usr/bin/g++-13
 ```
 
 ### Code Quality
@@ -345,6 +350,18 @@ The profiler uses a sophisticated double-buffered storage system for call traces
 - **Configuration Matrix**: Multiple build configs (release/debug/asan/tsan) per platform
 - **Symbol Processing**: Automatic debug symbol extraction for release builds
 - **Library Packaging**: Final JAR contains all platform-specific native libraries
+- **Compiler Detection**: Auto-detects clang++ (preferred) or g++ (fallback); override with `-Pnative.forceCompiler`
+
+### Native Build Plugin (build-logic)
+The project includes a Kotlin-based native build plugin (`build-logic/`) for type-safe C++ compilation:
+- **Composite Build**: Independent Gradle project for build logic versioning
+- **Type-Safe DSL**: Kotlin-based configuration with compile-time checking
+- **Auto Task Generation**: Creates compile, link, and assemble tasks per configuration
+- **Debug Symbol Extraction**: Automatic split debug info for release builds (69% size reduction)
+- **Source Sets**: Per-directory compiler flags for legacy/third-party code
+- **Symbol Visibility**: Linux version scripts and macOS exported symbols lists
+
+**See:** `build-logic/README.md` for full documentation
 
 ### Custom Native Build Tasks (buildSrc)
 The project uses custom Gradle task types in `buildSrc/` instead of Gradle's `cpp-library` and `cpp-application` plugins. This is intentional:

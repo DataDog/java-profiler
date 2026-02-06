@@ -57,6 +57,44 @@ The plugin automatically creates standard configurations (release, debug, asan, 
 - Fuzzing instrumentation
 - Requires libFuzzer
 
+## Compiler Detection
+
+The plugin automatically detects and selects the best available C++ compiler:
+
+### Auto-Detection (Default)
+```bash
+./gradlew build
+# Logs: "Auto-detected compiler: clang++"
+# or: "Auto-detected compiler: g++"
+```
+
+**Detection order:**
+1. `clang++` (preferred - better optimization and diagnostics)
+2. `g++` (fallback)
+3. `c++` (last resort)
+
+If no compiler is found, the build fails with a clear error message.
+
+### Force Specific Compiler
+Use the `-Pnative.forceCompiler` property to override auto-detection:
+
+```bash
+# Force clang++
+./gradlew build -Pnative.forceCompiler=clang++
+
+# Force g++
+./gradlew build -Pnative.forceCompiler=g++
+
+# Force specific version (full path)
+./gradlew build -Pnative.forceCompiler=/usr/bin/g++-13
+./gradlew build -Pnative.forceCompiler=/opt/homebrew/bin/clang++
+```
+
+**Validation:** The specified compiler is validated by running `<compiler> --version`. If validation fails, the build errors immediately with an actionable message.
+
+### Sanitizer Library Detection
+ASan and TSan library detection uses the detected/forced compiler instead of hardcoding `gcc`. This enables sanitizer builds on clang-only systems (e.g., macOS with Xcode but no gcc installed).
+
 ## Debug Symbol Extraction
 
 Release builds automatically extract debug symbols for optimal production deployment:
