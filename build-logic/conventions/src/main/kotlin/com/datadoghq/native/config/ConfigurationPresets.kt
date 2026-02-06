@@ -14,17 +14,24 @@ import java.io.File
  */
 object ConfigurationPresets {
 
-    private fun commonLinuxCompilerArgs(version: String): List<String> = listOf(
-        "-fPIC",
-        "-fno-omit-frame-pointer",
-        "-momit-leaf-frame-pointer",
-        "-fvisibility=hidden",
-        "-fdata-sections",
-        "-ffunction-sections",
-        "-std=c++17",
-        "-DPROFILER_VERSION=\"$version\"",
-        "-DCOUNTERS"
-    )
+    private fun commonLinuxCompilerArgs(version: String): List<String> {
+        val args = mutableListOf(
+            "-fPIC",
+            "-fno-omit-frame-pointer",
+            "-momit-leaf-frame-pointer",
+            "-fvisibility=hidden",
+            "-fdata-sections",
+            "-ffunction-sections",
+            "-std=c++17",
+            "-DPROFILER_VERSION=\"$version\"",
+            "-DCOUNTERS"
+        )
+        // Define __musl__ when building on musl libc (it doesn't define this by default)
+        if (PlatformUtils.isMusl()) {
+            args.add("-D__musl__")
+        }
+        return args
+    }
 
     private fun commonLinuxLinkerArgs(): List<String> = listOf(
         "-ldl",
