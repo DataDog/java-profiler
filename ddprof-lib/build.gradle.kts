@@ -212,4 +212,3 @@ val javadocJar by tasks.registering(Jar::class) {
 }
 
 // Publishing configuration will be added later
-// TODO: Add publishing, signing, etc.

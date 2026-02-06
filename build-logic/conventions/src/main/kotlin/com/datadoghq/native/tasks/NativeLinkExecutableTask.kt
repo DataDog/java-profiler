@@ -151,10 +151,7 @@ abstract class NativeLinkExecutableTask @Inject constructor(
 
             // Add runtime search paths (-rpath)
             runtimePaths.get().forEach { path ->
-                when (PlatformUtils.currentPlatform) {
-                    com.datadoghq.native.model.Platform.LINUX -> add("-Wl,-rpath,$path")
-                    com.datadoghq.native.model.Platform.MACOS -> add("-Wl,-rpath,$path")
-                }
+                add("-Wl,-rpath,$path")
             }
 
             // Add output file

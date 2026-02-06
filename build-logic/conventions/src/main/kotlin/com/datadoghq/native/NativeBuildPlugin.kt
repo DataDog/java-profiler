@@ -67,10 +67,10 @@ class NativeBuildPlugin : Plugin<Project> {
             // Create standard configurations for current platform
             extension.buildConfigurations.apply {
                 register("release") {
-                    ConfigurationPresets.configureRelease(this, currentPlatform, currentArch, version, rootDir)
+                    ConfigurationPresets.configureRelease(this, currentPlatform, currentArch, version)
                 }
                 register("debug") {
-                    ConfigurationPresets.configureDebug(this, currentPlatform, currentArch, version, rootDir)
+                    ConfigurationPresets.configureDebug(this, currentPlatform, currentArch, version)
                 }
                 register("asan") {
                     ConfigurationPresets.configureAsan(this, currentPlatform, currentArch, version, rootDir, compiler)

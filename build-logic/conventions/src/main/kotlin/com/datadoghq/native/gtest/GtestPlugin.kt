@@ -193,7 +193,7 @@ class GtestPlugin : Plugin<Project> {
         val gtestCompilerArgs = adjustCompilerArgs(config.compilerArgs.get(), extension)
 
         // Adjust linker args
-        val gtestLinkerArgs = adjustLinkerArgs(config, extension)
+        val gtestLinkerArgs = adjustLinkerArgs(config)
 
         // Create per-config aggregation task
         val configName = config.name.replaceFirstChar { it.uppercase() }
@@ -373,7 +373,7 @@ class GtestPlugin : Plugin<Project> {
                 outputs.upToDateWhen { false }
             }
 
-            // Fail fast if configured
+            // When failFast is enabled, stop build on test failures (don't ignore exit value)
             isIgnoreExitValue = !extension.failFast.get()
         }
     }
@@ -416,16 +416,11 @@ class GtestPlugin : Plugin<Project> {
         return args
     }
 
-    private fun adjustLinkerArgs(config: BuildConfiguration, extension: GtestExtension): List<String> {
+    private fun adjustLinkerArgs(config: BuildConfiguration): List<String> {
         val args = mutableListOf<String>()
 
-        // Add base linker args (optionally filter minimizing flags for release)
-        if (config.name != "release" || !extension.keepSymbols.get()) {
-            args.addAll(config.linkerArgs.get())
-        } else {
-            // For release with keepSymbols, still add base args
-            args.addAll(config.linkerArgs.get())
-        }
+        // Add base linker args
+        args.addAll(config.linkerArgs.get())
 
         return args
     }

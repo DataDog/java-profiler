@@ -51,8 +51,7 @@ object ConfigurationPresets {
         config: BuildConfiguration,
         platform: Platform,
         architecture: Architecture,
-        version: String,
-        rootDir: File
+        version: String
     ) {
         config.platform.set(platform)
         config.architecture.set(architecture)
@@ -86,8 +85,7 @@ object ConfigurationPresets {
         config: BuildConfiguration,
         platform: Platform,
         architecture: Architecture,
-        version: String,
-        rootDir: File
+        version: String
     ) {
         config.platform.set(platform)
         config.architecture.set(architecture)

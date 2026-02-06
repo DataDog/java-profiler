@@ -4,7 +4,6 @@ package com.datadoghq.native.model
 
 import org.gradle.api.Named
 import org.gradle.api.file.ConfigurableFileCollection
-import org.gradle.api.model.ObjectFactory
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFiles
@@ -20,8 +19,7 @@ import javax.inject.Inject
  * sourceSets { main { sources.from(fileTree("src/main/cpp")) } }
  */
 abstract class SourceSet @Inject constructor(
-    private val name: String,
-    objects: ObjectFactory
+    private val name: String
 ) : Named {
 
     /**
