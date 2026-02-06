@@ -59,7 +59,7 @@ static inline void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, 
 }
 
 static jmethodID getMethodId(VMMethod* method) {
-    if (!inDeadZone(method) && aligned((uintptr_t)method)) {
+    if (!inDeadZone(method) && aligned((uintptr_t)method) && SafeAccess::isReadable((void*)method)) {
         return method->validatedId();
     }
     return NULL;
