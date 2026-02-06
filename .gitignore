@@ -1,6 +1,7 @@
 **/build/
 **/build_*/
 **/build-*/
+!build-logic/
 /nbproject/
 /out/
 /.idea/
@@ -14,6 +15,7 @@
 .project
 .settings
 .gradle
+.kotlin
 .tmp
 *.iml
 /ddprof-stresstest/jmh-result.*
