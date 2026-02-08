@@ -49,38 +49,6 @@ class RootProjectPlugin : Plugin<Project> {
     }
 
     private fun setupStandardConfigurationsIfNeeded(project: Project, extension: NativeBuildExtension) {
-        // Only create configurations if none are explicitly defined
-        if (extension.buildConfigurations.isEmpty()) {
-            val currentPlatform = PlatformUtils.currentPlatform
-            val currentArch = PlatformUtils.currentArchitecture
-            val version = extension.version.get()
-            val rootDir = project.rootDir
-            val compiler = PlatformUtils.findCompiler(project)
-
-            project.logger.lifecycle("Setting up standard build configurations for $currentPlatform-$currentArch")
-            project.logger.lifecycle("Using compiler: $compiler")
-
-            // Create standard configurations for current platform
-            extension.buildConfigurations.apply {
-                register("release") {
-                    ConfigurationPresets.configureRelease(this, currentPlatform, currentArch, version)
-                }
-                register("debug") {
-                    ConfigurationPresets.configureDebug(this, currentPlatform, currentArch, version)
-                }
-                register("asan") {
-                    ConfigurationPresets.configureAsan(this, currentPlatform, currentArch, version, rootDir, compiler)
-                }
-                register("tsan") {
-                    ConfigurationPresets.configureTsan(this, currentPlatform, currentArch, version, rootDir, compiler)
-                }
-                register("fuzzer") {
-                    ConfigurationPresets.configureFuzzer(this, currentPlatform, currentArch, version, rootDir)
-                }
-            }
-
-            val activeConfigs = extension.getActiveConfigurations(currentPlatform, currentArch)
-            project.logger.lifecycle("Active configurations: ${activeConfigs.map { it.name }.joinToString(", ")}")
-        }
+        ConfigurationPresets.setupStandardConfigurations(extension, project)
     }
 }

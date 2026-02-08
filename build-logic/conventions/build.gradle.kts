@@ -38,5 +38,17 @@ gradlePlugin {
             id = "com.datadoghq.spotless-convention"
             implementationClass = "com.datadoghq.profiler.SpotlessConventionPlugin"
         }
+        create("javaConventions") {
+            id = "com.datadoghq.java-conventions"
+            implementationClass = "com.datadoghq.profiler.JavaConventionsPlugin"
+        }
+        create("fuzzTargets") {
+            id = "com.datadoghq.fuzz-targets"
+            implementationClass = "com.datadoghq.native.fuzz.FuzzTargetsPlugin"
+        }
+        create("simpleNativeLib") {
+            id = "com.datadoghq.simple-native-lib"
+            implementationClass = "com.datadoghq.native.SimpleNativeLibPlugin"
+        }
     }
 }

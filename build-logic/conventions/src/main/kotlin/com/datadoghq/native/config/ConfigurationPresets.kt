@@ -14,6 +14,52 @@ import java.io.File
  */
 object ConfigurationPresets {
 
+    /**
+     * Sets up standard build configurations (release, debug, asan, tsan, fuzzer) on the extension.
+     * This is the shared implementation used by both NativeBuildPlugin and RootProjectPlugin.
+     *
+     * @param extension The NativeBuildExtension to configure
+     * @param project The Gradle project (used for rootDir, logger, and compiler detection)
+     */
+    fun setupStandardConfigurations(
+        extension: com.datadoghq.native.NativeBuildExtension,
+        project: org.gradle.api.Project
+    ) {
+        if (extension.buildConfigurations.isNotEmpty()) {
+            return // Don't override explicitly defined configurations
+        }
+
+        val currentPlatform = PlatformUtils.currentPlatform
+        val currentArch = PlatformUtils.currentArchitecture
+        val version = extension.version.get()
+        val rootDir = project.rootDir
+        val compiler = PlatformUtils.findCompiler(project)
+
+        project.logger.lifecycle("Setting up standard build configurations for $currentPlatform-$currentArch")
+        project.logger.lifecycle("Using compiler: $compiler")
+
+        extension.buildConfigurations.apply {
+            register("release") {
+                configureRelease(this, currentPlatform, currentArch, version)
+            }
+            register("debug") {
+                configureDebug(this, currentPlatform, currentArch, version)
+            }
+            register("asan") {
+                configureAsan(this, currentPlatform, currentArch, version, rootDir, compiler)
+            }
+            register("tsan") {
+                configureTsan(this, currentPlatform, currentArch, version, rootDir, compiler)
+            }
+            register("fuzzer") {
+                configureFuzzer(this, currentPlatform, currentArch, version, rootDir)
+            }
+        }
+
+        val activeConfigs = extension.getActiveConfigurations(currentPlatform, currentArch)
+        project.logger.lifecycle("Active configurations: ${activeConfigs.map { it.name }.joinToString(", ")}")
+    }
+
     private fun commonLinuxCompilerArgs(version: String): List<String> {
         val args = mutableListOf(
             "-fPIC",

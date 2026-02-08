@@ -5,12 +5,9 @@ package com.datadoghq.native.gtest
 import com.datadoghq.native.NativeBuildExtension
 import com.datadoghq.native.model.BuildConfiguration
 import com.datadoghq.native.model.Platform
-import com.datadoghq.native.tasks.NativeCompileTask
-import com.datadoghq.native.tasks.NativeLinkExecutableTask
 import com.datadoghq.native.util.PlatformUtils
 import org.gradle.api.Plugin
 import org.gradle.api.Project
-import org.gradle.api.tasks.Exec
 import java.io.File
 
 /**
@@ -183,26 +180,17 @@ class GtestPlugin : Plugin<Project> {
         hasGtest: Boolean,
         gtestAll: org.gradle.api.tasks.TaskProvider<*>
     ) {
-        // Find compiler
+        // Find compiler and build include paths
         val compiler = findCompiler(project)
-
-        // Build include paths - combine extension includes with gtest-specific includes
         val includeFiles = extension.includes.plus(project.files(getGtestIncludes(extension)))
 
-        // Adjust compiler args
-        val gtestCompilerArgs = adjustCompilerArgs(config.compilerArgs.get(), extension)
-
-        // Adjust linker args
-        val gtestLinkerArgs = adjustLinkerArgs(config)
-
         // Create per-config aggregation task
-        val configName = config.name.replaceFirstChar { it.uppercase() }
-        val gtestConfigTask = project.tasks.register("gtest$configName") {
+        val gtestConfigTask = project.tasks.register("gtest${config.capitalizedName()}") {
             group = "verification"
             description = "Run all Google Tests for the ${config.name} build of the library"
         }
 
-        // Discover and create tasks for each test file
+        // Discover and create tasks for each test file using builder
         val testDir = extension.testSourceDir.get().asFile
         if (!testDir.exists()) {
             project.logger.info("Test source directory does not exist: $testDir")
@@ -210,171 +198,15 @@ class GtestPlugin : Plugin<Project> {
         }
 
         testDir.listFiles()?.filter { it.name.endsWith(".cpp") }?.forEach { testFile ->
-            val testName = testFile.nameWithoutExtension
+            val executeTask = GtestTaskBuilder(project, extension, config)
+                .forTest(testFile)
+                .withCompiler(compiler)
+                .withIncludes(includeFiles)
+                .onlyIfGtest(hasGtest)
+                .build()
 
-            // Create compile task
-            val compileTask = createCompileTask(
-                project, extension, config, testFile, testName,
-                compiler, gtestCompilerArgs, includeFiles, hasGtest
-            )
-
-            // Create link task
-            val linkTask = createLinkTask(
-                project, config, testName, compiler, gtestLinkerArgs,
-                compileTask, hasGtest, extension
-            )
-
-            // Create execute task
-            val executeTask = createExecuteTask(
-                project, extension, config, testName, linkTask, hasGtest
-            )
-
-            // Wire up dependencies
             gtestConfigTask.configure { dependsOn(executeTask) }
             gtestAll.configure { dependsOn(executeTask) }
-        }
-    }
-
-    private fun createCompileTask(
-        project: Project,
-        extension: GtestExtension,
-        config: BuildConfiguration,
-        testFile: File,
-        testName: String,
-        compiler: String,
-        compilerArgs: List<String>,
-        includeFiles: org.gradle.api.file.FileCollection,
-        hasGtest: Boolean
-    ): org.gradle.api.tasks.TaskProvider<NativeCompileTask> {
-        val configName = config.name.replaceFirstChar { it.uppercase() }
-
-        return project.tasks.register("compileGtest${configName}_$testName", NativeCompileTask::class.java) {
-            onlyIf {
-                hasGtest &&
-                !project.hasProperty("skip-tests") &&
-                !project.hasProperty("skip-native") &&
-                !project.hasProperty("skip-gtest")
-            }
-            group = "build"
-            description = "Compile the Google Test $testName for the ${config.name} build of the library"
-
-            this.compiler.set(compiler)
-            this.compilerArgs.set(compilerArgs)
-
-            // Combine main sources and test file
-            sources.from(
-                project.fileTree(extension.mainSourceDir.get()) { include("**/*.cpp") },
-                testFile
-            )
-
-            includes.from(includeFiles)
-            objectFileDir.set(project.file("${project.layout.buildDirectory.get()}/obj/gtest/${config.name}/$testName"))
-        }
-    }
-
-    private fun createLinkTask(
-        project: Project,
-        config: BuildConfiguration,
-        testName: String,
-        compiler: String,
-        linkerArgs: List<String>,
-        compileTask: org.gradle.api.tasks.TaskProvider<NativeCompileTask>,
-        hasGtest: Boolean,
-        extension: GtestExtension
-    ): org.gradle.api.tasks.TaskProvider<NativeLinkExecutableTask> {
-        val configName = config.name.replaceFirstChar { it.uppercase() }
-        val binary = project.file("${project.layout.buildDirectory.get()}/bin/gtest/${config.name}_$testName/$testName")
-
-        return project.tasks.register("linkGtest${configName}_$testName", NativeLinkExecutableTask::class.java) {
-            onlyIf {
-                hasGtest &&
-                !project.hasProperty("skip-tests") &&
-                !project.hasProperty("skip-native") &&
-                !project.hasProperty("skip-gtest")
-            }
-            dependsOn(compileTask)
-            group = "build"
-            description = "Link the Google Test $testName for the ${config.name} build of the library"
-
-            linker.set(compiler)
-            this.linkerArgs.set(linkerArgs)
-            objectFiles.from(
-                project.fileTree("${project.layout.buildDirectory.get()}/obj/gtest/${config.name}/$testName") {
-                    include("*.o")
-                }
-            )
-            outputFile.set(binary)
-
-            // Add gtest library paths
-            when (PlatformUtils.currentPlatform) {
-                Platform.MACOS -> {
-                    val gtestPath = if (extension.googleTestHome.isPresent) {
-                        extension.googleTestHome.get().asFile.absolutePath
-                    } else {
-                        "/opt/homebrew/opt/googletest"
-                    }
-                    libPath("$gtestPath/lib")
-                }
-                Platform.LINUX -> {
-                    // Use system paths
-                }
-            }
-
-            // Add gtest libraries
-            lib("gtest", "gtest_main", "gmock", "gmock_main", "dl", "pthread", "m")
-            if (PlatformUtils.currentPlatform == Platform.LINUX) {
-                lib("rt")
-            }
-        }
-    }
-
-    private fun createExecuteTask(
-        project: Project,
-        extension: GtestExtension,
-        config: BuildConfiguration,
-        testName: String,
-        linkTask: org.gradle.api.tasks.TaskProvider<NativeLinkExecutableTask>,
-        hasGtest: Boolean
-    ): org.gradle.api.tasks.TaskProvider<Exec> {
-        val configName = config.name.replaceFirstChar { it.uppercase() }
-        val binary = project.file("${project.layout.buildDirectory.get()}/bin/gtest/${config.name}_$testName/$testName")
-
-        return project.tasks.register("gtest${configName}_$testName", Exec::class.java) {
-            onlyIf {
-                hasGtest &&
-                !project.hasProperty("skip-tests") &&
-                !project.hasProperty("skip-native") &&
-                !project.hasProperty("skip-gtest")
-            }
-            dependsOn(linkTask)
-
-            // Add dependency on buildNativeLibs if it exists (Linux only)
-            if (PlatformUtils.currentPlatform == Platform.LINUX && extension.buildNativeLibs.get()) {
-                val buildNativeLibsTask = project.tasks.findByName("buildNativeLibs")
-                if (buildNativeLibsTask != null) {
-                    dependsOn(buildNativeLibsTask)
-                }
-            }
-
-            group = "verification"
-            description = "Run the Google Test $testName for the ${config.name} build of the library"
-
-            executable = binary.absolutePath
-
-            // Set test environment variables from configuration
-            config.testEnvironment.get().forEach { (key, value) ->
-                environment(key, value)
-            }
-
-            inputs.files(binary)
-
-            // Always re-run tests if configured
-            if (extension.alwaysRun.get()) {
-                outputs.upToDateWhen { false }
-            }
-
-            // When failFast is enabled, stop build on test failures (don't ignore exit value)
-            isIgnoreExitValue = !extension.failFast.get()
         }
     }
 
@@ -392,36 +224,5 @@ class GtestPlugin : Plugin<Project> {
             }
             Platform.LINUX -> emptyList() // System includes
         }
-    }
-
-    private fun adjustCompilerArgs(baseArgs: List<String>, extension: GtestExtension): List<String> {
-        val args = baseArgs.toMutableList()
-
-        // Remove -std=c++17 so we can re-add it consistently
-        args.removeAll { it.startsWith("-std=") }
-
-        // Remove -DNDEBUG if assertions are enabled
-        if (extension.enableAssertions.get()) {
-            args.removeAll { it == "-DNDEBUG" }
-        }
-
-        // Re-add C++17 standard
-        args.add("-std=c++17")
-
-        // Add musl define if needed
-        if (PlatformUtils.currentPlatform == Platform.LINUX && PlatformUtils.isMusl()) {
-            args.add("-D__musl__")
-        }
-
-        return args
-    }
-
-    private fun adjustLinkerArgs(config: BuildConfiguration): List<String> {
-        val args = mutableListOf<String>()
-
-        // Add base linker args
-        args.addAll(config.linkerArgs.get())
-
-        return args
     }
 }

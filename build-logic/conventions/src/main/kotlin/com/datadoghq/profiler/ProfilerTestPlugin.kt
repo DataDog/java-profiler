@@ -15,7 +15,6 @@ import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.SourceSetContainer
 import org.gradle.api.tasks.testing.Test
 import org.gradle.api.tasks.testing.logging.TestLogEvent
-import java.io.File
 import javax.inject.Inject
 
 /**
@@ -84,9 +83,8 @@ class ProfilerTestPlugin : Plugin<Project> {
         // Use JUnit Platform
         task.useJUnitPlatform()
 
-        // Configure Java executable
-        val javaHome = System.getenv("JAVA_TEST_HOME") ?: System.getenv("JAVA_HOME")
-        task.setExecutable(File(javaHome, "bin/java").absolutePath)
+        // Configure Java executable - use centralized utility for JAVA_TEST_HOME/JAVA_HOME resolution
+        task.setExecutable(PlatformUtils.testJavaExecutable())
 
         // Standard environment variables
         task.environment("DDPROF_TEST_DISABLE_RATE_LIMIT", "1")
@@ -112,9 +110,8 @@ class ProfilerTestPlugin : Plugin<Project> {
     }
 
     private fun configureJavaExecTask(task: JavaExec, extension: ProfilerTestExtension, project: Project) {
-        // Configure Java executable
-        val javaHome = System.getenv("JAVA_TEST_HOME") ?: System.getenv("JAVA_HOME")
-        task.setExecutable(File(javaHome, "bin/java").absolutePath)
+        // Configure Java executable - use centralized utility for JAVA_TEST_HOME/JAVA_HOME resolution
+        task.setExecutable(PlatformUtils.testJavaExecutable())
 
         // JVM arguments for JavaExec tasks
         task.doFirst {

@@ -53,36 +53,7 @@ class NativeBuildPlugin : Plugin<Project> {
     }
 
     private fun setupStandardConfigurations(project: Project, extension: NativeBuildExtension) {
-        val currentPlatform = PlatformUtils.currentPlatform
-        val currentArch = PlatformUtils.currentArchitecture
-        val version = extension.version.get()
-        val rootDir = project.rootDir
-        val compiler = findCompiler(project)
-
-        // Only create configurations if none are explicitly defined
-        if (extension.buildConfigurations.isEmpty()) {
-            project.logger.lifecycle("Setting up standard build configurations for $currentPlatform-$currentArch")
-            project.logger.lifecycle("Using compiler: $compiler")
-
-            // Create standard configurations for current platform
-            extension.buildConfigurations.apply {
-                register("release") {
-                    ConfigurationPresets.configureRelease(this, currentPlatform, currentArch, version)
-                }
-                register("debug") {
-                    ConfigurationPresets.configureDebug(this, currentPlatform, currentArch, version)
-                }
-                register("asan") {
-                    ConfigurationPresets.configureAsan(this, currentPlatform, currentArch, version, rootDir, compiler)
-                }
-                register("tsan") {
-                    ConfigurationPresets.configureTsan(this, currentPlatform, currentArch, version, rootDir, compiler)
-                }
-                register("fuzzer") {
-                    ConfigurationPresets.configureFuzzer(this, currentPlatform, currentArch, version, rootDir)
-                }
-            }
-        }
+        ConfigurationPresets.setupStandardConfigurations(extension, project)
     }
 
     private fun createTasks(project: Project, extension: NativeBuildExtension) {

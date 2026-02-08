@@ -5,10 +5,7 @@ plugins {
   `java-library`
   application
   id("com.datadoghq.profiler-test")
-}
-
-repositories {
-  mavenCentral()
+  id("com.datadoghq.java-conventions")
 }
 
 // Reference to native test helpers library directory
@@ -89,15 +86,7 @@ tasks.named<Test>("test") {
   onlyIf { false }
 }
 
-// Java compilation settings
-tasks.withType<JavaCompile>().configureEach {
-  options.compilerArgs.addAll(listOf("--release", "8"))
-
-  if (name == "compileTestJava") {
-    sourceCompatibility = "8"
-    targetCompatibility = "8"
-  }
-}
+// Java compilation settings handled by java-conventions plugin (--release 8)
 
 // Ensure compileTestJava has access to the test dependencies for compilation
 // (must be set after project evaluation when the configuration is created)

@@ -47,4 +47,11 @@ abstract class BuildConfiguration @Inject constructor(
      * Example: "Release" for name "release"
      */
     fun capitalizedName(): String = configName.replaceFirstChar { it.titlecase() }
+
+    // Task name helpers for consistent naming across plugins
+    val compileTaskName: String get() = "compile${capitalizedName()}"
+    val linkTaskName: String get() = "link${capitalizedName()}"
+    val assembleTaskName: String get() = "assemble${capitalizedName()}"
+    val testTaskName: String get() = "test${capitalizedName()}"
+    val gtestTaskName: String get() = "gtest${capitalizedName()}"
 }

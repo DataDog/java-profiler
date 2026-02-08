@@ -1,10 +1,9 @@
+import com.datadoghq.native.util.PlatformUtils
+
 plugins {
   java
   id("me.champeau.jmh") version "0.7.1"
-}
-
-repositories {
-  mavenCentral()
+  id("com.datadoghq.java-conventions")
 }
 
 dependencies {
@@ -22,11 +21,8 @@ sourceSets {
 }
 
 jmh {
-  val javaTestHome = System.getenv("JAVA_TEST_HOME")
-  val javaHome = javaTestHome ?: System.getenv("JAVA_HOME")
-
   // Set the JVM executable - this is used by the JMH plugin to fork benchmark processes
-  jvm.set("$javaHome/bin/java")
+  jvm.set(PlatformUtils.testJavaExecutable())
 
   // Explicitly set fork to use external JVM (not Gradle's JVM)
   fork.set(3)
@@ -39,10 +35,7 @@ jmh {
 
 // Configure all JMH-related JavaExec tasks to use the correct JDK
 tasks.withType<JavaExec>().matching { it.name.startsWith("jmh") }.configureEach {
-  val javaTestHome = System.getenv("JAVA_TEST_HOME")
-  val javaHome = javaTestHome ?: System.getenv("JAVA_HOME")
-
-  executable = "$javaHome/bin/java"
+  executable = PlatformUtils.testJavaExecutable()
 }
 
 tasks.named<Jar>("jmhJar") {
@@ -56,21 +49,15 @@ tasks.named<Jar>("jmhJar") {
 
 tasks.register<Exec>("runStressTests") {
   dependsOn(tasks.named("jmhJar"))
-  val javaTestHome = System.getenv("JAVA_TEST_HOME")
-  val javaHome = javaTestHome ?: System.getenv("JAVA_HOME")
 
   group = "Execution"
   description = "Run JMH stresstests"
   commandLine(
-    "$javaHome/bin/java",
+    PlatformUtils.testJavaExecutable(),
     "-jar",
     "build/libs/stresstests.jar",
     "-prof",
     "com.datadoghq.profiler.stresstest.WhiteboxProfiler",
     "counters.*"
   )
-}
-
-tasks.withType<JavaCompile>().configureEach {
-  options.compilerArgs.addAll(listOf("--release", "8"))
 }

@@ -4,6 +4,15 @@ pluginManagement {
   includeBuild("build-logic")
 }
 
+// Centralized dependency resolution - subprojects should not define their own repositories
+dependencyResolutionManagement {
+  repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+  repositories {
+    mavenCentral()
+    gradlePluginPortal()
+  }
+}
+
 rootProject.name = "java-profiler"
 
 include(":ddprof-lib")

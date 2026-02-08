@@ -30,6 +30,24 @@ object PlatformUtils {
             ?: throw IllegalStateException("Neither JAVA_HOME environment variable nor java.home system property is set")
     }
 
+    /**
+     * Resolve JAVA_HOME for test execution, preferring JAVA_TEST_HOME if set.
+     * This allows running tests with a different JDK than the build JDK.
+     */
+    fun testJavaHome(): String {
+        return System.getenv("JAVA_TEST_HOME")
+            ?: System.getenv("JAVA_HOME")
+            ?: System.getProperty("java.home")
+            ?: throw IllegalStateException("Neither JAVA_TEST_HOME, JAVA_HOME, nor java.home is set")
+    }
+
+    /**
+     * Get the java executable path for test execution.
+     */
+    fun testJavaExecutable(): String {
+        return "${testJavaHome()}/bin/java"
+    }
+
     fun jniIncludePaths(): List<String> {
         val javaHome = javaHome()
         val platform = when (currentPlatform) {
@@ -137,6 +155,87 @@ object PlatformUtils {
     fun sharedLibExtension(): String = when (currentPlatform) {
         Platform.LINUX -> "so"
         Platform.MACOS -> "dylib"
+    }
+
+    /**
+     * Find Homebrew LLVM installation on macOS.
+     * Returns the LLVM installation path or null if not found.
+     */
+    fun findHomebrewLLVM(): String? {
+        if (currentPlatform != Platform.MACOS) {
+            return null
+        }
+
+        val possiblePaths = listOf(
+            "/opt/homebrew/opt/llvm", // Apple Silicon
+            "/usr/local/opt/llvm" // Intel Mac
+        )
+
+        for (path in possiblePaths) {
+            if (File(path).exists() && File("$path/bin/clang++").exists()) {
+                return path
+            }
+        }
+
+        // Try using brew command
+        return try {
+            val process = ProcessBuilder("brew", "--prefix", "llvm")
+                .redirectErrorStream(true)
+                .start()
+            process.waitFor(5, TimeUnit.SECONDS)
+            if (process.exitValue() == 0) {
+                val brewPath = process.inputStream.bufferedReader().readText().trim()
+                if (File("$brewPath/bin/clang++").exists()) {
+                    brewPath
+                } else {
+                    null
+                }
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Find the clang resource directory within an LLVM installation.
+     * This is needed for locating libFuzzer on macOS with Homebrew LLVM.
+     */
+    fun findClangResourceDir(llvmPath: String?): String? {
+        if (llvmPath == null) {
+            return null
+        }
+
+        val clangLibDir = File("$llvmPath/lib/clang")
+        if (!clangLibDir.exists()) {
+            return null
+        }
+
+        // Find the version directory (e.g., 18.1.8 or 19)
+        val versions = clangLibDir.listFiles()
+            ?.filter { it.isDirectory }
+            ?.sortedByDescending { it.name }
+
+        return if (versions != null && versions.isNotEmpty()) {
+            "$llvmPath/lib/clang/${versions[0].name}"
+        } else {
+            null
+        }
+    }
+
+    /**
+     * Find a compiler suitable for fuzzing.
+     * On macOS, prefers Homebrew LLVM's clang++ for libFuzzer support.
+     */
+    fun findFuzzerCompiler(project: Project): String {
+        if (currentPlatform == Platform.MACOS) {
+            val homebrewLLVM = findHomebrewLLVM()
+            if (homebrewLLVM != null) {
+                return "$homebrewLLVM/bin/clang++"
+            }
+        }
+        return findCompiler(project)
     }
 
     /**
