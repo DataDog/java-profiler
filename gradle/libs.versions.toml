@@ -4,8 +4,59 @@
 cpp-standard = "17"
 kotlin = "1.9.22"
 
+# Testing
+junit = "5.9.2"
+junit-pioneer = "1.9.1"
+slf4j = "1.7.32"
+
+# Profiler runtime
+jmc = "8.1.0"
+jol = "0.16"
+lz4 = "1.8.0"
+snappy = "1.1.10.1"
+zstd = "1.5.5-4"
+
+# Code analysis
+asm = "9.6"
+
+# Benchmarking
+jmh = "1.36"
+
 [libraries]
-# Build system dependencies (if needed in the future)
+# JUnit 5
+junit-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "junit" }
+junit-engine = { module = "org.junit.jupiter:junit-jupiter-engine", version.ref = "junit" }
+junit-params = { module = "org.junit.jupiter:junit-jupiter-params", version.ref = "junit" }
+junit-pioneer = { module = "org.junit-pioneer:junit-pioneer", version.ref = "junit-pioneer" }
+
+# Logging
+slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4j" }
+
+# JFR and memory analysis
+jmc-flightrecorder = { module = "org.openjdk.jmc:flightrecorder", version.ref = "jmc" }
+jol-core = { module = "org.openjdk.jol:jol-core", version.ref = "jol" }
+
+# Compression libraries
+lz4 = { module = "org.lz4:lz4-java", version.ref = "lz4" }
+snappy = { module = "org.xerial.snappy:snappy-java", version.ref = "snappy" }
+zstd = { module = "com.github.luben:zstd-jni", version.ref = "zstd" }
+
+# Bytecode analysis
+asm = { module = "org.ow2.asm:asm", version.ref = "asm" }
+
+# JMH benchmarking
+jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }
+jmh-annprocess = { module = "org.openjdk.jmh:jmh-generator-annprocess", version.ref = "jmh" }
+
+[bundles]
+# Core testing framework (JUnit + logging)
+testing = ["junit-api", "junit-engine", "junit-params", "junit-pioneer", "slf4j-simple"]
+
+# Profiler runtime dependencies (JFR analysis + compression)
+profiler-runtime = ["jmc-flightrecorder", "jol-core", "lz4", "snappy", "zstd"]
+
+# JMH benchmarking
+jmh = ["jmh-core", "jmh-annprocess"]
 
 [plugins]
 # Plugin references will be added as needed

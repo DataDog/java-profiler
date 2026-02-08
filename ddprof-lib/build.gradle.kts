@@ -88,28 +88,6 @@ tasks.test {
   useJUnitPlatform()
 }
 
-// Utility functions for library paths
-fun libraryTargetBase(type: String): String {
-  return "$projectDir/build/native/$type"
-}
-
-fun libraryTargetPath(type: String): String {
-  val platform = com.datadoghq.native.util.PlatformUtils.currentPlatform
-  val arch = com.datadoghq.native.util.PlatformUtils.currentArchitecture
-  val isMusl = com.datadoghq.native.util.PlatformUtils.isMusl()
-  val muslSuffix = if (isMusl) "-musl" else ""
-  return "${libraryTargetBase(type)}/META-INF/native-libs/$platform-$arch$muslSuffix"
-}
-
-fun librarySourcePath(type: String, qualifier: String = ""): String {
-  val platform = com.datadoghq.native.util.PlatformUtils.currentPlatform
-  val arch = com.datadoghq.native.util.PlatformUtils.currentArchitecture
-  val ext = com.datadoghq.native.util.PlatformUtils.sharedLibExtension()
-  // New plugin uses build/lib/main/{config}/{os}/{arch}/ structure
-  val qualifierPath = if (qualifier.isNotEmpty()) "/$qualifier" else ""
-  return "$projectDir/build/lib/main/$type/$platform/$arch$qualifierPath/libjavaProfiler.$ext"
-}
-
 // Copy external libs task
 val copyExternalLibs by tasks.registering(Copy::class) {
   if (project.hasProperty("with-libs")) {
@@ -120,15 +98,15 @@ val copyExternalLibs by tasks.registering(Copy::class) {
   }
 }
 
-// Create JAR tasks for each build configuration
+// Create JAR tasks for each build configuration using nativeBuild extension utilities
 val buildConfigNames = listOf("release", "debug", "asan", "tsan", "fuzzer")
 buildConfigNames.forEach { name ->
   val copyTask = tasks.register("copy${name.replaceFirstChar { it.uppercase() }}Libs", Copy::class) {
-    from(file(librarySourcePath(name, "")).parent) {
+    from(nativeBuild.librarySourceDir(name)) {
       // Exclude debug symbols from production JAR
       exclude("debug/**", "*.debug", "*.dSYM/**")
     }
-    into(file(libraryTargetPath(name)))
+    into(nativeBuild.libraryTargetDir(name))
 
     // Ensure library is built before copying
     val linkTask = tasks.findByName("link${name.replaceFirstChar { it.uppercase() }}")
@@ -155,7 +133,7 @@ buildConfigNames.forEach { name ->
 
     from(sourceSets.main.get().output.classesDirs)
     from(sourceSets["java9"].output.classesDirs)
-    from(files(libraryTargetBase(name))) {
+    from(nativeBuild.libraryTargetBase(name)) {
       include("**/*")
       // Exclude debug symbols from production JAR
       exclude("**/debug/**", "**/*.debug", "**/*.dSYM/**")

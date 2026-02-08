@@ -29,5 +29,9 @@ gradlePlugin {
             id = "com.datadoghq.scanbuild"
             implementationClass = "com.datadoghq.native.scanbuild.ScanBuildPlugin"
         }
+        create("profilerTest") {
+            id = "com.datadoghq.profiler-test"
+            implementationClass = "com.datadoghq.profiler.ProfilerTestPlugin"
+        }
     }
 }

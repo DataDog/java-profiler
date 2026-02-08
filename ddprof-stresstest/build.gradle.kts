@@ -10,8 +10,7 @@ repositories {
 dependencies {
   implementation(project(mapOf("path" to ":ddprof-lib", "configuration" to "debug")))
   implementation(project(":ddprof-test-tracer"))
-  implementation("org.openjdk.jmh:jmh-core:1.36")
-  implementation("org.openjdk.jmh:jmh-generator-annprocess:1.36")
+  implementation(libs.bundles.jmh)
 }
 
 sourceSets {
