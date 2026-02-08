@@ -62,7 +62,7 @@ versionedSources {
   versions {
     register("java9") {
       release.set(9)
-      minToolchainVersion.set(11)  // Compile Java 9 code with JDK 11+
+      minToolchainVersion.set(11) // Compile Java 9 code with JDK 11+
     }
   }
 }
