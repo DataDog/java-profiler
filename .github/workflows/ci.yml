@@ -163,7 +163,7 @@ jobs:
 
   summarize-tests:
     needs: [test-matrix]
-    if: always() && github.event_name == 'pull_request'
+    if: always() && !cancelled() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read

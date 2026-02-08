@@ -11,7 +11,9 @@ If you need a full-fledged Java profiler head back to [async-profiler](https://g
 ### Prerequisites
 1. JDK 8 or later (required for building)
 2. Gradle (included in wrapper)
-3. C++ compiler (gcc/g++ or clang)
+3. C++ compiler (clang++ preferred, g++ supported)
+   - Build system auto-detects clang++ or g++
+   - Override with: `./gradlew build -Pnative.forceCompiler=g++`
 4. Make (included in XCode on Macos)
 5. Google Test (for unit testing)
    - On Ubuntu/Debian: `sudo apt install libgtest-dev`
@@ -288,6 +290,27 @@ ddprof-lib/build/
   - Ubuntu/Debian: `sudo apt-get install binutils`
   - Alpine: `apk add binutils`
   - macOS: Included with Xcode command line tools
+
+### Compiler Selection
+The build system automatically detects the best available C++ compiler (prefers clang++, falls back to g++).
+
+```bash
+# Auto-detection (default)
+./gradlew build
+
+# Force specific compiler
+./gradlew build -Pnative.forceCompiler=clang++
+./gradlew build -Pnative.forceCompiler=g++
+./gradlew build -Pnative.forceCompiler=/usr/bin/g++-13
+
+# Test with specific compiler
+./gradlew testDebug -Pnative.forceCompiler=g++
+```
+
+This is useful for:
+- **Reproducibility**: Ensure builds use the same compiler across machines
+- **clang-only systems**: macOS with Xcode but no gcc (sanitizer builds work)
+- **Testing**: Verify code compiles with both gcc and clang
 
 ## Development
 
