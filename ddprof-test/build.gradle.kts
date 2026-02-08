@@ -11,9 +11,6 @@ plugins {
 // Reference to native test helpers library directory
 val testNativeLibDir = project(":ddprof-test-native").layout.buildDirectory.dir("lib")
 
-// Access version catalog
-val catalog = the<VersionCatalogsExtension>().named("libs")
-
 // Configure profiler test plugin - this generates all multi-config tasks automatically
 configure<ProfilerTestExtension> {
   // Native library path for JNI test helpers
@@ -41,28 +38,16 @@ application {
 }
 
 // Add common dependencies to test and main configurations
-// The plugin creates testCommon and mainCommon configurations that we extend
-afterEvaluate {
-  configurations.findByName("testCommon")?.let { testCommon ->
-    catalog.findBundle("testing").ifPresent { bundle ->
-      bundle.get().forEach { testCommon.dependencies.add(dependencies.create(it)) }
-    }
-    catalog.findBundle("profiler-runtime").ifPresent { bundle ->
-      bundle.get().forEach { testCommon.dependencies.add(dependencies.create(it)) }
-    }
-    catalog.findLibrary("asm").ifPresent {
-      testCommon.dependencies.add(dependencies.create(it.get()))
-    }
-  }
+// The plugin creates testCommon and mainCommon configurations eagerly
+dependencies {
+  // Test dependencies
+  "testCommon"(libs.bundles.testing)
+  "testCommon"(libs.bundles.profiler.runtime)
+  "testCommon"(libs.asm)
 
-  configurations.findByName("mainCommon")?.let { mainCommon ->
-    catalog.findLibrary("slf4j-simple").ifPresent {
-      mainCommon.dependencies.add(dependencies.create(it.get()))
-    }
-    catalog.findBundle("profiler-runtime").ifPresent { bundle ->
-      bundle.get().forEach { mainCommon.dependencies.add(dependencies.create(it)) }
-    }
-  }
+  // Main/application dependencies
+  "mainCommon"(libs.slf4j.simple)
+  "mainCommon"(libs.bundles.profiler.runtime)
 }
 
 // Additional test task configuration beyond what the plugin provides

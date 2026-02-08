@@ -1,5 +1,3 @@
-// Copyright 2026, Datadog, Inc
-
 /*
  * Gradle build file for libFuzzer-based fuzz testing.
  * This module compiles and runs fuzz targets against the profiler's C++ code

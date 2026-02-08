@@ -1,5 +1,3 @@
-// Copyright 2026, Datadog, Inc
-
 /*
  * Benchmark for testing unwinding failures.
  * Uses NativeCompileTask/NativeLinkExecutableTask from build-logic.
@@ -12,7 +10,9 @@ import com.datadoghq.native.util.PlatformUtils
 
 plugins {
   base
-  id("com.datadoghq.native-build")
+  // Note: Does NOT use native-build plugin - tasks are created manually below
+  // because this project has a single benchmark executable, not the standard
+  // multi-config library structure
 }
 
 val benchmarkName = "unwind_failures_benchmark"

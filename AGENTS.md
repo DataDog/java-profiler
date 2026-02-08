@@ -230,7 +230,7 @@ The project supports multiple build configurations per platform:
 ### Platform Support
 - **Linux**: x64, arm64 (primary platforms)
 - **macOS**: arm64, x64
-- **Architecture detection**: Automatic via `common.gradle`
+- **Architecture detection**: Automatic via `PlatformUtils` in build-logic
 - **musl libc detection**: Automatic detection and handling
 
 ### Debug Information Handling
@@ -358,7 +358,7 @@ The profiler uses a sophisticated double-buffered storage system for call traces
 - **malloc-shim**: Linux memory allocation interceptor
 
 ### Native Compilation Pipeline
-- **Platform Detection**: Automatic OS and architecture detection via `common.gradle`
+- **Platform Detection**: Automatic OS and architecture detection via `PlatformUtils` in build-logic
 - **Configuration Matrix**: Multiple build configs (release/debug/asan/tsan) per platform
 - **Symbol Processing**: Automatic debug symbol extraction for release builds
 - **Library Packaging**: Final JAR contains all platform-specific native libraries
@@ -500,6 +500,46 @@ Final artifacts maintain a specific structure for deployment:
 META-INF/native-libs/{os}-{arch}/libjavaProfiler.{so|dylib}
 ```
 With separate debug symbol packages for production debugging support.
+
+## Build System Maintenance
+
+> **Detailed guide**: [doc/BUILD-SYSTEM-GUIDE.md](doc/BUILD-SYSTEM-GUIDE.md)
+
+### Quick Reference
+
+**Convention plugins** (in `build-logic/conventions/`):
+- `com.datadoghq.native-build` - Multi-config C++ compilation
+- `com.datadoghq.gtest` - Google Test integration
+- `com.datadoghq.profiler-test` - Multi-config Java test generation
+- `com.datadoghq.simple-native-lib` - Simple single-library builds
+
+**Key principle**: Build configurations (release/debug/asan/tsan/fuzzer) are **discovered dynamically**, not hardcoded. Add new configs in `ConfigurationPresets.kt` only.
+
+**Key files**:
+- `ConfigurationPresets.kt` - Defines all build configurations and their flags
+- `PlatformUtils.kt` - Platform detection and compiler finding
+- `NativeBuildPlugin.kt` - Creates compile/link tasks per configuration
+
+### Common Tasks
+
+| Task | Description |
+|------|-------------|
+| Add compiler flag to all configs | Edit `commonLinuxCompilerArgs()` in `ConfigurationPresets.kt` |
+| Add new build configuration | Add `register("name")` block in `ConfigurationPresets.kt` |
+| Create new convention plugin | Create class, register in `build.gradle.kts`, see [guide](doc/BUILD-SYSTEM-GUIDE.md#creating-a-new-convention-plugin) |
+
+### Gradle Properties
+
+See `gradle.properties.template` for all options. Key ones:
+- `skip-tests`, `skip-native`, `skip-gtest` - Skip build phases
+- `native.forceCompiler` - Override compiler detection
+- `ddprof_version` - Override version
+
+### Troubleshooting
+
+- **Plugin changes not taking effect**: Run `./gradlew --stop`
+- **"Task not found"**: Tasks are created dynamically; check `PlatformUtils` detection
+- **"Configuration not found"**: Access configurations in `afterEvaluate`
 
 ## Legacy and Compatibility
 

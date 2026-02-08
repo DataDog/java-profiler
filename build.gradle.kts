@@ -1,5 +1,3 @@
-// Copyright 2026, Datadog, Inc
-
 import java.net.URI
 
 buildscript {

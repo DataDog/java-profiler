@@ -50,7 +50,7 @@ tasks.named<Jar>("jmhJar") {
 tasks.register<Exec>("runStressTests") {
   dependsOn(tasks.named("jmhJar"))
 
-  group = "Execution"
+  group = "application"
   description = "Run JMH stresstests"
   commandLine(
     PlatformUtils.testJavaExecutable(),

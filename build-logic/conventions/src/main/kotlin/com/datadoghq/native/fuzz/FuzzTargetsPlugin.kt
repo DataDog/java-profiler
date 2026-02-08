@@ -1,4 +1,3 @@
-// Copyright 2026, Datadog, Inc
 
 package com.datadoghq.native.fuzz
 

@@ -1,5 +1,3 @@
-// Copyright 2026, Datadog, Inc
-
 /*
  * Native test helper libraries (JNI helpers for Java tests).
  */

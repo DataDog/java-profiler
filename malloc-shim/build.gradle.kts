@@ -1,5 +1,3 @@
-// Copyright 2026, Datadog, Inc
-
 /*
  * Memory allocation interceptor for malloc debugging (Linux only).
  */

@@ -1,5 +1,3 @@
-// Copyright 2026, Datadog, Inc
-
 plugins {
   java
   `maven-publish`
@@ -85,55 +83,59 @@ val copyExternalLibs by tasks.registering(Copy::class) {
 }
 
 // Create JAR tasks for each build configuration using nativeBuild extension utilities
-val buildConfigNames = listOf("release", "debug", "asan", "tsan", "fuzzer")
-buildConfigNames.forEach { name ->
-  val copyTask = tasks.register("copy${name.replaceFirstChar { it.uppercase() }}Libs", Copy::class) {
-    from(nativeBuild.librarySourceDir(name)) {
-      // Exclude debug symbols from production JAR
-      exclude("debug/**", "*.debug", "*.dSYM/**")
-    }
-    into(nativeBuild.libraryTargetDir(name))
+// Uses afterEvaluate to discover configurations dynamically from NativeBuildExtension
+afterEvaluate {
+  nativeBuild.buildConfigurations.names.forEach { name ->
+    val capitalizedName = name.replaceFirstChar { it.uppercase() }
 
-    // Ensure library is built before copying
-    val linkTask = tasks.findByName("link${name.replaceFirstChar { it.uppercase() }}")
-    if (linkTask != null) {
-      dependsOn(linkTask)
-    }
-  }
+    val copyTask = tasks.register("copy${capitalizedName}Libs", Copy::class) {
+      from(nativeBuild.librarySourceDir(name)) {
+        // Exclude debug symbols from production JAR
+        exclude("debug/**", "*.debug", "*.dSYM/**")
+      }
+      into(nativeBuild.libraryTargetDir(name))
 
-  val assembleJarTask = tasks.register("assemble${name.replaceFirstChar { it.uppercase() }}Jar", Jar::class) {
-    group = "build"
-    description = "Assemble the $name build of the library"
-    dependsOn(copyExternalLibs)
-
-    if (!project.hasProperty("skip-native")) {
-      dependsOn(copyTask)
-    }
-
-    if (name == "debug") {
-      manifest {
-        attributes("Premain-Class" to "com.datadoghq.profiler.Main")
+      // Ensure library is built before copying (link task created by NativeBuildPlugin)
+      val linkTaskName = "link$capitalizedName"
+      if (tasks.names.contains(linkTaskName)) {
+        dependsOn(linkTaskName)
       }
     }
 
-    from(sourceSets.main.get().output.classesDirs)
-    versionedSources.configureJar(this)
-    from(nativeBuild.libraryTargetBase(name)) {
-      include("**/*")
-      // Exclude debug symbols from production JAR
-      exclude("**/debug/**", "**/*.debug", "**/*.dSYM/**")
-    }
-    archiveBaseName.set(libraryName)
-    archiveClassifier.set(if (name == "release") "" else name)
-    archiveVersion.set(componentVersion)
-  }
+    val assembleJarTask = tasks.register("assemble${capitalizedName}Jar", Jar::class) {
+      group = "build"
+      description = "Assemble the $name build of the library"
+      dependsOn(copyExternalLibs)
 
-  // Create consumable configuration for inter-project dependencies
-  // This allows other projects to depend on specific build configurations
-  configurations.create(name) {
-    isCanBeConsumed = true
-    isCanBeResolved = false
-    outgoing.artifact(assembleJarTask)
+      if (!project.hasProperty("skip-native")) {
+        dependsOn(copyTask)
+      }
+
+      if (name == "debug") {
+        manifest {
+          attributes("Premain-Class" to "com.datadoghq.profiler.Main")
+        }
+      }
+
+      from(sourceSets.main.get().output.classesDirs)
+      versionedSources.configureJar(this)
+      from(nativeBuild.libraryTargetBase(name)) {
+        include("**/*")
+        // Exclude debug symbols from production JAR
+        exclude("**/debug/**", "**/*.debug", "**/*.dSYM/**")
+      }
+      archiveBaseName.set(libraryName)
+      archiveClassifier.set(if (name == "release") "" else name)
+      archiveVersion.set(componentVersion)
+    }
+
+    // Create consumable configuration for inter-project dependencies
+    // This allows other projects to depend on specific build configurations
+    configurations.create(name) {
+      isCanBeConsumed = true
+      isCanBeResolved = false
+      outgoing.artifact(assembleJarTask)
+    }
   }
 }
 

@@ -1,4 +1,3 @@
-// Copyright 2026, Datadog, Inc
 
 package com.datadoghq.profiler
 
@@ -58,6 +57,17 @@ class ProfilerTestPlugin : Plugin<Project> {
             ProfilerTestExtension::class.java,
             project
         )
+
+        // Create base configurations eagerly so they can be extended by build scripts
+        // without needing afterEvaluate
+        project.configurations.maybeCreate("testCommon").apply {
+            isCanBeConsumed = true
+            isCanBeResolved = true
+        }
+        project.configurations.maybeCreate("mainCommon").apply {
+            isCanBeConsumed = true
+            isCanBeResolved = true
+        }
 
         // Configure all Test tasks with standard settings
         project.tasks.withType(Test::class.java).configureEach {
@@ -136,20 +146,20 @@ class ProfilerTestPlugin : Plugin<Project> {
 
         val profilerLibProjectPath = extension.profilerLibProject.get()
         val tracerProjectPath = extension.tracerProject.getOrElse(":ddprof-test-tracer")
-        val applicationConfigs = extension.applicationConfigs.get()
+        // Default to all active configs if not explicitly specified
+        val explicitAppConfigs = extension.applicationConfigs.get()
+        val applicationConfigs = if (explicitAppConfigs.isEmpty()) {
+            activeConfigurations.map { it.name }
+        } else {
+            explicitAppConfigs
+        }
         val appMainClass = extension.applicationMainClass.getOrElse("")
 
         val sourceSets = project.extensions.getByType(SourceSetContainer::class.java)
 
-        // Create base configurations
-        val testCommon = project.configurations.maybeCreate("testCommon").apply {
-            isCanBeConsumed = true
-            isCanBeResolved = true
-        }
-        val mainCommon = project.configurations.maybeCreate("mainCommon").apply {
-            isCanBeConsumed = true
-            isCanBeResolved = true
-        }
+        // Get the base configurations (created eagerly in apply())
+        val testCommon = project.configurations.getByName("testCommon")
+        val mainCommon = project.configurations.getByName("mainCommon")
 
         // Add common dependencies to base configurations
         addCommonTestDependencies(project, testCommon, tracerProjectPath)
@@ -378,7 +388,8 @@ abstract class ProfilerTestExtension @Inject constructor(
 
     /**
      * Configurations that should have application tasks (runUnwindingValidator*, unwindingReport*).
-     * Default: ["release", "debug"]
+     * Default: empty list means all active configurations get application tasks.
+     * Set explicitly to restrict which configs get app tasks.
      */
     abstract val applicationConfigs: ListProperty<String>
 
@@ -401,7 +412,7 @@ abstract class ProfilerTestExtension @Inject constructor(
         extraJvmArgs.convention(emptyList())
         respectSkipTests.convention(true)
         tracerProject.convention(":ddprof-test-tracer")
-        applicationConfigs.convention(listOf("release", "debug"))
+        applicationConfigs.convention(emptyList()) // Empty = all active configs get app tasks
         applicationMainClass.convention("com.datadoghq.profiler.unwinding.UnwindingValidator")
     }
 }
