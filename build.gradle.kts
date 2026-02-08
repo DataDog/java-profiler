@@ -15,7 +15,6 @@ buildscript {
 
 plugins {
   id("io.github.gradle-nexus.publish-plugin") version "2.0.0"
-  id("com.diffplug.spotless") version "6.11.0"
   id("com.datadoghq.native-root")
 }
 
@@ -51,8 +50,8 @@ repositories {
 allprojects {
   group = "com.datadoghq"
 
-  // Apply spotless to all projects
-  apply(from = "$rootDir/gradle/spotless.gradle")
+  // Apply spotless formatting convention to all projects
+  apply(plugin = "com.datadoghq.spotless-convention")
 }
 
 subprojects {

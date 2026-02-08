@@ -140,6 +140,26 @@ object PlatformUtils {
     }
 
     /**
+     * Detect the installed clang-format version.
+     * Returns null if clang-format is not available.
+     */
+    fun clangFormatVersion(): String? {
+        return try {
+            val process = ProcessBuilder("clang-format", "--version").start()
+            process.waitFor(5, TimeUnit.SECONDS)
+            if (process.exitValue() == 0) {
+                val output = process.inputStream.bufferedReader().readText().trim()
+                val match = Regex("""clang-format version (\d+\.\d+\.\d+)""").find(output)
+                match?.groupValues?.get(1)
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
      * Find a C++ compiler, respecting -Pnative.forceCompiler property.
      * Auto-detects clang++ or g++ if not specified.
      */

@@ -3,6 +3,7 @@
 [versions]
 cpp-standard = "17"
 kotlin = "1.9.22"
+spotless = "6.11.0"
 
 # Testing
 junit = "5.9.2"
@@ -59,4 +60,4 @@ profiler-runtime = ["jmc-flightrecorder", "jol-core", "lz4", "snappy", "zstd"]
 jmh = ["jmh-core", "jmh-annprocess"]
 
 [plugins]
-# Plugin references will be added as needed
+spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }

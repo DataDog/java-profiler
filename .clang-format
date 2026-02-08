@@ -5,13 +5,10 @@ IndentWidth: 4
 ColumnLimit: 100
 BreakBeforeBraces: Attach
 AllowShortFunctionsOnASingleLine: None
-AllowShortIfStatementsOnASingleLine: false
+AllowShortIfStatementsOnASingleLine: Never
 AllowShortLoopsOnASingleLine: false
-AllowShortBlocksOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
 AllowShortCaseLabelsOnASingleLine: false
 AllowShortNamespacesOnASingleLine: false
-AllowShortStructsOnASingleLine: false
 AllowShortEnumsOnASingleLine: false
-AllowShortLambdasOnASingleLine: false
-AllowShortCompoundStatementsOnASingleLine: false
-AllowShortAlwaysBreakType: None
+AllowShortLambdasOnASingleLine: None

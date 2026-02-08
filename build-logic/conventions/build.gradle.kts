@@ -9,6 +9,7 @@ repositories {
 
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib")
+    implementation("com.diffplug.spotless:spotless-plugin-gradle:6.11.0")
 }
 
 gradlePlugin {
@@ -32,6 +33,10 @@ gradlePlugin {
         create("profilerTest") {
             id = "com.datadoghq.profiler-test"
             implementationClass = "com.datadoghq.profiler.ProfilerTestPlugin"
+        }
+        create("spotlessConvention") {
+            id = "com.datadoghq.spotless-convention"
+            implementationClass = "com.datadoghq.profiler.SpotlessConventionPlugin"
         }
     }
 }
