@@ -503,7 +503,7 @@ With separate debug symbol packages for production debugging support.
 
 ## Build System Maintenance
 
-> **Detailed guide**: [doc/BUILD-SYSTEM-GUIDE.md](doc/BUILD-SYSTEM-GUIDE.md)
+> **Detailed guide**: [doc/build/BuildSystemGuide.md](doc/build/BuildSystemGuide.md)
 
 ### Quick Reference
 
@@ -599,6 +599,10 @@ See `gradle.properties.template` for all options. Key ones:
       ```
 
 - This ensures the full build log is captured to a file and only a summary is shown in the main session.
+
+## Documentation Rules
+- All documentation files in `doc/` must use **PascalCase** naming (e.g., `BuildSystemGuide.md`, `CallTraceStorage.md`)
+- The `doc/README.md` index file is the only lowercase exception
 
 ## Ground rules
 - Never replace the code you work on with stubs
