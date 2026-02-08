@@ -3,7 +3,10 @@ package com.datadoghq.native
 
 import com.datadoghq.native.config.ConfigurationPresets
 import com.datadoghq.native.model.Architecture
+import com.datadoghq.native.model.BuildConfiguration
 import com.datadoghq.native.model.Platform
+import com.datadoghq.native.tasks.NativeCompileTask
+import com.datadoghq.native.tasks.NativeLinkTask
 import com.datadoghq.native.util.PlatformUtils
 import org.gradle.api.Plugin
 import org.gradle.api.Project
@@ -76,7 +79,7 @@ class NativeBuildPlugin : Plugin<Project> {
     private fun createConfigurationTasks(
         project: Project,
         extension: NativeBuildExtension,
-        config: com.datadoghq.native.model.BuildConfiguration
+        config: BuildConfiguration
     ) {
         val configName = config.capitalizedName()
         val platform = config.platform.get()
@@ -89,7 +92,7 @@ class NativeBuildPlugin : Plugin<Project> {
         val outputLib = project.file("$libDir/$libName")
 
         // Create compile task
-        val compileTask = project.tasks.register("compile$configName", com.datadoghq.native.tasks.NativeCompileTask::class.java) {
+        val compileTask = project.tasks.register("compile$configName", NativeCompileTask::class.java) {
             group = "build"
             description = "Compiles C++ sources for ${config.name} configuration"
 
@@ -115,7 +118,7 @@ class NativeBuildPlugin : Plugin<Project> {
         }
 
         // Create link task
-        val linkTask = project.tasks.register("link$configName", com.datadoghq.native.tasks.NativeLinkTask::class.java) {
+        val linkTask = project.tasks.register("link$configName", NativeLinkTask::class.java) {
             group = "build"
             description = "Links ${config.name} shared library"
             dependsOn(compileTask)
@@ -150,7 +153,7 @@ class NativeBuildPlugin : Plugin<Project> {
 
     private fun createAggregationTasks(
         project: Project,
-        activeConfigs: List<com.datadoghq.native.model.BuildConfiguration>
+        activeConfigs: List<BuildConfiguration>
     ) {
         // Create assembleAll task that depends on all assemble tasks
         project.tasks.register("assembleAll") {

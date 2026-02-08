@@ -64,8 +64,8 @@ abstract class NativeBuildExtension @Inject constructor(
      * Get configuration names for the current platform/architecture
      */
     fun getActiveConfigurationNames(): List<String> {
-        val platform = com.datadoghq.native.util.PlatformUtils.currentPlatform
-        val arch = com.datadoghq.native.util.PlatformUtils.currentArchitecture
+        val platform = PlatformUtils.currentPlatform
+        val arch = PlatformUtils.currentArchitecture
         return getActiveConfigurations(platform, arch).map { it.name }
     }
 

@@ -85,7 +85,6 @@ object ConfigurationPresets {
         "-lpthread",
         "-lm",
         "-lrt",
-        "-v",
         "-Wl,--build-id"
     )
 

@@ -2,6 +2,7 @@
 package com.datadoghq.native.tasks
 
 import com.datadoghq.native.model.LogLevel
+import com.datadoghq.native.model.Platform
 import com.datadoghq.native.util.PlatformUtils
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.ConfigurableFileCollection
@@ -260,8 +261,8 @@ abstract class NativeLinkTask @Inject constructor(
 
         // Determine shared library flag based on platform
         val sharedFlag = when (PlatformUtils.currentPlatform) {
-            com.datadoghq.native.model.Platform.MACOS -> "-dynamiclib"
-            com.datadoghq.native.model.Platform.LINUX -> "-shared"
+            Platform.MACOS -> "-dynamiclib"
+            Platform.LINUX -> "-shared"
         }
 
         // Build command line
@@ -288,12 +289,12 @@ abstract class NativeLinkTask @Inject constructor(
 
             // Add soname/install_name based on platform
             when (PlatformUtils.currentPlatform) {
-                com.datadoghq.native.model.Platform.LINUX -> {
+                Platform.LINUX -> {
                     if (soname.isPresent) {
                         add("-Wl,-soname,${soname.get()}")
                     }
                 }
-                com.datadoghq.native.model.Platform.MACOS -> {
+                Platform.MACOS -> {
                     if (installName.isPresent) {
                         add("-Wl,-install_name,${installName.get()}")
                     }
@@ -359,10 +360,10 @@ abstract class NativeLinkTask @Inject constructor(
      */
     private fun generateSymbolVisibilityFlags(outFile: java.io.File): List<String> {
         return when (PlatformUtils.currentPlatform) {
-            com.datadoghq.native.model.Platform.LINUX -> {
+            Platform.LINUX -> {
                 generateLinuxVersionScript(outFile)
             }
-            com.datadoghq.native.model.Platform.MACOS -> {
+            Platform.MACOS -> {
                 generateMacOSExportList(outFile)
             }
         }
@@ -467,10 +468,10 @@ abstract class NativeLinkTask @Inject constructor(
         debugDir.mkdirs()
 
         when (PlatformUtils.currentPlatform) {
-            com.datadoghq.native.model.Platform.LINUX -> {
+            Platform.LINUX -> {
                 extractDebugInfoLinux(libFile, debugDir)
             }
-            com.datadoghq.native.model.Platform.MACOS -> {
+            Platform.MACOS -> {
                 extractDebugInfoMacOS(libFile, debugDir)
             }
         }
@@ -526,8 +527,8 @@ abstract class NativeLinkTask @Inject constructor(
         logNormal("Stripping symbols from ${libFile.name}...")
 
         val stripCmd = when (PlatformUtils.currentPlatform) {
-            com.datadoghq.native.model.Platform.LINUX -> listOf("strip", "--strip-debug", libFile.absolutePath)
-            com.datadoghq.native.model.Platform.MACOS -> listOf("strip", "-S", libFile.absolutePath)
+            Platform.LINUX -> listOf("strip", "--strip-debug", libFile.absolutePath)
+            Platform.MACOS -> listOf("strip", "-S", libFile.absolutePath)
         }
 
         val result = execOperations.exec {

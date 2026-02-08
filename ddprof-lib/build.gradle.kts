@@ -1,3 +1,6 @@
+import com.datadoghq.native.model.Platform
+import com.datadoghq.native.util.PlatformUtils
+
 plugins {
   java
   `maven-publish`
@@ -33,10 +36,10 @@ gtest {
   mainSourceDir.set(layout.projectDirectory.dir("src/main/cpp"))
 
   // Include paths for compilation
-  val javaHome = com.datadoghq.native.util.PlatformUtils.javaHome()
-  val platformInclude = when (com.datadoghq.native.util.PlatformUtils.currentPlatform) {
-    com.datadoghq.native.model.Platform.LINUX -> "linux"
-    com.datadoghq.native.model.Platform.MACOS -> "darwin"
+  val javaHome = PlatformUtils.javaHome()
+  val platformInclude = when (PlatformUtils.currentPlatform) {
+    Platform.LINUX -> "linux"
+    Platform.MACOS -> "darwin"
   }
 
   includes.from(
