@@ -1,3 +1,5 @@
+import com.datadoghq.native.NativeBuildExtension
+import com.datadoghq.native.util.PlatformUtils
 import org.gradle.internal.os.OperatingSystem
 
 plugins {
@@ -9,9 +11,6 @@ plugins {
 repositories {
   mavenCentral()
 }
-
-// Apply common.gradle.kts to get access to helper functions
-apply(from = rootProject.file("common.gradle.kts"))
 
 // 1. Define paths and properties
 val nativeSrcDir = file("src/test/cpp")
@@ -104,28 +103,18 @@ application {
   mainClass.set("com.datadoghq.profiler.unwinding.UnwindingValidator")
 }
 
-// Access buildConfigurations and functions from root project
-@Suppress("UNCHECKED_CAST")
-val buildConfigurations = rootProject.extra["buildConfigurations"] as List<Map<String, Any>>
-val osIdentifier: () -> String = rootProject.extra["osIdentifier"] as () -> String
-val archIdentifier: () -> String = rootProject.extra["archIdentifier"] as () -> String
-val buildConfigNames: () -> List<String> = rootProject.extra["buildConfigNames"] as () -> List<String>
-val locateLibasan: () -> String? = rootProject.extra["locateLibasan"] as () -> String?
-val locateLibtsan: () -> String? = rootProject.extra["locateLibtsan"] as () -> String?
+// Access build configurations from root project plugin extension
+val nativeBuildExt = rootProject.extensions.getByType(NativeBuildExtension::class.java)
+val currentPlatform = PlatformUtils.currentPlatform
+val currentArchitecture = PlatformUtils.currentArchitecture
+val activeConfigurations = nativeBuildExt.getActiveConfigurations(currentPlatform, currentArchitecture)
+val buildConfigNames = { activeConfigurations.map { it.name } }
 
-buildConfigurations.forEach { configObj ->
-  @Suppress("UNCHECKED_CAST")
-  val config = configObj as Map<String, Any>
-  val name = config["name"] as String
-  val configOs = config["os"] as String
-  val configArch = config["arch"] as String
-  val active = config["active"] as Boolean
-  @Suppress("UNCHECKED_CAST")
-  val testEnv = config["testEnv"] as Map<String, String>
+activeConfigurations.forEach { config ->
+  val name = config.name
+  val isActive = config.active.get()
+  val testEnv = config.testEnvironment.get()
 
-  if (configOs != osIdentifier() || configArch != archIdentifier()) {
-    return@forEach
-  }
   logger.debug("Creating configuration for $name")
 
   // Test configuration
@@ -139,7 +128,7 @@ buildConfigurations.forEach { configObj ->
 
   val task = tasks.register<Test>("test$name") {
     onlyIf {
-      active
+      isActive
     }
     dependsOn(tasks.named("compileTestJava"))
     description = "Runs the unit tests with the $name library variant"
@@ -157,11 +146,11 @@ buildConfigurations.forEach { configObj ->
     }
     if (name == "asan") {
       onlyIf {
-        locateLibasan() != null
+        PlatformUtils.locateLibasan() != null
       }
     } else if (name == "tsan") {
       onlyIf {
-        locateLibtsan() != null
+        PlatformUtils.locateLibtsan() != null
       }
     }
   }
@@ -179,7 +168,7 @@ buildConfigurations.forEach { configObj ->
     // Manual execution task
     tasks.register<JavaExec>("runUnwindingValidator${name.capitalize()}") {
       onlyIf {
-        active
+        isActive
       }
       dependsOn(tasks.named("compileJava"))
       description = "Run the unwinding validator application (release or debug config)"
@@ -215,7 +204,7 @@ buildConfigurations.forEach { configObj ->
     // CI reporting task
     tasks.register<JavaExec>("unwindingReport${name.capitalize()}") {
       onlyIf {
-        active
+        isActive
       }
       dependsOn(tasks.named("compileJava"))
       description = "Generate unwinding report for CI (release or debug config)"

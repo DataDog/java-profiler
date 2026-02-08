@@ -16,6 +16,7 @@ buildscript {
 plugins {
   id("io.github.gradle-nexus.publish-plugin") version "2.0.0"
   id("com.diffplug.spotless") version "6.11.0"
+  id("com.datadoghq.native-root")
 }
 
 version = "1.38.0"
@@ -28,9 +29,6 @@ allprojects {
     mavenCentral()
     gradlePluginPortal()
   }
-
-  // Apply configurations.gradle.kts to define build configurations
-  apply(from = "$rootDir/gradle/configurations.gradle.kts")
 }
 
 repositories {
