@@ -50,5 +50,9 @@ gradlePlugin {
             id = "com.datadoghq.simple-native-lib"
             implementationClass = "com.datadoghq.native.SimpleNativeLibPlugin"
         }
+        create("versionedSources") {
+            id = "com.datadoghq.versioned-sources"
+            implementationClass = "com.datadoghq.java.versionedsources.VersionedSourcesPlugin"
+        }
     }
 }

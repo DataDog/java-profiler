@@ -9,6 +9,7 @@ plugins {
   id("com.datadoghq.native-build")
   id("com.datadoghq.gtest")
   id("com.datadoghq.scanbuild")
+  id("com.datadoghq.versioned-sources")
 }
 
 val libraryName = "ddprof"
@@ -48,36 +49,21 @@ gtest {
   )
 }
 
-// Java configuration
+// Java configuration - using sourceCompatibility (not --release 8)
+// because BufferWriter8 needs access to internal sun.nio.ch package
 java {
   sourceCompatibility = JavaVersion.VERSION_1_8
   targetCompatibility = JavaVersion.VERSION_1_8
 }
 
-// Configure Java 9+ source set for multi-release JAR
-sourceSets {
-  val java9 by creating {
-    java {
-      srcDirs("src/main/java9")
+// Configure versioned sources for runtime version-specific implementations
+versionedSources {
+  versions {
+    register("java9") {
+      release.set(9)
+      minToolchainVersion.set(11)  // Compile Java 9 code with JDK 11+
     }
   }
-}
-
-val current = JavaVersion.current().majorVersion.toInt()
-val requested = if (current >= 11) current else 11
-
-// Configure Java 9 compilation with Java 11 toolchain
-tasks.named<JavaCompile>("compileJava9Java") {
-  javaCompiler.set(
-    javaToolchains.compilerFor {
-      languageVersion.set(JavaLanguageVersion.of(requested))
-    }
-  )
-  options.release.set(9)
-
-  // Add main source set output to classpath
-  classpath = sourceSets.main.get().output + configurations.compileClasspath.get()
-  dependsOn(tasks.named("compileJava"))
 }
 
 // Test configuration
@@ -119,7 +105,6 @@ buildConfigNames.forEach { name ->
     group = "build"
     description = "Assemble the $name build of the library"
     dependsOn(copyExternalLibs)
-    dependsOn(tasks.named("compileJava9Java"))
 
     if (!project.hasProperty("skip-native")) {
       dependsOn(copyTask)
@@ -132,7 +117,7 @@ buildConfigNames.forEach { name ->
     }
 
     from(sourceSets.main.get().output.classesDirs)
-    from(sourceSets["java9"].output.classesDirs)
+    versionedSources.configureJar(this)
     from(nativeBuild.libraryTargetBase(name)) {
       include("**/*")
       // Exclude debug symbols from production JAR
@@ -162,13 +147,12 @@ tasks.register("runBenchmarks") {
 // Standard JAR task
 tasks.jar {
   dependsOn(copyExternalLibs)
-  dependsOn(tasks.named("compileJava9Java"))
 }
 
 // Source JAR
 val sourcesJar by tasks.registering(Jar::class) {
   from(sourceSets.main.get().allJava)
-  from(sourceSets["java9"].allJava)
+  versionedSources.configureSourceJar(this)
   archiveBaseName.set(libraryName)
   archiveClassifier.set("sources")
   archiveVersion.set(componentVersion)
