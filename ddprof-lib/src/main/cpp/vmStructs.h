@@ -19,6 +19,25 @@
 class GCHeapSummary;
 class HeapUsage;
 
+#define TYPE_SIZE_NAME(name)    _##name##_size
+#define DECL_TYPE_SIZE(name) static uint64_t TYPE_SIZE_NAME(name);
+#define INIT_TYPE_SIZE(name) uint64_t VMStructs::TYPE_SIZE_NAME(name) = uint64_t(-1);
+#define READ_TYPE_SIZE(name, variable) \
+    if (strcmp(type, #name) == 0) { \
+        TYPE_SIZE_NAME(variable) = *(uint64_t*)(entry + size_offset); \
+        continue;   \
+    }
+
+#define SIZE_OF(name) (VMStructs::TYPE_SIZE_NAME(name))
+#define CAST_TO(name, ptr) \
+  cast_to<name>(ptr, SIZE_OF(name)));
+
+template <typename T>
+T* cast_to(void* ptr, uint64_t size) {
+    assert(SafeAccess::isReadableRange(ptr, size));
+    return reinterpret_cast<T*>(const_cast<void*>(ptr));
+}
+
 class VMStructs {
   public:
     typedef bool (*IsValidMethodFunc)(void *);
@@ -80,7 +99,6 @@ class VMStructs {
     static int _method_code_offset;
     static int _constmethod_constants_offset;
     static int _constmethod_idnum_offset;
-    static int _constmethod_size;
     static int _pool_holder_offset;
     static int _array_len_offset;
     static int _array_data_offset;
@@ -97,7 +115,6 @@ class VMStructs {
     static int _flag_origin_offset;
     static const char* _flags_addr;
     static int _flag_count;
-    static int _flag_size;
     static char* _code_heap[3];
     static const void* _code_heap_low;
     static const void* _code_heap_high;
@@ -124,6 +141,16 @@ class VMStructs {
     static const void* _interpreted_frame_valid_start;
     static const void* _interpreted_frame_valid_end;
 
+ // Class sizes
+    DECL_TYPE_SIZE(VMFlag);
+    DECL_TYPE_SIZE(VMKlass);
+    DECL_TYPE_SIZE(VMMethod);
+    DECL_TYPE_SIZE(VMConstMethod);
+    DECL_TYPE_SIZE(VMConstantPool);
+    DECL_TYPE_SIZE(VMClassLoaderData);
+    DECL_TYPE_SIZE(VMThread);
+
+    static uint64_t _JVMFlag_size;
     static jfieldID _eetop;
     static jfieldID _tid;
     static jfieldID _klass;
@@ -545,7 +572,7 @@ class VMMethod : public /* TODO make private when consolidating VMMethod? */ VMS
     }
 
     const char* bytecode() {
-        return *(const char**) at(_method_constmethod_offset) + _constmethod_size;
+        return *(const char**) at(_method_constmethod_offset) + SIZE_OF(VMConstMethod);
     }
 
     NMethod* code() {

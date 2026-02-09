@@ -19,6 +19,7 @@
 
 #include "arch.h"
 #include "codeCache.h"
+#include "os.h"
 #include <cassert>
 #include <stdint.h>
 
@@ -77,6 +78,18 @@ public:
   static inline bool isReadable(void* ptr) {
     return load32((int32_t*)ptr, 1) != 1 ||
            load32((int32_t*)ptr, -1) != -1; 
+  }
+
+  static inline bool isReadableRange(void* start, size_t size) {
+    assert(size > 0);
+    void* start_page = (void*)align_down((uintptr_t)start, OS::page_size);
+    void* end_page = (void*)align_down((uintptr_t)start + size - 1, OS::page_size);
+    for (void* page = start_page; page <= end_page; page = (void*)((uintptr_t)page + OS::page_size)) {
+      if (!isReadable(page)) {
+        return false;
+      }
+    }
+    return true;
   }
 };
 

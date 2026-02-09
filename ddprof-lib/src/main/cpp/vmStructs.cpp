@@ -68,7 +68,6 @@ int VMStructs::_method_constmethod_offset = -1;
 int VMStructs::_method_code_offset = -1;
 int VMStructs::_constmethod_constants_offset = -1;
 int VMStructs::_constmethod_idnum_offset = -1;
-int VMStructs::_constmethod_size = -1;
 int VMStructs::_pool_holder_offset = -1;
 int VMStructs::_array_len_offset = 0;
 int VMStructs::_array_data_offset = -1;
@@ -85,7 +84,6 @@ int VMStructs::_flag_addr_offset = -1;
 int VMStructs::_flag_origin_offset = -1;
 const char* VMStructs::_flags_addr = NULL;
 int VMStructs::_flag_count = 0;
-int VMStructs::_flag_size = 0;
 char* VMStructs::_code_heap[3] = {};
 const void* VMStructs::_code_heap_low = NO_MIN_ADDRESS;
 const void* VMStructs::_code_heap_high = NO_MAX_ADDRESS;
@@ -111,6 +109,15 @@ const void** VMStructs::_call_stub_return_addr = NULL;
 const void* VMStructs::_call_stub_return = NULL;
 const void* VMStructs::_interpreted_frame_valid_start = NULL;
 const void* VMStructs::_interpreted_frame_valid_end = NULL;
+
+INIT_TYPE_SIZE(VMFlag)
+INIT_TYPE_SIZE(VMKlass)
+INIT_TYPE_SIZE(VMMethod)
+INIT_TYPE_SIZE(VMConstMethod)
+INIT_TYPE_SIZE(VMConstantPool)
+INIT_TYPE_SIZE(VMClassLoaderData)
+INIT_TYPE_SIZE(VMThread)
+
 
 jfieldID VMStructs::_eetop;
 jfieldID VMStructs::_tid;
@@ -410,11 +417,14 @@ void VMStructs::initOffsets() {
                 break;
             }
 
-            if (strcmp(type, "JVMFlag") == 0 || strcmp(type, "Flag") == 0) {
-                _flag_size = *(int*)(entry + size_offset);
-            } else if (strcmp(type, "ConstMethod") == 0) {
-                _constmethod_size = *(int*)(entry + size_offset);
-            }
+            READ_TYPE_SIZE(JVMFlag, VMFlag)
+            READ_TYPE_SIZE(Flag, VMFlag)
+            READ_TYPE_SIZE(Klass, VMKlass)
+            READ_TYPE_SIZE(Method, VMMethod)
+            READ_TYPE_SIZE(ConstMethod, VMConstMethod)
+            READ_TYPE_SIZE(ConstantPool, VMConstantPool)
+            READ_TYPE_SIZE(ClassLoaderData, VMClassLoaderData)
+            READ_TYPE_SIZE(Thread, VMThread)
         }
     }
 
@@ -495,7 +505,7 @@ void VMStructs::resolveOffsets() {
             && _method_code_offset >= 0
             && _constmethod_constants_offset >= 0
             && _constmethod_idnum_offset >= 0
-            && _constmethod_size >= 0
+            && TYPE_SIZE_NAME(VMConstMethod) >= 0
             && _pool_holder_offset >= 0;
 
     _has_compiler_structs = _comp_env_offset >= 0
@@ -544,7 +554,7 @@ void VMStructs::resolveOffsets() {
             && ((_mutable_data_offset >= 0 && _relocation_size_offset >= 0) || _nmethod_metadata_offset >= 0)
             && _thread_vframe_offset >= 0
             && _thread_exception_offset >= 0
-            && _constmethod_size >= 0;
+            && TYPE_SIZE_NAME(VMThread) >= 0;
 
     // Since JDK-8268406, it is no longer possible to get VMMethod* by dereferencing jmethodID
     _can_dereference_jmethod_id = _has_method_structs && VM::hotspot_version() <= 25;
@@ -902,9 +912,10 @@ int ScopeDesc::readInt() {
 }
 
 JVMFlag* JVMFlag::find(const char* name) {
-    if (_flags_addr != NULL && _flag_size > 0) {
+    if (_flags_addr != NULL && TYPE_SIZE_NAME(VMFlag) > 0) {
         for (int i = 0; i < _flag_count; i++) {
-            JVMFlag* f = (JVMFlag*)(_flags_addr + i * _flag_size);
+//            JVMFlag* f = (JVMFlag*)(_flags_addr + i * TYPE_SIZE_NAME(VMFlag));
+            JVMFlag* f = CAST_TO(JVMFlag, _flags_addr + i * TYPE_SIZE_NAME(VMFlag));
             if (f->name() != NULL && strcmp(f->name(), name) == 0 && f->addr() != NULL) {
                 return f;
             }
@@ -922,9 +933,10 @@ JVMFlag *JVMFlag::find(const char *name, std::initializer_list<JVMFlag::Type> ty
 }
 
 JVMFlag *JVMFlag::find(const char *name, int type_mask) {
-    if (_flags_addr != NULL && _flag_size > 0) {
+    if (_flags_addr != NULL && TYPE_SIZE_NAME(VMFlag) > 0) {
         for (int i = 0; i < _flag_count; i++) {
-            JVMFlag *f = (JVMFlag *)(_flags_addr + i * _flag_size);
+            JVMFlag* f = CAST_TO(JVMFlag, (void*)(_flags_addr + i * TYPE_SIZE_NAME(VMFlag)));
+//            JVMFlag *f = (JVMFlag *)(_flags_addr + i * _flag_size);
             if (f->name() != NULL && strcmp(f->name(), name) == 0) {
                 int masked = 0x1 << f->type();
                 if (masked & type_mask) {
