@@ -184,6 +184,12 @@ void VMStructs::initOffsets() {
                 break;
             }
 
+            if (strcmp(type, "Array<Klass*>")) {
+                if (strcmp(field, "_length") == 0) {
+                    int elem_size = *(int*)(entry + offset_offset);
+                    TEST_LOG("Array<Klass*> len = %d\n", elem_size);
+                }
+            }
             if (strcmp(type, "Klass") == 0) {
                 if (strcmp(field, "_name") == 0) {
                     _klass_name_offset = *(int*)(entry + offset_offset);

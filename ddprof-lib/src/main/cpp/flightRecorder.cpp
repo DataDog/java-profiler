@@ -152,25 +152,33 @@ void Lookup::cutArguments(char *func) {
 }
 
 void Lookup::fillJavaMethodInfo(MethodInfo *mi, VMMethod* method, bool first_time) {
+  assert(!VM::isOpenJ9());
+
   assert(method != nullptr);
   VMSymbol* name_sym = method->name();
   VMSymbol* sig_sym = method->signature();
   VMKlass* klass = method->methodHolder();
-  TEST_LOG("Method klass: %.*s\n", klass->name()->length(), klass->name()->body());
-  TEST_LOG("VMMethod: name=%.*s, sig=%.*s\n", name_sym->length(), name_sym->body(), sig_sym->length(), sig_sym->body());
-  if (method->hasLineNumberTable()) {
-    jint entry_count;
-    jvmtiLineNumberEntry* table;
+  char* name = (char*)malloc(name_sym->length() + 1);
+  char* signature = (char*)malloc(sig_sym->length() + 1);
+
+  memcpy(name, name_sym->body(), name_sym->length());
+  name[name_sym->length()] = '\0';
+  memcpy(signature, sig_sym->body(), sig_sym->length());
+  signature[sig_sym->length()] = '\0';
+
+  jint entry_count = 0;
+  jvmtiLineNumberEntry* table = nullptr;
+  if (first_time && method->hasLineNumberTable()) {
     if (method->getLineNumberTable(&entry_count, &table)) {
-      TEST_LOG("Line number table entries: %d\n", entry_count);
-      for (int i = 0; i < entry_count; i++) {
-        TEST_LOG("  bci=%d, line=%d\n", table[i].start_location, table[i].line_number);
-      }
+      entry_count = 0;
+      table = nullptr;
     }
   }
+
+  fillMethodInfo(mi, name, signature, entry_count, table);
+  free(name);
+  free(signature);
 }
-
-
 
 void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
                                 bool first_time) {
@@ -195,7 +203,6 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
 
   jvmti->GetPhase(&phase);
   if ((phase & (JVMTI_PHASE_START | JVMTI_PHASE_LIVE)) != 0) {
-    bool entry = false;
     if (VMMethod::check_jmethodID(method) &&
         jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
         // On some older versions of J9, the JVMTI call to GetMethodDeclaringClass will return OK = 0, but when a
@@ -223,9 +230,34 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         }
       }
 
-      // Check if the frame is Thread.run or inherits from it
-      if (strncmp(method_name, "run", 4) == 0 &&
-          strncmp(method_sig, "()V", 3) == 0) {
+
+    fillMethodInfo(mi, method_name, method_sig, line_number_table_size, line_number_table);
+
+    // strings are null or came from JVMTI
+    if (method_name) {
+      jvmti->Deallocate((unsigned char *)method_name);
+    }
+    if (method_sig) {
+      jvmti->Deallocate((unsigned char *)method_sig);
+    }
+    if (class_name) {
+      jvmti->Deallocate((unsigned char *)class_name);
+    }
+  }
+  jni->PopLocalFrame(NULL);
+}
+
+void Lookup::fillMethodInfo(MethodInfo *mi, char* method_name, char* method_sig, jint line_number_table_size, jvmtiLineNumberEntry* line_number_table) {
+  bool entry = false;
+
+  JNIEnv *jni = VM::jni();
+  if (jni == nullptr) {
+    return;
+  }
+
+  // Check if the frame is Thread.run or inherits from it
+  if (strncmp(method_name, "run", 4) == 0 &&
+      strncmp(method_sig, "()V", 3) == 0) {
         jclass Thread_class = jni->FindClass("java/lang/Thread");
         jclass Class_class = jni->FindClass("java/lang/Class");
         if (Thread_class != nullptr && Class_class != nullptr) {
@@ -331,19 +363,6 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       // Increment counter for tracking live line number tables
       Counters::increment(LINE_NUMBER_TABLES);
     }
-
-    // strings are null or came from JVMTI
-    if (method_name) {
-      jvmti->Deallocate((unsigned char *)method_name);
-    }
-    if (method_sig) {
-      jvmti->Deallocate((unsigned char *)method_sig);
-    }
-    if (class_name) {
-      jvmti->Deallocate((unsigned char *)class_name);
-    }
-  }
-  jni->PopLocalFrame(NULL);
 }
 
 MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {

@@ -318,6 +318,8 @@ private:
   void cutArguments(char *func);
   void fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time);
   void fillJavaMethodInfo(MethodInfo *mi, VMMethod* method, bool first_time);
+  void fillMethodInfo(MethodInfo *mi, char* method_name, char* method_sig, jint line_number_table_size, jvmtiLineNumberEntry* line_number_table);
+ 
   bool has_prefix(const char *str, const char *prefix) const {
     return strncmp(str, prefix, strlen(prefix)) == 0;
   }

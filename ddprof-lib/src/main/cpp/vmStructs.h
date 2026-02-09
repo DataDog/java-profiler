@@ -1010,23 +1010,14 @@ class VMClasses : VMStructs {
 
 // Datadog-specific classes
 class VMBSClassLoader : VMStructs {
-  private:
-    // java.lang.Object must be loaded by bootstrap class loader.
-    // _object_klass points to java/lang/Object instanceKlass stored in vmClasses,
-    // and we use it to figure out if classes/methods are loaded by bootstrap classloader
-    static VMKlass** _object_klass_addr;
-     
   public:
-    static void setObjectKlassAddr(VMKlass** addr) {
-       _object_klass_addr = addr;
-    }
     // If a Method is loaded by BootstrapClassLoader
     static bool loadedBy(VMMethod* method) {
       return loadedBy(method->methodHolder());
     }
 
     static bool loadedBy(VMKlass* klass) {
-      VMKlass* object_klass = *_object_klass_addr;
+      VMKlass* object_klass = VMClasses::objectKlass();
       assert(object_klass != nullptr);
       assert(klass != nullptr);
  
