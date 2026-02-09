@@ -253,7 +253,7 @@ void VMStructs::initOffsets() {
                     _constmethod_constants_offset = *(int*)(entry + offset_offset);
                 } else if (strcmp(field, "_method_idnum") == 0) {
                     _constmethod_idnum_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_flags._flags") == 0) {
+                } else if (strcmp(field, "_flags._flags") == 0 || strcmp(field, "_flags") == 0) {
                     _constmethod_flags_offset = *(int*)(entry + offset_offset);
                 } else if (strcmp(field, "_code_size") == 0) {
                     _constmethod_code_size = *(int*)(entry + offset_offset);
@@ -423,7 +423,9 @@ void VMStructs::initOffsets() {
                 // java/lang/Object must be loaded by bootstrap class loader, we use it to locate
                 // its CLD
                 if (strcmp(field, "_klasses[static_cast<int>(vmClassID::Object_klass_knum)]") == 0) {
-                    VMBSClassLoader::setObjectKlassAddr(*(::VMKlass***)(entry + address_offset));
+                    VMClasses::setObjectKlassAddr(*(::VMKlass***)(entry + address_offset));
+                } else if (strcmp(field, "_klasses[static_cast<int>(vmClassID::Thread_klass_knum)]") == 0) {
+                    VMClasses::setThreadKlassAddr(*(::VMKlass***)(entry + address_offset));
                 }
             } else if(strcmp(type, "OopHandle") == 0) {
                 if (strcmp(field, "_obj") == 0) {
@@ -1289,4 +1291,5 @@ HeapUsage HeapUsage::get(bool allow_jmx) {
 }
 
 // Datadgog-specific:
-VMKlass** VMBSClassLoader::_object_klass_addr = nullptr;
+VMKlass** VMClasses::_object_klass_addr = nullptr;
+VMKlass** VMClasses::_thread_klass_addr = nullptr;

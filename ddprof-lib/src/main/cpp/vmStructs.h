@@ -982,6 +982,32 @@ class InterpreterFrame : VMStructs {
     }
 };
 
+class VMClasses : VMStructs {
+  private:
+    static VMKlass**    _object_klass_addr;
+    static VMKlass**    _thread_klass_addr;
+  public:
+    static VMKlass* objectKlass() {
+        assert(_object_klass_addr != nullptr);
+        return *_object_klass_addr;
+    }
+
+    static VMKlass* threadKlass() {
+        assert(_thread_klass_addr != nullptr);
+        return *_thread_klass_addr;
+    }
+
+    static void setObjectKlassAddr(VMKlass** addr) {
+        assert(addr != nullptr);
+        _object_klass_addr = addr;
+    }
+
+    static void setThreadKlassAddr(VMKlass** addr) {
+        assert(addr != nullptr);
+       _thread_klass_addr = addr;
+    }
+};
+
 // Datadog-specific classes
 class VMBSClassLoader : VMStructs {
   private:
