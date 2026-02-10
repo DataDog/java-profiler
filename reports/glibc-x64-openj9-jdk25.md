@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-02-06 10:50:46 EST
+**Date:** 2026-02-10 07:11:27 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 683 |
-| Sample Rate | 11.38/sec |
-| Health Score | 711% |
+| CPU Samples | 503 |
+| Sample Rate | 8.38/sec |
+| Health Score | 524% |
 | Threads | 8 |
-| Allocations | 416 |
+| Allocations | 373 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 683 |
-| Sample Rate | 11.38/sec |
-| Health Score | 711% |
+| CPU Samples | 869 |
+| Sample Rate | 14.48/sec |
+| Health Score | 905% |
 | Threads | 9 |
-| Allocations | 536 |
+| Allocations | 489 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1770392660 32
-1770392665 32
-1770392670 32
-1770392675 32
-1770392680 32
-1770392685 32
-1770392690 32
-1770392695 32
-1770392700 32
-1770392705 32
-1770392710 32
-1770392715 32
-1770392720 32
-1770392725 32
-1770392730 32
-1770392735 32
-1770392740 32
-1770392745 32
-1770392750 32
-1770392755 32
+1770725140 32
+1770725145 32
+1770725150 32
+1770725155 32
+1770725160 32
+1770725165 32
+1770725170 32
+1770725175 32
+1770725180 32
+1770725185 32
+1770725190 32
+1770725195 32
+1770725200 32
+1770725205 32
+1770725210 32
+1770725215 32
+1770725220 32
+1770725225 32
+1770725230 32
+1770725235 32
 ```
 </details>
 

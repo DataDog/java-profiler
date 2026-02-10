@@ -1,6 +1,33 @@
 {
   "runs": [
     {
+      "id": "95479316",
+      "timestamp": "2026-02-10T12:11:23Z",
+      "ddprof_branch": "jb/asan",
+      "ddprof_sha": "0fc80262",
+      "ddprof_pr": {
+        "number": 362,
+        "url": "https://github.com/DataDog/java-profiler/pull/362",
+        "title": "Fix stack walking alignment issues causing ASAN violations"
+      },
+      "pipeline": {
+        "id": "95479316",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95479316"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 40,
+        "failed_jobs": 0,
+        "total_scenarios": 80,
+        "passed_scenarios": 80,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "95012625",
       "timestamp": "2026-02-06T15:50:44Z",
       "ddprof_branch": "main",
@@ -231,47 +258,6 @@
         "failed_scenarios": 0,
         "unknown_scenarios": 0,
         "failed_configs": []
-      }
-    },
-    {
-      "id": "94957556",
-      "timestamp": "2026-02-06T01:41:41Z",
-      "ddprof_branch": "zgu/reduce-jmethodID",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "94957556",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94957556"
-      },
-      "lib_version": "unknown",
-      "status": "partial",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 23,
-        "failed_jobs": 17,
-        "total_scenarios": 47,
-        "passed_scenarios": 47,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": [
-          "glibc-arm64-hotspot-jdk11",
-          "glibc-arm64-hotspot-jdk8",
-          "glibc-arm64-openj9-jdk11",
-          "glibc-arm64-openj9-jdk8",
-          "glibc-x64-hotspot-jdk11",
-          "glibc-x64-hotspot-jdk8",
-          "glibc-x64-openj9-jdk11",
-          "glibc-x64-openj9-jdk8",
-          "musl-arm64-hotspot-jdk11",
-          "musl-arm64-hotspot-jdk8",
-          "musl-arm64-openj9-jdk11",
-          "musl-arm64-openj9-jdk25",
-          "musl-arm64-openj9-jdk8",
-          "musl-x64-hotspot-jdk11",
-          "musl-x64-hotspot-jdk8",
-          "musl-x64-openj9-jdk11",
-          "musl-x64-openj9-jdk8"
-        ]
       }
     }
   ]
