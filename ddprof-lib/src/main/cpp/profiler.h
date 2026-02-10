@@ -52,7 +52,7 @@ union CallTraceBuffer {
 };
 
 class FrameName;
-class NMethod;
+class VMNMethod;
 class StackContext;
 class VM;
 
@@ -178,7 +178,7 @@ private:
   int getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
                         StackContext *java_ctx, bool *truncated);
   void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames,
-                      NMethod *nmethod);
+                      VMNMethod *nmethod);
   void updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                         bool self = false);
   void updateJavaThreadNames();

@@ -5,6 +5,7 @@
 
 #include <pthread.h>
 #include <unistd.h>
+#include <stdarg.h>
 #include "vmStructs.h"
 #include "vmEntry.h"
 #include "j9Ext.h"
@@ -110,13 +111,10 @@ const void* VMStructs::_call_stub_return = NULL;
 const void* VMStructs::_interpreted_frame_valid_start = NULL;
 const void* VMStructs::_interpreted_frame_valid_end = NULL;
 
-INIT_TYPE_SIZE(VMFlag)
-INIT_TYPE_SIZE(VMKlass)
-INIT_TYPE_SIZE(VMMethod)
-INIT_TYPE_SIZE(VMConstMethod)
-INIT_TYPE_SIZE(VMConstantPool)
-INIT_TYPE_SIZE(VMClassLoaderData)
-INIT_TYPE_SIZE(VMThread)
+// Initialize type size to 0
+#define INIT_TYPE_SIZE(name, ...) uint64_t VMStructs::TYPE_SIZE_NAME(name) = 0;
+DECL_TYPES_DO(INIT_TYPE_SIZE)
+#undef INIT_TYPE_SIZE
 
 
 jfieldID VMStructs::_eetop;
@@ -164,6 +162,24 @@ void VMStructs::ready() {
     resolveOffsets();
     patchSafeFetch();
     initThreadBridge();
+}
+
+bool initTypeSize(uint64_t& size, const char* type, uint64_t value, ...) {
+    int count;
+    va_list args;
+    va_start(args, value);
+    const char* match_type = nullptr;
+    bool found = false;
+    while ((match_type = va_arg(args, const char*)) != nullptr) { 
+        if (strcmp(type, match_type) == 0) {
+            size = value;
+            found = true;
+            break;
+        }
+    } 
+ 
+    va_end(args);
+    return found;
 }
 
 void VMStructs::initOffsets() {
@@ -417,14 +433,15 @@ void VMStructs::initOffsets() {
                 break;
             }
 
-            READ_TYPE_SIZE(JVMFlag, VMFlag)
-            READ_TYPE_SIZE(Flag, VMFlag)
-            READ_TYPE_SIZE(Klass, VMKlass)
-            READ_TYPE_SIZE(Method, VMMethod)
-            READ_TYPE_SIZE(ConstMethod, VMConstMethod)
-            READ_TYPE_SIZE(ConstantPool, VMConstantPool)
-            READ_TYPE_SIZE(ClassLoaderData, VMClassLoaderData)
-            READ_TYPE_SIZE(Thread, VMThread)
+            uint64_t size = *(uint64_t*)(entry + size_offset);
+           
+ #define TYPE_SIZE_MATCH(name, ...) \
+    if (initTypeSize(VMStructs::TYPE_SIZE_NAME(name), type, size, ##__VA_ARGS__)) continue;
+
+           DECL_TYPES_DO(TYPE_SIZE_MATCH)
+
+#undef TYPE_SIZE_MATCH   
+
         }
     }
 
@@ -479,13 +496,13 @@ void VMStructs::resolveOffsets() {
         _klass = (jfieldID)(uintptr_t)(*_klass_offset_addr << 2 | 2);
     }
 
-    JVMFlag* ccp = JVMFlag::find("UseCompressedClassPointers");
+    VMFlag* ccp = VMFlag::find("UseCompressedClassPointers");
     if (ccp != NULL && ccp->get() && _narrow_klass_base_addr != NULL && _narrow_klass_shift_addr != NULL) {
         _narrow_klass_base = *_narrow_klass_base_addr;
         _narrow_klass_shift = *_narrow_klass_shift_addr;
     }
 
-    JVMFlag* coh = JVMFlag::find("UseCompactObjectHeaders");
+    VMFlag* coh = VMFlag::find("UseCompactObjectHeaders");
     if (coh != NULL && coh->get()) {
         _compact_object_headers = true;
     }
@@ -505,7 +522,7 @@ void VMStructs::resolveOffsets() {
             && _method_code_offset >= 0
             && _constmethod_constants_offset >= 0
             && _constmethod_idnum_offset >= 0
-            && TYPE_SIZE_NAME(VMConstMethod) >= 0
+            && TYPE_SIZE_NAME(ConstMethod) >= 0
             && _pool_holder_offset >= 0;
 
     _has_compiler_structs = _comp_env_offset >= 0
@@ -554,7 +571,7 @@ void VMStructs::resolveOffsets() {
             && ((_mutable_data_offset >= 0 && _relocation_size_offset >= 0) || _nmethod_metadata_offset >= 0)
             && _thread_vframe_offset >= 0
             && _thread_exception_offset >= 0
-            && TYPE_SIZE_NAME(VMThread) >= 0;
+            && TYPE_SIZE_NAME(Thread) >= 0;
 
     // Since JDK-8268406, it is no longer possible to get VMMethod* by dereferencing jmethodID
     _can_dereference_jmethod_id = _has_method_structs && VM::hotspot_version() <= 25;
@@ -697,7 +714,7 @@ void VMStructs::initUnsafeFunctions() {
 void VMStructs::initCriticalJNINatives() {
 #ifdef __aarch64__
     // aarch64 does not support CriticalJNINatives
-    JVMFlag* flag = JVMFlag::find("CriticalJNINatives", {JVMFlag::Type::Bool});
+    VMFlag* flag = VMFlag::find("CriticalJNINatives", {VMFlag::Type::Bool});
     if (flag != nullptr && flag->get()) {
         flag->set(0);
     }
@@ -710,7 +727,7 @@ const void *VMStructs::findHeapUsageFunc() {
         // just disable it
         return nullptr;
     } else {
-        JVMFlag* flag = JVMFlag::find("UseG1GC", {JVMFlag::Type::Bool});
+        VMFlag* flag = VMFlag::find("UseG1GC", {VMFlag::Type::Bool});
         if (flag != NULL && flag->get()) {
             // The CollectedHeap::memory_usage function is a virtual one -
             // G1, Shenandoah and ZGC are overriding it and calling the base class
@@ -718,11 +735,11 @@ const void *VMStructs::findHeapUsageFunc() {
             // concrete overridden method form.
             return _libjvm->findSymbol("_ZN15G1CollectedHeap12memory_usageEv");
         }
-        flag = JVMFlag::find("UseShenandoahGC", {JVMFlag::Type::Bool});
+        flag = VMFlag::find("UseShenandoahGC", {VMFlag::Type::Bool});
         if (flag != NULL && flag->get()) {
             return _libjvm->findSymbol("_ZN14ShenandoahHeap12memory_usageEv");
         }
-        flag = JVMFlag::find("UseZGC", {JVMFlag::Type::Bool});
+        flag = VMFlag::find("UseZGC", {VMFlag::Type::Bool});
         if (flag != NULL && flag->get() && VM::hotspot_version() < 21) {
             // acessing this method in JDK 21 (generational ZGC) wil cause SIGSEGV
             return _libjvm->findSymbol("_ZN14ZCollectedHeap12memory_usageEv");
@@ -856,7 +873,7 @@ jmethodID VMMethod::validatedId() {
     return NULL;
 }
 
-NMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
+VMNMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
     unsigned char* heap_start = *(unsigned char**)(heap + _code_heap_memory_offset + _vs_low_offset);
     unsigned char* segmap = *(unsigned char**)(heap + _code_heap_segmap_offset + _vs_low_offset);
     size_t idx = ((unsigned char*)pc - heap_start) >> _code_heap_segment_shift;
@@ -869,10 +886,10 @@ NMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
     }
 
     unsigned char* block = heap_start + (idx << _code_heap_segment_shift) + _heap_block_used_offset;
-    return *block ? align<NMethod*>(block + sizeof(uintptr_t)) : NULL;
+    return *block ? align<VMNMethod*>(block + sizeof(uintptr_t)) : NULL;
 }
 
-int NMethod::findScopeOffset(const void* pc) {
+int VMNMethod::findScopeOffset(const void* pc) {
     intptr_t pc_offset = (const char*)pc - code();
     if (pc_offset < 0 || pc_offset > 0x7fffffff) {
         return -1;
@@ -911,11 +928,10 @@ int ScopeDesc::readInt() {
     return n;
 }
 
-JVMFlag* JVMFlag::find(const char* name) {
-    if (_flags_addr != NULL && TYPE_SIZE_NAME(VMFlag) > 0) {
+VMFlag* VMFlag::find(const char* name) {
+    if (_flags_addr != NULL && TYPE_SIZE_NAME(Flag) > 0) {
         for (int i = 0; i < _flag_count; i++) {
-//            JVMFlag* f = (JVMFlag*)(_flags_addr + i * TYPE_SIZE_NAME(VMFlag));
-            JVMFlag* f = CAST_TO(JVMFlag, _flags_addr + i * TYPE_SIZE_NAME(VMFlag));
+            VMFlag* f = VMFlag::cast(_flags_addr + i * SIZE_OF(Flag));
             if (f->name() != NULL && strcmp(f->name(), name) == 0 && f->addr() != NULL) {
                 return f;
             }
@@ -924,7 +940,7 @@ JVMFlag* JVMFlag::find(const char* name) {
     return NULL;
 }
 
-JVMFlag *JVMFlag::find(const char *name, std::initializer_list<JVMFlag::Type> types) {
+VMFlag *VMFlag::find(const char *name, std::initializer_list<VMFlag::Type> types) {
     int mask = 0;
     for (int type : types) {
         mask |= 0x1 << type;
@@ -932,15 +948,14 @@ JVMFlag *JVMFlag::find(const char *name, std::initializer_list<JVMFlag::Type> ty
     return find(name, mask);
 }
 
-JVMFlag *JVMFlag::find(const char *name, int type_mask) {
-    if (_flags_addr != NULL && TYPE_SIZE_NAME(VMFlag) > 0) {
+VMFlag *VMFlag::find(const char *name, int type_mask) {
+    if (_flags_addr != NULL && TYPE_SIZE_NAME(Flag) > 0) {
         for (int i = 0; i < _flag_count; i++) {
-            JVMFlag* f = CAST_TO(JVMFlag, (void*)(_flags_addr + i * TYPE_SIZE_NAME(VMFlag)));
-//            JVMFlag *f = (JVMFlag *)(_flags_addr + i * _flag_size);
+            VMFlag* f = VMFlag::cast(_flags_addr + i * SIZE_OF(Flag));
             if (f->name() != NULL && strcmp(f->name(), name) == 0) {
                 int masked = 0x1 << f->type();
                 if (masked & type_mask) {
-                    return (JVMFlag*)f;
+                    return (VMFlag*)f;
                 }
             }
         }
@@ -948,7 +963,7 @@ JVMFlag *JVMFlag::find(const char *name, int type_mask) {
     return NULL;
 }
 
-int JVMFlag::type() {
+int VMFlag::type() {
     if (VM::hotspot_version() < 16) { // in JDK 16 the JVM flag implementation has changed
         char* type_name = *(char **)at(_flag_type_offset);
         if (type_name == NULL) {

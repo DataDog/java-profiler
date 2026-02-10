@@ -80,10 +80,12 @@ public:
            load32((int32_t*)ptr, -1) != -1; 
   }
 
-  static inline bool isReadableRange(void* start, size_t size) {
+  static inline bool isReadableRange(const void* start, size_t size) {
     assert(size > 0);
     void* start_page = (void*)align_down((uintptr_t)start, OS::page_size);
     void* end_page = (void*)align_down((uintptr_t)start + size - 1, OS::page_size);
+    // Memory readability is determined at the page level, so we check each page in the range for readability. 
+    // This is more efficient than checking each byte.
     for (void* page = start_page; page <= end_page; page = (void*)((uintptr_t)page + OS::page_size)) {
       if (!isReadable(page)) {
         return false;

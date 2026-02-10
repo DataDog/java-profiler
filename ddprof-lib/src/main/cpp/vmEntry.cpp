@@ -447,7 +447,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   } else {
     // DebugNonSafepoints is automatically enabled with CompiledMethodLoad,
     // otherwise we set the flag manually
-    JVMFlag* f = JVMFlag::find("DebugNonSafepoints", {JVMFlag::Type::Bool});
+    VMFlag* f = VMFlag::find("DebugNonSafepoints", {VMFlag::Type::Bool});
     if (f != NULL && f->isDefault()) {
       f->set(1);
     }
@@ -457,7 +457,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   // profiler to avoid the risk of crashing flag was made obsolete (inert) in 15
   // (see JDK-8228991) and removed in 16 (see JDK-8231560)
   if (hotspot_version() < 15) {
-    JVMFlag *f = JVMFlag::find("UseAdaptiveGCBoundary", {JVMFlag::Type::Bool});
+    VMFlag *f = VMFlag::find("UseAdaptiveGCBoundary", {VMFlag::Type::Bool});
     _is_adaptive_gc_boundary_flag_set = f != NULL && f->get();
   }
 
@@ -528,7 +528,7 @@ void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
       VMKlass *vmklass = VMKlass::fromJavaClass(jni, klass);
       int method_count = vmklass->methodCount();
       if (method_count > 0) {
-        ClassLoaderData *cld = vmklass->classLoaderData();
+        VMClassLoaderData *cld = vmklass->classLoaderData();
         cld->lock();
         for (int i = 0; i < method_count; i += MethodList::SIZE) {
           *cld->methodList() = new MethodList(*cld->methodList());
