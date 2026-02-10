@@ -17,6 +17,7 @@
 
 const uintptr_t MAX_WALK_SIZE = 0x100000;
 const intptr_t MAX_INTERPRETER_FRAME_SIZE = 0x1000;
+const intptr_t MAX_FRAME_SIZE_WORDS = MAX_FRAME_SIZE / sizeof(void*);  // 0x8000 = 32768 words
 
 static ucontext_t empty_ucontext{};
 
@@ -187,11 +188,19 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
             pc = (const char*)pc + (f.fp_off >> 1);
         } else {
             if (f.fp_off != DW_SAME_FP && f.fp_off < MAX_FRAME_SIZE && f.fp_off > -MAX_FRAME_SIZE) {
-                fp = (uintptr_t)SafeAccess::load((void**)(sp + f.fp_off));
+                uintptr_t fp_addr = sp + f.fp_off;
+                if (!aligned(fp_addr)) {
+                    break;
+                }
+                fp = (uintptr_t)SafeAccess::load((void**)fp_addr);
             }
 
             if (EMPTY_FRAME_SIZE > 0 || f.pc_off != DW_LINK_REGISTER) {
-                pc = stripPointer(SafeAccess::load((void**)(sp + f.pc_off)));
+                uintptr_t pc_addr = sp + f.pc_off;
+                if (!aligned(pc_addr)) {
+                    break;
+                }
+                pc = stripPointer(SafeAccess::load((void**)pc_addr));
             } else if (depth == 1) {
                 pc = (const void*)frame.link();
             } else {
@@ -245,6 +254,10 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
     const void* pc = anchor->lastJavaPC();
     if (pc == NULL) {
+        // Verify alignment before dereferencing sp as pointer
+        if (!aligned(sp)) {
+            return 0;
+        }
         pc = ((const void**)sp)[-1];
     }
 
@@ -334,6 +347,12 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             }
 
             if (nm->isNMethod()) {
+                // Check if deoptimization is in progress before walking compiled frames
+                if (vm_thread != NULL && vm_thread->inDeopt()) {
+                    fillFrame(frames[depth++], BCI_ERROR, "break_deopt_compiled");
+                    break;
+                }
+
                 int level = nm->level();
                 FrameTypeId type = details && level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED;
                 fillFrame(frames[depth++], type, 0, nm->method()->id());
@@ -360,7 +379,21 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     // Handle situations when sp is temporarily changed in the compiled code
                     frame.adjustSP(nm->entry(), pc, sp);
 
-                    sp += nm->frameSize() * sizeof(void*);
+                    // Validate NMethod metadata before using frameSize()
+                    int frame_size = nm->frameSize();
+                    if (frame_size <= 0 || frame_size > MAX_FRAME_SIZE_WORDS) {
+                        fillFrame(frames[depth++], BCI_ERROR, "break_invalid_framesize");
+                        break;
+                    }
+
+                    sp += frame_size * sizeof(void*);
+
+                    // Verify alignment before dereferencing sp as pointer (secondary defense)
+                    if (!aligned(sp)) {
+                        fillFrame(frames[depth++], BCI_ERROR, "break_misaligned_sp");
+                        break;
+                    }
+
                     fp = ((uintptr_t*)sp)[-FRAME_PC_SLOT - 1];
                     pc = ((const void**)sp)[-FRAME_PC_SLOT];
                     continue;
@@ -407,7 +440,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                             sp = frame.senderSP();
                             fp = *(uintptr_t*)fp;
                         } else {
-                            pc = stripPointer(*(void**)sp);
+                            pc = stripPointer(SafeAccess::load((void**)sp));
                             sp = frame.senderSP();
                         }
                         continue;
@@ -455,7 +488,21 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 }
 
                 if (depth > 1 && nm->frameSize() > 0) {
-                    sp += nm->frameSize() * sizeof(void*);
+                    // Validate NMethod metadata before using frameSize()
+                    int frame_size = nm->frameSize();
+                    if (frame_size <= 0 || frame_size > MAX_FRAME_SIZE_WORDS) {
+                        fillFrame(frames[depth++], BCI_ERROR, "break_invalid_framesize");
+                        break;
+                    }
+
+                    sp += frame_size * sizeof(void*);
+
+                    // Verify alignment before dereferencing sp as pointer (secondary defense)
+                    if (!aligned(sp)) {
+                        fillFrame(frames[depth++], BCI_ERROR, "break_misaligned_sp");
+                        break;
+                    }
+
                     fp = ((uintptr_t*)sp)[-FRAME_PC_SLOT - 1];
                     pc = ((const void**)sp)[-FRAME_PC_SLOT];
                     continue;
@@ -572,7 +619,12 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             }
 
             if (EMPTY_FRAME_SIZE > 0 || f.pc_off != DW_LINK_REGISTER) {
-                pc = stripPointer(*(void**)(sp + f.pc_off));
+                // Verify alignment before dereferencing sp + offset
+                uintptr_t pc_addr = sp + f.pc_off;
+                if (!aligned(pc_addr)) {
+                    break;
+                }
+                pc = stripPointer(SafeAccess::load((void**)pc_addr));
             } else if (depth == 1) {
                 pc = (const void*)frame.link();
             } else {
