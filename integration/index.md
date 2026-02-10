@@ -13,6 +13,24 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 <details markdown="1">
 <summary>
+<strong>2026-02-10 22:36</strong> | ⚠️ | zgu/vmstruct_safety | PR [#363](https://github.com/DataDog/java-profiler/pull/363) | Pipeline [#95680405](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95680405)
+</summary>
+
+**Version:** unknown
+**Commit:** 9b576012
+
+| Metric | Value |
+|--------|-------|
+| Jobs | 40 |
+| Passed | 32 |
+| Failed | 8 |
+
+**Failed Configs:** glibc-arm64-hotspot-jdk8, glibc-arm64-openj9-jdk8, glibc-x64-hotspot-jdk8, glibc-x64-openj9-jdk8, musl-arm64-hotspot-jdk8, musl-arm64-openj9-jdk8, musl-x64-hotspot-jdk8, musl-x64-openj9-jdk8
+
+</details>
+
+<details markdown="1">
+<summary>
 <strong>2026-02-10 21:50</strong> | ⚠️ | zgu/vmstruct_safety | PR [#363](https://github.com/DataDog/java-profiler/pull/363) | Pipeline [#95669408](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95669408)
 </summary>
 
@@ -150,22 +168,6 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 **Version:** unknown
 **Commit:** 91ddb644
-
-| Metric | Value |
-|--------|-------|
-| Jobs | 40 |
-| Passed | 40 |
-| Failed | 0 |
-
-</details>
-
-<details markdown="1">
-<summary>
-<strong>2026-02-06 11:12</strong> | ✅ | jb/interrupted_tls | PR [#356](https://github.com/DataDog/java-profiler/pull/356) | Pipeline [#94979766](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94979766)
-</summary>
-
-**Version:** unknown
-**Commit:** unknown
 
 | Metric | Value |
 |--------|-------|
