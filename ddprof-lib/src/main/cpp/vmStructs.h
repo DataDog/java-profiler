@@ -47,16 +47,16 @@ T* cast_to(const void* ptr, uint64_t size) {
 #define DECL_TYPE_END };
 
 #define DECL_TYPES_DO(f) \
-    f(ClassLoaderData, "ClassLoaderData") \
-    f(ConstantPool, "ConstantPool") \
-    f(ConstMethod, "ConstMethod") \
+    f(ClassLoaderData, "ClassLoaderData", nullptr) \
+    f(ConstantPool, "ConstantPool", nullptr) \
+    f(ConstMethod, "ConstMethod", nullptr) \
     f(Flag, "JVMFlag", "Flag", nullptr) \
-    f(JavaFrameAnchor, "JavaFrameAnchor") \
-    f(Klass, "Klass") \
-    f(Method, "Method") \
-    f(NMethod, "nmethod") \
-    f(Symbol, "Symbol") \
-    f(Thread, "Thread")
+    f(JavaFrameAnchor, "JavaFrameAnchor", nullptr) \
+    f(Klass, "Klass", nullptr) \
+    f(Method, "Method", nullptr) \
+    f(NMethod, "nmethod", nullptr) \
+    f(Symbol, "Symbol", nullptr) \
+    f(Thread, "Thread", nullptr)
 
 class VMStructs {
   public:
