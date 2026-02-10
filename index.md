@@ -5,13 +5,13 @@ title: Java Profiler Build - Test Dashboard
 
 # Java Profiler Build - Test Dashboard
 
-> **Last Updated:** 2026-02-10 12:11 UTC
+> **Last Updated:** 2026-02-10 21:50 UTC
 
 ## Quick Status
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](integration/) | [#95479316](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95479316) | ✅ | jb/asan | [#362](https://github.com/DataDog/java-profiler/pull/362) |
+| [Integration](integration/) | [#95669408](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95669408) | ⚠️ | zgu/vmstruct_safety | [#363](https://github.com/DataDog/java-profiler/pull/363) |
 | [Benchmarks](benchmarks/) | - | - | - | - |
 | [Reliability](reliability/) | - | - | - | - |
 
@@ -37,11 +37,11 @@ Tests multiple allocator configurations (gmalloc, tcmalloc, jemalloc).
 
 | Date | Type | Pipeline | Branch | PR | Status |
 |------|------|----------|--------|-----|--------|
+| 2026-02-10 | Integration | [#95669408](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95669408) | zgu/vmstruct_safety | [#363](https://github.com/DataDog/java-profiler/pull/363) | ⚠️ |
 | 2026-02-10 | Integration | [#95479316](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95479316) | jb/asan | [#362](https://github.com/DataDog/java-profiler/pull/362) | ✅ |
 | 2026-02-06 | Integration | [#95012625](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95012625) | main | - | ✅ |
 | 2026-02-06 | Integration | [#95002956](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95002956) | zgu/validatedId | [#359](https://github.com/DataDog/java-profiler/pull/359) | ✅ |
 | 2026-02-06 | Integration | [#95000679](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95000679) | zgu/validatedId | - | ⚠️ |
-| 2026-02-06 | Integration | [#94985044](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94985044) | jb/build_revamp | [#358](https://github.com/DataDog/java-profiler/pull/358) | ❓ |
 
 ---
 

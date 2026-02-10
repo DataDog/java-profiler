@@ -1,6 +1,66 @@
 {
   "runs": [
     {
+      "id": "95669408",
+      "timestamp": "2026-02-10T21:50:39Z",
+      "ddprof_branch": "zgu/vmstruct_safety",
+      "ddprof_sha": "641d18c2",
+      "ddprof_pr": {
+        "number": 363,
+        "url": "https://github.com/DataDog/java-profiler/pull/363",
+        "title": "WIP: "
+      },
+      "pipeline": {
+        "id": "95669408",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95669408"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 8,
+        "failed_jobs": 32,
+        "total_scenarios": 16,
+        "passed_scenarios": 16,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "glibc-arm64-hotspot-jdk11",
+          "glibc-arm64-hotspot-jdk17",
+          "glibc-arm64-hotspot-jdk21",
+          "glibc-arm64-hotspot-jdk25",
+          "glibc-arm64-hotspot-jdk8",
+          "glibc-arm64-openj9-jdk11",
+          "glibc-arm64-openj9-jdk17",
+          "glibc-arm64-openj9-jdk21",
+          "glibc-arm64-openj9-jdk25",
+          "glibc-arm64-openj9-jdk8",
+          "glibc-x64-hotspot-jdk8",
+          "glibc-x64-openj9-jdk8",
+          "musl-arm64-hotspot-jdk11",
+          "musl-arm64-hotspot-jdk17",
+          "musl-arm64-hotspot-jdk21",
+          "musl-arm64-hotspot-jdk25",
+          "musl-arm64-hotspot-jdk8",
+          "musl-arm64-openj9-jdk11",
+          "musl-arm64-openj9-jdk17",
+          "musl-arm64-openj9-jdk21",
+          "musl-arm64-openj9-jdk25",
+          "musl-arm64-openj9-jdk8",
+          "musl-x64-hotspot-jdk11",
+          "musl-x64-hotspot-jdk17",
+          "musl-x64-hotspot-jdk21",
+          "musl-x64-hotspot-jdk25",
+          "musl-x64-hotspot-jdk8",
+          "musl-x64-openj9-jdk11",
+          "musl-x64-openj9-jdk17",
+          "musl-x64-openj9-jdk21",
+          "musl-x64-openj9-jdk25",
+          "musl-x64-openj9-jdk8"
+        ]
+      }
+    },
+    {
       "id": "95479316",
       "timestamp": "2026-02-10T12:11:23Z",
       "ddprof_branch": "jb/asan",
@@ -219,33 +279,6 @@
       "pipeline": {
         "id": "94979766",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94979766"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 40,
-        "failed_jobs": 0,
-        "total_scenarios": 80,
-        "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "94973870",
-      "timestamp": "2026-02-06T10:14:29Z",
-      "ddprof_branch": "jb/interrupted_tls",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": {
-        "number": 356,
-        "url": "https://github.com/DataDog/java-profiler/pull/356",
-        "title": "Fix musl TLS init crash with signal blocking"
-      },
-      "pipeline": {
-        "id": "94973870",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94973870"
       },
       "lib_version": "unknown",
       "status": "passed",
