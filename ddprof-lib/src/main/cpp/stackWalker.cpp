@@ -17,7 +17,7 @@
 
 const uintptr_t MAX_WALK_SIZE = 0x100000;
 const intptr_t MAX_INTERPRETER_FRAME_SIZE = 0x1000;
-const intptr_t MAX_FRAME_SIZE_WORDS = MAX_FRAME_SIZE / sizeof(void*);  // 0x8000 = 32768 words
+const intptr_t MAX_FRAME_SIZE_WORDS = StackWalkValidation::MAX_FRAME_SIZE / sizeof(void*);  // 0x8000 = 32768 words
 
 static ucontext_t empty_ucontext{};
 
