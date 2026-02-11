@@ -22,7 +22,7 @@ configure<ProfilerTestExtension> {
   // Extra JVM args specific to this project's tests
   extraJvmArgs.addAll(
     "-Dddprof.disable_unsafe=true",
-    "-XX:OnError=/tmp/do_stuff.sh"
+    "-XX:OnError=/tmp/do_stuff.sh",
   )
 }
 
@@ -62,7 +62,7 @@ tasks.withType<Test>().configureEach {
   jvmArgs(
     "-Dddprof_test.keep_jfrs=$keepRecordings",
     "-Dddprof_test.config=$configName",
-    "-Dddprof_test.ci=${project.hasProperty("CI")}"
+    "-Dddprof_test.ci=${project.hasProperty("CI")}",
   )
 }
 

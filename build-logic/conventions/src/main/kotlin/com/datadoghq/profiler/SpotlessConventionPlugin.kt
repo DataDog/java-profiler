@@ -37,8 +37,8 @@ class SpotlessConventionPlugin : Plugin<Project> {
     spotless.kotlinGradle {
       toggleOffOn()
       target("*.gradle.kts")
-      // ktlint 0.41.0 is compatible with older Kotlin versions in this build
-      ktlint("0.41.0").userData(
+      // ktlint 1.5.0 is compatible with Kotlin 2.x and Spotless 7.x
+      ktlint("1.5.0").editorConfigOverride(
         mapOf(
           "indent_size" to "2",
           "continuation_indent_size" to "2"
@@ -92,7 +92,7 @@ class SpotlessConventionPlugin : Plugin<Project> {
         "tooling/*.sh",
         ".circleci/*.sh"
       )
-      indentWithSpaces()
+      leadingTabsToSpaces()
       trimTrailingWhitespace()
       endWithNewline()
     }

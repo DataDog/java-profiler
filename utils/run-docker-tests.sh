@@ -230,7 +230,8 @@ fi
 
 echo "=== Docker Test Runner ==="
 echo "LIBC:       $LIBC"
-echo "JDK:        $JDK_VERSION"
+echo "Build JDK:  21 (Gradle 9 requirement)"
+echo "Test JDK:   $JDK_VERSION"
 echo "Arch:       $ARCH"
 echo "Config:     $CONFIG"
 echo "Tests:      ${TESTS:-<all>}"
@@ -313,6 +314,15 @@ EOF
     echo ">>> Base image built: $BASE_IMAGE_NAME"
 fi
 
+# ========== Get Build JDK URL (always JDK 21 for Gradle 9) ==========
+# Gradle 9 requires JDK 17+ to run; we use JDK 21 (LTS) as the build JDK
+BUILD_JDK_VERSION="21"
+if [[ "$LIBC" == "musl" ]]; then
+    BUILD_JDK_URL=$(get_musl_jdk_url "$BUILD_JDK_VERSION" "$ARCH")
+else
+    BUILD_JDK_URL=$(get_glibc_jdk_url "$BUILD_JDK_VERSION" "$ARCH")
+fi
+
 # ========== Build JDK Image (if needed) ==========
 IMAGE_EXISTS=false
 if [[ "$REBUILD" == "false" ]]; then
@@ -324,20 +334,25 @@ fi
 
 if [[ "$IMAGE_EXISTS" == "false" ]]; then
     echo ">>> Building JDK image: $IMAGE_NAME"
+    echo ">>> Build JDK (for Gradle): $BUILD_JDK_VERSION"
+    echo ">>> Test JDK: $JDK_VERSION"
 
-    cat > "$DOCKERFILE_DIR/Dockerfile" <<EOF
+    # Determine if we need two JDKs or just one
+    if [[ "$JDK_BASE_VERSION" == "$BUILD_JDK_VERSION" && -z "$JDK_VARIANT" ]]; then
+        # Test JDK is same as build JDK - use single installation
+        cat > "$DOCKERFILE_DIR/Dockerfile" <<EOF
 FROM $BASE_IMAGE_NAME
 
-# Download and install JDK
+# Download and install JDK (used for both build and test)
 RUN mkdir -p /jdk && \\
     wget -q "$JDK_URL" -O /tmp/jdk.tar.gz && \\
     tar xzf /tmp/jdk.tar.gz -C /jdk --strip-components=1 && \\
     rm /tmp/jdk.tar.gz
 
-# Set JDK environment
+# Set JDK environment (same JDK for build and test)
 ENV JAVA_HOME=/jdk
 ENV JAVA_TEST_HOME=/jdk
-ENV PATH="/jdk/bin:\$PATH"
+ENV PATH="/jdk/bin:\\\$PATH"
 
 # Verify JDK installation
 RUN java -version
@@ -352,6 +367,45 @@ RUN cd /tmp/gradle-setup && \\
 
 WORKDIR /workspace
 EOF
+    else
+        # Different JDKs for build and test
+        cat > "$DOCKERFILE_DIR/Dockerfile" <<EOF
+FROM $BASE_IMAGE_NAME
+
+# Download and install Build JDK (JDK $BUILD_JDK_VERSION for Gradle 9)
+RUN mkdir -p /jdk-build && \\
+    wget -q "$BUILD_JDK_URL" -O /tmp/jdk-build.tar.gz && \\
+    tar xzf /tmp/jdk-build.tar.gz -C /jdk-build --strip-components=1 && \\
+    rm /tmp/jdk-build.tar.gz
+
+# Download and install Test JDK (JDK $JDK_VERSION)
+RUN mkdir -p /jdk-test && \\
+    wget -q "$JDK_URL" -O /tmp/jdk-test.tar.gz && \\
+    tar xzf /tmp/jdk-test.tar.gz -C /jdk-test --strip-components=1 && \\
+    rm /tmp/jdk-test.tar.gz
+
+# Set JDK environment
+# JAVA_HOME = Build JDK (for running Gradle)
+# JAVA_TEST_HOME = Test JDK (for running tests)
+ENV JAVA_HOME=/jdk-build
+ENV JAVA_TEST_HOME=/jdk-test
+ENV PATH="/jdk-build/bin:\\\$PATH"
+
+# Verify JDK installations
+RUN echo "Build JDK:" && java -version
+RUN echo "Test JDK:" && /jdk-test/bin/java -version
+
+# Pre-cache Gradle wrapper
+COPY gradlew /tmp/gradle-setup/
+COPY gradle /tmp/gradle-setup/gradle
+RUN cd /tmp/gradle-setup && \\
+    chmod +x gradlew && \\
+    ./gradlew --version && \\
+    rm -rf /tmp/gradle-setup
+
+WORKDIR /workspace
+EOF
+    fi
 
     docker build $DOCKER_PLATFORM -t "$IMAGE_NAME" -f "$DOCKERFILE_DIR/Dockerfile" "$DOCKERFILE_DIR"
     echo ">>> JDK image built: $IMAGE_NAME"

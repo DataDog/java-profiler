@@ -25,8 +25,8 @@ nativeBuild {
   includeDirectories.set(
     listOf(
       "src/main/cpp",
-      "${project(":malloc-shim").file("src/main/public")}"
-    )
+      "${project(":malloc-shim").file("src/main/public")}",
+    ),
   )
 }
 
@@ -46,7 +46,7 @@ gtest {
     "src/main/cpp",
     "$javaHome/include",
     "$javaHome/include/$platformInclude",
-    project(":malloc-shim").file("src/main/public")
+    project(":malloc-shim").file("src/main/public"),
   )
 }
 

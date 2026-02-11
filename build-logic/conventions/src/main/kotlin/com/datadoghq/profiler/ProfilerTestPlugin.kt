@@ -176,7 +176,7 @@ class ProfilerTestPlugin : Plugin<Project> {
             configNames.add(configName)
 
             // Create test configuration
-            val testCfg = project.configurations.maybeCreate("test${configName.capitalize()}Implementation").apply {
+            val testCfg = project.configurations.maybeCreate("test${configName.replaceFirstChar { it.uppercaseChar() }}Implementation").apply {
                 isCanBeConsumed = true
                 isCanBeResolved = true
                 extendsFrom(testCommon)
@@ -226,7 +226,7 @@ class ProfilerTestPlugin : Plugin<Project> {
                 )
 
                 // Create run task
-                project.tasks.register("runUnwindingValidator${configName.capitalize()}", JavaExec::class.java) {
+                project.tasks.register("runUnwindingValidator${configName.replaceFirstChar { it.uppercaseChar() }}", JavaExec::class.java) {
                     val runTask = this
                     runTask.onlyIf { isActive }
                     runTask.dependsOn(project.tasks.named("compileJava"))
@@ -248,7 +248,7 @@ class ProfilerTestPlugin : Plugin<Project> {
                 }
 
                 // Create report task
-                project.tasks.register("unwindingReport${configName.capitalize()}", JavaExec::class.java) {
+                project.tasks.register("unwindingReport${configName.replaceFirstChar { it.uppercaseChar() }}", JavaExec::class.java) {
                     val reportTask = this
                     reportTask.onlyIf { isActive }
                     reportTask.dependsOn(project.tasks.named("compileJava"))
@@ -315,12 +315,12 @@ class ProfilerTestPlugin : Plugin<Project> {
                 val profilerLibProject = project.rootProject.findProject(profilerLibProjectPath)
 
                 if (profilerLibProject != null) {
-                    val assembleTask = profilerLibProject.tasks.findByName("assemble${cfgName.capitalize()}")
+                    val assembleTask = profilerLibProject.tasks.findByName("assemble${cfgName.replaceFirstChar { it.uppercaseChar() }}")
                     if (testTask != null && assembleTask != null) {
                         assembleTask.dependsOn(testTask)
                     }
 
-                    val gtestTask = profilerLibProject.tasks.findByName("gtest${cfgName.capitalize()}")
+                    val gtestTask = profilerLibProject.tasks.findByName("gtest${cfgName.replaceFirstChar { it.uppercaseChar() }}")
                     if (testTask != null && gtestTask != null) {
                         testTask.dependsOn(gtestTask)
                     }

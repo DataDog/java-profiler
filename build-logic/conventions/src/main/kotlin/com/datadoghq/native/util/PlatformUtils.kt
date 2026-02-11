@@ -6,6 +6,9 @@ import com.datadoghq.native.model.Platform
 import org.gradle.api.GradleException
 import org.gradle.api.Project
 import java.io.File
+import kotlin.io.path.createTempFile
+import kotlin.io.path.deleteIfExists
+import kotlin.io.path.writeText
 import java.util.concurrent.TimeUnit
 
 object PlatformUtils {
@@ -124,7 +127,7 @@ object PlatformUtils {
                     "clang++",
                     "-fsanitize=fuzzer",
                     "-c",
-                    testFile.absolutePath,
+                    testFile.toAbsolutePath().toString(),
                     "-o",
                     "/dev/null"
                 ).redirectErrorStream(true).start()
@@ -132,7 +135,7 @@ object PlatformUtils {
                 process.waitFor()
                 process.exitValue() == 0
             } finally {
-                testFile.delete()
+                testFile.deleteIfExists()
             }
         } catch (e: Exception) {
             false
