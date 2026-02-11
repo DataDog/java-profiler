@@ -23,13 +23,6 @@ class HeapUsage;
 #define DECL_TYPE_SIZE(name) static uint64_t TYPE_SIZE_NAME(name);
 #define SIZE_OF(name) VM##name::type_size()
 
-#define READ_TYPE_SIZE(name, variable) \
-    if (strcmp(type, #name) == 0) { \
-        TYPE_SIZE_NAME(variable) = *(uint64_t*)(entry + size_offset); \
-        continue;   \
-    }
-
-
 template <typename T>
 inline T* cast_to(const void* ptr, uint64_t size) {
     assert(size > 0); // Ensure type size has been initialized
