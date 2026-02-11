@@ -122,8 +122,11 @@ class ProfilerTestPlugin : Plugin<Project> {
     private fun configureJavaExecTask(task: JavaExec, extension: ProfilerTestExtension, project: Project) {
         // Disable Gradle 9 toolchain probing (fails on musl with glibc probe binary)
         // Use explicit executable path instead
+        // Note: Must clear convention AND set value to prevent toolchain resolution
         @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
-        task.javaLauncher.set(null as org.gradle.jvm.toolchain.JavaLauncher?)
+        task.javaLauncher.convention(null as org.gradle.jvm.toolchain.JavaLauncher?)
+        @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
+        task.javaLauncher.value(null as org.gradle.jvm.toolchain.JavaLauncher?)
         task.setExecutable(PlatformUtils.testJavaExecutable())
 
         // JVM arguments for JavaExec tasks

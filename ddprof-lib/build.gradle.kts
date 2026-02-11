@@ -85,6 +85,14 @@ val copyExternalLibs by tasks.registering(Copy::class) {
   }
 }
 
+// Gradle 9 requires explicit dependency: compileJava9Java uses mainSourceSet.output
+// which includes the copyExternalLibs destination directory
+afterEvaluate {
+  tasks.named("compileJava9Java") {
+    dependsOn(copyExternalLibs)
+  }
+}
+
 // Create JAR tasks for each build configuration using nativeBuild extension utilities
 // Uses afterEvaluate to discover configurations dynamically from NativeBuildExtension
 afterEvaluate {
