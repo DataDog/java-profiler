@@ -273,7 +273,7 @@ FROM alpine:3.21
 # - openssh-client for git clone over SSH
 RUN apk update && \
     apk add --no-cache \
-        curl wget bash make g++ clang git jq cmake \
+        curl wget bash make g++ clang git jq cmake coreutils \
         gtest-dev gmock tar binutils musl-dbg linux-headers \
         compiler-rt llvm openssh-client
 
@@ -352,7 +352,7 @@ RUN mkdir -p /jdk && \\
 # Set JDK environment (same JDK for build and test)
 ENV JAVA_HOME=/jdk
 ENV JAVA_TEST_HOME=/jdk
-ENV PATH="/jdk/bin:\\\$PATH"
+ENV PATH="/jdk/bin:\$PATH"
 
 # Verify JDK installation
 RUN java -version
@@ -389,7 +389,7 @@ RUN mkdir -p /jdk-test && \\
 # JAVA_TEST_HOME = Test JDK (for running tests)
 ENV JAVA_HOME=/jdk-build
 ENV JAVA_TEST_HOME=/jdk-test
-ENV PATH="/jdk-build/bin:\\\$PATH"
+ENV PATH="/jdk-build/bin:\$PATH"
 
 # Verify JDK installations
 RUN echo "Build JDK:" && java -version
