@@ -1,0 +1,75 @@
+# Java Profiler - Gradle Properties Template
+# Copy this file to gradle.properties and customize as needed.
+#
+# Note: Property values can be overridden via command line with -P flag
+# Example: ./gradlew build -Pskip-tests
+
+# =============================================================================
+# VERSION MANAGEMENT
+# =============================================================================
+
+# Override the project version (useful for custom builds)
+# ddprof_version=1.38.0-custom
+
+# =============================================================================
+# BUILD CONTROL
+# =============================================================================
+
+# Skip test execution (Java tests)
+# skip-tests=true
+
+# Skip native C++ compilation
+# skip-native=true
+
+# Skip Google Test (C++ unit tests)
+# skip-gtest=true
+
+# Skip fuzz testing
+# skip-fuzz=true
+
+# =============================================================================
+# COMPILER CONFIGURATION
+# =============================================================================
+
+# Force a specific C++ compiler (auto-detects clang++ or g++ if not set)
+# native.forceCompiler=/usr/bin/clang++
+
+# =============================================================================
+# EXTERNAL DEPENDENCIES
+# =============================================================================
+
+# Path to pre-built native libraries (skips native compilation if set)
+# with-libs=/path/to/external/libs
+
+# =============================================================================
+# TESTING
+# =============================================================================
+
+# Keep JFR recordings after test runs (also respects KEEP_JFRS env var)
+# keepJFRs=true
+
+# Arguments to pass to UnwindingValidator
+# validatorArgs=--verbose --output-format=json
+
+# =============================================================================
+# CI / PUBLISHING
+# =============================================================================
+
+# CI environment flag (auto-detected from CI env var)
+# CI=true
+
+# Use local Nexus for testing (requires running docker container)
+# forceLocal=true
+
+# =============================================================================
+# MEMORY / PERFORMANCE
+# =============================================================================
+
+# Gradle JVM arguments (default values shown)
+# org.gradle.jvmargs=-Xmx2g -XX:+HeapDumpOnOutOfMemoryError
+
+# Enable Gradle build cache
+# org.gradle.caching=true
+
+# Enable parallel project execution
+# org.gradle.parallel=true
