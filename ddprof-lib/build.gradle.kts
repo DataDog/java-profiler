@@ -7,8 +7,8 @@ plugins {
   java
   `maven-publish`
   signing
-  id("com.github.ben-manes.versions") version "0.27.0"
-  id("de.undercouch.download") version "4.1.1"
+  id("com.github.ben-manes.versions") version "0.51.0"
+  id("de.undercouch.download") version "5.6.0"
   id("com.datadoghq.native-build")
   id("com.datadoghq.gtest")
   id("com.datadoghq.scanbuild")
@@ -174,7 +174,7 @@ val sourcesJar by tasks.registering(Jar::class) {
 }
 
 // Javadoc configuration
-tasks.withType<Javadoc> {
+tasks.withType<Javadoc>().configureEach {
   // Allow javadoc to access internal sun.nio.ch package used by BufferWriter8
   (options as StandardJavadocDocletOptions).addStringOption("-add-exports", "java.base/sun.nio.ch=ALL-UNNAMED")
 }
@@ -252,7 +252,7 @@ tasks.withType<Sign>().configureEach {
 
 // Publication assertions
 gradle.taskGraph.whenReady {
-  if (hasTask(tasks.named("publish").get()) || hasTask(":publishToSonatype")) {
+  if (hasTask(":ddprof-lib:publish") || hasTask(":publishToSonatype")) {
     check(project.findProperty("removeJarVersionNumbers") != true) {
       "Cannot publish with removeJarVersionNumbers=true"
     }

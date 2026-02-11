@@ -61,11 +61,11 @@ class ProfilerTestPlugin : Plugin<Project> {
         // Create base configurations eagerly so they can be extended by build scripts
         // without needing afterEvaluate
         project.configurations.maybeCreate("testCommon").apply {
-            isCanBeConsumed = true
+            isCanBeConsumed = false
             isCanBeResolved = true
         }
         project.configurations.maybeCreate("mainCommon").apply {
-            isCanBeConsumed = true
+            isCanBeConsumed = false
             isCanBeResolved = true
         }
 
@@ -93,7 +93,12 @@ class ProfilerTestPlugin : Plugin<Project> {
         // Use JUnit Platform
         task.useJUnitPlatform()
 
-        // Configure Java executable - use centralized utility for JAVA_TEST_HOME/JAVA_HOME resolution
+        // Disable Gradle 9 toolchain probing (fails on musl with glibc probe binary)
+        // Use explicit executable path instead
+        @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
+        task.javaLauncher.convention(null as org.gradle.jvm.toolchain.JavaLauncher?)
+        @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
+        task.javaLauncher.value(null as org.gradle.jvm.toolchain.JavaLauncher?)
         task.setExecutable(PlatformUtils.testJavaExecutable())
 
         // Standard environment variables
@@ -183,7 +188,7 @@ class ProfilerTestPlugin : Plugin<Project> {
 
             // Create test configuration
             val testCfg = project.configurations.maybeCreate("test${configName.replaceFirstChar { it.uppercaseChar() }}Implementation").apply {
-                isCanBeConsumed = true
+                isCanBeConsumed = false
                 isCanBeResolved = true
                 extendsFrom(testCommon)
             }
@@ -223,7 +228,7 @@ class ProfilerTestPlugin : Plugin<Project> {
             if (configName in applicationConfigs && appMainClass.isNotEmpty()) {
                 // Create main configuration
                 val mainCfg = project.configurations.maybeCreate("${configName}Implementation").apply {
-                    isCanBeConsumed = true
+                    isCanBeConsumed = false
                     isCanBeResolved = true
                     extendsFrom(mainCommon)
                 }
