@@ -522,7 +522,7 @@ void VMStructs::resolveOffsets() {
             && _method_code_offset >= 0
             && _constmethod_constants_offset >= 0
             && _constmethod_idnum_offset >= 0
-            && TYPE_SIZE_NAME(ConstMethod) >= 0
+            && VMConstMethod::type_size() > 0
             && _pool_holder_offset >= 0;
 
     _has_compiler_structs = _comp_env_offset >= 0
@@ -571,7 +571,7 @@ void VMStructs::resolveOffsets() {
             && ((_mutable_data_offset >= 0 && _relocation_size_offset >= 0) || _nmethod_metadata_offset >= 0)
             && _thread_vframe_offset >= 0
             && _thread_exception_offset >= 0
-            && TYPE_SIZE_NAME(Thread) >= 0;
+            && VMThread::type_size() > 0;
 
     // Since JDK-8268406, it is no longer possible to get VMMethod* by dereferencing jmethodID
     _can_dereference_jmethod_id = _has_method_structs && VM::hotspot_version() <= 25;
@@ -929,9 +929,9 @@ int ScopeDesc::readInt() {
 }
 
 VMFlag* VMFlag::find(const char* name) {
-    if (_flags_addr != NULL && TYPE_SIZE_NAME(Flag) > 0) {
+    if (_flags_addr != NULL && VMFlag::type_size() > 0) {
         for (int i = 0; i < _flag_count; i++) {
-            VMFlag* f = VMFlag::cast(_flags_addr + i * SIZE_OF(Flag));
+            VMFlag* f = VMFlag::cast(_flags_addr + i * VMFlag::type_size());
             if (f->name() != NULL && strcmp(f->name(), name) == 0 && f->addr() != NULL) {
                 return f;
             }
@@ -949,9 +949,9 @@ VMFlag *VMFlag::find(const char *name, std::initializer_list<VMFlag::Type> types
 }
 
 VMFlag *VMFlag::find(const char *name, int type_mask) {
-    if (_flags_addr != NULL && TYPE_SIZE_NAME(Flag) > 0) {
+    if (_flags_addr != NULL && VMFlag::type_size() > 0) {
         for (int i = 0; i < _flag_count; i++) {
-            VMFlag* f = VMFlag::cast(_flags_addr + i * SIZE_OF(Flag));
+            VMFlag* f = VMFlag::cast(_flags_addr + i * VMFlag::type_size());
             if (f->name() != NULL && strcmp(f->name(), name) == 0) {
                 int masked = 0x1 << f->type();
                 if (masked & type_mask) {

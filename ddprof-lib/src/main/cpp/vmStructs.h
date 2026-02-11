@@ -19,7 +19,6 @@
 class GCHeapSummary;
 class HeapUsage;
 
-#define TYPE_NAME(name) VM##name
 #define TYPE_SIZE_NAME(name)    _##name##_size
 #define DECL_TYPE_SIZE(name) static uint64_t TYPE_SIZE_NAME(name);
 #define SIZE_OF(name) VM##name::type_size()
@@ -39,24 +38,27 @@ T* cast_to(const void* ptr, uint64_t size) {
 }
 
 #define DECL_TYPE(name) \
-    class VM##name : VMStructs { \
+    class name : VMStructs { \
       public: \
         static uint64_t type_size() { return TYPE_SIZE_NAME(name); } \
-        static TYPE_NAME(name) * cast(const void* ptr) { return cast_to<TYPE_NAME(name)>(ptr, type_size()); } 
+        static name * cast(const void* ptr) { return cast_to<name>(ptr, type_size()); } \ 
+        static name * load_then_cast(const void* ptr) { return cast(*(const void**)ptr); }
 
 #define DECL_TYPE_END };
 
+// Define a type anme and its size symbols for VMStructs.
+// A type may match multiple names in different JVM versions.
 #define DECL_TYPES_DO(f) \
-    f(ClassLoaderData, "ClassLoaderData", nullptr) \
-    f(ConstantPool, "ConstantPool", nullptr) \
-    f(ConstMethod, "ConstMethod", nullptr) \
-    f(Flag, "JVMFlag", "Flag", nullptr) \
-    f(JavaFrameAnchor, "JavaFrameAnchor", nullptr) \
-    f(Klass, "Klass", nullptr) \
-    f(Method, "Method", nullptr) \
-    f(NMethod, "nmethod", nullptr) \
-    f(Symbol, "Symbol", nullptr) \
-    f(Thread, "Thread", nullptr)
+    f(VMClassLoaderData, "ClassLoaderData", nullptr) \
+    f(VMConstantPool, "ConstantPool", nullptr) \
+    f(VMConstMethod, "ConstMethod", nullptr) \
+    f(VMFlag, "JVMFlag", "Flag", nullptr) \
+    f(VMJavaFrameAnchor, "JavaFrameAnchor", nullptr) \
+    f(VMKlass, "Klass", nullptr) \
+    f(VMMethod, "Method", nullptr) \
+    f(VMNMethod, "nmethod", nullptr) \
+    f(VMSymbol, "Symbol", nullptr) \
+    f(VMThread, "Thread", nullptr)
 
 class VMStructs {
   public:
@@ -357,7 +359,7 @@ class MethodList {
 class VMNMethod;
 class VMMethod;
 
-DECL_TYPE(Symbol)
+DECL_TYPE(VMSymbol)
   public:
     unsigned short length() {
         if (_symbol_length_offset >= 0) {
@@ -372,7 +374,7 @@ DECL_TYPE(Symbol)
     }
 DECL_TYPE_END
 
-DECL_TYPE(ClassLoaderData)
+DECL_TYPE(VMClassLoaderData)
   private:
     void* mutex() {
         return *(void**) at(sizeof(uintptr_t) * 3);
@@ -392,7 +394,7 @@ DECL_TYPE(ClassLoaderData)
     }
 DECL_TYPE_END
 
-DECL_TYPE(Klass)    
+DECL_TYPE(VMKlass)    
   public:
     static VMKlass* fromJavaClass(JNIEnv* env, jclass cls) {
         if (_has_perm_gen) {
@@ -438,8 +440,7 @@ DECL_TYPE(Klass)
 
     VMClassLoaderData* classLoaderData() {
         assert(_class_loader_data_offset >= 0);
-        const void* ptr = *(const void**) at(_class_loader_data_offset);
-        return VMClassLoaderData::cast(ptr);
+        return VMClassLoaderData::load_then_cast(at(_class_loader_data_offset));
     }
 
     int methodCount() {
@@ -452,7 +453,7 @@ DECL_TYPE(Klass)
     }
 DECL_TYPE_END
 
-DECL_TYPE(JavaFrameAnchor)
+DECL_TYPE(VMJavaFrameAnchor)
   private:
     enum { MAX_CALL_WRAPPER_DISTANCE = 512 };
 
@@ -508,7 +509,7 @@ enum JVMJavaThreadState {
     _thread_max_state         = 12  // maximum thread state+1 - used for statistics allocation
 };
 
-DECL_TYPE(Thread)
+DECL_TYPE(VMThread)
   public:
     static VMThread* current();
 
@@ -576,11 +577,11 @@ DECL_TYPE(Thread)
     }
 DECL_TYPE_END
 
-DECL_TYPE(ConstMethod)
+DECL_TYPE(VMConstMethod)
 DECL_TYPE_END
 
 
-DECL_TYPE(Method)   
+DECL_TYPE(VMMethod)   
     private:
     static bool check_jmethodID_J9(jmethodID id);
     static bool check_jmethodID_hotspot(jmethodID id);
@@ -608,7 +609,7 @@ DECL_TYPE(Method)
     static bool check_jmethodID(jmethodID id);
 DECL_TYPE_END
 
-DECL_TYPE(NMethod)
+DECL_TYPE(VMNMethod)
   public:
     int size() {
         assert(_blob_size_offset >= 0);
@@ -792,7 +793,7 @@ class CollectedHeap : VMStructs {
     }
 };
 
-DECL_TYPE(Flag)
+DECL_TYPE(VMFlag)
   private:
     enum {
         ORIGIN_DEFAULT = 0,
