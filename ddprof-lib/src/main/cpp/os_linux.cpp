@@ -522,7 +522,7 @@ static bool readProcessCmdline(int pid, ProcessInfo* info) {
     size_t len = 0;
 
     ssize_t r;
-    while (r = read(fd, info->cmdline + len, max_read - len)) {
+    while ((r = read(fd, info->cmdline + len, max_read - len))) {
         if (r > 0) {
             len += (size_t)r;
             if (len == max_read) break;
@@ -564,7 +564,7 @@ static bool readProcessStats(int pid, ProcessInfo* info) {
     size_t len = 0;
 
     ssize_t r;
-    while (r = read(fd, buffer + len, sizeof(buffer) - 1 - len)) {
+    while ((r = read(fd, buffer + len, sizeof(buffer) - 1 - len))) {
         if (r > 0) {
             len += (size_t)r;
             if (len == sizeof(buffer) - 1) break;
