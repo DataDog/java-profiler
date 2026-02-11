@@ -39,19 +39,21 @@ inline T* cast_to(const void* ptr, uint64_t size) {
 
 #define DECL_TYPE_END };
 
+#define MATCH_SYMBOLS(...) __VA_ARGS__, nullptr
+
 // Define a type anme and its size symbols for VMStructs.
 // A type may match multiple names in different JVM versions.
 #define DECL_TYPES_DO(f) \
-    f(VMClassLoaderData, "ClassLoaderData", nullptr) \
-    f(VMConstantPool, "ConstantPool", nullptr) \
-    f(VMConstMethod, "ConstMethod", nullptr) \
-    f(VMFlag, "JVMFlag", "Flag", nullptr) \
-    f(VMJavaFrameAnchor, "JavaFrameAnchor", nullptr) \
-    f(VMKlass, "Klass", nullptr) \
-    f(VMMethod, "Method", nullptr) \
-    f(VMNMethod, "nmethod", nullptr) \
-    f(VMSymbol, "Symbol", nullptr) \
-    f(VMThread, "Thread", nullptr)
+    f(VMClassLoaderData,    MATCH_SYMBOLS("ClassLoaderData")) \
+    f(VMConstantPool,       MATCH_SYMBOLS("ConstantPool")) \
+    f(VMConstMethod,        MATCH_SYMBOLS("ConstMethod")) \
+    f(VMFlag,               MATCH_SYMBOLS("JVMFlag", "Flag")) \
+    f(VMJavaFrameAnchor,    MATCH_SYMBOLS("JavaFrameAnchor")) \
+    f(VMKlass,              MATCH_SYMBOLS("Klass")) \
+    f(VMMethod,             MATCH_SYMBOLS("Method")) \
+    f(VMNMethod,            MATCH_SYMBOLS("nmethod")) \
+    f(VMSymbol,             MATCH_SYMBOLS("Symbol")) \
+    f(VMThread,             MATCH_SYMBOLS("Thread"))
 
 class VMStructs {
   public:
