@@ -75,7 +75,6 @@ class VMStructs {
     static bool _has_stack_structs;
     static bool _has_class_loader_data;
     static bool _has_native_thread_id;
-    static bool _has_perm_gen;
     static bool _can_dereference_jmethod_id;
     static bool _compact_object_headers;
 
@@ -149,8 +148,6 @@ class VMStructs {
     static int* _narrow_klass_shift_addr;
     static int _narrow_klass_shift;
     static char** _collected_heap_addr;
-    static char* _collected_heap;
-    static int _collected_heap_reserved_offset;
     static int _region_start_offset;
     static int _region_size_offset;
     static int _markword_klass_shift;
@@ -397,23 +394,15 @@ DECL_TYPE_END
 DECL_TYPE(VMKlass)    
   public:
     static VMKlass* fromJavaClass(JNIEnv* env, jclass cls) {
-        if (_has_perm_gen) {
-            jobject klassOop = env->GetObjectField(cls, _klass);
-            return (VMKlass*)(*(uintptr_t**)klassOop + 2);
-        } else if (sizeof(VMKlass*) == 8) {
-            return (VMKlass*)(uintptr_t)env->GetLongField(cls, _klass);
+        if (sizeof(VMKlass*) == 8) {
+            return VMKlass::cast((const void*)(intptr_t)env->GetLongField(cls, _klass));
         } else {
-            return (VMKlass*)(uintptr_t)env->GetIntField(cls, _klass);
+            return VMKlass::cast((const void*)(intptr_t)env->GetIntField(cls, _klass));
         }
     }
 
     static VMKlass* fromHandle(uintptr_t handle) {
-        if (_has_perm_gen) {
-            // On JDK 7 KlassHandle is a pointer to klassOop, hence one more indirection
-            return (VMKlass*)(*(uintptr_t**)handle + 2);
-        } else {
-            return (VMKlass*)handle;
-        }
+        return VMKlass::cast((const void*)handle);
     }
 
     static VMKlass* fromOop(uintptr_t oop) {
@@ -428,14 +417,15 @@ DECL_TYPE(VMKlass)
             } else {
                 narrow_klass = *(unsigned int*)(oop + _oop_klass_offset);
             }
-            return (VMKlass*)(_narrow_klass_base + (narrow_klass << _narrow_klass_shift));
+            return VMKlass::cast((const void*)(_narrow_klass_base + (narrow_klass << _narrow_klass_shift)));
         } else {
-            return *(VMKlass**)(oop + _oop_klass_offset);
+            return VMKlass::load_then_cast((const void*)(oop + _oop_klass_offset));
         }
     }
 
     VMSymbol* name() {
-        return *(VMSymbol**) at(_klass_name_offset);
+        assert(_klass_name_offset >= 0);
+        return VMSymbol::load_then_cast(at(_klass_name_offset));
     }
 
     VMClassLoaderData* classLoaderData() {
@@ -444,11 +434,13 @@ DECL_TYPE(VMKlass)
     }
 
     int methodCount() {
+        assert(_methods_offset >= 0);
         int* methods = *(int**) at(_methods_offset);
         return methods == NULL ? 0 : *methods & 0xffff;
     }
 
     jmethodID* jmethodIDs() {
+        assert(_jmethod_ids_offset >= 0);
         return __atomic_load_n((jmethodID**) at(_jmethod_ids_offset), __ATOMIC_ACQUIRE);
     }
 DECL_TYPE_END
@@ -459,26 +451,32 @@ DECL_TYPE(VMJavaFrameAnchor)
 
   public:
     static VMJavaFrameAnchor* fromEntryFrame(uintptr_t fp) {
+        assert(_entry_frame_call_wrapper_offset != -1);
+        assert(_call_wrapper_anchor_offset >= 0);
         const char* call_wrapper = (const char*) SafeAccess::loadPtr((void**)(fp + _entry_frame_call_wrapper_offset), nullptr);
         if (!goodPtr(call_wrapper) || (uintptr_t)call_wrapper - fp > MAX_CALL_WRAPPER_DISTANCE) {
             return NULL;
         }
-        return (VMJavaFrameAnchor*)(call_wrapper + _call_wrapper_anchor_offset);
+        return VMJavaFrameAnchor::cast((const void*)(call_wrapper + _call_wrapper_anchor_offset));
     }
 
     uintptr_t lastJavaSP() {
+        assert(_anchor_sp_offset >= 0);
         return (uintptr_t) SafeAccess::loadPtr((void**) at(_anchor_sp_offset), nullptr);
     }
 
     uintptr_t lastJavaFP() {
+        assert(_anchor_fp_offset >= 0);
         return (uintptr_t) SafeAccess::loadPtr((void**) at(_anchor_fp_offset), nullptr);
     }
 
     const void* lastJavaPC() {
+        assert(_anchor_pc_offset >= 0);
         return SafeAccess::loadPtr((void**) at(_anchor_pc_offset), nullptr);
     }
 
     void setLastJavaPC(const void* pc) {
+        assert(_anchor_pc_offset >= 0);
         *(const void**) at(_anchor_pc_offset) = pc;
     }
 
@@ -518,7 +516,7 @@ DECL_TYPE(VMThread)
     }
 
     static VMThread* fromJavaThread(JNIEnv* env, jthread thread) {
-        return (VMThread*)(uintptr_t)env->GetLongField(thread, _eetop);
+        return VMThread::cast((const void*)env->GetLongField(thread, _eetop));
     }
 
     static jlong javaThreadId(JNIEnv* env, jthread thread) {
@@ -532,6 +530,7 @@ DECL_TYPE(VMThread)
     JNIEnv* jni();
 
     const void** vtable() {
+        assert(SafeAccess::isReadable(this));
         return *(const void***)this;
     }
 
@@ -554,27 +553,21 @@ DECL_TYPE(VMThread)
     }
 
     bool inDeopt() {
+        assert(_thread_state_offset >= 0);
         return SafeAccess::loadPtr((void**) at(_thread_vframe_offset), nullptr) != NULL;
     }
 
     void*& exception() {
+        assert(_thread_exception_offset >= 0);
         return *(void**) at(_thread_exception_offset);
     }
 
     VMJavaFrameAnchor* anchor() {
-        return (VMJavaFrameAnchor*) at(_thread_anchor_offset);
+        assert(_thread_anchor_offset >= 0);
+        return VMJavaFrameAnchor::cast(at(_thread_anchor_offset));
     }
 
-    VMMethod* compiledMethod() {
-        const char* env = *(const char**) at(_comp_env_offset);
-        if (env != NULL) {
-            const char* task = *(const char**) (env + _comp_task_offset);
-            if (task != NULL) {
-                return *(VMMethod**) (task + _comp_method_offset);
-            }
-        }
-        return NULL;
-    }
+    inline VMMethod* compiledMethod();
 DECL_TYPE_END
 
 DECL_TYPE(VMConstMethod)
@@ -595,16 +588,17 @@ DECL_TYPE(VMMethod)
     // Workaround for JDK-8313816
     static bool isStaleMethodId(jmethodID id) {
         if (!_can_dereference_jmethod_id) return false;
-        VMMethod* vm_method = *(VMMethod**)id;
+
+        VMMethod* vm_method = VMMethod::load_then_cast((const void*)id);
         return vm_method == NULL || vm_method->id() == NULL;
     }
 
     const char* bytecode() {
         assert(_method_constmethod_offset >= 0);
-        return *(const char**) at(_method_constmethod_offset) + SIZE_OF(ConstMethod);
+        return *(const char**) at(_method_constmethod_offset) + VMConstMethod::type_size();
     }
 
-    VMNMethod* code();
+    inline VMNMethod* code();
 
     static bool check_jmethodID(jmethodID id);
 DECL_TYPE_END
@@ -679,6 +673,7 @@ DECL_TYPE(VMNMethod)
     }
 
     const char* name() {
+        assert(_nmethod_name_offset >= 0);
         return *(const char**) at(_nmethod_name_offset);
     }
 
@@ -704,8 +699,7 @@ DECL_TYPE(VMNMethod)
 
     VMMethod* method() {
         assert(_nmethod_method_offset >= 0);
-        const void* ptr = *(const void**) at(_nmethod_method_offset);
-        return VMMethod::cast(ptr);
+        return VMMethod::load_then_cast((const void*)at(_nmethod_method_offset));
     }
 
     char state() {
@@ -774,25 +768,6 @@ class CodeHeap : VMStructs {
     }
 };
 
-class CollectedHeap : VMStructs {
-  public:
-    static bool created() {
-        return _collected_heap_addr != NULL && *_collected_heap_addr != NULL;
-    }
-
-    static CollectedHeap* heap() {
-        return (CollectedHeap*)_collected_heap;
-    }
-
-    uintptr_t start() {
-        return *(uintptr_t*) at(_region_start_offset);
-    }
-
-    uintptr_t size() {
-        return (*(uintptr_t*) at(_region_size_offset)) * sizeof(uintptr_t);
-    }
-};
-
 DECL_TYPE(VMFlag)
   private:
     enum {
@@ -821,12 +796,14 @@ DECL_TYPE(VMFlag)
     static VMFlag *find(const char* name, std::initializer_list<Type> types);
 
     const char* name() {
+        assert(_flag_name_offset >= 0);
         return *(const char**) at(_flag_name_offset);
     }
 
     int type();
 
     void* addr() {
+        assert(_flag_addr_offset >= 0);
         return *(void**) at(_flag_addr_offset);
     }
 

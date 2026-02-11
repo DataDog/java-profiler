@@ -11,7 +11,7 @@
 #include "safeAccess.h"
 #include "stackFrame.h"
 #include "symbols.h"
-#include "vmStructs.h"
+#include "vmStructs.inline.h"
 #include "thread.h"
 
 
