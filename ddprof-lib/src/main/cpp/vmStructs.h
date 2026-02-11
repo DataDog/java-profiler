@@ -35,13 +35,15 @@ inline T* cast_to(const void* ptr, uint64_t size) {
       public: \
         static uint64_t type_size() { return TYPE_SIZE_NAME(name); } \
         static name * cast(const void* ptr) { return cast_to<name>(ptr, type_size()); } \ 
-        static name * load_then_cast(const void* ptr) { return cast(*(const void**)ptr); }
+        static name * load_then_cast(const void* ptr) { \
+            assert(ptr != nullptr); \
+            return cast(*(const void**)ptr); }
 
 #define DECL_TYPE_END };
 
 #define MATCH_SYMBOLS(...) __VA_ARGS__, nullptr
 
-// Define a type anme and its size symbols for VMStructs.
+// Defines a type and its matching symbols in vmStructs.
 // A type may match multiple names in different JVM versions.
 #define DECL_TYPES_DO(f) \
     f(VMClassLoaderData,    MATCH_SYMBOLS("ClassLoaderData")) \
