@@ -5,13 +5,13 @@ title: Java Profiler Build - Test Dashboard
 
 # Java Profiler Build - Test Dashboard
 
-> **Last Updated:** 2026-02-11 16:40 UTC
+> **Last Updated:** 2026-02-11 16:58 UTC
 
 ## Quick Status
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](integration/) | [#95861107](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95861107) | ⚠️ | jb/gradle_9 | [#365](https://github.com/DataDog/java-profiler/pull/365) |
+| [Integration](integration/) | [#95867417](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95867417) | ⚠️ | jb/gradle_9 | [#365](https://github.com/DataDog/java-profiler/pull/365) |
 | [Benchmarks](benchmarks/) | - | - | - | - |
 | [Reliability](reliability/) | - | - | - | - |
 
@@ -37,11 +37,11 @@ Tests multiple allocator configurations (gmalloc, tcmalloc, jemalloc).
 
 | Date | Type | Pipeline | Branch | PR | Status |
 |------|------|----------|--------|-----|--------|
+| 2026-02-11 | Integration | [#95867417](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95867417) | jb/gradle_9 | [#365](https://github.com/DataDog/java-profiler/pull/365) | ⚠️ |
 | 2026-02-11 | Integration | [#95861107](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95861107) | jb/gradle_9 | [#365](https://github.com/DataDog/java-profiler/pull/365) | ⚠️ |
 | 2026-02-11 | Integration | [#95853148](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95853148) | jb/gradle_9 | [#365](https://github.com/DataDog/java-profiler/pull/365) | ⚠️ |
 | 2026-02-11 | Integration | [#95846421](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95846421) | jb/gradle_9 | [#365](https://github.com/DataDog/java-profiler/pull/365) | ⚠️ |
 | 2026-02-10 | Integration | [#95680405](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95680405) | zgu/vmstruct_safety | [#363](https://github.com/DataDog/java-profiler/pull/363) | ⚠️ |
-| 2026-02-10 | Integration | [#95669408](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95669408) | zgu/vmstruct_safety | [#363](https://github.com/DataDog/java-profiler/pull/363) | ⚠️ |
 
 ---
 
