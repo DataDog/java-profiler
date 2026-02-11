@@ -185,7 +185,7 @@ val javadocJar by tasks.registering(Jar::class) {
   archiveBaseName.set(libraryName)
   archiveClassifier.set("javadoc")
   archiveVersion.set(componentVersion)
-  from(tasks.javadoc.get().destinationDir)
+  from(tasks.javadoc.map { it.destinationDir!! })
 }
 
 // Publishing configuration
@@ -273,9 +273,10 @@ afterEvaluate {
 }
 
 // Ensure published artifacts depend on release JAR
+// Note: assembleReleaseJar is registered in afterEvaluate, so use matching instead of named
 tasks.withType<AbstractPublishToMaven>().configureEach {
   if (name.contains("AssembledPublication")) {
-    dependsOn(tasks.named("assembleReleaseJar"))
+    dependsOn(tasks.matching { it.name == "assembleReleaseJar" })
   }
   rootProject.subprojects.forEach { subproject ->
     mustRunAfter(subproject.tasks.matching { it is VerificationTask })

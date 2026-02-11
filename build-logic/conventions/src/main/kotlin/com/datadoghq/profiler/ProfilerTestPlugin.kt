@@ -93,12 +93,8 @@ class ProfilerTestPlugin : Plugin<Project> {
         // Use JUnit Platform
         task.useJUnitPlatform()
 
-        // Disable Gradle 9 toolchain probing (fails on musl with glibc probe binary)
-        // Use explicit executable path instead
-        @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
-        task.javaLauncher.convention(null as org.gradle.jvm.toolchain.JavaLauncher?)
-        @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
-        task.javaLauncher.value(null as org.gradle.jvm.toolchain.JavaLauncher?)
+        // Disable toolchain probing and set explicit executable
+        disableToolchainProbing(task)
         task.setExecutable(PlatformUtils.testJavaExecutable())
 
         // Standard environment variables
@@ -125,13 +121,8 @@ class ProfilerTestPlugin : Plugin<Project> {
     }
 
     private fun configureJavaExecTask(task: JavaExec, extension: ProfilerTestExtension, project: Project) {
-        // Disable Gradle 9 toolchain probing (fails on musl with glibc probe binary)
-        // Use explicit executable path instead
-        // Note: Must clear convention AND set value to prevent toolchain resolution
-        @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
-        task.javaLauncher.convention(null as org.gradle.jvm.toolchain.JavaLauncher?)
-        @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
-        task.javaLauncher.value(null as org.gradle.jvm.toolchain.JavaLauncher?)
+        // Disable toolchain probing and set explicit executable
+        disableToolchainProbing(task)
         task.setExecutable(PlatformUtils.testJavaExecutable())
 
         // JVM arguments for JavaExec tasks
@@ -141,6 +132,31 @@ class ProfilerTestPlugin : Plugin<Project> {
             allArgs.addAll(extension.extraJvmArgs.get())
             task.jvmArgs(allArgs)
         }
+    }
+
+    /**
+     * Disables Gradle 9 toolchain probing for tasks with javaLauncher property.
+     *
+     * Gradle 9's toolchain probing uses a glibc-compiled probe binary that fails on musl (Alpine).
+     * This workaround clears both the convention and value to prevent any toolchain resolution.
+     *
+     * Must set both convention(null) AND value(null) because:
+     * - convention(null) clears the default toolchain convention
+     * - value(null) clears any provider-based value
+     * Without both, Gradle may still attempt to resolve the toolchain.
+     */
+    private fun disableToolchainProbing(task: org.gradle.api.tasks.JavaExec) {
+        @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
+        task.javaLauncher.convention(null as org.gradle.jvm.toolchain.JavaLauncher?)
+        @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
+        task.javaLauncher.value(null as org.gradle.jvm.toolchain.JavaLauncher?)
+    }
+
+    private fun disableToolchainProbing(task: org.gradle.api.tasks.testing.Test) {
+        @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
+        task.javaLauncher.convention(null as org.gradle.jvm.toolchain.JavaLauncher?)
+        @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
+        task.javaLauncher.value(null as org.gradle.jvm.toolchain.JavaLauncher?)
     }
 
     private fun generateMultiConfigTasks(project: Project, extension: ProfilerTestExtension) {
