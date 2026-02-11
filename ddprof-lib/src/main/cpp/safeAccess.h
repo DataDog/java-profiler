@@ -75,7 +75,7 @@ public:
   NOINLINE __attribute__((aligned(16)))
   static void *loadPtr(void** ptr, void* default_value);
 
-  static inline bool isReadable(void* ptr) {
+  static inline bool isReadable(const void* ptr) {
     return load32((int32_t*)ptr, 1) != 1 ||
            load32((int32_t*)ptr, -1) != -1; 
   }

@@ -208,7 +208,9 @@ class VMStructs {
     static const void *findHeapUsageFunc();
 
     const char* at(int offset) {
-        return (const char*)this + offset;
+        const char* ptr = (const char*)this + offset;
+        assert(SafeAccess::isReadable(ptr));
+        return ptr;
     }
 
     static bool goodPtr(const void* ptr) {
@@ -435,8 +437,9 @@ DECL_TYPE(Klass)
     }
 
     VMClassLoaderData* classLoaderData() {
-        assert(_has_class_loader_data >= 0);
-        return VMClassLoaderData::cast(at(_class_loader_data_offset));
+        assert(_class_loader_data_offset >= 0);
+        const void* ptr = *(const void**) at(_class_loader_data_offset);
+        return VMClassLoaderData::cast(ptr);
     }
 
     int methodCount() {
