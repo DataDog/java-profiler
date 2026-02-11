@@ -1,6 +1,44 @@
 {
   "runs": [
     {
+      "id": "95861107",
+      "timestamp": "2026-02-11T16:40:55Z",
+      "ddprof_branch": "jb/gradle_9",
+      "ddprof_sha": "36a5640e",
+      "ddprof_pr": {
+        "number": 365,
+        "url": "https://github.com/DataDog/java-profiler/pull/365",
+        "title": "Upgrade to Gradle 9.3.1 with JDK 21 build requirement"
+      },
+      "pipeline": {
+        "id": "95861107",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95861107"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 30,
+        "failed_jobs": 10,
+        "total_scenarios": 60,
+        "passed_scenarios": 60,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "musl-arm64-hotspot-jdk11",
+          "musl-arm64-hotspot-jdk17",
+          "musl-arm64-hotspot-jdk21",
+          "musl-arm64-hotspot-jdk25",
+          "musl-arm64-hotspot-jdk8",
+          "musl-arm64-openj9-jdk11",
+          "musl-arm64-openj9-jdk17",
+          "musl-arm64-openj9-jdk21",
+          "musl-arm64-openj9-jdk25",
+          "musl-arm64-openj9-jdk8"
+        ]
+      }
+    },
+    {
       "id": "95853148",
       "timestamp": "2026-02-11T16:22:24Z",
       "ddprof_branch": "jb/gradle_9",
@@ -287,33 +325,6 @@
       "pipeline": {
         "id": "94985044",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94985044"
-      },
-      "lib_version": "unknown",
-      "status": "unknown",
-      "summary": {
-        "total_jobs": 0,
-        "passed_jobs": 0,
-        "failed_jobs": 0,
-        "total_scenarios": 0,
-        "passed_scenarios": 0,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "94984980",
-      "timestamp": "2026-02-06T11:39:17Z",
-      "ddprof_branch": "jb/build_revamp",
-      "ddprof_sha": "unknown",
-      "ddprof_pr": {
-        "number": 358,
-        "url": "https://github.com/DataDog/java-profiler/pull/358",
-        "title": "Migrate build system to Kotlin build-logic"
-      },
-      "pipeline": {
-        "id": "94984980",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94984980"
       },
       "lib_version": "unknown",
       "status": "unknown",
