@@ -1,5 +1,7 @@
 import com.datadoghq.native.model.Platform
 import com.datadoghq.native.util.PlatformUtils
+import org.gradle.api.publish.maven.tasks.AbstractPublishToMaven
+import org.gradle.api.tasks.VerificationTask
 
 plugins {
   java
@@ -186,4 +188,96 @@ val javadocJar by tasks.registering(Jar::class) {
   from(tasks.javadoc.get().destinationDir)
 }
 
-// Publishing configuration will be added later
+// Publishing configuration
+val isGitlabCI = System.getenv("GITLAB_CI") != null
+val isCI = System.getenv("CI") != null
+
+publishing {
+  publications {
+    create<MavenPublication>("assembled") {
+      groupId = "com.datadoghq"
+      artifactId = "ddprof"
+
+      // Add artifacts from each build configuration
+      afterEvaluate {
+        nativeBuild.buildConfigurations.names.forEach { name ->
+          val capitalizedName = name.replaceFirstChar { it.uppercase() }
+          artifact(tasks.named("assemble${capitalizedName}Jar"))
+        }
+      }
+      artifact(sourcesJar)
+      artifact(javadocJar)
+
+      pom {
+        name.set(project.name)
+        description.set("${project.description} ($componentVersion)")
+        packaging = "jar"
+        url.set("https://github.com/datadog/java-profiler")
+
+        licenses {
+          license {
+            name.set("The Apache Software License, Version 2.0")
+            url.set("http://www.apache.org/licenses/LICENSE-2.0.txt")
+            distribution.set("repo")
+          }
+        }
+
+        scm {
+          connection.set("scm:https://datadog@github.com/datadog/java-profiler")
+          developerConnection.set("scm:git@github.com:datadog/java-profiler")
+          url.set("https://github.com/datadog/java-profiler")
+        }
+
+        developers {
+          developer {
+            id.set("datadog")
+            name.set("Datadog")
+          }
+        }
+      }
+    }
+  }
+}
+
+signing {
+  useInMemoryPgpKeys(System.getenv("GPG_PRIVATE_KEY"), System.getenv("GPG_PASSWORD"))
+  sign(publishing.publications["assembled"])
+}
+
+tasks.withType<Sign>().configureEach {
+  onlyIf {
+    isGitlabCI || (System.getenv("GPG_PRIVATE_KEY") != null && System.getenv("GPG_PASSWORD") != null)
+  }
+}
+
+// Publication assertions
+gradle.taskGraph.whenReady {
+  if (hasTask(tasks.named("publish").get()) || hasTask(":publishToSonatype")) {
+    check(project.findProperty("removeJarVersionNumbers") != true) {
+      "Cannot publish with removeJarVersionNumbers=true"
+    }
+    if (hasTask(":publishToSonatype")) {
+      checkNotNull(System.getenv("SONATYPE_USERNAME")) { "SONATYPE_USERNAME must be set" }
+      checkNotNull(System.getenv("SONATYPE_PASSWORD")) { "SONATYPE_PASSWORD must be set" }
+      if (isCI) {
+        checkNotNull(System.getenv("GPG_PRIVATE_KEY")) { "GPG_PRIVATE_KEY must be set in CI" }
+        checkNotNull(System.getenv("GPG_PASSWORD")) { "GPG_PASSWORD must be set in CI" }
+      }
+    }
+  }
+}
+
+// Verify project has description (required for published projects)
+afterEvaluate {
+  requireNotNull(description) { "Project ${project.path} is published, must have a description" }
+}
+
+// Ensure published artifacts depend on release JAR
+tasks.withType<AbstractPublishToMaven>().configureEach {
+  if (name.contains("AssembledPublication")) {
+    dependsOn(tasks.named("assembleReleaseJar"))
+  }
+  rootProject.subprojects.forEach { subproject ->
+    mustRunAfter(subproject.tasks.matching { it is VerificationTask })
+  }
+}
