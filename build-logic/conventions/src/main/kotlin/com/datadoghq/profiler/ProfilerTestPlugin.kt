@@ -120,7 +120,10 @@ class ProfilerTestPlugin : Plugin<Project> {
     }
 
     private fun configureJavaExecTask(task: JavaExec, extension: ProfilerTestExtension, project: Project) {
-        // Configure Java executable - use centralized utility for JAVA_TEST_HOME/JAVA_HOME resolution
+        // Disable Gradle 9 toolchain probing (fails on musl with glibc probe binary)
+        // Use explicit executable path instead
+        @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
+        task.javaLauncher.set(null as org.gradle.jvm.toolchain.JavaLauncher?)
         task.setExecutable(PlatformUtils.testJavaExecutable())
 
         // JVM arguments for JavaExec tasks
