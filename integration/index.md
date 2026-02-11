@@ -13,6 +13,24 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 <details markdown="1">
 <summary>
+<strong>2026-02-11 16:22</strong> | ⚠️ | jb/gradle_9 | PR [#365](https://github.com/DataDog/java-profiler/pull/365) | Pipeline [#95853148](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95853148)
+</summary>
+
+**Version:** unknown
+**Commit:** a86ba449
+
+| Metric | Value |
+|--------|-------|
+| Jobs | 40 |
+| Passed | 30 |
+| Failed | 10 |
+
+**Failed Configs:** musl-arm64-hotspot-jdk11, musl-arm64-hotspot-jdk17, musl-arm64-hotspot-jdk21, musl-arm64-hotspot-jdk25, musl-arm64-hotspot-jdk8, musl-arm64-openj9-jdk11, musl-arm64-openj9-jdk17, musl-arm64-openj9-jdk21, musl-arm64-openj9-jdk25, musl-arm64-openj9-jdk8
+
+</details>
+
+<details markdown="1">
+<summary>
 <strong>2026-02-11 16:04</strong> | ⚠️ | jb/gradle_9 | PR [#365](https://github.com/DataDog/java-profiler/pull/365) | Pipeline [#95846421](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95846421)
 </summary>
 
@@ -150,22 +168,6 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 <details markdown="1">
 <summary>
 <strong>2026-02-06 11:39</strong> | ❓ | jb/build_revamp | PR [#358](https://github.com/DataDog/java-profiler/pull/358) | Pipeline [#94984980](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94984980)
-</summary>
-
-**Version:** unknown
-**Commit:** unknown
-
-| Metric | Value |
-|--------|-------|
-| Jobs | 0 |
-| Passed | 0 |
-| Failed | 0 |
-
-</details>
-
-<details markdown="1">
-<summary>
-<strong>2026-02-06 11:37</strong> | ❓ | jb/build_revamp | PR [#358](https://github.com/DataDog/java-profiler/pull/358) | Pipeline [#94984937](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/94984937)
 </summary>
 
 **Version:** unknown
