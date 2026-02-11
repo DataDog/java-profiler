@@ -622,6 +622,7 @@ When upgrading the build JDK (e.g., from JDK 21 to JDK 25), update these files:
 |------|----------------|
 | `README.md` | Update "Prerequisites" section with new JDK version |
 | `.github/actions/setup_cached_java/action.yml` | Change `build_jdk=jdk21` to new version (line ~25) |
+| `.github/workflows/ci.yml` | Update `java-version` in `check-formatting` job's Setup Java step |
 | `utils/run-docker-tests.sh` | Update `BUILD_JDK_VERSION="21"` constant |
 | `build-logic/.../JavaConventionsPlugin.kt` | Update documentation comment if minimum changes |
 
