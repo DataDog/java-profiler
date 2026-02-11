@@ -1,6 +1,44 @@
 {
   "runs": [
     {
+      "id": "95868672",
+      "timestamp": "2026-02-11T16:59:15Z",
+      "ddprof_branch": "jb/gradle_9",
+      "ddprof_sha": "5fa4655e",
+      "ddprof_pr": {
+        "number": 365,
+        "url": "https://github.com/DataDog/java-profiler/pull/365",
+        "title": "Upgrade to Gradle 9.3.1 with JDK 21 build requirement"
+      },
+      "pipeline": {
+        "id": "95868672",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95868672"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 30,
+        "failed_jobs": 10,
+        "total_scenarios": 60,
+        "passed_scenarios": 60,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "musl-arm64-hotspot-jdk11",
+          "musl-arm64-hotspot-jdk17",
+          "musl-arm64-hotspot-jdk21",
+          "musl-arm64-hotspot-jdk25",
+          "musl-arm64-hotspot-jdk8",
+          "musl-arm64-openj9-jdk11",
+          "musl-arm64-openj9-jdk17",
+          "musl-arm64-openj9-jdk21",
+          "musl-arm64-openj9-jdk25",
+          "musl-arm64-openj9-jdk8"
+        ]
+      }
+    },
+    {
       "id": "95867417",
       "timestamp": "2026-02-11T16:58:23Z",
       "ddprof_branch": "jb/gradle_9",
@@ -323,31 +361,6 @@
         "failed_scenarios": 0,
         "unknown_scenarios": 0,
         "failed_configs": []
-      }
-    },
-    {
-      "id": "95000679",
-      "timestamp": "2026-02-06T14:39:25Z",
-      "ddprof_branch": "zgu/validatedId",
-      "ddprof_sha": "1bbde31e",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "95000679",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95000679"
-      },
-      "lib_version": "unknown",
-      "status": "partial",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 39,
-        "failed_jobs": 1,
-        "total_scenarios": 79,
-        "passed_scenarios": 79,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": [
-          "musl-x64-hotspot-jdk8"
-        ]
       }
     }
   ]
