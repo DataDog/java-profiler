@@ -414,10 +414,10 @@ fi
 # ========== Run Tests ==========
 
 # Build gradle test command
-# Note: Use -Ptests (not --tests) because config-specific tasks use Exec, not Test
+# Note: --tests flag works uniformly across all platforms (glibc, musl, macOS)
 GRADLE_CMD="./gradlew -PCI -PkeepJFRs :ddprof-test:test${CONFIG}"
 if [[ -n "$TESTS" ]]; then
-    GRADLE_CMD="$GRADLE_CMD -Ptests=\"$TESTS\""
+    GRADLE_CMD="$GRADLE_CMD --tests=\"$TESTS\""
 fi
 if ! $GTEST_ENABLED; then
     GRADLE_CMD="$GRADLE_CMD -Pskip-gtest"

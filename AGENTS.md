@@ -274,15 +274,17 @@ Release builds automatically extract debug symbols:
 ## Development Workflow
 
 ### Running Single Tests
-Use project properties to filter tests (config-specific test tasks use Exec, not Test):
+Use Gradle's standard `--tests` flag across all platforms:
 ```bash
-./gradlew :ddprof-test:testdebug -Ptests=ClassName.methodName  # Single method
-./gradlew :ddprof-test:testdebug -Ptests=ClassName              # Entire class
+./gradlew :ddprof-test:testdebug --tests=ClassName.methodName  # Single method
+./gradlew :ddprof-test:testdebug --tests=ClassName              # Entire class
+./gradlew :ddprof-test:testdebug --tests="*.ClassName"          # Pattern matching
 ```
 
-**Note**: Use `-Ptests` (not `--tests`) because config-specific test tasks (testdebug, testrelease)
-use Gradle's Exec task type to bypass toolchain issues on musl systems. The `--tests` flag only
-works with Gradle's Test task type.
+**Platform Implementation Details:**
+- **glibc/macOS**: Test tasks use Gradle's native Test task type with direct `--tests` flag support
+- **musl (Alpine)**: Test tasks delegate to Exec tasks internally (workaround for Gradle 9 toolchain probe issues on musl)
+- **Result**: Unified `--tests` flag works identically across all platforms, no platform-specific syntax required
 
 ### Working with Native Code
 Native compilation is automatic during build. C++ code changes require:
@@ -676,11 +678,11 @@ The CI caches JDKs via `.github/workflows/cache_java.yml`. When adding a new JDK
       ```
     - Instead of:
       ```bash
-      ./gradlew :ddprof-test:testdebug -Ptests=MuslDetectionTest
+      ./gradlew :ddprof-test:testdebug --tests=MuslDetectionTest
       ```
       use:
       ```bash
-      ./.claude/commands/build-and-summarize :ddprof-test:testdebug -Ptests=MuslDetectionTest
+      ./.claude/commands/build-and-summarize :ddprof-test:testdebug --tests=MuslDetectionTest
       ```
 
 - This ensures the full build log is captured to a file and only a summary is shown in the main session.
