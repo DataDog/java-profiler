@@ -1,6 +1,45 @@
 {
   "runs": [
     {
+      "id": "96055031",
+      "timestamp": "2026-02-12T11:37:50Z",
+      "ddprof_branch": "jb/gradle_9",
+      "ddprof_sha": "8c196134",
+      "ddprof_pr": {
+        "number": 365,
+        "url": "https://github.com/DataDog/java-profiler/pull/365",
+        "title": "Upgrade to Gradle 9.3.1 with JDK 21 build requirement"
+      },
+      "pipeline": {
+        "id": "96055031",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/96055031"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 29,
+        "failed_jobs": 11,
+        "total_scenarios": 59,
+        "passed_scenarios": 59,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "musl-arm64-hotspot-jdk11",
+          "musl-arm64-hotspot-jdk17",
+          "musl-arm64-hotspot-jdk21",
+          "musl-arm64-hotspot-jdk25",
+          "musl-arm64-hotspot-jdk8",
+          "musl-arm64-openj9-jdk11",
+          "musl-arm64-openj9-jdk17",
+          "musl-arm64-openj9-jdk21",
+          "musl-arm64-openj9-jdk25",
+          "musl-arm64-openj9-jdk8",
+          "musl-x64-openj9-jdk25"
+        ]
+      }
+    },
+    {
       "id": "95868672",
       "timestamp": "2026-02-11T16:59:15Z",
       "ddprof_branch": "jb/gradle_9",
@@ -322,33 +361,6 @@
       "pipeline": {
         "id": "95012625",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95012625"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 40,
-        "failed_jobs": 0,
-        "total_scenarios": 80,
-        "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "95002956",
-      "timestamp": "2026-02-06T14:56:47Z",
-      "ddprof_branch": "zgu/validatedId",
-      "ddprof_sha": "f934669f",
-      "ddprof_pr": {
-        "number": 359,
-        "url": "https://github.com/DataDog/java-profiler/pull/359",
-        "title": "WIP: Mitigating VMMethod::id() crash"
-      },
-      "pipeline": {
-        "id": "95002956",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95002956"
       },
       "lib_version": "unknown",
       "status": "passed",
