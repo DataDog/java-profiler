@@ -1,6 +1,45 @@
 {
   "runs": [
     {
+      "id": "96095537",
+      "timestamp": "2026-02-12T15:15:04Z",
+      "ddprof_branch": "jb/gradle_9",
+      "ddprof_sha": "fe4aa72f",
+      "ddprof_pr": {
+        "number": 365,
+        "url": "https://github.com/DataDog/java-profiler/pull/365",
+        "title": "Upgrade to Gradle 9.3.1 with JDK 21 build requirement"
+      },
+      "pipeline": {
+        "id": "96095537",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/96095537"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 29,
+        "failed_jobs": 11,
+        "total_scenarios": 58,
+        "passed_scenarios": 58,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "musl-arm64-hotspot-jdk11",
+          "musl-arm64-hotspot-jdk17",
+          "musl-arm64-hotspot-jdk21",
+          "musl-arm64-hotspot-jdk25",
+          "musl-arm64-hotspot-jdk8",
+          "musl-arm64-openj9-jdk11",
+          "musl-arm64-openj9-jdk17",
+          "musl-arm64-openj9-jdk21",
+          "musl-arm64-openj9-jdk25",
+          "musl-arm64-openj9-jdk8",
+          "musl-x64-openj9-jdk17"
+        ]
+      }
+    },
+    {
       "id": "96067392",
       "timestamp": "2026-02-12T13:15:34Z",
       "ddprof_branch": "jb/gradle_9",
@@ -340,42 +379,6 @@
           "musl-arm64-openj9-jdk21",
           "musl-arm64-openj9-jdk25",
           "musl-arm64-openj9-jdk8"
-        ]
-      }
-    },
-    {
-      "id": "95680405",
-      "timestamp": "2026-02-10T22:36:39Z",
-      "ddprof_branch": "zgu/vmstruct_safety",
-      "ddprof_sha": "9b576012",
-      "ddprof_pr": {
-        "number": 363,
-        "url": "https://github.com/DataDog/java-profiler/pull/363",
-        "title": "WIP: "
-      },
-      "pipeline": {
-        "id": "95680405",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95680405"
-      },
-      "lib_version": "unknown",
-      "status": "partial",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 32,
-        "failed_jobs": 8,
-        "total_scenarios": 64,
-        "passed_scenarios": 64,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": [
-          "glibc-arm64-hotspot-jdk8",
-          "glibc-arm64-openj9-jdk8",
-          "glibc-x64-hotspot-jdk8",
-          "glibc-x64-openj9-jdk8",
-          "musl-arm64-hotspot-jdk8",
-          "musl-arm64-openj9-jdk8",
-          "musl-x64-hotspot-jdk8",
-          "musl-x64-openj9-jdk8"
         ]
       }
     }
