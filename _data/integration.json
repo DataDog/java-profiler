@@ -1,6 +1,44 @@
 {
   "runs": [
     {
+      "id": "96059322",
+      "timestamp": "2026-02-12T12:03:27Z",
+      "ddprof_branch": "jb/gradle_9",
+      "ddprof_sha": "33f41e29",
+      "ddprof_pr": {
+        "number": 365,
+        "url": "https://github.com/DataDog/java-profiler/pull/365",
+        "title": "Upgrade to Gradle 9.3.1 with JDK 21 build requirement"
+      },
+      "pipeline": {
+        "id": "96059322",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/96059322"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 30,
+        "failed_jobs": 10,
+        "total_scenarios": 60,
+        "passed_scenarios": 60,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "musl-arm64-hotspot-jdk11",
+          "musl-arm64-hotspot-jdk17",
+          "musl-arm64-hotspot-jdk21",
+          "musl-arm64-hotspot-jdk25",
+          "musl-arm64-hotspot-jdk8",
+          "musl-arm64-openj9-jdk11",
+          "musl-arm64-openj9-jdk17",
+          "musl-arm64-openj9-jdk21",
+          "musl-arm64-openj9-jdk25",
+          "musl-arm64-openj9-jdk8"
+        ]
+      }
+    },
+    {
       "id": "96055031",
       "timestamp": "2026-02-12T11:37:50Z",
       "ddprof_branch": "jb/gradle_9",
@@ -338,29 +376,6 @@
       "pipeline": {
         "id": "95479316",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95479316"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 40,
-        "failed_jobs": 0,
-        "total_scenarios": 80,
-        "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "95012625",
-      "timestamp": "2026-02-06T15:50:44Z",
-      "ddprof_branch": "main",
-      "ddprof_sha": "002f2448",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "95012625",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95012625"
       },
       "lib_version": "unknown",
       "status": "passed",
