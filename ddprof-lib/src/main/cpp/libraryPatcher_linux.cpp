@@ -88,15 +88,9 @@ void LibraryPatcher::patch_libraries() {
 void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
   char path[PATH_MAX];
   char* resolved_path = realpath(lib->name(), path);
-  if (resolved_path == nullptr) {
-    // virtual file, e.g. [vdso], etc.
-    // scan-build false positive: resolved_path is used at line 96
-    resolved_path = (char*)lib->name();
-  } else {
-    // Don't patch self
-    if (strcmp(resolved_path,_profiler_name) == 0) {
-      return;
-    }
+  if (resolved_path != nullptr &&     //  filter out virtual file, e.g. [vdso], etc.
+      strcmp(resolved_path, _profiler_name) == 0) { // Don't patch self
+    return;
   }
 
   void** pthread_create_location = (void**)lib->findImport(im_pthread_create);
