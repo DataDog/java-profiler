@@ -43,7 +43,7 @@ inline T* cast_to(const void* ptr) {
 
 // Defines a type and its matching symbols in vmStructs.
 // A type may match multiple names in different JVM versions.
-#define DECL_TYPES_DO(f) \
+#define DECLARE_TYPES_DO(f) \
     f(VMClassLoaderData,    MATCH_SYMBOLS("ClassLoaderData")) \
     f(VMConstantPool,       MATCH_SYMBOLS("ConstantPool")) \
     f(VMConstMethod,        MATCH_SYMBOLS("ConstMethod")) \
@@ -156,12 +156,12 @@ class VMStructs {
     static const void* _interpreted_frame_valid_end;
 
 // Declare type size variables
- #define DECL_TYPE_SIZE_VAR(name, ...) \
+ #define DECLARE_TYPE_SIZE_VAR(name, ...) \
     static uint64_t TYPE_SIZE_NAME(name);
     
-    DECL_TYPES_DO(DECL_TYPE_SIZE_VAR)
+    DECLARE_TYPES_DO(DECLARE_TYPE_SIZE_VAR)
 
-#undef DECL_TYPE_SIZE_VAR
+#undef DECLARE_TYPE_SIZE_VAR
     
 
     static jfieldID _eetop;

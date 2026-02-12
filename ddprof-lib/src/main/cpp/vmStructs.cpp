@@ -110,7 +110,7 @@ const void* VMStructs::_interpreted_frame_valid_end = NULL;
 
 // Initialize type size to 0
 #define INIT_TYPE_SIZE(name, ...) uint64_t VMStructs::TYPE_SIZE_NAME(name) = 0;
-DECL_TYPES_DO(INIT_TYPE_SIZE)
+DECLARE_TYPES_DO(INIT_TYPE_SIZE)
 #undef INIT_TYPE_SIZE
 
 
@@ -428,7 +428,7 @@ void VMStructs::initOffsets() {
  #define TYPE_SIZE_MATCH(name, ...) \
     if (initTypeSize(VMStructs::TYPE_SIZE_NAME(name), type, size, ##__VA_ARGS__)) continue;
 
-           DECL_TYPES_DO(TYPE_SIZE_MATCH)
+           DECLARE_TYPES_DO(TYPE_SIZE_MATCH)
 
 #undef TYPE_SIZE_MATCH   
 
