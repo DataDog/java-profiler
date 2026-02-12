@@ -11,7 +11,7 @@
 #include "safeAccess.h"
 #include "stackFrame.h"
 #include "symbols.h"
-#include "vmStructs.h"
+#include "vmStructs.inline.h"
 #include "thread.h"
 
 
@@ -232,7 +232,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     }
 }
 
-__attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, JavaFrameAnchor* anchor, EventType event_type, int lock_index, bool* truncated) {
+__attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, VMJavaFrameAnchor* anchor, EventType event_type, int lock_index, bool* truncated) {
     uintptr_t sp = anchor->lastJavaSP();
     if (sp == 0) {
         return 0;
@@ -269,7 +269,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     volatile int depth = 0;
     int actual_max_depth = truncated ? max_depth + 1 : max_depth;
 
-    JavaFrameAnchor* anchor = NULL;
+    VMJavaFrameAnchor* anchor = NULL;
     if (vm_thread != NULL) {
         anchor = vm_thread->anchor();
         vm_thread->exception() = &crash_protection_ctx;
@@ -313,7 +313,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 break;
             }
             prev_native_pc = NULL; // we are in JVM code, no previous 'native' PC
-            NMethod* nm = CodeHeap::findNMethod(pc);
+            VMNMethod* nm = CodeHeap::findNMethod(pc);
             if (nm == NULL) {
                 if (anchor == NULL) {
                     // Add an error frame only if we cannot recover
@@ -417,7 +417,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 fillFrame(frames[depth++], BCI_ERROR, "break_interpreted");
                 break;
             } else if (nm->isEntryFrame(pc) && !features.mixed) {
-                JavaFrameAnchor* next_anchor = JavaFrameAnchor::fromEntryFrame(fp);
+                VMJavaFrameAnchor* next_anchor = VMJavaFrameAnchor::fromEntryFrame(fp);
                 if (next_anchor == NULL) {
                     fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame");
                     break;

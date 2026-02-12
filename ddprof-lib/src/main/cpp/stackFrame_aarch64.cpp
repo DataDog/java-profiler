@@ -197,7 +197,7 @@ static inline bool isEntryBarrier(instruction_t* ip) {
     return ip[0] == 0xb9402389 && ip[1] == 0xeb09011f;
 }
 
-bool StackFrame::unwindCompiled(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+bool StackFrame::unwindCompiled(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     instruction_t* ip = (instruction_t*)pc;
     instruction_t* entry = (instruction_t*)nm->entry();
     if ((*ip & 0xffe07fff) == 0xa9007bfd) {
@@ -236,7 +236,7 @@ static inline bool isFrameComplete(instruction_t* entry, instruction_t* ip) {
     return false;
 }
 
-bool StackFrame::unwindPrologue(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+bool StackFrame::unwindPrologue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     // C1/C2 methods:
     //   {stack_bang}
     //   sub  sp, sp, #0x40
@@ -312,7 +312,7 @@ static inline bool isPollReturn(instruction_t* ip) {
     return false;
 }
 
-bool StackFrame::unwindEpilogue(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+bool StackFrame::unwindEpilogue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     //  ldp  x29, x30, [sp, #32]
     //  add  sp, sp, #0x30
     //  {poll_return}
@@ -329,7 +329,7 @@ bool StackFrame::unwindAtomicStub(const void*& pc) {
     // VM threads may call generated atomic stubs, which are not normally walkable
     const void* lr = (const void*)link();
     if (VMStructs::libjvm()->contains(lr)) {
-        NMethod* nm = CodeHeap::findNMethod(pc);
+        VMNMethod* nm = CodeHeap::findNMethod(pc);
         if (nm != NULL && strncmp(nm->name(), "Stub", 4) == 0) {
             pc = lr;
             return true;

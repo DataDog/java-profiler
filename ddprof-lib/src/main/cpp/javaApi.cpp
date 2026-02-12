@@ -348,7 +348,7 @@ Java_com_datadoghq_profiler_JVMAccess_findStringJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
   JniString flag_str(env, flagName);
-  JVMFlag *f = JVMFlag::find(flag_str.c_str(), {JVMFlag::Type::String, JVMFlag::Type::Stringlist});
+  VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::String, VMFlag::Type::Stringlist});
   if (f) {
     char** value = static_cast<char**>(f->addr());
     if (value != NULL && *value != NULL) {
@@ -365,7 +365,7 @@ Java_com_datadoghq_profiler_JVMAccess_setStringJVMFlag0(JNIEnv *env,
                                                          jstring flagValue) {
   JniString flag_str(env, flagName);
   JniString value_str(env, flagValue);
-  JVMFlag *f = JVMFlag::find(flag_str.c_str(), {JVMFlag::Type::String, JVMFlag::Type::Stringlist});
+  VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::String, VMFlag::Type::Stringlist});
   if (f) {
     char** value = static_cast<char**>(f->addr());
     if (value != NULL) {
@@ -379,7 +379,7 @@ Java_com_datadoghq_profiler_JVMAccess_findBooleanJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
   JniString flag_str(env, flagName);
-  JVMFlag *f = JVMFlag::find(flag_str.c_str(), {JVMFlag::Type::Bool});
+  VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::Bool});
   if (f) {
     char* value = static_cast<char*>(f->addr());
     if (value != NULL) {
@@ -395,7 +395,7 @@ Java_com_datadoghq_profiler_JVMAccess_setBooleanJVMFlag0(JNIEnv *env,
                                                          jstring flagName,
                                                          jboolean flagValue) {
   JniString flag_str(env, flagName);
-  JVMFlag *f = JVMFlag::find(flag_str.c_str(), {JVMFlag::Type::Bool});
+  VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::Bool});
   if (f) {
     char* value = static_cast<char*>(f->addr());
     if (value != NULL) {
@@ -409,7 +409,7 @@ Java_com_datadoghq_profiler_JVMAccess_findIntJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
   JniString flag_str(env, flagName);
-  JVMFlag *f = JVMFlag::find(flag_str.c_str(), {JVMFlag::Type::Int, JVMFlag::Type::Uint, JVMFlag::Type::Intx, JVMFlag::Type::Uintx, JVMFlag::Type::Uint64_t, JVMFlag::Type::Size_t});
+  VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::Int, VMFlag::Type::Uint, VMFlag::Type::Intx, VMFlag::Type::Uintx, VMFlag::Type::Uint64_t, VMFlag::Type::Size_t});
   if (f) {
     long* value = static_cast<long*>(f->addr());
     if (value != NULL) {
@@ -424,7 +424,7 @@ Java_com_datadoghq_profiler_JVMAccess_findFloatJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
   JniString flag_str(env, flagName);
-  JVMFlag *f = JVMFlag::find(flag_str.c_str(),{ JVMFlag::Type::Double});
+  VMFlag *f = VMFlag::find(flag_str.c_str(),{ VMFlag::Type::Double});
   if (f) {
     double* value = static_cast<double*>(f->addr());
     if (value != NULL) {

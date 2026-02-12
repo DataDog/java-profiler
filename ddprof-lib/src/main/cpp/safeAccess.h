@@ -19,6 +19,7 @@
 
 #include "arch.h"
 #include "codeCache.h"
+#include "os.h"
 #include <cassert>
 #include <stdint.h>
 
@@ -74,9 +75,23 @@ public:
   NOINLINE __attribute__((aligned(16)))
   static void *loadPtr(void** ptr, void* default_value);
 
-  static inline bool isReadable(void* ptr) {
+  static inline bool isReadable(const void* ptr) {
     return load32((int32_t*)ptr, 1) != 1 ||
            load32((int32_t*)ptr, -1) != -1; 
+  }
+
+  static inline bool isReadableRange(const void* start, size_t size) {
+    assert(size > 0);
+    void* start_page = (void*)align_down((uintptr_t)start, OS::page_size);
+    void* end_page = (void*)align_down((uintptr_t)start + size - 1, OS::page_size);
+    // Memory readability is determined at the page level, so we check each page in the range for readability. 
+    // This is more efficient than checking each byte.
+    for (void* page = start_page; page <= end_page; page = (void*)((uintptr_t)page + OS::page_size)) {
+      if (!isReadable(page)) {
+        return false;
+      }
+    }
+    return true;
   }
 };
 
