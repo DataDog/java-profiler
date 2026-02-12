@@ -414,11 +414,10 @@ fi
 # ========== Run Tests ==========
 
 # Build gradle test command
-# Capitalize first letter for gradle task names (testDebug, testAsan, etc.)
-CONFIG_CAPITALIZED="$(tr '[:lower:]' '[:upper:]' <<< ${CONFIG:0:1})${CONFIG:1}"
-GRADLE_CMD="./gradlew -PCI -PkeepJFRs :ddprof-test:test${CONFIG_CAPITALIZED}"
+# Note: Use -Ptests (not --tests) because config-specific tasks use Exec, not Test
+GRADLE_CMD="./gradlew -PCI -PkeepJFRs :ddprof-test:test${CONFIG}"
 if [[ -n "$TESTS" ]]; then
-    GRADLE_CMD="$GRADLE_CMD --tests \"$TESTS\""
+    GRADLE_CMD="$GRADLE_CMD -Ptests=\"$TESTS\""
 fi
 if ! $GTEST_ENABLED; then
     GRADLE_CMD="$GRADLE_CMD -Pskip-gtest"

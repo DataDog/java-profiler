@@ -274,10 +274,15 @@ Release builds automatically extract debug symbols:
 ## Development Workflow
 
 ### Running Single Tests
-Use standard Gradle syntax:
+Use project properties to filter tests (config-specific test tasks use Exec, not Test):
 ```bash
-./gradlew :ddprof-test:test --tests "ClassName.methodName"
+./gradlew :ddprof-test:testdebug -Ptests=ClassName.methodName  # Single method
+./gradlew :ddprof-test:testdebug -Ptests=ClassName              # Entire class
 ```
+
+**Note**: Use `-Ptests` (not `--tests`) because config-specific test tasks (testdebug, testrelease)
+use Gradle's Exec task type to bypass toolchain issues on musl systems. The `--tests` flag only
+works with Gradle's Test task type.
 
 ### Working with Native Code
 Native compilation is automatic during build. C++ code changes require:
@@ -671,11 +676,11 @@ The CI caches JDKs via `.github/workflows/cache_java.yml`. When adding a new JDK
       ```
     - Instead of:
       ```bash
-      ./gradlew :prof-utils:test --tests "UpscaledMethodSampleEventSinkTest"
+      ./gradlew :ddprof-test:testdebug -Ptests=MuslDetectionTest
       ```
       use:
       ```bash
-      ./.claude/commands/build-and-summarize :prof-utils:test --tests "UpscaledMethodSampleEventSinkTest"
+      ./.claude/commands/build-and-summarize :ddprof-test:testdebug -Ptests=MuslDetectionTest
       ```
 
 - This ensures the full build log is captured to a file and only a summary is shown in the main session.

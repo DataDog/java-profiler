@@ -230,8 +230,10 @@ Use reduced iterations:
 ### Profiler fails to start
 Verify profiler library loads:
 ```bash
-./gradlew :ddprof-test:test --tests "JavaProfilerTest.testGetInstance"
+./gradlew :ddprof-test:testdebug -Ptests=JavaProfilerTest.testGetInstance
 ```
+
+**Note**: Use `-Ptests` (not `--tests`) with config-specific test tasks like `testdebug`.
 
 ### Out of memory errors
 - Reduce concurrent thread counts

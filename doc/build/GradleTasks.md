@@ -62,8 +62,10 @@ testTsan                 # Java tests with TSAN library (Linux)
 **Examples:**
 ```bash
 ./gradlew :ddprof-test:testRelease
-./gradlew :ddprof-test:testDebug --tests "*.ProfilerTest"
+./gradlew :ddprof-test:testDebug -Ptests=ProfilerTest
 ```
+
+**Note**: Use `-Ptests` (not `--tests`) with config-specific test tasks. The `--tests` flag only works with Gradle's Test task type, but config-specific tasks (testDebug, testRelease) use Exec task type to bypass toolchain issues on musl systems.
 
 ### C++ Unit Tests (Google Test)
 
@@ -178,7 +180,7 @@ linkFuzz_{TargetName}    # Link fuzz target
 
 ### Quick Development Cycle
 ```bash
-./gradlew assembleDebug :ddprof-test:testDebug --tests "*.MyTest"
+./gradlew assembleDebug :ddprof-test:testDebug -Ptests=MyTest
 ```
 
 ### Pre-commit Checks
