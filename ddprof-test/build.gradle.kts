@@ -51,8 +51,9 @@ dependencies {
 }
 
 // Additional test task configuration beyond what the plugin provides
-// The plugin creates Exec tasks (not Test tasks) for config-specific tests
-tasks.withType<org.gradle.api.tasks.Exec>().matching { it.name.startsWith("test") }.configureEach {
+// The plugin creates Test tasks on glibc/macOS and Exec tasks on musl
+// Both need the native test library to be built first
+tasks.matching { it.name.startsWith("test") && it.name != "test" }.configureEach {
   // Ensure native test library is built before running tests
   dependsOn(":ddprof-test-native:linkLib")
 }
