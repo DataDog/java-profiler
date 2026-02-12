@@ -1,3 +1,6 @@
+// Unless explicitly stated otherwise all files in this repository are licensed under the Apache License (Version 2.0).
+// This product includes software developed at Datadog (https://www.datadoghq.com/) Copyright 2025 Datadog, Inc.
+
 #ifndef _UTILS_H
 #define _UTILS_H
 
@@ -28,8 +31,5 @@ inline size_t align_up(size_t size, size_t alignment) noexcept {
     assert(is_power_of_2(alignment));
     return align_down(size + alignment - 1, alignment);
 }
-
-
-
 
 #endif // _UTILS_H

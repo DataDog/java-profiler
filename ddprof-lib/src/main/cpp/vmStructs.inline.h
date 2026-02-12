@@ -1,3 +1,6 @@
+// Unless explicitly stated otherwise all files in this repository are licensed under the Apache License (Version 2.0).
+// This product includes software developed at Datadog (https://www.datadoghq.com/) Copyright 2025 Datadog, Inc.
+
 #ifndef _VMSTRUCTS_INLINE_H
 #define _VMSTRUCTS_INLINE_H
 
@@ -10,7 +13,7 @@ VMNMethod* VMMethod::code() {
 }
 
 VMMethod* VMThread::compiledMethod() {
-    assert(_thread_vframe_offset >= 0);
+    assert(_comp_method_offset >= 0);
     assert(_comp_env_offset >= 0);
     assert(_comp_task_offset >= 0);
     const char* env = *(const char**) at(_comp_env_offset);

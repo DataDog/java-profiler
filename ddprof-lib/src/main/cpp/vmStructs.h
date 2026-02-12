@@ -20,26 +20,24 @@ class GCHeapSummary;
 class HeapUsage;
 
 #define TYPE_SIZE_NAME(name)    _##name##_size
-#define DECL_TYPE_SIZE(name) static uint64_t TYPE_SIZE_NAME(name);
-#define SIZE_OF(name) VM##name::type_size()
 
 template <typename T>
-inline T* cast_to(const void* ptr, uint64_t size) {
-    assert(size > 0); // Ensure type size has been initialized
+inline T* cast_to(const void* ptr) {
+    assert(T::type_size() > 0); // Ensure type size has been initialized
     assert(ptr == nullptr || SafeAccess::isReadableRange(ptr, T::type_size()));
     return reinterpret_cast<T*>(const_cast<void*>(ptr));
 }
 
-#define DECL_TYPE(name) \
+#define DECLARE(name) \
     class name : VMStructs { \
       public: \
         static uint64_t type_size() { return TYPE_SIZE_NAME(name); } \
-        static name * cast(const void* ptr) { return cast_to<name>(ptr, type_size()); } \ 
+        static name * cast(const void* ptr) { return cast_to<name>(ptr); } \
         static name * load_then_cast(const void* ptr) { \
             assert(ptr != nullptr); \
             return cast(*(const void**)ptr); }
 
-#define DECL_TYPE_END };
+#define DECLARE_END  };
 
 #define MATCH_SYMBOLS(...) __VA_ARGS__, nullptr
 
@@ -353,7 +351,7 @@ class MethodList {
 class VMNMethod;
 class VMMethod;
 
-DECL_TYPE(VMSymbol)
+DECLARE(VMSymbol)
   public:
     unsigned short length() {
         if (_symbol_length_offset >= 0) {
@@ -366,9 +364,9 @@ DECL_TYPE(VMSymbol)
     const char* body() {
         return at(_symbol_body_offset);
     }
-DECL_TYPE_END
+DECLARE_END
 
-DECL_TYPE(VMClassLoaderData)
+DECLARE(VMClassLoaderData)
   private:
     void* mutex() {
         return *(void**) at(sizeof(uintptr_t) * 3);
@@ -386,9 +384,9 @@ DECL_TYPE(VMClassLoaderData)
     MethodList** methodList() {
         return (MethodList**) at(sizeof(uintptr_t) * 6 + 8);
     }
-DECL_TYPE_END
+DECLARE_END
 
-DECL_TYPE(VMKlass)    
+DECLARE(VMKlass)    
   public:
     static VMKlass* fromJavaClass(JNIEnv* env, jclass cls) {
         if (sizeof(VMKlass*) == 8) {
@@ -440,9 +438,9 @@ DECL_TYPE(VMKlass)
         assert(_jmethod_ids_offset >= 0);
         return __atomic_load_n((jmethodID**) at(_jmethod_ids_offset), __ATOMIC_ACQUIRE);
     }
-DECL_TYPE_END
+DECLARE_END
 
-DECL_TYPE(VMJavaFrameAnchor)
+DECLARE(VMJavaFrameAnchor)
   private:
     enum { MAX_CALL_WRAPPER_DISTANCE = 512 };
 
@@ -486,7 +484,7 @@ DECL_TYPE(VMJavaFrameAnchor)
         }
         return false;
     }
-DECL_TYPE_END
+DECLARE_END
 
 // Copied from JDK's globalDefinitions.hpp 'JavaThreadState' enum
 enum JVMJavaThreadState {
@@ -504,7 +502,7 @@ enum JVMJavaThreadState {
     _thread_max_state         = 12  // maximum thread state+1 - used for statistics allocation
 };
 
-DECL_TYPE(VMThread)
+DECLARE(VMThread)
   public:
     static VMThread* current();
 
@@ -550,7 +548,7 @@ DECL_TYPE(VMThread)
     }
 
     bool inDeopt() {
-        assert(_thread_state_offset >= 0);
+        assert(_thread_vframe_offset >= 0);
         return SafeAccess::loadPtr((void**) at(_thread_vframe_offset), nullptr) != NULL;
     }
 
@@ -565,13 +563,13 @@ DECL_TYPE(VMThread)
     }
 
     inline VMMethod* compiledMethod();
-DECL_TYPE_END
+DECLARE_END
 
-DECL_TYPE(VMConstMethod)
-DECL_TYPE_END
+DECLARE(VMConstMethod)
+DECLARE_END
 
 
-DECL_TYPE(VMMethod)   
+DECLARE(VMMethod)   
     private:
     static bool check_jmethodID_J9(jmethodID id);
     static bool check_jmethodID_hotspot(jmethodID id);
@@ -598,9 +596,9 @@ DECL_TYPE(VMMethod)
     inline VMNMethod* code();
 
     static bool check_jmethodID(jmethodID id);
-DECL_TYPE_END
+DECLARE_END
 
-DECL_TYPE(VMNMethod)
+DECLARE(VMNMethod)
   public:
     int size() {
         assert(_blob_size_offset >= 0);
@@ -727,7 +725,7 @@ DECL_TYPE(VMNMethod)
     }
 
     int findScopeOffset(const void* pc);
-DECL_TYPE_END
+DECLARE_END
 
 class CodeHeap : VMStructs {
   private:
@@ -765,7 +763,7 @@ class CodeHeap : VMStructs {
     }
 };
 
-DECL_TYPE(VMFlag)
+DECLARE(VMFlag)
   private:
     enum {
         ORIGIN_DEFAULT = 0,
@@ -825,7 +823,7 @@ DECL_TYPE(VMFlag)
     void set(char value) {
         *((char*)addr()) = value;
     }
-DECL_TYPE_END
+DECLARE_END
 
 class PcDesc {
   public:

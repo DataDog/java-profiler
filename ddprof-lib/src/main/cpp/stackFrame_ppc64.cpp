@@ -132,7 +132,7 @@ bool StackFrame::unwindPrologue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uin
     return false;
 }
 
-bool StackFrame::unwindEpilogue(VMVMNMethodNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+bool StackFrame::unwindEpilogue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     // Not yet implemented
     return false;
 }

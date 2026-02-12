@@ -162,7 +162,6 @@ void VMStructs::ready() {
 }
 
 bool initTypeSize(uint64_t& size, const char* type, uint64_t value, ...) {
-    int count;
     va_list args;
     va_start(args, value);
     const char* match_type = nullptr;
