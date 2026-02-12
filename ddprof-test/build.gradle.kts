@@ -55,18 +55,6 @@ dependencies {
 tasks.withType<org.gradle.api.tasks.Exec>().matching { it.name.startsWith("test") }.configureEach {
   // Ensure native test library is built before running tests
   dependsOn(":ddprof-test-native:linkLib")
-
-  // Extract config name from task name for test-specific system properties
-  val configName = name.replace("test", "")
-  val keepRecordings = project.hasProperty("keepJFRs") || System.getenv("KEEP_JFRS")?.toBoolean() ?: false
-
-  // Pass test configuration as system properties
-  // The plugin's doFirst preserves args added here (doFirst blocks run in LIFO order)
-  doFirst {
-    args("-Dddprof_test.keep_jfrs=$keepRecordings")
-    args("-Dddprof_test.config=$configName")
-    args("-Dddprof_test.ci=${project.hasProperty("CI")}")
-  }
 }
 
 // Disable the default 'test' task - we use config-specific tasks instead

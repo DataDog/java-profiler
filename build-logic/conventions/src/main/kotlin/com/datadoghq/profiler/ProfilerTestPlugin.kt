@@ -156,8 +156,6 @@ class ProfilerTestPlugin : Plugin<Project> {
 
                 // Configure JVM arguments and test execution
                 testTask.doFirst {
-                    // Preserve any args added by build scripts (doFirst blocks run in LIFO order)
-                    val buildScriptArgs = testTask.args.toList()
                     val allArgs = mutableListOf<String>()
 
                     // Standard JVM args
@@ -167,8 +165,11 @@ class ProfilerTestPlugin : Plugin<Project> {
                     }
                     allArgs.addAll(extension.extraJvmArgs.get())
 
-                    // Add any args from build scripts (e.g., -Dddprof_test.* properties)
-                    allArgs.addAll(buildScriptArgs)
+                    // Test-specific system properties (extracted from config name)
+                    val keepRecordings = project.hasProperty("keepJFRs") || System.getenv("KEEP_JFRS")?.toBoolean() ?: false
+                    allArgs.add("-Dddprof_test.keep_jfrs=$keepRecordings")
+                    allArgs.add("-Dddprof_test.config=$configName")
+                    allArgs.add("-Dddprof_test.ci=${project.hasProperty("CI")}")
 
                     // System properties
                     allArgs.add("-DDDPROF_TEST_DISABLE_RATE_LIMIT=1")
@@ -185,11 +186,9 @@ class ProfilerTestPlugin : Plugin<Project> {
 
                     // JUnit Platform Console Launcher
                     allArgs.add("org.junit.platform.console.ConsoleLauncher")
-                    allArgs.add("--scan-classpath")
-                    allArgs.add("--details=verbose")
-                    allArgs.add("--details-theme=unicode")
 
                     // Support Gradle's --tests filter by mapping to JUnit's selection options
+                    // Note: Cannot use --scan-classpath with explicit selectors
                     if (project.hasProperty("tests")) {
                         val testFilter = project.property("tests") as String
                         // Only use --select-method if filter contains '#' (method separator)
@@ -199,7 +198,13 @@ class ProfilerTestPlugin : Plugin<Project> {
                         } else {
                             allArgs.add("--select-class=$testFilter")
                         }
+                    } else {
+                        // No filter specified, scan the entire classpath
+                        allArgs.add("--scan-classpath")
                     }
+
+                    allArgs.add("--details=verbose")
+                    allArgs.add("--details-theme=unicode")
 
                     testTask.args = allArgs
                 }
