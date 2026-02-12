@@ -141,9 +141,8 @@ class ProfilerTestPlugin : Plugin<Project> {
                 testTask.description = "Runs unit tests with the $configName library variant"
                 testTask.group = "verification"
 
-                // Use JAVA_TEST_HOME if set, otherwise JAVA_HOME
-                val javaHome = System.getenv("JAVA_TEST_HOME") ?: System.getenv("JAVA_HOME")
-                testTask.executable = "$javaHome/bin/java"
+                // Use JAVA_TEST_HOME if set, otherwise JAVA_HOME (with proper fallback and error handling)
+                testTask.executable = PlatformUtils.testJavaExecutable()
 
                 // Dependencies
                 testTask.dependsOn(project.tasks.named("compileTestJava"))
@@ -157,6 +156,8 @@ class ProfilerTestPlugin : Plugin<Project> {
 
                 // Configure JVM arguments and test execution
                 testTask.doFirst {
+                    // Preserve any args added by build scripts (doFirst blocks run in LIFO order)
+                    val buildScriptArgs = testTask.args.toList()
                     val allArgs = mutableListOf<String>()
 
                     // Standard JVM args
@@ -165,6 +166,9 @@ class ProfilerTestPlugin : Plugin<Project> {
                         allArgs.add("-Djava.library.path=${extension.nativeLibDir.get().asFile.absolutePath}")
                     }
                     allArgs.addAll(extension.extraJvmArgs.get())
+
+                    // Add any args from build scripts (e.g., -Dddprof_test.* properties)
+                    allArgs.addAll(buildScriptArgs)
 
                     // System properties
                     allArgs.add("-DDDPROF_TEST_DISABLE_RATE_LIMIT=1")
@@ -184,6 +188,18 @@ class ProfilerTestPlugin : Plugin<Project> {
                     allArgs.add("--scan-classpath")
                     allArgs.add("--details=verbose")
                     allArgs.add("--details-theme=unicode")
+
+                    // Support Gradle's --tests filter by mapping to JUnit's selection options
+                    if (project.hasProperty("tests")) {
+                        val testFilter = project.property("tests") as String
+                        // Only use --select-method if filter contains '#' (method separator)
+                        // FQCNs contain '.' but should use --select-class
+                        if (testFilter.contains("#")) {
+                            allArgs.add("--select-method=$testFilter")
+                        } else {
+                            allArgs.add("--select-class=$testFilter")
+                        }
+                    }
 
                     testTask.args = allArgs
                 }
@@ -223,8 +239,8 @@ class ProfilerTestPlugin : Plugin<Project> {
                     runTask.description = "Run the unwinding validator application ($configName config)"
                     runTask.group = "application"
 
-                    val javaHome = System.getenv("JAVA_TEST_HOME") ?: System.getenv("JAVA_HOME")
-                    runTask.executable = "$javaHome/bin/java"
+                    // Use JAVA_TEST_HOME if set, otherwise JAVA_HOME (with proper fallback and error handling)
+                    runTask.executable = PlatformUtils.testJavaExecutable()
 
                     runTask.dependsOn(project.tasks.named("compileJava"))
                     runTask.dependsOn(mainCfg)
@@ -261,8 +277,8 @@ class ProfilerTestPlugin : Plugin<Project> {
                     reportTask.description = "Generate unwinding report for CI ($configName config)"
                     reportTask.group = "verification"
 
-                    val javaHome = System.getenv("JAVA_TEST_HOME") ?: System.getenv("JAVA_HOME")
-                    reportTask.executable = "$javaHome/bin/java"
+                    // Use JAVA_TEST_HOME if set, otherwise JAVA_HOME (with proper fallback and error handling)
+                    reportTask.executable = PlatformUtils.testJavaExecutable()
 
                     reportTask.dependsOn(project.tasks.named("compileJava"))
                     reportTask.dependsOn(mainCfg)
@@ -372,7 +388,7 @@ abstract class ProfilerTestExtension @Inject constructor(
 ) {
 
     /**
-     * Standard JVM arguments applied to all Test and JavaExec tasks.
+     * Standard JVM arguments applied to all Exec-based test and application tasks.
      * These are the common profiler testing requirements.
      */
     abstract val standardJvmArgs: ListProperty<String>
@@ -384,7 +400,7 @@ abstract class ProfilerTestExtension @Inject constructor(
 
     /**
      * Directory containing native test libraries.
-     * When set, adds -Djava.library.path to Test tasks.
+     * When set, adds -Djava.library.path to test Exec tasks.
      */
     val nativeLibDir: org.gradle.api.file.DirectoryProperty = objects.directoryProperty()
 
