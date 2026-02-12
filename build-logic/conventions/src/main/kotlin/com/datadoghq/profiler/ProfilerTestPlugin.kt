@@ -10,10 +10,8 @@ import org.gradle.api.Project
 import org.gradle.api.artifacts.Configuration
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
-import org.gradle.api.tasks.JavaExec
+import org.gradle.api.tasks.Exec
 import org.gradle.api.tasks.SourceSetContainer
-import org.gradle.api.tasks.testing.Test
-import org.gradle.api.tasks.testing.logging.TestLogEvent
 import javax.inject.Inject
 
 /**
@@ -21,10 +19,16 @@ import javax.inject.Inject
  *
  * Provides:
  * - Standard JVM arguments for profiler testing (attach self, error files, etc.)
- * - Java executable selection (JAVA_TEST_HOME or JAVA_HOME)
+ * - Java executable selection (JAVA_TEST_HOME or JAVA_HOME) on ALL platforms
  * - Common environment variables (CI, rate limiting)
- * - JUnit Platform configuration
+ * - JUnit Platform Console Launcher execution via Exec tasks
  * - Automatic multi-config test task generation from NativeBuildExtension
+ *
+ * Implementation:
+ * - Uses Exec tasks instead of Test/JavaExec to bypass Gradle's toolchain system
+ * - This provides consistent behavior across all platforms (glibc, musl, macOS)
+ * - Supports multi-JDK testing via JAVA_TEST_HOME on all platforms
+ * - Same task names everywhere (testdebug, testrelease, unwindingReportRelease)
  *
  * Usage:
  * ```kotlin
@@ -42,7 +46,7 @@ import javax.inject.Inject
  *   // Optional: add extra JVM args
  *   extraJvmArgs.add("-Xms256m")
  *
- *   // Optional: specify which configs get application tasks (default: release, debug)
+ *   // Optional: specify which configs get application tasks (default: all active configs)
  *   applicationConfigs.set(listOf("release", "debug"))
  *
  *   // Optional: main class for application tasks
@@ -69,94 +73,12 @@ class ProfilerTestPlugin : Plugin<Project> {
             isCanBeResolved = true
         }
 
-        // Configure all Test tasks with standard settings
-        project.tasks.withType(Test::class.java).configureEach {
-            configureTestTask(this, extension, project)
-        }
-
-        // Configure all JavaExec tasks with standard settings
-        project.tasks.withType(JavaExec::class.java).configureEach {
-            configureJavaExecTask(this, extension, project)
-        }
-
         // After evaluation, generate multi-config tasks if profilerLibProject is set
         project.afterEvaluate {
             if (extension.profilerLibProject.isPresent) {
                 generateMultiConfigTasks(project, extension)
             }
         }
-    }
-
-    private fun configureTestTask(task: Test, extension: ProfilerTestExtension, project: Project) {
-        task.onlyIf { !project.hasProperty("skip-tests") }
-
-        // Use JUnit Platform
-        task.useJUnitPlatform()
-
-        // Disable toolchain probing and set explicit executable
-        disableToolchainProbing(task)
-        task.setExecutable(PlatformUtils.testJavaExecutable())
-
-        // Standard environment variables
-        task.environment("DDPROF_TEST_DISABLE_RATE_LIMIT", "1")
-        task.environment("CI", project.hasProperty("CI") || System.getenv("CI")?.toBoolean() ?: false)
-
-        // Test logging
-        task.testLogging.showStandardStreams = true
-        task.testLogging.events(TestLogEvent.FAILED, TestLogEvent.SKIPPED)
-
-        // JVM arguments - combine standard + extra
-        task.doFirst {
-            val allArgs = mutableListOf<String>()
-            allArgs.addAll(extension.standardJvmArgs.get())
-
-            // Add native library path if configured
-            if (extension.nativeLibDir.isPresent) {
-                allArgs.add("-Djava.library.path=${extension.nativeLibDir.get().asFile.absolutePath}")
-            }
-
-            allArgs.addAll(extension.extraJvmArgs.get())
-            task.jvmArgs(allArgs)
-        }
-    }
-
-    private fun configureJavaExecTask(task: JavaExec, extension: ProfilerTestExtension, project: Project) {
-        // Disable toolchain probing and set explicit executable
-        disableToolchainProbing(task)
-        task.setExecutable(PlatformUtils.testJavaExecutable())
-
-        // JVM arguments for JavaExec tasks
-        task.doFirst {
-            val allArgs = mutableListOf<String>()
-            allArgs.addAll(extension.standardJvmArgs.get())
-            allArgs.addAll(extension.extraJvmArgs.get())
-            task.jvmArgs(allArgs)
-        }
-    }
-
-    /**
-     * Disables Gradle 9 toolchain probing for tasks with javaLauncher property.
-     *
-     * Gradle 9's toolchain probing uses a glibc-compiled probe binary that fails on musl (Alpine).
-     * This workaround clears both the convention and value to prevent any toolchain resolution.
-     *
-     * Must set both convention(null) AND value(null) because:
-     * - convention(null) clears the default toolchain convention
-     * - value(null) clears any provider-based value
-     * Without both, Gradle may still attempt to resolve the toolchain.
-     */
-    private fun disableToolchainProbing(task: org.gradle.api.tasks.JavaExec) {
-        @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
-        task.javaLauncher.convention(null as org.gradle.jvm.toolchain.JavaLauncher?)
-        @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
-        task.javaLauncher.value(null as org.gradle.jvm.toolchain.JavaLauncher?)
-    }
-
-    private fun disableToolchainProbing(task: org.gradle.api.tasks.testing.Test) {
-        @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
-        task.javaLauncher.convention(null as org.gradle.jvm.toolchain.JavaLauncher?)
-        @Suppress("NULLABILITY_MISMATCH_BASED_ON_JAVA_ANNOTATIONS")
-        task.javaLauncher.value(null as org.gradle.jvm.toolchain.JavaLauncher?)
     }
 
     private fun generateMultiConfigTasks(project: Project, extension: ProfilerTestExtension) {
@@ -212,31 +134,73 @@ class ProfilerTestPlugin : Plugin<Project> {
                 project.dependencies.project(mapOf("path" to profilerLibProjectPath, "configuration" to configName))
             )
 
-            // Create test task using configuration closure
-            project.tasks.register("test$configName", Test::class.java) {
+            // Create test task using Exec to bypass Gradle's toolchain system
+            project.tasks.register("test$configName", Exec::class.java) {
                 val testTask = this
-                testTask.onlyIf { isActive }
-                testTask.dependsOn(project.tasks.named("compileTestJava"))
+                testTask.onlyIf { isActive && !project.hasProperty("skip-tests") }
                 testTask.description = "Runs unit tests with the $configName library variant"
                 testTask.group = "verification"
 
-                // Filter classpath to include only necessary dependencies
-                testTask.classpath = sourceSets.getByName("test").runtimeClasspath.filter { file ->
+                // Use JAVA_TEST_HOME if set, otherwise JAVA_HOME
+                val javaHome = System.getenv("JAVA_TEST_HOME") ?: System.getenv("JAVA_HOME")
+                testTask.executable = "$javaHome/bin/java"
+
+                // Dependencies
+                testTask.dependsOn(project.tasks.named("compileTestJava"))
+                testTask.dependsOn(testCfg)
+                testTask.dependsOn(sourceSets.getByName("test").output)
+
+                // Build classpath
+                val testClasspath = sourceSets.getByName("test").runtimeClasspath.filter { file ->
                     !file.name.contains("ddprof-") || file.name.contains("test-tracer")
                 } + testCfg
 
-                // Apply test environment from config
+                // Configure JVM arguments and test execution
+                testTask.doFirst {
+                    val allArgs = mutableListOf<String>()
+
+                    // Standard JVM args
+                    allArgs.addAll(extension.standardJvmArgs.get())
+                    if (extension.nativeLibDir.isPresent) {
+                        allArgs.add("-Djava.library.path=${extension.nativeLibDir.get().asFile.absolutePath}")
+                    }
+                    allArgs.addAll(extension.extraJvmArgs.get())
+
+                    // System properties
+                    allArgs.add("-DDDPROF_TEST_DISABLE_RATE_LIMIT=1")
+                    allArgs.add("-DCI=${project.hasProperty("CI") || System.getenv("CI")?.toBoolean() ?: false}")
+
+                    // Test environment variables as system properties
+                    testEnv.forEach { (key, value) ->
+                        allArgs.add("-D$key=$value")
+                    }
+
+                    // Classpath
+                    allArgs.add("-cp")
+                    allArgs.add(testClasspath.asPath)
+
+                    // JUnit Platform Console Launcher
+                    allArgs.add("org.junit.platform.console.ConsoleLauncher")
+                    allArgs.add("--scan-classpath")
+                    allArgs.add("--details=verbose")
+                    allArgs.add("--details-theme=unicode")
+
+                    testTask.args = allArgs
+                }
+
+                // Apply test environment
                 if (testEnv.isNotEmpty()) {
                     testEnv.forEach { (key, value) ->
                         testTask.environment(key, value)
                     }
                 }
+                testTask.environment("DDPROF_TEST_DISABLE_RATE_LIMIT", "1")
+                testTask.environment("CI", project.hasProperty("CI") || System.getenv("CI")?.toBoolean() ?: false)
 
                 // Sanitizer-specific conditions
                 when (configName) {
                     "asan" -> testTask.onlyIf { PlatformUtils.locateLibasan() != null }
                     "tsan" -> testTask.onlyIf { PlatformUtils.locateLibtsan() != null }
-                    else -> { /* no additional conditions */ }
                 }
             }
 
@@ -252,41 +216,73 @@ class ProfilerTestPlugin : Plugin<Project> {
                     project.dependencies.project(mapOf("path" to profilerLibProjectPath, "configuration" to configName))
                 )
 
-                // Create run task
-                project.tasks.register("runUnwindingValidator${configName.replaceFirstChar { it.uppercaseChar() }}", JavaExec::class.java) {
+                // Create run task using Exec to bypass Gradle's toolchain system
+                project.tasks.register("runUnwindingValidator${configName.replaceFirstChar { it.uppercaseChar() }}", Exec::class.java) {
                     val runTask = this
                     runTask.onlyIf { isActive }
-                    runTask.dependsOn(project.tasks.named("compileJava"))
                     runTask.description = "Run the unwinding validator application ($configName config)"
                     runTask.group = "application"
-                    runTask.mainClass.set(appMainClass)
-                    runTask.classpath = sourceSets.getByName("main").runtimeClasspath + mainCfg
+
+                    val javaHome = System.getenv("JAVA_TEST_HOME") ?: System.getenv("JAVA_HOME")
+                    runTask.executable = "$javaHome/bin/java"
+
+                    runTask.dependsOn(project.tasks.named("compileJava"))
+                    runTask.dependsOn(mainCfg)
+
+                    val mainClasspath = sourceSets.getByName("main").runtimeClasspath + mainCfg
+
+                    runTask.doFirst {
+                        val allArgs = mutableListOf<String>()
+                        allArgs.addAll(extension.standardJvmArgs.get())
+                        allArgs.addAll(extension.extraJvmArgs.get())
+                        allArgs.add("-cp")
+                        allArgs.add(mainClasspath.asPath)
+                        allArgs.add(appMainClass)
+
+                        // Handle validatorArgs property
+                        if (project.hasProperty("validatorArgs")) {
+                            allArgs.addAll((project.property("validatorArgs") as String).split(" "))
+                        }
+
+                        runTask.args = allArgs
+                    }
 
                     if (testEnv.isNotEmpty()) {
                         testEnv.forEach { (key, value) ->
                             runTask.environment(key, value)
                         }
                     }
-
-                    // Handle validatorArgs property
-                    if (project.hasProperty("validatorArgs")) {
-                        runTask.setArgs((project.property("validatorArgs") as String).split(" "))
-                    }
                 }
 
-                // Create report task
-                project.tasks.register("unwindingReport${configName.replaceFirstChar { it.uppercaseChar() }}", JavaExec::class.java) {
+                // Create report task using Exec to bypass Gradle's toolchain system
+                project.tasks.register("unwindingReport${configName.replaceFirstChar { it.uppercaseChar() }}", Exec::class.java) {
                     val reportTask = this
                     reportTask.onlyIf { isActive }
-                    reportTask.dependsOn(project.tasks.named("compileJava"))
                     reportTask.description = "Generate unwinding report for CI ($configName config)"
                     reportTask.group = "verification"
-                    reportTask.mainClass.set(appMainClass)
-                    reportTask.classpath = sourceSets.getByName("main").runtimeClasspath + mainCfg
-                    reportTask.args = listOf(
-                        "--output-format=markdown",
-                        "--output-file=build/reports/unwinding-summary.md"
-                    )
+
+                    val javaHome = System.getenv("JAVA_TEST_HOME") ?: System.getenv("JAVA_HOME")
+                    reportTask.executable = "$javaHome/bin/java"
+
+                    reportTask.dependsOn(project.tasks.named("compileJava"))
+                    reportTask.dependsOn(mainCfg)
+
+                    val mainClasspath = sourceSets.getByName("main").runtimeClasspath + mainCfg
+
+                    reportTask.doFirst {
+                        project.file("${project.layout.buildDirectory.get()}/reports").mkdirs()
+
+                        val allArgs = mutableListOf<String>()
+                        allArgs.addAll(extension.standardJvmArgs.get())
+                        allArgs.addAll(extension.extraJvmArgs.get())
+                        allArgs.add("-cp")
+                        allArgs.add(mainClasspath.asPath)
+                        allArgs.add(appMainClass)
+                        allArgs.add("--output-format=markdown")
+                        allArgs.add("--output-file=build/reports/unwinding-summary.md")
+
+                        reportTask.args = allArgs
+                    }
 
                     if (testEnv.isNotEmpty()) {
                         testEnv.forEach { (key, value) ->
@@ -294,10 +290,6 @@ class ProfilerTestPlugin : Plugin<Project> {
                         }
                     }
                     reportTask.environment("CI", project.hasProperty("CI") || System.getenv("CI")?.toBoolean() ?: false)
-
-                    reportTask.doFirst {
-                        project.file("${project.layout.buildDirectory.get()}/reports").mkdirs()
-                    }
                 }
             }
         }
