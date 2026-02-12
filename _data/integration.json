@@ -1,6 +1,44 @@
 {
   "runs": [
     {
+      "id": "96142573",
+      "timestamp": "2026-02-12T17:18:23Z",
+      "ddprof_branch": "jb/gradle_9",
+      "ddprof_sha": "579baf91",
+      "ddprof_pr": {
+        "number": 365,
+        "url": "https://github.com/DataDog/java-profiler/pull/365",
+        "title": "Upgrade to Gradle 9.3.1 with JDK 21 build requirement"
+      },
+      "pipeline": {
+        "id": "96142573",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/96142573"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 30,
+        "failed_jobs": 10,
+        "total_scenarios": 60,
+        "passed_scenarios": 60,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "musl-arm64-hotspot-jdk11",
+          "musl-arm64-hotspot-jdk17",
+          "musl-arm64-hotspot-jdk21",
+          "musl-arm64-hotspot-jdk25",
+          "musl-arm64-hotspot-jdk8",
+          "musl-arm64-openj9-jdk11",
+          "musl-arm64-openj9-jdk17",
+          "musl-arm64-openj9-jdk21",
+          "musl-arm64-openj9-jdk25",
+          "musl-arm64-openj9-jdk8"
+        ]
+      }
+    },
+    {
       "id": "96095537",
       "timestamp": "2026-02-12T15:15:04Z",
       "ddprof_branch": "jb/gradle_9",
@@ -319,44 +357,6 @@
       "pipeline": {
         "id": "95853148",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95853148"
-      },
-      "lib_version": "unknown",
-      "status": "partial",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 30,
-        "failed_jobs": 10,
-        "total_scenarios": 60,
-        "passed_scenarios": 60,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": [
-          "musl-arm64-hotspot-jdk11",
-          "musl-arm64-hotspot-jdk17",
-          "musl-arm64-hotspot-jdk21",
-          "musl-arm64-hotspot-jdk25",
-          "musl-arm64-hotspot-jdk8",
-          "musl-arm64-openj9-jdk11",
-          "musl-arm64-openj9-jdk17",
-          "musl-arm64-openj9-jdk21",
-          "musl-arm64-openj9-jdk25",
-          "musl-arm64-openj9-jdk8"
-        ]
-      }
-    },
-    {
-      "id": "95846421",
-      "timestamp": "2026-02-11T16:04:54Z",
-      "ddprof_branch": "jb/gradle_9",
-      "ddprof_sha": "0970a335",
-      "ddprof_pr": {
-        "number": 365,
-        "url": "https://github.com/DataDog/java-profiler/pull/365",
-        "title": "Upgrade to Gradle 9.3.1 with JDK 21 build requirement"
-      },
-      "pipeline": {
-        "id": "95846421",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/95846421"
       },
       "lib_version": "unknown",
       "status": "partial",

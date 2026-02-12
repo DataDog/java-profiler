@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk11
 
 ## glibc-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-02-12 10:15:07 EST
+**Date:** 2026-02-12 12:18:26 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 543 |
-| Sample Rate | 9.05/sec |
-| Health Score | 566% |
+| CPU Samples | 485 |
+| Sample Rate | 8.08/sec |
+| Health Score | 505% |
 | Threads | 8 |
-| Allocations | 330 |
+| Allocations | 373 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 904 |
-| Sample Rate | 15.07/sec |
-| Health Score | 942% |
-| Threads | 10 |
-| Allocations | 491 |
+| CPU Samples | 706 |
+| Sample Rate | 11.77/sec |
+| Health Score | 736% |
+| Threads | 9 |
+| Allocations | 506 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 27-27 cores)</summary>
 
 ```
-1770908962 27
-1770908967 27
-1770908972 27
-1770908977 27
-1770908982 27
-1770908987 27
-1770908992 27
-1770908997 27
-1770909002 27
-1770909007 27
-1770909012 27
-1770909017 27
-1770909022 27
-1770909027 27
-1770909032 27
-1770909037 27
-1770909042 27
-1770909048 27
-1770909053 27
-1770909058 27
+1770916312 27
+1770916317 27
+1770916322 27
+1770916327 27
+1770916332 27
+1770916337 27
+1770916342 27
+1770916347 27
+1770916352 27
+1770916357 27
+1770916362 27
+1770916367 27
+1770916372 27
+1770916377 27
+1770916382 27
+1770916387 27
+1770916392 27
+1770916397 27
+1770916402 27
+1770916407 27
 ```
 </details>
 

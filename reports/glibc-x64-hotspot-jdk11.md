@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk11
 
 ## glibc-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-02-12 10:15:07 EST
+**Date:** 2026-02-12 12:18:25 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 489 |
-| Sample Rate | 8.15/sec |
-| Health Score | 509% |
+| CPU Samples | 536 |
+| Sample Rate | 8.93/sec |
+| Health Score | 558% |
 | Threads | 8 |
-| Allocations | 327 |
+| Allocations | 381 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 697 |
-| Sample Rate | 11.62/sec |
-| Health Score | 726% |
+| CPU Samples | 653 |
+| Sample Rate | 10.88/sec |
+| Health Score | 680% |
 | Threads | 9 |
-| Allocations | 499 |
+| Allocations | 508 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1770909013 32
-1770909018 32
-1770909023 32
-1770909028 32
-1770909033 32
-1770909038 32
-1770909043 32
-1770909048 32
-1770909053 32
-1770909058 32
-1770909063 32
-1770909068 32
-1770909073 32
-1770909078 32
-1770909083 32
-1770909088 32
-1770909093 32
-1770909098 32
-1770909103 32
-1770909108 32
+1770916316 32
+1770916321 32
+1770916326 32
+1770916331 32
+1770916336 32
+1770916341 32
+1770916346 32
+1770916351 32
+1770916356 32
+1770916361 32
+1770916366 32
+1770916371 32
+1770916376 32
+1770916381 32
+1770916386 32
+1770916391 32
+1770916396 32
+1770916401 32
+1770916406 32
+1770916411 32
 ```
 </details>
 
