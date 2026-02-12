@@ -141,9 +141,6 @@ class ProfilerTestPlugin : Plugin<Project> {
                 testTask.description = "Runs unit tests with the $configName library variant"
                 testTask.group = "verification"
 
-                // Use JAVA_TEST_HOME if set, otherwise JAVA_HOME (with proper fallback and error handling)
-                testTask.executable = PlatformUtils.testJavaExecutable()
-
                 // Dependencies
                 testTask.dependsOn(project.tasks.named("compileTestJava"))
                 testTask.dependsOn(testCfg)
@@ -156,6 +153,10 @@ class ProfilerTestPlugin : Plugin<Project> {
 
                 // Configure JVM arguments and test execution
                 testTask.doFirst {
+                    // Set executable at execution time so environment variables (JAVA_TEST_HOME) are read correctly
+                    // (CI scripts export JAVA_TEST_HOME at runtime, not visible at Gradle configuration time)
+                    testTask.executable = PlatformUtils.testJavaExecutable()
+
                     val allArgs = mutableListOf<String>()
 
                     // Standard JVM args
@@ -218,6 +219,14 @@ class ProfilerTestPlugin : Plugin<Project> {
                 testTask.environment("DDPROF_TEST_DISABLE_RATE_LIMIT", "1")
                 testTask.environment("CI", project.hasProperty("CI") || System.getenv("CI")?.toBoolean() ?: false)
 
+                // Pass through CI environment variables that tests expect
+                // (Exec tasks don't inherit environment automatically like Test tasks do)
+                System.getenv("LIBC")?.let { testTask.environment("LIBC", it) }
+                System.getenv("KEEP_JFRS")?.let { testTask.environment("KEEP_JFRS", it) }
+                System.getenv("TEST_COMMIT")?.let { testTask.environment("TEST_COMMIT", it) }
+                System.getenv("TEST_CONFIGURATION")?.let { testTask.environment("TEST_CONFIGURATION", it) }
+                System.getenv("SANITIZER")?.let { testTask.environment("SANITIZER", it) }
+
                 // Sanitizer-specific conditions
                 when (configName) {
                     "asan" -> testTask.onlyIf { PlatformUtils.locateLibasan() != null }
@@ -244,15 +253,15 @@ class ProfilerTestPlugin : Plugin<Project> {
                     runTask.description = "Run the unwinding validator application ($configName config)"
                     runTask.group = "application"
 
-                    // Use JAVA_TEST_HOME if set, otherwise JAVA_HOME (with proper fallback and error handling)
-                    runTask.executable = PlatformUtils.testJavaExecutable()
-
                     runTask.dependsOn(project.tasks.named("compileJava"))
                     runTask.dependsOn(mainCfg)
 
                     val mainClasspath = sourceSets.getByName("main").runtimeClasspath + mainCfg
 
                     runTask.doFirst {
+                        // Set executable at execution time so environment variables are read correctly
+                        runTask.executable = PlatformUtils.testJavaExecutable()
+
                         val allArgs = mutableListOf<String>()
                         allArgs.addAll(extension.standardJvmArgs.get())
                         allArgs.addAll(extension.extraJvmArgs.get())
@@ -282,15 +291,15 @@ class ProfilerTestPlugin : Plugin<Project> {
                     reportTask.description = "Generate unwinding report for CI ($configName config)"
                     reportTask.group = "verification"
 
-                    // Use JAVA_TEST_HOME if set, otherwise JAVA_HOME (with proper fallback and error handling)
-                    reportTask.executable = PlatformUtils.testJavaExecutable()
-
                     reportTask.dependsOn(project.tasks.named("compileJava"))
                     reportTask.dependsOn(mainCfg)
 
                     val mainClasspath = sourceSets.getByName("main").runtimeClasspath + mainCfg
 
                     reportTask.doFirst {
+                        // Set executable at execution time so environment variables are read correctly
+                        reportTask.executable = PlatformUtils.testJavaExecutable()
+
                         project.file("${project.layout.buildDirectory.get()}/reports").mkdirs()
 
                         val allArgs = mutableListOf<String>()
