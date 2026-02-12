@@ -182,40 +182,46 @@ class ProfilerTestPlugin : Plugin<Project> {
             testTask.dependsOn(testCfg)
             testTask.dependsOn(sourceSets.getByName("test").output)
 
-            // Set executable directly (bypasses toolchain system, reads JAVA_TEST_HOME)
-            testTask.executable = PlatformUtils.testJavaExecutable()
-
             // Test class directories and classpath
             testTask.testClassesDirs = sourceSets.getByName("test").output.classesDirs
             testTask.classpath = testConfig.testClasspath
 
-            // JVM arguments
-            testTask.jvmArgs = buildList {
-                addAll(testConfig.standardJvmArgs)
-                if (extension.nativeLibDir.isPresent) {
-                    add("-Djava.library.path=${extension.nativeLibDir.get().asFile.absolutePath}")
-                }
-                addAll(testConfig.extraJvmArgs)
-            }
+            // Use JUnit Platform
+            testTask.useJUnitPlatform()
 
-            // System properties
-            testConfig.systemProperties.forEach { (key, value) ->
-                testTask.systemProperty(key, value)
-            }
+            // Configure Java executable - bypasses toolchain system
+            testTask.setExecutable(PlatformUtils.testJavaExecutable())
 
-            // Environment variables (explicit for consistency)
+            // Environment variables
+            testTask.environment("DDPROF_TEST_DISABLE_RATE_LIMIT", "1")
+            testTask.environment("CI", project.hasProperty("CI") || System.getenv("CI")?.toBoolean() ?: false)
             testConfig.environmentVariables.forEach { (key, value) ->
                 testTask.environment(key, value)
             }
-
-            // Use JUnit Platform
-            testTask.useJUnitPlatform()
 
             // Test output
             testTask.testLogging {
                 val logging = this
                 logging.events("passed", "skipped", "failed")
                 logging.showStandardStreams = true
+            }
+
+            // JVM arguments and system properties - configure in doFirst like main does
+            testTask.doFirst {
+                val allArgs = mutableListOf<String>()
+                allArgs.addAll(testConfig.standardJvmArgs)
+
+                if (extension.nativeLibDir.isPresent) {
+                    allArgs.add("-Djava.library.path=${extension.nativeLibDir.get().asFile.absolutePath}")
+                }
+
+                // System properties as JVM args
+                testConfig.systemProperties.forEach { (key, value) ->
+                    allArgs.add("-D$key=$value")
+                }
+
+                allArgs.addAll(testConfig.extraJvmArgs)
+                testTask.jvmArgs(allArgs)
             }
 
             // Sanitizer conditions
@@ -226,113 +232,6 @@ class ProfilerTestPlugin : Plugin<Project> {
         }
     }
 
-    /**
-     * Create Test task with Exec delegation for musl (workaround path).
-     * The Test task captures --tests filter, then delegates to hidden Exec task.
-     */
-    private fun createMuslTestTask(
-        project: Project,
-        extension: ProfilerTestExtension,
-        testConfig: TestTaskConfiguration,
-        testCfg: Configuration,
-        sourceSets: SourceSetContainer
-    ) {
-        // Create the visible Test task that users interact with
-        val testTask = project.tasks.register("test${testConfig.configName}", Test::class.java) {
-            val task = this
-            task.description = "Runs unit tests with the ${testConfig.configName} library variant"
-            task.group = "verification"
-            task.onlyIf { testConfig.isActive && !project.hasProperty("skip-tests") }
-
-            // Dependencies
-            task.dependsOn(project.tasks.named("compileTestJava"))
-            task.dependsOn(testCfg)
-            task.dependsOn(sourceSets.getByName("test").output)
-
-            // Configure Test task (captures --tests filter)
-            task.classpath = testConfig.testClasspath
-            task.useJUnitPlatform()
-
-            // Sanitizer conditions
-            when (testConfig.configName) {
-                "asan" -> task.onlyIf { PlatformUtils.locateLibasan() != null }
-                "tsan" -> task.onlyIf { PlatformUtils.locateLibtsan() != null }
-            }
-        }
-
-        // Create hidden Exec task that actually runs tests
-        val execTask = project.tasks.register("test${testConfig.configName}Exec", Exec::class.java) {
-            val exec = this
-            exec.group = null // Hide from task list
-            exec.description = "Internal Exec wrapper for musl Test task"
-
-            // Configure at execution time
-            exec.doFirst {
-                exec.executable = PlatformUtils.testJavaExecutable()
-
-                val allArgs = mutableListOf<String>()
-
-                // JVM args
-                allArgs.addAll(testConfig.standardJvmArgs)
-                if (extension.nativeLibDir.isPresent) {
-                    allArgs.add("-Djava.library.path=${extension.nativeLibDir.get().asFile.absolutePath}")
-                }
-                allArgs.addAll(testConfig.extraJvmArgs)
-
-                // System properties
-                testConfig.systemProperties.forEach { (key, value) ->
-                    allArgs.add("-D$key=$value")
-                }
-
-                // Classpath
-                allArgs.add("-cp")
-                allArgs.add(testConfig.testClasspath.asPath)
-
-                // JUnit Console Launcher
-                allArgs.add("org.junit.platform.console.ConsoleLauncher")
-
-                // Convert Test task's --tests filter to Console Launcher selectors
-                val testTaskInstance = testTask.get()
-                val testFilters = testTaskInstance.filter.includePatterns
-
-                if (testFilters.isNotEmpty()) {
-                    // User specified --tests flag, convert to selectors
-                    testFilters.forEach { pattern ->
-                        when {
-                            pattern.contains("#") -> allArgs.add("--select-method=$pattern")
-                            pattern.contains("*") -> {
-                                // Pattern like "*.TestClass" - use class selector without wildcard
-                                val className = pattern.removePrefix("*.")
-                                allArgs.add("--select-class=$className")
-                            }
-                            else -> allArgs.add("--select-class=$pattern")
-                        }
-                    }
-                } else {
-                    // No filter, scan everything
-                    allArgs.add("--scan-classpath")
-                }
-
-                allArgs.add("--details=verbose")
-                allArgs.add("--details-theme=unicode")
-
-                exec.args = allArgs
-            }
-
-            // Environment variables
-            testConfig.environmentVariables.forEach { (key, value) ->
-                exec.environment(key, value)
-            }
-        }
-
-        // Make Test task delegate to Exec task
-        testTask.configure {
-            val task = this
-            task.dependsOn(execTask)
-            // Make Test task a no-op that just depends on Exec
-            task.onlyIf { false } // Never actually run the Test task itself
-        }
-    }
 
     private fun generateMultiConfigTasks(project: Project, extension: ProfilerTestExtension) {
         val nativeBuildExt = project.rootProject.extensions.findByType(NativeBuildExtension::class.java)
@@ -390,14 +289,10 @@ class ProfilerTestPlugin : Plugin<Project> {
             // Build shared configuration
             val testConfig = buildTestConfiguration(project, extension, config, testCfg, sourceSets)
 
-            // Conditional task creation based on platform
-            if (PlatformUtils.isMusl()) {
-                project.logger.info("Creating Test task with Exec delegation for $configName (musl workaround)")
-                createMuslTestTask(project, extension, testConfig, testCfg, sourceSets)
-            } else {
-                project.logger.info("Creating Test task for $configName (glibc/macOS)")
-                createTestTask(project, extension, testConfig, testCfg, sourceSets)
-            }
+            // Use Test tasks on all platforms
+            // Setting executable directly bypasses Gradle's toolchain probing
+            project.logger.info("Creating Test task for $configName")
+            createTestTask(project, extension, testConfig, testCfg, sourceSets)
 
             // Create application tasks for specified configs
             if (configName in applicationConfigs && appMainClass.isNotEmpty()) {
