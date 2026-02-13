@@ -20,18 +20,30 @@ jobs:
     needs: run-test
     if: failure()
     steps:
-      - name: Download failed tests artifact
+      - name: Download all failure artifacts
         uses: actions/download-artifact@v4
         with:
-          name: failures
+          pattern: failures-*
           path: ./artifacts
+          merge-multiple: true
       - name: Report failures
         run: |
-          find ./artifacts -name 'failures_*' -exec cat {} \; > ./artifacts/failures.txt
-          scenarios=$(cat ./artifacts/failures.txt | tr '\n' ',')
-          
+          # Check if any failure files exist
+          if ! ls ./artifacts/failures_*.txt 1> /dev/null 2>&1; then
+            echo "No failure artifacts found"
+            exit 0
+          fi
+
+          # Combine all failure files
+          find ./artifacts -name 'failures_*.txt' -exec cat {} \; > ./artifacts/all_failures.txt
+          scenarios=$(cat ./artifacts/all_failures.txt | tr '\n' ',' | sed 's/,$//')
+
           echo "Failed scenarios: $scenarios"
 
-          curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
-               -H 'Content-Type: application/json' \
-               -d "{'scenarios': '${scenarios}', 'failed_run_url': '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'}"
+          if [ -n "${{ secrets.SLACK_WEBHOOK }}" ]; then
+            curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+                 -H 'Content-Type: application/json' \
+                 -d "{\"scenarios\": \"${scenarios}\", \"failed_run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+          else
+            echo "SLACK_WEBHOOK not configured, skipping notification"
+          fi
