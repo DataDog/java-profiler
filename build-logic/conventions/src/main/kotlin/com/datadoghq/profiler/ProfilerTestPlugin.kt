@@ -454,6 +454,15 @@ class ProfilerTestPlugin : Plugin<Project> {
                             runTask.environment(key, value)
                         }
                     }
+
+                    // CRITICAL FIX: Remove LD_LIBRARY_PATH to let RPATH work correctly
+                    runTask.doFirst {
+                        val currentLdLibPath = (runTask.environment["LD_LIBRARY_PATH"] as? String) ?: System.getenv("LD_LIBRARY_PATH")
+                        if (!currentLdLibPath.isNullOrEmpty()) {
+                            project.logger.info("Removing LD_LIBRARY_PATH to prevent cross-JDK library conflicts (was: $currentLdLibPath)")
+                            runTask.environment.remove("LD_LIBRARY_PATH")
+                        }
+                    }
                 }
 
                 // Create report task using Exec to bypass Gradle's toolchain system
@@ -492,6 +501,15 @@ class ProfilerTestPlugin : Plugin<Project> {
                         }
                     }
                     reportTask.environment("CI", project.hasProperty("CI") || System.getenv("CI")?.toBoolean() ?: false)
+
+                    // CRITICAL FIX: Remove LD_LIBRARY_PATH to let RPATH work correctly
+                    reportTask.doFirst {
+                        val currentLdLibPath = (reportTask.environment["LD_LIBRARY_PATH"] as? String) ?: System.getenv("LD_LIBRARY_PATH")
+                        if (!currentLdLibPath.isNullOrEmpty()) {
+                            project.logger.info("Removing LD_LIBRARY_PATH to prevent cross-JDK library conflicts (was: $currentLdLibPath)")
+                            reportTask.environment.remove("LD_LIBRARY_PATH")
+                        }
+                    }
                 }
             }
         }
