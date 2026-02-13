@@ -30,7 +30,7 @@ import java.io.PrintWriter;
 public class ProfilerTestRunner {
     public static void main(String[] args) {
         try {
-            runTests(args);
+            runTests();
         } catch (Throwable t) {
             System.err.println("FATAL ERROR in ProfilerTestRunner:");
             t.printStackTrace(System.err);
@@ -38,7 +38,7 @@ public class ProfilerTestRunner {
         }
     }
 
-    private static void runTests(String[] args) {
+    private static void runTests() {
         // Parse test filter from system property
         String testFilter = System.getProperty("test.filter");
 

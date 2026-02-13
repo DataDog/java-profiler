@@ -185,9 +185,11 @@ val javadocJar by tasks.registering(Jar::class) {
   archiveBaseName.set(libraryName)
   archiveClassifier.set("javadoc")
   archiveVersion.set(componentVersion)
-  from(tasks.javadoc.map {
-    it.destinationDir ?: throw GradleException("Javadoc task destinationDir is null - task may not have been configured properly")
-  })
+  from(
+    tasks.javadoc.map {
+      it.destinationDir ?: throw GradleException("Javadoc task destinationDir is null - task may not have been configured properly")
+    },
+  )
 }
 
 // Publishing configuration
