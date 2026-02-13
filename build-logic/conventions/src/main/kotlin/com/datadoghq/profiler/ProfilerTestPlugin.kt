@@ -312,9 +312,6 @@ class ProfilerTestPlugin : Plugin<Project> {
                 allArgs.add("com.datadoghq.profiler.test.ProfilerTestRunner")
 
                 execTask.args = allArgs
-
-                // Debug logging
-                project.logger.info("Exec task: ${execTask.executable} with ${testConfig.testClasspath.files.size} classpath entries")
             }
 
             // Environment variables
