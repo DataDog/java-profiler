@@ -55,6 +55,45 @@ inline T* cast_to(const void* ptr) {
     f(VMSymbol,             MATCH_SYMBOLS("Symbol")) \
     f(VMThread,             MATCH_SYMBOLS("Thread"))
 
+
+
+#define POSSIBLE_NAMES(...) { __VA_ARGS__, nullptr }
+#define POSSIBLE_TYPE_NAMES POSSIBLE_NAMES
+#define POSSIBLE_FIELD_NAMES POSSIBLE_NAMES
+
+typedef int offset;
+typedef const void* address;
+
+#define DECLARE_TYPE_FILED_DO(type, field, type_end)                                                                            \
+    type(VMMemRegion, POSSIBLE_TYPE_NAMES("MemRegion"))                                                                           \
+        field(VMMemRegion, start, offset, POSSIBLE_FIELD_NAMES("_start"))                                                         \
+        field(VMMemRegion, size, offset, POSSIBLE_FIELD_NAMES("_word_size"))                                                      \
+    type_end()                                                                                                                  \
+    type(VMNMethod, POSSIBLE_TYPE_NAMES(CompiledMethod, nmethod))                                                               \
+        field(VMNMethod, method, offset, POSSIBLE_FIELD_NAMES("_method"))                                                         \
+        field(VMNMethod, method_entry, offset, POSSIBLE_FIELD_NAMES("_verified_entry_offset", "_verified_entry_point"))             \
+        field(VMNMethod, state, offset, POSSIBLE_FIELD_NAMES("_state"))                                                           \
+        field(VMNMethod, level, offset, POSSIBLE_FIELD_NAMES("_comp_level"))                                                      \
+        field(VMNMethod, metadata, offset, POSSIBLE_FIELD_NAMES("_metadata_offset"))                                              \
+        field(VMNMethod, immutable_data, offset, POSSIBLE_FIELD_NAMES("_immutable_data"))                                         \
+        field(VMNMethod, scopes_pcs, offset, POSSIBLE_FIELD_NAMES("_scopes_pcs_offset"))                                          \
+        field(VMNMethod, scopes_data, offset, POSSIBLE_FIELD_NAMES("_scopes_data_offset", "_scopes_data_begin"))                    \
+    type_end()                                                                                                                  \
+    type(VMKlass, POSSIBLE_TYPE_NAMES(Klass))                                                                                   \
+        field(VMKlass, name, offset, POSSIBLE_FIELD_NAMES("_name"))                                                               \
+    type_end()                                                                                                                  \
+    type(VMSymbol, POSSIBLE_TYPE_NAMES(Symbol))                                                                                 \
+        field(VMSymbol, length, offset, POSSIBLE_FIELD_NAMES("_length"))                                                          \
+        field(VMSymbol, body, offset, POSSIBLE_FIELD_NAMES("_body"))                                                              \
+    type_end()                                                                                                                  \
+    type(VMUniverse, POSSIBLE_TYPE_NAMES(Universe, CompressedKlassPointers))                                                    \
+        field(VMUniverse, narrow_klass_base, address, POSSIBLE_FIELD_NAMES("_narrow_klass._base", "_base"))                         \
+        field(VMUniverse, narrow_klass_shift, offset, POSSIBLE_FIELD_NAMES("_narrow_klass._shift", "_shift"))                       \
+    type_end()                                                                                                                  \
+    type(VMOop, POSSIBLE_TYPE_NAMES(oopDesc))                                                                                   \
+        field(VMOop, _oop_klass, offset, POSSIBLE_FIELD_NAMES("_metadata._klass"))                                                \
+    type_end()                                                                                                                  \
+
 class VMStructs {
   public:
     typedef bool (*IsValidMethodFunc)(void *);
@@ -63,6 +102,16 @@ class VMStructs {
     enum { MONITOR_BIT = 2 };
 
     static CodeCache* _libjvm;
+
+// Do nothing macro
+#define DO_NOTHING(...)
+
+#define DECLARE_TYPE_FIELD(type, field, field_type, ...) \
+    static field_type _##type##_##field##_##field_type;  
+    
+    DECLARE_TYPE_FILED_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DO_NOTHING)
+#undef DECL_TYPE_FIELD
+#undef DO_NOTHING
 
     static bool _has_class_names;
     static bool _has_method_structs;
@@ -188,6 +237,7 @@ class VMStructs {
     static IsValidMethodFunc _is_valid_method_func;
 
     static uintptr_t readSymbol(const char* symbol_name);
+    static void init_offsets_and_addresses();
     static void initOffsets();
     static void resolveOffsets();
     static void patchSafeFetch();

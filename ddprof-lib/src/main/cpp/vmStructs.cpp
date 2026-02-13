@@ -113,6 +113,19 @@ const void* VMStructs::_interpreted_frame_valid_end = NULL;
 DECLARE_TYPES_DO(INIT_TYPE_SIZE)
 #undef INIT_TYPE_SIZE
 
+#define offset_value -1
+#define address_value nullptr
+// Do nothing macro
+#define DO_NOTHING(...)
+#define INIT_OFFSET_OR_ADDRESS(type, field, field_type, ...) \
+    field_type VMStructs::_##type##_##field##_##field_type = field_type##_value;
+
+DECLARE_TYPE_FILED_DO(DO_NOTHING, INIT_OFFSET_OR_ADDRESS, DO_NOTHING)
+
+#undef INIT_OFFSET_OR_ADDRESS
+#undef DO_NOTHING
+#undef offset_value
+#undef address_value
 
 jfieldID VMStructs::_eetop;
 jfieldID VMStructs::_tid;
@@ -176,6 +189,55 @@ bool initTypeSize(uint64_t& size, const char* type, uint64_t value, ...) {
  
     va_end(args);
     return found;
+}
+
+bool matchAny(const char* target_name, const char** names) {
+    for (const char** name = names; *name != nullptr; name++) {
+        if (strcmp(target_name, *name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+
+void VMStructs::init_offsets_and_addresses() {
+    uintptr_t entry = readSymbol("gHotSpotVMStructs");
+    uintptr_t stride = readSymbol("gHotSpotVMStructEntryArrayStride");
+    uintptr_t type_offset = readSymbol("gHotSpotVMStructEntryTypeNameOffset");
+    uintptr_t field_offset = readSymbol("gHotSpotVMStructEntryFieldNameOffset");
+    uintptr_t offset_offset = readSymbol("gHotSpotVMStructEntryOffsetOffset");
+    uintptr_t address_offset = readSymbol("gHotSpotVMStructEntryAddressOffset");
+
+    auto read_offset = [&]() -> int {
+        return *(int*)(entry + offset_offset);
+    };
+
+    auto read_address = [&]() -> const void* {
+        return *(const void**)(entry + address_offset);
+    };
+
+    if (entry != 0 && stride != 0) {
+        for (;; entry += stride) {
+            const char* type_name = *(const char**)(entry + type_offset);
+            const char* field_name = *(const char**)(entry + field_offset);
+            if (type_name == NULL || field_name == NULL) {
+                break;
+            }
+#define MATCH_TYPE_NAMES(type, ...) \
+     if (matchAny(type_name, (const char*[]){ #__VA_ARGS__, nullptr})) {
+#define READ_FIELD_VALUE(type, field, field_type, ...) \
+        if (matchAny(field_name, (const char*[]){ #__VA_ARGS__, nullptr})) {   \
+            _##type##_##field##_##field_type = read_##field_type();     \
+        }
+#define END_TYPE() }
+            
+        DECLARE_TYPE_FILED_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, END_TYPE)
+#undef MATCH_TYPE_NAMES
+#undef READ_FIELD_VALUE
+#undef END_TYPE
+        }
+    }
 }
 
 void VMStructs::initOffsets() {
