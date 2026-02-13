@@ -414,10 +414,11 @@ fi
 # ========== Run Tests ==========
 
 # Build gradle test command
-# Note: --tests flag works uniformly across all platforms (glibc, musl, macOS)
+# Note: -Ptests property works uniformly across all platforms (glibc, musl, macOS)
 GRADLE_CMD="./gradlew -PCI -PkeepJFRs :ddprof-test:test${CONFIG}"
 if [[ -n "$TESTS" ]]; then
-    GRADLE_CMD="$GRADLE_CMD --tests=\"$TESTS\""
+    # No need for quotes around $TESTS - Gradle property values don't require quoting
+    GRADLE_CMD="$GRADLE_CMD -Ptests=$TESTS"
 fi
 if ! $GTEST_ENABLED; then
     GRADLE_CMD="$GRADLE_CMD -Pskip-gtest"

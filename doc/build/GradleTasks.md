@@ -65,7 +65,7 @@ testTsan                 # Java tests with TSAN library (Linux)
 ./gradlew :ddprof-test:testDebug -Ptests=ProfilerTest
 ```
 
-**Note**: Use `-Ptests` (not `--tests`) with config-specific test tasks. The `--tests` flag only works with Gradle's Test task type, but config-specific tasks (testDebug, testRelease) use Exec task type to bypass toolchain issues on musl systems.
+**Note**: Use `-Ptests` (not `--tests`) with config-specific test tasks. The `-Ptests` property works uniformly across all platforms. On glibc/macOS, config-specific tasks use Gradle's Test task type. On musl systems, they use Exec task type to bypass toolchain probing issues.
 
 ### C++ Unit Tests (Google Test)
 

@@ -24,20 +24,26 @@ import javax.inject.Inject
  * - Standard JVM arguments for profiler testing (attach self, error files, etc.)
  * - Java executable selection (JAVA_TEST_HOME or JAVA_HOME) on ALL platforms
  * - Common environment variables (CI, rate limiting)
- * - Unified --tests flag support across all platforms
+ * - Unified -Ptests flag support across all platforms
  * - Automatic multi-config test task generation from NativeBuildExtension
  *
  * Implementation:
- * - glibc/macOS: Uses native Test tasks with direct --tests flag support
- * - musl (Alpine): Uses Test tasks that delegate to Exec tasks (workaround for Gradle 9 toolchain probe)
- * - Unified interface: --tests flag works identically on all platforms
+ * - glibc/macOS: Uses native Test tasks with Gradle's JUnit Platform integration
+ * - musl (Alpine): Uses Exec tasks with custom ProfilerTestRunner (bypasses toolchain probe)
+ * - Unified interface: -Ptests property works identically on all platforms
  * - Supports multi-JDK testing via JAVA_TEST_HOME on all platforms
  * - Same task names everywhere (testdebug, testrelease, unwindingReportRelease)
  *
  * Platform Detection:
  * - Uses PlatformUtils.isMusl() at configuration time to select task implementation
- * - musl systems: Test task captures --tests filter, delegates to hidden Exec task
+ * - musl systems: Exec task with ProfilerTestRunner (uses JUnit Platform Launcher API directly)
  * - glibc/macOS: Normal Test task with native JUnit integration
+ *
+ * Custom Test Runner:
+ * - ProfilerTestRunner uses JUnit Platform Launcher API directly
+ * - Avoids Console Launcher issues (assertions, JVM args, NoSuchMethodError on musl + JDK 11)
+ * - Same API used by IDEs and Gradle's Test task internally
+ * - Supports test filtering via -Dtest.filter system property
  *
  * Usage:
  * ```kotlin
@@ -63,7 +69,9 @@ import javax.inject.Inject
  * }
  *
  * // Run tests (all platforms use same syntax):
- * ./gradlew :ddprof-test:testdebug --tests=ClassName.methodName
+ * ./gradlew :ddprof-test:testdebug -Ptests=ClassName.methodName
+ * ./gradlew :ddprof-test:testdebug -Ptests=ClassName
+ * ./gradlew :ddprof-test:testdebug -Ptests="*.Pattern*"
  * ```
  */
 class ProfilerTestPlugin : Plugin<Project> {
@@ -162,7 +170,7 @@ class ProfilerTestPlugin : Plugin<Project> {
 
     /**
      * Create native Test task for glibc/macOS (normal path).
-     * Uses Gradle's Test task with --tests flag support.
+     * Uses Gradle's Test task with -Ptests property support.
      */
     private fun createTestTask(
         project: Project,
@@ -192,9 +200,7 @@ class ProfilerTestPlugin : Plugin<Project> {
             // Configure Java executable - bypasses toolchain system
             testTask.setExecutable(PlatformUtils.testJavaExecutable())
 
-            // Environment variables
-            testTask.environment("DDPROF_TEST_DISABLE_RATE_LIMIT", "1")
-            testTask.environment("CI", project.hasProperty("CI") || System.getenv("CI")?.toBoolean() ?: false)
+            // Environment variables (from testConfig which already includes DDPROF_TEST_DISABLE_RATE_LIMIT and CI)
             testConfig.environmentVariables.forEach { (key, value) ->
                 testTask.environment(key, value)
             }
@@ -204,6 +210,25 @@ class ProfilerTestPlugin : Plugin<Project> {
                 val logging = this
                 logging.events("passed", "skipped", "failed")
                 logging.showStandardStreams = true
+            }
+
+            // UNIFIED INTERFACE: Support -Ptests property (same as musl)
+            val testsFilter = project.findProperty("tests") as String?
+            if (testsFilter != null) {
+                // Forward -Ptests to Test task's filter
+                testTask.filter.includeTestsMatching(testsFilter)
+            }
+
+            // Warn if --tests flag was used instead of -Ptests
+            testTask.doFirst {
+                val filterPatterns = testTask.filter.includePatterns
+                if (filterPatterns.isNotEmpty() && testsFilter == null) {
+                    project.logger.warn("")
+                    project.logger.warn("WARNING: --tests flag detected. While it works on glibc/macOS, it will FAIL on musl systems.")
+                    project.logger.warn("For consistent behavior across all platforms, please use -Ptests instead:")
+                    project.logger.warn("  ./gradlew :ddprof-test:${testTask.name} -Ptests=${filterPatterns.first()}")
+                    project.logger.warn("")
+                }
             }
 
             // JVM arguments and system properties - configure in doFirst like main does
@@ -232,6 +257,90 @@ class ProfilerTestPlugin : Plugin<Project> {
         }
     }
 
+    /**
+     * Create Exec task with custom test runner for musl platforms.
+     * Uses ProfilerTestRunner with JUnit Platform Launcher API directly.
+     * Supports unified -Ptests property interface for test filtering.
+     */
+    private fun createExecTestTask(
+        project: Project,
+        extension: ProfilerTestExtension,
+        testConfig: TestTaskConfiguration,
+        testCfg: Configuration,
+        sourceSets: SourceSetContainer
+    ) {
+        project.tasks.register("test${testConfig.configName}", Exec::class.java) {
+            val execTask = this
+            execTask.description = "Runs unit tests with the ${testConfig.configName} library variant (musl workaround)"
+            execTask.group = "verification"
+            execTask.onlyIf { testConfig.isActive && !project.hasProperty("skip-tests") }
+
+            // Dependencies
+            execTask.dependsOn(project.tasks.named("compileTestJava"))
+            execTask.dependsOn(testCfg)
+            execTask.dependsOn(sourceSets.getByName("test").output)
+
+            // Configure at execution time to capture -Ptests filter
+            execTask.doFirst {
+                execTask.executable = PlatformUtils.testJavaExecutable()
+
+                val allArgs = mutableListOf<String>()
+
+                // JVM args
+                allArgs.addAll(testConfig.standardJvmArgs)
+                if (extension.nativeLibDir.isPresent) {
+                    allArgs.add("-Djava.library.path=${extension.nativeLibDir.get().asFile.absolutePath}")
+                }
+                allArgs.addAll(testConfig.extraJvmArgs)
+
+                // System properties
+                testConfig.systemProperties.forEach { (key, value) ->
+                    allArgs.add("-D$key=$value")
+                }
+
+                // UNIFIED INTERFACE: Test filter from -Ptests property
+                val testsFilter = project.findProperty("tests") as String?
+                if (testsFilter != null) {
+                    allArgs.add("-Dtest.filter=$testsFilter")
+                }
+
+                // Classpath (includes custom test runner)
+                allArgs.add("-cp")
+                allArgs.add(testConfig.testClasspath.asPath)
+
+                // Use custom test runner (NOT ConsoleLauncher)
+                allArgs.add("com.datadoghq.profiler.test.ProfilerTestRunner")
+
+                execTask.args = allArgs
+
+                // Debug logging
+                project.logger.info("Exec task: ${execTask.executable} with ${testConfig.testClasspath.files.size} classpath entries")
+            }
+
+            // Environment variables
+            testConfig.environmentVariables.forEach { (key, value) ->
+                execTask.environment(key, value)
+            }
+
+            // CRITICAL FIX: Remove LD_LIBRARY_PATH to let RPATH work correctly
+            // The test JDK's launcher has RPATH set to find its own libraries ($ORIGIN/../lib/jli)
+            // But LD_LIBRARY_PATH overrides RPATH and causes it to load the wrong libjli.so
+            // Solution: Unset LD_LIBRARY_PATH entirely to let RPATH take precedence
+            execTask.doFirst {
+                val currentLdLibPath = (execTask.environment["LD_LIBRARY_PATH"] as? String) ?: System.getenv("LD_LIBRARY_PATH")
+                if (!currentLdLibPath.isNullOrEmpty()) {
+                    project.logger.info("Removing LD_LIBRARY_PATH to prevent cross-JDK library conflicts (was: $currentLdLibPath)")
+                    execTask.environment.remove("LD_LIBRARY_PATH")
+                }
+            }
+
+            // Sanitizer conditions
+            when (testConfig.configName) {
+                "asan" -> execTask.onlyIf { PlatformUtils.locateLibasan() != null }
+                "tsan" -> execTask.onlyIf { PlatformUtils.locateLibtsan() != null }
+            }
+        }
+    }
 
     private fun generateMultiConfigTasks(project: Project, extension: ProfilerTestExtension) {
         val nativeBuildExt = project.rootProject.extensions.findByType(NativeBuildExtension::class.java)
@@ -289,10 +398,16 @@ class ProfilerTestPlugin : Plugin<Project> {
             // Build shared configuration
             val testConfig = buildTestConfiguration(project, extension, config, testCfg, sourceSets)
 
-            // Use Test tasks on all platforms
-            // Setting executable directly bypasses Gradle's toolchain probing
-            project.logger.info("Creating Test task for $configName")
-            createTestTask(project, extension, testConfig, testCfg, sourceSets)
+            // Platform-conditional task creation
+            // Check both PlatformUtils.isMusl() and LIBC environment variable (set by Docker)
+            val isMuslSystem = PlatformUtils.isMusl() || System.getenv("LIBC") == "musl"
+            if (isMuslSystem) {
+                project.logger.info("Creating Exec task for $configName (musl workaround, LIBC=${System.getenv("LIBC")})")
+                createExecTestTask(project, extension, testConfig, testCfg, sourceSets)
+            } else {
+                project.logger.info("Creating Test task for $configName (glibc/macOS, LIBC=${System.getenv("LIBC")})")
+                createTestTask(project, extension, testConfig, testCfg, sourceSets)
+            }
 
             // Create application tasks for specified configs
             if (configName in applicationConfigs && appMainClass.isNotEmpty()) {

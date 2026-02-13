@@ -29,7 +29,7 @@ jmh = "1.36"
 junit-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "junit" }
 junit-engine = { module = "org.junit.jupiter:junit-jupiter-engine", version.ref = "junit" }
 junit-params = { module = "org.junit.jupiter:junit-jupiter-params", version.ref = "junit" }
-junit-platform-console = { module = "org.junit.platform:junit-platform-console", version.ref = "junit-platform" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit-platform" }
 junit-pioneer = { module = "org.junit-pioneer:junit-pioneer", version.ref = "junit-pioneer" }
 
 # Logging
@@ -52,8 +52,8 @@ jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }
 jmh-annprocess = { module = "org.openjdk.jmh:jmh-generator-annprocess", version.ref = "jmh" }
 
 [bundles]
-# Core testing framework (JUnit + logging + console launcher for Exec tasks)
-testing = ["junit-api", "junit-engine", "junit-params", "junit-platform-console", "junit-pioneer", "slf4j-simple"]
+# Core testing framework (JUnit + logging + launcher API for custom test runner)
+testing = ["junit-api", "junit-engine", "junit-params", "junit-platform-launcher", "junit-pioneer", "slf4j-simple"]
 
 # Profiler runtime dependencies (JFR analysis + compression)
 profiler-runtime = ["jmc-flightrecorder", "jol-core", "lz4", "snappy", "zstd"]

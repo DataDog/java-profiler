@@ -274,17 +274,21 @@ Release builds automatically extract debug symbols:
 ## Development Workflow
 
 ### Running Single Tests
-Use Gradle's standard `--tests` flag across all platforms:
+Use the `-Ptests` property across all platforms:
 ```bash
-./gradlew :ddprof-test:testdebug --tests=ClassName.methodName  # Single method
-./gradlew :ddprof-test:testdebug --tests=ClassName              # Entire class
-./gradlew :ddprof-test:testdebug --tests="*.ClassName"          # Pattern matching
+./gradlew :ddprof-test:testdebug -Ptests=ClassName.methodName  # Single method
+./gradlew :ddprof-test:testdebug -Ptests=ClassName              # Entire class
+./gradlew :ddprof-test:testdebug -Ptests="*.ClassName"          # Pattern matching
 ```
 
 **Platform Implementation Details:**
-- **glibc/macOS**: Test tasks use Gradle's native Test task type with direct `--tests` flag support
-- **musl (Alpine)**: Test tasks delegate to Exec tasks internally (workaround for Gradle 9 toolchain probe issues on musl)
-- **Result**: Unified `--tests` flag works identically across all platforms, no platform-specific syntax required
+- **glibc/macOS**: Test tasks use Gradle's native Test task type with JUnit Platform integration
+- **musl (Alpine)**: Exec tasks with custom ProfilerTestRunner (bypasses Gradle 9 toolchain probe issues)
+- **Custom Test Runner**: Uses JUnit Platform Launcher API directly (same API used by IDEs and Gradle internally)
+- **Result**: Unified `-Ptests` property works identically across all platforms, no platform-specific syntax required
+
+**Why `-Ptests` instead of `--tests`?**
+The `-Ptests` property works consistently across both Test and Exec task types, while `--tests` only works with Test tasks. This ensures a truly unified interface across all platforms.
 
 ### Working with Native Code
 Native compilation is automatic during build. C++ code changes require:
@@ -678,11 +682,11 @@ The CI caches JDKs via `.github/workflows/cache_java.yml`. When adding a new JDK
       ```
     - Instead of:
       ```bash
-      ./gradlew :ddprof-test:testdebug --tests=MuslDetectionTest
+      ./gradlew :ddprof-test:testdebug -Ptests=MuslDetectionTest
       ```
       use:
       ```bash
-      ./.claude/commands/build-and-summarize :ddprof-test:testdebug --tests=MuslDetectionTest
+      ./.claude/commands/build-and-summarize :ddprof-test:testdebug -Ptests=MuslDetectionTest
       ```
 
 - This ensures the full build log is captured to a file and only a summary is shown in the main session.
