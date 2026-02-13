@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk8
 
 ## glibc-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-02-13 07:46:24 EST
+**Date:** 2026-02-13 07:52:39 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 87 |
-| Sample Rate | 1.45/sec |
-| Health Score | 91% |
+| CPU Samples | 268 |
+| Sample Rate | 4.47/sec |
+| Health Score | 279% |
 | Threads | 8 |
 | Allocations | 0 |
 
@@ -41,33 +41,33 @@ title: glibc-arm64-openj9-jdk8
 | CPU Samples | 89 |
 | Sample Rate | 1.48/sec |
 | Health Score | 92% |
-| Threads | 11 |
+| Threads | 10 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1770986585 24
-1770986590 24
-1770986595 24
-1770986600 24
-1770986605 24
-1770986610 24
-1770986615 24
-1770986620 24
-1770986625 24
-1770986630 24
-1770986635 24
-1770986640 24
-1770986645 24
-1770986650 24
-1770986655 24
-1770986660 24
-1770986665 24
-1770986670 24
-1770986675 24
-1770986680 24
+1770986867 24
+1770986872 24
+1770986877 24
+1770986882 24
+1770986887 24
+1770986892 24
+1770986897 24
+1770986902 24
+1770986907 24
+1770986912 24
+1770986917 24
+1770986922 24
+1770986927 24
+1770986932 24
+1770986937 24
+1770986942 24
+1770986947 24
+1770986952 24
+1770986957 24
+1770986962 24
 ```
 </details>
 
