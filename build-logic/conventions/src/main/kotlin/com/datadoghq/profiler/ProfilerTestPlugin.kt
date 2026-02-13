@@ -179,7 +179,7 @@ class ProfilerTestPlugin : Plugin<Project> {
         testCfg: Configuration,
         sourceSets: SourceSetContainer
     ) {
-        project.tasks.register("test${testConfig.configName}", Test::class.java) {
+        project.tasks.register("test${testConfig.configName.replaceFirstChar { it.uppercase() }}", Test::class.java) {
             val testTask = this
             testTask.description = "Runs unit tests with the ${testConfig.configName} library variant"
             testTask.group = "verification"
@@ -269,7 +269,7 @@ class ProfilerTestPlugin : Plugin<Project> {
         testCfg: Configuration,
         sourceSets: SourceSetContainer
     ) {
-        project.tasks.register("test${testConfig.configName}", Exec::class.java) {
+        project.tasks.register("test${testConfig.configName.replaceFirstChar { it.uppercase() }}", Exec::class.java) {
             val execTask = this
             execTask.description = "Runs unit tests with the ${testConfig.configName} library variant (musl workaround)"
             execTask.group = "verification"

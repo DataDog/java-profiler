@@ -414,8 +414,10 @@ fi
 # ========== Run Tests ==========
 
 # Build gradle test command
+# Capitalize first letter for gradle task names (testDebug, testAsan, etc.)
 # Note: -Ptests property works uniformly across all platforms (glibc, musl, macOS)
-GRADLE_CMD="./gradlew -PCI -PkeepJFRs :ddprof-test:test${CONFIG}"
+CONFIG_CAPITALIZED="$(tr '[:lower:]' '[:upper:]' <<< ${CONFIG:0:1})${CONFIG:1}"
+GRADLE_CMD="./gradlew -PCI -PkeepJFRs :ddprof-test:test${CONFIG_CAPITALIZED}"
 if [[ -n "$TESTS" ]]; then
     # No need for quotes around $TESTS - Gradle property values don't require quoting
     GRADLE_CMD="$GRADLE_CMD -Ptests=$TESTS"

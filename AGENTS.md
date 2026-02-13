@@ -276,9 +276,9 @@ Release builds automatically extract debug symbols:
 ### Running Single Tests
 Use the `-Ptests` property across all platforms:
 ```bash
-./gradlew :ddprof-test:testdebug -Ptests=ClassName.methodName  # Single method
-./gradlew :ddprof-test:testdebug -Ptests=ClassName              # Entire class
-./gradlew :ddprof-test:testdebug -Ptests="*.ClassName"          # Pattern matching
+./gradlew :ddprof-test:testDebug -Ptests=ClassName.methodName  # Single method
+./gradlew :ddprof-test:testDebug -Ptests=ClassName              # Entire class
+./gradlew :ddprof-test:testDebug -Ptests="*.ClassName"          # Pattern matching
 ```
 
 **Platform Implementation Details:**
@@ -615,7 +615,7 @@ See `gradle.properties.template` for all options. Key ones:
 
 - Exclude ddprof-lib/build/async-profiler from searches of active usage
 
-- Run tests with 'testdebug' gradle task
+- Run tests with 'testDebug' gradle task
 
 ## Build JDK Configuration
 
@@ -682,7 +682,7 @@ The CI caches JDKs via `.github/workflows/cache_java.yml`. When adding a new JDK
       ```
     - Instead of:
       ```bash
-      ./gradlew :ddprof-test:testdebug -Ptests=MuslDetectionTest
+      ./gradlew :ddprof-test:testDebug -Ptests=MuslDetectionTest
       ```
       use:
       ```bash
