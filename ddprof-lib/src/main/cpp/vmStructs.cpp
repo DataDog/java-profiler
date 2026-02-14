@@ -14,9 +14,7 @@
 #include "safeAccess.h"
 #include "spinLock.h"
 
-
 CodeCache* VMStructs::_libjvm = nullptr;
-
 bool VMStructs::_has_class_names = false;
 bool VMStructs::_has_method_structs = false;
 bool VMStructs::_has_compiler_structs = false;
@@ -39,7 +37,7 @@ const void* VMStructs::_interpreted_frame_valid_end = nullptr;
 
 
 // Initialize type size to 0
-#define INIT_TYPE_SIZE(name, ...) uint64_t VMStructs::TYPE_SIZE_NAME(name) = 0;
+#define INIT_TYPE_SIZE(name, names) uint64_t VMStructs::TYPE_SIZE_NAME(name) = 0;
 DECLARE_TYPES_DO(INIT_TYPE_SIZE)
 #undef INIT_TYPE_SIZE
 
@@ -53,7 +51,7 @@ DECLARE_TYPES_DO(INIT_TYPE_SIZE)
 
 // Do nothing macro
 #define DO_NOTHING(...)
-#define INIT_OFFSET_OR_ADDRESS(field, field_type, ...) \
+#define INIT_OFFSET_OR_ADDRESS(field, field_type, names) \
     field_type VMStructs::_##field##_##field_type = field_type##_value;
 
 DECLARE_TYPE_FILED_DO(DO_NOTHING, INIT_OFFSET_OR_ADDRESS, DO_NOTHING)
@@ -120,23 +118,6 @@ void VMStructs::ready() {
     initThreadBridge();
 }
 
-bool initTypeSize(uint64_t& size, const char* type, uint64_t value, ...) {
-    va_list args;
-    va_start(args, value);
-    const char* match_type = nullptr;
-    bool found = false;
-    while ((match_type = va_arg(args, const char*)) != nullptr) { 
-        if (strcmp(type, match_type) == 0) {
-            size = value;
-            found = true;
-            break;
-        }
-    } 
- 
-    va_end(args);
-    return found;
-}
-
 bool matchAny(const char* target_name, const char** names) {
     for (const char** name = names; *name != nullptr; name++) {
         if (strcmp(target_name, *name) == 0) {
@@ -163,7 +144,7 @@ void VMStructs::init_offsets_and_addresses() {
     };
 
     auto read_value = [&]() -> int {
-        return **(int**)(entry + offset_offset);
+        return *(int*)(entry + offset_offset);
     };
 
     if (entry != 0 && stride != 0) {
@@ -173,14 +154,14 @@ void VMStructs::init_offsets_and_addresses() {
             if (type_name == nullptr || field_name == nullptr) {
                 break;
             }
-#define MATCH_TYPE_NAMES(type, ...)                                     \
-     if (matchAny(type_name, (const char*[]){ #__VA_ARGS__ })) {
-#define READ_FIELD_VALUE(field, field_type, ...) \
-        if (matchAny(field_name, (const char*[]){ #__VA_ARGS__ })) {    \
+#define MATCH_TYPE_NAMES(type, type_names)                                     \
+     if (matchAny(type_name, type_names)) {
+#define READ_FIELD_VALUE(field, field_type, field_names) \
+        if (matchAny(field_name, field_names)) {    \
             _##field##_##field_type = read_##field_type();              \
             continue;                                                   \
         }
-#define END_TYPE() }
+#define END_TYPE() continue; }
         DECLARE_TYPE_FILED_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, END_TYPE)
 #undef MATCH_TYPE_NAMES
 #undef READ_FIELD_VALUE
@@ -204,8 +185,8 @@ void VMStructs::init_type_sizes() {
 
             uint64_t size = *(uint64_t*)(entry + size_offset);
            
- #define READ_TYPE_SIZE(name, ...)                                      \
-        if (matchAny(type, (const char*[]){ #__VA_ARGS__ })) {          \
+ #define READ_TYPE_SIZE(name, names)                                      \
+        if (matchAny(type, names)) {          \
             TYPE_SIZE_NAME(name) = size;                                \
             continue;                                                   \
         }

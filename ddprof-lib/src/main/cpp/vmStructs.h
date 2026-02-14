@@ -39,20 +39,20 @@ inline T* cast_to(const void* ptr) {
 
 #define DECLARE_END  };
 
-#define MATCH_SYMBOLS(...) { #__VA_ARGS__, nullptr }
+#define MATCH_SYMBOLS(...)  (const char*[]) { __VA_ARGS__, nullptr }
 
 // Defines a type and its matching symbols in vmStructs.
 // A type may match multiple names in different JVM versions.
 #define DECLARE_TYPES_DO(f) \
-    f(VMClassLoaderData,    MATCH_SYMBOLS("ClassLoaderData")) \
-    f(VMConstantPool,       MATCH_SYMBOLS("ConstantPool")) \
-    f(VMConstMethod,        MATCH_SYMBOLS("ConstMethod")) \
-    f(VMFlag,               MATCH_SYMBOLS("JVMFlag", "Flag")) \
-    f(VMJavaFrameAnchor,    MATCH_SYMBOLS("JavaFrameAnchor")) \
-    f(VMKlass,              MATCH_SYMBOLS("Klass")) \
-    f(VMMethod,             MATCH_SYMBOLS("Method")) \
-    f(VMNMethod,            MATCH_SYMBOLS("nmethod")) \
-    f(VMSymbol,             MATCH_SYMBOLS("Symbol")) \
+    f(VMClassLoaderData,    MATCH_SYMBOLS("ClassLoaderData"))   \
+    f(VMConstantPool,       MATCH_SYMBOLS("ConstantPool"))      \
+    f(VMConstMethod,        MATCH_SYMBOLS("ConstMethod"))       \
+    f(VMFlag,               MATCH_SYMBOLS("JVMFlag", "Flag"))   \
+    f(VMJavaFrameAnchor,    MATCH_SYMBOLS("JavaFrameAnchor"))   \
+    f(VMKlass,              MATCH_SYMBOLS("Klass"))             \
+    f(VMMethod,             MATCH_SYMBOLS("Method"))            \
+    f(VMNMethod,            MATCH_SYMBOLS("nmethod"))           \
+    f(VMSymbol,             MATCH_SYMBOLS("Symbol"))            \
     f(VMThread,             MATCH_SYMBOLS("Thread"))
 
 
@@ -188,11 +188,11 @@ typedef int value;
         field(collected_heap, address, MATCH_SYMBOLS("_collectedHeap"))                                             \
     type_end()
 
-#define DECLARE_INT_CONSTANTS_DO(constant) \
+#define DECLARE_INT_CONSTANTS_DO(constant)              \
     constant(frame, entry_frame_call_wrapper_offset)
 
-#define DECLARE_LONG_CONSTANTS_DO(constant) \
-    constant(markWord, klass_shift) \
+#define DECLARE_LONG_CONSTANTS_DO(constant)             \
+    constant(markWord, klass_shift)                     \
     constant(markWord, monitor_value)
 
 class VMStructs {
@@ -226,7 +226,7 @@ class VMStructs {
 
 
 // Declare type size variables
- #define DECLARE_TYPE_SIZE_VAR(name, ...) \
+ #define DECLARE_TYPE_SIZE_VAR(name, names) \
     static uint64_t TYPE_SIZE_NAME(name);
 
     DECLARE_TYPES_DO(DECLARE_TYPE_SIZE_VAR)
@@ -236,7 +236,7 @@ class VMStructs {
 
 // Do nothing macro
 #define DO_NOTHING(...)
-#define DECLARE_TYPE_FIELD(field, field_type, ...) \
+#define DECLARE_TYPE_FIELD(field, field_type, names) \
     static field_type _##field##_##field_type;
 
     DECLARE_TYPE_FILED_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DO_NOTHING)
