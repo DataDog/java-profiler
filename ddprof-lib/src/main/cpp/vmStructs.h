@@ -39,7 +39,7 @@ inline T* cast_to(const void* ptr) {
 
 #define DECLARE_END  };
 
-#define MATCH_SYMBOLS(...) __VA_ARGS__, nullptr
+#define MATCH_SYMBOLS(...) { #__VA_ARGS__, nullptr }
 
 // Defines a type and its matching symbols in vmStructs.
 // A type may match multiple names in different JVM versions.
@@ -56,43 +56,144 @@ inline T* cast_to(const void* ptr) {
     f(VMThread,             MATCH_SYMBOLS("Thread"))
 
 
-
-#define POSSIBLE_NAMES(...) { __VA_ARGS__, nullptr }
-#define POSSIBLE_TYPE_NAMES POSSIBLE_NAMES
-#define POSSIBLE_FIELD_NAMES POSSIBLE_NAMES
-
 typedef int offset;
-typedef const void* address;
+typedef const unsigned char** address;
+typedef int value;
 
-#define DECLARE_TYPE_FILED_DO(type, field, type_end)                                                                            \
-    type(VMMemRegion, POSSIBLE_TYPE_NAMES("MemRegion"))                                                                           \
-        field(VMMemRegion, start, offset, POSSIBLE_FIELD_NAMES("_start"))                                                         \
-        field(VMMemRegion, size, offset, POSSIBLE_FIELD_NAMES("_word_size"))                                                      \
-    type_end()                                                                                                                  \
-    type(VMNMethod, POSSIBLE_TYPE_NAMES(CompiledMethod, nmethod))                                                               \
-        field(VMNMethod, method, offset, POSSIBLE_FIELD_NAMES("_method"))                                                         \
-        field(VMNMethod, method_entry, offset, POSSIBLE_FIELD_NAMES("_verified_entry_offset", "_verified_entry_point"))             \
-        field(VMNMethod, state, offset, POSSIBLE_FIELD_NAMES("_state"))                                                           \
-        field(VMNMethod, level, offset, POSSIBLE_FIELD_NAMES("_comp_level"))                                                      \
-        field(VMNMethod, metadata, offset, POSSIBLE_FIELD_NAMES("_metadata_offset"))                                              \
-        field(VMNMethod, immutable_data, offset, POSSIBLE_FIELD_NAMES("_immutable_data"))                                         \
-        field(VMNMethod, scopes_pcs, offset, POSSIBLE_FIELD_NAMES("_scopes_pcs_offset"))                                          \
-        field(VMNMethod, scopes_data, offset, POSSIBLE_FIELD_NAMES("_scopes_data_offset", "_scopes_data_begin"))                    \
-    type_end()                                                                                                                  \
-    type(VMKlass, POSSIBLE_TYPE_NAMES(Klass))                                                                                   \
-        field(VMKlass, name, offset, POSSIBLE_FIELD_NAMES("_name"))                                                               \
-    type_end()                                                                                                                  \
-    type(VMSymbol, POSSIBLE_TYPE_NAMES(Symbol))                                                                                 \
-        field(VMSymbol, length, offset, POSSIBLE_FIELD_NAMES("_length"))                                                          \
-        field(VMSymbol, body, offset, POSSIBLE_FIELD_NAMES("_body"))                                                              \
-    type_end()                                                                                                                  \
-    type(VMUniverse, POSSIBLE_TYPE_NAMES(Universe, CompressedKlassPointers))                                                    \
-        field(VMUniverse, narrow_klass_base, address, POSSIBLE_FIELD_NAMES("_narrow_klass._base", "_base"))                         \
-        field(VMUniverse, narrow_klass_shift, offset, POSSIBLE_FIELD_NAMES("_narrow_klass._shift", "_shift"))                       \
-    type_end()                                                                                                                  \
-    type(VMOop, POSSIBLE_TYPE_NAMES(oopDesc))                                                                                   \
-        field(VMOop, _oop_klass, offset, POSSIBLE_FIELD_NAMES("_metadata._klass"))                                                \
-    type_end()                                                                                                                  \
+#define DECLARE_TYPE_FILED_DO(type_begin, field, type_end)                                                          \
+    type_begin(VMMemRegion, MATCH_SYMBOLS("MemRegion"))                                                             \
+        field(region_start, offset, MATCH_SYMBOLS("_start"))                                                        \
+        field(region_size, offset, MATCH_SYMBOLS("_word_size"))                                                     \
+    type_end()                                                                                                      \
+    type_begin(VMNMethod, MATCH_SYMBOLS("CompiledMethod", "nmethod"))                                               \
+        field(nmethod_method, offset, MATCH_SYMBOLS("_method"))                                                     \
+        field(nmethod_entry, offset, MATCH_SYMBOLS("_verified_entry_offset", "_verified_entry_point"))              \
+        field(nmethod_state, offset, MATCH_SYMBOLS("_state"))                                                       \
+        field(nmethod_level, offset, MATCH_SYMBOLS("_comp_level"))                                                  \
+        field(nmethod_metadata, offset, MATCH_SYMBOLS("_metadata_offset"))                                          \
+        field(nmethod_immutable, offset, MATCH_SYMBOLS("_immutable_data"))                                          \
+        field(scopes_pcs, offset, MATCH_SYMBOLS("_scopes_pcs_offset"))                                              \
+        field(scopes_data, offset, MATCH_SYMBOLS("_scopes_data_offset", "_scopes_data_begin"))                      \
+    type_end()                                                                                                      \
+    type_begin(VMMethod, MATCH_SYMBOLS("Method"))                                                                   \
+        field(method_constmethod, offset, MATCH_SYMBOLS("_constMethod"))                                            \
+        field(method_code, offset, MATCH_SYMBOLS("_code"))                                                          \
+    type_end()                                                                                                      \
+    type_begin(VMConstMethod, MATCH_SYMBOLS("ConstMethod"))                                                         \
+        field(constmethod_constants, offset, MATCH_SYMBOLS("_constants"))                                           \
+        field(constmethod_idnum, offset, MATCH_SYMBOLS("_method_idnum"))                                            \
+    type_end()                                                                                                      \
+    type_begin(VMConstantPool, MATCH_SYMBOLS("ConstantPool"))                                                       \
+        field(pool_holder, offset, MATCH_SYMBOLS("_pool_holder"))                                                   \
+    type_end()                                                                                                      \
+    type_begin(VMKlass, MATCH_SYMBOLS("Klass", "InstanceKlass"))                                                    \
+        field(klass_name, offset, MATCH_SYMBOLS("_name"))                                                                 \
+        field(class_loader_data, offset, MATCH_SYMBOLS("_class_loader_data"))                                       \
+        field(methods, offset, MATCH_SYMBOLS("_methods"))                                                           \
+        field(jmethod_ids, offset, MATCH_SYMBOLS("_methods_jmethod_ids"))                                           \
+    type_end()                                                                                                      \
+    type_begin(VMClassLoaderData, MATCH_SYMBOLS("ClassLoaderData"))                                                 \
+        field(class_loader_data_next, offset, MATCH_SYMBOLS("_next"))                                               \
+    type_end()                                                                                                      \
+    type_begin(VMJavaClass, MATCH_SYMBOLS("java_lang_Class"))                                                       \
+        field(klass_offset, address, MATCH_SYMBOLS("_klass_offset"))                                                \
+    type_end()                                                                                                      \
+    type_begin(VMSymbol, MATCH_SYMBOLS("Symbol"))                                                                   \
+        field(symbol_length, offset, MATCH_SYMBOLS("_length"))                                                      \
+        field(symbol_body, offset, MATCH_SYMBOLS("_body"))                                                          \
+        field(symbol_length_and_refcount, offset, MATCH_SYMBOLS("_length_and_refcount"))                            \
+    type_end()                                                                                                      \
+    type_begin(VMThread, MATCH_SYMBOLS("Thread", "JavaThread"))                                                     \
+        field(thread_osthread, offset, MATCH_SYMBOLS("_osthread"))                                                  \
+        field(thread_anchor, offset, MATCH_SYMBOLS("_anchor"))                                                      \
+        field(thread_state, offset, MATCH_SYMBOLS("_thread_state"))                                                 \
+        field(thread_vframe, offset, MATCH_SYMBOLS("_vframe_array_head"))                                           \
+    type_end()                                                                                                      \
+    type_begin(VMOSThread, MATCH_SYMBOLS("OSThread"))                                                               \
+        field(osthread_id, offset, MATCH_SYMBOLS("_thread_id"))                                                     \
+        field(osthread_state, offset, MATCH_SYMBOLS("_state"))                                                      \
+    type_end()                                                                                                      \
+    type_begin(VMThreadShow, MATCH_SYMBOLS("ThreadShadow"))                                                         \
+        field(thread_exception, offset, MATCH_SYMBOLS("_exception_file"))                                           \
+    type_end()                                                                                                      \
+    type_begin(VMCompilerThread, MATCH_SYMBOLS("CompilerThread"))                                                   \
+        field(comp_env, offset, MATCH_SYMBOLS("_env"))                                                              \
+    type_end()                                                                                                      \
+    type_begin(VMciEnv, MATCH_SYMBOLS("ciEnv"))                                                                     \
+        field(comp_task, offset, MATCH_SYMBOLS("_task"))                                                            \
+    type_end()                                                                                                      \
+    type_begin(VMCompileTask, MATCH_SYMBOLS("CompileTask"))                                                         \
+        field(comp_method, offset, MATCH_SYMBOLS("_method"))                                                        \
+    type_end()                                                                                                      \
+    type_begin(VMJavaCallWrapper, MATCH_SYMBOLS("JavaCallWrapper"))                                                 \
+        field(call_wrapper_anchor, offset, MATCH_SYMBOLS("_anchor"))                                                \
+    type_end()                                                                                                      \
+    type_begin(VMJavaFrameAnchor, MATCH_SYMBOLS("JavaFrameAnchor"))                                                 \
+        field(anchor_sp, offset, MATCH_SYMBOLS("_last_Java_sp"))                                                    \
+        field(anchor_pc, offset, MATCH_SYMBOLS("_last_Java_pc"))                                                    \
+        field(anchor_fp, offset, MATCH_SYMBOLS("_last_Java_fp"))                                                    \
+    type_end()                                                                                                      \
+    type_begin(VMCodeBlob, MATCH_SYMBOLS("CodeBlob"))                                                               \
+        field(blob_size, offset, MATCH_SYMBOLS("_size"))                                                            \
+        field(frame_size, offset, MATCH_SYMBOLS("_frame_size"))                                                     \
+        field(frame_complete, offset, MATCH_SYMBOLS("_frame_complete_offset"))                                      \
+        field(code, offset, MATCH_SYMBOLS("_code_offset", "_code_begin"))                                           \
+        field(data, offset, MATCH_SYMBOLS("_data_offset"))                                                          \
+        field(mutable_data, offset, MATCH_SYMBOLS("_mutable_data"))                                                 \
+        field(relocation_size, offset, MATCH_SYMBOLS("_relocation_size"))                                           \
+        field(nmethod_name, offset, MATCH_SYMBOLS("_name"))                                                         \
+    type_end()                                                                                                      \
+    type_begin(VMCodeCache, MATCH_SYMBOLS("CodeCache"))                                                             \
+        field(code_heap, address, MATCH_SYMBOLS("_heap", "_heaps"))                                                 \
+        field(code_heap_low, address, MATCH_SYMBOLS("_low_bound"))                                                  \
+        field(code_heap_high, address, MATCH_SYMBOLS("_high_bound"))                                                \
+    type_end()                                                                                                      \
+    type_begin(VMCodeHeap, MATCH_SYMBOLS("CodeHeap"))                                                               \
+        field(code_heap_memory, offset, MATCH_SYMBOLS("_memory"))                                                   \
+        field(code_heap_segmap, offset, MATCH_SYMBOLS("_segmap"))                                                   \
+        field(code_heap_segment_shift, value, MATCH_SYMBOLS("_log2_segment_size"))                                  \
+    type_end()                                                                                                      \
+    type_begin(VMHeapBlock, MATCH_SYMBOLS("HeapBlock::Header"))                                                     \
+        field(heap_block_used, offset, MATCH_SYMBOLS("_used"))                                                      \
+    type_end()                                                                                                      \
+    type_begin(VMVirtualSpace, MATCH_SYMBOLS("VirtualSpace"))                                                       \
+        field(vs_low_bound, offset, MATCH_SYMBOLS("_low_boundary"))                                                 \
+        field(vs_high_bound, offset, MATCH_SYMBOLS("_high_boundary"))                                               \
+        field(vs_low, offset, MATCH_SYMBOLS("_low"))                                                                \
+        field(vs_high, offset, MATCH_SYMBOLS("_high"))                                                              \
+    type_end()                                                                                                      \
+    type_begin(VMStubRoutine, MATCH_SYMBOLS("StubRoutines"))                                                        \
+        field(call_stub_return, address, MATCH_SYMBOLS("_call_stub_return_address"))                                \
+    type_end()                                                                                                      \
+    type_begin(VMGrowableArray, MATCH_SYMBOLS("GrowableArrayBase", "GenericGrowableArray"))                         \
+        field(array_len, offset, MATCH_SYMBOLS("_len"))                                                             \
+    type_end()                                                                                                      \
+    type_begin(VMGrowableArrayInt, MATCH_SYMBOLS("GrowableArray<int>"))                                             \
+        field(array_data, offset, MATCH_SYMBOLS("_data"))                                                           \
+    type_end()                                                                                                      \
+    type_begin(VMFlag, MATCH_SYMBOLS("JVMFlag", "Flag"))                                                            \
+        field(flag_name, offset, MATCH_SYMBOLS("_name", "name"))                                                    \
+        field(flag_addr, offset, MATCH_SYMBOLS("_addr", "addr"))                                                    \
+        field(flag_origin, offset, MATCH_SYMBOLS("_flags", "origin"))                                               \
+        field(flags, address, MATCH_SYMBOLS("flags"))                                                               \
+        field(flag_count, value, MATCH_SYMBOLS("numFlags"))                                                         \
+        field(flag_type, offset, MATCH_SYMBOLS("_type", "type"))                                                    \
+    type_end()                                                                                                      \
+    type_begin(VMOop, MATCH_SYMBOLS("oopDesc"))                                                                     \
+        field(oop_klass, offset, MATCH_SYMBOLS("_metadata._klass"))                                                 \
+    type_end()                                                                                                      \
+    type_begin(VMUniverse, MATCH_SYMBOLS("Universe", "CompressedKlassPointers"))                                    \
+        field(narrow_klass_base, address, MATCH_SYMBOLS("_narrow_klass._base", "_base"))                            \
+        field(narrow_klass_shift, offset, MATCH_SYMBOLS("_narrow_klass._shift", "_shift"))                          \
+        field(collected_heap, address, MATCH_SYMBOLS("_collectedHeap"))                                             \
+    type_end()
+
+#define DECLARE_INT_CONSTANTS_DO(constant) \
+    constant(frame, entry_frame_call_wrapper_offset)
+
+#define DECLARE_LONG_CONSTANTS_DO(constant) \
+    constant(markWord, klass_shift) \
+    constant(markWord, monitor_value)
 
 class VMStructs {
   public:
@@ -103,16 +204,6 @@ class VMStructs {
 
     static CodeCache* _libjvm;
 
-// Do nothing macro
-#define DO_NOTHING(...)
-
-#define DECLARE_TYPE_FIELD(type, field, field_type, ...) \
-    static field_type _##type##_##field##_##field_type;  
-    
-    DECLARE_TYPE_FILED_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DO_NOTHING)
-#undef DECL_TYPE_FIELD
-#undef DO_NOTHING
-
     static bool _has_class_names;
     static bool _has_method_structs;
     static bool _has_compiler_structs;
@@ -121,97 +212,49 @@ class VMStructs {
     static bool _has_native_thread_id;
     static bool _can_dereference_jmethod_id;
     static bool _compact_object_headers;
-
-    static int _klass_name_offset;
-    static int _symbol_length_offset;
-    static int _symbol_length_and_refcount_offset;
-    static int _symbol_body_offset;
-    static int _oop_klass_offset;
-    static int _class_loader_data_offset;
-    static int _class_loader_data_next_offset;
-    static int _methods_offset;
-    static int _jmethod_ids_offset;
-    static int _thread_osthread_offset;
-    static int _thread_anchor_offset;
-    static int _thread_state_offset;
-    static int _thread_vframe_offset;
-    static int _thread_exception_offset;
-    static int _osthread_id_offset;
-    static int _call_wrapper_anchor_offset;
-    static int _comp_env_offset;
-    static int _comp_task_offset;
-    static int _comp_method_offset;
-    static int _anchor_sp_offset;
-    static int _anchor_pc_offset;
-    static int _anchor_fp_offset;
-    static int _blob_size_offset;
-    static int _frame_size_offset;
-    static int _frame_complete_offset;
-    static int _code_offset;
-    static int _data_offset;
-    static int _mutable_data_offset;
-    static int _relocation_size_offset;
-    static int _scopes_pcs_offset;
-    static int _scopes_data_offset;
-    static int _nmethod_name_offset;
-    static int _nmethod_method_offset;
-    static int _nmethod_entry_offset;
-    static int _nmethod_state_offset;
-    static int _nmethod_level_offset;
-    static int _nmethod_metadata_offset;
-    static int _nmethod_immutable_offset;
-    static int _method_constmethod_offset;
-    static int _method_code_offset;
-    static int _constmethod_constants_offset;
-    static int _constmethod_idnum_offset;
-    static int _pool_holder_offset;
-    static int _array_len_offset;
-    static int _array_data_offset;
-    static int _code_heap_memory_offset;
-    static int _code_heap_segmap_offset;
-    static int _code_heap_segment_shift;
-    static int _heap_block_used_offset;
-    static int _vs_low_bound_offset;
-    static int _vs_high_bound_offset;
-    static int _vs_low_offset;
-    static int _vs_high_offset;
-    static int _flag_name_offset;
-    static int _flag_addr_offset;
-    static int _flag_origin_offset;
-    static const char* _flags_addr;
-    static int _flag_count;
-    static char* _code_heap[3];
+    
+    static int _narrow_klass_shift;
     static const void* _code_heap_low;
     static const void* _code_heap_high;
-    static char** _code_heap_addr;
-    static const void** _code_heap_low_addr;
-    static const void** _code_heap_high_addr;
-    static int* _klass_offset_addr;
-    static char** _narrow_klass_base_addr;
     static char* _narrow_klass_base;
-    static int* _narrow_klass_shift_addr;
-    static int _narrow_klass_shift;
-    static char** _collected_heap_addr;
-    static int _region_start_offset;
-    static int _region_size_offset;
-    static int _markword_klass_shift;
-    static int _markword_monitor_value;
-    static int _entry_frame_call_wrapper_offset;
+    static const void* _call_stub_return;
+    static char* _code_heap[3];
     static int _interpreter_frame_bcp_offset;
     static unsigned char _unsigned5_base;
-    static const void** _call_stub_return_addr;
-    static const void* _call_stub_return;
     static const void* _interpreted_frame_valid_start;
     static const void* _interpreted_frame_valid_end;
+
 
 // Declare type size variables
  #define DECLARE_TYPE_SIZE_VAR(name, ...) \
     static uint64_t TYPE_SIZE_NAME(name);
-    
-    DECLARE_TYPES_DO(DECLARE_TYPE_SIZE_VAR)
 
+    DECLARE_TYPES_DO(DECLARE_TYPE_SIZE_VAR)
 #undef DECLARE_TYPE_SIZE_VAR
-    
+
+// Declare vmStructs' field offsets and addresses
+
+// Do nothing macro
+#define DO_NOTHING(...)
+#define DECLARE_TYPE_FIELD(field, field_type, ...) \
+    static field_type _##field##_##field_type;
+
+    DECLARE_TYPE_FILED_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DO_NOTHING)
+#undef DECLARE_TYPE_FIELD
+#undef DO_NOTHING
+
+// Declare int constant variables
+#define DECLARE_INT_CONSTANT_VAR(type, field) \
+    static int _##type##_##field;
+    DECLARE_INT_CONSTANTS_DO(DECLARE_INT_CONSTANT_VAR)
+#undef DECLARE_INT_CONSTANT_VAR
+
+// Declare long constant variables
+#define DECLARE_LONG_CONSTANT_VAR(type, field) \
+    static long _##type##_##field;
+    DECLARE_LONG_CONSTANTS_DO(DECLARE_LONG_CONSTANT_VAR)
+#undef DECLARE_LONG_CONSTANT_VAR
+
 
     static jfieldID _eetop;
     static jfieldID _tid;
@@ -226,8 +269,6 @@ class VMStructs {
 
     // Datadog-specific extensions
     static CodeCache _unsafe_to_walk;
-    static int _osthread_state_offset;
-    static int _flag_type_offset;
     typedef HeapUsage (*HeapUsageFunc)(const void *);
     static HeapUsageFunc _heap_usage_func;
     typedef void *(*MemoryUsageFunc)(void *, void *, bool);
@@ -237,8 +278,13 @@ class VMStructs {
     static IsValidMethodFunc _is_valid_method_func;
 
     static uintptr_t readSymbol(const char* symbol_name);
+
+    // Read VM information from vmStructs
+    static void init_type_sizes();
     static void init_offsets_and_addresses();
+    static void init_constants();
     static void initOffsets();
+
     static void resolveOffsets();
     static void patchSafeFetch();
     static void initJvmFunctions();
@@ -458,7 +504,7 @@ DECLARE(VMKlass)
                 if (mark & MONITOR_BIT) {
                     mark = *(uintptr_t*)(mark ^ MONITOR_BIT);
                 }
-                narrow_klass = mark >> _markword_klass_shift;
+                narrow_klass = mark >> _markWord_klass_shift;
             } else {
                 narrow_klass = *(unsigned int*)(oop + _oop_klass_offset);
             }
@@ -496,9 +542,9 @@ DECLARE(VMJavaFrameAnchor)
 
   public:
     static VMJavaFrameAnchor* fromEntryFrame(uintptr_t fp) {
-        assert(_entry_frame_call_wrapper_offset != -1);
+        assert(_frame_entry_frame_call_wrapper_offset != -1);
         assert(_call_wrapper_anchor_offset >= 0);
-        const char* call_wrapper = (const char*) SafeAccess::loadPtr((void**)(fp + _entry_frame_call_wrapper_offset), nullptr);
+        const char* call_wrapper = (const char*) SafeAccess::loadPtr((void**)(fp + _frame_entry_frame_call_wrapper_offset), nullptr);
         if (!goodPtr(call_wrapper) || (uintptr_t)call_wrapper - fp > MAX_CALL_WRAPPER_DISTANCE) {
             return NULL;
         }
@@ -789,7 +835,7 @@ class CodeHeap : VMStructs {
 
   public:
     static bool available() {
-        return _code_heap_addr != NULL;
+        return _code_heap_address != nullptr;
     }
 
     static bool contains(const void* pc) {
