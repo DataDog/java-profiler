@@ -86,31 +86,43 @@ object PlatformUtils {
             return null
         }
 
-        return try {
-            // Try the specified compiler first, fall back to gcc
-            val compilerToUse = if (isCompilerAvailable(compiler)) {
-                compiler
-            } else if (compiler != "gcc" && isCompilerAvailable("gcc")) {
-                "gcc"
-            } else {
-                return null
+        // Try the specified compiler first
+        if (isCompilerAvailable(compiler)) {
+            try {
+                val process = ProcessBuilder(compiler, "-print-file-name=$libName.so")
+                    .redirectErrorStream(true)
+                    .start()
+
+                val output = process.inputStream.bufferedReader().readText().trim()
+                process.waitFor()
+
+                if (process.exitValue() == 0 && output != "$libName.so") {
+                    return output
+                }
+            } catch (e: Exception) {
+                // Fall through to try gcc
             }
-
-            val process = ProcessBuilder(compilerToUse, "-print-file-name=$libName.so")
-                .redirectErrorStream(true)
-                .start()
-
-            val output = process.inputStream.bufferedReader().readText().trim()
-            process.waitFor()
-
-            if (process.exitValue() == 0 && !output.endsWith("$libName.so")) {
-                output
-            } else {
-                null
-            }
-        } catch (e: Exception) {
-            null
         }
+
+        // If the specified compiler didn't find it, try gcc as fallback
+        if (compiler != "gcc" && isCompilerAvailable("gcc")) {
+            try {
+                val process = ProcessBuilder("gcc", "-print-file-name=$libName.so")
+                    .redirectErrorStream(true)
+                    .start()
+
+                val output = process.inputStream.bufferedReader().readText().trim()
+                process.waitFor()
+
+                if (process.exitValue() == 0 && output != "$libName.so") {
+                    return output
+                }
+            } catch (e: Exception) {
+                // Fall through to return null
+            }
+        }
+
+        return null
     }
 
     fun locateLibasan(compiler: String = "gcc"): String? = locateLibrary("libasan", compiler)
