@@ -26,14 +26,14 @@ simpleNativeLib {
     when (PlatformUtils.currentPlatform) {
       Platform.LINUX -> listOf("-fPIC")
       Platform.MACOS -> emptyList()
-    }
+    },
   )
 
   linkerArgs.set(
     when (PlatformUtils.currentPlatform) {
       Platform.LINUX -> listOf("-shared", "-Wl,--build-id")
       Platform.MACOS -> listOf("-dynamiclib")
-    }
+    },
   )
 
   // Create consumable configurations for other projects to depend on

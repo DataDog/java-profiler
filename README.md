@@ -9,8 +9,8 @@ If you need a full-fledged Java profiler head back to [async-profiler](https://g
 ## Build
 
 ### Prerequisites
-1. JDK 8 or later (required for building)
-2. Gradle (included in wrapper)
+1. JDK 21 or later (required for building - Gradle 9 requirement)
+2. Gradle 9.3.1 (included in wrapper)
 3. C++ compiler (clang++ preferred, g++ supported)
    - Build system auto-detects clang++ or g++
    - Override with: `./gradlew build -Pnative.forceCompiler=g++`

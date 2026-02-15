@@ -22,7 +22,7 @@ fuzzTargets {
   // Additional include directories
   additionalIncludes.set(
     listOf(
-      project(":malloc-shim").file("src/main/public").absolutePath
-    )
+      project(":malloc-shim").file("src/main/public").absolutePath,
+    ),
   )
 }

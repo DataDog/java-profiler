@@ -10,8 +10,9 @@ import org.gradle.api.tasks.compile.JavaCompile
  *
  * Applies standard Java compilation options across all subprojects:
  * - Java 8 release target for broad JVM compatibility
+ * - Suppresses JDK 21+ deprecation warnings for --release 8
  *
- * Requires JDK 9+ for building (uses --release flag).
+ * Requires JDK 21+ for building (Gradle 9 requirement).
  * The compiled bytecode targets Java 8 runtime.
  *
  * Usage:
@@ -23,18 +24,10 @@ import org.gradle.api.tasks.compile.JavaCompile
  */
 class JavaConventionsPlugin : Plugin<Project> {
     override fun apply(project: Project) {
-        val javaVersion = System.getProperty("java.specification.version")?.toDoubleOrNull() ?: 0.0
-
         project.tasks.withType(JavaCompile::class.java).configureEach {
-            if (javaVersion >= 9) {
-                // JDK 9+ supports --release flag which handles source, target, and boot classpath
-                options.compilerArgs.addAll(listOf("--release", "8"))
-            } else {
-                // Fallback for JDK 8 (not recommended for building)
-                sourceCompatibility = "8"
-                targetCompatibility = "8"
-                project.logger.warn("Building with JDK 8 is not recommended. Use JDK 11+ with --release 8 for better compatibility.")
-            }
+            // JDK 21+ deprecated --release 8 with warnings; suppress with -Xlint:-options
+            // The deprecation is informational - Java 8 targeting still works
+            options.compilerArgs.addAll(listOf("--release", "8", "-Xlint:-options"))
         }
     }
 }

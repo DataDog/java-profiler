@@ -2,7 +2,7 @@ import com.datadoghq.native.util.PlatformUtils
 
 plugins {
   java
-  id("me.champeau.jmh") version "0.7.1"
+  id("me.champeau.jmh") version "0.7.3"
   id("com.datadoghq.java-conventions")
 }
 
@@ -35,13 +35,13 @@ jmh {
 
 // Configure all JMH-related JavaExec tasks to use the correct JDK
 tasks.withType<JavaExec>().matching { it.name.startsWith("jmh") }.configureEach {
-  executable = PlatformUtils.testJavaExecutable()
+  setExecutable(PlatformUtils.testJavaExecutable())
 }
 
 tasks.named<Jar>("jmhJar") {
   manifest {
     attributes(
-      "Main-Class" to "com.datadoghq.profiler.stresstest.Main"
+      "Main-Class" to "com.datadoghq.profiler.stresstest.Main",
     )
   }
   archiveFileName.set("stresstests.jar")
@@ -58,6 +58,6 @@ tasks.register<Exec>("runStressTests") {
     "build/libs/stresstests.jar",
     "-prof",
     "com.datadoghq.profiler.stresstest.WhiteboxProfiler",
-    "counters.*"
+    "counters.*",
   )
 }
