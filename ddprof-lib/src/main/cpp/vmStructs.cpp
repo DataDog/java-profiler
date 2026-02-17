@@ -63,11 +63,15 @@ DECLARE_TYPE_FILED_DO(DO_NOTHING, INIT_OFFSET_OR_ADDRESS, DO_NOTHING)
 #undef value_value
 
 // Initialize constant variables to -1
-#define INIT_CONSTANT(type, field) \
+#define INIT_INT_CONSTANT(type, field) \
     int VMStructs::_##type##_##field = -1;
-DECLARE_INT_CONSTANTS_DO(INIT_CONSTANT)
-DECLARE_LONG_CONSTANTS_DO(INIT_CONSTANT)
-#undef INIT_CONSTANT
+#define INIT_LONG_CONSTANT(type, field) \
+    long VMStructs::_##type##_##field = -1;
+
+DECLARE_INT_CONSTANTS_DO(INIT_INT_CONSTANT)
+DECLARE_LONG_CONSTANTS_DO(INIT_LONG_CONSTANT)
+#undef INIT_INT_CONSTANT
+#undef INIT_LONG_CONSTANT
 
 
 jfieldID VMStructs::_eetop;
@@ -286,7 +290,10 @@ void VMStructs::initOffsets() {
     init_offsets_and_addresses();
     init_constants();
 
-    DEBUG_ONLY(verify_offsets();)
+
+#ifdef DEBUG
+   verify_offsets();
+#endif
 }
 
 void VMStructs::resolveOffsets() {

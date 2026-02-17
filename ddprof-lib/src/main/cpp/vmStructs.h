@@ -103,10 +103,10 @@ typedef int value;
         field(symbol_body, offset, MATCH_SYMBOLS("_body"))                                                          \
         field(symbol_length_and_refcount, offset, MATCH_SYMBOLS("_length_and_refcount"))                            \
     type_end()                                                                                                      \
-    type_begin(VMThread, MATCH_SYMBOLS"Thread")                                                                     \
+    type_begin(VMThread, MATCH_SYMBOLS("Thread"))                                                                   \
         field(thread_osthread, offset, MATCH_SYMBOLS("_osthread"))                                                  \
     type_end()                                                                                                      \
-    type_begin(VMJavaThread, MATCH_SYMBOLS("JavaThread"))                                                          \
+    type_begin(VMJavaThread, MATCH_SYMBOLS("JavaThread"))                                                           \
         field(thread_anchor, offset, MATCH_SYMBOLS("_anchor"))                                                      \
         field(thread_state, offset, MATCH_SYMBOLS("_thread_state"))                                                 \
         field(thread_vframe, offset, MATCH_SYMBOLS("_vframe_array_head"))                                           \
@@ -287,7 +287,9 @@ class VMStructs {
     static void init_constants();
     static void initOffsets();
 
-    DEBUG_ONLY(static void verify_offsets();)
+#ifdef DEBUG
+    static void verify_offsets();
+#endif
 
     static void resolveOffsets();
     static void patchSafeFetch();
