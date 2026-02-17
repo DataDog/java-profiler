@@ -12,8 +12,14 @@ constexpr size_t KNUTH_MULTIPLICATIVE_CONSTANT = 0x9e3779b97f4a7c15ULL;
   fprintf(stdout, "[TEST::INFO] " fmt "\n", ##__VA_ARGS__); \
   fflush(stdout); \
 } while (0)
+
+#define DEBUG_ONLY(s) s
+
 #else
 #define TEST_LOG(fmt, ...) // No-op in non-debug mode
+
+#define DEBUG_ONLY(s)
+
 #endif
 
 #endif // _COMMON_H

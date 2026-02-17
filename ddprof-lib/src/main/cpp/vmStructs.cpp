@@ -60,17 +60,14 @@ DECLARE_TYPE_FILED_DO(DO_NOTHING, INIT_OFFSET_OR_ADDRESS, DO_NOTHING)
 #undef DO_NOTHING
 #undef offset_value
 #undef address_value
+#undef value_value
 
 // Initialize constant variables to -1
-#define INIT_INT_CONSTANT(type, field) \
+#define INIT_CONSTANT(type, field) \
     int VMStructs::_##type##_##field = -1;
-DECLARE_INT_CONSTANTS_DO(INIT_INT_CONSTANT)
-#undef INIT_INT_CONSTANT
-
-#define INIT_LONG_CONSTANT(type, field) \
-    long VMStructs::_##type##_##field = -1;
-DECLARE_LONG_CONSTANTS_DO(INIT_LONG_CONSTANT)
-#undef INIT_LONG_CONSTANT
+DECLARE_INT_CONSTANTS_DO(INIT_CONSTANT)
+DECLARE_LONG_CONSTANTS_DO(INIT_CONSTANT)
+#undef INIT_CONSTANT
 
 
 jfieldID VMStructs::_eetop;
@@ -248,10 +245,48 @@ void VMStructs::init_constants() {
 
 #undef READ_CONSTANT
 
+
+#ifdef DEBUG
+void VMStructs::verify_offsets() {
+// Verify type sizes
+#define VERIFY_TYPE_SIZE(name, names) assert(TYPE_SIZE_NAME(name) > 0);
+    DECLARE_TYPES_DO(VERIFY_TYPE_SIZE);
+#undef VERIFY_TYPE_SIZE
+
+
+// Verify offsets and addresses
+#define offset_value -1
+#define address_value nullptr
+#define value_value -1
+
+// Do nothing macro
+#define DO_NOTHING(...)
+#define VERIFY_OFFSET_OR_ADDRESS(field, field_type, names) \
+    assert(_##field##_##field_type != field_type##_value);
+    DECLARE_TYPE_FILED_DO(DO_NOTHING, VERIFY_OFFSET_OR_ADDRESS, DO_NOTHING)
+#undef VERIFY_OFFSET_OR_ADDRESS
+#undef DO_NOTHING
+#undef offset_value
+#undef address_value
+#undef value_value
+
+// Verify constants
+// Initialize constant variables to -1
+#define VERIFY_CONSTANT(type, field) \
+    assert(_##type##_##field != -1);
+    DECLARE_INT_CONSTANTS_DO(VERIFY_CONSTANT)
+    DECLARE_LONG_CONSTANTS_DO(VERIFY_CONSTANT)
+#undef INIT_CONSTANT
+}
+
+#endif // DEBUG
+
 void VMStructs::initOffsets() {
     init_type_sizes();
     init_offsets_and_addresses();
     init_constants();
+
+    DEBUG_ONLY(verify_offsets();)
 }
 
 void VMStructs::resolveOffsets() {

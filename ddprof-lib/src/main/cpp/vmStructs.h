@@ -87,7 +87,7 @@ typedef int value;
         field(pool_holder, offset, MATCH_SYMBOLS("_pool_holder"))                                                   \
     type_end()                                                                                                      \
     type_begin(VMKlass, MATCH_SYMBOLS("Klass", "InstanceKlass"))                                                    \
-        field(klass_name, offset, MATCH_SYMBOLS("_name"))                                                                 \
+        field(klass_name, offset, MATCH_SYMBOLS("_name"))                                                           \
         field(class_loader_data, offset, MATCH_SYMBOLS("_class_loader_data"))                                       \
         field(methods, offset, MATCH_SYMBOLS("_methods"))                                                           \
         field(jmethod_ids, offset, MATCH_SYMBOLS("_methods_jmethod_ids"))                                           \
@@ -103,8 +103,10 @@ typedef int value;
         field(symbol_body, offset, MATCH_SYMBOLS("_body"))                                                          \
         field(symbol_length_and_refcount, offset, MATCH_SYMBOLS("_length_and_refcount"))                            \
     type_end()                                                                                                      \
-    type_begin(VMThread, MATCH_SYMBOLS("Thread", "JavaThread"))                                                     \
+    type_begin(VMThread, MATCH_SYMBOLS"Thread")                                                                     \
         field(thread_osthread, offset, MATCH_SYMBOLS("_osthread"))                                                  \
+    type_end()                                                                                                      \
+    type_begin(VMJavaThread, MATCH_SYMBOLS("JavaThread"))                                                          \
         field(thread_anchor, offset, MATCH_SYMBOLS("_anchor"))                                                      \
         field(thread_state, offset, MATCH_SYMBOLS("_thread_state"))                                                 \
         field(thread_vframe, offset, MATCH_SYMBOLS("_vframe_array_head"))                                           \
@@ -284,6 +286,8 @@ class VMStructs {
     static void init_offsets_and_addresses();
     static void init_constants();
     static void initOffsets();
+
+    DEBUG_ONLY(static void verify_offsets();)
 
     static void resolveOffsets();
     static void patchSafeFetch();
