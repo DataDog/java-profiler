@@ -60,7 +60,7 @@ typedef int offset;
 typedef const unsigned char** address;
 typedef int value;
 
-#define DECLARE_TYPE_FILED_DO(type_begin, field, type_end)                                                          \
+#define DECLARE_TYPE_FILED_DO(type_begin, field, field_no_check, type_end)                                                          \
     type_begin(VMMemRegion, MATCH_SYMBOLS("MemRegion"))                                                             \
         field(region_start, offset, MATCH_SYMBOLS("_start"))                                                        \
         field(region_size, offset, MATCH_SYMBOLS("_word_size"))                                                     \
@@ -71,7 +71,7 @@ typedef int value;
         field(nmethod_state, offset, MATCH_SYMBOLS("_state"))                                                       \
         field(nmethod_level, offset, MATCH_SYMBOLS("_comp_level"))                                                  \
         field(nmethod_metadata, offset, MATCH_SYMBOLS("_metadata_offset"))                                          \
-        field(nmethod_immutable, offset, MATCH_SYMBOLS("_immutable_data"))                                          \
+        field_no_check(nmethod_immutable, offset, MATCH_SYMBOLS("_immutable_data"))                                 \
         field(scopes_pcs, offset, MATCH_SYMBOLS("_scopes_pcs_offset"))                                              \
         field(scopes_data, offset, MATCH_SYMBOLS("_scopes_data_offset", "_scopes_data_begin"))                      \
     type_end()                                                                                                      \
@@ -241,7 +241,7 @@ class VMStructs {
 #define DECLARE_TYPE_FIELD(field, field_type, names) \
     static field_type _##field##_##field_type;
 
-    DECLARE_TYPE_FILED_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DO_NOTHING)
+    DECLARE_TYPE_FILED_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DECLARE_TYPE_FIELD, DO_NOTHING)
 #undef DECLARE_TYPE_FIELD
 #undef DO_NOTHING
 

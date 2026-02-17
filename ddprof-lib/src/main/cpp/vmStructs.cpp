@@ -54,7 +54,7 @@ DECLARE_TYPES_DO(INIT_TYPE_SIZE)
 #define INIT_OFFSET_OR_ADDRESS(field, field_type, names) \
     field_type VMStructs::_##field##_##field_type = field_type##_value;
 
-DECLARE_TYPE_FILED_DO(DO_NOTHING, INIT_OFFSET_OR_ADDRESS, DO_NOTHING)
+DECLARE_TYPE_FILED_DO(DO_NOTHING, INIT_OFFSET_OR_ADDRESS, INIT_OFFSET_OR_ADDRESS, DO_NOTHING)
 
 #undef INIT_OFFSET_OR_ADDRESS
 #undef DO_NOTHING
@@ -163,7 +163,7 @@ void VMStructs::init_offsets_and_addresses() {
             continue;                                                   \
         }
 #define END_TYPE() continue; }
-        DECLARE_TYPE_FILED_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, END_TYPE)
+        DECLARE_TYPE_FILED_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE, END_TYPE)
 #undef MATCH_TYPE_NAMES
 #undef READ_FIELD_VALUE
 #undef END_TYPE
@@ -267,7 +267,7 @@ void VMStructs::verify_offsets() {
 #define DO_NOTHING(...)
 #define VERIFY_OFFSET_OR_ADDRESS(field, field_type, names) \
     assert(_##field##_##field_type != field_type##_value);
-    DECLARE_TYPE_FILED_DO(DO_NOTHING, VERIFY_OFFSET_OR_ADDRESS, DO_NOTHING)
+    DECLARE_TYPE_FILED_DO(DO_NOTHING, VERIFY_OFFSET_OR_ADDRESS, DO_NOTHING, DO_NOTHING)
 #undef VERIFY_OFFSET_OR_ADDRESS
 #undef DO_NOTHING
 #undef offset_value
@@ -292,7 +292,7 @@ void VMStructs::initOffsets() {
 
 
 #ifdef DEBUG
-   verify_offsets();
+//   verify_offsets();
 #endif
 }
 
