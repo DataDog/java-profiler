@@ -167,6 +167,38 @@ Release builds automatically extract debug symbols via `NativeLinkTask`, reducin
 
 **See:** `build-logic/README.md` for full documentation
 
+### Docker-based Testing (Recommended for ASan/Non-Local Environments)
+
+**When to use**: For ASan testing, cross-architecture testing (aarch64), different libc variants (musl), or reproducing CI environment issues.
+
+```bash
+# ASan tests on aarch64 Linux
+./utils/run-docker-tests.sh --arch=aarch64 --config=asan --libc=glibc --jdk=21
+
+# Run specific test pattern
+./utils/run-docker-tests.sh --arch=aarch64 --tests="*SpecificTest*"
+
+# Enable C++ gtests
+./utils/run-docker-tests.sh --arch=aarch64 --gtest
+
+# Drop to shell for debugging
+./utils/run-docker-tests.sh --arch=aarch64 --shell
+
+# Test with musl libc
+./utils/run-docker-tests.sh --libc=musl --jdk=21
+
+# Test with OpenJ9
+./utils/run-docker-tests.sh --jdk=21-j9
+
+# Use mounted repo (faster, but may have stale artifacts)
+./utils/run-docker-tests.sh --mount
+
+# Rebuild Docker images
+./utils/run-docker-tests.sh --rebuild
+```
+
+**Note**: The Docker script supports `--config=debug|release|asan|tsan`. Use this for cross-architecture testing and reproducing CI environments. For local development, use `./gradlew testAsan` directly.
+
 ### Build Options
 ```bash
 # Skip native compilation

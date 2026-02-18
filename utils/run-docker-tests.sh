@@ -10,7 +10,7 @@
 #   --libc=glibc|musl        (default: glibc)
 #   --jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9  (default: 21)
 #   --arch=x64|aarch64       (default: auto-detect)
-#   --config=debug|release   (default: debug)
+#   --config=debug|release|asan|tsan   (default: debug)
 #   --tests="TestPattern"    (optional, specific test to run)
 #   --gtest                  (enable C++ gtests, disabled by default)
 #   --shell                  (drop to shell instead of running tests)
@@ -186,8 +186,8 @@ if [[ "$ARCH" != "x64" && "$ARCH" != "aarch64" ]]; then
     exit 1
 fi
 
-if [[ "$CONFIG" != "debug" && "$CONFIG" != "release" ]]; then
-    echo "Error: --config must be 'debug' or 'release'"
+if [[ "$CONFIG" != "debug" && "$CONFIG" != "release" && "$CONFIG" != "asan" && "$CONFIG" != "tsan" ]]; then
+    echo "Error: --config must be 'debug', 'release', 'asan', or 'tsan'"
     exit 1
 fi
 
@@ -291,14 +291,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install build dependencies
 # - libasan/libtsan for GCC sanitizers
-# - libclang-rt-dev for clang sanitizers and libFuzzer
+# - clang provides sanitizer runtimes and libFuzzer
 # - openssh-client for git clone over SSH
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl wget bash make g++ clang git jq cmake \
         libgtest-dev libgmock-dev tar binutils libc6-dbg \
         ca-certificates linux-libc-dev \
-        libasan6 libtsan0 libclang-rt-dev openssh-client && \
+        libasan6 libtsan0 openssh-client && \
     rm -rf /var/lib/apt/lists/*
 
 # Set up Gradle cache directory
@@ -360,7 +360,9 @@ fi
 # ========== Run Tests ==========
 
 # Build gradle test command
-GRADLE_CMD="./gradlew -PCI -PkeepJFRs :ddprof-test:test${CONFIG}"
+# Capitalize first letter for gradle task names (testDebug, testAsan, etc.)
+CONFIG_CAPITALIZED="$(tr '[:lower:]' '[:upper:]' <<< ${CONFIG:0:1})${CONFIG:1}"
+GRADLE_CMD="./gradlew -PCI -PkeepJFRs :ddprof-test:test${CONFIG_CAPITALIZED}"
 if [[ -n "$TESTS" ]]; then
     GRADLE_CMD="$GRADLE_CMD --tests \"$TESTS\""
 fi
