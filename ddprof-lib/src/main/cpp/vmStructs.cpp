@@ -169,7 +169,6 @@ void VMStructs::init_offsets_and_addresses() {
 #define READ_FIELD_VALUE(field, field_type, field_names) \
         if (matchAny(field_name, field_names)) {    \
             _##field##_##field_type = read_##field_type();              \
-            TEST_LOG(#field "_" #field_type " = %ld", (long)_##field##_##field_type); \
             continue;                                                   \
         }
 #define END_TYPE() continue; }
@@ -227,7 +226,7 @@ void VMStructs::init_constants() {
     if (entry != 0 && stride != 0) {
         for (;; entry += stride) {
             const char* type_name = *(const char**)(entry + name_offset);
-            if (nullptr == nullptr) {
+            if (type_name == nullptr) {
                 break;
             }
             int value = *(int*)(entry + value_offset);
