@@ -314,7 +314,7 @@ void VMStructs::resolveOffsets() {
     }
 
     if (_klass_offset_address != NULL) {
-        _klass = (jfieldID)(uintptr_t)(*(uintptr_t*)_klass_offset_address << 2 | 2);
+        _klass = (jfieldID)(uintptr_t)(*(int*)_klass_offset_address << 2 | 2);
     }
 
     VMFlag* ccp = VMFlag::find("UseCompressedClassPointers");
