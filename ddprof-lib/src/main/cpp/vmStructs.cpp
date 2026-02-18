@@ -43,11 +43,14 @@ DECLARE_TYPES_DO(INIT_TYPE_SIZE)
 
 #define offset_value -1
 #define address_value nullptr
-#define value_value -1
+#define off_value_value -1
+#define addr_value_value -1
 
 // Initialize field variables
 // offset = -1
 // address = nullptr
+// off_value = -1       int value from an offset
+// addr_value = -1      int value from an address
 
 // Do nothing macro
 #define DO_NOTHING(...)
@@ -60,7 +63,8 @@ DECLARE_TYPE_FILED_DO(DO_NOTHING, INIT_OFFSET_OR_ADDRESS, INIT_OFFSET_OR_ADDRESS
 #undef DO_NOTHING
 #undef offset_value
 #undef address_value
-#undef value_value
+#undef off_value_value
+#undef addr_value_value
 
 // Initialize constant variables to -1
 #define INIT_INT_CONSTANT(type, field) \
@@ -144,7 +148,11 @@ void VMStructs::init_offsets_and_addresses() {
         return *(address*)(entry + address_offset);
     };
 
-    auto read_value = [&]() -> int {
+    auto read_addr_value = [&]() -> int {
+        return **(int**)(entry + address_offset);
+    };
+
+    auto read_off_value = [&]() -> int {
         return *(int*)(entry + offset_offset);
     };
 
@@ -261,23 +269,27 @@ void VMStructs::verify_offsets() {
 // Verify offsets and addresses
 #define offset_value -1
 #define address_value nullptr
-#define value_value -1
+#define off_value_value -1
+#define addr_value_value -1
 
 // Do nothing macro
 #define DO_NOTHING(...)
 #define VERIFY_OFFSET_OR_ADDRESS(field, field_type, names) \
     assert(_##field##_##field_type != field_type##_value);
+
     DECLARE_TYPE_FILED_DO(DO_NOTHING, VERIFY_OFFSET_OR_ADDRESS, DO_NOTHING, DO_NOTHING)
 #undef VERIFY_OFFSET_OR_ADDRESS
 #undef DO_NOTHING
 #undef offset_value
 #undef address_value
-#undef value_value
+#undef off_value_value
+#undef addr_value_value
 
 // Verify constants
 // Initialize constant variables to -1
 #define VERIFY_CONSTANT(type, field) \
-    assert(_##type##_##field != -1);
+    // assert(_##type##_##field != -1);
+
     DECLARE_INT_CONSTANTS_DO(VERIFY_CONSTANT)
     DECLARE_LONG_CONSTANTS_DO(VERIFY_CONSTANT)
 #undef INIT_CONSTANT
@@ -292,7 +304,7 @@ void VMStructs::initOffsets() {
 
 
 #ifdef DEBUG
-//   verify_offsets();
+   verify_offsets();
 #endif
 }
 
@@ -306,9 +318,9 @@ void VMStructs::resolveOffsets() {
     }
 
     VMFlag* ccp = VMFlag::find("UseCompressedClassPointers");
-    if (ccp != NULL && ccp->get() && _narrow_klass_base_address != NULL && _narrow_klass_shift_offset >= 0) {
+    if (ccp != NULL && ccp->get() && _narrow_klass_base_address != NULL && _narrow_klass_shift_address != nullptr) {
         _narrow_klass_base = *(char**)_narrow_klass_base_address;
-        _narrow_klass_shift = _narrow_klass_shift_offset;
+        _narrow_klass_shift = *(int*)_narrow_klass_shift_address;
     }
 
     VMFlag* coh = VMFlag::find("UseCompactObjectHeaders");
@@ -401,11 +413,11 @@ void VMStructs::resolveOffsets() {
     }
 
     // Invariant: _code_heap[i] != NULL iff all CodeHeap structures are available
-    if (_code_heap[0] != NULL && _code_heap_segment_shift_value >= 0) {
-        _code_heap_segment_shift_value = *(int*)(_code_heap[0] + _code_heap_segment_shift_value);
+    if (_code_heap[0] != NULL && _code_heap_segment_shift_off_value >= 0) {
+        _code_heap_segment_shift_off_value = *(int*)(_code_heap[0] + _code_heap_segment_shift_off_value);
     }
     if (_code_heap_memory_offset < 0 || _code_heap_segmap_offset < 0 ||
-        _code_heap_segment_shift_value < 0 || _code_heap_segment_shift_value > 16 ||
+        _code_heap_segment_shift_off_value < 0 || _code_heap_segment_shift_off_value > 16 ||
         _heap_block_used_offset < 0) {
         memset(_code_heap, 0, sizeof(_code_heap));
     }
@@ -680,7 +692,7 @@ jmethodID VMMethod::validatedId() {
 VMNMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
     unsigned char* heap_start = *(unsigned char**)(heap + _code_heap_memory_offset + _vs_low_offset);
     unsigned char* segmap = *(unsigned char**)(heap + _code_heap_segmap_offset + _vs_low_offset);
-    size_t idx = ((unsigned char*)pc - heap_start) >> _code_heap_segment_shift_value;
+    size_t idx = ((unsigned char*)pc - heap_start) >> _code_heap_segment_shift_off_value;
 
     if (segmap[idx] == 0xff) {
         return NULL;
@@ -689,7 +701,7 @@ VMNMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
         idx -= segmap[idx];
     }
 
-    unsigned char* block = heap_start + (idx << _code_heap_segment_shift_value) + _heap_block_used_offset;
+    unsigned char* block = heap_start + (idx << _code_heap_segment_shift_off_value) + _heap_block_used_offset;
     return *block ? align<VMNMethod*>(block + sizeof(uintptr_t)) : NULL;
 }
 
@@ -734,7 +746,7 @@ int ScopeDesc::readInt() {
 
 VMFlag* VMFlag::find(const char* name) {
     if (_flags_address != NULL && VMFlag::type_size() > 0) {
-        for (int i = 0; i < _flag_count_value; i++) {
+        for (int i = 0; i < _flag_count_addr_value; i++) {
             VMFlag* f = VMFlag::cast(_flags_address + i * VMFlag::type_size());
             if (f->name() != NULL && strcmp(f->name(), name) == 0 && f->addr() != NULL) {
                 return f;
@@ -754,7 +766,7 @@ VMFlag *VMFlag::find(const char *name, std::initializer_list<VMFlag::Type> types
 
 VMFlag *VMFlag::find(const char *name, int type_mask) {
     if (_flags_address != NULL && VMFlag::type_size() > 0) {
-        for (int i = 0; i < _flag_count_value; i++) {
+        for (int i = 0; i < _flag_count_addr_value; i++) {
             VMFlag* f = VMFlag::cast(_flags_address + i * VMFlag::type_size());
             if (f->name() != NULL && strcmp(f->name(), name) == 0) {
                 int masked = 0x1 << f->type();

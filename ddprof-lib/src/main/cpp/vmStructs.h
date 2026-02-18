@@ -19,7 +19,6 @@
 class GCHeapSummary;
 class HeapUsage;
 
-#define TYPE_SIZE_NAME(name)    _##name##_size
 
 template <typename T>
 inline T* cast_to(const void* ptr) {
@@ -28,6 +27,27 @@ inline T* cast_to(const void* ptr) {
     return reinterpret_cast<T*>(const_cast<void*>(ptr));
 }
 
+#define TYPE_SIZE_NAME(name)    _##name##_size
+
+// MATCH_SYMBOLS macro expands into an nullptr terminated char string array,
+// that is consumed by matchAny() method
+#define MATCH_SYMBOLS(...)  (const char*[]) { __VA_ARGS__, nullptr }
+
+/**
+ * This macro defines a counterpart of a JVM class, e.g. VMKass -> Klass.
+ * By the convention, we prefix the class name with 'VM' to avoid namespace collision
+ * with JVM inside a debug session. E.g.
+ * gdb > p this
+ * gdb > (VMKlass*)0x123456
+ * gdb > p (Klass*)this
+ * .... 
+ *
+ * The macro implicitly defines three static functions:
+ *  - type_size()       Return class size defined in JVM.
+ *  - cast()            It performs memory readability check before casts a void* pointer to this type.
+ *                      It ensures the memory range [ptr, ptr + type_size()) is readable.
+ *  - load_then_cast()  It loads a pointer from specified location, then does above cast.
+ */
 #define DECLARE(name) \
     class name : VMStructs { \
       public: \
@@ -39,10 +59,43 @@ inline T* cast_to(const void* ptr) {
 
 #define DECLARE_END  };
 
-#define MATCH_SYMBOLS(...)  (const char*[]) { __VA_ARGS__, nullptr }
+/**
+ * Defines a type and its matching symbols in vmStructs.
+ * A type may match multiple names in different JVM versions.
+ *  Macro expansion:
+ *  - Declaration phase
+ *   static uint64_t _TYPE_size;
+ *   
+ *   For example:
+ *    f(VMClassLoaderData) -> static uint64_t _VMClassLoaderData_size;
+ *
+ *  - Initialization phase
+ *    uint64_t VMStructs::_TYPE_size = 0;
+ *
+ *   For exmaple:
+ *    f(VMClassLoaderData) -> uint64_t VMStructs::_VMClassLoaderData_size = 0;
+ * 
+ * - Value population phase
+ *   if (matchAny((char*)[]) { typeName, nullptr}) {
+ *       _TYPE_size = size;
+ *       continue;
+ *   } 
+ * 
+ *  For example:
+ *   f(VMClassLoaderData,    MATCH_SYMBOLS("ClassLoaderData")) ->
+ *   if (matchAny((char*)[] {"ClassLoaderData", nullptr})) {
+ *      _ClassLoaderData_size = size;
+ *      continue;
+ *    }
+ * 
+ * - Value verification phase
+ *   assert(_TYPE_size > 0);
+ * 
+ *  For example:
+ *  f(VMClassLoaderData,    MATCH_SYMBOLS("ClassLoaderData")) ->
+ *  assert(_VMClassLoaderData_size > 0);
+ */
 
-// Defines a type and its matching symbols in vmStructs.
-// A type may match multiple names in different JVM versions.
 #define DECLARE_TYPES_DO(f) \
     f(VMClassLoaderData,    MATCH_SYMBOLS("ClassLoaderData"))   \
     f(VMConstantPool,       MATCH_SYMBOLS("ConstantPool"))      \
@@ -55,12 +108,26 @@ inline T* cast_to(const void* ptr) {
     f(VMSymbol,             MATCH_SYMBOLS("Symbol"))            \
     f(VMThread,             MATCH_SYMBOLS("Thread"))
 
+/**
+ * Following macros define field offsets, addresses or values of JVM classes that are exported by
+ * vmStructs.
+ *  - type_begin()    Start a definition of a type. The type name is not used at this moment, but
+ *                    improves readability.
+ *  - field()         Define a field of a class, can be either an offset, an address or a value
+ *  - field_no_check  Define a field of a class, just like above. But the field may not be exported
+ *                    by JVMs. Therefore, it is skiped by verify_offsets()
+ *  - type_end()      End of a type definition
+*/
 
 typedef int offset;
 typedef const unsigned char** address;
-typedef int value;
 
-#define DECLARE_TYPE_FILED_DO(type_begin, field, field_no_check, type_end)                                                          \
+// int value from an offset
+typedef int off_value;
+// int value from an address
+typedef int addr_value;
+
+#define DECLARE_TYPE_FILED_DO(type_begin, field, field_no_check, type_end)                                          \
     type_begin(VMMemRegion, MATCH_SYMBOLS("MemRegion"))                                                             \
         field(region_start, offset, MATCH_SYMBOLS("_start"))                                                        \
         field(region_size, offset, MATCH_SYMBOLS("_word_size"))                                                     \
@@ -101,12 +168,10 @@ typedef int value;
     type_begin(VMSymbol, MATCH_SYMBOLS("Symbol"))                                                                   \
         field(symbol_length, offset, MATCH_SYMBOLS("_length"))                                                      \
         field(symbol_body, offset, MATCH_SYMBOLS("_body"))                                                          \
-        field(symbol_length_and_refcount, offset, MATCH_SYMBOLS("_length_and_refcount"))                            \
-    type_end()                                                                                                      \
-    type_begin(VMThread, MATCH_SYMBOLS("Thread"))                                                                   \
-        field(thread_osthread, offset, MATCH_SYMBOLS("_osthread"))                                                  \
+        field_no_check(symbol_length_and_refcount, offset, MATCH_SYMBOLS("_length_and_refcount"))                   \
     type_end()                                                                                                      \
     type_begin(VMJavaThread, MATCH_SYMBOLS("JavaThread"))                                                           \
+        field(thread_osthread, offset, MATCH_SYMBOLS("_osthread"))                                                  \
         field(thread_anchor, offset, MATCH_SYMBOLS("_anchor"))                                                      \
         field(thread_state, offset, MATCH_SYMBOLS("_thread_state"))                                                 \
         field(thread_vframe, offset, MATCH_SYMBOLS("_vframe_array_head"))                                           \
@@ -141,8 +206,8 @@ typedef int value;
         field(frame_complete, offset, MATCH_SYMBOLS("_frame_complete_offset"))                                      \
         field(code, offset, MATCH_SYMBOLS("_code_offset", "_code_begin"))                                           \
         field(data, offset, MATCH_SYMBOLS("_data_offset"))                                                          \
-        field(mutable_data, offset, MATCH_SYMBOLS("_mutable_data"))                                                 \
-        field(relocation_size, offset, MATCH_SYMBOLS("_relocation_size"))                                           \
+        field_no_check(mutable_data, offset, MATCH_SYMBOLS("_mutable_data"))                                        \
+        field_no_check(relocation_size, offset, MATCH_SYMBOLS("_relocation_size"))                                  \
         field(nmethod_name, offset, MATCH_SYMBOLS("_name"))                                                         \
     type_end()                                                                                                      \
     type_begin(VMCodeCache, MATCH_SYMBOLS("CodeCache"))                                                             \
@@ -153,7 +218,7 @@ typedef int value;
     type_begin(VMCodeHeap, MATCH_SYMBOLS("CodeHeap"))                                                               \
         field(code_heap_memory, offset, MATCH_SYMBOLS("_memory"))                                                   \
         field(code_heap_segmap, offset, MATCH_SYMBOLS("_segmap"))                                                   \
-        field(code_heap_segment_shift, value, MATCH_SYMBOLS("_log2_segment_size"))                                  \
+        field(code_heap_segment_shift, off_value, MATCH_SYMBOLS("_log2_segment_size"))                              \
     type_end()                                                                                                      \
     type_begin(VMHeapBlock, MATCH_SYMBOLS("HeapBlock::Header"))                                                     \
         field(heap_block_used, offset, MATCH_SYMBOLS("_used"))                                                      \
@@ -178,7 +243,7 @@ typedef int value;
         field(flag_addr, offset, MATCH_SYMBOLS("_addr", "addr"))                                                    \
         field(flag_origin, offset, MATCH_SYMBOLS("_flags", "origin"))                                               \
         field(flags, address, MATCH_SYMBOLS("flags"))                                                               \
-        field(flag_count, value, MATCH_SYMBOLS("numFlags"))                                                         \
+        field(flag_count, addr_value, MATCH_SYMBOLS("numFlags"))                                                    \
         field(flag_type, offset, MATCH_SYMBOLS("_type", "type"))                                                    \
     type_end()                                                                                                      \
     type_begin(VMOop, MATCH_SYMBOLS("oopDesc"))                                                                     \
@@ -186,9 +251,14 @@ typedef int value;
     type_end()                                                                                                      \
     type_begin(VMUniverse, MATCH_SYMBOLS("Universe", "CompressedKlassPointers"))                                    \
         field(narrow_klass_base, address, MATCH_SYMBOLS("_narrow_klass._base", "_base"))                            \
-        field(narrow_klass_shift, offset, MATCH_SYMBOLS("_narrow_klass._shift", "_shift"))                          \
+        field(narrow_klass_shift, address, MATCH_SYMBOLS("_narrow_klass._shift", "_shift"))                         \
         field(collected_heap, address, MATCH_SYMBOLS("_collectedHeap"))                                             \
     type_end()
+
+/**
+ * The follwing macros declare JVM constants that are exported by vmStructs
+ *   - constant defines a constant of a class
+ */
 
 #define DECLARE_INT_CONSTANTS_DO(constant)              \
     constant(frame, entry_frame_call_wrapper_offset)
