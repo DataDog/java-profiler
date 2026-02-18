@@ -172,7 +172,7 @@ typedef int addr_value;
         field(symbol_body, offset, MATCH_SYMBOLS("_body"))                                                          \
         field_no_check(symbol_length_and_refcount, offset, MATCH_SYMBOLS("_length_and_refcount"))                   \
     type_end()                                                                                                      \
-    type_begin(VMJavaThread, MATCH_SYMBOLS("JavaThread"))                                                           \
+    type_begin(VMJavaThread, MATCH_SYMBOLS("JavaThread", "Thread"))                                                 \
         field(thread_osthread, offset, MATCH_SYMBOLS("_osthread"))                                                  \
         field(thread_anchor, offset, MATCH_SYMBOLS("_anchor"))                                                      \
         field(thread_state, offset, MATCH_SYMBOLS("_thread_state"))                                                 \

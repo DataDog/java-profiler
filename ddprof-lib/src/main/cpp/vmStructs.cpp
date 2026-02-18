@@ -13,6 +13,7 @@
 #include "jvmHeap.h"
 #include "safeAccess.h"
 #include "spinLock.h"
+#include "common.h"
 
 CodeCache* VMStructs::_libjvm = nullptr;
 bool VMStructs::_has_class_names = false;
@@ -168,6 +169,7 @@ void VMStructs::init_offsets_and_addresses() {
 #define READ_FIELD_VALUE(field, field_type, field_names) \
         if (matchAny(field_name, field_names)) {    \
             _##field##_##field_type = read_##field_type();              \
+            TEST_LOG(#field "_" #field_type " = %ld", (long)_##field##_##field_type); \
             continue;                                                   \
         }
 #define END_TYPE() continue; }
