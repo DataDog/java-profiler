@@ -120,7 +120,7 @@ inline T* cast_to(const void* ptr) {
 */
 
 typedef int offset;
-typedef const unsigned char** address;
+typedef char** address;
 
 // int value from an offset
 typedef int off_value;
@@ -220,7 +220,7 @@ typedef int addr_value;
     type_begin(VMCodeHeap, MATCH_SYMBOLS("CodeHeap"))                                                               \
         field(_code_heap_memory_offset, offset, MATCH_SYMBOLS("_memory"))                                                   \
         field(_code_heap_segmap_offset, offset, MATCH_SYMBOLS("_segmap"))                                                   \
-        field(_code_heap_segment_shift, off_value, MATCH_SYMBOLS("_log2_segment_size"))                              \
+        field(_code_heap_segment_shift, offset, MATCH_SYMBOLS("_log2_segment_size"))                              \
     type_end()                                                                                                      \
     type_begin(VMHeapBlock, MATCH_SYMBOLS("HeapBlock::Header"))                                                     \
         field(_heap_block_used_offset, offset, MATCH_SYMBOLS("_used"))                                                      \
@@ -288,13 +288,13 @@ class VMStructs {
     static bool _compact_object_headers;
     
     static int _narrow_klass_shift;
+    static char* _code_heap[3];
     static const void* _code_heap_low;
     static const void* _code_heap_high;
     static char* _narrow_klass_base;
-    static const void* _call_stub_return;
-    static char* _code_heap[3];
     static int _interpreter_frame_bcp_offset;
     static unsigned char _unsigned5_base;
+    static const void* _call_stub_return;
     static const void* _interpreted_frame_valid_start;
     static const void* _interpreted_frame_valid_end;
 
@@ -913,7 +913,7 @@ class CodeHeap : VMStructs {
 
   public:
     static bool available() {
-        return _code_heap_addr != nullptr;
+        return _code_heap_addr != NULL;
     }
 
     static bool contains(const void* pc) {

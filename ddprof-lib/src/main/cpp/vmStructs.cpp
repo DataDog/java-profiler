@@ -398,7 +398,7 @@ void VMStructs::resolveOffsets() {
     // Since JDK-8268406, it is no longer possible to get VMMethod* by dereferencing jmethodID
     _can_dereference_jmethod_id = _has_method_structs && VM::hotspot_version() <= 25;
 
-    if (_code_heap_addr != nullptr && _code_heap_low_addr != nullptr && _code_heap_high_addr != nullptr) {
+    if (_code_heap_addr != NULL && _code_heap_low_addr != NULL && _code_heap_high_addr != NULL) {
         char* code_heaps = *(char**)_code_heap_addr;
         unsigned int code_heap_count = *(unsigned int*)(code_heaps + _array_len_offset);
         if (code_heap_count <= 3 && _array_data_offset >= 0) {
