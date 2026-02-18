@@ -55,8 +55,8 @@ DECLARE_TYPES_DO(INIT_TYPE_SIZE)
 
 // Do nothing macro
 #define DO_NOTHING(...)
-#define INIT_OFFSET_OR_ADDRESS(field, field_type, names) \
-    field_type VMStructs::_##field##_##field_type = field_type##_value;
+#define INIT_OFFSET_OR_ADDRESS(var, field_type, names) \
+    field_type VMStructs::var = field_type##_value;
 
 DECLARE_TYPE_FILED_DO(DO_NOTHING, INIT_OFFSET_OR_ADDRESS, INIT_OFFSET_OR_ADDRESS, DO_NOTHING)
 
@@ -166,9 +166,9 @@ void VMStructs::init_offsets_and_addresses() {
             }
 #define MATCH_TYPE_NAMES(type, type_names)                                     \
      if (matchAny(type_name, type_names)) {
-#define READ_FIELD_VALUE(field, field_type, field_names) \
+#define READ_FIELD_VALUE(var, field_type, field_names) \
         if (matchAny(field_name, field_names)) {    \
-            _##field##_##field_type = read_##field_type();              \
+            var = read_##field_type();              \
             continue;                                                   \
         }
 #define END_TYPE() continue; }
@@ -275,8 +275,8 @@ void VMStructs::verify_offsets() {
 
 // Do nothing macro
 #define DO_NOTHING(...)
-#define VERIFY_OFFSET_OR_ADDRESS(field, field_type, names) \
-    assert(_##field##_##field_type != field_type##_value);
+#define VERIFY_OFFSET_OR_ADDRESS(var, field_type, names) \
+    assert(var != field_type##_value);
 
     DECLARE_TYPE_FILED_DO(DO_NOTHING, VERIFY_OFFSET_OR_ADDRESS, DO_NOTHING, DO_NOTHING)
 #undef VERIFY_OFFSET_OR_ADDRESS
@@ -314,14 +314,14 @@ void VMStructs::resolveOffsets() {
         return;
     }
 
-    if (_klass_offset_address != NULL) {
-        _klass = (jfieldID)(uintptr_t)(*(int*)_klass_offset_address << 2 | 2);
+    if (_klass_offset_addr != NULL) {
+        _klass = (jfieldID)(uintptr_t)(*(int*)_klass_offset_addr << 2 | 2);
     }
 
     VMFlag* ccp = VMFlag::find("UseCompressedClassPointers");
-    if (ccp != NULL && ccp->get() && _narrow_klass_base_address != NULL && _narrow_klass_shift_address != nullptr) {
-        _narrow_klass_base = *(char**)_narrow_klass_base_address;
-        _narrow_klass_shift = *(int*)_narrow_klass_shift_address;
+    if (ccp != NULL && ccp->get() && _narrow_klass_base_addr != NULL && _narrow_klass_shift_addr != nullptr) {
+        _narrow_klass_base = *(char**)_narrow_klass_base_addr;
+        _narrow_klass_shift = *(int*)_narrow_klass_shift_addr;
     }
 
     VMFlag* coh = VMFlag::find("UseCompactObjectHeaders");
@@ -373,8 +373,8 @@ void VMStructs::resolveOffsets() {
         _unsigned5_base = 1;
     }
 
-    if (_call_stub_return_address != NULL) {
-        _call_stub_return = (const void*)_call_stub_return_address;
+    if (_call_stub_return_addr != NULL) {
+        _call_stub_return = *(const void**)_call_stub_return_addr;
     }
 
     // Since JDK 23, _metadata_offset is relative to _data_offset. See metadata()
@@ -398,27 +398,27 @@ void VMStructs::resolveOffsets() {
     // Since JDK-8268406, it is no longer possible to get VMMethod* by dereferencing jmethodID
     _can_dereference_jmethod_id = _has_method_structs && VM::hotspot_version() <= 25;
 
-    if (_code_heap_address != nullptr && _code_heap_low_address != nullptr && _code_heap_high_address != nullptr) {
-        char* code_heaps = *(char**)_code_heap_address;
+    if (_code_heap_addr != nullptr && _code_heap_low_addr != nullptr && _code_heap_high_addr != nullptr) {
+        char* code_heaps = *(char**)_code_heap_addr;
         unsigned int code_heap_count = *(unsigned int*)(code_heaps + _array_len_offset);
         if (code_heap_count <= 3 && _array_data_offset >= 0) {
             char* code_heap_array = *(char**)(code_heaps + _array_data_offset);
             memcpy(_code_heap, code_heap_array, code_heap_count * sizeof(_code_heap[0]));
         }
-        _code_heap_low = _code_heap_low_address;
-        _code_heap_high = _code_heap_high_address;
-    } else if (_code_heap_address != NULL && _code_heap_memory_offset >= 0) {
-        _code_heap[0] = (char*)_code_heap_address;
+        _code_heap_low = *(const void**)_code_heap_low_addr;
+        _code_heap_high = *(const void**)_code_heap_high_addr;
+    } else if (_code_heap_addr != NULL && _code_heap_memory_offset >= 0) {
+        _code_heap[0] = *(char**)_code_heap_addr;
         _code_heap_low = *(const void**)(_code_heap[0] + _code_heap_memory_offset + _vs_low_bound_offset);
         _code_heap_high = *(const void**)(_code_heap[0] + _code_heap_memory_offset + _vs_high_bound_offset);
     }
 
     // Invariant: _code_heap[i] != NULL iff all CodeHeap structures are available
-    if (_code_heap[0] != NULL && _code_heap_segment_shift_off_value >= 0) {
-        _code_heap_segment_shift_off_value = *(int*)(_code_heap[0] + _code_heap_segment_shift_off_value);
+    if (_code_heap[0] != NULL && _code_heap_segment_shift >= 0) {
+        _code_heap_segment_shift = *(int*)(_code_heap[0] + _code_heap_segment_shift);
     }
     if (_code_heap_memory_offset < 0 || _code_heap_segmap_offset < 0 ||
-        _code_heap_segment_shift_off_value < 0 || _code_heap_segment_shift_off_value > 16 ||
+        _code_heap_segment_shift < 0 || _code_heap_segment_shift > 16 ||
         _heap_block_used_offset < 0) {
         memset(_code_heap, 0, sizeof(_code_heap));
     }
@@ -693,7 +693,7 @@ jmethodID VMMethod::validatedId() {
 VMNMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
     unsigned char* heap_start = *(unsigned char**)(heap + _code_heap_memory_offset + _vs_low_offset);
     unsigned char* segmap = *(unsigned char**)(heap + _code_heap_segmap_offset + _vs_low_offset);
-    size_t idx = ((unsigned char*)pc - heap_start) >> _code_heap_segment_shift_off_value;
+    size_t idx = ((unsigned char*)pc - heap_start) >> _code_heap_segment_shift;
 
     if (segmap[idx] == 0xff) {
         return NULL;
@@ -702,7 +702,7 @@ VMNMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
         idx -= segmap[idx];
     }
 
-    unsigned char* block = heap_start + (idx << _code_heap_segment_shift_off_value) + _heap_block_used_offset;
+    unsigned char* block = heap_start + (idx << _code_heap_segment_shift) + _heap_block_used_offset;
     return *block ? align<VMNMethod*>(block + sizeof(uintptr_t)) : NULL;
 }
 
@@ -746,9 +746,9 @@ int ScopeDesc::readInt() {
 }
 
 VMFlag* VMFlag::find(const char* name) {
-    if (_flags_address != NULL && VMFlag::type_size() > 0) {
-        for (int i = 0; i < _flag_count_addr_value; i++) {
-            VMFlag* f = VMFlag::cast(*_flags_address + i * VMFlag::type_size());
+    if (_flags_addr != NULL && VMFlag::type_size() > 0) {
+        for (int i = 0; i < _flag_count; i++) {
+            VMFlag* f = VMFlag::cast(*_flags_addr + i * VMFlag::type_size());
             if (f->name() != NULL && strcmp(f->name(), name) == 0 && f->addr() != NULL) {
                 return f;
             }
@@ -766,9 +766,9 @@ VMFlag *VMFlag::find(const char *name, std::initializer_list<VMFlag::Type> types
 }
 
 VMFlag *VMFlag::find(const char *name, int type_mask) {
-    if (_flags_address != NULL && VMFlag::type_size() > 0) {
-        for (int i = 0; i < _flag_count_addr_value; i++) {
-            VMFlag* f = VMFlag::cast(*_flags_address + i * VMFlag::type_size());
+    if (_flags_addr != NULL && VMFlag::type_size() > 0) {
+        for (int i = 0; i < _flag_count; i++) {
+            VMFlag* f = VMFlag::cast(*_flags_addr + i * VMFlag::type_size());
             if (f->name() != NULL && strcmp(f->name(), name) == 0) {
                 int masked = 0x1 << f->type();
                 if (masked & type_mask) {
@@ -974,11 +974,11 @@ bool HeapUsage::isLastGCUsageSupported() {
     // only supported for JDK 17+
     // the CollectedHeap structure is vastly different in JDK 11 and earlier so
     // we can't support it
-    return _collected_heap_address != NULL && _heap_usage_func != NULL;
+    return _collected_heap_addr != NULL && _heap_usage_func != NULL;
 }
 
 bool HeapUsage::needsNativeBindingInterception() {
-    return _collected_heap_address == NULL ||
+    return _collected_heap_addr == NULL ||
            (_heap_usage_func == NULL && _gc_heap_summary_func == NULL);
 }
 
@@ -1017,16 +1017,16 @@ HeapUsage HeapUsage::get() {
 
 HeapUsage HeapUsage::get(bool allow_jmx) {
     HeapUsage usage;
-    if (_collected_heap_address != NULL) {
+    if (_collected_heap_addr != NULL) {
         if (_heap_usage_func != NULL) {
             // this is the JDK 17+ path
-            usage = _heap_usage_func(*_collected_heap_address);
+            usage = _heap_usage_func(*_collected_heap_addr);
             usage._used_at_last_gc =
-                ((CollectedHeapWrapper *)*_collected_heap_address)->_used_at_last_gc;
+                ((CollectedHeapWrapper *)*_collected_heap_addr)->_used_at_last_gc;
         } else if (_gc_heap_summary_func != NULL) {
             // this is the JDK 11 path
             // we need to collect GCHeapSummary information first
-            GCHeapSummary summary = _gc_heap_summary_func((void*)_collected_heap_address);
+            GCHeapSummary summary = _gc_heap_summary_func(*(void**)_collected_heap_addr);
             usage._initSize = -1;
             usage._used = summary.used();
             usage._committed = -1;
