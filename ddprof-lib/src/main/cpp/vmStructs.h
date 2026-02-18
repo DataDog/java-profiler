@@ -153,9 +153,11 @@ typedef int addr_value;
     type_begin(VMConstantPool, MATCH_SYMBOLS("ConstantPool"))                                                       \
         field(pool_holder, offset, MATCH_SYMBOLS("_pool_holder"))                                                   \
     type_end()                                                                                                      \
-    type_begin(VMKlass, MATCH_SYMBOLS("Klass", "InstanceKlass"))                                                    \
+    type_begin(VMKlass, MATCH_SYMBOLS("Klass"))                                                                     \
         field(klass_name, offset, MATCH_SYMBOLS("_name"))                                                           \
         field(class_loader_data, offset, MATCH_SYMBOLS("_class_loader_data"))                                       \
+    type_end()                                                                                                      \
+    type_begin(VMInstanceKlass, MATCH_SYMBOLS("InstanceKlass"))                                                     \
         field(methods, offset, MATCH_SYMBOLS("_methods"))                                                           \
         field(jmethod_ids, offset, MATCH_SYMBOLS("_methods_jmethod_ids"))                                           \
     type_end()                                                                                                      \

@@ -747,7 +747,7 @@ int ScopeDesc::readInt() {
 VMFlag* VMFlag::find(const char* name) {
     if (_flags_address != NULL && VMFlag::type_size() > 0) {
         for (int i = 0; i < _flag_count_addr_value; i++) {
-            VMFlag* f = VMFlag::cast(_flags_address + i * VMFlag::type_size());
+            VMFlag* f = VMFlag::cast(*_flags_address + i * VMFlag::type_size());
             if (f->name() != NULL && strcmp(f->name(), name) == 0 && f->addr() != NULL) {
                 return f;
             }
@@ -767,7 +767,7 @@ VMFlag *VMFlag::find(const char *name, std::initializer_list<VMFlag::Type> types
 VMFlag *VMFlag::find(const char *name, int type_mask) {
     if (_flags_address != NULL && VMFlag::type_size() > 0) {
         for (int i = 0; i < _flag_count_addr_value; i++) {
-            VMFlag* f = VMFlag::cast(_flags_address + i * VMFlag::type_size());
+            VMFlag* f = VMFlag::cast(*_flags_address + i * VMFlag::type_size());
             if (f->name() != NULL && strcmp(f->name(), name) == 0) {
                 int masked = 0x1 << f->type();
                 if (masked & type_mask) {
