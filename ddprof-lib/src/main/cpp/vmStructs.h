@@ -120,12 +120,7 @@ inline T* cast_to(const void* ptr) {
 */
 
 typedef int offset;
-typedef char** address;
-
-// int value from an offset
-typedef int off_value;
-// int value from an address
-typedef int addr_value;
+typedef void* address;
 
 #define DECLARE_TYPE_FILED_DO(type_begin, field, field_no_check, type_end)                                          \
     type_begin(VMMemRegion, MATCH_SYMBOLS("MemRegion"))                                                             \
@@ -245,7 +240,7 @@ typedef int addr_value;
         field(_flag_addr_offset, offset, MATCH_SYMBOLS("_addr", "addr"))                                                    \
         field(_flag_origin_offset, offset, MATCH_SYMBOLS("_flags", "origin"))                                               \
         field(_flags_addr, address, MATCH_SYMBOLS("flags"))                                                               \
-        field(_flag_count, addr_value, MATCH_SYMBOLS("numFlags"))                                                    \
+        field(_flag_count, address, MATCH_SYMBOLS("numFlags"))                                                    \
         field(_flag_type_offset, offset, MATCH_SYMBOLS("_type", "type"))                                                    \
     type_end()                                                                                                      \
     type_begin(VMOop, MATCH_SYMBOLS("oopDesc"))                                                                     \

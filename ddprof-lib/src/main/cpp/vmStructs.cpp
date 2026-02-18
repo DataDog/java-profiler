@@ -44,14 +44,10 @@ DECLARE_TYPES_DO(INIT_TYPE_SIZE)
 
 #define offset_value -1
 #define address_value nullptr
-#define off_value_value -1
-#define addr_value_value -1
 
 // Initialize field variables
 // offset = -1
 // address = nullptr
-// off_value = -1       int value from an offset
-// addr_value = -1      int value from an address
 
 // Do nothing macro
 #define DO_NOTHING(...)
@@ -64,8 +60,6 @@ DECLARE_TYPE_FILED_DO(DO_NOTHING, INIT_OFFSET_OR_ADDRESS, INIT_OFFSET_OR_ADDRESS
 #undef DO_NOTHING
 #undef offset_value
 #undef address_value
-#undef off_value_value
-#undef addr_value_value
 
 // Initialize constant variables to -1
 #define INIT_INT_CONSTANT(type, field) \
@@ -139,28 +133,26 @@ void VMStructs::init_offsets_and_addresses() {
     uintptr_t type_offset = readSymbol("gHotSpotVMStructEntryTypeNameOffset");
     uintptr_t field_offset = readSymbol("gHotSpotVMStructEntryFieldNameOffset");
     uintptr_t offset_offset = readSymbol("gHotSpotVMStructEntryOffsetOffset");
+    uintptr_t isStatic_offset = readSymbol("gHotSpotVMStructEntryIsStaticOffset");
     uintptr_t address_offset = readSymbol("gHotSpotVMStructEntryAddressOffset");
+    bool isStatic;
 
     auto read_offset = [&]() -> int {
+        assert(!isStatic);
         return *(int*)(entry + offset_offset);
     };
 
     auto read_address = [&]() -> address {
+        assert(isStatic);
         return *(address*)(entry + address_offset);
-    };
-
-    auto read_addr_value = [&]() -> int {
-        return **(int**)(entry + address_offset);
-    };
-
-    auto read_off_value = [&]() -> int {
-        return *(int*)(entry + offset_offset);
     };
 
     if (entry != 0 && stride != 0) {
         for (;; entry += stride) {
             const char* type_name = *(const char**)(entry + type_offset);
             const char* field_name = *(const char**)(entry + field_offset);
+            isStatic = *(int32_t*)(entry + isStatic_offset) != 0;
+ 
             if (type_name == nullptr || field_name == nullptr) {
                 break;
             }
@@ -208,7 +200,6 @@ void VMStructs::init_type_sizes() {
         }
     }
 }
-
 
 #define READ_CONSTANT(type, field)                                                      \
             if (strcmp(type_name, #type "::" #field) == 0) {                            \
@@ -747,8 +738,10 @@ int ScopeDesc::readInt() {
 
 VMFlag* VMFlag::find(const char* name) {
     if (_flags_addr != NULL && VMFlag::type_size() > 0) {
-        for (int i = 0; i < _flag_count; i++) {
-            VMFlag* f = VMFlag::cast(*_flags_addr + i * VMFlag::type_size());
+        size_t count = *(size_t*)_flag_count;
+
+        for (size_t i = 0; i < count; i++) {
+            VMFlag* f = VMFlag::cast(*(const char**)_flags_addr + i * VMFlag::type_size());
             if (f->name() != NULL && strcmp(f->name(), name) == 0 && f->addr() != NULL) {
                 return f;
             }
@@ -767,8 +760,9 @@ VMFlag *VMFlag::find(const char *name, std::initializer_list<VMFlag::Type> types
 
 VMFlag *VMFlag::find(const char *name, int type_mask) {
     if (_flags_addr != NULL && VMFlag::type_size() > 0) {
-        for (int i = 0; i < _flag_count; i++) {
-            VMFlag* f = VMFlag::cast(*_flags_addr + i * VMFlag::type_size());
+        size_t count = *(size_t*)_flag_count;
+        for (size_t i = 0; i < count; i++) {
+            VMFlag* f = VMFlag::cast(*(const char**)_flags_addr + i * VMFlag::type_size());
             if (f->name() != NULL && strcmp(f->name(), name) == 0) {
                 int masked = 0x1 << f->type();
                 if (masked & type_mask) {
@@ -1020,13 +1014,13 @@ HeapUsage HeapUsage::get(bool allow_jmx) {
     if (_collected_heap_addr != NULL) {
         if (_heap_usage_func != NULL) {
             // this is the JDK 17+ path
-            usage = _heap_usage_func(*_collected_heap_addr);
+            usage = _heap_usage_func(*(char**)_collected_heap_addr);
             usage._used_at_last_gc =
-                ((CollectedHeapWrapper *)*_collected_heap_addr)->_used_at_last_gc;
+                ((CollectedHeapWrapper *)*(char**)_collected_heap_addr)->_used_at_last_gc;
         } else if (_gc_heap_summary_func != NULL) {
             // this is the JDK 11 path
             // we need to collect GCHeapSummary information first
-            GCHeapSummary summary = _gc_heap_summary_func(*(void**)_collected_heap_addr);
+            GCHeapSummary summary = _gc_heap_summary_func(*(char**)_collected_heap_addr);
             usage._initSize = -1;
             usage._used = summary.used();
             usage._committed = -1;
