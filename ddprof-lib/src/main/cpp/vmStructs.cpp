@@ -399,7 +399,7 @@ void VMStructs::resolveOffsets() {
     _can_dereference_jmethod_id = _has_method_structs && VM::hotspot_version() <= 25;
 
     if (_code_heap_address != nullptr && _code_heap_low_address != nullptr && _code_heap_high_address != nullptr) {
-        char* code_heaps = (char*)_code_heap_address;
+        char* code_heaps = *(char**)_code_heap_address;
         unsigned int code_heap_count = *(unsigned int*)(code_heaps + _array_len_offset);
         if (code_heap_count <= 3 && _array_data_offset >= 0) {
             char* code_heap_array = *(char**)(code_heaps + _array_data_offset);
