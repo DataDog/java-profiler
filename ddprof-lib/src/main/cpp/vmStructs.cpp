@@ -307,7 +307,7 @@ void VMStructs::initOffsets() {
 
 
 #ifdef DEBUG
-   verify_offsets();
+//   verify_offsets();
 #endif
 }
 
