@@ -170,17 +170,6 @@ void VMStructs::init_offsets_and_addresses() {
 #undef END_TYPE
         }
     }
-
-    // Special cases
-    // JDK23  
-    // CodeBlob::_code_begin -> CodeBlob::_code_offset 
-    // CodeBlob::_code_begin -> CodeBlob::_code_offset
-    // nmethod::_verified_entry_point -> nmethod::_verified_entry_offset
-    if (VM::hotspot_version() < 23) {
-        _code_offset = - _code_offset;
-        _scopes_data_offset = - _scopes_data_offset;
-        _nmethod_entry_offset = - _nmethod_entry_offset;
-    } 
 }
 
 void VMStructs::init_type_sizes() {
@@ -340,7 +329,7 @@ void VMStructs::resolveOffsets() {
 
     _has_method_structs = _jmethod_ids_offset >= 0
             && _nmethod_method_offset >= 0
-            && _nmethod_entry_offset != -1
+            && (_nmethod_entry_offset != -1 || _nmethod_entry_address != -1)
             && _nmethod_state_offset >= 0
             && _method_constmethod_offset >= 0
             && _method_code_offset >= 0
@@ -388,9 +377,9 @@ void VMStructs::resolveOffsets() {
             && _call_wrapper_anchor_offset >= 0
             && _frame_entry_frame_call_wrapper_offset != -1
             && _interpreter_frame_bcp_offset != 0
-            && _code_offset != -1
+            && (_code_offset != -1 || _code_address != -1)
             && _data_offset >= 0
-            && _scopes_data_offset != -1
+            && (_scopes_data_offset != -1 || _scopes_data_address != -1)
             && _scopes_pcs_offset >= 0
             && ((_mutable_data_offset >= 0 && _relocation_size_offset >= 0) || _nmethod_metadata_offset >= 0)
             && _thread_vframe_offset >= 0
