@@ -111,33 +111,37 @@ inline T* cast_to(const void* ptr) {
 /**
  * Following macros define field offsets, addresses or values of JVM classes that are exported by
  * vmStructs.
- *  - type_begin()    Start a definition of a type. The type name is not used at this moment, but
- *                    improves readability.
- *  - field()         Define a field of a class, can be either an offset, an address or a value
- *  - field_no_check  Define a field of a class, just like above. But the field may not be exported
- *                    by JVMs. Therefore, it is skiped by verify_offsets()
- *  - type_end()      End of a type definition
+ *  - type_begin()        Start a definition of a type. The type name is not used at this moment, but
+ *                        improves readability.
+ *  - field()             Define a field of a class, can be either an offset, an address or a value
+ *  - field_with_version  A field that only exits in the specified JVM version range
+ *  - type_end()          End of a type definition
 */
 
 typedef int offset;
 typedef void* address;
 
-#define DECLARE_TYPE_FILED_DO(type_begin, field, field_no_check, type_end)                                          \
+#define MIN_VERSION 8
+
+// JDK 128 :-)
+#define MAX_VERSION 128
+
+#define DECLARE_TYPE_FILED_DO(type_begin, field, field_with_version, type_end)                                      \
     type_begin(VMMemRegion, MATCH_SYMBOLS("MemRegion"))                                                             \
         field(_region_start_offset, offset, MATCH_SYMBOLS("_start"))                                                \
         field(_region_size_offset, offset, MATCH_SYMBOLS("_word_size"))                                             \
     type_end()                                                                                                      \
     type_begin(VMNMethod, MATCH_SYMBOLS("CompiledMethod", "nmethod"))                                               \
-        field(_nmethod_method_offset, offset, MATCH_SYMBOLS("_method"))                                             \
-        field(_nmethod_entry_offset, offset, MATCH_SYMBOLS("_verified_entry_offset"))                               \
-        field(_nmethod_entry_address, offset, MATCH_SYMBOLS("_verified_entry_point"))                               \
+        field(_nmethod_method_offset, offset,MATCH_SYMBOLS("_method"))                                              \
+        field_with_version(_nmethod_entry_offset, offset, 23, MAX_VERSION, MATCH_SYMBOLS("_verified_entry_offset")) \
+        field_with_version(_nmethod_entry_address, offset, 8, 22, MATCH_SYMBOLS("_verified_entry_point"))           \
         field(_nmethod_state_offset, offset, MATCH_SYMBOLS("_state"))                                               \
         field(_nmethod_level_offset, offset, MATCH_SYMBOLS("_comp_level"))                                          \
-        field(_nmethod_metadata_offset, offset, MATCH_SYMBOLS("_metadata_offset"))                                  \
-        field_no_check(_nmethod_immutable_offset, offset, MATCH_SYMBOLS("_immutable_data"))                         \
+        field_with_version(_nmethod_metadata_offset, offset, MIN_VERSION, 24, MATCH_SYMBOLS("_metadata_offset"))    \
+        field_with_version(_nmethod_immutable_offset, offset, 23, MAX_VERSION, MATCH_SYMBOLS("_immutable_data"))    \
         field(_scopes_pcs_offset, offset, MATCH_SYMBOLS("_scopes_pcs_offset"))                                      \
-        field(_scopes_data_offset, offset, MATCH_SYMBOLS("_scopes_data_offset"))                                    \
-        field(_scopes_data_address, offset, MATCH_SYMBOLS("_scopes_data_begin"))                                    \
+        field_with_version(_scopes_data_offset, offset, 23, MAX_VERSION, MATCH_SYMBOLS("_scopes_data_offset"))      \
+        field_with_version(_scopes_data_address, offset, 9, 22, MATCH_SYMBOLS("_scopes_data_begin"))                \
     type_end()                                                                                                      \
     type_begin(VMMethod, MATCH_SYMBOLS("Method"))                                                                   \
         field(_method_constmethod_offset, offset, MATCH_SYMBOLS("_constMethod"))                                    \
@@ -165,7 +169,6 @@ typedef void* address;
     type_begin(VMSymbol, MATCH_SYMBOLS("Symbol"))                                                                   \
         field(_symbol_length_offset, offset, MATCH_SYMBOLS("_length"))                                              \
         field(_symbol_body_offset, offset, MATCH_SYMBOLS("_body"))                                                  \
-        field_no_check(_symbol_length_and_refcount_offset, offset, MATCH_SYMBOLS("_length_and_refcount"))           \
     type_end()                                                                                                      \
     type_begin(VMJavaThread, MATCH_SYMBOLS("JavaThread", "Thread"))                                                 \
         field(_thread_osthread_offset, offset, MATCH_SYMBOLS("_osthread"))                                          \
@@ -175,7 +178,7 @@ typedef void* address;
     type_end()                                                                                                      \
     type_begin(VMOSThread, MATCH_SYMBOLS("OSThread"))                                                               \
         field(_osthread_id_offset, offset, MATCH_SYMBOLS("_thread_id"))                                             \
-        field(_osthread_state_offset, offset, MATCH_SYMBOLS("_state"))                                              \
+        field_with_version(_osthread_state_offset, offset, 10, MAX_VERSION, MATCH_SYMBOLS("_state"))                \
     type_end()                                                                                                      \
     type_begin(VMThreadShow, MATCH_SYMBOLS("ThreadShadow"))                                                         \
         field(_thread_exception_offset, offset, MATCH_SYMBOLS("_exception_file"))                                   \
@@ -201,17 +204,17 @@ typedef void* address;
         field(_blob_size_offset, offset, MATCH_SYMBOLS("_size"))                                                    \
         field(_frame_size_offset, offset, MATCH_SYMBOLS("_frame_size"))                                             \
         field(_frame_complete_offset, offset, MATCH_SYMBOLS("_frame_complete_offset"))                              \
-        field(_code_offset, offset, MATCH_SYMBOLS("_code_offset"))                                                  \
-        field(_code_address, offset, MATCH_SYMBOLS("_code_begin"))                                                  \
+        field_with_version(_code_offset, offset, 23, MAX_VERSION, MATCH_SYMBOLS("_code_offset"))                    \
+        field_with_version(_code_address, offset, 9, 22, MATCH_SYMBOLS("_code_begin"))                              \
         field(_data_offset, offset, MATCH_SYMBOLS("_data_offset"))                                                  \
-        field_no_check(_mutable_data_offset, offset, MATCH_SYMBOLS("_mutable_data"))                                \
-        field_no_check(_relocation_size_offset, offset, MATCH_SYMBOLS("_relocation_size"))                          \
+        field_with_version(_mutable_data_offset, offset, 25, MAX_VERSION, MATCH_SYMBOLS("_mutable_data"))           \
+        field_with_version(_relocation_size_offset, offset, 23, MAX_VERSION, MATCH_SYMBOLS("_relocation_size"))     \
         field(_nmethod_name_offset, offset, MATCH_SYMBOLS("_name"))                                                 \
     type_end()                                                                                                      \
     type_begin(VMCodeCache, MATCH_SYMBOLS("CodeCache"))                                                             \
         field(_code_heap_addr, address, MATCH_SYMBOLS("_heap", "_heaps"))                                           \
-        field(_code_heap_low_addr, address, MATCH_SYMBOLS("_low_bound"))                                            \
-        field(_code_heap_high_addr, address, MATCH_SYMBOLS("_high_bound"))                                          \
+        field_with_version(_code_heap_low_addr, address, 9, MAX_VERSION, MATCH_SYMBOLS("_low_bound"))               \
+        field_with_version(_code_heap_high_addr, address, 9, MAX_VERSION, MATCH_SYMBOLS("_high_bound"))             \
     type_end()                                                                                                      \
     type_begin(VMCodeHeap, MATCH_SYMBOLS("CodeHeap"))                                                               \
         field(_code_heap_memory_offset, offset, MATCH_SYMBOLS("_memory"))                                           \
@@ -308,9 +311,12 @@ class VMStructs {
 #define DO_NOTHING(...)
 #define DECLARE_TYPE_FIELD(var, field_type, names) \
     static field_type var;
+#define DECLARE_TYPE_FIELD_WITH_VERSION(var, field_type, min_version, max_version, names) \
+    static field_type var;
 
-    DECLARE_TYPE_FILED_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DECLARE_TYPE_FIELD, DO_NOTHING)
+    DECLARE_TYPE_FILED_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DECLARE_TYPE_FIELD_WITH_VERSION, DO_NOTHING)
 #undef DECLARE_TYPE_FIELD
+#undef DECLARE_TYPE_FIELD_WITH_VERSION
 #undef DO_NOTHING
 
 // Declare int constant variables
@@ -524,14 +530,12 @@ class VMMethod;
 DECLARE(VMSymbol)
   public:
     unsigned short length() {
-        if (_symbol_length_offset >= 0) {
-          return *(unsigned short*) at(_symbol_length_offset);
-        } else {
-          return *(unsigned int*) at(_symbol_length_and_refcount_offset) >> 16;
-        }
+        assert(_symbol_length_offset >= 0);
+        return *(unsigned short*) at(_symbol_length_offset);
     }
 
     const char* body() {
+        assert(_symbol_body_offset >= 0);
         return at(_symbol_body_offset);
     }
 DECLARE_END

@@ -51,20 +51,24 @@ DECLARE_TYPES_DO(INIT_TYPE_SIZE)
 
 // Do nothing macro
 #define DO_NOTHING(...)
-#define INIT_OFFSET_OR_ADDRESS(var, field_type, names) \
+#define INIT_FILED(var, field_type, names) \
     field_type VMStructs::var = field_type##_value;
 
-DECLARE_TYPE_FILED_DO(DO_NOTHING, INIT_OFFSET_OR_ADDRESS, INIT_OFFSET_OR_ADDRESS, DO_NOTHING)
+#define INIT_FILED_WITH_VERSION(var, field_type, min_version, max_version, names) \
+    field_type VMStructs::var = field_type##_value;
 
-#undef INIT_OFFSET_OR_ADDRESS
+DECLARE_TYPE_FILED_DO(DO_NOTHING, INIT_FILED, INIT_FILED_WITH_VERSION, DO_NOTHING)
+
+#undef INIT_FILED
+#undef INIT_FILED_WITH_VERSION
 #undef DO_NOTHING
 #undef offset_value
 #undef address_value
 
 // Initialize constant variables to -1
-#define INIT_INT_CONSTANT(type, field) \
+#define INIT_INT_CONSTANT(type, field)      \
     int VMStructs::_##type##_##field = -1;
-#define INIT_LONG_CONSTANT(type, field) \
+#define INIT_LONG_CONSTANT(type, field)     \
     long VMStructs::_##type##_##field = -1;
 
 DECLARE_INT_CONSTANTS_DO(INIT_INT_CONSTANT)
@@ -163,10 +167,17 @@ void VMStructs::init_offsets_and_addresses() {
             var = read_##field_type();              \
             continue;                                                   \
         }
+#define READ_FIELD_VALUE_WITH_VERSION(var, field_type, min_version, max_version, field_names) \
+        if (matchAny(field_name, field_names)) {    \
+            var = read_##field_type();              \
+            continue;                                                   \
+        }
+
 #define END_TYPE() continue; }
-        DECLARE_TYPE_FILED_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE, END_TYPE)
+        DECLARE_TYPE_FILED_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
 #undef MATCH_TYPE_NAMES
 #undef READ_FIELD_VALUE
+#undef READ_FIELD_VALUE_WITH_VERSION
 #undef END_TYPE
         }
     }
@@ -187,10 +198,10 @@ void VMStructs::init_type_sizes() {
 
             uint64_t size = *(uint64_t*)(entry + size_offset);
            
- #define READ_TYPE_SIZE(name, names)                                      \
+ #define READ_TYPE_SIZE(name, names)          \
         if (matchAny(type, names)) {          \
-            TYPE_SIZE_NAME(name) = size;                                \
-            continue;                                                   \
+            TYPE_SIZE_NAME(name) = size;      \
+            continue;                         \
         }
 
         DECLARE_TYPES_DO(READ_TYPE_SIZE)
@@ -201,10 +212,10 @@ void VMStructs::init_type_sizes() {
     }
 }
 
-#define READ_CONSTANT(type, field)                                                      \
-            if (strcmp(type_name, #type "::" #field) == 0) {                            \
-                _##type##_##field = value;                                              \
-                continue;                                                               \
+#define READ_CONSTANT(type, field)                                \
+            if (strcmp(type_name, #type "::" #field) == 0) {      \
+                _##type##_##field = value;                        \
+                continue;                                         \
             }
 
 
@@ -252,6 +263,8 @@ void VMStructs::init_constants() {
 
 #ifdef DEBUG
 void VMStructs::verify_offsets() {
+    int hotspot_version = VM::hotspot_version();
+
 // Verify type sizes
 #define VERIFY_TYPE_SIZE(name, names) assert(TYPE_SIZE_NAME(name) > 0);
     DECLARE_TYPES_DO(VERIFY_TYPE_SIZE);
@@ -266,10 +279,12 @@ void VMStructs::verify_offsets() {
 
 // Do nothing macro
 #define DO_NOTHING(...)
-#define VERIFY_OFFSET_OR_ADDRESS(var, field_type, names) \
+#define VERIFY_FIELD(var, field_type, names)                                    \
     assert(var != field_type##_value);
+#define VERSION_FIELD_WITH_VERSION(var, field_type, min_ver, max_ver, names)    \
+    assert(hotspot_version < min_ver || hotspot_version > max_ver || var != field_type##_value);
 
-    DECLARE_TYPE_FILED_DO(DO_NOTHING, VERIFY_OFFSET_OR_ADDRESS, DO_NOTHING, DO_NOTHING)
+    DECLARE_TYPE_FILED_DO(DO_NOTHING, VERIFY_FIELD, VERSION_FIELD_WITH_VERSION, DO_NOTHING)
 #undef VERIFY_OFFSET_OR_ADDRESS
 #undef DO_NOTHING
 #undef offset_value
@@ -296,7 +311,7 @@ void VMStructs::initOffsets() {
 
 
 #ifdef DEBUG
-//   verify_offsets();
+   verify_offsets();
 #endif
 }
 
@@ -323,7 +338,7 @@ void VMStructs::resolveOffsets() {
     _has_class_names = _klass_name_offset >= 0
             && (_compact_object_headers ? (_markWord_klass_shift >= 0 && _markWord_monitor_value == MONITOR_BIT)
                                         : _oop_klass_offset >= 0)
-            && (_symbol_length_offset >= 0 || _symbol_length_and_refcount_offset >= 0)
+            && _symbol_length_offset >= 0
             && _symbol_body_offset >= 0
             && _klass != NULL;
 
