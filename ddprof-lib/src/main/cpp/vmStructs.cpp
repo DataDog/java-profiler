@@ -170,6 +170,17 @@ void VMStructs::init_offsets_and_addresses() {
 #undef END_TYPE
         }
     }
+
+    // Special cases
+    // JDK23  
+    // CodeBlob::_code_begin -> CodeBlob::_code_offset 
+    // CodeBlob::_code_begin -> CodeBlob::_code_offset
+    // nmethod::_verified_entry_point -> nmethod::_verified_entry_offset
+    if (VM::hotspot_version() < 23) {
+        _code_offset = - _code_offset;
+        _scopes_data_offset = - _scopes_data_offset;
+        _nmethod_entry_offset = - _nmethod_entry_offset;
+    } 
 }
 
 void VMStructs::init_type_sizes() {
