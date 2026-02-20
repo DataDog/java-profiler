@@ -6,7 +6,7 @@ kotlin = "1.9.22"
 spotless = "7.0.2"
 
 # Testing
-junit = "5.9.2"
+junit = "6.0.3"
 junit-platform = "1.9.2"  # JUnit Platform version corresponding to JUnit Jupiter 5.9.2
 junit-pioneer = "1.9.1"
 slf4j = "1.7.32"
