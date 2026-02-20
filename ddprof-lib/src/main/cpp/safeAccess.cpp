@@ -102,7 +102,7 @@ extern "C" int64_t safefetch64_cont(int64_t* adr, int64_t errValue);
     asm(R"(
         .globl _safefetch32_impl
         .private_extern _safefetch32_impl
-        _safefetch32_impl:
+        safefetch32_impl:
             ldr      w0, [x0]
             ret
         .globl _safefetch32_cont
