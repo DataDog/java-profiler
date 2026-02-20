@@ -142,13 +142,18 @@ class GtestPlugin : Plugin<Project> {
                     val libDir = File("$targetDir/$libName")
                     val libSrcDir = File("$srcDir/$libName")
 
-                    project.exec {
-                        commandLine("sh", "-c", """
-                            echo "Processing library: $libName @ $libSrcDir"
-                            mkdir -p $libDir
-                            cd $libSrcDir
-                            make TARGET_DIR=$libDir
-                        """.trimIndent())
+                    // Use ProcessBuilder directly (Gradle 9 removed project.exec in task actions)
+                    val process = ProcessBuilder("sh", "-c", """
+                        echo "Processing library: $libName @ $libSrcDir"
+                        mkdir -p $libDir
+                        cd $libSrcDir
+                        make TARGET_DIR=$libDir
+                    """.trimIndent())
+                        .inheritIO()
+                        .start()
+                    val exitCode = process.waitFor()
+                    if (exitCode != 0) {
+                        throw org.gradle.api.GradleException("Failed to build native lib: $libName (exit code: $exitCode)")
                     }
                 }
             }

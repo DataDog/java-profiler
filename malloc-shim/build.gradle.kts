@@ -28,8 +28,8 @@ simpleNativeLib {
       "-fvisibility=hidden",
       "-std=c++17",
       "-DPROFILER_VERSION=\"${project.version}\"",
-      "-fPIC"
-    )
+      "-fPIC",
+    ),
   )
 
   linkerArgs.set(listOf("-ldl"))
