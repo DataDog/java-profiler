@@ -22,7 +22,7 @@ configure<ProfilerTestExtension> {
   // Extra JVM args specific to this project's tests
   extraJvmArgs.addAll(
     "-Dddprof.disable_unsafe=true",
-    "-XX:OnError=/tmp/do_stuff.sh"
+    "-XX:OnError=/tmp/do_stuff.sh",
   )
 }
 
@@ -51,19 +51,11 @@ dependencies {
 }
 
 // Additional test task configuration beyond what the plugin provides
-tasks.withType<Test>().configureEach {
+// The plugin creates Test tasks on glibc/macOS and Exec tasks on musl
+// Both need the native test library to be built first
+tasks.matching { it.name.startsWith("test") && it.name != "test" }.configureEach {
   // Ensure native test library is built before running tests
   dependsOn(":ddprof-test-native:linkLib")
-
-  // Extract config name from task name for test-specific JVM args
-  val configName = name.replace("test", "")
-  val keepRecordings = project.hasProperty("keepJFRs") || System.getenv("KEEP_JFRS")?.toBoolean() ?: false
-
-  jvmArgs(
-    "-Dddprof_test.keep_jfrs=$keepRecordings",
-    "-Dddprof_test.config=$configName",
-    "-Dddprof_test.ci=${project.hasProperty("CI")}"
-  )
 }
 
 // Disable the default 'test' task - we use config-specific tasks instead

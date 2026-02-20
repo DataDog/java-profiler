@@ -1,12 +1,14 @@
 import com.datadoghq.native.model.Platform
 import com.datadoghq.native.util.PlatformUtils
+import org.gradle.api.publish.maven.tasks.AbstractPublishToMaven
+import org.gradle.api.tasks.VerificationTask
 
 plugins {
   java
   `maven-publish`
   signing
-  id("com.github.ben-manes.versions") version "0.27.0"
-  id("de.undercouch.download") version "4.1.1"
+  id("com.github.ben-manes.versions") version "0.51.0"
+  id("de.undercouch.download") version "5.6.0"
   id("com.datadoghq.native-build")
   id("com.datadoghq.gtest")
   id("com.datadoghq.scanbuild")
@@ -25,8 +27,8 @@ nativeBuild {
   includeDirectories.set(
     listOf(
       "src/main/cpp",
-      "${project(":malloc-shim").file("src/main/public")}"
-    )
+      "${project(":malloc-shim").file("src/main/public")}",
+    ),
   )
 }
 
@@ -46,7 +48,7 @@ gtest {
     "src/main/cpp",
     "$javaHome/include",
     "$javaHome/include/$platformInclude",
-    project(":malloc-shim").file("src/main/public")
+    project(":malloc-shim").file("src/main/public"),
   )
 }
 
@@ -82,6 +84,14 @@ val copyExternalLibs by tasks.registering(Copy::class) {
       include("**/*.so", "**/*.dylib", "**/*.debug", "**/*.dSYM/**")
     }
     into("$projectDir/build/classes/java/main/META-INF/native-libs")
+  }
+}
+
+// Gradle 9 requires explicit dependency: compileJava9Java uses mainSourceSet.output
+// which includes the copyExternalLibs destination directory
+afterEvaluate {
+  tasks.named("compileJava9Java") {
+    dependsOn(copyExternalLibs)
   }
 }
 
@@ -164,7 +174,7 @@ val sourcesJar by tasks.registering(Jar::class) {
 }
 
 // Javadoc configuration
-tasks.withType<Javadoc> {
+tasks.withType<Javadoc>().configureEach {
   // Allow javadoc to access internal sun.nio.ch package used by BufferWriter8
   (options as StandardJavadocDocletOptions).addStringOption("-add-exports", "java.base/sun.nio.ch=ALL-UNNAMED")
 }
@@ -175,7 +185,104 @@ val javadocJar by tasks.registering(Jar::class) {
   archiveBaseName.set(libraryName)
   archiveClassifier.set("javadoc")
   archiveVersion.set(componentVersion)
-  from(tasks.javadoc.get().destinationDir)
+  from(
+    tasks.javadoc.map {
+      it.destinationDir ?: throw GradleException("Javadoc task destinationDir is null - task may not have been configured properly")
+    },
+  )
 }
 
-// Publishing configuration will be added later
+// Publishing configuration
+val isGitlabCI = System.getenv("GITLAB_CI") != null
+val isCI = System.getenv("CI") != null
+
+publishing {
+  publications {
+    create<MavenPublication>("assembled") {
+      groupId = "com.datadoghq"
+      artifactId = "ddprof"
+
+      // Add artifacts from each build configuration
+      afterEvaluate {
+        nativeBuild.buildConfigurations.names.forEach { name ->
+          val capitalizedName = name.replaceFirstChar { it.uppercase() }
+          artifact(tasks.named("assemble${capitalizedName}Jar"))
+        }
+      }
+      artifact(sourcesJar)
+      artifact(javadocJar)
+
+      pom {
+        name.set(project.name)
+        description.set("${project.description} ($componentVersion)")
+        packaging = "jar"
+        url.set("https://github.com/datadog/java-profiler")
+
+        licenses {
+          license {
+            name.set("The Apache Software License, Version 2.0")
+            url.set("http://www.apache.org/licenses/LICENSE-2.0.txt")
+            distribution.set("repo")
+          }
+        }
+
+        scm {
+          connection.set("scm:https://datadog@github.com/datadog/java-profiler")
+          developerConnection.set("scm:git@github.com:datadog/java-profiler")
+          url.set("https://github.com/datadog/java-profiler")
+        }
+
+        developers {
+          developer {
+            id.set("datadog")
+            name.set("Datadog")
+          }
+        }
+      }
+    }
+  }
+}
+
+signing {
+  useInMemoryPgpKeys(System.getenv("GPG_PRIVATE_KEY"), System.getenv("GPG_PASSWORD"))
+  sign(publishing.publications["assembled"])
+}
+
+tasks.withType<Sign>().configureEach {
+  onlyIf {
+    isGitlabCI || (System.getenv("GPG_PRIVATE_KEY") != null && System.getenv("GPG_PASSWORD") != null)
+  }
+}
+
+// Publication assertions
+gradle.taskGraph.whenReady {
+  if (hasTask(":ddprof-lib:publish") || hasTask(":publishToSonatype")) {
+    check(project.findProperty("removeJarVersionNumbers") != true) {
+      "Cannot publish with removeJarVersionNumbers=true"
+    }
+    if (hasTask(":publishToSonatype")) {
+      checkNotNull(System.getenv("SONATYPE_USERNAME")) { "SONATYPE_USERNAME must be set" }
+      checkNotNull(System.getenv("SONATYPE_PASSWORD")) { "SONATYPE_PASSWORD must be set" }
+      if (isCI) {
+        checkNotNull(System.getenv("GPG_PRIVATE_KEY")) { "GPG_PRIVATE_KEY must be set in CI" }
+        checkNotNull(System.getenv("GPG_PASSWORD")) { "GPG_PASSWORD must be set in CI" }
+      }
+    }
+  }
+}
+
+// Verify project has description (required for published projects)
+afterEvaluate {
+  requireNotNull(description) { "Project ${project.path} is published, must have a description" }
+}
+
+// Ensure published artifacts depend on release JAR
+// Note: assembleReleaseJar is registered in afterEvaluate, so use matching instead of named
+tasks.withType<AbstractPublishToMaven>().configureEach {
+  if (name.contains("AssembledPublication")) {
+    dependsOn(tasks.matching { it.name == "assembleReleaseJar" })
+  }
+  rootProject.subprojects.forEach { subproject ->
+    mustRunAfter(subproject.tasks.matching { it is VerificationTask })
+  }
+}
