@@ -15,6 +15,22 @@ jobs:
   cache-jdks:
     # This job is used to cache the JDKs for the test jobs
     uses: ./.github/workflows/cache_java.yml
+  filter-musl-configs:
+    # Sanitizers (asan/tsan) are not supported on musl - filter them out
+    runs-on: ubuntu-latest
+    outputs:
+      configs: ${{ steps.filter.outputs.configs }}
+      has_configs: ${{ steps.filter.outputs.has_configs }}
+    steps:
+      - id: filter
+        run: |
+          configs=$(echo '${{ inputs.configuration }}' | jq -c '[.[] | select(. != "asan" and . != "tsan")]')
+          if [ "$configs" = "[]" ]; then
+            echo "has_configs=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_configs=true" >> $GITHUB_OUTPUT
+          fi
+          echo "configs=$configs" >> $GITHUB_OUTPUT
   test-linux-glibc-amd64:
     needs: cache-jdks
     strategy:
@@ -132,12 +148,13 @@ jobs:
           path: test-reports
 
   test-linux-musl-amd64:
-    needs: cache-jdks
+    needs: [cache-jdks, filter-musl-configs]
+    if: needs.filter-musl-configs.outputs.has_configs == 'true'
     strategy:
      fail-fast: false
      matrix:
        java_version: [ "8-librca", "11-librca", "17-librca", "21-librca", "25-librca" ]
-       config: ${{ fromJson(inputs.configuration) }}
+       config: ${{ fromJson(needs.filter-musl-configs.outputs.configs) }}
     runs-on: ubuntu-latest
     container:
       image: "alpine:3.21"
@@ -368,12 +385,13 @@ jobs:
           path: test-reports
 
   test-linux-musl-aarch64:
-     needs: cache-jdks
+     needs: [cache-jdks, filter-musl-configs]
+     if: needs.filter-musl-configs.outputs.has_configs == 'true'
      strategy:
        fail-fast: false
        matrix:
          java_version: [ "8-librca", "11-librca", "17-librca", "21-librca", "25-librca" ]
-         config: ${{ fromJson(inputs.configuration) }}
+         config: ${{ fromJson(needs.filter-musl-configs.outputs.configs) }}
      runs-on:
        group: ARM LINUX SHARED
        labels: arm-4core-linux-ubuntu24.04

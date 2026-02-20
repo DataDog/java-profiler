@@ -3,10 +3,11 @@
 [versions]
 cpp-standard = "17"
 kotlin = "1.9.22"
-spotless = "6.11.0"
+spotless = "7.0.2"
 
 # Testing
 junit = "5.9.2"
+junit-platform = "1.9.2"  # JUnit Platform version corresponding to JUnit Jupiter 5.9.2
 junit-pioneer = "1.9.1"
 slf4j = "1.7.32"
 
@@ -28,6 +29,7 @@ jmh = "1.36"
 junit-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "junit" }
 junit-engine = { module = "org.junit.jupiter:junit-jupiter-engine", version.ref = "junit" }
 junit-params = { module = "org.junit.jupiter:junit-jupiter-params", version.ref = "junit" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit-platform" }
 junit-pioneer = { module = "org.junit-pioneer:junit-pioneer", version.ref = "junit-pioneer" }
 
 # Logging
@@ -50,8 +52,8 @@ jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }
 jmh-annprocess = { module = "org.openjdk.jmh:jmh-generator-annprocess", version.ref = "jmh" }
 
 [bundles]
-# Core testing framework (JUnit + logging)
-testing = ["junit-api", "junit-engine", "junit-params", "junit-pioneer", "slf4j-simple"]
+# Core testing framework (JUnit + logging + launcher API for custom test runner)
+testing = ["junit-api", "junit-engine", "junit-params", "junit-platform-launcher", "junit-pioneer", "slf4j-simple"]
 
 # Profiler runtime dependencies (JFR analysis + compression)
 profiler-runtime = ["jmc-flightrecorder", "jol-core", "lz4", "snappy", "zstd"]

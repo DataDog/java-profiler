@@ -274,10 +274,21 @@ Release builds automatically extract debug symbols:
 ## Development Workflow
 
 ### Running Single Tests
-Use standard Gradle syntax:
+Use the `-Ptests` property across all platforms:
 ```bash
-./gradlew :ddprof-test:test --tests "ClassName.methodName"
+./gradlew :ddprof-test:testDebug -Ptests=ClassName.methodName  # Single method
+./gradlew :ddprof-test:testDebug -Ptests=ClassName              # Entire class
+./gradlew :ddprof-test:testDebug -Ptests="*.ClassName"          # Pattern matching
 ```
+
+**Platform Implementation Details:**
+- **glibc/macOS**: Test tasks use Gradle's native Test task type with JUnit Platform integration
+- **musl (Alpine)**: Exec tasks with custom ProfilerTestRunner (bypasses Gradle 9 toolchain probe issues)
+- **Custom Test Runner**: Uses JUnit Platform Launcher API directly (same API used by IDEs and Gradle internally)
+- **Result**: Unified `-Ptests` property works identically across all platforms, no platform-specific syntax required
+
+**Why `-Ptests` instead of `--tests`?**
+The `-Ptests` property works consistently across both Test and Exec task types, while `--tests` only works with Test tasks. This ensures a truly unified interface across all platforms.
 
 ### Working with Native Code
 Native compilation is automatic during build. C++ code changes require:
@@ -604,8 +615,56 @@ See `gradle.properties.template` for all options. Key ones:
 
 - Exclude ddprof-lib/build/async-profiler from searches of active usage
 
-- Run tests with 'testdebug' gradle task
-- Use at most Java 21 to build and run tests
+- Run tests with 'testDebug' gradle task
+
+## Build JDK Configuration
+
+The project uses a **two-JDK pattern**:
+- **Build JDK** (`JAVA_HOME`): Used to run Gradle itself. Must be JDK 17+ for Gradle 9.
+- **Test JDK** (`JAVA_TEST_HOME`): Used to run tests against different Java versions.
+
+**Current requirement:** JDK 21 (LTS) for building, targeting Java 8 bytecode via `--release 8`.
+
+### Files to Modify When Changing Build JDK Version
+
+When upgrading the build JDK (e.g., from JDK 21 to JDK 25), update these files:
+
+| File | What to Change |
+|------|----------------|
+| `README.md` | Update "Prerequisites" section with new JDK version |
+| `.github/actions/setup_cached_java/action.yml` | Change `build_jdk=jdk21` to new version (line ~25) |
+| `.github/workflows/ci.yml` | Update `java-version` in `check-formatting` job's Setup Java step |
+| `utils/run-docker-tests.sh` | Update `BUILD_JDK_VERSION="21"` constant |
+| `build-logic/.../JavaConventionsPlugin.kt` | Update documentation comment if minimum changes |
+
+### Files to Modify When Changing Target JDK Version
+
+When changing the target bytecode version (e.g., from Java 8 to Java 11):
+
+| File | What to Change |
+|------|----------------|
+| `build-logic/.../JavaConventionsPlugin.kt` | Change `--release 8` to new version |
+| `ddprof-lib/build.gradle.kts` | Change `sourceCompatibility`/`targetCompatibility` |
+| `README.md` | Update minimum Java runtime version |
+
+### Gradle 9 API Changes Reference
+
+When upgrading Gradle major versions, watch for these breaking changes:
+
+| Old API | New API (Gradle 9+) | Affected Files |
+|---------|---------------------|----------------|
+| `project.exec { }` in task actions | `ProcessBuilder` directly | `GtestPlugin.kt` |
+| `String.capitalize()` | `replaceFirstChar { it.uppercaseChar() }` | Kotlin plugins |
+| `createTempFile()` | `kotlin.io.path.createTempFile()` | `PlatformUtils.kt` |
+| Spotless `userData()` | `editorConfigOverride()` | `SpotlessConventionPlugin.kt` |
+| Spotless `indentWithSpaces()` | `leadingTabsToSpaces()` | `SpotlessConventionPlugin.kt` |
+
+### CI JDK Caching
+
+The CI caches JDKs via `.github/workflows/cache_java.yml`. When adding a new JDK version:
+1. Add version URLs to `cache_java.yml` environment variables
+2. Add to the `java_variant` matrix in cache jobs
+3. Run the `cache_java.yml` workflow manually to populate caches
 
 ## Agentic Work
 
@@ -623,11 +682,11 @@ See `gradle.properties.template` for all options. Key ones:
       ```
     - Instead of:
       ```bash
-      ./gradlew :prof-utils:test --tests "UpscaledMethodSampleEventSinkTest"
+      ./gradlew :ddprof-test:testDebug -Ptests=MuslDetectionTest
       ```
       use:
       ```bash
-      ./.claude/commands/build-and-summarize :prof-utils:test --tests "UpscaledMethodSampleEventSinkTest"
+      ./.claude/commands/build-and-summarize :ddprof-test:testdebug -Ptests=MuslDetectionTest
       ```
 
 - This ensures the full build log is captured to a file and only a summary is shown in the main session.
