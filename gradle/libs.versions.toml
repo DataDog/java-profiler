@@ -7,7 +7,7 @@ spotless = "7.0.2"
 
 # Testing
 junit = "5.9.2"
-junit-platform = "1.9.2"  # JUnit Platform version corresponding to JUnit Jupiter 5.9.2
+junit-platform = "6.0.3"  # JUnit Platform version corresponding to JUnit Jupiter 5.9.2
 junit-pioneer = "1.9.1"
 slf4j = "1.7.32"
 
