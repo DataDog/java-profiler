@@ -263,6 +263,8 @@ void VMStructs::init_constants() {
 
 #ifdef DEBUG
 void VMStructs::verify_offsets() {
+    // Hotspot only
+    assert(VM::isHotspot());
     int hotspot_version = VM::hotspot_version();
 
 // Verify type sizes
@@ -306,7 +308,7 @@ void VMStructs::verify_offsets() {
 
 void VMStructs::initOffsets() {
     // J9 does not support vmStructs
-    if (VM::isOpenJ9()) {
+    if (VM::isOpenJ9() || VM::isZing()) {
         return;
     }
 

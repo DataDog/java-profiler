@@ -22,8 +22,8 @@ class HeapUsage;
 
 template <typename T>
 inline T* cast_to(const void* ptr) {
-    assert(T::type_size() > 0); // Ensure type size has been initialized
-    assert(ptr == nullptr || SafeAccess::isReadableRange(ptr, T::type_size()));
+    assert(!VM::isHotspot() || T::type_size() > 0); // Ensure type size has been initialized
+    assert(ptr == nullptr || !VM::isHotspot() || SafeAccess::isReadableRange(ptr, T::type_size()));
     return reinterpret_cast<T*>(const_cast<void*>(ptr));
 }
 
