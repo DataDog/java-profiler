@@ -379,7 +379,7 @@ class VMStructs {
 
     const char* at(int offset) {
         const char* ptr = (const char*)this + offset;
-        assert(SafeAccess::isReadable(ptr));
+        assert(!VM::isHotspot() || SafeAccess::isReadable(ptr));
         return ptr;
     }
 
