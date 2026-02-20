@@ -305,6 +305,11 @@ void VMStructs::verify_offsets() {
 #endif // DEBUG
 
 void VMStructs::initOffsets() {
+    // J9 and Zing don't support vmStructs
+    if (VM::isOpenJ9() || VM::isZing()) {
+        return;
+    }
+
     init_type_sizes();
     init_offsets_and_addresses();
     init_constants();
