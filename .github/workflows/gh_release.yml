@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
-      - uses: webfactory/ssh-agent@v0.7.0
+      - uses: webfactory/ssh-agent@v0.9.1
         with:
           ssh-private-key: ${{ secrets.SSH_PUSH_SECRET }}
       - name: Create Release [automatic]

@@ -153,7 +153,7 @@ jobs:
           echo "::error::Pre-release tests failed. Cannot proceed with release."
           exit 1
 
-      - uses: webfactory/ssh-agent@v0.7.0
+      - uses: webfactory/ssh-agent@v0.9.1
         with:
           ssh-private-key: ${{ secrets.SSH_PUSH_SECRET }}
 
