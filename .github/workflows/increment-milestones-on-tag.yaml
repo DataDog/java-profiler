@@ -53,7 +53,7 @@ jobs:
       - name: Get next minor version
         if: fromJSON(steps.milestone.outputs.result)
         id: semvers
-        uses: WyriHaximus/github-action-next-semvers@33d116a4c239252582a60a1ba8dbba63ad493ffd # 1.1.0
+        uses: WyriHaximus/github-action-next-semvers@18aa9ed4152808ab99b88d71f5481e41f8d89930 # 1.2.1
         with:
           version: ${{steps.milestoneTitle.outputs.result}}
       - name: Create next milestone
