@@ -34,7 +34,7 @@ env:
   # jdk1.8.0_361
   JAVA_8_ORACLE_URL: "https://javadl.oracle.com/webapps/download/AutoDL?BundleId=247926_0ae14417abb444ebb02b9815e2103550"
 
-  JAVA_8_IBM_URL: "https://public.dhe.ibm.com/ibmdl/export/pub/systems/cloud/runtimes/java/8.0.8.50/linux/x86_64/ibm-java-jre-8.0-8.50-linux-x86_64.tgz"
+  JAVA_8_IBM_URL: "https://public.dhe.ibm.com/ibmdl/export/pub/systems/cloud/runtimes/java/8.0.8.60/linux/x86_64/ibm-java-jre-8.0-8.60-linux-x86_64.tgz"
 
   JAVA_8_ZING_URL         : "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk8.0.372-linux_x64.tar.gz"
   JAVA_8_ZING_AARCH64_URL : "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk8.0.431-linux_aarch64.tar.gz"
