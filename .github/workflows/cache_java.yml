@@ -172,7 +172,7 @@ jobs:
           sudo apt-get install -y curl zip unzip
       - name: Download SDKMAN! from Artifact
         if: steps.check-cache.outputs.cache-hit != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: sdkman-installation-amd64
           path: sdkman
@@ -281,7 +281,7 @@ jobs:
           sudo apt-get install -y curl zip unzip
       - name: Download SDKMAN! from Artifact
         if: steps.check-cache.outputs.cache-hit != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: sdkman-installation-aarch64
           path: sdkman

@@ -21,7 +21,7 @@ jobs:
     if: failure()
     steps:
       - name: Download all failure artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: failures-*
           path: ./artifacts
