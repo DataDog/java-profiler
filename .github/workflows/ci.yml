@@ -46,7 +46,7 @@ jobs:
     needs: check-for-pr
     if: needs.check-for-pr.outputs.skip != 'true'
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
 
       - name: Setup Java
         uses: actions/setup-java@v3
@@ -87,7 +87,7 @@ jobs:
     needs: check-for-pr
     if: needs.check-for-pr.outputs.skip != 'true'
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
 
       - name: Setup Java
         uses: actions/setup-java@v3
@@ -178,7 +178,7 @@ jobs:
       actions: read
       id-token: write
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
 
       - name: Generate test summary
         env:
