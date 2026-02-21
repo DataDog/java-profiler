@@ -7,6 +7,9 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "no-release-notes"
     groups:
       gradle-minor:
         update-types:
@@ -20,6 +23,9 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "no-release-notes"
     groups:
       gradle-minor:
         update-types:
@@ -33,3 +39,6 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "no-release-notes"
