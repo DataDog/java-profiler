@@ -58,7 +58,7 @@ jobs:
           version: ${{steps.milestoneTitle.outputs.result}}
       - name: Create next milestone
         if: fromJSON(steps.milestone.outputs.result)
-        uses: WyriHaximus/github-action-create-milestone@b86699ba7511fa3b61154ac8675d86b01938fc16 # 1.0.0
+        uses: WyriHaximus/github-action-create-milestone@6f8e11bb23890a15c6cc520abf7a36510dfd0f94 # 1.2.0
         with:
           title: ${{ steps.semvers.outputs.minor }}
         env:
