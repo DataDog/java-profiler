@@ -13,16 +13,16 @@ slf4j = "1.7.32"
 
 # Profiler runtime
 jmc = "8.1.0"
-jol = "0.16"
-lz4 = "1.8.0"
+jol = "0.17"
+lz4 = "1.8.1"
 snappy = "1.1.10.1"
-zstd = "1.5.5-4"
+zstd = "1.5.7-7"
 
 # Code analysis
-asm = "9.6"
+asm = "9.9.1"
 
 # Benchmarking
-jmh = "1.36"
+jmh = "1.37"
 
 [libraries]
 # JUnit 5
