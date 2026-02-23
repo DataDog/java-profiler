@@ -1,14 +1,21 @@
 package com.datadoghq.profiler.test;
 
+import org.junit.platform.engine.TestExecutionResult;
+import org.junit.platform.engine.TestSource;
 import org.junit.platform.engine.discovery.ClassNameFilter;
 import org.junit.platform.engine.discovery.DiscoverySelectors;
+import org.junit.platform.engine.support.descriptor.MethodSource;
 import org.junit.platform.launcher.Launcher;
 import org.junit.platform.launcher.LauncherDiscoveryRequest;
+import org.junit.platform.launcher.TestExecutionListener;
+import org.junit.platform.launcher.TestIdentifier;
 import org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder;
 import org.junit.platform.launcher.core.LauncherFactory;
 import org.junit.platform.launcher.listeners.SummaryGeneratingListener;
 
 import java.io.PrintWriter;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Custom test runner using JUnit Platform Launcher API.
@@ -101,10 +108,10 @@ public class ProfilerTestRunner {
 
         LauncherDiscoveryRequest request = requestBuilder.build();
 
-        // Create launcher and register listener
+        // Create launcher and register listeners
         Launcher launcher = LauncherFactory.create();
         SummaryGeneratingListener listener = new SummaryGeneratingListener();
-        launcher.registerTestExecutionListeners(listener);
+        launcher.registerTestExecutionListeners(new GradleStyleTestListener(), listener);
 
         // Execute tests
         launcher.execute(request);
@@ -148,5 +155,70 @@ public class ProfilerTestRunner {
 
         // Method names conventionally start with lowercase
         return Character.isLowerCase(lastSegment.charAt(0));
+    }
+
+    /**
+     * Emits per-test STARTED / PASSED / FAILED / SKIPPED markers to stdout in the same
+     * format as Gradle's Test task, so that filter_gradle_log.py can compress the output
+     * identically on both glibc and musl paths.
+     *
+     * Output format (matches Gradle's testLogging output):
+     *   com.example.FooTest > testBar STARTED
+     *   com.example.FooTest > testBar PASSED (42ms)
+     *   com.example.FooTest > testBar FAILED
+     *       java.lang.AssertionError: ...
+     */
+    private static final class GradleStyleTestListener implements TestExecutionListener {
+        private final ConcurrentHashMap<String, Long> startTimes = new ConcurrentHashMap<>();
+
+        @Override
+        public void executionStarted(TestIdentifier testIdentifier) {
+            if (!testIdentifier.isTest()) return;
+            startTimes.put(testIdentifier.getUniqueId(), System.currentTimeMillis());
+            String name = formatName(testIdentifier);
+            if (name != null) {
+                System.out.println(name + " STARTED");
+                System.out.flush();
+            }
+        }
+
+        @Override
+        public void executionFinished(TestIdentifier testIdentifier, TestExecutionResult result) {
+            if (!testIdentifier.isTest()) return;
+            String name = formatName(testIdentifier);
+            if (name == null) return;
+
+            Long start = startTimes.remove(testIdentifier.getUniqueId());
+            long ms = start != null ? System.currentTimeMillis() - start : 0;
+
+            switch (result.getStatus()) {
+                case SUCCESSFUL:
+                    System.out.printf("%s PASSED (%dms)%n", name, ms);
+                    break;
+                case FAILED:
+                case ABORTED:
+                    System.out.printf("%s FAILED%n", name);
+                    result.getThrowable().ifPresent(t -> t.printStackTrace(System.out));
+                    break;
+            }
+            System.out.flush();
+        }
+
+        @Override
+        public void executionSkipped(TestIdentifier testIdentifier, String reason) {
+            if (!testIdentifier.isTest()) return;
+            String name = formatName(testIdentifier);
+            if (name != null) {
+                System.out.println(name + " SKIPPED");
+                System.out.flush();
+            }
+        }
+
+        private static String formatName(TestIdentifier testIdentifier) {
+            Optional<TestSource> source = testIdentifier.getSource();
+            if (!source.isPresent() || !(source.get() instanceof MethodSource)) return null;
+            MethodSource ms = (MethodSource) source.get();
+            return ms.getClassName() + " > " + ms.getMethodName();
+        }
     }
 }
