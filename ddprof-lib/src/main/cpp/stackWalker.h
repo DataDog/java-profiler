@@ -8,6 +8,7 @@
 #define _STACKWALKER_H
 
 #include <stdint.h>
+#include <string.h>
 #include "arguments.h"
 #include "event.h"
 #include "vmEntry.h"
@@ -48,6 +49,18 @@ namespace StackWalkValidation {
     // Check if two pointers are on the same stack
     static inline bool sameStack(void* hi, void* lo) {
         return (uintptr_t)hi - (uintptr_t)lo < SAME_STACK_DISTANCE;
+    }
+
+    // Drop unknown leaf frame (method_id == NULL at index 0).
+    // Returns the new depth after removal.
+    static inline int dropUnknownLeaf(ASGCT_CallFrame* frames, int depth) {
+        if (depth > 0 && frames[0].method_id == NULL) {
+            depth--;
+            if (depth > 0) {
+                memmove(frames, frames + 1, depth * sizeof(frames[0]));
+            }
+        }
+        return depth;
     }
 }
 
