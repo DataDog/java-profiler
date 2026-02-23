@@ -193,6 +193,7 @@ jobs:
       - name: Extract Versions
         uses: ./.github/actions/extract_versions
       - name: Test
+        shell: bash
         run: |
           set +e
 
