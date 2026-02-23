@@ -101,9 +101,12 @@ jobs:
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}-${{ matrix.config }}-amd64
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
-      
-          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
-          EXIT_CODE=$?
+
+          mkdir -p build/logs
+          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+            | tee -a build/test-raw.log \
+            | python3 -u .github/scripts/filter_gradle_log.py
+          EXIT_CODE=${PIPESTATUS[0]}
       
           if [ $EXIT_CODE -ne 0 ]; then
             echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
@@ -163,7 +166,7 @@ jobs:
     steps:
       - name: Setup OS
         run: |
-          apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar binutils >/dev/null
+          apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar binutils python3 >/dev/null
           # Install debug symbols for musl libc
           apk add musl-dbg
       - uses: actions/checkout@v6
@@ -217,8 +220,11 @@ jobs:
           export JAVA_VERSION
           echo "JAVA_VERSION=${JAVA_VERSION}"
 
-          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
-          EXIT_CODE=$?
+          mkdir -p build/logs
+          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+            | tee -a build/test-raw.log \
+            | python3 -u .github/scripts/filter_gradle_log.py
+          EXIT_CODE=${PIPESTATUS[0]}
 
           if [ $EXIT_CODE -ne 0 ]; then
             echo "musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
@@ -339,8 +345,11 @@ jobs:
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
 
-          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
-          EXIT_CODE=$?
+          mkdir -p build/logs
+          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+            | tee -a build/test-raw.log \
+            | python3 -u .github/scripts/filter_gradle_log.py
+          EXIT_CODE=${PIPESTATUS[0]}
 
           if [ $EXIT_CODE -ne 0 ]; then
             echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
@@ -424,13 +433,16 @@ jobs:
          run: |
            set +e
            # the effective JAVA_VERSION is computed in the test_alpine_aarch64.sh script
+           mkdir -p build/logs
            docker run --cpus 4 --rm -v /tmp:/tmp -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" -w "${GITHUB_WORKSPACE}" alpine:3.21 /bin/sh -c "
              \"$GITHUB_WORKSPACE/.github/scripts/test_alpine_aarch64.sh\" \
              \"${{ github.sha }}\" \"musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64\" \
              \"${{ matrix.config }}\" \"${{ env.JAVA_HOME }}\" \"${{ env.JAVA_TEST_HOME }}\"
-           "
+           " 2>&1 \
+             | tee -a build/test-raw.log \
+             | python3 -u .github/scripts/filter_gradle_log.py
 
-           EXIT_CODE=$?
+           EXIT_CODE=${PIPESTATUS[0]}
 
            if [ $EXIT_CODE -ne 0 ]; then
              echo "musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
