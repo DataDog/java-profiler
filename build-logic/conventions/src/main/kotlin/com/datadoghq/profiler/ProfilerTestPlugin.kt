@@ -208,7 +208,7 @@ class ProfilerTestPlugin : Plugin<Project> {
             // Test output
             testTask.testLogging {
                 val logging = this
-                logging.events("passed", "skipped", "failed")
+                logging.events("started", "passed", "skipped", "failed")
                 logging.showStandardStreams = true
             }
 

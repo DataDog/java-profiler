@@ -24,9 +24,9 @@ Exit code and PIPESTATUS:
         GRADLE_EXIT=${PIPESTATUS[0]}
 
 Limitations:
-  - Only handles the Gradle Test task format (glibc / macOS path).
-  - The musl path (ProfilerTestRunner / Exec task) does not emit per-test markers, so
-    its output is passed through unmodified.
+  - [TEST::INFO] lines emitted from class-level lifecycle methods (@BeforeAll, static
+    initializers) appear before any STARTED marker and are suppressed in OUTSIDE state.
+    They remain visible in the raw log preserved by tee.
 """
 
 import re
@@ -103,7 +103,11 @@ def main() -> None:
         else:
             # OUTSIDE or FAILING: pass through directly.
             # In FAILING state this captures exception lines, stack traces, etc.
-            emit(line)
+            # In OUTSIDE state, suppress [TEST::INFO] lines: they originate from
+            # class-level init (@BeforeAll, static blocks) and are noise when no
+            # test has failed; the raw log still contains them for reference.
+            if state == FAILING or not line.startswith('[TEST::INFO]'):
+                emit(line)
 
     # EOF handling: if still inside a test the JVM likely crashed (SIGABRT from sanitizer,
     # OOM kill, etc.).  Emit everything so the failure is visible in the filtered log.
