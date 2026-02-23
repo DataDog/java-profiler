@@ -119,13 +119,13 @@ jobs:
           echo "## 🔧 Unwinding Quality Report - ${{ matrix.java_version }} (amd64)" >> $GITHUB_STEP_SUMMARY
           cat ddprof-test/build/reports/unwinding-summary.md >> $GITHUB_STEP_SUMMARY
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: success()
         with:
           name: (build) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: build/
       - name: Upload failures
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64
@@ -135,13 +135,13 @@ jobs:
         run: |
           .github/scripts/prepare_reports.sh
       - name: Upload unwinding reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: success() && matrix.config == 'debug'
         with:
           name: (unwinding-reports) unwinding-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: unwinding-reports
       - name: Upload test reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: (test-reports) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
@@ -234,13 +234,13 @@ jobs:
           echo "## 🔧 Unwinding Quality Report - ${{ matrix.java_version }} (amd64-musl)" >> $GITHUB_STEP_SUMMARY
           cat ddprof-test/build/reports/unwinding-summary.md >> $GITHUB_STEP_SUMMARY
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: success()
         with:
           name: (build) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: build/
       - name: Upload failures
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64
@@ -250,13 +250,13 @@ jobs:
         run: |
           .github/scripts/prepare_reports.sh
       - name: Upload unwinding reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: success() && matrix.config == 'debug'
         with:
           name: (unwinding-reports) unwinding-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: unwinding-reports
       - name: Upload test reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: (test-reports) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
@@ -356,13 +356,13 @@ jobs:
           echo "## 🔧 Unwinding Quality Report - ${{ matrix.java_version }} (aarch64)" >> $GITHUB_STEP_SUMMARY
           cat ddprof-test/build/reports/unwinding-summary.md >> $GITHUB_STEP_SUMMARY
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: success()
         with:
           name: (build) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: build/
       - name: Upload failures
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
@@ -372,13 +372,13 @@ jobs:
         run: |
           .github/scripts/prepare_reports.sh
       - name: Upload unwinding reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: success() && matrix.config == 'debug'
         with:
           name: (unwinding-reports) unwinding-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: unwinding-reports
       - name: Upload test reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: (test-reports) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
@@ -450,13 +450,13 @@ jobs:
            echo "## 🔧 Unwinding Quality Report - ${{ matrix.java_version }} (aarch64-musl)" >> $GITHUB_STEP_SUMMARY
            cat ddprof-test/build/reports/unwinding-summary.md >> $GITHUB_STEP_SUMMARY
        - name: Upload build artifacts
-         uses: actions/upload-artifact@v4
+         uses: actions/upload-artifact@v6
          if: success()
          with:
            name: (build) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
            path: build/
        - name: Upload failures
-         uses: actions/upload-artifact@v4
+         uses: actions/upload-artifact@v6
          if: failure()
          with:
            name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
@@ -466,13 +466,13 @@ jobs:
          run: |
            .github/scripts/prepare_reports.sh
        - name: Upload unwinding reports
-         uses: actions/upload-artifact@v4
+         uses: actions/upload-artifact@v6
          if: success() && matrix.config == 'debug'
          with:
            name: (unwinding-reports) unwinding-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
            path: unwinding-reports
        - name: Upload test reports
-         uses: actions/upload-artifact@v4
+         uses: actions/upload-artifact@v6
          if: failure()
          with:
            name: (test-reports) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
