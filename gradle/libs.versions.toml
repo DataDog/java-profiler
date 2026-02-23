@@ -3,7 +3,7 @@
 [versions]
 cpp-standard = "17"
 kotlin = "1.9.22"
-spotless = "7.0.2"
+spotless = "8.2.1"
 
 # Testing
 junit = "5.9.2"
