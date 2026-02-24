@@ -127,6 +127,8 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   ProfiledThread *current = ProfiledThread::current();
   int tid = -1;
   
+  // In the process to tear down the thread, block any future signals.
+  SignalBlocker blocker(false /* don't restore, block forever */);
   if (current != nullptr) {
     // ProfiledThread is alive - do full cleanup and use efficient tid access
     int slot_id = current->filterSlotId();

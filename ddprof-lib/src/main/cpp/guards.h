@@ -115,9 +115,13 @@ class SignalBlocker {
 private:
   sigset_t _old_mask;
   bool _active;
+  // If the signal should be restored upon exiting SignalBlocker.
+  // true (default): the signal should be restored
+  // false: the signal should be blocked forever till thread exited
+  bool _restore_signal;
 
 public:
-  SignalBlocker() : _active(false) {
+  SignalBlocker(bool restore = true) : _active(false), _restore_signal(restore) {
     sigset_t prof_signals;
     sigemptyset(&prof_signals);
 
@@ -126,7 +130,8 @@ public:
     sigaddset(&prof_signals, SIGVTALRM);   // Used by WallClock
 #ifdef __linux__
     // Block RT signals used by TLS priming and potentially other profilers (Linux-only)
-    // This prevents any RT signal handler from interrupting TLS initialization
+    // This prevents any RT signal handler from interrupting TLS initialization or
+    // delivering pending signal while the thread is exiting.
     for (int sig = SIGRTMIN; sig <= SIGRTMIN + 5 && sig <= SIGRTMAX; sig++) {
       sigaddset(&prof_signals, sig);
     }
@@ -138,7 +143,7 @@ public:
   }
 
   ~SignalBlocker() {
-    if (_active) {
+    if (_active && _restore_signal) {
       pthread_sigmask(SIG_SETMASK, &_old_mask, nullptr);
     }
   }

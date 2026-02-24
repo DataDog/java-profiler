@@ -61,6 +61,10 @@ static void* start_routine_wrapper(void* args) {
     int tid = ProfiledThread::currentTid();
     Profiler::registerThread(tid);
     void* result = routine(params);
+    if (ProfiledThread::current() != nullptr) {
+      // In the process to tear down the thread, block any future signals.
+      SignalBlocker blocker(false /* don't restore, block forever */);
+    }
     Profiler::unregisterThread(tid);
     ProfiledThread::release();
     return result;
