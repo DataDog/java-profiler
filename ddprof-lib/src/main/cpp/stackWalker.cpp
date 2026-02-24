@@ -655,6 +655,10 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
     if (vm_thread != NULL) vm_thread->exception() = saved_exception;
 
+    // Drop unknown leaf frame - it provides no useful information and breaks
+    // aggregation by lumping unrelated samples under a single "unknown" entry
+    depth = StackWalkValidation::dropUnknownLeaf(frames, depth);
+
     if (truncated) {
         if (depth > max_depth) {
             *truncated = true;
