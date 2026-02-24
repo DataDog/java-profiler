@@ -88,6 +88,8 @@ inline EventType eventTypeFromBCI(jint bci_type) {
             return LOCK_SAMPLE;
         case BCI_PARK:
             return PARK_SAMPLE;
+        case BCI_NATIVE_MALLOC:
+            return MALLOC_SAMPLE;
         default:
             // For unknown or invalid BCI types, default to EXECUTION_SAMPLE
             // This maintains backward compatibility and prevents undefined behavior
@@ -367,6 +369,7 @@ public:
                          ASGCT_CallFrame *frames, int lock_index);
   void recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event);
+  void recordEventOnly(int event_type, Event *event);
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);
   void recordExternalSample(u64 weight, int tid, int num_frames,

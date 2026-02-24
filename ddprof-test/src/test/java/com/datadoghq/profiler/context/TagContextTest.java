@@ -161,6 +161,9 @@ public class TagContextTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=1ms,filter=0,attributes=tag1;tag2;tag3";
+        // Use cstack=default explicitly: this test covers context-tagging correctness,
+        // not stack-walking mode.  CSTACK_VM is the global default but is unreliable
+        // on certain CI runners (musl x64), so we pin to a stable mode here.
+        return "wall=1ms,filter=0,cstack=default,attributes=tag1;tag2;tag3";
     }
 }

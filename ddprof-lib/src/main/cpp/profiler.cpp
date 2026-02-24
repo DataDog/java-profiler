@@ -6,6 +6,7 @@
 
 #include "profiler.h"
 #include "asyncSampleMutex.h"
+#include "mallocTracer.h"
 #include "context.h"
 #include "guards.h"
 #include "common.h"
@@ -52,6 +53,7 @@ static void (*orig_segvHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 static void (*orig_busHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 
 static Engine noop_engine;
+static MallocTracer malloc_tracer;
 static PerfEvents perf_events;
 static WallClockASGCT wall_asgct_engine;
 static WallClockJVMTI wall_jvmti_engine;
@@ -298,7 +300,7 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
                              bool *truncated, int lock_index) {
   if (_cstack == CSTACK_NO ||
       (event_type == BCI_ALLOC || event_type == BCI_ALLOC_OUTSIDE_TLAB) ||
-      (event_type != BCI_CPU && event_type != BCI_WALL &&
+      (event_type != BCI_CPU && event_type != BCI_WALL && event_type != BCI_NATIVE_MALLOC &&
        _cstack == CSTACK_DEFAULT)) {
     return 0;
   }
@@ -845,7 +847,15 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
                                  &java_ctx, &truncated, lock_index);
     if (num_frames < _max_stack_depth) {
       int max_remaining = _max_stack_depth - num_frames;
-      if (_features.mixed) {
+      if (event_type == BCI_NATIVE_MALLOC && _cstack >= CSTACK_VM) {
+        // Walk the Java stack for native malloc events.
+        // ucontext is NULL here (no signal context); walkVM starts from callerPC() and
+        // walks native frames via DWARF until it fails, then retries from the thread's
+        // JavaFrameAnchor (lastJavaPC/lastJavaSP/lastJavaFP) to reach Java frames.
+        int vm_frames = StackWalker::walkVM(ucontext, frames + num_frames, max_remaining,
+                                            _features, eventTypeFromBCI(event_type), lock_index, &truncated);
+        num_frames += vm_frames;
+      } else if (_features.mixed) {
         int vm_start = num_frames;
         int vm_frames = StackWalker::walkVM(ucontext, frames + vm_start, max_remaining, _features, eventTypeFromBCI(event_type), lock_index, &truncated);
         num_frames += vm_frames;
@@ -888,6 +898,21 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
   }
   _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
 
+  _locks[lock_index].unlock();
+}
+
+void Profiler::recordEventOnly(int event_type, Event *event) {
+  if (!_jfr.active()) {
+    return;
+  }
+  int tid = OS::threadId();
+  u32 lock_index = getLockIndex(tid);
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    return;
+  }
+  _jfr.recordEvent(lock_index, tid, 0, event_type, event);
   _locks[lock_index].unlock();
 }
 
@@ -996,6 +1021,7 @@ void *Profiler::dlopen_hook(const char *filename, int flags) {
     // Static function of Profiler -> can not use the instance variable _libs
     // Since Libraries is a singleton, this does not matter
     Libraries::instance()->updateSymbols(false);
+    MallocTracer::installHooks();
     // Extract build-ids for newly loaded libraries if remote symbolication is enabled
     Profiler* profiler = instance();
     if (profiler != nullptr && profiler->_remote_symbolication) {
@@ -1288,7 +1314,8 @@ Error Profiler::start(Arguments &args, bool reset) {
       (args._cpu >= 0 ? EM_CPU : 0) | (args._wall >= 0 ? EM_WALL : 0) |
       (args._record_allocations || args._record_liveness || args._gc_generations
            ? EM_ALLOC
-           : 0);
+           : 0) |
+      (args._nativemem >= 0 ? EM_NATIVEMEM : 0);
 
   if (_event_mask == 0) {
     return Error("No profiling events specified");
@@ -1385,8 +1412,9 @@ Error Profiler::start(Arguments &args, bool reset) {
     Log::warn("Branch stack is supported only with PMU events");
   } else if (_cstack == CSTACK_VM) {
     if (!VMStructs::hasStackStructs()) {
-      return Error(
-          "VMStructs stack walking is not supported on this JVM/platform");
+      _cstack = CSTACK_DEFAULT;
+      Log::warn("VMStructs stack walking is not supported on this JVM/platform, "
+                "defaulting to frame pointer unwinding.");
     }
   }
 
@@ -1444,6 +1472,15 @@ Error Profiler::start(Arguments &args, bool reset) {
       }
     }
   }
+  if (_event_mask & EM_NATIVEMEM) {
+    error = malloc_tracer.start(args);
+    if (error) {
+      Log::warn("%s", error.message());
+      error = Error::OK; // recoverable
+    } else {
+      activated |= EM_NATIVEMEM;
+    }
+  }
 
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
@@ -1482,6 +1519,8 @@ Error Profiler::stop() {
 
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();
+  if (_event_mask & EM_NATIVEMEM)
+    malloc_tracer.stop();
   if (_event_mask & EM_WALL)
     _wall_engine->stop();
   if (_event_mask & EM_CPU)
@@ -1529,6 +1568,9 @@ Error Profiler::check(Arguments &args) {
   if (!error && args._memory >= 0) {
     _alloc_engine = selectAllocEngine(args);
     error = _alloc_engine->check(args);
+  }
+  if (!error && args._nativemem >= 0) {
+    error = malloc_tracer.check(args);
   }
   if (!error) {
     if (args._cstack == CSTACK_DWARF && !DWARF_SUPPORTED) {

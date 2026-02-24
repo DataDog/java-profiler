@@ -645,7 +645,6 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                         anchor = NULL;
                         if (sp >= bottom || !aligned(sp)) {
                             Counters::increment(WALKVM_ANCHOR_INLINE_BAD_SP);
-                            fillFrame(frames[depth++], BCI_ERROR, "break_no_anchor");
                             break;
                         }
                         prev_native_pc = NULL;
