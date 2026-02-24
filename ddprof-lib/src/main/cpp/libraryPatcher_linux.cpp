@@ -1,6 +1,7 @@
 #include "libraryPatcher.h"
 
 #ifdef __linux__
+#include "guards.h"
 #include "profiler.h"
 #include "vmStructs.h"
 
