@@ -47,11 +47,22 @@ public:
   }
 };
 
+static void thread_cleanup(void* arg) {
+    int tid = *static_cast<int*>(arg);
+    if (ProfiledThread::current() != nullptr) {
+        // In the process to tear down the thread, block any future signals.
+        SignalBlocker blocker(false /* don't restore, block forever */);
+    }
+    Profiler::unregisterThread(tid);
+    ProfiledThread::release();
+}
+
 // Wrapper around the real start routine.
 // The wrapper:
 // 1. Register the newly created thread to profiler
 // 2. Call real start routine
 // 3. Unregister the thread from profiler once the routine is completed.
+//    Uses pthread_cleanup_push/pop so cleanup also runs if routine calls pthread_exit().
 static void* start_routine_wrapper(void* args) {
     RoutineInfo* thr = (RoutineInfo*)args;
     func_start_routine routine = thr->routine();
@@ -61,13 +72,9 @@ static void* start_routine_wrapper(void* args) {
     ProfiledThread::initCurrentThread();
     int tid = ProfiledThread::currentTid();
     Profiler::registerThread(tid);
+    pthread_cleanup_push(thread_cleanup, &tid);
     void* result = routine(params);
-    if (ProfiledThread::current() != nullptr) {
-      // In the process to tear down the thread, block any future signals.
-      SignalBlocker blocker(false /* don't restore, block forever */);
-    }
-    Profiler::unregisterThread(tid);
-    ProfiledThread::release();
+    pthread_cleanup_pop(1);
     return result;
 }
 
