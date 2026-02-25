@@ -32,7 +32,7 @@ void LibraryPatcher::initialize() {
 class RoutineInfo {
 private:
   func_start_routine _routine;
-  void* const _args;
+  void* _args;
 public:
   RoutineInfo(func_start_routine routine, void* args) :
     _routine(routine), _args(args) {
@@ -42,15 +42,23 @@ public:
     return _routine;
   }
 
-  void* const args() const {
+  void* args() const {
     return _args;
   }
 };
 
-static void thread_cleanup(void* arg) {
-    int tid = *static_cast<int*>(arg);
-    Profiler::unregisterThread(tid);
-    ProfiledThread::release();
+// Initialize the current thread's TLS with profiling signals blocked.
+// Kept in a separate noinline function so that SignalBlocker's 128-byte
+// sigset_t lives in its own frame and does not trigger stack-protector
+// canary placement in start_routine_wrapper on aarch64.
+__attribute__((noinline))
+static void init_thread_tls() {
+    // Block profiling signals during TLS initialization: musl's TLS init
+    // (pthread_once, pthread_key_create, pthread_setspecific) is not
+    // async-signal-safe. A profiling signal here can corrupt musl's
+    // internal TLS bookkeeping on the stack.
+    SignalBlocker blocker;
+    ProfiledThread::initCurrentThread();
 }
 
 // Wrapper around the real start routine.
@@ -61,25 +69,14 @@ static void thread_cleanup(void* arg) {
 static void* start_routine_wrapper(void* args) {
     RoutineInfo* thr = (RoutineInfo*)args;
     func_start_routine routine = thr->routine();
-    void* const params = thr->args();
+    void* params = thr->args();
     delete thr;
-    {
-        // Block profiling signals during TLS initialization: musl's TLS init
-        // (pthread_once, pthread_key_create, pthread_setspecific) is not
-        // async-signal-safe. A profiling signal here can corrupt musl's
-        // internal TLS bookkeeping on the stack.
-        SignalBlocker blocker;
-        ProfiledThread::initCurrentThread();
-    }
-    ProfiledThread::initCurrentThread();
+    init_thread_tls();
     int tid = ProfiledThread::currentTid();
     Profiler::registerThread(tid);
-    void* result = nullptr;
-    pthread_cleanup_push(thread_cleanup, &tid);
-
-    result = routine(params);
-    pthread_cleanup_pop(1);
-
+    void* result = routine(params);
+    Profiler::unregisterThread(tid);
+    ProfiledThread::release();
     return result;
 }
 
