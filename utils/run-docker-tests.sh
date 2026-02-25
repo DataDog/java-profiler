@@ -13,7 +13,7 @@
 #   --config=debug|release|asan|tsan   (default: debug)
 #   --tests="TestPattern"    (optional, specific test to run)
 #   --gtest                  (enable C++ gtests, disabled by default)
-#   --shell                  (drop to shell instead of running tests)
+#   --shell                  (drop to shell instead of running tests; enables SYS_PTRACE for gdb)
 #   --mount                  (mount local repo instead of cloning - faster but may have stale artifacts)
 #   --rebuild                (force rebuild of Docker images)
 #   --rebuild-base           (force rebuild of base image only)
@@ -275,7 +275,7 @@ RUN apk update && \
     apk add --no-cache \
         curl wget bash make g++ clang git jq cmake coreutils \
         gtest-dev gmock tar binutils musl-dbg linux-headers \
-        compiler-rt llvm openssh-client
+        compiler-rt llvm openssh-client gdb
 
 # Set up Gradle cache directory
 ENV GRADLE_USER_HOME=/gradle-cache
@@ -299,7 +299,7 @@ RUN apt-get update && \
         curl wget bash make g++ clang git jq cmake \
         libgtest-dev libgmock-dev tar binutils libc6-dbg \
         ca-certificates linux-libc-dev \
-        libasan6 libtsan0 openssh-client && \
+        libasan6 libtsan0 openssh-client build-essential gdb && \
     rm -rf /var/lib/apt/lists/*
 
 # Set up Gradle cache directory
@@ -430,7 +430,7 @@ GRADLE_CMD="$GRADLE_CMD --no-daemon --parallel --build-cache --no-watch-fs"
 # Build Docker run command base
 DOCKER_CMD="docker run --rm"
 if $SHELL_MODE; then
-    DOCKER_CMD="$DOCKER_CMD -it"
+    DOCKER_CMD="$DOCKER_CMD -it --init --ulimit core=-1 --cap-add=SYS_PTRACE"
 fi
 DOCKER_CMD="$DOCKER_CMD $DOCKER_PLATFORM"
 DOCKER_CMD="$DOCKER_CMD -e LIBC=$LIBC"
