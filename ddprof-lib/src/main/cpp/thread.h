@@ -84,10 +84,6 @@ public:
   }
 
   static void initCurrentThread();
-  static void initCurrentThreadWithBuffer(); // Called by signal handler for native threads
-  static void initExistingThreads();
-  static void cleanupTlsPriming();
-
   static void release();
 
   static ProfiledThread *current();

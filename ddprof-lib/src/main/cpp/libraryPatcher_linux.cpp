@@ -3,6 +3,7 @@
 #ifdef __linux__
 #include "profiler.h"
 #include "vmStructs.h"
+#include "guards.h"
 
 #include <cassert>
 #include <dlfcn.h>
@@ -46,6 +47,12 @@ public:
   }
 };
 
+static void thread_cleanup(void* arg) {
+    int tid = *static_cast<int*>(arg);
+    Profiler::unregisterThread(tid);
+    ProfiledThread::release();
+}
+
 // Wrapper around the real start routine.
 // The wrapper:
 // 1. Register the newly created thread to profiler
@@ -56,13 +63,23 @@ static void* start_routine_wrapper(void* args) {
     func_start_routine routine = thr->routine();
     void* const params = thr->args();
     delete thr;
-
+    {
+        // Block profiling signals during TLS initialization: musl's TLS init
+        // (pthread_once, pthread_key_create, pthread_setspecific) is not
+        // async-signal-safe. A profiling signal here can corrupt musl's
+        // internal TLS bookkeeping on the stack.
+        SignalBlocker blocker;
+        ProfiledThread::initCurrentThread();
+    }
     ProfiledThread::initCurrentThread();
     int tid = ProfiledThread::currentTid();
     Profiler::registerThread(tid);
-    void* result = routine(params);
-    Profiler::unregisterThread(tid);
-    ProfiledThread::release();
+    void* result = nullptr;
+    pthread_cleanup_push(thread_cleanup, &tid);
+
+    result = routine(params);
+    pthread_cleanup_pop(1);
+
     return result;
 }
 
@@ -71,7 +88,9 @@ static int pthread_create_hook(pthread_t* thread,
                           func_start_routine start_routine,
                           void* args) {
   RoutineInfo* thr = new RoutineInfo(start_routine, args);
-  return pthread_create(thread, attr, start_routine_wrapper, (void*)thr);
+  int ret = pthread_create(thread, attr, start_routine_wrapper, (void*)thr);
+  if (ret != 0) delete thr;
+  return ret;
 }
 
 void LibraryPatcher::patch_libraries() {

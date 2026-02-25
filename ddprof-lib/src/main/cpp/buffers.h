@@ -146,6 +146,7 @@ public:
       v >>= 7;
     }
     _data[_offset++] = (char)v;
+    assert(_offset < limit());
   }
 
   #ifdef __aarch64__
@@ -170,6 +171,7 @@ public:
       v >>= 7;
     }
     _data[_offset++] = (char)v;
+    assert(_offset < limit());
   }
 
   // the trickery of RecordingBuffer extending Buffer::_data array may trip off asan
@@ -205,6 +207,7 @@ public:
   __attribute__((no_sanitize("bounds")))
   #endif
   void putVar32(int offset, u32 v) {
+    assert(offset + 4 < limit());
     _data[offset] = v | 0x80;
     _data[offset + 1] = (v >> 7) | 0x80;
     _data[offset + 2] = (v >> 14) | 0x80;
