@@ -276,6 +276,9 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
     jmp_buf crash_protection_ctx;
     VMThread* vm_thread = VMThread::current();
+    if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
+        vm_thread = NULL;
+    }
     void* saved_exception = vm_thread != NULL ? vm_thread->exception() : NULL;
 
     // Should be preserved across setjmp/longjmp
@@ -547,7 +550,6 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                         // already used the anchor; disable it
                         anchor = NULL;
                         if (sp < prev_sp || sp >= bottom || !aligned(sp)) {
-                            fillFrame(frames[depth++], BCI_ERROR, "break_no_anchor");
                             break;
                         }
                         // we restored from Java frame; clean the prev_native_pc
@@ -572,7 +574,6 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                         }
                     }
                 }
-                fillFrame(frames[depth++], BCI_ERROR, "break_no_anchor");
                 break;
             }
             fillFrame(frames[depth++], frame_bci, (void*)method_name);
@@ -681,7 +682,7 @@ void StackWalker::checkFault(ProfiledThread* thrd) {
     }
 
     VMThread* vm_thread = VMThread::current();
-    if (vm_thread != NULL && sameStack(vm_thread->exception(), &vm_thread)) {
+    if (vm_thread != NULL && vm_thread->isThreadAccessible() && sameStack(vm_thread->exception(), &vm_thread)) {
         if (thrd) {
             // going to longjmp out of the signal handler, reset the crash handler depth counter
             thrd->resetCrashHandler();

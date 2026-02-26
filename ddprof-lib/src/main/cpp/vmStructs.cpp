@@ -1082,6 +1082,7 @@ OSThreadState VMThread::osThreadState() {
 }
 
 int VMThread::state() {
+    if (!cachedIsJavaThread()) return 0;
     int offset = VMStructs::thread_state_offset();
     if (offset >= 0) {
         int* state = (int*)at(offset);

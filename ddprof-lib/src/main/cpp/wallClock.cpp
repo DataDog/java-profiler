@@ -80,6 +80,9 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
 
   ExecutionEvent event;
   VMThread *vm_thread = VMThread::current();
+  if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
+      vm_thread = NULL;
+  }
   int raw_thread_state = vm_thread ? vm_thread->state() : 0;
   bool is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
   bool is_initialized = is_java_thread;

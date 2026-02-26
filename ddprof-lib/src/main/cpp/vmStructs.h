@@ -13,6 +13,7 @@
 #include <type_traits>
 #include "codeCache.h"
 #include "safeAccess.h"
+#include "thread.h"
 #include "threadState.h"
 #include "vmEntry.h"
 
@@ -539,6 +540,21 @@ DECLARE(VMThread)
                (vtbl[5] == _java_thread_vtbl[5]) >= 2;
     }
 
+    // Cached version of isJavaThread(). On first call per thread, computes the
+    // vtable check and caches the result in ProfiledThread for O(1) subsequent
+    // lookups. This is needed because JVMTI ThreadStart only fires for application
+    // threads, not for JVM-internal JavaThread subclasses (CompilerThread, etc.).
+    bool cachedIsJavaThread() {
+        ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+        if (pt != NULL) {
+            if (!pt->isJavaThreadKnown()) {
+                pt->cacheJavaThread(isJavaThread());
+            }
+            return pt->isJavaThread();
+        }
+        return isJavaThread();
+    }
+
     OSThreadState osThreadState();
 
     int state();
@@ -548,8 +564,25 @@ DECLARE(VMThread)
     }
 
     bool inDeopt() {
+        if (!cachedIsJavaThread()) return false;
         assert(_thread_vframe_offset >= 0);
         return SafeAccess::loadPtr((void**) at(_thread_vframe_offset), nullptr) != NULL;
+    }
+
+    // Check if the thread object memory is readable up to the largest used
+    // offset. On some JVMs (e.g. GraalVM 25 aarch64), a wall-clock signal
+    // can hit a thread whose memory is only partially mapped — the vtable
+    // at offset 0 may be readable while fields deeper in the object are not.
+    // On non-HotSpot JVMs (J9, Zing) offsets stay at -1; skip the check.
+    bool isThreadAccessible() {
+        int max_offset = -1;
+        if (_thread_exception_offset > max_offset) max_offset = _thread_exception_offset;
+        if (_thread_state_offset > max_offset) max_offset = _thread_state_offset;
+        if (_thread_osthread_offset > max_offset) max_offset = _thread_osthread_offset;
+        if (_thread_anchor_offset > max_offset) max_offset = _thread_anchor_offset;
+        if (_thread_vframe_offset > max_offset) max_offset = _thread_vframe_offset;
+        if (max_offset < 0) return true;
+        return SafeAccess::isReadableRange(this, max_offset + sizeof(void*));
     }
 
     void*& exception() {
@@ -558,6 +591,7 @@ DECLARE(VMThread)
     }
 
     VMJavaFrameAnchor* anchor() {
+        if (!cachedIsJavaThread()) return NULL;
         assert(_thread_anchor_offset >= 0);
         return VMJavaFrameAnchor::cast(at(_thread_anchor_offset));
     }
