@@ -54,9 +54,9 @@ public:
 // canary placement in start_routine_wrapper on aarch64.
 __attribute__((noinline))
 static void init_thread_tls() {
-    // Block profiling signals during TLS initialization: musl's TLS init
+    // Block profiling signals during TLS initialization: TLS init
     // (pthread_once, pthread_key_create, pthread_setspecific) is not
-    // async-signal-safe. A profiling signal here can corrupt musl's
+    // async-signal-safe. A profiling signal here can corrupt
     // internal TLS bookkeeping on the stack.
     SignalBlocker blocker;
     ProfiledThread::initCurrentThread();
@@ -69,6 +69,7 @@ static void init_thread_tls() {
 // 3. Unregister the thread from profiler once the routine is completed.
 // This version is to workaround a precarious stack guard corruption,
 // which only happens in Linux/musl/aarch64/jdk11
+__attribute__((visibility("hidden")))
 static void* start_routine_wrapper_spec(void* args) {
     RoutineInfo* thr = (RoutineInfo*)args;
     func_start_routine routine = thr->routine();
@@ -104,12 +105,17 @@ static void thread_cleanup(void* arg) {
 
 // Wrapper around the real start routine.
 // See comments for start_routine_wrapper_spec() for details
+__attribute__((visibility("hidden")))
 static void* start_routine_wrapper(void* args) {
     RoutineInfo* thr = (RoutineInfo*)args;
     func_start_routine routine = thr->routine();
     void* params = thr->args();
     delete thr;
     {
+        // Block profiling signals during TLS initialization: TLS init
+        // (pthread_once, pthread_key_create, pthread_setspecific) is not
+        // async-signal-safe. A profiling signal here can corrupt
+        // internal TLS bookkeeping on the stack.
         SignalBlocker blocker;
         ProfiledThread::initCurrentThread();
     }
