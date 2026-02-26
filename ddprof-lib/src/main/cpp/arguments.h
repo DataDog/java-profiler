@@ -222,7 +222,7 @@ public:
         _loglevel(NULL),
         _unknown_arg(NULL),
         _filter(NULL),
-        _cstack(CSTACK_DEFAULT),
+        _cstack(CSTACK_VM),
         _clock(CLK_DEFAULT),
         _jfr_options(0),
         _context_attributes({}),
