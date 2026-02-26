@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <cmath>
 #include <dlfcn.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -12,6 +13,7 @@
 #include "libraries.h"
 #include "mallocTracer.h"
 #include "os.h"
+#include "pidController.h"
 #include "profiler.h"
 #include "symbols.h"
 #include "tsc.h"
@@ -102,9 +104,12 @@ extern "C" void* aligned_alloc_hook(size_t alignment, size_t size) {
     return ret;
 }
 
-u64 MallocTracer::_interval;
+volatile u64 MallocTracer::_interval;
 bool MallocTracer::_nofree;
-volatile u64 MallocTracer::_allocated_bytes;
+volatile u64 MallocTracer::_bytes_until_sample;
+u64 MallocTracer::_configured_interval;
+volatile u64 MallocTracer::_sample_count;
+u64 MallocTracer::_last_config_update_ts;
 
 Mutex MallocTracer::_patch_lock;
 int MallocTracer::_patched_libs = 0;
@@ -225,14 +230,71 @@ void MallocTracer::patchLibraries() {
     }
 }
 
+u64 MallocTracer::nextPoissonInterval() {
+    u64 s = TSC::ticks();
+    s ^= s >> 12;
+    s ^= s << 25;
+    s ^= s >> 27;
+    double u = (double)(s * 0x2545F4914F6CDD1DULL >> 11) / (double)(1ULL << 53);
+    if (u < 1e-18) u = 1e-18;
+    return (u64)((double)_interval * -log(u));
+}
+
+bool MallocTracer::shouldSample(size_t size) {
+    if (_interval <= 1) return true;
+    while (true) {
+        u64 prev = _bytes_until_sample;
+        if (size < prev) {
+            if (__sync_bool_compare_and_swap(&_bytes_until_sample, prev, prev - size))
+                return false;
+        } else {
+            u64 next = nextPoissonInterval();
+            if (__sync_bool_compare_and_swap(&_bytes_until_sample, prev, next))
+                return true;
+        }
+    }
+}
+
+void MallocTracer::updateConfiguration(u64 events, double time_coefficient) {
+    static PidController pid(TARGET_SAMPLES_PER_WINDOW,
+        31, 511, 3, CONFIG_UPDATE_CHECK_PERIOD_SECS, 15);
+    double signal = pid.compute(events, time_coefficient);
+    int64_t new_interval = (int64_t)_interval - (int64_t)signal;
+    if (new_interval < (int64_t)_configured_interval)
+        new_interval = (int64_t)_configured_interval;
+    if (new_interval > (int64_t)(1ULL << 40))
+        new_interval = (int64_t)(1ULL << 40);
+    _interval = (u64)new_interval;
+}
+
 void MallocTracer::recordMalloc(void* address, size_t size) {
-    if (updateCounter(_allocated_bytes, size, _interval)) {
+    if (shouldSample(size)) {
+        u64 current_interval = _interval;
         MallocEvent event;
         event._start_time = TSC::ticks();
         event._address = (uintptr_t)address;
         event._size = size;
+        event._weight = (float)(size == 0 || current_interval <= 1
+            ? 1.0
+            : 1.0 / (1.0 - exp(-(double)size / (double)current_interval)));
 
         Profiler::instance()->recordSample(NULL, size, OS::threadId(), BCI_NATIVE_MALLOC, 0, &event);
+
+        u64 current_samples = __sync_add_and_fetch(&_sample_count, 1);
+        if ((current_samples % TARGET_SAMPLES_PER_WINDOW) == 0) {
+            u64 now = OS::nanotime();
+            u64 prev_ts = __atomic_load_n(&_last_config_update_ts, __ATOMIC_RELAXED);
+            u64 time_diff = now - prev_ts;
+            u64 check_period_ns = (u64)CONFIG_UPDATE_CHECK_PERIOD_SECS * 1000000000ULL;
+            if (time_diff > check_period_ns) {
+                if (__atomic_compare_exchange(&_last_config_update_ts, &prev_ts, &now,
+                                              false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+                    __sync_fetch_and_add(&_sample_count, -current_samples);
+                    updateConfiguration(current_samples,
+                                        (double)check_period_ns / time_diff);
+                }
+            }
+        }
     }
 }
 
@@ -246,9 +308,12 @@ void MallocTracer::recordFree(void* address) {
 }
 
 Error MallocTracer::start(Arguments& args) {
-    _interval = args._nativemem > 0 ? args._nativemem : 0;
+    _configured_interval = args._nativemem > 0 ? args._nativemem : 0;
+    _interval = _configured_interval;
     _nofree = args._nofree;
-    _allocated_bytes = 0;
+    _bytes_until_sample = _configured_interval > 1 ? nextPoissonInterval() : 0;
+    _sample_count = 0;
+    _last_config_update_ts = OS::nanotime();
 
     if (!_initialized) {
         initialize();

@@ -14,9 +14,15 @@
 
 class MallocTracer : public Engine {
   private:
-    static u64 _interval;
+    static volatile u64 _interval;
     static bool _nofree;
-    static volatile u64 _allocated_bytes;
+    static volatile u64 _bytes_until_sample;
+
+    static u64 _configured_interval;
+    static volatile u64 _sample_count;
+    static u64 _last_config_update_ts;
+    static const int CONFIG_UPDATE_CHECK_PERIOD_SECS = 1;
+    static const int TARGET_SAMPLES_PER_WINDOW = 100;
 
     static Mutex _patch_lock;
     static int _patched_libs;
@@ -25,6 +31,9 @@ class MallocTracer : public Engine {
 
     static void initialize();
     static void patchLibraries();
+    static u64 nextPoissonInterval();
+    static bool shouldSample(size_t size);
+    static void updateConfiguration(u64 events, double time_coefficient);
 
   public:
     const char* name() {

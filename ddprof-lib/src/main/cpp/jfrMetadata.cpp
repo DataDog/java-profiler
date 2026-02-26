@@ -293,7 +293,8 @@ void JfrMetadata::initialize(
               << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
               << field("stackTrace", T_STACK_TRACE, "Stack Trace", F_CPOOL)
               << field("address", T_LONG, "Address", F_ADDRESS)
-              << field("size", T_LONG, "Size", F_BYTES))
+              << field("size", T_LONG, "Size", F_BYTES)
+              << field("weight", T_FLOAT, "Sample weight"))
 
           << (type("profiler.Free", T_FREE, "free")
               << category("Java Virtual Machine", "Native Memory")

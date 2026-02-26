@@ -1585,6 +1585,7 @@ void Recording::recordMallocSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->putVar64(event->_address);
   if (event->_size != 0) {
     buf->putVar64(event->_size);
+    buf->putFloat(event->_weight);
   }
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
