@@ -176,10 +176,11 @@ NULL`). Native stack unwinding via frame pointers or DWARF requires a signal con
 as the starting point, so neither `CSTACK_DEFAULT` nor `CSTACK_FP` can produce
 useful traces for malloc events.
 
-`CSTACK_VM` uses HotSpot's `JavaFrameAnchor` (lastJavaPC / lastJavaSP / lastJavaFP)
-to walk Java frames, and falls back to `__builtin_return_address` for the native
-portion. This works correctly from inside a malloc hook because the anchor is set
-whenever the JVM has transitioned from Java to native.
+`CSTACK_VM` starts from `__builtin_return_address` for the initial frame and walks
+native frames via DWARF. It then uses HotSpot's `JavaFrameAnchor` (lastJavaPC /
+lastJavaSP / lastJavaFP) to transition from native to Java frames. This works
+correctly from inside a malloc hook because the anchor is set whenever the JVM has
+transitioned from Java to native.
 
 ### Default stack mode
 
@@ -282,9 +283,10 @@ which passes `call_trace_id = 0` (JFR null-reference convention).
 > not used. Reentrant allocation calls would result in double-accounting.
 
 When `recordMalloc` calls into the profiler (stack walking, JFR buffer writes), any
-allocations made by the profiler itself will re-enter the hooks. Because those
-internal allocations call `_orig_malloc` directly (not the hook), there is no
-infinite recursion, but they may be double-counted as application allocations.
+allocations made by the profiler itself will re-enter the hooks. Infinite recursion
+is prevented because the hook functions call `_orig_malloc` (a saved direct function
+pointer) instead of going through the GOT, but profiler-internal allocations may be
+double-counted as application allocations.
 Leak detection is unaffected: the same address being recorded multiple times is
 handled correctly by the tracking logic.
 
