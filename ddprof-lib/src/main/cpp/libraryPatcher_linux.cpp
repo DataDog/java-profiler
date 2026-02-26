@@ -96,7 +96,6 @@ static int pthread_create_hook_spec(pthread_t* thread,
 
 #endif // __aarch64__
 
-
 static void thread_cleanup(void* arg) {
     int tid = *static_cast<int*>(arg);
     Profiler::unregisterThread(tid);
