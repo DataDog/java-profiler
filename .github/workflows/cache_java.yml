@@ -53,8 +53,8 @@ env:
   JAVA_17_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/17.0.16+12/bellsoft-jdk17.0.16+12-linux-aarch64-musl-lite.tar.gz"
   JAVA_21_MUSL_URL: "https://download.bell-sw.com/java/21.0.8+12/bellsoft-jdk21.0.8+12-linux-x64-musl-lite.tar.gz"
   JAVA_21_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/21.0.8+12/bellsoft-jdk21.0.8+12-linux-aarch64-musl-lite.tar.gz"
-  JAVA_25_MUSL_URL: "https://download.bell-sw.com/java/25+37/bellsoft-jdk25+37-linux-x64-musl-lite.tar.gz"
-  JAVA_25_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/25+37/bellsoft-jdk25+37-linux-aarch64-musl-lite.tar.gz"
+  JAVA_25_MUSL_URL: "https://download.bell-sw.com/java/25.0.2+12/bellsoft-jdk25.0.2+12-linux-x64-musl-lite.tar.gz"
+  JAVA_25_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/25.0.2+12/bellsoft-jdk25.0.2+12-linux-aarch64-musl-lite.tar.gz"
 
 permissions:
   contents: read

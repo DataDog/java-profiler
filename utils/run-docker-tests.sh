@@ -68,8 +68,8 @@ get_musl_jdk_url() {
         17-aarch64) echo "https://download.bell-sw.com/java/17.0.16+12/bellsoft-jdk17.0.16+12-linux-aarch64-musl-lite.tar.gz" ;;
         21-x64)     echo "https://download.bell-sw.com/java/21.0.8+12/bellsoft-jdk21.0.8+12-linux-x64-musl-lite.tar.gz" ;;
         21-aarch64) echo "https://download.bell-sw.com/java/21.0.8+12/bellsoft-jdk21.0.8+12-linux-aarch64-musl-lite.tar.gz" ;;
-        25-x64)     echo "https://download.bell-sw.com/java/25+37/bellsoft-jdk25+37-linux-x64-musl-lite.tar.gz" ;;
-        25-aarch64) echo "https://download.bell-sw.com/java/25+37/bellsoft-jdk25+37-linux-aarch64-musl-lite.tar.gz" ;;
+        25-x64)     echo "https://download.bell-sw.com/java/25.0.2+12/bellsoft-jdk25.0.2+12-linux-x64-musl-lite.tar.gz" ;;
+        25-aarch64) echo "https://download.bell-sw.com/java/25.0.2+12/bellsoft-jdk25.0.2+12-linux-aarch64-musl-lite.tar.gz" ;;
         *)          echo "" ;;
     esac
 }
@@ -88,8 +88,8 @@ get_glibc_jdk_url() {
         17-aarch64) echo "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.13%2B11/OpenJDK17U-jdk_aarch64_linux_hotspot_17.0.13_11.tar.gz" ;;
         21-x64)     echo "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.5%2B11/OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz" ;;
         21-aarch64) echo "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.5%2B11/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.5_11.tar.gz" ;;
-        25-x64)     echo "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25%2B3-ea-beta/OpenJDK25U-jdk_x64_linux_hotspot_25_3-ea.tar.gz" ;;
-        25-aarch64) echo "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25%2B3-ea-beta/OpenJDK25U-jdk_aarch64_linux_hotspot_25_3-ea.tar.gz" ;;
+        25-x64)     echo "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.2%2B10/OpenJDK25U-jdk_x64_linux_hotspot_25.0.2_10.tar.gz" ;;
+        25-aarch64) echo "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.2%2B10/OpenJDK25U-jdk_aarch64_linux_hotspot_25.0.2_10.tar.gz" ;;
         *)          echo "" ;;
     esac
 }
