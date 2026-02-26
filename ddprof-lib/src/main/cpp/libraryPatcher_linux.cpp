@@ -47,6 +47,7 @@ public:
   }
 };
 
+#ifdef __aarch64__
 // Initialize the current thread's TLS with profiling signals blocked.
 // Kept in a separate noinline function so that SignalBlocker's 128-byte
 // sigset_t lives in its own frame and does not trigger stack-protector
@@ -66,7 +67,9 @@ static void init_thread_tls() {
 // 1. Register the newly created thread to profiler
 // 2. Call real start routine
 // 3. Unregister the thread from profiler once the routine is completed.
-static void* start_routine_wrapper(void* args) {
+// This version is to workaround a precarious stack guard corruption,
+// which only happens in Linux/musl/aarch64/jdk11
+static void* start_routine_wrapper_spec(void* args) {
     RoutineInfo* thr = (RoutineInfo*)args;
     func_start_routine routine = thr->routine();
     void* params = thr->args();
@@ -77,6 +80,47 @@ static void* start_routine_wrapper(void* args) {
     void* result = routine(params);
     Profiler::unregisterThread(tid);
     ProfiledThread::release();
+    return result;
+}
+
+static int pthread_create_hook_spec(pthread_t* thread,
+                          const pthread_attr_t* attr,
+                          func_start_routine start_routine,
+                          void* args) {
+  RoutineInfo* thr = new RoutineInfo(start_routine, args);
+  int ret = pthread_create(thread, attr, start_routine_wrapper_spec, (void*)thr);
+  if (ret != 0) delete thr;
+  return ret;
+}
+
+#endif // __aarch64__
+
+
+static void thread_cleanup(void* arg) {
+    int tid = *static_cast<int*>(arg);
+    Profiler::unregisterThread(tid);
+    ProfiledThread::release();
+}
+
+// Wrapper around the real start routine.
+// See comments for start_routine_wrapper_spec() for details
+static void* start_routine_wrapper(void* args) {
+    RoutineInfo* thr = (RoutineInfo*)args;
+    func_start_routine routine = thr->routine();
+    void* params = thr->args();
+    delete thr;
+    {
+        SignalBlocker blocker;
+        ProfiledThread::initCurrentThread();
+    }
+    int tid = ProfiledThread::currentTid();
+    Profiler::registerThread(tid);
+    void* result = nullptr;
+    // Handle pthread_exit() bypass - the thread calls pthread_exit()
+    // instead of normal termination
+    pthread_cleanup_push(thread_cleanup, &tid);
+    result = routine(params);
+    pthread_cleanup_pop(1);
     return result;
 }
 
@@ -121,10 +165,18 @@ void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
     }
   }
   TEST_LOG("Patching: %s", lib->name());
+  void* func = (void*)pthread_create_hook;
+
+#ifdef __aarch64__
+  // Workaround stack guard corruption in Linux/aarch64/musl/jdk11
+  if (VM::isHotspot() && OS::isMusl() && VM::java_version() == 11) {
+    func = (void*)pthread_create_hook_spec;
+  }
+#endif
   _patched_entries[_size]._lib = lib;
   _patched_entries[_size]._location = pthread_create_location;
   _patched_entries[_size]._func = (void*)__atomic_load_n(pthread_create_location, __ATOMIC_RELAXED);
-  __atomic_store_n(pthread_create_location, (void*)pthread_create_hook, __ATOMIC_RELAXED);
+  __atomic_store_n(pthread_create_location, func, __ATOMIC_RELAXED);
   _size++;
 }
 
