@@ -292,9 +292,13 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     if (vm_thread != NULL) {
         anchor = vm_thread->anchor();
         vm_thread->exception() = &crash_protection_ctx;
-        if (profiled_thread != nullptr) profiled_thread->setCrashProtectionActive(true);
+        if (profiled_thread != nullptr) {
+            profiled_thread->setCrashProtectionActive(true);
+        }
         if (setjmp(crash_protection_ctx) != 0) {
-            if (profiled_thread != nullptr) profiled_thread->setCrashProtectionActive(false);
+            if (profiled_thread != nullptr) {
+                profiled_thread->setCrashProtectionActive(false);
+            }
             vm_thread->exception() = saved_exception;
             if (depth < max_depth) {
                 fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
@@ -555,6 +559,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                         // already used the anchor; disable it
                         anchor = NULL;
                         if (sp < prev_sp || sp >= bottom || !aligned(sp)) {
+                            fillFrame(frames[depth++], BCI_ERROR, "break_no_anchor");
                             break;
                         }
                         // we restored from Java frame; clean the prev_native_pc
@@ -578,6 +583,11 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                             break;
                         }
                     }
+                }
+                if (vm_thread != NULL && vm_thread->isJavaThread()) {
+                    fillFrame(frames[depth++], BCI_ERROR, "break_no_anchor");
+                } else {
+                    fillFrame(frames[depth++], BCI_ERROR, "break_no_symbol");
                 }
                 break;
             }
@@ -659,8 +669,12 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
         goto unwind_loop;
     }
 
-    if (profiled_thread != nullptr) profiled_thread->setCrashProtectionActive(false);
-    if (vm_thread != NULL) vm_thread->exception() = saved_exception;
+    if (profiled_thread != nullptr) {
+        profiled_thread->setCrashProtectionActive(false);
+    }
+    if (vm_thread != NULL) {
+        vm_thread->exception() = saved_exception;
+    }
 
     // Drop unknown leaf frame - it provides no useful information and breaks
     // aggregation by lumping unrelated samples under a single "unknown" entry
