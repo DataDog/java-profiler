@@ -60,7 +60,8 @@ static inline void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, 
 }
 
 static jmethodID getMethodId(VMMethod* method) {
-    if (!inDeadZone(method) && aligned((uintptr_t)method) && SafeAccess::isReadable((void*)method)) {
+    if (!inDeadZone(method) && aligned((uintptr_t)method)
+            && SafeAccess::isReadableRange(method, VMMethod::type_size())) {
         return method->validatedId();
     }
     return NULL;
@@ -285,11 +286,15 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     volatile int depth = 0;
     int actual_max_depth = truncated ? max_depth + 1 : max_depth;
 
+    ProfiledThread* profiled_thread = ProfiledThread::currentSignalSafe();
+
     VMJavaFrameAnchor* anchor = NULL;
     if (vm_thread != NULL) {
         anchor = vm_thread->anchor();
         vm_thread->exception() = &crash_protection_ctx;
+        if (profiled_thread != nullptr) profiled_thread->setCrashProtectionActive(true);
         if (setjmp(crash_protection_ctx) != 0) {
+            if (profiled_thread != nullptr) profiled_thread->setCrashProtectionActive(false);
             vm_thread->exception() = saved_exception;
             if (depth < max_depth) {
                 fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
@@ -654,6 +659,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
         goto unwind_loop;
     }
 
+    if (profiled_thread != nullptr) profiled_thread->setCrashProtectionActive(false);
     if (vm_thread != NULL) vm_thread->exception() = saved_exception;
 
     // Drop unknown leaf frame - it provides no useful information and breaks

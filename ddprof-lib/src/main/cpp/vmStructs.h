@@ -22,10 +22,23 @@ class HeapUsage;
 
 #define TYPE_SIZE_NAME(name)    _##name##_size
 
+// During stack walking in the profiler's signal handler, GC or class unloading
+// on another thread can free VMNMethod/VMMethod memory concurrently, making
+// pointers stale between the readability check and the actual dereference.
+// In release builds the setjmp/longjmp crash protection in walkVM catches the
+// resulting SIGSEGV. In debug builds the assert(isReadable) fires first,
+// sending SIGABRT which is uncatchable by crash protection.
+// When crash protection is active the assert is redundant — any bad read will
+// be caught by the SIGSEGV handler and recovered via longjmp — so we skip it.
+inline bool crashProtectionActive() {
+    ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+    return pt != nullptr && pt->isCrashProtectionActive();
+}
+
 template <typename T>
 inline T* cast_to(const void* ptr) {
     assert(T::type_size() > 0); // Ensure type size has been initialized
-    assert(ptr == nullptr || SafeAccess::isReadableRange(ptr, T::type_size()));
+    assert(crashProtectionActive() || ptr == nullptr || SafeAccess::isReadableRange(ptr, T::type_size()));
     return reinterpret_cast<T*>(const_cast<void*>(ptr));
 }
 
@@ -204,7 +217,7 @@ class VMStructs {
 
     const char* at(int offset) {
         const char* ptr = (const char*)this + offset;
-        assert(SafeAccess::isReadable(ptr));
+        assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
         return ptr;
     }
 
