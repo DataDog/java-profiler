@@ -30,6 +30,7 @@ private:
   // Even with 5 levels cap we will need any highly recursing signal handlers
   static constexpr u32 CRASH_HANDLER_NESTING_LIMIT = 5;
   static pthread_key_t _tls_key;
+  static volatile bool _tls_key_initialized;
   static int _buffer_size;
   static volatile int _running_buffer_pos;
   static ProfiledThread** _buffer;
@@ -47,8 +48,6 @@ private:
   static void initTLSKey();
   static void doInitTLSKey();
   static inline void freeKey(void *key);
-  static void doInitExistingThreads();
-  static void prepareBuffer(int size);
   static void cleanupBuffer();
 
   // Free slot management - lock-free operations
@@ -92,10 +91,6 @@ public:
   static ProfiledThread *currentSignalSafe(); // Signal-safe version that never allocates
   static int currentTid();
 
-  // TLS priming status checks
-  static bool isTlsPrimingAvailable();
-  static bool wasTlsPrimingAttempted();
-  
   inline int tid() { return _tid; }
 
   inline u64 noteCPUSample(u32 recording_epoch) {
@@ -165,8 +160,6 @@ public:
     }
     return &_unwind_failures;
   }
-
-  static void simpleTlsSignalHandler(int signo);
 
   int filterSlotId() { return _filter_slot_id; }
   void setFilterSlotId(int slotId) { _filter_slot_id = slotId; }
