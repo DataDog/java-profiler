@@ -15,6 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Test;
 import org.junitpioneer.jupiter.RetryingTest;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
@@ -25,6 +26,8 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.ContextSetter;
+import static com.datadoghq.profiler.MoreAssertions.DICTIONARY_PAGE_SIZE;
+import static com.datadoghq.profiler.MoreAssertions.assertBoundedBy;
 import com.datadoghq.profiler.Platform;
 
 public class TagContextTest extends AbstractProfilerTest {
@@ -42,78 +45,97 @@ public class TagContextTest extends AbstractProfilerTest {
         stopProfiler();
         IItemCollection events = verifyEvents("datadog.MethodSample");
         Map<String, AtomicLong> weightsByTagValue = new HashMap<>();
-        Map<String, Long> jfrCounters = new HashMap<>();
-        for (IItemIterable counterEvent : verifyEvents("datadog.ProfilerCounter")) {
-            IMemberAccessor<String, IItem> nameAccessor = NAME.getAccessor(counterEvent.getType());
-            IMemberAccessor<IQuantity, IItem> countAccessor = COUNT.getAccessor(counterEvent.getType());
-            for (IItem item : counterEvent) {
-                jfrCounters.put(nameAccessor.getMember(item), countAccessor.getMember(item).longValue());
-            }
-        }
-        for (IItemIterable wallclockSamples : events) {
-            IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT.getAccessor(wallclockSamples.getType());
-            // this will become more generic in the future
-            IMemberAccessor<String, IItem> tag1Accessor = TAG_1.getAccessor(wallclockSamples.getType());
-            assertNotNull(tag1Accessor);
-            IMemberAccessor<String, IItem> tag2Accessor = TAG_2.getAccessor(wallclockSamples.getType());
-            assertNotNull(tag2Accessor);
-            IMemberAccessor<String, IItem> stacktraceAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(wallclockSamples.getType());
-            for (IItem sample : wallclockSamples) {
-                String stacktrace = stacktraceAccessor.getMember(sample);
-                if (stacktrace == null || stacktrace.isEmpty()) {
-                    continue;
-                }
-                if (!stacktrace.contains("sleep")) {
-                    // we don't know the context has been set for sure until the sleep has started
-                    continue;
-                }
+        long droppedSamplesCount = 0;
+        long droppedSamplesWeight = 0;
+        long totalSamplesCount = 0;
+        long totalSamplesWeight = 0;
+        try {
+            for (IItemIterable wallclockSamples : events) {
+                IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT.getAccessor(wallclockSamples.getType());
+                // this will become more generic in the future
+                IMemberAccessor<String, IItem> tag1Accessor = TAG_1.getAccessor(wallclockSamples.getType());
+                assertNotNull(tag1Accessor);
+                IMemberAccessor<String, IItem> tag2Accessor = TAG_2.getAccessor(wallclockSamples.getType());
+                assertNotNull(tag2Accessor);
+                IMemberAccessor<String, IItem> stacktraceAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(wallclockSamples.getType());
+                for (IItem sample : wallclockSamples) {
+                    String stacktrace = stacktraceAccessor.getMember(sample);
+                    if (!stacktrace.contains("sleep")) {
+                        // we don't know the context has been set for sure until the sleep has started
+                        continue;
+                    }
 
-                long weight = weightAccessor.getMember(sample).longValue();
+                    long weight = weightAccessor.getMember(sample).longValue();
+                    totalSamplesCount++;
+                    totalSamplesWeight += weight;
 
-                if (stacktrace.contains("<dropped due to contention>")) {
-                    continue;
-                }
+                    if (stacktrace.contains("<dropped due to contention>")) {
+                        // track dropped samples statistics but skip for weight distribution calculation
+                        droppedSamplesCount++;
+                        droppedSamplesWeight += weight;
+                        continue;
+                    }
 
-                String tag = tag1Accessor.getMember(sample);
-                weightsByTagValue.computeIfAbsent(tag, v -> new AtomicLong())
-                        .addAndGet(weight);
-                assertNull(tag2Accessor.getMember(sample));
-            }
-        }
-        long sum = 0;
-        long[] weights = new long[strings.length];
-        for (int i = 0; i < strings.length; i++) {
-            AtomicLong weight = weightsByTagValue.get(strings[i]);
-            assertNotNull(weight, "Weight for " + strings[i] + " not found. Found: " + weightsByTagValue.keySet());
-            weights[i] = weightsByTagValue.get(strings[i]).get();
-            sum += weights[i];
-        }
-        double avg = (double) sum / weights.length;
-        for (int i = 0; i < weights.length; i++) {
-            assertTrue(Math.abs(weights[i] - avg) < 0.15 * weights[i], strings[i]
-                    + " more than 15% from mean");
-        }
-
-        // now check we have settings to unbundle the dynamic columns
-        IItemCollection activeSettings = verifyEvents("jdk.ActiveSetting");
-        Set<String> recordedContextAttributes = new HashSet<>();
-        for (IItemIterable activeSetting : activeSettings) {
-            IMemberAccessor<String, IItem> nameAccessor = JdkAttributes.REC_SETTING_NAME.getAccessor(activeSetting.getType());
-            IMemberAccessor<String, IItem> valueAccessor = JdkAttributes.REC_SETTING_VALUE.getAccessor(activeSetting.getType());
-            for (IItem item : activeSetting) {
-                String name = nameAccessor.getMember(item);
-                if ("contextattribute".equals(name)) {
-                    recordedContextAttributes.add(valueAccessor.getMember(item));
+                    String tag = tag1Accessor.getMember(sample);
+                    weightsByTagValue.computeIfAbsent(tag, v -> new AtomicLong())
+                            .addAndGet(weight);
+                    assertNull(tag2Accessor.getMember(sample));
                 }
             }
-        }
-        assertEquals(3, recordedContextAttributes.size());
-        assertTrue(recordedContextAttributes.contains("tag1"));
-        assertTrue(recordedContextAttributes.contains("tag2"));
-        assertTrue(recordedContextAttributes.contains("tag3"));
+            long sum = 0;
+            long[] weights = new long[strings.length];
+            System.out.println("Found tag values: " + weightsByTagValue.keySet());
+            for (int i = 0; i < strings.length; i++) {
+                AtomicLong weight = weightsByTagValue.get(strings[i]);
+                assertNotNull(weight, "Weight for " + strings[i] + " not found. Found: " + weightsByTagValue.keySet());
+                weights[i] = weightsByTagValue.get(strings[i]).get();
+                sum += weights[i];
+            }
+            double avg = (double) sum / weights.length;
+            for (int i = 0; i < weights.length; i++) {
+                assertTrue(Math.abs(weights[i] - avg) < 0.15 * weights[i], strings[i]
+                        + " more than 15% from mean");
+            }
 
-        assertFalse(jfrCounters.isEmpty());
-        assertEquals(strings.length, jfrCounters.get("dictionary_context_keys"));
+            // now check we have settings to unbundle the dynamic columns
+            IItemCollection activeSettings = verifyEvents("jdk.ActiveSetting");
+            Set<String> recordedContextAttributes = new HashSet<>();
+            for (IItemIterable activeSetting : activeSettings) {
+                IMemberAccessor<String, IItem> nameAccessor = JdkAttributes.REC_SETTING_NAME.getAccessor(activeSetting.getType());
+                IMemberAccessor<String, IItem> valueAccessor = JdkAttributes.REC_SETTING_VALUE.getAccessor(activeSetting.getType());
+                for (IItem item : activeSetting) {
+                    String name = nameAccessor.getMember(item);
+                    if ("contextattribute".equals(name)) {
+                        recordedContextAttributes.add(valueAccessor.getMember(item));
+                    }
+                }
+            }
+            assertEquals(3, recordedContextAttributes.size());
+            assertTrue(recordedContextAttributes.contains("tag1"));
+            assertTrue(recordedContextAttributes.contains("tag2"));
+            assertTrue(recordedContextAttributes.contains("tag3"));
+
+            // Verify counters from JFR serialized data (not live process counters which are reset)
+            Map<String, Long> jfrCounters = new HashMap<>();
+            for (IItemIterable counterEvent : verifyEvents("datadog.ProfilerCounter")) {
+                IMemberAccessor<String, IItem> nameAccessor = NAME.getAccessor(counterEvent.getType());
+                IMemberAccessor<IQuantity, IItem> countAccessor = COUNT.getAccessor(counterEvent.getType());
+                for (IItem item : counterEvent) {
+                    String name = nameAccessor.getMember(item);
+                    jfrCounters.put(name, countAccessor.getMember(item).longValue());
+                }
+            }
+
+            assertFalse(jfrCounters.isEmpty());
+            assertEquals(strings.length, jfrCounters.get("dictionary_context_keys"));
+        } finally {
+            // Print statistics about dropped samples for debugging
+            double dropRate = totalSamplesCount > 0 ? (100.0 * droppedSamplesCount / totalSamplesCount) : 0.0;
+            double dropWeightRate = totalSamplesWeight > 0 ? (100.0 * droppedSamplesWeight / totalSamplesWeight) : 0.0;
+            System.out.printf("Sample statistics: %d total (%d dropped, %.2f%%), weight %d total (%d dropped, %.2f%%)%n",
+                    totalSamplesCount, droppedSamplesCount, dropRate,
+                    totalSamplesWeight, droppedSamplesWeight, dropWeightRate);
+        }
     }
 
     private void work(ContextSetter contextSetter, String contextAttribute, String contextValue)
