@@ -6,7 +6,7 @@
 #include <time.h>
 
 pthread_key_t ProfiledThread::_tls_key;
-volatile bool ProfiledThread::_tls_key_initialized = false;
+bool ProfiledThread::_tls_key_initialized = false;
 int ProfiledThread::_buffer_size = 0;
 volatile int ProfiledThread::_running_buffer_pos = 0;
 ProfiledThread** ProfiledThread::_buffer = nullptr;
@@ -21,9 +21,10 @@ void ProfiledThread::initTLSKey() {
 void ProfiledThread::doInitTLSKey() {
   pthread_key_create(&_tls_key, freeKey);
   // Must be set AFTER pthread_key_create so signal handlers see a valid key.
-  // volatile write provides sufficient ordering for single-writer (init thread)
-  // multi-reader (signal handlers on other threads) on all supported architectures.
-  _tls_key_initialized = true;
+  // Store-release pairs with the acquire loads in currentSignalSafe() and release()
+  // to prevent hardware load-load reordering on weakly-ordered architectures (aarch64):
+  // a plain volatile write is not sufficient there.
+  __atomic_store_n(&_tls_key_initialized, true, __ATOMIC_RELEASE);
 }
 
 inline void ProfiledThread::freeKey(void *key) {
@@ -58,7 +59,7 @@ void ProfiledThread::initCurrentThread() {
 }
 
 void ProfiledThread::release() {
-  if (!_tls_key_initialized) {
+  if (!__atomic_load_n(&_tls_key_initialized, __ATOMIC_ACQUIRE)) {
     return;
   }
   pthread_key_t key = _tls_key;
@@ -129,7 +130,7 @@ ProfiledThread *ProfiledThread::currentSignalSafe() {
   // Signal-safe: never allocate, just return existing TLS or null.
   // Use _tls_key_initialized instead of key != 0 because pthread_key_create
   // can legitimately return key 0 (common on musl where keys start at 0).
-  return _tls_key_initialized ? (ProfiledThread *)pthread_getspecific(_tls_key) : nullptr;
+  return __atomic_load_n(&_tls_key_initialized, __ATOMIC_ACQUIRE) ? (ProfiledThread *)pthread_getspecific(_tls_key) : nullptr;
 }
 
 int ProfiledThread::popFreeSlot() {
