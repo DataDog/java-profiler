@@ -13,10 +13,9 @@
 #include "jvmHeap.h"
 #include "safeAccess.h"
 #include "spinLock.h"
+#include "common.h"
 
-
-CodeCache* VMStructs::_libjvm = NULL;
-
+CodeCache* VMStructs::_libjvm = nullptr;
 bool VMStructs::_has_class_names = false;
 bool VMStructs::_has_method_structs = false;
 bool VMStructs::_has_compiler_structs = false;
@@ -26,92 +25,56 @@ bool VMStructs::_has_native_thread_id = false;
 bool VMStructs::_can_dereference_jmethod_id = false;
 bool VMStructs::_compact_object_headers = false;
 
-int VMStructs::_klass_name_offset = -1;
-int VMStructs::_symbol_length_offset = -1;
-int VMStructs::_symbol_length_and_refcount_offset = -1;
-int VMStructs::_symbol_body_offset = -1;
-int VMStructs::_oop_klass_offset = -1;
-int VMStructs::_class_loader_data_offset = -1;
-int VMStructs::_class_loader_data_next_offset = -1;
-int VMStructs::_methods_offset = -1;
-int VMStructs::_jmethod_ids_offset = -1;
-int VMStructs::_thread_osthread_offset = -1;
-int VMStructs::_thread_anchor_offset = -1;
-int VMStructs::_thread_state_offset = -1;
-int VMStructs::_thread_vframe_offset = -1;
-int VMStructs::_thread_exception_offset = -1;
-int VMStructs::_osthread_id_offset = -1;
-int VMStructs::_call_wrapper_anchor_offset = -1;
-int VMStructs::_comp_env_offset = -1;
-int VMStructs::_comp_task_offset = -1;
-int VMStructs::_comp_method_offset = -1;
-int VMStructs::_anchor_sp_offset = -1;
-int VMStructs::_anchor_pc_offset = -1;
-int VMStructs::_anchor_fp_offset = -1;
-int VMStructs::_blob_size_offset = -1;
-int VMStructs::_frame_size_offset = -1;
-int VMStructs::_frame_complete_offset = -1;
-int VMStructs::_code_offset = -1;
-int VMStructs::_data_offset = -1;
-int VMStructs::_mutable_data_offset = -1;
-int VMStructs::_relocation_size_offset = -1;
-int VMStructs::_scopes_pcs_offset = -1;
-int VMStructs::_scopes_data_offset = -1;
-int VMStructs::_nmethod_name_offset = -1;
-int VMStructs::_nmethod_method_offset = -1;
-int VMStructs::_nmethod_entry_offset = -1;
-int VMStructs::_nmethod_state_offset = -1;
-int VMStructs::_nmethod_level_offset = -1;
-int VMStructs::_nmethod_metadata_offset = -1;
-int VMStructs::_nmethod_immutable_offset = -1;
-int VMStructs::_method_constmethod_offset = -1;
-int VMStructs::_method_code_offset = -1;
-int VMStructs::_constmethod_constants_offset = -1;
-int VMStructs::_constmethod_idnum_offset = -1;
-int VMStructs::_pool_holder_offset = -1;
-int VMStructs::_array_len_offset = 0;
-int VMStructs::_array_data_offset = -1;
-int VMStructs::_code_heap_memory_offset = -1;
-int VMStructs::_code_heap_segmap_offset = -1;
-int VMStructs::_code_heap_segment_shift = -1;
-int VMStructs::_heap_block_used_offset = -1;
-int VMStructs::_vs_low_bound_offset = -1;
-int VMStructs::_vs_high_bound_offset = -1;
-int VMStructs::_vs_low_offset = -1;
-int VMStructs::_vs_high_offset = -1;
-int VMStructs::_flag_name_offset = -1;
-int VMStructs::_flag_addr_offset = -1;
-int VMStructs::_flag_origin_offset = -1;
-const char* VMStructs::_flags_addr = NULL;
-int VMStructs::_flag_count = 0;
 char* VMStructs::_code_heap[3] = {};
 const void* VMStructs::_code_heap_low = NO_MIN_ADDRESS;
 const void* VMStructs::_code_heap_high = NO_MAX_ADDRESS;
-char** VMStructs::_code_heap_addr = NULL;
-const void** VMStructs::_code_heap_low_addr = NULL;
-const void** VMStructs::_code_heap_high_addr = NULL;
-int* VMStructs::_klass_offset_addr = NULL;
-char** VMStructs::_narrow_klass_base_addr = NULL;
-char* VMStructs::_narrow_klass_base = NULL;
-int* VMStructs::_narrow_klass_shift_addr = NULL;
+char* VMStructs::_narrow_klass_base = nullptr;
 int VMStructs::_narrow_klass_shift = -1;
-char** VMStructs::_collected_heap_addr = NULL;
-int VMStructs::_region_start_offset = -1;
-int VMStructs::_region_size_offset = -1;
-int VMStructs::_markword_klass_shift = -1;
-int VMStructs::_markword_monitor_value = -1;
-int VMStructs::_entry_frame_call_wrapper_offset = -1;
 int VMStructs::_interpreter_frame_bcp_offset = 0;
 unsigned char VMStructs::_unsigned5_base = 0;
-const void** VMStructs::_call_stub_return_addr = NULL;
-const void* VMStructs::_call_stub_return = NULL;
-const void* VMStructs::_interpreted_frame_valid_start = NULL;
-const void* VMStructs::_interpreted_frame_valid_end = NULL;
+const void* VMStructs::_call_stub_return = nullptr;
+const void* VMStructs::_interpreted_frame_valid_start = nullptr;
+const void* VMStructs::_interpreted_frame_valid_end = nullptr;
+
 
 // Initialize type size to 0
-#define INIT_TYPE_SIZE(name, ...) uint64_t VMStructs::TYPE_SIZE_NAME(name) = 0;
+#define INIT_TYPE_SIZE(name, names) uint64_t VMStructs::TYPE_SIZE_NAME(name) = 0;
 DECLARE_TYPES_DO(INIT_TYPE_SIZE)
 #undef INIT_TYPE_SIZE
+
+#define offset_value -1
+#define address_value nullptr
+
+// Initialize field variables
+// offset = -1
+// address = nullptr
+
+// Do nothing macro
+#define DO_NOTHING(...)
+#define INIT_FILED(var, field_type, names) \
+    field_type VMStructs::var = field_type##_value;
+
+#define INIT_FILED_WITH_VERSION(var, field_type, min_version, max_version, names) \
+    field_type VMStructs::var = field_type##_value;
+
+DECLARE_TYPE_FILED_DO(DO_NOTHING, INIT_FILED, INIT_FILED_WITH_VERSION, DO_NOTHING)
+
+#undef INIT_FILED
+#undef INIT_FILED_WITH_VERSION
+#undef DO_NOTHING
+#undef offset_value
+#undef address_value
+
+// Initialize constant variables to -1
+#define INIT_INT_CONSTANT(type, field)      \
+    int VMStructs::_##type##_##field = -1;
+#define INIT_LONG_CONSTANT(type, field)     \
+    long VMStructs::_##type##_##field = -1;
+
+DECLARE_INT_CONSTANTS_DO(INIT_INT_CONSTANT)
+DECLARE_LONG_CONSTANTS_DO(INIT_LONG_CONSTANT)
+#undef INIT_INT_CONSTANT
+#undef INIT_LONG_CONSTANT
 
 
 jfieldID VMStructs::_eetop;
@@ -125,8 +88,6 @@ VMStructs::LockFunc VMStructs::_lock_func;
 VMStructs::LockFunc VMStructs::_unlock_func;
 
 // Datadog-specific static variables
-int VMStructs::_osthread_state_offset = -1;
-int VMStructs::_flag_type_offset = -1;
 CodeCache VMStructs::_unsafe_to_walk("unwalkable code");
 VMStructs::HeapUsageFunc VMStructs::_heap_usage_func = NULL;
 VMStructs::MemoryUsageFunc VMStructs::_memory_usage_func = NULL;
@@ -161,259 +122,71 @@ void VMStructs::ready() {
     initThreadBridge();
 }
 
-bool initTypeSize(uint64_t& size, const char* type, uint64_t value, ...) {
-    va_list args;
-    va_start(args, value);
-    const char* match_type = nullptr;
-    bool found = false;
-    while ((match_type = va_arg(args, const char*)) != nullptr) { 
-        if (strcmp(type, match_type) == 0) {
-            size = value;
-            found = true;
-            break;
+bool matchAny(const char* target_name, const char** names) {
+    for (const char** name = names; *name != nullptr; name++) {
+        if (strcmp(target_name, *name) == 0) {
+            return true;
         }
-    } 
- 
-    va_end(args);
-    return found;
+    }
+    return false;
 }
 
-void VMStructs::initOffsets() {
+void VMStructs::init_offsets_and_addresses() {
     uintptr_t entry = readSymbol("gHotSpotVMStructs");
     uintptr_t stride = readSymbol("gHotSpotVMStructEntryArrayStride");
     uintptr_t type_offset = readSymbol("gHotSpotVMStructEntryTypeNameOffset");
     uintptr_t field_offset = readSymbol("gHotSpotVMStructEntryFieldNameOffset");
     uintptr_t offset_offset = readSymbol("gHotSpotVMStructEntryOffsetOffset");
+    uintptr_t isStatic_offset = readSymbol("gHotSpotVMStructEntryIsStaticOffset");
     uintptr_t address_offset = readSymbol("gHotSpotVMStructEntryAddressOffset");
+    bool isStatic;
+
+    auto read_offset = [&]() -> int {
+        assert(!isStatic);
+        return *(int*)(entry + offset_offset);
+    };
+
+    auto read_address = [&]() -> address {
+        assert(isStatic);
+        return *(address*)(entry + address_offset);
+    };
 
     if (entry != 0 && stride != 0) {
         for (;; entry += stride) {
-            const char* type = *(const char**)(entry + type_offset);
-            const char* field = *(const char**)(entry + field_offset);
-            if (type == NULL || field == NULL) {
+            const char* type_name = *(const char**)(entry + type_offset);
+            const char* field_name = *(const char**)(entry + field_offset);
+            isStatic = *(int32_t*)(entry + isStatic_offset) != 0;
+ 
+            if (type_name == nullptr || field_name == nullptr) {
                 break;
             }
+#define MATCH_TYPE_NAMES(type, type_names)                                     \
+     if (matchAny(type_name, type_names)) {
+#define READ_FIELD_VALUE(var, field_type, field_names) \
+        if (matchAny(field_name, field_names)) {    \
+            var = read_##field_type();              \
+            continue;                                                   \
+        }
+#define READ_FIELD_VALUE_WITH_VERSION(var, field_type, min_version, max_version, field_names) \
+        if (matchAny(field_name, field_names)) {    \
+            var = read_##field_type();              \
+            continue;                                                   \
+        }
 
-            if (strcmp(type, "Klass") == 0) {
-                if (strcmp(field, "_name") == 0) {
-                    _klass_name_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "Symbol") == 0) {
-                if (strcmp(field, "_length") == 0) {
-                    _symbol_length_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_length_and_refcount") == 0) {
-                    _symbol_length_and_refcount_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_body") == 0) {
-                    _symbol_body_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "oopDesc") == 0) {
-                if (strcmp(field, "_metadata._klass") == 0) {
-                    _oop_klass_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "Universe") == 0 || strcmp(type, "CompressedKlassPointers") == 0) {
-                if (strcmp(field, "_narrow_klass._base") == 0 || strcmp(field, "_base") == 0) {
-                    _narrow_klass_base_addr = *(char***)(entry + address_offset);
-                } else if (strcmp(field, "_narrow_klass._shift") == 0 || strcmp(field, "_shift") == 0) {
-                    _narrow_klass_shift_addr = *(int**)(entry + address_offset);
-                } else if (strcmp(field, "_collectedHeap") == 0) {
-                    _collected_heap_addr = *(char***)(entry + address_offset);
-                }
-            } else if (strcmp(type, "MemRegion") == 0) {
-                if (strcmp(field, "_start") == 0) {
-                    _region_start_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_word_size") == 0) {
-                    _region_size_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "CompiledMethod") == 0 || strcmp(type, "nmethod") == 0) {
-                if (strcmp(field, "_method") == 0) {
-                    _nmethod_method_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_verified_entry_offset") == 0) {
-                    _nmethod_entry_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_verified_entry_point") == 0) {
-                    _nmethod_entry_offset = - *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_state") == 0) {
-                    _nmethod_state_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_comp_level") == 0) {
-                    _nmethod_level_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_metadata_offset") == 0) {
-                    _nmethod_metadata_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_immutable_data") == 0) {
-                    _nmethod_immutable_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_scopes_pcs_offset") == 0) {
-                    _scopes_pcs_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_scopes_data_offset") == 0) {
-                    _scopes_data_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_scopes_data_begin") == 0) {
-                    _scopes_data_offset = - *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "Method") == 0) {
-                if (strcmp(field, "_constMethod") == 0) {
-                    _method_constmethod_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_code") == 0) {
-                    _method_code_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "ConstMethod") == 0) {
-                if (strcmp(field, "_constants") == 0) {
-                    _constmethod_constants_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_method_idnum") == 0) {
-                    _constmethod_idnum_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "ConstantPool") == 0) {
-                if (strcmp(field, "_pool_holder") == 0) {
-                    _pool_holder_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "InstanceKlass") == 0) {
-                if (strcmp(field, "_class_loader_data") == 0) {
-                    _class_loader_data_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_methods") == 0) {
-                    _methods_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_methods_jmethod_ids") == 0) {
-                    _jmethod_ids_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "ClassLoaderData") == 0) {
-                if (strcmp(field, "_next") == 0) {
-                    _class_loader_data_next_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "java_lang_Class") == 0) {
-                if (strcmp(field, "_klass_offset") == 0) {
-                    _klass_offset_addr = *(int**)(entry + address_offset);
-                }
-            } else if (strcmp(type, "Thread") == 0) {
-                // Since JDK 25, _osthread field belongs to Thread rather than JavaThread
-                if (strcmp(field, "_osthread") == 0) {
-                    _thread_osthread_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "JavaThread") == 0) {
-                if (strcmp(field, "_osthread") == 0) {
-                    _thread_osthread_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_anchor") == 0) {
-                    _thread_anchor_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_thread_state") == 0) {
-                    _thread_state_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_vframe_array_head") == 0) {
-                    _thread_vframe_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "ThreadShadow") == 0) {
-                if (strcmp(field, "_exception_file") == 0) {
-                    _thread_exception_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "OSThread") == 0) {
-                if (strcmp(field, "_thread_id") == 0) {
-                    _osthread_id_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_state") == 0) {
-                    _osthread_state_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "CompilerThread") == 0) {
-                if (strcmp(field, "_env") == 0) {
-                    _comp_env_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "ciEnv") == 0) {
-                if (strcmp(field, "_task") == 0) {
-                    _comp_task_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "CompileTask") == 0) {
-                if (strcmp(field, "_method") == 0) {
-                    _comp_method_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "JavaCallWrapper") == 0) {
-                if (strcmp(field, "_anchor") == 0) {
-                    _call_wrapper_anchor_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "JavaFrameAnchor") == 0) {
-                if (strcmp(field, "_last_Java_sp") == 0) {
-                    _anchor_sp_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_last_Java_pc") == 0) {
-                    _anchor_pc_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_last_Java_fp") == 0) {
-                    _anchor_fp_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "CodeBlob") == 0) {
-                if (strcmp(field, "_size") == 0) {
-                    _blob_size_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_frame_size") == 0) {
-                    _frame_size_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_frame_complete_offset") == 0) {
-                    _frame_complete_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_code_offset") == 0) {
-                    _code_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_code_begin") == 0) {
-                    _code_offset = - *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_data_offset") == 0) {
-                    _data_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_mutable_data") == 0) {
-                    _mutable_data_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_relocation_size") == 0) {
-                    _relocation_size_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_name") == 0) {
-                    _nmethod_name_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "CodeCache") == 0) {
-                if (strcmp(field, "_heap") == 0) {
-                    _code_heap_addr = *(char***)(entry + address_offset);
-                } else if (strcmp(field, "_heaps") == 0) {
-                    _code_heap_addr = *(char***)(entry + address_offset);
-                } else if (strcmp(field, "_low_bound") == 0) {
-                    _code_heap_low_addr = *(const void***)(entry + address_offset);
-                } else if (strcmp(field, "_high_bound") == 0) {
-                    _code_heap_high_addr = *(const void***)(entry + address_offset);
-                }
-            } else if (strcmp(type, "CodeHeap") == 0) {
-                if (strcmp(field, "_memory") == 0) {
-                    _code_heap_memory_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_segmap") == 0) {
-                    _code_heap_segmap_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_log2_segment_size") == 0) {
-                    _code_heap_segment_shift = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "HeapBlock::Header") == 0) {
-                if (strcmp(field, "_used") == 0) {
-                    _heap_block_used_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "VirtualSpace") == 0) {
-                if (strcmp(field, "_low_boundary") == 0) {
-                    _vs_low_bound_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_high_boundary") == 0) {
-                    _vs_high_bound_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_low") == 0) {
-                    _vs_low_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_high") == 0) {
-                    _vs_high_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "StubRoutines") == 0) {
-                if (strcmp(field, "_call_stub_return_address") == 0) {
-                    _call_stub_return_addr = *(const void***)(entry + address_offset);
-                }
-            } else if (strcmp(type, "GrowableArrayBase") == 0 || strcmp(type, "GenericGrowableArray") == 0) {
-                if (strcmp(field, "_len") == 0) {
-                    _array_len_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "GrowableArray<int>") == 0) {
-                if (strcmp(field, "_data") == 0) {
-                    _array_data_offset = *(int*)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "JVMFlag") == 0 || strcmp(type, "Flag") == 0) {
-                if (strcmp(field, "_name") == 0 || strcmp(field, "name") == 0) {
-                    _flag_name_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_addr") == 0 || strcmp(field, "addr") == 0) {
-                    _flag_addr_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "_flags") == 0 || strcmp(field, "origin") == 0) {
-                    _flag_origin_offset = *(int*)(entry + offset_offset);
-                } else if (strcmp(field, "flags") == 0) {
-                    _flags_addr = **(char***)(entry + address_offset);
-                } else if (strcmp(field, "numFlags") == 0) {
-                    _flag_count = **(int**)(entry + address_offset);
-                } else if (strcmp(field, "_type") == 0 || strcmp(field, "type") == 0) {
-                    _flag_type_offset = *(int *)(entry + offset_offset);
-                }
-            } else if (strcmp(type, "PcDesc") == 0) {
-                // TODO
-            }
+#define END_TYPE() continue; }
+        DECLARE_TYPE_FILED_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
+#undef MATCH_TYPE_NAMES
+#undef READ_FIELD_VALUE
+#undef READ_FIELD_VALUE_WITH_VERSION
+#undef END_TYPE
         }
     }
+}
 
-    entry = readSymbol("gHotSpotVMTypes");
-    stride = readSymbol("gHotSpotVMTypeEntryArrayStride");
-    type_offset = readSymbol("gHotSpotVMTypeEntryTypeNameOffset");
+void VMStructs::init_type_sizes() {
+    uintptr_t entry = readSymbol("gHotSpotVMTypes");
+    uintptr_t stride = readSymbol("gHotSpotVMTypeEntryArrayStride");
+    uintptr_t type_offset = readSymbol("gHotSpotVMTypeEntryTypeNameOffset");
     uintptr_t size_offset = readSymbol("gHotSpotVMTypeEntrySizeOffset");
 
     if (entry != 0 && stride != 0) {
@@ -425,56 +198,128 @@ void VMStructs::initOffsets() {
 
             uint64_t size = *(uint64_t*)(entry + size_offset);
            
- #define TYPE_SIZE_MATCH(name, ...) \
-    if (initTypeSize(VMStructs::TYPE_SIZE_NAME(name), type, size, ##__VA_ARGS__)) continue;
+ #define READ_TYPE_SIZE(name, names)          \
+        if (matchAny(type, names)) {          \
+            TYPE_SIZE_NAME(name) = size;      \
+            continue;                         \
+        }
 
-           DECLARE_TYPES_DO(TYPE_SIZE_MATCH)
+        DECLARE_TYPES_DO(READ_TYPE_SIZE)
 
-#undef TYPE_SIZE_MATCH   
+#undef READ_TYPE_SIZE   
 
         }
     }
+}
 
+#define READ_CONSTANT(type, field)                                \
+            if (strcmp(type_name, #type "::" #field) == 0) {      \
+                _##type##_##field = value;                        \
+                continue;                                         \
+            }
+
+
+void VMStructs::init_constants() {
+    // Int constants
+    uintptr_t entry = readSymbol("gHotSpotVMIntConstants");
+    uintptr_t stride = readSymbol("gHotSpotVMIntConstantEntryArrayStride");
+    uintptr_t name_offset = readSymbol("gHotSpotVMIntConstantEntryNameOffset");
+    uintptr_t value_offset = readSymbol("gHotSpotVMIntConstantEntryValueOffset");
+    if (entry != 0 && stride != 0) {
+        for (;; entry += stride) {
+            const char* type_name = *(const char**)(entry + name_offset);
+            if (type_name == nullptr) {
+                break;
+            }
+            int value = *(int*)(entry + value_offset);
+            DECLARE_INT_CONSTANTS_DO(READ_CONSTANT)
+        }
+    }
+    // Sepcial case
+    _frame_entry_frame_call_wrapper_offset *= sizeof(uintptr_t);
+
+
+    // Long constants
     entry = readSymbol("gHotSpotVMLongConstants");
     stride = readSymbol("gHotSpotVMLongConstantEntryArrayStride");
-    uintptr_t name_offset = readSymbol("gHotSpotVMLongConstantEntryNameOffset");
-    uintptr_t value_offset = readSymbol("gHotSpotVMLongConstantEntryValueOffset");
+    name_offset = readSymbol("gHotSpotVMLongConstantEntryNameOffset");
+    value_offset = readSymbol("gHotSpotVMLongConstantEntryValueOffset");
 
     if (entry != 0 && stride != 0) {
         for (;; entry += stride) {
-            const char* name = *(const char**)(entry + name_offset);
-            if (name == NULL) {
+            const char* type_name = *(const char**)(entry + name_offset);
+            if (type_name == nullptr) {
                 break;
             }
 
-            if (strncmp(name, "markWord::", 10) == 0) {
-                if (strcmp(name + 10, "klass_shift") == 0) {
-                    _markword_klass_shift = *(long*)(entry + value_offset);
-                } else if (strcmp(name + 10, "monitor_value") == 0) {
-                    _markword_monitor_value = *(long*)(entry + value_offset);
-                }
-            }
+            long value = *(long*)(entry + value_offset);
+            DECLARE_LONG_CONSTANTS_DO(READ_CONSTANT)
         }
     }
+}
 
-    entry = readSymbol("gHotSpotVMIntConstants");
-    stride = readSymbol("gHotSpotVMIntConstantEntryArrayStride");
-    name_offset = readSymbol("gHotSpotVMIntConstantEntryNameOffset");
-    value_offset = readSymbol("gHotSpotVMIntConstantEntryValueOffset");
+#undef READ_CONSTANT
 
-    if (entry != 0 && stride != 0) {
-        for (;; entry += stride) {
-            const char* name = *(const char**)(entry + name_offset);
-            if (name == NULL) {
-                break;
-            }
 
-            if (strcmp(name, "frame::entry_frame_call_wrapper_offset") == 0) {
-                _entry_frame_call_wrapper_offset = *(int*)(entry + value_offset) * sizeof(uintptr_t);
-                break;  // remove it for reading more constants
-            }
-        }
+#ifdef DEBUG
+void VMStructs::verify_offsets() {
+    // Hotspot only
+    assert(VM::isHotspot());
+    int hotspot_version = VM::hotspot_version();
+
+// Verify type sizes
+#define VERIFY_TYPE_SIZE(name, names) assert(TYPE_SIZE_NAME(name) > 0);
+    DECLARE_TYPES_DO(VERIFY_TYPE_SIZE);
+#undef VERIFY_TYPE_SIZE
+
+
+// Verify offsets and addresses
+#define offset_value -1
+#define address_value nullptr
+#define off_value_value -1
+#define addr_value_value -1
+
+// Do nothing macro
+#define DO_NOTHING(...)
+#define VERIFY_FIELD(var, field_type, names)                                    \
+    assert(var != field_type##_value);
+#define VERSION_FIELD_WITH_VERSION(var, field_type, min_ver, max_ver, names)    \
+    assert(hotspot_version < min_ver || hotspot_version > max_ver || var != field_type##_value);
+
+    DECLARE_TYPE_FILED_DO(DO_NOTHING, VERIFY_FIELD, VERSION_FIELD_WITH_VERSION, DO_NOTHING)
+#undef VERIFY_OFFSET_OR_ADDRESS
+#undef DO_NOTHING
+#undef offset_value
+#undef address_value
+#undef off_value_value
+#undef addr_value_value
+
+// Verify constants
+// Initialize constant variables to -1
+#define VERIFY_CONSTANT(type, field) \
+    // assert(_##type##_##field != -1);
+
+    DECLARE_INT_CONSTANTS_DO(VERIFY_CONSTANT)
+    DECLARE_LONG_CONSTANTS_DO(VERIFY_CONSTANT)
+#undef INIT_CONSTANT
+}
+
+#endif // DEBUG
+
+void VMStructs::initOffsets() {
+    // J9 does not support vmStructs
+    if (VM::isOpenJ9() || VM::isZing()) {
+        return;
     }
+
+    init_type_sizes();
+    init_offsets_and_addresses();
+    init_constants();
+
+
+#ifdef DEBUG
+   verify_offsets();
+#endif
 }
 
 void VMStructs::resolveOffsets() {
@@ -483,13 +328,13 @@ void VMStructs::resolveOffsets() {
     }
 
     if (_klass_offset_addr != NULL) {
-        _klass = (jfieldID)(uintptr_t)(*_klass_offset_addr << 2 | 2);
+        _klass = (jfieldID)(uintptr_t)(*(int*)_klass_offset_addr << 2 | 2);
     }
 
     VMFlag* ccp = VMFlag::find("UseCompressedClassPointers");
-    if (ccp != NULL && ccp->get() && _narrow_klass_base_addr != NULL && _narrow_klass_shift_addr != NULL) {
-        _narrow_klass_base = *_narrow_klass_base_addr;
-        _narrow_klass_shift = *_narrow_klass_shift_addr;
+    if (ccp != NULL && ccp->get() && _narrow_klass_base_addr != NULL && _narrow_klass_shift_addr != nullptr) {
+        _narrow_klass_base = *(char**)_narrow_klass_base_addr;
+        _narrow_klass_shift = *(int*)_narrow_klass_shift_addr;
     }
 
     VMFlag* coh = VMFlag::find("UseCompactObjectHeaders");
@@ -498,15 +343,15 @@ void VMStructs::resolveOffsets() {
     }
 
     _has_class_names = _klass_name_offset >= 0
-            && (_compact_object_headers ? (_markword_klass_shift >= 0 && _markword_monitor_value == MONITOR_BIT)
+            && (_compact_object_headers ? (_markWord_klass_shift >= 0 && _markWord_monitor_value == MONITOR_BIT)
                                         : _oop_klass_offset >= 0)
-            && (_symbol_length_offset >= 0 || _symbol_length_and_refcount_offset >= 0)
+            && _symbol_length_offset >= 0
             && _symbol_body_offset >= 0
             && _klass != NULL;
 
     _has_method_structs = _jmethod_ids_offset >= 0
             && _nmethod_method_offset >= 0
-            && _nmethod_entry_offset != -1
+            && (_nmethod_entry_offset != -1 || _nmethod_entry_address != -1)
             && _nmethod_state_offset >= 0
             && _method_constmethod_offset >= 0
             && _method_code_offset >= 0
@@ -530,10 +375,10 @@ void VMStructs::resolveOffsets() {
 #elif defined(__aarch64__)
     _interpreter_frame_bcp_offset = VM::hotspot_version() >= 11 ? -9 : VM::hotspot_version() == 8 ? -7 : 0;
     // The constant is missing on ARM, but fortunately, it has been stable for years across all JDK versions
-    _entry_frame_call_wrapper_offset = -64;
+    _frame_entry_frame_call_wrapper_offset = -64;
 #elif defined(__arm__) || defined(__thumb__)
     _interpreter_frame_bcp_offset = VM::hotspot_version() >= 11 ? -8 : 0;
-    _entry_frame_call_wrapper_offset = 0;
+    _frame_entry_frame_call_wrapper_offset = 0;
 #endif
 
     // JDK-8292758 has slightly changed ScopeDesc encoding
@@ -542,7 +387,7 @@ void VMStructs::resolveOffsets() {
     }
 
     if (_call_stub_return_addr != NULL) {
-        _call_stub_return = *_call_stub_return_addr;
+        _call_stub_return = *(const void**)_call_stub_return_addr;
     }
 
     // Since JDK 23, _metadata_offset is relative to _data_offset. See metadata()
@@ -552,11 +397,11 @@ void VMStructs::resolveOffsets() {
 
     _has_stack_structs = _has_method_structs
             && _call_wrapper_anchor_offset >= 0
-            && _entry_frame_call_wrapper_offset != -1
+            && _frame_entry_frame_call_wrapper_offset != -1
             && _interpreter_frame_bcp_offset != 0
-            && _code_offset != -1
+            && (_code_offset != -1 || _code_address != -1)
             && _data_offset >= 0
-            && _scopes_data_offset != -1
+            && (_scopes_data_offset != -1 || _scopes_data_address != -1)
             && _scopes_pcs_offset >= 0
             && ((_mutable_data_offset >= 0 && _relocation_size_offset >= 0) || _nmethod_metadata_offset >= 0)
             && _thread_vframe_offset >= 0
@@ -567,16 +412,16 @@ void VMStructs::resolveOffsets() {
     _can_dereference_jmethod_id = _has_method_structs && VM::hotspot_version() <= 25;
 
     if (_code_heap_addr != NULL && _code_heap_low_addr != NULL && _code_heap_high_addr != NULL) {
-        char* code_heaps = *_code_heap_addr;
+        char* code_heaps = *(char**)_code_heap_addr;
         unsigned int code_heap_count = *(unsigned int*)(code_heaps + _array_len_offset);
         if (code_heap_count <= 3 && _array_data_offset >= 0) {
             char* code_heap_array = *(char**)(code_heaps + _array_data_offset);
             memcpy(_code_heap, code_heap_array, code_heap_count * sizeof(_code_heap[0]));
         }
-        _code_heap_low = *_code_heap_low_addr;
-        _code_heap_high = *_code_heap_high_addr;
+        _code_heap_low = *(const void**)_code_heap_low_addr;
+        _code_heap_high = *(const void**)_code_heap_high_addr;
     } else if (_code_heap_addr != NULL && _code_heap_memory_offset >= 0) {
-        _code_heap[0] = *_code_heap_addr;
+        _code_heap[0] = *(char**)_code_heap_addr;
         _code_heap_low = *(const void**)(_code_heap[0] + _code_heap_memory_offset + _vs_low_bound_offset);
         _code_heap_high = *(const void**)(_code_heap[0] + _code_heap_memory_offset + _vs_high_bound_offset);
     }
@@ -915,8 +760,10 @@ int ScopeDesc::readInt() {
 
 VMFlag* VMFlag::find(const char* name) {
     if (_flags_addr != NULL && VMFlag::type_size() > 0) {
-        for (int i = 0; i < _flag_count; i++) {
-            VMFlag* f = VMFlag::cast(_flags_addr + i * VMFlag::type_size());
+        size_t count = *(size_t*)_flag_count;
+
+        for (size_t i = 0; i < count; i++) {
+            VMFlag* f = VMFlag::cast(*(const char**)_flags_addr + i * VMFlag::type_size());
             if (f->name() != NULL && strcmp(f->name(), name) == 0 && f->addr() != NULL) {
                 return f;
             }
@@ -935,8 +782,9 @@ VMFlag *VMFlag::find(const char *name, std::initializer_list<VMFlag::Type> types
 
 VMFlag *VMFlag::find(const char *name, int type_mask) {
     if (_flags_addr != NULL && VMFlag::type_size() > 0) {
-        for (int i = 0; i < _flag_count; i++) {
-            VMFlag* f = VMFlag::cast(_flags_addr + i * VMFlag::type_size());
+        size_t count = *(size_t*)_flag_count;
+        for (size_t i = 0; i < count; i++) {
+            VMFlag* f = VMFlag::cast(*(const char**)_flags_addr + i * VMFlag::type_size());
             if (f->name() != NULL && strcmp(f->name(), name) == 0) {
                 int masked = 0x1 << f->type();
                 if (masked & type_mask) {
@@ -1188,13 +1036,13 @@ HeapUsage HeapUsage::get(bool allow_jmx) {
     if (_collected_heap_addr != NULL) {
         if (_heap_usage_func != NULL) {
             // this is the JDK 17+ path
-            usage = _heap_usage_func(*_collected_heap_addr);
+            usage = _heap_usage_func(*(char**)_collected_heap_addr);
             usage._used_at_last_gc =
-                ((CollectedHeapWrapper *)*_collected_heap_addr)->_used_at_last_gc;
+                ((CollectedHeapWrapper *)*(char**)_collected_heap_addr)->_used_at_last_gc;
         } else if (_gc_heap_summary_func != NULL) {
             // this is the JDK 11 path
             // we need to collect GCHeapSummary information first
-            GCHeapSummary summary = _gc_heap_summary_func(*_collected_heap_addr);
+            GCHeapSummary summary = _gc_heap_summary_func(*(char**)_collected_heap_addr);
             usage._initSize = -1;
             usage._used = summary.used();
             usage._committed = -1;
