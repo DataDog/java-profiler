@@ -12,6 +12,7 @@
 #include <string.h>
 #include <type_traits>
 #include "codeCache.h"
+#include "counters.h"
 #include "safeAccess.h"
 #include "thread.h"
 #include "threadState.h"
@@ -563,9 +564,13 @@ DECLARE(VMThread)
             if (!pt->isJavaThreadKnown()) {
                 pt->cacheJavaThread(isJavaThread());
             }
-            return pt->isJavaThread();
+            bool result = pt->isJavaThread();
+            if (!result) Counters::increment(WALKVM_CACHED_NOT_JAVA);
+            return result;
         }
-        return isJavaThread();
+        bool result = isJavaThread();
+        if (!result) Counters::increment(WALKVM_CACHED_NOT_JAVA);
+        return result;
     }
 
     OSThreadState osThreadState();

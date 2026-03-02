@@ -49,7 +49,19 @@ public class TagContextTest extends AbstractProfilerTest {
         long droppedSamplesWeight = 0;
         long totalSamplesCount = 0;
         long totalSamplesWeight = 0;
+        // Read counters early so they're available in finally block even if assertions fail
+        Map<String, Long> jfrCounters = new HashMap<>();
+        int debugPrinted = 0;
+        int nullTraceCount = 0;
+        int emptyTraceCount = 0;
         try {
+            for (IItemIterable counterEvent : verifyEvents("datadog.ProfilerCounter")) {
+                IMemberAccessor<String, IItem> nameAccessor = NAME.getAccessor(counterEvent.getType());
+                IMemberAccessor<IQuantity, IItem> countAccessor = COUNT.getAccessor(counterEvent.getType());
+                for (IItem item : counterEvent) {
+                    jfrCounters.put(nameAccessor.getMember(item), countAccessor.getMember(item).longValue());
+                }
+            }
             for (IItemIterable wallclockSamples : events) {
                 IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT.getAccessor(wallclockSamples.getType());
                 // this will become more generic in the future
@@ -60,6 +72,12 @@ public class TagContextTest extends AbstractProfilerTest {
                 IMemberAccessor<String, IItem> stacktraceAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(wallclockSamples.getType());
                 for (IItem sample : wallclockSamples) {
                     String stacktrace = stacktraceAccessor.getMember(sample);
+                    if (stacktrace == null) { nullTraceCount++; continue; }
+                    if (stacktrace.isEmpty()) { emptyTraceCount++; continue; }
+                    if (debugPrinted < 10) {
+                        System.out.println("[DEBUG-TRACE-" + debugPrinted + "] " + stacktrace.substring(0, Math.min(2000, stacktrace.length())));
+                        debugPrinted++;
+                    }
                     if (!stacktrace.contains("sleep")) {
                         // we don't know the context has been set for sure until the sleep has started
                         continue;
@@ -115,17 +133,7 @@ public class TagContextTest extends AbstractProfilerTest {
             assertTrue(recordedContextAttributes.contains("tag2"));
             assertTrue(recordedContextAttributes.contains("tag3"));
 
-            // Verify counters from JFR serialized data (not live process counters which are reset)
-            Map<String, Long> jfrCounters = new HashMap<>();
-            for (IItemIterable counterEvent : verifyEvents("datadog.ProfilerCounter")) {
-                IMemberAccessor<String, IItem> nameAccessor = NAME.getAccessor(counterEvent.getType());
-                IMemberAccessor<IQuantity, IItem> countAccessor = COUNT.getAccessor(counterEvent.getType());
-                for (IItem item : counterEvent) {
-                    String name = nameAccessor.getMember(item);
-                    jfrCounters.put(name, countAccessor.getMember(item).longValue());
-                }
-            }
-
+            // Verify counters from JFR serialized data (already read above)
             assertFalse(jfrCounters.isEmpty());
             assertEquals(strings.length, jfrCounters.get("dictionary_context_keys"));
         } finally {
@@ -135,6 +143,24 @@ public class TagContextTest extends AbstractProfilerTest {
             System.out.printf("Sample statistics: %d total (%d dropped, %.2f%%), weight %d total (%d dropped, %.2f%%)%n",
                     totalSamplesCount, droppedSamplesCount, dropRate,
                     totalSamplesWeight, droppedSamplesWeight, dropWeightRate);
+            System.out.println("nullTraces=" + nullTraceCount + " emptyTraces=" + emptyTraceCount);
+            // Print walkvm diagnostic counters
+            System.out.println("walkvm_vmthread_ok=" + jfrCounters.getOrDefault("walkvm_vmthread_ok", 0L)
+                    + " walkvm_no_vmthread=" + jfrCounters.getOrDefault("walkvm_no_vmthread", 0L)
+                    + " walkvm_thread_inaccessible=" + jfrCounters.getOrDefault("walkvm_thread_inaccessible", 0L)
+                    + " walkvm_anchor_null=" + jfrCounters.getOrDefault("walkvm_anchor_null", 0L)
+                    + " walkvm_cached_not_java=" + jfrCounters.getOrDefault("walkvm_cached_not_java", 0L)
+                    + " thread_entry_mark_detections=" + jfrCounters.getOrDefault("thread_entry_mark_detections", 0L));
+            System.out.println("walkvm_hit_codeheap=" + jfrCounters.getOrDefault("walkvm_hit_codeheap", 0L)
+                    + " walkvm_codeh_no_vm=" + jfrCounters.getOrDefault("walkvm_codeh_no_vm", 0L)
+                    + " walkvm_anchor_used_inline=" + jfrCounters.getOrDefault("walkvm_anchor_used_inline", 0L)
+                    + " walkvm_anchor_fallback=" + jfrCounters.getOrDefault("walkvm_anchor_fallback", 0L)
+                    + " walkvm_anchor_fallback_fail=" + jfrCounters.getOrDefault("walkvm_anchor_fallback_fail", 0L)
+                    + " walkvm_anchor_consumed=" + jfrCounters.getOrDefault("walkvm_anchor_consumed", 0L)
+                    + " walkvm_depth_zero=" + jfrCounters.getOrDefault("walkvm_depth_zero", 0L));
+            System.out.println("walkvm_break_interpreted=" + jfrCounters.getOrDefault("walkvm_break_interpreted", 0L)
+                    + " walkvm_break_compiled=" + jfrCounters.getOrDefault("walkvm_break_compiled", 0L)
+                    + " walkvm_java_frame_ok=" + jfrCounters.getOrDefault("walkvm_java_frame_ok", 0L));
         }
     }
 
