@@ -540,7 +540,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 }
             }
         } else {
-            // Check if remote symbolication is enabled
+            // Resolve native frame (may use remote symbolication if enabled)
             Profiler::NativeFrameResolution resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)pc, lock_index);
             if (resolution.is_marked) {
                 // This is a marked C++ interpreter frame, terminate scan
@@ -576,10 +576,10 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
                     // Try to read the Java method directly from the anchor's FP,
                     // treating it as an interpreter frame.
-                    // On x86_64, lastJavaFP is non-zero only for interpreter frames
-                    // (HotSpot convention: compiled frames set FP=0 in the anchor).
-                    // The subsequent getMethodId()+validatedId() round-trip provides
-                    // additional safety against misinterpretation.
+                    // In HotSpot, lastJavaFP is non-zero only for interpreter frames;
+                    // compiled frames record FP=0 in the anchor.
+                    // getMethodId() guards against misinterpretation (alignment, dead-zone,
+                    // readable-range checks, and validatedId() pointer identity check).
                     if (anchor_fp != 0
                         && aligned(anchor_fp) && !inDeadZone((const void*)anchor_fp)
                         && anchor_sp != 0 && anchor_sp > anchor_fp - MAX_INTERPRETER_FRAME_SIZE
@@ -724,7 +724,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
     // If we did not meet Java frame but current thread has JavaFrameAnchor set,
     // try to read the interpreter frame directly from the anchor's FP.
-    // On x86_64, lastJavaFP != 0 reliably indicates an interpreter frame.
+    // In HotSpot, lastJavaFP != 0 reliably indicates an interpreter frame.
     if (anchor != NULL) {
         uintptr_t anchor_fp = anchor->lastJavaFP();
         uintptr_t anchor_sp = anchor->lastJavaSP();
