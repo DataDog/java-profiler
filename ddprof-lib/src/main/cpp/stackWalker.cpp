@@ -255,8 +255,9 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
     const void* pc = anchor->lastJavaPC();
     if (pc == NULL || !CodeHeap::contains(pc)) {
-        // lastJavaPC is NULL or points outside CodeHeap (e.g. JVM native code).
-        // Read the actual return address from the stack frame.
+        // lastJavaPC is NULL (thread not in Java→native transition) or points outside
+        // the tracked CodeHeap range (e.g. interpreter/stub code in a separately mmap'd
+        // region). Read the actual return address from the stack frame instead.
         if (!aligned(sp)) {
             return 0;
         }
