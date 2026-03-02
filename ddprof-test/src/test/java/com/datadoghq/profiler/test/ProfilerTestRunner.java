@@ -165,6 +165,7 @@ public class ProfilerTestRunner {
      * Output format (matches Gradle's testLogging output):
      *   com.example.FooTest > testBar STARTED
      *   com.example.FooTest > testBar PASSED (42ms)
+     *   com.example.FooTest > testBar SKIPPED
      *   com.example.FooTest > testBar FAILED
      *       java.lang.AssertionError: ...
      */
@@ -195,8 +196,12 @@ public class ProfilerTestRunner {
                 case SUCCESSFUL:
                     System.out.printf("%s PASSED (%dms)%n", name, ms);
                     break;
-                case FAILED:
                 case ABORTED:
+                    System.out.printf("%s SKIPPED%n", name);
+                    result.getThrowable().ifPresent(t ->
+                        System.out.println(t.getMessage()));
+                    break;
+                case FAILED:
                     System.out.printf("%s FAILED%n", name);
                     result.getThrowable().ifPresent(t -> t.printStackTrace(System.out));
                     break;
