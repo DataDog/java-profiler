@@ -1548,6 +1548,20 @@ void Recording::recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event) {
   flushIfNeeded(buf);
 }
 
+void Recording::recordNativeSocketEvent(Buffer *buf, int tid, NativeSocketEvent *event) {
+  int start = buf->skip(1);
+  buf->putVar64(T_NATIVE_SOCKET_EVENT);
+  buf->putVar64(event->_start);
+  buf->putVar64(event->_end - event->_start);
+  buf->putVar64(tid);
+  buf->putVar64(static_cast<u32>(event->_fd));
+  buf->putVar64(event->_bytes);
+  buf->putVar64(event->_operation);
+  writeContext(buf, Contexts::get());
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
 void Recording::recordAllocation(RecordingBuffer *buf, int tid,
                                  u64 call_trace_id, AllocEvent *event) {
   int start = buf->skip(1);
@@ -1747,6 +1761,18 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid,
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
       rec->recordQueueTime(buf, tid, event);
+    }
+  }
+}
+
+void FlightRecorder::recordNativeSocketEvent(int lock_index, int tid,
+                                             NativeSocketEvent *event) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->recordNativeSocketEvent(buf, tid, event);
     }
   }
 }

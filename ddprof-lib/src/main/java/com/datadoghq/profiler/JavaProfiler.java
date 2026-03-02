@@ -267,6 +267,39 @@ public final class JavaProfiler {
         return endTicks - startTicks > thresholdMillis * TSCFrequencyHolder.FREQUENCY / 1000;
     }
 
+    /** Operation constant for recv(). */
+    public static final int SOCKET_OP_RECV = 0;
+    /** Operation constant for send(). */
+    public static final int SOCKET_OP_SEND = 1;
+    /** Operation constant for recvfrom(). */
+    public static final int SOCKET_OP_RECVFROM = 2;
+    /** Operation constant for sendto(). */
+    public static final int SOCKET_OP_SENDTO = 3;
+    /** Operation constant for readv(). */
+    public static final int SOCKET_OP_READV = 4;
+    /** Operation constant for writev(). */
+    public static final int SOCKET_OP_WRITEV = 5;
+
+    /**
+     * Records a native socket I/O event. Intended for use by Netty instrumentation
+     * or other native socket interceptors to feed events into the profiler's JFR output.
+     * <p>
+     * Invalid parameters (fd &lt; 0, bytes &lt; 0, operation outside [0..5]) are silently ignored.
+     *
+     * @param startTicks start timestamp from {@link #getCurrentTicks()}
+     * @param endTicks   end timestamp from {@link #getCurrentTicks()}
+     * @param fd         file descriptor
+     * @param bytes      number of bytes transferred
+     * @param operation  one of SOCKET_OP_* constants
+     */
+    public void recordNativeSocketEvent(long startTicks, long endTicks,
+                                        int fd, long bytes, int operation) {
+        if (fd < 0 || bytes < 0 || operation < SOCKET_OP_RECV || operation > SOCKET_OP_WRITEV) {
+            return;
+        }
+        recordNativeSocketEvent0(startTicks, endTicks, fd, bytes, operation);
+    }
+
     /**
      * Records when queueing ended
      * @param task the name of the enqueue task
@@ -334,6 +367,8 @@ public final class JavaProfiler {
     private static native String[] describeDebugCounters0();
 
     private static native void recordSettingEvent0(String name, String value, String unit);
+
+    private static native void recordNativeSocketEvent0(long startTicks, long endTicks, int fd, long bytes, int operation);
 
     private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin, String queueType, int queueLength);
 

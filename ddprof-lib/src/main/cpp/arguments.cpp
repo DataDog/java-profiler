@@ -362,6 +362,25 @@ Error Arguments::parse(const char *args) {
         _remote_symbolication = true;
       }
 
+      CASE("nativesock")
+      if (value != NULL) {
+        switch (value[0]) {
+        case 'n': // no
+        case 'f': // false
+        case '0': // 0
+          _native_sockets = false;
+          break;
+        case 'y': // yes
+        case 't': // true
+        case '1': // 1
+        default:
+          _native_sockets = true;
+        }
+      } else {
+        // No value means enable
+        _native_sockets = true;
+      }
+
       CASE("wallsampler")
       if (value != NULL) {
           switch (value[0]) {

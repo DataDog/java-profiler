@@ -286,6 +286,19 @@ void JfrMetadata::initialize(
               << field("name", T_STRING, "Name")
               << field("count", T_LONG, "Count"))
 
+          << (type("datadog.NativeSocketEvent", T_NATIVE_SOCKET_EVENT,
+                   "Native Socket Event")
+                  << category("Datadog")
+                  << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+                  << field("duration", T_LONG, "Duration", F_DURATION_TICKS)
+                  << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
+                  << field("fd", T_INT, "File Descriptor")
+                  << field("bytesTransferred", T_LONG, "Bytes Transferred")
+                  << field("operation", T_INT, "Operation")
+                  << field("spanId", T_LONG, "Span ID")
+                  << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
+              contextAttributes)
+
           << (type("jdk.OSInformation", T_OS_INFORMATION, "OS Information")
               << category("Operating System")
               << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
