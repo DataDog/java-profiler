@@ -580,10 +580,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     // compiled frames record FP=0 in the anchor.
                     // getMethodId() guards against misinterpretation (alignment, dead-zone,
                     // readable-range checks, and validatedId() pointer identity check).
-                    if (anchor_fp != 0
-                        && aligned(anchor_fp) && !inDeadZone((const void*)anchor_fp)
-                        && anchor_sp != 0 && anchor_sp > anchor_fp - MAX_INTERPRETER_FRAME_SIZE
-                        && anchor_sp < anchor_fp + bcp_offset * (intptr_t)sizeof(void*)) {
+                    if (isAnchorInterpreter(anchor_fp, anchor_sp, bcp_offset)) {
                         VMMethod* method = ((VMMethod**)anchor_fp)[InterpreterFrame::method_offset];
                         jmethodID method_id = getMethodId(method);
                         if (method_id != NULL) {
@@ -728,10 +725,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     if (anchor != NULL) {
         uintptr_t anchor_fp = anchor->lastJavaFP();
         uintptr_t anchor_sp = anchor->lastJavaSP();
-        if (anchor_fp != 0
-            && aligned(anchor_fp) && !inDeadZone((const void*)anchor_fp)
-            && anchor_sp != 0 && anchor_sp > anchor_fp - MAX_INTERPRETER_FRAME_SIZE
-            && anchor_sp < anchor_fp + bcp_offset * (intptr_t)sizeof(void*)) {
+        if (isAnchorInterpreter(anchor_fp, anchor_sp, bcp_offset)) {
             VMMethod* method = ((VMMethod**)anchor_fp)[InterpreterFrame::method_offset];
             jmethodID method_id = getMethodId(method);
             if (method_id != NULL) {

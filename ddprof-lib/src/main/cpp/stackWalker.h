@@ -66,6 +66,12 @@ namespace StackWalkValidation {
 
 class StackWalker {
   private:
+    static inline bool isAnchorInterpreter(uintptr_t anchor_fp, uintptr_t anchor_sp, int bcp_offset) {
+        return anchor_fp != 0 && aligned(anchor_fp) && !inDeadZone((const void*)anchor_fp)
+                && anchor_sp != 0 && anchor_sp > anchor_fp - MAX_INTERPRETER_FRAME_SIZE
+                && anchor_sp < anchor_fp + bcp_offset * (intptr_t)sizeof(void*);
+    }
+
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                       StackWalkFeatures features, EventType event_type,
                       const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated);
