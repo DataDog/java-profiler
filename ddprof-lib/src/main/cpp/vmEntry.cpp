@@ -318,14 +318,17 @@ bool VM::initShared(JavaVM* vm) {
   // Mark thread entry points for all JVMs (critical for correct stack unwinding)
   lib->mark(isThreadEntry, MARK_THREAD_ENTRY);
 
-  // Also mark libc/pthread libraries which contain thread start/exit points
-  CodeCache* libc = libraries->findJvmLibrary("libc");
-  if (libc != NULL) {
-      libc->mark(isThreadEntry, MARK_THREAD_ENTRY);
-  }
-  CodeCache* libpthread = libraries->findJvmLibrary("libpthread");
-  if (libpthread != NULL) {
-      libpthread->mark(isThreadEntry, MARK_THREAD_ENTRY);
+  // Mark OS-level pthread entry points across ALL loaded native libraries.
+  // On glibc these live in libc.so.6 or libpthread.so.0 (merged in glibc 2.34+);
+  // on musl in libc.musl-<arch>.so.1; on Rust they may be in the app binary itself.
+  // Scanning all libs avoids fragile name-based lookup (findLibraryByName uses a
+  // prefix match that can return the wrong library, e.g. libcap instead of libc).
+  // walkVM stops unwinding when it reaches the top of a pure-native thread stack
+  // without finding an anchor; marking start_thread/thread_start here gives the
+  // walker a clean stopping point for any pthread-managed thread.
+  const CodeCacheArray& all_native_libs = libraries->native_libs();
+  for (int i = 0; i < all_native_libs.count(); i++) {
+      all_native_libs[i]->mark(isThreadEntry, MARK_THREAD_ENTRY);
   }
 
   if (isOpenJ9()) {

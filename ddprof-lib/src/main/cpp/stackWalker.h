@@ -32,6 +32,7 @@ struct StackContext {
 
 // Stack walking validation helpers (used by implementation and tests)
 namespace StackWalkValidation {
+    const intptr_t MAX_INTERPRETER_FRAME_SIZE = 0x1000;
     const uintptr_t DEAD_ZONE = 0x1000;
     const intptr_t MAX_FRAME_SIZE = 0x40000;
     const uintptr_t SAME_STACK_DISTANCE = 8192;
@@ -62,10 +63,15 @@ namespace StackWalkValidation {
         }
         return depth;
     }
+
+    static inline bool isPlausibleInterpreterFrame(uintptr_t fp, uintptr_t sp, int bcp_offset){
+        return fp != 0 && aligned(fp) && !inDeadZone((const void*)fp)
+                && sp != 0 && sp > fp - MAX_INTERPRETER_FRAME_SIZE
+                && sp < fp + bcp_offset * (intptr_t)sizeof(void*);
+    }
 }
 
 class StackWalker {
-  private:
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                       StackWalkFeatures features, EventType event_type,
                       const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated);

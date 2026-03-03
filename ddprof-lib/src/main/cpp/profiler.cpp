@@ -477,7 +477,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   // handler since JDK 9, so we do it only for threads already registered in
   // ThreadLocalStorage
   VMThread *vm_thread = VMThread::current();
-  if (vm_thread == NULL) {
+  if (vm_thread == NULL || !vm_thread->isThreadAccessible()) {
     Counters::increment(AGCT_NOT_REGISTERED_IN_TLS);
     return 0;
   }
@@ -1358,6 +1358,13 @@ Error Profiler::start(Arguments &args, bool reset) {
   _cpu_engine = selectCpuEngine(args);
   _wall_engine = selectWallEngine(args);
   _cstack = args._cstack;
+  if (_cstack == CSTACK_DEFAULT) {
+    if (VMStructs::hasStackStructs() && OS::isLinux()) {
+      _cstack = CSTACK_VM;
+    } else if (DWARF_SUPPORTED) {
+      _cstack = CSTACK_DWARF;
+    }
+  }
   if (_cstack == CSTACK_DWARF && !DWARF_SUPPORTED) {
     _cstack = CSTACK_NO;
     Log::warn("DWARF unwinding is not supported on this platform. Defaulting "

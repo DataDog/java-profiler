@@ -68,7 +68,22 @@
   X(REMOTE_SYMBOLICATION_FRAMES, "remote_symbolication_frames")                \
   X(REMOTE_SYMBOLICATION_LIBS_WITH_BUILD_ID, "remote_symbolication_libs_with_build_id") \
   X(REMOTE_SYMBOLICATION_BUILD_ID_CACHE_HITS, "remote_symbolication_build_id_cache_hits") \
-  X(THREAD_ENTRY_MARK_DETECTIONS, "thread_entry_mark_detections")
+  X(THREAD_ENTRY_MARK_DETECTIONS, "thread_entry_mark_detections")              \
+  X(WALKVM_THREAD_INACCESSIBLE, "walkvm_thread_inaccessible")                  \
+  X(WALKVM_ANCHOR_NULL, "walkvm_anchor_null")                                  \
+  X(WALKVM_CACHED_NOT_JAVA, "walkvm_cached_not_java")                          \
+  X(WALKVM_NO_VMTHREAD, "walkvm_no_vmthread")                                  \
+  X(WALKVM_VMTHREAD_OK, "walkvm_vmthread_ok")                                  \
+  X(WALKVM_ANCHOR_USED_INLINE, "walkvm_anchor_used_inline")                    \
+  X(WALKVM_ANCHOR_FALLBACK, "walkvm_anchor_fallback")                          \
+  X(WALKVM_CODEH_NO_VM, "walkvm_codeh_no_vm")                                  \
+  X(WALKVM_DEPTH_ZERO, "walkvm_depth_zero")                                    \
+  X(WALKVM_HIT_CODEHEAP, "walkvm_hit_codeheap")                                \
+  X(WALKVM_ANCHOR_FALLBACK_FAIL, "walkvm_anchor_fallback_fail")                \
+  X(WALKVM_ANCHOR_CONSUMED, "walkvm_anchor_consumed")                          \
+  X(WALKVM_BREAK_INTERPRETED, "walkvm_break_interpreted")                      \
+  X(WALKVM_BREAK_COMPILED, "walkvm_break_compiled")                            \
+  X(WALKVM_JAVA_FRAME_OK, "walkvm_java_frame_ok")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS

@@ -30,12 +30,14 @@ private:
   // Even with 5 levels cap we will need any highly recursing signal handlers
   static constexpr u32 CRASH_HANDLER_NESTING_LIMIT = 5;
   static pthread_key_t _tls_key;
+  static bool _tls_key_initialized;
   static int _buffer_size;
   static volatile int _running_buffer_pos;
   static ProfiledThread** _buffer;
 
   // Misc flags
   static constexpr u32 FLAG_JAVA_THREAD = 0x01;
+  static constexpr u32 FLAG_JAVA_THREAD_KNOWN = 0x02;
 
   // Free slot recycling - lock-free stack of available buffer slots
   // Note: Using plain int with GCC atomic builtins instead of std::atomic
@@ -46,8 +48,6 @@ private:
   static void initTLSKey();
   static void doInitTLSKey();
   static inline void freeKey(void *key);
-  static void doInitExistingThreads();
-  static void prepareBuffer(int size);
   static void cleanupBuffer();
 
   // Free slot management - lock-free operations
@@ -69,11 +69,12 @@ private:
   int _filter_slot_id; // Slot ID for thread filtering
   UnwindFailures _unwind_failures;
   bool _ctx_tls_initialized;
+  bool _crash_protection_active;
   Context* _ctx_tls_ptr;
 
   ProfiledThread(int buffer_pos, int tid)
       : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _root_span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
-        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _ctx_tls_initialized(false), _ctx_tls_ptr(nullptr) {};
+        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _ctx_tls_initialized(false), _crash_protection_active(false), _ctx_tls_ptr(nullptr) {};
 
   void releaseFromBuffer();
 
@@ -90,10 +91,6 @@ public:
   static ProfiledThread *currentSignalSafe(); // Signal-safe version that never allocates
   static int currentTid();
 
-  // TLS priming status checks
-  static bool isTlsPrimingAvailable();
-  static bool wasTlsPrimingAttempted();
-  
   inline int tid() { return _tid; }
 
   inline u64 noteCPUSample(u32 recording_epoch) {
@@ -164,8 +161,6 @@ public:
     return &_unwind_failures;
   }
 
-  static void simpleTlsSignalHandler(int signo);
-
   int filterSlotId() { return _filter_slot_id; }
   void setFilterSlotId(int slotId) { _filter_slot_id = slotId; }
   
@@ -194,14 +189,36 @@ public:
     return _ctx_tls_ptr;
   }
   
-  // Flags
+  // JavaThread status cache — avoids repeated vtable checks in VMThread::isJavaThread().
+  // JVMTI ThreadStart only fires for application threads, not for JVM-internal
+  // JavaThread subclasses (CompilerThread, etc.), so we cache the vtable result
+  // here for O(1) subsequent lookups via VMThread::cachedIsJavaThread().
+
+  // Called from JVMTI ThreadStart callback for threads known to be Java threads.
   inline void setJavaThread() {
-    _misc_flags |= FLAG_JAVA_THREAD;
+    _misc_flags |= (FLAG_JAVA_THREAD | FLAG_JAVA_THREAD_KNOWN);
   }
 
+  // Returns the cached JavaThread status. Only valid after setJavaThread() or
+  // cacheJavaThread() has been called (check isJavaThreadKnown() first).
   inline bool isJavaThread() const {
-    return (_misc_flags & FLAG_JAVA_THREAD) == FLAG_JAVA_THREAD;
+    return (_misc_flags & FLAG_JAVA_THREAD) != 0;
   }
+
+  // Returns true if the JavaThread status has been determined and cached.
+  inline bool isJavaThreadKnown() const {
+    return (_misc_flags & FLAG_JAVA_THREAD_KNOWN) != 0;
+  }
+
+  // Caches the result of VMThread::isJavaThread() vtable check.
+  // Sets FLAG_JAVA_THREAD_KNOWN unconditionally; sets FLAG_JAVA_THREAD if isJava is true.
+  // Written from the signal handler on the owning thread — no cross-thread visibility concern.
+  inline void cacheJavaThread(bool isJava) {
+    _misc_flags |= FLAG_JAVA_THREAD_KNOWN | (isJava ? FLAG_JAVA_THREAD : 0);
+  }
+
+  inline bool isCrashProtectionActive() const { return _crash_protection_active; }
+  inline void setCrashProtectionActive(bool active) { _crash_protection_active = active; }
 
 private:
   // Atomic flag for signal handler reentrancy protection within the same thread
