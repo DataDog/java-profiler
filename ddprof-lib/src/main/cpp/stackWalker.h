@@ -72,7 +72,6 @@ namespace StackWalkValidation {
 }
 
 class StackWalker {
-  private:
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                       StackWalkFeatures features, EventType event_type,
                       const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated);
