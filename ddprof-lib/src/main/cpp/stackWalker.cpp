@@ -16,7 +16,6 @@
 
 
 const uintptr_t MAX_WALK_SIZE = 0x100000;
-const intptr_t MAX_INTERPRETER_FRAME_SIZE = 0x1000;
 const intptr_t MAX_FRAME_SIZE_WORDS = StackWalkValidation::MAX_FRAME_SIZE / sizeof(void*);  // 0x8000 = 32768 words
 
 static ucontext_t empty_ucontext{};
@@ -437,10 +436,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     break;
                 }
 
-                bool is_plausible_interpreter_frame = !inDeadZone((const void*)fp) && aligned(fp)
-                    && sp > fp - MAX_INTERPRETER_FRAME_SIZE
-                    && sp < fp + bcp_offset * sizeof(void*);
-
+                bool is_plausible_interpreter_frame = StackWalkValidation::isPlausibleInterpreterFrame(fp, sp, bcp_offset);
                 if (is_plausible_interpreter_frame) {
                     VMMethod* method = ((VMMethod**)fp)[InterpreterFrame::method_offset];
                     jmethodID method_id = getMethodId(method);
@@ -580,10 +576,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     // compiled frames record FP=0 in the anchor.
                     // getMethodId() guards against misinterpretation (alignment, dead-zone,
                     // readable-range checks, and validatedId() pointer identity check).
-                    if (anchor_fp != 0
-                        && aligned(anchor_fp) && !inDeadZone((const void*)anchor_fp)
-                        && anchor_sp != 0 && anchor_sp > anchor_fp - MAX_INTERPRETER_FRAME_SIZE
-                        && anchor_sp < anchor_fp + bcp_offset * (intptr_t)sizeof(void*)) {
+                    if (StackWalkValidation::isPlausibleInterpreterFrame(anchor_fp, anchor_sp, bcp_offset)) {
                         VMMethod* method = ((VMMethod**)anchor_fp)[InterpreterFrame::method_offset];
                         jmethodID method_id = getMethodId(method);
                         if (method_id != NULL) {
@@ -728,10 +721,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     if (anchor != NULL) {
         uintptr_t anchor_fp = anchor->lastJavaFP();
         uintptr_t anchor_sp = anchor->lastJavaSP();
-        if (anchor_fp != 0
-            && aligned(anchor_fp) && !inDeadZone((const void*)anchor_fp)
-            && anchor_sp != 0 && anchor_sp > anchor_fp - MAX_INTERPRETER_FRAME_SIZE
-            && anchor_sp < anchor_fp + bcp_offset * (intptr_t)sizeof(void*)) {
+        if (StackWalkValidation::isPlausibleInterpreterFrame(anchor_fp, anchor_sp, bcp_offset)) {
             VMMethod* method = ((VMMethod**)anchor_fp)[InterpreterFrame::method_offset];
             jmethodID method_id = getMethodId(method);
             if (method_id != NULL) {
