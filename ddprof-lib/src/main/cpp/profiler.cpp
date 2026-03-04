@@ -388,9 +388,6 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     uint32_t lib_index = (uint32_t)lib->libIndex();
     unsigned long packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
 
-    TEST_LOG("resolveNativeFrameForWalkVM: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u, packed=0x%zx",
-             lib->name(), lib->buildId(), pc, pc_offset, (int)mark, lib_index, packed);
-
     return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
   }
 
