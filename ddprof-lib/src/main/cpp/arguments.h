@@ -177,7 +177,6 @@ public:
   bool _record_heap_usage;
   bool _gc_generations;
   long _nativemem;
-  bool _nofree;
   int  _jstackdepth;
   int _safe_mode;
   StackWalkFeatures _features;
@@ -213,7 +212,6 @@ public:
         _record_heap_usage(false),
         _gc_generations(false),
         _nativemem(-1),
-        _nofree(true),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),
         _features{1, 1, 1, 1, 1, 1},

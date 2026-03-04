@@ -62,24 +62,14 @@ void* calloc_hook_dummy(size_t num, size_t size) {
 
 extern "C" void* realloc_hook(void* addr, size_t size) {
     void* ret = _orig_realloc(addr, size);
-    if (MallocTracer::running()) {
-        // On POSIX, realloc(ptr, 0) may return NULL and free ptr.
-        // Only record the free if allocation didn't simply fail (size > 0 with NULL ret = ENOMEM).
-        if (addr && !MallocTracer::nofree() && (ret != NULL || size == 0)) {
-            MallocTracer::recordFree(addr);
-        }
-        if (ret != NULL && size > 0) {
-            MallocTracer::recordMalloc(ret, size);
-        }
+    if (MallocTracer::running() && ret != NULL && size > 0) {
+        MallocTracer::recordMalloc(ret, size);
     }
     return ret;
 }
 
 extern "C" void free_hook(void* addr) {
     _orig_free(addr);
-    if (MallocTracer::running() && !MallocTracer::nofree() && addr) {
-        MallocTracer::recordFree(addr);
-    }
 }
 
 extern "C" int posix_memalign_hook(void** memptr, size_t alignment, size_t size) {
@@ -105,7 +95,6 @@ extern "C" void* aligned_alloc_hook(size_t alignment, size_t size) {
 }
 
 volatile u64 MallocTracer::_interval;
-bool MallocTracer::_nofree;
 volatile u64 MallocTracer::_bytes_until_sample;
 u64 MallocTracer::_configured_interval;
 volatile u64 MallocTracer::_sample_count;
@@ -298,22 +287,12 @@ void MallocTracer::recordMalloc(void* address, size_t size) {
     }
 }
 
-void MallocTracer::recordFree(void* address) {
-    MallocEvent event;
-    event._start_time = TSC::ticks();
-    event._address = (uintptr_t)address;
-    event._size = 0;
-
-    Profiler::instance()->recordSample(NULL, 0, OS::threadId(), BCI_NATIVE_MALLOC, 0, &event);
-}
-
 Error MallocTracer::start(Arguments& args) {
     _configured_interval = args._nativemem > 0 ? args._nativemem : 0;
     _interval = _configured_interval;
-    _nofree = args._nofree;
     _bytes_until_sample = _configured_interval > 1 ? nextPoissonInterval() : 0;
     _sample_count = 0;
-    _last_config_update_ts = OS::nanotime();
+    __atomic_store_n(&_last_config_update_ts, OS::nanotime(), __ATOMIC_RELEASE);
 
     if (!_initialized) {
         initialize();

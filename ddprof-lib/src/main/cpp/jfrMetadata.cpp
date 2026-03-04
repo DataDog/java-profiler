@@ -299,16 +299,6 @@ void JfrMetadata::initialize(
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
               contextAttributes)
 
-          << (type("profiler.Free", T_FREE, "free")
-                  << category("Java Virtual Machine", "Native Memory")
-                  << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
-                  << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
-                  << field("stackTrace", T_STACK_TRACE, "Stack Trace", F_CPOOL)
-                  << field("address", T_LONG, "Address", F_ADDRESS)
-                  << field("spanId", T_LONG, "Span ID")
-                  << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
-              contextAttributes)
-
           << (type("jdk.OSInformation", T_OS_INFORMATION, "OS Information")
               << category("Operating System")
               << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)

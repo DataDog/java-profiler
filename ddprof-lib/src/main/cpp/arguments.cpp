@@ -380,13 +380,6 @@ Error Arguments::parse(const char *args) {
         msg = "nativemem must be >= 0";
       }
 
-      CASE("nofree")
-      if (value != NULL && (value[0] == 'f' || value[0] == 'n' || value[0] == '0')) {
-        _nofree = false;
-      } else {
-        _nofree = true;
-      }
-
       DEFAULT()
       if (_unknown_arg == NULL)
         _unknown_arg = arg;

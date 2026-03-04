@@ -2,16 +2,15 @@
 
 ## Overview
 
-The native memory profiler tracks heap allocations and frees made through the C
-standard library (`malloc`, `calloc`, `realloc`, `free`, `posix_memalign`,
-`aligned_alloc`). It instruments these functions at the GOT (Global Offset Table)
-level so that every intercepted call is accounted for without modifying application
-source code or requiring a custom allocator.
+The native memory profiler tracks heap allocations made through the C standard
+library (`malloc`, `calloc`, `realloc`, `posix_memalign`, `aligned_alloc`). It
+instruments these functions at the GOT (Global Offset Table) level so that every
+intercepted call is accounted for without modifying application source code or
+requiring a custom allocator. The `free` function is also hooked (to forward calls
+correctly through the GOT) but free events are not recorded.
 
 Sampled allocation events carry a full Java + native stack trace and are emitted as
-`profiler.Malloc` JFR events. Free events are emitted as `profiler.Free` JFR events
-without a stack trace (capturing stack traces at every free would be prohibitively
-expensive).
+`profiler.Malloc` JFR events.
 
 The feature is activated by passing `nativemem=<interval>` to the profiler, where
 `<interval>` is the byte-sampling interval (e.g. `nativemem=524288` samples roughly
@@ -29,20 +28,18 @@ one event per 512 KiB allocated). Passing `nativemem=0` records every allocation
   │  libc / musl│ ◄────────── │  malloc_hook / free_hook  │  mallocTracer.cpp
   └─────────────┘             │  calloc_hook / …          │
                               └────────────┬─────────────┘
-                                           │ recordMalloc / recordFree
+                                           │ recordMalloc
                                            ▼
                               ┌──────────────────────────┐
                               │  MallocTracer::           │  mallocTracer.cpp/h
-                              │  updateCounter()          │
+                              │  shouldSample()           │
                               │  recordSample() ──────►  │  profiler.cpp
-                              │  recordEventOnly() ────►  │
                               └────────────┬─────────────┘
                                            │ walkVM (CSTACK_VM)
                                            ▼
                               ┌──────────────────────────┐
                               │  JFR buffer               │  flightRecorder.cpp
                               │  profiler.Malloc          │
-                              │  profiler.Free            │
                               └──────────────────────────┘
 ```
 
@@ -73,13 +70,10 @@ Each hook calls the saved original function first, then records the event:
 |------|-------|---------|
 | `malloc_hook(size)` | `_orig_malloc(size)` | `recordMalloc(ret, size)` if `ret != NULL && size != 0` |
 | `calloc_hook(num, size)` | `_orig_calloc(num, size)` | `recordMalloc(ret, num*size)` if `ret != NULL` |
-| `realloc_hook(addr, size)` | `_orig_realloc(addr, size)` | `recordFree(addr)` + `recordMalloc(ret, size)` |
-| `free_hook(addr)` | `_orig_free(addr)` | `recordFree(addr)` if `addr != NULL` |
+| `realloc_hook(addr, size)` | `_orig_realloc(addr, size)` | `recordMalloc(ret, size)` if `ret != NULL && size > 0` |
+| `free_hook(addr)` | `_orig_free(addr)` | — (forwards only) |
 | `posix_memalign_hook(…)` | `_orig_posix_memalign(…)` | `recordMalloc(*memptr, size)` if `ret == 0` |
 | `aligned_alloc_hook(align, size)` | `_orig_aligned_alloc(align, size)` | `recordMalloc(ret, size)` if `ret != NULL` |
-
-Free recording is suppressed for all hooks when `nofree` is set
-(`MallocTracer::nofree()` returns `true`).
 
 ---
 
@@ -139,31 +133,33 @@ loaded libraries are automatically hooked without requiring a profiler restart.
 
 ## Sampling
 
-Allocation recording is gated by a byte-level counter using
-`Engine::updateCounter()`:
+Allocation recording uses Poisson-interval sampling via `MallocTracer::shouldSample()`:
 
 ```cpp
-// engine.h — lock-free CAS loop
-static bool updateCounter(volatile u64& counter, u64 value, u64 interval) {
-    if (interval <= 1) return true;          // nativemem=0: record every allocation
+// mallocTracer.cpp — lock-free CAS loop with Poisson jitter
+static bool shouldSample(size_t size) {
+    if (_interval <= 1) return true;         // nativemem=0: record every allocation
     while (true) {
-        u64 prev = counter, next = prev + value;
-        if (next < interval) {
-            if (__sync_bool_compare_and_swap(&counter, prev, next)) return false;
+        u64 prev = _bytes_until_sample;
+        if (prev > size) {
+            if (__sync_bool_compare_and_swap(&_bytes_until_sample, prev, prev - size))
+                return false;
         } else {
-            if (__sync_bool_compare_and_swap(&counter, prev, next % interval)) return true;
+            if (__sync_bool_compare_and_swap(&_bytes_until_sample, prev, nextPoissonInterval()))
+                return true;
         }
     }
 }
 ```
 
-`_allocated_bytes` is the shared volatile counter; `_interval` is set from
-`args._nativemem`. A sample is recorded only when `updateCounter` returns `true`
-(i.e. the counter crosses an `_interval` boundary). Multiple threads compete via CAS
-so no mutex is needed for the counter itself.
+`_bytes_until_sample` is a shared volatile counter decremented by each allocation's
+size. When exhausted, a new Poisson-distributed interval is generated via
+`nextPoissonInterval()` (using `-interval * ln(uniform_random)`), providing random
+jitter that avoids synchronization artifacts. Multiple threads compete via CAS so no
+mutex is needed.
 
-Free events bypass the counter — every free is always recorded (unless `nofree` is
-set), because omitting frees would make leak detection impossible.
+A PID controller (`updateConfiguration()`) periodically adjusts `_interval` to
+maintain approximately `TARGET_SAMPLES_PER_WINDOW` (100) samples per second.
 
 ---
 
@@ -184,9 +180,9 @@ transitioned from Java to native.
 
 ### Default stack mode
 
-`CSTACK_VM` is the global default (`arguments.h`). On a HotSpot JVM with VMStructs
-available this gives the best stack traces for all profiling modes. If VMStructs are
-not available, `profiler.cpp` downgrades to `CSTACK_DEFAULT` at startup:
+`CSTACK_DEFAULT` is the initial default (`arguments.h`). At profiler start,
+`profiler.cpp` promotes it to `CSTACK_VM` when VMStructs are available on the
+platform. If VMStructs are not available, it stays at `CSTACK_DEFAULT`:
 
 ```cpp
 } else if (_cstack == CSTACK_VM) {
@@ -200,10 +196,10 @@ not available, `profiler.cpp` downgrades to `CSTACK_DEFAULT` at startup:
 ### Code path in `recordSample`
 
 ```cpp
-// profiler.cpp line 839
+// profiler.cpp — stack walking for malloc events
 if (event_type == BCI_NATIVE_MALLOC && _cstack >= CSTACK_VM) {
-    // walkVM starts from callerPC()/callerFP() and walks native frames
-    // until it reaches the thread's JavaFrameAnchor for Java frames.
+    // walkVM walks native frames via DWARF/FP and, when native unwinding
+    // fails, falls back to the JavaFrameAnchor to reach Java frames.
     int vm_frames = StackWalker::walkVM(ucontext /*NULL*/, frames + num_frames,
                                         max_remaining, _features,
                                         eventTypeFromBCI(event_type),
@@ -220,7 +216,7 @@ source of both native and Java frames for malloc events.
 
 ## JFR Event Format
 
-Two new event types are defined in `jfrMetadata.cpp` under the
+A single event type is defined in `jfrMetadata.cpp` under the
 `Java Virtual Machine / Native Memory` category:
 
 ### `profiler.Malloc` (`T_MALLOC`)
@@ -232,33 +228,20 @@ Two new event types are defined in `jfrMetadata.cpp` under the
 | `stackTrace` | stack trace ref | Call stack at the allocation site |
 | `address` | `long` (address) | Returned pointer value |
 | `size` | `long` (bytes) | Requested allocation size |
+| `weight` | `float` | Statistical sample weight based on Poisson sampling probability |
 
-### `profiler.Free` (`T_FREE`)
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `startTime` | `long` (ticks) | TSC timestamp of the free |
-| `eventThread` | thread ref | Thread that performed the free |
-| `stackTrace` | stack trace ref | Always null (0) — see Limitations |
-| `address` | `long` (address) | Pointer being freed |
-
-Both event types are written by `Recording::recordMallocSample()` in
-`flightRecorder.cpp`, which selects the type by inspecting `event->_size`:
+Events are written by `Recording::recordMallocSample()` in `flightRecorder.cpp`:
 
 ```cpp
-buf->putVar64(event->_size != 0 ? T_MALLOC : T_FREE);
+buf->putVar64(T_MALLOC);
 buf->putVar64(event->_start_time);
 buf->putVar32(tid);
-buf->putVar64(call_trace_id);      // 0 for free events
+buf->putVar64(call_trace_id);
 buf->putVar64(event->_address);
-if (event->_size != 0) {
-    buf->putVar64(event->_size);   // omitted for T_FREE
-}
+buf->putVar64(event->_size);
+buf->putFloat(event->_weight);
+writeContext(buf, Contexts::get());
 ```
-
-Malloc events flow through `Profiler::recordSample()`, which fills `call_trace_id`
-from the call trace storage. Free events flow through `Profiler::recordEventOnly()`,
-which passes `call_trace_id = 0` (JFR null-reference convention).
 
 ---
 
@@ -268,7 +251,7 @@ which passes `call_trace_id = 0` (JFR null-reference convention).
 |---------|-----------|
 | GOT patching across threads | `_patch_lock` (Mutex) in `patchLibraries()` |
 | Library unload during patching | `UnloadProtection` handle per library |
-| Allocation byte counter | Lock-free CAS loop in `updateCounter` |
+| Allocation byte counter | Lock-free CAS loop in `shouldSample` |
 | JFR buffer writes | Per-lock-index try-lock with 3 attempts; events dropped on contention |
 | Hook enable / disable | `volatile bool _running` — checked before every recording call |
 | `_initialized` write ordering | Serialized by the profiler's outer state lock (caller responsibility) |
@@ -297,12 +280,12 @@ bool read, which is negligible in practice. Uninstalling hooks safely would requ
 iterating all libraries again under `_patch_lock`, which is deferred.
 
 **`nativemem=0` records every allocation.** When `_interval == 0`,
-`updateCounter` returns `true` on every call (the `interval <= 1` fast path). This
+`shouldSample` returns `true` on every call (the `interval <= 1` fast path). This
 is intentional for 100% sampling but can produce very high event volumes.
 
-**No stack traces on free events.** `call_trace_id` is always 0 for `profiler.Free`
-events. The `stackTrace` field is present in the JFR metadata but will always resolve
-to a null reference.
+**No free event tracking.** Free calls are hooked (to forward through the GOT
+correctly) but not recorded. Sampled mallocs mean most frees would match nothing,
+and the immense event volume with no stack traces provides no actionable insight.
 
 **HotSpot / Linux only for full stack traces.** `CSTACK_VM` requires
 `VMStructs::hasStackStructs()`, which is only true on HotSpot JVMs on Linux. On other

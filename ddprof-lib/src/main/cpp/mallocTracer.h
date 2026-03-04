@@ -15,7 +15,6 @@
 class MallocTracer : public Engine {
   private:
     static volatile u64 _interval;
-    static bool _nofree;
     static volatile u64 _bytes_until_sample;
 
     static u64 _configured_interval;
@@ -53,12 +52,7 @@ class MallocTracer : public Engine {
         }
     }
 
-    static inline bool nofree() {
-        return _nofree;
-    }
-
     static void recordMalloc(void* address, size_t size);
-    static void recordFree(void* address);
 };
 
 #endif // _MALLOCTRACER_H

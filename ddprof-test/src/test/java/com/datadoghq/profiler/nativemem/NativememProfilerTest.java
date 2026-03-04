@@ -20,16 +20,14 @@ import org.openjdk.jmc.common.unit.IQuantity;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
 import static org.openjdk.jmc.common.unit.UnitLookup.ADDRESS;
 
 /**
- * Smoke tests for native memory (malloc/free) profiling.
+ * Smoke tests for native memory (malloc) profiling.
  *
  * <p>Runs with {@code cstack=vm} and {@code cstack=vmx}. In {@code vmx} mode the
  * stack trace is expected to contain {@code allocateDirect} because the mixed-mode
@@ -94,57 +92,4 @@ public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
         buffers.clear(); // keep alive until after stop
     }
 
-    @RetryTest(3)
-    @TestTemplate
-    @ValueSource(strings = {"vm", "vmx"})
-    public void shouldRecordFreeEvents() throws InterruptedException {
-        Assumptions.assumeFalse(isAsan() || isTsan());
-
-        // Allocate and immediately abandon so the GC Cleaner will call free()
-        for (int i = 0; i < 1000; i++) {
-            ByteBuffer.allocateDirect(1024);
-        }
-        for (int attempt = 0; attempt < 5; attempt++) {
-            System.gc();
-            Thread.sleep(200);
-        }
-
-        stopProfiler();
-
-        IItemCollection mallocEvents = verifyEvents("profiler.Malloc");
-        IItemCollection freeEvents = verifyEvents("profiler.Free");
-
-        // Collect all recorded malloc addresses
-        Set<Long> mallocAddresses = new HashSet<>();
-        for (IItemIterable items : mallocEvents) {
-            IMemberAccessor<IQuantity, IItem> addrAccessor = MALLOC_ADDRESS.getAccessor(items.getType());
-            if (addrAccessor == null) {
-                continue;
-            }
-            for (IItem item : items) {
-                IQuantity addr = addrAccessor.getMember(item);
-                if (addr != null) {
-                    mallocAddresses.add(addr.longValue());
-                }
-            }
-        }
-
-        // At least one free event address must match a previously recorded malloc address
-        boolean foundCorrelation = false;
-        outer:
-        for (IItemIterable items : freeEvents) {
-            IMemberAccessor<IQuantity, IItem> addrAccessor = MALLOC_ADDRESS.getAccessor(items.getType());
-            if (addrAccessor == null) {
-                continue;
-            }
-            for (IItem item : items) {
-                IQuantity addr = addrAccessor.getMember(item);
-                if (addr != null && mallocAddresses.contains(addr.longValue())) {
-                    foundCorrelation = true;
-                    break outer;
-                }
-            }
-        }
-        assertTrue(foundCorrelation, "expected at least one free event whose address matches a recorded malloc");
-    }
 }
