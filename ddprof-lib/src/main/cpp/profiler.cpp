@@ -848,10 +848,10 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     if (num_frames < _max_stack_depth) {
       int max_remaining = _max_stack_depth - num_frames;
       if (event_type == BCI_NATIVE_MALLOC && _cstack >= CSTACK_VM) {
-        // Walk the Java stack for native malloc events.
-        // ucontext is NULL here (no signal context); walkVM starts from callerPC() and
-        // walks native frames via DWARF until it fails, then retries from the thread's
-        // JavaFrameAnchor (lastJavaPC/lastJavaSP/lastJavaFP) to reach Java frames.
+        // Walk the stack for native malloc events using walkVM.
+        // ucontext is NULL here (no signal context); walkVM walks native frames
+        // via DWARF/FP and, when native unwinding fails, falls back to the
+        // JavaFrameAnchor to reach Java frames.
         int vm_frames = StackWalker::walkVM(ucontext, frames + num_frames, max_remaining,
                                             _features, eventTypeFromBCI(event_type), lock_index, &truncated);
         num_frames += vm_frames;
@@ -901,20 +901,6 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
   _locks[lock_index].unlock();
 }
 
-void Profiler::recordEventOnly(int event_type, Event *event) {
-  if (!_jfr.active()) {
-    return;
-  }
-  int tid = OS::threadId();
-  u32 lock_index = getLockIndex(tid);
-  if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
-    return;
-  }
-  _jfr.recordEvent(lock_index, tid, 0, event_type, event);
-  _locks[lock_index].unlock();
-}
 
 void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event) {
   u32 lock_index = getLockIndex(tid);

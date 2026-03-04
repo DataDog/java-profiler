@@ -304,7 +304,7 @@ void MallocTracer::recordFree(void* address) {
     event._address = (uintptr_t)address;
     event._size = 0;
 
-    Profiler::instance()->recordEventOnly(BCI_NATIVE_MALLOC, &event);
+    Profiler::instance()->recordSample(NULL, 0, OS::threadId(), BCI_NATIVE_MALLOC, 0, &event);
 }
 
 Error MallocTracer::start(Arguments& args) {
