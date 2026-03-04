@@ -657,14 +657,18 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     Counters::increment(WALKVM_ANCHOR_INLINE_NO_SP);
                 }
                 // Check previous frame for thread entry points (Rust, libc/pthread)
+                // Only check marks for traditionally-resolved frames; packed remote
+                // frames store an integer in the method_name union, not a valid pointer.
                 if (prev_native_pc != NULL) {
                     Profiler::NativeFrameResolution prev_resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)prev_native_pc, lock_index);
-                    const char* prev_method_name = (const char*)prev_resolution.method_name;
-                    if (prev_method_name != NULL) {
-                        char prev_mark = NativeFunc::read_mark(prev_method_name);
-                        if (prev_mark == MARK_THREAD_ENTRY) {
-                            Counters::increment(THREAD_ENTRY_MARK_DETECTIONS);
-                            break;
+                    if (prev_resolution.bci != BCI_NATIVE_FRAME_REMOTE) {
+                        const char* prev_method_name = prev_resolution.method_name;
+                        if (prev_method_name != NULL) {
+                            char prev_mark = NativeFunc::read_mark(prev_method_name);
+                            if (prev_mark == MARK_THREAD_ENTRY) {
+                                Counters::increment(THREAD_ENTRY_MARK_DETECTIONS);
+                                break;
+                            }
                         }
                     }
                 }

@@ -375,11 +375,19 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
       // Note: This is called during JFR serialization with lockAll() held (see Profiler::dump),
       // so the library array is stable - no concurrent dlopen_hook calls can modify it.
       CodeCache* lib = Libraries::instance()->getLibraryByIndex(lib_index);
-      if (lib != nullptr) {
+      if (lib != nullptr && lib->hasBuildId() && Profiler::instance()->isRemoteSymbolication()) {
         TEST_LOG("Found library: %s, build_id=%s", lib->name(), lib->buildId());
-        // Create temporary RemoteFrameInfo for fillRemoteFrameInfo
+        // Remote symbolication: defer to backend
         RemoteFrameInfo rfi(lib->buildId(), pc_offset, lib_index);
         fillRemoteFrameInfo(mi, &rfi);
+      } else if (lib != nullptr) {
+        // Locally unsymbolized: render as [libname+0xoffset]
+        char name_buf[256];
+        const char* s = lib->name();
+        const char* basename = strrchr(s, '/');
+        if (basename) basename++; else basename = s;
+        snprintf(name_buf, sizeof(name_buf), "[%s+0x%" PRIxPTR "]", basename, pc_offset);
+        fillNativeMethodInfo(mi, name_buf, nullptr);
       } else {
         TEST_LOG("WARNING: Library lookup failed for index %u", lib_index);
         fillNativeMethodInfo(mi, "unknown_library", nullptr);
