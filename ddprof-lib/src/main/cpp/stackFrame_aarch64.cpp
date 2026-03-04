@@ -11,6 +11,7 @@
 #include "stackFrame.h"
 #include "safeAccess.h"
 #include "vmStructs.h"
+#include "counters.h"
 
 
 #ifdef __APPLE__
@@ -188,6 +189,23 @@ bool StackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& p
         }
         return true;
     }
+
+    // Generic fallback: detect standard aarch64 frame prologue
+    //   stp x29, x30, [sp, #-16]!  (0xa9bf7bfd)
+    //   mov x29, sp                 (0x910003fd)
+    // This catches JVM stubs not in the hardcoded whitelist.
+    if (entry != NULL && withinCurrentStack(fp)) {
+        for (int i = 0; i < 8 && entry + i < ip; i++) {
+            if (entry[i] == 0xa9bf7bfd && i + 1 < 8 && entry + i + 1 < ip && entry[i + 1] == 0x910003fd) {
+                sp = fp + 16;
+                fp = ((uintptr_t*)sp)[-2];
+                pc = ((uintptr_t*)sp)[-1];
+                Counters::increment(WALKVM_STUB_GENERIC_UNWIND);
+                return true;
+            }
+        }
+    }
+
     return false;
 }
 
