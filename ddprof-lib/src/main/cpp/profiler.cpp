@@ -365,38 +365,52 @@ void Profiler::populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCac
  * - Returns is_marked=true if mark indicates termination (MARK_INTERPRETER, etc.)
  *
  * For traditional symbolication:
- * - Does full symbol resolution via findNativeMethod()
+ * - Does symbol resolution via binarySearch() on the found library
  * - Checks marks after symbol resolution (same O(log n) + O(1) cost)
+ * - If no symbol found but PC is in a known library, packs as
+ *   BCI_NATIVE_FRAME_REMOTE for library-relative rendering ([lib+0xoffset])
  */
 Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index) {
-  if (_remote_symbolication) {
-    CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
-    if (lib != nullptr && lib->hasBuildId()) {
-      // Get symbol name and check mark
-      const char *method_name = nullptr;
-      lib->binarySearch((void*)pc, &method_name);
-      char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
+  CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
 
-      if (mark != 0) {
-        return {nullptr, BCI_NATIVE_FRAME, true};  // Marked - stop processing
-      }
+  if (_remote_symbolication && lib != nullptr && lib->hasBuildId()) {
+    // Get symbol name and check mark
+    const char *method_name = nullptr;
+    lib->binarySearch((void*)pc, &method_name);
+    char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
-      // Pack remote symbolication data using utility struct
-      uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
-      uint32_t lib_index = (uint32_t)lib->libIndex();
-      unsigned long packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
-
-      TEST_LOG("resolveNativeFrameForWalkVM: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u, packed=0x%zx",
-               lib->name(), lib->buildId(), pc, pc_offset, (int)mark, lib_index, packed);
-
-      return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
+    if (mark != 0) {
+      return {nullptr, BCI_NATIVE_FRAME, true};  // Marked - stop processing
     }
+
+    // Pack remote symbolication data using utility struct
+    uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
+    uint32_t lib_index = (uint32_t)lib->libIndex();
+    unsigned long packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
+
+    TEST_LOG("resolveNativeFrameForWalkVM: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u, packed=0x%zx",
+             lib->name(), lib->buildId(), pc, pc_offset, (int)mark, lib_index, packed);
+
+    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
   }
 
-  // Fallback: Traditional symbol resolution
-  const char *method_name = findNativeMethod((void*)pc);
+  // Traditional symbol resolution
+  const char *method_name = nullptr;
+  if (lib != nullptr) {
+    lib->binarySearch((void*)pc, &method_name);
+  }
   if (method_name != nullptr && NativeFunc::is_marked(method_name)) {
     return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, true);
+  }
+
+  // No symbol but known library: pack for library-relative identification.
+  // Reuses BCI_NATIVE_FRAME_REMOTE encoding; resolveMethod() in flightRecorder.cpp
+  // distinguishes remote vs local rendering via hasBuildId() && isRemoteSymbolication().
+  if (method_name == nullptr && lib != nullptr) {
+    uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
+    uint32_t lib_index = (uint32_t)lib->libIndex();
+    unsigned long packed = RemoteFramePacker::pack(pc_offset, 0, lib_index);
+    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
   }
 
   return NativeFrameResolution(method_name, BCI_NATIVE_FRAME, false);
