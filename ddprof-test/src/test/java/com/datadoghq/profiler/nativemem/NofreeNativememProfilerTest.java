@@ -39,7 +39,7 @@ public class NofreeNativememProfilerTest extends CStackAwareAbstractProfilerTest
     @RetryTest(3)
     @TestTemplate
     @ValueSource(strings = {"vm", "vmx"})
-    public void shouldNotRecordFreeEventsWithNofreeOption(@CStack String cstack) throws InterruptedException {
+    public void shouldNotRecordFreeEventsWithNofreeOption() throws InterruptedException {
         Assumptions.assumeFalse(isAsan() || isTsan());
 
         // Trigger allocations and then release them via GC

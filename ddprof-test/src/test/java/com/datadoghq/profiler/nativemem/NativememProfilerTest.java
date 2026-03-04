@@ -56,7 +56,7 @@ public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
     @RetryTest(3)
     @TestTemplate
     @ValueSource(strings = {"vm", "vmx"})
-    public void shouldRecordMallocSamples(@CStack String cstack) throws InterruptedException {
+    public void shouldRecordMallocSamples() throws InterruptedException {
         Assumptions.assumeFalse(isAsan() || isTsan());
 
         List<ByteBuffer> buffers = new ArrayList<>();
@@ -97,7 +97,7 @@ public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
     @RetryTest(3)
     @TestTemplate
     @ValueSource(strings = {"vm", "vmx"})
-    public void shouldRecordFreeEvents(@CStack String cstack) throws InterruptedException {
+    public void shouldRecordFreeEvents() throws InterruptedException {
         Assumptions.assumeFalse(isAsan() || isTsan());
 
         // Allocate and immediately abandon so the GC Cleaner will call free()
