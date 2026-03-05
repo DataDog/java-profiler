@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-03-05 13:28:44 EST
+**Date:** 2026-03-05 13:29:12 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 86 |
-| Sample Rate | 1.43/sec |
-| Health Score | 89% |
+| CPU Samples | 84 |
+| Sample Rate | 1.40/sec |
+| Health Score | 87% |
 | Threads | 9 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 87 |
-| Sample Rate | 1.45/sec |
-| Health Score | 91% |
-| Threads | 10 |
+| CPU Samples | 54 |
+| Sample Rate | 0.90/sec |
+| Health Score | 56% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1772734967 24
-1772734972 24
-1772734977 24
-1772734982 24
-1772734987 24
-1772734992 24
-1772734997 24
-1772735002 24
-1772735007 24
-1772735012 24
-1772735017 24
-1772735022 24
-1772735027 24
-1772735032 24
-1772735037 24
-1772735042 24
-1772735047 24
-1772735053 24
-1772735058 24
-1772735063 24
+1772735098 24
+1772735103 24
+1772735108 24
+1772735113 24
+1772735118 24
+1772735123 24
+1772735128 24
+1772735133 24
+1772735138 24
+1772735143 24
+1772735148 24
+1772735153 24
+1772735158 24
+1772735163 24
+1772735168 24
+1772735173 24
+1772735178 24
+1772735183 24
+1772735188 24
+1772735193 24
 ```
 </details>
 
