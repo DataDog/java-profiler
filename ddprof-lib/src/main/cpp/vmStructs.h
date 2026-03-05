@@ -460,7 +460,7 @@ DECLARE(VMJavaFrameAnchor)
     enum { MAX_CALL_WRAPPER_DISTANCE = 512 };
 
   public:
-    static VMJavaFrameAnchor* fromEntryFrame(uintptr_t fp) {
+    NOADDRSANITIZE static VMJavaFrameAnchor* fromEntryFrame(uintptr_t fp) {
         assert(_entry_frame_call_wrapper_offset != -1);
         assert(_call_wrapper_anchor_offset >= 0);
         const char* call_wrapper = (const char*) SafeAccess::loadPtr((void**)(fp + _entry_frame_call_wrapper_offset), nullptr);
@@ -470,17 +470,17 @@ DECLARE(VMJavaFrameAnchor)
         return VMJavaFrameAnchor::cast((const void*)(call_wrapper + _call_wrapper_anchor_offset));
     }
 
-    uintptr_t lastJavaSP() {
+    NOADDRSANITIZE uintptr_t lastJavaSP() {
         assert(_anchor_sp_offset >= 0);
         return (uintptr_t) SafeAccess::loadPtr((void**) at(_anchor_sp_offset), nullptr);
     }
 
-    uintptr_t lastJavaFP() {
+    NOADDRSANITIZE uintptr_t lastJavaFP() {
         assert(_anchor_fp_offset >= 0);
         return (uintptr_t) SafeAccess::loadPtr((void**) at(_anchor_fp_offset), nullptr);
     }
 
-    const void* lastJavaPC() {
+    NOADDRSANITIZE const void* lastJavaPC() {
         assert(_anchor_pc_offset >= 0);
         return SafeAccess::loadPtr((void**) at(_anchor_pc_offset), nullptr);
     }
@@ -490,7 +490,7 @@ DECLARE(VMJavaFrameAnchor)
         *(const void**) at(_anchor_pc_offset) = pc;
     }
 
-    bool getFrame(const void*& pc, uintptr_t& sp, uintptr_t& fp) {
+    NOADDRSANITIZE bool getFrame(const void*& pc, uintptr_t& sp, uintptr_t& fp) {
         if (lastJavaPC() != NULL && lastJavaSP() != 0) {
             pc = lastJavaPC();
             sp = lastJavaSP();
@@ -604,11 +604,14 @@ DECLARE(VMThread)
     }
 
     void*& exception() {
-        assert(_thread_exception_offset >= 0);
+        if (_thread_exception_offset < 0) {
+            static void* _null_exception = nullptr;
+            return _null_exception;
+        }
         return *(void**) at(_thread_exception_offset);
     }
 
-    VMJavaFrameAnchor* anchor() {
+    NOADDRSANITIZE VMJavaFrameAnchor* anchor() {
         if (!cachedIsJavaThread()) return NULL;
         assert(_thread_anchor_offset >= 0);
         return VMJavaFrameAnchor::cast(at(_thread_anchor_offset));

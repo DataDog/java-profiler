@@ -839,11 +839,14 @@ jmethodID VMMethod::id() {
     const char* cpool = (const char*) SafeAccess::load((void**)(const_method + _constmethod_constants_offset));
     unsigned short num = (unsigned short) SafeAccess::load32((int32_t*)(const_method + _constmethod_idnum_offset), 0);
     if (goodPtr(cpool)) {
-        VMKlass* holder = *(VMKlass**)(cpool + _pool_holder_offset);
+        VMKlass* holder = (VMKlass*) SafeAccess::loadPtr((void**)(cpool + _pool_holder_offset), nullptr);
         if (goodPtr(holder)) {
-            jmethodID* ids = holder->jmethodIDs();
-            if (ids != NULL && num < (size_t)ids[0]) {
-                return ids[num + 1];
+            jmethodID* ids = (jmethodID*) SafeAccess::loadPtr((void**)((char*)holder + _jmethod_ids_offset), nullptr);
+            if (ids != NULL) {
+                size_t len = (size_t) SafeAccess::load32((int32_t*)ids, 0);
+                if (num < len) {
+                    return (jmethodID) SafeAccess::loadPtr((void**)(ids + num + 1), nullptr);
+                }
             }
         }
     }

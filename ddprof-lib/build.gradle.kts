@@ -175,6 +175,7 @@ val sourcesJar by tasks.registering(Jar::class) {
 
 // Javadoc configuration
 tasks.withType<Javadoc>().configureEach {
+  dependsOn(copyExternalLibs)
   // Allow javadoc to access internal sun.nio.ch package used by BufferWriter8
   (options as StandardJavadocDocletOptions).addStringOption("-add-exports", "java.base/sun.nio.ch=ALL-UNNAMED")
 }
