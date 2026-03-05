@@ -23,7 +23,7 @@
 #include <vector>
 
 const long DEFAULT_CPU_INTERVAL = 10 * 1000 * 1000;  // 10 ms
-const long DEFAULT_WALL_INTERVAL = 50 * 1000 * 1000; // 50 ms
+const long DEFAULT_WALL_INTERVAL = 200 * 1000 * 1000; // 200 ms
 const long DEFAULT_ALLOC_INTERVAL = 524287;          // 512 KiB
 const int DEFAULT_WALL_THREADS_PER_TICK = 16;
 const int DEFAULT_JSTACKDEPTH = 2048;
