@@ -1,0 +1,13 @@
+issuer: https://token.actions.githubusercontent.com
+
+subject: repo:DataDog/java-profiler:ref:refs/heads/main
+
+claim_pattern:
+  event_name: schedule
+  ref: refs/heads/main
+  ref_protected: "true"
+  job_workflow_ref: DataDog/java-profiler/\.github/workflows/dependabot-automerge\.yml@refs/heads/main
+
+permissions:
+  contents: write
+  pull_requests: write
