@@ -143,7 +143,7 @@ static inline bool isZeroSizeFrame(const char* name) {
     }
 }
 
-bool StackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+NOSANALIGSANITIZE bool StackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     instruction_t* ip = (instruction_t*)pc;
     if (ip == entry || *ip == 0xd65f03c0) {
         pc = link();
@@ -215,7 +215,7 @@ static inline bool isEntryBarrier(instruction_t* ip) {
     return ip[0] == 0xb9402389 && ip[1] == 0xeb09011f;
 }
 
-bool StackFrame::unwindCompiled(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+NOSANALIGSANITIZE bool StackFrame::unwindCompiled(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     instruction_t* ip = (instruction_t*)pc;
     instruction_t* entry = (instruction_t*)nm->entry();
     if ((*ip & 0xffe07fff) == 0xa9007bfd) {
@@ -254,7 +254,7 @@ static inline bool isFrameComplete(instruction_t* entry, instruction_t* ip) {
     return false;
 }
 
-bool StackFrame::unwindPrologue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+NOSANALIGSANITIZE bool StackFrame::unwindPrologue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     // C1/C2 methods:
     //   {stack_bang}
     //   sub  sp, sp, #0x40
@@ -330,7 +330,7 @@ static inline bool isPollReturn(instruction_t* ip) {
     return false;
 }
 
-bool StackFrame::unwindEpilogue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+NOSANALIGSANITIZE bool StackFrame::unwindEpilogue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     //  ldp  x29, x30, [sp, #32]
     //  add  sp, sp, #0x30
     //  {poll_return}
@@ -356,7 +356,7 @@ bool StackFrame::unwindAtomicStub(const void*& pc) {
     return false;
 }
 
-void StackFrame::adjustSP(const void* entry, const void* pc, uintptr_t& sp) {
+NOSANALIGSANITIZE void StackFrame::adjustSP(const void* entry, const void* pc, uintptr_t& sp) {
     instruction_t* ip = (instruction_t*)pc;
     if (ip > entry && (ip[-1] == 0xa9bf27ff || (ip[-1] == 0xd63f0100 && ip[-2] == 0xa9bf27ff))) {
         // When calling a leaf native from Java, JVM puts a dummy frame link onto the stack,
@@ -375,7 +375,7 @@ bool StackFrame::skipFaultInstruction() {
     return false;
 }
 
-bool StackFrame::checkInterruptedSyscall() {
+NOSANALIGSANITIZE bool StackFrame::checkInterruptedSyscall() {
 #ifdef __APPLE__
     // We are not interested in syscalls that do not check error code, e.g. semaphore_wait_trap
     if (*(instruction_t*)pc() == 0xd65f03c0) {
