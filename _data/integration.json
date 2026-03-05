@@ -1,6 +1,40 @@
 {
   "runs": [
     {
+      "id": "100742167",
+      "timestamp": "2026-03-05T20:44:03Z",
+      "ddprof_branch": "main",
+      "ddprof_sha": "2f57e9ba",
+      "ddprof_pr": null,
+      "pipeline": {
+        "id": "100742167",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100742167"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 30,
+        "failed_jobs": 10,
+        "total_scenarios": 60,
+        "passed_scenarios": 60,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "musl-arm64-hotspot-jdk11",
+          "musl-arm64-hotspot-jdk17",
+          "musl-arm64-hotspot-jdk21",
+          "musl-arm64-hotspot-jdk25",
+          "musl-arm64-hotspot-jdk8",
+          "musl-arm64-openj9-jdk11",
+          "musl-arm64-openj9-jdk17",
+          "musl-arm64-openj9-jdk21",
+          "musl-arm64-openj9-jdk25",
+          "musl-arm64-openj9-jdk8"
+        ]
+      }
+    },
+    {
       "id": "100696413",
       "timestamp": "2026-03-05T18:29:52Z",
       "ddprof_branch": "main",
@@ -331,45 +365,6 @@
           "musl-arm64-openj9-jdk21",
           "musl-arm64-openj9-jdk25",
           "musl-arm64-openj9-jdk8"
-        ]
-      }
-    },
-    {
-      "id": "96095537",
-      "timestamp": "2026-02-12T15:15:04Z",
-      "ddprof_branch": "jb/gradle_9",
-      "ddprof_sha": "fe4aa72f",
-      "ddprof_pr": {
-        "number": 365,
-        "url": "https://github.com/DataDog/java-profiler/pull/365",
-        "title": "Upgrade to Gradle 9.3.1 with JDK 21 build requirement"
-      },
-      "pipeline": {
-        "id": "96095537",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/96095537"
-      },
-      "lib_version": "unknown",
-      "status": "partial",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 29,
-        "failed_jobs": 11,
-        "total_scenarios": 58,
-        "passed_scenarios": 58,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": [
-          "musl-arm64-hotspot-jdk11",
-          "musl-arm64-hotspot-jdk17",
-          "musl-arm64-hotspot-jdk21",
-          "musl-arm64-hotspot-jdk25",
-          "musl-arm64-hotspot-jdk8",
-          "musl-arm64-openj9-jdk11",
-          "musl-arm64-openj9-jdk17",
-          "musl-arm64-openj9-jdk21",
-          "musl-arm64-openj9-jdk25",
-          "musl-arm64-openj9-jdk8",
-          "musl-x64-openj9-jdk17"
         ]
       }
     }

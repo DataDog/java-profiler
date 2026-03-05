@@ -13,6 +13,24 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 <details markdown="1">
 <summary>
+<strong>2026-03-05 20:44</strong> | ⚠️ | main | Pipeline [#100742167](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100742167)
+</summary>
+
+**Version:** unknown
+**Commit:** 2f57e9ba
+
+| Metric | Value |
+|--------|-------|
+| Jobs | 40 |
+| Passed | 30 |
+| Failed | 10 |
+
+**Failed Configs:** musl-arm64-hotspot-jdk11, musl-arm64-hotspot-jdk17, musl-arm64-hotspot-jdk21, musl-arm64-hotspot-jdk25, musl-arm64-hotspot-jdk8, musl-arm64-openj9-jdk11, musl-arm64-openj9-jdk17, musl-arm64-openj9-jdk21, musl-arm64-openj9-jdk25, musl-arm64-openj9-jdk8
+
+</details>
+
+<details markdown="1">
+<summary>
 <strong>2026-03-05 18:29</strong> | ⚠️ | main | Pipeline [#100696413](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100696413)
 </summary>
 
@@ -170,24 +188,6 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 | Failed | 10 |
 
 **Failed Configs:** musl-arm64-hotspot-jdk11, musl-arm64-hotspot-jdk17, musl-arm64-hotspot-jdk21, musl-arm64-hotspot-jdk25, musl-arm64-hotspot-jdk8, musl-arm64-openj9-jdk11, musl-arm64-openj9-jdk17, musl-arm64-openj9-jdk21, musl-arm64-openj9-jdk25, musl-arm64-openj9-jdk8
-
-</details>
-
-<details markdown="1">
-<summary>
-<strong>2026-02-12 15:15</strong> | ⚠️ | jb/gradle_9 | PR [#365](https://github.com/DataDog/java-profiler/pull/365) | Pipeline [#96095537](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/96095537)
-</summary>
-
-**Version:** unknown
-**Commit:** fe4aa72f
-
-| Metric | Value |
-|--------|-------|
-| Jobs | 40 |
-| Passed | 29 |
-| Failed | 11 |
-
-**Failed Configs:** musl-arm64-hotspot-jdk11, musl-arm64-hotspot-jdk17, musl-arm64-hotspot-jdk21, musl-arm64-hotspot-jdk25, musl-arm64-hotspot-jdk8, musl-arm64-openj9-jdk11, musl-arm64-openj9-jdk17, musl-arm64-openj9-jdk21, musl-arm64-openj9-jdk25, musl-arm64-openj9-jdk8, musl-x64-openj9-jdk17
 
 </details>
 

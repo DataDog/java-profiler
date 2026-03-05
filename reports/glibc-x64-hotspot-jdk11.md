@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk11
 
 ## glibc-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-03-05 13:29:54 EST
+**Date:** 2026-03-05 15:44:05 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 497 |
-| Sample Rate | 8.28/sec |
-| Health Score | 517% |
+| CPU Samples | 500 |
+| Sample Rate | 8.33/sec |
+| Health Score | 521% |
 | Threads | 8 |
-| Allocations | 383 |
+| Allocations | 363 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 738 |
-| Sample Rate | 12.30/sec |
-| Health Score | 769% |
+| CPU Samples | 702 |
+| Sample Rate | 11.70/sec |
+| Health Score | 731% |
 | Threads | 10 |
-| Allocations | 447 |
+| Allocations | 490 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1772735108 32
-1772735113 32
-1772735118 32
-1772735123 32
-1772735128 32
-1772735133 32
-1772735138 32
-1772735143 32
-1772735148 32
-1772735153 32
-1772735158 32
-1772735163 32
-1772735168 32
-1772735173 32
-1772735178 32
-1772735183 32
-1772735188 32
-1772735193 32
-1772735198 32
-1772735203 32
+1772743228 32
+1772743233 32
+1772743238 32
+1772743243 32
+1772743248 32
+1772743253 32
+1772743258 32
+1772743263 32
+1772743268 32
+1772743273 32
+1772743278 32
+1772743283 32
+1772743288 32
+1772743293 32
+1772743298 32
+1772743303 32
+1772743308 32
+1772743313 32
+1772743318 32
+1772743323 32
 ```
 </details>
 
