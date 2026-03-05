@@ -24,7 +24,6 @@ static ucontext_t empty_ucontext{};
 using StackWalkValidation::inDeadZone;
 using StackWalkValidation::aligned;
 using StackWalkValidation::MAX_FRAME_SIZE;
-using StackWalkValidation::SAME_STACK_DISTANCE;
 using StackWalkValidation::sameStack;
 
 // AArch64: on Linux, frame link is stored at the top of the frame,
@@ -790,7 +789,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             }
         }
         // Fallback: redirect via anchor frame and sp[-1]
-        if (anchor->getFrame(pc, sp, fp)) {
+        if (anchor != NULL && anchor->getFrame(pc, sp, fp)) {
             if (!CodeHeap::contains(pc) && sp != 0 && aligned(sp) && sp < bottom) {
                 pc = ((const void**)sp)[-1];
             }
@@ -800,7 +799,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             if (sp != 0 && sp < bottom && aligned(sp)) {
                 goto unwind_loop;
             }
-        } else {
+        } else if (anchor != NULL) {
             Counters::increment(WALKVM_ANCHOR_FALLBACK_FAIL);
         }
     }
@@ -843,11 +842,22 @@ void StackWalker::checkFault(ProfiledThread* thrd) {
     }
 
     VMThread* vm_thread = VMThread::current();
-    if (vm_thread != NULL && vm_thread->isThreadAccessible() && sameStack(vm_thread->exception(), &vm_thread)) {
-        if (thrd) {
-            // going to longjmp out of the signal handler, reset the crash handler depth counter
-            thrd->resetCrashHandler();
-        }
-        longjmp(*(jmp_buf*)vm_thread->exception(), 1);
+    if (vm_thread == NULL || !vm_thread->isThreadAccessible()) {
+        return;
     }
+
+    // Prefer the semantic crash protection flag (reliable regardless of stack frame sizes).
+    // Fall back to sameStack heuristic when ProfiledThread TLS is unavailable (e.g. during
+    // early init or in crash recovery tests). sameStack uses a fixed 8KB threshold which
+    // can fail with ASAN-inflated frames, but the crashProtectionActive path handles that.
+    bool protected_walk = (thrd != nullptr && thrd->isCrashProtectionActive())
+                       || sameStack(vm_thread->exception(), &vm_thread);
+    if (!protected_walk) {
+        return;
+    }
+
+    if (thrd != nullptr) {
+        thrd->resetCrashHandler();
+    }
+    longjmp(*(jmp_buf*)vm_thread->exception(), 1);
 }
