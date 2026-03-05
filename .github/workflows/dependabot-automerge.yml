@@ -7,8 +7,8 @@ on:
     types: [opened, synchronize, reopened]
 
 jobs:
-  auto-approve-and-merge:
-    name: Auto-approve and enable auto-merge
+  auto-merge:
+    name: Enable auto-merge
     if: github.actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     permissions:
@@ -19,10 +19,6 @@ jobs:
         with:
           scope: DataDog/java-profiler
           policy: self.dependabot-automerge.pr
-      - name: Auto-approve PR
-        uses: hmarr/auto-approve-action@v4
-        with:
-          github-token: ${{ steps.octo-sts.outputs.token }}
       - name: Enable auto-merge
         env:
           GH_TOKEN: ${{ steps.octo-sts.outputs.token }}
@@ -41,7 +37,7 @@ jobs:
         with:
           scope: DataDog/java-profiler
           policy: self.dependabot-automerge.schedule
-      - name: Auto-approve and enable auto-merge for Dependabot PRs
+      - name: Enable auto-merge for Dependabot PRs
         env:
           GH_TOKEN: ${{ steps.octo-sts.outputs.token }}
         run: |
@@ -52,8 +48,6 @@ jobs:
             --jq '.[].number' \
           | while read pr_number; do
               echo "Processing PR #$pr_number"
-              gh pr review "$pr_number" --approve --repo "$GITHUB_REPOSITORY" \
-                || echo "Could not approve PR #$pr_number (may already be approved)"
               gh pr merge "$pr_number" --auto --squash --repo "$GITHUB_REPOSITORY" \
                 || echo "Could not enable auto-merge for PR #$pr_number"
             done
