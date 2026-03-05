@@ -404,6 +404,12 @@ tasks.whenTaskAdded { task ->
           }
           if (config.name == 'release') {
             setupDebugExtraction(config, linkTask)
+          } else {
+            // For non-release builds, wire the link task into the copy task to ensure
+            // proper task ordering and that debug symbols are preserved (not stripped).
+            tasks.named("copy${config.name.capitalize()}Libs").configure {
+              dependsOn linkTask
+            }
           }
         }
       }
@@ -450,9 +456,12 @@ library {
   linkage = [Linkage.SHARED]
 }
 
+// Only the explicitly created stripLibRelease task is allowed to run.
+// All other StripSymbols tasks (including any Gradle cpp-library plugin generated ones
+// for debug, asan, tsan variants) are blocked here to preserve debug symbols.
 tasks.withType(StripSymbols).configureEach {
   onlyIf {
-    name == ("stripLibRelease") && !project.hasProperty('skip-native')
+    name == "stripLibRelease" && !project.hasProperty('skip-native')
   }
 }
 
