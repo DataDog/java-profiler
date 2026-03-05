@@ -9,7 +9,7 @@ spotless = "8.2.1"
 junit = "5.9.2"
 junit-platform = "1.9.2"  # JUnit Platform version corresponding to JUnit Jupiter 5.9.2
 junit-pioneer = "1.9.1"
-slf4j = "1.7.32"
+slf4j = "2.0.17"
 
 # Profiler runtime
 jmc = "8.1.0"
