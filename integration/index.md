@@ -13,6 +13,24 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 <details markdown="1">
 <summary>
+<strong>2026-03-05 18:29</strong> | ⚠️ | main | Pipeline [#100696413](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100696413)
+</summary>
+
+**Version:** unknown
+**Commit:** a84d7fe7
+
+| Metric | Value |
+|--------|-------|
+| Jobs | 40 |
+| Passed | 30 |
+| Failed | 10 |
+
+**Failed Configs:** musl-arm64-hotspot-jdk11, musl-arm64-hotspot-jdk17, musl-arm64-hotspot-jdk21, musl-arm64-hotspot-jdk25, musl-arm64-hotspot-jdk8, musl-arm64-openj9-jdk11, musl-arm64-openj9-jdk17, musl-arm64-openj9-jdk21, musl-arm64-openj9-jdk25, musl-arm64-openj9-jdk8
+
+</details>
+
+<details markdown="1">
+<summary>
 <strong>2026-03-05 18:29</strong> | ⚠️ | jb/native_allocs | PR [#398](https://github.com/DataDog/java-profiler/pull/398) | Pipeline [#100696124](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100696124)
 </summary>
 
@@ -170,24 +188,6 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 | Failed | 11 |
 
 **Failed Configs:** musl-arm64-hotspot-jdk11, musl-arm64-hotspot-jdk17, musl-arm64-hotspot-jdk21, musl-arm64-hotspot-jdk25, musl-arm64-hotspot-jdk8, musl-arm64-openj9-jdk11, musl-arm64-openj9-jdk17, musl-arm64-openj9-jdk21, musl-arm64-openj9-jdk25, musl-arm64-openj9-jdk8, musl-x64-openj9-jdk17
-
-</details>
-
-<details markdown="1">
-<summary>
-<strong>2026-02-12 13:15</strong> | ⚠️ | jb/gradle_9 | PR [#365](https://github.com/DataDog/java-profiler/pull/365) | Pipeline [#96067392](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/96067392)
-</summary>
-
-**Version:** unknown
-**Commit:** f46d282f
-
-| Metric | Value |
-|--------|-------|
-| Jobs | 40 |
-| Passed | 30 |
-| Failed | 10 |
-
-**Failed Configs:** musl-arm64-hotspot-jdk11, musl-arm64-hotspot-jdk17, musl-arm64-hotspot-jdk21, musl-arm64-hotspot-jdk25, musl-arm64-hotspot-jdk8, musl-arm64-openj9-jdk11, musl-arm64-openj9-jdk17, musl-arm64-openj9-jdk21, musl-arm64-openj9-jdk25, musl-arm64-openj9-jdk8
 
 </details>
 
