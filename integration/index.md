@@ -13,6 +13,24 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 <details markdown="1">
 <summary>
+<strong>2026-03-06 16:13</strong> | ⚠️ | jb/native_allocs | PR [#398](https://github.com/DataDog/java-profiler/pull/398) | Pipeline [#100942066](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100942066)
+</summary>
+
+**Version:** unknown
+**Commit:** 0fe7fad2
+
+| Metric | Value |
+|--------|-------|
+| Jobs | 40 |
+| Passed | 19 |
+| Failed | 21 |
+
+**Failed Configs:** glibc-arm64-hotspot-jdk17, glibc-arm64-hotspot-jdk21, glibc-arm64-hotspot-jdk25, glibc-arm64-openj9-jdk21, glibc-arm64-openj9-jdk25, glibc-arm64-openj9-jdk8, glibc-x64-hotspot-jdk11, glibc-x64-hotspot-jdk25, glibc-x64-hotspot-jdk8, musl-arm64-hotspot-jdk11, musl-arm64-hotspot-jdk17, musl-arm64-hotspot-jdk21, musl-arm64-hotspot-jdk25, musl-arm64-hotspot-jdk8, musl-arm64-openj9-jdk17, musl-arm64-openj9-jdk21, musl-arm64-openj9-jdk25, musl-arm64-openj9-jdk8, musl-x64-hotspot-jdk17, musl-x64-hotspot-jdk21, musl-x64-openj9-jdk8
+
+</details>
+
+<details markdown="1">
+<summary>
 <strong>2026-03-06 12:48</strong> | ✅ | dependabot/github_actions/actions/download-artifact-8 | PR [#402](https://github.com/DataDog/java-profiler/pull/402) | Pipeline [#100878526](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100878526)
 </summary>
 
@@ -146,22 +164,6 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 **Version:** unknown
 **Commit:** 7a55891c
-
-| Metric | Value |
-|--------|-------|
-| Jobs | 40 |
-| Passed | 40 |
-| Failed | 0 |
-
-</details>
-
-<details markdown="1">
-<summary>
-<strong>2026-03-06 09:35</strong> | ✅ | main | Pipeline [#100836573](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100836573)
-</summary>
-
-**Version:** unknown
-**Commit:** 5b896e25
 
 | Metric | Value |
 |--------|-------|

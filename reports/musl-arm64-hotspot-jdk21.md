@@ -3,9 +3,9 @@ layout: default
 title: musl-arm64-hotspot-jdk21
 ---
 
-## musl-arm64-hotspot-jdk21 - ✅ PASS
+## musl-arm64-hotspot-jdk21 - ❌ FAIL
 
-**Date:** 2026-03-06 07:48:05 EST
+**Date:** 2026-03-06 11:13:22 EST
 
 ### Configuration
 | Setting | Value |
@@ -24,50 +24,49 @@ title: musl-arm64-hotspot-jdk21
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ✅
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 87 |
-| Sample Rate | 1.45/sec |
-| Health Score | 91% |
-| Threads | 6 |
-| Allocations | 73 |
+| Status | FAIL |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
-#### Scenario 2: Tracer+Profiler ✅
+#### Scenario 2: Tracer+Profiler ⚠️
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 13 |
-| Sample Rate | 0.22/sec |
-| Health Score | 14% |
-| Threads | 7 |
-| Allocations | 10 |
+| Status | N/A |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1772801080 24
-1772801085 24
-1772801090 24
-1772801095 24
-1772801100 24
-1772801105 24
-1772801110 24
-1772801115 24
-1772801120 24
-1772801125 24
-1772801130 24
-1772801135 24
-1772801140 24
-1772801145 24
-1772801150 24
-1772801155 24
-1772801160 24
-1772801165 24
-1772801170 24
-1772801175 24
+1772813423 24
+1772813428 24
+1772813433 24
+1772813438 24
+1772813444 24
+1772813449 24
+1772813454 24
+1772813459 24
+1772813464 24
+1772813469 24
+1772813474 24
+1772813479 24
+1772813484 24
+1772813489 24
+1772813494 24
+1772813499 24
+1772813504 24
+1772813509 24
+1772813514 24
 ```
 </details>
 

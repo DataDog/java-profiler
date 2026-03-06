@@ -1,6 +1,55 @@
 {
   "runs": [
     {
+      "id": "100942066",
+      "timestamp": "2026-03-06T16:13:19Z",
+      "ddprof_branch": "jb/native_allocs",
+      "ddprof_sha": "0fe7fad2",
+      "ddprof_pr": {
+        "number": 398,
+        "url": "https://github.com/DataDog/java-profiler/pull/398",
+        "title": "Port native malloc allocation profiling from async-profiler"
+      },
+      "pipeline": {
+        "id": "100942066",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100942066"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 19,
+        "failed_jobs": 21,
+        "total_scenarios": 59,
+        "passed_scenarios": 38,
+        "failed_scenarios": 21,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "glibc-arm64-hotspot-jdk17",
+          "glibc-arm64-hotspot-jdk21",
+          "glibc-arm64-hotspot-jdk25",
+          "glibc-arm64-openj9-jdk21",
+          "glibc-arm64-openj9-jdk25",
+          "glibc-arm64-openj9-jdk8",
+          "glibc-x64-hotspot-jdk11",
+          "glibc-x64-hotspot-jdk25",
+          "glibc-x64-hotspot-jdk8",
+          "musl-arm64-hotspot-jdk11",
+          "musl-arm64-hotspot-jdk17",
+          "musl-arm64-hotspot-jdk21",
+          "musl-arm64-hotspot-jdk25",
+          "musl-arm64-hotspot-jdk8",
+          "musl-arm64-openj9-jdk17",
+          "musl-arm64-openj9-jdk21",
+          "musl-arm64-openj9-jdk25",
+          "musl-arm64-openj9-jdk8",
+          "musl-x64-hotspot-jdk17",
+          "musl-x64-hotspot-jdk21",
+          "musl-x64-openj9-jdk8"
+        ]
+      }
+    },
+    {
       "id": "100878526",
       "timestamp": "2026-03-06T12:48:02Z",
       "ddprof_branch": "dependabot/github_actions/actions/download-artifact-8",
@@ -213,29 +262,6 @@
       "pipeline": {
         "id": "100836690",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100836690"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 40,
-        "failed_jobs": 0,
-        "total_scenarios": 80,
-        "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "100836573",
-      "timestamp": "2026-03-06T09:35:15Z",
-      "ddprof_branch": "main",
-      "ddprof_sha": "5b896e25",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "100836573",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100836573"
       },
       "lib_version": "unknown",
       "status": "passed",

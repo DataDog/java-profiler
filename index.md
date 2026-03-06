@@ -5,13 +5,13 @@ title: Java Profiler Build - Test Dashboard
 
 # Java Profiler Build - Test Dashboard
 
-> **Last Updated:** 2026-03-06 12:48 UTC
+> **Last Updated:** 2026-03-06 16:13 UTC
 
 ## Quick Status
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](integration/) | [#100878526](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100878526) | ✅ | dependabot/github_actions/actions/download-artifact-8 | [#402](https://github.com/DataDog/java-profiler/pull/402) |
+| [Integration](integration/) | [#100942066](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100942066) | ⚠️ | jb/native_allocs | [#398](https://github.com/DataDog/java-profiler/pull/398) |
 | [Benchmarks](benchmarks/) | - | - | - | - |
 | [Reliability](reliability/) | - | - | - | - |
 
@@ -37,11 +37,11 @@ Tests multiple allocator configurations (gmalloc, tcmalloc, jemalloc).
 
 | Date | Type | Pipeline | Branch | PR | Status |
 |------|------|----------|--------|-----|--------|
+| 2026-03-06 | Integration | [#100942066](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100942066) | jb/native_allocs | [#398](https://github.com/DataDog/java-profiler/pull/398) | ⚠️ |
 | 2026-03-06 | Integration | [#100878526](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100878526) | dependabot/github_actions/actions/download-artifact-8 | [#402](https://github.com/DataDog/java-profiler/pull/402) | ✅ |
 | 2026-03-06 | Integration | [#100877904](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100877904) | dependabot/github_actions/actions/download-artifact-8 | [#402](https://github.com/DataDog/java-profiler/pull/402) | ✅ |
 | 2026-03-06 | Integration | [#100863417](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100863417) | main | - | ✅ |
 | 2026-03-06 | Integration | [#100859742](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100859742) | main | - | ✅ |
-| 2026-03-06 | Integration | [#100859404](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100859404) | main | - | ✅ |
 
 ---
 
