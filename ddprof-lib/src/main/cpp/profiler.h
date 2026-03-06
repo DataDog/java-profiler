@@ -88,6 +88,8 @@ inline EventType eventTypeFromBCI(jint bci_type) {
             return LOCK_SAMPLE;
         case BCI_PARK:
             return PARK_SAMPLE;
+        case BCI_NATIVE_MALLOC:
+            return MALLOC_SAMPLE;
         default:
             // For unknown or invalid BCI types, default to EXECUTION_SAMPLE
             // This maintains backward compatibility and prevents undefined behavior
