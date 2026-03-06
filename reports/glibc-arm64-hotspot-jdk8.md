@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-03-05 15:44:29 EST
+**Date:** 2026-03-06 04:35:12 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 83 |
-| Sample Rate | 1.38/sec |
-| Health Score | 86% |
-| Threads | 8 |
+| CPU Samples | 105 |
+| Sample Rate | 1.75/sec |
+| Health Score | 109% |
+| Threads | 6 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 354 |
-| Sample Rate | 5.90/sec |
-| Health Score | 369% |
-| Threads | 9 |
+| CPU Samples | 38 |
+| Sample Rate | 0.63/sec |
+| Health Score | 39% |
+| Threads | 6 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1772742919 24
-1772742924 24
-1772742929 24
-1772742934 24
-1772742939 24
-1772742944 24
-1772742949 24
-1772742954 24
-1772742959 24
-1772742964 24
-1772742969 24
-1772742974 24
-1772742979 24
-1772742984 24
-1772742989 24
-1772742994 24
-1772742999 24
-1772743004 24
-1772743009 24
-1772743014 24
+1772789449 24
+1772789454 24
+1772789459 24
+1772789464 24
+1772789469 24
+1772789474 24
+1772789479 24
+1772789484 24
+1772789489 24
+1772789494 24
+1772789499 24
+1772789504 24
+1772789509 24
+1772789514 24
+1772789519 24
+1772789524 24
+1772789529 24
+1772789534 24
+1772789539 24
+1772789544 24
 ```
 </details>
 

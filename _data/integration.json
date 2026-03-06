@@ -1,6 +1,33 @@
 {
   "runs": [
     {
+      "id": "100836908",
+      "timestamp": "2026-03-06T09:35:10Z",
+      "ddprof_branch": "dependabot/gradle/gradle-minor-6ec1433625",
+      "ddprof_sha": "3c63f38c",
+      "ddprof_pr": {
+        "number": 412,
+        "url": "https://github.com/DataDog/java-profiler/pull/412",
+        "title": "Bump the gradle-minor group with 4 updates"
+      },
+      "pipeline": {
+        "id": "100836908",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100836908"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 40,
+        "failed_jobs": 0,
+        "total_scenarios": 80,
+        "passed_scenarios": 80,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "100742160",
       "timestamp": "2026-03-05T20:44:28Z",
       "ddprof_branch": "main",
@@ -301,44 +328,6 @@
       "pipeline": {
         "id": "96301049",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/96301049"
-      },
-      "lib_version": "unknown",
-      "status": "partial",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 30,
-        "failed_jobs": 10,
-        "total_scenarios": 60,
-        "passed_scenarios": 60,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": [
-          "musl-arm64-hotspot-jdk11",
-          "musl-arm64-hotspot-jdk17",
-          "musl-arm64-hotspot-jdk21",
-          "musl-arm64-hotspot-jdk25",
-          "musl-arm64-hotspot-jdk8",
-          "musl-arm64-openj9-jdk11",
-          "musl-arm64-openj9-jdk17",
-          "musl-arm64-openj9-jdk21",
-          "musl-arm64-openj9-jdk25",
-          "musl-arm64-openj9-jdk8"
-        ]
-      }
-    },
-    {
-      "id": "96164787",
-      "timestamp": "2026-02-12T18:12:31Z",
-      "ddprof_branch": "jb/gradle_9",
-      "ddprof_sha": "97c66332",
-      "ddprof_pr": {
-        "number": 365,
-        "url": "https://github.com/DataDog/java-profiler/pull/365",
-        "title": "Upgrade to Gradle 9.3.1 with JDK 21 build requirement"
-      },
-      "pipeline": {
-        "id": "96164787",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/96164787"
       },
       "lib_version": "unknown",
       "status": "partial",
