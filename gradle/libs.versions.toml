@@ -3,19 +3,19 @@
 [versions]
 cpp-standard = "17"
 kotlin = "1.9.22"
-spotless = "7.0.2"
+spotless = "8.2.1"
 
 # Testing
 junit = "5.9.2"
 junit-platform = "1.9.2"  # JUnit Platform version corresponding to JUnit Jupiter 5.9.2
 junit-pioneer = "1.9.1"
-slf4j = "1.7.32"
+slf4j = "2.0.17"
 
 # Profiler runtime
 jmc = "8.1.0"
 jol = "0.17"
 lz4 = "1.10.3"
-snappy = "1.1.10.1"
+snappy = "1.1.10.8"
 zstd = "1.5.7-7"
 
 # Code analysis

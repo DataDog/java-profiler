@@ -13,7 +13,7 @@ jobs:
     steps:
       - name: Get milestone title
         id: milestoneTitle
-        uses: actions/github-script@47f7cf65b5ced0830a325f705cad64f2f58dddf7 # 3.1.0
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # 8.0.0
         with:
           result-encoding: string
           script: |
@@ -21,11 +21,11 @@ jobs:
             return '${{github.event.ref}}'.startsWith('v_') ? '${{github.event.ref}}'.substring(2) : '${{github.event.ref}}';
       - name: Get milestone for tag
         id: milestone
-        uses: actions/github-script@47f7cf65b5ced0830a325f705cad64f2f58dddf7 # 3.1.0
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # 8.0.0
         with:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
-            const milestones = await github.paginate(github.issues.listMilestones, {
+            const milestones = await github.paginate(github.rest.issues.listMilestones, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'all'
@@ -40,11 +40,11 @@ jobs:
             }
       - name: Close milestone
         if: fromJSON(steps.milestone.outputs.result)
-        uses: actions/github-script@47f7cf65b5ced0830a325f705cad64f2f58dddf7 # 3.1.0
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # 8.0.0
         with:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
-            await github.issues.updateMilestone({
+            await github.rest.issues.updateMilestone({
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'closed',

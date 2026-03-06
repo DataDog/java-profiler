@@ -6,6 +6,7 @@
 #include <time.h>
 
 pthread_key_t ProfiledThread::_tls_key;
+bool ProfiledThread::_tls_key_initialized = false;
 int ProfiledThread::_buffer_size = 0;
 volatile int ProfiledThread::_running_buffer_pos = 0;
 ProfiledThread** ProfiledThread::_buffer = nullptr;
@@ -17,7 +18,14 @@ void ProfiledThread::initTLSKey() {
   pthread_once(&tls_initialized, doInitTLSKey);
 }
 
-void ProfiledThread::doInitTLSKey() { pthread_key_create(&_tls_key, freeKey); }
+void ProfiledThread::doInitTLSKey() {
+  pthread_key_create(&_tls_key, freeKey);
+  // Must be set AFTER pthread_key_create so signal handlers see a valid key.
+  // Store-release pairs with the acquire loads in currentSignalSafe() and release()
+  // to prevent hardware load-load reordering on weakly-ordered architectures (aarch64):
+  // a plain volatile write is not sufficient there.
+  __atomic_store_n(&_tls_key_initialized, true, __ATOMIC_RELEASE);
+}
 
 inline void ProfiledThread::freeKey(void *key) {
   ProfiledThread *tls_ref = (ProfiledThread *)(key);
@@ -51,10 +59,10 @@ void ProfiledThread::initCurrentThread() {
 }
 
 void ProfiledThread::release() {
-  pthread_key_t key = _tls_key;
-  if (key == 0) {
+  if (!__atomic_load_n(&_tls_key_initialized, __ATOMIC_ACQUIRE)) {
     return;
   }
+  pthread_key_t key = _tls_key;
   ProfiledThread *tls = (ProfiledThread *)pthread_getspecific(key);
   if (tls != NULL) {
     pthread_setspecific(key, NULL);
@@ -119,9 +127,10 @@ ProfiledThread *ProfiledThread::current() {
 }
 
 ProfiledThread *ProfiledThread::currentSignalSafe() {
-  // Signal-safe: never allocate, just return existing TLS or null
-  pthread_key_t key = _tls_key;
-  return key != 0 ? (ProfiledThread *)pthread_getspecific(key) : nullptr;
+  // Signal-safe: never allocate, just return existing TLS or null.
+  // Use _tls_key_initialized instead of key != 0 because pthread_key_create
+  // can legitimately return key 0 (common on musl where keys start at 0).
+  return __atomic_load_n(&_tls_key_initialized, __ATOMIC_ACQUIRE) ? (ProfiledThread *)pthread_getspecific(_tls_key) : nullptr;
 }
 
 int ProfiledThread::popFreeSlot() {
