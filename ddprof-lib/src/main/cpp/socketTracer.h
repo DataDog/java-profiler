@@ -13,19 +13,22 @@
 
 /**
  * Operation name constants used as the {@code operation} field in SocketIOEvent.
- * These are static string literals — no allocation needed in hot paths.
+ * These are string literals — no allocation needed in hot paths.
+ * Declared inline to avoid duplicate definitions when the header is included
+ * from multiple translation units (C++17).
  */
-static constexpr const char* SOCKET_OP_READ      = "read";
-static constexpr const char* SOCKET_OP_WRITE      = "write";
-static constexpr const char* SOCKET_OP_READV      = "readv";
-static constexpr const char* SOCKET_OP_WRITEV     = "writev";
-static constexpr const char* SOCKET_OP_RECV      = "recv";
-static constexpr const char* SOCKET_OP_SEND      = "send";
-static constexpr const char* SOCKET_OP_RECVMSG   = "recvmsg";
-static constexpr const char* SOCKET_OP_SENDMSG   = "sendmsg";
-static constexpr const char* SOCKET_OP_CONNECT    = "connect";
-static constexpr const char* SOCKET_OP_ACCEPT     = "accept";
-static constexpr const char* SOCKET_OP_EPOLL_WAIT = "epoll_wait";
+inline constexpr const char* SOCKET_OP_READ      = "read";
+inline constexpr const char* SOCKET_OP_WRITE      = "write";
+inline constexpr const char* SOCKET_OP_READV      = "readv";
+inline constexpr const char* SOCKET_OP_WRITEV     = "writev";
+inline constexpr const char* SOCKET_OP_RECV      = "recv";
+inline constexpr const char* SOCKET_OP_SEND      = "send";
+inline constexpr const char* SOCKET_OP_RECVMSG   = "recvmsg";
+inline constexpr const char* SOCKET_OP_SENDMSG   = "sendmsg";
+inline constexpr const char* SOCKET_OP_CONNECT    = "connect";
+inline constexpr const char* SOCKET_OP_ACCEPT     = "accept";
+inline constexpr const char* SOCKET_OP_ACCEPT4    = "accept4";
+inline constexpr const char* SOCKET_OP_EPOLL_WAIT = "epoll_wait";
 
 /**
  * Intercepts socket I/O calls in Netty's native transport library via PLT patching

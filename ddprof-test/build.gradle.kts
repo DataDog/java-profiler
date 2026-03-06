@@ -47,6 +47,7 @@ dependencies {
   // Netty native epoll transport for socket-event integration tests
   "testCommon"(libs.netty.all)
   "testCommon"(variantOf(libs.netty.transport.epoll) { classifier("linux-x86_64") })
+  "testCommon"(variantOf(libs.netty.transport.epoll) { classifier("linux-aarch_64") })
 
   // Main/application dependencies
   "mainCommon"(libs.slf4j.simple)

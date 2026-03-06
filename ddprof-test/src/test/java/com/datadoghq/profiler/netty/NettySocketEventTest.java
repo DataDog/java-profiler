@@ -182,7 +182,8 @@ public class NettySocketEventTest extends AbstractProfilerTest {
                     op.equals("read") || op.equals("write") || op.equals("readv") ||
                     op.equals("writev") || op.equals("recv") || op.equals("send") ||
                     op.equals("recvmsg") || op.equals("sendmsg") ||
-                    op.equals("connect") || op.equals("accept") || op.equals("epoll_wait"),
+                    op.equals("connect") || op.equals("accept") || op.equals("accept4") ||
+                    op.equals("epoll_wait"),
                     "Unexpected operation: " + op);
 
                 // Any of the data-transfer operations (read/write variants) indicate

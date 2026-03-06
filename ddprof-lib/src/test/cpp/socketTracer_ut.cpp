@@ -88,6 +88,20 @@ TEST_F(SocketTracerTest, SocketIOEventNegativeBytesForNonTransferOps) {
     EXPECT_STREQ(event._operation, "connect");
 }
 
+TEST_F(SocketTracerTest, SocketIOEventAccept4Operation) {
+    // accept4 is the preferred accept variant on Linux (used by Netty and glibc).
+    // Verify it has its own distinct operation name and uses -1 for bytes.
+    SocketIOEvent event;
+    event._start     = 300ULL;
+    event._end       = 400ULL;
+    event._operation = SOCKET_OP_ACCEPT4;
+    event._bytes     = -1L;
+
+    EXPECT_STREQ(event._operation, "accept4");
+    EXPECT_STRNE(event._operation, SOCKET_OP_ACCEPT) << "accept4 must be distinct from accept";
+    EXPECT_EQ(event._bytes, -1L) << "accept4 does not transfer bytes";
+}
+
 // --------------------------------------------------------------------------
 // Operation name constant tests
 // --------------------------------------------------------------------------
@@ -103,6 +117,7 @@ TEST_F(SocketTracerTest, OperationNameConstantsAreCorrect) {
     EXPECT_STREQ(SOCKET_OP_SENDMSG,    "sendmsg");
     EXPECT_STREQ(SOCKET_OP_CONNECT,    "connect");
     EXPECT_STREQ(SOCKET_OP_ACCEPT,     "accept");
+    EXPECT_STREQ(SOCKET_OP_ACCEPT4,    "accept4");
     EXPECT_STREQ(SOCKET_OP_EPOLL_WAIT, "epoll_wait");
 }
 
@@ -110,7 +125,7 @@ TEST_F(SocketTracerTest, OperationNameConstantsAreDistinct) {
     const char* ops[] = {
         SOCKET_OP_READ, SOCKET_OP_WRITE, SOCKET_OP_READV, SOCKET_OP_WRITEV,
         SOCKET_OP_RECV, SOCKET_OP_SEND, SOCKET_OP_RECVMSG, SOCKET_OP_SENDMSG,
-        SOCKET_OP_CONNECT, SOCKET_OP_ACCEPT, SOCKET_OP_EPOLL_WAIT
+        SOCKET_OP_CONNECT, SOCKET_OP_ACCEPT, SOCKET_OP_ACCEPT4, SOCKET_OP_EPOLL_WAIT
     };
     const int num_ops = sizeof(ops) / sizeof(ops[0]);
     for (int i = 0; i < num_ops; i++) {

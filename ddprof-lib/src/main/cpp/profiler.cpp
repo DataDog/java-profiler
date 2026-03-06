@@ -1404,9 +1404,10 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   enableEngines();
 
-  // Always enable the dlopen hook so that libraries loaded after the profiler starts
-  // (e.g. Netty native transport) are patched by LibraryPatcher and SocketTracer.
-  switchLibraryTrap(true);
+  // Enable the dlopen hook when DWARF unwinding, remote symbolication, or socket
+  // tracing is active, so that libraries loaded after the profiler starts are
+  // processed by LibraryPatcher and SocketTracer as needed.
+  switchLibraryTrap(_cstack == CSTACK_DWARF || _remote_symbolication || SocketTracer::isInitialized());
 
   JfrMetadata::initialize(args._context_attributes);
   _num_context_attributes = args._context_attributes.size();
