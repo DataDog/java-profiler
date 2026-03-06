@@ -18,6 +18,7 @@
 #include "j9WallClock.h"
 #include "libraryPatcher.h"
 #include "objectSampler.h"
+#include "socketTracer.h"
 #include "os.h"
 #include "perfEvents.h"
 #include "safeAccess.h"
@@ -365,49 +366,38 @@ void Profiler::populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCac
  * - Returns is_marked=true if mark indicates termination (MARK_INTERPRETER, etc.)
  *
  * For traditional symbolication:
- * - Does symbol resolution via binarySearch() on the found library
+ * - Does full symbol resolution via findNativeMethod()
  * - Checks marks after symbol resolution (same O(log n) + O(1) cost)
- * - If no symbol found but PC is in a known library, packs as
- *   BCI_NATIVE_FRAME_REMOTE for library-relative rendering ([lib+0xoffset])
  */
 Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index) {
-  CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
+  if (_remote_symbolication) {
+    CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
+    if (lib != nullptr && lib->hasBuildId()) {
+      // Get symbol name and check mark
+      const char *method_name = nullptr;
+      lib->binarySearch((void*)pc, &method_name);
+      char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
-  if (_remote_symbolication && lib != nullptr && lib->hasBuildId()) {
-    // Get symbol name and check mark
-    const char *method_name = nullptr;
-    lib->binarySearch((void*)pc, &method_name);
-    char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
+      if (mark != 0) {
+        return {nullptr, BCI_NATIVE_FRAME, true};  // Marked - stop processing
+      }
 
-    if (mark != 0) {
-      return {nullptr, BCI_NATIVE_FRAME, true};  // Marked - stop processing
+      // Pack remote symbolication data using utility struct
+      uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
+      uint32_t lib_index = (uint32_t)lib->libIndex();
+      unsigned long packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
+
+      TEST_LOG("resolveNativeFrameForWalkVM: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u, packed=0x%zx",
+               lib->name(), lib->buildId(), pc, pc_offset, (int)mark, lib_index, packed);
+
+      return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
     }
-
-    // Pack remote symbolication data using utility struct
-    uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
-    uint32_t lib_index = (uint32_t)lib->libIndex();
-    unsigned long packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
-
-    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
   }
 
-  // Traditional symbol resolution
-  const char *method_name = nullptr;
-  if (lib != nullptr) {
-    lib->binarySearch((void*)pc, &method_name);
-  }
+  // Fallback: Traditional symbol resolution
+  const char *method_name = findNativeMethod((void*)pc);
   if (method_name != nullptr && NativeFunc::is_marked(method_name)) {
     return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, true);
-  }
-
-  // No symbol but known library: pack for library-relative identification.
-  // Reuses BCI_NATIVE_FRAME_REMOTE encoding; resolveMethod() in flightRecorder.cpp
-  // distinguishes remote vs local rendering via hasBuildId() && isRemoteSymbolication().
-  if (method_name == nullptr && lib != nullptr) {
-    uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
-    uint32_t lib_index = (uint32_t)lib->libIndex();
-    unsigned long packed = RemoteFramePacker::pack(pc_offset, 0, lib_index);
-    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
   }
 
   return NativeFrameResolution(method_name, BCI_NATIVE_FRAME, false);
@@ -924,6 +914,17 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
   _locks[lock_index].unlock();
 }
 
+void Profiler::recordSocketIO(int tid, SocketIOEvent *event) {
+  u32 lock_index = getLockIndex(tid);
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    return;
+  }
+  _jfr.recordSocketIO(lock_index, tid, event);
+  _locks[lock_index].unlock();
+}
+
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
                                     ASGCT_CallFrame *frames, bool truncated,
                                     jint event_type, Event *event) {
@@ -1391,6 +1392,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   LibraryPatcher::initialize();
+  SocketTracer::initialize();
 
   // Kernel symbols are useful only for perf_events without --all-user
   _libs->updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
@@ -1402,7 +1404,9 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   enableEngines();
 
-  switchLibraryTrap(_cstack == CSTACK_DWARF || _remote_symbolication);
+  // Always enable the dlopen hook so that libraries loaded after the profiler starts
+  // (e.g. Netty native transport) are patched by LibraryPatcher and SocketTracer.
+  switchLibraryTrap(true);
 
   JfrMetadata::initialize(args._context_attributes);
   _num_context_attributes = args._context_attributes.size();
@@ -1505,6 +1509,7 @@ Error Profiler::stop() {
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
   // owned by library metadata, so we must keep library patches active until after serialization
   LibraryPatcher::unpatch_libraries();
+  SocketTracer::unpatchLibraries();
 
   _state = IDLE;
   return Error::OK;

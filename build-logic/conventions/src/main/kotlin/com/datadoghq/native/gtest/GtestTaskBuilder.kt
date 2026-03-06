@@ -125,7 +125,13 @@ class GtestTaskBuilder(
                     val gtestPath = gtestHomePath()
                     libPath("$gtestPath/lib")
                 }
-                Platform.LINUX -> { /* System paths */ }
+                Platform.LINUX -> {
+                    // Support GTEST_HOME env var for custom installations
+                    val gtestHomeEnv = System.getenv("GTEST_HOME")
+                    if (!gtestHomeEnv.isNullOrBlank()) {
+                        libPath("$gtestHomeEnv/lib")
+                    }
+                }
             }
 
             // Add gtest libraries

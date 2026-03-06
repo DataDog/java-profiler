@@ -375,19 +375,11 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
       // Note: This is called during JFR serialization with lockAll() held (see Profiler::dump),
       // so the library array is stable - no concurrent dlopen_hook calls can modify it.
       CodeCache* lib = Libraries::instance()->getLibraryByIndex(lib_index);
-      if (lib != nullptr && lib->hasBuildId() && Profiler::instance()->isRemoteSymbolication()) {
+      if (lib != nullptr) {
         TEST_LOG("Found library: %s, build_id=%s", lib->name(), lib->buildId());
-        // Remote symbolication: defer to backend
+        // Create temporary RemoteFrameInfo for fillRemoteFrameInfo
         RemoteFrameInfo rfi(lib->buildId(), pc_offset, lib_index);
         fillRemoteFrameInfo(mi, &rfi);
-      } else if (lib != nullptr) {
-        // Locally unsymbolized: render as [libname+0xoffset]
-        char name_buf[256];
-        const char* s = lib->name();
-        const char* basename = strrchr(s, '/');
-        if (basename) basename++; else basename = s;
-        snprintf(name_buf, sizeof(name_buf), "[%s+0x%" PRIxPTR "]", basename, pc_offset);
-        fillNativeMethodInfo(mi, name_buf, nullptr);
       } else {
         TEST_LOG("WARNING: Library lookup failed for index %u", lib_index);
         fillNativeMethodInfo(mi, "unknown_library", nullptr);
@@ -1556,6 +1548,19 @@ void Recording::recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event) {
   flushIfNeeded(buf);
 }
 
+void Recording::recordSocketIO(Buffer *buf, int tid, SocketIOEvent *event) {
+  int start = buf->skip(1);
+  buf->putVar64(T_SOCKET_IO);
+  buf->putVar64(event->_start);
+  buf->putVar64(event->_end - event->_start);
+  buf->putVar64(tid);
+  buf->putUtf8(event->_operation);
+  buf->putVar64(event->_bytes);
+  writeContext(buf, Contexts::get());
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
 void Recording::recordAllocation(RecordingBuffer *buf, int tid,
                                  u64 call_trace_id, AllocEvent *event) {
   int start = buf->skip(1);
@@ -1755,6 +1760,18 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid,
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
       rec->recordQueueTime(buf, tid, event);
+    }
+  }
+}
+
+void FlightRecorder::recordSocketIO(int lock_index, int tid,
+                                    SocketIOEvent *event) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording *rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->recordSocketIO(buf, tid, event);
     }
   }
 }

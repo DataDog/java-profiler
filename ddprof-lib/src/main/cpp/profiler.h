@@ -315,7 +315,7 @@ public:
 
     /**
      * Pack remote symbolication data into a 64-bit jmethodID.
-     * Layout: pc_offset (44 bits) | mark (3 bits) | lib_index (15 bits)
+     * Layout: pc_offset (44 bits) | mark (3 bits) | lib_index (17 bits)
      */
     static inline unsigned long pack(uintptr_t pc_offset, char mark, uint32_t lib_index) {
       return (unsigned long)(
@@ -375,13 +375,13 @@ public:
   void recordWallClockEpoch(int tid, WallClockEpochEvent *event);
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
+  void recordSocketIO(int tid, SocketIOEvent *event);
   void writeLog(LogLevel level, const char *message);
   void writeLog(LogLevel level, const char *message, size_t len);
   void writeDatadogProfilerSetting(int tid, int length, const char *name,
                                    const char *value, const char *unit);
   void writeHeapUsage(long value, bool live);
   int eventMask() const { return _event_mask; }
-  bool isRemoteSymbolication() const { return _remote_symbolication; }
 
   const void *resolveSymbol(const char *name);
   const char *getLibraryName(const char *native_symbol);

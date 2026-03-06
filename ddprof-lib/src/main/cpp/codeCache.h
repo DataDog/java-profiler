@@ -31,6 +31,18 @@ enum ImportId {
   im_calloc,
   im_realloc,
   im_free,
+  im_read,
+  im_write,
+  im_readv,
+  im_writev,
+  im_recv,
+  im_send,
+  im_recvmsg,
+  im_sendmsg,
+  im_connect,
+  im_accept,
+  im_accept4,
+  im_epoll_wait,
   NUM_IMPORTS
 };
 

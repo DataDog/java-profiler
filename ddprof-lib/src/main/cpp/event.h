@@ -173,4 +173,12 @@ typedef struct QueueTimeEvent {
   u32 _queueLength;
 } QueueTimeEvent;
 
+/** Represents a single socket I/O operation intercepted via native PLT patching. */
+typedef struct SocketIOEvent {
+  u64 _start;                // start time in TSC ticks
+  u64 _end;                  // end time in TSC ticks
+  const char* _operation;    // operation name (pointer to a static string literal)
+  long _bytes;               // bytes transferred (negative when not applicable)
+} SocketIOEvent;
+
 #endif // _EVENT_H

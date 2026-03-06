@@ -302,14 +302,28 @@ void CodeCache::saveImport(ImportId id, void** entry) {
 
 void CodeCache::addImport(void **entry, const char *name) {
     switch (name[0]) {
+      case 'a':
+          if (strcmp(name, "accept") == 0) {
+              saveImport(im_accept, entry);
+          } else if (strcmp(name, "accept4") == 0) {
+              saveImport(im_accept4, entry);
+          }
+          break;
       case 'c':
           if (strcmp(name, "calloc") == 0) {
               saveImport(im_calloc, entry);
+          } else if (strcmp(name, "connect") == 0) {
+              saveImport(im_connect, entry);
           }
           break;
       case 'd':
           if (strcmp(name, "dlopen") == 0) {
               saveImport(im_dlopen, entry);
+          }
+          break;
+      case 'e':
+          if (strcmp(name, "epoll_wait") == 0) {
+              saveImport(im_epoll_wait, entry);
           }
           break;
       case 'f':
@@ -334,8 +348,30 @@ void CodeCache::addImport(void **entry, const char *name) {
           }
           break;
       case 'r':
-          if (strcmp(name, "realloc") == 0) {
+          if (strcmp(name, "read") == 0) {
+              saveImport(im_read, entry);
+          } else if (strcmp(name, "readv") == 0) {
+              saveImport(im_readv, entry);
+          } else if (strcmp(name, "realloc") == 0) {
               saveImport(im_realloc, entry);
+          } else if (strcmp(name, "recv") == 0) {
+              saveImport(im_recv, entry);
+          } else if (strcmp(name, "recvmsg") == 0) {
+              saveImport(im_recvmsg, entry);
+          }
+          break;
+      case 's':
+          if (strcmp(name, "send") == 0) {
+              saveImport(im_send, entry);
+          } else if (strcmp(name, "sendmsg") == 0) {
+              saveImport(im_sendmsg, entry);
+          }
+          break;
+      case 'w':
+          if (strcmp(name, "write") == 0) {
+              saveImport(im_write, entry);
+          } else if (strcmp(name, "writev") == 0) {
+              saveImport(im_writev, entry);
           }
           break;
     }

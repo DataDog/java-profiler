@@ -103,7 +103,14 @@ class GtestPlugin : Plugin<Project> {
                 "/usr/local/include/gtest"
             )
         }
-        return locations.any { File(it).exists() }
+        if (locations.any { File(it).exists() }) return true
+
+        // Also check GTEST_HOME environment variable
+        val gtestHomeEnv = System.getenv("GTEST_HOME")
+        if (!gtestHomeEnv.isNullOrBlank()) {
+            return File("$gtestHomeEnv/include/gtest").exists()
+        }
+        return false
     }
 
     private fun createBuildNativeLibsTask(project: Project, extension: GtestExtension, hasGtest: Boolean) {
@@ -226,7 +233,15 @@ class GtestPlugin : Plugin<Project> {
                 }
                 listOf(File("$gtestPath/include"))
             }
-            Platform.LINUX -> emptyList() // System includes
+            Platform.LINUX -> {
+                // Support GTEST_HOME env var for custom installations
+                val gtestHomeEnv = System.getenv("GTEST_HOME")
+                if (!gtestHomeEnv.isNullOrBlank()) {
+                    listOf(File("$gtestHomeEnv/include"))
+                } else {
+                    emptyList() // System includes
+                }
+            }
         }
     }
 }

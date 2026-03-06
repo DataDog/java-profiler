@@ -3,20 +3,23 @@
 [versions]
 cpp-standard = "17"
 kotlin = "1.9.22"
-spotless = "8.3.0"
+spotless = "8.2.1"
 
 # Testing
 junit = "5.9.2"
 junit-platform = "1.9.2"  # JUnit Platform version corresponding to JUnit Jupiter 5.9.2
 junit-pioneer = "1.9.1"
-slf4j = "2.0.17"
+slf4j = "1.7.32"
 
 # Profiler runtime
 jmc = "8.1.0"
 jol = "0.17"
-lz4 = "1.10.4"
-snappy = "1.1.10.8"
+lz4 = "1.10.3"
+snappy = "1.1.10.1"
 zstd = "1.5.7-7"
+
+# Netty native transport (for socket tracking tests)
+netty = "4.1.115.Final"
 
 # Code analysis
 asm = "9.9.1"
@@ -46,6 +49,10 @@ zstd = { module = "com.github.luben:zstd-jni", version.ref = "zstd" }
 
 # Bytecode analysis
 asm = { module = "org.ow2.asm:asm", version.ref = "asm" }
+
+# Netty native epoll transport (Linux x86_64 and aarch64 classifiers)
+netty-transport-epoll = { module = "io.netty:netty-transport-native-epoll", version.ref = "netty" }
+netty-all = { module = "io.netty:netty-all", version.ref = "netty" }
 
 # JMH benchmarking
 jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }
