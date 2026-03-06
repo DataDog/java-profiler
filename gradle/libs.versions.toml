@@ -3,7 +3,7 @@
 [versions]
 cpp-standard = "17"
 kotlin = "1.9.22"
-spotless = "8.2.1"
+spotless = "8.3.0"
 
 # Testing
 junit = "5.9.2"
@@ -14,7 +14,7 @@ slf4j = "2.0.17"
 # Profiler runtime
 jmc = "8.1.0"
 jol = "0.17"
-lz4 = "1.10.3"
+lz4 = "1.10.4"
 snappy = "1.1.10.8"
 zstd = "1.5.7-7"
 
