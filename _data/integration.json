@@ -1,6 +1,33 @@
 {
   "runs": [
     {
+      "id": "100877904",
+      "timestamp": "2026-03-06T12:42:28Z",
+      "ddprof_branch": "dependabot/github_actions/actions/download-artifact-8",
+      "ddprof_sha": "331ade5a",
+      "ddprof_pr": {
+        "number": 402,
+        "url": "https://github.com/DataDog/java-profiler/pull/402",
+        "title": "Bump actions/download-artifact from 7 to 8"
+      },
+      "pipeline": {
+        "id": "100877904",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100877904"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 40,
+        "failed_jobs": 0,
+        "total_scenarios": 80,
+        "passed_scenarios": 80,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "100863417",
       "timestamp": "2026-03-06T11:30:55Z",
       "ddprof_branch": "main",
@@ -221,40 +248,6 @@
         "failed_scenarios": 0,
         "unknown_scenarios": 0,
         "failed_configs": []
-      }
-    },
-    {
-      "id": "100742160",
-      "timestamp": "2026-03-05T20:44:28Z",
-      "ddprof_branch": "main",
-      "ddprof_sha": "2f57e9ba",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "100742160",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100742160"
-      },
-      "lib_version": "unknown",
-      "status": "partial",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 30,
-        "failed_jobs": 10,
-        "total_scenarios": 60,
-        "passed_scenarios": 60,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": [
-          "musl-arm64-hotspot-jdk11",
-          "musl-arm64-hotspot-jdk17",
-          "musl-arm64-hotspot-jdk21",
-          "musl-arm64-hotspot-jdk25",
-          "musl-arm64-hotspot-jdk8",
-          "musl-arm64-openj9-jdk11",
-          "musl-arm64-openj9-jdk17",
-          "musl-arm64-openj9-jdk21",
-          "musl-arm64-openj9-jdk25",
-          "musl-arm64-openj9-jdk8"
-        ]
       }
     }
   ]
