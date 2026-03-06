@@ -10,6 +10,9 @@ updates:
     labels:
       - "dependencies"
       - "no-release-notes"
+    ignore:
+      - dependency-name: "org.junit-pioneer:junit-pioneer"
+        versions: [">=2.0.0"]
     groups:
       gradle-minor:
         update-types:
