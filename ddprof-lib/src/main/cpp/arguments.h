@@ -189,6 +189,7 @@ public:
   bool _lightweight;
   bool _enable_method_cleanup;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
+  bool _native_sockets;        // Enable PLT patching of Netty native socket functions
 
   Arguments(bool persistent = false)
       : _buf(NULL),
@@ -223,7 +224,8 @@ public:
         _wallclock_sampler(ASGCT),
         _lightweight(false),
         _enable_method_cleanup(true),
-        _remote_symbolication(false) {}
+        _remote_symbolication(false),
+        _native_sockets(false) {}
 
   ~Arguments();
 

@@ -173,4 +173,22 @@ typedef struct QueueTimeEvent {
   u32 _queueLength;
 } QueueTimeEvent;
 
+// Operation types for NativeSocketEvent
+enum SocketOp {
+  SOCKET_OP_RECV = 0,
+  SOCKET_OP_SEND = 1,
+  SOCKET_OP_RECVFROM = 2,
+  SOCKET_OP_SENDTO = 3,
+  SOCKET_OP_READV = 4,
+  SOCKET_OP_WRITEV = 5,
+};
+
+typedef struct NativeSocketEvent {
+  u64 _start;
+  u64 _end;
+  int _fd;
+  u64 _bytes;
+  u32 _operation;
+} NativeSocketEvent;
+
 #endif // _EVENT_H

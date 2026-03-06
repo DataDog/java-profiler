@@ -31,6 +31,13 @@ enum ImportId {
   im_calloc,
   im_realloc,
   im_free,
+  // Socket I/O — intercepted in Netty native transport libraries
+  im_recv,
+  im_send,
+  im_recvfrom,
+  im_sendto,
+  im_readv,
+  im_writev,
   NUM_IMPORTS
 };
 
