@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk11
 
 ## musl-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-03-06 04:52:19 EST
+**Date:** 2026-03-06 05:53:49 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 525 |
-| Sample Rate | 8.75/sec |
-| Health Score | 547% |
+| CPU Samples | 631 |
+| Sample Rate | 10.52/sec |
+| Health Score | 657% |
 | Threads | 8 |
-| Allocations | 366 |
+| Allocations | 346 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 740 |
-| Sample Rate | 12.33/sec |
-| Health Score | 771% |
+| CPU Samples | 1034 |
+| Sample Rate | 17.23/sec |
+| Health Score | 1077% |
 | Threads | 10 |
-| Allocations | 479 |
+| Allocations | 539 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 29-30 cores)</summary>
+<summary>CPU Timeline (1 unique values: 30-30 cores)</summary>
 
 ```
-1772790348 30
-1772790353 30
-1772790358 30
-1772790363 30
-1772790368 30
-1772790373 30
-1772790378 30
-1772790383 30
-1772790388 30
-1772790393 30
-1772790398 30
-1772790403 30
-1772790408 30
-1772790413 30
-1772790418 29
-1772790423 29
-1772790428 29
-1772790433 29
-1772790438 29
-1772790443 29
+1772794082 30
+1772794087 30
+1772794092 30
+1772794097 30
+1772794102 30
+1772794107 30
+1772794112 30
+1772794117 30
+1772794122 30
+1772794127 30
+1772794132 30
+1772794137 30
+1772794142 30
+1772794147 30
+1772794152 30
+1772794157 30
+1772794162 30
+1772794167 30
+1772794172 30
+1772794177 30
 ```
 </details>
 
