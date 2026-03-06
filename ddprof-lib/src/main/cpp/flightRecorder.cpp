@@ -1548,12 +1548,13 @@ void Recording::recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event) {
   flushIfNeeded(buf);
 }
 
-void Recording::recordSocketIO(Buffer *buf, int tid, SocketIOEvent *event) {
+void Recording::recordSocketIO(Buffer *buf, int tid, u64 call_trace_id, SocketIOEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_SOCKET_IO);
   buf->putVar64(event->_start);
   buf->putVar64(event->_end - event->_start);
   buf->putVar64(tid);
+  buf->putVar64(call_trace_id);
   buf->putUtf8(event->_operation);
   buf->putVar64(event->_bytes);
   writeContext(buf, Contexts::get());
@@ -1764,17 +1765,6 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid,
   }
 }
 
-void FlightRecorder::recordSocketIO(int lock_index, int tid,
-                                    SocketIOEvent *event) {
-  OptionalSharedLockGuard locker(&_rec_lock);
-  if (locker.ownsLock()) {
-    Recording *rec = _rec;
-    if (rec != nullptr) {
-      Buffer *buf = rec->buffer(lock_index);
-      rec->recordSocketIO(buf, tid, event);
-    }
-  }
-}
 
 void FlightRecorder::recordDatadogSetting(int lock_index, int length,
                                           const char *name, const char *value,
@@ -1828,6 +1818,9 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
           break;
         case BCI_PARK:
           rec->recordThreadPark(buf, tid, call_trace_id, (LockEvent *)event);
+          break;
+        case BCI_SOCKET_IO:
+          rec->recordSocketIO(buf, tid, call_trace_id, (SocketIOEvent *)event);
           break;
         }
         rec->flushIfNeeded(buf);

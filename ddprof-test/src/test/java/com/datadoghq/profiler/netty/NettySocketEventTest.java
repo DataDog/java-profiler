@@ -26,6 +26,9 @@ import io.netty.handler.codec.bytes.ByteArrayDecoder;
 import io.netty.handler.codec.bytes.ByteArrayEncoder;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.openjdk.jmc.common.IMCFrame;
+import org.openjdk.jmc.common.IMCMethod;
+import org.openjdk.jmc.common.IMCStackTrace;
 import org.openjdk.jmc.common.item.IAttribute;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
@@ -43,6 +46,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
 import static org.openjdk.jmc.common.unit.UnitLookup.NUMBER;
 import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
+import static org.openjdk.jmc.common.unit.UnitLookup.STACKTRACE;
 import static org.openjdk.jmc.common.unit.UnitLookup.TIMESTAMP;
 
 /**
@@ -158,19 +162,25 @@ public class NettySocketEventTest extends AbstractProfilerTest {
         IAttribute<IQuantity> startTimeAttr = attr("startTime", "", "", TIMESTAMP);
         IAttribute<String> operationAttr = attr("operation", "", "", PLAIN_TEXT);
         IAttribute<IQuantity> bytesAttr = attr("bytesTransferred", "", "", NUMBER);
+        IAttribute<IMCStackTrace> stackTraceAttr = attr("stackTrace", "stackTrace", "", STACKTRACE);
 
         IItemCollection events = verifyEvents("datadog.SocketIO");
         assertNotNull(events, "Expected datadog.SocketIO events");
 
         boolean foundDataTransfer = false;
+        boolean foundEventWithStacktrace = false;
+        boolean foundNativeFrameInStacktrace = false;
+        int maxStackDepth = 0;
         for (IItemIterable it : events) {
             IMemberAccessor<IQuantity, IItem> startTimeAccessor = startTimeAttr.getAccessor(it.getType());
             IMemberAccessor<String, IItem> opAccessor = operationAttr.getAccessor(it.getType());
             IMemberAccessor<IQuantity, IItem> bytesAccessor = bytesAttr.getAccessor(it.getType());
+            IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor = stackTraceAttr.getAccessor(it.getType());
 
             assertNotNull(startTimeAccessor, "startTime accessor must be non-null");
             assertNotNull(opAccessor, "operation accessor must be non-null");
             assertNotNull(bytesAccessor, "bytesTransferred accessor must be non-null");
+            assertNotNull(stackTraceAccessor, "stackTrace accessor must be non-null");
 
             for (IItem item : it) {
                 long startNs = startTimeAccessor.getMember(item).longValue();
@@ -186,6 +196,42 @@ public class NettySocketEventTest extends AbstractProfilerTest {
                     op.equals("epoll_wait"),
                     "Unexpected operation: " + op);
 
+                // Check for stacktrace with native frames
+                IMCStackTrace stackTrace = stackTraceAccessor.getMember(item);
+                if (stackTrace != null && !stackTrace.getFrames().isEmpty()) {
+                    foundEventWithStacktrace = true;
+                    int depth = stackTrace.getFrames().size();
+                    maxStackDepth = Math.max(maxStackDepth, depth);
+
+                    // Check if stacktrace contains native frames
+                    // Native frames are captured from the socket I/O hook points
+                    // Look for frames that indicate native code execution
+                    for (int i = 0; i < stackTrace.getFrames().size(); i++) {
+                        IMCFrame frame = stackTrace.getFrames().get(i);
+                        IMCMethod frameMethod = frame.getMethod();
+                        if (frameMethod != null) {
+                            String methodName = frameMethod.getMethodName();
+                            String typeName = frameMethod.getType() != null ?
+                                frameMethod.getType().getFullName() : "";
+
+                            // Native frames show up with type names containing native library paths
+                            // or special markers like [Unknown], or native method indicators
+                            if (typeName.contains(".so") ||  // Shared library
+                                typeName.contains("[Unknown]") ||  // Unknown native code
+                                typeName.equals("") ||  // Empty type for native frames
+                                (methodName != null && (
+                                    methodName.contains("writev") ||
+                                    methodName.contains("readv") ||
+                                    methodName.contains("epoll") ||
+                                    methodName.endsWith("()")  // Native frames often show as funcname()
+                                ))) {
+                                foundNativeFrameInStacktrace = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
                 // Any of the data-transfer operations (read/write variants) indicate
                 // that socket I/O was successfully intercepted during the data exchange.
                 if (op.equals("read") || op.equals("write") || op.equals("readv") ||
@@ -198,6 +244,14 @@ public class NettySocketEventTest extends AbstractProfilerTest {
 
         assertTrue(foundDataTransfer,
                 "Expected at least one data-transfer socket I/O event from Netty data exchange");
+        assertTrue(foundEventWithStacktrace,
+                "Expected at least one socket I/O event with a non-empty stacktrace");
+        assertTrue(maxStackDepth > 1,
+                "Expected stacktraces with depth > 1 (found max depth: " + maxStackDepth +
+                "). Full stacktraces including native frames should have multiple frames.");
+        assertTrue(foundNativeFrameInStacktrace,
+                "Expected at least one socket I/O event with native frames in the stacktrace. " +
+                "Native frames should be captured from the hooked socket operations.");
     }
 
 }

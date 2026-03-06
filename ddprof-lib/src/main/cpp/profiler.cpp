@@ -28,6 +28,7 @@
 #include "thread.h"
 #include "tsc.h"
 #include "vmStructs.h"
+#include <ucontext.h>
 #include "wallClock.h"
 #include <algorithm>
 #include <dlfcn.h>
@@ -299,13 +300,16 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
                              bool *truncated, int lock_index) {
   if (_cstack == CSTACK_NO ||
       (event_type == BCI_ALLOC || event_type == BCI_ALLOC_OUTSIDE_TLAB) ||
-      (event_type != BCI_CPU && event_type != BCI_WALL &&
+      (event_type != BCI_CPU && event_type != BCI_WALL && event_type != BCI_SOCKET_IO &&
        _cstack == CSTACK_DEFAULT)) {
     return 0;
   }
   int max_depth = min(_max_stack_depth, MAX_NATIVE_FRAMES);
   const void *callchain[max_depth + 1]; // we can read one frame past when trying to figure out whether the result is truncated
   int native_frames = 0;
+
+  // For socket I/O events, skip emitSocketIOEvent and the hook frame (e.g., epoll_wait_hook)
+  int skip_frames = (event_type == BCI_SOCKET_IO) ? 2 : 0;
 
   if (event_type == BCI_CPU && _cpu_engine == &perf_events) {
     native_frames +=
@@ -317,11 +321,11 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
   } else if (_cstack == CSTACK_DWARF) {
     native_frames += StackWalker::walkDwarf(ucontext, callchain + native_frames,
                                             max_depth - native_frames,
-                                            java_ctx, truncated);
+                                            java_ctx, truncated, skip_frames);
   } else {
     native_frames += StackWalker::walkFP(ucontext, callchain + native_frames,
                                          max_depth - native_frames,
-                                         java_ctx, truncated);
+                                         java_ctx, truncated, skip_frames);
   }
 
   return convertNativeTrace(native_frames, callchain, frames, lock_index);
@@ -839,10 +843,11 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
         int vm_start = num_frames;
         int vm_frames = StackWalker::walkVM(ucontext, frames + vm_start, max_remaining, _features, eventTypeFromBCI(event_type), lock_index, &truncated);
         num_frames += vm_frames;
-      } else if (event_type == BCI_CPU || event_type == BCI_WALL) {
+      } else if (event_type == BCI_CPU || event_type == BCI_WALL || event_type == BCI_SOCKET_IO) {
         if (_cstack >= CSTACK_VM) {
           int vm_start = num_frames;
-          int vm_frames = StackWalker::walkVM(ucontext, frames + vm_start, max_remaining, _features, eventTypeFromBCI(event_type), lock_index, &truncated);
+          int skip_frames = (event_type == BCI_SOCKET_IO) ? 2 : 0;
+          int vm_frames = StackWalker::walkVM(ucontext, frames + vm_start, max_remaining, _features, eventTypeFromBCI(event_type), lock_index, &truncated, skip_frames);
           num_frames += vm_frames;
         } else {
           // Async events
@@ -914,16 +919,6 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
   _locks[lock_index].unlock();
 }
 
-void Profiler::recordSocketIO(int tid, SocketIOEvent *event) {
-  u32 lock_index = getLockIndex(tid);
-  if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
-    return;
-  }
-  _jfr.recordSocketIO(lock_index, tid, event);
-  _locks[lock_index].unlock();
-}
 
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
                                     ASGCT_CallFrame *frames, bool truncated,

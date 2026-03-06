@@ -20,6 +20,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
+#include <ucontext.h>
 #include <unistd.h>
 
 // --------------------------------------------------------------------------
@@ -109,7 +110,17 @@ static inline void emitSocketIOEvent(const char* operation, u64 start, u64 end, 
     event._end       = end;
     event._operation = operation;
     event._bytes     = bytes;
-    Profiler::instance()->recordSocketIO(tid, &event);
+
+    // Capture current context for stack walking
+    ucontext_t uctx;
+    void* ucontext_ptr = nullptr;
+    if (getcontext(&uctx) == 0) {
+        ucontext_ptr = &uctx;
+    }
+
+    // Call recordSample with BCI_SOCKET_IO event type
+    // counter=0, call_trace_id=0 (will be captured by recordSample)
+    Profiler::instance()->recordSample(ucontext_ptr, 0, tid, BCI_SOCKET_IO, 0, (Event*)&event);
 }
 
 // --------------------------------------------------------------------------

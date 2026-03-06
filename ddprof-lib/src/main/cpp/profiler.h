@@ -375,7 +375,6 @@ public:
   void recordWallClockEpoch(int tid, WallClockEpochEvent *event);
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
-  void recordSocketIO(int tid, SocketIOEvent *event);
   void writeLog(LogLevel level, const char *message);
   void writeLog(LogLevel level, const char *message, size_t len);
   void writeDatadogProfilerSetting(int tid, int length, const char *name,

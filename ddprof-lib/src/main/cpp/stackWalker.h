@@ -74,13 +74,13 @@ namespace StackWalkValidation {
 class StackWalker {
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                       StackWalkFeatures features, EventType event_type,
-                      const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated);
+                      const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated, int skip_frames = 0);
 
   public:
-    static int walkFP(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated = nullptr);
-    static int walkDwarf(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated = nullptr);
-    static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, StackWalkFeatures features, EventType event_type, int lock_index, bool* truncated = nullptr);
-    static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, VMJavaFrameAnchor* anchor, EventType event_type, int lock_index, bool* truncated = nullptr);
+    static int walkFP(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated = nullptr, int skip_frames = 0);
+    static int walkDwarf(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated = nullptr, int skip_frames = 0);
+    static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, StackWalkFeatures features, EventType event_type, int lock_index, bool* truncated = nullptr, int skip_frames = 0);
+    static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, VMJavaFrameAnchor* anchor, EventType event_type, int lock_index, bool* truncated = nullptr, int skip_frames = 0);
 
     static void checkFault(ProfiledThread* thrd = nullptr);
 };

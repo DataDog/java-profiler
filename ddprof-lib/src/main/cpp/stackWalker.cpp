@@ -66,7 +66,7 @@ static jmethodID getMethodId(VMMethod* method) {
 }
 
 
-int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated) {
+int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated, int skip_frames) {
     const void* pc;
     uintptr_t fp;
     uintptr_t sp;
@@ -84,19 +84,18 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
     }
 
     int depth = 0;
+    int skipped = 0;
     int actual_max_depth = truncated ? max_depth + 1 : max_depth;
 
     // Walk until the bottom of the stack or until the first Java frame
-    while (depth < actual_max_depth) {
-        if (CodeHeap::contains(pc) && !(depth == 0 && frame.unwindAtomicStub(pc)) &&
+    while (depth < actual_max_depth || skipped < skip_frames) {
+        if (CodeHeap::contains(pc) && !(depth == 0 && skipped >= skip_frames && frame.unwindAtomicStub(pc)) &&
             VMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
             java_ctx->set(pc, sp, fp);
             break;
         }
 
-        callchain[depth++] = pc;
-
-        // Check if the next frame is below on the current stack
+        // Check if we can unwind to the next frame
         if (fp < sp || fp >= sp + MAX_FRAME_SIZE || fp >= bottom) {
             break;
         }
@@ -106,13 +105,26 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
             break;
         }
 
-        pc = stripPointer(SafeAccess::load((void**)fp + FRAME_PC_SLOT));
-        if (inDeadZone(pc)) {
+        // Read next frame info
+        const void* next_pc = stripPointer(SafeAccess::load((void**)fp + FRAME_PC_SLOT));
+        if (inDeadZone(next_pc)) {
             break;
         }
 
-        sp = fp + (FRAME_PC_SLOT + 1) * sizeof(void*);
-        fp = (uintptr_t)SafeAccess::load((void**)fp);
+        uintptr_t next_sp = fp + (FRAME_PC_SLOT + 1) * sizeof(void*);
+        uintptr_t next_fp = (uintptr_t)SafeAccess::load((void**)fp);
+
+        // NOW decide whether to skip or collect the CURRENT frame (before moving to next)
+        if (skipped < skip_frames) {
+            skipped++;
+        } else {
+            callchain[depth++] = pc;
+        }
+
+        // Move to next frame
+        pc = next_pc;
+        sp = next_sp;
+        fp = next_fp;
     }
 
     if (truncated && depth > max_depth) {
@@ -123,7 +135,7 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
     return depth;
 }
 
-int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated) {
+int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated, int skip_frames) {
     const void* pc;
     uintptr_t fp;
     uintptr_t sp;
@@ -141,12 +153,13 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
     }
 
     int depth = 0;
+    int skipped = 0;
     Profiler* profiler = Profiler::instance();
     int actual_max_depth = truncated ? max_depth + 1 : max_depth;
 
     // Walk until the bottom of the stack or until the first Java frame
-    while (depth < actual_max_depth) {
-        if (CodeHeap::contains(pc) && !(depth == 0 && frame.unwindAtomicStub(pc)) &&
+    while (depth < actual_max_depth || skipped < skip_frames) {
+        if (CodeHeap::contains(pc) && !(depth == 0 && skipped >= skip_frames && frame.unwindAtomicStub(pc)) &&
             VMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
             // Don't dereference pc as it may point to unreadable memory
             // frame.adjustSP(page_start, pc, sp);
@@ -154,8 +167,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
             break;
         }
 
-        callchain[depth++] = pc;
-
+        // Unwind to next frame FIRST
         uintptr_t prev_sp = sp;
         CodeCache* cc = profiler->findLibraryByAddress(pc);
         FrameDesc f = cc != NULL ? cc->findFrameDesc(pc) : FrameDesc::default_frame;
@@ -183,15 +195,18 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         }
 
         const void* prev_pc = pc;
+        const void* next_pc;
+        uintptr_t next_fp = fp;
+
         if (f.fp_off & DW_PC_OFFSET) {
-            pc = (const char*)pc + (f.fp_off >> 1);
+            next_pc = (const char*)pc + (f.fp_off >> 1);
         } else {
             if (f.fp_off != DW_SAME_FP && f.fp_off < MAX_FRAME_SIZE && f.fp_off > -MAX_FRAME_SIZE) {
                 uintptr_t fp_addr = sp + f.fp_off;
                 if (!aligned(fp_addr)) {
                     break;
                 }
-                fp = (uintptr_t)SafeAccess::load((void**)fp_addr);
+                next_fp = (uintptr_t)SafeAccess::load((void**)fp_addr);
             }
 
             if (EMPTY_FRAME_SIZE > 0 || f.pc_off != DW_LINK_REGISTER) {
@@ -199,25 +214,36 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
                 if (!aligned(pc_addr)) {
                     break;
                 }
-                pc = stripPointer(SafeAccess::load((void**)pc_addr));
+                next_pc = stripPointer(SafeAccess::load((void**)pc_addr));
             } else if (depth == 1) {
-                pc = (const void*)frame.link();
+                next_pc = (const void*)frame.link();
             } else {
                 break;
             }
 
             if (EMPTY_FRAME_SIZE == 0 && cfa_off == 0 && f.fp_off != DW_SAME_FP) {
                 // AArch64 default_frame
-                sp = defaultSenderSP(sp, fp);
+                sp = defaultSenderSP(sp, next_fp);
                 if (sp < prev_sp || sp >= bottom || !aligned(sp)) {
                     break;
                 }
             }
         }
 
-        if (inDeadZone(pc) || (pc == prev_pc && sp == prev_sp)) {
+        if (inDeadZone(next_pc) || (next_pc == prev_pc && sp == prev_sp)) {
             break;
         }
+
+        // NOW decide whether to skip or collect the CURRENT frame (before moving to next)
+        if (skipped < skip_frames) {
+            skipped++;
+        } else {
+            callchain[depth++] = pc;
+        }
+
+        // Move to next frame
+        pc = next_pc;
+        fp = next_fp;
     }
 
     if (truncated && depth > max_depth) {
@@ -229,18 +255,18 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
 }
 
 __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
-                        StackWalkFeatures features, EventType event_type, int lock_index, bool* truncated) {
+                        StackWalkFeatures features, EventType event_type, int lock_index, bool* truncated, int skip_frames) {
     if (ucontext == NULL) {
         return walkVM(&empty_ucontext, frames, max_depth, features, event_type,
-                      callerPC(), (uintptr_t)callerSP(), (uintptr_t)callerFP(), lock_index, truncated);
+                      callerPC(), (uintptr_t)callerSP(), (uintptr_t)callerFP(), lock_index, truncated, skip_frames);
     } else {
         StackFrame frame(ucontext);
         return walkVM(ucontext, frames, max_depth, features, event_type,
-                      (const void*)frame.pc(), frame.sp(), frame.fp(), lock_index, truncated);
+                      (const void*)frame.pc(), frame.sp(), frame.fp(), lock_index, truncated, skip_frames);
     }
 }
 
-__attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, VMJavaFrameAnchor* anchor, EventType event_type, int lock_index, bool* truncated) {
+__attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, VMJavaFrameAnchor* anchor, EventType event_type, int lock_index, bool* truncated, int skip_frames) {
     uintptr_t sp = anchor->lastJavaSP();
     if (sp == 0) {
         return 0;
@@ -263,12 +289,12 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     }
 
     StackWalkFeatures no_features{};
-    return walkVM(ucontext, frames, max_depth, no_features, event_type, pc, sp, fp, lock_index, truncated);
+    return walkVM(ucontext, frames, max_depth, no_features, event_type, pc, sp, fp, lock_index, truncated, skip_frames);
 }
 
 __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                         StackWalkFeatures features, EventType event_type,
-                        const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated) {
+                        const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated, int skip_frames) {
     StackFrame frame(ucontext);
     uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
 
@@ -290,6 +316,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
     // Should be preserved across setjmp/longjmp
     volatile int depth = 0;
+    int native_frames_seen = 0;  // Count of native frames encountered (for skip_frames)
     int actual_max_depth = truncated ? max_depth + 1 : max_depth;
     bool fp_chain_fallback = false;
 
@@ -678,7 +705,12 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 fp_chain_fallback = true;
                 goto dwarf_unwind;
             }
-            fillFrame(frames[depth++], frame_bci, (void*)method_name);
+            // Skip initial native frames if requested (e.g., profiler internal frames for socket I/O)
+            if (native_frames_seen++ < skip_frames) {
+                // Don't record this frame, just continue unwinding
+            } else {
+                fillFrame(frames[depth++], frame_bci, (void*)method_name);
+            }
         }
 
         dwarf_unwind:

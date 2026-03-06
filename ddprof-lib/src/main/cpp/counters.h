@@ -63,6 +63,7 @@
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
+  X(UNWINDING_TIME_SOCKETIO, "unwinding_ticks_socketio")                       \
   X(CALLTRACE_STORAGE_DROPPED, "calltrace_storage_dropped_traces")             \
   X(LINE_NUMBER_TABLES, "line_number_tables")                                  \
   X(REMOTE_SYMBOLICATION_FRAMES, "remote_symbolication_frames")                \
