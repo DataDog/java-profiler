@@ -67,7 +67,7 @@ fi
 if [ "$BRANCH" != "$RELEASE_BRANCH" ]; then
   git checkout -b $RELEASE_BRANCH
   if ! git diff --quiet; then
-    git add build.gradle
+    git add build.gradle.kts
     git commit -m "[Automated] Release ${BASE}"
   fi
   git push $DRYRUN --atomic --set-upstream origin $RELEASE_BRANCH
@@ -82,7 +82,7 @@ fi
 
 CANDIDATE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
 
-git add build.gradle
+git add build.gradle.kts
 git commit -m "[Automated] Bump dev version to ${CANDIDATE}"
 
 git push $DRYRUN --atomic --set-upstream origin $BRANCH
