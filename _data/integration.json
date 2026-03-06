@@ -1,6 +1,33 @@
 {
   "runs": [
     {
+      "id": "100878526",
+      "timestamp": "2026-03-06T12:48:02Z",
+      "ddprof_branch": "dependabot/github_actions/actions/download-artifact-8",
+      "ddprof_sha": "d97965bb",
+      "ddprof_pr": {
+        "number": 402,
+        "url": "https://github.com/DataDog/java-profiler/pull/402",
+        "title": "Bump actions/download-artifact from 7 to 8"
+      },
+      "pipeline": {
+        "id": "100878526",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100878526"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 40,
+        "failed_jobs": 0,
+        "total_scenarios": 80,
+        "passed_scenarios": 80,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "100877904",
       "timestamp": "2026-03-06T12:42:28Z",
       "ddprof_branch": "dependabot/github_actions/actions/download-artifact-8",
@@ -209,33 +236,6 @@
       "pipeline": {
         "id": "100836573",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100836573"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 40,
-        "failed_jobs": 0,
-        "total_scenarios": 80,
-        "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "100836908",
-      "timestamp": "2026-03-06T09:35:10Z",
-      "ddprof_branch": "dependabot/gradle/gradle-minor-6ec1433625",
-      "ddprof_sha": "3c63f38c",
-      "ddprof_pr": {
-        "number": 412,
-        "url": "https://github.com/DataDog/java-profiler/pull/412",
-        "title": "Bump the gradle-minor group with 4 updates"
-      },
-      "pipeline": {
-        "id": "100836908",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100836908"
       },
       "lib_version": "unknown",
       "status": "passed",

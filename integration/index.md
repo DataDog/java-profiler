@@ -13,6 +13,22 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 <details markdown="1">
 <summary>
+<strong>2026-03-06 12:48</strong> | ✅ | dependabot/github_actions/actions/download-artifact-8 | PR [#402](https://github.com/DataDog/java-profiler/pull/402) | Pipeline [#100878526](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100878526)
+</summary>
+
+**Version:** unknown
+**Commit:** d97965bb
+
+| Metric | Value |
+|--------|-------|
+| Jobs | 40 |
+| Passed | 40 |
+| Failed | 0 |
+
+</details>
+
+<details markdown="1">
+<summary>
 <strong>2026-03-06 12:42</strong> | ✅ | dependabot/github_actions/actions/download-artifact-8 | PR [#402](https://github.com/DataDog/java-profiler/pull/402) | Pipeline [#100877904](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100877904)
 </summary>
 
@@ -146,22 +162,6 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 **Version:** unknown
 **Commit:** 5b896e25
-
-| Metric | Value |
-|--------|-------|
-| Jobs | 40 |
-| Passed | 40 |
-| Failed | 0 |
-
-</details>
-
-<details markdown="1">
-<summary>
-<strong>2026-03-06 09:35</strong> | ✅ | dependabot/gradle/gradle-minor-6ec1433625 | PR [#412](https://github.com/DataDog/java-profiler/pull/412) | Pipeline [#100836908](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100836908)
-</summary>
-
-**Version:** unknown
-**Commit:** 3c63f38c
 
 | Metric | Value |
 |--------|-------|

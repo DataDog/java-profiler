@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk21
 
 ## musl-x64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-03-06 07:42:32 EST
+**Date:** 2026-03-06 07:48:06 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 469 |
-| Sample Rate | 7.82/sec |
-| Health Score | 489% |
+| CPU Samples | 521 |
+| Sample Rate | 8.68/sec |
+| Health Score | 542% |
 | Threads | 9 |
-| Allocations | 406 |
+| Allocations | 397 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 656 |
-| Sample Rate | 10.93/sec |
-| Health Score | 683% |
-| Threads | 12 |
-| Allocations | 494 |
+| CPU Samples | 692 |
+| Sample Rate | 11.53/sec |
+| Health Score | 721% |
+| Threads | 9 |
+| Allocations | 506 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1772800608 24
-1772800613 24
-1772800618 24
-1772800623 24
-1772800628 24
-1772800633 24
-1772800638 24
-1772800643 24
-1772800648 24
-1772800653 24
-1772800658 24
-1772800663 24
-1772800668 24
-1772800673 24
-1772800678 24
-1772800683 24
-1772800688 24
-1772800693 24
-1772800698 24
-1772800703 24
+1772800926 24
+1772800931 24
+1772800936 24
+1772800941 24
+1772800946 24
+1772800951 24
+1772800956 24
+1772800961 24
+1772800966 24
+1772800971 24
+1772800976 24
+1772800981 24
+1772800986 24
+1772800991 24
+1772800996 24
+1772801001 24
+1772801006 24
+1772801011 24
+1772801016 24
+1772801021 24
 ```
 </details>
 
