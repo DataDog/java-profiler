@@ -18,7 +18,7 @@ jobs:
     steps:
       - name: Get project milestones
         id: milestones
-        uses: actions/github-script@47f7cf65b5ced0830a325f705cad64f2f58dddf7 # 3.1.0
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # 8.0.0
         with:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
@@ -34,7 +34,7 @@ jobs:
             return milestones.length == 0 ? null : milestones[0].number
       - name: Update Pull Request
         if: steps.milestones.outputs.result != null
-        uses: actions/github-script@47f7cf65b5ced0830a325f705cad64f2f58dddf7 # 3.1.0
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # 8.0.0
         with:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
