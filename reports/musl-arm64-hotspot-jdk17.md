@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk17
 
 ## musl-arm64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-03-06 04:35:18 EST
+**Date:** 2026-03-06 04:35:41 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,26 +28,28 @@ title: musl-arm64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 73 |
-| Sample Rate | 1.22/sec |
-| Health Score | 76% |
+| CPU Samples | 80 |
+| Sample Rate | 1.33/sec |
+| Health Score | 83% |
 | Threads | 9 |
-| Allocations | 64 |
+| Allocations | 58 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 75 |
-| Sample Rate | 1.25/sec |
-| Health Score | 78% |
-| Threads | 7 |
-| Allocations | 32 |
+| CPU Samples | 280 |
+| Sample Rate | 4.67/sec |
+| Health Score | 292% |
+| Threads | 9 |
+| Allocations | 112 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
+1772789546 24
+1772789551 24
 1772789556 24
 1772789561 24
 1772789566 24
@@ -66,8 +68,6 @@ title: musl-arm64-hotspot-jdk17
 1772789631 24
 1772789636 24
 1772789641 24
-1772789646 24
-1772789651 24
 ```
 </details>
 
