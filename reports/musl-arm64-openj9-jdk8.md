@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk8
 
 ## musl-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-03-06 04:35:41 EST
+**Date:** 2026-03-06 04:46:59 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 98 |
-| Sample Rate | 1.63/sec |
-| Health Score | 102% |
+| CPU Samples | 94 |
+| Sample Rate | 1.57/sec |
+| Health Score | 98% |
 | Threads | 8 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: musl-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 36 |
-| Sample Rate | 0.60/sec |
-| Health Score | 37% |
-| Threads | 7 |
+| CPU Samples | 100 |
+| Sample Rate | 1.67/sec |
+| Health Score | 104% |
+| Threads | 9 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1772789469 24
-1772789474 24
-1772789479 24
-1772789484 24
-1772789489 24
-1772789494 24
-1772789499 24
-1772789504 24
-1772789509 24
-1772789514 24
-1772789519 24
-1772789524 24
-1772789529 24
-1772789534 24
-1772789539 24
-1772789544 24
-1772789549 24
-1772789554 24
-1772789559 24
-1772789564 24
+1772790169 24
+1772790174 24
+1772790179 24
+1772790184 24
+1772790189 24
+1772790194 24
+1772790199 24
+1772790204 24
+1772790209 24
+1772790214 24
+1772790219 24
+1772790224 24
+1772790229 24
+1772790234 24
+1772790239 24
+1772790244 24
+1772790249 24
+1772790254 24
+1772790259 24
+1772790264 24
 ```
 </details>
 

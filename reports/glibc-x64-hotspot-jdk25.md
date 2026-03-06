@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk25
 
 ## glibc-x64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-03-06 04:35:40 EST
+**Date:** 2026-03-06 04:46:58 EST
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 473 |
-| Sample Rate | 7.88/sec |
-| Health Score | 492% |
-| Threads | 9 |
-| Allocations | 370 |
+| CPU Samples | 412 |
+| Sample Rate | 6.87/sec |
+| Health Score | 429% |
+| Threads | 8 |
+| Allocations | 371 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 635 |
-| Sample Rate | 10.58/sec |
-| Health Score | 661% |
+| CPU Samples | 732 |
+| Sample Rate | 12.20/sec |
+| Health Score | 762% |
 | Threads | 11 |
-| Allocations | 456 |
+| Allocations | 477 |
 
 <details>
-<summary>CPU Timeline (4 unique values: 26-32 cores)</summary>
+<summary>CPU Timeline (2 unique values: 28-32 cores)</summary>
 
 ```
-1772789460 28
-1772789465 28
-1772789470 28
-1772789475 28
-1772789480 27
-1772789485 27
-1772789490 27
-1772789495 27
-1772789500 27
-1772789505 27
-1772789510 27
-1772789515 27
-1772789520 28
-1772789525 28
-1772789530 28
-1772789535 28
-1772789540 26
-1772789545 26
-1772789550 26
-1772789555 26
+1772790181 28
+1772790186 28
+1772790191 28
+1772790196 28
+1772790201 28
+1772790206 28
+1772790211 28
+1772790216 28
+1772790221 28
+1772790226 28
+1772790231 28
+1772790236 28
+1772790241 28
+1772790246 32
+1772790251 32
+1772790256 32
+1772790261 32
+1772790266 32
+1772790271 32
+1772790276 32
 ```
 </details>
 
