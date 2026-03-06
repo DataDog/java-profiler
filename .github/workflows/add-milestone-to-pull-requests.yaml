@@ -22,7 +22,7 @@ jobs:
         with:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
-            const list = await github.issues.listMilestones({
+            const list = await github.rest.issues.listMilestones({
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open'
@@ -39,7 +39,7 @@ jobs:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
             // Confusingly, the issues api is used because pull requests are issues
-            await github.issues.update({
+            await github.rest.issues.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: ${{ github.event.pull_request.number }},

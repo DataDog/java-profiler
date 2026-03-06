@@ -25,7 +25,7 @@ jobs:
         with:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
-            const milestones = await github.paginate(github.issues.listMilestones, {
+            const milestones = await github.paginate(github.rest.issues.listMilestones, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'all'
@@ -44,7 +44,7 @@ jobs:
         with:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
-            await github.issues.updateMilestone({
+            await github.rest.issues.updateMilestone({
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'closed',
