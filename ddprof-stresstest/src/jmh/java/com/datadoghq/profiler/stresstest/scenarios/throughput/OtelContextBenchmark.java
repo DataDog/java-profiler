@@ -55,6 +55,7 @@ public class OtelContextBenchmark {
 
     private static volatile JavaProfiler profiler;
     private static Object lock = new Object();
+    private static int threadsCount = 0;
 
     @Setup(Level.Iteration)
     public void setup() throws IOException {
@@ -64,13 +65,15 @@ public class OtelContextBenchmark {
                 Path jfrFile = Files.createTempFile("otel-ctx-profiler", ".jfr");        
                 profiler.execute(String.format("start,cpu=1ms,ctxstorage=%s,jfr,file=%s", mode, jfrFile.toAbsolutePath()));
             }
+            threadsCount ++;
         }
     }
 
     @TearDown(Level.Iteration)
     public void tearDown() throws IOException {
         synchronized(lock) {
-            if (profiler != null) {
+            threadsCount --;
+            if (threadsCount == 0) {
                 profiler.stop();
                 profiler = null;
             }
