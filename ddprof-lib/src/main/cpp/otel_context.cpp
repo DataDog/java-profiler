@@ -40,7 +40,7 @@ size_t OtelContexts::_capacity = 0;
 // Since OtelContextV2Record has a flexible array member, we allocate a fixed-size
 // buffer that can hold the header plus attributes data.
 // Thread-local buffer for per-thread V2 records (header + attrs_data space).
-static thread_local alignas(4) u8 otel_context_v2_buffer[V2_DEFAULT_MAX_RECORD_SIZE] = {};
+alignas(4) static thread_local u8 otel_context_v2_buffer[V2_DEFAULT_MAX_RECORD_SIZE] = {};
 static thread_local OtelContextV2Record* otel_context_v2_record =
     reinterpret_cast<OtelContextV2Record*>(otel_context_v2_buffer);
 
