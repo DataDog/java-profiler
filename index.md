@@ -5,13 +5,13 @@ title: Java Profiler Build - Test Dashboard
 
 # Java Profiler Build - Test Dashboard
 
-> **Last Updated:** 2026-03-06 18:00 UTC
+> **Last Updated:** 2026-03-10 17:36 UTC
 
 ## Quick Status
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](integration/) | [#100983844](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100983844) | ✅ | jb/netty_native_socket | - |
+| [Integration](integration/) | [#101685631](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101685631) | ✅ | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) |
 | [Benchmarks](benchmarks/) | - | - | - | - |
 | [Reliability](reliability/) | - | - | - | - |
 
@@ -37,11 +37,11 @@ Tests multiple allocator configurations (gmalloc, tcmalloc, jemalloc).
 
 | Date | Type | Pipeline | Branch | PR | Status |
 |------|------|----------|--------|-----|--------|
+| 2026-03-10 | Integration | [#101685631](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101685631) | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) | ✅ |
 | 2026-03-06 | Integration | [#100983844](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100983844) | jb/netty_native_socket | - | ✅ |
 | 2026-03-06 | Integration | [#100942066](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100942066) | jb/native_allocs | [#398](https://github.com/DataDog/java-profiler/pull/398) | ⚠️ |
 | 2026-03-06 | Integration | [#100878526](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100878526) | dependabot/github_actions/actions/download-artifact-8 | [#402](https://github.com/DataDog/java-profiler/pull/402) | ✅ |
 | 2026-03-06 | Integration | [#100877904](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100877904) | dependabot/github_actions/actions/download-artifact-8 | [#402](https://github.com/DataDog/java-profiler/pull/402) | ✅ |
-| 2026-03-06 | Integration | [#100863417](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100863417) | main | - | ✅ |
 
 ---
 
