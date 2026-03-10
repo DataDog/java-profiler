@@ -1,6 +1,33 @@
 {
   "runs": [
     {
+      "id": "101695464",
+      "timestamp": "2026-03-10T17:55:43Z",
+      "ddprof_branch": "jb/libraries_reentrancy",
+      "ddprof_sha": "d2117548",
+      "ddprof_pr": {
+        "number": 413,
+        "url": "https://github.com/DataDog/java-profiler/pull/413",
+        "title": "Fix async-signal-unsafe CodeCacheArray reads"
+      },
+      "pipeline": {
+        "id": "101695464",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101695464"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 40,
+        "failed_jobs": 0,
+        "total_scenarios": 80,
+        "passed_scenarios": 80,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "101685631",
       "timestamp": "2026-03-10T17:36:34Z",
       "ddprof_branch": "jb/libraries_reentrancy",
@@ -231,33 +258,6 @@
       "pipeline": {
         "id": "100854218",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100854218"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 40,
-        "failed_jobs": 0,
-        "total_scenarios": 80,
-        "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "100839688",
-      "timestamp": "2026-03-06T09:52:14Z",
-      "ddprof_branch": "dependabot/github_actions/actions/upload-artifact-7",
-      "ddprof_sha": "7455011f",
-      "ddprof_pr": {
-        "number": 403,
-        "url": "https://github.com/DataDog/java-profiler/pull/403",
-        "title": "Bump actions/upload-artifact from 4 to 7"
-      },
-      "pipeline": {
-        "id": "100839688",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100839688"
       },
       "lib_version": "unknown",
       "status": "passed",
