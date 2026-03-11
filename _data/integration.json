@@ -1,6 +1,37 @@
 {
   "runs": [
     {
+      "id": "101810015",
+      "timestamp": "2026-03-11T09:23:30Z",
+      "ddprof_branch": "jb/libraries_reentrancy",
+      "ddprof_sha": "87302715",
+      "ddprof_pr": {
+        "number": 413,
+        "url": "https://github.com/DataDog/java-profiler/pull/413",
+        "title": "Harden CodeCacheArray and profiler against signal-handler races"
+      },
+      "pipeline": {
+        "id": "101810015",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101810015"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 37,
+        "failed_jobs": 3,
+        "total_scenarios": 76,
+        "passed_scenarios": 75,
+        "failed_scenarios": 1,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "glibc-arm64-hotspot-jdk17",
+          "musl-arm64-hotspot-jdk11",
+          "musl-arm64-openj9-jdk11"
+        ]
+      }
+    },
+    {
       "id": "101802095",
       "timestamp": "2026-03-11T08:33:06Z",
       "ddprof_branch": "jb/libraries_reentrancy",
@@ -239,29 +270,6 @@
       "pipeline": {
         "id": "100859742",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100859742"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 40,
-        "failed_jobs": 0,
-        "total_scenarios": 80,
-        "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "100859404",
-      "timestamp": "2026-03-06T11:13:16Z",
-      "ddprof_branch": "main",
-      "ddprof_sha": "94b1c49a",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "100859404",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100859404"
       },
       "lib_version": "unknown",
       "status": "passed",
