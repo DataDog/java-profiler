@@ -11,12 +11,12 @@
 #include "safeAccess.h"
 #include "stackFrame.h"
 #include "symbols.h"
-#include "vmStructs.h"
+#include "vmStructs.inline.h"
 #include "thread.h"
 
 
 const uintptr_t MAX_WALK_SIZE = 0x100000;
-const intptr_t MAX_INTERPRETER_FRAME_SIZE = 0x1000;
+const intptr_t MAX_FRAME_SIZE_WORDS = StackWalkValidation::MAX_FRAME_SIZE / sizeof(void*);  // 0x8000 = 32768 words
 
 static ucontext_t empty_ucontext{};
 
@@ -24,7 +24,6 @@ static ucontext_t empty_ucontext{};
 using StackWalkValidation::inDeadZone;
 using StackWalkValidation::aligned;
 using StackWalkValidation::MAX_FRAME_SIZE;
-using StackWalkValidation::SAME_STACK_DISTANCE;
 using StackWalkValidation::sameStack;
 
 // AArch64: on Linux, frame link is stored at the top of the frame,
@@ -59,7 +58,8 @@ static inline void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, 
 }
 
 static jmethodID getMethodId(VMMethod* method) {
-    if (!inDeadZone(method) && aligned((uintptr_t)method)) {
+    if (!inDeadZone(method) && aligned((uintptr_t)method)
+            && SafeAccess::isReadableRange(method, VMMethod::type_size())) {
         return method->validatedId();
     }
     return NULL;
@@ -112,7 +112,7 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
         }
 
         sp = fp + (FRAME_PC_SLOT + 1) * sizeof(void*);
-        fp = *(uintptr_t*)fp;
+        fp = (uintptr_t)SafeAccess::load((void**)fp);
     }
 
     if (truncated && depth > max_depth) {
@@ -187,11 +187,19 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
             pc = (const char*)pc + (f.fp_off >> 1);
         } else {
             if (f.fp_off != DW_SAME_FP && f.fp_off < MAX_FRAME_SIZE && f.fp_off > -MAX_FRAME_SIZE) {
-                fp = (uintptr_t)SafeAccess::load((void**)(sp + f.fp_off));
+                uintptr_t fp_addr = sp + f.fp_off;
+                if (!aligned(fp_addr)) {
+                    break;
+                }
+                fp = (uintptr_t)SafeAccess::load((void**)fp_addr);
             }
 
             if (EMPTY_FRAME_SIZE > 0 || f.pc_off != DW_LINK_REGISTER) {
-                pc = stripPointer(SafeAccess::load((void**)(sp + f.pc_off)));
+                uintptr_t pc_addr = sp + f.pc_off;
+                if (!aligned(pc_addr)) {
+                    break;
+                }
+                pc = stripPointer(SafeAccess::load((void**)pc_addr));
             } else if (depth == 1) {
                 pc = (const void*)frame.link();
             } else {
@@ -232,7 +240,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     }
 }
 
-__attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, JavaFrameAnchor* anchor, EventType event_type, int lock_index, bool* truncated) {
+__attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, VMJavaFrameAnchor* anchor, EventType event_type, int lock_index, bool* truncated) {
     uintptr_t sp = anchor->lastJavaSP();
     if (sp == 0) {
         return 0;
@@ -244,7 +252,13 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     }
 
     const void* pc = anchor->lastJavaPC();
-    if (pc == NULL) {
+    if (pc == NULL || !CodeHeap::contains(pc)) {
+        // lastJavaPC is NULL (thread not in Java→native transition) or points outside
+        // the tracked CodeHeap range (e.g. interpreter/stub code in a separately mmap'd
+        // region). Read the actual return address from the stack frame instead.
+        if (!aligned(sp)) {
+            return 0;
+        }
         pc = ((const void**)sp)[-1];
     }
 
@@ -263,17 +277,38 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
     jmp_buf crash_protection_ctx;
     VMThread* vm_thread = VMThread::current();
+    if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
+        Counters::increment(WALKVM_THREAD_INACCESSIBLE);
+        vm_thread = NULL;
+    }
+    if (vm_thread == NULL) {
+        Counters::increment(WALKVM_NO_VMTHREAD);
+    } else {
+        Counters::increment(WALKVM_VMTHREAD_OK);
+    }
     void* saved_exception = vm_thread != NULL ? vm_thread->exception() : NULL;
 
     // Should be preserved across setjmp/longjmp
     volatile int depth = 0;
     int actual_max_depth = truncated ? max_depth + 1 : max_depth;
+    bool fp_chain_fallback = false;
 
-    JavaFrameAnchor* anchor = NULL;
+    ProfiledThread* profiled_thread = ProfiledThread::currentSignalSafe();
+
+    VMJavaFrameAnchor* anchor = NULL;
     if (vm_thread != NULL) {
         anchor = vm_thread->anchor();
+        if (anchor == NULL) {
+            Counters::increment(WALKVM_ANCHOR_NULL);
+        }
         vm_thread->exception() = &crash_protection_ctx;
+        if (profiled_thread != nullptr) {
+            profiled_thread->setCrashProtectionActive(true);
+        }
         if (setjmp(crash_protection_ctx) != 0) {
+            if (profiled_thread != nullptr) {
+                profiled_thread->setCrashProtectionActive(false);
+            }
             vm_thread->exception() = saved_exception;
             if (depth < max_depth) {
                 fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
@@ -283,10 +318,17 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     }
 
     const void* prev_native_pc = NULL;
+
+    // Saved anchor data — preserved across anchor consumption so inline
+    // recovery can redirect even after the anchor pointer has been set to NULL.
+    const void* saved_anchor_pc = NULL;
+    uintptr_t saved_anchor_sp = 0;
+    uintptr_t saved_anchor_fp = 0;
+
     // Show extended frame types and stub frames for execution-type events
     bool details = event_type <= MALLOC_SAMPLE || features.mixed;
 
-    if (details && vm_thread != NULL && vm_thread->isJavaThread()) {
+    if (details && vm_thread != NULL && vm_thread->cachedIsJavaThread()) {
         anchor = vm_thread->anchor();
     }
 
@@ -295,6 +337,11 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
         if (CodeHeap::contains(pc)) {
+            Counters::increment(WALKVM_HIT_CODEHEAP);
+            if (fp_chain_fallback) {
+                Counters::increment(WALKVM_FP_CHAIN_REACHED_CODEHEAP);
+                fp_chain_fallback = false;
+            }
             // If we're in JVM-generated code but don't have a VMThread, we cannot safely
             // walk the Java stack because crash protection is not set up.
             //
@@ -309,11 +356,12 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             //
             // The missing VMThread is a timing issue during thread lifecycle.
             if (vm_thread == NULL) {
+                Counters::increment(WALKVM_CODEH_NO_VM);
                 fillFrame(frames[depth++], BCI_ERROR, "break_no_vmthread");
                 break;
             }
             prev_native_pc = NULL; // we are in JVM code, no previous 'native' PC
-            NMethod* nm = CodeHeap::findNMethod(pc);
+            VMNMethod* nm = CodeHeap::findNMethod(pc);
             if (nm == NULL) {
                 if (anchor == NULL) {
                     // Add an error frame only if we cannot recover
@@ -326,6 +374,14 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             // since it provides reliable SP and FP.
             // Do not treat the topmost stub as Java frame.
             if (anchor != NULL && (depth > 0 || !nm->isStub())) {
+                Counters::increment(WALKVM_ANCHOR_CONSUMED);
+                // Preserve anchor data before consumption — getFrame() is read-only
+                // but we set anchor=NULL below, losing the pointer for later recovery.
+                if (saved_anchor_sp == 0) {
+                    saved_anchor_pc = anchor->lastJavaPC();
+                    saved_anchor_sp = anchor->lastJavaSP();
+                    saved_anchor_fp = anchor->lastJavaFP();
+                }
                 if (anchor->getFrame(pc, sp, fp) && !nm->contains(pc)) {
                     anchor = NULL;
                     continue;  // NMethod has changed as a result of correction
@@ -334,6 +390,13 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             }
 
             if (nm->isNMethod()) {
+                // Check if deoptimization is in progress before walking compiled frames
+                if (vm_thread != NULL && vm_thread->inDeopt()) {
+                    fillFrame(frames[depth++], BCI_ERROR, "break_deopt_compiled");
+                    break;
+                }
+
+                Counters::increment(WALKVM_JAVA_FRAME_OK);
                 int level = nm->level();
                 FrameTypeId type = details && level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED;
                 fillFrame(frames[depth++], type, 0, nm->method()->id());
@@ -360,7 +423,21 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     // Handle situations when sp is temporarily changed in the compiled code
                     frame.adjustSP(nm->entry(), pc, sp);
 
-                    sp += nm->frameSize() * sizeof(void*);
+                    // Validate NMethod metadata before using frameSize()
+                    int frame_size = nm->frameSize();
+                    if (frame_size <= 0 || frame_size > MAX_FRAME_SIZE_WORDS) {
+                        fillFrame(frames[depth++], BCI_ERROR, "break_invalid_framesize");
+                        break;
+                    }
+
+                    sp += frame_size * sizeof(void*);
+
+                    // Verify alignment before dereferencing sp as pointer (secondary defense)
+                    if (!aligned(sp)) {
+                        fillFrame(frames[depth++], BCI_ERROR, "break_misaligned_sp");
+                        break;
+                    }
+
                     fp = ((uintptr_t*)sp)[-FRAME_PC_SLOT - 1];
                     pc = ((const void**)sp)[-FRAME_PC_SLOT];
                     continue;
@@ -368,6 +445,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     continue;
                 }
 
+                Counters::increment(WALKVM_BREAK_COMPILED);
                 fillFrame(frames[depth++], BCI_ERROR, "break_compiled");
                 break;
             } else if (nm->isInterpreter()) {
@@ -376,14 +454,12 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     break;
                 }
 
-                bool is_plausible_interpreter_frame = !inDeadZone((const void*)fp) && aligned(fp)
-                    && sp > fp - MAX_INTERPRETER_FRAME_SIZE
-                    && sp < fp + bcp_offset * sizeof(void*);
-
+                bool is_plausible_interpreter_frame = StackWalkValidation::isPlausibleInterpreterFrame(fp, sp, bcp_offset);
                 if (is_plausible_interpreter_frame) {
                     VMMethod* method = ((VMMethod**)fp)[InterpreterFrame::method_offset];
                     jmethodID method_id = getMethodId(method);
                     if (method_id != NULL) {
+                        Counters::increment(WALKVM_JAVA_FRAME_OK);
                         const char* bytecode_start = method->bytecode();
                         const char* bcp = ((const char**)fp)[bcp_offset];
                         int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
@@ -400,6 +476,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     VMMethod* method = (VMMethod*)frame.method();
                     jmethodID method_id = getMethodId(method);
                     if (method_id != NULL) {
+                        Counters::increment(WALKVM_JAVA_FRAME_OK);
                         fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id);
 
                         if (is_plausible_interpreter_frame) {
@@ -407,17 +484,18 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                             sp = frame.senderSP();
                             fp = *(uintptr_t*)fp;
                         } else {
-                            pc = stripPointer(*(void**)sp);
+                            pc = stripPointer(SafeAccess::load((void**)sp));
                             sp = frame.senderSP();
                         }
                         continue;
                     }
                 }
 
+                Counters::increment(WALKVM_BREAK_INTERPRETED);
                 fillFrame(frames[depth++], BCI_ERROR, "break_interpreted");
                 break;
             } else if (nm->isEntryFrame(pc) && !features.mixed) {
-                JavaFrameAnchor* next_anchor = JavaFrameAnchor::fromEntryFrame(fp);
+                VMJavaFrameAnchor* next_anchor = VMJavaFrameAnchor::fromEntryFrame(fp);
                 if (next_anchor == NULL) {
                     fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame");
                     break;
@@ -454,24 +532,39 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     continue;
                 }
 
-                if (depth > 1 && nm->frameSize() > 0) {
-                    sp += nm->frameSize() * sizeof(void*);
+                if (depth > 0 && nm->frameSize() > 0) {
+                    Counters::increment(WALKVM_STUB_FRAMESIZE_FALLBACK);
+                    // Validate NMethod metadata before using frameSize()
+                    int frame_size = nm->frameSize();
+                    if (frame_size <= 0 || frame_size > MAX_FRAME_SIZE_WORDS) {
+                        fillFrame(frames[depth++], BCI_ERROR, "break_invalid_framesize");
+                        break;
+                    }
+
+                    sp += frame_size * sizeof(void*);
+
+                    // Verify alignment before dereferencing sp as pointer (secondary defense)
+                    if (!aligned(sp)) {
+                        fillFrame(frames[depth++], BCI_ERROR, "break_misaligned_sp");
+                        break;
+                    }
+
                     fp = ((uintptr_t*)sp)[-FRAME_PC_SLOT - 1];
                     pc = ((const void**)sp)[-FRAME_PC_SLOT];
                     continue;
                 }
             }
         } else {
-            // Check if remote symbolication is enabled
+            // Resolve native frame (may use remote symbolication if enabled)
             Profiler::NativeFrameResolution resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)pc, lock_index);
             if (resolution.is_marked) {
                 // This is a marked C++ interpreter frame, terminate scan
                 break;
             }
-            const char* method_name = (const char*)resolution.method_id;
+            const char* method_name = resolution.method_name;
             int frame_bci = resolution.bci;
             char mark;
-            if (frame_bci != BCI_NATIVE_FRAME_REMOTE && method_name != NULL && (mark = NativeFunc::mark(method_name)) != 0) {
+            if (frame_bci != BCI_NATIVE_FRAME_REMOTE && method_name != NULL && (mark = NativeFunc::read_mark(method_name)) != 0) {
                 if (mark == MARK_ASYNC_PROFILER && event_type == MALLOC_SAMPLE) {
                     // Skip all internal frames above malloc_hook functions, leave the hook itself
                     depth = 0;
@@ -488,49 +581,107 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     Counters::increment(THREAD_ENTRY_MARK_DETECTIONS);
                     break;
                 }
-            } else if (method_name == NULL && details) {
-                // These workarounds will minimize the number of unknown frames for 'vm'
-                // We want to keep the 'raw' data in 'vmx', though
+            } else if (method_name == NULL && details && profiler->findLibraryByAddress(pc) == NULL) {
+                // Try anchor recovery — prefer live anchor, fall back to saved data
+                const void* recovery_pc = NULL;
+                uintptr_t recovery_sp = 0;
+                uintptr_t recovery_fp = 0;
+                bool have_anchor_data = false;
+
                 if (anchor) {
-                    uintptr_t prev_sp = sp;
-                    sp = anchor->lastJavaSP();
-                    fp = anchor->lastJavaFP();
-                    pc = anchor->lastJavaPC();
+                    Counters::increment(WALKVM_ANCHOR_USED_INLINE);
+                    recovery_fp = anchor->lastJavaFP();
+                    recovery_sp = anchor->lastJavaSP();
+                    recovery_pc = anchor->lastJavaPC();
+                    have_anchor_data = true;
+                } else if (saved_anchor_sp != 0) {
+                    Counters::increment(WALKVM_SAVED_ANCHOR_USED);
+                    recovery_fp = saved_anchor_fp;
+                    recovery_sp = saved_anchor_sp;
+                    recovery_pc = saved_anchor_pc;
+                    have_anchor_data = true;
+                    // Clear saved data after use — one-shot recovery
+                    saved_anchor_sp = 0;
+                } else {
+                    Counters::increment(WALKVM_ANCHOR_INLINE_NO_ANCHOR);
+                }
+
+                if (have_anchor_data) {
+                    // Try to read the Java method directly from the anchor's FP,
+                    // treating it as an interpreter frame.
+                    // In HotSpot, lastJavaFP is non-zero only for interpreter frames;
+                    // compiled frames record FP=0 in the anchor.
+                    if (StackWalkValidation::isPlausibleInterpreterFrame(recovery_fp, recovery_sp, bcp_offset)) {
+                        VMMethod* method = ((VMMethod**)recovery_fp)[InterpreterFrame::method_offset];
+                        jmethodID method_id = getMethodId(method);
+                        if (method_id != NULL) {
+                            anchor = NULL;
+                            prev_native_pc = NULL;
+                            if (depth > 0 && depth + 1 < actual_max_depth) {
+                                fillFrame(frames[depth++], BCI_ERROR, "[skipped frames]");
+                            }
+                            Counters::increment(WALKVM_JAVA_FRAME_OK);
+                            const char* bytecode_start = method->bytecode();
+                            const char* bcp = ((const char**)recovery_fp)[bcp_offset];
+                            int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
+                            fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
+
+                            sp = ((uintptr_t*)recovery_fp)[InterpreterFrame::sender_sp_offset];
+                            pc = stripPointer(((void**)recovery_fp)[FRAME_PC_SLOT]);
+                            fp = *(uintptr_t*)recovery_fp;
+                            continue;
+                        }
+                    }
+
+                    // Fallback: redirect via recovery SP/FP/PC
+                    sp = recovery_sp;
+                    fp = recovery_fp;
+                    pc = recovery_pc;
+                    if (pc != NULL && !CodeHeap::contains(pc) && sp != 0 && aligned(sp) && sp < bottom) {
+                        pc = ((const void**)sp)[-1];
+                    }
                     if (sp != 0 && pc != NULL) {
-                        // already used the anchor; disable it
                         anchor = NULL;
-                        if (sp < prev_sp || sp >= bottom || !aligned(sp)) {
+                        if (sp >= bottom || !aligned(sp)) {
+                            Counters::increment(WALKVM_ANCHOR_INLINE_BAD_SP);
                             fillFrame(frames[depth++], BCI_ERROR, "break_no_anchor");
                             break;
                         }
-                        // we restored from Java frame; clean the prev_native_pc
                         prev_native_pc = NULL;
                         if (depth > 0) {
                             fillFrame(frames[depth++], BCI_ERROR, "[skipped frames]");
                         }
                         continue;
                     }
+                    Counters::increment(WALKVM_ANCHOR_INLINE_NO_SP);
                 }
                 // Check previous frame for thread entry points (Rust, libc/pthread)
+                // Only check marks for traditionally-resolved frames; packed remote
+                // frames store an integer in the method_name union, not a valid pointer.
                 if (prev_native_pc != NULL) {
                     Profiler::NativeFrameResolution prev_resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)prev_native_pc, lock_index);
-                    const char* prev_method_name = (const char*)prev_resolution.method_id;
-                    if (prev_method_name != NULL) {
-                        char prev_mark = NativeFunc::mark(prev_method_name);
-                        if (prev_mark == MARK_THREAD_ENTRY) {
-                            // Thread entry point detected in previous frame (Rust thread_start, libc start_thread, etc.)
-                            // This is the root frame - stop unwinding
-                            Counters::increment(THREAD_ENTRY_MARK_DETECTIONS);
-                            break;
+                    if (prev_resolution.bci != BCI_NATIVE_FRAME_REMOTE) {
+                        const char* prev_method_name = prev_resolution.method_name;
+                        if (prev_method_name != NULL) {
+                            char prev_mark = NativeFunc::read_mark(prev_method_name);
+                            if (prev_mark == MARK_THREAD_ENTRY) {
+                                Counters::increment(THREAD_ENTRY_MARK_DETECTIONS);
+                                break;
+                            }
                         }
                     }
                 }
-                fillFrame(frames[depth++], BCI_ERROR, "break_no_anchor");
-                break;
+                // Fall through to DWARF section — when findLibraryByAddress(pc)
+                // returns NULL, default_frame uses FP-chain walking (DW_REG_FP)
+                // which can bridge symbol-less gaps in libjvm.so.
+                Counters::increment(WALKVM_FP_CHAIN_ATTEMPT);
+                fp_chain_fallback = true;
+                goto dwarf_unwind;
             }
             fillFrame(frames[depth++], frame_bci, (void*)method_name);
         }
 
+        dwarf_unwind:
         uintptr_t prev_sp = sp;
         CodeCache* cc = profiler->findLibraryByAddress(pc);
         FrameDesc f = cc != NULL ? cc->findFrameDesc(pc) : FrameDesc::default_frame;
@@ -547,6 +698,13 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
         if (cfa_reg == DW_REG_SP) {
             sp = sp + cfa_off;
         } else if (cfa_reg == DW_REG_FP) {
+            // Sanity-check FP before deriving CFA from it. A corrupted FP can produce a
+            // phantom CFA and cause the walk to record spurious frames before breaking.
+            // We cannot check fp < sp here because on aarch64 the frame pointer is set
+            // to SP at function entry, which is typically less than the previous CFA.
+            if (fp >= bottom || !aligned(fp)) {
+                break;
+            }
             sp = fp + cfa_off;
         } else if (cfa_reg == DW_REG_PLT) {
             sp += ((uintptr_t)pc & 15) >= 11 ? cfa_off * 2 : cfa_off;
@@ -572,15 +730,12 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             }
 
             if (EMPTY_FRAME_SIZE > 0 || f.pc_off != DW_LINK_REGISTER) {
-                pc = stripPointer(SafeAccess::load((void**)(sp + f.pc_off)));
-            } else if (depth == 1) {
-                pc = (const void*)frame.link();
-            } else {
-                break;
-            }
-
-            if (EMPTY_FRAME_SIZE > 0 || f.pc_off != DW_LINK_REGISTER) {
-                pc = stripPointer(*(void**)(sp + f.pc_off));
+                // Verify alignment before dereferencing sp + offset
+                uintptr_t pc_addr = sp + f.pc_off;
+                if (!aligned(pc_addr)) {
+                    break;
+                }
+                pc = stripPointer(SafeAccess::load((void**)pc_addr));
             } else if (depth == 1) {
                 pc = (const void*)frame.link();
             } else {
@@ -602,14 +757,68 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     }
 
     // If we did not meet Java frame but current thread has JavaFrameAnchor set,
-    // retry stack walking from the anchor
-    if (anchor != NULL && anchor->getFrame(pc, sp, fp)) {
-        anchor = NULL;
-        while (depth > 0 && frames[depth - 1].method_id == NULL) depth--;  // pop unknown frames
-        goto unwind_loop;
+    // try to read the interpreter frame directly from the anchor's FP.
+    // In HotSpot, lastJavaFP != 0 reliably indicates an interpreter frame.
+    if (anchor != NULL) {
+        uintptr_t anchor_fp = anchor->lastJavaFP();
+        uintptr_t anchor_sp = anchor->lastJavaSP();
+        if (anchor_sp == 0) {
+            Counters::increment(WALKVM_ANCHOR_NOT_IN_JAVA);
+            goto done;
+        }
+        if (StackWalkValidation::isPlausibleInterpreterFrame(anchor_fp, anchor_sp, bcp_offset)) {
+            VMMethod* method = ((VMMethod**)anchor_fp)[InterpreterFrame::method_offset];
+            jmethodID method_id = getMethodId(method);
+            if (method_id != NULL) {
+                Counters::increment(WALKVM_ANCHOR_FALLBACK);
+                Counters::increment(WALKVM_JAVA_FRAME_OK);
+                anchor = NULL;
+                while (depth > 0 && frames[depth - 1].method_id == NULL) depth--;
+                if (depth < actual_max_depth) {
+                    const char* bytecode_start = method->bytecode();
+                    const char* bcp = ((const char**)anchor_fp)[bcp_offset];
+                    int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
+                    fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
+                    sp = ((uintptr_t*)anchor_fp)[InterpreterFrame::sender_sp_offset];
+                    pc = stripPointer(((void**)anchor_fp)[FRAME_PC_SLOT]);
+                    fp = *(uintptr_t*)anchor_fp;
+                    if (sp != 0 && sp < bottom && aligned(sp)) {
+                        goto unwind_loop;
+                    }
+                }
+            }
+        }
+        // Fallback: redirect via anchor frame and sp[-1]
+        if (anchor != NULL && anchor->getFrame(pc, sp, fp)) {
+            if (!CodeHeap::contains(pc) && sp != 0 && aligned(sp) && sp < bottom) {
+                pc = ((const void**)sp)[-1];
+            }
+            Counters::increment(WALKVM_ANCHOR_FALLBACK);
+            anchor = NULL;
+            while (depth > 0 && frames[depth - 1].method_id == NULL) depth--;
+            if (sp != 0 && sp < bottom && aligned(sp)) {
+                goto unwind_loop;
+            }
+        } else if (anchor != NULL) {
+            Counters::increment(WALKVM_ANCHOR_FALLBACK_FAIL);
+        }
     }
 
-    if (vm_thread != NULL) vm_thread->exception() = saved_exception;
+    done:
+    if (profiled_thread != nullptr) {
+        profiled_thread->setCrashProtectionActive(false);
+    }
+    if (vm_thread != NULL) {
+        vm_thread->exception() = saved_exception;
+    }
+
+    // Drop unknown leaf frame - it provides no useful information and breaks
+    // aggregation by lumping unrelated samples under a single "unknown" entry
+    depth = StackWalkValidation::dropUnknownLeaf(frames, depth);
+
+    if (depth == 0) {
+        Counters::increment(WALKVM_DEPTH_ZERO);
+    }
 
     if (truncated) {
         if (depth > max_depth) {
@@ -633,11 +842,22 @@ void StackWalker::checkFault(ProfiledThread* thrd) {
     }
 
     VMThread* vm_thread = VMThread::current();
-    if (vm_thread != NULL && sameStack(vm_thread->exception(), &vm_thread)) {
-        if (thrd) {
-            // going to longjmp out of the signal handler, reset the crash handler depth counter
-            thrd->resetCrashHandler();
-        }
-        longjmp(*(jmp_buf*)vm_thread->exception(), 1);
+    if (vm_thread == NULL || !vm_thread->isThreadAccessible()) {
+        return;
     }
+
+    // Prefer the semantic crash protection flag (reliable regardless of stack frame sizes).
+    // Fall back to sameStack heuristic when ProfiledThread TLS is unavailable (e.g. during
+    // early init or in crash recovery tests). sameStack uses a fixed 8KB threshold which
+    // can fail with ASAN-inflated frames, but the crashProtectionActive path handles that.
+    bool protected_walk = (thrd != nullptr && thrd->isCrashProtectionActive())
+                       || sameStack(vm_thread->exception(), &vm_thread);
+    if (!protected_walk) {
+        return;
+    }
+
+    if (thrd != nullptr) {
+        thrd->resetCrashHandler();
+    }
+    longjmp(*(jmp_buf*)vm_thread->exception(), 1);
 }

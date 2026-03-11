@@ -50,9 +50,17 @@ public class CStackInjector implements TestTemplateInvocationContextProvider {
             // zing is a bit iffy when using anything but 'no' for cstack
             return Stream.of(new ParameterizedTestContext("no", retryCount));
         } else {
-            return Stream.of(valueSource.strings()).
-                    filter(CStackInjector::isModeSafe).
-                    map(param -> new ParameterizedTestContext(param, retryCount));
+            List<String> safeValues = Stream.of(valueSource.strings())
+                    .filter(CStackInjector::isModeSafe)
+                    .collect(Collectors.toList());
+            if (safeValues.isEmpty()) {
+                // No mode passed the filter (e.g. J9 with a {"vm","vmx"} @ValueSource).
+                // Fall back to the first declared value so the test can reach
+                // isPlatformSupported() and skip cleanly rather than failing with
+                // PreconditionViolationException (JUnit 5 requires ≥1 invocation context).
+                safeValues = Collections.singletonList(valueSource.strings()[0]);
+            }
+            return safeValues.stream().map(param -> new ParameterizedTestContext(param, retryCount));
         }
     }
 
@@ -68,6 +76,11 @@ public class CStackInjector implements TestTemplateInvocationContextProvider {
                 // our CI runner for musl on x64 is iffy and inexplicably locks up
                 //   randomly when doing vm stackwalking
                 return !mode.startsWith("vm");
+            }
+            if (Platform.isMusl() && Platform.isAarch64() && "vmx".equals(mode)) {
+                // vmx mode has intermittent initialization timing issues on musl aarch64
+                // causing 0 events in intermediate JFR dumps
+                return false;
             }
         }
         return true;

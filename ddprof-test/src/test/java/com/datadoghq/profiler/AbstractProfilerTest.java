@@ -4,10 +4,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -42,6 +44,7 @@ public abstract class AbstractProfilerTest {
   private static final boolean ALLOW_NATIVE_CSTACKS = true;
 
   private boolean stopped = true;
+  private Map<Path, Long> sanitizerLogSizesBefore = new HashMap<>();
 
   public static final String LAMBDA_QUALIFIER = Platform.isJavaVersionAtLeast(21) ? "$$Lambda." : "$$Lambda$";
   public static final IQuantity ZERO_BYTES = BYTE.quantity(0);
@@ -154,6 +157,53 @@ public abstract class AbstractProfilerTest {
     return System.getenv("ASAN_OPTIONS") != null;
   }
 
+  private static long getPid() {
+    try {
+      String name = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
+      return Long.parseLong(name.split("@")[0]);
+    } catch (NumberFormatException e) {
+      return 0L;
+    }
+  }
+
+  private static List<Path> getSanitizerLogPaths() {
+    List<Path> paths = new ArrayList<>();
+    String pid = String.valueOf(getPid());
+    for (String envVar : new String[]{"ASAN_OPTIONS", "UBSAN_OPTIONS"}) {
+      String options = System.getenv(envVar);
+      if (options == null) continue;
+      for (String opt : options.split(":")) {
+        if (opt.startsWith("log_path=")) {
+          String template = opt.substring("log_path=".length());
+          String path = template.replace("%p", pid);
+          paths.add(Paths.get(path));
+        }
+      }
+    }
+    return paths;
+  }
+
+  private void dumpSanitizerLogs() {
+    for (Path logPath : getSanitizerLogPaths()) {
+      try {
+        if (!Files.exists(logPath)) continue;
+        long sizeBefore = sanitizerLogSizesBefore.getOrDefault(logPath, 0L);
+        long currentSize = Files.size(logPath);
+        if (currentSize <= sizeBefore) continue;
+        byte[] bytes = Files.readAllBytes(logPath);
+        if (bytes.length > (int) sizeBefore) {
+          String newContent = new String(bytes, (int) sizeBefore, bytes.length - (int) sizeBefore);
+          String label = logPath.getFileName().toString().toUpperCase();
+          System.err.println("=== " + label + " errors detected during test ===");
+          System.err.println(newContent);
+          System.err.println("=== End " + label + " errors ===");
+        }
+      } catch (Exception e) {
+        // best effort
+      }
+    }
+  }
+
   protected final boolean isTsan() {
     return System.getenv("TSAN_OPTIONS") != null;
   }
@@ -186,6 +236,18 @@ public abstract class AbstractProfilerTest {
     String command = "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
     cpuInterval = command.contains("cpu") ? parseInterval(command, "cpu") : (command.contains("interval") ? parseInterval(command, "interval") : Duration.ZERO);
     wallInterval = parseInterval(command, "wall");
+    // Record sanitizer log sizes before test so we can dump new errors after
+    sanitizerLogSizesBefore.clear();
+    for (Path logPath : getSanitizerLogPaths()) {
+      try {
+        if (Files.exists(logPath)) {
+          sanitizerLogSizesBefore.put(logPath, Files.size(logPath));
+        }
+      } catch (Exception e) {
+        // best effort
+      }
+    }
+
     System.out.println("===> command: " + command);
     profiler.execute(command);
     stopped = false;
@@ -196,6 +258,7 @@ public abstract class AbstractProfilerTest {
   public void cleanup() throws Exception {
     after();
     stopProfiler();
+    dumpSanitizerLogs();
     System.out.println("===> keep_jfrs: " + Boolean.getBoolean("ddprof_test.keep_jfrs"));
     if (jfrDump != null && !Boolean.getBoolean("ddprof_test.keep_jfrs")) {
       Files.deleteIfExists(jfrDump);
@@ -269,6 +332,36 @@ public abstract class AbstractProfilerTest {
     if (!stopped) {
       profiler.dump(recording);
     }
+  }
+
+  /**
+   * Waits for the profiler to reach RUNNING state by polling getStatus().
+   * This ensures all engines are initialized and ready to collect samples
+   * before test workload begins.
+   *
+   * @param timeoutMs Maximum time to wait in milliseconds
+   * @throws IllegalStateException if profiler doesn't reach RUNNING state within timeout
+   * @throws InterruptedException if interrupted while waiting
+   */
+  protected void waitForProfilerReady(long timeoutMs) throws InterruptedException {
+    long deadline = System.currentTimeMillis() + timeoutMs;
+    long waitTime = 0;
+
+    while (System.currentTimeMillis() < deadline) {
+      String status = profiler.getStatus();
+      if (status.contains("Running          : true")) {
+        System.out.println("[Profiler Ready] Took " + waitTime + "ms to initialize");
+        return;
+      }
+      Thread.sleep(10);
+      waitTime += 10;
+    }
+
+    // Timeout reached - throw with diagnostic info
+    String finalStatus = profiler.getStatus();
+    throw new IllegalStateException(
+            "Profiler failed to reach RUNNING state within " + timeoutMs + "ms\n" +
+            "Final status:\n" + finalStatus);
   }
 
   public final void registerCurrentThreadForWallClockProfiling() {

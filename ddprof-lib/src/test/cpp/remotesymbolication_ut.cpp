@@ -8,8 +8,80 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include "symbols_linux.h"
+#include "profiler.h"
 #include "vmEntry.h"
 #include "../../main/cpp/gtest_crash_handler.h"
+
+// RemoteFramePacker tests are platform-independent (pure bit manipulation)
+using RFP = Profiler::RemoteFramePacker;
+
+TEST(RemoteFramePackerTest, RoundTrip) {
+    uintptr_t pc_offset = 0x123456789AB;
+    char mark = 5;
+    uint32_t lib_index = 1000;
+
+    unsigned long packed = RFP::pack(pc_offset, mark, lib_index);
+    EXPECT_EQ(RFP::unpackPcOffset(packed), pc_offset);
+    EXPECT_EQ(RFP::unpackMark(packed), mark);
+    EXPECT_EQ(RFP::unpackLibIndex(packed), lib_index);
+}
+
+TEST(RemoteFramePackerTest, ZeroValues) {
+    unsigned long packed = RFP::pack(0, 0, 0);
+    EXPECT_EQ(packed, 0UL);
+    EXPECT_EQ(RFP::unpackPcOffset(packed), 0UL);
+    EXPECT_EQ(RFP::unpackMark(packed), 0);
+    EXPECT_EQ(RFP::unpackLibIndex(packed), 0U);
+}
+
+TEST(RemoteFramePackerTest, MaxValues) {
+    uintptr_t max_pc = RFP::PC_OFFSET_MASK;     // 44 bits all set
+    char max_mark = (char)RFP::MARK_MASK;        // 3 bits all set = 7
+    uint32_t max_lib = (uint32_t)RFP::LIB_INDEX_MASK; // 15 bits all set = 32767
+
+    unsigned long packed = RFP::pack(max_pc, max_mark, max_lib);
+    EXPECT_EQ(RFP::unpackPcOffset(packed), max_pc);
+    EXPECT_EQ(RFP::unpackMark(packed), max_mark);
+    EXPECT_EQ(RFP::unpackLibIndex(packed), max_lib);
+}
+
+TEST(RemoteFramePackerTest, FieldIsolation) {
+    // Setting only pc_offset should not affect mark or lib_index
+    unsigned long packed_pc = RFP::pack(0xABCDE, 0, 0);
+    EXPECT_EQ(RFP::unpackMark(packed_pc), 0);
+    EXPECT_EQ(RFP::unpackLibIndex(packed_pc), 0U);
+
+    // Setting only mark should not affect pc_offset or lib_index
+    unsigned long packed_mark = RFP::pack(0, 3, 0);
+    EXPECT_EQ(RFP::unpackPcOffset(packed_mark), 0UL);
+    EXPECT_EQ(RFP::unpackLibIndex(packed_mark), 0U);
+
+    // Setting only lib_index should not affect pc_offset or mark
+    unsigned long packed_lib = RFP::pack(0, 0, 500);
+    EXPECT_EQ(RFP::unpackPcOffset(packed_lib), 0UL);
+    EXPECT_EQ(RFP::unpackMark(packed_lib), 0);
+}
+
+TEST(RemoteFramePackerTest, Overflow_PcOffsetTruncated) {
+    // pc_offset larger than 44 bits should be silently truncated
+    uintptr_t oversize_pc = (1ULL << 44) | 0x42;
+    unsigned long packed = RFP::pack(oversize_pc, 0, 0);
+    EXPECT_EQ(RFP::unpackPcOffset(packed), (uintptr_t)0x42)
+        << "Bits above 44 should be masked off";
+}
+
+TEST(RemoteFramePackerTest, UnsymbolizedFramePacksWithZeroMark) {
+    // The new code path packs unsymbolized frames with mark=0
+    uintptr_t pc_offset = 0x1A2B3C;
+    uint32_t lib_index = 7;
+    unsigned long packed = RFP::pack(pc_offset, 0, lib_index);
+
+    EXPECT_EQ(RFP::unpackPcOffset(packed), pc_offset);
+    EXPECT_EQ(RFP::unpackMark(packed), 0);
+    EXPECT_EQ(RFP::unpackLibIndex(packed), lib_index);
+    // Packed value is non-zero even with mark=0 (prevents false NULL check)
+    EXPECT_NE(packed, 0UL);
+}
 
 #ifdef __linux__
 

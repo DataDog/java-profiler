@@ -1,6 +1,7 @@
 **/build/
 **/build_*/
 **/build-*/
+!build-logic/
 /nbproject/
 /out/
 /.idea/
@@ -14,6 +15,7 @@
 .project
 .settings
 .gradle
+.kotlin
 .tmp
 *.iml
 /ddprof-stresstest/jmh-result.*
@@ -34,3 +36,9 @@ datadog/maven/resources
 .history
 .claude/settings.local.json
 /jmh-*
+
+# Temporary documentation and work state
+doc/temp/
+
+# CLAUDE.md is auto-generated from AGENTS.md bootstrap instructions
+CLAUDE.md

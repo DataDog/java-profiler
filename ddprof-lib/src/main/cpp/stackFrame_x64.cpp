@@ -102,7 +102,7 @@ __attribute__((no_sanitize("address"))) bool StackFrame::unwindStub(instruction_
     return false;
 }
 
-bool StackFrame::unwindCompiled(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+bool StackFrame::unwindCompiled(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     instruction_t* ip = (instruction_t*)pc;
     instruction_t* entry = (instruction_t*)nm->entry();
     if (ip <= entry
@@ -156,7 +156,7 @@ static inline bool isFrameComplete(instruction_t* entry, instruction_t* ip) {
     return false;
 }
 
-bool StackFrame::unwindPrologue(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+bool StackFrame::unwindPrologue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     //  0:   mov    %eax,-0x14000(%rsp)
     //  7:   push   %rbp
     //  8:   mov    %rsp,%rbp  ; for native methods only
@@ -219,7 +219,7 @@ static inline bool isPollReturn(instruction_t* ip) {
     return false;
 }
 
-bool StackFrame::unwindEpilogue(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+bool StackFrame::unwindEpilogue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     //  add    $0x40,%rsp
     //  pop    %rbp
     //  {poll_return}

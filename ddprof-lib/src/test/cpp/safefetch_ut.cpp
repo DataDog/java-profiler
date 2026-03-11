@@ -105,6 +105,12 @@ TEST_F(SafeFetchTest, invalidAccessPtr) {
   EXPECT_EQ(res, bp);
 }
 
+TEST_F(SafeFetchTest, isReadable) {
+  char c = 'x';
+  EXPECT_TRUE(SafeAccess::isReadable(&c));
+  EXPECT_FALSE(SafeAccess::isReadable(nullptr));
+}
+
 /**
  * Tests that safeFetch32 correctly handles mprotected memory.
  *

@@ -1,0 +1,32 @@
+name: Dependabot Auto-Merge
+
+on:
+  schedule:
+    - cron: '0 */4 * * *' # Every 4 hours
+
+jobs:
+  scheduled-automerge:
+    name: Merge approved Dependabot PRs
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Needed to federate tokens
+    steps:
+      - uses: DataDog/dd-octo-sts-action@acaa02eee7e3bb0839e4272dacb37b8f3b58ba80 # v1.0.3
+        id: octo-sts
+        with:
+          scope: DataDog/java-profiler
+          policy: self.dependabot-automerge.schedule
+      - name: Merge approved Dependabot PRs
+        env:
+          GH_TOKEN: ${{ steps.octo-sts.outputs.token }}
+        run: |
+          gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --author "dependabot[bot]" \
+            --json number \
+            --jq '.[].number' \
+          | while read pr_number; do
+              echo "Processing PR #$pr_number"
+              gh pr merge "$pr_number" --squash --repo "$GITHUB_REPOSITORY" \
+                || echo "Could not merge PR #$pr_number"
+            done

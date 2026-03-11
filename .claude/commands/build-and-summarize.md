@@ -1,6 +1,6 @@
 # build-and-summarize
 
-Execute the bash script `~/.claude/commands/build-and-summarize` with all provided arguments.
+Execute the bash script `.claude/commands/build-and-summarize` with all provided arguments.
 
 This script will:
 - Run `./gradlew` with the specified arguments (defaults to 'build' if none provided)

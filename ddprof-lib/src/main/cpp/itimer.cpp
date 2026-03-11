@@ -21,9 +21,9 @@
 #include "profiler.h"
 #include "stackWalker.h"
 #include "thread.h"
-#include "threadState.h"
+#include "threadState.inline.h"
 #include "vmStructs.h"
-#include "criticalSection.h"
+#include "guards.h"
 #include <sys/time.h>
 
 volatile bool ITimer::_enabled = false;
@@ -50,8 +50,7 @@ void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   Shims::instance().setSighandlerTid(tid);
 
   ExecutionEvent event;
-  VMThread *vm_thread = VMThread::current();
-  event._execution_mode = getThreadExecutionMode(vm_thread);
+  event._execution_mode = getThreadExecutionMode();
   Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,
                                      &event);
   Shims::instance().setSighandlerTid(-1);

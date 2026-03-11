@@ -8,7 +8,7 @@
 #include "asyncSampleMutex.h"
 #include "context.h"
 #include "context_api.h"
-#include "criticalSection.h"
+#include "guards.h"
 #include "common.h"
 #include "counters.h"
 #include "ctimer.h"
@@ -109,13 +109,16 @@ void Profiler::addRuntimeStub(const void *address, int length,
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   ProfiledThread::initCurrentThread();
   ProfiledThread *current = ProfiledThread::current();
+  current->setJavaThread();
   int tid = current->tid();
   if (_thread_filter.enabled()) {
     int slot_id = _thread_filter.registerThread();
     current->setFilterSlotId(slot_id);
     _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
-  updateThreadName(jvmti, jni, thread, true);
+  if (thread != NULL) {
+    updateThreadName(jvmti, jni, thread, true);
+  }
 
   _cpu_engine->registerThread(tid);
   _wall_engine->registerThread(tid);
@@ -341,13 +344,13 @@ void Profiler::populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCac
   uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
   uint32_t lib_index = (uint32_t)lib->libIndex();
 
-  jmethodID packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
+  unsigned long packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
 
-  TEST_LOG("populateRemoteFrame: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u, packed=0x%lx",
-           lib->name(), lib->buildId(), pc, pc_offset, (int)mark, lib_index, (uintptr_t)packed);
+  TEST_LOG("populateRemoteFrame: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u, packed=0x%zx",
+           lib->name(), lib->buildId(), pc, pc_offset, (int)mark, lib_index, packed);
 
   frame->bci = BCI_NATIVE_FRAME_REMOTE;
-  frame->method_id = packed;
+  frame->packed_remote_frame = packed;
 
   // Track remote symbolication usage
   Counters::increment(REMOTE_SYMBOLICATION_FRAMES);
@@ -363,41 +366,52 @@ void Profiler::populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCac
  * - Returns is_marked=true if mark indicates termination (MARK_INTERPRETER, etc.)
  *
  * For traditional symbolication:
- * - Does full symbol resolution via findNativeMethod()
+ * - Does symbol resolution via binarySearch() on the found library
  * - Checks marks after symbol resolution (same O(log n) + O(1) cost)
+ * - If no symbol found but PC is in a known library, packs as
+ *   BCI_NATIVE_FRAME_REMOTE for library-relative rendering ([lib+0xoffset])
  */
 Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index) {
-  if (_remote_symbolication) {
-    CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
-    if (lib != nullptr && lib->hasBuildId()) {
-      // Get symbol name and check mark
-      const char *method_name = nullptr;
-      lib->binarySearch((void*)pc, &method_name);
-      char mark = (method_name != nullptr) ? NativeFunc::mark(method_name) : 0;
+  CodeCache* lib = _libs->findLibraryByAddress((void*)pc);
 
-      if (mark != 0) {
-        return {nullptr, BCI_NATIVE_FRAME, true};  // Marked - stop processing
-      }
+  if (_remote_symbolication && lib != nullptr && lib->hasBuildId()) {
+    // Get symbol name and check mark
+    const char *method_name = nullptr;
+    lib->binarySearch((void*)pc, &method_name);
+    char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
-      // Pack remote symbolication data using utility struct
-      uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
-      uint32_t lib_index = (uint32_t)lib->libIndex();
-      jmethodID packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
-
-      TEST_LOG("resolveNativeFrameForWalkVM: lib=%s, build_id=%s, pc=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u, packed=0x%lx",
-               lib->name(), lib->buildId(), pc, pc_offset, (int)mark, lib_index, (uintptr_t)packed);
-
-      return {packed, BCI_NATIVE_FRAME_REMOTE, false};
+    if (mark != 0) {
+      return {nullptr, BCI_NATIVE_FRAME, true};  // Marked - stop processing
     }
+
+    // Pack remote symbolication data using utility struct
+    uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
+    uint32_t lib_index = (uint32_t)lib->libIndex();
+    unsigned long packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
+
+    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
   }
 
-  // Fallback: Traditional symbol resolution
-  const char *method_name = findNativeMethod((void*)pc);
-  if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
-    return {nullptr, BCI_NATIVE_FRAME, true};
+  // Traditional symbol resolution
+  const char *method_name = nullptr;
+  if (lib != nullptr) {
+    lib->binarySearch((void*)pc, &method_name);
+  }
+  if (method_name != nullptr && NativeFunc::is_marked(method_name)) {
+    return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, true);
   }
 
-  return {(jmethodID)method_name, BCI_NATIVE_FRAME, false};
+  // No symbol but known library: pack for library-relative identification.
+  // Reuses BCI_NATIVE_FRAME_REMOTE encoding; resolveMethod() in flightRecorder.cpp
+  // distinguishes remote vs local rendering via hasBuildId() && isRemoteSymbolication().
+  if (method_name == nullptr && lib != nullptr) {
+    uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
+    uint32_t lib_index = (uint32_t)lib->libIndex();
+    unsigned long packed = RemoteFramePacker::pack(pc_offset, 0, lib_index);
+    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
+  }
+
+  return NativeFrameResolution(method_name, BCI_NATIVE_FRAME, false);
 }
 
 /**
@@ -425,7 +439,7 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
         // binarySearch() returns symbol name, then we check mark (O(1))
         const char *method_name = nullptr;
         lib->binarySearch((void*)pc, &method_name);
-        char mark = (method_name != nullptr) ? NativeFunc::mark(method_name) : 0;
+        char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
         if (mark != 0) {
           // Terminate scan at marked frame
@@ -448,7 +462,7 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
 
     // Fallback: Traditional symbol resolution
     const char *method_name = findNativeMethod((void*)pc);
-    if (method_name != nullptr && NativeFunc::isMarked(method_name)) {
+    if (method_name != nullptr && NativeFunc::is_marked(method_name)) {
       // Terminate scan at marked frame
       return depth;
     }
@@ -475,7 +489,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   // handler since JDK 9, so we do it only for threads already registered in
   // ThreadLocalStorage
   VMThread *vm_thread = VMThread::current();
-  if (vm_thread == NULL) {
+  if (vm_thread == NULL || !vm_thread->isThreadAccessible()) {
     Counters::increment(AGCT_NOT_REGISTERED_IN_TLS);
     return 0;
   }
@@ -585,7 +599,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
         VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
       }
     } else if (VMStructs::hasMethodStructs()) {
-      NMethod *nmethod = CodeHeap::findNMethod((const void *)frame.pc());
+      VMNMethod *nmethod = CodeHeap::findNMethod((const void *)frame.pc());
       if (nmethod != NULL && nmethod->isNMethod() && nmethod->isAlive()) {
         VMMethod *method = nmethod->method();
         if (method != NULL) {
@@ -621,7 +635,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
     }
   } else if (trace.num_frames == ticks_unknown_not_Java &&
              !(_safe_mode & LAST_JAVA_PC)) {
-    JavaFrameAnchor* anchor = vm_thread->anchor();
+    VMJavaFrameAnchor* anchor = vm_thread->anchor();
     uintptr_t sp = anchor->lastJavaSP();
     const void* pc = anchor->lastJavaPC();
     if (sp != 0 && pc == NULL) {
@@ -630,7 +644,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       pc = ((const void**)sp)[-1];
       anchor->setLastJavaPC(pc);
 
-      NMethod *m = CodeHeap::findNMethod(pc);
+      VMNMethod *m = CodeHeap::findNMethod(pc);
       if (m != NULL) {
         // AGCT fails if the last Java frame is a Runtime Stub with an invalid
         // _frame_complete_offset. In this case we patch _frame_complete_offset
@@ -648,13 +662,13 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
     }
   } else if (trace.num_frames == ticks_not_walkable_not_Java &&
              !(_safe_mode & LAST_JAVA_PC)) {
-    JavaFrameAnchor* anchor = vm_thread->anchor();
+    VMJavaFrameAnchor* anchor = vm_thread->anchor();
     uintptr_t sp = anchor->lastJavaSP();
     const void* pc = anchor->lastJavaPC();
     if (sp != 0 && pc != NULL) {
       // Similar to the above: last Java frame is set,
       // but points to a Runtime Stub with an invalid _frame_complete_offset
-      NMethod *m = CodeHeap::findNMethod(pc);
+      VMNMethod *m = CodeHeap::findNMethod(pc);
       if (m != NULL && !m->isNMethod() && m->frameSize() > 0 &&
           m->frameCompleteOffset() == -1) {
         m->setFrameCompleteOffset(0);
@@ -689,7 +703,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
 }
 
 void Profiler::fillFrameTypes(ASGCT_CallFrame *frames, int num_frames,
-                              NMethod *nmethod) {
+                              VMNMethod *nmethod) {
   if (nmethod->isNMethod() && nmethod->isAlive()) {
     VMMethod *method = nmethod->method();
     if (method == NULL) {
@@ -848,7 +862,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
           if (mutex.acquired()) {
             java_frames = getJavaTraceAsync(ucontext, frames + num_frames, max_remaining, &java_ctx, &truncated);
             if (java_frames > 0 && java_ctx.pc != NULL && VMStructs::hasMethodStructs()) {
-              NMethod* nmethod = CodeHeap::findNMethod(java_ctx.pc);
+              VMNMethod* nmethod = CodeHeap::findNMethod(java_ctx.pc);
               if (nmethod != NULL) {
                 fillFrameTypes(frames + num_frames, java_frames, nmethod);
               }
@@ -1267,43 +1281,16 @@ Error Profiler::start(Arguments &args, bool reset) {
     return error;
   }
 
-  ProfiledThread::initExistingThreads();
-  
-  // Validate TLS priming for signal-based profiling safety
-  if (ProfiledThread::wasTlsPrimingAttempted() && !ProfiledThread::isTlsPrimingAvailable()) {
-    _omit_stacktraces = args._lightweight;
-    _remote_symbolication = args._remote_symbolication;
-    _event_mask =
-        ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
-                                                                       : 0) |
-        (args._cpu >= 0 ? EM_CPU : 0) | (args._wall >= 0 ? EM_WALL : 0) |
-        (args._record_allocations || args._record_liveness || args._gc_generations
-             ? EM_ALLOC
-             : 0);
-    
-    // Check if signal-based profiling is requested without TLS priming
-    if (_event_mask & (EM_CPU | EM_WALL)) {
-      return Error("CRITICAL: Signal-based profiling (CPU/Wall) requested but TLS priming failed. "
-                   "This would cause crashes in signal handlers due to unsafe TLS allocation. "
-                   "Profiling disabled for safety. Check system RT signal availability.");
-    }
-    
-    // Allow allocation profiling since it doesn't use signals
-    if (_event_mask == EM_ALLOC) {
-      writeLog(LOG_WARN, "TLS priming failed but continuing with allocation-only profiling (no signals)", 92);
-    }
-  } else {
-    _omit_stacktraces = args._lightweight;
-    _remote_symbolication = args._remote_symbolication;
-    _event_mask =
-        ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
-                                                                       : 0) |
-        (args._cpu >= 0 ? EM_CPU : 0) | (args._wall >= 0 ? EM_WALL : 0) |
-        (args._record_allocations || args._record_liveness || args._gc_generations
-             ? EM_ALLOC
-             : 0);
-  }
-  
+  _omit_stacktraces = args._lightweight;
+  _remote_symbolication = args._remote_symbolication;
+  _event_mask =
+      ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
+                                                                     : 0) |
+      (args._cpu >= 0 ? EM_CPU : 0) | (args._wall >= 0 ? EM_WALL : 0) |
+      (args._record_allocations || args._record_liveness || args._gc_generations
+           ? EM_ALLOC
+           : 0);
+
   if (_event_mask == 0) {
     return Error("No profiling events specified");
   }
@@ -1383,6 +1370,13 @@ Error Profiler::start(Arguments &args, bool reset) {
   _cpu_engine = selectCpuEngine(args);
   _wall_engine = selectWallEngine(args);
   _cstack = args._cstack;
+  if (_cstack == CSTACK_DEFAULT) {
+    if (VMStructs::hasStackStructs() && OS::isLinux()) {
+      _cstack = CSTACK_VM;
+    } else if (DWARF_SUPPORTED) {
+      _cstack = CSTACK_DWARF;
+    }
+  }
   if (_cstack == CSTACK_DWARF && !DWARF_SUPPORTED) {
     _cstack = CSTACK_NO;
     Log::warn("DWARF unwinding is not supported on this platform. Defaulting "
@@ -1458,6 +1452,12 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
 
+    // Initialize this thread
+    // Note: passing all nullptrs results in not able to resolve the thread name here.
+    //      However, the thread name will be updated later in updateJavaThreadNames().
+    // TODO: find a better way to resolve the thread name.
+    onThreadStart(nullptr, nullptr, nullptr);
+
     _state = RUNNING;
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
@@ -1499,9 +1499,6 @@ Error Profiler::stop() {
   // writing these out before stopping the JFR recording allows to report the
   // correct counts in the recording
   _thread_info.reportCounters();
-
-  // Clean up TLS priming infrastructure (watcher thread and signal handler)
-  ProfiledThread::cleanupTlsPriming();
 
   // Acquire all spinlocks to avoid race with remaining signals
   lockAll();
@@ -1649,6 +1646,9 @@ Error Profiler::runInternal(Arguments &args, std::ostream &out) {
   }
   case ACTION_STOP: {
     Error error = stop();
+    if (error) {
+      return error;
+    }
     break;
   }
 

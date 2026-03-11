@@ -18,11 +18,11 @@ jobs:
     steps:
       - name: Get project milestones
         id: milestones
-        uses: actions/github-script@47f7cf65b5ced0830a325f705cad64f2f58dddf7 # 3.1.0
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # 8.0.0
         with:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
-            const list = await github.issues.listMilestones({
+            const list = await github.rest.issues.listMilestones({
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open'
@@ -34,12 +34,12 @@ jobs:
             return milestones.length == 0 ? null : milestones[0].number
       - name: Update Pull Request
         if: steps.milestones.outputs.result != null
-        uses: actions/github-script@47f7cf65b5ced0830a325f705cad64f2f58dddf7 # 3.1.0
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # 8.0.0
         with:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
             // Confusingly, the issues api is used because pull requests are issues
-            await github.issues.update({
+            await github.rest.issues.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: ${{ github.event.pull_request.number }},

@@ -289,7 +289,7 @@ void ThreadFilter::init(const char* filter) {
     // Only explicitly registered threads via addThread() will be sampled
     // Previously we had a syntax where we could manually force some thread IDs.
     // This is no longer supported.
-    _enabled.store(filter != nullptr, std::memory_order_release);
+    _enabled.store(filter != nullptr && strlen(filter) > 0, std::memory_order_release);
 }
 
 bool ThreadFilter::enabled() const {

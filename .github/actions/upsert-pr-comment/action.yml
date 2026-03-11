@@ -7,6 +7,10 @@ inputs:
   body-file:
     description: "Path to file whose contents become the comment body"
     required: true
+  comment-id:
+    description: "Unique identifier for this comment type (used to find/update existing comment)"
+    required: false
+    default: "upsert-pr-comment"
   repo:        # optional; defaults to triggering repo
     description: "Repository (owner/repo)."
     required: false
@@ -31,25 +35,30 @@ runs:
       env:
         GH_TOKEN: ${{ steps.octo-sts.outputs.token }}
         BODY_FILE: ${{ inputs['body-file'] }}
+        COMMENT_ID: ${{ inputs['comment-id'] }}
         REPO: ${{ inputs.repo || github.repository }}
         PR:   ${{ inputs['pr-number'] || github.event.pull_request.number }}
       shell: bash
       run: |
         if [[ -s "$BODY_FILE" ]]; then
           set -e
-          # find last comment by this actor
-          # first, build a jq filter that embeds the actor’s login
-          filter=".[] | select(.user.login == \"${GITHUB_ACTOR}\") | .id"
+          # Create marker to identify this comment type
+          MARKER="<!-- ${COMMENT_ID} -->"
+
+          # Find existing comment with this marker
           cid=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" \
-                --jq "${filter}" | tail -n1)
-  
+                --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" | head -n1)
+
+          # Prepend marker to body
+          BODY="${MARKER}"$'\n'"$(< "$BODY_FILE")"
+
           if [[ -n "$cid" ]]; then
             gh api --method PATCH "repos/$REPO/issues/comments/$cid" \
-              --raw-field body="$(< "$BODY_FILE")"
+              --raw-field body="$BODY"
             echo "✏️  Updated comment $cid"
           else
             gh api --method POST "repos/$REPO/issues/$PR/comments" \
-              --raw-field body="$(< "$BODY_FILE")"
+              --raw-field body="$BODY"
             echo "💬  Created new comment"
           fi
         else

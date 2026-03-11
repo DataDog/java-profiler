@@ -318,14 +318,17 @@ bool VM::initShared(JavaVM* vm) {
   // Mark thread entry points for all JVMs (critical for correct stack unwinding)
   lib->mark(isThreadEntry, MARK_THREAD_ENTRY);
 
-  // Also mark libc/pthread libraries which contain thread start/exit points
-  CodeCache* libc = libraries->findJvmLibrary("libc");
-  if (libc != NULL) {
-      libc->mark(isThreadEntry, MARK_THREAD_ENTRY);
-  }
-  CodeCache* libpthread = libraries->findJvmLibrary("libpthread");
-  if (libpthread != NULL) {
-      libpthread->mark(isThreadEntry, MARK_THREAD_ENTRY);
+  // Mark OS-level pthread entry points across ALL loaded native libraries.
+  // On glibc these live in libc.so.6 or libpthread.so.0 (merged in glibc 2.34+);
+  // on musl in libc.musl-<arch>.so.1; on Rust they may be in the app binary itself.
+  // Scanning all libs avoids fragile name-based lookup (findLibraryByName uses a
+  // prefix match that can return the wrong library, e.g. libcap instead of libc).
+  // walkVM stops unwinding when it reaches the top of a pure-native thread stack
+  // without finding an anchor; marking start_thread/thread_start here gives the
+  // walker a clean stopping point for any pthread-managed thread.
+  const CodeCacheArray& all_native_libs = libraries->native_libs();
+  for (int i = 0; i < all_native_libs.count(); i++) {
+      all_native_libs[i]->mark(isThreadEntry, MARK_THREAD_ENTRY);
   }
 
   if (isOpenJ9()) {
@@ -447,7 +450,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   } else {
     // DebugNonSafepoints is automatically enabled with CompiledMethodLoad,
     // otherwise we set the flag manually
-    JVMFlag* f = JVMFlag::find("DebugNonSafepoints", {JVMFlag::Type::Bool});
+    VMFlag* f = VMFlag::find("DebugNonSafepoints", {VMFlag::Type::Bool});
     if (f != NULL && f->isDefault()) {
       f->set(1);
     }
@@ -457,7 +460,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   // profiler to avoid the risk of crashing flag was made obsolete (inert) in 15
   // (see JDK-8228991) and removed in 16 (see JDK-8231560)
   if (hotspot_version() < 15) {
-    JVMFlag *f = JVMFlag::find("UseAdaptiveGCBoundary", {JVMFlag::Type::Bool});
+    VMFlag *f = VMFlag::find("UseAdaptiveGCBoundary", {VMFlag::Type::Bool});
     _is_adaptive_gc_boundary_flag_set = f != NULL && f->get();
   }
 
@@ -528,7 +531,7 @@ void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
       VMKlass *vmklass = VMKlass::fromJavaClass(jni, klass);
       int method_count = vmklass->methodCount();
       if (method_count > 0) {
-        ClassLoaderData *cld = vmklass->classLoaderData();
+        VMClassLoaderData *cld = vmklass->classLoaderData();
         cld->lock();
         for (int i = 0; i < method_count; i += MethodList::SIZE) {
           *cld->methodList() = new MethodList(*cld->methodList());

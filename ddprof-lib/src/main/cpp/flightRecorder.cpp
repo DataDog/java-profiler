@@ -326,47 +326,72 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
 }
 
 MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
+  static const char* UNKNOWN = "unknown";
+  unsigned long key;
   jint bci = frame.bci;
-  jmethodID method = frame.method_id;
 
-  MethodInfo *mi = &(*_method_map)[method];
+  jmethodID method = frame.method_id;
+  if (method == nullptr) {
+    key = MethodMap::makeKey(UNKNOWN);
+  } else if (bci == BCI_ERROR || bci == BCI_NATIVE_FRAME) {
+    key = MethodMap::makeKey(frame.native_function_name);
+  } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
+    key = MethodMap::makeKey(frame.packed_remote_frame);
+  } else {
+    FrameTypeId frame_type = FrameType::decode(bci);
+    assert(frame_type == FRAME_INTERPRETED || frame_type == FRAME_JIT_COMPILED ||
+           frame_type == FRAME_INLINED || frame_type == FRAME_C1_COMPILED ||
+           VM::isOpenJ9()); // OpenJ9 may have bugs that produce invalid frame types
+    key = MethodMap::makeKey(method);
+  }
+
+  MethodInfo *mi = &(*_method_map)[key];
 
   if (!mi->_mark) {
     mi->_mark = true;
     bool first_time = mi->_key == 0;
     if (first_time) {
-      mi->_key = _method_map->size();
+      mi->_key = _method_map->size() + 1; // avoid zero key
     }
-    if (method == NULL) {
-      fillNativeMethodInfo(mi, "unknown", NULL);
+    if (method == nullptr) {
+      fillNativeMethodInfo(mi, UNKNOWN, nullptr);
     } else if (bci == BCI_ERROR) {
-      fillNativeMethodInfo(mi, (const char *)method, NULL);
+      fillNativeMethodInfo(mi, (const char *)method, nullptr);
     } else if (bci == BCI_NATIVE_FRAME) {
       const char *name = (const char *)method;
       fillNativeMethodInfo(mi, name,
                            Profiler::instance()->getLibraryName(name));
     } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
       // Unpack remote symbolication data using utility struct
-      // Layout: pc_offset (44 bits) | mark (3 bits) | lib_index (17 bits)
-      uintptr_t pc_offset = Profiler::RemoteFramePacker::unpackPcOffset(method);
-      char mark = Profiler::RemoteFramePacker::unpackMark(method);
-      uint32_t lib_index = Profiler::RemoteFramePacker::unpackLibIndex(method);
+      // Layout: pc_offset (44 bits) | mark (3 bits) | lib_index (15 bits)
+      unsigned long packed_remote_frame = frame.packed_remote_frame;
+      uintptr_t pc_offset = Profiler::RemoteFramePacker::unpackPcOffset(packed_remote_frame);
+      [[maybe_unused]] char mark = Profiler::RemoteFramePacker::unpackMark(packed_remote_frame);
+      uint32_t lib_index = Profiler::RemoteFramePacker::unpackLibIndex(packed_remote_frame);
 
-      TEST_LOG("Unpacking remote frame: packed=0x%lx, pc_offset=0x%lx, mark=%d, lib_index=%u",
-               (uintptr_t)method, pc_offset, (int)mark, lib_index);
+      TEST_LOG("Unpacking remote frame: packed=0x%zx, pc_offset=0x%lx, mark=%d, lib_index=%u",
+               packed_remote_frame, pc_offset, (int)mark, lib_index);
 
       // Lookup library by index to get build_id
       // Note: This is called during JFR serialization with lockAll() held (see Profiler::dump),
       // so the library array is stable - no concurrent dlopen_hook calls can modify it.
       CodeCache* lib = Libraries::instance()->getLibraryByIndex(lib_index);
-      if (lib != nullptr) {
+      if (lib != nullptr && lib->hasBuildId() && Profiler::instance()->isRemoteSymbolication()) {
         TEST_LOG("Found library: %s, build_id=%s", lib->name(), lib->buildId());
-        // Create temporary RemoteFrameInfo for fillRemoteFrameInfo
+        // Remote symbolication: defer to backend
         RemoteFrameInfo rfi(lib->buildId(), pc_offset, lib_index);
         fillRemoteFrameInfo(mi, &rfi);
+      } else if (lib != nullptr) {
+        // Locally unsymbolized: render as [libname+0xoffset]
+        char name_buf[256];
+        const char* s = lib->name();
+        const char* basename = strrchr(s, '/');
+        if (basename) basename++; else basename = s;
+        snprintf(name_buf, sizeof(name_buf), "[%s+0x%" PRIxPTR "]", basename, pc_offset);
+        fillNativeMethodInfo(mi, name_buf, nullptr);
       } else {
         TEST_LOG("WARNING: Library lookup failed for index %u", lib_index);
-        fillNativeMethodInfo(mi, "unknown_library", NULL);
+        fillNativeMethodInfo(mi, "unknown_library", nullptr);
       }
     } else {
       fillJavaMethodInfo(mi, method, first_time);
@@ -656,7 +681,7 @@ void Recording::cleanupUnreferencedMethods() {
   const int AGE_THRESHOLD = 3;  // Remove after 3 consecutive chunks without reference
   size_t removed_count = 0;
   size_t removed_with_line_tables = 0;
-  size_t total_before = _method_map.size();
+  [[maybe_unused]] size_t total_before = _method_map.size();
 
   for (MethodMap::iterator it = _method_map.begin(); it != _method_map.end(); ) {
     MethodInfo& mi = it->second;
@@ -689,7 +714,7 @@ void Recording::cleanupUnreferencedMethods() {
             removed_count, AGE_THRESHOLD, removed_with_line_tables, total_before, _method_map.size());
 
     // Log current count of live line number tables
-    long long live_tables = Counters::getCounter(LINE_NUMBER_TABLES);
+    [[maybe_unused]] long long live_tables = Counters::getCounter(LINE_NUMBER_TABLES);
     TEST_LOG("Live line number tables after cleanup: %lld", live_tables);
   }
 }

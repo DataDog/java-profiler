@@ -8,12 +8,12 @@
 #
 # Usage: ./utils/run-docker-tests.sh [options]
 #   --libc=glibc|musl        (default: glibc)
-#   --jdk=8|11|17|21|25      (default: 21)
+#   --jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9  (default: 21)
 #   --arch=x64|aarch64       (default: auto-detect)
-#   --config=debug|release   (default: debug)
+#   --config=debug|release|asan|tsan   (default: debug)
 #   --tests="TestPattern"    (optional, specific test to run)
 #   --gtest                  (enable C++ gtests, disabled by default)
-#   --shell                  (drop to shell instead of running tests)
+#   --shell                  (drop to shell instead of running tests; enables SYS_PTRACE for gdb)
 #   --mount                  (mount local repo instead of cloning - faster but may have stale artifacts)
 #   --rebuild                (force rebuild of Docker images)
 #   --rebuild-base           (force rebuild of base image only)
@@ -68,8 +68,8 @@ get_musl_jdk_url() {
         17-aarch64) echo "https://download.bell-sw.com/java/17.0.16+12/bellsoft-jdk17.0.16+12-linux-aarch64-musl-lite.tar.gz" ;;
         21-x64)     echo "https://download.bell-sw.com/java/21.0.8+12/bellsoft-jdk21.0.8+12-linux-x64-musl-lite.tar.gz" ;;
         21-aarch64) echo "https://download.bell-sw.com/java/21.0.8+12/bellsoft-jdk21.0.8+12-linux-aarch64-musl-lite.tar.gz" ;;
-        25-x64)     echo "https://download.bell-sw.com/java/25+37/bellsoft-jdk25+37-linux-x64-musl-lite.tar.gz" ;;
-        25-aarch64) echo "https://download.bell-sw.com/java/25+37/bellsoft-jdk25+37-linux-aarch64-musl-lite.tar.gz" ;;
+        25-x64)     echo "https://download.bell-sw.com/java/25.0.2+12/bellsoft-jdk25.0.2+12-linux-x64-musl-lite.tar.gz" ;;
+        25-aarch64) echo "https://download.bell-sw.com/java/25.0.2+12/bellsoft-jdk25.0.2+12-linux-aarch64-musl-lite.tar.gz" ;;
         *)          echo "" ;;
     esac
 }
@@ -88,8 +88,26 @@ get_glibc_jdk_url() {
         17-aarch64) echo "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.13%2B11/OpenJDK17U-jdk_aarch64_linux_hotspot_17.0.13_11.tar.gz" ;;
         21-x64)     echo "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.5%2B11/OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz" ;;
         21-aarch64) echo "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.5%2B11/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.5_11.tar.gz" ;;
-        25-x64)     echo "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25%2B3-ea-beta/OpenJDK25U-jdk_x64_linux_hotspot_25_3-ea.tar.gz" ;;
-        25-aarch64) echo "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25%2B3-ea-beta/OpenJDK25U-jdk_aarch64_linux_hotspot_25_3-ea.tar.gz" ;;
+        25-x64)     echo "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.2%2B10/OpenJDK25U-jdk_x64_linux_hotspot_25.0.2_10.tar.gz" ;;
+        25-aarch64) echo "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.2%2B10/OpenJDK25U-jdk_aarch64_linux_hotspot_25.0.2_10.tar.gz" ;;
+        *)          echo "" ;;
+    esac
+}
+
+# JDK Download URLs (IBM Semeru OpenJ9)
+get_j9_jdk_url() {
+    local version=$1
+    local arch=$2
+
+    case "$version-$arch" in
+        8-x64)      echo "https://github.com/ibmruntimes/semeru8-binaries/releases/download/jdk8u482-b08_openj9-0.57.0/ibm-semeru-open-jdk_x64_linux_8u482b08_openj9-0.57.0.tar.gz" ;;
+        8-aarch64)  echo "https://github.com/ibmruntimes/semeru8-binaries/releases/download/jdk8u482-b08_openj9-0.57.0/ibm-semeru-open-jdk_aarch64_linux_8u482b08_openj9-0.57.0.tar.gz" ;;
+        11-x64)     echo "https://github.com/ibmruntimes/semeru11-binaries/releases/download/jdk-11.0.30%2B7_openj9-0.57.0/ibm-semeru-open-jdk_x64_linux_11.0.30_7_openj9-0.57.0.tar.gz" ;;
+        11-aarch64) echo "https://github.com/ibmruntimes/semeru11-binaries/releases/download/jdk-11.0.30%2B7_openj9-0.57.0/ibm-semeru-open-jdk_aarch64_linux_11.0.30_7_openj9-0.57.0.tar.gz" ;;
+        17-x64)     echo "https://github.com/ibmruntimes/semeru17-binaries/releases/download/jdk-17.0.18%2B8_openj9-0.57.0/ibm-semeru-open-jdk_x64_linux_17.0.18_8_openj9-0.57.0.tar.gz" ;;
+        17-aarch64) echo "https://github.com/ibmruntimes/semeru17-binaries/releases/download/jdk-17.0.18%2B8_openj9-0.57.0/ibm-semeru-open-jdk_aarch64_linux_17.0.18_8_openj9-0.57.0.tar.gz" ;;
+        21-x64)     echo "https://github.com/ibmruntimes/semeru21-binaries/releases/download/jdk-21.0.10%2B7_openj9-0.57.0/ibm-semeru-open-jdk_x64_linux_21.0.9_10_openj9-0.56.0.tar.gz" ;;
+        21-aarch64) echo "https://github.com/ibmruntimes/semeru21-binaries/releases/download/jdk-21.0.10%2B7_openj9-0.57.0/ibm-semeru-open-jdk_aarch64_linux_21.0.9_10_openj9-0.56.0.tar.gz" ;;
         *)          echo "" ;;
     esac
 }
@@ -168,20 +186,33 @@ if [[ "$ARCH" != "x64" && "$ARCH" != "aarch64" ]]; then
     exit 1
 fi
 
-if [[ "$CONFIG" != "debug" && "$CONFIG" != "release" ]]; then
-    echo "Error: --config must be 'debug' or 'release'"
+if [[ "$CONFIG" != "debug" && "$CONFIG" != "release" && "$CONFIG" != "asan" && "$CONFIG" != "tsan" ]]; then
+    echo "Error: --config must be 'debug', 'release', 'asan', or 'tsan'"
     exit 1
 fi
 
-# Get JDK URL based on libc
-if [[ "$LIBC" == "musl" ]]; then
-    JDK_URL=$(get_musl_jdk_url "$JDK_VERSION" "$ARCH")
+# Parse JDK version and variant (e.g., "21-j9" -> version="21", variant="j9")
+JDK_BASE_VERSION="${JDK_VERSION%%-*}"
+JDK_VARIANT="${JDK_VERSION#*-}"
+if [[ "$JDK_VARIANT" == "$JDK_VERSION" ]]; then
+    JDK_VARIANT=""  # No variant specified
+fi
+
+# Get JDK URL based on variant and libc
+if [[ "$JDK_VARIANT" == "j9" ]]; then
+    if [[ "$LIBC" == "musl" ]]; then
+        echo "Error: J9/OpenJ9 is not available for musl libc"
+        exit 1
+    fi
+    JDK_URL=$(get_j9_jdk_url "$JDK_BASE_VERSION" "$ARCH")
+elif [[ "$LIBC" == "musl" ]]; then
+    JDK_URL=$(get_musl_jdk_url "$JDK_BASE_VERSION" "$ARCH")
 else
-    JDK_URL=$(get_glibc_jdk_url "$JDK_VERSION" "$ARCH")
+    JDK_URL=$(get_glibc_jdk_url "$JDK_BASE_VERSION" "$ARCH")
 fi
 
 if [[ -z "$JDK_URL" ]]; then
-    echo "Error: --jdk must be one of: 8, 11, 17, 21, 25"
+    echo "Error: --jdk must be one of: 8, 11, 17, 21, 25, 8-j9, 11-j9, 17-j9, 21-j9"
     exit 1
 fi
 
@@ -199,7 +230,8 @@ fi
 
 echo "=== Docker Test Runner ==="
 echo "LIBC:       $LIBC"
-echo "JDK:        $JDK_VERSION"
+echo "Build JDK:  21 (Gradle 9 requirement)"
+echo "Test JDK:   $JDK_VERSION"
 echo "Arch:       $ARCH"
 echo "Config:     $CONFIG"
 echo "Tests:      ${TESTS:-<all>}"
@@ -241,9 +273,9 @@ FROM alpine:3.21
 # - openssh-client for git clone over SSH
 RUN apk update && \
     apk add --no-cache \
-        curl wget bash make g++ clang git jq cmake \
+        curl wget bash make g++ clang git jq cmake coreutils \
         gtest-dev gmock tar binutils musl-dbg linux-headers \
-        compiler-rt llvm openssh-client
+        compiler-rt llvm openssh-client gdb
 
 # Set up Gradle cache directory
 ENV GRADLE_USER_HOME=/gradle-cache
@@ -252,13 +284,7 @@ RUN mkdir -p /gradle-cache
 WORKDIR /workspace
 EOF
     else
-        # libclang-rt-dev is only available on x64, not arm64
-        if [[ "$ARCH" == "x64" ]]; then
-            CLANG_RT_PKG="libclang-rt-dev"
-        else
-            CLANG_RT_PKG=""
-        fi
-        cat > "$DOCKERFILE_DIR/Dockerfile.base" <<EOF
+        cat > "$DOCKERFILE_DIR/Dockerfile.base" <<'EOF'
 FROM ubuntu:22.04
 
 # Avoid interactive prompts
@@ -266,14 +292,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install build dependencies
 # - libasan/libtsan for GCC sanitizers
-# - libclang-rt-dev for clang sanitizers and libFuzzer (x64 only)
+# - clang provides sanitizer runtimes and libFuzzer
 # - openssh-client for git clone over SSH
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl wget bash make g++ clang git jq cmake \
         libgtest-dev libgmock-dev tar binutils libc6-dbg \
         ca-certificates linux-libc-dev \
-        libasan6 libtsan0 ${CLANG_RT_PKG} openssh-client && \
+        libasan6 libtsan0 openssh-client build-essential gdb && \
     rm -rf /var/lib/apt/lists/*
 
 # Set up Gradle cache directory
@@ -288,6 +314,15 @@ EOF
     echo ">>> Base image built: $BASE_IMAGE_NAME"
 fi
 
+# ========== Get Build JDK URL (always JDK 21 for Gradle 9) ==========
+# Gradle 9 requires JDK 17+ to run; we use JDK 21 (LTS) as the build JDK
+BUILD_JDK_VERSION="21"
+if [[ "$LIBC" == "musl" ]]; then
+    BUILD_JDK_URL=$(get_musl_jdk_url "$BUILD_JDK_VERSION" "$ARCH")
+else
+    BUILD_JDK_URL=$(get_glibc_jdk_url "$BUILD_JDK_VERSION" "$ARCH")
+fi
+
 # ========== Build JDK Image (if needed) ==========
 IMAGE_EXISTS=false
 if [[ "$REBUILD" == "false" ]]; then
@@ -299,17 +334,22 @@ fi
 
 if [[ "$IMAGE_EXISTS" == "false" ]]; then
     echo ">>> Building JDK image: $IMAGE_NAME"
+    echo ">>> Build JDK (for Gradle): $BUILD_JDK_VERSION"
+    echo ">>> Test JDK: $JDK_VERSION"
 
-    cat > "$DOCKERFILE_DIR/Dockerfile" <<EOF
+    # Determine if we need two JDKs or just one
+    if [[ "$JDK_BASE_VERSION" == "$BUILD_JDK_VERSION" && -z "$JDK_VARIANT" ]]; then
+        # Test JDK is same as build JDK - use single installation
+        cat > "$DOCKERFILE_DIR/Dockerfile" <<EOF
 FROM $BASE_IMAGE_NAME
 
-# Download and install JDK
+# Download and install JDK (used for both build and test)
 RUN mkdir -p /jdk && \\
     wget -q "$JDK_URL" -O /tmp/jdk.tar.gz && \\
     tar xzf /tmp/jdk.tar.gz -C /jdk --strip-components=1 && \\
     rm /tmp/jdk.tar.gz
 
-# Set JDK environment
+# Set JDK environment (same JDK for build and test)
 ENV JAVA_HOME=/jdk
 ENV JAVA_TEST_HOME=/jdk
 ENV PATH="/jdk/bin:\$PATH"
@@ -327,6 +367,45 @@ RUN cd /tmp/gradle-setup && \\
 
 WORKDIR /workspace
 EOF
+    else
+        # Different JDKs for build and test
+        cat > "$DOCKERFILE_DIR/Dockerfile" <<EOF
+FROM $BASE_IMAGE_NAME
+
+# Download and install Build JDK (JDK $BUILD_JDK_VERSION for Gradle 9)
+RUN mkdir -p /jdk-build && \\
+    wget -q "$BUILD_JDK_URL" -O /tmp/jdk-build.tar.gz && \\
+    tar xzf /tmp/jdk-build.tar.gz -C /jdk-build --strip-components=1 && \\
+    rm /tmp/jdk-build.tar.gz
+
+# Download and install Test JDK (JDK $JDK_VERSION)
+RUN mkdir -p /jdk-test && \\
+    wget -q "$JDK_URL" -O /tmp/jdk-test.tar.gz && \\
+    tar xzf /tmp/jdk-test.tar.gz -C /jdk-test --strip-components=1 && \\
+    rm /tmp/jdk-test.tar.gz
+
+# Set JDK environment
+# JAVA_HOME = Build JDK (for running Gradle)
+# JAVA_TEST_HOME = Test JDK (for running tests)
+ENV JAVA_HOME=/jdk-build
+ENV JAVA_TEST_HOME=/jdk-test
+ENV PATH="/jdk-build/bin:\$PATH"
+
+# Verify JDK installations
+RUN echo "Build JDK:" && java -version
+RUN echo "Test JDK:" && /jdk-test/bin/java -version
+
+# Pre-cache Gradle wrapper
+COPY gradlew /tmp/gradle-setup/
+COPY gradle /tmp/gradle-setup/gradle
+RUN cd /tmp/gradle-setup && \\
+    chmod +x gradlew && \\
+    ./gradlew --version && \\
+    rm -rf /tmp/gradle-setup
+
+WORKDIR /workspace
+EOF
+    fi
 
     docker build $DOCKER_PLATFORM -t "$IMAGE_NAME" -f "$DOCKERFILE_DIR/Dockerfile" "$DOCKERFILE_DIR"
     echo ">>> JDK image built: $IMAGE_NAME"
@@ -335,9 +414,13 @@ fi
 # ========== Run Tests ==========
 
 # Build gradle test command
-GRADLE_CMD="./gradlew -PCI -PkeepJFRs :ddprof-test:test${CONFIG}"
+# Capitalize first letter for gradle task names (testDebug, testAsan, etc.)
+# Note: -Ptests property works uniformly across all platforms (glibc, musl, macOS)
+CONFIG_CAPITALIZED="$(tr '[:lower:]' '[:upper:]' <<< ${CONFIG:0:1})${CONFIG:1}"
+GRADLE_CMD="./gradlew -PCI -PkeepJFRs :ddprof-test:test${CONFIG_CAPITALIZED}"
 if [[ -n "$TESTS" ]]; then
-    GRADLE_CMD="$GRADLE_CMD --tests \"$TESTS\""
+    # No need for quotes around $TESTS - Gradle property values don't require quoting
+    GRADLE_CMD="$GRADLE_CMD -Ptests=$TESTS"
 fi
 if ! $GTEST_ENABLED; then
     GRADLE_CMD="$GRADLE_CMD -Pskip-gtest"
@@ -347,7 +430,7 @@ GRADLE_CMD="$GRADLE_CMD --no-daemon --parallel --build-cache --no-watch-fs"
 # Build Docker run command base
 DOCKER_CMD="docker run --rm"
 if $SHELL_MODE; then
-    DOCKER_CMD="$DOCKER_CMD -it"
+    DOCKER_CMD="$DOCKER_CMD -it --init --ulimit core=-1 --cap-add=SYS_PTRACE"
 fi
 DOCKER_CMD="$DOCKER_CMD $DOCKER_PLATFORM"
 DOCKER_CMD="$DOCKER_CMD -e LIBC=$LIBC"

@@ -11,7 +11,7 @@
 #include "thread.h"
 #include "vmEntry.h" // For BCI_ERROR constant
 #include "arch.h" // For LP64_ONLY macro and COMMA macro
-#include "criticalSection.h" // For table swap critical sections
+#include "guards.h" // For table swap critical sections
 #include "primeProbing.h"
 #include "thread.h"
 #include <string.h>

@@ -12,7 +12,7 @@
 #include "arch.h"
 
 
-class NMethod;
+class VMNMethod;
 
 class StackFrame {
   private:
@@ -61,7 +61,7 @@ class StackFrame {
         return unwindStub(entry, name, pc(), sp(), fp());
     }
 
-    bool unwindCompiled(NMethod* nm) {
+    bool unwindCompiled(VMNMethod* nm) {
         return unwindCompiled(nm, pc(), sp(), fp());
     }
 
@@ -69,15 +69,15 @@ class StackFrame {
     bool unwindAtomicStub(const void*& pc);
 
     // TODO: this function will be removed once `vm` becomes the default stack walking mode
-    bool unwindCompiled(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
+    bool unwindCompiled(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
 
-    bool unwindPrologue(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
-    bool unwindEpilogue(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
+    bool unwindPrologue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
+    bool unwindEpilogue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
 
     void adjustSP(const void* entry, const void* pc, uintptr_t& sp);
 
     // SP baseline helpers for compiled frame unwinding
-    uintptr_t sender_sp_baseline(const NMethod* nm, uintptr_t sp, uintptr_t fp, const void* pc);
+    uintptr_t sender_sp_baseline(const VMNMethod* nm, uintptr_t sp, uintptr_t fp, const void* pc);
     const void* read_caller_pc_from_sp(uintptr_t sp_base);
     uintptr_t read_saved_fp_from_sp(uintptr_t sp_base);
 

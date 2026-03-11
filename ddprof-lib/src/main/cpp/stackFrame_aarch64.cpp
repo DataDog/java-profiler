@@ -11,6 +11,7 @@
 #include "stackFrame.h"
 #include "safeAccess.h"
 #include "vmStructs.h"
+#include "counters.h"
 
 
 #ifdef __APPLE__
@@ -142,7 +143,7 @@ static inline bool isZeroSizeFrame(const char* name) {
     }
 }
 
-bool StackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+NOSANALIGSANITIZE bool StackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     instruction_t* ip = (instruction_t*)pc;
     if (ip == entry || *ip == 0xd65f03c0) {
         pc = link();
@@ -188,6 +189,23 @@ bool StackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& p
         }
         return true;
     }
+
+    // Generic fallback: detect standard aarch64 frame prologue
+    //   stp x29, x30, [sp, #-16]!  (0xa9bf7bfd)
+    //   mov x29, sp                 (0x910003fd)
+    // This catches JVM stubs not in the hardcoded whitelist.
+    if (entry != NULL && withinCurrentStack(fp)) {
+        for (int i = 0; i < 8 && entry + i < ip; i++) {
+            if (entry[i] == 0xa9bf7bfd && i + 1 < 8 && entry + i + 1 < ip && entry[i + 1] == 0x910003fd) {
+                sp = fp + 16;
+                fp = ((uintptr_t*)sp)[-2];
+                pc = ((uintptr_t*)sp)[-1];
+                Counters::increment(WALKVM_STUB_GENERIC_UNWIND);
+                return true;
+            }
+        }
+    }
+
     return false;
 }
 
@@ -197,7 +215,7 @@ static inline bool isEntryBarrier(instruction_t* ip) {
     return ip[0] == 0xb9402389 && ip[1] == 0xeb09011f;
 }
 
-bool StackFrame::unwindCompiled(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+NOSANALIGSANITIZE bool StackFrame::unwindCompiled(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     instruction_t* ip = (instruction_t*)pc;
     instruction_t* entry = (instruction_t*)nm->entry();
     if ((*ip & 0xffe07fff) == 0xa9007bfd) {
@@ -236,7 +254,7 @@ static inline bool isFrameComplete(instruction_t* entry, instruction_t* ip) {
     return false;
 }
 
-bool StackFrame::unwindPrologue(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+NOSANALIGSANITIZE bool StackFrame::unwindPrologue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     // C1/C2 methods:
     //   {stack_bang}
     //   sub  sp, sp, #0x40
@@ -312,7 +330,7 @@ static inline bool isPollReturn(instruction_t* ip) {
     return false;
 }
 
-bool StackFrame::unwindEpilogue(NMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
+NOSANALIGSANITIZE bool StackFrame::unwindEpilogue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     //  ldp  x29, x30, [sp, #32]
     //  add  sp, sp, #0x30
     //  {poll_return}
@@ -329,7 +347,7 @@ bool StackFrame::unwindAtomicStub(const void*& pc) {
     // VM threads may call generated atomic stubs, which are not normally walkable
     const void* lr = (const void*)link();
     if (VMStructs::libjvm()->contains(lr)) {
-        NMethod* nm = CodeHeap::findNMethod(pc);
+        VMNMethod* nm = CodeHeap::findNMethod(pc);
         if (nm != NULL && strncmp(nm->name(), "Stub", 4) == 0) {
             pc = lr;
             return true;
@@ -338,7 +356,7 @@ bool StackFrame::unwindAtomicStub(const void*& pc) {
     return false;
 }
 
-void StackFrame::adjustSP(const void* entry, const void* pc, uintptr_t& sp) {
+NOSANALIGSANITIZE void StackFrame::adjustSP(const void* entry, const void* pc, uintptr_t& sp) {
     instruction_t* ip = (instruction_t*)pc;
     if (ip > entry && (ip[-1] == 0xa9bf27ff || (ip[-1] == 0xd63f0100 && ip[-2] == 0xa9bf27ff))) {
         // When calling a leaf native from Java, JVM puts a dummy frame link onto the stack,
@@ -357,7 +375,7 @@ bool StackFrame::skipFaultInstruction() {
     return false;
 }
 
-bool StackFrame::checkInterruptedSyscall() {
+NOSANALIGSANITIZE bool StackFrame::checkInterruptedSyscall() {
 #ifdef __APPLE__
     // We are not interested in syscalls that do not check error code, e.g. semaphore_wait_trap
     if (*(instruction_t*)pc() == 0xd65f03c0) {

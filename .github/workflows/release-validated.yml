@@ -36,12 +36,12 @@ jobs:
       release_branch: ${{ steps.compute-version.outputs.release_branch }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Setup Java
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version: '21'
@@ -82,12 +82,30 @@ jobs:
             exit 1
           fi
 
+          # Check if this version is already released
+          if git rev-parse "v_${BASE}" >/dev/null 2>&1; then
+            ALREADY_RELEASED=true
+            echo "Version $BASE is already released"
+          else
+            ALREADY_RELEASED=false
+            echo "Version $BASE is not yet released"
+          fi
+
           # Compute release version based on type
           if [ "$TYPE" == "MAJOR" ] || [ "$TYPE" == "major" ]; then
-            RELEASE_VERSION="$((MAJOR + 1)).0.0"
+            if [ "$ALREADY_RELEASED" == "true" ]; then
+              RELEASE_VERSION="$((MAJOR + 1)).0.0"
+            else
+              RELEASE_VERSION="$BASE"
+            fi
           elif [ "$TYPE" == "MINOR" ] || [ "$TYPE" == "minor" ]; then
-            RELEASE_VERSION="$MAJOR.$((MINOR + 1)).0"
+            if [ "$ALREADY_RELEASED" == "true" ]; then
+              RELEASE_VERSION="$MAJOR.$((MINOR + 1)).0"
+            else
+              RELEASE_VERSION="$BASE"
+            fi
           else
+            # PATCH always increments
             RELEASE_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
           fi
 
@@ -135,7 +153,7 @@ jobs:
           echo "::error::Pre-release tests failed. Cannot proceed with release."
           exit 1
 
-      - uses: webfactory/ssh-agent@v0.7.0
+      - uses: webfactory/ssh-agent@v0.9.1
         with:
           ssh-private-key: ${{ secrets.SSH_PUSH_SECRET }}
 
@@ -150,7 +168,7 @@ jobs:
           git checkout $GITHUB_REF_NAME
 
       - name: Setup Java
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version: '21'

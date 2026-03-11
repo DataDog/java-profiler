@@ -43,6 +43,34 @@ struct jvmtiStackInfoExtended {
 
 enum { SHOW_COMPILED_FRAMES = 4, SHOW_INLINED_FRAMES = 8 };
 
+/**
+ * J9 frame type constants from ibmjvmti.h.
+ * These are the expected values returned in jvmtiFrameInfoExtended.type.
+ */
+enum J9FrameType {
+  J9_FRAME_NOT_JITTED = 0,  // COM_IBM_STACK_FRAME_EXTENDED_NOT_JITTED
+  J9_FRAME_JITTED = 1,      // COM_IBM_STACK_FRAME_EXTENDED_JITTED
+  J9_FRAME_INLINED = 2      // COM_IBM_STACK_FRAME_EXTENDED_INLINED
+};
+
+/**
+ * Validates and maps J9 frame type to FrameTypeId.
+ * J9's JVMTI extension may return unexpected values in the type field.
+ * This function ensures we only pass valid values to FrameType::encode().
+ *
+ * @param j9_type The frame type value from jvmtiFrameInfoExtended.type
+ * @return A valid FrameTypeId (FRAME_INTERPRETED, FRAME_JIT_COMPILED, or FRAME_INLINED)
+ */
+static inline int sanitizeJ9FrameType(jint j9_type) {
+  // J9 should only return 0, 1, or 2 for the frame type.
+  // Any other value is unexpected and we default to JIT compiled.
+  if (j9_type >= J9_FRAME_NOT_JITTED && j9_type <= J9_FRAME_INLINED) {
+    return j9_type;  // Direct mapping: J9 values match our FrameTypeId values
+  }
+  // Unexpected value - default to JIT compiled as the safest assumption
+  return FRAME_JIT_COMPILED;
+}
+
 class J9Ext {
 private:
   static jvmtiEnv *_jvmti;
@@ -139,7 +167,7 @@ public:
     for (int j = 0; j < *count_ptr; j++) {
       jvmtiFrameInfoExtended *fi = &buffer[j];
       frame_buffer[j].method_id = fi->method;
-      frame_buffer[j].bci = FrameType::encode(fi->type, fi->location);
+      frame_buffer[j].bci = FrameType::encode(sanitizeJ9FrameType(fi->type), fi->location);
     }
     return JVMTI_ERROR_NONE;
   }

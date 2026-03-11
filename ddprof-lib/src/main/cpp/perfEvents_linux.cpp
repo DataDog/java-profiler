@@ -20,7 +20,7 @@
 #include "arch.h"
 #include "arguments.h"
 #include "context.h"
-#include "criticalSection.h"
+#include "guards.h"
 #include "debugSupport.h"
 #include "libraries.h"
 #include "log.h"
@@ -32,7 +32,7 @@
 #include "stackWalker.h"
 #include "symbols.h"
 #include "thread.h"
-#include "threadState.h"
+#include "threadState.inline.h"
 #include "vmStructs.h"
 #include <dlfcn.h>
 #include <errno.h>
@@ -744,8 +744,7 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 
     u64 counter = readCounter(siginfo, ucontext);
     ExecutionEvent event;
-    VMThread *vm_thread = VMThread::current();
-    event._execution_mode = getThreadExecutionMode(vm_thread);
+    event._execution_mode = getThreadExecutionMode();
     Profiler::instance()->recordSample(ucontext, counter, tid, BCI_CPU, 0,
                                        &event);
     Shims::instance().setSighandlerTid(-1);

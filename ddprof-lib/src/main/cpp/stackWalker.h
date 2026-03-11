@@ -8,12 +8,13 @@
 #define _STACKWALKER_H
 
 #include <stdint.h>
+#include <string.h>
 #include "arguments.h"
 #include "event.h"
 #include "vmEntry.h"
 
 
-class JavaFrameAnchor;
+class VMJavaFrameAnchor;
 class ProfiledThread;
 
 struct StackContext {
@@ -31,6 +32,7 @@ struct StackContext {
 
 // Stack walking validation helpers (used by implementation and tests)
 namespace StackWalkValidation {
+    const intptr_t MAX_INTERPRETER_FRAME_SIZE = 0x1000;
     const uintptr_t DEAD_ZONE = 0x1000;
     const intptr_t MAX_FRAME_SIZE = 0x40000;
     const uintptr_t SAME_STACK_DISTANCE = 8192;
@@ -49,10 +51,27 @@ namespace StackWalkValidation {
     static inline bool sameStack(void* hi, void* lo) {
         return (uintptr_t)hi - (uintptr_t)lo < SAME_STACK_DISTANCE;
     }
+
+    // Drop unknown leaf frame (method_id == NULL at index 0).
+    // Returns the new depth after removal.
+    static inline int dropUnknownLeaf(ASGCT_CallFrame* frames, int depth) {
+        if (depth > 0 && frames[0].method_id == NULL) {
+            depth--;
+            if (depth > 0) {
+                memmove(frames, frames + 1, depth * sizeof(frames[0]));
+            }
+        }
+        return depth;
+    }
+
+    static inline bool isPlausibleInterpreterFrame(uintptr_t fp, uintptr_t sp, int bcp_offset){
+        return fp != 0 && aligned(fp) && !inDeadZone((const void*)fp)
+                && sp != 0 && sp > fp - MAX_INTERPRETER_FRAME_SIZE
+                && sp < fp + bcp_offset * (intptr_t)sizeof(void*);
+    }
 }
 
 class StackWalker {
-  private:
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                       StackWalkFeatures features, EventType event_type,
                       const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated);
@@ -61,7 +80,7 @@ class StackWalker {
     static int walkFP(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated = nullptr);
     static int walkDwarf(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated = nullptr);
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, StackWalkFeatures features, EventType event_type, int lock_index, bool* truncated = nullptr);
-    static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, JavaFrameAnchor* anchor, EventType event_type, int lock_index, bool* truncated = nullptr);
+    static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, VMJavaFrameAnchor* anchor, EventType event_type, int lock_index, bool* truncated = nullptr);
 
     static void checkFault(ProfiledThread* thrd = nullptr);
 };
