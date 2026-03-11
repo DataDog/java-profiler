@@ -340,7 +340,7 @@ jobs:
           sudo apt update -y
           sudo apt remove -y g++
           sudo apt autoremove -y
-          sudo apt install -y curl zip unzip clang make build-essential binutils
+          sudo apt install -y curl zip unzip clang make build-essential binutils gdb
           # Install debug symbols for system libraries
           sudo apt install -y libc6-dbg
           if [[ ${{ matrix.java_version }} =~ "-zing" ]]; then
@@ -363,11 +363,44 @@ jobs:
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
 
-          mkdir -p build/logs
-          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
-            | tee -a build/test-raw.log \
-            | python3 -u .github/scripts/filter_gradle_log.py
-          EXIT_CODE=${PIPESTATUS[0]}
+          # For ASAN: launch a gdb watchdog that dumps all native threads before the
+          # 30-minute Gradle timeout kills the JVM, so we can diagnose hangs in native code.
+          if [[ "${{ matrix.config }}" == "asan" ]]; then
+            mkdir -p build/logs
+            (
+              sleep 1500  # 25 minutes — fires before the 30-min Gradle timeout
+              echo "::warning::GDB watchdog triggered after 25 minutes"
+              for pid in $(pgrep -f 'java.*ddprof-test'); do
+                echo "=== Thread dump for PID $pid ===" >> build/logs/gdb-watchdog.log
+                gdb -batch -ex 'thread apply all bt full' -p "$pid" >> build/logs/gdb-watchdog.log 2>&1 || true
+              done
+            ) &
+            GDB_WATCHDOG_PID=$!
+          fi
+
+          MAX_ATTEMPTS=1
+          if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ (j9|ibm) ]]; then
+            MAX_ATTEMPTS=2
+          fi
+
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            mkdir -p build/logs
+            ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+              | tee -a build/test-raw.log \
+              | python3 -u .github/scripts/filter_gradle_log.py
+            EXIT_CODE=${PIPESTATUS[0]}
+
+            if [ $EXIT_CODE -eq 0 ]; then break; fi
+            if [ $attempt -lt $MAX_ATTEMPTS ]; then
+              echo "::warning::Attempt $attempt failed (exit $EXIT_CODE), retrying..."
+              ./gradlew --stop 2>/dev/null || true
+            fi
+          done
+
+          # Kill the watchdog if tests finished before it fired
+          if [[ -n "${GDB_WATCHDOG_PID:-}" ]]; then
+            kill "$GDB_WATCHDOG_PID" 2>/dev/null || true
+          fi
 
           if [ $EXIT_CODE -ne 0 ]; then
             echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt

@@ -15,6 +15,7 @@ import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Exec
 import org.gradle.api.tasks.SourceSetContainer
 import org.gradle.api.tasks.testing.Test
+import java.time.Duration
 import javax.inject.Inject
 
 /**
@@ -262,6 +263,8 @@ class ProfilerTestPlugin : Plugin<Project> {
                         testTask.setForkEvery(1)
                     }
                 }
+                // Kill hung ASAN test tasks after 30 minutes
+                testTask.timeout.set(Duration.ofMinutes(30))
             }
         }
     }
