@@ -125,7 +125,7 @@ public:
     sigaddset(&prof_signals, SIGPROF);     // Used by ITimer and CTimer
     sigaddset(&prof_signals, SIGVTALRM);   // Used by WallClock
 #ifdef __linux__
-    // Block RT signals used by TLS priming and potentially other profilers (Linux-only)
+    // Block RT signals (Linux-only)
     // This prevents any RT signal handler from interrupting TLS initialization
     for (int sig = SIGRTMIN; sig <= SIGRTMIN + 5 && sig <= SIGRTMAX; sig++) {
       sigaddset(&prof_signals, sig);

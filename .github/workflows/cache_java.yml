@@ -34,16 +34,17 @@ env:
   # jdk1.8.0_361
   JAVA_8_ORACLE_URL: "https://javadl.oracle.com/webapps/download/AutoDL?BundleId=247926_0ae14417abb444ebb02b9815e2103550"
 
-  JAVA_8_IBM_URL: "https://public.dhe.ibm.com/ibmdl/export/pub/systems/cloud/runtimes/java/8.0.8.50/linux/x86_64/ibm-java-jre-8.0-8.50-linux-x86_64.tgz"
+  JAVA_8_IBM_URL: "https://public.dhe.ibm.com/ibmdl/export/pub/systems/cloud/runtimes/java/8.0.8.60/linux/x86_64/ibm-java-jre-8.0-8.60-linux-x86_64.tgz"
 
-  JAVA_8_ZING_URL         : "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk8.0.372-linux_x64.tar.gz"
-  JAVA_8_ZING_AARCH64_URL : "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk8.0.431-linux_aarch64.tar.gz"
-  JAVA_11_ZING_URL        : "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk11.0.19-linux_x64.tar.gz"
-  JAVA_11_ZING_AARCH64_URL: "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk11.0.24.0.101-linux_aarch64.tar.gz"
-  JAVA_17_ZING_URL        : "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk17.0.7-linux_x64.tar.gz"
-  JAVA_17_ZING_AARCH64_URL: "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk17.0.12.0.101-linux_aarch64.tar.gz"
-  JAVA_21_ZING_URL        : "https://cdn.azul.com/zing-zvm/ZVM23.10.0.0/zing23.10.0.0-3-jdk21.0.1-linux_x64.tar.gz"
-  JAVA_21_ZING_AARCH64_URL: "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk21.0.4.0.101-linux_aarch64.tar.gz"
+  # FIXME: Azul pulled public CDN access to Zing/Prime downloads - all URLs return 404
+  # JAVA_8_ZING_URL         : "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk8.0.372-linux_x64.tar.gz"
+  # JAVA_8_ZING_AARCH64_URL : "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk8.0.431-linux_aarch64.tar.gz"
+  # JAVA_11_ZING_URL        : "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk11.0.19-linux_x64.tar.gz"
+  # JAVA_11_ZING_AARCH64_URL: "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk11.0.24.0.101-linux_aarch64.tar.gz"
+  # JAVA_17_ZING_URL        : "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk17.0.7-linux_x64.tar.gz"
+  # JAVA_17_ZING_AARCH64_URL: "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk17.0.12.0.101-linux_aarch64.tar.gz"
+  # JAVA_21_ZING_URL        : "https://cdn.azul.com/zing-zvm/ZVM23.10.0.0/zing23.10.0.0-3-jdk21.0.1-linux_x64.tar.gz"
+  # JAVA_21_ZING_AARCH64_URL: "https://cdn.azul.com/zing-zvm/ZVM24.10.0.0/zing24.10.0.0-4-jdk21.0.4.0.101-linux_aarch64.tar.gz"
 
   JAVA_8_MUSL_URL : "https://download.bell-sw.com/java/8u462+11/bellsoft-jdk8u462+11-linux-x64-musl-lite.tar.gz"
   JAVA_8_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/8u462+11/bellsoft-jdk8u462+11-linux-aarch64-musl-lite.tar.gz"
@@ -53,8 +54,8 @@ env:
   JAVA_17_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/17.0.16+12/bellsoft-jdk17.0.16+12-linux-aarch64-musl-lite.tar.gz"
   JAVA_21_MUSL_URL: "https://download.bell-sw.com/java/21.0.8+12/bellsoft-jdk21.0.8+12-linux-x64-musl-lite.tar.gz"
   JAVA_21_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/21.0.8+12/bellsoft-jdk21.0.8+12-linux-aarch64-musl-lite.tar.gz"
-  JAVA_25_MUSL_URL: "https://download.bell-sw.com/java/25+37/bellsoft-jdk25+37-linux-x64-musl-lite.tar.gz"
-  JAVA_25_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/25+37/bellsoft-jdk25+37-linux-aarch64-musl-lite.tar.gz"
+  JAVA_25_MUSL_URL: "https://download.bell-sw.com/java/25.0.2+12/bellsoft-jdk25.0.2+12-linux-x64-musl-lite.tar.gz"
+  JAVA_25_MUSL_AARCH64_URL: "https://download.bell-sw.com/java/25.0.2+12/bellsoft-jdk25.0.2+12-linux-aarch64-musl-lite.tar.gz"
 
 permissions:
   contents: read
@@ -67,7 +68,7 @@ jobs:
       sdkman_path: ${{ steps.export-path.outputs.sdkman_path }}
     steps:
       - name: Cache SDKMan! AMD64
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: sdkman
           key: sdkman-amd64-${{ github.run_id }}
@@ -95,7 +96,7 @@ jobs:
         run: |
           curl -s "https://get.sdkman.io" | bash
       - name: Upload SDKMAN! as Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sdkman-installation-amd64
           path: ${{ env.SDKMAN_DIR }}
@@ -108,7 +109,7 @@ jobs:
       sdkman_path: ${{ steps.export-path.outputs.sdkman_path }}
     steps:
       - name: Cache SDKMan! AARCH64
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: sdkman
           key: sdkman-aarch64-${{ github.run_id }}
@@ -135,7 +136,7 @@ jobs:
         run: |
           curl -s "https://get.sdkman.io" | bash
       - name: Upload SDKMAN! as Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sdkman-installation-aarch64
           path: ${{ env.SDKMAN_DIR }}
@@ -146,12 +147,14 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        java_variant: [ "8", "8-orcl", "8-zing", "8-j9", "8-ibm", "11", "11-zing", "11-j9", "17", "17-zing", "17-j9", "17-graal", "21", "21-j9", "21-zing", "21-graal", "25", "25-graal" ]
+        # java_variant: [ "8", "8-orcl", "8-zing", "8-j9", "8-ibm", "11", "11-zing", "11-j9", "17", "17-zing", "17-j9", "17-graal", "21", "21-j9", "21-zing", "21-graal", "25", "25-graal" ]
+        # FIXME: Zing disabled - Azul pulled public CDN access
+        java_variant: [ "8", "8-orcl", "8-j9", "8-ibm", "11", "11-j9", "17", "17-j9", "17-graal", "21", "21-j9", "21-graal", "25", "25-graal" ]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
       - name: Try restore cache JDK ${{ matrix.java_variant }}
         id: cache-jdk
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
@@ -172,7 +175,7 @@ jobs:
           sudo apt-get install -y curl zip unzip
       - name: Download SDKMAN! from Artifact
         if: steps.check-cache.outputs.cache-hit != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: sdkman-installation-amd64
           path: sdkman
@@ -190,7 +193,7 @@ jobs:
 
       - name: Save JDK ${{ matrix.java_variant }} cache
         if: steps.check-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
@@ -207,14 +210,14 @@ jobs:
       matrix:
         java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "25-librca" ]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
       - name: Setup OS
         run: |
           # This needs to be done early because alpine does not have bash and tar is also iffy
           apk update && apk add curl zip unzip bash tar
       - name: Cache JDK ${{ matrix.java_variant }}
         id: cache-jdk
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
@@ -240,7 +243,7 @@ jobs:
 
       - name: Save JDK ${{ matrix.java_variant }} cache
         if: steps.check-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
@@ -255,12 +258,14 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        java_variant: [ "8", "8-zing", "8-j9", "11", "11-zing", "11-j9", "17", "17-zing", "17-j9", "17-graal", "21", "21-j9", "21-zing", "21-graal", "25", "25-graal" ]
+        # java_variant: [ "8", "8-zing", "8-j9", "11", "11-zing", "11-j9", "17", "17-zing", "17-j9", "17-graal", "21", "21-j9", "21-zing", "21-graal", "25", "25-graal" ]
+        # FIXME: Zing disabled - Azul pulled public CDN access
+        java_variant: [ "8", "8-j9", "11", "11-j9", "17", "17-j9", "17-graal", "21", "21-j9", "21-graal", "25", "25-graal" ]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
       - name: Cache JDK ${{ matrix.java_variant }}
         id: cache-jdk
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
@@ -281,7 +286,7 @@ jobs:
           sudo apt-get install -y curl zip unzip
       - name: Download SDKMAN! from Artifact
         if: steps.check-cache.outputs.cache-hit != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: sdkman-installation-aarch64
           path: sdkman
@@ -298,7 +303,7 @@ jobs:
 
       - name: Save JDK ${{ matrix.java_variant }} cache
         if: steps.check-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
@@ -314,14 +319,14 @@ jobs:
       matrix:
         java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "25-librca" ]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
       - name: Setup OS
         run: |
           # This needs to be done early because alpine does not have bash and tar is also iffy
           sudo apt update && sudo apt install -y curl zip unzip bash tar
       - name: Cache JDK ${{ matrix.java_variant }}
         id: cache-jdk
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
@@ -347,7 +352,7 @@ jobs:
 
       - name: Save JDK ${{ matrix.java_variant }} cache
         if: steps.check-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}

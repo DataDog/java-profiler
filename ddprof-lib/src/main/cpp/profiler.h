@@ -315,7 +315,7 @@ public:
 
     /**
      * Pack remote symbolication data into a 64-bit jmethodID.
-     * Layout: pc_offset (44 bits) | mark (3 bits) | lib_index (17 bits)
+     * Layout: pc_offset (44 bits) | mark (3 bits) | lib_index (15 bits)
      */
     static inline unsigned long pack(uintptr_t pc_offset, char mark, uint32_t lib_index) {
       return (unsigned long)(
@@ -381,6 +381,7 @@ public:
                                    const char *value, const char *unit);
   void writeHeapUsage(long value, bool live);
   int eventMask() const { return _event_mask; }
+  bool isRemoteSymbolication() const { return _remote_symbolication; }
 
   const void *resolveSymbol(const char *name);
   const char *getLibraryName(const char *native_symbol);

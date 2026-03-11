@@ -7,8 +7,8 @@ plugins {
   java
   `maven-publish`
   signing
-  id("com.github.ben-manes.versions") version "0.51.0"
-  id("de.undercouch.download") version "5.6.0"
+  id("com.github.ben-manes.versions") version "0.53.0"
+  id("de.undercouch.download") version "5.7.0"
   id("com.datadoghq.native-build")
   id("com.datadoghq.gtest")
   id("com.datadoghq.scanbuild")
@@ -175,6 +175,7 @@ val sourcesJar by tasks.registering(Jar::class) {
 
 // Javadoc configuration
 tasks.withType<Javadoc>().configureEach {
+  dependsOn(copyExternalLibs)
   // Allow javadoc to access internal sun.nio.ch package used by BufferWriter8
   (options as StandardJavadocDocletOptions).addStringOption("-add-exports", "java.base/sun.nio.ch=ALL-UNNAMED")
 }

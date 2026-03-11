@@ -13,7 +13,7 @@
 #   --config=debug|release|asan|tsan   (default: debug)
 #   --tests="TestPattern"    (optional, specific test to run)
 #   --gtest                  (enable C++ gtests, disabled by default)
-#   --shell                  (drop to shell instead of running tests)
+#   --shell                  (drop to shell instead of running tests; enables SYS_PTRACE for gdb)
 #   --mount                  (mount local repo instead of cloning - faster but may have stale artifacts)
 #   --rebuild                (force rebuild of Docker images)
 #   --rebuild-base           (force rebuild of base image only)
@@ -68,8 +68,8 @@ get_musl_jdk_url() {
         17-aarch64) echo "https://download.bell-sw.com/java/17.0.16+12/bellsoft-jdk17.0.16+12-linux-aarch64-musl-lite.tar.gz" ;;
         21-x64)     echo "https://download.bell-sw.com/java/21.0.8+12/bellsoft-jdk21.0.8+12-linux-x64-musl-lite.tar.gz" ;;
         21-aarch64) echo "https://download.bell-sw.com/java/21.0.8+12/bellsoft-jdk21.0.8+12-linux-aarch64-musl-lite.tar.gz" ;;
-        25-x64)     echo "https://download.bell-sw.com/java/25+37/bellsoft-jdk25+37-linux-x64-musl-lite.tar.gz" ;;
-        25-aarch64) echo "https://download.bell-sw.com/java/25+37/bellsoft-jdk25+37-linux-aarch64-musl-lite.tar.gz" ;;
+        25-x64)     echo "https://download.bell-sw.com/java/25.0.2+12/bellsoft-jdk25.0.2+12-linux-x64-musl-lite.tar.gz" ;;
+        25-aarch64) echo "https://download.bell-sw.com/java/25.0.2+12/bellsoft-jdk25.0.2+12-linux-aarch64-musl-lite.tar.gz" ;;
         *)          echo "" ;;
     esac
 }
@@ -88,8 +88,8 @@ get_glibc_jdk_url() {
         17-aarch64) echo "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.13%2B11/OpenJDK17U-jdk_aarch64_linux_hotspot_17.0.13_11.tar.gz" ;;
         21-x64)     echo "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.5%2B11/OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz" ;;
         21-aarch64) echo "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.5%2B11/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.5_11.tar.gz" ;;
-        25-x64)     echo "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25%2B3-ea-beta/OpenJDK25U-jdk_x64_linux_hotspot_25_3-ea.tar.gz" ;;
-        25-aarch64) echo "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25%2B3-ea-beta/OpenJDK25U-jdk_aarch64_linux_hotspot_25_3-ea.tar.gz" ;;
+        25-x64)     echo "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.2%2B10/OpenJDK25U-jdk_x64_linux_hotspot_25.0.2_10.tar.gz" ;;
+        25-aarch64) echo "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.2%2B10/OpenJDK25U-jdk_aarch64_linux_hotspot_25.0.2_10.tar.gz" ;;
         *)          echo "" ;;
     esac
 }
@@ -275,7 +275,7 @@ RUN apk update && \
     apk add --no-cache \
         curl wget bash make g++ clang git jq cmake coreutils \
         gtest-dev gmock tar binutils musl-dbg linux-headers \
-        compiler-rt llvm openssh-client
+        compiler-rt llvm openssh-client gdb
 
 # Set up Gradle cache directory
 ENV GRADLE_USER_HOME=/gradle-cache
@@ -299,7 +299,7 @@ RUN apt-get update && \
         curl wget bash make g++ clang git jq cmake \
         libgtest-dev libgmock-dev tar binutils libc6-dbg \
         ca-certificates linux-libc-dev \
-        libasan6 libtsan0 openssh-client && \
+        libasan6 libtsan0 openssh-client build-essential gdb && \
     rm -rf /var/lib/apt/lists/*
 
 # Set up Gradle cache directory
@@ -430,7 +430,7 @@ GRADLE_CMD="$GRADLE_CMD --no-daemon --parallel --build-cache --no-watch-fs"
 # Build Docker run command base
 DOCKER_CMD="docker run --rm"
 if $SHELL_MODE; then
-    DOCKER_CMD="$DOCKER_CMD -it"
+    DOCKER_CMD="$DOCKER_CMD -it --init --ulimit core=-1 --cap-add=SYS_PTRACE"
 fi
 DOCKER_CMD="$DOCKER_CMD $DOCKER_PLATFORM"
 DOCKER_CMD="$DOCKER_CMD -e LIBC=$LIBC"

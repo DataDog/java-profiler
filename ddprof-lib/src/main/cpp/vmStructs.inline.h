@@ -13,6 +13,7 @@ VMNMethod* VMMethod::code() {
 }
 
 VMMethod* VMThread::compiledMethod() {
+    if (!cachedIsJavaThread()) return NULL;
     assert(_comp_method_offset >= 0);
     assert(_comp_env_offset >= 0);
     assert(_comp_task_offset >= 0);

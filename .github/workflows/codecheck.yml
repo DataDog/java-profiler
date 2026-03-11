@@ -21,13 +21,13 @@ jobs:
     env:
       HEAD_REF: ${{ github.head_ref }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
       - name: System setup
         run: |
           sudo apt-get update
           sudo apt install -y clang clang-tools openjdk-11-jdk
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v6
         with:
           python-version: 3.9
       - name: Install Python dependencies
@@ -38,7 +38,7 @@ jobs:
         run: |
           ./gradlew scanBuild --no-daemon
       - name: Upload logs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: scan-build-reports
@@ -71,11 +71,11 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v6
 
       # Initializes the CodeQL tools for scanning.
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           # If you wish to specify custom queries, you can do so here or in a config file.
@@ -84,4 +84,4 @@ jobs:
           # queries: ./path/to/local/query, your-org/your-repo/queries@main
       - run: ./gradlew -x test assembleReleaseJar
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4

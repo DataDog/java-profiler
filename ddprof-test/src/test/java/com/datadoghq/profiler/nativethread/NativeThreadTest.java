@@ -32,9 +32,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests native thread profiling to ensure proper stack unwinding without error frames.
- * This test validates Theory 1 (thread entry point detection) by verifying that
- * native threads no longer produce break_no_anchor or other error frames.
+ * Tests native thread profiling to ensure proper stack unwinding.
+ * Validates that native threads produce usable samples with do_primes() and
+ * that non-Java thread samples are not misclassified as break_no_anchor
+ * (which implies a missing JavaFrameAnchor, inapplicable for pure pthreads).
  */
 public class NativeThreadTest extends AbstractProfilerTest {
 
@@ -68,13 +69,13 @@ public class NativeThreadTest extends AbstractProfilerTest {
               String stacktrace = stacktraceAccessor.getMember(item);
               totalSamples++;
 
-              // Primary verification: Assert NO break_no_anchor errors
-              // Note: no_Java_frame is acceptable for pure native threads that never enter Java
-              assertFalse(stacktrace.contains("break_no_anchor"),
-                  "Found break_no_anchor error frame in stacktrace: " + stacktrace);
-
-              // Secondary verification: Check for expected native frames
               if (stacktrace.indexOf("do_primes()") != -1) {
+                // Native thread sample: must not contain break_no_anchor
+                // (non-Java threads have no JavaFrameAnchor — that error is inapplicable)
+                // break_no_symbol is expected when DWARF CFI is incomplete
+                assertFalse(stacktrace.contains("break_no_anchor"),
+                    "Found break_no_anchor in native thread sample: " + stacktrace);
+
                 if (!stacktrace_printed) {
                     stacktrace_printed = true;
                     System.out.println("Native thread stack:");

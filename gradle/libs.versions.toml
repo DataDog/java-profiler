@@ -3,26 +3,26 @@
 [versions]
 cpp-standard = "17"
 kotlin = "1.9.22"
-spotless = "7.0.2"
+spotless = "8.3.0"
 
 # Testing
 junit = "5.9.2"
 junit-platform = "1.9.2"  # JUnit Platform version corresponding to JUnit Jupiter 5.9.2
 junit-pioneer = "1.9.1"
-slf4j = "1.7.32"
+slf4j = "2.0.17"
 
 # Profiler runtime
 jmc = "8.1.0"
-jol = "0.16"
-lz4 = "1.8.0"
-snappy = "1.1.10.1"
-zstd = "1.5.5-4"
+jol = "0.17"
+lz4 = "1.10.4"
+snappy = "1.1.10.8"
+zstd = "1.5.7-7"
 
 # Code analysis
-asm = "9.6"
+asm = "9.9.1"
 
 # Benchmarking
-jmh = "1.36"
+jmh = "1.37"
 
 [libraries]
 # JUnit 5
@@ -40,7 +40,7 @@ jmc-flightrecorder = { module = "org.openjdk.jmc:flightrecorder", version.ref = 
 jol-core = { module = "org.openjdk.jol:jol-core", version.ref = "jol" }
 
 # Compression libraries
-lz4 = { module = "org.lz4:lz4-java", version.ref = "lz4" }
+lz4 = { module = "at.yawk.lz4:lz4-java", version.ref = "lz4" }
 snappy = { module = "org.xerial.snappy:snappy-java", version.ref = "snappy" }
 zstd = { module = "com.github.luben:zstd-jni", version.ref = "zstd" }
 

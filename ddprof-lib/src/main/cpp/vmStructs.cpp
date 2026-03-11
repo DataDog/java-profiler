@@ -684,11 +684,14 @@ jmethodID VMMethod::id() {
     const char* cpool = (const char*) SafeAccess::load((void**)(const_method + _constmethod_constants_offset));
     unsigned short num = (unsigned short) SafeAccess::load32((int32_t*)(const_method + _constmethod_idnum_offset), 0);
     if (goodPtr(cpool)) {
-        VMKlass* holder = *(VMKlass**)(cpool + _pool_holder_offset);
+        VMKlass* holder = (VMKlass*) SafeAccess::loadPtr((void**)(cpool + _pool_holder_offset), nullptr);
         if (goodPtr(holder)) {
-            jmethodID* ids = holder->jmethodIDs();
-            if (ids != NULL && num < (size_t)ids[0]) {
-                return ids[num + 1];
+            jmethodID* ids = (jmethodID*) SafeAccess::loadPtr((void**)((char*)holder + _jmethod_ids_offset), nullptr);
+            if (ids != NULL) {
+                size_t len = (size_t) SafeAccess::load32((int32_t*)ids, 0);
+                if (num < len) {
+                    return (jmethodID) SafeAccess::loadPtr((void**)(ids + num + 1), nullptr);
+                }
             }
         }
     }
@@ -716,7 +719,18 @@ VMNMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
     }
 
     unsigned char* block = heap_start + (idx << _code_heap_segment_shift) + _heap_block_used_offset;
-    return *block ? align<VMNMethod*>(block + sizeof(uintptr_t)) : NULL;
+    if (!*block) {
+        return NULL;
+    }
+    VMNMethod* nm = align<VMNMethod*>(block + sizeof(uintptr_t));
+    // Validate the nmethod memory is still readable. findNMethod is called from
+    // signal-handler context (walkVM) where nmethods can be freed concurrently
+    // during class unloading. Unlike other VMStructs casts that go through
+    // cast_to<T> with readability validation, align<> provides none.
+    if (!SafeAccess::isReadableRange(nm, VMNMethod::type_size())) {
+        return NULL;
+    }
+    return nm;
 }
 
 int VMNMethod::findScopeOffset(const void* pc) {
@@ -930,6 +944,7 @@ OSThreadState VMThread::osThreadState() {
 }
 
 int VMThread::state() {
+    if (!cachedIsJavaThread()) return 0;
     int offset = VMStructs::thread_state_offset();
     if (offset >= 0) {
         int* state = (int*)at(offset);

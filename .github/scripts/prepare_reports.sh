@@ -3,7 +3,11 @@
 set -e
 mkdir -p test-reports
 mkdir -p unwinding-reports
+cp build/test-raw.log test-reports/ || true
 cp /tmp/hs_err* test-reports/ || true
+cp /tmp/asan_*.log test-reports/ || true
+cp /tmp/ubsan_*.log test-reports/ || true
+cp /tmp/tsan_*.log test-reports/ || true
 cp ddprof-test/javacore*.txt test-reports/ || true
 cp ddprof-test/build/hs_err* test-reports/ || true
 cp -r ddprof-lib/build/tmp test-reports/native_build || true

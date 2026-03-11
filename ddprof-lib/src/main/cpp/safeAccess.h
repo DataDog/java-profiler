@@ -32,6 +32,7 @@ extern "C" int64_t safefetch64_impl(int64_t* adr, int64_t errValue);
 #define NOINLINE __attribute__((noinline, noclone))
 #endif
 #define NOADDRSANITIZE __attribute__((no_sanitize("address")))
+#define NOSANALIGSANITIZE __attribute__((no_sanitize("alignment")))
 
 class SafeAccess {
 public:

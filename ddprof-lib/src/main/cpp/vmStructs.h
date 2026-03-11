@@ -12,7 +12,9 @@
 #include <string.h>
 #include <type_traits>
 #include "codeCache.h"
+#include "counters.h"
 #include "safeAccess.h"
+#include "thread.h"
 #include "threadState.h"
 #include "vmEntry.h"
 
@@ -20,10 +22,23 @@ class GCHeapSummary;
 class HeapUsage;
 
 
+// During stack walking in the profiler's signal handler, GC or class unloading
+// on another thread can free VMNMethod/VMMethod memory concurrently, making
+// pointers stale between the readability check and the actual dereference.
+// In release builds the setjmp/longjmp crash protection in walkVM catches the
+// resulting SIGSEGV. In debug builds the assert(isReadable) fires first,
+// sending SIGABRT which is uncatchable by crash protection.
+// When crash protection is active the assert is redundant — any bad read will
+// be caught by the SIGSEGV handler and recovered via longjmp — so we skip it.
+inline bool crashProtectionActive() {
+    ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+    return pt != nullptr && pt->isCrashProtectionActive();
+}
+
 template <typename T>
 inline T* cast_to(const void* ptr) {
-    assert(!VM::isHotspot() || T::type_size() > 0); // Ensure type size has been initialized
-    assert(ptr == nullptr || !VM::isHotspot() || SafeAccess::isReadableRange(ptr, T::type_size()));
+    assert(T::type_size() > 0); // Ensure type size has been initialized
+    assert(crashProtectionActive() || ptr == nullptr || SafeAccess::isReadableRange(ptr, T::type_size()));
     return reinterpret_cast<T*>(const_cast<void*>(ptr));
 }
 
@@ -379,7 +394,7 @@ class VMStructs {
 
     const char* at(int offset) {
         const char* ptr = (const char*)this + offset;
-        assert(!VM::isHotspot() || SafeAccess::isReadable(ptr));
+        assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
         return ptr;
     }
 
@@ -619,7 +634,7 @@ DECLARE(VMJavaFrameAnchor)
     enum { MAX_CALL_WRAPPER_DISTANCE = 512 };
 
   public:
-    static VMJavaFrameAnchor* fromEntryFrame(uintptr_t fp) {
+    NOADDRSANITIZE static VMJavaFrameAnchor* fromEntryFrame(uintptr_t fp) {
         assert(_frame_entry_frame_call_wrapper_offset != -1);
         assert(_call_wrapper_anchor_offset >= 0);
         const char* call_wrapper = (const char*) SafeAccess::loadPtr((void**)(fp + _frame_entry_frame_call_wrapper_offset), nullptr);
@@ -629,17 +644,17 @@ DECLARE(VMJavaFrameAnchor)
         return VMJavaFrameAnchor::cast((const void*)(call_wrapper + _call_wrapper_anchor_offset));
     }
 
-    uintptr_t lastJavaSP() {
+    NOADDRSANITIZE uintptr_t lastJavaSP() {
         assert(_anchor_sp_offset >= 0);
         return (uintptr_t) SafeAccess::loadPtr((void**) at(_anchor_sp_offset), nullptr);
     }
 
-    uintptr_t lastJavaFP() {
+    NOADDRSANITIZE uintptr_t lastJavaFP() {
         assert(_anchor_fp_offset >= 0);
         return (uintptr_t) SafeAccess::loadPtr((void**) at(_anchor_fp_offset), nullptr);
     }
 
-    const void* lastJavaPC() {
+    NOADDRSANITIZE const void* lastJavaPC() {
         assert(_anchor_pc_offset >= 0);
         return SafeAccess::loadPtr((void**) at(_anchor_pc_offset), nullptr);
     }
@@ -649,7 +664,7 @@ DECLARE(VMJavaFrameAnchor)
         *(const void**) at(_anchor_pc_offset) = pc;
     }
 
-    bool getFrame(const void*& pc, uintptr_t& sp, uintptr_t& fp) {
+    NOADDRSANITIZE bool getFrame(const void*& pc, uintptr_t& sp, uintptr_t& fp) {
         if (lastJavaPC() != NULL && lastJavaSP() != 0) {
             pc = lastJavaPC();
             sp = lastJavaSP();
@@ -713,6 +728,25 @@ DECLARE(VMThread)
                (vtbl[5] == _java_thread_vtbl[5]) >= 2;
     }
 
+    // Cached version of isJavaThread(). On first call per thread, computes the
+    // vtable check and caches the result in ProfiledThread for O(1) subsequent
+    // lookups. This is needed because JVMTI ThreadStart only fires for application
+    // threads, not for JVM-internal JavaThread subclasses (CompilerThread, etc.).
+    bool cachedIsJavaThread() {
+        ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+        if (pt != NULL) {
+            if (!pt->isJavaThreadKnown()) {
+                pt->cacheJavaThread(isJavaThread());
+            }
+            bool result = pt->isJavaThread();
+            if (!result) Counters::increment(WALKVM_CACHED_NOT_JAVA);
+            return result;
+        }
+        bool result = isJavaThread();
+        if (!result) Counters::increment(WALKVM_CACHED_NOT_JAVA);
+        return result;
+    }
+
     OSThreadState osThreadState();
 
     int state();
@@ -722,16 +756,37 @@ DECLARE(VMThread)
     }
 
     bool inDeopt() {
+        if (!cachedIsJavaThread()) return false;
         assert(_thread_vframe_offset >= 0);
         return SafeAccess::loadPtr((void**) at(_thread_vframe_offset), nullptr) != NULL;
     }
 
+    // Check if the thread object memory is readable up to the largest used
+    // offset. On some JVMs (e.g. GraalVM 25 aarch64), a wall-clock signal
+    // can hit a thread whose memory is only partially mapped — the vtable
+    // at offset 0 may be readable while fields deeper in the object are not.
+    // On non-HotSpot JVMs (J9, Zing) offsets stay at -1; skip the check.
+    bool isThreadAccessible() {
+        int max_offset = -1;
+        if (_thread_exception_offset > max_offset) max_offset = _thread_exception_offset;
+        if (_thread_state_offset > max_offset) max_offset = _thread_state_offset;
+        if (_thread_osthread_offset > max_offset) max_offset = _thread_osthread_offset;
+        if (_thread_anchor_offset > max_offset) max_offset = _thread_anchor_offset;
+        if (_thread_vframe_offset > max_offset) max_offset = _thread_vframe_offset;
+        if (max_offset < 0) return true;
+        return SafeAccess::isReadableRange(this, max_offset + sizeof(void*));
+    }
+
     void*& exception() {
-        assert(_thread_exception_offset >= 0);
+        if (_thread_exception_offset < 0) {
+            static void* _null_exception = nullptr;
+            return _null_exception;
+        }
         return *(void**) at(_thread_exception_offset);
     }
 
-    VMJavaFrameAnchor* anchor() {
+    NOADDRSANITIZE VMJavaFrameAnchor* anchor() {
+        if (!cachedIsJavaThread()) return NULL;
         assert(_thread_anchor_offset >= 0);
         return VMJavaFrameAnchor::cast(at(_thread_anchor_offset));
     }

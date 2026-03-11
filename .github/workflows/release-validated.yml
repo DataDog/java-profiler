@@ -36,12 +36,12 @@ jobs:
       release_branch: ${{ steps.compute-version.outputs.release_branch }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Setup Java
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version: '21'
@@ -153,7 +153,7 @@ jobs:
           echo "::error::Pre-release tests failed. Cannot proceed with release."
           exit 1
 
-      - uses: webfactory/ssh-agent@v0.7.0
+      - uses: webfactory/ssh-agent@v0.9.1
         with:
           ssh-private-key: ${{ secrets.SSH_PUSH_SECRET }}
 
@@ -168,7 +168,7 @@ jobs:
           git checkout $GITHUB_REF_NAME
 
       - name: Setup Java
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version: '21'
