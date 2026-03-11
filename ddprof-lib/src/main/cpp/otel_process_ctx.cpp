@@ -34,6 +34,10 @@
   #define PR_SET_VMA_ANON_NAME  0
 #endif
 
+#ifndef MFD_NOEXEC_SEAL
+  #define MFD_NOEXEC_SEAL 0x0008U
+#endif
+
 static const otel_process_ctx_data empty_data = {
   .deployment_environment_name = NULL,
   .service_instance_id = NULL,
