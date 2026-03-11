@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk21
 
 ## glibc-arm64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-03-11 14:07:37 EDT
+**Date:** 2026-03-11 14:07:58 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,26 +28,29 @@ title: glibc-arm64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 222 |
-| Sample Rate | 3.70/sec |
-| Health Score | 231% |
+| CPU Samples | 237 |
+| Sample Rate | 3.95/sec |
+| Health Score | 247% |
 | Threads | 8 |
-| Allocations | 169 |
+| Allocations | 177 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 647 |
-| Sample Rate | 10.78/sec |
-| Health Score | 674% |
-| Threads | 9 |
-| Allocations | 439 |
+| CPU Samples | 89 |
+| Sample Rate | 1.48/sec |
+| Health Score | 92% |
+| Threads | 8 |
+| Allocations | 75 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
+1773252234 24
+1773252239 24
+1773252244 24
 1773252249 24
 1773252254 24
 1773252259 24
@@ -62,12 +65,9 @@ title: glibc-arm64-openj9-jdk21
 1773252304 24
 1773252309 24
 1773252314 24
-1773252320 24
-1773252325 24
-1773252330 24
-1773252335 24
-1773252340 24
-1773252345 24
+1773252319 24
+1773252324 24
+1773252329 24
 ```
 </details>
 
