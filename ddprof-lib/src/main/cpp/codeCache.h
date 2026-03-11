@@ -264,24 +264,28 @@ public:
 
   CodeCache *operator[](int index) const { return __atomic_load_n(&_libs[index], __ATOMIC_ACQUIRE); }
 
+  // Returns a count that may include indices whose pointer has not yet been
+  // stored by a concurrent add(). Callers using operator[] must handle NULL.
   int count() const { return __atomic_load_n(&_count, __ATOMIC_RELAXED); }
 
+  // Two-phase add: _count is CAS-incremented first, then the pointer is stored.
+  // This creates a window where operator[]/at() may return NULL for valid indices.
   void add(CodeCache *lib) {
-    int index = __atomic_fetch_add(&_count, 1, __ATOMIC_RELAXED);
-    if (index < MAX_NATIVE_LIBS) {
-      __atomic_fetch_add(&_used_memory, lib->memoryUsage(), __ATOMIC_RELAXED);
-       __atomic_store_n(&_libs[index], lib, __ATOMIC_RELEASE);
-    }
+    int old = __atomic_load_n(&_count, __ATOMIC_RELAXED);
+    do {
+      if (old >= MAX_NATIVE_LIBS) return;
+    } while (!__atomic_compare_exchange_n(&_count, &old, old + 1,
+                                          true, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
+    __atomic_fetch_add(&_used_memory, lib->memoryUsage(), __ATOMIC_RELAXED);
+    __atomic_store_n(&_libs[old], lib, __ATOMIC_RELEASE);
   }
 
+  // Non-blocking read; may return NULL if the slot has not been stored yet.
   CodeCache* at(int index) const {
     if (index >= MAX_NATIVE_LIBS) {
-        return nullptr;
+      return nullptr;
     }
-    CodeCache* lib = nullptr;
-    while ((lib = __atomic_load_n(&_libs[index], __ATOMIC_ACQUIRE)) == nullptr);
-
-    return lib;
+    return __atomic_load_n(&_libs[index], __ATOMIC_ACQUIRE);
   }
 
   size_t memoryUsage() const {

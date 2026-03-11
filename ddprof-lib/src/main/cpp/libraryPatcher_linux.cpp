@@ -151,10 +151,22 @@ void LibraryPatcher::patch_libraries() {
 }
 
 void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
+  if (lib->name() == nullptr) return;
+
   char path[PATH_MAX];
   char* resolved_path = realpath(lib->name(), path);
   if (resolved_path != nullptr &&     //  filter out virtual file, e.g. [vdso], etc.
       strcmp(resolved_path, _profiler_name) == 0) { // Don't patch self
+    return;
+  }
+
+  // Don't patch sanitizer runtime libraries — intercepting their internal
+  // pthread_create calls causes reentrancy and heap corruption under ASAN.
+  const char* base = strrchr(lib->name(), '/');
+  base = (base != nullptr) ? base + 1 : lib->name();
+  if (strncmp(base, "libasan", 7) == 0 ||
+      strncmp(base, "libtsan", 7) == 0 ||
+      strncmp(base, "libubsan", 8) == 0) {
     return;
   }
 
@@ -200,7 +212,9 @@ void LibraryPatcher::patch_pthread_create() {
   ExclusiveLockGuard locker(&_lock);
   for (int index = 0; index < num_of_libs; index++) {
      CodeCache* lib = native_libs.at(index);
-     patch_library_unlocked(lib);
+     if (lib != nullptr) {
+       patch_library_unlocked(lib);
+     }
   }
 }
 #endif // __linux__
