@@ -5,13 +5,13 @@ title: Java Profiler Build - Test Dashboard
 
 # Java Profiler Build - Test Dashboard
 
-> **Last Updated:** 2026-03-10 17:55 UTC
+> **Last Updated:** 2026-03-11 08:33 UTC
 
 ## Quick Status
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](integration/) | [#101695464](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101695464) | ✅ | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) |
+| [Integration](integration/) | [#101802095](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101802095) | ✅ | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) |
 | [Benchmarks](benchmarks/) | - | - | - | - |
 | [Reliability](reliability/) | - | - | - | - |
 
@@ -37,11 +37,11 @@ Tests multiple allocator configurations (gmalloc, tcmalloc, jemalloc).
 
 | Date | Type | Pipeline | Branch | PR | Status |
 |------|------|----------|--------|-----|--------|
+| 2026-03-11 | Integration | [#101802095](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101802095) | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) | ✅ |
 | 2026-03-10 | Integration | [#101695464](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101695464) | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) | ✅ |
 | 2026-03-10 | Integration | [#101685631](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101685631) | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) | ✅ |
 | 2026-03-06 | Integration | [#100983844](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100983844) | jb/netty_native_socket | - | ✅ |
 | 2026-03-06 | Integration | [#100942066](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100942066) | jb/native_allocs | [#398](https://github.com/DataDog/java-profiler/pull/398) | ⚠️ |
-| 2026-03-06 | Integration | [#100878526](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100878526) | dependabot/github_actions/actions/download-artifact-8 | [#402](https://github.com/DataDog/java-profiler/pull/402) | ✅ |
 
 ---
 
