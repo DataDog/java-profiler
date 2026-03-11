@@ -1,6 +1,33 @@
 {
   "runs": [
     {
+      "id": "101961989",
+      "timestamp": "2026-03-11T18:07:31Z",
+      "ddprof_branch": "jb/libraries_reentrancy",
+      "ddprof_sha": "a927fc04",
+      "ddprof_pr": {
+        "number": 413,
+        "url": "https://github.com/DataDog/java-profiler/pull/413",
+        "title": "Harden CodeCacheArray and profiler against signal-handler races"
+      },
+      "pipeline": {
+        "id": "101961989",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101961989"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 40,
+        "failed_jobs": 0,
+        "total_scenarios": 80,
+        "passed_scenarios": 80,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "101949234",
       "timestamp": "2026-03-11T17:39:47Z",
       "ddprof_branch": "jb/native_allocs",
@@ -238,33 +265,6 @@
       "pipeline": {
         "id": "101802095",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101802095"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 40,
-        "failed_jobs": 0,
-        "total_scenarios": 80,
-        "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "101695464",
-      "timestamp": "2026-03-10T17:55:43Z",
-      "ddprof_branch": "jb/libraries_reentrancy",
-      "ddprof_sha": "d2117548",
-      "ddprof_pr": {
-        "number": 413,
-        "url": "https://github.com/DataDog/java-profiler/pull/413",
-        "title": "Fix async-signal-unsafe CodeCacheArray reads"
-      },
-      "pipeline": {
-        "id": "101695464",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101695464"
       },
       "lib_version": "unknown",
       "status": "passed",

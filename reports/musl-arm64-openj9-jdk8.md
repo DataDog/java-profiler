@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk8
 
 ## musl-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-03-11 13:39:51 EDT
+**Date:** 2026-03-11 14:07:40 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,10 +28,10 @@ title: musl-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 261 |
-| Sample Rate | 4.35/sec |
-| Health Score | 272% |
-| Threads | 7 |
+| CPU Samples | 114 |
+| Sample Rate | 1.90/sec |
+| Health Score | 119% |
+| Threads | 6 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
@@ -41,33 +41,33 @@ title: musl-arm64-openj9-jdk8
 | CPU Samples | 100 |
 | Sample Rate | 1.67/sec |
 | Health Score | 104% |
-| Threads | 11 |
+| Threads | 9 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1773250310 24
-1773250315 24
-1773250320 24
-1773250325 24
-1773250330 24
-1773250335 24
-1773250340 24
-1773250345 24
-1773250350 24
-1773250355 24
-1773250360 24
-1773250365 24
-1773250370 24
-1773250375 24
-1773250380 24
-1773250385 24
-1773250390 24
-1773250395 24
-1773250400 24
-1773250405 24
+1773252247 24
+1773252252 24
+1773252257 24
+1773252262 24
+1773252267 24
+1773252272 24
+1773252277 24
+1773252282 24
+1773252287 24
+1773252292 24
+1773252297 24
+1773252302 24
+1773252307 24
+1773252312 24
+1773252317 24
+1773252322 24
+1773252327 24
+1773252332 24
+1773252337 24
+1773252342 24
 ```
 </details>
 
