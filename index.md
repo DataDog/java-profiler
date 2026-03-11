@@ -5,13 +5,13 @@ title: Java Profiler Build - Test Dashboard
 
 # Java Profiler Build - Test Dashboard
 
-> **Last Updated:** 2026-03-11 09:27 UTC
+> **Last Updated:** 2026-03-11 12:50 UTC
 
 ## Quick Status
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](integration/) | [#101811096](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101811096) | ⚠️ | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) |
+| [Integration](integration/) | [#101843330](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101843330) | ⚠️ | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) |
 | [Benchmarks](benchmarks/) | - | - | - | - |
 | [Reliability](reliability/) | - | - | - | - |
 
@@ -37,11 +37,11 @@ Tests multiple allocator configurations (gmalloc, tcmalloc, jemalloc).
 
 | Date | Type | Pipeline | Branch | PR | Status |
 |------|------|----------|--------|-----|--------|
+| 2026-03-11 | Integration | [#101843330](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101843330) | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) | ⚠️ |
 | 2026-03-11 | Integration | [#101811096](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101811096) | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) | ⚠️ |
 | 2026-03-11 | Integration | [#101810015](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101810015) | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) | ⚠️ |
 | 2026-03-11 | Integration | [#101802095](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101802095) | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) | ✅ |
 | 2026-03-10 | Integration | [#101695464](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101695464) | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) | ✅ |
-| 2026-03-10 | Integration | [#101685631](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101685631) | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) | ✅ |
 
 ---
 

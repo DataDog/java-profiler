@@ -1,6 +1,36 @@
 {
   "runs": [
     {
+      "id": "101843330",
+      "timestamp": "2026-03-11T12:50:39Z",
+      "ddprof_branch": "jb/libraries_reentrancy",
+      "ddprof_sha": "6e9d4891",
+      "ddprof_pr": {
+        "number": 413,
+        "url": "https://github.com/DataDog/java-profiler/pull/413",
+        "title": "Harden CodeCacheArray and profiler against signal-handler races"
+      },
+      "pipeline": {
+        "id": "101843330",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101843330"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 38,
+        "failed_jobs": 2,
+        "total_scenarios": 76,
+        "passed_scenarios": 76,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "musl-arm64-hotspot-jdk11",
+          "musl-arm64-openj9-jdk11"
+        ]
+      }
+    },
+    {
       "id": "101811096",
       "timestamp": "2026-03-11T09:27:44Z",
       "ddprof_branch": "jb/libraries_reentrancy",
@@ -254,29 +284,6 @@
       "pipeline": {
         "id": "100877904",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100877904"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 40,
-        "failed_jobs": 0,
-        "total_scenarios": 80,
-        "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "100863417",
-      "timestamp": "2026-03-06T11:30:55Z",
-      "ddprof_branch": "main",
-      "ddprof_sha": "76efe296",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "100863417",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/100863417"
       },
       "lib_version": "unknown",
       "status": "passed",
