@@ -254,6 +254,15 @@ class ProfilerTestPlugin : Plugin<Project> {
                 "asan" -> testTask.onlyIf { PlatformUtils.locateLibasan() != null }
                 "tsan" -> testTask.onlyIf { PlatformUtils.locateLibtsan() != null }
             }
+
+            // J9+ASAN: isolate each test class in its own JVM to limit crash blast radius
+            if (testConfig.configName == "asan") {
+                testTask.doFirst {
+                    if (PlatformUtils.isTestJvmJ9()) {
+                        testTask.setForkEvery(1)
+                    }
+                }
+            }
         }
     }
 

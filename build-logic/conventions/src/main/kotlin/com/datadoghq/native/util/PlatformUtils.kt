@@ -304,4 +304,22 @@ object PlatformUtils {
             "or specify one with -Pnative.forceCompiler=/path/to/compiler"
         )
     }
+
+    /**
+     * Returns true if the test JVM (from JAVA_TEST_HOME or JAVA_HOME) is an OpenJ9/J9 JVM.
+     * Probes `java -version` stderr output for "J9" or "OpenJ9".
+     */
+    fun isTestJvmJ9(): Boolean {
+        val javaHome = testJavaHome()
+        return try {
+            val process = ProcessBuilder("$javaHome/bin/java", "-version")
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().readText()
+            process.waitFor(10, TimeUnit.SECONDS)
+            output.contains("J9") || output.contains("OpenJ9")
+        } catch (_: Exception) {
+            false
+        }
+    }
 }

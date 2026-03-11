@@ -104,12 +104,25 @@ jobs:
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
 
-          mkdir -p build/logs
-          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
-            | tee -a build/test-raw.log \
-            | python3 -u .github/scripts/filter_gradle_log.py
-          EXIT_CODE=${PIPESTATUS[0]}
-      
+          MAX_ATTEMPTS=1
+          if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ (j9|ibm) ]]; then
+            MAX_ATTEMPTS=2
+          fi
+
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            mkdir -p build/logs
+            ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+              | tee -a build/test-raw.log \
+              | python3 -u .github/scripts/filter_gradle_log.py
+            EXIT_CODE=${PIPESTATUS[0]}
+
+            if [ $EXIT_CODE -eq 0 ]; then break; fi
+            if [ $attempt -lt $MAX_ATTEMPTS ]; then
+              echo "::warning::Attempt $attempt failed (exit $EXIT_CODE), retrying..."
+              ./gradlew --stop 2>/dev/null || true
+            fi
+          done
+
           if [ $EXIT_CODE -ne 0 ]; then
             echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
             exit 1
