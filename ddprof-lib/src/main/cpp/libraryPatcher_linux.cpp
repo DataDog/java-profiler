@@ -48,16 +48,19 @@ public:
 };
 
 #ifdef __aarch64__
+// Delete RoutineInfo with profiling signals blocked to prevent ASAN
+// allocator lock reentrancy. Kept noinline so SignalBlocker's sigset_t
+// does not trigger stack-protector canary in the caller on aarch64.
+__attribute__((noinline))
+static void delete_routine_info(RoutineInfo* thr) {
+    SignalBlocker blocker;
+    delete thr;
+}
+
 // Initialize the current thread's TLS with profiling signals blocked.
-// Kept in a separate noinline function so that SignalBlocker's 128-byte
-// sigset_t lives in its own frame and does not trigger stack-protector
-// canary placement in start_routine_wrapper on aarch64.
+// Kept noinline for the same stack-protector reason as delete_routine_info.
 __attribute__((noinline))
 static void init_thread_tls() {
-    // Block profiling signals during TLS initialization: TLS init
-    // (pthread_once, pthread_key_create, pthread_setspecific) is not
-    // async-signal-safe. A profiling signal here can corrupt
-    // internal TLS bookkeeping on the stack.
     SignalBlocker blocker;
     ProfiledThread::initCurrentThread();
 }
@@ -74,7 +77,7 @@ static void* start_routine_wrapper_spec(void* args) {
     RoutineInfo* thr = (RoutineInfo*)args;
     func_start_routine routine = thr->routine();
     void* params = thr->args();
-    delete thr;
+    delete_routine_info(thr);
     init_thread_tls();
     int tid = ProfiledThread::currentTid();
     Profiler::registerThread(tid);
@@ -88,9 +91,16 @@ static int pthread_create_hook_spec(pthread_t* thread,
                           const pthread_attr_t* attr,
                           func_start_routine start_routine,
                           void* args) {
-  RoutineInfo* thr = new RoutineInfo(start_routine, args);
+  RoutineInfo* thr;
+  {
+    SignalBlocker blocker;
+    thr = new RoutineInfo(start_routine, args);
+  }
   int ret = pthread_create(thread, attr, start_routine_wrapper_spec, (void*)thr);
-  if (ret != 0) delete thr;
+  if (ret != 0) {
+    SignalBlocker blocker;
+    delete thr;
+  }
   return ret;
 }
 
@@ -107,15 +117,18 @@ static void thread_cleanup(void* arg) {
 __attribute__((visibility("hidden")))
 static void* start_routine_wrapper(void* args) {
     RoutineInfo* thr = (RoutineInfo*)args;
-    func_start_routine routine = thr->routine();
-    void* params = thr->args();
-    delete thr;
+    func_start_routine routine;
+    void* params;
     {
-        // Block profiling signals during TLS initialization: TLS init
-        // (pthread_once, pthread_key_create, pthread_setspecific) is not
-        // async-signal-safe. A profiling signal here can corrupt
-        // internal TLS bookkeeping on the stack.
+        // Block profiling signals while accessing and freeing RoutineInfo
+        // and during TLS initialization: these operations are not
+        // async-signal-safe. A profiling signal here can deadlock under
+        // ASAN (allocator lock reentrancy) or corrupt internal TLS
+        // bookkeeping on the stack.
         SignalBlocker blocker;
+        routine = thr->routine();
+        params = thr->args();
+        delete thr;
         ProfiledThread::initCurrentThread();
     }
     int tid = ProfiledThread::currentTid();
@@ -133,9 +146,16 @@ static int pthread_create_hook(pthread_t* thread,
                           const pthread_attr_t* attr,
                           func_start_routine start_routine,
                           void* args) {
-  RoutineInfo* thr = new RoutineInfo(start_routine, args);
+  RoutineInfo* thr;
+  {
+    SignalBlocker blocker;
+    thr = new RoutineInfo(start_routine, args);
+  }
   int ret = pthread_create(thread, attr, start_routine_wrapper, (void*)thr);
-  if (ret != 0) delete thr;
+  if (ret != 0) {
+    SignalBlocker blocker;
+    delete thr;
+  }
   return ret;
 }
 
