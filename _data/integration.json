@@ -1,6 +1,33 @@
 {
   "runs": [
     {
+      "id": "102136447",
+      "timestamp": "2026-03-12T14:26:57Z",
+      "ddprof_branch": "jb/libraries_reentrancy",
+      "ddprof_sha": "2cd9e864",
+      "ddprof_pr": {
+        "number": 413,
+        "url": "https://github.com/DataDog/java-profiler/pull/413",
+        "title": "Harden CodeCacheArray and profiler against signal-handler races"
+      },
+      "pipeline": {
+        "id": "102136447",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/102136447"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 39,
+        "passed_jobs": 39,
+        "failed_jobs": 0,
+        "total_scenarios": 78,
+        "passed_scenarios": 78,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "102067100",
       "timestamp": "2026-03-12T07:41:03Z",
       "ddprof_branch": "jb/libraries_reentrancy",
@@ -225,36 +252,6 @@
       "pipeline": {
         "id": "101845918",
         "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101845918"
-      },
-      "lib_version": "unknown",
-      "status": "partial",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 38,
-        "failed_jobs": 2,
-        "total_scenarios": 76,
-        "passed_scenarios": 76,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": [
-          "musl-arm64-hotspot-jdk11",
-          "musl-arm64-openj9-jdk11"
-        ]
-      }
-    },
-    {
-      "id": "101843330",
-      "timestamp": "2026-03-11T12:50:39Z",
-      "ddprof_branch": "jb/libraries_reentrancy",
-      "ddprof_sha": "6e9d4891",
-      "ddprof_pr": {
-        "number": 413,
-        "url": "https://github.com/DataDog/java-profiler/pull/413",
-        "title": "Harden CodeCacheArray and profiler against signal-handler races"
-      },
-      "pipeline": {
-        "id": "101843330",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101843330"
       },
       "lib_version": "unknown",
       "status": "partial",
