@@ -35,7 +35,7 @@
 #endif
 
 #ifndef MFD_NOEXEC_SEAL
-  #define MFD_NOEXEC_SEAL 0x0008U
+  #define MFD_NOEXEC_SEAL 8U
 #endif
 
 static const otel_process_ctx_data empty_data = {
@@ -705,14 +705,19 @@ static otel_process_ctx_result otel_process_ctx_encode_protobuf_payload(char **o
       if (!value) return false;
 
       // Dispatch based on key
-      if (strcmp(key_buffer, "deployment.environment.name") == 0) { data_out->deployment_environment_name = value; }
-      else if (strcmp(key_buffer, "service.instance.id") == 0) { data_out->service_instance_id = value; }
-      else if (strcmp(key_buffer, "service.name") == 0) { data_out->service_name = value; }
-      else if (strcmp(key_buffer, "service.version") == 0) { data_out->service_version = value; }
-      else if (strcmp(key_buffer, "telemetry.sdk.language") == 0) { data_out->telemetry_sdk_language = value; }
-      else if (strcmp(key_buffer, "telemetry.sdk.version") == 0) { data_out->telemetry_sdk_version = value; }
-      else if (strcmp(key_buffer, "telemetry.sdk.name") == 0) { data_out->telemetry_sdk_name = value; }
-      else {
+      const char **field = NULL;
+      if      (strcmp(key_buffer, "deployment.environment.name") == 0) { field = &data_out->deployment_environment_name; }
+      else if (strcmp(key_buffer, "service.instance.id") == 0)         { field = &data_out->service_instance_id; }
+      else if (strcmp(key_buffer, "service.name") == 0)                { field = &data_out->service_name; }
+      else if (strcmp(key_buffer, "service.version") == 0)             { field = &data_out->service_version; }
+      else if (strcmp(key_buffer, "telemetry.sdk.language") == 0)      { field = &data_out->telemetry_sdk_language; }
+      else if (strcmp(key_buffer, "telemetry.sdk.version") == 0)       { field = &data_out->telemetry_sdk_version; }
+      else if (strcmp(key_buffer, "telemetry.sdk.name") == 0)          { field = &data_out->telemetry_sdk_name; }
+
+      if (field != NULL) {
+        if (*field != NULL) { free(value); return false; }
+        *field = value;
+      } else {
         char *key = strdup(key_buffer);
 
         if (!key || resource_index + 2 >= resource_capacity) {
