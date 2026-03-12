@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk25
 
 ## glibc-arm64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-03-11 16:37:26 EDT
+**Date:** 2026-03-12 03:41:05 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 72 |
-| Sample Rate | 1.20/sec |
-| Health Score | 75% |
-| Threads | 9 |
-| Allocations | 74 |
+| CPU Samples | 191 |
+| Sample Rate | 3.18/sec |
+| Health Score | 199% |
+| Threads | 8 |
+| Allocations | 153 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 621 |
-| Sample Rate | 10.35/sec |
-| Health Score | 647% |
-| Threads | 9 |
-| Allocations | 499 |
+| CPU Samples | 65 |
+| Sample Rate | 1.08/sec |
+| Health Score | 68% |
+| Threads | 8 |
+| Allocations | 55 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1773261244 24
-1773261249 24
-1773261254 24
-1773261259 24
-1773261264 24
-1773261269 24
-1773261274 24
-1773261279 24
-1773261284 24
-1773261289 24
-1773261294 24
-1773261299 24
-1773261304 24
-1773261309 24
-1773261314 24
-1773261319 24
-1773261325 24
-1773261330 24
-1773261335 24
-1773261340 24
+1773301025 24
+1773301030 24
+1773301035 24
+1773301040 24
+1773301045 24
+1773301050 24
+1773301055 24
+1773301060 24
+1773301065 24
+1773301070 24
+1773301075 24
+1773301080 24
+1773301085 24
+1773301090 24
+1773301095 24
+1773301100 24
+1773301105 24
+1773301110 24
+1773301115 24
+1773301120 24
 ```
 </details>
 
