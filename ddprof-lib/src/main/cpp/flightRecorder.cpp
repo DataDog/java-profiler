@@ -1111,15 +1111,10 @@ void Recording::writeNativeLibraries(Buffer *buf) {
   int native_lib_count = native_libs.count();
 
   // Emit jdk.NativeLibrary events for newly loaded libraries.
-  // Stop at the first NULL slot — a concurrent add() may have incremented
-  // count() but not stored the pointer yet. Unrecorded entries will be
-  // picked up on the next flush.
-  int i;
-  for (i = _recorded_lib_count; i < native_lib_count; i++) {
+  // CodeCacheArray::add() stores the pointer before advancing count(),
+  // so all indices < native_lib_count are guaranteed non-NULL.
+  for (int i = _recorded_lib_count; i < native_lib_count; i++) {
     CodeCache* lib = native_libs[i];
-    if (lib == NULL) {
-      break;
-    }
 
     flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - MAX_STRING_LENGTH);
     int start = buf->skip(5);
@@ -1134,7 +1129,7 @@ void Recording::writeNativeLibraries(Buffer *buf) {
     flushIfNeeded(buf);
   }
 
-  _recorded_lib_count = i;
+  _recorded_lib_count = native_lib_count;
 }
 
 void Recording::writeCpool(Buffer *buf) {

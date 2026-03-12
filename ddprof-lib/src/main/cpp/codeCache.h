@@ -254,34 +254,42 @@ public:
 class CodeCacheArray {
 private:
   CodeCache *_libs[MAX_NATIVE_LIBS];
-  volatile int _count;
+  volatile int _reserved;       // next slot to reserve (CAS by writers)
+  volatile int _count;          // published count (all indices < _count have non-NULL pointers)
   volatile size_t _used_memory;
 
 public:
-  CodeCacheArray() : _count(0), _used_memory(0) {
+  CodeCacheArray() : _reserved(0), _count(0), _used_memory(0) {
     memset(_libs, 0, MAX_NATIVE_LIBS * sizeof(CodeCache *));
   }
 
   CodeCache *operator[](int index) const { return __atomic_load_n(&_libs[index], __ATOMIC_ACQUIRE); }
 
-  // Returns a count that may include indices whose pointer has not yet been
-  // stored by a concurrent add(). Callers using operator[] must handle NULL.
+  // All indices < count() are guaranteed to have a non-NULL pointer.
   int count() const { return __atomic_load_n(&_count, __ATOMIC_ACQUIRE); }
 
-  // Two-phase add: _count is CAS-incremented first, then the pointer is stored.
-  // This creates a window where operator[]/at() may return NULL for valid indices.
+  // Pointer-first add: reserve a slot via CAS on _reserved, store the
+  // pointer with RELEASE, then advance _count. Readers see count() grow
+  // only after the pointer is visible, so indices < count() never yield NULL.
   void add(CodeCache *lib) {
-    int old = __atomic_load_n(&_count, __ATOMIC_RELAXED);
+    int slot = __atomic_load_n(&_reserved, __ATOMIC_RELAXED);
     do {
-      if (old >= MAX_NATIVE_LIBS) return;
-    } while (!__atomic_compare_exchange_n(&_count, &old, old + 1,
+      if (slot >= MAX_NATIVE_LIBS) return;
+    } while (!__atomic_compare_exchange_n(&_reserved, &slot, slot + 1,
                                           true, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
-    assert(__atomic_load_n(&_libs[old], __ATOMIC_RELAXED) == nullptr);
+    assert(__atomic_load_n(&_libs[slot], __ATOMIC_RELAXED) == nullptr);
     __atomic_fetch_add(&_used_memory, lib->memoryUsage(), __ATOMIC_RELAXED);
-    __atomic_store_n(&_libs[old], lib, __ATOMIC_RELEASE);
+    // Store pointer before publishing count. The RELEASE here pairs with
+    // the ACQUIRE load in operator[]/at() and count().
+    __atomic_store_n(&_libs[slot], lib, __ATOMIC_RELEASE);
+    // Advance _count to publish the new slot. Spin until our slot is next
+    // in line, preserving contiguous ordering when multiple adds race.
+    while (__atomic_load_n(&_count, __ATOMIC_RELAXED) != slot) {
+      // wait for preceding slots to publish
+    }
+    __atomic_store_n(&_count, slot + 1, __ATOMIC_RELEASE);
   }
 
-  // Non-blocking read; may return NULL if the slot has not been stored yet.
   CodeCache* at(int index) const {
     if (index >= MAX_NATIVE_LIBS) {
       return nullptr;
