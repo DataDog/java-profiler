@@ -264,7 +264,9 @@ void VMStructs::init_constants() {
 #ifdef DEBUG
 void VMStructs::verify_offsets() {
     // Hotspot only
-    assert(VM::isHotspot());
+    if (!VM::isHotspot()) {
+        return;
+    }
     int hotspot_version = VM::hotspot_version();
 
 // Verify type sizes

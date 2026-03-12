@@ -68,6 +68,7 @@ inline T* cast_to(const void* ptr) {
       public: \
         static uint64_t type_size() { return TYPE_SIZE_NAME(name); } \
         static name * cast(const void* ptr) { return cast_to<name>(ptr); } \
+        static name * cast_raw(const void* ptr) { return (name *)ptr; } \
         static name * load_then_cast(const void* ptr) { \
             assert(ptr != nullptr); \
             return cast(*(const void**)ptr); }
@@ -700,7 +701,7 @@ DECLARE(VMThread)
     }
 
     static VMThread* fromJavaThread(JNIEnv* env, jthread thread) {
-        return VMThread::cast((const void*)env->GetLongField(thread, _eetop));
+        return VMThread::cast_raw((const void*)env->GetLongField(thread, _eetop));
     }
 
     static jlong javaThreadId(JNIEnv* env, jthread thread) {
