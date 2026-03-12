@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk8
 
 ## musl-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-03-12 10:34:45 EDT
+**Date:** 2026-03-12 11:39:21 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 92 |
-| Sample Rate | 1.53/sec |
-| Health Score | 96% |
+| CPU Samples | 95 |
+| Sample Rate | 1.58/sec |
+| Health Score | 99% |
 | Threads | 8 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: musl-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 94 |
-| Sample Rate | 1.57/sec |
-| Health Score | 98% |
-| Threads | 9 |
+| CPU Samples | 56 |
+| Sample Rate | 0.93/sec |
+| Health Score | 58% |
+| Threads | 7 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1773325690 24
-1773325695 24
-1773325700 24
-1773325705 24
-1773325710 24
-1773325715 24
-1773325720 24
-1773325725 24
-1773325730 24
-1773325735 24
-1773325740 24
-1773325745 24
-1773325750 24
-1773325755 24
-1773325760 24
-1773325765 24
-1773325770 24
-1773325775 24
-1773325780 24
-1773325785 24
+1773329724 24
+1773329729 24
+1773329734 24
+1773329739 24
+1773329744 24
+1773329749 24
+1773329754 24
+1773329759 24
+1773329764 24
+1773329769 24
+1773329774 24
+1773329779 24
+1773329784 24
+1773329789 24
+1773329794 24
+1773329799 24
+1773329804 24
+1773329809 24
+1773329814 24
+1773329819 24
 ```
 </details>
 
