@@ -18,6 +18,7 @@
 #include "j9WallClock.h"
 #include "libraryPatcher.h"
 #include "objectSampler.h"
+#include "socketPatcher.h"
 #include "os.h"
 #include "perfEvents.h"
 #include "safeAccess.h"
@@ -924,6 +925,21 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
   _locks[lock_index].unlock();
 }
 
+void Profiler::recordNativeSocketEvent(NativeSocketEvent *event) {
+  int tid = ProfiledThread::currentTid();
+  if (tid < 0) {
+    return;
+  }
+  u32 lock_index = getLockIndex(tid);
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    return;
+  }
+  _jfr.recordNativeSocketEvent(lock_index, tid, event);
+  _locks[lock_index].unlock();
+}
+
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
                                     ASGCT_CallFrame *frames, bool truncated,
                                     jint event_type, Event *event) {
@@ -1282,6 +1298,7 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   _omit_stacktraces = args._lightweight;
   _remote_symbolication = args._remote_symbolication;
+  _native_sockets = args._native_sockets;
   _event_mask =
       ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
                                                                      : 0) |
@@ -1503,7 +1520,12 @@ Error Profiler::stop() {
 
   // Unpatch libraries AFTER JFR serialization completes
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
-  // owned by library metadata, so we must keep library patches active until after serialization
+  // owned by library metadata, so we must keep library patches active until after serialization.
+  // Note: between unlockAll() above and unpatch_libraries() below, PLT hooks may still
+  // fire from concurrent Netty I/O threads. This is safe because
+  // FlightRecorder::recordNativeSocketEvent checks _rec != nullptr (set to null by _jfr.stop()).
+  _native_sockets = false;  // Prevent dlopen hooks from re-patching after unpatch
+  SocketPatcher::unpatch_libraries();
   LibraryPatcher::unpatch_libraries();
 
   _state = IDLE;

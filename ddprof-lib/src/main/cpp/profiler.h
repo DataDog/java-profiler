@@ -155,6 +155,7 @@ private:
   u32 _num_context_attributes;
   bool _omit_stacktraces;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
+  bool _native_sockets;        // Enable PLT patching of Netty native socket functions
 
   // dlopen() hook support
   void **_dlopen_entry;
@@ -209,7 +210,7 @@ public:
         _num_context_attributes(0), _class_map(1), _string_label_map(2),
         _context_value_map(3), _cpu_engine(), _alloc_engine(), _event_mask(0),
         _stop_time(), _total_samples(0), _failures(), _cstack(CSTACK_NO),
-        _omit_stacktraces(false) {
+        _omit_stacktraces(false), _native_sockets(false) {
 
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       _calltrace_buffer[i] = NULL;
@@ -375,6 +376,8 @@ public:
   void recordWallClockEpoch(int tid, WallClockEpochEvent *event);
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
+  void recordNativeSocketEvent(NativeSocketEvent *event);
+  bool nativeSockets() const { return _native_sockets; }
   void writeLog(LogLevel level, const char *message);
   void writeLog(LogLevel level, const char *message, size_t len);
   void writeDatadogProfilerSetting(int tid, int length, const char *name,

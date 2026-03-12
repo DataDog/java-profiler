@@ -3,6 +3,7 @@
 #include "libraries.h"
 #include "libraryPatcher.h"
 #include "log.h"
+#include "socketPatcher.h"
 #include "symbols.h"
 #include "symbols_linux.h"
 #include "vmEntry.h"
@@ -38,6 +39,7 @@ end:
 void Libraries::updateSymbols(bool kernel_symbols) {
   Symbols::parseLibraries(&_native_libs, kernel_symbols);
   LibraryPatcher::patch_libraries();
+  SocketPatcher::patch_libraries();
 }
 
 // Platform-specific implementation of updateBuildIds() is in libraries_linux.cpp (Linux)

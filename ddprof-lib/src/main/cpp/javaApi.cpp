@@ -21,6 +21,7 @@
 #include "counters.h"
 #include "common.h"
 #include "engine.h"
+#include "event.h"
 #include "incbin.h"
 #include "os.h"
 #include "otel_process_ctx.h"
@@ -281,6 +282,22 @@ Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(
   length += unit_str.length();
   Profiler::instance()->writeDatadogProfilerSetting(
       tid, length, name_str.c_str(), value_str.c_str(), unit_str.c_str());
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_recordNativeSocketEvent0(
+    JNIEnv *env, jclass unused, jlong startTime, jlong endTime,
+    jint fd, jlong bytes, jint operation) {
+  if (fd < 0 || bytes < 0 || operation < SOCKET_OP_RECV || operation > SOCKET_OP_WRITEV) {
+    return;
+  }
+  NativeSocketEvent event;
+  event._start = startTime;
+  event._end = endTime;
+  event._fd = fd;
+  event._bytes = (u64)bytes;
+  event._operation = (u32)operation;
+  Profiler::instance()->recordNativeSocketEvent(&event);
 }
 
 static int dictionarizeClassName(JNIEnv* env, jstring className) {
