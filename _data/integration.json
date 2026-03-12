@@ -1,6 +1,33 @@
 {
   "runs": [
     {
+      "id": "102138366",
+      "timestamp": "2026-03-12T14:34:41Z",
+      "ddprof_branch": "jb/libraries_reentrancy",
+      "ddprof_sha": "9d2bddf4",
+      "ddprof_pr": {
+        "number": 413,
+        "url": "https://github.com/DataDog/java-profiler/pull/413",
+        "title": "Harden CodeCacheArray and profiler against signal-handler races"
+      },
+      "pipeline": {
+        "id": "102138366",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/102138366"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 40,
+        "failed_jobs": 0,
+        "total_scenarios": 80,
+        "passed_scenarios": 80,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "102136447",
       "timestamp": "2026-03-12T14:26:57Z",
       "ddprof_branch": "jb/libraries_reentrancy",
@@ -237,36 +264,6 @@
         "failed_scenarios": 0,
         "unknown_scenarios": 0,
         "failed_configs": []
-      }
-    },
-    {
-      "id": "101845918",
-      "timestamp": "2026-03-11T13:07:58Z",
-      "ddprof_branch": "jb/libraries_reentrancy",
-      "ddprof_sha": "d9aa2670",
-      "ddprof_pr": {
-        "number": 413,
-        "url": "https://github.com/DataDog/java-profiler/pull/413",
-        "title": "Harden CodeCacheArray and profiler against signal-handler races"
-      },
-      "pipeline": {
-        "id": "101845918",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101845918"
-      },
-      "lib_version": "unknown",
-      "status": "partial",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 38,
-        "failed_jobs": 2,
-        "total_scenarios": 76,
-        "passed_scenarios": 76,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": [
-          "musl-arm64-hotspot-jdk11",
-          "musl-arm64-openj9-jdk11"
-        ]
       }
     }
   ]
