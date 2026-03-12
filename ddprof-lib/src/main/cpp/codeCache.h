@@ -266,7 +266,7 @@ public:
 
   // Returns a count that may include indices whose pointer has not yet been
   // stored by a concurrent add(). Callers using operator[] must handle NULL.
-  int count() const { return __atomic_load_n(&_count, __ATOMIC_RELAXED); }
+  int count() const { return __atomic_load_n(&_count, __ATOMIC_ACQUIRE); }
 
   // Two-phase add: _count is CAS-incremented first, then the pointer is stored.
   // This creates a window where operator[]/at() may return NULL for valid indices.
@@ -276,6 +276,7 @@ public:
       if (old >= MAX_NATIVE_LIBS) return;
     } while (!__atomic_compare_exchange_n(&_count, &old, old + 1,
                                           true, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
+    assert(__atomic_load_n(&_libs[old], __ATOMIC_RELAXED) == nullptr);
     __atomic_fetch_add(&_used_memory, lib->memoryUsage(), __ATOMIC_RELAXED);
     __atomic_store_n(&_libs[old], lib, __ATOMIC_RELEASE);
   }

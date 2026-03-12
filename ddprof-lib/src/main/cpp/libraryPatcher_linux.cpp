@@ -121,10 +121,11 @@ static void* start_routine_wrapper(void* args) {
     void* params;
     {
         // Block profiling signals while accessing and freeing RoutineInfo
-        // and during TLS initialization: these operations are not
-        // async-signal-safe. A profiling signal here can deadlock under
-        // ASAN (allocator lock reentrancy) or corrupt internal TLS
-        // bookkeeping on the stack.
+        // and during TLS initialization. Under ASAN, new/delete/
+        // pthread_setspecific are intercepted and acquire ASAN's internal
+        // allocator lock. A profiling signal during any of these calls
+        // runs ASAN-instrumented code that tries to acquire the same
+        // lock, causing deadlock.
         SignalBlocker blocker;
         routine = thr->routine();
         params = thr->args();
