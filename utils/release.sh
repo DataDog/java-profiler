@@ -427,24 +427,43 @@ if gh workflow run release-validated.yml \
     WORKFLOW_SUCCESS=true
     echo ""
     print_success "✓ Workflow triggered successfully!"
-    echo ""
-    print_info "Monitor the workflow run:"
-    echo "  gh run list --workflow=release-validated.yml --limit 1"
-    echo ""
-    print_info "View workflow logs:"
-    echo "  gh run watch"
-    echo ""
-    print_info "Or view in browser:"
     REPO_URL=$(gh repo view --json url -q .url)
-    echo "  ${REPO_URL}/actions/workflows/release-validated.yml"
-    echo ""
 
+    # Wait for the run to appear and capture its ID
+    print_info "Waiting for workflow run to appear..."
+    RUN_ID=""
+    for i in $(seq 1 15); do
+        sleep 2
+        RUN_ID=$(gh run list --workflow=release-validated.yml --limit 1 --json databaseId,status -q '.[0].databaseId // empty')
+        if [ -n "$RUN_ID" ]; then
+            break
+        fi
+    done
+
+    if [ -n "$RUN_ID" ]; then
+        echo ""
+        print_info "Watching workflow run ${RUN_ID}..."
+        echo "  ${REPO_URL}/actions/runs/${RUN_ID}"
+        echo ""
+        if gh run watch "$RUN_ID" --exit-status; then
+            WORKFLOW_CONCLUSION="success"
+            print_success "✓ Workflow completed successfully!"
+        else
+            WORKFLOW_CONCLUSION="failure"
+            print_error "✗ Workflow failed!"
+            echo "  View logs: gh run view $RUN_ID --log-failed"
+        fi
+    else
+        WORKFLOW_CONCLUSION="unknown"
+        print_warning "Could not detect the workflow run. Monitor manually:"
+        echo "  gh run list --workflow=release-validated.yml --limit 1"
+    fi
+
+    echo ""
     if [ "$DRY_RUN" == "false" ]; then
         print_info "Next Steps:"
-        echo "  1. Monitor the GitHub Actions workflow"
-        echo "  2. GitLab pipeline will build and publish to Maven Central"
-        echo "  3. GitHub release will be created automatically"
-        echo "  4. Check releases: ${REPO_URL}/releases"
+        echo "  1. Verify Maven:  https://repo1.maven.org/maven2/com/datadoghq/ddprof/"
+        echo "  2. Check release: ${REPO_URL}/releases"
     else
         print_info "This was a dry-run. Review the output and run again with --no-dry-run"
     fi
@@ -490,20 +509,22 @@ echo ""
 
 # Status and next steps
 if [ "$WORKFLOW_SUCCESS" = true ]; then
-    print_success "Status: SUCCESS"
-    echo ""
-    echo "Next Steps:"
-    if [ "$DRY_RUN" == "false" ]; then
-        echo "  1. Monitor workflow:  gh run watch"
-        echo "  2. Check GitLab:      [Your GitLab pipeline URL]"
-        echo "  3. Verify Maven:      https://repo1.maven.org/maven2/com/datadoghq/ddprof/"
-        echo "  4. Check release:     ${REPO_URL}/releases"
-    else
-        echo "  → This was a DRY-RUN. No actual changes were made."
+    if [ "${WORKFLOW_CONCLUSION:-}" = "success" ]; then
+        print_success "Status: WORKFLOW SUCCEEDED"
+    elif [ "${WORKFLOW_CONCLUSION:-}" = "failure" ]; then
+        print_error "Status: WORKFLOW FAILED"
+        echo "  View logs: gh run view $RUN_ID --log-failed"
+    elif [ "$DRY_RUN" == "true" ]; then
+        print_success "Status: DRY-RUN COMPLETED"
+        echo ""
+        echo "  → No actual changes were made."
         echo "  → To perform the release, run: $0 $RELEASE_TYPE --no-dry-run --commit $SHORT_SHA"
+    else
+        print_warning "Status: WORKFLOW STATUS UNKNOWN"
+        echo "  Check manually: gh run list --workflow=release-validated.yml --limit 1"
     fi
 else
-    print_error "Status: FAILED"
+    print_error "Status: FAILED TO TRIGGER WORKFLOW"
     echo ""
     echo "Error Details:"
     if [ -s "$WORKFLOW_ERROR" ]; then
