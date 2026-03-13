@@ -15,6 +15,7 @@ import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Exec
 import org.gradle.api.tasks.SourceSetContainer
 import org.gradle.api.tasks.testing.Test
+import java.time.Duration
 import javax.inject.Inject
 
 /**
@@ -253,6 +254,17 @@ class ProfilerTestPlugin : Plugin<Project> {
             when (testConfig.configName) {
                 "asan" -> testTask.onlyIf { PlatformUtils.locateLibasan() != null }
                 "tsan" -> testTask.onlyIf { PlatformUtils.locateLibtsan() != null }
+            }
+
+            // J9+ASAN: isolate each test class in its own JVM to limit crash blast radius
+            if (testConfig.configName == "asan") {
+                testTask.doFirst {
+                    if (PlatformUtils.isTestJvmJ9()) {
+                        testTask.setForkEvery(1)
+                    }
+                }
+                // Kill hung ASAN test tasks after 30 minutes
+                testTask.timeout.set(Duration.ofMinutes(30))
             }
         }
     }

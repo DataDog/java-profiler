@@ -292,6 +292,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     volatile int depth = 0;
     int actual_max_depth = truncated ? max_depth + 1 : max_depth;
     bool fp_chain_fallback = false;
+    int fp_chain_depth = 0;
 
     ProfiledThread* profiled_thread = ProfiledThread::currentSignalSafe();
 
@@ -321,9 +322,12 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
     // Saved anchor data — preserved across anchor consumption so inline
     // recovery can redirect even after the anchor pointer has been set to NULL.
+    // Recovery is one-shot: once attempted, we do not retry to avoid
+    // ping-ponging between CodeHeap and unmapped native regions.
     const void* saved_anchor_pc = NULL;
     uintptr_t saved_anchor_sp = 0;
     uintptr_t saved_anchor_fp = 0;
+    bool anchor_recovery_used = false;
 
     // Show extended frame types and stub frames for execution-type events
     bool details = event_type <= MALLOC_SAMPLE || features.mixed;
@@ -341,6 +345,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             if (fp_chain_fallback) {
                 Counters::increment(WALKVM_FP_CHAIN_REACHED_CODEHEAP);
                 fp_chain_fallback = false;
+                fp_chain_depth = 0;
             }
             // If we're in JVM-generated code but don't have a VMThread, we cannot safely
             // walk the Java stack because crash protection is not set up.
@@ -581,8 +586,10 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     Counters::increment(THREAD_ENTRY_MARK_DETECTIONS);
                     break;
                 }
-            } else if (method_name == NULL && details && profiler->findLibraryByAddress(pc) == NULL) {
+            } else if (method_name == NULL && details && !anchor_recovery_used
+                       && profiler->findLibraryByAddress(pc) == NULL) {
                 // Try anchor recovery — prefer live anchor, fall back to saved data
+                anchor_recovery_used = true;
                 const void* recovery_pc = NULL;
                 uintptr_t recovery_sp = 0;
                 uintptr_t recovery_fp = 0;
@@ -676,6 +683,9 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 // which can bridge symbol-less gaps in libjvm.so.
                 Counters::increment(WALKVM_FP_CHAIN_ATTEMPT);
                 fp_chain_fallback = true;
+                if (++fp_chain_depth > actual_max_depth) {
+                    break;
+                }
                 goto dwarf_unwind;
             }
             fillFrame(frames[depth++], frame_bci, (void*)method_name);
