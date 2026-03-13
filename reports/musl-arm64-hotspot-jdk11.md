@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk11
 
 ## musl-arm64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-03-12 11:39:21 EDT
+**Date:** 2026-03-13 05:26:05 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 88 |
-| Sample Rate | 1.47/sec |
-| Health Score | 92% |
-| Threads | 7 |
-| Allocations | 60 |
+| CPU Samples | 381 |
+| Sample Rate | 6.35/sec |
+| Health Score | 397% |
+| Threads | 8 |
+| Allocations | 183 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 134 |
-| Sample Rate | 2.23/sec |
-| Health Score | 139% |
-| Threads | 7 |
-| Allocations | 56 |
+| CPU Samples | 89 |
+| Sample Rate | 1.48/sec |
+| Health Score | 92% |
+| Threads | 11 |
+| Allocations | 64 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 24-24 cores)</summary>
 
 ```
-1773329731 24
-1773329736 24
-1773329741 24
-1773329746 24
-1773329751 24
-1773329756 24
-1773329761 24
-1773329766 24
-1773329771 24
-1773329776 24
-1773329781 24
-1773329786 24
-1773329791 24
-1773329796 24
-1773329801 24
-1773329806 24
-1773329811 24
-1773329816 24
-1773329821 24
-1773329826 24
+1773393759 24
+1773393764 24
+1773393769 24
+1773393774 24
+1773393779 24
+1773393784 24
+1773393789 24
+1773393794 24
+1773393799 24
+1773393804 24
+1773393809 24
+1773393814 24
+1773393819 24
+1773393824 24
+1773393829 24
+1773393834 24
+1773393839 24
+1773393844 24
+1773393849 24
+1773393854 24
 ```
 </details>
 
