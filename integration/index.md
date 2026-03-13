@@ -13,6 +13,22 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 <details markdown="1">
 <summary>
+<strong>2026-03-13 16:15</strong> | ✅ | jb/native_allocs | PR [#398](https://github.com/DataDog/java-profiler/pull/398) | Pipeline [#102404424](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/102404424)
+</summary>
+
+**Version:** unknown
+**Commit:** 8d7dcd3c
+
+| Metric | Value |
+|--------|-------|
+| Jobs | 40 |
+| Passed | 40 |
+| Failed | 0 |
+
+</details>
+
+<details markdown="1">
+<summary>
 <strong>2026-03-13 11:09</strong> | ✅ | main | Pipeline [#102336731](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/102336731)
 </summary>
 
@@ -146,22 +162,6 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 **Version:** unknown
 **Commit:** c23065f0
-
-| Metric | Value |
-|--------|-------|
-| Jobs | 40 |
-| Passed | 40 |
-| Failed | 0 |
-
-</details>
-
-<details markdown="1">
-<summary>
-<strong>2026-03-11 20:37</strong> | ✅ | jb/libraries_reentrancy | PR [#413](https://github.com/DataDog/java-profiler/pull/413) | Pipeline [#102007899](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/102007899)
-</summary>
-
-**Version:** unknown
-**Commit:** 5b090c9b
 
 | Metric | Value |
 |--------|-------|
