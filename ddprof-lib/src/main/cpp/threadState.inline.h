@@ -7,14 +7,15 @@
 #include "thread.h"
 #include <stdio.h>
 
-inline ExecutionMode getThreadExecutionMode() {
-  VMThread* vm_thread = VMThread::current();
+inline ExecutionMode getThreadExecutionMode(VMThread* vm_thread) {
+  // This is hotspot JVM specific implementation
+  assert(VM::isHotspot());
+
   // Not a JVM thread - native thread, e.g. thread launched by JNI code
   if (vm_thread == nullptr) {
     return ExecutionMode::NATIVE;
   }
 
-  
   ProfiledThread *prof_thread = ProfiledThread::currentSignalSafe();
   bool is_java_thread = prof_thread != nullptr && prof_thread->isJavaThread();
 
@@ -29,10 +30,15 @@ inline ExecutionMode getThreadExecutionMode() {
     return is_java_thread ? convertJvmExecutionState(raw_thread_state)
                         : ExecutionMode::JVM;
   } else {
-    // It is a JVM internal thread, may or may not be a Java thread, 
+    // It is a JVM internal thread, may or may not be a Java thread,
     // e.g. Compiler thread or GC thread, etc
     return ExecutionMode::JVM;
   }
+}
+
+inline ExecutionMode getThreadExecutionMode() {
+  VMThread* vm_thread = VMThread::current();
+  return getThreadExecutionMode(vm_thread);
 }
 
 #endif // JAVA_PROFILER_LIBRARY_THREAD_STATE_INLINE_H

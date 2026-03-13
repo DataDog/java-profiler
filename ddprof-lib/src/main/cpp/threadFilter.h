@@ -45,7 +45,7 @@ public:
     bool enabled() const;
     // Hot path methods - slot_id MUST be from registerThread(), undefined behavior otherwise
     bool accept(SlotID slot_id) const;
-    void add(int tid, SlotID slot_id);
+    void add(long tid, SlotID slot_id);
     void remove(SlotID slot_id);
     void collect(std::vector<int>& tids) const;
 
@@ -55,7 +55,7 @@ public:
 private:
     // Optimized slot structure with padding to avoid false sharing
     struct alignas(DEFAULT_CACHE_LINE_SIZE) Slot {
-        std::atomic<int> value{-1};
+        std::atomic<long> value{-1};
         char padding[DEFAULT_CACHE_LINE_SIZE - sizeof(value)];  // Pad to cache line size
     };
     static_assert(sizeof(Slot) == DEFAULT_CACHE_LINE_SIZE, "Slot must be exactly one cache line");

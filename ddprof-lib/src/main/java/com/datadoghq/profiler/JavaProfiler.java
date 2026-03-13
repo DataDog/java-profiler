@@ -181,7 +181,7 @@ public final class JavaProfiler {
      * 'filter' option must be enabled to use this method.
      */
     public void addThread() {
-        filterThreadAdd0();
+        filterThreadAdd0(Thread.currentThread().getId());
     }
 
     /**
@@ -318,7 +318,7 @@ public final class JavaProfiler {
     private native void stop0() throws IllegalStateException;
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
 
-    private static native void filterThreadAdd0();
+    private static native void filterThreadAdd0(long java_tid);
     private static native void filterThreadRemove0();
 
     private static native int getTid0();

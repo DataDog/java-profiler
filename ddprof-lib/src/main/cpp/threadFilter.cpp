@@ -163,7 +163,7 @@ bool ThreadFilter::accept(SlotID slot_id) const {
     return false;
 }
 
-void ThreadFilter::add(int tid, SlotID slot_id) {
+void ThreadFilter::add(long tid, SlotID slot_id) {
     // PRECONDITION: slot_id must be from registerThread() or negative
     // Undefined behavior for invalid positive slot_ids (performance optimization)
     if (slot_id < 0) return;

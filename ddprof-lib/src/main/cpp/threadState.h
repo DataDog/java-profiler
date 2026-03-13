@@ -66,8 +66,46 @@ static ExecutionMode convertJvmExecutionState(int state) {
  *         ExecutionMode::JVM for JVM internal threads,
  *         or the appropriate execution mode for Java threads
  */
- class VMThread;
+class VMThread;
 
 inline ExecutionMode getThreadExecutionMode();
+inline ExecutionMode getThreadExecutionMode(VMThread* thread);
+
+// The helper classes to resolve thread state.
+class ThreadStateResolver {
+private:
+    static ThreadStateResolver* INSTANCE;
+
+public:
+    // Must be called at initialization phase, in single-threaded mode,
+    // after resolving JVM type
+    static void initialize();
+
+    static ThreadStateResolver* getInstance() { return INSTANCE; }
+
+    virtual OSThreadState resolveThreadState(jthread thread) = 0;
+    virtual ExecutionMode resolveThreadExecutionMode(jthread thread) = 0;
+};
+
+// Hotspot JVM uses VMStructs to resolve thread state and execution mode
+class VMStructsThreadStateResolver : public ThreadStateResolver {
+public:
+    VMStructsThreadStateResolver();
+    OSThreadState resolveThreadState(jthread thread);
+    ExecutionMode resolveThreadExecutionMode(jthread thread);
+};
+
+// J9 and Zing use JNI to resolve thread state and execution mode
+class JNIThreadStateResolver : public ThreadStateResolver {
+private:
+    jmethodID   _thread_get_state_id;
+    jmethodID   _state_ordinal_id;
+public:
+    JNIThreadStateResolver();
+    OSThreadState resolveThreadState(jthread thread);
+    ExecutionMode resolveThreadExecutionMode(jthread thread);
+private:
+    static OSThreadState ordinal2ThreadState(int ordinal);
+};
 
 #endif // JAVA_PROFILER_LIBRARY_THREAD_STATE_H
