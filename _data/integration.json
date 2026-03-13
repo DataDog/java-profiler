@@ -1,6 +1,29 @@
 {
   "runs": [
     {
+      "id": "102324312",
+      "timestamp": "2026-03-13T09:44:18Z",
+      "ddprof_branch": "main",
+      "ddprof_sha": "a8c08ca8",
+      "ddprof_pr": null,
+      "pipeline": {
+        "id": "102324312",
+        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/102324312"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 39,
+        "passed_jobs": 39,
+        "failed_jobs": 0,
+        "total_scenarios": 78,
+        "passed_scenarios": 78,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "102322872",
       "timestamp": "2026-03-13T09:26:01Z",
       "ddprof_branch": "main",
@@ -234,33 +257,6 @@
         "failed_jobs": 0,
         "total_scenarios": 74,
         "passed_scenarios": 74,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "101941886",
-      "timestamp": "2026-03-11T17:17:24Z",
-      "ddprof_branch": "jb/libraries_reentrancy",
-      "ddprof_sha": "6acf59e0",
-      "ddprof_pr": {
-        "number": 413,
-        "url": "https://github.com/DataDog/java-profiler/pull/413",
-        "title": "Harden CodeCacheArray and profiler against signal-handler races"
-      },
-      "pipeline": {
-        "id": "101941886",
-        "url": "https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/101941886"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 40,
-        "failed_jobs": 0,
-        "total_scenarios": 80,
-        "passed_scenarios": 80,
         "failed_scenarios": 0,
         "unknown_scenarios": 0,
         "failed_configs": []
