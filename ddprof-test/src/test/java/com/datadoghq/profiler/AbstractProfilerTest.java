@@ -118,6 +118,13 @@ public abstract class AbstractProfilerTest {
     this(null);
   }
 
+  /**
+   * Default wallclock sampling period matching {@code DEFAULT_WALL_INTERVAL} in {@code
+   * ddprof-lib/src/main/cpp/arguments.h}. Used by {@link #parseInterval} to return the known
+   * default when the {@code wall} keyword is present without an explicit value.
+   */
+  public static final Duration DEFAULT_WALL_INTERVAL = Duration.ofMillis(200);
+
   private static Duration parseInterval(String command, String part) {
     String prefix = part + "=";
     int start = command.indexOf(prefix);
@@ -150,7 +157,30 @@ public abstract class AbstractProfilerTest {
         default:
       }
     }
+    // Bare keyword (e.g. "wall" without "=Xms") means the native default is used.
+    if ("wall".equals(part) && hasBareKeyword(command, part)) {
+      return DEFAULT_WALL_INTERVAL;
+    }
     return Duration.ofMillis(0);
+  }
+
+  /**
+   * Returns true if {@code part} appears as a standalone comma-delimited option in {@code command}
+   * (i.e. preceded by a comma or the start of the string, and followed by a comma or end of
+   * string).
+   */
+  private static boolean hasBareKeyword(String command, String part) {
+    int idx = 0;
+    while ((idx = command.indexOf(part, idx)) >= 0) {
+      boolean precededByDelimiter = idx == 0 || command.charAt(idx - 1) == ',';
+      int after = idx + part.length();
+      boolean followedByDelimiter = after >= command.length() || command.charAt(after) == ',';
+      if (precededByDelimiter && followedByDelimiter) {
+        return true;
+      }
+      idx = after;
+    }
+    return false;
   }
 
   protected final boolean isAsan() {
