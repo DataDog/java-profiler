@@ -11,7 +11,7 @@ title: Java Profiler Build - Test Dashboard
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](integration/) | [#102324312](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/102324312) | ✅ | main | - |
+| [Integration](integration/) | [#102324331](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/102324331) | ✅ | main | - |
 | [Benchmarks](benchmarks/) | - | - | - | - |
 | [Reliability](reliability/) | - | - | - | - |
 
@@ -37,11 +37,11 @@ Tests multiple allocator configurations (gmalloc, tcmalloc, jemalloc).
 
 | Date | Type | Pipeline | Branch | PR | Status |
 |------|------|----------|--------|-----|--------|
+| 2026-03-13 | Integration | [#102324331](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/102324331) | main | - | ✅ |
 | 2026-03-13 | Integration | [#102324312](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/102324312) | main | - | ✅ |
 | 2026-03-13 | Integration | [#102322872](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/102322872) | main | - | ✅ |
 | 2026-03-12 | Integration | [#102160159](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/102160159) | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) | ✅ |
 | 2026-03-12 | Integration | [#102138366](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/102138366) | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) | ✅ |
-| 2026-03-12 | Integration | [#102136447](https://gitlab.ddbuild.io/DataDog/apm-reliability/async-profiler-build/-/pipelines/102136447) | jb/libraries_reentrancy | [#413](https://github.com/DataDog/java-profiler/pull/413) | ✅ |
 
 ---
 
