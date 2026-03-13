@@ -148,7 +148,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check test results
-        if: ${{ inputs.skip_tests != true && needs.pre-release-tests.result != 'success' }}
+        if: ${{ inputs.dry_run != true && inputs.skip_tests != true && needs.pre-release-tests.result != 'success' }}
         run: |
           echo "::error::Pre-release tests failed. Cannot proceed with release."
           exit 1

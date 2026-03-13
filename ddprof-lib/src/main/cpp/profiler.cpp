@@ -242,16 +242,22 @@ const void *Profiler::resolveSymbol(const char *name) {
   int native_lib_count = native_libs.count();
   if (len > 0 && name[len - 1] == '*') {
     for (int i = 0; i < native_lib_count; i++) {
-      const void *address = native_libs[i]->findSymbolByPrefix(name, len - 1);
-      if (address != NULL) {
-        return address;
+      CodeCache *lib = native_libs[i];
+      if (lib != NULL) {
+        const void *address = lib->findSymbolByPrefix(name, len - 1);
+        if (address != NULL) {
+          return address;
+        }
       }
     }
   } else {
     for (int i = 0; i < native_lib_count; i++) {
-      const void *address = native_libs[i]->findSymbol(name);
-      if (address != NULL) {
-        return address;
+      CodeCache *lib = native_libs[i];
+      if (lib != NULL) {
+        const void *address = lib->findSymbol(name);
+        if (address != NULL) {
+          return address;
+        }
       }
     }
   }
@@ -264,10 +270,13 @@ const char *Profiler::getLibraryName(const char *native_symbol) {
   short lib_index = NativeFunc::libIndex(native_symbol);
   const CodeCacheArray& native_libs = _libs->native_libs();
   if (lib_index >= 0 && lib_index < native_libs.count()) {
-    const char *s = native_libs[lib_index]->name();
-    if (s != NULL) {
-      const char *p = strrchr(s, '/');
-      return p != NULL ? p + 1 : s;
+    CodeCache *lib = native_libs[lib_index];
+    if (lib != NULL) {
+      const char *s = lib->name();
+      if (s != NULL) {
+        const char *p = strrchr(s, '/');
+        return p != NULL ? p + 1 : s;
+      }
     }
   }
   return NULL;
@@ -556,12 +565,15 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   if (in_java && java_ctx->sp != 0) {
     // skip ahead to the Java frames before calling AGCT
     frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);
-  } else if (state != 0 && (vm_thread->anchor() == nullptr || vm_thread->anchor()->lastJavaSP() == 0)) {
-    // we haven't found the top Java frame ourselves, and the lastJavaSP wasn't
-    // recorded either when not in the Java state, lastJava ucontext will be
-    // used by AGCT
-    Counters::increment(AGCT_NATIVE_NO_JAVA_CONTEXT);
-    return 0;
+  } else if (state != 0) {
+    VMJavaFrameAnchor* a = vm_thread->anchor();
+    if (a == nullptr || a->lastJavaSP() == 0) {
+      // we haven't found the top Java frame ourselves, and the lastJavaSP wasn't
+      // recorded either when not in the Java state, lastJava ucontext will be
+      // used by AGCT
+      Counters::increment(AGCT_NATIVE_NO_JAVA_CONTEXT);
+      return 0;
+    }
   }
   bool blocked_in_vm = (state == 10 || state == 11);
   // avoid unwinding during deoptimization
@@ -637,6 +649,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   } else if (trace.num_frames == ticks_unknown_not_Java &&
              !(_safe_mode & LAST_JAVA_PC)) {
     VMJavaFrameAnchor* anchor = vm_thread->anchor();
+    if (anchor == NULL) return 0;
     uintptr_t sp = anchor->lastJavaSP();
     const void* pc = anchor->lastJavaPC();
     if (sp != 0 && pc == NULL) {
@@ -664,6 +677,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   } else if (trace.num_frames == ticks_not_walkable_not_Java &&
              !(_safe_mode & LAST_JAVA_PC)) {
     VMJavaFrameAnchor* anchor = vm_thread->anchor();
+    if (anchor == NULL) return 0;
     uintptr_t sp = anchor->lastJavaSP();
     const void* pc = anchor->lastJavaPC();
     if (sp != 0 && pc != NULL) {
@@ -677,7 +691,8 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       }
     }
   } else if (trace.num_frames == ticks_GC_active && !(_safe_mode & GC_TRACES)) {
-    if (vm_thread->anchor()->lastJavaSP() == 0) {
+    VMJavaFrameAnchor* anchor = vm_thread->anchor();
+    if (anchor == NULL || anchor->lastJavaSP() == 0) {
       // Do not add 'GC_active' for threads with no Java frames, e.g. Compiler
       // threads
       frame.restore(saved_pc, saved_sp, saved_fp);

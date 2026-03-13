@@ -357,6 +357,17 @@ The profiler uses a sophisticated double-buffered storage system for call traces
 - **Atomic Operations**: Instance ID management and counter updates use atomics
 - **Memory Allocation**: Minimize malloc() in hot paths, use pre-allocated containers
 
+### Atomic Memory Ordering (Critical for arm64)
+arm64 has a weakly-ordered memory model (unlike x86 TSO). Incorrect ordering causes real lockups on arm64 that never reproduce on x86.
+- **Cross-thread reads**: Always use `__ATOMIC_ACQUIRE` for loads that must see stores from another thread. Never use `__ATOMIC_RELAXED` for cross-thread visibility unless you can prove no ordering dependency exists.
+- **Cross-thread writes**: Use `__ATOMIC_RELEASE` for stores that must be visible to other threads. Pair with `__ATOMIC_ACQUIRE` loads.
+- **Count + pointer patterns**: When a data structure publishes a count and a separate pointer (two-phase add), both the count load and pointer load need acquire semantics so the reader sees the pointer store that preceded the count increment.
+- **Default stance**: When in doubt, use acquire/release. The performance cost is negligible; the correctness cost of relaxed ordering bugs is enormous (silent arm64-only lockups).
+
+### Concurrent Data Structure Iteration
+- **NULL gaps**: When iterating a concurrent array (e.g., `CodeCacheArray`), always NULL-check each slot — a slot may be count-allocated but pointer-not-yet-stored.
+- **Cursor advancement**: Never permanently advance an iteration cursor past NULL gaps. Stop at the first NULL or track the last contiguous non-NULL entry, so missing entries are retried on the next pass.
+
 ### 64-bit Trace ID System
 - **Collision Avoidance**: Instance-based IDs prevent collisions across storage swaps
 - **JFR Compatibility**: 64-bit IDs work with JFR constant pool indices
@@ -705,3 +716,9 @@ The CI caches JDKs via `.github/workflows/cache_java.yml`. When adding a new JDK
 - Always provide tests for bug fixes - test fails before the fix, passes after the fix
 - All code needs to strive to be lean in terms of resources consumption and easy to follow -
     do not shy away from factoring out self containing code to shorter functions with explicit name
+
+### C/C++ Code Style
+- **Indentation**: Match the exact indentation style of the surrounding code in each file. Do not introduce inconsistent indentation — reviewers will flag it.
+- **Minimal complexity**: Do not split inline logic into separate helper functions unless the helpers are reused or the original is genuinely hard to follow. Unnecessary splits add indirection without value.
+- **Comment precision**: Comments explaining "why" must reference concrete mechanisms (e.g., "ASAN's allocator lock is reentrant" not "internal bookkeeping"). Vague comments get challenged in review. Every claim in a comment must be verifiable from the code or documented behavior of the referenced system (ASAN, glibc NPTL, HotSpot, etc.).
+- **No speculative comments**: Do not claim a system (HotSpot, glibc, ASAN) uses a specific mechanism unless you are certain. If unsure, describe the observable symptom instead of guessing the cause.

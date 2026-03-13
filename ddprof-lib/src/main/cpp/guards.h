@@ -121,16 +121,12 @@ public:
     sigset_t prof_signals;
     sigemptyset(&prof_signals);
 
-    // Add all profiling signals that could interrupt us
+    // Block only the profiling signals that the profiler actually registers.
+    // No profiler engine uses RT signals, so blocking them is unnecessary
+    // and risks interfering with glibc NPTL internals (SIGRTMIN, SIGRTMIN+1)
+    // or other JVM-internal signal usage.
     sigaddset(&prof_signals, SIGPROF);     // Used by ITimer and CTimer
     sigaddset(&prof_signals, SIGVTALRM);   // Used by WallClock
-#ifdef __linux__
-    // Block RT signals (Linux-only)
-    // This prevents any RT signal handler from interrupting TLS initialization
-    for (int sig = SIGRTMIN; sig <= SIGRTMIN + 5 && sig <= SIGRTMAX; sig++) {
-      sigaddset(&prof_signals, sig);
-    }
-#endif
 
     if (pthread_sigmask(SIG_BLOCK, &prof_signals, &_old_mask) == 0) {
       _active = true;

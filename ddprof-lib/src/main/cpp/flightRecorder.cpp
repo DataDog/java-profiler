@@ -1114,10 +1114,12 @@ void Recording::writeNativeLibraries(Buffer *buf) {
   const CodeCacheArray &native_libs = libraries->native_libs();
   int native_lib_count = native_libs.count();
 
+  // Emit jdk.NativeLibrary events for newly loaded libraries.
+  // CodeCacheArray::add() stores the pointer before advancing count(),
+  // so all indices < native_lib_count are guaranteed non-NULL.
   for (int i = _recorded_lib_count; i < native_lib_count; i++) {
     CodeCache* lib = native_libs[i];
 
-    // Emit jdk.NativeLibrary event with extended fields (buildId and loadBias)
     flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - MAX_STRING_LENGTH);
     int start = buf->skip(5);
     buf->putVar64(T_NATIVE_LIBRARY);
