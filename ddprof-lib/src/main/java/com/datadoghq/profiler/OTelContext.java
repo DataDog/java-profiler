@@ -63,7 +63,7 @@ public final class OTelContext {
             this.telemetrySdkVersion = telemetrySdkVersion;
             this.telemetrySdkName = telemetrySdkName;
         }
-        
+
         @Override
         public String toString() {
             return String.format("ProcessContext{deploymentEnvironmentName='%s', hostName='%s', serviceInstanceId='%s', serviceName='%s', serviceVersion='%s', telemetrySdkLanguage='%s', telemetrySdkVersion='%s', telemetrySdkName='%s'}",
@@ -181,7 +181,7 @@ public final class OTelContext {
      * OTelContext.getInstance().setProcessContext(
      *     "staging",           // env
      *     "my-hostname",       // hostname
-     *     "instance-12345"     // runtime-id
+     *     "instance-12345",    // runtime-id
      *     "my-service",        // service
      *     "1.0.0",             // version
      *     "3.5.0"              // tracer-version
@@ -191,8 +191,8 @@ public final class OTelContext {
      * @param env the deployment environment name as defined by OpenTelemetry
      *            semantic conventions (deployment.environment.name). Must not be null.
      *            Examples: "production", "staging", "development", "test"
-     * @param hostname the hostname of the service as defined by OpenTelemetry
-     *                 semantic conventions (host.name). Must not be null.
+     * @param hostname the hostname of the service, recorded under the OpenTelemetry
+     *                 semantic convention key host.name as a resource attribute. Must not be null.
      *                 Examples: "my-hostname", "my-hostname.example.com"
      * @param runtimeId the unique identifier for this specific instance of the service
      *                  as defined by OpenTelemetry semantic conventions (service.instance.id).
@@ -219,7 +219,7 @@ public final class OTelContext {
             setProcessCtx0(env, hostname, runtimeId, service, version, tracerVersion);
         } finally {
             lock.writeLock().unlock();
-        } 
+        }
     }
 
     private static native void setProcessCtx0(String env, String hostname, String runtimeId, String service, String version, String tracerVersion);

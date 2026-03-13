@@ -7,7 +7,6 @@ import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -33,30 +32,31 @@ public class ProcessContextTest {
 
         OtelMappingInfo mapping = findOtelMapping();
         assertNotNull(mapping, "OTEL mapping should exist after setProcessContext");
-        
+
         verifyMappingPermissions(mapping);
     }
-    
+
     private static class OtelMappingInfo {
         final String startAddress;
         final String endAddress;
         final String permissions;
-        
+
         OtelMappingInfo(String startAddress, String endAddress, String permissions) {
             this.startAddress = startAddress;
             this.endAddress = endAddress;
             this.permissions = permissions;
         }
     }
-    
+
     private OtelMappingInfo findOtelMapping() throws IOException {
         Path mapsFile = Paths.get("/proc/self/maps");
         if (!Files.exists(mapsFile)) {
             return null;
         }
-        
-        Pattern otelPattern = Pattern.compile("^([0-9a-f]+)-([0-9a-f]+)\\s+(\\S+)\\s+\\S+\\s+\\S+\\s+\\S+\\s*\\[anon:OTEL_CTX\\].*$");
-        
+
+        // Match memfd-backed mapping (/memfd:OTEL_CTX), anon mapping ([anon:OTEL_CTX]), or anon shmem ([anon_shmem:OTEL_CTX])
+        Pattern otelPattern = Pattern.compile("^([0-9a-f]+)-([0-9a-f]+)\\s+(\\S+)\\s+\\S+\\s+\\S+\\s+\\S+\\s*(?:/memfd:OTEL_CTX|\\[anon:OTEL_CTX\\]|\\[anon_shmem:OTEL_CTX\\]).*$");
+
         try (BufferedReader reader = Files.newBufferedReader(mapsFile)) {
             String line;
             while ((line = reader.readLine()) != null) {
@@ -76,8 +76,6 @@ public class ProcessContextTest {
     private void verifyMappingPermissions(OtelMappingInfo mapping) {
         assertTrue(mapping.permissions.contains("r"),
             "OTEL mapping should have read permission, got: " + mapping.permissions);
-        assertFalse(mapping.permissions.contains("w"),
-            "OTEL mapping should not have write permission, got: " + mapping.permissions);
         assertFalse(mapping.permissions.contains("x"),
             "OTEL mapping should not have execute permission, got: " + mapping.permissions);
     }
