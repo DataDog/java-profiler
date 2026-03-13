@@ -328,7 +328,10 @@ bool VM::initShared(JavaVM* vm) {
   // walker a clean stopping point for any pthread-managed thread.
   const CodeCacheArray& all_native_libs = libraries->native_libs();
   for (int i = 0; i < all_native_libs.count(); i++) {
-      all_native_libs[i]->mark(isThreadEntry, MARK_THREAD_ENTRY);
+      CodeCache *cc = all_native_libs[i];
+      if (cc != NULL) {
+          cc->mark(isThreadEntry, MARK_THREAD_ENTRY);
+      }
   }
 
   if (isOpenJ9()) {
