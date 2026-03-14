@@ -29,7 +29,6 @@
 #include "tsc.h"
 #include "vmEntry.h"
 #include "vmStructs.h"
-#include "wallClock.h"
 #include <errno.h>
 #include <fstream>
 #include <sstream>
@@ -154,7 +153,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0(jlong java_tid
   if (unlikely(slot_id == -1)) {
     return;  // Failed to register thread
   }
-  thread_filter->add(java_tid, slot_id);
+  thread_filter->add(java_tid, current->tid(), slot_id);
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -173,6 +172,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
     // Thread doesn't have a slot ID yet - nothing to remove
     return;
   }
+  current->setFilterSlotId(-1);
   thread_filter->remove(slot_id);
 }
 

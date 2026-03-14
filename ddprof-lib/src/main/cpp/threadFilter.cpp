@@ -22,6 +22,8 @@
 #include "threadFilter.h"
 #include "arch.h"
 #include "os.h"
+#include "profiler.h"
+#include "wallclock/wallClock.h"
 #include <cassert>
 #include <cstdlib>
 #include <cstdio>
@@ -77,7 +79,7 @@ void ThreadFilter::initializeChunk(int chunk_idx) {
     // Allocate and initialize new chunk completely before swapping
     ChunkStorage* new_chunk = new ChunkStorage();
     for (auto& slot : new_chunk->slots) {
-        slot.value.store(-1, std::memory_order_relaxed);
+       slot.value.java_tid.store(-1, std::memory_order_relaxed);
     }
 
     // Try to install it atomically
@@ -145,6 +147,11 @@ void ThreadFilter::initFreeList() {
     }
 }
 
+bool ThreadFilter::filter_by_os_tid() {
+   BaseWallClock* wall_clock = Profiler::instance()->wallEngine();
+   return wall_clock == nullptr || wall_clock->mode() == BaseWallClock::Mode::ASGCT;
+}
+
 bool ThreadFilter::accept(SlotID slot_id) const {
     // Fast path: if disabled, accept everything (relaxed to avoid fences on hot path)
     if (unlikely(!_enabled.load(std::memory_order_relaxed))) {
@@ -158,12 +165,16 @@ bool ThreadFilter::accept(SlotID slot_id) const {
     // This is not a fast path like the add operation.
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
     if (likely(chunk != nullptr)) {
-        return chunk->slots[slot_idx].value.load(std::memory_order_relaxed) != -1;
+        if (filter_by_os_tid()) {
+            return chunk->slots[slot_idx].value.os_tid.load(std::memory_order_relaxed) != -1;
+        } else {
+            return chunk->slots[slot_idx].value.java_tid.load(std::memory_order_relaxed) != -1;
+        }
     }
     return false;
 }
 
-void ThreadFilter::add(long tid, SlotID slot_id) {
+void ThreadFilter::add(long java_tid, int os_tid, SlotID slot_id) {
     // PRECONDITION: slot_id must be from registerThread() or negative
     // Undefined behavior for invalid positive slot_ids (performance optimization)
     if (slot_id < 0) return;
@@ -174,7 +185,11 @@ void ThreadFilter::add(long tid, SlotID slot_id) {
     // Fast path: assume valid slot_id from registerThread()
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
     if (likely(chunk != nullptr)) {
-        chunk->slots[slot_idx].value.store(tid, std::memory_order_release);
+        if (filter_by_os_tid()) {
+            chunk->slots[slot_idx].value.os_tid.store(os_tid, std::memory_order_release);
+        } else {
+            chunk->slots[slot_idx].value.java_tid.store(java_tid, std::memory_order_release);
+        }
     }
 }
 
@@ -195,8 +210,11 @@ void ThreadFilter::remove(SlotID slot_id) {
     if (unlikely(chunk == nullptr)) {
         return;
     }
-
-    chunk->slots[slot_idx].value.store(-1, std::memory_order_release);
+    if (filter_by_os_tid()) {
+        chunk->slots[slot_idx].value.java_tid.store(-1, std::memory_order_release);
+    } else {
+        chunk->slots[slot_idx].value.os_tid.store(-1, std::memory_order_release);
+    }
 }
 
 void ThreadFilter::unregisterThread(SlotID slot_id) {
@@ -255,12 +273,13 @@ ThreadFilter::SlotID ThreadFilter::popFromFreeList() {
     return -1; // Empty list
 }
 
-void ThreadFilter::collect(std::vector<int>& tids) const {
-    tids.clear();
+void ThreadFilter::collect_java_tids(std::vector<long>& java_tids) const {
+    assert(!filter_by_os_tid());
+    java_tids.clear();
 
     // Reserve space for efficiency
     // The eventual resize is not the bottleneck, so we reserve a reasonable size
-    tids.reserve(512);
+    java_tids.reserve(512);
 
     // Scan only initialized chunks
     int num_chunks = _num_chunks.load(std::memory_order_relaxed);
@@ -271,16 +290,36 @@ void ThreadFilter::collect(std::vector<int>& tids) const {
         }
 
         for (const auto& slot : chunk->slots) {
-            int slot_tid = slot.value.load(std::memory_order_relaxed);
-            if (slot_tid != -1) {
-                tids.push_back(slot_tid);
+            long java_tid = slot.value.java_tid.load(std::memory_order_relaxed);
+            if (java_tid != -1) {
+                java_tids.push_back(java_tid);
             }
         }
     }
+}
 
-    // Optional: shrink if we over-reserved significantly
-    if (tids.capacity() > tids.size() * 2) {
-        tids.shrink_to_fit();
+void ThreadFilter::collect_os_tids(std::vector<int>& os_tids) const {
+    assert(!filter_by_os_tid());
+    os_tids.clear();
+
+    // Reserve space for efficiency
+    // The eventual resize is not the bottleneck, so we reserve a reasonable size
+    os_tids.reserve(512);
+
+    // Scan only initialized chunks
+    int num_chunks = _num_chunks.load(std::memory_order_relaxed);
+    for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
+        ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
+        if (chunk == nullptr) {
+            continue;  // Skip unallocated chunks
+        }
+
+        for (const auto& slot : chunk->slots) {
+            int os_tid = slot.value.os_tid.load(std::memory_order_relaxed);
+            if (os_tid != -1) {
+                os_tids.push_back(os_tid);
+            }
+        }
     }
 }
 

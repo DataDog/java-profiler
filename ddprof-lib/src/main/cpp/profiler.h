@@ -55,6 +55,7 @@ class FrameName;
 class VMNMethod;
 class StackContext;
 class VM;
+class BaseWallClock;
 
 enum State { NEW, IDLE, RUNNING, TERMINATED };
 
@@ -124,7 +125,7 @@ private:
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
   Engine *_cpu_engine;
-  Engine *_wall_engine = NULL;
+  BaseWallClock *_wall_engine = NULL;
   Engine *_alloc_engine;
   int _event_mask;
 
@@ -186,7 +187,7 @@ private:
   void mangle(const char *name, char *buf, size_t size);
 
   Engine *selectCpuEngine(Arguments &args);
-  Engine *selectWallEngine(Arguments &args);
+  BaseWallClock *selectWallEngine(Arguments &args);
   Engine *selectAllocEngine(Arguments &args);
   Error checkJvmCapabilities();
 
@@ -240,7 +241,7 @@ public:
   int max_stack_depth() { return _max_stack_depth; }
   time_t uptime() { return time(NULL) - _start_time; }
   Engine *cpuEngine() { return _cpu_engine; }
-  Engine *wallEngine() { return _wall_engine; }
+  BaseWallClock *wallEngine() const { return _wall_engine; }
 
   Dictionary *classMap() { return &_class_map; }
   Dictionary *stringLabelMap() { return &_string_label_map; }

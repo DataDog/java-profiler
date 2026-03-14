@@ -15,7 +15,7 @@
 #include "flightRecorder.h"
 #include "itimer.h"
 #include "j9Ext.h"
-#include "j9WallClock.h"
+#include "wallclock/j9WallClock.h"
 #include "libraryPatcher.h"
 #include "objectSampler.h"
 #include "os.h"
@@ -27,7 +27,8 @@
 #include "thread.h"
 #include "tsc.h"
 #include "vmStructs.h"
-#include "wallClock.h"
+#include "wallclock/wallClockASGCT.h"
+#include "wallclock/wallClockJVMTI.h"
 #include <algorithm>
 #include <dlfcn.h>
 #include <fstream>
@@ -1187,10 +1188,10 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
   }
 }
 
-Engine *Profiler::selectWallEngine(Arguments &args) {
+BaseWallClock *Profiler::selectWallEngine(Arguments &args) {
   if (args._wall < 0 &&
       (args._event == NULL || strcmp(args._event, EVENT_WALL) != 0)) {
-    return &noop_engine;
+    return nullptr;
   }
   if (VM::isOpenJ9()) {
     if (args._wallclock_sampler == JVMTI || !J9Ext::shouldUseAsgct() || !J9Ext::can_use_ASGCT()) {
@@ -1201,18 +1202,18 @@ Engine *Profiler::selectWallEngine(Arguments &args) {
       }
       j9_engine.sampleIdleThreads();
       TEST_LOG("J9[wall]=jvmti");
-      return (Engine *)&j9_engine;
+      return (BaseWallClock *)&j9_engine;
     } else {
       TEST_LOG("J9[wall]=asgct");
-      return (Engine *)&wall_asgct_engine;
+      return &wall_asgct_engine;
     }
   }
   switch (args._wallclock_sampler) {
         case JVMTI:
-            return (Engine*)&wall_jvmti_engine;
+            return &wall_jvmti_engine;
         case ASGCT:
         default:
-            return (Engine*)&wall_asgct_engine;
+            return &wall_asgct_engine;
     }
 }
 
