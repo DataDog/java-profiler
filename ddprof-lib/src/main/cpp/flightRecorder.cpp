@@ -27,6 +27,7 @@
 #include "threadState.h"
 #include "tsc.h"
 #include "vmStructs.h"
+#include "wallclock/wallClock.h"
 #include <arpa/inet.h>
 #include <cxxabi.h>
 #include <errno.h>

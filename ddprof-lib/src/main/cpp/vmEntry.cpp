@@ -15,6 +15,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "safeAccess.h"
+#include "threadState.h"
 #include "vmStructs.h"
 #include <dlfcn.h>
 #include <stdlib.h>
@@ -377,6 +378,9 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   if (!initShared(vm)) {
     return false;
   }
+
+  // Initialize thread state resolver
+  ThreadStateResolver::initialize();
 
   CodeCache *lib = openJvmLibrary();
   if (lib == nullptr) {

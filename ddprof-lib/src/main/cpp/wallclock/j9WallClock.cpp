@@ -20,12 +20,8 @@
 #include "threadState.h"
 #include <stdlib.h>
 
-volatile bool J9WallClock::_enabled = false;
-
-long J9WallClock::_interval;
-
 Error J9WallClock::start(Arguments &args) {
-  if (_running) {
+  if (_running.load()) {
     // only one instance should be running
     return Error::OK;
   }

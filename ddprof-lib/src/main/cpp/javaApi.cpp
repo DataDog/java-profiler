@@ -29,7 +29,6 @@
 #include "tsc.h"
 #include "vmEntry.h"
 #include "vmStructs.h"
-#include "wallClock.h"
 #include <errno.h>
 #include <fstream>
 #include <sstream>
@@ -133,13 +132,9 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 // We direct corresponding JNI calls to JavaCritical to make sure the parameters/return value
 // still compatible in the event of signature changes in the future.
 extern "C" DLLEXPORT void JNICALL
-JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
+JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0(jlong java_tid) {
   ProfiledThread *current = ProfiledThread::current();
   if (unlikely(current == nullptr)) {
-    return;
-  }
-  int tid = current->tid();
-  if (unlikely(tid < 0)) {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
@@ -158,17 +153,13 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
   if (unlikely(slot_id == -1)) {
     return;  // Failed to register thread
   }
-  thread_filter->add(tid, slot_id);
+  thread_filter->add(java_tid, current->tid(), slot_id);
 }
 
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
   ProfiledThread *current = ProfiledThread::current();
   if (unlikely(current == nullptr)) {
-    return;
-  }
-  int tid = current->tid();
-  if (unlikely(tid < 0)) {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
@@ -181,14 +172,16 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
     // Thread doesn't have a slot ID yet - nothing to remove
     return;
   }
+  current->setFilterSlotId(-1);
   thread_filter->remove(slot_id);
 }
 
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0(JNIEnv *env,
-                                                          jclass unused) {
-  JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0();
+                                                          jclass unused,
+                                                          jlong java_tid) {
+  JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0(java_tid);
 }
 
 extern "C" DLLEXPORT void JNICALL

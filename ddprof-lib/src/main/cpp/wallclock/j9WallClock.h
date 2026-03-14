@@ -17,41 +17,30 @@
 #ifndef _J9WALLCLOCK_H
 #define _J9WALLCLOCK_H
 
-#include "engine.h"
-#include <pthread.h>
+#include "wallclock/wallClock.h"
 
-class J9WallClock : public Engine {
+class J9WallClock : public BaseWallClock {
 private:
-  static volatile bool _enabled;
-  static long _interval;
-
   bool _sample_idle_threads;
   int _max_stack_depth;
-  volatile bool _running;
-  pthread_t _thread;
 
   static void *threadEntry(void *wall_clock) {
     ((J9WallClock *)wall_clock)->timerLoop();
     return NULL;
   }
 
-  void timerLoop();
+  void timerLoop() override;
 
 public:
-  const char *units() { return "ns"; }
-
-  const char *name() {
+  const char *name() const override {
     return _sample_idle_threads ? "J9WallClock" : "J9Execution";
   }
-
-  virtual long interval() const { return _interval; }
+  Mode mode() const override { return Mode::ASGCT; }
 
   inline void sampleIdleThreads() { _sample_idle_threads = true; }
 
-  Error start(Arguments &args);
-  void stop();
-
-  inline void enableEvents(bool enabled) { _enabled = enabled; }
+  Error start(Arguments &args) override;
+  void stop() override;
 };
 
 #endif // _J9WALLCLOCK_H
