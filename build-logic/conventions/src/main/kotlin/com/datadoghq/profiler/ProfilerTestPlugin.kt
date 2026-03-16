@@ -252,19 +252,14 @@ class ProfilerTestPlugin : Plugin<Project> {
 
             // Sanitizer conditions
             when (testConfig.configName) {
-                "asan" -> testTask.onlyIf { PlatformUtils.locateLibasan() != null }
-                "tsan" -> testTask.onlyIf { PlatformUtils.locateLibtsan() != null }
-            }
-
-            // J9+ASAN: isolate each test class in its own JVM to limit crash blast radius
-            if (testConfig.configName == "asan") {
-                testTask.doFirst {
-                    if (PlatformUtils.isTestJvmJ9()) {
-                        testTask.setForkEvery(1)
-                    }
+                "asan" -> testTask.onlyIf {
+                    PlatformUtils.locateLibasan() != null &&
+                    // Skip J9+ASAN: OpenJ9 has known GC stack-scanning and defineClass
+                    // race bugs exposed by ASAN timing
+                    // https://github.com/eclipse-openj9/openj9/issues/23514
+                    !PlatformUtils.isTestJvmJ9()
                 }
-                // Kill hung ASAN test tasks after 30 minutes
-                testTask.timeout.set(Duration.ofMinutes(30))
+                "tsan" -> testTask.onlyIf { PlatformUtils.locateLibtsan() != null }
             }
         }
     }
@@ -345,7 +340,13 @@ class ProfilerTestPlugin : Plugin<Project> {
 
             // Sanitizer conditions
             when (testConfig.configName) {
-                "asan" -> execTask.onlyIf { PlatformUtils.locateLibasan() != null }
+                "asan" -> execTask.onlyIf {
+                    PlatformUtils.locateLibasan() != null &&
+                    // Skip J9+ASAN: OpenJ9 has known GC stack-scanning and defineClass
+                    // race bugs exposed by ASAN timing
+                    // https://github.com/eclipse-openj9/openj9/issues/23514
+                    !PlatformUtils.isTestJvmJ9()
+                }
                 "tsan" -> execTask.onlyIf { PlatformUtils.locateLibtsan() != null }
             }
         }
