@@ -22,7 +22,6 @@ public class JvmtiBasedContextWallClockTest extends AbstractProfilerTest {
 
     @Override
     protected boolean isPlatformSupported() {
-        // Liveness tracking requires Java 11+ and specific JVM types
         return Platform.isJ9();
     }
 
