@@ -1223,7 +1223,8 @@ Engine *Profiler::selectWallEngine(Arguments &args) {
   }
   switch (args._wallclock_sampler) {
         case JVMTI:
-            fprintf(stderr, "[ddprof] [WARN] JVMTI wallclock is not available on this JVM, fallback to ASGCT wallclock");
+            fprintf(stderr, "[ddprof] [WARN] JVMTI wallclock is not available on this JVM, fallback to ASGCT wallclock\n");
+            [[fallthrough]];
         case ASGCT:
         default:
             return (Engine*)&wall_asgct_engine;
