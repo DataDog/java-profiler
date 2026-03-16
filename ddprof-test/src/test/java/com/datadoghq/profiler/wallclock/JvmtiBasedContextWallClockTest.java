@@ -20,6 +20,12 @@ public class JvmtiBasedContextWallClockTest extends AbstractProfilerTest {
         base.after();
     }
 
+    @Override
+    protected boolean isPlatformSupported() {
+        // Liveness tracking requires Java 11+ and specific JVM types
+        return Platform.isJ9();
+    }
+
     @RetryingTest(5)
     public void test() throws ExecutionException, InterruptedException {
         // thread local handshake available only since Java 15
