@@ -10,6 +10,19 @@
 #include <limits.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <stdio.h>
+
+// Async-signal-safe diagnostic marker using raw write(2).
+// These survive hangs and don't need locks or malloc.
+static void diag(const char* msg) {
+    // Format: "[ddprof-diag] <msg>\n"
+    char buf[256];
+    int len = snprintf(buf, sizeof(buf), "[ddprof-diag] tid=%d %s\n", OS::threadId(), msg);
+    if (len > 0) {
+        write(STDERR_FILENO, buf, len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1);
+    }
+}
 
 typedef void* (*func_start_routine)(void*);
 
@@ -107,15 +120,18 @@ static int pthread_create_hook_spec(pthread_t* thread,
 #endif // __aarch64__
 
 static void thread_cleanup(void* arg) {
+    diag("thread_cleanup: enter");
     int tid = *static_cast<int*>(arg);
     Profiler::unregisterThread(tid);
     ProfiledThread::release();
+    diag("thread_cleanup: done");
 }
 
 // Wrapper around the real start routine.
 // See comments for start_routine_wrapper_spec() for details
 __attribute__((visibility("hidden")))
 static void* start_routine_wrapper(void* args) {
+    diag("wrapper: enter");
     RoutineInfo* thr = (RoutineInfo*)args;
     func_start_routine routine;
     void* params;
@@ -126,20 +142,28 @@ static void* start_routine_wrapper(void* args) {
         // allocator lock. A profiling signal during any of these calls
         // runs ASAN-instrumented code that tries to acquire the same
         // lock, causing deadlock.
+        diag("wrapper: SignalBlocker enter");
         SignalBlocker blocker;
         routine = thr->routine();
         params = thr->args();
         delete thr;
+        diag("wrapper: initCurrentThread");
         ProfiledThread::initCurrentThread();
+        diag("wrapper: SignalBlocker exit");
     }
+    diag("wrapper: registerThread");
     int tid = ProfiledThread::currentTid();
     Profiler::registerThread(tid);
+    diag("wrapper: cleanup_push");
     void* result = nullptr;
     // Handle pthread_exit() bypass - the thread calls pthread_exit()
     // instead of normal termination
     pthread_cleanup_push(thread_cleanup, &tid);
+    diag("wrapper: calling routine");
     result = routine(params);
+    diag("wrapper: routine returned");
     pthread_cleanup_pop(1);
+    diag("wrapper: exit");
     return result;
 }
 
@@ -147,12 +171,17 @@ static int pthread_create_hook(pthread_t* thread,
                           const pthread_attr_t* attr,
                           func_start_routine start_routine,
                           void* args) {
+  diag("hook: enter");
   RoutineInfo* thr;
   {
+    diag("hook: SignalBlocker enter");
     SignalBlocker blocker;
     thr = new RoutineInfo(start_routine, args);
+    diag("hook: SignalBlocker exit");
   }
+  diag("hook: calling real pthread_create");
   int ret = pthread_create(thread, attr, start_routine_wrapper, (void*)thr);
+  diag("hook: pthread_create returned");
   if (ret != 0) {
     SignalBlocker blocker;
     delete thr;
@@ -230,13 +259,21 @@ void LibraryPatcher::unpatch_libraries() {
 void LibraryPatcher::patch_pthread_create() {
   const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
   int num_of_libs = native_libs.count();
+  char msg[128];
+  snprintf(msg, sizeof(msg), "patch_pthread_create: %d libs", num_of_libs);
+  diag(msg);
   ExclusiveLockGuard locker(&_lock);
   for (int index = 0; index < num_of_libs; index++) {
+     snprintf(msg, sizeof(msg), "patch_pthread_create: at(%d)", index);
+     diag(msg);
      CodeCache* lib = native_libs.at(index);
      if (lib != nullptr) {
+       snprintf(msg, sizeof(msg), "patch_pthread_create: patching %s", lib->name() ? lib->name() : "(null)");
+       diag(msg);
        patch_library_unlocked(lib);
      }
   }
+  diag("patch_pthread_create: done");
 }
 #endif // __linux__
 

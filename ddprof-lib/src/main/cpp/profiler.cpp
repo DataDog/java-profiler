@@ -41,6 +41,13 @@
 #include <sys/param.h>
 #include <unistd.h>
 
+// Async-signal-safe diagnostic marker for lockup debugging
+static void profiler_diag(const char* msg) {
+    char buf[256];
+    int len = snprintf(buf, sizeof(buf), "[ddprof-diag] tid=%d profiler::%s\n", OS::threadId(), msg);
+    if (len > 0) write(STDERR_FILENO, buf, len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1);
+}
+
 // The instance is not deleted on purpose, since profiler structures
 // can be still accessed concurrently during VM termination
 Profiler *const Profiler::_instance = new Profiler();
@@ -106,6 +113,7 @@ void Profiler::addRuntimeStub(const void *address, int length,
 }
 
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
+  profiler_diag("onThreadStart: enter");
   ProfiledThread::initCurrentThread();
   ProfiledThread *current = ProfiledThread::current();
   current->setJavaThread();
@@ -124,6 +132,7 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 }
 
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
+  profiler_diag("onThreadEnd: enter");
   ProfiledThread *current = ProfiledThread::current();
   int tid = -1;
   
@@ -154,10 +163,12 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 }
 
 int Profiler::registerThread(int tid) {
+  profiler_diag("registerThread (static)");
   return _instance->_cpu_engine->registerThread(tid) |
          _instance->_wall_engine->registerThread(tid);
 }
 void Profiler::unregisterThread(int tid) {
+  profiler_diag("unregisterThread (static)");
   _instance->_cpu_engine->unregisterThread(tid);
   _instance->_wall_engine->unregisterThread(tid);
 }
@@ -1407,18 +1418,24 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   LibraryPatcher::initialize();
 
+  profiler_diag("start: updateSymbols");
   // Kernel symbols are useful only for perf_events without --all-user
   _libs->updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
+  profiler_diag("start: updateSymbols done");
 
   // Extract build-ids for remote symbolication if enabled
   if (_remote_symbolication) {
+    profiler_diag("start: updateBuildIds");
     _libs->updateBuildIds();
   }
 
+  profiler_diag("start: enableEngines");
   enableEngines();
 
+  profiler_diag("start: switchLibraryTrap");
   switchLibraryTrap(_cstack == CSTACK_DWARF || _remote_symbolication);
 
+  profiler_diag("start: JFR init");
   JfrMetadata::initialize(args._context_attributes);
   _num_context_attributes = args._context_attributes.size();
   error = _jfr.start(args, reset);
@@ -1430,6 +1447,7 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   int activated = 0;
   if ((_event_mask & EM_CPU) && _cpu_engine != &noop_engine) {
+    profiler_diag("start: cpu_engine->start");
     error = _cpu_engine->start(args);
     if (error) {
       Log::warn("%s", error.message());
@@ -1437,8 +1455,10 @@ Error Profiler::start(Arguments &args, bool reset) {
     } else {
       activated |= EM_CPU;
     }
+    profiler_diag("start: cpu_engine started");
   }
   if ((_event_mask & EM_WALL) && _wall_engine != &noop_engine) {
+    profiler_diag("start: wall_engine->start");
     error = _wall_engine->start(args);
     if (error) {
       Log::warn("%s", error.message());
@@ -1446,10 +1466,12 @@ Error Profiler::start(Arguments &args, bool reset) {
     } else {
       activated |= EM_WALL;
     }
+    profiler_diag("start: wall_engine started");
   }
   if (_event_mask & EM_ALLOC) {
     _alloc_engine = selectAllocEngine(args);
     if (_alloc_engine != &noop_engine) {
+      profiler_diag("start: alloc_engine->start");
       error = _alloc_engine->start(args);
       if (error) {
         Log::warn("%s", error.message());
@@ -1461,18 +1483,21 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   if (activated) {
+    profiler_diag("start: switchThreadEvents");
     switchThreadEvents(JVMTI_ENABLE);
 
     // Initialize this thread
     // Note: passing all nullptrs results in not able to resolve the thread name here.
     //      However, the thread name will be updated later in updateJavaThreadNames().
     // TODO: find a better way to resolve the thread name.
+    profiler_diag("start: onThreadStart");
     onThreadStart(nullptr, nullptr, nullptr);
 
     _state = RUNNING;
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
 
+    profiler_diag("start: RUNNING");
     return Error::OK;
   }
   // no engine was activated; perform cleanup
