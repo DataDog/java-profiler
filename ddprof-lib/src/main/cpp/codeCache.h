@@ -31,6 +31,7 @@ enum ImportId {
   im_calloc,
   im_realloc,
   im_free,
+  im_sigaction,
   NUM_IMPORTS
 };
 

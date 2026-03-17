@@ -24,7 +24,7 @@ class Libraries {
   // Note: Parameter is uint32_t to match lib_index packing (17 bits = max 131K libraries)
   CodeCache *getLibraryByIndex(uint32_t index) const {
     if (index < _native_libs.count()) {
-      return _native_libs[index];  // may be NULL during concurrent add()
+      return _native_libs[index];
     }
     return nullptr;
   }
