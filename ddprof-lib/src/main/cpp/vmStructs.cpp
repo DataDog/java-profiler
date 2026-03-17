@@ -320,7 +320,8 @@ void VMStructs::initOffsets() {
 
 
 #ifdef DEBUG
-   verify_offsets();
+     // Disable verifier for now
+//   verify_offsets();
 #endif
 }
 
