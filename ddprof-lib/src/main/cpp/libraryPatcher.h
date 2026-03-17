@@ -24,13 +24,19 @@ private:
   static int         _size;
   static bool        _patch_pthread_create;
 
+  // Separate tracking for sigaction patches
+  static PatchEntry  _sigaction_entries[MAX_NATIVE_LIBS];
+  static int         _sigaction_size;
+
   static void patch_library_unlocked(CodeCache* lib);
   static void patch_pthread_create();
   static void patch_pthread_setspecific();
+  static void patch_sigaction_in_library(CodeCache* lib);
 public:
   static void initialize();
   static void patch_libraries();
   static void unpatch_libraries();
+  static void patch_sigaction();
 };
 
 #else
