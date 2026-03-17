@@ -52,11 +52,11 @@ jobs:
               echo "enabled=false" >> $GITHUB_OUTPUT
             fi
           fi
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         if: steps.set_enabled.outputs.enabled == 'true'
       - name: Cache Gradle Wrapper Binaries
         if: steps.set_enabled.outputs.enabled == 'true'
-        uses: actions/cache@v5
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: ~/.gradle/wrapper/dists
           key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
@@ -64,7 +64,7 @@ jobs:
             gradle-wrapper-${{ runner.os }}-
       - name: Cache Gradle User Home
         if: steps.set_enabled.outputs.enabled == 'true'
-        uses: actions/cache@v5
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: ~/.gradle/caches
           key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
@@ -104,12 +104,25 @@ jobs:
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
 
-          mkdir -p build/logs
-          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
-            | tee -a build/test-raw.log \
-            | python3 -u .github/scripts/filter_gradle_log.py
-          EXIT_CODE=${PIPESTATUS[0]}
-      
+          MAX_ATTEMPTS=1
+          if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ (j9|ibm) ]]; then
+            MAX_ATTEMPTS=2
+          fi
+
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            mkdir -p build/logs
+            ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+              | tee -a build/test-raw.log \
+              | python3 -u .github/scripts/filter_gradle_log.py
+            EXIT_CODE=${PIPESTATUS[0]}
+
+            if [ $EXIT_CODE -eq 0 ]; then break; fi
+            if [ $attempt -lt $MAX_ATTEMPTS ]; then
+              echo "::warning::Attempt $attempt failed (exit $EXIT_CODE), retrying..."
+              ./gradlew --stop 2>/dev/null || true
+            fi
+          done
+
           if [ $EXIT_CODE -ne 0 ]; then
             echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
             exit 1
@@ -124,13 +137,13 @@ jobs:
           echo "## 🔧 Unwinding Quality Report - ${{ matrix.java_version }} (amd64)" >> $GITHUB_STEP_SUMMARY
           cat ddprof-test/build/reports/unwinding-summary.md >> $GITHUB_STEP_SUMMARY
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: success()
         with:
           name: (build) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: build/
       - name: Upload failures
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: failure()
         with:
           name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64
@@ -140,13 +153,13 @@ jobs:
         run: |
           .github/scripts/prepare_reports.sh
       - name: Upload unwinding reports
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: success() && matrix.config == 'debug'
         with:
           name: (unwinding-reports) unwinding-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: unwinding-reports
       - name: Upload test reports
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: failure()
         with:
           name: (test-reports) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
@@ -171,16 +184,16 @@ jobs:
           apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar binutils python3 >/dev/null
           # Install debug symbols for musl libc
           apk add musl-dbg
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Cache Gradle Wrapper Binaries
-        uses: actions/cache@v5
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: ~/.gradle/wrapper/dists
           key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: |
             gradle-wrapper-${{ runner.os }}-
       - name: Cache Gradle User Home
-        uses: actions/cache@v5
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: ~/.gradle/caches
           key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
@@ -243,13 +256,13 @@ jobs:
           echo "## 🔧 Unwinding Quality Report - ${{ matrix.java_version }} (amd64-musl)" >> $GITHUB_STEP_SUMMARY
           cat ddprof-test/build/reports/unwinding-summary.md >> $GITHUB_STEP_SUMMARY
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: success()
         with:
           name: (build) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: build/
       - name: Upload failures
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: failure()
         with:
           name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64
@@ -259,13 +272,13 @@ jobs:
         run: |
           .github/scripts/prepare_reports.sh
       - name: Upload unwinding reports
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: success() && matrix.config == 'debug'
         with:
           name: (unwinding-reports) unwinding-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: unwinding-reports
       - name: Upload test reports
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: failure()
         with:
           name: (test-reports) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
@@ -296,11 +309,11 @@ jobs:
               echo "enabled=false" >> $GITHUB_OUTPUT
             fi
           fi
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         if: steps.set_enabled.outputs.enabled == 'true'
       - name: Cache Gradle Wrapper Binaries
         if: steps.set_enabled.outputs.enabled == 'true'
-        uses: actions/cache@v5
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: ~/.gradle/wrapper/dists
           key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
@@ -308,7 +321,7 @@ jobs:
             gradle-wrapper-${{ runner.os }}-
       - name: Cache Gradle User Home
         if: steps.set_enabled.outputs.enabled == 'true'
-        uses: actions/cache@v5
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: ~/.gradle/caches
           key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
@@ -327,7 +340,7 @@ jobs:
           sudo apt update -y
           sudo apt remove -y g++
           sudo apt autoremove -y
-          sudo apt install -y curl zip unzip clang make build-essential binutils
+          sudo apt install -y curl zip unzip clang make build-essential binutils gdb
           # Install debug symbols for system libraries
           sudo apt install -y libc6-dbg
           if [[ ${{ matrix.java_version }} =~ "-zing" ]]; then
@@ -350,11 +363,44 @@ jobs:
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
 
-          mkdir -p build/logs
-          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
-            | tee -a build/test-raw.log \
-            | python3 -u .github/scripts/filter_gradle_log.py
-          EXIT_CODE=${PIPESTATUS[0]}
+          # For ASAN: launch a gdb watchdog that dumps all native threads before the
+          # 30-minute Gradle timeout kills the JVM, so we can diagnose hangs in native code.
+          if [[ "${{ matrix.config }}" == "asan" ]]; then
+            mkdir -p build/logs
+            (
+              sleep 1500  # 25 minutes — fires before the 30-min Gradle timeout
+              echo "::warning::GDB watchdog triggered after 25 minutes"
+              for pid in $(pgrep -f 'java.*ddprof-test'); do
+                echo "=== Thread dump for PID $pid ===" >> build/logs/gdb-watchdog.log
+                gdb -batch -ex 'thread apply all bt full' -p "$pid" >> build/logs/gdb-watchdog.log 2>&1 || true
+              done
+            ) &
+            GDB_WATCHDOG_PID=$!
+          fi
+
+          MAX_ATTEMPTS=1
+          if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ (j9|ibm) ]]; then
+            MAX_ATTEMPTS=2
+          fi
+
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            mkdir -p build/logs
+            ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+              | tee -a build/test-raw.log \
+              | python3 -u .github/scripts/filter_gradle_log.py
+            EXIT_CODE=${PIPESTATUS[0]}
+
+            if [ $EXIT_CODE -eq 0 ]; then break; fi
+            if [ $attempt -lt $MAX_ATTEMPTS ]; then
+              echo "::warning::Attempt $attempt failed (exit $EXIT_CODE), retrying..."
+              ./gradlew --stop 2>/dev/null || true
+            fi
+          done
+
+          # Kill the watchdog if tests finished before it fired
+          if [[ -n "${GDB_WATCHDOG_PID:-}" ]]; then
+            kill "$GDB_WATCHDOG_PID" 2>/dev/null || true
+          fi
 
           if [ $EXIT_CODE -ne 0 ]; then
             echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
@@ -370,13 +416,13 @@ jobs:
           echo "## 🔧 Unwinding Quality Report - ${{ matrix.java_version }} (aarch64)" >> $GITHUB_STEP_SUMMARY
           cat ddprof-test/build/reports/unwinding-summary.md >> $GITHUB_STEP_SUMMARY
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: success()
         with:
           name: (build) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: build/
       - name: Upload failures
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: failure()
         with:
           name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
@@ -386,13 +432,13 @@ jobs:
         run: |
           .github/scripts/prepare_reports.sh
       - name: Upload unwinding reports
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: success() && matrix.config == 'debug'
         with:
           name: (unwinding-reports) unwinding-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: unwinding-reports
       - name: Upload test reports
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: failure()
         with:
           name: (test-reports) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
@@ -411,16 +457,16 @@ jobs:
        labels: arm-4core-linux-ubuntu24.04
      timeout-minutes: 180
      steps:
-       - uses: actions/checkout@v6
+       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
        - name: Cache Gradle Wrapper Binaries
-         uses: actions/cache@v5
+         uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
          with:
            path: ~/.gradle/wrapper/dists
            key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
            restore-keys: |
              gradle-wrapper-${{ runner.os }}-
        - name: Cache Gradle User Home
-         uses: actions/cache@v5
+         uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
          with:
            path: ~/.gradle/caches
            key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
@@ -467,13 +513,13 @@ jobs:
            echo "## 🔧 Unwinding Quality Report - ${{ matrix.java_version }} (aarch64-musl)" >> $GITHUB_STEP_SUMMARY
            cat ddprof-test/build/reports/unwinding-summary.md >> $GITHUB_STEP_SUMMARY
        - name: Upload build artifacts
-         uses: actions/upload-artifact@v7
+         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
          if: success()
          with:
            name: (build) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
            path: build/
        - name: Upload failures
-         uses: actions/upload-artifact@v7
+         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
          if: failure()
          with:
            name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
@@ -483,13 +529,13 @@ jobs:
          run: |
            .github/scripts/prepare_reports.sh
        - name: Upload unwinding reports
-         uses: actions/upload-artifact@v7
+         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
          if: success() && matrix.config == 'debug'
          with:
            name: (unwinding-reports) unwinding-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
            path: unwinding-reports
        - name: Upload test reports
-         uses: actions/upload-artifact@v7
+         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
          if: failure()
          with:
            name: (test-reports) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})

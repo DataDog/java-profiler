@@ -54,16 +54,22 @@ const void *Libraries::resolveSymbol(const char *name) {
   int native_lib_count = _native_libs.count();
   if (len > 0 && name[len - 1] == '*') {
     for (int i = 0; i < native_lib_count; i++) {
-      const void *address = _native_libs[i]->findSymbolByPrefix(name, len - 1);
-      if (address != NULL) {
-        return address;
+      CodeCache *lib = _native_libs[i];
+      if (lib != NULL) {
+        const void *address = lib->findSymbolByPrefix(name, len - 1);
+        if (address != NULL) {
+          return address;
+        }
       }
     }
   } else {
     for (int i = 0; i < native_lib_count; i++) {
-      const void *address = _native_libs[i]->findSymbol(name);
-      if (address != NULL) {
-        return address;
+      CodeCache *lib = _native_libs[i];
+      if (lib != NULL) {
+        const void *address = lib->findSymbol(name);
+        if (address != NULL) {
+          return address;
+        }
       }
     }
   }
@@ -79,11 +85,14 @@ CodeCache *Libraries::findLibraryByName(const char *lib_name) {
   const size_t lib_name_len = strlen(lib_name);
   const int native_lib_count = _native_libs.count();
   for (int i = 0; i < native_lib_count; i++) {
-    const char *s = _native_libs[i]->name();
-    if (s != NULL) {
-      const char *p = strrchr(s, '/');
-      if (p != NULL && strncmp(p + 1, lib_name, lib_name_len) == 0) {
-        return _native_libs[i];
+    CodeCache *lib = _native_libs[i];
+    if (lib != NULL) {
+      const char *s = lib->name();
+      if (s != NULL) {
+        const char *p = strrchr(s, '/');
+        if (p != NULL && strncmp(p + 1, lib_name, lib_name_len) == 0) {
+          return lib;
+        }
       }
     }
   }
@@ -93,8 +102,9 @@ CodeCache *Libraries::findLibraryByName(const char *lib_name) {
 CodeCache *Libraries::findLibraryByAddress(const void *address) {
   const int native_lib_count = _native_libs.count();
   for (int i = 0; i < native_lib_count; i++) {
-    if (_native_libs[i]->contains(address)) {
-      return _native_libs[i];
+    CodeCache *lib = _native_libs[i];
+    if (lib != NULL && lib->contains(address)) {
+      return lib;
     }
   }
   return NULL;

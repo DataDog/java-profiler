@@ -47,6 +47,9 @@ final class BaseContextWallClockTest {
     }
 
     void after() throws InterruptedException {
+        if (executor == null) {
+            return;
+        }
         executor.shutdownNow();
         boolean terminated = executor.awaitTermination(30, TimeUnit.SECONDS);
         if (!terminated) {
