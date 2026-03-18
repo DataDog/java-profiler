@@ -89,7 +89,7 @@ typedef struct __attribute__((packed, aligned(8))) {
   uint32_t otel_process_ctx_version;         // Always > 0, incremented when the data structure changes, currently v2
   uint32_t otel_process_payload_size;        // Always > 0, size of storage
   uint64_t otel_process_monotonic_published_at_ns; // Timestamp from when the context was published in nanoseconds from CLOCK_BOOTTIME. 0 during updates.
-     char *otel_process_payload;             // Always non-null, points to the storage for the data; expected to be a protobuf map of string key/value pairs, null-terminated
+  char *otel_process_payload;                // Always non-null, points to the storage for the data; expected to be a protobuf map of string key/value pairs, null-terminated
 } otel_process_ctx_mapping;
 
 /**
