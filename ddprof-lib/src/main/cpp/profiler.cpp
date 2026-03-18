@@ -54,7 +54,6 @@ static void (*orig_busHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 static Engine noop_engine;
 static PerfEvents perf_events;
 static WallClockASGCT wall_asgct_engine;
-static WallClockJVMTI wall_jvmti_engine;
 static J9WallClock j9_engine;
 static ITimer itimer;
 static CTimer ctimer;
@@ -1224,7 +1223,8 @@ Engine *Profiler::selectWallEngine(Arguments &args) {
   }
   switch (args._wallclock_sampler) {
         case JVMTI:
-            return (Engine*)&wall_jvmti_engine;
+            fprintf(stderr, "[ddprof] [WARN] JVMTI wallclock is not available on this JVM, fallback to ASGCT wallclock\n");
+            [[fallthrough]];
         case ASGCT:
         default:
             return (Engine*)&wall_asgct_engine;
