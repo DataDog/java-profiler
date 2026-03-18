@@ -28,6 +28,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "common.h"
+#include "counters.h"
 #include "os.h"
 
 #ifndef __musl__
@@ -724,6 +725,90 @@ SigAction OS::replaceSigbusHandler(SigAction action) {
     sa.sa_sigaction = action;
     sigaction(SIGBUS, &sa, NULL);
     return old_action;
+}
+
+// ============================================================================
+// sigaction interposition to prevent other libraries from overwriting our
+// SIGSEGV/SIGBUS handlers. This is needed because libraries like wasmtime
+// install broken signal handlers that call malloc() (not async-signal-safe).
+// ============================================================================
+
+// Our protected handlers and their chain targets
+static SigAction _protected_segv_handler = nullptr;
+static SigAction _protected_bus_handler = nullptr;
+static volatile SigAction _segv_chain_target = nullptr;
+static volatile SigAction _bus_chain_target = nullptr;
+
+// Real sigaction function pointer (resolved via dlsym)
+typedef int (*real_sigaction_t)(int, const struct sigaction*, struct sigaction*);
+static real_sigaction_t _real_sigaction = nullptr;
+
+void OS::protectSignalHandlers(SigAction segvHandler, SigAction busHandler) {
+    // Resolve real sigaction BEFORE enabling protection, while we can still use RTLD_DEFAULT
+    if (_real_sigaction == nullptr) {
+        _real_sigaction = (real_sigaction_t)dlsym(RTLD_DEFAULT, "sigaction");
+    }
+    _protected_segv_handler = segvHandler;
+    _protected_bus_handler = busHandler;
+}
+
+SigAction OS::getSegvChainTarget() {
+    return __atomic_load_n(&_segv_chain_target, __ATOMIC_ACQUIRE);
+}
+
+SigAction OS::getBusChainTarget() {
+    return __atomic_load_n(&_bus_chain_target, __ATOMIC_ACQUIRE);
+}
+
+// sigaction hook - called via GOT patching to intercept sigaction calls
+static int sigaction_hook(int signum, const struct sigaction* act, struct sigaction* oldact) {
+    // _real_sigaction must be resolved before any GOT patching happens
+    if (_real_sigaction == nullptr) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    // If this is SIGSEGV or SIGBUS and we have protected handlers installed,
+    // intercept the call to keep our handler on top
+    if (act != nullptr) {
+        if (signum == SIGSEGV && _protected_segv_handler != nullptr) {
+            // Only intercept SA_SIGINFO handlers (3-arg form) for safe chaining
+            if (act->sa_flags & SA_SIGINFO) {
+                SigAction new_handler = act->sa_sigaction;
+                // Don't intercept if it's our own handler being installed
+                if (new_handler != _protected_segv_handler) {
+                    // Save their handler as our chain target
+                    __atomic_exchange_n(&_segv_chain_target, new_handler, __ATOMIC_ACQ_REL);
+                    if (oldact != nullptr) {
+                        _real_sigaction(signum, nullptr, oldact);
+                    }
+                    Counters::increment(SIGACTION_INTERCEPTED);
+                    // Don't actually install their handler - keep ours on top
+                    return 0;
+                }
+            }
+            // Let 1-arg handlers (without SA_SIGINFO) pass through - we can't safely chain them
+        } else if (signum == SIGBUS && _protected_bus_handler != nullptr) {
+            if (act->sa_flags & SA_SIGINFO) {
+                SigAction new_handler = act->sa_sigaction;
+                if (new_handler != _protected_bus_handler) {
+                    __atomic_exchange_n(&_bus_chain_target, new_handler, __ATOMIC_ACQ_REL);
+                    if (oldact != nullptr) {
+                        _real_sigaction(signum, nullptr, oldact);
+                    }
+                    Counters::increment(SIGACTION_INTERCEPTED);
+                    return 0;
+                }
+            }
+        }
+    }
+
+    // For all other cases, pass through to real sigaction
+    return _real_sigaction(signum, act, oldact);
+}
+
+void* OS::getSigactionHook() {
+    return (void*)sigaction_hook;
 }
 
 #endif // __linux__

@@ -92,7 +92,10 @@
   X(WALKVM_STUB_FRAMESIZE_FALLBACK, "walkvm_stub_framesize_fallback")        \
   X(WALKVM_FP_CHAIN_ATTEMPT, "walkvm_fp_chain_attempt")                      \
   X(WALKVM_FP_CHAIN_REACHED_CODEHEAP, "walkvm_fp_chain_reached_codeheap")    \
-  X(WALKVM_ANCHOR_NOT_IN_JAVA, "walkvm_anchor_not_in_java")
+  X(WALKVM_ANCHOR_NOT_IN_JAVA, "walkvm_anchor_not_in_java")                    \
+  X(NATIVE_LIBS_DROPPED, "native_libs_dropped")                                \
+  X(SIGACTION_PATCHED_LIBS, "sigaction_patched_libs")                          \
+  X(SIGACTION_INTERCEPTED, "sigaction_intercepted")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS

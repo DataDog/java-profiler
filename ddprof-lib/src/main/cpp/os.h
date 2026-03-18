@@ -152,6 +152,12 @@ class OS {
     static SigAction replaceSigsegvHandler(SigAction action);
     static SigAction replaceSigbusHandler(SigAction action);
 
+    // Signal handler protection - prevents other libraries from overwriting our handlers
+    static void protectSignalHandlers(SigAction segvHandler, SigAction busHandler);
+    static SigAction getSegvChainTarget();
+    static SigAction getBusChainTarget();
+    static void* getSigactionHook();
+
     static int getMaxThreadId(int floor) {
         int maxThreadId = getMaxThreadId();
         return maxThreadId < floor ? floor : maxThreadId;
