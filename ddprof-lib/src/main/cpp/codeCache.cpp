@@ -282,7 +282,7 @@ void CodeCache::findSymbolsByPrefix(std::vector<const char *> &prefixes,
   for (int i = 0; i < _count; i++) {
     const char *blob_name = _blobs[i]._name;
     if (blob_name != NULL) {
-      for (int i = 0; i < prefixes.size(); i++) {
+      for (size_t i = 0; i < prefixes.size(); i++) {
         if (strncmp(blob_name, prefixes[i], prefix_lengths[i]) == 0) {
           symbols.push_back(_blobs[i]._start);
         }

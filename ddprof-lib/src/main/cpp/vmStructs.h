@@ -182,7 +182,7 @@ class VMStructs {
     static jfieldID _eetop;
     static jfieldID _tid;
     static jfieldID _klass;
-    static int _tls_index;
+    static pthread_key_t _tls_index;
     static intptr_t _env_offset;
     static void* _java_thread_vtbl[6];
 
@@ -521,7 +521,7 @@ DECLARE(VMThread)
   public:
     static VMThread* current();
 
-    static int key() {
+    static pthread_key_t key() {
         return _tls_index;
     }
 

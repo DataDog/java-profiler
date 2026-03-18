@@ -25,14 +25,14 @@
 template <class T>
 class ReservoirSampler {
 private:
-    const size_t _size;
+    const int _size;
     std::mt19937 _generator;
     std::uniform_real_distribution<double> _uniform;
     std::uniform_int_distribution<int> _random_index;
     std::vector<T> _reservoir;
 
 public:
-    ReservoirSampler(const size_t size) :
+    ReservoirSampler(const int size) :
         _size(size),
         _generator([]() {
             std::random_device rd;
@@ -46,12 +46,13 @@ public:
 
     std::vector<T>& sample(const std::vector<T> &input) {
         _reservoir.clear();
-        for (size_t i = 0; i < _size && i < input.size(); i++) {
+        for (int i = 0; i < _size && i < (int)input.size(); i++) {
             _reservoir.push_back(input[i]);
         }
         double weight = exp(log(_uniform(_generator)) / _size);
-        size_t target = _size + (int) (log(_uniform(_generator)) / log(1 - weight));
-        while (target < input.size()) {
+        int target = _size + (int) (log(_uniform(_generator)) / log(1 - weight));
+        assert(target >= 0);
+        while (target < (int)input.size()) {
             _reservoir[_random_index(_generator)] = input[target];
             weight *= exp(log(_uniform(_generator)) / _size);
             target += (int) (log(_uniform(_generator)) / log(1 - weight));

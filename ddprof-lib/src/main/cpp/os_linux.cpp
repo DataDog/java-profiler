@@ -269,7 +269,8 @@ SigAction OS::installSignalHandler(int signo, SigAction action, SigHandler handl
     } else {
         sa.sa_sigaction = action;
         sa.sa_flags = SA_SIGINFO | SA_RESTART;
-        if (signo > 0 && signo < sizeof(installed_sigaction) / sizeof(installed_sigaction[0])) {
+        int num = sizeof(installed_sigaction) / sizeof(installed_sigaction[0]);
+        if (signo > 0 && signo < num) {
             installed_sigaction[signo] = action;
         }
     }

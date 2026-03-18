@@ -661,8 +661,9 @@ const char* ElfParser::getDebuginfodCache() {
             continue;
         }
 
-        snprintf(_debuginfod_cache_buf, sizeof(_debuginfod_cache_buf), "%s/%s", env_val, suffixes[i]);
-        return _debuginfod_cache_buf;
+        if (snprintf(_debuginfod_cache_buf, sizeof(_debuginfod_cache_buf), "%s/%s", env_val, suffixes[i]) < (int)sizeof(_debuginfod_cache_buf)) {
+            return _debuginfod_cache_buf;
+        }
     }
 
     _debuginfod_cache_buf[0] = '\0';

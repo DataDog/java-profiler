@@ -117,7 +117,7 @@ DECLARE_TYPES_DO(INIT_TYPE_SIZE)
 jfieldID VMStructs::_eetop;
 jfieldID VMStructs::_tid;
 jfieldID VMStructs::_klass = NULL;
-int VMStructs::_tls_index = -1;
+pthread_key_t VMStructs::_tls_index = pthread_key_t(-1);
 intptr_t VMStructs::_env_offset = -1;
 void* VMStructs::_java_thread_vtbl[6];
 
@@ -632,7 +632,7 @@ void VMStructs::patchSafeFetch() {
 void VMStructs::initTLS(void* vm_thread) {
     for (int i = 0; i < 1024; i++) {
         if (pthread_getspecific((pthread_key_t)i) == vm_thread) {
-            _tls_index = i;
+            _tls_index = (pthread_key_t)i;
             break;
         }
     }
@@ -802,7 +802,7 @@ void VMStructs::checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni,
 }
 
 VMThread* VMThread::current() {
-    return _tls_index >= 0 ? (VMThread*)pthread_getspecific((pthread_key_t)_tls_index) : NULL;
+    return _tls_index >= 0 ? (VMThread*)pthread_getspecific(_tls_index) : NULL;
 }
 
 int VMThread::nativeThreadId(JNIEnv* jni, jthread thread) {
