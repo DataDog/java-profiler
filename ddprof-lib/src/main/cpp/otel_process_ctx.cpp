@@ -7,36 +7,12 @@
   #define _GNU_SOURCE
 #endif
 
-#ifdef __cplusplus
-  #include <atomic>
-  using std::atomic_thread_fence;
-  using std::memory_order_seq_cst;
-#else
-  #include <stdatomic.h>
-#endif
-#include <stdint.h>
+// Note: Things here are needed for NOOP. Things that are only for non-NOOP get added further below.
+
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/mman.h>
-#include <sys/prctl.h>
-#include <time.h>
-#include <unistd.h>
 
 #define ADD_QUOTES_HELPER(x) #x
 #define ADD_QUOTES(x) ADD_QUOTES_HELPER(x)
-#define KEY_VALUE_LIMIT 4096
-#define UINT14_MAX 16383
-#define OTEL_CTX_SIGNATURE "OTEL_CTX"
-
-#ifndef PR_SET_VMA
-  #define PR_SET_VMA            0x53564d41
-  #define PR_SET_VMA_ANON_NAME  0
-#endif
-
-#ifndef MFD_NOEXEC_SEAL
-  #define MFD_NOEXEC_SEAL 8U
-#endif
 
 static const otel_process_ctx_data empty_data = {
   .deployment_environment_name = NULL,
@@ -74,6 +50,34 @@ static const otel_process_ctx_data empty_data = {
     }
   #endif // OTEL_PROCESS_CTX_NO_READ
 #else // OTEL_PROCESS_CTX_NOOP
+
+#ifdef __cplusplus
+  #include <atomic>
+  using std::atomic_thread_fence;
+  using std::memory_order_seq_cst;
+#else
+  #include <stdatomic.h>
+#endif
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/prctl.h>
+#include <time.h>
+#include <unistd.h>
+
+#define KEY_VALUE_LIMIT 4096
+#define UINT14_MAX 16383
+#define OTEL_CTX_SIGNATURE "OTEL_CTX"
+
+#ifndef PR_SET_VMA
+  #define PR_SET_VMA            0x53564d41
+  #define PR_SET_VMA_ANON_NAME  0
+#endif
+
+#ifndef MFD_NOEXEC_SEAL
+  #define MFD_NOEXEC_SEAL 8U
+#endif
 
 /**
  * The process context data that's written into the published anonymous mapping.
