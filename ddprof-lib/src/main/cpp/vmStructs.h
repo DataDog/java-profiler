@@ -7,6 +7,7 @@
 #ifndef _VMSTRUCTS_H
 #define _VMSTRUCTS_H
 
+#include <initializer_list>
 #include <jvmti.h>
 #include <stdint.h>
 #include <string.h>
@@ -46,7 +47,7 @@ inline T* cast_to(const void* ptr) {
 
 // MATCH_SYMBOLS macro expands into an nullptr terminated char string array,
 // that is consumed by matchAny() method
-#define MATCH_SYMBOLS(...)  (const char*[]) { __VA_ARGS__, nullptr }
+#define MATCH_SYMBOLS(...)  std::initializer_list<const char*>{ __VA_ARGS__ }
 
 /**
  * This macro defines a counterpart of a JVM class, e.g. VMKlass -> Klass.

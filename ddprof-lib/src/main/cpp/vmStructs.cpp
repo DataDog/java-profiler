@@ -122,9 +122,9 @@ void VMStructs::ready() {
     initThreadBridge();
 }
 
-bool matchAny(const char* target_name, const char** names) {
-    for (const char** name = names; *name != nullptr; name++) {
-        if (strcmp(target_name, *name) == 0) {
+bool matchAny(const char* target_name, std::initializer_list<const char*> names) {
+    for (const char* name : names) {
+        if (strcmp(target_name, name) == 0) {
             return true;
         }
     }
