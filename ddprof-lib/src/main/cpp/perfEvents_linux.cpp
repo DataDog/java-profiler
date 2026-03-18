@@ -123,7 +123,7 @@ static void resolvePmuEventName(const char *device, char *event, size_t size) {
   }
 
   ssize_t r = read(fd, event, size);
-  if (r > 0 && (r == size || event[r - 1] == '\n')) {
+  if (r > 0 && (size_t(r) == size || event[r - 1] == '\n')) {
     event[r - 1] = 0;
   }
   close(fd);

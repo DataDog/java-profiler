@@ -78,6 +78,7 @@ private:
 
   void releaseFromBuffer();
 
+  virtual ~ProfiledThread() { }
 public:
   static ProfiledThread *forTid(int tid) { return new ProfiledThread(-1, tid); }
   static ProfiledThread *inBuffer(int buffer_pos) {

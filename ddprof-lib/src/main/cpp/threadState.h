@@ -26,7 +26,7 @@ enum class ExecutionMode : int {
   SYSCALL = 5
 };
 
-static ExecutionMode convertJvmExecutionState(int state) {
+inline ExecutionMode convertJvmExecutionState(int state) {
   switch (state) {
   case 4:
   case 5:

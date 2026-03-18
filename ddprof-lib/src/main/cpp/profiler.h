@@ -200,19 +200,22 @@ private:
 
 public:
   Profiler()
-      : _state(NEW), _class_unload_hook_trap(2),
-        _notify_class_unloaded_func(NULL), _thread_filter(), _call_trace_storage(), _jfr(),
-        _start_time(0), _epoch(0), _timer_id(NULL),
-        _max_stack_depth(0), _safe_mode(0), _thread_events_state(JVMTI_DISABLE),
-        _libs(Libraries::instance()), _stubs_lock(), _runtime_stubs("[stubs]"),
-        _call_stub_begin(NULL), _call_stub_end(NULL), _dlopen_entry(NULL),
-        _num_context_attributes(0), _class_map(1), _string_label_map(2),
-        _context_value_map(3), _cpu_engine(), _alloc_engine(), _event_mask(0),
-        _stop_time(), _total_samples(0), _failures(), _cstack(CSTACK_NO),
-        _omit_stacktraces(false) {
+      : _state_lock(), _state(NEW), _class_unload_hook_trap(2),
+        _notify_class_unloaded_func(NULL), _thread_info(), _class_map(1),
+        _string_label_map(2), _context_value_map(3), _thread_filter(),
+        _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
+        _alloc_engine(NULL), _event_mask(0),
+        _start_time(0), _stop_time(0), _epoch(0), _timer_id(NULL),
+        _total_samples(0), _failures(), _class_map_lock(),
+        _max_stack_depth(0), _features(), _safe_mode(0), _cstack(CSTACK_NO),
+        _thread_events_state(JVMTI_DISABLE), _libs(Libraries::instance()), _stubs_lock(),
+        _runtime_stubs("[stubs]"), _call_stub_begin(NULL), _call_stub_end(NULL), 
+        _num_context_attributes(0), _omit_stacktraces(false), _remote_symbolication(false),
+        _dlopen_entry(NULL) {
 
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       _calltrace_buffer[i] = NULL;
+      new (&_locks[i])SpinLock();
     }
   }
 

@@ -116,12 +116,12 @@ Error BaseWallClock::start(Arguments &args) {
   if (interval < 0) {
     return Error("interval must be positive");
   }
+
   _interval = interval ? interval : DEFAULT_WALL_INTERVAL;
 
-    _reservoir_size =
+  _reservoir_size =
             args._wall_threads_per_tick ?
-            args._wall_threads_per_tick
-                                                : DEFAULT_WALL_THREADS_PER_TICK;
+            args._wall_threads_per_tick : DEFAULT_WALL_THREADS_PER_TICK;
 
   initialize(args);
 
@@ -223,8 +223,6 @@ void WallClockJVMTI::timerLoop() {
     };
 
   auto sampleThreads = [&](ThreadEntry& thread_entry, int& num_failures, int& threads_already_exited, int& permission_denied) {
-    static jint max_stack_depth = (jint)Profiler::instance()->max_stack_depth();
-
     ExecutionEvent event;
     VMThread* vm_thread = thread_entry.native;
     int raw_thread_state = vm_thread->state();

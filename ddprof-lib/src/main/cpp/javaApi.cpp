@@ -440,9 +440,6 @@ Java_com_datadoghq_profiler_JVMAccess_healthCheck0(JNIEnv *env,
   return true;
 }
 
-// Static variable to track the current published context
-static otel_process_ctx_result* current_published_context = nullptr;
-
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
                                                          jclass unused,
@@ -577,7 +574,8 @@ Java_com_datadoghq_profiler_JavaProfiler_testlog(JNIEnv* env, jclass unused, jst
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused) {
+#ifdef DEBUG
   Context& ctx = Contexts::get();
-
   TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu, checksum=%lu", OS::threadId(), ctx.spanId, ctx.rootSpanId, ctx.checksum);
+#endif // DEBUG
 }

@@ -39,8 +39,6 @@ public:
   Tag get_tag(int i) { return tags[i]; }
 };
 
-static Context DD_EMPTY_CONTEXT = {};
-
 class Contexts {
 
 public:

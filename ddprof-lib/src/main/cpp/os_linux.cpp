@@ -344,7 +344,7 @@ bool OS::getCpuDescription(char* buf, size_t size) {
     if (r <= 0) {
         return false;
     }
-    buf[r < size ? r : size - 1] = 0;
+    buf[size_t(r) < size ? r : size - 1] = 0;
 
     char* c;
     do {
