@@ -1202,9 +1202,9 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
     if (VM::isOpenJ9()) {
       if (!J9Ext::shouldUseAsgct() || !J9Ext::can_use_ASGCT()) {
         if (!J9Ext::is_jvmti_jmethodid_safe()) {
-          fprintf(stderr, "[ddprof] [WARN] Safe jmethodID access is not available on this JVM. Using "
+          LOG_WARN("Safe jmethodID access is not available on this JVM. Using "
                     "CPU profiler on your own risk. Use -XX:+KeepJNIIDs=true JVM "
-                    "flag to make access to jmethodIDs safe, if your JVM supports it\n");
+                    "flag to make access to jmethodIDs safe, if your JVM supports it");
         }
         TEST_LOG("J9[cpu]=jvmti");
         return &j9_engine;
@@ -1234,9 +1234,9 @@ Engine *Profiler::selectWallEngine(Arguments &args) {
   if (VM::isOpenJ9()) {
     if (args._wallclock_sampler == JVMTI || !J9Ext::shouldUseAsgct() || !J9Ext::can_use_ASGCT()) {
       if (!J9Ext::is_jvmti_jmethodid_safe()) {
-        fprintf(stderr, "[ddprof] [WARN] Safe jmethodID access is not available on this JVM. Using "
+        LOG_WARN("Safe jmethodID access is not available on this JVM. Using "
                   "wallclock profiler on your own risk. Use -XX:+KeepJNIIDs=true JVM "
-                  "flag to make access to jmethodIDs safe, if your JVM supports it\n");
+                  "flag to make access to jmethodIDs safe, if your JVM supports it");
       }
       j9_engine.sampleIdleThreads();
       TEST_LOG("J9[wall]=jvmti");

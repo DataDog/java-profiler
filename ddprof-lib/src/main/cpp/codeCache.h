@@ -6,6 +6,8 @@
 #ifndef _CODECACHE_H
 #define _CODECACHE_H
 
+#include "common.h"
+#include "counters.h"
 #include "utils.h"
 
 #include <jvmti.h>
@@ -258,9 +260,10 @@ private:
   volatile int _reserved;       // next slot to reserve (CAS by writers)
   volatile int _count;          // published count (all indices < _count have non-NULL pointers)
   volatile size_t _used_memory;
+  bool _overflow_reported;
 
 public:
-  CodeCacheArray() : _reserved(0), _count(0), _used_memory(0) {
+  CodeCacheArray() : _reserved(0), _count(0), _used_memory(0), _overflow_reported(false) {
     memset(_libs, 0, MAX_NATIVE_LIBS * sizeof(CodeCache *));
   }
 
@@ -272,10 +275,17 @@ public:
   // Pointer-first add: reserve a slot via CAS on _reserved, store the
   // pointer with RELEASE, then advance _count. Readers see count() grow
   // only after the pointer is visible, so indices < count() never yield NULL.
-  void add(CodeCache *lib) {
+  bool add(CodeCache *lib) {
     int slot = __atomic_load_n(&_reserved, __ATOMIC_RELAXED);
     do {
-      if (slot >= MAX_NATIVE_LIBS) return;
+      if (slot >= MAX_NATIVE_LIBS) {
+        Counters::increment(NATIVE_LIBS_DROPPED);
+        if (!_overflow_reported) {
+          _overflow_reported = true;
+          LOG_WARN("Native library limit reached (%d). Additional libraries will not be tracked.", MAX_NATIVE_LIBS);
+        }
+        return false;
+      }
     } while (!__atomic_compare_exchange_n(&_reserved, &slot, slot + 1,
                                           true, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
     assert(__atomic_load_n(&_libs[slot], __ATOMIC_RELAXED) == nullptr);
@@ -289,6 +299,7 @@ public:
       // wait for preceding slots to publish
     }
     __atomic_store_n(&_count, slot + 1, __ATOMIC_RELEASE);
+    return true;
   }
 
   CodeCache* at(int index) const {
