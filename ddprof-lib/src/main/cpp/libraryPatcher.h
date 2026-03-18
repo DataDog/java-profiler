@@ -46,6 +46,7 @@ public:
   static void initialize() { }
   static void patch_libraries() { }
   static void unpatch_libraries() { }
+  static void patch_sigaction() { }
 };
 
 #endif
