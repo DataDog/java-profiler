@@ -213,7 +213,9 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
                 Log::warn("Could not parse symbols from %s", path);
             }
             cc->sort();
-            array->add(cc);
+            if (!array->add(cc)) {
+                delete cc;
+            }
         } else {
             delete cc;
         }
