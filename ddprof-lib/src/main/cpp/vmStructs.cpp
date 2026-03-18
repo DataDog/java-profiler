@@ -235,7 +235,7 @@ void VMStructs::init_constants() {
             DECLARE_INT_CONSTANTS_DO(READ_CONSTANT)
         }
     }
-    // Sepcial case
+    // Special case
     _frame_entry_frame_call_wrapper_offset *= sizeof(uintptr_t);
 
 
@@ -287,9 +287,9 @@ void VMStructs::verify_offsets() {
     assert(var != field_type##_value);
 #define VERSION_FIELD_WITH_VERSION(var, field_type, min_ver, max_ver, names)    \
     assert(hotspot_version < min_ver || hotspot_version > max_ver || var != field_type##_value);
-
     DECLARE_TYPE_FILED_DO(DO_NOTHING, VERIFY_FIELD, VERSION_FIELD_WITH_VERSION, DO_NOTHING)
-#undef VERIFY_OFFSET_OR_ADDRESS
+#undef VERSION_FIELD_WITH_VERSION    
+#undef VERIFY_FIELD
 #undef DO_NOTHING
 #undef offset_value
 #undef address_value
@@ -574,7 +574,7 @@ const void *VMStructs::findHeapUsageFunc() {
         }
         flag = VMFlag::find("UseZGC", {VMFlag::Type::Bool});
         if (flag != NULL && flag->get() && VM::hotspot_version() < 21) {
-            // acessing this method in JDK 21 (generational ZGC) wil cause SIGSEGV
+            // accessing this method in JDK 21 (generational ZGC) will cause SIGSEGV
             return _libjvm->findSymbol("_ZN14ZCollectedHeap12memory_usageEv");
         }
         return _libjvm->findSymbol("_ZN13CollectedHeap12memory_usageEv");
@@ -609,8 +609,8 @@ void JNICALL VMStructs::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread t
                 tmpDelayed = (void **)malloc(tmpCounter * sizeof(void *) * 2);
                 memcpy(tmpDelayed, delayed, tmpCounter * sizeof(void *) * 2);
                 delayedCounter = 0;
-                delayed = NULL;
                 free(delayed);
+                delayed = NULL;
             }
             _lock.unlock();
             // if there was a delayed list, we check it now, not blocking on the lock
@@ -623,7 +623,7 @@ void JNICALL VMStructs::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread t
                 free(tmpDelayed);
             }
         } else {
-            _lock.unlock();
+            _lock.lock();
             if (delayed != NULL) {
                 delayed[delayedCounter] = method;
                 delayed[delayedCounter + 1] = address;

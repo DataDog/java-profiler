@@ -49,7 +49,7 @@ inline T* cast_to(const void* ptr) {
 #define MATCH_SYMBOLS(...)  (const char*[]) { __VA_ARGS__, nullptr }
 
 /**
- * This macro defines a counterpart of a JVM class, e.g. VMKass -> Klass.
+ * This macro defines a counterpart of a JVM class, e.g. VMKlass -> Klass.
  * By the convention, we prefix the class name with 'VM' to avoid namespace collision
  * with JVM inside a debug session. E.g.
  * gdb > p this
@@ -273,7 +273,7 @@ typedef void* address;
     type_end()
 
 /**
- * The follwing macros declare JVM constants that are exported by vmStructs
+ * The following macros declare JVM constants that are exported by vmStructs
  *   - constant defines a constant of a class
  */
 
