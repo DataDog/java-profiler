@@ -158,6 +158,7 @@ otel_process_ctx_result otel_process_ctx_publish(const otel_process_ctx_data *da
   if (fd >= 0) {
     // Try to create mapping from memfd
     if (ftruncate(fd, mapping_size) == -1) {
+      close(fd); // Swallow errors here, truncation already failed anyway
       otel_process_ctx_drop_current();
       return (otel_process_ctx_result) {.success = false, .error_message = "Failed to truncate memfd (" __FILE__ ":" ADD_QUOTES(__LINE__) ")"};
     }
