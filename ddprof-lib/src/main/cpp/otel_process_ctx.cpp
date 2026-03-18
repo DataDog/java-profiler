@@ -465,11 +465,17 @@ static otel_process_ctx_result otel_process_ctx_encode_protobuf_payload(char **o
       size_t array_value_content_size = protobuf_otel_array_value_content_size(data.thread_ctx_config->attribute_key_map);
       size_t any_value_content_size = protobuf_record_size(array_value_content_size);
       size_t kv_content_size = protobuf_string_size("threadlocal.attribute_key_map") + protobuf_record_size(any_value_content_size);
+      if (kv_content_size > UINT14_MAX) {
+        return (otel_process_ctx_result) {.success = false, .error_message = "Encoded size of attribute_key_map exceeds UINT14_MAX limit (" __FILE__ ":" ADD_QUOTES(__LINE__) ")"};
+      }
       thread_ctx_pairs_size += protobuf_record_size(kv_content_size);
     }
   }
 
   size_t resource_size = pairs_size + resource_attributes_pairs_size;
+  if (resource_size > UINT14_MAX) {
+    return (otel_process_ctx_result) {.success = false, .error_message = "Encoded size of resource attributes exceeds UINT14_MAX limit (" __FILE__ ":" ADD_QUOTES(__LINE__) ")"};
+  }
   size_t total_size = protobuf_record_size(resource_size) + extra_attributes_pairs_size + thread_ctx_pairs_size;
 
   char *encoded = (char *) calloc(total_size, 1);
