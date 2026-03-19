@@ -484,4 +484,16 @@ SigAction OS::replaceSigsegvHandler(SigAction action) {
     return old_action;
 }
 
+// No GOT-based sigaction interception on macOS — these are no-ops.
+void OS::protectSignalHandlers(SigAction segvHandler, SigAction busHandler) {
+}
+
+SigAction OS::getSegvChainTarget() {
+    return nullptr;
+}
+
+SigAction OS::getBusChainTarget() {
+    return nullptr;
+}
+
 #endif // __APPLE__

@@ -1,6 +1,7 @@
 #include "libraryPatcher.h"
 
 #ifdef __linux__
+#include "counters.h"
 #include "profiler.h"
 #include "vmStructs.h"
 #include "guards.h"
@@ -17,6 +18,8 @@ SpinLock LibraryPatcher::_lock;
 const char* LibraryPatcher::_profiler_name = nullptr;
 PatchEntry LibraryPatcher::_patched_entries[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_size = 0;
+PatchEntry LibraryPatcher::_sigaction_entries[MAX_NATIVE_LIBS];
+int        LibraryPatcher::_sigaction_size = 0;
 
 void LibraryPatcher::initialize() {
   if (_profiler_name == nullptr) {
@@ -238,8 +241,59 @@ void LibraryPatcher::patch_pthread_create() {
      }
   }
 }
+
+// Patch sigaction in all libraries to prevent any library from overwriting
+// our SIGSEGV/SIGBUS handlers. This protects against misbehaving libraries
+// (like wasmtime) that install broken signal handlers calling malloc().
+void LibraryPatcher::patch_sigaction_in_library(CodeCache* lib) {
+  if (lib->name() == nullptr) return;
+  if (_profiler_name == nullptr) return;  // Not initialized yet
+
+  // Don't patch ourselves
+  char path[PATH_MAX];
+  char* resolved_path = realpath(lib->name(), path);
+  if (resolved_path != nullptr && strcmp(resolved_path, _profiler_name) == 0) {
+    return;
+  }
+
+  // Note: We intentionally patch sanitizer libraries (libasan, libtsan, libubsan) here.
+  // This keeps our handler on top for recoverable SIGSEGVs (e.g., safefetch) while
+  // still chaining to the sanitizer's handler for unexpected crashes.
+
+  void** sigaction_location = (void**)lib->findImport(im_sigaction);
+  if (sigaction_location == nullptr) {
+    return;
+  }
+
+  // Check if already patched or array is full
+  if (_sigaction_size >= MAX_NATIVE_LIBS) {
+    return;
+  }
+  for (int index = 0; index < _sigaction_size; index++) {
+    if (_sigaction_entries[index]._lib == lib) {
+      return;
+    }
+  }
+
+  void* hook = OS::getSigactionHook();
+  _sigaction_entries[_sigaction_size]._lib = lib;
+  _sigaction_entries[_sigaction_size]._location = sigaction_location;
+  _sigaction_entries[_sigaction_size]._func = (void*)__atomic_load_n(sigaction_location, __ATOMIC_RELAXED);
+  __atomic_store_n(sigaction_location, hook, __ATOMIC_RELAXED);
+  _sigaction_size++;
+  Counters::increment(SIGACTION_PATCHED_LIBS);
+}
+
+void LibraryPatcher::patch_sigaction() {
+  const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
+  int num_of_libs = native_libs.count();
+  ExclusiveLockGuard locker(&_lock);
+  for (int index = 0; index < num_of_libs; index++) {
+    CodeCache* lib = native_libs.at(index);
+    if (lib != nullptr) {
+      patch_sigaction_in_library(lib);
+    }
+  }
+}
+
 #endif // __linux__
-
-
-
-
