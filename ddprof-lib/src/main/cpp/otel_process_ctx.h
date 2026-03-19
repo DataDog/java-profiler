@@ -4,9 +4,9 @@
 #pragma once
 
 #define OTEL_PROCESS_CTX_VERSION_MAJOR 0
-#define OTEL_PROCESS_CTX_VERSION_MINOR 0
-#define OTEL_PROCESS_CTX_VERSION_PATCH 7
-#define OTEL_PROCESS_CTX_VERSION_STRING "0.0.7"
+#define OTEL_PROCESS_CTX_VERSION_MINOR 1
+#define OTEL_PROCESS_CTX_VERSION_PATCH 0
+#define OTEL_PROCESS_CTX_VERSION_STRING "0.1.0"
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,11 +18,24 @@ extern "C" {
  * # OpenTelemetry Process Context reference implementation
  *
  * `otel_process_ctx.h` and `otel_process_ctx.c` provide a reference implementation for the OpenTelemetry
- * process-level context sharing specification. (TODO Link)
+ * process-level context sharing specification.
+ * (https://github.com/open-telemetry/opentelemetry-specification/pull/4719/)
  *
  * This reference implementation is Linux-only, as the specification currently only covers Linux.
  * On non-Linux OS's (or when OTEL_PROCESS_CTX_NOOP is defined) no-op versions of functions are supplied.
  */
+
+ /**
+ * Config for the experimental thread context sharing mechanism, see
+ * https://docs.google.com/document/d/1eatbHpEXXhWZEPrXZpfR58-5RIx-81mUgF69Zpn3Rz4/edit?tab=t.bmgoq3yor67o for usage
+ * details.
+ */
+typedef struct {
+  const char *schema_version;
+  // NULL-terminated array of attribute key strings to be used in thread context.
+  // Can be NULL if not needed.
+  const char **attribute_key_map;
+} otel_thread_ctx_config_data;
 
 /**
  * Data that can be published as a process context.
@@ -37,38 +50,32 @@ extern "C" {
  *
  * Strings MAY be:
  * * Empty
- *
- * The below fields map to usual datadog attributes as follows (TODO: Remove this once we share the header publicly)
- * * deployment_environment_name -> env
- * * host_name -> hostname
- * * service_instance_id -> runtime-id
- * * service_name -> service
- * * service_version -> version
- * * telemetry_sdk_language -> tracer_language
- * * telemetry_sdk_version -> tracer_version
- * * telemetry_sdk_name -> name of library (e.g. dd-trace-java)
  */
 typedef struct {
   // https://opentelemetry.io/docs/specs/semconv/registry/attributes/deployment/#deployment-environment-name
-  char *deployment_environment_name;
-  // https://opentelemetry.io/docs/specs/semconv/registry/attributes/host/#host-name
-  char *host_name;
+  const char *deployment_environment_name;
   // https://opentelemetry.io/docs/specs/semconv/registry/attributes/service/#service-instance-id
-  char *service_instance_id;
+  const char *service_instance_id;
   // https://opentelemetry.io/docs/specs/semconv/registry/attributes/service/#service-name
-  char *service_name;
+  const char *service_name;
   // https://opentelemetry.io/docs/specs/semconv/registry/attributes/service/#service-version
-  char *service_version;
+  const char *service_version;
   // https://opentelemetry.io/docs/specs/semconv/registry/attributes/telemetry/#telemetry-sdk-language
-  char *telemetry_sdk_language;
+  const char *telemetry_sdk_language;
   // https://opentelemetry.io/docs/specs/semconv/registry/attributes/telemetry/#telemetry-sdk-version
-  char *telemetry_sdk_version;
+  const char *telemetry_sdk_version;
   // https://opentelemetry.io/docs/specs/semconv/registry/attributes/telemetry/#telemetry-sdk-name
-  char *telemetry_sdk_name;
-  // Additional key/value pairs as resources https://opentelemetry.io/docs/specs/otel/resource/sdk/
-  // Can be NULL if no resources are needed; if non-NULL, this array MUST be terminated with a NULL entry.
+  const char *telemetry_sdk_name;
+  // Additional key/value pairs as resource attributes https://opentelemetry.io/docs/specs/otel/resource/sdk/
+  // Can be NULL if no resource attributes are needed; if non-NULL, this array MUST be terminated with a NULL entry.
   // Every even entry is a key, every odd entry is a value (E.g. "key1", "value1", "key2", "value2", NULL).
-  char **resources;
+  const char **resource_attributes;
+  // Additional key/value pairs as extra attributes (ProcessContext.extra_attributes in process_context.proto)
+  // Can be NULL if no extra attributes are needed; if non-NULL, this array MUST be terminated with a NULL entry.
+  // Every even entry is a key, every odd entry is a value (E.g. "key1", "value1", "key2", "value2", NULL).
+  const char **extra_attributes;
+  // Experimental thread context sharing mechanism configuration. See struct definition for details. Can be NULL.
+  const otel_thread_ctx_config_data *thread_ctx_config;
 } otel_process_ctx_data;
 
 /** Number of entries in the `otel_process_ctx_data` struct. Can be used to easily detect when the struct is updated. */
