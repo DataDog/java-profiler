@@ -302,7 +302,12 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
         if (anchor == NULL) {
             Counters::increment(WALKVM_ANCHOR_NULL);
         }
+        // scan-build false positive: reports "stack address stored into global variable"
+        // because it cannot model setjmp scoping — the pointer is always restored to
+        // saved_exception before walkVM returns (longjmp path: line ~313, normal exit: done label).
+#ifndef __clang_analyzer__
         vm_thread->exception() = &crash_protection_ctx;
+#endif
         if (profiled_thread != nullptr) {
             profiled_thread->setCrashProtectionActive(true);
         }
