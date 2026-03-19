@@ -142,7 +142,7 @@ typedef void* address;
 // JDK 128 :-)
 #define MAX_VERSION 128
 
-#define DECLARE_TYPE_FILED_DO(type_begin, field, field_with_version, type_end)                                      \
+#define DECLARE_TYPE_FIELD_DO(type_begin, field, field_with_version, type_end)                                      \
     type_begin(VMMemRegion, MATCH_SYMBOLS("MemRegion"))                                                             \
         field(_region_start_offset, offset, MATCH_SYMBOLS("_start"))                                                \
         field(_region_size_offset, offset, MATCH_SYMBOLS("_word_size"))                                             \
@@ -330,7 +330,7 @@ class VMStructs {
 #define DECLARE_TYPE_FIELD_WITH_VERSION(var, field_type, min_version, max_version, names) \
     static field_type var;
 
-    DECLARE_TYPE_FILED_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DECLARE_TYPE_FIELD_WITH_VERSION, DO_NOTHING)
+    DECLARE_TYPE_FIELD_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DECLARE_TYPE_FIELD_WITH_VERSION, DO_NOTHING)
 #undef DECLARE_TYPE_FIELD
 #undef DECLARE_TYPE_FIELD_WITH_VERSION
 #undef DO_NOTHING

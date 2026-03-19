@@ -51,16 +51,16 @@ DECLARE_TYPES_DO(INIT_TYPE_SIZE)
 
 // Do nothing macro
 #define DO_NOTHING(...)
-#define INIT_FILED(var, field_type, names) \
+#define INIT_FIELD(var, field_type, names) \
     field_type VMStructs::var = field_type##_value;
 
-#define INIT_FILED_WITH_VERSION(var, field_type, min_version, max_version, names) \
+#define INIT_FIELD_WITH_VERSION(var, field_type, min_version, max_version, names) \
     field_type VMStructs::var = field_type##_value;
 
-DECLARE_TYPE_FILED_DO(DO_NOTHING, INIT_FILED, INIT_FILED_WITH_VERSION, DO_NOTHING)
+DECLARE_TYPE_FIELD_DO(DO_NOTHING, INIT_FIELD, INIT_FIELD_WITH_VERSION, DO_NOTHING)
 
-#undef INIT_FILED
-#undef INIT_FILED_WITH_VERSION
+#undef INIT_FIELD
+#undef INIT_FIELD_WITH_VERSION
 #undef DO_NOTHING
 #undef offset_value
 #undef address_value
@@ -174,7 +174,7 @@ void VMStructs::init_offsets_and_addresses() {
         }
 
 #define END_TYPE() continue; }
-        DECLARE_TYPE_FILED_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
+        DECLARE_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
 #undef MATCH_TYPE_NAMES
 #undef READ_FIELD_VALUE
 #undef READ_FIELD_VALUE_WITH_VERSION
@@ -286,7 +286,7 @@ void VMStructs::verify_offsets() {
     assert(var != field_type##_value);
 #define VERSION_FIELD_WITH_VERSION(var, field_type, min_ver, max_ver, names)    \
     assert(hotspot_version < min_ver || hotspot_version > max_ver || var != field_type##_value);
-    DECLARE_TYPE_FILED_DO(DO_NOTHING, VERIFY_FIELD, VERSION_FIELD_WITH_VERSION, DO_NOTHING)
+    DECLARE_TYPE_FIELD_DO(DO_NOTHING, VERIFY_FIELD, VERSION_FIELD_WITH_VERSION, DO_NOTHING)
 #undef VERSION_FIELD_WITH_VERSION    
 #undef VERIFY_FIELD
 #undef DO_NOTHING
@@ -300,7 +300,7 @@ void VMStructs::verify_offsets() {
 
     DECLARE_INT_CONSTANTS_DO(VERIFY_CONSTANT)
     DECLARE_LONG_CONSTANTS_DO(VERIFY_CONSTANT)
-#undef INIT_CONSTANT
+#undef VERIFY_CONSTANT
 }
 
 #endif // DEBUG
