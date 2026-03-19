@@ -4,6 +4,7 @@
  */
 
 #include "thread.h"
+#include "otel_context.h"
 #include "os.h"
 #include "profiler.h"
 #include "common.h"
@@ -85,6 +86,10 @@ void ProfiledThread::release() {
   }
 }
 
+ProfiledThread::~ProfiledThread() {
+  delete _otel_ctx_record;
+}
+
 void ProfiledThread::releaseFromBuffer() {
   if (_buffer_pos >= 0 && _buffer != nullptr && _buffer_pos < _buffer_size) {
     // Reset the thread object for reuse (clear thread-specific data)
@@ -98,6 +103,13 @@ void ProfiledThread::releaseFromBuffer() {
     _recording_epoch = 0;
     _filter_slot_id = -1;
     _unwind_failures.clear();
+
+    // Free the OTEL context record (null first for signal safety)
+    OtelThreadContextRecord* record = _otel_ctx_record;
+    _otel_ctx_record = nullptr;
+    _otel_ctx_initialized = false;
+    _otel_local_root_span_id = 0;
+    delete record;
 
     // Put this ProfiledThread object back in the buffer for reuse
     _buffer[_buffer_pos] = this;

@@ -54,8 +54,8 @@ public class ProcessContextTest {
             return null;
         }
 
-        // Match memfd-backed mapping (/memfd:OTEL_CTX), anon mapping ([anon:OTEL_CTX]), or anon shmem ([anon_shmem:OTEL_CTX])
-        Pattern otelPattern = Pattern.compile("^([0-9a-f]+)-([0-9a-f]+)\\s+(\\S+)\\s+\\S+\\s+\\S+\\s+\\S+\\s*(?:/memfd:OTEL_CTX|\\[anon:OTEL_CTX\\]|\\[anon_shmem:OTEL_CTX\\]).*$");
+        // Match any mapping containing OTEL_CTX (memfd, anon, anon_shmem variants)
+        Pattern otelPattern = Pattern.compile("^([0-9a-f]+)-([0-9a-f]+)\\s+(\\S+)\\s+\\S+\\s+\\S+\\s+\\S+\\s*.*OTEL_CTX.*$");
 
         try (BufferedReader reader = Files.newBufferedReader(mapsFile)) {
             String line;

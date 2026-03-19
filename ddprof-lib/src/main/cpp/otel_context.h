@@ -1,0 +1,130 @@
+/*
+ * Copyright 2026, Datadog, Inc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef _OTEL_CONTEXT_H
+#define _OTEL_CONTEXT_H
+
+#include "arch.h"
+#include "asprof.h"
+#include <cstdint>
+#include <cstring>
+
+// Max total record size including header
+static const int OTEL_MAX_RECORD_SIZE = 640;
+// Header: trace_id(16) + span_id(8) + valid(1) + reserved(1) + attrs_data_size(2) = 28
+static const int OTEL_HEADER_SIZE = 28;
+// Max space for attribute data
+static const int OTEL_MAX_ATTRS_DATA_SIZE = OTEL_MAX_RECORD_SIZE - OTEL_HEADER_SIZE;
+
+/**
+ * OTEP #4947-compliant Thread Local Context Record.
+ *
+ * 640-byte packed structure matching the OTEP specification layout:
+ *   offset 0x00: trace_id[16]      — W3C 128-bit trace ID (big-endian)
+ *   offset 0x10: span_id[8]        — 64-bit span ID (big-endian)
+ *   offset 0x18: valid             — 1 = record ready for reading
+ *   offset 0x19: _reserved         — alignment padding
+ *   offset 0x1A: attrs_data_size   — number of valid bytes in attrs_data
+ *   offset 0x1C: attrs_data[612]   — encoded key/value attribute pairs
+ *
+ * Each attribute in attrs_data:
+ *   key_index: uint8  — index into process context's attribute_key_map
+ *   length:    uint8  — length of value string (max 255)
+ *   value:     uint8[length] — UTF-8 value bytes
+ *
+ * Discovery: external profilers find the TLS pointer
+ * custom_labels_current_set_v2 via ELF dynsym table.
+ */
+struct __attribute__((packed)) OtelThreadContextRecord {
+    uint8_t  trace_id[16];
+    uint8_t  span_id[8];
+    uint8_t  valid;
+    uint8_t  _reserved;        // OTEP spec: reserved for future use, must be 0
+    uint16_t attrs_data_size;
+    uint8_t  attrs_data[OTEL_MAX_ATTRS_DATA_SIZE];
+};
+
+// OTEP #4947 TLS pointer — MUST appear in dynsym for external profiler discovery
+DLLEXPORT extern thread_local OtelThreadContextRecord* custom_labels_current_set_v2;
+
+/**
+ * OTEL context storage manager (OTEP #4947 TLS pointer model).
+ *
+ * Each thread gets a pre-allocated OtelThreadContextRecord cached in
+ * ProfiledThread. The TLS pointer custom_labels_current_set_v2 is set
+ * to the record when context is active, or nullptr when inactive.
+ *
+ * Signal safety: signal handlers must never access
+ * custom_labels_current_set_v2 directly (TLS lazy init can deadlock
+ * in musl). Instead they read via ProfiledThread::getOtelContextRecord().
+ */
+class OtelContexts {
+public:
+    static bool initialize();
+    static void shutdown();
+    static bool isInitialized();
+
+    /**
+     * Write context for the current thread using OTEP publication protocol:
+     * 1. Set TLS pointer to nullptr (detach — external readers)
+     * 2. Set valid = 0 (invalidate — signal handler readers via cached pointer)
+     * 3. Populate record fields (trace_id, span_id, attrs_data_size = 0)
+     * 4. Set valid = 1
+     * 5. Set TLS pointer to record (attach)
+     */
+    static void set(u64 trace_id_high, u64 trace_id_low, u64 span_id);
+
+    /**
+     * Read context for the current thread.
+     * Used from non-signal-handler code path only.
+     */
+    static bool get(u64& trace_id_high, u64& trace_id_low, u64& span_id);
+
+    /**
+     * Write a single attribute into the current thread's OTEP record.
+     * Appends (key_index, length, value) to attrs_data, re-publishes via detach/attach.
+     * Returns false if the attribute doesn't fit in the remaining space.
+     */
+    static bool setAttribute(uint8_t key_index, const char* value, uint8_t value_len);
+
+    /**
+     * Read attrs_data from the given record.
+     * Returns pointer to attrs_data and sets out_size to attrs_data_size.
+     * Returns nullptr if the record is null or invalid.
+     */
+    static const uint8_t* readAttrsData(OtelThreadContextRecord* record, uint16_t& out_size);
+
+    /**
+     * Clear context for the current thread (set TLS pointer to nullptr).
+     */
+    static void clear();
+
+    // Byte conversion helpers (big-endian, W3C trace context)
+    static void u64ToBytes(u64 val, uint8_t* out);
+    static u64 bytesToU64(const uint8_t* in);
+
+private:
+    static bool _initialized;
+
+    // Read fields from a record pointer, returning false if null or invalid
+    static bool readRecord(OtelThreadContextRecord* record,
+                           u64& trace_id_high, u64& trace_id_low, u64& span_id);
+
+    // Ensure TLS is initialized for current thread, returns record pointer
+    static OtelThreadContextRecord* ensureRecord();
+};
+
+#endif /* _OTEL_CONTEXT_H */

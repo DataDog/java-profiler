@@ -1,5 +1,5 @@
 /*
- * Copyright 2025, Datadog, Inc
+ * Copyright 2025, 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,19 @@ package com.datadoghq.profiler;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
+/**
+ * Thread-local context for trace/span identification.
+ *
+ * <p>Provides access to thread-local context storage used by the profiler to correlate
+ * samples with distributed traces. Supports two storage modes:
+ * <ul>
+ *   <li><b>Profiler mode (default)</b>: Context stored in TLS via direct ByteBuffer mapping</li>
+ *   <li><b>OTEL mode</b>: Context stored in OTEP TLS record accessible by external profilers</li>
+ * </ul>
+ *
+ * <p>The storage mode is determined at profiler startup via the {@code ctxstorage} option.
+ * Reading and writing context automatically routes to the correct storage via JNI.
+ */
 public final class ThreadContext {
     /**
      * Knuth's multiplicative hash constant for 64-bit values.
@@ -59,6 +72,13 @@ public final class ThreadContext {
     private final boolean useJNI;
 
     /**
+     * True if OTEL context storage mode is active.
+     * In OTEL mode, context reads must go through JNI since the OTEP
+     * record is managed via a separate TLS pointer, not the direct ByteBuffer.
+     */
+    private final boolean otelMode;
+
+    /**
      * Creates a ThreadContext with native struct field offsets.
      *
      * @param buffer Direct ByteBuffer mapped to native Context struct
@@ -79,13 +99,39 @@ public final class ThreadContext {
         this.customTagsOffset = offsets[3];
         // For Java 17 and later the cost of downcall to JNI is negligible
         useJNI = Platform.isJavaVersionAtLeast(17);
+        // Check if OTEL mode is active - if so, reads must go through JNI
+        otelMode = isOtelMode0();
     }
 
+    /**
+     * Gets the span ID from the current thread's context.
+     *
+     * <p>In OTEL mode, reads from the OTEP TLS record via JNI.
+     * In profiler mode, reads directly from the TLS ByteBuffer.
+     *
+     * @return the span ID, or 0 if not set
+     */
     public long getSpanId() {
+        if (otelMode) {
+            long[] ctx = getContext0();
+            return ctx != null ? ctx[0] : 0;
+        }
         return buffer.getLong(spanIdOffset);
     }
 
+    /**
+     * Gets the root span ID from the current thread's context.
+     *
+     * <p>In OTEL mode, reads from the OTEP TLS record via JNI.
+     * In profiler mode, reads directly from the TLS ByteBuffer.
+     *
+     * @return the root span ID, or 0 if not set
+     */
     public long getRootSpanId() {
+        if (otelMode) {
+            long[] ctx = getContext0();
+            return ctx != null ? ctx[1] : 0;
+        }
         return buffer.getLong(rootSpanIdOffset);
     }
 
@@ -94,7 +140,26 @@ public final class ThreadContext {
     }
 
     public long put(long spanId, long rootSpanId) {
+        if (otelMode) {
+            throw new IllegalStateException(
+                "put(spanId, rootSpanId) is not supported in OTEL mode — use put(localRootSpanId, spanId, traceIdHigh, traceIdLow)");
+        }
         return useJNI ? setContext0(spanId, rootSpanId) : putContextJava(spanId, rootSpanId);
+    }
+
+    /**
+     * Sets trace context with full 128-bit W3C trace ID and local root span ID.
+     * In OTEL mode: writes trace_id + span_id to the OTEP record, stores
+     * localRootSpanId as a reserved attribute for JFR endpoint correlation.
+     * In profiler mode: traceIdHigh is ignored, localRootSpanId maps to rootSpanId.
+     *
+     * @param localRootSpanId Local root span ID (for endpoint correlation)
+     * @param spanId The span ID
+     * @param traceIdHigh Upper 64 bits of the 128-bit trace ID
+     * @param traceIdLow Lower 64 bits of the 128-bit trace ID
+     */
+    public void put(long localRootSpanId, long spanId, long traceIdHigh, long traceIdLow) {
+        setContextFull0(localRootSpanId, spanId, traceIdHigh, traceIdLow);
     }
 
     public void putCustom(int offset, int value) {
@@ -132,6 +197,43 @@ public final class ThreadContext {
         return (long) value * offset;
     }
 
+    /**
+     * Sets a custom attribute on the current thread's context by string value.
+     *
+     * <p>In OTEL mode: encodes the value directly into the OTEP record's attrs_data.
+     * In profiler mode: registers the string as a constant and writes the encoding
+     * to the TLS context tag slot (same as registerConstant + putCustom).
+     *
+     * @param keyIndex Index into the registered attribute key map (0-based)
+     * @param value The string value for this attribute
+     * @return true if the attribute was set successfully
+     */
+    public boolean setContextAttribute(int keyIndex, String value) {
+        if (keyIndex < 0 || keyIndex > 255 || value == null) {
+            return false;
+        }
+        return setContextAttribute0(keyIndex, value);
+    }
+
     private static native long setContext0(long spanId, long rootSpanId);
+    private static native void setContextFull0(long localRootSpanId, long spanId, long traceIdHigh, long traceIdLow);
     private static native void setContextSlot0(int offset, int value);
+    private static native boolean setContextAttribute0(int keyIndex, String value);
+
+    /**
+     * Checks if OTEL context storage mode is active.
+     *
+     * @return true if OTEL mode is active, false for default profiler mode
+     */
+    private static native boolean isOtelMode0();
+
+    /**
+     * Reads context via the native ContextApi.
+     *
+     * <p>This method routes to the appropriate storage backend based on the
+     * active storage mode (OTEP TLS record or TLS).
+     *
+     * @return array with [spanId, rootSpanId], or null on error
+     */
+    private static native long[] getContext0();
 }

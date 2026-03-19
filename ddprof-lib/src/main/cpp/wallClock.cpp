@@ -9,6 +9,7 @@
 
 #include "stackFrame.h"
 #include "context.h"
+#include "context_api.h"
 #include "debugSupport.h"
 #include "libraries.h"
 #include "log.h"
@@ -69,11 +70,12 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   u64 call_trace_id = 0;
   if (current != NULL && _collapsing) {
     StackFrame frame(ucontext);
-    Context &context = Contexts::get();
+    u64 spanId = 0, rootSpanId = 0;
+    ContextApi::get(spanId, rootSpanId);
     call_trace_id = current->lookupWallclockCallTraceId(
         (u64)frame.pc(), (u64)frame.sp(),
         Profiler::instance()->recordingEpoch(),
-        context.spanId, context.rootSpanId);
+        spanId, rootSpanId);
     if (call_trace_id != 0) {
       Counters::increment(SKIPPED_WALLCLOCK_UNWINDS);
     }

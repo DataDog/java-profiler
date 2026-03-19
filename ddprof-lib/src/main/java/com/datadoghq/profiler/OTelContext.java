@@ -222,6 +222,26 @@ public final class OTelContext {
         }
     }
 
+    /**
+     * Registers attribute key names for the thread context.
+     *
+     * <p>These keys define the attribute_key_map in the process context's
+     * thread_ctx_config. In OTEL mode, attribute values set via
+     * {@link ThreadContext#setContextAttribute(int, String)} are encoded
+     * with the key index corresponding to position in this array.
+     *
+     * <p>Must be called before any calls to setContextAttribute.
+     *
+     * @param keys Attribute key names (e.g. "http.route", "db.system")
+     */
+    public void registerAttributeKeys(String... keys) {
+        if (!libraryLoadResult.succeeded || keys == null || keys.length == 0) {
+            return;
+        }
+        registerAttributeKeys0(keys);
+    }
+
     private static native void setProcessCtx0(String env, String hostname, String runtimeId, String service, String version, String tracerVersion);
     private static native ProcessContext readProcessCtx0();
+    private static native void registerAttributeKeys0(String[] keys);
 }

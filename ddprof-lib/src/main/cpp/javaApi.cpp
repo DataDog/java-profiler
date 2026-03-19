@@ -19,6 +19,7 @@
 
 #include "arch.h"
 #include "context.h"
+#include "context_api.h"
 #include "counters.h"
 #include "common.h"
 #include "engine.h"
@@ -470,7 +471,7 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
     .telemetry_sdk_name = "dd-trace-java",
     .resource_attributes = host_name_attrs,
     .extra_attributes = NULL,
-    .thread_ctx_config = NULL
+    .thread_ctx_config = NULL  // Set later by ContextApi::registerAttributeKeys() when keys are known
   };
 
   otel_process_ctx_result result = otel_process_ctx_publish(&data);
@@ -561,19 +562,108 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeContextTls0(JNIEnv* env, jcla
 
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_ThreadContext_setContext0(JNIEnv* env, jclass unused, jlong spanId, jlong rootSpanId) {
-  Context& ctx = Contexts::get();
+  // Use ContextApi for mode-agnostic context setting (handles TLS or OTEL storage)
+  ContextApi::set(spanId, rootSpanId);
 
-  ctx.spanId = spanId;
-  ctx.rootSpanId = rootSpanId;
-  ctx.checksum = Contexts::checksum(spanId, rootSpanId);
-
-  return ctx.checksum;
+  // Return checksum for API compatibility
+  // In OTEL mode, return 0 as checksum is not used (OTEL uses valid flag and pointer-swapping)
+  if (ContextApi::getMode() == CTX_STORAGE_OTEL) {
+    return 0;
+  }
+  return Contexts::checksum(spanId, rootSpanId);
 }
 
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_ThreadContext_setContextFull0(JNIEnv* env, jclass unused, jlong localRootSpanId, jlong spanId, jlong traceIdHigh, jlong traceIdLow) {
+  ContextApi::setFull(localRootSpanId, spanId, traceIdHigh, traceIdLow);
+}
+
+// Legacy API: writes directly to Context.tags[] regardless of storage mode.
+// In OTEL mode, writeCurrentContext() in flightRecorder.cpp reads both Context.tags[]
+// and the OTEP attrs_data, so tags set via this path are still recorded in JFR.
+// New callers should prefer setContextAttribute0() which writes to the appropriate store.
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_ThreadContext_setContextSlot0(JNIEnv* env, jclass unused, jint offset, jint value) {
   Context& ctx = Contexts::get();
   ctx.tags[offset].value = (u32)value;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_ThreadContext_isOtelMode0(JNIEnv* env, jclass unused) {
+  return ContextApi::isInitialized() && ContextApi::getMode() == CTX_STORAGE_OTEL;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_ThreadContext_setContextAttribute0(JNIEnv* env, jclass unused, jint keyIndex, jstring value) {
+  if (value == nullptr || keyIndex < 0 || keyIndex > 255) {
+    return false;
+  }
+  JniString value_str(env, value);
+  int len = value_str.length();
+  if (len > 255) {
+    len = 255;
+  }
+  return ContextApi::setAttribute((uint8_t)keyIndex, value_str.c_str(), (uint8_t)len);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_OTelContext_registerAttributeKeys0(JNIEnv* env, jclass unused, jobjectArray keys) {
+  if (keys == nullptr) {
+    return;
+  }
+  int count = env->GetArrayLength(keys);
+  if (count <= 0) {
+    return;
+  }
+  if (count > ContextApi::MAX_ATTRIBUTE_KEYS) {
+    count = ContextApi::MAX_ATTRIBUTE_KEYS;
+  }
+
+  const char* key_ptrs[ContextApi::MAX_ATTRIBUTE_KEYS];
+  JniString* jni_strings[ContextApi::MAX_ATTRIBUTE_KEYS];
+
+  for (int i = 0; i < count; i++) {
+    jstring jstr = (jstring)env->GetObjectArrayElement(keys, i);
+    if (jstr == nullptr) {
+      // Clean up already-allocated strings and bail
+      for (int j = 0; j < i; j++) {
+        delete jni_strings[j];
+      }
+      return;
+    }
+    jni_strings[i] = new JniString(env, jstr);
+    key_ptrs[i] = jni_strings[i]->c_str();
+  }
+
+  ContextApi::registerAttributeKeys(key_ptrs, count);
+
+  for (int i = 0; i < count; i++) {
+    delete jni_strings[i];
+  }
+}
+
+extern "C" DLLEXPORT jlongArray JNICALL
+Java_com_datadoghq_profiler_ThreadContext_getContext0(JNIEnv* env, jclass unused) {
+  u64 spanId = 0;
+  u64 rootSpanId = 0;
+
+  // Read context via ContextApi (handles both OTEL and TLS modes)
+  // If read fails (torn read or write in progress), return zeros
+  if (!ContextApi::get(spanId, rootSpanId)) {
+    spanId = 0;
+    rootSpanId = 0;
+  }
+
+  // Create result array [spanId, rootSpanId]
+  jlongArray result = env->NewLongArray(2);
+  if (result == nullptr) {
+    return nullptr;
+  }
+
+  jlong values[2] = {(jlong)spanId, (jlong)rootSpanId};
+  env->SetLongArrayRegion(result, 0, 2, values);
+
+  return result;
 }
 
 // ---- test and debug utilities

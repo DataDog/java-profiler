@@ -204,10 +204,23 @@ public final class JavaProfiler {
     }
 
     /**
+     * Sets trace context with full 128-bit W3C trace ID and local root span ID.
+     * Required in OTEL mode. Works in profiler mode too (traceIdHigh ignored).
+     *
+     * @param localRootSpanId Local root span ID (for endpoint correlation)
+     * @param spanId Span identifier
+     * @param traceIdHigh Upper 64 bits of the 128-bit trace ID
+     * @param traceIdLow Lower 64 bits of the 128-bit trace ID
+     */
+    public void setContext(long localRootSpanId, long spanId, long traceIdHigh, long traceIdLow) {
+        tlsContextStorage.get().put(localRootSpanId, spanId, traceIdHigh, traceIdLow);
+    }
+
+    /**
      * Clears context identifier for current thread.
      */
     public void clearContext() {
-        setContext(0, 0);
+        tlsContextStorage.get().put(0, 0, 0, 0);
     }
 
     /**
@@ -360,4 +373,13 @@ public final class JavaProfiler {
     public static native void testlog(String msg);
 
     public static native void dumpContext();
+
+    /**
+     * Resets the cached ThreadContext for the current thread.
+     * The next call to {@link #getThreadContext()} or {@link #setContext(long, long)}
+     * will re-create it, picking up the current storage mode.
+     */
+    public void resetThreadContext() {
+        tlsContextStorage.remove();
+    }
 }

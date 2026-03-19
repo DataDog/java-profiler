@@ -17,8 +17,9 @@
 #include <sys/types.h>
 #include <vector>
 
-// Forward declaration to avoid circular dependency
+// Forward declarations to avoid circular dependency
 class Context;
+struct OtelThreadContextRecord;
 
 class ProfiledThread : public ThreadLocalData {     
 private:
@@ -69,13 +70,17 @@ private:
   int _filter_slot_id; // Slot ID for thread filtering
   UnwindFailures _unwind_failures;
   bool _ctx_tls_initialized;
+  bool _otel_ctx_initialized;
   bool _crash_protection_active;
   Context* _ctx_tls_ptr;
+  OtelThreadContextRecord* _otel_ctx_record;
+  u64 _otel_local_root_span_id;  // Cached local root span ID for OTEL mode (O(1) read)
 
   ProfiledThread(int buffer_pos, int tid)
       : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _root_span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
-        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _ctx_tls_initialized(false), _crash_protection_active(false), _ctx_tls_ptr(nullptr) {};
+        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _ctx_tls_initialized(false), _otel_ctx_initialized(false), _crash_protection_active(false), _ctx_tls_ptr(nullptr), _otel_ctx_record(nullptr), _otel_local_root_span_id(0) {};
 
+  ~ProfiledThread();  // Defined in thread.cpp (needs complete OtelThreadContextRecord type)
   void releaseFromBuffer();
 
   virtual ~ProfiledThread() { }
@@ -189,7 +194,29 @@ public:
   inline Context* getContextTlsPtr() {
     return _ctx_tls_ptr;
   }
-  
+
+  // OTel context TLS (OTEP #4947)
+  inline void markOtelContextInitialized(OtelThreadContextRecord* record) {
+    _otel_ctx_record = record;
+    _otel_ctx_initialized = true;
+  }
+
+  inline bool isOtelContextInitialized() {
+    return _otel_ctx_initialized;
+  }
+
+  inline OtelThreadContextRecord* getOtelContextRecord() {
+    return _otel_ctx_record;
+  }
+
+  inline void setOtelLocalRootSpanId(u64 id) {
+    _otel_local_root_span_id = id;
+  }
+
+  inline u64 getOtelLocalRootSpanId() {
+    return _otel_local_root_span_id;
+  }
+
   // JavaThread status cache — avoids repeated vtable checks in VMThread::isJavaThread().
   // JVMTI ThreadStart only fires for application threads, not for JVM-internal
   // JavaThread subclasses (CompilerThread, etc.), so we cache the vtable result
