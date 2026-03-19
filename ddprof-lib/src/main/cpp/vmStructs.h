@@ -10,7 +10,6 @@
 #include <initializer_list>
 #include <jvmti.h>
 #include <stdint.h>
-#include <string.h>
 #include <type_traits>
 #include "codeCache.h"
 #include "counters.h"
@@ -21,6 +20,7 @@
 
 class GCHeapSummary;
 class HeapUsage;
+class VMNMethod;
 
 
 // During stack walking in the profiler's signal handler, GC or class unloading
@@ -310,6 +310,8 @@ class VMStructs {
     static int _interpreter_frame_bcp_offset;
     static unsigned char _unsigned5_base;
     static const void* _call_stub_return;
+    static const void* _interpreter_start;
+    static VMNMethod* _interpreter_nm;
     static const void* _interpreted_frame_valid_start;
     static const void* _interpreted_frame_valid_end;
 
@@ -829,6 +831,16 @@ DECLARE(VMMethod)
 DECLARE_END
 
 DECLARE(VMNMethod)
+  private:
+    // Inline string comparison to avoid indirect call to strncmp
+    template<size_t N>
+    static bool startsWith(const char* s, const char (&pattern)[N]) {
+        for (size_t i = 0; i < N - 1; i++) {
+            if (s[i] != pattern[i]) return false;
+        }
+        return true;
+    }
+
   public:
     int size() {
         assert(_blob_size_offset >= 0);
@@ -902,24 +914,23 @@ DECLARE(VMNMethod)
         return *(const char**) at(_nmethod_name_offset);
     }
 
-    bool isNMethod() {
-        const char* n = name();
-        return n != NULL && (strcmp(n, "nmethod") == 0 || strcmp(n, "native nmethod") == 0);
+    bool isInterpreter() {
+        return this == _interpreter_nm;
     }
 
-    bool isInterpreter() {
+    bool isNMethod() {
         const char* n = name();
-        return n != NULL && strcmp(n, "Interpreter") == 0;
+        return n != NULL && (startsWith(n, "nmethod\0") || startsWith(n, "native nmethod\0"));
     }
 
     bool isStub() {
         const char* n = name();
-        return n != NULL && strncmp(n, "StubRoutines", 12) == 0;
+        return n != NULL && startsWith(n, "StubRoutines");
     }
 
     bool isVTableStub() {
         const char* n = name();
-        return n != NULL && strcmp(n, "vtable chunks") == 0;
+        return n != NULL && startsWith(n, "vtable chunks");
     }
 
     VMMethod* method() {
@@ -983,6 +994,11 @@ class CodeHeap : VMStructs {
         for (const void* high = _code_heap_high;
              end > high && !__sync_bool_compare_and_swap(&_code_heap_high, high, end);
              high = _code_heap_high);
+    }
+
+    static void setInterpreterStart(const void* start) {
+        _interpreter_start = start;
+        _interpreter_nm = findNMethod(start);
     }
 
     static VMNMethod* findNMethod(const void* pc) {
