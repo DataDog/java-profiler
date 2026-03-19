@@ -133,6 +133,7 @@ public abstract class AbstractProcessProfilerTest {
         boolean val = p.waitFor(10, TimeUnit.SECONDS);
         if (!val) {
             p.destroyForcibly();
+            p.waitFor(5, TimeUnit.SECONDS);
         }
         return new LaunchResult(val, p.exitValue());
     }
