@@ -69,7 +69,7 @@ void benchmarkGetLockIndex() {
     }));
 }
 
-// ---- Fix 5: findLibraryByAddress  linear scan vs TLS cache ------------------
+// ---- Fix 5: findLibraryByAddress  linear scan vs last-hit-index cache -------
 
 struct FakeLib {
     uintptr_t min_addr;
@@ -104,21 +104,17 @@ static const FakeLib *findLibLinear(uintptr_t addr) {
     return nullptr;
 }
 
-// Optimized: thread-local last-hit cache
-struct TLLibCache {
-    uintptr_t        min  = 0;
-    uintptr_t        max  = 0;
-    const FakeLib   *lib  = nullptr;
-};
-thread_local TLLibCache tl_lib_cache;
+// Optimized: signal-safe static last-hit index (no DTLS allocation)
+static volatile int last_hit_idx = 0;
 
-static const FakeLib *findLibTLCache(uintptr_t addr) {
-    if (tl_lib_cache.lib && addr >= tl_lib_cache.min && addr < tl_lib_cache.max) {
-        return tl_lib_cache.lib;
+static const FakeLib *findLibLastHit(uintptr_t addr) {
+    int hint = last_hit_idx;
+    if (hint < NUM_LIBS && fake_libs[hint].contains(addr)) {
+        return &fake_libs[hint];
     }
     for (int i = 0; i < NUM_LIBS; i++) {
         if (fake_libs[i].contains(addr)) {
-            tl_lib_cache = {fake_libs[i].min_addr, fake_libs[i].max_addr, &fake_libs[i]};
+            last_hit_idx = i;
             return &fake_libs[i];
         }
     }
@@ -127,7 +123,7 @@ static const FakeLib *findLibTLCache(uintptr_t addr) {
 
 void benchmarkFindLibrary() {
     initFakeLibs();
-    std::cout << "\n=== Fix 5: findLibraryByAddress  (linear vs TLS cache) ===" << std::endl;
+    std::cout << "\n=== Fix 5: findLibraryByAddress  (linear vs last-hit index) ===" << std::endl;
 
     std::mt19937 rng(42);
 
@@ -153,9 +149,9 @@ void benchmarkFindLibrary() {
         if (lib) id_sink = lib->id;
     }));
 
-    tl_lib_cache = {};
-    results.push_back(runBenchmark("findLib TLS cache (hot)", [&](int i) {
-        const FakeLib *lib = findLibTLCache(hot_addrs[i]);
+    last_hit_idx = 0;
+    results.push_back(runBenchmark("findLib last-hit idx (hot)", [&](int i) {
+        const FakeLib *lib = findLibLastHit(hot_addrs[i]);
         if (lib) id_sink = lib->id;
     }));
 
@@ -165,9 +161,9 @@ void benchmarkFindLibrary() {
         if (lib) id_sink = lib->id;
     }));
 
-    tl_lib_cache = {};
-    results.push_back(runBenchmark("findLib TLS cache (cold)", [&](int i) {
-        const FakeLib *lib = findLibTLCache(cold_addrs[i]);
+    last_hit_idx = 0;
+    results.push_back(runBenchmark("findLib last-hit idx (cold)", [&](int i) {
+        const FakeLib *lib = findLibLastHit(cold_addrs[i]);
         if (lib) id_sink = lib->id;
     }));
 }
