@@ -32,9 +32,21 @@ Also read the corresponding markdown report to understand the actual diff hunks 
 
 If there are zero candidates, tell the user and stop.
 
-## Step 3: Group into PR Proposals
+## Step 3: Filter Out Existing PRs
 
-Analyze the contributable hunks across all candidate files and group them into logical PR proposals. Guidelines:
+Before proposing new PRs, check what's already open from DataDog against upstream:
+
+```bash
+gh pr list --repo async-profiler/async-profiler --author DataDog --state open --json number,title,body,files
+```
+
+For each open PR, extract the list of files it touches. Then cross-reference with the candidate files from Step 2:
+
+- If a candidate file is already fully covered by an open PR (i.e., the PR touches that file and addresses the same type of change), **exclude it** from proposals
+- If a candidate file is only partially covered (the open PR addresses some hunks but not others), keep the uncovered hunks as candidates
+- When presenting proposals in Step 4, mention any skipped files and the existing PR that covers them, so the user has full visibility
+
+Analyze the remaining contributable hunks across candidate files and group them into logical PR proposals. Guidelines:
 
 - **Related changes go together**: e.g., a bug fix touching `stackWalker.cpp` and `vmStructs.cpp` for the same issue = one PR
 - **Independent changes are separate**: unrelated fixes in different files = separate PRs
@@ -46,7 +58,7 @@ For each proposed PR, prepare:
 - The list of files and hunks it covers
 - A brief rationale explaining why this change benefits upstream
 
-## Step 4: Present Proposals to User
+## Step 5: Present Proposals to User
 
 Show the user a numbered list of proposed PRs with:
 - Title
@@ -58,11 +70,11 @@ Use `AskUserQuestion` with `multiSelect: true` to let the user pick which PRs to
 
 If the user selects none, stop.
 
-## Step 5: Create Selected PRs
+## Step 6: Create Selected PRs
 
 For each selected PR, perform the following:
 
-### 5a. Clone the Fork (once)
+### 6a. Clone the Fork (once)
 
 Clone `git@github.com:DataDog/async-profiler.git` to a temp directory. Reuse this clone for all PRs.
 
@@ -78,7 +90,7 @@ git checkout -b master
 git branch -D temp
 ```
 
-### 5b. Create Feature Branch
+### 6b. Create Feature Branch
 
 For each PR, create a branch from upstream master:
 
@@ -91,7 +103,7 @@ git checkout -b "$BRANCH_NAME"
 
 Where `<slug>` is a short kebab-case description derived from the PR title.
 
-### 5c. Port Changes
+### 6c. Port Changes
 
 Apply only the relevant contributable hunks for this PR to the upstream files:
 
@@ -100,7 +112,7 @@ Apply only the relevant contributable hunks for this PR to the upstream files:
 3. **Critical**: Ensure NO Datadog-specific references leak through (DD_, ddprof, Datadog, datadog, DDPROF, context.h, counters.h, tagger, QueueItem)
 4. If a hunk cannot be cleanly applied because the upstream file diverged, skip it and note it for the user
 
-### 5d. Verify Build
+### 6d. Verify Build
 
 Attempt a basic build check:
 
@@ -111,7 +123,7 @@ make
 
 If the build fails, analyze the error. If it's a simple fix (e.g., missing include), fix it. If it's complex, note it for the user and proceed anyway (the PR is draft).
 
-### 5e. Commit and Push
+### 6e. Commit and Push
 
 ```bash
 cd "$FORK_DIR"
@@ -120,7 +132,7 @@ git commit -m "<concise description of the change>"
 git push origin "$BRANCH_NAME"
 ```
 
-### 5f. Open Draft PR
+### 6f. Open Draft PR
 
 Use `gh` to create a draft PR against upstream. **Important**: Before creating the first PR, fetch the target project's PR template from the upstream repo (`gh api repos/async-profiler/async-profiler/contents/.github/PULL_REQUEST_TEMPLATE.md` and decode the base64 content). The PR body **must** follow that template exactly — use all its sections, checkboxes, and footer verbatim. Fill in each section with the relevant content for this change.
 
@@ -134,7 +146,7 @@ gh pr create \
   --body "<body following the upstream PR template>"
 ```
 
-## Step 6: Report
+## Step 7: Report
 
 After all selected PRs are created, show the user:
 - A summary table of created PRs with their URLs
