@@ -8,6 +8,7 @@
 
 #include "common.h"
 #include "counters.h"
+#include "dwarf.h"
 #include "utils.h"
 
 #include <jvmti.h>
@@ -116,8 +117,6 @@ public:
   }
 };
 
-class FrameDesc;
-
 class CodeCache {
 private:
   char *_name;
@@ -141,6 +140,7 @@ private:
 
   FrameDesc *_dwarf_table;
   int _dwarf_table_length;
+  const FrameDesc *_default_frame;
 
   int _capacity;
   int _count;
@@ -241,7 +241,7 @@ public:
   void findSymbolsByPrefix(std::vector<const char *> &prefixes,
                            std::vector<const void *> &symbols);
 
-  void setDwarfTable(FrameDesc *table, int length);
+  void setDwarfTable(FrameDesc *table, int length, const FrameDesc &default_frame = FrameDesc::default_frame);
   FrameDesc findFrameDesc(const void *pc);
 
   long long memoryUsage() {

@@ -63,6 +63,7 @@ CodeCache::CodeCache(const char *name, short lib_index,
 
   _dwarf_table = NULL;
   _dwarf_table_length = 0;
+  _default_frame = &FrameDesc::default_frame;
 
   _capacity = INITIAL_CODE_CACHE_CAPACITY;
   _count = 0;
@@ -101,6 +102,7 @@ void CodeCache::copyFrom(const CodeCache& other) {
   _dwarf_table = new FrameDesc[_dwarf_table_length];
   memcpy(_dwarf_table, other._dwarf_table,
          _dwarf_table_length * sizeof(FrameDesc));
+  _default_frame = other._default_frame;
 
   _capacity = other._capacity;
   _count = other._count;
@@ -388,16 +390,15 @@ void CodeCache::makeImportsPatchable() {
   }
 }
 
-void CodeCache::setDwarfTable(FrameDesc *table, int length) {
+void CodeCache::setDwarfTable(FrameDesc *table, int length, const FrameDesc &default_frame) {
   _dwarf_table = table;
   _dwarf_table_length = length;
+  _default_frame = &default_frame;
 }
 
 FrameDesc CodeCache::findFrameDesc(const void *pc) {
   if (_dwarf_table == NULL || _dwarf_table_length == 0) {
-    // No DWARF data available - use default frame pointer unwinding
-    // This handles OpenJ9 and other VMs that don't provide DWARF info
-    return FrameDesc::default_frame;
+    return *_default_frame;
   }
 
   u32 target_loc = (const char *)pc - _text_base;
@@ -420,7 +421,7 @@ FrameDesc CodeCache::findFrameDesc(const void *pc) {
   } else if (target_loc - _plt_offset < _plt_size) {
     return FrameDesc::empty_frame;
   } else {
-    return FrameDesc::default_frame;
+    return *_default_frame;
   }
 }
 
