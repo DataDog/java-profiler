@@ -34,10 +34,17 @@ If there are zero candidates, tell the user and stop.
 
 ## Step 3: Filter Out Existing PRs
 
-Before proposing new PRs, check what's already open from DataDog against upstream:
+Before proposing new PRs, check what's already open from the DataDog fork against upstream. Note: `--author DataDog` does not work because fork PRs are authored by the pushing user, not the org. Instead, query the API and filter by head repo:
 
 ```bash
-gh pr list --repo async-profiler/async-profiler --author DataDog --state open --json number,title,body,files
+gh api 'repos/async-profiler/async-profiler/pulls?state=open&per_page=100' \
+  --jq '.[] | select(.head.repo.full_name == "DataDog/async-profiler") | {number, title}'
+```
+
+Then for each matching PR, fetch the files it touches:
+
+```bash
+gh api 'repos/async-profiler/async-profiler/pulls/<number>/files' --jq '.[].filename'
 ```
 
 For each open PR, extract the list of files it touches. Then cross-reference with the candidate files from Step 2:
