@@ -224,21 +224,46 @@ info "Will cherry-pick $COMMIT_COUNT commit(s)"
 
 # --- Handle existing backport branch -----------------------------------------
 BACKPORT_BRANCH="$USER/backport-pr-$PR_NUMBER"
-if git show-ref --verify --quiet "refs/remotes/origin/$BACKPORT_BRANCH" 2>/dev/null; then
-    warn "Remote branch $BACKPORT_BRANCH already exists."
-    echo -n "Delete it and start fresh? (y/n) "
+SKIP_CHERRY_PICK=0
+
+EXISTING_REMOTE=0
+EXISTING_LOCAL=0
+EXISTING_PR=0
+git show-ref --verify --quiet "refs/remotes/origin/$BACKPORT_BRANCH" 2>/dev/null && EXISTING_REMOTE=1
+git show-ref --verify --quiet "refs/heads/$BACKPORT_BRANCH" 2>/dev/null && EXISTING_LOCAL=1
+if [ $EXISTING_REMOTE -eq 1 ]; then
+    gh pr view "$BACKPORT_BRANCH" --json url 1>/dev/null 2>&1 && EXISTING_PR=1
+fi
+
+if [ $EXISTING_REMOTE -eq 1 ] && [ $EXISTING_PR -eq 1 ]; then
+    EXISTING_PR_URL=$(gh pr view "$BACKPORT_BRANCH" --json url --jq '.url')
+    error "A backport PR already exists: $EXISTING_PR_URL"
+    exit 1
+fi
+
+if [ $EXISTING_REMOTE -eq 1 ] && [ $EXISTING_PR -eq 0 ]; then
+    warn "Remote branch $BACKPORT_BRANCH exists but has no open PR."
+    echo -n "  Create the PR from the existing branch? (y/n) "
     read -r ANSWER
     if [ "$ANSWER" == "y" ]; then
-        if [ $DRY_RUN -eq 0 ]; then
-            git push origin --delete "$BACKPORT_BRANCH" 2>/dev/null || true
-        fi
-        info "Deleted remote branch $BACKPORT_BRANCH"
+        SKIP_CHERRY_PICK=1
+        info "Will reuse existing branch"
     else
-        echo "Aborting."
-        exit 1
+        echo -n "  Delete it and start fresh instead? (y/n) "
+        read -r ANSWER
+        if [ "$ANSWER" == "y" ]; then
+            if [ $DRY_RUN -eq 0 ]; then
+                git push origin --delete "$BACKPORT_BRANCH" 2>/dev/null || true
+            fi
+            info "Deleted remote branch $BACKPORT_BRANCH"
+        else
+            echo "Aborting."
+            exit 1
+        fi
     fi
 fi
-if git show-ref --verify --quiet "refs/heads/$BACKPORT_BRANCH" 2>/dev/null; then
+
+if [ $SKIP_CHERRY_PICK -eq 0 ] && [ $EXISTING_LOCAL -eq 1 ]; then
     warn "Local branch $BACKPORT_BRANCH already exists."
     echo -n "Delete it and start fresh? (y/n) "
     read -r ANSWER
@@ -267,41 +292,51 @@ if [ $DRY_RUN -eq 1 ]; then
     done
     echo -e "  Labels:    ${PR_LABELS:-<none>}"
     echo -e "  PR title:  🍒 $PR_NUMBER - $PR_TITLE"
+    if [ $SKIP_CHERRY_PICK -eq 1 ]; then
+        echo -e "  Mode:      ${YELLOW}Resume${RESET} (reuse existing remote branch)"
+    fi
     echo ""
     info "Dry run complete. Re-run without --dry-run to execute."
     exit 0
 fi
 
 # --- Backport ----------------------------------------------------------------
-step "Creating backport"
+if [ $SKIP_CHERRY_PICK -eq 1 ]; then
+    step "Skipping cherry-pick (reusing existing branch)"
+else
+    step "Creating backport"
 
-git checkout "$RELEASE_BRANCH"
-git pull --quiet
-git checkout -b "$BACKPORT_BRANCH"
+    git checkout "$RELEASE_BRANCH"
+    git pull --quiet
+    git checkout -b "$BACKPORT_BRANCH"
 
-CHERRY_PICK_IN_PROGRESS=1
-for PR_COMMIT in $PR_COMMITS; do
-    git cherry-pick -x "$PR_COMMIT"
-done
-CHERRY_PICK_IN_PROGRESS=0
+    CHERRY_PICK_IN_PROGRESS=1
+    for PR_COMMIT in $PR_COMMITS; do
+        git cherry-pick -x "$PR_COMMIT"
+    done
+    CHERRY_PICK_IN_PROGRESS=0
 
-git push -u origin "$BACKPORT_BRANCH"
-info "Pushed $BACKPORT_BRANCH"
+    git push -u origin "$BACKPORT_BRANCH"
+    info "Pushed $BACKPORT_BRANCH"
+fi
 
 # --- Create PR ---------------------------------------------------------------
 step "Creating pull request"
 
-LABEL_ARGS=""
+LABEL_ARGS=()
 if [ -n "$PR_LABELS" ]; then
-    LABEL_ARGS="--label $PR_LABELS"
+    LABEL_ARGS=(--label "$PR_LABELS")
 fi
 
-# shellcheck disable=SC2086
 BACKPORT_PR_URL=$(gh pr create --base "$RELEASE_BRANCH" \
     --head "$BACKPORT_BRANCH" \
     --title "🍒 $PR_NUMBER - $PR_TITLE" \
     --body "Backport of #$PR_NUMBER to \`$RELEASE_BRANCH\`" \
-    $LABEL_ARGS 2>&1)
+    "${LABEL_ARGS[@]+"${LABEL_ARGS[@]}"}")
+if [ -z "$BACKPORT_PR_URL" ]; then
+    error "gh pr create did not return a URL"
+    exit 1
+fi
 info "Created: $BACKPORT_PR_URL"
 
 # Comment on the original PR for traceability
@@ -313,4 +348,5 @@ git checkout "$CURRENT_BRANCH"
 info "Back on $CURRENT_BRANCH"
 
 echo ""
-echo -e "${GREEN}${BOLD}Done!${RESET} Backport PR: $BACKPORT_PR_URL"
+echo -e "${GREEN}${BOLD}Done!${RESET}"
+echo -e "  ${BOLD}Backport PR:${RESET} $BACKPORT_PR_URL"
