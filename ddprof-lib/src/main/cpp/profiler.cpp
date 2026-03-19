@@ -197,7 +197,7 @@ inline u32 Profiler::getLockIndex(int tid) {
   u32 lock_index = tid;
   lock_index ^= lock_index >> 8;
   lock_index ^= lock_index >> 4;
-  return lock_index % CONCURRENCY_LEVEL;
+  return lock_index & (CONCURRENCY_LEVEL - 1);
 }
 
 void Profiler::mangle(const char *name, char *buf, size_t size) {
@@ -388,7 +388,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
     if (mark != 0) {
-      return {nullptr, BCI_NATIVE_FRAME, true};  // Marked - stop processing
+      return {nullptr, BCI_NATIVE_FRAME, true, lib};  // Marked - stop processing
     }
 
     // Pack remote symbolication data using utility struct
@@ -396,7 +396,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     uint32_t lib_index = (uint32_t)lib->libIndex();
     unsigned long packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
 
-    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
+    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false, lib);
   }
 
   // Traditional symbol resolution
@@ -405,7 +405,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     lib->binarySearch((void*)pc, &method_name);
   }
   if (method_name != nullptr && NativeFunc::is_marked(method_name)) {
-    return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, true);
+    return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, true, lib);
   }
 
   // No symbol but known library: pack for library-relative identification.
@@ -415,10 +415,10 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
     uint32_t lib_index = (uint32_t)lib->libIndex();
     unsigned long packed = RemoteFramePacker::pack(pc_offset, 0, lib_index);
-    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
+    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false, lib);
   }
 
-  return NativeFrameResolution(method_name, BCI_NATIVE_FRAME, false);
+  return NativeFrameResolution(method_name, BCI_NATIVE_FRAME, false, lib);
 }
 
 /**
@@ -763,8 +763,8 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
 
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+      !_locks[lock_index = (lock_index + 1) & (CONCURRENCY_LEVEL - 1)].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) & (CONCURRENCY_LEVEL - 1)].tryLock()) {
     // Too many concurrent signals already
     atomicIncRelaxed(_failures[-ticks_skipped]);
 
@@ -772,7 +772,9 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
   }
   u64 call_trace_id = 0;
   if (!_omit_stacktraces) {
+#ifdef COUNTERS
     u64 startTime = TSC::ticks();
+#endif
     ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
     jvmtiFrameInfo *jvmti_frames = _calltrace_buffer[lock_index]->_jvmti_frames;
 
@@ -792,10 +794,12 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
     }
 
     call_trace_id = _call_trace_storage.put(num_frames, frames, false, counter);
+#ifdef COUNTERS
     u64 duration = TSC::ticks() - startTime;
     if (duration > 0) {
       Counters::increment(UNWINDING_TIME_JVMTI, duration); // increment the JVMTI specific counter
     }
+#endif
   }
   if (!deferred) {
     _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
@@ -810,8 +814,8 @@ void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type,
 
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+      !_locks[lock_index = (lock_index + 1) & (CONCURRENCY_LEVEL - 1)].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) & (CONCURRENCY_LEVEL - 1)].tryLock()) {
     // Too many concurrent signals already
     atomicIncRelaxed(_failures[-ticks_skipped]);
     return;
@@ -828,8 +832,8 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
 
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+      !_locks[lock_index = (lock_index + 1) & (CONCURRENCY_LEVEL - 1)].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) & (CONCURRENCY_LEVEL - 1)].tryLock()) {
     // Too many concurrent signals already
     atomicIncRelaxed(_failures[-ticks_skipped]);
 
@@ -848,7 +852,9 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
   // call_trace_id determined to be reusable at a higher level
 
   if (!_omit_stacktraces && call_trace_id == 0) {
+#ifdef COUNTERS
     u64 startTime = TSC::ticks();
+#endif
     ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
 
     int num_frames = 0;
@@ -895,10 +901,12 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     if (thread != nullptr) {
       thread->recordCallTraceId(call_trace_id);
     }
+#ifdef COUNTERS
     u64 duration = TSC::ticks() - startTime;
     if (duration > 0) {
       Counters::increment(UNWINDING_TIME_ASYNC, duration); // increment the async specific counter
     }
+#endif
   }
   _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
 
@@ -908,8 +916,8 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
 void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event) {
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+      !_locks[lock_index = (lock_index + 1) & (CONCURRENCY_LEVEL - 1)].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) & (CONCURRENCY_LEVEL - 1)].tryLock()) {
     return;
   }
   _jfr.wallClockEpoch(lock_index, event);
@@ -919,8 +927,8 @@ void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event) {
 void Profiler::recordTraceRoot(int tid, TraceRootEvent *event) {
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+      !_locks[lock_index = (lock_index + 1) & (CONCURRENCY_LEVEL - 1)].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) & (CONCURRENCY_LEVEL - 1)].tryLock()) {
     return;
   }
   _jfr.recordTraceRoot(lock_index, tid, event);
@@ -930,8 +938,8 @@ void Profiler::recordTraceRoot(int tid, TraceRootEvent *event) {
 void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+      !_locks[lock_index = (lock_index + 1) & (CONCURRENCY_LEVEL - 1)].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) & (CONCURRENCY_LEVEL - 1)].tryLock()) {
     return;
   }
   _jfr.recordQueueTime(lock_index, tid, event);
@@ -956,8 +964,8 @@ void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
   u64 call_trace_id =
       _call_trace_storage.put(num_frames, extended_frames, truncated, weight);
   if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+      !_locks[lock_index = (lock_index + 1) & (CONCURRENCY_LEVEL - 1)].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) & (CONCURRENCY_LEVEL - 1)].tryLock()) {
     // Too many concurrent signals already
     atomicIncRelaxed(_failures[-ticks_skipped]);
     return;
@@ -981,8 +989,8 @@ void Profiler::writeDatadogProfilerSetting(int tid, int length,
                                            const char *unit) {
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+      !_locks[lock_index = (lock_index + 1) & (CONCURRENCY_LEVEL - 1)].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) & (CONCURRENCY_LEVEL - 1)].tryLock()) {
     return;
   }
   _jfr.recordDatadogSetting(lock_index, length, name, value, unit);
@@ -996,8 +1004,8 @@ void Profiler::writeHeapUsage(long value, bool live) {
   }
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+      !_locks[lock_index = (lock_index + 1) & (CONCURRENCY_LEVEL - 1)].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) & (CONCURRENCY_LEVEL - 1)].tryLock()) {
     return;
   }
   _jfr.recordHeapUsage(lock_index, value, live);

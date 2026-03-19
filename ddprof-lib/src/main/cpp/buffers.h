@@ -216,7 +216,7 @@ public:
   }
 };
 
-class RecordingBuffer : public Buffer {
+class RecordingBuffer final : public Buffer {
 private:
   static const int _limit = RECORDING_BUFFER_SIZE - sizeof(Buffer);
   // we reserve 8KiB to overflow in to in case event serialisers in

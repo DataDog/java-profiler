@@ -100,10 +100,15 @@ CodeCache *Libraries::findLibraryByName(const char *lib_name) {
 }
 
 CodeCache *Libraries::findLibraryByAddress(const void *address) {
+  thread_local struct { const void* min; const void* max; CodeCache* lib; } tl_lib_cache = {nullptr, nullptr, nullptr};
+  if (tl_lib_cache.lib != nullptr && address >= tl_lib_cache.min && address < tl_lib_cache.max) {
+    return tl_lib_cache.lib;
+  }
   const int native_lib_count = _native_libs.count();
   for (int i = 0; i < native_lib_count; i++) {
     CodeCache *lib = _native_libs[i];
     if (lib != NULL && lib->contains(address)) {
+      tl_lib_cache = {lib->minAddress(), lib->maxAddress(), lib};
       return lib;
     }
   }

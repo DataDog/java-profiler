@@ -1471,7 +1471,8 @@ void Recording::writeContext(Buffer *buf, Context &context) {
   buf->putVar64(spanId);
   buf->putVar64(rootSpanId);
 
-  for (size_t i = 0; i < Profiler::instance()->numContextAttributes(); i++) {
+  size_t num_attrs = Profiler::instance()->numContextAttributes();
+  for (size_t i = 0; i < num_attrs; i++) {
     Tag tag = context.get_tag(i);
     buf->putVar32(tag.value);
   }
@@ -1815,7 +1816,6 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
           rec->recordThreadPark(buf, tid, call_trace_id, (LockEvent *)event);
           break;
         }
-        rec->flushIfNeeded(buf);
         rec->addThread(lock_index, tid);
       }
   }

@@ -79,7 +79,7 @@ class BaseWallClock : public Engine {
         int num_failures = 0;
         int threads_already_exited = 0;
         int permission_denied = 0;
-        std::vector<ThreadType> sample = reservoir.sample(threads);
+        std::vector<ThreadType>& sample = reservoir.sample(threads);
         for (ThreadType thread : sample) {
           if (!sampleThreads(thread, num_failures, threads_already_exited, permission_denied)) {
             continue;

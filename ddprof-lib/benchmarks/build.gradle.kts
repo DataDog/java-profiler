@@ -15,7 +15,12 @@ plugins {
   // multi-config library structure
 }
 
-val benchmarkName = "unwind_failures_benchmark"
+data class BenchmarkDef(val name: String, val source: String)
+
+val benchmarks = listOf(
+  BenchmarkDef("unwind_failures_benchmark", "src/unwindFailuresBenchmark.cpp"),
+  BenchmarkDef("hot_path_benchmark", "src/hotPathBenchmark.cpp"),
+)
 
 // Determine if we should build for this platform
 val shouldBuild = PlatformUtils.currentPlatform == Platform.MACOS ||
@@ -24,60 +29,74 @@ val shouldBuild = PlatformUtils.currentPlatform == Platform.MACOS ||
 if (shouldBuild) {
   val compiler = PlatformUtils.findCompiler(project)
 
-  // Compile task
-  val compileTask = tasks.register<NativeCompileTask>("compileBenchmark") {
-    onlyIf { shouldBuild && !project.hasProperty("skip-native") }
-    group = "build"
-    description = "Compile the unwinding failures benchmark"
+  benchmarks.forEach { bench ->
+    val safeName = bench.name.split('_').joinToString("") { it.replaceFirstChar { c -> c.uppercase() } }
 
-    this.compiler.set(compiler)
-    compilerArgs.set(listOf("-O2", "-g", "-std=c++17"))
-    sources.from(file("src/unwindFailuresBenchmark.cpp"))
-    includes.from(project(":ddprof-lib").file("src/main/cpp"))
-    objectFileDir.set(file("${layout.buildDirectory.get()}/obj/benchmark"))
-  }
+    // Compile task
+    val compileTask = tasks.register<NativeCompileTask>("compile$safeName") {
+      onlyIf { shouldBuild && !project.hasProperty("skip-native") }
+      group = "build"
+      description = "Compile ${bench.name}"
 
-  // Link task
-  val binary = file("${layout.buildDirectory.get()}/bin/$benchmarkName")
-  val linkTask = tasks.register<NativeLinkExecutableTask>("linkBenchmark") {
-    onlyIf { shouldBuild && !project.hasProperty("skip-native") }
-    dependsOn(compileTask)
-    group = "build"
-    description = "Link the unwinding failures benchmark"
-
-    linker.set(compiler)
-    val args = mutableListOf("-ldl", "-lpthread")
-    if (PlatformUtils.currentPlatform == Platform.LINUX) {
-      args.add("-lrt")
+      this.compiler.set(compiler)
+      compilerArgs.set(listOf("-O2", "-g", "-std=c++17"))
+      sources.from(file(bench.source))
+      includes.from(project(":ddprof-lib").file("src/main/cpp"))
+      objectFileDir.set(file("${layout.buildDirectory.get()}/obj/${bench.name}"))
     }
-    linkerArgs.set(args)
-    objectFiles.from(fileTree("${layout.buildDirectory.get()}/obj/benchmark") { include("*.o") })
-    outputFile.set(binary)
+
+    // Link task
+    val binary = file("${layout.buildDirectory.get()}/bin/${bench.name}")
+    val linkTask = tasks.register<NativeLinkExecutableTask>("link$safeName") {
+      onlyIf { shouldBuild && !project.hasProperty("skip-native") }
+      dependsOn(compileTask)
+      group = "build"
+      description = "Link ${bench.name}"
+
+      linker.set(compiler)
+      val args = mutableListOf("-ldl", "-lpthread")
+      if (PlatformUtils.currentPlatform == Platform.LINUX) {
+        args.add("-lrt")
+      }
+      linkerArgs.set(args)
+      objectFiles.from(fileTree("${layout.buildDirectory.get()}/obj/${bench.name}") { include("*.o") })
+      outputFile.set(binary)
+    }
+
+    tasks.named("assemble") {
+      dependsOn(linkTask)
+    }
+
+    tasks.register<Exec>("run$safeName") {
+      dependsOn(linkTask)
+      group = "verification"
+      description = "Run ${bench.name}"
+
+      executable = binary.absolutePath
+
+      doFirst {
+        if (project.hasProperty("args")) {
+          args(project.property("args").toString().split(" "))
+        }
+        println("Running benchmark: ${binary.absolutePath}")
+      }
+
+      doLast {
+        println("Benchmark completed.")
+      }
+    }
   }
 
-  // Wire linkBenchmark into the standard assemble lifecycle
-  tasks.named("assemble") {
-    dependsOn(linkTask)
-  }
-
-  // Add a task to run the benchmark
+  // Convenience alias: runBenchmark → original unwind failures benchmark
   tasks.register<Exec>("runBenchmark") {
-    dependsOn(linkTask)
+    dependsOn("linkUnwindFailuresBenchmark")
     group = "verification"
-    description = "Run the unwinding failures benchmark"
-
-    executable = binary.absolutePath
-
-    // Add any additional arguments passed to the Gradle task
+    description = "Run the unwinding failures benchmark (alias)"
+    executable = file("${layout.buildDirectory.get()}/bin/unwind_failures_benchmark").absolutePath
     doFirst {
       if (project.hasProperty("args")) {
         args(project.property("args").toString().split(" "))
       }
-      println("Running benchmark: ${binary.absolutePath}")
-    }
-
-    doLast {
-      println("Benchmark completed.")
     }
   }
 }

@@ -340,6 +340,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
+        CodeCache* resolved_cc = nullptr;
         if (CodeHeap::contains(pc)) {
             Counters::increment(WALKVM_HIT_CODEHEAP);
             if (fp_chain_fallback) {
@@ -562,6 +563,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
         } else {
             // Resolve native frame (may use remote symbolication if enabled)
             Profiler::NativeFrameResolution resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)pc, lock_index);
+            resolved_cc = resolution.cc;
             if (resolution.is_marked) {
                 // This is a marked C++ interpreter frame, terminate scan
                 break;
@@ -587,7 +589,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     break;
                 }
             } else if (method_name == NULL && details && !anchor_recovery_used
-                       && profiler->findLibraryByAddress(pc) == NULL) {
+                       && resolution.cc == NULL) {
                 // Try anchor recovery — prefer live anchor, fall back to saved data
                 anchor_recovery_used = true;
                 const void* recovery_pc = NULL;
@@ -693,7 +695,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
         dwarf_unwind:
         uintptr_t prev_sp = sp;
-        CodeCache* cc = profiler->findLibraryByAddress(pc);
+        CodeCache* cc = resolved_cc != nullptr ? resolved_cc : profiler->findLibraryByAddress(pc);
         FrameDesc f = cc != NULL ? cc->findFrameDesc(pc) : FrameDesc::default_frame;
 
         u8 cfa_reg = (u8)f.cfa;

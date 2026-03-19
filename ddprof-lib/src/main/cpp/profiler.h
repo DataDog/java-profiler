@@ -351,14 +351,15 @@ public:
   struct NativeFrameResolution {
     union {
       unsigned long packed_remote_frame;  // Packed remote frame data (pc_offset|mark|lib_index)
-      const char* method_name;            // Resolved method name 
+      const char* method_name;            // Resolved method name
     };
     int bci;                            // BCI_NATIVE_FRAME_REMOTE or BCI_NATIVE_FRAME
     bool is_marked;                     // true if this is a marked C++ interpreter frame (stop processing)
-    NativeFrameResolution(const char* name, int bci_type, bool marked)
-      : method_name(name), bci(bci_type), is_marked(marked) {}
-    NativeFrameResolution(unsigned long packed, int bci_type, bool marked)
-      : packed_remote_frame(packed), bci(bci_type), is_marked(marked) {}
+    CodeCache* cc;                      // Library containing the PC (may be null)
+    NativeFrameResolution(const char* name, int bci_type, bool marked, CodeCache* lib = nullptr)
+      : method_name(name), bci(bci_type), is_marked(marked), cc(lib) {}
+    NativeFrameResolution(unsigned long packed, int bci_type, bool marked, CodeCache* lib = nullptr)
+      : packed_remote_frame(packed), bci(bci_type), is_marked(marked), cc(lib) {}
   };
 
   void populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCache* lib, char mark);
