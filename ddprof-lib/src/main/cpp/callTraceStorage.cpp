@@ -345,7 +345,7 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
     CallTraceHashTable* active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE));
 
     // Safety check - if null, system is shutting down
-    if (active == nullptr) {
+    if (unlikely(active == nullptr)) {
         Counters::increment(CALLTRACE_STORAGE_DROPPED);
         return DROPPED_TRACE_ID;
     }
@@ -355,7 +355,7 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
     RefCountGuard guard(active);
 
     // Check if refcount guard allocation failed (slot exhaustion)
-    if (!guard.isActive()) {
+    if (unlikely(!guard.isActive())) {
         // No refcount protection available - return dropped trace ID
         Counters::increment(CALLTRACE_STORAGE_DROPPED);
         return DROPPED_TRACE_ID;
@@ -373,7 +373,7 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
     //
     // Memory ordering: ACQUIRE load ensures we see scanner's ACQ_REL exchange to nullptr
     CallTraceHashTable* original_active = const_cast<CallTraceHashTable*>(__atomic_load_n(&_active_storage, __ATOMIC_ACQUIRE));
-    if (original_active != active || original_active == nullptr) {
+    if (unlikely(original_active != active || original_active == nullptr)) {
         // Storage was swapped or nullified during guard construction
         // SAFE: We detected the race, drop this trace, never use the table pointer
         Counters::increment(CALLTRACE_STORAGE_DROPPED);

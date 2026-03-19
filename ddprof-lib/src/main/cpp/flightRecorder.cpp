@@ -794,7 +794,7 @@ void Recording::flush(Buffer *buf) {
 }
 
 void Recording::flushIfNeeded(Buffer *buf, int limit) {
-  if (buf->offset() >= limit) {
+  if (unlikely(buf->offset() >= limit)) {
     flush(buf);
   }
 }

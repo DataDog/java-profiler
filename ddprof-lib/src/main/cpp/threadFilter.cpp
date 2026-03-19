@@ -104,7 +104,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread() {
 
     // Allocate a new slot
     SlotID index = _next_index.fetch_add(1, std::memory_order_relaxed);
-    if (index >= kMaxThreads) {
+    if (unlikely(index >= kMaxThreads)) {
         // Revert the increment and return failure
         _next_index.fetch_sub(1, std::memory_order_relaxed);
         return -1;
@@ -113,7 +113,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread() {
     const int chunk_idx = index >> kChunkShift;
 
     // Ensure the chunk is initialized (lock-free)
-    if (chunk_idx >= _num_chunks.load(std::memory_order_acquire)) {
+    if (unlikely(chunk_idx >= _num_chunks.load(std::memory_order_acquire))) {
         // Update the chunk count atomically
         int expected_chunks = chunk_idx;
         int desired_chunks = chunk_idx + 1;

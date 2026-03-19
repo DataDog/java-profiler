@@ -42,7 +42,7 @@ public:
   virtual int limit() const { return _limit; }
 
   bool flushIfNeeded(FlushCallback callback, int limit = BUFFER_LIMIT) {
-    if (_offset > limit) {
+    if (unlikely(_offset > limit)) {
       if (callback(_data, _offset) == _offset) {
         reset();
         return true;

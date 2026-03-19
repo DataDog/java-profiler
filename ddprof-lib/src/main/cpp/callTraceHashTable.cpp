@@ -48,7 +48,7 @@ public:
 
   static LongHashTable *allocate(LongHashTable *prev, u32 capacity, LinearAllocator* allocator) {
     void *memory = allocator->alloc(getSize(capacity));
-    if (memory != nullptr) {
+    if (likely(memory != nullptr)) {
       // Use placement new to invoke constructor in-place with parameters
       // LinearAllocator doesn't zero memory like OS::safeAlloc with anon mmap
       // so we need to explicitly clear the keys and values (should_clean = true)
@@ -174,7 +174,7 @@ CallTrace *CallTraceHashTable::storeCallTrace(int num_frames,
   const size_t total_size = header_size + num_frames * sizeof(ASGCT_CallFrame);
   void *memory = _allocator.alloc(total_size);
   CallTrace *buf = nullptr;
-  if (memory != nullptr) {
+  if (likely(memory != nullptr)) {
     // Use placement new to invoke constructor in-place
     buf = new (memory) CallTrace(truncated, num_frames, trace_id);
     // Do not use memcpy inside signal handler
@@ -199,7 +199,7 @@ CallTrace *CallTraceHashTable::findCallTrace(LongHashTable *table, u64 hash) {
     if (keys[slot] == 0) {
       return nullptr;
     }
-    if (!probe.hasNext()) {
+    if (unlikely(!probe.hasNext())) {
       break;
     }
     slot = probe.next();
@@ -213,7 +213,7 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
   u64 hash = calcHash(num_frames, frames, truncated);
 
   LongHashTable *table = _table;
-  if (table == nullptr) {
+  if (unlikely(table == nullptr)) {
     // Table allocation failed or was cleared - drop sample
     Counters::increment(CALLTRACE_STORAGE_DROPPED);
     return CallTraceStorage::DROPPED_TRACE_ID;
@@ -230,7 +230,7 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
       CallTrace* current_trace = table->values()[slot].acquireTrace();
       
       // If another thread is preparing this slot, wait for completion
-      if (current_trace == CallTraceSample::PREPARING) {
+      if (unlikely(current_trace == CallTraceSample::PREPARING)) {
         // Wait for the preparing thread to complete, with timeout
         int wait_cycles = 0;
         const int MAX_WAIT_CYCLES = 1000; // ~1000 cycles should be enough for allocation
@@ -252,13 +252,13 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
         } while (current_trace == CallTraceSample::PREPARING && wait_cycles < MAX_WAIT_CYCLES);
         
         // If still preparing after timeout, something is wrong - continue search
-        if (current_trace == CallTraceSample::PREPARING) {
+        if (unlikely(current_trace == CallTraceSample::PREPARING)) {
           continue;
         }
       }
       
       // Check final state after waiting
-      if (current_trace != nullptr && current_trace != CallTraceSample::PREPARING) {
+      if (likely(current_trace != nullptr && current_trace != CallTraceSample::PREPARING)) {
         // Trace is ready, use it
         return current_trace->trace_id;
       } else {
@@ -279,7 +279,7 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
       }
       
       // Mark the slot as being prepared so other threads know to wait
-      if (!table->values()[slot].markPreparing()) {
+      if (unlikely(!table->values()[slot].markPreparing())) {
         // Failed to mark as preparing (shouldn't happen), clear key with full barrier and retry
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
         __atomic_store_n(&keys[slot], 0, __ATOMIC_RELEASE);
@@ -293,10 +293,10 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
       probe.updateCapacity(new_size);
 
       // EXPANSION LOGIC: Check if 75% capacity reached after incrementing size
-      if (new_size == capacity * 3 / 4) {
+      if (unlikely(new_size == capacity * 3 / 4)) {
         // Allocate new table with double capacity using LinearAllocator
         LongHashTable* new_table = LongHashTable::allocate(table, capacity * 2, &_allocator);
-        if (new_table != nullptr) {
+        if (likely(new_table != nullptr)) {
           // Atomic table swap - only one thread succeeds
           __atomic_compare_exchange_n(&_table, &table, new_table, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
         }
@@ -315,7 +315,7 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
         u64 instance_id = _instance_id.load(std::memory_order_acquire);
         u64 trace_id = (instance_id << 32) | slot;
         trace = storeCallTrace(num_frames, frames, truncated, trace_id);
-        if (trace == nullptr) {
+        if (unlikely(trace == nullptr)) {
           // Allocation failure - reset trace first, then clear key
           table->values()[slot].setTrace(nullptr);
           __atomic_thread_fence(__ATOMIC_SEQ_CST);
@@ -330,7 +330,7 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
       return trace->trace_id;
     }
 
-    if (!probe.hasNext()) {
+    if (unlikely(!probe.hasNext())) {
       // Table overflow - very unlikely with expansion logic
       atomicIncRelaxed(_overflow);
       return OVERFLOW_TRACE_ID;

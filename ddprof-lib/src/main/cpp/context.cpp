@@ -40,7 +40,7 @@ Context& Contexts::initializeContextTls() {
 
 Context& Contexts::get() {
   ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
-  if (thrd == nullptr || !thrd->isContextTlsInitialized()) {
+  if (unlikely(thrd == nullptr || !thrd->isContextTlsInitialized())) {
     return DD_EMPTY_CONTEXT;
   }
   // Return via stored pointer - never access context_tls_v1 from signal handler

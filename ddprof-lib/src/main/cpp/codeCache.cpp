@@ -25,11 +25,11 @@ char *NativeFunc::create(const char *name, short lib_index) {
 void NativeFunc::destroy(char *name) { free(from(name)); }
 
 char NativeFunc::read_mark(const char* name) {
-  if (name == nullptr) {
+  if (unlikely(name == nullptr)) {
     return 0;
   }
   NativeFunc* func = from(name);
-  if (!is_aligned(func, sizeof(func))) {
+  if (unlikely(!is_aligned(func, sizeof(func)))) {
     return 0;
   }
   // Use SafeAccess to read the mark field in signal handler context
@@ -394,7 +394,7 @@ void CodeCache::setDwarfTable(FrameDesc *table, int length) {
 }
 
 FrameDesc CodeCache::findFrameDesc(const void *pc) {
-  if (_dwarf_table == NULL || _dwarf_table_length == 0) {
+  if (unlikely(_dwarf_table == NULL || _dwarf_table_length == 0)) {
     // No DWARF data available - use default frame pointer unwinding
     // This handles OpenJ9 and other VMs that don't provide DWARF info
     return FrameDesc::default_frame;
@@ -415,7 +415,7 @@ FrameDesc CodeCache::findFrameDesc(const void *pc) {
     }
   }
 
-  if (low > 0) {
+  if (likely(low > 0)) {
     return _dwarf_table[low - 1];
   } else if (target_loc - _plt_offset < _plt_size) {
     return FrameDesc::empty_frame;

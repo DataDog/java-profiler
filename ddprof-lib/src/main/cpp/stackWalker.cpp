@@ -97,17 +97,17 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
         callchain[depth++] = pc;
 
         // Check if the next frame is below on the current stack
-        if (fp < sp || fp >= sp + MAX_FRAME_SIZE || fp >= bottom) {
+        if (unlikely(fp < sp || fp >= sp + MAX_FRAME_SIZE || fp >= bottom)) {
             break;
         }
 
         // Frame pointer must be word aligned
-        if (!aligned(fp)) {
+        if (unlikely(!aligned(fp))) {
             break;
         }
 
         pc = stripPointer(SafeAccess::load((void**)fp + FRAME_PC_SLOT));
-        if (inDeadZone(pc)) {
+        if (unlikely(inDeadZone(pc))) {
             break;
         }
 
@@ -173,12 +173,12 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         }
 
         // Check if the next frame is below on the current stack
-        if (sp < prev_sp || sp >= prev_sp + MAX_FRAME_SIZE || sp >= bottom) {
+        if (unlikely(sp < prev_sp || sp >= prev_sp + MAX_FRAME_SIZE || sp >= bottom)) {
             break;
         }
 
         // Stack pointer must be word aligned
-        if (!aligned(sp)) {
+        if (unlikely(!aligned(sp))) {
             break;
         }
 
@@ -215,7 +215,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
             }
         }
 
-        if (inDeadZone(pc) || (pc == prev_pc && sp == prev_sp)) {
+        if (unlikely(inDeadZone(pc) || (pc == prev_pc && sp == prev_sp))) {
             break;
         }
     }
@@ -360,14 +360,14 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             // frame handling or NMethod validation would crash the process with unrecoverable SEGV.
             //
             // The missing VMThread is a timing issue during thread lifecycle.
-            if (vm_thread == NULL) {
+            if (unlikely(vm_thread == NULL)) {
                 Counters::increment(WALKVM_CODEH_NO_VM);
                 fillFrame(frames[depth++], BCI_ERROR, "break_no_vmthread");
                 break;
             }
             prev_native_pc = NULL; // we are in JVM code, no previous 'native' PC
             VMNMethod* nm = CodeHeap::findNMethod(pc);
-            if (nm == NULL) {
+            if (unlikely(nm == NULL)) {
                 if (anchor == NULL) {
                     // Add an error frame only if we cannot recover
                     fillFrame(frames[depth++], BCI_ERROR, "unknown_nmethod");
@@ -395,7 +395,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             }
 
             if (nm->isInterpreter()) {
-                if (vm_thread != NULL && vm_thread->inDeopt()) {
+                if (unlikely(vm_thread != NULL && vm_thread->inDeopt())) {
                     fillFrame(frames[depth++], BCI_ERROR, "break_deopt");
                     break;
                 }
@@ -442,7 +442,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 break;
             } else if (nm->isNMethod()) {
                 // Check if deoptimization is in progress before walking compiled frames
-                if (vm_thread != NULL && vm_thread->inDeopt()) {
+                if (unlikely(vm_thread != NULL && vm_thread->inDeopt())) {
                     fillFrame(frames[depth++], BCI_ERROR, "break_deopt_compiled");
                     break;
                 }
@@ -476,7 +476,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
                     // Validate NMethod metadata before using frameSize()
                     int frame_size = nm->frameSize();
-                    if (frame_size <= 0 || frame_size > MAX_FRAME_SIZE_WORDS) {
+                    if (unlikely(frame_size <= 0 || frame_size > MAX_FRAME_SIZE_WORDS)) {
                         fillFrame(frames[depth++], BCI_ERROR, "break_invalid_framesize");
                         break;
                     }
@@ -484,7 +484,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     sp += frame_size * sizeof(void*);
 
                     // Verify alignment before dereferencing sp as pointer (secondary defense)
-                    if (!aligned(sp)) {
+                    if (unlikely(!aligned(sp))) {
                         fillFrame(frames[depth++], BCI_ERROR, "break_misaligned_sp");
                         break;
                     }
@@ -541,7 +541,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     Counters::increment(WALKVM_STUB_FRAMESIZE_FALLBACK);
                     // Validate NMethod metadata before using frameSize()
                     int frame_size = nm->frameSize();
-                    if (frame_size <= 0 || frame_size > MAX_FRAME_SIZE_WORDS) {
+                    if (unlikely(frame_size <= 0 || frame_size > MAX_FRAME_SIZE_WORDS)) {
                         fillFrame(frames[depth++], BCI_ERROR, "break_invalid_framesize");
                         break;
                     }
@@ -549,7 +549,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     sp += frame_size * sizeof(void*);
 
                     // Verify alignment before dereferencing sp as pointer (secondary defense)
-                    if (!aligned(sp)) {
+                    if (unlikely(!aligned(sp))) {
                         fillFrame(frames[depth++], BCI_ERROR, "break_misaligned_sp");
                         break;
                     }
@@ -701,7 +701,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
         // If DWARF is invalid, we cannot continue unwinding reliably
         // Thread entry points are detected earlier via MARK_THREAD_ENTRY
-        if (cfa_reg == DW_REG_INVALID || cfa_reg > DW_REG_PLT) {
+        if (unlikely(cfa_reg == DW_REG_INVALID || cfa_reg > DW_REG_PLT)) {
             break;
         }
 
@@ -721,12 +721,12 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
         }
 
         // Check if the next frame is below on the current stack
-        if (sp < prev_sp || sp >= prev_sp + MAX_FRAME_SIZE || sp >= bottom) {
+        if (unlikely(sp < prev_sp || sp >= prev_sp + MAX_FRAME_SIZE || sp >= bottom)) {
             break;
         }
 
         // Stack pointer must be word aligned
-        if (!aligned(sp)) {
+        if (unlikely(!aligned(sp))) {
             break;
         }
 
@@ -761,7 +761,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             }
         }
 
-        if (inDeadZone(pc) || (pc == prev_native_pc && sp == prev_sp)) {
+        if (unlikely(inDeadZone(pc) || (pc == prev_native_pc && sp == prev_sp))) {
             break;
         }
     }
