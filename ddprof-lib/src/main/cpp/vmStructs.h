@@ -277,12 +277,12 @@ typedef void* address;
  *   - constant defines a constant of a class
  */
 
-#define DECLARE_INT_CONSTANTS_DO(constant)              \
+#define DECLARE_INT_CONSTANTS_DO(constant, constant_with_version) \
     constant(frame, entry_frame_call_wrapper_offset)
 
-#define DECLARE_LONG_CONSTANTS_DO(constant)             \
-    constant(markWord, klass_shift)                     \
-    constant(markWord, monitor_value)
+#define DECLARE_LONG_CONSTANTS_DO(constant, constant_with_version)  \
+    constant_with_version(markWord, klass_shift, 24, MAX_VERSION)   \
+    constant_with_version(markWord, monitor_value, 24, MAX_VERSION)
 
 class VMStructs {
   public:
@@ -336,15 +336,15 @@ class VMStructs {
 #undef DO_NOTHING
 
 // Declare int constant variables
-#define DECLARE_INT_CONSTANT_VAR(type, field) \
+#define DECLARE_INT_CONSTANT_VAR(type, field, ...) \
     static int _##type##_##field;
-    DECLARE_INT_CONSTANTS_DO(DECLARE_INT_CONSTANT_VAR)
+    DECLARE_INT_CONSTANTS_DO(DECLARE_INT_CONSTANT_VAR, DECLARE_INT_CONSTANT_VAR)
 #undef DECLARE_INT_CONSTANT_VAR
 
 // Declare long constant variables
-#define DECLARE_LONG_CONSTANT_VAR(type, field) \
+#define DECLARE_LONG_CONSTANT_VAR(type, field, ...) \
     static long _##type##_##field;
-    DECLARE_LONG_CONSTANTS_DO(DECLARE_LONG_CONSTANT_VAR)
+    DECLARE_LONG_CONSTANTS_DO(DECLARE_LONG_CONSTANT_VAR, DECLARE_LONG_CONSTANT_VAR)
 #undef DECLARE_LONG_CONSTANT_VAR
 
 

@@ -66,13 +66,13 @@ DECLARE_TYPE_FIELD_DO(DO_NOTHING, INIT_FIELD, INIT_FIELD_WITH_VERSION, DO_NOTHIN
 #undef address_value
 
 // Initialize constant variables to -1
-#define INIT_INT_CONSTANT(type, field)      \
+#define INIT_INT_CONSTANT(type, field, ...)      \
     int VMStructs::_##type##_##field = -1;
-#define INIT_LONG_CONSTANT(type, field)     \
+#define INIT_LONG_CONSTANT(type, field, ...)     \
     long VMStructs::_##type##_##field = -1;
 
-DECLARE_INT_CONSTANTS_DO(INIT_INT_CONSTANT)
-DECLARE_LONG_CONSTANTS_DO(INIT_LONG_CONSTANT)
+DECLARE_INT_CONSTANTS_DO(INIT_INT_CONSTANT, INIT_INT_CONSTANT)
+DECLARE_LONG_CONSTANTS_DO(INIT_LONG_CONSTANT, INIT_LONG_CONSTANT)
 #undef INIT_INT_CONSTANT
 #undef INIT_LONG_CONSTANT
 
@@ -212,7 +212,7 @@ void VMStructs::init_type_sizes() {
     }
 }
 
-#define READ_CONSTANT(type, field)                                \
+#define READ_CONSTANT(type, field, ...)                                \
             if (strcmp(type_name, #type "::" #field) == 0) {      \
                 _##type##_##field = value;                        \
                 continue;                                         \
@@ -232,7 +232,7 @@ void VMStructs::init_constants() {
                 break;
             }
             int value = *(int*)(entry + value_offset);
-            DECLARE_INT_CONSTANTS_DO(READ_CONSTANT)
+            DECLARE_INT_CONSTANTS_DO(READ_CONSTANT, READ_CONSTANT)
         }
     }
     // Special case
@@ -253,7 +253,7 @@ void VMStructs::init_constants() {
             }
 
             long value = *(long*)(entry + value_offset);
-            DECLARE_LONG_CONSTANTS_DO(READ_CONSTANT)
+            DECLARE_LONG_CONSTANTS_DO(READ_CONSTANT, READ_CONSTANT)
         }
     }
 }
@@ -263,12 +263,12 @@ void VMStructs::init_constants() {
 
 #ifdef DEBUG
 void VMStructs::verify_offsets() {
+    int hotspot_version = VM::hotspot_version();
     // Hotspot only
     // NOTE: disabled for JDK25, due to a weird failure in CI
-    if (!VM::isHotspot() || VM::java_version() == 25) {
+    if (!VM::isHotspot() || hotspot_version == 25) {
         return;
     }
-    int hotspot_version = VM::hotspot_version();
 
 // Verify type sizes
 #define VERIFY_TYPE_SIZE(name, names) assert(TYPE_SIZE_NAME(name) > 0);
@@ -296,10 +296,12 @@ void VMStructs::verify_offsets() {
 // Verify constants
 // Initialize constant variables to -1
 #define VERIFY_CONSTANT(type, field) \
-    // assert(_##type##_##field != -1);
+    assert(_##type##_##field != -1);
+#define VERIFY_CONSTANT_WITH_VERSION(type, field, min_ver, max_ver) \
+    assert(hotspot_version < min_ver || hotspot_version > max_ver || _##type##_##field != -1);
 
-    DECLARE_INT_CONSTANTS_DO(VERIFY_CONSTANT)
-    DECLARE_LONG_CONSTANTS_DO(VERIFY_CONSTANT)
+    DECLARE_INT_CONSTANTS_DO(VERIFY_CONSTANT, VERIFY_CONSTANT_WITH_VERSION)
+    DECLARE_LONG_CONSTANTS_DO(VERIFY_CONSTANT, VERIFY_CONSTANT_WITH_VERSION)
 #undef VERIFY_CONSTANT
 }
 
