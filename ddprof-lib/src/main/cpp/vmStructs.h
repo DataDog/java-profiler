@@ -45,8 +45,7 @@ inline T* cast_to(const void* ptr) {
 
 #define TYPE_SIZE_NAME(name)    _##name##_size
 
-// MATCH_SYMBOLS macro expands into an nullptr terminated char string array,
-// that is consumed by matchAny() method
+// MATCH_SYMBOLS macro expands into a string list, that is consumed by matchAny() method
 #define MATCH_SYMBOLS(...)  std::initializer_list<const char*>{ __VA_ARGS__ }
 
 /**
@@ -89,7 +88,7 @@ inline T* cast_to(const void* ptr) {
  *  - Initialization phase
  *    uint64_t VMStructs::_TYPE_size = 0;
  *
- *   For exmaple:
+ *   For example:
  *    f(VMClassLoaderData) -> uint64_t VMStructs::_VMClassLoaderData_size = 0;
  * 
  * - Value population phase
@@ -197,7 +196,7 @@ typedef void* address;
         field(_osthread_id_offset, offset, MATCH_SYMBOLS("_thread_id"))                                             \
         field_with_version(_osthread_state_offset, offset, 10, MAX_VERSION, MATCH_SYMBOLS("_state"))                \
     type_end()                                                                                                      \
-    type_begin(VMThreadShow, MATCH_SYMBOLS("ThreadShadow"))                                                         \
+    type_begin(VMThreadShadow, MATCH_SYMBOLS("ThreadShadow"))                                                         \
         field(_thread_exception_offset, offset, MATCH_SYMBOLS("_exception_file"))                                   \
     type_end()                                                                                                      \
     type_begin(VMCompilerThread, MATCH_SYMBOLS("CompilerThread"))                                                   \
