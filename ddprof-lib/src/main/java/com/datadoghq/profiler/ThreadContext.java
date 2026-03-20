@@ -123,11 +123,7 @@ public final class ThreadContext {
      * @return the span ID, or 0 if not set
      */
     public long getSpanId() {
-        if (otelMode) {
-            long[] ctx = getContext0();
-            return ctx != null ? ctx[0] : 0;
-        }
-        return buffer.getLong(spanIdOffset);
+        return getContext()[0];
     }
 
     /**
@@ -139,11 +135,22 @@ public final class ThreadContext {
      * @return the root span ID, or 0 if not set
      */
     public long getRootSpanId() {
+        return getContext()[1];
+    }
+
+    /**
+     * Reads both span ID and root span ID in a single call.
+     * Prefer this over separate getSpanId() + getRootSpanId() calls
+     * to avoid double JNI round-trips in OTEL mode.
+     *
+     * @return array with [spanId, rootSpanId], or [0, 0] if not set
+     */
+    public long[] getContext() {
         if (otelMode) {
             long[] ctx = getContext0();
-            return ctx != null ? ctx[1] : 0;
+            return ctx != null ? ctx : new long[2];
         }
-        return buffer.getLong(rootSpanIdOffset);
+        return new long[] { buffer.getLong(spanIdOffset), buffer.getLong(rootSpanIdOffset) };
     }
 
     public long getChecksum() {

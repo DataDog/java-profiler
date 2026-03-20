@@ -598,7 +598,7 @@ Java_com_datadoghq_profiler_ThreadContext_setContextSlot0(JNIEnv* env, jclass un
     if (thrd != nullptr && offset >= 0 && offset < (jint)DD_TAGS_CAPACITY) {
       thrd->setOtelTagEncoding(offset, (u32)value);
     }
-  } else {
+  } else if (offset >= 0 && offset < (jint)DD_TAGS_CAPACITY) {
     Context& ctx = Contexts::get();
     ctx.tags[offset].value = (u32)value;
   }
