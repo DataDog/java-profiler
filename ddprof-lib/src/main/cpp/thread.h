@@ -6,6 +6,7 @@
 #ifndef _THREAD_H
 #define _THREAD_H
 
+#include "context.h"
 #include "os.h"
 #include "threadLocalData.h"
 #include "unwindStats.h"
@@ -74,11 +75,13 @@ private:
   bool _crash_protection_active;
   Context* _ctx_tls_ptr;
   OtelThreadContextRecord* _otel_ctx_record;
-  u64 _otel_local_root_span_id;  // Cached local root span ID for OTEL mode (O(1) read)
+  u32 _otel_tag_encodings[DD_TAGS_CAPACITY];
+  u64 _otel_local_root_span_id;
 
   ProfiledThread(int buffer_pos, int tid)
       : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _root_span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
-        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _ctx_tls_initialized(false), _otel_ctx_initialized(false), _crash_protection_active(false), _ctx_tls_ptr(nullptr), _otel_ctx_record(nullptr), _otel_local_root_span_id(0) {};
+        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _ctx_tls_initialized(false), _otel_ctx_initialized(false), _crash_protection_active(false), _ctx_tls_ptr(nullptr), _otel_ctx_record(nullptr),
+        _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
 
   ~ProfiledThread();  // Defined in thread.cpp (needs complete OtelThreadContextRecord type)
   void releaseFromBuffer();
@@ -209,13 +212,6 @@ public:
     return _otel_ctx_record;
   }
 
-  inline void setOtelLocalRootSpanId(u64 id) {
-    _otel_local_root_span_id = id;
-  }
-
-  inline u64 getOtelLocalRootSpanId() {
-    return _otel_local_root_span_id;
-  }
 
   // JavaThread status cache — avoids repeated vtable checks in VMThread::isJavaThread().
   // JVMTI ThreadStart only fires for application threads, not for JVM-internal
@@ -247,6 +243,16 @@ public:
 
   inline bool isCrashProtectionActive() const { return _crash_protection_active; }
   inline void setCrashProtectionActive(bool active) { _crash_protection_active = active; }
+
+  // OTEL JFR tag encoding sidecar — populated by JNI thread, read by signal handler
+  inline void setOtelTagEncoding(u32 idx, u32 val) {
+    if (idx < DD_TAGS_CAPACITY) _otel_tag_encodings[idx] = val;
+  }
+  inline u32 getOtelTagEncoding(u32 idx) const {
+    return idx < DD_TAGS_CAPACITY ? _otel_tag_encodings[idx] : 0;
+  }
+  inline void setOtelLocalRootSpanId(u64 id) { _otel_local_root_span_id = id; }
+  inline u64 getOtelLocalRootSpanId() const { return _otel_local_root_span_id; }
 
 private:
   // Atomic flag for signal handler reentrancy protection within the same thread

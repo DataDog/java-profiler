@@ -136,7 +136,13 @@ void ContextApi::setFull(u64 local_root_span_id, u64 span_id, u64 trace_id_high,
         // Write trace_id + span_id to OTEP record
         OtelContexts::set(trace_id_high, trace_id_low, span_id);
 
-        // Store local_root_span_id in ProfiledThread for O(1) read by signal handler
+        // Store local_root_span_id as custom attribute at reserved index 0.
+        // Readable by external OTEL profilers and decoded by writeCurrentContext.
+        uint8_t lrs_bytes[8];
+        OtelContexts::u64ToBytes(local_root_span_id, lrs_bytes);
+        OtelContexts::setAttribute(LOCAL_ROOT_SPAN_ATTR_INDEX, (const char*)lrs_bytes, 8);
+
+        // Cache in sidecar for O(1) signal-handler reads
         thrd->setOtelLocalRootSpanId(local_root_span_id);
     } else {
         // Profiler mode: local_root_span_id maps to rootSpanId, trace_id_high ignored
@@ -185,7 +191,7 @@ bool ContextApi::get(u64& span_id, u64& root_span_id) {
             return false;
         }
 
-        // Read local_root_span_id from ProfiledThread (O(1), signal-safe)
+        // Read local_root_span_id from sidecar (O(1), no attrs_data scan)
         root_span_id = 0;
         ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
         if (thrd != nullptr) {
@@ -224,12 +230,11 @@ bool ContextApi::setAttribute(uint8_t key_index, const char* value, uint8_t valu
             initializeOtelTls(thrd);
         }
 
-        // Pre-register the value string in the Dictionary from this JNI thread.
-        // The signal handler (writeCurrentContext) will later call bounded_lookup
-        // to find the encoding — by pre-registering here, the signal handler
-        // only does a read (no malloc), which is async-signal-safe.
-        Profiler::instance()->contextValueMap()->bounded_lookup(
+        // Pre-register the value string in the Dictionary and cache the encoding
+        // in the sidecar for O(1) signal-handler reads (no hash lookup needed).
+        u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
             value, value_len, 1 << 16);
+        thrd->setOtelTagEncoding(key_index, encoding != INT_MAX ? encoding : 0);
 
         return OtelContexts::setAttribute(key_index, value, value_len);
     } else {

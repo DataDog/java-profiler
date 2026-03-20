@@ -151,6 +151,10 @@ public:
 
     static const int MAX_ATTRIBUTE_KEYS = 32;
 
+    // Reserved attribute index for local root span ID in OTEL attrs_data.
+    // Stored as 8-byte big-endian value. Visible to external OTEL profilers.
+    static const uint8_t LOCAL_ROOT_SPAN_ATTR_INDEX = 0;
+
 private:
     static ContextStorageMode _mode;
     static bool _initialized;

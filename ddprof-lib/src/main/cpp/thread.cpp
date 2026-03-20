@@ -8,6 +8,8 @@
 #include "os.h"
 #include "profiler.h"
 #include "common.h"
+#include "vmStructs.h"
+#include <cstring>
 #include <time.h>
 
 pthread_key_t ProfiledThread::_tls_key;
@@ -104,11 +106,14 @@ void ProfiledThread::releaseFromBuffer() {
     _filter_slot_id = -1;
     _unwind_failures.clear();
 
+    // Reset OTEL sidecar (before freeing the record, for signal safety)
+    memset(_otel_tag_encodings, 0, sizeof(_otel_tag_encodings));
+    _otel_local_root_span_id = 0;
+
     // Free the OTEL context record (null first for signal safety)
     OtelThreadContextRecord* record = _otel_ctx_record;
     _otel_ctx_record = nullptr;
     _otel_ctx_initialized = false;
-    _otel_local_root_span_id = 0;
     delete record;
 
     // Put this ProfiledThread object back in the buffer for reuse

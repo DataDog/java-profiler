@@ -11,7 +11,6 @@
 #include "callTraceHashTable.h"
 #include "context.h"
 #include "context_api.h"
-#include "otel_context.h"
 #include "counters.h"
 #include "dictionary.h"
 #include "flightRecorder.h"
@@ -1489,38 +1488,12 @@ void Recording::writeCurrentContext(Buffer *buf) {
   size_t numAttrs = Profiler::instance()->numContextAttributes();
 
   if (ContextApi::getMode() == CTX_STORAGE_OTEL) {
-    // In OTEL mode: decode attrs_data from the OTEP record only.
-    u32 tag_values[DD_TAGS_CAPACITY] = {};
-
+    // In OTEL mode: read pre-computed encodings from ProfiledThread sidecar.
+    // Encodings are cached by ContextApi::setAttribute() on the JNI thread —
+    // O(1) array read, no hash lookup or attrs_data scanning.
     ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
-    if (thrd != nullptr && thrd->isOtelContextInitialized()) {
-      OtelThreadContextRecord* record = thrd->getOtelContextRecord();
-      uint16_t attrs_size = 0;
-      const uint8_t* attrs = OtelContexts::readAttrsData(record, attrs_size);
-      if (attrs != nullptr && attrs_size > 0) {
-        uint16_t pos = 0;
-        while (pos + 2 <= attrs_size) {
-          uint8_t key_index = attrs[pos];
-          uint8_t val_len = attrs[pos + 1];
-          if (pos + 2 + val_len > attrs_size) break;
-
-          if (key_index < numAttrs) {
-            // Read-only lookup (size_limit=0 → for_insert=false → no malloc).
-            // O(1) amortized — hash table with 3-way associative rows.
-            // Values are pre-registered by ContextApi::setAttribute() from the JNI thread.
-            u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
-                (const char*)(attrs + pos + 2), val_len, 0);
-            if (encoding != INT_MAX) {
-              tag_values[key_index] = encoding;
-            }
-          }
-          pos += 2 + val_len;
-        }
-      }
-    }
-
     for (size_t i = 0; i < numAttrs; i++) {
-      buf->putVar32(tag_values[i]);
+      buf->putVar32(thrd != nullptr ? thrd->getOtelTagEncoding(i) : 0);
     }
   } else {
     // Profiler mode: read directly from Context.tags[]
