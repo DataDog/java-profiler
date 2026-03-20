@@ -106,6 +106,29 @@ ChunkList CallTraceHashTable::clearTableOnly() {
   // Wait for all refcount guards to clear before detaching chunks
   RefCountGuard::waitForAllRefCountsToClear();
 
+  // Compute and decrement the global counters for everything in this table.
+  // After waitForAllRefCountsToClear() there are no concurrent writers, so
+  // plain iteration (same pattern as collect()) is safe.
+  const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
+  long long freed_bytes = 0;
+  long long freed_traces = 0;
+  for (LongHashTable *t = _table; t != nullptr; t = t->prev()) {
+    u64 *keys = t->keys();
+    CallTraceSample *values = t->values();
+    u32 capacity = t->capacity();
+    for (u32 slot = 0; slot < capacity; slot++) {
+      if (keys[slot] != 0) {
+        CallTrace *trace = values[slot].acquireTrace();
+        if (trace != nullptr && trace != CallTraceSample::PREPARING) {
+          freed_bytes += header_size + trace->num_frames * sizeof(ASGCT_CallFrame);
+          freed_traces++;
+        }
+      }
+    }
+  }
+  Counters::increment(CALLTRACE_STORAGE_BYTES, -freed_bytes);
+  Counters::increment(CALLTRACE_STORAGE_TRACES, -freed_traces);
+
   // Clear previous chain pointers to prevent traversal during deallocation
   for (LongHashTable *table = _table; table != nullptr; table = table->prev()) {
     LongHashTable *prev_table = table->prev();
@@ -424,7 +447,7 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
         table->values()[slot].setTrace(copied_trace);
         Counters::increment(CALLTRACE_STORAGE_BYTES, total_size);
         Counters::increment(CALLTRACE_STORAGE_TRACES);
-        
+
         // Increment table size
         u32 new_size = table->incSize();
         probe.updateCapacity(new_size);
