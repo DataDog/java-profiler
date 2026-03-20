@@ -121,11 +121,6 @@ bool OtelContexts::setAttribute(OtelThreadContextRecord* record, uint8_t key_ind
     uint16_t entry_size = 2 + value_len;
     uint16_t current_size = record->attrs_data_size;
 
-    // Fast-path rejection before detach
-    if (current_size + entry_size > OTEL_MAX_ATTRS_DATA_SIZE) {
-        return false;
-    }
-
     // Detach (external readers) and invalidate (signal handler readers)
     __atomic_store_n(&custom_labels_current_set_v2, (OtelThreadContextRecord*)nullptr, __ATOMIC_RELEASE);
     __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELEASE);

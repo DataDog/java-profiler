@@ -90,11 +90,13 @@ void ContextApi::setFull(u64 local_root_span_id, u64 span_id, u64 trace_id_high,
             return;
         }
 
+        // Update sidecar BEFORE publishing the OTEP record. OtelContexts::set()
+        // flips valid=1 at the end; a signal handler that sees valid=1 must also
+        // see the updated local_root_span_id.
+        thrd->setOtelLocalRootSpanId(local_root_span_id);
+
         // Write trace_id + span_id + local_root_span_id in a single detach/attach cycle
         OtelContexts::set(thrd->getOtelContextRecord(), trace_id_high, trace_id_low, span_id, local_root_span_id);
-
-        // Cache in sidecar for O(1) signal-handler reads
-        thrd->setOtelLocalRootSpanId(local_root_span_id);
     } else {
         // Profiler mode: local_root_span_id maps to rootSpanId, trace_id_high ignored
         setProfilerContext(local_root_span_id, span_id);

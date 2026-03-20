@@ -90,7 +90,9 @@ void ProfiledThread::releaseFromBuffer() {
     // Reset the thread object for reuse (clear thread-specific data)
     _tid = 0;
     _pc = 0;
+    _sp = 0;
     _span_id = 0;
+    _root_span_id = 0;
     _crash_depth = 0;
     _cpu_epoch = 0;
     _wall_epoch = 0;
@@ -99,10 +101,11 @@ void ProfiledThread::releaseFromBuffer() {
     _filter_slot_id = -1;
     _unwind_failures.clear();
 
-    // Reset OTEL sidecar and embedded record
+    // Mark uninitialized FIRST so signal handlers short-circuit before
+    // reading partially-zeroed data during the memset below.
+    _otel_ctx_initialized = false;
     clearOtelSidecar();
     memset(&_otel_ctx_record, 0, sizeof(_otel_ctx_record));
-    _otel_ctx_initialized = false;
 
     // Put this ProfiledThread object back in the buffer for reuse
     _buffer[_buffer_pos] = this;

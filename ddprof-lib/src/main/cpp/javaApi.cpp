@@ -562,6 +562,7 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeContextTls0(JNIEnv* env, jcla
 
 extern "C" DLLEXPORT jobject JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_initializeOtelSidecarTls0(JNIEnv* env, jclass unused) {
+  if (ContextApi::getMode() != CTX_STORAGE_OTEL) return nullptr;
   ProfiledThread* thrd = ProfiledThread::current();
   if (thrd == nullptr) return nullptr;
   return env->NewDirectByteBuffer(
