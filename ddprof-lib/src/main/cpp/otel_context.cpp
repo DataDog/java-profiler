@@ -22,17 +22,12 @@ DLLEXPORT thread_local OtelThreadContextRecord* custom_labels_current_set_v2 = n
 
 bool OtelContexts::_initialized = false;
 
-bool OtelContexts::initialize() {
+void OtelContexts::initialize() {
     _initialized = true;
-    return true;
 }
 
 void OtelContexts::shutdown() {
     _initialized = false;
-}
-
-bool OtelContexts::isInitialized() {
-    return _initialized;
 }
 
 void OtelContexts::u64ToBytes(u64 val, uint8_t* out) {

@@ -19,7 +19,7 @@ single source of truth.
 - [Polar Signals Custom Labels v1](https://github.com/polarsignals/custom-labels/blob/master/custom-labels-v1.md)
 - [Datadog java-profiler ContextSetter](https://github.com/DataDog/java-profiler/blob/main/ddprof-lib/src/main/java/com/datadoghq/profiler/ContextSetter.java) (our existing shared-hashmap approach)
 
-Last updated: 2026-03-19
+Last updated: 2026-03-20
 
 ---
 
@@ -220,9 +220,13 @@ Uses OTEP pointer-swapping protocol:
 - Per-thread custom attributes via `attrs_data` (key_index + length + UTF-8 value encoding)
 - Attribute key registration via `ContextApi::registerAttributeKeys()`
 
-### 2.5 Not Yet Implemented
+### 2.5 JFR Tag Encoding Sidecar
 
-- No protobuf payload (process context uses Rust-based OTEP #4719 library directly)
+`ProfiledThread` caches pre-computed Dictionary encodings (`_otel_tag_encodings[]`) and
+`_otel_local_root_span_id` alongside the OTEP record. The JNI write path populates both
+the OTEP `attrs_data` (raw strings for external profilers) and the sidecar (u32 encodings
+for the JFR writer). Signal handlers read only the sidecar -- O(1) array index, no
+string lookups or hash-table probes per sample.
 
 ---
 
@@ -304,25 +308,23 @@ Uses OTEP pointer-swapping protocol:
 5. **Ring buffer removed** — replaced by per-thread record pointer cached in `ProfiledThread`.
    Cross-thread reads use `ProfiledThread::getOtelContextRecord()`.
 
-### Phase 2: Process Context (OTEP #4719)
+### Phase 2: Process Context (OTEP #4719) -- DONE
 
 **Goal:** External profiler can discover schema version and attribute key map.
 
-6. **Implement OTEP #4719 process context region:**
+6. **OTEP #4719 process context region** -- implemented via C-based `otel_process_ctx` library
+   (derived from upstream sig-profiling reference implementation):
    - `memfd_create("OTEL_CTX", ...)` with fallback to anonymous mmap
    - 32-byte header: signature `"OTEL_CTX"`, version `2`, payload_size,
      monotonic_published_at_ns, payload pointer
-   - `madvise(MADV_DONTFORK)`
-   - `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, ..., "OTEL_CTX")`
+   - `madvise(MADV_DONTFORK)`, `prctl(PR_SET_VMA, ...)`
 
-7. **Add protobuf support:**
-   - Either vendor the OTel proto definitions or use a minimal hand-rolled serializer
-     (protobuf in a JNI native agent adds complexity)
-   - Serialize `ProcessContext` with `extra_attributes`:
-     - `threadlocal.schema_version` = `"tlsdesc_v1_dev"`
-     - `threadlocal.attribute_key_map` = `[]` (empty array initially)
+7. **Protobuf support** -- hand-rolled minimal encoder/decoder in `otel_process_ctx.cpp`.
+   Serializes `ProcessContext` with `extra_attributes`:
+   - `threadlocal.schema_version` = `"tlsdesc_v1_dev"`
+   - `threadlocal.attribute_key_map` = registered key names
 
-8. **Implement seqlock update protocol** for process context mutations.
+8. **Seqlock update protocol** -- implemented (timestamp-based, see `otel_process_ctx_update`).
 
 ### Phase 3: Custom Attributes — DONE
 
@@ -353,19 +355,17 @@ Uses OTEP pointer-swapping protocol:
    Cross-thread reads use `ProfiledThread`'s cached record pointer. No TSD base
    resolution needed.
 
-2. **Protobuf in native agent:** (Phase 2) Adding protobuf to a JNI shared library adds
-   build complexity and binary size. Alternatives: (a) hand-roll the minimal serialization
-   for `ProcessContext`, (b) delegate serialization to the Java side, (c) use nanopb or
-   similar lightweight C protobuf library.
+2. ~~**Protobuf in native agent:**~~ **Resolved.** Hand-rolled minimal protobuf
+   encoder/decoder in `otel_process_ctx.cpp` (derived from upstream C reference impl).
 
 3. ~~**Record allocation strategy:**~~ **Resolved.** One `OtelThreadContextRecord` per
    thread, allocated on first `ContextApi::set()`, cached in `ProfiledThread`, reused
    across span activations.
 
-4. **Schema version:** (Phase 2) `tlsdesc_v1_dev` has `_dev` suffix — will change to
+4. **Schema version:** `tlsdesc_v1_dev` has `_dev` suffix — will change to
    `tlsdesc_v1` when the OTEP merges.
 
-5. **OTEP #4719 dependency:** (Phase 2) Both OTEPs are still open PRs.
+5. **OTEP dependency:** Both OTEPs (#4947, #4719) are still open PRs.
 
 6. ~~**TLS pointer in signal handlers:**~~ **Resolved.** Signal handlers read via
    `ProfiledThread::getOtelContextRecord()`, never accessing `custom_labels_current_set_v2`

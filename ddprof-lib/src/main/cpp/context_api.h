@@ -19,6 +19,7 @@
 
 #include "arch.h"
 #include "arguments.h"
+#include "context.h"
 #include <cstdint>
 
 /**
@@ -43,9 +44,8 @@ public:
      * For OTEL mode, sets the initialized flag (per-thread TLS init is deferred).
      *
      * @param args Profiler arguments containing _context_storage mode
-     * @return true if initialization succeeded
      */
-    static bool initialize(const Arguments& args);
+    static void initialize(const Arguments& args);
 
     /**
      * Shutdown context storage.
@@ -70,15 +70,13 @@ public:
     static ContextStorageMode getMode();
 
     /**
-     * Write context for the current thread.
+     * Write context for the current thread (profiler mode only).
      *
-     * This is the primary method for setting trace context from the tracer.
-     * Maps Datadog's (spanId, rootSpanId) to OTEL's (trace_id_high, trace_id_low, span_id).
-     *
-     * In OTEL mode: trace_id = (0, rootSpanId), span_id = spanId
+     * NOT supported in OTEL mode — use setFull() instead.
+     * In OTEL mode this logs a warning and returns without writing.
      *
      * @param span_id The span ID
-     * @param root_span_id The root span ID (trace ID low bits for OTEL)
+     * @param root_span_id The root span ID
      */
     static void set(u64 span_id, u64 root_span_id);
 
@@ -112,6 +110,18 @@ public:
      * Clear context for the current thread.
      */
     static void clear();
+
+    /**
+     * Snapshot the current thread's context into a Context struct.
+     *
+     * In profiler mode, returns Contexts::get() directly.
+     * In OTEL mode, populates a Context with spanId, rootSpanId (from sidecar),
+     * checksum, and tag encodings (from sidecar) so that writeContext() works
+     * identically for both modes.
+     *
+     * @return A Context struct representing the current thread's context
+     */
+    static Context snapshot();
 
     /**
      * Set a custom attribute on the current thread's context.
@@ -152,7 +162,7 @@ public:
     static const int MAX_ATTRIBUTE_KEYS = 32;
 
     // Reserved attribute index for local root span ID in OTEL attrs_data.
-    // Stored as 8-byte big-endian value. Visible to external OTEL profilers.
+    // Stored as 16-char hex string (UTF-8). Visible to external OTEL profilers.
     static const uint8_t LOCAL_ROOT_SPAN_ATTR_INDEX = 0;
 
 private:
@@ -161,8 +171,11 @@ private:
     static char* _attribute_keys[MAX_ATTRIBUTE_KEYS];
     static int _attribute_key_count;
 
-    // Internal: write trace_id + span_id to the appropriate storage
-    static void setOtelInternal(u64 trace_id_high, u64 trace_id_low, u64 span_id);
+    // Internal: write context to profiler TLS (Context struct)
+    static void setProfilerContext(u64 root_span_id, u64 span_id);
+
+    // Clear sidecar fields (tag encodings + localRootSpanId) on context detachment
+    static void clearOtelSidecar();
 };
 
 #endif /* _CONTEXT_API_H */

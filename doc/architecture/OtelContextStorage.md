@@ -28,10 +28,10 @@ The system uses a feature-flagged approach where the storage mode is selected at
 │  JavaProfiler.execute("start,cpu=1ms,ctxstorage=otel,...")             │
 │         │                                                               │
 │         ▼                                                               │
-│  ThreadContext.put(spanId, rootSpanId)                                  │
+│  ThreadContext.put(localRootSpanId, spanId, traceIdHigh, traceIdLow)    │
 │         │                                                               │
 │         ▼                                                               │
-│  JNI: setContext0(spanId, rootSpanId)                                   │
+│  JNI: setContext0(localRootSpanId, spanId, traceIdHigh, traceIdLow)    │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
@@ -42,10 +42,11 @@ The system uses a feature-flagged approach where the storage mode is selected at
 │                                                                         │
 │  ContextApi (Unified Interface)                                         │
 │    │                                                                    │
-│    ├─ initialize(args)  → Select mode based on ctxstorage option        │
-│    ├─ set(spanId, rootSpanId)  → Route to appropriate storage           │
-│    ├─ get(spanId, rootSpanId)  → Read from appropriate storage          │
-│    └─ clear()                  → Clear current thread's context         │
+│    ├─ initialize(args)    → Select mode based on ctxstorage option      │
+│    ├─ setFull(lrs, span, trHi, trLo) → Write full context              │
+│    ├─ get(spanId, rootSpanId) → Read from appropriate storage           │
+│    ├─ setAttribute(idx, val)  → Write custom attribute                  │
+│    └─ clear()                 → Clear current thread's context          │
 │         │                                                               │
 │         ├─────────────────────────┬─────────────────────────────────────┤
 │         ▼                         ▼                                     │
@@ -177,15 +178,16 @@ The critical constraint: signal handlers must never access `custom_labels_curren
 ```cpp
 class ContextApi {
 public:
-    static bool initialize(const Arguments& args);
+    static void initialize(const Arguments& args);
     static void shutdown();
-    static bool isInitialized();
     static ContextStorageMode getMode();
 
-    static void set(u64 span_id, u64 root_span_id);
-    static void setOtel(u64 trace_id_high, u64 trace_id_low, u64 span_id);
+    static void set(u64 span_id, u64 root_span_id);           // Profiler mode only
+    static void setFull(u64 lrs, u64 span, u64 trHi, u64 trLo); // Both modes
     static bool get(u64& span_id, u64& root_span_id);
     static void clear();
+    static bool setAttribute(uint8_t key_index, const char* value, uint8_t value_len);
+    static void registerAttributeKeys(const char** keys, int count);
 };
 ```
 
@@ -194,12 +196,12 @@ public:
 ```cpp
 class OtelContexts {
 public:
-    static bool initialize();
+    static void initialize();
     static void shutdown();
-    static bool isInitialized();
 
     static void set(u64 trace_id_high, u64 trace_id_low, u64 span_id);
     static bool get(u64& trace_id_high, u64& trace_id_low, u64& span_id);
+    static bool setAttribute(uint8_t key_index, const char* value, uint8_t value_len);
     static void clear();
 };
 ```
@@ -235,9 +237,9 @@ java -agentpath:libjavaProfiler.so=start,cpu=1ms,ctxstorage=otel,jfr,file=profil
 | Operation | Profiler Mode | OTEL Mode | Notes |
 |-----------|---------------|-----------|-------|
 | Context write | ~10-20ns | ~15-25ns | OTEL: pointer-swap + byte conversion |
-| Context read (own thread) | ~5-10ns | ~5-10ns | Both use cached pointer |
-| Context read (by TID) | N/A | Via ProfiledThread | Cached record pointer |
-| Memory overhead | ~64 bytes/thread | ~640 bytes/thread | OTEL record per thread (includes attrs_data) |
+| Context read (signal handler) | ~5-10ns | ~5-10ns | Both use cached pointer / sidecar |
+| Tag read (signal handler) | O(1) array | O(1) array | Sidecar caches Dictionary encodings |
+| Memory overhead | ~64 bytes/thread | ~640 bytes + sidecar/thread | OTEL record + tag encoding sidecar |
 
 ## File Structure
 
@@ -249,14 +251,18 @@ ddprof-lib/src/main/cpp/
 ├── context_api.cpp
 ├── otel_context.h         # OTEP #4947 TLS pointer implementation
 ├── otel_context.cpp
+├── otel_process_ctx.h     # OTEP #4719 process context (C library)
+├── otel_process_ctx.cpp
+├── thread.h               # ProfiledThread with tag encoding sidecar
 ├── arguments.h            # ctxstorage option
 ├── arguments.cpp
 ├── profiler.cpp           # ContextApi initialization
 ├── javaApi.cpp            # JNI routing through ContextApi
-└── wallClock.cpp          # Uses ContextApi
+└── flightRecorder.cpp     # writeCurrentContext reads sidecar
 
 ddprof-lib/src/main/java/com/datadoghq/profiler/
 ├── ThreadContext.java     # isOtelMode(), mode-aware getters
+├── OTelContext.java       # Process context API
 
 ddprof-test/src/test/java/com/datadoghq/profiler/context/
 └── OtelContextStorageModeTest.java  # OTEL mode tests

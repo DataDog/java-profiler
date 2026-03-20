@@ -29,25 +29,18 @@ bool ContextApi::_initialized = false;
 char* ContextApi::_attribute_keys[MAX_ATTRIBUTE_KEYS] = {};
 int ContextApi::_attribute_key_count = 0;
 
-bool ContextApi::initialize(const Arguments& args) {
+void ContextApi::initialize(const Arguments& args) {
     if (__atomic_load_n(&_initialized, __ATOMIC_ACQUIRE)) {
-        return true;
+        return;
     }
 
     ContextStorageMode mode = args._context_storage;
     if (mode == CTX_STORAGE_OTEL) {
-        if (!OtelContexts::initialize()) {
-            // Fall back to profiler storage if OTEL init fails
-            mode = CTX_STORAGE_PROFILER;
-            __atomic_store_n(&_mode, mode, __ATOMIC_RELEASE);
-            __atomic_store_n(&_initialized, true, __ATOMIC_RELEASE);
-            return true;
-        }
+        OtelContexts::initialize();
     }
 
     __atomic_store_n(&_mode, mode, __ATOMIC_RELEASE);
     __atomic_store_n(&_initialized, true, __ATOMIC_RELEASE);
-    return true;
 }
 
 // Called from Profiler::stop() which is single-threaded — no racing with initialize().
@@ -56,7 +49,7 @@ void ContextApi::shutdown() {
         return;
     }
 
-    if (__atomic_load_n(&_mode, __ATOMIC_ACQUIRE) == CTX_STORAGE_OTEL) {
+    if (getMode() == CTX_STORAGE_OTEL) {
         OtelContexts::shutdown();
     }
 
@@ -106,22 +99,23 @@ static OtelThreadContextRecord* initializeOtelTls(ProfiledThread* thrd) {
 }
 
 void ContextApi::set(u64 span_id, u64 root_span_id) {
-    ContextStorageMode mode = __atomic_load_n(&_mode, __ATOMIC_ACQUIRE);
+    ContextStorageMode mode = getMode();
     if (mode == CTX_STORAGE_OTEL) {
         Log::warn("set(spanId, rootSpanId) called in OTEL mode — use setFull() instead");
         return;
     }
     // Profiler mode: rootSpanId is used directly for trace correlation
-    setOtelInternal(0, root_span_id, span_id);
+    setProfilerContext(root_span_id, span_id);
 }
 
 void ContextApi::setFull(u64 local_root_span_id, u64 span_id, u64 trace_id_high, u64 trace_id_low) {
-    ContextStorageMode mode = __atomic_load_n(&_mode, __ATOMIC_ACQUIRE);
+    ContextStorageMode mode = getMode();
 
     if (mode == CTX_STORAGE_OTEL) {
         // All-zero IDs = context detachment
         if (trace_id_high == 0 && trace_id_low == 0 && span_id == 0) {
             OtelContexts::clear();
+            clearOtelSidecar();
             return;
         }
 
@@ -136,54 +130,39 @@ void ContextApi::setFull(u64 local_root_span_id, u64 span_id, u64 trace_id_high,
         // Write trace_id + span_id to OTEP record
         OtelContexts::set(trace_id_high, trace_id_low, span_id);
 
-        // Store local_root_span_id as custom attribute at reserved index 0.
-        // Readable by external OTEL profilers and decoded by writeCurrentContext.
-        uint8_t lrs_bytes[8];
-        OtelContexts::u64ToBytes(local_root_span_id, lrs_bytes);
-        OtelContexts::setAttribute(LOCAL_ROOT_SPAN_ATTR_INDEX, (const char*)lrs_bytes, 8);
+        // Store local_root_span_id as hex string attribute at reserved index 0.
+        // OTEP spec requires UTF-8 string values in attrs_data.
+        // Hand-rolled hex encoder to avoid snprintf overhead on the hot path.
+        static const char hex_chars[] = "0123456789abcdef";
+        char lrs_hex[16];
+        u64 v = local_root_span_id;
+        for (int i = 15; i >= 0; i--) {
+            lrs_hex[i] = hex_chars[v & 0xF];
+            v >>= 4;
+        }
+        OtelContexts::setAttribute(LOCAL_ROOT_SPAN_ATTR_INDEX, lrs_hex, 16);
 
         // Cache in sidecar for O(1) signal-handler reads
         thrd->setOtelLocalRootSpanId(local_root_span_id);
     } else {
         // Profiler mode: local_root_span_id maps to rootSpanId, trace_id_high ignored
-        setOtelInternal(0, local_root_span_id, span_id);
+        setProfilerContext(local_root_span_id, span_id);
     }
 }
 
-void ContextApi::setOtelInternal(u64 trace_id_high, u64 trace_id_low, u64 span_id) {
-    ContextStorageMode mode = __atomic_load_n(&_mode, __ATOMIC_ACQUIRE);
+void ContextApi::setProfilerContext(u64 root_span_id, u64 span_id) {
+    Context& ctx = Contexts::get();
 
-    if (mode == CTX_STORAGE_OTEL) {
-        // All-zero IDs = context detachment per OTEP — use NULL pointer
-        if (trace_id_high == 0 && trace_id_low == 0 && span_id == 0) {
-            OtelContexts::clear();
-            return;
-        }
+    __atomic_store_n(&ctx.checksum, 0ULL, __ATOMIC_RELEASE);
+    __atomic_store_n(&ctx.spanId, span_id, __ATOMIC_RELAXED);
+    __atomic_store_n(&ctx.rootSpanId, root_span_id, __ATOMIC_RELAXED);
 
-        // Ensure TLS + record are initialized on first use
-        ProfiledThread* thrd = ProfiledThread::current();
-        if (thrd == nullptr) return;
-
-        if (!thrd->isOtelContextInitialized()) {
-            initializeOtelTls(thrd);
-        }
-
-        OtelContexts::set(trace_id_high, trace_id_low, span_id);
-    } else {
-        // Profiler mode: use existing TLS
-        Context& ctx = Contexts::get();
-
-        __atomic_store_n(&ctx.checksum, 0ULL, __ATOMIC_RELEASE);
-        __atomic_store_n(&ctx.spanId, span_id, __ATOMIC_RELAXED);
-        __atomic_store_n(&ctx.rootSpanId, trace_id_low, __ATOMIC_RELAXED);
-
-        u64 newChecksum = Contexts::checksum(span_id, trace_id_low);
-        __atomic_store_n(&ctx.checksum, newChecksum, __ATOMIC_RELEASE);
-    }
+    u64 newChecksum = Contexts::checksum(span_id, root_span_id);
+    __atomic_store_n(&ctx.checksum, newChecksum, __ATOMIC_RELEASE);
 }
 
 bool ContextApi::get(u64& span_id, u64& root_span_id) {
-    ContextStorageMode mode = __atomic_load_n(&_mode, __ATOMIC_ACQUIRE);
+    ContextStorageMode mode = getMode();
 
     if (mode == CTX_STORAGE_OTEL) {
         u64 trace_high, trace_low;
@@ -208,18 +187,51 @@ bool ContextApi::get(u64& span_id, u64& root_span_id) {
 }
 
 
+void ContextApi::clearOtelSidecar() {
+    ProfiledThread* thrd = ProfiledThread::current();
+    if (thrd != nullptr) {
+        thrd->setOtelLocalRootSpanId(0);
+        for (u32 i = 0; i < DD_TAGS_CAPACITY; i++) {
+            thrd->setOtelTagEncoding(i, 0);
+        }
+    }
+}
+
 void ContextApi::clear() {
-    ContextStorageMode mode = __atomic_load_n(&_mode, __ATOMIC_ACQUIRE);
+    ContextStorageMode mode = getMode();
 
     if (mode == CTX_STORAGE_OTEL) {
         OtelContexts::clear();
+        clearOtelSidecar();
     } else {
         set(0, 0);
     }
 }
 
+Context ContextApi::snapshot() {
+    ContextStorageMode mode = getMode();
+
+    if (mode == CTX_STORAGE_OTEL) {
+        Context ctx = {};
+        u64 span_id = 0, root_span_id = 0;
+        if (get(span_id, root_span_id)) {
+            ctx.spanId = span_id;
+            ctx.rootSpanId = root_span_id;
+            ctx.checksum = Contexts::checksum(span_id, root_span_id);
+        }
+        ProfiledThread* thrd = ProfiledThread::current();
+        size_t numAttrs = Profiler::instance()->numContextAttributes();
+        for (size_t i = 0; i < numAttrs && i < DD_TAGS_CAPACITY; i++) {
+            ctx.tags[i].value = thrd->getOtelTagEncoding(i);
+        }
+        return ctx;
+    }
+
+    return Contexts::get();
+}
+
 bool ContextApi::setAttribute(uint8_t key_index, const char* value, uint8_t value_len) {
-    ContextStorageMode mode = __atomic_load_n(&_mode, __ATOMIC_ACQUIRE);
+    ContextStorageMode mode = getMode();
 
     if (mode == CTX_STORAGE_OTEL) {
         // Ensure TLS + record are initialized on first use
@@ -271,7 +283,7 @@ void ContextApi::registerAttributeKeys(const char** keys, int count) {
     }
 
     // If in OTEL mode, re-publish process context with thread_ctx_config
-    ContextStorageMode mode = __atomic_load_n(&_mode, __ATOMIC_ACQUIRE);
+    ContextStorageMode mode = getMode();
     if (mode == CTX_STORAGE_OTEL) {
         // Build NULL-terminated key array for the process context config
         const char* key_ptrs[MAX_ATTRIBUTE_KEYS + 1];

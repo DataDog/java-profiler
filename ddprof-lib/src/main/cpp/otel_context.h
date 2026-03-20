@@ -73,10 +73,8 @@ DLLEXPORT extern thread_local OtelThreadContextRecord* custom_labels_current_set
  */
 class OtelContexts {
 public:
-    static bool initialize();
+    static void initialize();
     static void shutdown();
-    static bool isInitialized();
-
     /**
      * Write context for the current thread using OTEP publication protocol:
      * 1. Set TLS pointer to nullptr (detach — external readers)
