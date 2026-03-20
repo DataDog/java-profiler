@@ -69,6 +69,13 @@ public final class ThreadContext {
 
     private final ByteBuffer buffer;
 
+    /**
+     * Direct ByteBuffer mapped to ProfiledThread._otel_tag_encodings[].
+     * Non-null only in OTEL mode; allows Java to write tag encodings directly
+     * to the same memory the signal handler reads — zero JNI overhead.
+     */
+    private final ByteBuffer sidecarBuffer;
+
     private final boolean useJNI;
 
     /**
@@ -87,8 +94,10 @@ public final class ThreadContext {
      *                [1] = offsetof(Context, rootSpanId)
      *                [2] = offsetof(Context, checksum)
      *                [3] = offsetof(Context, tags)
+     * @param sidecarBuffer Direct ByteBuffer mapped to ProfiledThread._otel_tag_encodings,
+     *                      or null if not in OTEL mode
      */
-    public ThreadContext(ByteBuffer buffer, int[] offsets) {
+    public ThreadContext(ByteBuffer buffer, int[] offsets, ByteBuffer sidecarBuffer) {
         if (offsets == null || offsets.length < 4) {
             throw new IllegalArgumentException("offsets array must have at least 4 elements");
         }
@@ -101,6 +110,8 @@ public final class ThreadContext {
         useJNI = Platform.isJavaVersionAtLeast(17);
         // Check if OTEL mode is active - if so, reads must go through JNI
         otelMode = isOtelMode0();
+        this.sidecarBuffer = sidecarBuffer != null
+            ? sidecarBuffer.order(ByteOrder.LITTLE_ENDIAN) : null;
     }
 
     /**
@@ -136,13 +147,18 @@ public final class ThreadContext {
     }
 
     public long getChecksum() {
+        if (otelMode) {
+            return 0; // OTEL mode uses valid-flag validation, not checksums
+        }
         return buffer.getLong(checksumOffset);
     }
 
     public long put(long spanId, long rootSpanId) {
         if (otelMode) {
-            throw new IllegalStateException(
-                "put(spanId, rootSpanId) is not supported in OTEL mode — use put(localRootSpanId, spanId, traceIdHigh, traceIdLow)");
+            // In OTEL mode, delegate to setFull with zero trace IDs.
+            // rootSpanId maps to localRootSpanId for endpoint correlation.
+            setContextFull0(rootSpanId, spanId, 0, 0);
+            return 0;
         }
         return useJNI ? setContext0(spanId, rootSpanId) : putContextJava(spanId, rootSpanId);
     }
@@ -166,9 +182,12 @@ public final class ThreadContext {
         if (offset >= MAX_CUSTOM_SLOTS) {
             throw new IllegalArgumentException("Invalid offset: " + offset + " (max " +  MAX_CUSTOM_SLOTS + ")");
         }
-        // JNI path uses array indexing (offset is tag index)
-        // Java path uses byte buffer (offset needs to be multiplied by 4 for byte positioning)
-        if (useJNI) {
+        if (otelMode && sidecarBuffer != null) {
+            // Write directly to the sidecar buffer (same memory the signal handler reads)
+            BUFFER_WRITER.writeOrderedInt(sidecarBuffer, offset * 4, value);
+        } else if (useJNI || otelMode) {
+            // OTEL without sidecar (shouldn't happen) must still go through JNI
+            // to write to ProfiledThread sidecar, not the Context struct buffer.
             setContextSlot0(offset, value);
         } else {
             setContextSlotJava(offset, value);
@@ -177,9 +196,10 @@ public final class ThreadContext {
 
     public void copyCustoms(int[] value) {
         int len = Math.min(value.length, MAX_CUSTOM_SLOTS);
-        for  (int i = 0; i < len; i++) {
-            // custom tags are spaced by 4 bytes (32 bits)
-            value[i] = buffer.getInt(customTagsOffset + i * 4);
+        ByteBuffer src = (otelMode && sidecarBuffer != null) ? sidecarBuffer : buffer;
+        int baseOffset = (otelMode && sidecarBuffer != null) ? 0 : customTagsOffset;
+        for (int i = 0; i < len; i++) {
+            value[i] = src.getInt(baseOffset + i * 4);
         }
     }
 

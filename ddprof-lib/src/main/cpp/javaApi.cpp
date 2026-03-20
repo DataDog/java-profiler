@@ -560,6 +560,15 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeContextTls0(JNIEnv* env, jcla
   return env->NewDirectByteBuffer((void *)&ctx, (jlong)sizeof(Context));
 }
 
+extern "C" DLLEXPORT jobject JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_initializeOtelSidecarTls0(JNIEnv* env, jclass unused) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr) return nullptr;
+  return env->NewDirectByteBuffer(
+      (void*)thrd->getOtelTagEncodingsPtr(),
+      (jlong)(DD_TAGS_CAPACITY * sizeof(u32)));
+}
+
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_ThreadContext_setContext0(JNIEnv* env, jclass unused, jlong spanId, jlong rootSpanId) {
   // Use ContextApi for mode-agnostic context setting (handles TLS or OTEL storage)
@@ -578,19 +587,26 @@ Java_com_datadoghq_profiler_ThreadContext_setContextFull0(JNIEnv* env, jclass un
   ContextApi::setFull(localRootSpanId, spanId, traceIdHigh, traceIdLow);
 }
 
-// Legacy API: writes directly to Context.tags[] regardless of storage mode.
-// In OTEL mode, writeCurrentContext() in flightRecorder.cpp reads both Context.tags[]
-// and the OTEP attrs_data, so tags set via this path are still recorded in JFR.
+// Legacy API: writes a pre-computed tag encoding to the thread-local context.
+// In OTEL mode, writes to the ProfiledThread sidecar (writeCurrentContext reads from there).
+// In profiler mode, writes directly to Context.tags[].
 // New callers should prefer setContextAttribute0() which writes to the appropriate store.
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_ThreadContext_setContextSlot0(JNIEnv* env, jclass unused, jint offset, jint value) {
-  Context& ctx = Contexts::get();
-  ctx.tags[offset].value = (u32)value;
+  if (ContextApi::getMode() == CTX_STORAGE_OTEL) {
+    ProfiledThread* thrd = ProfiledThread::current();
+    if (thrd != nullptr && offset >= 0 && offset < (jint)DD_TAGS_CAPACITY) {
+      thrd->setOtelTagEncoding(offset, (u32)value);
+    }
+  } else {
+    Context& ctx = Contexts::get();
+    ctx.tags[offset].value = (u32)value;
+  }
 }
 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_ThreadContext_isOtelMode0(JNIEnv* env, jclass unused) {
-  return ContextApi::isInitialized() && ContextApi::getMode() == CTX_STORAGE_OTEL;
+  return ContextApi::getMode() == CTX_STORAGE_OTEL;
 }
 
 extern "C" DLLEXPORT jboolean JNICALL

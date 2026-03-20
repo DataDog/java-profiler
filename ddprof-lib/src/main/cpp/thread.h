@@ -7,6 +7,7 @@
 #define _THREAD_H
 
 #include "context.h"
+#include "otel_context.h"
 #include "os.h"
 #include "threadLocalData.h"
 #include "unwindStats.h"
@@ -17,10 +18,6 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <vector>
-
-// Forward declarations to avoid circular dependency
-class Context;
-struct OtelThreadContextRecord;
 
 class ProfiledThread : public ThreadLocalData {     
 private:
@@ -74,16 +71,16 @@ private:
   bool _otel_ctx_initialized;
   bool _crash_protection_active;
   Context* _ctx_tls_ptr;
-  OtelThreadContextRecord* _otel_ctx_record;
+  OtelThreadContextRecord _otel_ctx_record;
   u32 _otel_tag_encodings[DD_TAGS_CAPACITY];
   u64 _otel_local_root_span_id;
 
   ProfiledThread(int buffer_pos, int tid)
       : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _root_span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
-        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _ctx_tls_initialized(false), _otel_ctx_initialized(false), _crash_protection_active(false), _ctx_tls_ptr(nullptr), _otel_ctx_record(nullptr),
-        _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
+        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _ctx_tls_initialized(false), _otel_ctx_initialized(false), _crash_protection_active(false), _ctx_tls_ptr(nullptr),
+        _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
 
-  ~ProfiledThread();  // Defined in thread.cpp (needs complete OtelThreadContextRecord type)
+  ~ProfiledThread() = default;
   void releaseFromBuffer();
 
   virtual ~ProfiledThread() { }
@@ -199,8 +196,7 @@ public:
   }
 
   // OTel context TLS (OTEP #4947)
-  inline void markOtelContextInitialized(OtelThreadContextRecord* record) {
-    _otel_ctx_record = record;
+  inline void markOtelContextInitialized() {
     _otel_ctx_initialized = true;
   }
 
@@ -209,7 +205,7 @@ public:
   }
 
   inline OtelThreadContextRecord* getOtelContextRecord() {
-    return _otel_ctx_record;
+    return &_otel_ctx_record;
   }
 
 
@@ -245,6 +241,7 @@ public:
   inline void setCrashProtectionActive(bool active) { _crash_protection_active = active; }
 
   // OTEL JFR tag encoding sidecar — populated by JNI thread, read by signal handler
+  inline u32* getOtelTagEncodingsPtr() { return _otel_tag_encodings; }
   inline void setOtelTagEncoding(u32 idx, u32 val) {
     if (idx < DD_TAGS_CAPACITY) _otel_tag_encodings[idx] = val;
   }
@@ -253,6 +250,13 @@ public:
   }
   inline void setOtelLocalRootSpanId(u64 id) { _otel_local_root_span_id = id; }
   inline u64 getOtelLocalRootSpanId() const { return _otel_local_root_span_id; }
+
+  inline void clearOtelSidecar() {
+    memset(_otel_tag_encodings, 0, sizeof(_otel_tag_encodings));
+    _otel_local_root_span_id = 0;
+  }
+
+  Context snapshotContext(size_t numAttrs);
 
 private:
   // Atomic flag for signal handler reentrancy protection within the same thread

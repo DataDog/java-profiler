@@ -73,56 +73,41 @@ DLLEXPORT extern thread_local OtelThreadContextRecord* custom_labels_current_set
  */
 class OtelContexts {
 public:
-    static void initialize();
-    static void shutdown();
     /**
      * Write context for the current thread using OTEP publication protocol:
      * 1. Set TLS pointer to nullptr (detach — external readers)
      * 2. Set valid = 0 (invalidate — signal handler readers via cached pointer)
-     * 3. Populate record fields (trace_id, span_id, attrs_data_size = 0)
+     * 3. Populate record fields (trace_id, span_id, local_root_span_id as hex attr)
      * 4. Set valid = 1
      * 5. Set TLS pointer to record (attach)
+     *
+     * local_root_span_id is encoded as a 16-char hex string attribute at index 0.
+     * Existing user attributes (key_index >= 1) are preserved across calls.
      */
-    static void set(u64 trace_id_high, u64 trace_id_low, u64 span_id);
+    static void set(OtelThreadContextRecord* record, u64 trace_id_high, u64 trace_id_low, u64 span_id, u64 local_root_span_id);
 
     /**
-     * Read context for the current thread.
-     * Used from non-signal-handler code path only.
+     * Read span_id from a record pointer (signal-safe).
+     * Skips trace_id decode for efficiency.
+     * Returns false if the record is null or invalid.
      */
-    static bool get(u64& trace_id_high, u64& trace_id_low, u64& span_id);
+    static bool getSpanId(OtelThreadContextRecord* record, u64& span_id);
 
     /**
      * Write a single attribute into the current thread's OTEP record.
      * Appends (key_index, length, value) to attrs_data, re-publishes via detach/attach.
      * Returns false if the attribute doesn't fit in the remaining space.
      */
-    static bool setAttribute(uint8_t key_index, const char* value, uint8_t value_len);
-
-    /**
-     * Read attrs_data from the given record.
-     * Returns pointer to attrs_data and sets out_size to attrs_data_size.
-     * Returns nullptr if the record is null or invalid.
-     */
-    static const uint8_t* readAttrsData(OtelThreadContextRecord* record, uint16_t& out_size);
+    static bool setAttribute(OtelThreadContextRecord* record, uint8_t key_index, const char* value, uint8_t value_len);
 
     /**
      * Clear context for the current thread (set TLS pointer to nullptr).
      */
-    static void clear();
+    static void clear(OtelThreadContextRecord* record);
 
     // Byte conversion helpers (big-endian, W3C trace context)
     static void u64ToBytes(u64 val, uint8_t* out);
     static u64 bytesToU64(const uint8_t* in);
-
-private:
-    static bool _initialized;
-
-    // Read fields from a record pointer, returning false if null or invalid
-    static bool readRecord(OtelThreadContextRecord* record,
-                           u64& trace_id_high, u64& trace_id_low, u64& span_id);
-
-    // Ensure TLS is initialized for current thread, returns record pointer
-    static OtelThreadContextRecord* ensureRecord();
 };
 
 #endif /* _OTEL_CONTEXT_H */

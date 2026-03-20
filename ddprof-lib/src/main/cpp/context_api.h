@@ -41,7 +41,6 @@ public:
      * Initialize context storage based on configuration.
      *
      * Must be called once during profiler startup.
-     * For OTEL mode, sets the initialized flag (per-thread TLS init is deferred).
      *
      * @param args Profiler arguments containing _context_storage mode
      */
@@ -51,16 +50,8 @@ public:
      * Shutdown context storage.
      *
      * Releases resources allocated during initialization.
-     * For OTEL mode, clears the initialized flag.
      */
     static void shutdown();
-
-    /**
-     * Check if context storage is initialized.
-     *
-     * @return true if initialized
-     */
-    static bool isInitialized();
 
     /**
      * Get the current storage mode.
@@ -85,8 +76,8 @@ public:
     /**
      * Write full OTEL context with 128-bit trace ID and local root span ID.
      *
-     * In OTEL mode: writes trace_id + span_id to the OTEP record, stores
-     * local_root_span_id as a reserved attribute (key index 0) for JFR.
+     * In OTEL mode: writes trace_id + span_id + local_root_span_id to the
+     * OTEP record in a single detach/attach cycle.
      * In profiler mode: trace_id_high is ignored, local_root_span_id maps to rootSpanId.
      *
      * @param local_root_span_id Local root span ID (for endpoint correlation)
@@ -107,11 +98,6 @@ public:
      * @return true if context was successfully read
      */
     static bool get(u64& span_id, u64& root_span_id);
-
-    /**
-     * Clear context for the current thread.
-     */
-    static void clear();
 
     /**
      * Snapshot the current thread's context into a Context struct.
@@ -148,19 +134,6 @@ public:
      */
     static void registerAttributeKeys(const char** keys, int count);
 
-    /**
-     * Get registered attribute key name by index.
-     *
-     * @param index Key index
-     * @return Key name string, or nullptr if index is out of range
-     */
-    static const char* getAttributeKey(int index);
-
-    /**
-     * Get number of registered attribute keys.
-     */
-    static int getAttributeKeyCount();
-
     static const int MAX_ATTRIBUTE_KEYS = 32;
 
     // Reserved attribute index for local root span ID in OTEL attrs_data.
@@ -169,15 +142,14 @@ public:
 
 private:
     static ContextStorageMode _mode;
-    static bool _initialized;
     static char* _attribute_keys[MAX_ATTRIBUTE_KEYS];
     static int _attribute_key_count;
 
     // Internal: write context to profiler TLS (Context struct)
     static void setProfilerContext(u64 root_span_id, u64 span_id);
 
-    // Clear sidecar fields (tag encodings + localRootSpanId) on context detachment
-    static void clearOtelSidecar();
+    // Free registered attribute keys (shared by shutdown() and registerAttributeKeys())
+    static void freeAttributeKeys();
 };
 
 #endif /* _CONTEXT_API_H */

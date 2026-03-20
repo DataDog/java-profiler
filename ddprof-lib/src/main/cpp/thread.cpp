@@ -4,11 +4,8 @@
  */
 
 #include "thread.h"
-#include "otel_context.h"
+#include "context_api.h"
 #include "os.h"
-#include "profiler.h"
-#include "common.h"
-#include "vmStructs.h"
 #include <cstring>
 #include <time.h>
 
@@ -88,10 +85,6 @@ void ProfiledThread::release() {
   }
 }
 
-ProfiledThread::~ProfiledThread() {
-  delete _otel_ctx_record;
-}
-
 void ProfiledThread::releaseFromBuffer() {
   if (_buffer_pos >= 0 && _buffer != nullptr && _buffer_pos < _buffer_size) {
     // Reset the thread object for reuse (clear thread-specific data)
@@ -106,15 +99,10 @@ void ProfiledThread::releaseFromBuffer() {
     _filter_slot_id = -1;
     _unwind_failures.clear();
 
-    // Reset OTEL sidecar (before freeing the record, for signal safety)
-    memset(_otel_tag_encodings, 0, sizeof(_otel_tag_encodings));
-    _otel_local_root_span_id = 0;
-
-    // Free the OTEL context record (null first for signal safety)
-    OtelThreadContextRecord* record = _otel_ctx_record;
-    _otel_ctx_record = nullptr;
+    // Reset OTEL sidecar and embedded record
+    clearOtelSidecar();
+    memset(&_otel_ctx_record, 0, sizeof(_otel_ctx_record));
     _otel_ctx_initialized = false;
-    delete record;
 
     // Put this ProfiledThread object back in the buffer for reuse
     _buffer[_buffer_pos] = this;
@@ -203,4 +191,18 @@ void ProfiledThread::cleanupBuffer() {
   _buffer_size = 0;
   _running_buffer_pos = 0;
   _free_stack_top = -1;
+}
+
+Context ProfiledThread::snapshotContext(size_t numAttrs) {
+  Context ctx = {};
+  u64 span_id = 0, root_span_id = 0;
+  if (ContextApi::get(span_id, root_span_id)) {
+    ctx.spanId = span_id;
+    ctx.rootSpanId = root_span_id;
+    ctx.checksum = Contexts::checksum(span_id, root_span_id);
+  }
+  for (size_t i = 0; i < numAttrs && i < DD_TAGS_CAPACITY; i++) {
+    ctx.tags[i].value = _otel_tag_encodings[i];
+  }
+  return ctx;
 }

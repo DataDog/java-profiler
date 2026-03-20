@@ -324,7 +324,8 @@ public final class JavaProfiler {
     private static ThreadContext initializeThreadContext() {
         int[] offsets = new int[4];
         ByteBuffer bb = initializeContextTls0(offsets);
-        return new ThreadContext(bb, offsets);
+        ByteBuffer sidecar = initializeOtelSidecarTls0();
+        return new ThreadContext(bb, offsets, sidecar);
     }
 
     private static native boolean init0();
@@ -359,6 +360,8 @@ public final class JavaProfiler {
     private static native String getStatus0();
 
     private static native ByteBuffer initializeContextTls0(int[] offsets);
+
+    private static native ByteBuffer initializeOtelSidecarTls0();
 
     public ThreadContext getThreadContext() {
         return tlsContextStorage.get();
