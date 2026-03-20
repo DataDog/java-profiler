@@ -67,7 +67,9 @@ public:
      *
      * @return The active context storage mode
      */
-    static ContextStorageMode getMode();
+    static inline ContextStorageMode getMode() {
+        return __atomic_load_n(&_mode, __ATOMIC_ACQUIRE);
+    }
 
     /**
      * Write context for the current thread (profiler mode only).

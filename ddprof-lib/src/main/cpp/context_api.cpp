@@ -70,9 +70,6 @@ bool ContextApi::isInitialized() {
     return __atomic_load_n(&_initialized, __ATOMIC_ACQUIRE);
 }
 
-ContextStorageMode ContextApi::getMode() {
-    return __atomic_load_n(&_mode, __ATOMIC_ACQUIRE);
-}
 
 /**
  * Initialize OTel TLS for the current thread on first use.
