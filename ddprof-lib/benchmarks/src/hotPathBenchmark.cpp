@@ -70,52 +70,47 @@ void benchmarkGetLockIndex() {
 }
 
 // ---- Fix 5: findLibraryByAddress  linear scan vs last-hit-index cache -------
+// Uses findLibraryImpl.h — the exact same template instantiated in production.
+
+#include "findLibraryImpl.h"
 
 struct FakeLib {
     uintptr_t min_addr;
     uintptr_t max_addr;
     int       id;
 
-    bool contains(uintptr_t addr) const {
-        return addr >= min_addr && addr < max_addr;
+    bool contains(const void* addr) const {
+        return (uintptr_t)addr >= min_addr && (uintptr_t)addr < max_addr;
     }
 };
 
 // 128 simulated loaded libraries, 64 KiB each, contiguous
 static const int NUM_LIBS = 128;
 static const uintptr_t LIB_SIZE = 64 * 1024;
-static FakeLib fake_libs[NUM_LIBS];
+static FakeLib  fake_lib_storage[NUM_LIBS];
+static FakeLib* fake_lib_ptrs[NUM_LIBS];  // pointer array mirrors CodeCacheArray
+
+// Minimal array wrapper satisfying the findLibraryByAddressImpl contract.
+struct FakeLibArray {
+    int count() const { return NUM_LIBS; }
+    FakeLib* operator[](int i) const { return fake_lib_ptrs[i]; }
+};
+static FakeLibArray fake_libs;
 
 static void initFakeLibs() {
     uintptr_t base = 0x7f0000000000ULL;
     for (int i = 0; i < NUM_LIBS; i++) {
-        fake_libs[i] = {base, base + LIB_SIZE, i};
+        fake_lib_storage[i] = {base, base + LIB_SIZE, i};
+        fake_lib_ptrs[i] = &fake_lib_storage[i];
         base += LIB_SIZE;
     }
 }
 
-// Baseline: O(N) linear scan every call
-static const FakeLib *findLibLinear(uintptr_t addr) {
+// Baseline: O(N) linear scan every call (no cache)
+static const FakeLib *findLibLinear(const void* addr) {
     for (int i = 0; i < NUM_LIBS; i++) {
-        if (fake_libs[i].contains(addr)) {
-            return &fake_libs[i];
-        }
-    }
-    return nullptr;
-}
-
-// Optimized: signal-safe static last-hit index (no DTLS allocation)
-static volatile int last_hit_idx = 0;
-
-static const FakeLib *findLibLastHit(uintptr_t addr) {
-    int hint = last_hit_idx;
-    if (hint < NUM_LIBS && fake_libs[hint].contains(addr)) {
-        return &fake_libs[hint];
-    }
-    for (int i = 0; i < NUM_LIBS; i++) {
-        if (fake_libs[i].contains(addr)) {
-            last_hit_idx = i;
-            return &fake_libs[i];
+        if (fake_lib_ptrs[i]->contains(addr)) {
+            return fake_lib_ptrs[i];
         }
     }
     return nullptr;
@@ -128,17 +123,17 @@ void benchmarkFindLibrary() {
     std::mt19937 rng(42);
 
     // Hot case: same lib repeatedly (models deep native stacks in one library)
-    const uintptr_t hot_lib_base = fake_libs[NUM_LIBS / 2].min_addr;
-    std::vector<uintptr_t> hot_addrs(config.measurement_iterations);
+    const void* hot_lib_base = (const void*)fake_lib_storage[NUM_LIBS / 2].min_addr;
+    std::vector<const void*> hot_addrs(config.measurement_iterations);
     for (auto &a : hot_addrs) {
-        a = hot_lib_base + (rng() % LIB_SIZE);
+        a = (const void*)(fake_lib_storage[NUM_LIBS / 2].min_addr + (rng() % LIB_SIZE));
     }
 
     // Cold case: uniform random across all libs
-    std::vector<uintptr_t> cold_addrs(config.measurement_iterations);
+    std::vector<const void*> cold_addrs(config.measurement_iterations);
     for (auto &a : cold_addrs) {
         int lib_idx = rng() % NUM_LIBS;
-        a = fake_libs[lib_idx].min_addr + (rng() % LIB_SIZE);
+        a = (const void*)(fake_lib_storage[lib_idx].min_addr + (rng() % LIB_SIZE));
     }
 
     static volatile int id_sink;
@@ -149,9 +144,8 @@ void benchmarkFindLibrary() {
         if (lib) id_sink = lib->id;
     }));
 
-    last_hit_idx = 0;
     results.push_back(runBenchmark("findLib last-hit idx (hot)", [&](int i) {
-        const FakeLib *lib = findLibLastHit(hot_addrs[i]);
+        const FakeLib *lib = findLibraryByAddressImpl<FakeLib>(fake_libs, hot_addrs[i]);
         if (lib) id_sink = lib->id;
     }));
 
@@ -161,9 +155,8 @@ void benchmarkFindLibrary() {
         if (lib) id_sink = lib->id;
     }));
 
-    last_hit_idx = 0;
     results.push_back(runBenchmark("findLib last-hit idx (cold)", [&](int i) {
-        const FakeLib *lib = findLibLastHit(cold_addrs[i]);
+        const FakeLib *lib = findLibraryByAddressImpl<FakeLib>(fake_libs, cold_addrs[i]);
         if (lib) id_sink = lib->id;
     }));
 }

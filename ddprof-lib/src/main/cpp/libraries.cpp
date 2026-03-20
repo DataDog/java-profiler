@@ -1,5 +1,6 @@
 #include "codeCache.h"
 #include "common.h"
+#include "findLibraryImpl.h"
 #include "libraries.h"
 #include "libraryPatcher.h"
 #include "log.h"
@@ -100,24 +101,5 @@ CodeCache *Libraries::findLibraryByName(const char *lib_name) {
 }
 
 CodeCache *Libraries::findLibraryByAddress(const void *address) {
-  // Signal-handler-safe last-hit cache. Not thread_local: DTLS init in shared
-  // libraries calls calloc, which deadlocks if the signal fires inside malloc.
-  // A plain static int is benignly racy — worst case is a cache miss.
-  static volatile int last_hit = 0;
-  const int native_lib_count = _native_libs.count();
-  int hint = last_hit;
-  if (hint < native_lib_count) {
-    CodeCache *lib = _native_libs[hint];
-    if (lib != NULL && lib->contains(address)) {
-      return lib;
-    }
-  }
-  for (int i = 0; i < native_lib_count; i++) {
-    CodeCache *lib = _native_libs[i];
-    if (lib != NULL && lib->contains(address)) {
-      last_hit = i;
-      return lib;
-    }
-  }
-  return NULL;
+  return findLibraryByAddressImpl<CodeCache>(_native_libs, address);
 }
