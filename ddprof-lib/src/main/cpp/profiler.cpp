@@ -53,7 +53,6 @@ static void (*orig_busHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 static Engine noop_engine;
 static PerfEvents perf_events;
 static WallClockASGCT wall_asgct_engine;
-static WallClockJVMTI wall_jvmti_engine;
 static J9WallClock j9_engine;
 static ITimer itimer;
 static CTimer ctimer;
@@ -1006,20 +1005,27 @@ void Profiler::writeHeapUsage(long value, bool live) {
 
 void *Profiler::dlopen_hook(const char *filename, int flags) {
   void *result = dlopen(filename, flags);
+
   if (result != NULL) {
     // Static function of Profiler -> can not use the instance variable _libs
     // Since Libraries is a singleton, this does not matter
     Libraries::instance()->updateSymbols(false);
+    // Patch sigaction in newly loaded libraries
+    LibraryPatcher::patch_sigaction();
     // Extract build-ids for newly loaded libraries if remote symbolication is enabled
     Profiler* profiler = instance();
     if (profiler != nullptr && profiler->_remote_symbolication) {
       Libraries::instance()->updateBuildIds();
     }
   }
+
   return result;
 }
 
 void Profiler::switchLibraryTrap(bool enable) {
+  if (_dlopen_entry == NULL) {
+    return;  // Not initialized yet, nothing to do
+  }
   void *impl = enable ? (void *)dlopen_hook : (void *)dlopen;
   __atomic_store_n(_dlopen_entry, impl, __ATOMIC_RELEASE);
 }
@@ -1036,13 +1042,25 @@ void Profiler::disableEngines() {
 
 void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (!crashHandler(signo, siginfo, ucontext)) {
-    orig_segvHandler(signo, siginfo, ucontext);
+    // Check dynamic chain target first (set by intercepted sigaction calls)
+    SigAction chain = OS::getSegvChainTarget();
+    if (chain != nullptr) {
+      chain(signo, siginfo, ucontext);
+    } else if (orig_segvHandler != nullptr) {
+      orig_segvHandler(signo, siginfo, ucontext);
+    }
   }
 }
 
 void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (!crashHandler(signo, siginfo, ucontext)) {
-    orig_busHandler(signo, siginfo, ucontext);
+    // Check dynamic chain target first (set by intercepted sigaction calls)
+    SigAction chain = OS::getBusChainTarget();
+    if (chain != nullptr) {
+      chain(signo, siginfo, ucontext);
+    } else if (orig_busHandler != nullptr) {
+      orig_busHandler(signo, siginfo, ucontext);
+    }
   }
 }
 
@@ -1101,16 +1119,21 @@ bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 }
 
 void Profiler::setupSignalHandlers() {
-  // do not re-run the signal setup (run only when VM has not been loaded yet)
+  // Do not re-run the signal setup (run only when VM has not been loaded yet)
   if (__sync_bool_compare_and_swap(&_signals_initialized, false, true)) {
       if (VM::isHotspot() || VM::isOpenJ9()) {
-        // HotSpot and J9 tolerate interposed SIGSEGV/SIGBUS handler; other JVMs
-        // probably not
+        // HotSpot and J9 tolerate interposed SIGSEGV/SIGBUS handler; other JVMs probably not
         orig_segvHandler = OS::replaceSigsegvHandler(segvHandler);
         orig_busHandler = OS::replaceSigbusHandler(busHandler);
+        // Protect our handlers from being overwritten by other libraries (e.g., wasmtime).
+        // Their handlers will be stored as chain targets and called from our handlers.
+        OS::protectSignalHandlers(segvHandler, busHandler);
+        // Patch sigaction GOT in libraries with broken signal handlers (already loaded)
+        LibraryPatcher::patch_sigaction();
       }
   }
 }
+
 
 /**
  * Update thread name for the given thread
@@ -1177,9 +1200,9 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
     if (VM::isOpenJ9()) {
       if (!J9Ext::shouldUseAsgct() || !J9Ext::can_use_ASGCT()) {
         if (!J9Ext::is_jvmti_jmethodid_safe()) {
-          fprintf(stderr, "[ddprof] [WARN] Safe jmethodID access is not available on this JVM. Using "
+          LOG_WARN("Safe jmethodID access is not available on this JVM. Using "
                     "CPU profiler on your own risk. Use -XX:+KeepJNIIDs=true JVM "
-                    "flag to make access to jmethodIDs safe, if your JVM supports it\n");
+                    "flag to make access to jmethodIDs safe, if your JVM supports it");
         }
         TEST_LOG("J9[cpu]=jvmti");
         return &j9_engine;
@@ -1209,9 +1232,9 @@ Engine *Profiler::selectWallEngine(Arguments &args) {
   if (VM::isOpenJ9()) {
     if (args._wallclock_sampler == JVMTI || !J9Ext::shouldUseAsgct() || !J9Ext::can_use_ASGCT()) {
       if (!J9Ext::is_jvmti_jmethodid_safe()) {
-        fprintf(stderr, "[ddprof] [WARN] Safe jmethodID access is not available on this JVM. Using "
+        LOG_WARN("Safe jmethodID access is not available on this JVM. Using "
                   "wallclock profiler on your own risk. Use -XX:+KeepJNIIDs=true JVM "
-                  "flag to make access to jmethodIDs safe, if your JVM supports it\n");
+                  "flag to make access to jmethodIDs safe, if your JVM supports it");
       }
       j9_engine.sampleIdleThreads();
       TEST_LOG("J9[wall]=jvmti");
@@ -1223,7 +1246,8 @@ Engine *Profiler::selectWallEngine(Arguments &args) {
   }
   switch (args._wallclock_sampler) {
         case JVMTI:
-            return (Engine*)&wall_jvmti_engine;
+            fprintf(stderr, "[ddprof] [WARN] JVMTI wallclock is not available on this JVM, fallback to ASGCT wallclock\n");
+            [[fallthrough]];
         case ASGCT:
         default:
             return (Engine*)&wall_asgct_engine;
@@ -1416,7 +1440,8 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   enableEngines();
 
-  switchLibraryTrap(_cstack == CSTACK_DWARF || _remote_symbolication);
+  // Always enable library trap to catch wasmtime loading and patch its broken sigaction
+  switchLibraryTrap(true);
 
   JfrMetadata::initialize(args._context_attributes);
   _num_context_attributes = args._context_attributes.size();

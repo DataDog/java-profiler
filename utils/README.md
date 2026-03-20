@@ -109,6 +109,65 @@ If the release fails:
 3. **GitLab build fails**: Check GitLab pipeline and retry
 4. **Authentication issues**: Run `gh auth login`
 
+## Backport Script
+
+### `backport-pr.sh`
+
+Cherry-picks a merged PR onto a release branch, pushes the backport branch, and opens a PR.
+
+**Prerequisites:**
+- [GitHub CLI](https://cli.github.com/) installed and authenticated
+- [jq](https://jqlang.github.io/jq/) installed
+- Clean working tree (no uncommitted changes)
+
+**Usage:**
+```bash
+./utils/backport-pr.sh [--dry-run] [<release-name>] <pr-number-or-url>
+```
+
+**Arguments:**
+- `<release-name>`: Target release branch suffix, e.g. `1.9._` (maps to `release/1.9._`). If omitted, the script presents an interactive picker of the 10 most recent release branches.
+- `<pr-number-or-url>`: PR number (`420`) or full GitHub URL (`https://github.com/DataDog/java-profiler/pull/420`).
+- `--dry-run`: Show what would happen without making any changes.
+
+**Examples:**
+```bash
+# Backport PR #420 to release/1.9._
+./utils/backport-pr.sh 1.9._ 420
+
+# Same, using a URL
+./utils/backport-pr.sh 1.9._ https://github.com/DataDog/java-profiler/pull/420
+
+# Interactive branch selection
+./utils/backport-pr.sh 420
+
+# Preview without making changes
+./utils/backport-pr.sh --dry-run 1.9._ 420
+```
+
+**Features:**
+- Interactive release branch picker when no branch is specified
+- Accepts both PR numbers and full GitHub URLs
+- Single GitHub API call for all PR metadata
+- Warns if the PR is not merged and asks for confirmation
+- Handles squashed/garbage-collected commits by falling back to the merge commit
+- Detects and cleans up existing backport branches from previous attempts
+- Guided recovery on cherry-pick conflicts (does not leave you stranded)
+- Comments on the original PR with a link to the backport for traceability
+- Colored terminal output (degrades gracefully in non-TTY contexts)
+- Restores the original branch on completion or failure
+
+## Patch dd-java-agent Script
+
+### `patch-dd-java-agent.sh`
+
+Patches a `dd-java-agent.jar` with locally-built ddprof library contents for quick local testing without a full dd-trace-java rebuild.
+
+**Usage:**
+```bash
+DD_AGENT_JAR=path/to/dd-java-agent.jar DDPROF_JAR=path/to/ddprof.jar ./utils/patch-dd-java-agent.sh
+```
+
 ## Cherry-Pick Scripts
 
 ### `cherry.sh`

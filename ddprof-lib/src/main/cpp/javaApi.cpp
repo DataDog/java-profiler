@@ -457,16 +457,19 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
   JniString version_str(env, version);
   JniString tracer_version_str(env, tracer_version);
 
+  const char *host_name_attrs[] = {"host.name", hostname_str.c_str(), NULL};
+
   otel_process_ctx_data data = {
-    .deployment_environment_name = const_cast<char*>(env_str.c_str()),
-    .host_name = const_cast<char*>(hostname_str.c_str()),
-    .service_instance_id = const_cast<char*>(runtime_id_str.c_str()),
-    .service_name = const_cast<char*>(service_str.c_str()),
-    .service_version = const_cast<char*>(version_str.c_str()),
-    .telemetry_sdk_language = const_cast<char*>("java"),
-    .telemetry_sdk_version = const_cast<char*>(tracer_version_str.c_str()),
-    .telemetry_sdk_name = const_cast<char*>("dd-trace-java"),
-    .resources = NULL // TODO: Arbitrary tags not supported yet for Java
+    .deployment_environment_name = env_str.c_str(),
+    .service_instance_id = runtime_id_str.c_str(),
+    .service_name = service_str.c_str(),
+    .service_version = version_str.c_str(),
+    .telemetry_sdk_language = "java",
+    .telemetry_sdk_version = tracer_version_str.c_str(),
+    .telemetry_sdk_name = "dd-trace-java",
+    .resource_attributes = host_name_attrs,
+    .extra_attributes = NULL,
+    .thread_ctx_config = NULL
   };
 
   otel_process_ctx_result result = otel_process_ctx_publish(&data);
@@ -488,8 +491,6 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
   // Convert C strings to Java strings
   jstring jDeploymentEnvironmentName = result.data.deployment_environment_name ?
     env->NewStringUTF(result.data.deployment_environment_name) : nullptr;
-  jstring jHostName = result.data.host_name ?
-    env->NewStringUTF(result.data.host_name) : nullptr;
   jstring jServiceInstanceId = result.data.service_instance_id ?
     env->NewStringUTF(result.data.service_instance_id) : nullptr;
   jstring jServiceName = result.data.service_name ?
@@ -502,7 +503,17 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
     env->NewStringUTF(result.data.telemetry_sdk_version) : nullptr;
   jstring jTelemetrySdkName = result.data.telemetry_sdk_name ?
     env->NewStringUTF(result.data.telemetry_sdk_name) : nullptr;
-  // TODO: result.data.resources not supported yet for Java
+
+  // Extract host.name from resource_attributes
+  jstring jHostName = nullptr;
+  if (result.data.resource_attributes != NULL) {
+    for (int i = 0; result.data.resource_attributes[i] != NULL; i += 2) {
+      if (strcmp(result.data.resource_attributes[i], "host.name") == 0 && result.data.resource_attributes[i + 1] != NULL) {
+        jHostName = env->NewStringUTF(result.data.resource_attributes[i + 1]);
+        break;
+      }
+    }
+  }
 
   otel_process_ctx_read_drop(&result);
 

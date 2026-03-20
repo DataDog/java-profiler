@@ -155,19 +155,4 @@ class WallClockASGCT : public BaseWallClock {
     }
 };
 
-class WallClockJVMTI : public BaseWallClock {
-  private:
-    void timerLoop() override;
-  public:
-    struct ThreadEntry {
-        VMThread* native;
-        jthread java;
-        int tid;
-    };
-    WallClockJVMTI() : BaseWallClock() {}
-    const char* name() override {
-    return "WallClock (JVMTI)";
-  }
-};
-
 #endif // _WALLCLOCK_H

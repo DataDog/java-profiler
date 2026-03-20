@@ -433,6 +433,20 @@ For detailed documentation, see [doc/RemoteSymbolication.md](doc/plans/RemoteSym
 4. Run tests: `./gradlew test`
 5. Submit a pull request
 
+## Utility Scripts
+
+The [`utils/`](utils/) directory contains helper scripts for common workflows. See [`utils/README.md`](utils/README.md) for full documentation.
+
+| Script | Description |
+|--------|-------------|
+| `release.sh` | Trigger a validated release (major/minor/patch) via GitHub Actions |
+| `backport-pr.sh` | Cherry-pick a merged PR onto a release branch and open a backport PR |
+| `patch-dd-java-agent.sh` | Patch `dd-java-agent.jar` with a local ddprof build for quick testing |
+| `run-docker-tests.sh` | Run tests in Docker containers (musl/glibc, multiple JDKs) |
+| `check_upstream_changes.sh` | Check for upstream async-profiler changes locally |
+| `track_upstream_changes.sh` | Track upstream changes and generate reports |
+| `generate_tracked_files.sh` | Generate the list of files tracked from upstream |
+
 ## License
 This project is licensed under the Apache License 2.0 - see the LICENSE file for details.
 

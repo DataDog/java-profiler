@@ -949,7 +949,9 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
 
         if (haveKernelSymbols()) {
             cc->sort();
-            array->add(cc);
+            if (!array->add(cc)) {
+                delete cc;
+            }
         } else {
             delete cc;
         }
@@ -987,7 +989,9 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
 
         cc->sort();
         applyPatch(cc);
-        array->add(cc);
+        if (!array->add(cc)) {
+            delete cc;
+        }
     }
 
     if (array->count() >= MAX_NATIVE_LIBS && !_libs_limit_reported) {

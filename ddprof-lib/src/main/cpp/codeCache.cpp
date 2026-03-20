@@ -338,6 +338,11 @@ void CodeCache::addImport(void **entry, const char *name) {
               saveImport(im_realloc, entry);
           }
           break;
+      case 's':
+          if (strcmp(name, "sigaction") == 0) {
+              saveImport(im_sigaction, entry);
+          }
+          break;
     }
 }
 
