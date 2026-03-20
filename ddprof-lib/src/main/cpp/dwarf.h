@@ -83,6 +83,17 @@ struct FrameDesc {
     static FrameDesc default_clang_frame;
     static FrameDesc no_dwarf_frame;
 
+    // Best-guess fallback frame layout when a PC doesn't map to any known library.
+    // Per-library detection overrides this: on macOS via __eh_frame section presence,
+    // on Linux via DwarfParser::detectedDefaultFrame().
+    static const FrameDesc& fallback_default_frame() {
+#if defined(__APPLE__) && defined(__aarch64__)
+        return default_clang_frame;
+#else
+        return default_frame;
+#endif
+    }
+
     static int comparator(const void* p1, const void* p2) {
         FrameDesc* fd1 = (FrameDesc*)p1;
         FrameDesc* fd2 = (FrameDesc*)p2;

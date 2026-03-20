@@ -12,6 +12,7 @@
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
 #include "symbols.h"
+#include "dwarf.h"
 #include "log.h"
 
 UnloadProtection::UnloadProtection(const CodeCache *cc) {
@@ -138,6 +139,7 @@ class MachOParser {
         const symtab_command* symtab = NULL;
         const dysymtab_command* dysymtab = NULL;
         const section_64* stubs_section = NULL;
+        bool has_eh_frame = false;
 
         for (uint32_t i = 0; i < header->ncmds; i++) {
             if (lc->cmd == LC_SEGMENT_64) {
@@ -145,6 +147,7 @@ class MachOParser {
                 if (strcmp(sc->segname, "__TEXT") == 0) {
                     _cc->updateBounds(_image_base, add(_image_base, sc->vmsize));
                     stubs_section = findSection(sc, "__stubs");
+                    has_eh_frame = findSection(sc, "__eh_frame") != NULL;
                 } else if (strcmp(sc->segname, "__LINKEDIT") == 0) {
                     link_base = _vmaddr_slide + sc->vmaddr - sc->fileoff;
                 } else if (strcmp(sc->segname, "__DATA") == 0 || strcmp(sc->segname, "__DATA_CONST") == 0) {
@@ -167,6 +170,12 @@ class MachOParser {
                 if (stubs_section != NULL) loadStubSymbols(symtab, dysymtab, stubs_section, link_base);
             }
         }
+
+        // GCC emits __eh_frame (DWARF CFI); clang emits __unwind_info (compact unwind).
+        // On aarch64, GCC and clang use different frame layouts, so detecting the
+        // compiler matters. On x86_64 both use the same layout (no-op distinction).
+        const FrameDesc& frame = has_eh_frame ? FrameDesc::default_frame : FrameDesc::fallback_default_frame();
+        _cc->setDwarfTable(NULL, 0, frame);
 
         return true;
     }

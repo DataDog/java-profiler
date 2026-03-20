@@ -158,11 +158,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
 
         uintptr_t prev_sp = sp;
         CodeCache* cc = profiler->findLibraryByAddress(pc);
-#if defined(__APPLE__) && defined(__aarch64__)
-        FrameDesc f = cc != NULL ? cc->findFrameDesc(pc) : FrameDesc::default_clang_frame;
-#else
-        FrameDesc f = cc != NULL ? cc->findFrameDesc(pc) : FrameDesc::default_frame;
-#endif
+        FrameDesc f = cc != NULL ? cc->findFrameDesc(pc) : FrameDesc::fallback_default_frame();
 
         u8 cfa_reg = (u8)f.cfa;
         int cfa_off = f.cfa >> 8;
@@ -698,11 +694,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
         dwarf_unwind:
         uintptr_t prev_sp = sp;
         CodeCache* cc = profiler->findLibraryByAddress(pc);
-#if defined(__APPLE__) && defined(__aarch64__)
-        FrameDesc f = cc != NULL ? cc->findFrameDesc(pc) : FrameDesc::default_clang_frame;
-#else
-        FrameDesc f = cc != NULL ? cc->findFrameDesc(pc) : FrameDesc::default_frame;
-#endif
+        FrameDesc f = cc != NULL ? cc->findFrameDesc(pc) : FrameDesc::fallback_default_frame();
 
         u8 cfa_reg = (u8)f.cfa;
         int cfa_off = f.cfa >> 8;
