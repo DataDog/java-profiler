@@ -110,6 +110,10 @@ main() {
         fi
     fi
 
+    # Save test script since it won't exist on main branch
+    local temp_test_script="/tmp/test_branch_prediction_perf_$$.sh"
+    cp "${TEST_SCRIPT}" "${temp_test_script}"
+
     # Test optimized version (current branch)
     log_step "1/4: Building optimized version (${current_branch})..."
     cd "${REPO_ROOT}"
@@ -117,7 +121,7 @@ main() {
     cd - > /dev/null
 
     log_step "2/4: Testing optimized version..."
-    "${TEST_SCRIPT}" "${benchmark}" "optimized"
+    "${temp_test_script}" "${benchmark}" "optimized"
 
     # Switch to main and test baseline
     log_step "3/4: Switching to main branch and building baseline..."
@@ -128,7 +132,7 @@ main() {
     cd - > /dev/null
 
     log_step "4/4: Testing baseline version..."
-    "${TEST_SCRIPT}" "${benchmark}" "baseline"
+    "${temp_test_script}" "${benchmark}" "baseline"
 
     # Switch back
     log_info "Switching back to ${current_branch}..."
@@ -136,6 +140,9 @@ main() {
     git checkout "${current_branch}"
     git stash pop || true
     cd - > /dev/null
+
+    # Cleanup temp script
+    rm -f "${temp_test_script}"
 
     # Compare results
     echo ""
