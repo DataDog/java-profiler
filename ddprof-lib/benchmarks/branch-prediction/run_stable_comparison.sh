@@ -174,22 +174,22 @@ baseline_ipc_values=()
 optimized_ipc_values=()
 
 for i in $(seq 1 ${ITERATIONS}); do
-    local baseline_file="perf_results_run_${i}/baseline_stat.txt"
-    local optimized_file="perf_results_run_${i}/optimized_stat.txt"
+    baseline_file="perf_results_run_${i}/baseline_stat.txt"
+    optimized_file="perf_results_run_${i}/optimized_stat.txt"
 
     if [ -f "${baseline_file}" ] && [ -f "${optimized_file}" ]; then
-        local b_instr=$(extract_metric "${baseline_file}" "instructions")
-        local b_cycles=$(extract_metric "${baseline_file}" "cycles")
-        local o_instr=$(extract_metric "${optimized_file}" "instructions")
-        local o_cycles=$(extract_metric "${optimized_file}" "cycles")
+        b_instr=$(extract_metric "${baseline_file}" "instructions")
+        b_cycles=$(extract_metric "${baseline_file}" "cycles")
+        o_instr=$(extract_metric "${optimized_file}" "instructions")
+        o_cycles=$(extract_metric "${optimized_file}" "cycles")
 
         if [ -n "${b_instr}" ] && [ -n "${b_cycles}" ] && [ "${b_cycles}" -gt 0 ]; then
-            local b_ipc=$(echo "scale=6; ${b_instr} / ${b_cycles}" | bc)
+            b_ipc=$(echo "scale=6; ${b_instr} / ${b_cycles}" | bc)
             baseline_ipc_values+=("${b_ipc}")
         fi
 
         if [ -n "${o_instr}" ] && [ -n "${o_cycles}" ] && [ "${o_cycles}" -gt 0 ]; then
-            local o_ipc=$(echo "scale=6; ${o_instr} / ${o_cycles}" | bc)
+            o_ipc=$(echo "scale=6; ${o_instr} / ${o_cycles}" | bc)
             optimized_ipc_values+=("${o_ipc}")
         fi
     fi
@@ -197,8 +197,8 @@ done
 
 if [ ${#baseline_ipc_values[@]} -gt 0 ]; then
     # Calculate mean IPC
-    local baseline_ipc_sum=0
-    local optimized_ipc_sum=0
+    baseline_ipc_sum=0
+    optimized_ipc_sum=0
     for val in "${baseline_ipc_values[@]}"; do
         baseline_ipc_sum=$(echo "${baseline_ipc_sum} + ${val}" | bc)
     done
@@ -206,29 +206,29 @@ if [ ${#baseline_ipc_values[@]} -gt 0 ]; then
         optimized_ipc_sum=$(echo "${optimized_ipc_sum} + ${val}" | bc)
     done
 
-    local n=${#baseline_ipc_values[@]}
-    local baseline_ipc_mean=$(echo "scale=6; ${baseline_ipc_sum} / ${n}" | bc)
-    local optimized_ipc_mean=$(echo "scale=6; ${optimized_ipc_sum} / ${n}" | bc)
+    n=${#baseline_ipc_values[@]}
+    baseline_ipc_mean=$(echo "scale=6; ${baseline_ipc_sum} / ${n}" | bc)
+    optimized_ipc_mean=$(echo "scale=6; ${optimized_ipc_sum} / ${n}" | bc)
 
     # Calculate standard deviation
-    local baseline_ipc_var_sum=0
-    local optimized_ipc_var_sum=0
+    baseline_ipc_var_sum=0
+    optimized_ipc_var_sum=0
     for val in "${baseline_ipc_values[@]}"; do
-        local diff=$(echo "${val} - ${baseline_ipc_mean}" | bc)
-        local sq=$(echo "${diff} * ${diff}" | bc)
+        diff=$(echo "${val} - ${baseline_ipc_mean}" | bc)
+        sq=$(echo "${diff} * ${diff}" | bc)
         baseline_ipc_var_sum=$(echo "${baseline_ipc_var_sum} + ${sq}" | bc)
     done
     for val in "${optimized_ipc_values[@]}"; do
-        local diff=$(echo "${val} - ${optimized_ipc_mean}" | bc)
-        local sq=$(echo "${diff} * ${diff}" | bc)
+        diff=$(echo "${val} - ${optimized_ipc_mean}" | bc)
+        sq=$(echo "${diff} * ${diff}" | bc)
         optimized_ipc_var_sum=$(echo "${optimized_ipc_var_sum} + ${sq}" | bc)
     done
 
-    local baseline_ipc_stddev=$(echo "scale=6; sqrt(${baseline_ipc_var_sum} / ${n})" | bc)
-    local optimized_ipc_stddev=$(echo "scale=6; sqrt(${optimized_ipc_var_sum} / ${n})" | bc)
+    baseline_ipc_stddev=$(echo "scale=6; sqrt(${baseline_ipc_var_sum} / ${n})" | bc)
+    optimized_ipc_stddev=$(echo "scale=6; sqrt(${optimized_ipc_var_sum} / ${n})" | bc)
 
     # Calculate change
-    local ipc_change=$(echo "scale=2; (${optimized_ipc_mean} - ${baseline_ipc_mean}) * 100 / ${baseline_ipc_mean}" | bc)
+    ipc_change=$(echo "scale=2; (${optimized_ipc_mean} - ${baseline_ipc_mean}) * 100 / ${baseline_ipc_mean}" | bc)
 
     echo "--------------------------|------------------------------------|------------------------------------|----------"
     printf "%-25s | %20s ± %10s | %20s ± %10s | %8s%%\n" \
