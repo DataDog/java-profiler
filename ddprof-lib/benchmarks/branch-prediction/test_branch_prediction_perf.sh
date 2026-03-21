@@ -99,7 +99,7 @@ start_benchmark() {
     fi
 
     env -u JAVA_TOOL_OPTIONS \
-    bash -c "set -x; while true; do java -agentpath:\"${PROFILER_LIB}=start,cpu,file=/tmp/test_${benchmark}.jfr\" \
+    bash -c "set -x; while true; do java -agentpath:\"${PROFILER_LIB}=start,cpu,wall,alloc,file=/tmp/test_${benchmark}.jfr\" \
          -Xmx2g \
          -Xms2g \
          -jar \"${RENAISSANCE_JAR}\" \
