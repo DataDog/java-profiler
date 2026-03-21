@@ -26,22 +26,29 @@ log_warn() {
     echo -e "${YELLOW}[WARN]${NC} $1"
 }
 
-# System tuning recommendations
-log_info "=== System Performance Tuning Recommendations ==="
-echo ""
-log_warn "For more stable results, consider:"
-echo "  1. Set CPU governor to 'performance':"
-echo "     sudo cpupower frequency-set -g performance"
-echo ""
-echo "  2. Disable turbo boost (reduces thermal variance):"
-echo "     echo 1 | sudo tee /sys/devices/system/cpu/intel_pmu/allow_tsx_force_abort"
-echo ""
-echo "  3. Pin to specific CPUs (if using taskset with the benchmark)"
-echo ""
-echo "  4. Ensure system is idle (no background jobs)"
-echo ""
-read -p "Press Enter to continue or Ctrl-C to abort..."
-echo ""
+# System tuning recommendations (non-interactive)
+if [ -t 0 ]; then
+    # Only show interactive prompt if stdin is a terminal
+    log_info "=== System Performance Tuning Recommendations ==="
+    echo ""
+    log_warn "For more stable results, consider:"
+    echo "  1. Set CPU governor to 'performance':"
+    echo "     sudo cpupower frequency-set -g performance"
+    echo ""
+    echo "  2. Disable turbo boost (reduces thermal variance):"
+    echo "     echo 1 | sudo tee /sys/devices/system/cpu/intel_pmu/allow_tsx_force_abort"
+    echo ""
+    echo "  3. Pin to specific CPUs (if using taskset with the benchmark)"
+    echo ""
+    echo "  4. Ensure system is idle (no background jobs)"
+    echo ""
+    read -p "Press Enter to continue or Ctrl-C to abort..."
+    echo ""
+else
+    # Non-interactive mode (nohup, background, etc.)
+    log_info "Running in non-interactive mode (nohup/background)"
+    log_warn "For best results, ensure system tuning is applied before running"
+fi
 
 log_info "Running ${ITERATIONS} iterations of benchmark: ${BENCHMARK}"
 echo ""
