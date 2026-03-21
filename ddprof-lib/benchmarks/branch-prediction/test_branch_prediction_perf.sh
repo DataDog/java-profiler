@@ -91,13 +91,20 @@ start_benchmark() {
     # Disable DD Java agent injection to avoid conflicts
     # Run in infinite loop to ensure process stays alive during all perf measurements
     # The benchmark will be killed by cleanup when tests complete
+    log_info "Using profiler library: ${PROFILER_LIB}"
+
+    if [ ! -f "${PROFILER_LIB}" ]; then
+        log_error "Profiler library does not exist: ${PROFILER_LIB}"
+        exit 1
+    fi
+
     env -u JAVA_TOOL_OPTIONS \
-    bash -c "while true; do java -agentpath:\"${PROFILER_LIB}=start,cpu,file=/tmp/test.jfr\" \
+    bash -c "set -x; while true; do java -agentpath:\"${PROFILER_LIB}\" \
          -Xmx2g \
          -Xms2g \
          -jar \"${RENAISSANCE_JAR}\" \
          \"${benchmark}\" \
-         -r 100; done" \
+         -r 100 || { echo 'Java exited with status:' \$?; sleep 1; }; done" \
          &> /tmp/renaissance_${benchmark}.log &
 
     local WRAPPER_PID=$!
@@ -119,13 +126,23 @@ start_benchmark() {
     log_info "Java process PID: ${JAVA_PID}"
 
     log_info "Warming up for ${WARMUP} seconds..."
-    sleep ${WARMUP}
 
-    # Verify still running after warmup
-    if ! kill -0 ${JAVA_PID} 2>/dev/null; then
-        log_error "Java process ${JAVA_PID} died during warmup. Check /tmp/renaissance_${benchmark}.log"
-        exit 1
-    fi
+    # Monitor process during warmup
+    local elapsed=0
+    while [ $elapsed -lt ${WARMUP} ]; do
+        if ! kill -0 ${JAVA_PID} 2>/dev/null; then
+            log_error "Java process ${JAVA_PID} died after ${elapsed}s of warmup"
+            log_error "Last 50 lines of /tmp/renaissance_${benchmark}.log:"
+            tail -50 /tmp/renaissance_${benchmark}.log 2>/dev/null || echo "No log available"
+            log_error "Checking for core dumps or crash logs..."
+            ls -lth /tmp/hs_err_pid*.log 2>/dev/null | head -3 || echo "No hs_err logs found"
+            exit 1
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    log_info "Warmup complete, process still running"
 }
 
 # Run perf stat to collect branch prediction statistics
