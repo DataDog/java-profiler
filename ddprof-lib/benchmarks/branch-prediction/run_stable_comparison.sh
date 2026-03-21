@@ -69,4 +69,105 @@ done
 log_info "=== All iterations complete ==="
 log_info "Results saved in perf_results_run_*/ directories"
 log_info ""
-log_info "To analyze variance, compare the stat.txt files across runs"
+
+# Statistical analysis
+log_info "=== Statistical Analysis ==="
+echo ""
+
+# Extract metric from a stat file
+extract_metric() {
+    local file="$1"
+    local pattern="$2"
+    local value=$(grep "$pattern" "$file" | awk '{print $1}' | head -1)
+    # Return empty if value contains < (like <not counted>)
+    if [[ "$value" =~ \< ]]; then
+        echo ""
+    else
+        echo "$value" | tr -d ','
+    fi
+}
+
+# Calculate statistics for a metric
+calc_stats() {
+    local metric_name="$1"
+    local pattern="$2"
+    local baseline_values=()
+    local optimized_values=()
+
+    # Collect all values
+    for i in $(seq 1 ${ITERATIONS}); do
+        local baseline_file="perf_results_run_${i}/baseline_stat.txt"
+        local optimized_file="perf_results_run_${i}/optimized_stat.txt"
+
+        if [ -f "${baseline_file}" ] && [ -f "${optimized_file}" ]; then
+            local bval=$(extract_metric "${baseline_file}" "${pattern}")
+            local oval=$(extract_metric "${optimized_file}" "${pattern}")
+
+            if [ -n "${bval}" ] && [ -n "${oval}" ]; then
+                baseline_values+=("${bval}")
+                optimized_values+=("${oval}")
+            fi
+        fi
+    done
+
+    if [ ${#baseline_values[@]} -eq 0 ]; then
+        echo "${metric_name}: No data"
+        return
+    fi
+
+    # Calculate mean
+    local baseline_sum=0
+    local optimized_sum=0
+    for val in "${baseline_values[@]}"; do
+        baseline_sum=$((baseline_sum + val))
+    done
+    for val in "${optimized_values[@]}"; do
+        optimized_sum=$((optimized_sum + val))
+    done
+
+    local n=${#baseline_values[@]}
+    local baseline_mean=$((baseline_sum / n))
+    local optimized_mean=$((optimized_sum / n))
+
+    # Calculate standard deviation
+    local baseline_var_sum=0
+    local optimized_var_sum=0
+    for val in "${baseline_values[@]}"; do
+        local diff=$((val - baseline_mean))
+        baseline_var_sum=$((baseline_var_sum + diff * diff))
+    done
+    for val in "${optimized_values[@]}"; do
+        local diff=$((val - optimized_mean))
+        optimized_var_sum=$((optimized_var_sum + diff * diff))
+    done
+
+    local baseline_stddev=$(echo "scale=2; sqrt(${baseline_var_sum} / ${n})" | bc)
+    local optimized_stddev=$(echo "scale=2; sqrt(${optimized_var_sum} / ${n})" | bc)
+
+    # Calculate change
+    local change=$(echo "scale=2; (${optimized_mean} - ${baseline_mean}) * 100 / ${baseline_mean}" | bc)
+
+    # Format output with thousand separators
+    local baseline_formatted=$(printf "%'d" ${baseline_mean})
+    local optimized_formatted=$(printf "%'d" ${optimized_mean})
+
+    printf "%-25s | %20s ± %10s | %20s ± %10s | %8s%%\n" \
+           "${metric_name}" \
+           "${baseline_formatted}" "${baseline_stddev}" \
+           "${optimized_formatted}" "${optimized_stddev}" \
+           "${change}"
+}
+
+echo "Metric                    | Baseline (mean ± σ)                | Optimized (mean ± σ)               | Change"
+echo "--------------------------|------------------------------------|------------------------------------|----------"
+
+calc_stats "Branch misses" "branch-misses"
+calc_stats "L1 icache misses" "L1-icache-load-misses"
+calc_stats "Instructions" "instructions"
+calc_stats "Cycles" "cycles"
+
+echo ""
+log_info "n=${ITERATIONS} iterations"
+log_info "Negative change % indicates improvement (fewer misses/cycles)"
+log_info ""
+log_info "Individual run results in perf_results_run_*/ directories"
