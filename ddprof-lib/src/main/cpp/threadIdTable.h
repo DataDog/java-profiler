@@ -45,7 +45,7 @@ public:
     
     // Signal-safe insertion using atomic operations only
     void insert(int tid) {
-        if (unlikely(tid == 0)) return; // Invalid thread ID, 0 is reserved for empty slots
+        if ((tid == 0)) return; // Invalid thread ID, 0 is reserved for empty slots
         
         int start_slot = hash(tid);
         for (int probe = 0; probe < TABLE_SIZE; probe++) {
@@ -58,7 +58,7 @@ public:
             }
             
             // Check if already present (common case - threads insert multiple times)
-            if (likely(table[slot].load(std::memory_order_relaxed) == tid)) {
+            if ((table[slot].load(std::memory_order_relaxed) == tid)) {
                 return; // Already exists
             }
         }

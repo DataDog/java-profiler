@@ -135,27 +135,27 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
   ProfiledThread *current = ProfiledThread::current();
-  if (unlikely(current == nullptr)) {
+  if ((current == nullptr)) {
     return;
   }
   int tid = current->tid();
-  if (unlikely(tid < 0)) {
+  if ((tid < 0)) {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
-  if (unlikely(!thread_filter->enabled())) {
+  if ((!thread_filter->enabled())) {
     return;
   }
   
   int slot_id = current->filterSlotId();
-  if (unlikely(slot_id == -1)) {
+  if ((slot_id == -1)) {
     // Thread doesn't have a slot ID yet (e.g., main thread), so register it
     // Happens when we are not enabled before thread start
     slot_id = thread_filter->registerThread();
     current->setFilterSlotId(slot_id);
   }
   
-  if (unlikely(slot_id == -1)) {
+  if ((slot_id == -1)) {
     return;  // Failed to register thread
   }
   thread_filter->add(tid, slot_id);
@@ -164,20 +164,20 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
   ProfiledThread *current = ProfiledThread::current();
-  if (unlikely(current == nullptr)) {
+  if ((current == nullptr)) {
     return;
   }
   int tid = current->tid();
-  if (unlikely(tid < 0)) {
+  if ((tid < 0)) {
     return;
   }
   ThreadFilter *thread_filter = Profiler::instance()->threadFilter();
-  if (unlikely(!thread_filter->enabled())) {
+  if ((!thread_filter->enabled())) {
     return;
   }
 
   int slot_id = current->filterSlotId();
-  if (unlikely(slot_id == -1)) {
+  if ((slot_id == -1)) {
     // Thread doesn't have a slot ID yet - nothing to remove
     return;
   }

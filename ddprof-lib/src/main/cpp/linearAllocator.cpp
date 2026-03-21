@@ -138,7 +138,7 @@ void *LinearAllocator::alloc(size_t size) {
 
   // CRITICAL FIX: After detachChunks() fails, _tail may be nullptr.
   // We must handle this gracefully to prevent crash.
-  if (unlikely(chunk == nullptr)) {
+  if ((chunk == nullptr)) {
     return nullptr;
   }
 
@@ -157,7 +157,7 @@ void *LinearAllocator::alloc(size_t size) {
         ASAN_UNPOISON_MEMORY_REGION(allocated_ptr, size);
         #endif
 
-        if (unlikely(_chunk_size / 2 - offs < size)) {
+        if ((_chunk_size / 2 - offs < size)) {
           // Stepped over a middle of the chunk - it's time to prepare a new one
           reserveChunk(chunk);
         }
@@ -171,7 +171,7 @@ void *LinearAllocator::alloc(size_t size) {
 
 Chunk *LinearAllocator::allocateChunk(Chunk *current) {
   Chunk *chunk = (Chunk *)OS::safeAlloc(_chunk_size);
-  if (likely(chunk != NULL)) {
+  if ((chunk != NULL)) {
     chunk->prev = current;
     chunk->offs = sizeof(Chunk);
 
@@ -208,18 +208,18 @@ void LinearAllocator::reserveChunk(Chunk *current) {
 Chunk *LinearAllocator::getNextChunk(Chunk *current) {
   Chunk *reserve = _reserve;
 
-  if (unlikely(reserve == current)) {
+  if ((reserve == current)) {
     // Unlikely case: no reserve yet.
     // It's probably being allocated right now, so let's compete
     reserve = allocateChunk(current);
-    if (unlikely(reserve == NULL)) {
+    if ((reserve == NULL)) {
       // Not enough memory
       return NULL;
     }
 
     Chunk *prev_reserve =
         __sync_val_compare_and_swap(&_reserve, current, reserve);
-    if (unlikely(prev_reserve != current)) {
+    if ((prev_reserve != current)) {
       freeChunk(reserve);
       reserve = prev_reserve;
     }

@@ -764,9 +764,9 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
   atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
-  if (unlikely(!_locks[lock_index].tryLock() &&
+  if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock())) {
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     // Too many concurrent signals already
     atomicIncRelaxed(_failures[-ticks_skipped]);
 
@@ -811,9 +811,9 @@ void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type,
   atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
-  if (unlikely(!_locks[lock_index].tryLock() &&
+  if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock())) {
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     // Too many concurrent signals already
     atomicIncRelaxed(_failures[-ticks_skipped]);
     return;
@@ -859,7 +859,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     ASGCT_CallFrame *native_stop = frames + num_frames;
     num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
                                  &java_ctx, &truncated, lock_index);
-    if (likely(num_frames < _max_stack_depth)) {
+    if (num_frames < _max_stack_depth) {
       int max_remaining = _max_stack_depth - num_frames;
       if (_features.mixed) {
         int vm_start = num_frames;
@@ -887,14 +887,14 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
         }
       }
     }
-    if (unlikely(num_frames == 0)) {
+    if (num_frames == 0) {
       num_frames += makeFrame(frames + num_frames, BCI_ERROR, "no_Java_frame");
     }
 
     call_trace_id =
         _call_trace_storage.put(num_frames, frames, truncated, counter);
     ProfiledThread *thread = ProfiledThread::currentSignalSafe();
-    if (likely(thread != nullptr)) {
+    if (thread != nullptr) {
       thread->recordCallTraceId(call_trace_id);
     }
     u64 duration = TSC::ticks() - startTime;
@@ -909,9 +909,9 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
 
 void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event) {
   u32 lock_index = getLockIndex(tid);
-  if (unlikely(!_locks[lock_index].tryLock() &&
+  if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock())) {
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     return;
   }
   _jfr.wallClockEpoch(lock_index, event);
@@ -920,9 +920,9 @@ void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event) {
 
 void Profiler::recordTraceRoot(int tid, TraceRootEvent *event) {
   u32 lock_index = getLockIndex(tid);
-  if (unlikely(!_locks[lock_index].tryLock() &&
+  if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock())) {
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     return;
   }
   _jfr.recordTraceRoot(lock_index, tid, event);
@@ -931,9 +931,9 @@ void Profiler::recordTraceRoot(int tid, TraceRootEvent *event) {
 
 void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
   u32 lock_index = getLockIndex(tid);
-  if (unlikely(!_locks[lock_index].tryLock() &&
+  if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock())) {
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     return;
   }
   _jfr.recordQueueTime(lock_index, tid, event);
@@ -957,9 +957,9 @@ void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
 
   u64 call_trace_id =
       _call_trace_storage.put(num_frames, extended_frames, truncated, weight);
-  if (unlikely(!_locks[lock_index].tryLock() &&
+  if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock())) {
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     // Too many concurrent signals already
     atomicIncRelaxed(_failures[-ticks_skipped]);
     return;
@@ -982,9 +982,9 @@ void Profiler::writeDatadogProfilerSetting(int tid, int length,
                                            const char *name, const char *value,
                                            const char *unit) {
   u32 lock_index = getLockIndex(tid);
-  if (unlikely(!_locks[lock_index].tryLock() &&
+  if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock())) {
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     return;
   }
   _jfr.recordDatadogSetting(lock_index, length, name, value, unit);
@@ -997,9 +997,9 @@ void Profiler::writeHeapUsage(long value, bool live) {
     return;
   }
   u32 lock_index = getLockIndex(tid);
-  if (unlikely(!_locks[lock_index].tryLock() &&
+  if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock())) {
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     return;
   }
   _jfr.recordHeapUsage(lock_index, value, live);

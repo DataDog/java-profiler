@@ -104,7 +104,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread() {
 
     // Allocate a new slot
     SlotID index = _next_index.fetch_add(1, std::memory_order_relaxed);
-    if (unlikely(index >= kMaxThreads)) {
+    if (index >= kMaxThreads) {
         // Revert the increment and return failure
         _next_index.fetch_sub(1, std::memory_order_relaxed);
         return -1;
@@ -113,7 +113,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread() {
     const int chunk_idx = index >> kChunkShift;
 
     // Ensure the chunk is initialized (lock-free)
-    if (unlikely(chunk_idx >= _num_chunks.load(std::memory_order_acquire))) {
+    if (chunk_idx >= _num_chunks.load(std::memory_order_acquire)) {
         // Update the chunk count atomically
         int expected_chunks = chunk_idx;
         int desired_chunks = chunk_idx + 1;
@@ -150,14 +150,14 @@ bool ThreadFilter::accept(SlotID slot_id) const {
     if (unlikely(!_enabled.load(std::memory_order_relaxed))) {
         return true;
     }
-    if (unlikely(slot_id < 0)) return false;
+    if (slot_id < 0) return false;
 
     int chunk_idx = slot_id >> kChunkShift;
     int slot_idx = slot_id & kChunkMask;
 
     // This is not a fast path like the add operation.
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
-    if (likely(chunk != nullptr)) {
+    if (chunk != nullptr) {
         return chunk->slots[slot_idx].value.load(std::memory_order_relaxed) != -1;
     }
     return false;
@@ -173,7 +173,7 @@ void ThreadFilter::add(int tid, SlotID slot_id) {
 
     // Fast path: assume valid slot_id from registerThread()
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
-    if (likely(chunk != nullptr)) {
+    if (chunk != nullptr) {
         chunk->slots[slot_idx].value.store(tid, std::memory_order_release);
     }
 }
@@ -186,13 +186,13 @@ void ThreadFilter::remove(SlotID slot_id) {
     int chunk_idx = slot_id >> kChunkShift;
     int slot_idx = slot_id & kChunkMask;
 
-    if (unlikely(chunk_idx >= kMaxChunks)) {
+    if (chunk_idx >= kMaxChunks) {
         assert(false && "Invalid slot_id in ThreadFilter::remove - should not happen after wall clock fix");
         return;
     }
 
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
-    if (unlikely(chunk == nullptr)) {
+    if (chunk == nullptr) {
         return;
     }
 

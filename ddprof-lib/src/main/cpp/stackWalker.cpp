@@ -102,7 +102,7 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
         }
 
         // Frame pointer must be word aligned
-        if (unlikely(!aligned(fp))) {
+        if (!aligned(fp)) {
             break;
         }
 
@@ -178,7 +178,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         }
 
         // Stack pointer must be word aligned
-        if (unlikely(!aligned(sp))) {
+        if (!aligned(sp)) {
             break;
         }
 
@@ -365,14 +365,14 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             // frame handling or NMethod validation would crash the process with unrecoverable SEGV.
             //
             // The missing VMThread is a timing issue during thread lifecycle.
-            if (unlikely(vm_thread == NULL)) {
+            if (vm_thread == NULL) {
                 Counters::increment(WALKVM_CODEH_NO_VM);
                 fillFrame(frames[depth++], BCI_ERROR, "break_no_vmthread");
                 break;
             }
             prev_native_pc = NULL; // we are in JVM code, no previous 'native' PC
             VMNMethod* nm = CodeHeap::findNMethod(pc);
-            if (unlikely(nm == NULL)) {
+            if (nm == NULL) {
                 if (anchor == NULL) {
                     // Add an error frame only if we cannot recover
                     fillFrame(frames[depth++], BCI_ERROR, "unknown_nmethod");
@@ -400,7 +400,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             }
 
             if (nm->isInterpreter()) {
-                if (vm_thread != NULL && unlikely(vm_thread->inDeopt())) {
+                if (vm_thread != NULL && (vm_thread->inDeopt())) {
                     fillFrame(frames[depth++], BCI_ERROR, "break_deopt");
                     break;
                 }
@@ -447,7 +447,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 break;
             } else if (nm->isNMethod()) {
                 // Check if deoptimization is in progress before walking compiled frames
-                if (vm_thread != NULL && unlikely(vm_thread->inDeopt())) {
+                if (vm_thread != NULL && (vm_thread->inDeopt())) {
                     fillFrame(frames[depth++], BCI_ERROR, "break_deopt_compiled");
                     break;
                 }
@@ -481,7 +481,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
                     // Validate NMethod metadata before using frameSize()
                     int frame_size = nm->frameSize();
-                    if (unlikely(frame_size <= 0 || frame_size > MAX_FRAME_SIZE_WORDS)) {
+                    if (frame_size <= 0 || frame_size > MAX_FRAME_SIZE_WORDS) {
                         fillFrame(frames[depth++], BCI_ERROR, "break_invalid_framesize");
                         break;
                     }
@@ -489,7 +489,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     sp += frame_size * sizeof(void*);
 
                     // Verify alignment before dereferencing sp as pointer (secondary defense)
-                    if (unlikely(!aligned(sp))) {
+                    if (!aligned(sp)) {
                         fillFrame(frames[depth++], BCI_ERROR, "break_misaligned_sp");
                         break;
                     }
@@ -546,7 +546,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     Counters::increment(WALKVM_STUB_FRAMESIZE_FALLBACK);
                     // Validate NMethod metadata before using frameSize()
                     int frame_size = nm->frameSize();
-                    if (unlikely(frame_size <= 0 || frame_size > MAX_FRAME_SIZE_WORDS)) {
+                    if (frame_size <= 0 || frame_size > MAX_FRAME_SIZE_WORDS) {
                         fillFrame(frames[depth++], BCI_ERROR, "break_invalid_framesize");
                         break;
                     }
@@ -554,7 +554,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     sp += frame_size * sizeof(void*);
 
                     // Verify alignment before dereferencing sp as pointer (secondary defense)
-                    if (unlikely(!aligned(sp))) {
+                    if (!aligned(sp)) {
                         fillFrame(frames[depth++], BCI_ERROR, "break_misaligned_sp");
                         break;
                     }
@@ -706,7 +706,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
         // If DWARF is invalid, we cannot continue unwinding reliably
         // Thread entry points are detected earlier via MARK_THREAD_ENTRY
-        if (unlikely(cfa_reg == DW_REG_INVALID || cfa_reg > DW_REG_PLT)) {
+        if (cfa_reg == DW_REG_INVALID || cfa_reg > DW_REG_PLT) {
             break;
         }
 
