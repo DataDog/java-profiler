@@ -230,8 +230,8 @@ display_results() {
         echo ""
 
         # Calculate branch miss rate if available
-        local misses=$(grep "branch-misses" "${stat_file}" | awk '{print $1}' | tr -d ',')
-        local total=$(grep -w "branches" "${stat_file}" | awk '{print $1}' | tr -d ',')
+        local misses=$(grep "branch-misses" "${stat_file}" | awk '{print $1}' | tr -d ',' | head -1)
+        local total=$(grep -w "branches" "${stat_file}" | awk '{print $1}' | tr -d ',' | head -1)
 
         if [ -n "${misses}" ] && [ -n "${total}" ] && [ "${total}" -gt 0 ]; then
             local rate=$(echo "scale=4; ${misses} * 100 / ${total}" | bc)
