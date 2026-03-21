@@ -160,8 +160,17 @@ main() {
     # Run tests from optimized worktree but with baseline library
     cd "${OPTIMIZED_WORKTREE}/ddprof-lib/benchmarks/branch-prediction"
 
+    # Use absolute path for baseline library
+    local baseline_lib
+    baseline_lib="$(cd "${BASELINE_WORKTREE}" && pwd)/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
+
+    if [ ! -f "${baseline_lib}" ]; then
+        log_error "Baseline profiler library not found at ${baseline_lib}"
+        exit 1
+    fi
+
     # Temporarily override PROFILER_LIB for baseline test
-    PROFILER_LIB_OVERRIDE="${BASELINE_WORKTREE}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so" \
+    PROFILER_LIB_OVERRIDE="${baseline_lib}" \
     "${baseline_test_script}" "${benchmark}" "baseline"
 
     # Test optimized
