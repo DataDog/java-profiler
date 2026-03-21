@@ -26,6 +26,16 @@ bool JfrMetadata::_initialized = false;
 
 JfrMetadata::JfrMetadata() : Element("root") {}
 
+void JfrMetadata::reset() {
+  _root._children.clear();
+  _root._attributes.clear();
+  _strings.clear();
+  _string_map.clear();
+  // Re-register "root" at ID 0 so _root._name (const 0) stays valid
+  getId("root");
+  _initialized = false;
+}
+
 void JfrMetadata::initialize(
     const std::vector<std::string> &contextAttributes) {
   if (_initialized) {

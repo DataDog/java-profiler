@@ -50,6 +50,7 @@ public class OtelContextStorageModeTest {
     public void cleanup() {
         if (profilerStarted) {
             profiler.stop();
+            profiler.resetThreadContext();
             profilerStarted = false;
         }
     }
@@ -62,7 +63,7 @@ public class OtelContextStorageModeTest {
     public void testOtelStorageModeContext() throws Exception {
         Path jfrFile = Files.createTempFile("otel-ctx-otel", ".jfr");
 
-        profiler.execute(String.format("start,cpu=1ms,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profiler.execute(String.format("start,cpu=1ms,attributes=tag1;tag2;tag3,jfr,file=%s", jfrFile.toAbsolutePath()));
         profilerStarted = true;
 
         long localRootSpanId = 0x1111222233334444L;
@@ -83,7 +84,7 @@ public class OtelContextStorageModeTest {
     public void testOtelModeStartsOnAnyPlatform() throws Exception {
         Path jfrFile = Files.createTempFile("otel-ctx-any", ".jfr");
 
-        profiler.execute(String.format("start,cpu=1ms,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profiler.execute(String.format("start,cpu=1ms,attributes=tag1;tag2;tag3,jfr,file=%s", jfrFile.toAbsolutePath()));
         profilerStarted = true;
 
         // Context operations should not crash
@@ -97,7 +98,7 @@ public class OtelContextStorageModeTest {
     public void testOtelModeClearContext() throws Exception {
         Path jfrFile = Files.createTempFile("otel-ctx-clear", ".jfr");
 
-        profiler.execute(String.format("start,cpu=1ms,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profiler.execute(String.format("start,cpu=1ms,attributes=tag1;tag2;tag3,jfr,file=%s", jfrFile.toAbsolutePath()));
         profilerStarted = true;
 
         profiler.setContext(0xCAFEBABEL, 0xDEADBEEFL, 0L, 0x12345678L);
@@ -116,7 +117,7 @@ public class OtelContextStorageModeTest {
     public void testOtelModeCustomAttributes() throws Exception {
         Path jfrFile = Files.createTempFile("otel-ctx-attrs", ".jfr");
 
-        profiler.execute(String.format("start,cpu=1ms,contextattribute=http.route;db.system,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profiler.execute(String.format("start,cpu=1ms,attributes=http.route;db.system,jfr,file=%s", jfrFile.toAbsolutePath()));
         profilerStarted = true;
 
         // Register attribute keys
@@ -145,7 +146,7 @@ public class OtelContextStorageModeTest {
     public void testSetContextAttribute() throws Exception {
         Path jfrFile = Files.createTempFile("otel-ctx-attr", ".jfr");
 
-        profiler.execute(String.format("start,cpu=1ms,contextattribute=http.route,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profiler.execute(String.format("start,cpu=1ms,attributes=http.route,jfr,file=%s", jfrFile.toAbsolutePath()));
         profilerStarted = true;
 
         profiler.setContext(0x456L, 0x123L, 0L, 0x789L);
@@ -162,7 +163,7 @@ public class OtelContextStorageModeTest {
     public void testOtelModeAttributeOverflow() throws Exception {
         Path jfrFile = Files.createTempFile("otel-ctx-overflow", ".jfr");
 
-        profiler.execute(String.format("start,cpu=1ms,contextattribute=k0;k1;k2;k3;k4,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profiler.execute(String.format("start,cpu=1ms,attributes=k0;k1;k2;k3;k4,jfr,file=%s", jfrFile.toAbsolutePath()));
         profilerStarted = true;
 
         OTelContext.getInstance().registerAttributeKeys("k0", "k1", "k2", "k3", "k4");
@@ -171,8 +172,8 @@ public class OtelContextStorageModeTest {
 
         ThreadContext ctx = profiler.getThreadContext();
 
-        // Fill up attrs_data with long values (255 bytes each = 257 bytes per entry)
-        // 612 / 257 = 2 full entries, third should fail
+        // LRS "2" occupies 3 bytes (key=1, len=1, value=1) in attrs_data.
+        // Each 255-char attr = 257 bytes per entry. Two fit; third overflows.
         StringBuilder sb = new StringBuilder(255);
         for (int i = 0; i < 255; i++) sb.append('x');
         String longValue = sb.toString();

@@ -1478,6 +1478,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Always enable library trap to catch wasmtime loading and patch its broken sigaction
   switchLibraryTrap(true);
 
+  JfrMetadata::reset();
   JfrMetadata::initialize(args._context_attributes);
   _num_context_attributes = args._context_attributes.size();
   error = _jfr.start(args, reset);

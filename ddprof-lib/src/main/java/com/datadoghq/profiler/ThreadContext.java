@@ -100,6 +100,16 @@ public final class ThreadContext {
             throw new UnsupportedOperationException(
                 "ByteBuffer context path requires little-endian platform");
         }
+        // Zero sidecar + record to prevent stale encodings from a previous profiler session.
+        // The native ProfiledThread survives across sessions, so the sidecar may hold
+        // old tag encodings and the record may hold old attrs_data.
+        for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
+            this.sidecarBuffer.putInt(i * 4, 0);
+        }
+        this.sidecarBuffer.putLong(this.lrsSidecarOffset, 0);
+        this.recordBuffer.put(this.validOffset, (byte) 0);
+        this.recordBuffer.putShort(this.attrsDataSizeOffset, (short) 0);
+        this.tlsPtrBuffer.putLong(0, 0);
     }
 
     /**
@@ -219,9 +229,9 @@ public final class ThreadContext {
         // otepKeyIndex is offset by 1: index 0 is reserved for LRS
         int otepKeyIndex = keyIndex + 1;
         detach();
-        replaceOtepAttribute(otepKeyIndex, utf8);
+        boolean written = replaceOtepAttribute(otepKeyIndex, utf8);
         attach();
-        return true;
+        return written;
     }
 
     /**
@@ -305,7 +315,7 @@ public final class ThreadContext {
      * Replace or insert an attribute in attrs_data. Record must be detached.
      * Writes the pre-encoded UTF-8 bytes into the record.
      */
-    private void replaceOtepAttribute(int otepKeyIndex, byte[] utf8) {
+    private boolean replaceOtepAttribute(int otepKeyIndex, byte[] utf8) {
         int currentSize = compactOtepAttribute(otepKeyIndex);
         int valueLen = Math.min(utf8.length, 255);
         int entrySize = 2 + valueLen;
@@ -317,8 +327,11 @@ public final class ThreadContext {
                 recordBuffer.put(base + 2 + i, utf8[i]);
             }
             currentSize += entrySize;
+            recordBuffer.putShort(attrsDataSizeOffset, (short) currentSize);
+            return true;
         }
         recordBuffer.putShort(attrsDataSizeOffset, (short) currentSize);
+        return false;
     }
 
     /** Remove an attribute from attrs_data by compacting. Record must be detached. */
