@@ -53,6 +53,11 @@ fi
 log_info "Running ${ITERATIONS} iterations of benchmark: ${BENCHMARK}"
 echo ""
 
+# Build once before all iterations
+log_info "Building baseline and optimized versions (one-time setup)..."
+"${COMPARE_SCRIPT}" "${BENCHMARK}" --build-only
+echo ""
+
 # Run iterations
 for i in $(seq 1 ${ITERATIONS}); do
     log_info "=== Iteration $i/${ITERATIONS} ==="
@@ -63,8 +68,8 @@ for i in $(seq 1 ${ITERATIONS}); do
         sleep 10
     fi
 
-    # Run comparison
-    "${COMPARE_SCRIPT}" "${BENCHMARK}"
+    # Run comparison (skip build)
+    "${COMPARE_SCRIPT}" "${BENCHMARK}" --skip-build
 
     # Save results
     if [ -d perf_results ]; then

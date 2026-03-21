@@ -161,13 +161,28 @@ compare_results() {
 
 main() {
     local benchmark="${1:-akka-uct}"
-    local baseline_branch="${2:-main}"
-    local optimized_branch="${3:-jb/likely}"
+    local mode="${2:-}"
+    local baseline_branch="main"
+    local optimized_branch="jb/likely"
+
+    # Check for flags
+    local skip_build=false
+    local build_only=false
+    if [[ "$mode" == "--skip-build" ]]; then
+        skip_build=true
+    elif [[ "$mode" == "--build-only" ]]; then
+        build_only=true
+    fi
 
     log_info "=== Branch Prediction Comparison Test ==="
     log_info "Baseline branch: ${baseline_branch}"
     log_info "Optimized branch: ${optimized_branch}"
     log_info "Benchmark: ${benchmark}"
+    if $skip_build; then
+        log_info "Mode: Skip build (reuse existing)"
+    elif $build_only; then
+        log_info "Mode: Build only (no benchmark)"
+    fi
     echo ""
 
     cd "${REPO_ROOT}"
@@ -203,45 +218,68 @@ main() {
         git worktree add "${OPTIMIZED_WORKTREE}" "${optimized_branch}"
     fi
 
-    # Build baseline
-    log_step "3/6: Building baseline version..."
-    cd "${BASELINE_WORKTREE}"
-    ./gradlew ddprof-lib:buildrelease -x test
+    # Build or locate existing libraries
+    if $skip_build; then
+        # Skip build, just find existing libraries
+        log_info "Skipping build, locating existing libraries..."
+        BASELINE_LIB="${BASELINE_WORKTREE}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
+        OPTIMIZED_LIB="${OPTIMIZED_WORKTREE}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
 
-    # Find the baseline library (prefer release, fallback to any .so)
-    local baseline_lib_check="${BASELINE_WORKTREE}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
-    if [ ! -f "${baseline_lib_check}" ]; then
-        log_warn "Expected library not at ${baseline_lib_check}, searching for alternatives..."
-        baseline_lib_check=$(find "${BASELINE_WORKTREE}/ddprof-lib/build" -name "libjavaProfiler.so" -type f 2>/dev/null | grep -E "(release|main)" | head -1)
-        if [ -z "${baseline_lib_check}" ]; then
-            log_error "Baseline build did not produce any libjavaProfiler.so"
-            log_info "Files built:"
-            find "${BASELINE_WORKTREE}/ddprof-lib/build" -name "*.so" -type f 2>/dev/null || true
+        if [ ! -f "${BASELINE_LIB}" ] || [ ! -f "${OPTIMIZED_LIB}" ]; then
+            log_error "Libraries not found. Run with --build-only first."
+            log_error "  Baseline: ${BASELINE_LIB}"
+            log_error "  Optimized: ${OPTIMIZED_LIB}"
             exit 1
         fi
-        log_info "Using baseline library: ${baseline_lib_check}"
-    fi
-    BASELINE_LIB="${baseline_lib_check}"
+    else
+        # Build baseline
+        log_step "3/6: Building baseline version..."
+        cd "${BASELINE_WORKTREE}"
+        ./gradlew ddprof-lib:buildrelease -x test
 
-    # Build optimized
-    log_step "4/6: Building optimized version..."
-    cd "${OPTIMIZED_WORKTREE}"
-    ./gradlew ddprof-lib:buildrelease -x test
-
-    # Find the optimized library (prefer release, fallback to any .so)
-    local optimized_lib_check="${OPTIMIZED_WORKTREE}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
-    if [ ! -f "${optimized_lib_check}" ]; then
-        log_warn "Expected library not at ${optimized_lib_check}, searching for alternatives..."
-        optimized_lib_check=$(find "${OPTIMIZED_WORKTREE}/ddprof-lib/build" -name "libjavaProfiler.so" -type f 2>/dev/null | grep -E "(release|main)" | head -1)
-        if [ -z "${optimized_lib_check}" ]; then
-            log_error "Optimized build did not produce any libjavaProfiler.so"
-            log_info "Files built:"
-            find "${OPTIMIZED_WORKTREE}/ddprof-lib/build" -name "*.so" -type f 2>/dev/null || true
-            exit 1
+        # Find the baseline library (prefer release, fallback to any .so)
+        local baseline_lib_check="${BASELINE_WORKTREE}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
+        if [ ! -f "${baseline_lib_check}" ]; then
+            log_warn "Expected library not at ${baseline_lib_check}, searching for alternatives..."
+            baseline_lib_check=$(find "${BASELINE_WORKTREE}/ddprof-lib/build" -name "libjavaProfiler.so" -type f 2>/dev/null | grep -E "(release|main)" | head -1)
+            if [ -z "${baseline_lib_check}" ]; then
+                log_error "Baseline build did not produce any libjavaProfiler.so"
+                log_info "Files built:"
+                find "${BASELINE_WORKTREE}/ddprof-lib/build" -name "*.so" -type f 2>/dev/null || true
+                exit 1
+            fi
+            log_info "Using baseline library: ${baseline_lib_check}"
         fi
-        log_info "Using optimized library: ${optimized_lib_check}"
+        BASELINE_LIB="${baseline_lib_check}"
+
+        # Build optimized
+        log_step "4/6: Building optimized version..."
+        cd "${OPTIMIZED_WORKTREE}"
+        ./gradlew ddprof-lib:buildrelease -x test
+
+        # Find the optimized library (prefer release, fallback to any .so)
+        local optimized_lib_check="${OPTIMIZED_WORKTREE}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
+        if [ ! -f "${optimized_lib_check}" ]; then
+            log_warn "Expected library not at ${optimized_lib_check}, searching for alternatives..."
+            optimized_lib_check=$(find "${OPTIMIZED_WORKTREE}/ddprof-lib/build" -name "libjavaProfiler.so" -type f 2>/dev/null | grep -E "(release|main)" | head -1)
+            if [ -z "${optimized_lib_check}" ]; then
+                log_error "Optimized build did not produce any libjavaProfiler.so"
+                log_info "Files built:"
+                find "${OPTIMIZED_WORKTREE}/ddprof-lib/build" -name "*.so" -type f 2>/dev/null || true
+                exit 1
+            fi
+            log_info "Using optimized library: ${optimized_lib_check}"
+        fi
+        OPTIMIZED_LIB="${optimized_lib_check}"
     fi
-    OPTIMIZED_LIB="${optimized_lib_check}"
+
+    # If build-only mode, exit here
+    if $build_only; then
+        log_info "Build complete. Libraries ready for benchmarking:"
+        log_info "  Baseline: ${BASELINE_LIB}"
+        log_info "  Optimized: ${OPTIMIZED_LIB}"
+        return 0
+    fi
 
     # Test baseline
     log_step "5/6: Testing baseline version..."
