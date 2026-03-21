@@ -97,7 +97,7 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
         callchain[depth++] = pc;
 
         // Check if the next frame is below on the current stack
-        if (unlikely(fp < sp || fp >= sp + MAX_FRAME_SIZE || fp >= bottom)) {
+        if ((fp < sp || fp >= sp + MAX_FRAME_SIZE || fp >= bottom)) {
             break;
         }
 
@@ -107,7 +107,7 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
         }
 
         pc = stripPointer(SafeAccess::load((void**)fp + FRAME_PC_SLOT));
-        if (unlikely(inDeadZone(pc))) {
+        if ((inDeadZone(pc))) {
             break;
         }
 
@@ -173,7 +173,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         }
 
         // Check if the next frame is below on the current stack
-        if (unlikely(sp < prev_sp || sp >= prev_sp + MAX_FRAME_SIZE || sp >= bottom)) {
+        if ((sp < prev_sp || sp >= prev_sp + MAX_FRAME_SIZE || sp >= bottom)) {
             break;
         }
 
@@ -215,7 +215,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
             }
         }
 
-        if (unlikely(inDeadZone(pc) || (pc == prev_pc && sp == prev_sp))) {
+        if ((inDeadZone(pc) || (pc == prev_pc && sp == prev_sp))) {
             break;
         }
     }
@@ -726,12 +726,12 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
         }
 
         // Check if the next frame is below on the current stack
-        if (unlikely(sp < prev_sp || sp >= prev_sp + MAX_FRAME_SIZE || sp >= bottom)) {
+        if ((sp < prev_sp || sp >= prev_sp + MAX_FRAME_SIZE || sp >= bottom)) {
             break;
         }
 
         // Stack pointer must be word aligned
-        if (unlikely(!aligned(sp))) {
+        if ((!aligned(sp))) {
             break;
         }
 
@@ -766,7 +766,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             }
         }
 
-        if (unlikely(inDeadZone(pc) || (pc == prev_native_pc && sp == prev_sp))) {
+        if ((inDeadZone(pc) || (pc == prev_native_pc && sp == prev_sp))) {
             break;
         }
     }

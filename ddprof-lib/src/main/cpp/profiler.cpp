@@ -829,9 +829,9 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
   atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
-  if (unlikely(!_locks[lock_index].tryLock() &&
+  if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock())) {
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     // Too many concurrent signals already
     atomicIncRelaxed(_failures[-ticks_skipped]);
 
@@ -849,7 +849,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
   // record a null stacktrace we can skip the unwind if we've got a
   // call_trace_id determined to be reusable at a higher level
 
-  if (likely(!_omit_stacktraces && call_trace_id == 0)) {
+  if (!_omit_stacktraces && call_trace_id == 0) {
     u64 startTime = TSC::ticks();
     ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
 

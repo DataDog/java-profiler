@@ -1,0 +1,14 @@
+
+ Performance counter stats for process id '1700537':
+
+   <not supported>      branch-misses                                                         
+   <not supported>      branches                                                              
+   <not supported>      L1-icache-load-misses                                                 
+   <not supported>      L1-icache-loads                                                       
+   <not supported>      instructions                                                          
+   <not supported>      cycles                                                                
+   <not supported>      cache-misses                                                          
+   <not supported>      cache-references                                                      
+
+      60.002073325 seconds time elapsed
+

@@ -147,7 +147,7 @@ void ThreadFilter::initFreeList() {
 
 bool ThreadFilter::accept(SlotID slot_id) const {
     // Fast path: if disabled, accept everything (relaxed to avoid fences on hot path)
-    if (unlikely(!_enabled.load(std::memory_order_relaxed))) {
+    if (!_enabled.load(std::memory_order_relaxed)) {
         return true;
     }
     if (slot_id < 0) return false;
