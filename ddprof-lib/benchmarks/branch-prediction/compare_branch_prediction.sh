@@ -142,10 +142,28 @@ main() {
     cd "${BASELINE_WORKTREE}"
     ./gradlew ddprof-lib:build -x test
 
+    # Verify baseline library was built
+    local baseline_lib_check="${BASELINE_WORKTREE}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
+    if [ ! -f "${baseline_lib_check}" ]; then
+        log_error "Baseline build did not produce library at ${baseline_lib_check}"
+        log_info "Checking what was built:"
+        find "${BASELINE_WORKTREE}/ddprof-lib/build" -name "*.so" -type f 2>/dev/null || true
+        exit 1
+    fi
+
     # Build optimized
     log_step "4/6: Building optimized version..."
     cd "${OPTIMIZED_WORKTREE}"
     ./gradlew ddprof-lib:build -x test
+
+    # Verify optimized library was built
+    local optimized_lib_check="${OPTIMIZED_WORKTREE}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
+    if [ ! -f "${optimized_lib_check}" ]; then
+        log_error "Optimized build did not produce library at ${optimized_lib_check}"
+        log_info "Checking what was built:"
+        find "${OPTIMIZED_WORKTREE}/ddprof-lib/build" -name "*.so" -type f 2>/dev/null || true
+        exit 1
+    fi
 
     # Test baseline
     log_step "5/6: Testing baseline version..."
