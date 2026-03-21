@@ -88,21 +88,36 @@ start_benchmark() {
     log_info "Starting Renaissance benchmark: ${benchmark}"
 
     # Disable DD Java agent injection to avoid conflicts
+    # Run many iterations to keep benchmark running during perf measurement
     env -u JAVA_TOOL_OPTIONS \
     java -agentpath:"${PROFILER_LIB}=start,cpu,file=/tmp/test.jfr" \
          -Xmx2g \
          -Xms2g \
          -jar "${RENAISSANCE_JAR}" \
          "${benchmark}" \
-         -r 10 \
+         -r 9999 \
          &> /tmp/renaissance_${benchmark}.log &
 
     JAVA_PID=$!
     echo ${JAVA_PID} > /tmp/java_perf_test.pid
 
     log_info "Java process started with PID: ${JAVA_PID}"
+
+    # Verify process started successfully
+    sleep 2
+    if ! kill -0 ${JAVA_PID} 2>/dev/null; then
+        log_error "Java process ${JAVA_PID} died immediately. Check /tmp/renaissance_${benchmark}.log"
+        exit 1
+    fi
+
     log_info "Warming up for ${WARMUP} seconds..."
     sleep ${WARMUP}
+
+    # Verify still running after warmup
+    if ! kill -0 ${JAVA_PID} 2>/dev/null; then
+        log_error "Java process ${JAVA_PID} died during warmup. Check /tmp/renaissance_${benchmark}.log"
+        exit 1
+    fi
 }
 
 # Run perf stat to collect branch prediction statistics
