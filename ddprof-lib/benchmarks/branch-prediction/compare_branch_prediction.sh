@@ -140,7 +140,7 @@ main() {
     # Build baseline
     log_step "3/6: Building baseline version..."
     cd "${BASELINE_WORKTREE}"
-    ./gradlew ddprof-lib:build -x test
+    ./gradlew ddprof-lib:buildrelease -x test
 
     # Find the baseline library (prefer release, fallback to any .so)
     local baseline_lib_check="${BASELINE_WORKTREE}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
@@ -160,7 +160,7 @@ main() {
     # Build optimized
     log_step "4/6: Building optimized version..."
     cd "${OPTIMIZED_WORKTREE}"
-    ./gradlew ddprof-lib:build -x test
+    ./gradlew ddprof-lib:buildrelease -x test
 
     # Find the optimized library (prefer release, fallback to any .so)
     local optimized_lib_check="${OPTIMIZED_WORKTREE}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
