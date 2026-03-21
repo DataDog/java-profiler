@@ -134,6 +134,16 @@ public final class BufferWriter {
          * This is equivalent to calling both a load fence and a store fence.
          */
         void fullFence();
+
+        /**
+         * Executes a store-store memory fence.
+         *
+         * <p>Ensures that stores before the fence are visible before stores after it.
+         * Cheaper than fullFence on ARM (~5ns vs ~50ns) since it only orders
+         * stores, not loads. Sufficient for publication protocols where the writer
+         * needs to ensure data writes are visible before a flag/pointer write.
+         */
+        void storeFence();
     }
 
     private final Impl impl;
@@ -241,5 +251,25 @@ public final class BufferWriter {
      */
     public void writeVolatileInt(ByteBuffer buffer, int offset, int value) {
         impl.writeAndReleaseInt(buffer, offset, value);
+    }
+
+    /**
+     * Executes a full memory fence (barrier).
+     *
+     * <p>A full fence prevents reordering of any memory operations across the fence boundary.
+     * Used in the OTEP publication protocol between invalidate and validate steps.
+     */
+    public void fullFence() {
+        impl.fullFence();
+    }
+
+    /**
+     * Executes a store-store memory fence.
+     *
+     * <p>Ensures stores before the fence are globally visible before stores after it.
+     * Cheaper than {@link #fullFence()} on weakly-ordered architectures (ARM).
+     */
+    public void storeFence() {
+        impl.storeFence();
     }
 }

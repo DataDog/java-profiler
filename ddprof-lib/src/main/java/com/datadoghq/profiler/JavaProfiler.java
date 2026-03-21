@@ -16,14 +16,10 @@
 
 package com.datadoghq.profiler;
 
-import sun.misc.Unsafe;
-
 import java.io.IOException;
-import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -41,18 +37,6 @@ public final class JavaProfiler {
         static final long FREQUENCY = tscFrequency0();
     }
     private static JavaProfiler instance;
-    private static final int CONTEXT_SIZE = 64;
-    // must be kept in sync with PAGE_SIZE in context.h
-    private static final int PAGE_SIZE = 1024;
-    private static final int SPAN_OFFSET = 0;
-    private static final int ROOT_SPAN_OFFSET = 8;
-    private static final int CHECKSUM_OFFSET = 16;
-    private static final int DYNAMIC_TAGS_OFFSET = 24;
-    private static final ThreadLocal<Integer> TID = ThreadLocal.withInitial(JavaProfiler::getTid0);
-
-    private ByteBuffer[] contextStorage;
-    private long[] contextBaseOffsets;
-    private static final ByteBuffer SENTINEL = ByteBuffer.allocate(0);
 
     // Thread-local storage for profiling context
     private final ThreadLocal<ThreadContext> tlsContextStorage = ThreadLocal.withInitial(JavaProfiler::initializeThreadContext);
@@ -205,7 +189,6 @@ public final class JavaProfiler {
 
     /**
      * Sets trace context with full 128-bit W3C trace ID and local root span ID.
-     * Required in OTEL mode. Works in profiler mode too (traceIdHigh ignored).
      *
      * @param localRootSpanId Local root span ID (for endpoint correlation)
      * @param spanId Span identifier
@@ -322,10 +305,12 @@ public final class JavaProfiler {
     }
 
     private static ThreadContext initializeThreadContext() {
-        int[] offsets = new int[4];
-        ByteBuffer bb = initializeContextTls0(offsets);
-        ByteBuffer sidecar = initializeOtelSidecarTls0();
-        return new ThreadContext(bb, offsets, sidecar);
+        long[] metadata = new long[7];
+        ByteBuffer[] buffers = initializeOtelTls0(metadata);
+        if (buffers == null) {
+            throw new IllegalStateException("Failed to initialize OTEL TLS — ProfiledThread not available");
+        }
+        return new ThreadContext(buffers[0], buffers[1], buffers[2], metadata);
     }
 
     private static native boolean init0();
@@ -359,9 +344,20 @@ public final class JavaProfiler {
 
     private static native String getStatus0();
 
-    private static native ByteBuffer initializeContextTls0(int[] offsets);
-
-    private static native ByteBuffer initializeOtelSidecarTls0();
+    /**
+     * Initializes OTEL TLS for the current thread and returns 3 DirectByteBuffers.
+     *
+     * @param metadata output array filled with:
+     *   [0] recordAddress — native pointer to OtelThreadContextRecord
+     *   [1] VALID_OFFSET — offset of 'valid' field in the record
+     *   [2] TRACE_ID_OFFSET — offset of 'trace_id' field in the record
+     *   [3] SPAN_ID_OFFSET — offset of 'span_id' field in the record
+     *   [4] ATTRS_DATA_SIZE_OFFSET — offset of 'attrs_data_size' field
+     *   [5] ATTRS_DATA_OFFSET — offset of 'attrs_data' field
+     *   [6] LRS_SIDECAR_OFFSET — offset of local_root_span_id in sidecar buffer
+     * @return array of 3 ByteBuffers: [recordBuffer, tlsPtrBuffer, sidecarBuffer]
+     */
+    private static native ByteBuffer[] initializeOtelTls0(long[] metadata);
 
     public ThreadContext getThreadContext() {
         return tlsContextStorage.get();
@@ -380,7 +376,7 @@ public final class JavaProfiler {
     /**
      * Resets the cached ThreadContext for the current thread.
      * The next call to {@link #getThreadContext()} or {@link #setContext(long, long)}
-     * will re-create it, picking up the current storage mode.
+     * will re-create it with fresh OTEL TLS buffers.
      */
     public void resetThreadContext() {
         tlsContextStorage.remove();

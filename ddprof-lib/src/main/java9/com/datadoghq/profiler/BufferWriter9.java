@@ -67,4 +67,9 @@ public final class BufferWriter9 implements BufferWriter.Impl {
     public void fullFence() {
         VarHandle.fullFence();
     }
+
+    @Override
+    public void storeFence() {
+        VarHandle.storeStoreFence();
+    }
 }
