@@ -270,6 +270,12 @@ main() {
         exit 1
     }
 
+    # Ensure baseline Java process is killed before starting optimized test
+    log_info "Ensuring all Java processes are stopped before optimized test..."
+    pkill -9 -f "renaissance.*${benchmark}" 2>/dev/null || true
+    rm -f /tmp/java_perf_test.pid /tmp/java_perf_test_wrapper.pid
+    sleep 2
+
     # Test optimized
     log_step "6/6: Testing optimized version..."
     "${baseline_test_script}" "${benchmark}" "optimized" || {
