@@ -20,6 +20,7 @@
 #include "arch.h"
 #include "context.h"
 #include "context_api.h"
+#include "guards.h"
 #include "counters.h"
 #include "common.h"
 #include "engine.h"
@@ -543,84 +544,67 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
 #endif
 }
 
-extern "C" DLLEXPORT jobject JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_initializeContextTls0(JNIEnv* env, jclass unused, jintArray offsets) {
-  Context& ctx = Contexts::initializeContextTls();
-
-  // Populate offsets array with actual struct field offsets
-  if (offsets != nullptr) {
-    jint offsetValues[4];
-    offsetValues[0] = (jint)offsetof(Context, spanId);
-    offsetValues[1] = (jint)offsetof(Context, rootSpanId);
-    offsetValues[2] = (jint)offsetof(Context, checksum);
-    offsetValues[3] = (jint)offsetof(Context, tags);
-    env->SetIntArrayRegion(offsets, 0, 4, offsetValues);
-  }
-
-  return env->NewDirectByteBuffer((void *)&ctx, (jlong)sizeof(Context));
-}
-
-extern "C" DLLEXPORT jobject JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_initializeOtelSidecarTls0(JNIEnv* env, jclass unused) {
-  if (ContextApi::getMode() != CTX_STORAGE_OTEL) return nullptr;
+extern "C" DLLEXPORT jobjectArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_initializeOtelTls0(JNIEnv* env, jclass unused, jlongArray metadata) {
   ProfiledThread* thrd = ProfiledThread::current();
   if (thrd == nullptr) return nullptr;
-  return env->NewDirectByteBuffer(
-      (void*)thrd->getOtelTagEncodingsPtr(),
-      (jlong)(DD_TAGS_CAPACITY * sizeof(u32)));
-}
 
-extern "C" DLLEXPORT jlong JNICALL
-Java_com_datadoghq_profiler_ThreadContext_setContext0(JNIEnv* env, jclass unused, jlong spanId, jlong rootSpanId) {
-  // Use ContextApi for mode-agnostic context setting (handles TLS or OTEL storage)
-  ContextApi::set(spanId, rootSpanId);
-
-  // Return checksum for API compatibility
-  // In OTEL mode, return 0 as checksum is not used (OTEL uses valid flag and pointer-swapping)
-  if (ContextApi::getMode() == CTX_STORAGE_OTEL) {
-    return 0;
+  if (!thrd->isOtelContextInitialized()) {
+    // Block profiling signals during first TLS access
+    SignalBlocker blocker;
+    OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+    record->valid = 0;
+    record->_reserved = 0;
+    record->attrs_data_size = 0;
+    custom_labels_current_set_v2 = nullptr;
+    thrd->markOtelContextInitialized();
   }
-  return Contexts::checksum(spanId, rootSpanId);
-}
 
-extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_ThreadContext_setContextFull0(JNIEnv* env, jclass unused, jlong localRootSpanId, jlong spanId, jlong traceIdHigh, jlong traceIdLow) {
-  ContextApi::setFull(localRootSpanId, spanId, traceIdHigh, traceIdLow);
-}
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
 
-// Legacy API: writes a pre-computed tag encoding to the thread-local context.
-// In OTEL mode, writes to the ProfiledThread sidecar (writeCurrentContext reads from there).
-// In profiler mode, writes directly to Context.tags[].
-// New callers should prefer setContextAttribute0() which writes to the appropriate store.
-extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_ThreadContext_setContextSlot0(JNIEnv* env, jclass unused, jint offset, jint value) {
-  if (ContextApi::getMode() == CTX_STORAGE_OTEL) {
-    ProfiledThread* thrd = ProfiledThread::current();
-    if (thrd != nullptr && offset >= 0 && offset < (jint)DD_TAGS_CAPACITY) {
-      thrd->setOtelTagEncoding(offset, (u32)value);
-    }
-  } else if (offset >= 0 && offset < (jint)DD_TAGS_CAPACITY) {
-    Context& ctx = Contexts::get();
-    ctx.tags[offset].value = (u32)value;
+  // Fill metadata[7]: [recordAddress, VALID_OFFSET, TRACE_ID_OFFSET,
+  //                    SPAN_ID_OFFSET, ATTRS_DATA_SIZE_OFFSET, ATTRS_DATA_OFFSET,
+  //                    LRS_SIDECAR_OFFSET]
+  if (metadata != nullptr && env->GetArrayLength(metadata) >= 7) {
+    jlong meta[7];
+    meta[0] = (jlong)(uintptr_t)record;
+    meta[1] = (jlong)offsetof(OtelThreadContextRecord, valid);
+    meta[2] = (jlong)offsetof(OtelThreadContextRecord, trace_id);
+    meta[3] = (jlong)offsetof(OtelThreadContextRecord, span_id);
+    meta[4] = (jlong)offsetof(OtelThreadContextRecord, attrs_data_size);
+    meta[5] = (jlong)offsetof(OtelThreadContextRecord, attrs_data);
+    meta[6] = (jlong)(DD_TAGS_CAPACITY * sizeof(u32)); // LRS sidecar offset in sidecar buffer
+    env->SetLongArrayRegion(metadata, 0, 7, meta);
   }
+
+  // Create 3 DirectByteBuffers: [record, tlsPtr, sidecar]
+  jclass bbClass = env->FindClass("java/nio/ByteBuffer");
+  jobjectArray result = env->NewObjectArray(3, bbClass, nullptr);
+
+  // recordBuffer: 640 bytes over the OtelThreadContextRecord
+  jobject recordBuf = env->NewDirectByteBuffer((void*)record, (jlong)OTEL_MAX_RECORD_SIZE);
+  env->SetObjectArrayElement(result, 0, recordBuf);
+
+  // tlsPtrBuffer: 8 bytes over &custom_labels_current_set_v2
+  jobject tlsPtrBuf = env->NewDirectByteBuffer((void*)&custom_labels_current_set_v2, (jlong)sizeof(void*));
+  env->SetObjectArrayElement(result, 1, tlsPtrBuf);
+
+  // sidecarBuffer: covers _otel_tag_encodings[DD_TAGS_CAPACITY] + _otel_local_root_span_id (contiguous)
+  static_assert(DD_TAGS_CAPACITY * sizeof(u32) % alignof(u64) == 0,
+      "tag encodings array size must be aligned to u64 for contiguous sidecar layout");
+  size_t sidecarSize = DD_TAGS_CAPACITY * sizeof(u32) + sizeof(u64);
+  jobject sidecarBuf = env->NewDirectByteBuffer((void*)thrd->getOtelTagEncodingsPtr(), (jlong)sidecarSize);
+  env->SetObjectArrayElement(result, 2, sidecarBuf);
+
+  return result;
 }
 
-extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_ThreadContext_isOtelMode0(JNIEnv* env, jclass unused) {
-  return ContextApi::getMode() == CTX_STORAGE_OTEL;
-}
-
-extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_ThreadContext_setContextAttribute0(JNIEnv* env, jclass unused, jint keyIndex, jstring value) {
-  if (value == nullptr || keyIndex < 0 || keyIndex > 255) {
-    return false;
-  }
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_ThreadContext_registerConstant0(JNIEnv* env, jclass unused, jstring value) {
   JniString value_str(env, value);
-  int len = value_str.length();
-  if (len > 255) {
-    len = 255;
-  }
-  return ContextApi::setAttribute((uint8_t)keyIndex, value_str.c_str(), (uint8_t)len);
+  u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
+      value_str.c_str(), value_str.length(), 1 << 16);
+  return encoding == INT_MAX ? -1 : encoding;
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -664,7 +648,7 @@ Java_com_datadoghq_profiler_ThreadContext_getContext0(JNIEnv* env, jclass unused
   u64 spanId = 0;
   u64 rootSpanId = 0;
 
-  // Read context via ContextApi (handles both OTEL and TLS modes)
+  // Read context via ContextApi (OTEL TLS record)
   // If read fails (torn read or write in progress), return zeros
   if (!ContextApi::get(spanId, rootSpanId)) {
     spanId = 0;
@@ -693,8 +677,7 @@ Java_com_datadoghq_profiler_JavaProfiler_testlog(JNIEnv* env, jclass unused, jst
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused) {
-#ifdef DEBUG
-  Context& ctx = Contexts::get();
-  TEST_LOG("===> Context: tid:%u, spanId=%llu, rootSpanId=%llu, checksum=%llu", OS::threadId(), ctx.spanId, ctx.rootSpanId, ctx.checksum);
-#endif // DEBUG
+  u64 spanId = 0, rootSpanId = 0;
+  ContextApi::get(spanId, rootSpanId);
+  TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu", OS::threadId(), spanId, rootSpanId);
 }

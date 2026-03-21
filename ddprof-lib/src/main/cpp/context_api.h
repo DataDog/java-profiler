@@ -18,67 +18,35 @@
 #define _CONTEXT_API_H
 
 #include "arch.h"
-#include "arguments.h"
 #include "context.h"
 #include <cstdint>
 
 /**
  * Unified context API for trace/span context storage.
  *
- * This class provides a mode-agnostic interface for reading and writing
- * thread context. The actual storage is selected at initialization time
- * based on the Arguments::_context_storage setting:
- *
- * - CTX_STORAGE_PROFILER: Uses existing TLS-based storage (context_tls_v1)
- * - CTX_STORAGE_OTEL: Uses OTEP #4947 TLS pointer (custom_labels_current_set_v2)
- *
- * The abstraction allows signal handlers and JNI code to remain unchanged
- * while the underlying storage mechanism can be switched via configuration.
+ * Uses OTEP #4947 TLS pointer (custom_labels_current_set_v2) for all
+ * context reads and writes. The OTEP record is embedded in ProfiledThread
+ * and discovered by external profilers via ELF dynsym.
  */
 class ContextApi {
 public:
     /**
-     * Initialize context storage based on configuration.
-     *
+     * Initialize context storage.
      * Must be called once during profiler startup.
-     *
-     * @param args Profiler arguments containing _context_storage mode
      */
-    static void initialize(const Arguments& args);
+    static void initialize();
 
     /**
      * Shutdown context storage.
-     *
      * Releases resources allocated during initialization.
      */
     static void shutdown();
 
     /**
-     * Get the current storage mode.
-     *
-     * @return The active context storage mode
-     */
-    static inline ContextStorageMode getMode() {
-        return __atomic_load_n(&_mode, __ATOMIC_ACQUIRE);
-    }
-
-    /**
-     * Write context for the current thread (profiler mode only).
-     *
-     * NOT supported in OTEL mode — use setFull() instead.
-     * In OTEL mode this logs a warning and returns without writing.
-     *
-     * @param span_id The span ID
-     * @param root_span_id The root span ID
-     */
-    static void set(u64 span_id, u64 root_span_id);
-
-    /**
      * Write full OTEL context with 128-bit trace ID and local root span ID.
      *
-     * In OTEL mode: writes trace_id + span_id + local_root_span_id to the
-     * OTEP record in a single detach/attach cycle.
-     * In profiler mode: trace_id_high is ignored, local_root_span_id maps to rootSpanId.
+     * Writes trace_id + span_id + local_root_span_id to the OTEP record
+     * in a single detach/attach cycle.
      *
      * @param local_root_span_id Local root span ID (for endpoint correlation)
      * @param span_id The span ID
@@ -102,10 +70,9 @@ public:
     /**
      * Snapshot the current thread's context into a Context struct.
      *
-     * In profiler mode, returns Contexts::get() directly.
-     * In OTEL mode, populates a Context with spanId, rootSpanId (from sidecar),
-     * checksum, and tag encodings (from sidecar) so that writeContext() works
-     * identically for both modes.
+     * Populates a Context with spanId, rootSpanId (from sidecar),
+     * checksum, and tag encodings (from sidecar) so that writeContext()
+     * works for both live and deferred event paths.
      *
      * @return A Context struct representing the current thread's context
      */
@@ -114,9 +81,8 @@ public:
     /**
      * Set a custom attribute on the current thread's context.
      *
-     * In OTEL mode: encodes into attrs_data of the OTEP record.
-     * In profiler mode: registers the string value as a constant and
-     * writes the encoding to Context.tags[key_index].
+     * Encodes into attrs_data of the OTEP record and caches the
+     * encoding in the ProfiledThread sidecar for O(1) signal-handler reads.
      *
      * @param key_index Index into the registered attribute key map
      * @param value UTF-8 string value
@@ -137,16 +103,11 @@ public:
     static const int MAX_ATTRIBUTE_KEYS = 32;
 
     // Reserved attribute index for local root span ID in OTEL attrs_data.
-    // Stored as 16-char hex string (UTF-8). Visible to external OTEL profilers.
     static const uint8_t LOCAL_ROOT_SPAN_ATTR_INDEX = 0;
 
 private:
-    static ContextStorageMode _mode;
     static char* _attribute_keys[MAX_ATTRIBUTE_KEYS];
     static int _attribute_key_count;
-
-    // Internal: write context to profiler TLS (Context struct)
-    static void setProfilerContext(u64 root_span_id, u64 span_id);
 
     // Free registered attribute keys (shared by shutdown() and registerAttributeKeys())
     static void freeAttributeKeys();

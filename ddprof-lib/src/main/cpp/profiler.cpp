@@ -1470,8 +1470,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     _libs->updateBuildIds();
   }
 
-  // Initialize context storage (TLS or OTEL mode based on args)
-  ContextApi::initialize(args);
+  // Initialize OTEL context storage
+  ContextApi::initialize();
 
   enableEngines();
 
@@ -1580,7 +1580,7 @@ Error Profiler::stop() {
   // owned by library metadata, so we must keep library patches active until after serialization
   LibraryPatcher::unpatch_libraries();
 
-  // Shutdown context storage (clears OTEL initialized flag if in OTEL mode)
+  // Shutdown context storage (frees attribute keys)
   ContextApi::shutdown();
 
   _state = IDLE;

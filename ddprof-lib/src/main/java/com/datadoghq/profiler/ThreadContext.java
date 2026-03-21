@@ -17,164 +17,127 @@ package com.datadoghq.profiler;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Thread-local context for trace/span identification.
  *
- * <p>Provides access to thread-local context storage used by the profiler to correlate
- * samples with distributed traces. Supports two storage modes:
- * <ul>
- *   <li><b>Profiler mode (default)</b>: Context stored in TLS via direct ByteBuffer mapping</li>
- *   <li><b>OTEL mode</b>: Context stored in OTEP TLS record accessible by external profilers</li>
- * </ul>
- *
- * <p>The storage mode is determined at profiler startup via the {@code ctxstorage} option.
- * Reading and writing context automatically routes to the correct storage via JNI.
+ * <p>Uses OTEP #4947 TLS record for all context storage.
+ * Context is written directly to the OTEP record via DirectByteBuffer
+ * for minimal overhead. Only little-endian platforms are supported.
  */
 public final class ThreadContext {
-    /**
-     * Knuth's multiplicative hash constant for 64-bit values.
-     * Based on the golden ratio: 2^64 / φ where φ = (1 + √5) / 2
-     */
-    private static final long KNUTH_CONSTANT = 0x9E3779B97F4A7C15L; // 11400714819323198485
-
     private static final int MAX_CUSTOM_SLOTS = 10;
+    private static final int OTEL_MAX_RECORD_SIZE = 640;
+    private static final int LRS_OTEP_KEY_INDEX = 0;
 
     private static final BufferWriter BUFFER_WRITER = new BufferWriter();
 
-    // Offsets populated from native Context struct using offsetof()
+    // ---- Process-wide bounded direct-mapped caches ----
+    // Both caches store {int encoding, byte[] utf8Bytes} per entry.
+    // - encoding: Dictionary constant pool ID for DD JFR sidecar
+    // - utf8Bytes: UTF-8 value for OTEP attrs_data (external profilers)
+    //
+    // Collision evicts the old entry. Races between threads cause benign
+    // cache misses (redundant work), never corruption.
+    // The Dictionary (contextValueMap) is never cleared within a profiler
+    // session, so encodings remain valid until the profiler is stopped.
+    // On profiler restart, ThreadContext instances are recreated.
+    private static final int CACHE_SIZE = 256;
+    private static final int CACHE_MASK = CACHE_SIZE - 1;
+
+    // LRS cache: long lrsValue → byte[] decimalUtf8 (for OTEP attrs_data)
+    private static final long[] lrsCacheKeys = new long[CACHE_SIZE];
+    private static final byte[][] lrsCacheBytes = new byte[CACHE_SIZE][];
+
+    // Attribute value cache: String value → {int encoding, byte[] utf8}
+    // Keyed by value string (not by keyIndex) — same string always maps to
+    // same encoding regardless of key slot.
+    private static final String[] attrCacheKeys = new String[CACHE_SIZE];
+    private static final int[] attrCacheEncodings = new int[CACHE_SIZE];
+    private static final byte[][] attrCacheBytes = new byte[CACHE_SIZE][];
+
+    // OTEP record field offsets (from packed struct)
+    private final int validOffset;
+    private final int traceIdOffset;
     private final int spanIdOffset;
-    private final int rootSpanIdOffset;
-    private final int checksumOffset;
-    private final int customTagsOffset;
+    private final int attrsDataSizeOffset;
+    private final int attrsDataOffset;
+    private final int maxAttrsDataSize;
+    private final int lrsSidecarOffset;
+
+    private final ByteBuffer recordBuffer;   // 640 bytes, OtelThreadContextRecord
+    private final ByteBuffer tlsPtrBuffer;   // 8 bytes, &custom_labels_current_set_v2
+    private final ByteBuffer sidecarBuffer;  // tag encodings + LRS
+    private final long recordAddress;        // for re-attach step
 
     /**
-     * Computes a hash-based checksum for context validation.
-     * Uses Knuth's multiplicative hash on both spanId and rootSpanId,
-     * then XORs them together. This provides better torn-read detection
-     * than simple XOR alone.
+     * Creates a ThreadContext from the three DirectByteBuffers returned by native initializeOtelTls0.
      *
-     * @param spanId The span identifier
-     * @param rootSpanId The root span identifier
-     * @return The computed checksum
+     * @param recordBuffer 640-byte buffer over OtelThreadContextRecord
+     * @param tlsPtrBuffer 8-byte buffer over &amp;custom_labels_current_set_v2
+     * @param sidecarBuffer buffer over tag encodings + local root span id
+     * @param metadata array with [recordAddress, VALID_OFFSET, TRACE_ID_OFFSET,
+     *                 SPAN_ID_OFFSET, ATTRS_DATA_SIZE_OFFSET, ATTRS_DATA_OFFSET,
+     *                 LRS_SIDECAR_OFFSET]
      */
-    public static long computeContextChecksum(long spanId, long rootSpanId) {
-        long hashSpanId = spanId * KNUTH_CONSTANT;
-        long swappedRootSpanId = ((rootSpanId & 0xFFFFFFFFL) << 32) | (rootSpanId >>> 32);
-        long hashRootSpanId = swappedRootSpanId * KNUTH_CONSTANT;
-        long computed = hashSpanId ^ hashRootSpanId;
-        computed = computed == 0 ? 0xffffffffffffffffL : computed;
-        return computed;
-    }
-
-    private final ByteBuffer buffer;
-
-    /**
-     * Direct ByteBuffer mapped to ProfiledThread._otel_tag_encodings[].
-     * Non-null only in OTEL mode; allows Java to write tag encodings directly
-     * to the same memory the signal handler reads — zero JNI overhead.
-     */
-    private final ByteBuffer sidecarBuffer;
-
-    private final boolean useJNI;
-
-    /**
-     * True if OTEL context storage mode is active.
-     * In OTEL mode, context reads must go through JNI since the OTEP
-     * record is managed via a separate TLS pointer, not the direct ByteBuffer.
-     */
-    private final boolean otelMode;
-
-    /**
-     * Creates a ThreadContext with native struct field offsets.
-     *
-     * @param buffer Direct ByteBuffer mapped to native Context struct
-     * @param offsets Array of native struct field offsets:
-     *                [0] = offsetof(Context, spanId)
-     *                [1] = offsetof(Context, rootSpanId)
-     *                [2] = offsetof(Context, checksum)
-     *                [3] = offsetof(Context, tags)
-     * @param sidecarBuffer Direct ByteBuffer mapped to ProfiledThread._otel_tag_encodings,
-     *                      or null if not in OTEL mode
-     */
-    public ThreadContext(ByteBuffer buffer, int[] offsets, ByteBuffer sidecarBuffer) {
-        if (offsets == null || offsets.length < 4) {
-            throw new IllegalArgumentException("offsets array must have at least 4 elements");
+    public ThreadContext(ByteBuffer recordBuffer, ByteBuffer tlsPtrBuffer, ByteBuffer sidecarBuffer, long[] metadata) {
+        // Record buffer uses native order for uint16_t attrs_data_size (read by C as native uint16_t).
+        // trace_id/span_id are uint8_t[] arrays requiring big-endian — handled via Long.reverseBytes()
+        // in setContextDirect(). Only little-endian platforms are supported.
+        this.recordBuffer = recordBuffer.order(ByteOrder.nativeOrder());
+        this.tlsPtrBuffer = tlsPtrBuffer.order(ByteOrder.nativeOrder());
+        this.sidecarBuffer = sidecarBuffer.order(ByteOrder.nativeOrder());
+        this.recordAddress = metadata[0];
+        this.validOffset = (int) metadata[1];
+        this.traceIdOffset = (int) metadata[2];
+        this.spanIdOffset = (int) metadata[3];
+        this.attrsDataSizeOffset = (int) metadata[4];
+        this.attrsDataOffset = (int) metadata[5];
+        this.maxAttrsDataSize = OTEL_MAX_RECORD_SIZE - this.attrsDataOffset;
+        this.lrsSidecarOffset = (int) metadata[6];
+        if (ByteOrder.nativeOrder() != ByteOrder.LITTLE_ENDIAN) {
+            throw new UnsupportedOperationException(
+                "ByteBuffer context path requires little-endian platform");
         }
-        this.buffer = buffer.order(ByteOrder.LITTLE_ENDIAN);
-        this.spanIdOffset = offsets[0];
-        this.rootSpanIdOffset = offsets[1];
-        this.checksumOffset = offsets[2];
-        this.customTagsOffset = offsets[3];
-        // For Java 17 and later the cost of downcall to JNI is negligible
-        useJNI = Platform.isJavaVersionAtLeast(17);
-        // Check if OTEL mode is active - if so, reads must go through JNI
-        otelMode = isOtelMode0();
-        this.sidecarBuffer = sidecarBuffer != null
-            ? sidecarBuffer.order(ByteOrder.LITTLE_ENDIAN) : null;
     }
 
     /**
-     * Gets the span ID from the current thread's context.
+     * Reads both span ID and root span ID in a single call.
      *
-     * <p>In OTEL mode, reads from the OTEP TLS record via JNI.
-     * In profiler mode, reads directly from the TLS ByteBuffer.
-     *
-     * @return the span ID, or 0 if not set
+     * @return array with [spanId, rootSpanId], or [0, 0] if not set
      */
+    public long[] getContext() {
+        long[] ctx = getContext0();
+        return ctx != null ? ctx : new long[2];
+    }
+
     public long getSpanId() {
         return getContext()[0];
     }
 
-    /**
-     * Gets the root span ID from the current thread's context.
-     *
-     * <p>In OTEL mode, reads from the OTEP TLS record via JNI.
-     * In profiler mode, reads directly from the TLS ByteBuffer.
-     *
-     * @return the root span ID, or 0 if not set
-     */
     public long getRootSpanId() {
         return getContext()[1];
     }
 
     /**
-     * Reads both span ID and root span ID in a single call.
-     * Prefer this over separate getSpanId() + getRootSpanId() calls
-     * to avoid double JNI round-trips in OTEL mode.
+     * Sets trace context with 2-arg legacy API.
+     * Maps rootSpanId to localRootSpanId. Uses spanId as traceIdLow so that
+     * the OTEL clear check (all-zero) only fires when spanId is actually 0.
+     * Note: this produces a synthetic trace_id of [0, spanId] in the OTEP record.
+     * External OTEP readers will see this as a real W3C trace ID. Callers needing
+     * correct OTEP interop must use the 4-arg {@link #put(long, long, long, long)}.
      *
-     * @return array with [spanId, rootSpanId], or [0, 0] if not set
+     * @deprecated Use {@link #put(long, long, long, long)} instead.
      */
-    public long[] getContext() {
-        if (otelMode) {
-            long[] ctx = getContext0();
-            return ctx != null ? ctx : new long[2];
-        }
-        return new long[] { buffer.getLong(spanIdOffset), buffer.getLong(rootSpanIdOffset) };
-    }
-
-    public long getChecksum() {
-        if (otelMode) {
-            return 0; // OTEL mode uses valid-flag validation, not checksums
-        }
-        return buffer.getLong(checksumOffset);
-    }
-
+    @Deprecated
     public long put(long spanId, long rootSpanId) {
-        if (otelMode) {
-            // In OTEL mode, delegate to setFull with zero trace IDs.
-            // rootSpanId maps to localRootSpanId for endpoint correlation.
-            setContextFull0(rootSpanId, spanId, 0, 0);
-            return 0;
-        }
-        return useJNI ? setContext0(spanId, rootSpanId) : putContextJava(spanId, rootSpanId);
+        put(rootSpanId, spanId, 0, spanId);
+        return 0;
     }
 
     /**
      * Sets trace context with full 128-bit W3C trace ID and local root span ID.
-     * In OTEL mode: writes trace_id + span_id to the OTEP record, stores
-     * localRootSpanId as a reserved attribute for JFR endpoint correlation.
-     * In profiler mode: traceIdHigh is ignored, localRootSpanId maps to rootSpanId.
      *
      * @param localRootSpanId Local root span ID (for endpoint correlation)
      * @param spanId The span ID
@@ -182,54 +145,29 @@ public final class ThreadContext {
      * @param traceIdLow Lower 64 bits of the 128-bit trace ID
      */
     public void put(long localRootSpanId, long spanId, long traceIdHigh, long traceIdLow) {
-        setContextFull0(localRootSpanId, spanId, traceIdHigh, traceIdLow);
+        setContextDirect(localRootSpanId, spanId, traceIdHigh, traceIdLow);
     }
 
     public void putCustom(int offset, int value) {
-        if (offset >= MAX_CUSTOM_SLOTS) {
-            throw new IllegalArgumentException("Invalid offset: " + offset + " (max " +  MAX_CUSTOM_SLOTS + ")");
+        if (offset < 0 || offset >= MAX_CUSTOM_SLOTS) {
+            throw new IllegalArgumentException("Invalid offset: " + offset + " (max " + MAX_CUSTOM_SLOTS + ")");
         }
-        if (otelMode && sidecarBuffer != null) {
-            // Write directly to the sidecar buffer (same memory the signal handler reads)
-            BUFFER_WRITER.writeOrderedInt(sidecarBuffer, offset * 4, value);
-        } else if (useJNI || otelMode) {
-            // OTEL without sidecar (shouldn't happen) must still go through JNI
-            // to write to ProfiledThread sidecar, not the Context struct buffer.
-            setContextSlot0(offset, value);
-        } else {
-            setContextSlotJava(offset, value);
-        }
+        BUFFER_WRITER.writeOrderedInt(sidecarBuffer, offset * 4, value);
     }
 
     public void copyCustoms(int[] value) {
         int len = Math.min(value.length, MAX_CUSTOM_SLOTS);
-        ByteBuffer src = (otelMode && sidecarBuffer != null) ? sidecarBuffer : buffer;
-        int baseOffset = (otelMode && sidecarBuffer != null) ? 0 : customTagsOffset;
         for (int i = 0; i < len; i++) {
-            value[i] = src.getInt(baseOffset + i * 4);
+            value[i] = sidecarBuffer.getInt(i * 4);
         }
-    }
-
-    private long putContextJava(long spanId, long rootSpanId) {
-        long checksum = computeContextChecksum(spanId, rootSpanId);
-        BUFFER_WRITER.writeOrderedLong(buffer, checksumOffset, 0); // mark in progress
-        BUFFER_WRITER.writeOrderedLong(buffer, spanIdOffset, spanId);
-        BUFFER_WRITER.writeOrderedLong(buffer, rootSpanIdOffset, rootSpanId);
-        BUFFER_WRITER.writeVolatileLong(buffer, checksumOffset, checksum);
-        return checksum;
-    }
-
-    private long setContextSlotJava(int offset, int value) {
-        BUFFER_WRITER.writeOrderedInt(buffer, customTagsOffset + offset * 4, value);
-        return (long) value * offset;
     }
 
     /**
      * Sets a custom attribute on the current thread's context by string value.
-     *
-     * <p>In OTEL mode: encodes the value directly into the OTEP record's attrs_data.
-     * In profiler mode: registers the string as a constant and writes the encoding
-     * to the TLS context tag slot (same as registerConstant + putCustom).
+     * Uses a process-wide encoding cache to avoid JNI for repeated values
+     * (the common case). On cache miss, a single JNI call registers the value
+     * in the native Dictionary; subsequent calls with the same value are
+     * zero-JNI ByteBuffer writes.
      *
      * @param keyIndex Index into the registered attribute key map (0-based)
      * @param value The string value for this attribute
@@ -239,28 +177,186 @@ public final class ThreadContext {
         if (keyIndex < 0 || keyIndex > 255 || value == null) {
             return false;
         }
-        return setContextAttribute0(keyIndex, value);
+        return setContextAttributeDirect(keyIndex, value);
     }
 
-    private static native long setContext0(long spanId, long rootSpanId);
-    private static native void setContextFull0(long localRootSpanId, long spanId, long traceIdHigh, long traceIdLow);
-    private static native void setContextSlot0(int offset, int value);
-    private static native boolean setContextAttribute0(int keyIndex, String value);
+    /**
+     * Writes both the sidecar encoding (DD signal handler) and OTEP attrs_data
+     * UTF-8 value (external profilers) via ByteBuffer.
+     */
+    private boolean setContextAttributeDirect(int keyIndex, String value) {
+        if (keyIndex >= MAX_CUSTOM_SLOTS) return false;
+
+        // Resolve encoding + UTF-8 bytes from process-wide cache
+        int slot = value.hashCode() & CACHE_MASK;
+        int encoding;
+        byte[] utf8;
+        if (value.equals(attrCacheKeys[slot])) {
+            encoding = attrCacheEncodings[slot];
+            utf8 = attrCacheBytes[slot];
+        } else {
+            // Cache miss: register in Dictionary, encode UTF-8, cache both.
+            // Allocates byte[] once per unique value; cached for reuse.
+            encoding = registerConstant0(value);
+            if (encoding < 0) {
+                BUFFER_WRITER.writeOrderedInt(sidecarBuffer, keyIndex * 4, 0);
+                return false;
+            }
+            utf8 = value.getBytes(StandardCharsets.UTF_8);
+            // Write encoding + bytes BEFORE the key — the key acts as the
+            // commit for concurrent readers. The fence ensures ARM cores see
+            // the values before the key that guards them.
+            attrCacheEncodings[slot] = encoding;
+            attrCacheBytes[slot] = utf8;
+            BUFFER_WRITER.storeFence();
+            attrCacheKeys[slot] = value;
+        }
+
+        // Write encoding to sidecar (DD signal handler reads this)
+        BUFFER_WRITER.writeOrderedInt(sidecarBuffer, keyIndex * 4, encoding);
+
+        // Write OTEP attrs_data entry (external profilers read this)
+        // otepKeyIndex is offset by 1: index 0 is reserved for LRS
+        int otepKeyIndex = keyIndex + 1;
+        detach();
+        replaceOtepAttribute(otepKeyIndex, utf8);
+        attach();
+        return true;
+    }
 
     /**
-     * Checks if OTEL context storage mode is active.
-     *
-     * @return true if OTEL mode is active, false for default profiler mode
+     * Write context directly to the OTEP record via ByteBuffer.
+     * trace_id and span_id are OTEP big-endian byte arrays — Long.reverseBytes()
+     * converts from native LE to big-endian.
      */
-    private static native boolean isOtelMode0();
+    private void setContextDirect(long lrs, long spanId, long trHi, long trLo) {
+        // Update LRS in sidecar (signal handler reads this)
+        BUFFER_WRITER.writeOrderedLong(sidecarBuffer, lrsSidecarOffset, lrs);
+
+        detach();
+
+        if (trHi == 0 && trLo == 0 && spanId == 0) {
+            // Clear: zero fields, leave detached
+            recordBuffer.putLong(traceIdOffset, 0);
+            recordBuffer.putLong(traceIdOffset + 8, 0);
+            recordBuffer.putLong(spanIdOffset, 0);
+            recordBuffer.putShort(attrsDataSizeOffset, (short) 0);
+            BUFFER_WRITER.writeOrderedLong(sidecarBuffer, lrsSidecarOffset, 0);
+            return;
+        }
+
+        // Write trace_id (big-endian) + span_id (big-endian)
+        recordBuffer.putLong(traceIdOffset, Long.reverseBytes(trHi));
+        recordBuffer.putLong(traceIdOffset + 8, Long.reverseBytes(trLo));
+        recordBuffer.putLong(spanIdOffset, Long.reverseBytes(spanId));
+
+        // Write LRS as a regular OTEP attribute at key_index=0 (decimal string, per OTEP spec)
+        if (lrs != 0) {
+            byte[] lrsUtf8 = lookupLrs(lrs);
+            replaceOtepAttribute(LRS_OTEP_KEY_INDEX, lrsUtf8);
+        } else {
+            removeOtepAttribute(LRS_OTEP_KEY_INDEX);
+        }
+
+        attach();
+    }
+
+    // ---- LRS cache ----
 
     /**
-     * Reads context via the native ContextApi.
-     *
-     * <p>This method routes to the appropriate storage backend based on the
-     * active storage mode (OTEP TLS record or TLS).
-     *
-     * @return array with [spanId, rootSpanId], or null on error
+     * Look up LRS decimal UTF-8 bytes from the process-wide cache.
+     * On miss: converts to unsigned decimal string and caches the UTF-8 bytes.
+     * Allocates one byte[] per unique LRS value (cached for reuse).
      */
+    private static byte[] lookupLrs(long lrs) {
+        int slot = Long.hashCode(lrs) & CACHE_MASK;
+        if (lrsCacheKeys[slot] == lrs && lrsCacheBytes[slot] != null) {
+            return lrsCacheBytes[slot];
+        }
+        byte[] utf8 = Long.toUnsignedString(lrs).getBytes(StandardCharsets.UTF_8);
+        // Write bytes BEFORE key — key acts as commit for concurrent readers.
+        // Fence ensures ARM cores see the bytes before the key that guards them.
+        lrsCacheBytes[slot] = utf8;
+        BUFFER_WRITER.storeFence();
+        lrsCacheKeys[slot] = lrs;
+        return utf8;
+    }
+
+    // ---- OTEP record helpers (called between detach/attach) ----
+
+    /** Detach TLS pointer + invalidate record. Must be paired with attach(). */
+    private void detach() {
+        BUFFER_WRITER.writeOrderedLong(tlsPtrBuffer, 0, 0);
+        recordBuffer.put(validOffset, (byte) 0);
+        BUFFER_WRITER.storeFence();
+    }
+
+    /** Validate record + re-attach TLS pointer. */
+    private void attach() {
+        // storeFence ensures all record writes are visible before valid=1.
+        // The volatile TLS pointer write provides a release barrier that
+        // prevents valid=1 from being reordered past the pointer publication.
+        BUFFER_WRITER.storeFence();
+        recordBuffer.put(validOffset, (byte) 1);
+        BUFFER_WRITER.writeVolatileLong(tlsPtrBuffer, 0, recordAddress);
+    }
+
+    /**
+     * Replace or insert an attribute in attrs_data. Record must be detached.
+     * Writes the pre-encoded UTF-8 bytes into the record.
+     */
+    private void replaceOtepAttribute(int otepKeyIndex, byte[] utf8) {
+        int currentSize = compactOtepAttribute(otepKeyIndex);
+        int valueLen = Math.min(utf8.length, 255);
+        int entrySize = 2 + valueLen;
+        if (currentSize + entrySize <= maxAttrsDataSize) {
+            int base = attrsDataOffset + currentSize;
+            recordBuffer.put(base, (byte) otepKeyIndex);
+            recordBuffer.put(base + 1, (byte) valueLen);
+            for (int i = 0; i < valueLen; i++) {
+                recordBuffer.put(base + 2 + i, utf8[i]);
+            }
+            currentSize += entrySize;
+        }
+        recordBuffer.putShort(attrsDataSizeOffset, (short) currentSize);
+    }
+
+    /** Remove an attribute from attrs_data by compacting. Record must be detached. */
+    private void removeOtepAttribute(int otepKeyIndex) {
+        int currentSize = compactOtepAttribute(otepKeyIndex);
+        recordBuffer.putShort(attrsDataSizeOffset, (short) currentSize);
+    }
+
+    /**
+     * Scan attrs_data and compact out the entry with the given key_index.
+     * Returns the new attrs_data size after compaction.
+     */
+    private int compactOtepAttribute(int otepKeyIndex) {
+        int currentSize = recordBuffer.getShort(attrsDataSizeOffset) & 0xFFFF;
+        int readPos = 0;
+        int writePos = 0;
+        boolean found = false;
+        while (readPos + 2 <= currentSize) {
+            int k = recordBuffer.get(attrsDataOffset + readPos) & 0xFF;
+            int len = recordBuffer.get(attrsDataOffset + readPos + 1) & 0xFF;
+            if (readPos + 2 + len > currentSize) { currentSize = writePos; break; }
+            if (k == otepKeyIndex) {
+                found = true;
+                readPos += 2 + len;
+            } else {
+                if (found && writePos < readPos) {
+                    for (int i = 0; i < 2 + len; i++) {
+                        recordBuffer.put(attrsDataOffset + writePos + i,
+                            recordBuffer.get(attrsDataOffset + readPos + i));
+                    }
+                }
+                writePos += 2 + len;
+                readPos += 2 + len;
+            }
+        }
+        return found ? writePos : currentSize;
+    }
+
+    private static native int registerConstant0(String value);
     private static native long[] getContext0();
 }

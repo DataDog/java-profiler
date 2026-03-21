@@ -67,17 +67,18 @@ private:
   u32 _misc_flags;
   int _filter_slot_id; // Slot ID for thread filtering
   UnwindFailures _unwind_failures;
-  bool _ctx_tls_initialized;
   bool _otel_ctx_initialized;
   bool _crash_protection_active;
-  Context* _ctx_tls_ptr;
   OtelThreadContextRecord _otel_ctx_record;
-  u32 _otel_tag_encodings[DD_TAGS_CAPACITY];
+  // These two fields MUST be contiguous and 8-byte aligned — the JNI layer
+  // exposes them as a single DirectByteBuffer (sidecar), and VarHandle long
+  // views require 8-byte alignment for the buffer base address.
+  alignas(8) u32 _otel_tag_encodings[DD_TAGS_CAPACITY];
   u64 _otel_local_root_span_id;
 
   ProfiledThread(int buffer_pos, int tid)
       : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _root_span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
-        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _ctx_tls_initialized(false), _otel_ctx_initialized(false), _crash_protection_active(false), _ctx_tls_ptr(nullptr),
+        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _otel_ctx_initialized(false), _crash_protection_active(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
 
   ~ProfiledThread() = default;
@@ -181,20 +182,6 @@ public:
     __atomic_store_n(&_in_critical_section, false, __ATOMIC_RELEASE);
   }
   
-  // context sharing TLS
-  inline void markContextTlsInitialized(Context* ctx_ptr) {
-    _ctx_tls_ptr = ctx_ptr;
-    _ctx_tls_initialized = true;
-  }
-
-  inline bool isContextTlsInitialized() {
-    return _ctx_tls_initialized;
-  }
-
-  inline Context* getContextTlsPtr() {
-    return _ctx_tls_ptr;
-  }
-
   // OTel context TLS (OTEP #4947)
   inline void markOtelContextInitialized() {
     _otel_ctx_initialized = true;

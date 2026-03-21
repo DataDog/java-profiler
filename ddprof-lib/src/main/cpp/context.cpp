@@ -15,37 +15,3 @@
  */
 
 #include "context.h"
-#include "counters.h"
-#include "os.h"
-#include "guards.h"
-#include "thread.h"
-#include <cstring>
-
-DLLEXPORT thread_local Context context_tls_v1;
-
-Context& Contexts::initializeContextTls() {
-  // Block profiling signals during context_tls_v1 first access to prevent
-  // signal handler from interrupting musl's TLS initialization
-  SignalBlocker blocker;
-
-  // FIRST access to context_tls_v1 - triggers musl TLS init on first call
-  // ProfiledThread::current() will never return nullptr
-  Context& ctx = context_tls_v1;
-  // Store pointer in ProfiledThread for signal-safe access
-  ProfiledThread::current()->markContextTlsInitialized(&ctx);
-
-  // Signal mask automatically restored when blocker goes out of scope
-  return ctx;
-}
-
-static Context DD_EMPTY_CONTEXT = {};
-
-Context& Contexts::get() {
-  ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
-  if (thrd == nullptr || !thrd->isContextTlsInitialized()) {
-    return DD_EMPTY_CONTEXT;
-  }
-  // Return via stored pointer - never access context_tls_v1 from signal handler
-  // This avoids triggering TLS lazy initialization which can deadlock in malloc
-  return *thrd->getContextTlsPtr();
-}

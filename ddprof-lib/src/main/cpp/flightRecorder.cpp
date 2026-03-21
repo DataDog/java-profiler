@@ -1486,22 +1486,9 @@ void Recording::writeCurrentContext(Buffer *buf) {
   buf->putVar64(rootSpanId);
 
   size_t numAttrs = Profiler::instance()->numContextAttributes();
-
-  if (ContextApi::getMode() == CTX_STORAGE_OTEL) {
-    // In OTEL mode: read pre-computed encodings from ProfiledThread sidecar.
-    // Encodings are cached by ContextApi::setAttribute() on the JNI thread —
-    // O(1) array read, no hash lookup or attrs_data scanning.
-    ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
-    for (size_t i = 0; i < numAttrs; i++) {
-      buf->putVar32(thrd != nullptr ? thrd->getOtelTagEncoding(i) : 0);
-    }
-  } else {
-    // Profiler mode: read directly from Context.tags[]
-    Context &context = Contexts::get();
-    for (size_t i = 0; i < numAttrs; i++) {
-      Tag tag = context.get_tag(i);
-      buf->putVar32(tag.value);
-    }
+  ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+  for (size_t i = 0; i < numAttrs; i++) {
+    buf->putVar32(thrd != nullptr ? thrd->getOtelTagEncoding(i) : 0);
   }
 }
 

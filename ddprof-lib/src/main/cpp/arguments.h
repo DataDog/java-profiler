@@ -92,16 +92,6 @@ enum Clock {
     CLK_MONOTONIC
 };
 
-/**
- * Context storage mode for trace/span context.
- * Both modes are async-signal safe. The profiler mode is production-proven;
- * OTEP mode enables interop with external profilers but is newer.
- */
-enum ContextStorageMode {
-    CTX_STORAGE_PROFILER,  // Default: TLS-based storage
-    CTX_STORAGE_OTEL       // OTEP #4947 TLS pointer storage
-};
-
 // Keep this in sync with JfrSync.java
 enum EventMask {
     EM_CPU          = 1,
@@ -199,7 +189,6 @@ public:
   bool _lightweight;
   bool _enable_method_cleanup;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
-  ContextStorageMode _context_storage;  // Context storage mode (profiler TLS or OTEL TLS pointer)
 
   Arguments(bool persistent = false)
       : _buf(NULL),
@@ -234,8 +223,7 @@ public:
         _context_attributes({}),
         _lightweight(false),
         _enable_method_cleanup(true),
-        _remote_symbolication(false),
-        _context_storage(CTX_STORAGE_PROFILER) {}
+        _remote_symbolication(false) {}
 
   ~Arguments();
 

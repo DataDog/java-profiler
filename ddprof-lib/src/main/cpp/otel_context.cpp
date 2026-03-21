@@ -73,17 +73,22 @@ void OtelContexts::set(OtelThreadContextRecord* record, u64 trace_id_high, u64 t
 
     uint16_t new_size = 0;
 
-    // Write local_root_span_id as hex string attribute at reserved index 0
+    // Write local_root_span_id as decimal string attribute at reserved index 0
     if (local_root_span_id != 0) {
-        static const char hex_chars[] = "0123456789abcdef";
-        record->attrs_data[0] = 0;   // key_index = LOCAL_ROOT_SPAN_ATTR_INDEX
-        record->attrs_data[1] = 16;  // length
+        // Max digits for u64: 20 ("18446744073709551615"). Entry = 2 + digits.
+        uint8_t digits[20];
+        int ndigits = 0;
         u64 v = local_root_span_id;
-        for (int i = 17; i >= 2; i--) {
-            record->attrs_data[i] = hex_chars[v & 0xF];
-            v >>= 4;
+        do {
+            digits[ndigits++] = '0' + (v % 10);
+            v /= 10;
+        } while (v > 0);
+        record->attrs_data[0] = 0;          // key_index = LOCAL_ROOT_SPAN_ATTR_INDEX
+        record->attrs_data[1] = ndigits;    // length
+        for (int i = 0; i < ndigits; i++) {
+            record->attrs_data[2 + i] = digits[ndigits - 1 - i]; // reverse into big-endian order
         }
-        new_size = 18;
+        new_size = 2 + ndigits;
     }
 
     // Re-append preserved user entries
