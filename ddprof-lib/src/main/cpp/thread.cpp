@@ -92,7 +92,6 @@ void ProfiledThread::releaseFromBuffer() {
     _pc = 0;
     _sp = 0;
     _span_id = 0;
-    _root_span_id = 0;
     _crash_depth = 0;
     _cpu_epoch = 0;
     _wall_epoch = 0;

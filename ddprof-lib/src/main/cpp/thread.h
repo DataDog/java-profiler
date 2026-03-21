@@ -56,7 +56,6 @@ private:
   u64 _pc;
   u64 _sp;
   u64 _span_id;
-  u64 _root_span_id;
   volatile u32 _crash_depth;
   int _buffer_pos;
   int _tid;
@@ -77,7 +76,7 @@ private:
   u64 _otel_local_root_span_id;
 
   ProfiledThread(int buffer_pos, int tid)
-      : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _root_span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
+      : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _otel_ctx_initialized(false), _crash_protection_active(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
 
@@ -120,14 +119,13 @@ public:
   u64 lookupWallclockCallTraceId(u64 pc, u64 sp, u32 recording_epoch,
                                   u64 span_id, u64 root_span_id) {
     if (_pc == pc && _sp == sp && _span_id == span_id &&
-        _root_span_id == root_span_id && _recording_epoch == recording_epoch &&
+        _otel_local_root_span_id == root_span_id && _recording_epoch == recording_epoch &&
         _call_trace_id != 0) {
       return _call_trace_id;
     }
     _pc = pc;
     _sp = sp;
     _span_id = span_id;
-    _root_span_id = root_span_id;
     _recording_epoch = recording_epoch;
     return 0;
   }
