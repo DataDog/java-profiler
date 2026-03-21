@@ -17,10 +17,8 @@ package com.datadoghq.profiler.context;
 
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.OTelContext;
-import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.ThreadContext;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -31,16 +29,12 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Tests for OTEL-compatible context storage mode (OTEP #4947).
+ * Tests for OTEL-compatible context storage (OTEP #4947).
  *
- * <p>The profiler supports two context storage modes controlled by the {@code ctxstorage} option:
- * <ul>
- *   <li>{@code profiler} (default): Uses TLS-based storage with checksum validation</li>
- *   <li>{@code otel}: Uses OTEP #4947 TLS pointer (custom_labels_current_set_v2)</li>
- * </ul>
- *
- * <p>The OTEL mode publishes a {@code __thread} pointer discoverable via ELF dynsym
- * that external profilers (like the OTel eBPF profiler) can resolve per-thread.
+ * <p>All context storage now uses the OTEP #4947 TLS pointer
+ * (custom_labels_current_set_v2). The TLS symbol is discoverable via ELF dynsym
+ * on Linux, enabling external profilers (like the OTel eBPF profiler) to resolve
+ * per-thread context.
  */
 public class OtelContextStorageModeTest {
 
@@ -58,50 +52,18 @@ public class OtelContextStorageModeTest {
             profiler.stop();
             profilerStarted = false;
         }
-        // Reset cached ThreadContext after profiler stops (no active sampling).
-        // The next test's profiler.execute() will start fresh, and the ThreadContext
-        // created afterward will pick up the correct otelMode.
-        profiler.resetThreadContext();
     }
 
     /**
-     * Tests that the default (profiler) mode works correctly.
-     * Context values written should be readable back via TLS.
-     */
-    @Test
-    public void testDefaultProfilerModeContext() throws Exception {
-        Path jfrFile = Files.createTempFile("otel-ctx-default", ".jfr");
-
-        profiler.execute(String.format("start,cpu=1ms,ctxstorage=profiler,jfr,file=%s", jfrFile.toAbsolutePath()));
-        profilerStarted = true;
-
-        // Clear any previous context
-        profiler.setContext(0, 0);
-
-        // Write context
-        long spanId = 0x1234567890ABCDEFL;
-        long rootSpanId = 0xFEDCBA0987654321L;
-        profiler.setContext(spanId, rootSpanId);
-
-        // Verify context is readable from TLS
-        ThreadContext ctx = profiler.getThreadContext();
-        assertEquals(spanId, ctx.getSpanId(), "SpanId should match");
-        assertEquals(rootSpanId, ctx.getRootSpanId(), "RootSpanId should match");
-    }
-
-    /**
-     * Tests that OTEL storage mode starts successfully and context round-trips correctly.
-     * On Linux, the custom_labels_current_set_v2 TLS symbol is discoverable via ELF dynsym.
+     * Tests that context round-trips correctly.
+     * The custom_labels_current_set_v2 TLS symbol is discoverable via ELF dynsym on Linux.
      */
     @Test
     public void testOtelStorageModeContext() throws Exception {
         Path jfrFile = Files.createTempFile("otel-ctx-otel", ".jfr");
 
-        profiler.execute(String.format("start,cpu=1ms,ctxstorage=otel,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profiler.execute(String.format("start,cpu=1ms,jfr,file=%s", jfrFile.toAbsolutePath()));
         profilerStarted = true;
-
-        // Reset cached ThreadContext so it picks up the current OTEL mode
-        profiler.resetThreadContext();
 
         long localRootSpanId = 0x1111222233334444L;
         long spanId = 0xAAAABBBBCCCCDDDDL;
@@ -110,37 +72,33 @@ public class OtelContextStorageModeTest {
         profiler.setContext(localRootSpanId, spanId, traceIdHigh, traceIdLow);
 
         ThreadContext ctx = profiler.getThreadContext();
-        assertEquals(spanId, ctx.getSpanId(), "SpanId should match in OTEL mode");
-        assertEquals(localRootSpanId, ctx.getRootSpanId(), "LocalRootSpanId should match in OTEL mode");
+        assertEquals(spanId, ctx.getSpanId(), "SpanId should match");
+        assertEquals(localRootSpanId, ctx.getRootSpanId(), "LocalRootSpanId should match");
     }
 
     /**
-     * Tests that OTEL mode can be requested on any platform without crashing.
+     * Tests that context operations do not crash on any platform.
      */
     @Test
     public void testOtelModeStartsOnAnyPlatform() throws Exception {
         Path jfrFile = Files.createTempFile("otel-ctx-any", ".jfr");
 
-        profiler.execute(String.format("start,cpu=1ms,ctxstorage=otel,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profiler.execute(String.format("start,cpu=1ms,jfr,file=%s", jfrFile.toAbsolutePath()));
         profilerStarted = true;
-
-        profiler.resetThreadContext();
 
         // Context operations should not crash
         profiler.setContext(0x456L, 0x123L, 0L, 0x789L);
     }
 
     /**
-     * Tests that clearing context in OTEL mode sets values back to zero.
+     * Tests that clearing context sets values back to zero.
      */
     @Test
     public void testOtelModeClearContext() throws Exception {
         Path jfrFile = Files.createTempFile("otel-ctx-clear", ".jfr");
 
-        profiler.execute(String.format("start,cpu=1ms,ctxstorage=otel,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profiler.execute(String.format("start,cpu=1ms,jfr,file=%s", jfrFile.toAbsolutePath()));
         profilerStarted = true;
-
-        profiler.resetThreadContext();
 
         profiler.setContext(0xCAFEBABEL, 0xDEADBEEFL, 0L, 0x12345678L);
         profiler.clearContext();
@@ -151,20 +109,18 @@ public class OtelContextStorageModeTest {
     }
 
     /**
-     * Tests that custom attributes round-trip correctly in OTEL mode.
+     * Tests that custom attributes round-trip correctly.
      * Registers attribute keys, sets values via setContextAttribute.
      */
     @Test
     public void testOtelModeCustomAttributes() throws Exception {
         Path jfrFile = Files.createTempFile("otel-ctx-attrs", ".jfr");
 
-        profiler.execute(String.format("start,cpu=1ms,ctxstorage=otel,contextattribute=http.route;db.system,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profiler.execute(String.format("start,cpu=1ms,contextattribute=http.route;db.system,jfr,file=%s", jfrFile.toAbsolutePath()));
         profilerStarted = true;
 
         // Register attribute keys
         OTelContext.getInstance().registerAttributeKeys("http.route", "db.system");
-
-        profiler.resetThreadContext();
 
         long localRootSpanId = 0x1111222233334444L;
         long spanId = 0xAAAABBBBCCCCDDDDL;
@@ -183,21 +139,20 @@ public class OtelContextStorageModeTest {
     }
 
     /**
-     * Tests that setContextAttribute works in profiler mode as fallback
-     * (registers constant + writes to Context.tags[]).
+     * Tests that setContextAttribute works (registers constant + writes encoding).
      */
     @Test
-    public void testProfilerModeSetContextAttribute() throws Exception {
-        Path jfrFile = Files.createTempFile("otel-ctx-prof-attr", ".jfr");
+    public void testSetContextAttribute() throws Exception {
+        Path jfrFile = Files.createTempFile("otel-ctx-attr", ".jfr");
 
         profiler.execute(String.format("start,cpu=1ms,contextattribute=http.route,jfr,file=%s", jfrFile.toAbsolutePath()));
         profilerStarted = true;
 
-        profiler.setContext(0x123L, 0x456L);
+        profiler.setContext(0x456L, 0x123L, 0L, 0x789L);
 
         ThreadContext ctx = profiler.getThreadContext();
         boolean result = ctx.setContextAttribute(0, "POST /api/orders");
-        assertTrue(result, "setContextAttribute should work in profiler mode");
+        assertTrue(result, "setContextAttribute should work");
     }
 
     /**
@@ -207,12 +162,10 @@ public class OtelContextStorageModeTest {
     public void testOtelModeAttributeOverflow() throws Exception {
         Path jfrFile = Files.createTempFile("otel-ctx-overflow", ".jfr");
 
-        profiler.execute(String.format("start,cpu=1ms,ctxstorage=otel,contextattribute=k0;k1;k2;k3;k4,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profiler.execute(String.format("start,cpu=1ms,contextattribute=k0;k1;k2;k3;k4,jfr,file=%s", jfrFile.toAbsolutePath()));
         profilerStarted = true;
 
         OTelContext.getInstance().registerAttributeKeys("k0", "k1", "k2", "k3", "k4");
-
-        profiler.resetThreadContext();
 
         profiler.setContext(0x2L, 0x1L, 0L, 0x3L);
 
