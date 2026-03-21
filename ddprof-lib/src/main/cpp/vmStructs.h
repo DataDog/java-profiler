@@ -830,17 +830,16 @@ DECLARE(VMMethod)
     static bool check_jmethodID(jmethodID id);
 DECLARE_END
 
-DECLARE(VMNMethod)
-  private:
-    // Inline string comparison to avoid indirect call to strncmp
-    template<size_t N>
-    static bool startsWith(const char* s, const char (&pattern)[N]) {
-        for (size_t i = 0; i < N - 1; i++) {
-            if (s[i] != pattern[i]) return false;
-        }
-        return true;
+// Inline string comparison to avoid indirect call to strncmp
+template<size_t N>
+static inline bool startsWith(const char* s, const char (&pattern)[N]) {
+    for (size_t i = 0; i < N - 1; i++) {
+        if (s[i] != pattern[i]) return false;
     }
+    return true;
+}
 
+DECLARE(VMNMethod)
   public:
     int size() {
         assert(_blob_size_offset >= 0);
