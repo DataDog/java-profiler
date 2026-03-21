@@ -9,6 +9,9 @@ COMPARE_SCRIPT="${SCRIPT_DIR}/compare_branch_prediction.sh"
 ITERATIONS="${1:-3}"
 BENCHMARK="${2:-akka-uct}"
 
+# Change to script directory to ensure perf_results/ is in the right place
+cd "${SCRIPT_DIR}"
+
 # Color output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
