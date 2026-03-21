@@ -75,6 +75,16 @@ compare_results() {
     local baseline_instr=$(extract_metric "$baseline" "instructions")
     local optimized_instr=$(extract_metric "$optimized" "instructions")
 
+    # Cycles
+    local baseline_cycles=$(extract_metric "$baseline" "cycles")
+    local optimized_cycles=$(extract_metric "$optimized" "cycles")
+
+    # Stalled cycles
+    local baseline_stall_fe=$(extract_metric "$baseline" "stalled-cycles-frontend")
+    local optimized_stall_fe=$(extract_metric "$optimized" "stalled-cycles-frontend")
+    local baseline_stall_be=$(extract_metric "$baseline" "stalled-cycles-backend")
+    local optimized_stall_be=$(extract_metric "$optimized" "stalled-cycles-backend")
+
     echo "Metric                    | Baseline        | Optimized       | Change"
     echo "--------------------------|-----------------|-----------------|------------------"
 
@@ -102,8 +112,44 @@ compare_results() {
                "$change"
     fi
 
+    if [ -n "$baseline_cycles" ] && [ -n "$optimized_cycles" ]; then
+        local change=$(echo "scale=2; ($optimized_cycles - $baseline_cycles) * 100 / $baseline_cycles" | bc)
+        printf "Cycles                    | %15s | %15s | %s%%\n" \
+               "$(printf '%0s' $baseline_cycles | sed 's/\(.\{3\}\)/\1,/g' | sed 's/,$//')" \
+               "$(printf '%0s' $optimized_cycles | sed 's/\(.\{3\}\)/\1,/g' | sed 's/,$//')" \
+               "$change"
+    fi
+
+    if [ -n "$baseline_stall_fe" ] && [ -n "$optimized_stall_fe" ]; then
+        local change=$(echo "scale=2; ($optimized_stall_fe - $baseline_stall_fe) * 100 / $baseline_stall_fe" | bc)
+        printf "Frontend stalls           | %15s | %15s | %s%%\n" \
+               "$(printf '%0s' $baseline_stall_fe | sed 's/\(.\{3\}\)/\1,/g' | sed 's/,$//')" \
+               "$(printf '%0s' $optimized_stall_fe | sed 's/\(.\{3\}\)/\1,/g' | sed 's/,$//')" \
+               "$change"
+    fi
+
+    if [ -n "$baseline_stall_be" ] && [ -n "$optimized_stall_be" ]; then
+        local change=$(echo "scale=2; ($optimized_stall_be - $baseline_stall_be) * 100 / $baseline_stall_be" | bc)
+        printf "Backend stalls            | %15s | %15s | %s%%\n" \
+               "$(printf '%0s' $baseline_stall_be | sed 's/\(.\{3\}\)/\1,/g' | sed 's/,$//')" \
+               "$(printf '%0s' $optimized_stall_be | sed 's/\(.\{3\}\)/\1,/g' | sed 's/,$//')" \
+               "$change"
+    fi
+
+    # Calculate and display IPC (Instructions Per Cycle)
+    if [ -n "$baseline_instr" ] && [ -n "$baseline_cycles" ] && [ "$baseline_cycles" -gt 0 ]; then
+        local baseline_ipc=$(echo "scale=3; $baseline_instr / $baseline_cycles" | bc)
+        local optimized_ipc=$(echo "scale=3; $optimized_instr / $optimized_cycles" | bc)
+        local ipc_change=$(echo "scale=2; ($optimized_ipc - $baseline_ipc) * 100 / $baseline_ipc" | bc)
+
+        echo "--------------------------|-----------------|-----------------|------------------"
+        printf "IPC (insn/cycle)          | %15s | %15s | %s%%\n" \
+               "$baseline_ipc" "$optimized_ipc" "$ipc_change"
+    fi
+
     echo ""
-    log_info "Negative change % indicates improvement (fewer misses)"
+    log_info "Negative change % indicates improvement (fewer misses/cycles)"
+    log_info "Positive IPC change indicates better throughput"
 }
 
 main() {

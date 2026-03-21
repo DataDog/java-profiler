@@ -138,6 +138,7 @@ run_perf_stat() {
     perf stat -e branch-misses,branches \
               -e L1-icache-load-misses,L1-icache-loads \
               -e instructions,cycles \
+              -e stalled-cycles-frontend,stalled-cycles-backend \
               -e cache-misses,cache-references \
               -p ${pid} \
               -- sleep ${DURATION} \
