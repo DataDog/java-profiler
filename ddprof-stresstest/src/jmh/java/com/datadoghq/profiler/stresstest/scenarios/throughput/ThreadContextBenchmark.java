@@ -32,6 +32,7 @@ import org.openjdk.jmh.annotations.OutputTimeUnit;
 import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
+import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
 
 /**
@@ -42,7 +43,6 @@ import org.openjdk.jmh.annotations.Warmup;
  *
  * <p>Run with different JAVA_HOME to compare JNI (17+) vs ByteBuffer (&lt;17) paths.
  */
-@State(Scope.Thread)
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
 @Fork(value = 2, warmups = 0)
@@ -50,51 +50,88 @@ import org.openjdk.jmh.annotations.Warmup;
 @Measurement(iterations = 5, time = 2)
 public class ThreadContextBenchmark {
 
-    private JavaProfiler profiler;
-    private ThreadContext ctx;
-    private long spanId;
-    private long localRootSpanId;
-    private int counter;
-
     private static final String[] ROUTES = {
         "GET /api/users", "POST /api/orders", "GET /api/health",
         "PUT /api/users/{id}", "DELETE /api/sessions"
     };
 
-    @Setup(Level.Trial)
-    public void setup() throws Exception {
-        profiler = JavaProfiler.getInstance();
-        Path jfr = Files.createTempFile("bench", ".jfr");
-        profiler.execute("start,cpu=10ms,attributes=http.route,jfr,file=" + jfr.toAbsolutePath());
-        OTelContext.getInstance().registerAttributeKeys("http.route");
-        ctx = profiler.getThreadContext();
-        spanId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
-        localRootSpanId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+    @State(Scope.Benchmark)
+    public static class ProfilerState {
+        JavaProfiler profiler;
+
+        @Setup(Level.Trial)
+        public void setup() throws Exception {
+            profiler = JavaProfiler.getInstance();
+            Path jfr = Files.createTempFile("bench", ".jfr");
+            profiler.execute("start,cpu=10ms,attributes=http.route,jfr,file=" + jfr.toAbsolutePath());
+            OTelContext.getInstance().registerAttributeKeys("http.route");
+        }
+    }
+
+    @State(Scope.Thread)
+    public static class ThreadState {
+        ThreadContext ctx;
+        long spanId;
+        long localRootSpanId;
+        int counter;
+
+        @Setup(Level.Trial)
+        public void setup(ProfilerState ps) {
+            ctx = ps.profiler.getThreadContext();
+            spanId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+            localRootSpanId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        }
     }
 
     @Benchmark
-    public void setContextFull() {
-        ctx.put(localRootSpanId, spanId, 0, spanId);
+    public void setContextFull(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
     }
 
     @Benchmark
-    public boolean setAttrCacheHit() {
-        return ctx.setContextAttribute(0, ROUTES[counter++ % ROUTES.length]);
+    public boolean setAttrCacheHit(ThreadState ts) {
+        return ts.ctx.setContextAttribute(0, ROUTES[ts.counter++ % ROUTES.length]);
     }
 
     @Benchmark
-    public void spanLifecycle() {
-        ctx.put(localRootSpanId, spanId, 0, spanId);
-        ctx.setContextAttribute(0, ROUTES[counter++ % ROUTES.length]);
+    public void spanLifecycle(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
+        ts.ctx.setContextAttribute(0, ROUTES[ts.counter++ % ROUTES.length]);
     }
 
     @Benchmark
-    public long[] getContext() {
-        return ctx.getContext();
+    @Threads(2)
+    public void setContextFull_2t(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
     }
 
     @Benchmark
-    public void clearContext() {
-        ctx.put(0, 0, 0, 0);
+    @Threads(4)
+    public void setContextFull_4t(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
+    }
+
+    @Benchmark
+    @Threads(2)
+    public void spanLifecycle_2t(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
+        ts.ctx.setContextAttribute(0, ROUTES[ts.counter++ % ROUTES.length]);
+    }
+
+    @Benchmark
+    @Threads(4)
+    public void spanLifecycle_4t(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
+        ts.ctx.setContextAttribute(0, ROUTES[ts.counter++ % ROUTES.length]);
+    }
+
+    @Benchmark
+    public long[] getContext(ThreadState ts) {
+        return ts.ctx.getContext();
+    }
+
+    @Benchmark
+    public void clearContext(ThreadState ts) {
+        ts.ctx.put(0, 0, 0, 0);
     }
 }
