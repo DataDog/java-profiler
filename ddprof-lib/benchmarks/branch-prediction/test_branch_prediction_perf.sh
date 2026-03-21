@@ -173,14 +173,16 @@ run_perf_record() {
 
     log_info "perf record data saved to ${output_file}"
 
-    # Generate report focused on our library
+    # Generate report focused on our library (non-fatal if it fails)
     log_info "Generating perf report for libjavaProfiler.so..."
-    perf report -i "${output_file}" \
+    if perf report -i "${output_file}" \
                 --dsos=libjavaProfiler.so \
                 --stdio \
-                > "${output_file%.data}_report.txt"
-
-    log_info "Report saved to ${output_file%.data}_report.txt"
+                > "${output_file%.data}_report.txt" 2>&1; then
+        log_info "Report saved to ${output_file%.data}_report.txt"
+    else
+        log_warn "perf report failed or found no samples for libjavaProfiler.so"
+    fi
 }
 
 # Stop the benchmark
