@@ -6,12 +6,12 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/../../.."
-TEST_SCRIPT="${SCRIPT_DIR}/test_branch_prediction_perf.sh"
 
 # Color output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+RED='\033[0;31m'
 NC='\033[0m'
 
 log_info() {
@@ -25,6 +25,26 @@ log_step() {
 log_warn() {
     echo -e "${YELLOW}[WARN]${NC} $1"
 }
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# Cleanup worktrees on exit
+cleanup() {
+    log_info "Cleaning up worktrees..."
+    cd "${REPO_ROOT}"
+
+    if [ -n "${BASELINE_WORKTREE}" ] && [ -d "${BASELINE_WORKTREE}" ]; then
+        git worktree remove -f "${BASELINE_WORKTREE}" 2>/dev/null || true
+    fi
+
+    if [ -n "${OPTIMIZED_WORKTREE}" ] && [ -d "${OPTIMIZED_WORKTREE}" ]; then
+        git worktree remove -f "${OPTIMIZED_WORKTREE}" 2>/dev/null || true
+    fi
+}
+
+trap cleanup EXIT
 
 # Compare two perf stat results
 compare_results() {
@@ -86,89 +106,87 @@ compare_results() {
 
 main() {
     local benchmark="${1:-akka-uct}"
+    local baseline_branch="${2:-main}"
+    local optimized_branch="${3:-jb/likely}"
 
     log_info "=== Branch Prediction Comparison Test ==="
-    log_info "This will test baseline (main) vs optimized (jb/likely) branches"
+    log_info "Baseline branch: ${baseline_branch}"
+    log_info "Optimized branch: ${optimized_branch}"
     log_info "Benchmark: ${benchmark}"
     echo ""
 
-    if [ ! -f "${TEST_SCRIPT}" ]; then
-        log_warn "Test script not found at ${TEST_SCRIPT}"
+    cd "${REPO_ROOT}"
+
+    # Create worktrees for both branches
+    BASELINE_WORKTREE="${REPO_ROOT}/../java-profiler-baseline-$$"
+    OPTIMIZED_WORKTREE="${REPO_ROOT}/../java-profiler-optimized-$$"
+
+    log_step "1/6: Creating worktree for baseline (${baseline_branch})..."
+    git worktree add "${BASELINE_WORKTREE}" "${baseline_branch}"
+
+    log_step "2/6: Creating worktree for optimized (${optimized_branch})..."
+    git worktree add "${OPTIMIZED_WORKTREE}" "${optimized_branch}"
+
+    # Build baseline
+    log_step "3/6: Building baseline version..."
+    cd "${BASELINE_WORKTREE}"
+    ./gradlew ddprof-lib:build -x test
+
+    # Build optimized
+    log_step "4/6: Building optimized version..."
+    cd "${OPTIMIZED_WORKTREE}"
+    ./gradlew ddprof-lib:build -x test
+
+    # Test baseline
+    log_step "5/6: Testing baseline version..."
+    local baseline_test_script="${OPTIMIZED_WORKTREE}/ddprof-lib/benchmarks/branch-prediction/test_branch_prediction_perf.sh"
+
+    if [ ! -f "${baseline_test_script}" ]; then
+        log_error "Test script not found at ${baseline_test_script}"
+        log_error "Benchmark scripts may not exist on ${optimized_branch} branch"
         exit 1
     fi
 
-    # Current branch (should be jb/likely)
-    local current_branch=$(git branch --show-current)
-    log_info "Current branch: ${current_branch}"
+    # Run tests from optimized worktree but with baseline library
+    cd "${OPTIMIZED_WORKTREE}/ddprof-lib/benchmarks/branch-prediction"
 
-    if [ "${current_branch}" != "jb/likely" ]; then
-        log_warn "You are not on jb/likely branch. Switch to it first?"
-        read -p "Continue anyway? (y/N) " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            exit 1
-        fi
-    fi
+    # Temporarily override PROFILER_LIB for baseline test
+    PROFILER_LIB_OVERRIDE="${BASELINE_WORKTREE}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so" \
+    "${baseline_test_script}" "${benchmark}" "baseline"
 
-    # Save test script since it won't exist on main branch
-    local temp_test_script="/tmp/test_branch_prediction_perf_$$.sh"
-    cp "${TEST_SCRIPT}" "${temp_test_script}"
-
-    # Test optimized version (current branch)
-    log_step "1/4: Building optimized version (${current_branch})..."
-    cd "${REPO_ROOT}"
-    ./gradlew ddprof-lib:build -x test
-    cd - > /dev/null
-
-    log_step "2/4: Testing optimized version..."
-    "${temp_test_script}" "${benchmark}" "optimized"
-
-    # Switch to main and test baseline
-    log_step "3/4: Switching to main branch and building baseline..."
-    cd "${REPO_ROOT}"
-    git stash push -m "Temporary stash for perf comparison"
-    git checkout main
-    ./gradlew ddprof-lib:build -x test
-    cd - > /dev/null
-
-    log_step "4/4: Testing baseline version..."
-    "${temp_test_script}" "${benchmark}" "baseline"
-
-    # Switch back
-    log_info "Switching back to ${current_branch}..."
-    cd "${REPO_ROOT}"
-    git checkout "${current_branch}"
-    git stash pop || true
-    cd - > /dev/null
-
-    # Cleanup temp script
-    rm -f "${temp_test_script}"
+    # Test optimized
+    log_step "6/6: Testing optimized version..."
+    "${baseline_test_script}" "${benchmark}" "optimized"
 
     # Compare results
     echo ""
     compare_results \
-        "${SCRIPT_DIR}/perf_results/baseline_stat.txt" \
-        "${SCRIPT_DIR}/perf_results/optimized_stat.txt"
+        "${OPTIMIZED_WORKTREE}/ddprof-lib/benchmarks/branch-prediction/perf_results/baseline_stat.txt" \
+        "${OPTIMIZED_WORKTREE}/ddprof-lib/benchmarks/branch-prediction/perf_results/optimized_stat.txt"
 
     log_info "=== Comparison Complete ==="
-    log_info "Detailed results in perf_results/ directory"
+    log_info "Detailed results in ${OPTIMIZED_WORKTREE}/ddprof-lib/benchmarks/branch-prediction/perf_results/"
     log_info ""
     log_info "To view detailed perf reports:"
-    log_info "  perf report -i perf_results/baseline_record.data --dsos=libjavaProfiler.so"
-    log_info "  perf report -i perf_results/optimized_record.data --dsos=libjavaProfiler.so"
+    log_info "  cd ${OPTIMIZED_WORKTREE}/ddprof-lib/benchmarks/branch-prediction/perf_results"
+    log_info "  perf report -i baseline_record.data --dsos=libjavaProfiler.so"
+    log_info "  perf report -i optimized_record.data --dsos=libjavaProfiler.so"
 }
 
 if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-    echo "Usage: $0 [benchmark]"
+    echo "Usage: $0 [benchmark] [baseline_branch] [optimized_branch]"
     echo ""
-    echo "Compares branch prediction performance between main and jb/likely branches"
+    echo "Compares branch prediction performance between two branches using git worktrees"
     echo ""
     echo "Arguments:"
-    echo "  benchmark   Renaissance benchmark to use (default: akka-uct)"
+    echo "  benchmark         Renaissance benchmark to use (default: akka-uct)"
+    echo "  baseline_branch   Baseline branch (default: main)"
+    echo "  optimized_branch  Optimized branch (default: jb/likely)"
     echo ""
     echo "Examples:"
-    echo "  $0                # Compare using akka-uct"
-    echo "  $0 finagle-chirper # Compare using finagle-chirper"
+    echo "  $0                           # Compare main vs jb/likely using akka-uct"
+    echo "  $0 finagle-chirper           # Compare using finagle-chirper"
+    echo "  $0 akka-uct main jb/likely   # Explicit branch names"
     exit 0
 fi
 

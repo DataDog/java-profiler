@@ -8,7 +8,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/../../.."
 RENAISSANCE_VERSION="0.16.1"
 RENAISSANCE_JAR="${SCRIPT_DIR}/renaissance-gpl-${RENAISSANCE_VERSION}.jar"
-PROFILER_LIB="${REPO_ROOT}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
+# Allow override for comparison testing
+PROFILER_LIB="${PROFILER_LIB_OVERRIDE:-${REPO_ROOT}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so}"
 DURATION=60  # seconds for perf measurement
 WARMUP=30    # seconds to warmup before measurement
 
