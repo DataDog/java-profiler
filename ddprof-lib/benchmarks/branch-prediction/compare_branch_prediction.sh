@@ -3,6 +3,7 @@
 # This script helps measure the impact of likely/unlikely hints
 
 set -e
+set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/../../.."
@@ -193,13 +194,27 @@ main() {
     log_info "Using baseline library: ${BASELINE_LIB}"
     log_info "Using optimized library: ${OPTIMIZED_LIB}"
 
+    # Disable cleanup trap while running tests
+    trap - EXIT
+
     # Temporarily override PROFILER_LIB for baseline test
     PROFILER_LIB_OVERRIDE="${BASELINE_LIB}" \
-    "${baseline_test_script}" "${benchmark}" "baseline"
+    "${baseline_test_script}" "${benchmark}" "baseline" || {
+        log_error "Baseline test failed"
+        cleanup
+        exit 1
+    }
 
     # Test optimized
     log_step "6/6: Testing optimized version..."
-    "${baseline_test_script}" "${benchmark}" "optimized"
+    "${baseline_test_script}" "${benchmark}" "optimized" || {
+        log_error "Optimized test failed"
+        cleanup
+        exit 1
+    }
+
+    # Re-enable cleanup trap
+    trap cleanup EXIT
 
     # Compare results
     echo ""
