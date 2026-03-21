@@ -36,12 +36,13 @@ cleanup() {
     log_info "Cleaning up worktrees..."
     cd "${REPO_ROOT}"
 
-    if [ -n "${BASELINE_WORKTREE}" ] && [ -d "${BASELINE_WORKTREE}" ]; then
+    # Only remove worktrees that we created (contain our PID in the path)
+    if [ -n "${BASELINE_WORKTREE}" ] && [[ "${BASELINE_WORKTREE}" == *"-$$" ]] && [ -d "${BASELINE_WORKTREE}" ]; then
         git worktree remove -f "${BASELINE_WORKTREE}" 2>/dev/null || true
     fi
 
-    # Only cleanup optimized worktree if it's not the current repo
-    if [ -n "${OPTIMIZED_WORKTREE}" ] && [ "${OPTIMIZED_WORKTREE}" != "${REPO_ROOT}" ] && [ -d "${OPTIMIZED_WORKTREE}" ]; then
+    # Only cleanup optimized worktree if it's not the current repo and we created it
+    if [ -n "${OPTIMIZED_WORKTREE}" ] && [ "${OPTIMIZED_WORKTREE}" != "${REPO_ROOT}" ] && [[ "${OPTIMIZED_WORKTREE}" == *"-$$" ]] && [ -d "${OPTIMIZED_WORKTREE}" ]; then
         git worktree remove -f "${OPTIMIZED_WORKTREE}" 2>/dev/null || true
     fi
 }
@@ -174,18 +175,30 @@ main() {
     # Get current branch
     local current_branch=$(git branch --show-current)
 
-    # Create worktrees for both branches
+    # Check for existing worktrees
+    local existing_baseline=$(git worktree list | grep "${baseline_branch}" | awk '{print $1}')
+    local existing_optimized=$(git worktree list | grep "${optimized_branch}" | awk '{print $1}')
+
+    # Create or reuse worktrees for both branches
     BASELINE_WORKTREE="${REPO_ROOT}/../java-profiler-baseline-$$"
     OPTIMIZED_WORKTREE="${REPO_ROOT}/../java-profiler-optimized-$$"
 
-    log_step "1/6: Creating worktree for baseline (${baseline_branch})..."
-    git worktree add "${BASELINE_WORKTREE}" "${baseline_branch}"
+    log_step "1/6: Setting up worktree for baseline (${baseline_branch})..."
+    if [ -n "${existing_baseline}" ]; then
+        log_info "Reusing existing worktree at ${existing_baseline}"
+        BASELINE_WORKTREE="${existing_baseline}"
+    else
+        git worktree add "${BASELINE_WORKTREE}" "${baseline_branch}"
+    fi
 
-    log_step "2/6: Creating worktree for optimized (${optimized_branch})..."
+    log_step "2/6: Setting up worktree for optimized (${optimized_branch})..."
     # If we're already on the optimized branch, use current worktree
     if [ "${current_branch}" = "${optimized_branch}" ]; then
         log_info "Already on ${optimized_branch}, using current worktree"
         OPTIMIZED_WORKTREE="${REPO_ROOT}"
+    elif [ -n "${existing_optimized}" ]; then
+        log_info "Reusing existing worktree at ${existing_optimized}"
+        OPTIMIZED_WORKTREE="${existing_optimized}"
     else
         git worktree add "${OPTIMIZED_WORKTREE}" "${optimized_branch}"
     fi
