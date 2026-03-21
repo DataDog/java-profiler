@@ -89,14 +89,15 @@ start_benchmark() {
     log_info "Starting Renaissance benchmark: ${benchmark}"
 
     # Disable DD Java agent injection to avoid conflicts
-    # Run many iterations to keep benchmark running during perf measurement
+    # Run in infinite loop to ensure process stays alive during all perf measurements
+    # The benchmark will be killed by cleanup when tests complete
     env -u JAVA_TOOL_OPTIONS \
-    java -agentpath:"${PROFILER_LIB}=start,cpu,file=/tmp/test.jfr" \
+    bash -c "while true; do java -agentpath:\"${PROFILER_LIB}=start,cpu,file=/tmp/test.jfr\" \
          -Xmx2g \
          -Xms2g \
-         -jar "${RENAISSANCE_JAR}" \
-         "${benchmark}" \
-         -r 9999 \
+         -jar \"${RENAISSANCE_JAR}\" \
+         \"${benchmark}\" \
+         -r 100; done" \
          &> /tmp/renaissance_${benchmark}.log &
 
     JAVA_PID=$!
@@ -137,12 +138,24 @@ run_perf_stat() {
               2>&1 | tee "${output_file}"
 
     log_info "perf stat results saved to ${output_file}"
+
+    # Verify process is still alive
+    if ! kill -0 ${pid} 2>/dev/null; then
+        log_error "Process ${pid} died during perf stat. Check /tmp/renaissance_*.log"
+        return 1
+    fi
 }
 
 # Run perf record for detailed analysis
 run_perf_record() {
     local pid=$1
     local output_file="${2:-perf_record.data}"
+
+    # Verify process is still alive before starting
+    if ! kill -0 ${pid} 2>/dev/null; then
+        log_error "Process ${pid} is not running, skipping perf record"
+        return 1
+    fi
 
     log_info "Running perf record for ${DURATION} seconds..."
 
