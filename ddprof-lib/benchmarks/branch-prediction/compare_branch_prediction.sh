@@ -39,7 +39,8 @@ cleanup() {
         git worktree remove -f "${BASELINE_WORKTREE}" 2>/dev/null || true
     fi
 
-    if [ -n "${OPTIMIZED_WORKTREE}" ] && [ -d "${OPTIMIZED_WORKTREE}" ]; then
+    # Only cleanup optimized worktree if it's not the current repo
+    if [ -n "${OPTIMIZED_WORKTREE}" ] && [ "${OPTIMIZED_WORKTREE}" != "${REPO_ROOT}" ] && [ -d "${OPTIMIZED_WORKTREE}" ]; then
         git worktree remove -f "${OPTIMIZED_WORKTREE}" 2>/dev/null || true
     fi
 }
@@ -117,6 +118,9 @@ main() {
 
     cd "${REPO_ROOT}"
 
+    # Get current branch
+    local current_branch=$(git branch --show-current)
+
     # Create worktrees for both branches
     BASELINE_WORKTREE="${REPO_ROOT}/../java-profiler-baseline-$$"
     OPTIMIZED_WORKTREE="${REPO_ROOT}/../java-profiler-optimized-$$"
@@ -125,7 +129,13 @@ main() {
     git worktree add "${BASELINE_WORKTREE}" "${baseline_branch}"
 
     log_step "2/6: Creating worktree for optimized (${optimized_branch})..."
-    git worktree add "${OPTIMIZED_WORKTREE}" "${optimized_branch}"
+    # If we're already on the optimized branch, use current worktree
+    if [ "${current_branch}" = "${optimized_branch}" ]; then
+        log_info "Already on ${optimized_branch}, using current worktree"
+        OPTIMIZED_WORKTREE="${REPO_ROOT}"
+    else
+        git worktree add "${OPTIMIZED_WORKTREE}" "${optimized_branch}"
+    fi
 
     # Build baseline
     log_step "3/6: Building baseline version..."
