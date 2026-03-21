@@ -400,7 +400,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             }
 
             if (nm->isInterpreter()) {
-                if (unlikely(vm_thread != NULL && vm_thread->inDeopt())) {
+                if (vm_thread != NULL && unlikely(vm_thread->inDeopt())) {
                     fillFrame(frames[depth++], BCI_ERROR, "break_deopt");
                     break;
                 }
@@ -447,7 +447,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 break;
             } else if (nm->isNMethod()) {
                 // Check if deoptimization is in progress before walking compiled frames
-                if (unlikely(vm_thread != NULL && vm_thread->inDeopt())) {
+                if (vm_thread != NULL && unlikely(vm_thread->inDeopt())) {
                     fillFrame(frames[depth++], BCI_ERROR, "break_deopt_compiled");
                     break;
                 }
