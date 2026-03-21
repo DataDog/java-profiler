@@ -100,17 +100,23 @@ start_benchmark() {
          -r 100; done" \
          &> /tmp/renaissance_${benchmark}.log &
 
-    JAVA_PID=$!
-    echo ${JAVA_PID} > /tmp/java_perf_test.pid
+    local WRAPPER_PID=$!
+    echo ${WRAPPER_PID} > /tmp/java_perf_test_wrapper.pid
 
-    log_info "Java process started with PID: ${JAVA_PID}"
+    log_info "Benchmark wrapper started with PID: ${WRAPPER_PID}"
 
-    # Verify process started successfully
-    sleep 2
-    if ! kill -0 ${JAVA_PID} 2>/dev/null; then
-        log_error "Java process ${JAVA_PID} died immediately. Check /tmp/renaissance_${benchmark}.log"
+    # Wait for Java process to actually start and get its PID
+    sleep 3
+    JAVA_PID=$(pgrep -P ${WRAPPER_PID} java)
+
+    if [ -z "${JAVA_PID}" ]; then
+        log_error "Could not find Java process. Check /tmp/renaissance_${benchmark}.log"
+        kill ${WRAPPER_PID} 2>/dev/null || true
         exit 1
     fi
+
+    echo ${JAVA_PID} > /tmp/java_perf_test.pid
+    log_info "Java process PID: ${JAVA_PID}"
 
     log_info "Warming up for ${WARMUP} seconds..."
     sleep ${WARMUP}
@@ -179,11 +185,22 @@ run_perf_record() {
 
 # Stop the benchmark
 stop_benchmark() {
+    # Kill wrapper process which will kill Java too
+    if [ -f /tmp/java_perf_test_wrapper.pid ]; then
+        local wrapper_pid=$(cat /tmp/java_perf_test_wrapper.pid)
+        log_info "Stopping benchmark wrapper ${wrapper_pid}..."
+        kill ${wrapper_pid} 2>/dev/null || true
+        sleep 2
+        kill -9 ${wrapper_pid} 2>/dev/null || true
+        rm -f /tmp/java_perf_test_wrapper.pid
+    fi
+
+    # Also kill Java process directly
     if [ -f /tmp/java_perf_test.pid ]; then
         local pid=$(cat /tmp/java_perf_test.pid)
         log_info "Stopping Java process ${pid}..."
         kill ${pid} 2>/dev/null || true
-        sleep 2
+        sleep 1
         kill -9 ${pid} 2>/dev/null || true
         rm -f /tmp/java_perf_test.pid
     fi
