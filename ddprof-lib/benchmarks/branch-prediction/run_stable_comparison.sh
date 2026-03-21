@@ -132,20 +132,30 @@ calc_stats() {
     local baseline_mean=$((baseline_sum / n))
     local optimized_mean=$((optimized_sum / n))
 
-    # Calculate standard deviation
-    local baseline_var_sum=0
-    local optimized_var_sum=0
-    for val in "${baseline_values[@]}"; do
-        local diff=$((val - baseline_mean))
-        baseline_var_sum=$((baseline_var_sum + diff * diff))
-    done
-    for val in "${optimized_values[@]}"; do
-        local diff=$((val - optimized_mean))
-        optimized_var_sum=$((optimized_var_sum + diff * diff))
-    done
+    # Calculate standard deviation (handle edge cases)
+    local baseline_stddev="0"
+    local optimized_stddev="0"
 
-    local baseline_stddev=$(echo "scale=2; sqrt(${baseline_var_sum} / ${n})" | bc)
-    local optimized_stddev=$(echo "scale=2; sqrt(${optimized_var_sum} / ${n})" | bc)
+    if [ ${n} -gt 1 ]; then
+        local baseline_var_sum=0
+        local optimized_var_sum=0
+        for val in "${baseline_values[@]}"; do
+            local diff=$((val - baseline_mean))
+            baseline_var_sum=$((baseline_var_sum + diff * diff))
+        done
+        for val in "${optimized_values[@]}"; do
+            local diff=$((val - optimized_mean))
+            optimized_var_sum=$((optimized_var_sum + diff * diff))
+        done
+
+        # Use max(0, variance) to handle floating point errors
+        if [ ${baseline_var_sum} -gt 0 ]; then
+            baseline_stddev=$(echo "scale=2; sqrt(${baseline_var_sum} / ${n})" | bc 2>/dev/null || echo "0")
+        fi
+        if [ ${optimized_var_sum} -gt 0 ]; then
+            optimized_stddev=$(echo "scale=2; sqrt(${optimized_var_sum} / ${n})" | bc 2>/dev/null || echo "0")
+        fi
+    fi
 
     # Calculate change
     local change=$(echo "scale=2; (${optimized_mean} - ${baseline_mean}) * 100 / ${baseline_mean}" | bc)
@@ -210,22 +220,34 @@ if [ ${#baseline_ipc_values[@]} -gt 0 ]; then
     baseline_ipc_mean=$(echo "scale=6; ${baseline_ipc_sum} / ${n}" | bc)
     optimized_ipc_mean=$(echo "scale=6; ${optimized_ipc_sum} / ${n}" | bc)
 
-    # Calculate standard deviation
-    baseline_ipc_var_sum=0
-    optimized_ipc_var_sum=0
-    for val in "${baseline_ipc_values[@]}"; do
-        diff=$(echo "${val} - ${baseline_ipc_mean}" | bc)
-        sq=$(echo "${diff} * ${diff}" | bc)
-        baseline_ipc_var_sum=$(echo "${baseline_ipc_var_sum} + ${sq}" | bc)
-    done
-    for val in "${optimized_ipc_values[@]}"; do
-        diff=$(echo "${val} - ${optimized_ipc_mean}" | bc)
-        sq=$(echo "${diff} * ${diff}" | bc)
-        optimized_ipc_var_sum=$(echo "${optimized_ipc_var_sum} + ${sq}" | bc)
-    done
+    # Calculate standard deviation (handle edge cases)
+    baseline_ipc_stddev="0.000000"
+    optimized_ipc_stddev="0.000000"
 
-    baseline_ipc_stddev=$(echo "scale=6; sqrt(${baseline_ipc_var_sum} / ${n})" | bc)
-    optimized_ipc_stddev=$(echo "scale=6; sqrt(${optimized_ipc_var_sum} / ${n})" | bc)
+    if [ ${n} -gt 1 ]; then
+        baseline_ipc_var_sum=0
+        optimized_ipc_var_sum=0
+        for val in "${baseline_ipc_values[@]}"; do
+            diff=$(echo "${val} - ${baseline_ipc_mean}" | bc)
+            sq=$(echo "${diff} * ${diff}" | bc)
+            baseline_ipc_var_sum=$(echo "${baseline_ipc_var_sum} + ${sq}" | bc)
+        done
+        for val in "${optimized_ipc_values[@]}"; do
+            diff=$(echo "${val} - ${optimized_ipc_mean}" | bc)
+            sq=$(echo "${diff} * ${diff}" | bc)
+            optimized_ipc_var_sum=$(echo "${optimized_ipc_var_sum} + ${sq}" | bc)
+        done
+
+        # Check if variance is positive before taking sqrt
+        is_positive=$(echo "${baseline_ipc_var_sum} > 0" | bc)
+        if [ "${is_positive}" -eq 1 ]; then
+            baseline_ipc_stddev=$(echo "scale=6; sqrt(${baseline_ipc_var_sum} / ${n})" | bc 2>/dev/null || echo "0.000000")
+        fi
+        is_positive=$(echo "${optimized_ipc_var_sum} > 0" | bc)
+        if [ "${is_positive}" -eq 1 ]; then
+            optimized_ipc_stddev=$(echo "scale=6; sqrt(${optimized_ipc_var_sum} / ${n})" | bc 2>/dev/null || echo "0.000000")
+        fi
+    fi
 
     # Calculate change
     ipc_change=$(echo "scale=2; (${optimized_ipc_mean} - ${baseline_ipc_mean}) * 100 / ${baseline_ipc_mean}" | bc)
