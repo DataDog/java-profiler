@@ -165,11 +165,20 @@ run_perf_record() {
 
     log_info "Running perf record for ${DURATION} seconds..."
 
+    # perf record may return non-zero due to kernel symbol warnings, which are harmless
     perf record -e L1-icache-load-misses,branch-misses \
                 -g -F 999 \
                 -p ${pid} \
                 -o "${output_file}" \
-                -- sleep ${DURATION}
+                -- sleep ${DURATION} || {
+        log_warn "perf record exited with status $?, but may have collected data"
+    }
+
+    # Verify we got some data
+    if [ ! -f "${output_file}" ] || [ ! -s "${output_file}" ]; then
+        log_error "perf record did not produce data file ${output_file}"
+        return 1
+    fi
 
     log_info "perf record data saved to ${output_file}"
 
