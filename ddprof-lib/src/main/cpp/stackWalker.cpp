@@ -394,7 +394,53 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 anchor = NULL;
             }
 
-            if (nm->isNMethod()) {
+            if (nm->isInterpreter()) {
+                if (vm_thread != NULL && vm_thread->inDeopt()) {
+                    fillFrame(frames[depth++], BCI_ERROR, "break_deopt");
+                    break;
+                }
+
+                bool is_plausible_interpreter_frame = StackWalkValidation::isPlausibleInterpreterFrame(fp, sp, bcp_offset);
+                if (is_plausible_interpreter_frame) {
+                    VMMethod* method = ((VMMethod**)fp)[InterpreterFrame::method_offset];
+                    jmethodID method_id = getMethodId(method);
+                    if (method_id != NULL) {
+                        Counters::increment(WALKVM_JAVA_FRAME_OK);
+                        const char* bytecode_start = method->bytecode();
+                        const char* bcp = ((const char**)fp)[bcp_offset];
+                        int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
+                        fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
+
+                        sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
+                        pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
+                        fp = *(uintptr_t*)fp;
+                        continue;
+                    }
+                }
+
+                if (depth == 0) {
+                    VMMethod* method = (VMMethod*)frame.method();
+                    jmethodID method_id = getMethodId(method);
+                    if (method_id != NULL) {
+                        Counters::increment(WALKVM_JAVA_FRAME_OK);
+                        fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id);
+
+                        if (is_plausible_interpreter_frame) {
+                            pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
+                            sp = frame.senderSP();
+                            fp = *(uintptr_t*)fp;
+                        } else {
+                            pc = stripPointer(SafeAccess::load((void**)sp));
+                            sp = frame.senderSP();
+                        }
+                        continue;
+                    }
+                }
+
+                Counters::increment(WALKVM_BREAK_INTERPRETED);
+                fillFrame(frames[depth++], BCI_ERROR, "break_interpreted");
+                break;
+            } else if (nm->isNMethod()) {
                 // Check if deoptimization is in progress before walking compiled frames
                 if (vm_thread != NULL && vm_thread->inDeopt()) {
                     fillFrame(frames[depth++], BCI_ERROR, "break_deopt_compiled");
@@ -452,52 +498,6 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
                 Counters::increment(WALKVM_BREAK_COMPILED);
                 fillFrame(frames[depth++], BCI_ERROR, "break_compiled");
-                break;
-            } else if (nm->isInterpreter()) {
-                if (vm_thread != NULL && vm_thread->inDeopt()) {
-                    fillFrame(frames[depth++], BCI_ERROR, "break_deopt");
-                    break;
-                }
-
-                bool is_plausible_interpreter_frame = StackWalkValidation::isPlausibleInterpreterFrame(fp, sp, bcp_offset);
-                if (is_plausible_interpreter_frame) {
-                    VMMethod* method = ((VMMethod**)fp)[InterpreterFrame::method_offset];
-                    jmethodID method_id = getMethodId(method);
-                    if (method_id != NULL) {
-                        Counters::increment(WALKVM_JAVA_FRAME_OK);
-                        const char* bytecode_start = method->bytecode();
-                        const char* bcp = ((const char**)fp)[bcp_offset];
-                        int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
-                        fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
-
-                        sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
-                        pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
-                        fp = *(uintptr_t*)fp;
-                        continue;
-                    }
-                }
-
-                if (depth == 0) {
-                    VMMethod* method = (VMMethod*)frame.method();
-                    jmethodID method_id = getMethodId(method);
-                    if (method_id != NULL) {
-                        Counters::increment(WALKVM_JAVA_FRAME_OK);
-                        fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id);
-
-                        if (is_plausible_interpreter_frame) {
-                            pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
-                            sp = frame.senderSP();
-                            fp = *(uintptr_t*)fp;
-                        } else {
-                            pc = stripPointer(SafeAccess::load((void**)sp));
-                            sp = frame.senderSP();
-                        }
-                        continue;
-                    }
-                }
-
-                Counters::increment(WALKVM_BREAK_INTERPRETED);
-                fillFrame(frames[depth++], BCI_ERROR, "break_interpreted");
                 break;
             } else if (nm->isEntryFrame(pc) && !features.mixed) {
                 VMJavaFrameAnchor* next_anchor = VMJavaFrameAnchor::fromEntryFrame(fp);

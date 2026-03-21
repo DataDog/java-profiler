@@ -4,6 +4,7 @@
  */
 
 #include <pthread.h>
+#include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
 #include "vmStructs.h"
@@ -33,6 +34,8 @@ int VMStructs::_narrow_klass_shift = -1;
 int VMStructs::_interpreter_frame_bcp_offset = 0;
 unsigned char VMStructs::_unsigned5_base = 0;
 const void* VMStructs::_call_stub_return = nullptr;
+const void* VMStructs::_interpreter_start = nullptr;
+VMNMethod* VMStructs::_interpreter_nm = nullptr;
 const void* VMStructs::_interpreted_frame_valid_start = nullptr;
 const void* VMStructs::_interpreted_frame_valid_end = nullptr;
 
@@ -436,6 +439,9 @@ void VMStructs::resolveOffsets() {
         _code_heap_segment_shift < 0 || _code_heap_segment_shift > 16 ||
         _heap_block_used_offset < 0) {
         memset(_code_heap, 0, sizeof(_code_heap));
+    }
+    if (_interpreter_nm == NULL && _interpreter_start != NULL) {
+        _interpreter_nm = CodeHeap::findNMethod(_interpreter_start);
     }
 }
 
