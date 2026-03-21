@@ -60,7 +60,13 @@ compare_results() {
     extract_metric() {
         local file="$1"
         local pattern="$2"
-        grep "$pattern" "$file" | awk '{print $1}' | tr -d ',' | head -1
+        local value=$(grep "$pattern" "$file" | awk '{print $1}' | head -1)
+        # Return empty if value contains < (like <not counted>)
+        if [[ "$value" =~ \< ]]; then
+            echo ""
+        else
+            echo "$value" | tr -d ','
+        fi
     }
 
     # Branch misses
