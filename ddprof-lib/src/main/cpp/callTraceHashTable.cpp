@@ -106,34 +106,38 @@ ChunkList CallTraceHashTable::clearTableOnly() {
   // Wait for all refcount guards to clear before detaching chunks
   RefCountGuard::waitForAllRefCountsToClear();
 
+#ifdef COUNTERS
   // Compute and decrement the global counters for everything in this table.
   // After waitForAllRefCountsToClear() there are no concurrent writers, so
   // plain iteration (same pattern as collect()) is safe.
   // Use a set to deduplicate: put() may store the same CallTrace* pointer in
   // both a newer and an older table (when findCallTrace finds it in prev()),
   // but the counter was only incremented once, so we must only count it once.
-  const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
-  long long freed_bytes = 0;
-  long long freed_traces = 0;
-  std::unordered_set<CallTrace*> seen;
-  for (LongHashTable *t = _table; t != nullptr; t = t->prev()) {
-    u64 *keys = t->keys();
-    CallTraceSample *values = t->values();
-    u32 capacity = t->capacity();
-    for (u32 slot = 0; slot < capacity; slot++) {
-      if (keys[slot] != 0) {
-        CallTrace *trace = values[slot].acquireTrace();
-        if (trace != nullptr && trace != CallTraceSample::PREPARING) {
-          if (seen.insert(trace).second) {
-            freed_bytes += header_size + trace->num_frames * sizeof(ASGCT_CallFrame);
-            freed_traces++;
+  {
+    const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
+    long long freed_bytes = 0;
+    long long freed_traces = 0;
+    std::unordered_set<CallTrace*> seen;
+    for (LongHashTable *t = _table; t != nullptr; t = t->prev()) {
+      u64 *keys = t->keys();
+      CallTraceSample *values = t->values();
+      u32 capacity = t->capacity();
+      for (u32 slot = 0; slot < capacity; slot++) {
+        if (keys[slot] != 0) {
+          CallTrace *trace = values[slot].acquireTrace();
+          if (trace != nullptr && trace != CallTraceSample::PREPARING) {
+            if (seen.insert(trace).second) {
+              freed_bytes += header_size + trace->num_frames * sizeof(ASGCT_CallFrame);
+              freed_traces++;
+            }
           }
         }
       }
     }
+    Counters::increment(CALLTRACE_STORAGE_BYTES, -freed_bytes);
+    Counters::increment(CALLTRACE_STORAGE_TRACES, -freed_traces);
   }
-  Counters::increment(CALLTRACE_STORAGE_BYTES, -freed_bytes);
-  Counters::increment(CALLTRACE_STORAGE_TRACES, -freed_traces);
+#endif // COUNTERS
 
   // Clear previous chain pointers to prevent traversal during deallocation
   for (LongHashTable *table = _table; table != nullptr; table = table->prev()) {
