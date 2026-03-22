@@ -220,22 +220,54 @@ main() {
 
     # Build or locate existing libraries
     if $skip_build; then
-        # Skip build, just find existing libraries
-        log_info "Skipping build, locating existing libraries..."
+        # Skip build, but verify libraries are up-to-date with current commit
+        log_info "Skipping build, verifying libraries are up-to-date..."
         BASELINE_LIB="${BASELINE_WORKTREE}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
         OPTIMIZED_LIB="${OPTIMIZED_WORKTREE}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
 
-        if [ ! -f "${BASELINE_LIB}" ] || [ ! -f "${OPTIMIZED_LIB}" ]; then
-            log_error "Libraries not found. Run with --build-only first."
-            log_error "  Baseline: ${BASELINE_LIB}"
-            log_error "  Optimized: ${OPTIMIZED_LIB}"
+        BASELINE_HASH_FILE="${BASELINE_WORKTREE}/ddprof-lib/build/.build_commit_hash"
+        OPTIMIZED_HASH_FILE="${OPTIMIZED_WORKTREE}/ddprof-lib/build/.build_commit_hash"
+
+        # Get current commit hashes
+        cd "${BASELINE_WORKTREE}"
+        local baseline_current_hash=$(git rev-parse HEAD)
+        cd "${OPTIMIZED_WORKTREE}"
+        local optimized_current_hash=$(git rev-parse HEAD)
+
+        # Check if libraries exist and match current commit
+        local need_rebuild=false
+        if [ ! -f "${BASELINE_LIB}" ] || [ ! -f "${BASELINE_HASH_FILE}" ]; then
+            log_warn "Baseline library not found or missing hash file"
+            need_rebuild=true
+        elif [ "$(cat ${BASELINE_HASH_FILE})" != "${baseline_current_hash}" ]; then
+            log_warn "Baseline library built from different commit: $(cat ${BASELINE_HASH_FILE}) != ${baseline_current_hash}"
+            need_rebuild=true
+        fi
+
+        if [ ! -f "${OPTIMIZED_LIB}" ] || [ ! -f "${OPTIMIZED_HASH_FILE}" ]; then
+            log_warn "Optimized library not found or missing hash file"
+            need_rebuild=true
+        elif [ "$(cat ${OPTIMIZED_HASH_FILE})" != "${optimized_current_hash}" ]; then
+            log_warn "Optimized library built from different commit: $(cat ${OPTIMIZED_HASH_FILE}) != ${optimized_current_hash}"
+            need_rebuild=true
+        fi
+
+        if $need_rebuild; then
+            log_error "Libraries are out of date. Run with --build-only first to rebuild."
             exit 1
         fi
+
+        log_info "Libraries are up-to-date:"
+        log_info "  Baseline: ${BASELINE_LIB} (commit: ${baseline_current_hash:0:8})"
+        log_info "  Optimized: ${OPTIMIZED_LIB} (commit: ${optimized_current_hash:0:8})"
     else
         # Build baseline
         log_step "3/6: Building baseline version..."
         cd "${BASELINE_WORKTREE}"
         ./gradlew ddprof-lib:buildrelease -x test
+
+        # Record the commit hash for this build
+        git rev-parse HEAD > ddprof-lib/build/.build_commit_hash
 
         # Find the baseline library (prefer release, fallback to any .so)
         local baseline_lib_check="${BASELINE_WORKTREE}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
@@ -251,11 +283,15 @@ main() {
             log_info "Using baseline library: ${baseline_lib_check}"
         fi
         BASELINE_LIB="${baseline_lib_check}"
+        log_info "Built baseline from commit: $(cat ddprof-lib/build/.build_commit_hash | cut -c1-8)"
 
         # Build optimized
         log_step "4/6: Building optimized version..."
         cd "${OPTIMIZED_WORKTREE}"
         ./gradlew ddprof-lib:buildrelease -x test
+
+        # Record the commit hash for this build
+        git rev-parse HEAD > ddprof-lib/build/.build_commit_hash
 
         # Find the optimized library (prefer release, fallback to any .so)
         local optimized_lib_check="${OPTIMIZED_WORKTREE}/ddprof-lib/build/lib/main/release/linux/x64/libjavaProfiler.so"
@@ -271,6 +307,7 @@ main() {
             log_info "Using optimized library: ${optimized_lib_check}"
         fi
         OPTIMIZED_LIB="${optimized_lib_check}"
+        log_info "Built optimized from commit: $(cat ddprof-lib/build/.build_commit_hash | cut -c1-8)"
     fi
 
     # If build-only mode, exit here
