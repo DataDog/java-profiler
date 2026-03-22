@@ -302,7 +302,7 @@ main() {
 
     # Temporarily override PROFILER_LIB for baseline test
     PROFILER_LIB_OVERRIDE="${BASELINE_LIB}" \
-    "${baseline_test_script}" "${benchmark}" "baseline" || {
+    "${baseline_test_script}" "${benchmark}" "baseline" "--no-record" || {
         log_error "Baseline test failed"
         cleanup
         exit 1
@@ -316,7 +316,7 @@ main() {
 
     # Test optimized
     log_step "6/6: Testing optimized version..."
-    "${baseline_test_script}" "${benchmark}" "optimized" || {
+    "${baseline_test_script}" "${benchmark}" "optimized" "--no-record" || {
         log_error "Optimized test failed"
         cleanup
         exit 1

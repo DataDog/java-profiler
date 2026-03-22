@@ -71,11 +71,13 @@ for i in $(seq 1 ${ITERATIONS}); do
     # Run comparison (skip build)
     "${COMPARE_SCRIPT}" "${BENCHMARK}" --skip-build
 
-    # Save results
+    # Save results (only stat.txt files to save disk space)
     if [ -d perf_results ]; then
         mkdir -p "perf_results_run_${i}"
-        cp -r perf_results/* "perf_results_run_${i}/"
+        cp perf_results/*_stat.txt "perf_results_run_${i}/" 2>/dev/null || true
         log_info "Results saved to perf_results_run_${i}/"
+        # Clean up perf_results to save disk space
+        rm -rf perf_results
     fi
 
     echo ""

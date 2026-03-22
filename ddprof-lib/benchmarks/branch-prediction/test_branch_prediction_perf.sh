@@ -269,10 +269,14 @@ trap cleanup EXIT
 main() {
     local benchmark="${1:-akka-uct}"
     local test_name="${2:-likely_test}"
+    local skip_record="${3:-}"
 
     log_info "=== Branch Prediction Performance Test ==="
     log_info "Benchmark: ${benchmark}"
     log_info "Test name: ${test_name}"
+    if [[ "$skip_record" == "--no-record" ]]; then
+        log_info "Mode: Skip perf record (stat only)"
+    fi
     echo ""
 
     check_prerequisites
@@ -287,8 +291,10 @@ main() {
     # Run perf stat
     run_perf_stat ${JAVA_PID} "${test_name}_stat.txt"
 
-    # Run perf record
-    run_perf_record ${JAVA_PID} "${test_name}_record.data"
+    # Optionally run perf record (disabled by default to save disk space)
+    if [[ "$skip_record" != "--no-record" ]]; then
+        run_perf_record ${JAVA_PID} "${test_name}_record.data"
+    fi
 
     # Display results
     display_results "${test_name}_stat.txt"
@@ -299,20 +305,23 @@ main() {
     log_info "=== Test Complete ==="
     log_info "Results available in perf_results/ directory:"
     log_info "  - ${test_name}_stat.txt: Statistics summary"
-    log_info "  - ${test_name}_record.data: Raw perf data"
-    log_info "  - ${test_name}_record_report.txt: Detailed report"
-    echo ""
-    log_info "To view interactive report:"
-    log_info "  perf report -i perf_results/${test_name}_record.data --dsos=libjavaProfiler.so"
+    if [[ "$skip_record" != "--no-record" ]]; then
+        log_info "  - ${test_name}_record.data: Raw perf data"
+        log_info "  - ${test_name}_record_report.txt: Detailed report"
+        echo ""
+        log_info "To view interactive report:"
+        log_info "  perf report -i perf_results/${test_name}_record.data --dsos=libjavaProfiler.so"
+    fi
 }
 
 # Show usage
 usage() {
-    echo "Usage: $0 [benchmark] [test_name]"
+    echo "Usage: $0 [benchmark] [test_name] [--no-record]"
     echo ""
     echo "Arguments:"
-    echo "  benchmark   Renaissance benchmark to run (default: akka-uct)"
-    echo "  test_name   Name for output files (default: likely_test)"
+    echo "  benchmark    Renaissance benchmark to run (default: akka-uct)"
+    echo "  test_name    Name for output files (default: likely_test)"
+    echo "  --no-record  Skip perf record to save disk space (default: run perf record)"
     echo ""
     echo "Available benchmarks: akka-uct, finagle-chirper, fj-kmeans, future-genetic,"
     echo "                     movie-lens, neo4j-analytics, reactors, scala-kmeans, etc."
