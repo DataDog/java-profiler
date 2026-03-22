@@ -879,6 +879,12 @@ bool VMMethod::check_jmethodID(jmethodID id) {
 }
 
 bool VMMethod::check_jmethodID_hotspot(jmethodID id) {
+    if (VM::hotspot_version() > 25) {
+        // In https://bugs.openjdk.org/browse/JDK-8268406 the jmethodids are completely reworked
+        // The assumption that jmethodid can be resolved to Method* is false and we really can
+        // not do any extra checks here
+        return true;
+    }
     const char *method_ptr = (const char *)SafeAccess::load((void **)id);
     // check for NULL ptr and 'empty' ptr (JNIMethodBlock::_free_method)
     if (method_ptr == NULL || (size_t)method_ptr == 55) {
