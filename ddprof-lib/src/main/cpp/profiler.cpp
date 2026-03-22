@@ -772,7 +772,9 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
   }
   u64 call_trace_id = 0;
   if (!_omit_stacktraces) {
+#ifdef COUNTERS
     u64 startTime = TSC::ticks();
+#endif // COUNTERS
     ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
     jvmtiFrameInfo *jvmti_frames = _calltrace_buffer[lock_index]->_jvmti_frames;
 
@@ -792,10 +794,12 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
     }
 
     call_trace_id = _call_trace_storage.put(num_frames, frames, false, counter);
+#ifdef COUNTERS
     u64 duration = TSC::ticks() - startTime;
     if (duration > 0) {
-      Counters::increment(UNWINDING_TIME_JVMTI, duration); // increment the JVMTI specific counter
+      Counters::increment(UNWINDING_TIME_JVMTI, duration);
     }
+#endif // COUNTERS
   }
   if (!deferred) {
     _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
@@ -848,7 +852,9 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
   // call_trace_id determined to be reusable at a higher level
 
   if (!_omit_stacktraces && call_trace_id == 0) {
+#ifdef COUNTERS
     u64 startTime = TSC::ticks();
+#endif // COUNTERS
     ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
 
     int num_frames = 0;
@@ -895,10 +901,12 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     if (thread != nullptr) {
       thread->recordCallTraceId(call_trace_id);
     }
+#ifdef COUNTERS
     u64 duration = TSC::ticks() - startTime;
     if (duration > 0) {
-      Counters::increment(UNWINDING_TIME_ASYNC, duration); // increment the async specific counter
+      Counters::increment(UNWINDING_TIME_ASYNC, duration);
     }
+#endif // COUNTERS
   }
   _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
 
