@@ -99,7 +99,7 @@ void CodeCache::copyFrom(const CodeCache& other) {
   _imports_patchable = other._imports_patchable;
 
   _dwarf_table_length = other._dwarf_table_length;
-  _dwarf_table = new FrameDesc[_dwarf_table_length];
+  _dwarf_table = (FrameDesc*)malloc(_dwarf_table_length * sizeof(FrameDesc));
   memcpy(_dwarf_table, other._dwarf_table,
          _dwarf_table_length * sizeof(FrameDesc));
   _default_frame = other._default_frame;
@@ -120,7 +120,7 @@ CodeCache &CodeCache::operator=(const CodeCache &other) {
   }
 
   NativeFunc::destroy(_name);
-  delete[] _dwarf_table;
+  free(_dwarf_table);
   delete[] _blobs;
   free(_build_id);
 
@@ -135,7 +135,7 @@ CodeCache::~CodeCache() {
   }
   NativeFunc::destroy(_name);
   delete[] _blobs;
-  delete[] _dwarf_table;
+  free(_dwarf_table);
   free(_build_id);  // Free build-id memory
 }
 

@@ -1,6 +1,6 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -116,6 +116,7 @@ class DwarfParser {
     u32 _code_align;
     int _data_align;
     int _linked_frame_size;  // detected from FP-based DWARF entries; -1 = undetected
+    bool _has_z_augmentation;
 
     const char* add(size_t size) {
         const char* ptr = _ptr;
@@ -179,6 +180,7 @@ class DwarfParser {
     }
 
     void parse(const char* eh_frame_hdr);
+    void parseEhFrame(const char* eh_frame, size_t size);
     void parseCie();
     void parseFde();
     void parseInstructions(u32 loc, const char* end);
@@ -189,6 +191,7 @@ class DwarfParser {
 
   public:
     DwarfParser(const char* name, const char* image_base, const char* eh_frame_hdr);
+    DwarfParser(const char* name, const char* image_base, const char* eh_frame, size_t eh_frame_size);
 
     FrameDesc* table() const {
         return _table;

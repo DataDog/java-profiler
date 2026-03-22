@@ -278,7 +278,12 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     Profiler* profiler = Profiler::instance();
     int bcp_offset = InterpreterFrame::bcp_offset();
 
-    jmp_buf crash_protection_ctx;
+    // thread_local: scan-build flags stack-allocated jmp_buf whose address is
+    // stored in vm_thread->exception() (a globally-accessible VMThread field).
+    // Using thread_local avoids the "stack address stored in global" violation
+    // while preserving setjmp/longjmp semantics — walkVM is never re-entered on
+    // the same thread, so the single per-thread buffer is safe.
+    static thread_local jmp_buf crash_protection_ctx;
     VMThread* vm_thread = VMThread::current();
     if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
         Counters::increment(WALKVM_THREAD_INACCESSIBLE);

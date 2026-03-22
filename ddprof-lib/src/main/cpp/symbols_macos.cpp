@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -11,8 +12,8 @@
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
-#include "symbols.h"
 #include "dwarf.h"
+#include "symbols.h"
 #include "log.h"
 
 UnloadProtection::UnloadProtection(const CodeCache *cc) {
@@ -33,6 +34,8 @@ class MachOParser {
     CodeCache* _cc;
     const mach_header* _image_base;
     const char* _vmaddr_slide;
+    const char* _eh_frame;
+    size_t _eh_frame_size;
 
     static const char* add(const void* base, uint64_t offset) {
         return (const char*)base + offset;
@@ -124,7 +127,8 @@ class MachOParser {
 
   public:
     MachOParser(CodeCache* cc, const mach_header* image_base, const char* vmaddr_slide) :
-        _cc(cc), _image_base(image_base), _vmaddr_slide(vmaddr_slide) {}
+        _cc(cc), _image_base(image_base), _vmaddr_slide(vmaddr_slide),
+        _eh_frame(NULL), _eh_frame_size(0) {}
 
     bool parse() {
         if (_image_base->magic != MH_MAGIC_64) {
@@ -139,15 +143,17 @@ class MachOParser {
         const symtab_command* symtab = NULL;
         const dysymtab_command* dysymtab = NULL;
         const section_64* stubs_section = NULL;
-        bool has_eh_frame = false;
-
         for (uint32_t i = 0; i < header->ncmds; i++) {
             if (lc->cmd == LC_SEGMENT_64) {
                 const segment_command_64* sc = (const segment_command_64*)lc;
                 if (strcmp(sc->segname, "__TEXT") == 0) {
                     _cc->updateBounds(_image_base, add(_image_base, sc->vmsize));
                     stubs_section = findSection(sc, "__stubs");
-                    has_eh_frame = findSection(sc, "__eh_frame") != NULL;
+                    const section_64* eh_frame_section = findSection(sc, "__eh_frame");
+                    if (eh_frame_section != NULL) {
+                        _eh_frame = _vmaddr_slide + eh_frame_section->addr;
+                        _eh_frame_size = eh_frame_section->size;
+                    }
                 } else if (strcmp(sc->segname, "__LINKEDIT") == 0) {
                     link_base = _vmaddr_slide + sc->vmaddr - sc->fileoff;
                 } else if (strcmp(sc->segname, "__DATA") == 0 || strcmp(sc->segname, "__DATA_CONST") == 0) {
@@ -171,11 +177,16 @@ class MachOParser {
             }
         }
 
-        // GCC emits __eh_frame (DWARF CFI); clang emits __unwind_info (compact unwind).
-        // On aarch64, GCC and clang use different frame layouts, so detecting the
-        // compiler matters. On x86_64 both use the same layout (no-op distinction).
-        const FrameDesc& frame = has_eh_frame ? FrameDesc::default_frame : FrameDesc::fallback_default_frame();
-        _cc->setDwarfTable(NULL, 0, frame);
+        if (DWARF_SUPPORTED && _eh_frame != NULL && _eh_frame_size > 0) {
+            DwarfParser dwarf(_cc->name(), _vmaddr_slide, _eh_frame, _eh_frame_size);
+            _cc->setDwarfTable(dwarf.table(), dwarf.count(), dwarf.detectedDefaultFrame());
+        } else {
+            // No __eh_frame (clang compact-unwind-only libraries): fall back to the
+            // library-wide default frame.  On aarch64, clang uses a different frame
+            // layout from GCC, so we must pass fallback_default_frame() rather than
+            // letting CodeCache keep its constructor default of FrameDesc::default_frame.
+            _cc->setDwarfTable(NULL, 0, FrameDesc::fallback_default_frame());
+        }
 
         return true;
     }
@@ -237,6 +248,10 @@ void Symbols::initLibraryRanges() {
 
 bool Symbols::isLibcOrPthreadAddress(uintptr_t pc) {
     return false;
+}
+
+void Symbols::clearParsingCaches() {
+    _parsed_libraries.clear();
 }
 
 #endif // __APPLE__
