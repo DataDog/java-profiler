@@ -280,3 +280,81 @@ log_info "Negative change % indicates improvement (fewer misses/cycles)"
 log_info "Positive IPC change % indicates improvement (more instructions per cycle)"
 log_info ""
 log_info "Individual run results in perf_results_run_*/ directories"
+
+# Generate human-readable summary file
+SUMMARY_FILE="benchmark_summary_$(date +%Y%m%d_%H%M%S).txt"
+log_info ""
+log_info "Generating summary report: ${SUMMARY_FILE}"
+
+cat > "${SUMMARY_FILE}" << EOF
+================================================================================
+Branch Prediction Benchmark Summary
+================================================================================
+Generated: $(date)
+Benchmark: ${BENCHMARK}
+Iterations: ${ITERATIONS}
+Baseline branch: main
+Optimized branch: jb/likely
+
+================================================================================
+Statistical Analysis Results
+================================================================================
+
+Metric                    | Baseline (mean ± σ)                | Optimized (mean ± σ)               | Change
+--------------------------|------------------------------------|------------------------------------|----------
+EOF
+
+# Append the statistics table to file
+{
+calc_stats "Branch misses" "branch-misses"
+calc_stats "L1 icache misses" "L1-icache-load-misses"
+calc_stats "Instructions" "instructions"
+calc_stats "Cycles" "cycles"
+
+# Re-calculate IPC for file output
+if [ ${#baseline_ipc_values[@]} -gt 0 ]; then
+    echo "--------------------------|------------------------------------|------------------------------------|----------"
+    printf "%-25s | %20s ± %10s | %20s ± %10s | %8s%%\n" \
+           "IPC (insn/cycle)" \
+           "$(printf "%.3f" ${baseline_ipc_mean})" "$(printf "%.6f" ${baseline_ipc_stddev})" \
+           "$(printf "%.3f" ${optimized_ipc_mean})" "$(printf "%.6f" ${optimized_ipc_stddev})" \
+           "${ipc_change}"
+fi
+} >> "${SUMMARY_FILE}"
+
+cat >> "${SUMMARY_FILE}" << EOF
+
+================================================================================
+Interpretation
+================================================================================
+- Negative change % = improvement (fewer misses/cycles)
+- Positive IPC change % = improvement (more instructions per cycle)
+- Standard deviation (σ) indicates measurement stability
+
+================================================================================
+Individual Run Data
+================================================================================
+
+EOF
+
+# Append individual run data
+for i in $(seq 1 ${ITERATIONS}); do
+    echo "--- Iteration $i ---" >> "${SUMMARY_FILE}"
+    if [ -f "perf_results_run_${i}/baseline_stat.txt" ]; then
+        echo "Baseline:" >> "${SUMMARY_FILE}"
+        grep -E "(branch-misses|L1-icache-load-misses|instructions|cycles)" "perf_results_run_${i}/baseline_stat.txt" >> "${SUMMARY_FILE}" 2>/dev/null || echo "  No data" >> "${SUMMARY_FILE}"
+    fi
+    if [ -f "perf_results_run_${i}/optimized_stat.txt" ]; then
+        echo "Optimized:" >> "${SUMMARY_FILE}"
+        grep -E "(branch-misses|L1-icache-load-misses|instructions|cycles)" "perf_results_run_${i}/optimized_stat.txt" >> "${SUMMARY_FILE}" 2>/dev/null || echo "  No data" >> "${SUMMARY_FILE}"
+    fi
+    echo "" >> "${SUMMARY_FILE}"
+done
+
+cat >> "${SUMMARY_FILE}" << EOF
+================================================================================
+End of Report
+================================================================================
+EOF
+
+log_info "Summary saved to: ${SUMMARY_FILE}"
