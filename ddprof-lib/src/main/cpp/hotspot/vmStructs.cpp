@@ -4,6 +4,7 @@
  */
 
 #include <pthread.h>
+#include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
 #include "hotspot/vmStructs.h"
@@ -32,6 +33,8 @@ int VMStructs::_narrow_klass_shift = -1;
 int VMStructs::_interpreter_frame_bcp_offset = 0;
 unsigned char VMStructs::_unsigned5_base = 0;
 const void* VMStructs::_call_stub_return = nullptr;
+const void* VMStructs::_interpreter_start = nullptr;
+VMNMethod* VMStructs::_interpreter_nm = nullptr;
 const void* VMStructs::_interpreted_frame_valid_start = nullptr;
 const void* VMStructs::_interpreted_frame_valid_end = nullptr;
 
@@ -434,6 +437,9 @@ void VMStructs::resolveOffsets() {
         _code_heap_segment_shift < 0 || _code_heap_segment_shift > 16 ||
         _heap_block_used_offset < 0) {
         memset(_code_heap, 0, sizeof(_code_heap));
+    }
+    if (_interpreter_nm == NULL && _interpreter_start != NULL) {
+        _interpreter_nm = CodeHeap::findNMethod(_interpreter_start);
     }
 }
 
@@ -858,6 +864,12 @@ bool VMMethod::check_jmethodID(jmethodID id) {
 }
 
 bool VMMethod::check_jmethodID_hotspot(jmethodID id) {
+    if (VM::hotspot_version() > 25) {
+        // In https://bugs.openjdk.org/browse/JDK-8268406 the jmethodids are completely reworked
+        // The assumption that jmethodid can be resolved to Method* is false and we really can
+        // not do any extra checks here
+        return true;
+    }
     const char *method_ptr = (const char *)SafeAccess::load((void **)id);
     // check for NULL ptr and 'empty' ptr (JNIMethodBlock::_free_method)
     if (method_ptr == NULL || (size_t)method_ptr == 55) {

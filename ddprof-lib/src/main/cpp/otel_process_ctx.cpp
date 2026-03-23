@@ -63,6 +63,7 @@ static const otel_process_ctx_data empty_data = {
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -75,8 +76,21 @@ static const otel_process_ctx_data empty_data = {
   #define PR_SET_VMA_ANON_NAME  0
 #endif
 
+#ifndef MFD_CLOEXEC
+  #define MFD_CLOEXEC 1U
+#endif
+#ifndef MFD_ALLOW_SEALING
+  #define MFD_ALLOW_SEALING 2U
+#endif
 #ifndef MFD_NOEXEC_SEAL
   #define MFD_NOEXEC_SEAL 8U
+#endif
+
+// memfd_create(2) libc wrapper was added in glibc 2.27; provide a syscall fallback for older systems (e.g. CentOS 7 / glibc 2.17)
+#if defined(__NR_memfd_create) && defined(__GLIBC__) && (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ < 27))
+  static inline int memfd_create(const char *name, unsigned int flags) {
+    return (int) syscall(__NR_memfd_create, name, flags);
+  }
 #endif
 
 /**
