@@ -9,7 +9,7 @@
 #include <string.h>
 #include <sys/syscall.h>
 #include "stackFrame.h"
-#include "vmStructs.h"
+#include "hotspot/vmStructs.h"
 
 
 #ifdef __APPLE__

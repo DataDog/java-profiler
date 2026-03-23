@@ -22,6 +22,7 @@
 #include "context.h"
 #include "guards.h"
 #include "debugSupport.h"
+#include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
 #include "os.h"
@@ -167,7 +168,7 @@ static void **_pthread_entry = NULL;
 // pthread_setspecific(). HotSpot puts VMThread into TLS on thread start, and
 // resets on thread end.
 static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
-  if (key != VMThread::key()) {
+  if (!JVMThread::is_initialized()) {
     return pthread_setspecific(key, value);
   }
   if (pthread_getspecific(key) == value) {

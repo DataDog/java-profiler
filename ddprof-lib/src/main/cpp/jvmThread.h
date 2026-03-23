@@ -31,7 +31,6 @@ public:
      */
     static bool init_key();
     static inline void* current() {
-
         return pthread_getspecific(_thread_key);
     }
 

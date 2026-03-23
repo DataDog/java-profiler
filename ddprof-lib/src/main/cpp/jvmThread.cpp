@@ -28,4 +28,5 @@ void* JVMThread::current_thread_slow() {
     } else {
         current_thread = VMThread::init_and_get_current();
     }
+    return current_thread;
 }

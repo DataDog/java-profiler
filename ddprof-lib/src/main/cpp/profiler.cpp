@@ -1271,7 +1271,7 @@ Error Profiler::checkJvmCapabilities() {
     return Error("Could not find Thread ID field. Unsupported JVM?");
   }
 
-  if (JVMThread::is_initialized()) {
+  if (!JVMThread::is_initialized()) {
     return Error("Could not find JVMThread bridge. Unsupported JVM?");
   }
 
