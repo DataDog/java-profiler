@@ -1267,12 +1267,12 @@ Engine *Profiler::selectAllocEngine(Arguments &args) {
 }
 
 Error Profiler::checkJvmCapabilities() {
-  if (!VMStructs::hasJavaThreadId()) {
-    return Error("Could not find Thread ID field. Unsupported JVM?");
-  }
-
   if (!JVMThread::is_initialized()) {
     return Error("Could not find JVMThread bridge. Unsupported JVM?");
+  }
+
+  if (VM::isHotspot() && !VMStructs::hasJavaThreadId()) {
+    return Error("Could not find Thread ID field. Unsupported JVM?");
   }
 
   if (VM::isUseAdaptiveGCBoundarySet()) {

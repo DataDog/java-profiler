@@ -352,7 +352,6 @@ class VMStructs {
     static jfieldID _eetop;
     static jfieldID _tid;
     static jfieldID _klass;
-    static int _tls_index;
     static intptr_t _env_offset;
     static void* _java_thread_vtbl[6];
 

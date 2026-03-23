@@ -34,6 +34,10 @@ public:
         return pthread_getspecific(_thread_key);
     }
 
+    static pthread_key_t key() {
+        return _thread_key;
+    }
+
     static int native_thread_id(JNIEnv* jni, jthread thread) {
         return VM::isOpenJ9() ? J9Ext::GetOSThreadID(thread) : VMThread::nativeThreadId(jni, thread);
     }

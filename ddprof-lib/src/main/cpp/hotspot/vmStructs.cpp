@@ -10,6 +10,7 @@
 #include "vmEntry.h"
 #include "jniHelper.h"
 #include "jvmHeap.h"
+#include "jvmThread.h"
 #include "safeAccess.h"
 #include "spinLock.h"
 #include "common.h"
@@ -79,7 +80,6 @@ DECLARE_LONG_CONSTANTS_DO(INIT_LONG_CONSTANT, INIT_LONG_CONSTANT)
 jfieldID VMStructs::_eetop;
 jfieldID VMStructs::_tid;
 jfieldID VMStructs::_klass = NULL;
-int VMStructs::_tls_index = -1;
 intptr_t VMStructs::_env_offset = -1;
 void* VMStructs::_java_thread_vtbl[6];
 
@@ -623,17 +623,15 @@ void* VMThread::init_and_get_current() {
 
     VMThread* vm_thread = VMThread::fromJavaThread(env, thread);
     assert(vm_thread != nullptr);
-    if (vm_thread != NULL) {
-        _has_native_thread_id = _thread_osthread_offset >= 0 && _osthread_id_offset >= 0;
-        _env_offset = (intptr_t)env - (intptr_t)vm_thread;
-        memcpy(_java_thread_vtbl, vm_thread->vtable(), sizeof(_java_thread_vtbl));
-    }
+    _has_native_thread_id = _thread_osthread_offset >= 0 && _osthread_id_offset >= 0;
+    _env_offset = (intptr_t)env - (intptr_t)vm_thread;
+    memcpy(_java_thread_vtbl, vm_thread->vtable(), sizeof(_java_thread_vtbl));
 
     return (void*)vm_thread;
 }
 
 VMThread* VMThread::current() {
-    return _tls_index >= 0 ? (VMThread*)pthread_getspecific((pthread_key_t)_tls_index) : NULL;
+    return VMThread::cast(JVMThread::current());
 }
 
 int VMThread::nativeThreadId(JNIEnv* jni, jthread thread) {
