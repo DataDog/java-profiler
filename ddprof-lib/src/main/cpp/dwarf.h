@@ -83,6 +83,17 @@ struct FrameDesc {
     static FrameDesc default_clang_frame;
     static FrameDesc no_dwarf_frame;
 
+    // Best-guess fallback frame layout when a PC doesn't map to any known library.
+    // Per-library detection overrides this: on macOS via __eh_frame section presence,
+    // on Linux via DwarfParser::detectedDefaultFrame().
+    static const FrameDesc& fallback_default_frame() {
+#if defined(__APPLE__) && defined(__aarch64__)
+        return default_clang_frame;
+#else
+        return default_frame;
+#endif
+    }
+
     static int comparator(const void* p1, const void* p2) {
         FrameDesc* fd1 = (FrameDesc*)p1;
         FrameDesc* fd2 = (FrameDesc*)p2;
@@ -104,6 +115,7 @@ class DwarfParser {
 
     u32 _code_align;
     int _data_align;
+    int _linked_frame_size;  // detected from FP-based DWARF entries; -1 = undetected
 
     const char* add(size_t size) {
         const char* ptr = _ptr;
@@ -184,6 +196,13 @@ class DwarfParser {
 
     int count() const {
         return _count;
+    }
+
+    const FrameDesc& detectedDefaultFrame() const {
+        if (_linked_frame_size == LINKED_FRAME_CLANG_SIZE && LINKED_FRAME_CLANG_SIZE != LINKED_FRAME_SIZE) {
+            return FrameDesc::default_clang_frame;
+        }
+        return FrameDesc::default_frame;
     }
 };
 
