@@ -147,7 +147,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
         if (CodeHeap::contains(pc) && !(depth == 0 && frame.unwindAtomicStub(pc)) &&
-            VMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
+            JVMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
             // Don't dereference pc as it may point to unreadable memory
             // frame.adjustSP(page_start, pc, sp);
             java_ctx->set(pc, sp, fp);
@@ -269,6 +269,8 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                         StackWalkFeatures features, EventType event_type,
                         const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated) {
+    // VMStructs is only available for hotspot JVM 
+    assert(VM::isHotspot());
     StackFrame frame(ucontext);
     uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
 
