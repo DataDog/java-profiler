@@ -11,7 +11,7 @@
 #include "safeAccess.h"
 #include "stackFrame.h"
 #include "symbols.h"
-#include "vmStructs.inline.h"
+#include "hotspot/vmStructs.inline.h"
 #include "thread.h"
 
 
@@ -846,7 +846,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 }
 
 void StackWalker::checkFault(ProfiledThread* thrd) {
-    if (VMThread::key() < 0) {
+    if (!JVMThread::is_initialized()) {
         // JVM has not been loaded or VMStructs have not been initialized yet
         return;
     }

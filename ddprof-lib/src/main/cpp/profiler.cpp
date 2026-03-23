@@ -14,8 +14,9 @@
 #include "dwarf.h"
 #include "flightRecorder.h"
 #include "itimer.h"
-#include "j9Ext.h"
-#include "j9WallClock.h"
+#include "j9/j9Ext.h"
+#include "j9/j9WallClock.h"
+#include "jvmThread.h"
 #include "libraryPatcher.h"
 #include "objectSampler.h"
 #include "os.h"
@@ -26,7 +27,7 @@
 #include "symbols.h"
 #include "thread.h"
 #include "tsc.h"
-#include "vmStructs.h"
+#include "hotspot/vmStructs.h"
 #include "wallClock.h"
 #include <algorithm>
 #include <dlfcn.h>
@@ -495,7 +496,7 @@ int Profiler::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   // Workaround for JDK-8132510: it's not safe to call GetEnv() inside a signal
   // handler since JDK 9, so we do it only for threads already registered in
   // ThreadLocalStorage
-  VMThread *vm_thread = VMThread::current();
+  VMThread *vm_thread = (VMThread*)JVMThread::current();
   if (vm_thread == NULL || !vm_thread->isThreadAccessible()) {
     Counters::increment(AGCT_NOT_REGISTERED_IN_TLS);
     return 0;
@@ -1270,8 +1271,8 @@ Error Profiler::checkJvmCapabilities() {
     return Error("Could not find Thread ID field. Unsupported JVM?");
   }
 
-  if (VMThread::key() < 0) {
-    return Error("Could not find VMThread bridge. Unsupported JVM?");
+  if (JVMThread::is_initialized()) {
+    return Error("Could not find JVMThread bridge. Unsupported JVM?");
   }
 
   if (VM::isUseAdaptiveGCBoundarySet()) {

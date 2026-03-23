@@ -22,7 +22,7 @@
 #include "stackWalker.h"
 #include "thread.h"
 #include "threadState.inline.h"
-#include "vmStructs.h"
+#include "hotspot/vmStructs.h"
 #include "guards.h"
 #include <sys/time.h>
 

@@ -3,12 +3,16 @@
 
 
 #include "threadState.h"
-#include "vmStructs.h"
+#include "hotspot/vmStructs.h"
+#include "jvmThread.h"
 #include "thread.h"
+#include "vmEntry.h"
 #include <stdio.h>
 
 inline ExecutionMode getThreadExecutionMode() {
-  VMThread* vm_thread = VMThread::current();
+  assert(!VM::isOpenJ9());
+
+  VMThread* vm_thread =(VMThread*)JVMThread::current();
   // Not a JVM thread - native thread, e.g. thread launched by JNI code
   if (vm_thread == nullptr) {
     return ExecutionMode::NATIVE;

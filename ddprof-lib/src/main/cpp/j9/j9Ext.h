@@ -15,14 +15,13 @@
  * limitations under the License.
  */
 
-#ifndef _J9EXT_H
-#define _J9EXT_H
+#ifndef _J9_J9EXT_H
+#define _J9_J9EXT_H
 
 #include <jvmti.h>
 
 #include "log.h"
 #include "vmEntry.h"
-#include "vmStructs.h"
 
 #define JVMTI_EXT(f, ...) ((jvmtiError(*)(jvmtiEnv *, __VA_ARGS__))f)
 
@@ -179,4 +178,4 @@ public:
   static int InstrumentableObjectAlloc_id;
 };
 
-#endif // _J9EXT_H
+#endif // _J9_J9EXT_H

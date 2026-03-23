@@ -1,6 +1,6 @@
 #include "jvm.h"
 #include "log.h"
-#include "vmStructs.h"
+#include "hotspot/vmStructs.h"
 
 bool JVM::_is_readable_pointer_resolved = false;
 is_readable_pointer_fn JVM::_is_readable_pointer = NULL;

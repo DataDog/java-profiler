@@ -13,7 +13,6 @@
 #include "pidController.h"
 #include "profiler.h"
 #include "thread.h"
-#include "vmStructs.h"
 #include <jni.h>
 #include <limits.h>
 #include <math.h>

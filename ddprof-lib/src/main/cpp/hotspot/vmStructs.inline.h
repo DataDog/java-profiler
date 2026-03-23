@@ -1,10 +1,15 @@
 // Unless explicitly stated otherwise all files in this repository are licensed under the Apache License (Version 2.0).
 // This product includes software developed at Datadog (https://www.datadoghq.com/) Copyright 2025 Datadog, Inc.
 
-#ifndef _VMSTRUCTS_INLINE_H
-#define _VMSTRUCTS_INLINE_H
+#ifndef _HOTSPOT_VMSTRUCTS_INLINE_H
+#define _HOTSPOT_VMSTRUCTS_INLINE_H
 
-#include "vmStructs.h"
+#include "hotspot/vmStructs.h"
+#include "jvmThread.h"
+VMThread* VMThread::current() {
+    void* current = JVMThread::current();
+    return VMThread::cast(current);
+}
 
 VMNMethod* VMMethod::code() {
     assert(_method_code_offset >= 0);
@@ -27,5 +32,4 @@ VMMethod* VMThread::compiledMethod() {
     return NULL;
 }
 
-
-#endif // _VMSTRUCTS_INLINE_H
+#endif // _HOTSPOT_VMSTRUCTS_INLINE_H

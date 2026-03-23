@@ -3,7 +3,6 @@
 #ifdef __linux__
 #include "counters.h"
 #include "profiler.h"
-#include "vmStructs.h"
 #include "guards.h"
 
 #include <cassert>

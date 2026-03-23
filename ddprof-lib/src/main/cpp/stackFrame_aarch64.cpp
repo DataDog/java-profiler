@@ -10,7 +10,7 @@
 #include <sys/syscall.h>
 #include "stackFrame.h"
 #include "safeAccess.h"
-#include "vmStructs.h"
+#include "hotspot/vmStructs.h"
 #include "counters.h"
 
 

@@ -33,7 +33,6 @@
 #include "symbols.h"
 #include "thread.h"
 #include "threadState.inline.h"
-#include "vmStructs.h"
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>

@@ -10,6 +10,7 @@
 
 #include "arch.h"
 #include "context.h"
+#include "hotspot/vmStructs.h"
 #include "incbin.h"
 #include "jniHelper.h"
 #include "livenessTracker.h"
@@ -18,7 +19,6 @@
 #include "profiler.h"
 #include "thread.h"
 #include "tsc.h"
-#include "vmStructs.h"
 #include <jni.h>
 #include <string.h>
 

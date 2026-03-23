@@ -6,9 +6,8 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <stdarg.h>
-#include "vmStructs.h"
+#include "hotspot/vmStructs.h"
 #include "vmEntry.h"
-#include "j9Ext.h"
 #include "jniHelper.h"
 #include "jvmHeap.h"
 #include "safeAccess.h"
@@ -119,7 +118,6 @@ void VMStructs::init(CodeCache* libjvm) {
 void VMStructs::ready() {
     resolveOffsets();
     patchSafeFetch();
-    initThreadBridge();
 }
 
 bool matchAny(const char* target_name, std::initializer_list<const char*> names) {
@@ -476,51 +474,6 @@ void VMStructs::patchSafeFetch() {
     }
 }
 
-void VMStructs::initTLS(void* vm_thread) {
-    for (int i = 0; i < 1024; i++) {
-        if (pthread_getspecific((pthread_key_t)i) == vm_thread) {
-            _tls_index = i;
-            break;
-        }
-    }
-}
-
-void VMStructs::initThreadBridge() {
-    jthread thread;
-    if (VM::jvmti()->GetCurrentThread(&thread) != 0) {
-        return;
-    }
-
-    JNIEnv* env = VM::jni();
-    jclass thread_class = env->FindClass("java/lang/Thread");
-    if (thread_class == NULL || (_tid = env->GetFieldID(thread_class, "tid", "J")) == NULL) {
-        env->ExceptionClear();
-        return;
-    }
-
-    if (VM::isOpenJ9()) {
-        void* j9thread = J9Ext::j9thread_self();
-        if (j9thread != NULL) {
-            initTLS(j9thread);
-        }
-    } else {
-        // Get eetop field - a bridge from Java Thread to VMThread
-        if ((_eetop = env->GetFieldID(thread_class, "eetop", "J")) == NULL) {
-            // No such field - probably not a HotSpot JVM
-            env->ExceptionClear();
-            return;
-        }
-
-        VMThread* vm_thread = VMThread::fromJavaThread(env, thread);
-        if (vm_thread != NULL) {
-            _has_native_thread_id = _thread_osthread_offset >= 0 && _osthread_id_offset >= 0;
-            initTLS(vm_thread);
-            _env_offset = (intptr_t)env - (intptr_t)vm_thread;
-            memcpy(_java_thread_vtbl, vm_thread->vtable(), sizeof(_java_thread_vtbl));
-        }
-    }
-}
-
 // ===== Datadog-specific VMStructs extensions =====
 
 void VMStructs::initUnsafeFunctions() {
@@ -648,16 +601,48 @@ void VMStructs::checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni,
     jvmti->Deallocate((unsigned char *)method_name);
 }
 
+void* VMThread::init_and_get_current() {
+    jthread thread;
+    if (VM::jvmti()->GetCurrentThread(&thread) != JVMTI_ERROR_NONE) {
+        return nullptr;
+    }
+
+    JNIEnv* env = VM::jni();
+    jclass thread_class = env->FindClass("java/lang/Thread");
+    if (thread_class == NULL || (_tid = env->GetFieldID(thread_class, "tid", "J")) == NULL) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+
+    // Get eetop field - a bridge from Java Thread to VMThread
+    if ((_eetop = env->GetFieldID(thread_class, "eetop", "J")) == NULL) {
+       // No such field - probably not a HotSpot JVM
+       env->ExceptionClear();
+       return nullptr;
+    }
+
+    VMThread* vm_thread = VMThread::fromJavaThread(env, thread);
+    assert(vm_thread != nullptr);
+    if (vm_thread != NULL) {
+        _has_native_thread_id = _thread_osthread_offset >= 0 && _osthread_id_offset >= 0;
+        _env_offset = (intptr_t)env - (intptr_t)vm_thread;
+        memcpy(_java_thread_vtbl, vm_thread->vtable(), sizeof(_java_thread_vtbl));
+    }
+
+    return (void*)vm_thread;
+}
+
 VMThread* VMThread::current() {
     return _tls_index >= 0 ? (VMThread*)pthread_getspecific((pthread_key_t)_tls_index) : NULL;
 }
 
 int VMThread::nativeThreadId(JNIEnv* jni, jthread thread) {
+    assert(_has_native_thread_id);
     if (_has_native_thread_id) {
         VMThread* vm_thread = fromJavaThread(jni, thread);
         return vm_thread != NULL ? vm_thread->osThreadId() : -1;
     }
-    return VM::isOpenJ9() ? J9Ext::GetOSThreadID(thread) : -1;
+    return -1;
 }
 
 int VMThread::osThreadId() {

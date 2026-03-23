@@ -8,14 +8,15 @@
 #include "vmEntry.h"
 #include "arguments.h"
 #include "context.h"
-#include "j9Ext.h"
+#include "j9/j9Ext.h"
 #include "jniHelper.h"
+#include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
 #include "os.h"
 #include "profiler.h"
 #include "safeAccess.h"
-#include "vmStructs.h"
+#include "hotspot/vmStructs.h"
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
@@ -491,7 +492,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
 void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
   Profiler::check_JDK_8313796_workaround();
   Profiler::setupSignalHandlers();
-  {
+  JVMThread::init_key();
+  if (isHotspot()) {
     JitWriteProtection jit(true);
     VMStructs::ready();
   }

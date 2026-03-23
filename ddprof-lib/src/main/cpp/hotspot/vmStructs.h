@@ -4,10 +4,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef _VMSTRUCTS_H
-#define _VMSTRUCTS_H
+#ifndef _HOTSPOT_VMSTRUCTS_H
+#define _HOTSPOT_VMSTRUCTS_H
 
 #include <initializer_list>
+#include <jni.h>
 #include <jvmti.h>
 #include <stdint.h>
 #include <string.h>
@@ -694,11 +695,9 @@ enum JVMJavaThreadState {
 
 DECLARE(VMThread)
   public:
-    static VMThread* current();
+    static inline VMThread* current();
 
-    static int key() {
-        return _tls_index;
-    }
+    static void* init_and_get_current();
 
     static VMThread* fromJavaThread(JNIEnv* env, jthread thread) {
         return VMThread::cast_raw((const void*)env->GetLongField(thread, _eetop));
@@ -1108,4 +1107,4 @@ class InterpreterFrame : VMStructs {
     }
 };
 
-#endif // _VMSTRUCTS_H
+#endif // _HOTSPOT_VMSTRUCTS_H

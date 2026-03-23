@@ -14,7 +14,6 @@
 #include "stackFrame.h"
 #include "thread.h"
 #include "threadState.inline.h"
-#include "vmStructs.h"
 #include "guards.h"
 #include <math.h>
 #include <random>
@@ -79,7 +78,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   }
 
   ExecutionEvent event;
-  VMThread *vm_thread = VMThread::current();
+  VMThread *vm_thread =(VMThread*) JVMThread::current();
   if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
       vm_thread = NULL;
   }

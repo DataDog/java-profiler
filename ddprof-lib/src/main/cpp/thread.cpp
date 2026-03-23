@@ -2,7 +2,6 @@
 #include "os.h"
 #include "profiler.h"
 #include "common.h"
-#include "vmStructs.h"
 #include <time.h>
 
 pthread_key_t ProfiledThread::_tls_key;
