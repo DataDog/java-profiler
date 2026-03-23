@@ -97,7 +97,9 @@ void Profiler::addRuntimeStub(const void *address, int length,
   _runtime_stubs.add(address, length, name, true);
   _stubs_lock.unlock();
 
-  if (strcmp(name, "call_stub") == 0) {
+  if (name[0] == 'I' && strcmp(name, "Interpreter") == 0) {
+    CodeHeap::setInterpreterStart(address);
+  } else if (strcmp(name, "call_stub") == 0) {
     _call_stub_begin = address;
     _call_stub_end = (const char *)address + length;
   }
