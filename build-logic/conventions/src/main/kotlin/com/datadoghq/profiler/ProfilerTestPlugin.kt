@@ -560,21 +560,22 @@ class ProfilerTestPlugin : Plugin<Project> {
             }
         }
 
-        // Wire up assemble/gtest dependencies
+        // Wire up gtest -> test dependencies (C++ tests run before Java tests)
         project.gradle.projectsEvaluated {
             configNames.forEach { cfgName ->
-                val testTask = project.tasks.findByName("test$cfgName")
+                val capitalizedCfgName = cfgName.replaceFirstChar { it.uppercaseChar() }
+                val testTaskName = "test$capitalizedCfgName"
+                val testTask = project.tasks.findByName(testTaskName)
                 val profilerLibProject = project.rootProject.findProject(profilerLibProjectPath)
 
-                if (profilerLibProject != null) {
-                    val assembleTask = profilerLibProject.tasks.findByName("assemble${cfgName.replaceFirstChar { it.uppercaseChar() }}")
-                    if (testTask != null && assembleTask != null) {
-                        assembleTask.dependsOn(testTask)
-                    }
-
-                    val gtestTask = profilerLibProject.tasks.findByName("gtest${cfgName.replaceFirstChar { it.uppercaseChar() }}")
-                    if (testTask != null && gtestTask != null) {
+                if (profilerLibProject != null && testTask != null) {
+                    // Wire test -> gtest dependency (C++ unit tests run before Java integration tests)
+                    val gtestTaskName = "gtest${capitalizedCfgName}"
+                    try {
+                        val gtestTask = profilerLibProject.tasks.named(gtestTaskName)
                         testTask.dependsOn(gtestTask)
+                    } catch (e: org.gradle.api.UnknownTaskException) {
+                        project.logger.info("Task $gtestTaskName not found in $profilerLibProjectPath - gtest may not be available")
                     }
                 }
             }

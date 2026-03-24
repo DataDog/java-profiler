@@ -496,4 +496,8 @@ SigAction OS::getBusChainTarget() {
     return nullptr;
 }
 
+void* OS::getSigactionHook() {
+    return nullptr;  // No sigaction interception on macOS
+}
+
 #endif // __APPLE__

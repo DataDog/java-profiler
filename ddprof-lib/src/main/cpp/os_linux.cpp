@@ -739,6 +739,11 @@ static SigAction _protected_bus_handler = nullptr;
 static volatile SigAction _segv_chain_target = nullptr;
 static volatile SigAction _bus_chain_target = nullptr;
 
+// Original handlers (JVM's) saved before we install ours - used for oldact in sigaction hook
+static struct sigaction _orig_segv_sigaction;
+static struct sigaction _orig_bus_sigaction;
+static bool _orig_handlers_saved = false;
+
 // Real sigaction function pointer (resolved via dlsym)
 typedef int (*real_sigaction_t)(int, const struct sigaction*, struct sigaction*);
 static real_sigaction_t _real_sigaction = nullptr;
@@ -747,6 +752,14 @@ void OS::protectSignalHandlers(SigAction segvHandler, SigAction busHandler) {
     // Resolve real sigaction BEFORE enabling protection, while we can still use RTLD_DEFAULT
     if (_real_sigaction == nullptr) {
         _real_sigaction = (real_sigaction_t)dlsym(RTLD_DEFAULT, "sigaction");
+    }
+    // Save the current (JVM's) signal handlers BEFORE we install ours.
+    // These will be returned as oldact when we intercept other libraries' sigaction calls,
+    // so they chain to JVM instead of back to us (which would cause infinite loops).
+    if (!_orig_handlers_saved && _real_sigaction != nullptr) {
+        _real_sigaction(SIGSEGV, nullptr, &_orig_segv_sigaction);
+        _real_sigaction(SIGBUS, nullptr, &_orig_bus_sigaction);
+        _orig_handlers_saved = true;
     }
     _protected_segv_handler = segvHandler;
     _protected_bus_handler = busHandler;
@@ -780,7 +793,10 @@ static int sigaction_hook(int signum, const struct sigaction* act, struct sigact
                     // Save their handler as our chain target
                     __atomic_exchange_n(&_segv_chain_target, new_handler, __ATOMIC_ACQ_REL);
                     if (oldact != nullptr) {
-                        _real_sigaction(signum, nullptr, oldact);
+                        // Return the original (JVM's) handler, not our handler.
+                        // This way, when the intercepted library chains to "previous",
+                        // it goes to JVM, not back to us (which would cause infinite loops).
+                        *oldact = _orig_segv_sigaction;
                     }
                     Counters::increment(SIGACTION_INTERCEPTED);
                     // Don't actually install their handler - keep ours on top
@@ -794,7 +810,8 @@ static int sigaction_hook(int signum, const struct sigaction* act, struct sigact
                 if (new_handler != _protected_bus_handler) {
                     __atomic_exchange_n(&_bus_chain_target, new_handler, __ATOMIC_ACQ_REL);
                     if (oldact != nullptr) {
-                        _real_sigaction(signum, nullptr, oldact);
+                        // Return the original (JVM's) handler, not our handler.
+                        *oldact = _orig_bus_sigaction;
                     }
                     Counters::increment(SIGACTION_INTERCEPTED);
                     return 0;

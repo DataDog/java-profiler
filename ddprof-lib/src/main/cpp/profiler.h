@@ -194,6 +194,7 @@ private:
   void unlockAll();
 
   static bool crashHandler(int signo, siginfo_t *siginfo, void *ucontext);
+  static int crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext);
   static void check_JDK_8313796_workaround();
 
   static Profiler *const _instance;
