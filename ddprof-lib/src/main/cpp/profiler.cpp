@@ -1070,7 +1070,7 @@ void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
 }
 
-// Returns: true = handled, false = not handled (chain to next handler)
+// Returns: 0 = not handled (chain to next handler), non-zero = handled
 int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext) {
   ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
 

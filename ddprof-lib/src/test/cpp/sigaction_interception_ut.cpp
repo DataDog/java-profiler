@@ -18,6 +18,7 @@
 #include <signal.h>
 #include <setjmp.h>
 #include <atomic>
+#include <cstring>
 
 #include "os.h"
 
