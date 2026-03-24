@@ -21,6 +21,8 @@
 #include "context.h"
 #include <cstdint>
 
+class ProfiledThread;
+
 /**
  * Unified context API for trace/span context storage.
  *
@@ -31,29 +33,16 @@
 class ContextApi {
 public:
     /**
-     * Initialize context storage.
-     * Must be called once during profiler startup.
-     */
-    static void initialize();
-
-    /**
      * Shutdown context storage.
      * Releases resources allocated during initialization.
      */
     static void shutdown();
 
     /**
-     * Write full OTEL context with 128-bit trace ID and local root span ID.
-     *
-     * Writes trace_id + span_id + local_root_span_id to the OTEP record
-     * in a single detach/attach cycle.
-     *
-     * @param local_root_span_id Local root span ID (for endpoint correlation)
-     * @param span_id The span ID
-     * @param trace_id_high Upper 64 bits of 128-bit trace ID
-     * @param trace_id_low Lower 64 bits of 128-bit trace ID
+     * Initialize OTel TLS for the given thread on first use.
+     * Must be called with signals blocked (SignalBlocker).
      */
-    static void setFull(u64 local_root_span_id, u64 span_id, u64 trace_id_high, u64 trace_id_low);
+    static void initializeOtelTls(ProfiledThread* thrd);
 
     /**
      * Read context for the current thread.
@@ -77,19 +66,6 @@ public:
      * @return A Context struct representing the current thread's context
      */
     static Context snapshot();
-
-    /**
-     * Set a custom attribute on the current thread's context.
-     *
-     * Encodes into attrs_data of the OTEP record and caches the
-     * encoding in the ProfiledThread sidecar for O(1) signal-handler reads.
-     *
-     * @param key_index Index into the registered attribute key map
-     * @param value UTF-8 string value
-     * @param value_len Length of value in bytes (max 255)
-     * @return true if the attribute was set successfully
-     */
-    static bool setAttribute(uint8_t key_index, const char* value, uint8_t value_len);
 
     /**
      * Register attribute key names and publish them in the process context.

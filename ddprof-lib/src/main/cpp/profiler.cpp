@@ -1470,9 +1470,6 @@ Error Profiler::start(Arguments &args, bool reset) {
     _libs->updateBuildIds();
   }
 
-  // Initialize OTEL context storage
-  ContextApi::initialize();
-
   enableEngines();
 
   // Always enable library trap to catch wasmtime loading and patch its broken sigaction

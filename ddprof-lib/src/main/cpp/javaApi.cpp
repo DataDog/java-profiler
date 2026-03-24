@@ -550,14 +550,7 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeOtelTls0(JNIEnv* env, jclass 
   if (thrd == nullptr) return nullptr;
 
   if (!thrd->isOtelContextInitialized()) {
-    // Block profiling signals during first TLS access
-    SignalBlocker blocker;
-    OtelThreadContextRecord* record = thrd->getOtelContextRecord();
-    record->valid = 0;
-    record->_reserved = 0;
-    record->attrs_data_size = 0;
-    custom_labels_current_set_v2 = nullptr;
-    thrd->markOtelContextInitialized();
+    ContextApi::initializeOtelTls(thrd);
   }
 
   OtelThreadContextRecord* record = thrd->getOtelContextRecord();

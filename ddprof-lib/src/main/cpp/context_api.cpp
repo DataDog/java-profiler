@@ -27,54 +27,21 @@
 char* ContextApi::_attribute_keys[MAX_ATTRIBUTE_KEYS] = {};
 int ContextApi::_attribute_key_count = 0;
 
-void ContextApi::initialize() {
-    // No per-session state to initialize — OTEL TLS is always used.
-}
-
 void ContextApi::shutdown() {
     freeAttributeKeys();
 }
 
 /**
  * Initialize OTel TLS for the current thread on first use.
- * Zero-inits the embedded OtelThreadContextRecord and triggers TLS init.
+ * Triggers the first access to custom_labels_current_set_v2 (TLS init).
  * Must be called with signals blocked to prevent musl TLS deadlock.
+ * The OtelThreadContextRecord is already zero-initialized by the ProfiledThread ctor.
  */
-static void initializeOtelTls(ProfiledThread* thrd) {
+void ContextApi::initializeOtelTls(ProfiledThread* thrd) {
     SignalBlocker blocker;
-
-    OtelThreadContextRecord* record = thrd->getOtelContextRecord();
-    record->valid = 0;
-    record->_reserved = 0;
-    record->attrs_data_size = 0;
-
     // First access to custom_labels_current_set_v2 triggers TLS init
     custom_labels_current_set_v2 = nullptr;
-
     thrd->markOtelContextInitialized();
-}
-
-void ContextApi::setFull(u64 local_root_span_id, u64 span_id, u64 trace_id_high, u64 trace_id_low) {
-    ProfiledThread* thrd = ProfiledThread::current();
-    if (thrd == nullptr) return;
-
-    if (!thrd->isOtelContextInitialized()) {
-        initializeOtelTls(thrd);
-    }
-
-    // All-zero IDs = context detachment
-    if (trace_id_high == 0 && trace_id_low == 0 && span_id == 0) {
-        OtelContexts::clear(thrd->getOtelContextRecord());
-        thrd->clearOtelSidecar();
-        return;
-    }
-
-    // Update sidecar BEFORE publishing the OTEP record. OtelContexts::set()
-    // flips valid=1 at the end; a signal handler that sees valid=1 must also
-    // see the updated local_root_span_id.
-    thrd->setOtelLocalRootSpanId(local_root_span_id);
-
-    OtelContexts::set(thrd->getOtelContextRecord(), trace_id_high, trace_id_low, span_id, local_root_span_id);
 }
 
 bool ContextApi::get(u64& span_id, u64& root_span_id) {
@@ -100,41 +67,13 @@ Context ContextApi::snapshot() {
     return thrd->snapshotContext(numAttrs);
 }
 
-bool ContextApi::setAttribute(uint8_t key_index, const char* value, uint8_t value_len) {
-    if (key_index >= DD_TAGS_CAPACITY) return false;
-
-    ProfiledThread* thrd = ProfiledThread::current();
-    if (thrd == nullptr) return false;
-
-    if (!thrd->isOtelContextInitialized()) {
-        initializeOtelTls(thrd);
-    }
-
-    // Pre-register the value string in the Dictionary and cache the encoding
-    // in the sidecar for O(1) signal-handler reads (no hash lookup needed).
-    u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
-        value, value_len, 1 << 16);
-    if (encoding == INT_MAX) {
-        thrd->setOtelTagEncoding(key_index, 0);
-        return false;
-    }
-    thrd->setOtelTagEncoding(key_index, encoding);
-
-    // Offset by 1 in the OTEP record: index 0 is reserved for LOCAL_ROOT_SPAN_ATTR_INDEX
-    uint8_t otep_key_index = key_index + 1;
-    return OtelContexts::setAttribute(thrd->getOtelContextRecord(), otep_key_index, value, value_len);
-}
-
 void ContextApi::freeAttributeKeys() {
     int count = _attribute_key_count;
-    char* old_keys[MAX_ATTRIBUTE_KEYS];
-    for (int i = 0; i < count; i++) {
-        old_keys[i] = _attribute_keys[i];
-        _attribute_keys[i] = nullptr;
-    }
     _attribute_key_count = 0;
     for (int i = 0; i < count; i++) {
-        free(old_keys[i]);
+        char* key = _attribute_keys[i];
+        _attribute_keys[i] = nullptr;
+        free(key);
     }
 }
 

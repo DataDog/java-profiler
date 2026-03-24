@@ -64,7 +64,7 @@ public final class ThreadContext {
     private final int attrsDataSizeOffset;
     private final int attrsDataOffset;
     private final int maxAttrsDataSize;
-    private final int lrsSidecarOffset;
+    private final int lrsSidecarOffset; // localRootSpanId offset in sidecar
 
     private final ByteBuffer recordBuffer;   // 640 bytes, OtelThreadContextRecord
     private final ByteBuffer tlsPtrBuffer;   // 8 bytes, &custom_labels_current_set_v2
@@ -239,18 +239,23 @@ public final class ThreadContext {
      * trace_id and span_id are OTEP big-endian byte arrays — Long.reverseBytes()
      * converts from native LE to big-endian.
      */
-    private void setContextDirect(long lrs, long spanId, long trHi, long trLo) {
-        // Update LRS in sidecar (signal handler reads this)
-        BUFFER_WRITER.writeOrderedLong(sidecarBuffer, lrsSidecarOffset, lrs);
-
+    private void setContextDirect(long localRootSpanId, long spanId, long trHi, long trLo) {
         detach();
 
+        // Update LRS in sidecar inside the detach/attach window to avoid a
+        // brief inconsistency where a signal handler sees the new LRS with
+        // the old trace/span IDs.
+        BUFFER_WRITER.writeOrderedLong(sidecarBuffer, lrsSidecarOffset, localRootSpanId);
+
         if (trHi == 0 && trLo == 0 && spanId == 0) {
-            // Clear: zero fields, leave detached
+            // Clear: zero all fields + sidecar, leave detached
             recordBuffer.putLong(traceIdOffset, 0);
             recordBuffer.putLong(traceIdOffset + 8, 0);
             recordBuffer.putLong(spanIdOffset, 0);
             recordBuffer.putShort(attrsDataSizeOffset, (short) 0);
+            for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
+                sidecarBuffer.putInt(i * 4, 0);
+            }
             BUFFER_WRITER.writeOrderedLong(sidecarBuffer, lrsSidecarOffset, 0);
             return;
         }
@@ -260,9 +265,9 @@ public final class ThreadContext {
         recordBuffer.putLong(traceIdOffset + 8, Long.reverseBytes(trLo));
         recordBuffer.putLong(spanIdOffset, Long.reverseBytes(spanId));
 
-        // Write LRS as a regular OTEP attribute at key_index=0 (decimal string, per OTEP spec)
-        if (lrs != 0) {
-            byte[] lrsUtf8 = lookupLrs(lrs);
+        // Write local root span ID as a decimal UTF-8 OTEP attribute at key_index=0
+        if (localRootSpanId != 0) {
+            byte[] lrsUtf8 = lookupLrs(localRootSpanId);
             replaceOtepAttribute(LRS_OTEP_KEY_INDEX, lrsUtf8);
         } else {
             removeOtepAttribute(LRS_OTEP_KEY_INDEX);

@@ -5,6 +5,7 @@
 
 #include "thread.h"
 #include "context_api.h"
+#include "otel_context.h"
 #include "os.h"
 #include <cstring>
 #include <time.h>
@@ -100,6 +101,9 @@ void ProfiledThread::releaseFromBuffer() {
     _filter_slot_id = -1;
     _unwind_failures.clear();
 
+    // Detach the TLS pointer before clearing the record, so external
+    // profilers don't see a stale pointer to a recycled record.
+    __atomic_store_n(&custom_labels_current_set_v2, (OtelThreadContextRecord*)nullptr, __ATOMIC_RELEASE);
     // Mark uninitialized FIRST so signal handlers short-circuit before
     // reading partially-zeroed data during the memset below.
     _otel_ctx_initialized = false;
@@ -203,7 +207,8 @@ Context ProfiledThread::snapshotContext(size_t numAttrs) {
     ctx.rootSpanId = root_span_id;
     ctx.checksum = Contexts::checksum(span_id, root_span_id);
   }
-  for (size_t i = 0; i < numAttrs && i < DD_TAGS_CAPACITY; i++) {
+  size_t count = numAttrs < DD_TAGS_CAPACITY ? numAttrs : DD_TAGS_CAPACITY;
+  for (size_t i = 0; i < count; i++) {
     ctx.tags[i].value = _otel_tag_encodings[i];
   }
   return ctx;

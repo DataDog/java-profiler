@@ -30,11 +30,6 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Tests for OTEL-compatible context storage (OTEP #4947).
- *
- * <p>All context storage now uses the OTEP #4947 TLS pointer
- * (custom_labels_current_set_v2). The TLS symbol is discoverable via ELF dynsym
- * on Linux, enabling external profilers (like the OTel eBPF profiler) to resolve
- * per-thread context.
  */
 public class OtelContextStorageModeTest {
 
@@ -57,7 +52,6 @@ public class OtelContextStorageModeTest {
 
     /**
      * Tests that context round-trips correctly.
-     * The custom_labels_current_set_v2 TLS symbol is discoverable via ELF dynsym on Linux.
      */
     @Test
     public void testOtelStorageModeContext() throws Exception {
@@ -75,20 +69,6 @@ public class OtelContextStorageModeTest {
         ThreadContext ctx = profiler.getThreadContext();
         assertEquals(spanId, ctx.getSpanId(), "SpanId should match");
         assertEquals(localRootSpanId, ctx.getRootSpanId(), "LocalRootSpanId should match");
-    }
-
-    /**
-     * Tests that context operations do not crash on any platform.
-     */
-    @Test
-    public void testOtelModeStartsOnAnyPlatform() throws Exception {
-        Path jfrFile = Files.createTempFile("otel-ctx-any", ".jfr");
-
-        profiler.execute(String.format("start,cpu=1ms,attributes=tag1;tag2;tag3,jfr,file=%s", jfrFile.toAbsolutePath()));
-        profilerStarted = true;
-
-        // Context operations should not crash
-        profiler.setContext(0x456L, 0x123L, 0L, 0x789L);
     }
 
     /**
@@ -137,23 +117,6 @@ public class OtelContextStorageModeTest {
         // Verify trace context is still intact
         assertEquals(spanId, ctx.getSpanId(), "SpanId should match after setAttribute");
         assertEquals(localRootSpanId, ctx.getRootSpanId(), "LocalRootSpanId should match after setAttribute");
-    }
-
-    /**
-     * Tests that setContextAttribute works (registers constant + writes encoding).
-     */
-    @Test
-    public void testSetContextAttribute() throws Exception {
-        Path jfrFile = Files.createTempFile("otel-ctx-attr", ".jfr");
-
-        profiler.execute(String.format("start,cpu=1ms,attributes=http.route,jfr,file=%s", jfrFile.toAbsolutePath()));
-        profilerStarted = true;
-
-        profiler.setContext(0x456L, 0x123L, 0L, 0x789L);
-
-        ThreadContext ctx = profiler.getThreadContext();
-        boolean result = ctx.setContextAttribute(0, "POST /api/orders");
-        assertTrue(result, "setContextAttribute should work");
     }
 
     /**
