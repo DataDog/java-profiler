@@ -283,15 +283,15 @@ public final class ThreadContext {
      */
     private static byte[] lookupLrs(long lrs) {
         int slot = Long.hashCode(lrs) & CACHE_MASK;
-        if (lrsCacheKeys[slot] == lrs && lrsCacheBytes[slot] != null) {
-            return lrsCacheBytes[slot];
+        byte[] utf8 = lrsCacheKeys[slot] == lrs ? lrsCacheBytes[slot] : null;
+        if (utf8 == null) {
+            utf8 = Long.toUnsignedString(lrs).getBytes(StandardCharsets.UTF_8);
+            // Write bytes BEFORE key — key acts as commit for concurrent readers.
+            // Fence ensures ARM cores see the bytes before the key that guards them.
+            lrsCacheBytes[slot] = utf8;
+            BUFFER_WRITER.storeFence();
+            lrsCacheKeys[slot] = lrs;
         }
-        byte[] utf8 = Long.toUnsignedString(lrs).getBytes(StandardCharsets.UTF_8);
-        // Write bytes BEFORE key — key acts as commit for concurrent readers.
-        // Fence ensures ARM cores see the bytes before the key that guards them.
-        lrsCacheBytes[slot] = utf8;
-        BUFFER_WRITER.storeFence();
-        lrsCacheKeys[slot] = lrs;
         return utf8;
     }
 
