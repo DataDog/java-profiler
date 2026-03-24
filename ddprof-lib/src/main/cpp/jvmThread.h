@@ -46,7 +46,11 @@ public:
     }
 
     static void* fromJavaThread(JNIEnv* env, jthread thread) {
-        return (void*)env->GetLongField(thread, _eetop);
+        if (_eetop != nullptr) {
+            return (void*)env->GetLongField(thread, _eetop);
+        } else {
+            return nullptr;
+        }
     }
 
     static inline jlong javaThreadId(JNIEnv* env, jthread thread) {

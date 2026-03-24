@@ -4,7 +4,6 @@
  */
 
 #include "jvmThread.h"
-
 #include "j9/j9Ext.h"
 
 pthread_key_t JVMThread::_thread_key = pthread_key_t(-1);
@@ -20,18 +19,18 @@ bool JVMThread::initialize() {
   for (int i = 0; i < 1024; i++) {
     if (pthread_getspecific((pthread_key_t)i) == current_thread) {
         _thread_key = pthread_key_t(i);
-        return true;
+        break;
     }
   }
 
   assert(_tid != nullptr);
-  assert(_eetop != nullptr);
+  assert(!VM::isHotspot() || _eetop != nullptr);
 
   if (VM::isHotspot()) {
     VMThread::initialize(current_thread);
   }
 
-  return false;
+  return true;
 }
 
 void* JVMThread::current_thread_slow() {
@@ -51,12 +50,12 @@ void* JVMThread::current_thread_slow() {
     if ((_eetop = env->GetFieldID(thread_class, "eetop", "J")) == NULL) {
        // No such field - probably not a HotSpot JVM
        env->ExceptionClear();
-       return nullptr;
     }
 
     if (VM::isOpenJ9()) {
       return J9Ext::j9thread_self();
     } else {
+      assert(_eetop != nullptr);
       return (void*)env->GetLongField(thread, _eetop);
     }
 }
