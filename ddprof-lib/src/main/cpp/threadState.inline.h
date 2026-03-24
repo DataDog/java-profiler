@@ -10,8 +10,10 @@
 #include <stdio.h>
 
 inline ExecutionMode getThreadExecutionMode() {
-  assert(!VM::isOpenJ9());
-
+  if (!VM::isHotspot()) {
+    return ExecutionMode::UNKNOWN;
+  }
+  
   VMThread* vm_thread =(VMThread*)JVMThread::current();
   // Not a JVM thread - native thread, e.g. thread launched by JNI code
   if (vm_thread == nullptr) {

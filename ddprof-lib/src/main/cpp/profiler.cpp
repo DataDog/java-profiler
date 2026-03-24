@@ -1147,12 +1147,10 @@ void Profiler::updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
   JitWriteProtection jit(true); // workaround for JDK-8262896
   jvmtiThreadInfo thread_info;
   int native_thread_id = -1;
-  
-
 
   if (self) {
     // if updating the current thread, use the native thread id from the
-    // ProfilerThread
+    // ProfilerThread, it is faster and safer.
     native_thread_id = ProfiledThread::currentTid();
     assert(native_thread_id != -1);
   } else {
