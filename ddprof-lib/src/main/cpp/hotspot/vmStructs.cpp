@@ -80,8 +80,6 @@ DECLARE_LONG_CONSTANTS_DO(INIT_LONG_CONSTANT, INIT_LONG_CONSTANT)
 #undef INIT_LONG_CONSTANT
 
 
-jfieldID VMStructs::_eetop;
-jfieldID VMStructs::_tid;
 jfieldID VMStructs::_klass = NULL;
 intptr_t VMStructs::_env_offset = -1;
 void* VMStructs::_java_thread_vtbl[6];
@@ -607,33 +605,13 @@ void VMStructs::checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni,
     jvmti->Deallocate((unsigned char *)method_name);
 }
 
-void* VMThread::init_and_get_current() {
-    jthread thread;
-    if (VM::jvmti()->GetCurrentThread(&thread) != JVMTI_ERROR_NONE) {
-        return nullptr;
-    }
-
-    JNIEnv* env = VM::jni();
-    jclass thread_class = env->FindClass("java/lang/Thread");
-    if (thread_class == NULL || (_tid = env->GetFieldID(thread_class, "tid", "J")) == NULL) {
-        env->ExceptionClear();
-        return nullptr;
-    }
-
-    // Get eetop field - a bridge from Java Thread to VMThread
-    if ((_eetop = env->GetFieldID(thread_class, "eetop", "J")) == NULL) {
-       // No such field - probably not a HotSpot JVM
-       env->ExceptionClear();
-       return nullptr;
-    }
-
-    VMThread* vm_thread = VMThread::fromJavaThread(env, thread);
+void VMThread::initialize(void* current) {
+    VMThread* vm_thread = VMThread::cast(current);
     assert(vm_thread != nullptr);
     _has_native_thread_id = _thread_osthread_offset >= 0 && _osthread_id_offset >= 0;
+    JNIEnv* env = VM::jni();
     _env_offset = (intptr_t)env - (intptr_t)vm_thread;
     memcpy(_java_thread_vtbl, vm_thread->vtable(), sizeof(_java_thread_vtbl));
-
-    return (void*)vm_thread;
 }
 
 VMThread* VMThread::current() {
@@ -641,9 +619,9 @@ VMThread* VMThread::current() {
 }
 
 int VMThread::nativeThreadId(JNIEnv* jni, jthread thread) {
-    assert(_has_native_thread_id);
+//    assert(_has_native_thread_id);
     if (_has_native_thread_id) {
-        VMThread* vm_thread = fromJavaThread(jni, thread);
+        VMThread* vm_thread = cast(JVMThread::fromJavaThread(jni, thread));
         return vm_thread != NULL ? vm_thread->osThreadId() : -1;
     }
     return -1;

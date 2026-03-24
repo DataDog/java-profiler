@@ -142,7 +142,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     ProfiledThread::release();
   } else {
     // ProfiledThread already cleaned up - try to get tid from JVMTI as fallback
-    tid = VMThread::nativeThreadId(jni, thread);
+    tid = JVMThread::native_thread_id(jni, thread);
     if (tid < 0) {
       // No ProfiledThread AND can't get tid from JVMTI - nothing we can do
       return;
@@ -1146,15 +1146,22 @@ void Profiler::updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                                 bool self) {
   JitWriteProtection jit(true); // workaround for JDK-8262896
   jvmtiThreadInfo thread_info;
-  int native_thread_id = VMThread::nativeThreadId(jni, thread);
-  if (native_thread_id < 0 && self) {
+  int native_thread_id = -1;
+  
+
+
+  if (self) {
     // if updating the current thread, use the native thread id from the
     // ProfilerThread
     native_thread_id = ProfiledThread::currentTid();
+    assert(native_thread_id != -1);
+  } else {
+    native_thread_id = JVMThread::native_thread_id(jni, thread);
   }
+
   if (native_thread_id >= 0 &&
-      jvmti->GetThreadInfo(thread, &thread_info) == 0) {
-    jlong java_thread_id = VMThread::javaThreadId(jni, thread);
+    jvmti->GetThreadInfo(thread, &thread_info) == 0) {
+    jlong java_thread_id = JVMThread::javaThreadId(jni, thread);
     _thread_info.set(native_thread_id, thread_info.name, java_thread_id);
     jvmti->Deallocate((unsigned char *)thread_info.name);
   }
@@ -1273,7 +1280,7 @@ Error Profiler::checkJvmCapabilities() {
     return Error("Could not find JVMThread bridge. Unsupported JVM?");
   }
 
-  if (VM::isHotspot() && !VMStructs::hasJavaThreadId()) {
+  if (!JVMThread::hasJavaThreadId()) {
     return Error("Could not find Thread ID field. Unsupported JVM?");
   }
 

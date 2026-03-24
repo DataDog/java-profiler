@@ -47,7 +47,6 @@ jvmtiError(JNICALL *VM::_orig_RetransformClasses)(jvmtiEnv *, jint,
                                                   const jclass *classes);
 
 void *VM::_libjvm;
-void *VM::_libjava;
 AsyncGetCallTrace VM::_asyncGetCallTrace;
 JVM_GetManagement VM::_getManagement;
 
@@ -492,12 +491,11 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
 void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
   Profiler::check_JDK_8313796_workaround();
   Profiler::setupSignalHandlers();
-  JVMThread::init_key();
+  JVMThread::initialize();
   if (isHotspot()) {
     JitWriteProtection jit(true);
     VMStructs::ready();
   }
-  _libjava = getLibraryHandle("libjava.so");
 }
 
 void VM::applyPatch(char *func, const char *patch, const char *end_patch) {

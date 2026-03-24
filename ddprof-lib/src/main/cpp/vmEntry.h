@@ -144,7 +144,6 @@ private:
 
 public:
   static void *_libjvm;
-  static void *_libjava;
   static AsyncGetCallTrace _asyncGetCallTrace;
   static JVM_GetManagement _getManagement;
 

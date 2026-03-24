@@ -351,8 +351,6 @@ class VMStructs {
 #undef DECLARE_LONG_CONSTANT_VAR
 
 
-    static jfieldID _eetop;
-    static jfieldID _tid;
     static jfieldID _klass;
     static intptr_t _env_offset;
     static void* _java_thread_vtbl[6];
@@ -441,10 +439,6 @@ class VMStructs {
 
     static bool hasNativeThreadId() {
         return _has_native_thread_id;
-    }
-
-    static bool hasJavaThreadId() {
-        return _tid != NULL;
     }
 
     static bool isInterpretedFrameValidFunc(const void* pc) {
@@ -696,18 +690,9 @@ enum JVMJavaThreadState {
 
 DECLARE(VMThread)
   public:
+    static void initialize(void* current);
+
     static inline VMThread* current();
-
-    static void* init_and_get_current();
-
-    static VMThread* fromJavaThread(JNIEnv* env, jthread thread) {
-        return VMThread::cast_raw((const void*)env->GetLongField(thread, _eetop));
-    }
-
-    static jlong javaThreadId(JNIEnv* env, jthread thread) {
-        return env->GetLongField(thread, _tid);
-    }
-
     static int nativeThreadId(JNIEnv* jni, jthread thread);
 
     int osThreadId();

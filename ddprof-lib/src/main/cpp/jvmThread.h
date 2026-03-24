@@ -20,6 +20,9 @@
 class JVMThread {
 private:
     static pthread_key_t _thread_key;
+    static jfieldID _tid;
+    static jfieldID _eetop;
+
 public:
     static bool is_initialized() {
         return _thread_key != pthread_key_t(-1);
@@ -29,18 +32,31 @@ public:
      * The initialization happens in early startup, in single-threaded mode,
      * no synchronization is needed
      */
-    static bool init_key();
+    static bool initialize();
     static inline void* current() {
         return pthread_getspecific(_thread_key);
     }
 
-    static pthread_key_t key() {
+    static inline pthread_key_t key() {
         return _thread_key;
     }
 
-    static int native_thread_id(JNIEnv* jni, jthread thread) {
+    static inline int native_thread_id(JNIEnv* jni, jthread thread) {
         return VM::isOpenJ9() ? J9Ext::GetOSThreadID(thread) : VMThread::nativeThreadId(jni, thread);
     }
+
+    static void* fromJavaThread(JNIEnv* env, jthread thread) {
+        return (void*)env->GetLongField(thread, _eetop);
+    }
+
+    static inline jlong javaThreadId(JNIEnv* env, jthread thread) {
+       return env->GetLongField(thread, _tid);
+    }
+
+    static inline bool hasJavaThreadId() {
+        return _tid != nullptr;
+    }
+
 private:
     static void* current_thread_slow();
 };
