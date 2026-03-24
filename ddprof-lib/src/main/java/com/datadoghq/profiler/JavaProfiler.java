@@ -206,13 +206,12 @@ public final class JavaProfiler {
         tlsContextStorage.get().put(0, 0, 0, 0);
     }
 
-    /**
-     * Sets a context value
-     * @param offset the offset
-     * @param value the encoding of the value. Must have been encoded via @see JavaProfiler#registerConstant
-     */
-    public void setContextValue(int offset, int value) {
-        tlsContextStorage.get().putCustom(offset, value);
+    public boolean setContextAttribute(int offset, String value) {
+        return tlsContextStorage.get().setContextAttribute(offset, value);
+    }
+
+    public void clearContextAttribute(int offset) {
+        tlsContextStorage.get().clearContextAttribute(offset);
     }
 
     void copyTags(int[] snapshot) {

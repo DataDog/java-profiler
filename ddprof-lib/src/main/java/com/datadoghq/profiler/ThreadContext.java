@@ -151,11 +151,18 @@ public final class ThreadContext {
         setContextDirect(localRootSpanId, spanId, traceIdHigh, traceIdLow);
     }
 
-    public void putCustom(int offset, int value) {
-        if (offset < 0 || offset >= MAX_CUSTOM_SLOTS) {
-            throw new IllegalArgumentException("Invalid offset: " + offset + " (max " + MAX_CUSTOM_SLOTS + ")");
+    /**
+     * Clears a custom attribute: zeros the sidecar encoding and removes it from OTEP attrs_data.
+     */
+    public void clearContextAttribute(int keyIndex) {
+        if (keyIndex < 0 || keyIndex >= MAX_CUSTOM_SLOTS) {
+            return;
         }
-        BUFFER_WRITER.writeOrderedInt(sidecarBuffer, offset * 4, value);
+        int otepKeyIndex = keyIndex + 1;
+        detach();
+        BUFFER_WRITER.writeOrderedInt(sidecarBuffer, keyIndex * 4, 0);
+        removeOtepAttribute(otepKeyIndex);
+        attach();
     }
 
     public void copyCustoms(int[] value) {
