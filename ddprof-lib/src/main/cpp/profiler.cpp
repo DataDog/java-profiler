@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <cassert>
 #include "profiler.h"
 #include "asyncSampleMutex.h"
 #include "context.h"
@@ -1429,11 +1430,10 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Minor optim: Register the current thread (start thread won't be called)
   if (_thread_filter.enabled()) {
     ProfiledThread *current = ProfiledThread::current();
-    if (current != nullptr) {
-      int slot_id = _thread_filter.registerThread();
-      current->setFilterSlotId(slot_id);
-      _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
-    }
+    assert(current != nullptr);
+    int slot_id = _thread_filter.registerThread();
+    current->setFilterSlotId(slot_id);
+    _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
   }
 
   _cpu_engine = selectCpuEngine(args);

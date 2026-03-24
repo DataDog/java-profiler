@@ -138,9 +138,7 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
   ProfiledThread *current = ProfiledThread::current();
-  if (unlikely(current == nullptr)) {
-    return;
-  }
+  assert(current != nullptr);
   int tid = current->tid();
   if (unlikely(tid < 0)) {
     return;
@@ -167,9 +165,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
   ProfiledThread *current = ProfiledThread::current();
-  if (unlikely(current == nullptr)) {
-    return;
-  }
+  assert(current != nullptr);
   int tid = current->tid();
   if (unlikely(tid < 0)) {
     return;
@@ -547,7 +543,7 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
 extern "C" DLLEXPORT jobjectArray JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_initializeOtelTls0(JNIEnv* env, jclass unused, jlongArray metadata) {
   ProfiledThread* thrd = ProfiledThread::current();
-  if (thrd == nullptr) return nullptr;
+  assert(thrd != nullptr);
 
   if (!thrd->isOtelContextInitialized()) {
     ContextApi::initializeOtelTls(thrd);

@@ -7,6 +7,7 @@
 #ifndef _WALLCLOCK_H
 #define _WALLCLOCK_H
 
+#include <cassert>
 #include "engine.h"
 #include "os.h"
 #include "profiler.h"
@@ -60,8 +61,8 @@ class BaseWallClock : public Engine {
       
       // We don't want to profile ourselves in wall time
       ProfiledThread* current = ProfiledThread::current();
-      if (current != nullptr) {
-        int slot_id = current->filterSlotId();
+      assert(current != nullptr);
+      int slot_id = current->filterSlotId();
         if (slot_id != -1) {
           thread_filter->remove(slot_id);
         }

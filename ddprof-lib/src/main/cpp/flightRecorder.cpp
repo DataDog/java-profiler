@@ -1455,7 +1455,7 @@ void Recording::writeUnwindFailures(Buffer *buf) {
   });
 }
 
-void Recording::writeContext(Buffer *buf, Context &context) {
+void Recording::writeContextSnapshot(Buffer *buf, Context &context) {
   buf->putVar64(context.spanId);
   buf->putVar64(context.rootSpanId);
 
@@ -1591,7 +1591,7 @@ void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
           ? ((event->_alloc._weight * event->_alloc._size) + event->_skipped) /
                 event->_alloc._size
           : 0);
-  writeContext(buf, event->_ctx);
+  writeContextSnapshot(buf, event->_ctx);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
