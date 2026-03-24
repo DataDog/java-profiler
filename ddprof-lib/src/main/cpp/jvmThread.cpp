@@ -5,6 +5,8 @@
 
 #include "jvmThread.h"
 
+#include "j9/j9Ext.h"
+
 pthread_key_t JVMThread::_thread_key = pthread_key_t(-1);
 jfieldID JVMThread::_tid = nullptr;
 jfieldID JVMThread::_eetop = nullptr;
@@ -52,5 +54,9 @@ void* JVMThread::current_thread_slow() {
        return nullptr;
     }
 
-    return (void*)env->GetLongField(thread, _eetop);
+    if (VM::isOpenJ9()) {
+      return J9Ext::j9thread_self();
+    } else {
+      return (void*)env->GetLongField(thread, _eetop);
+    }
 }
