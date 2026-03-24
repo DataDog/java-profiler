@@ -134,8 +134,7 @@ For benchmark data, see
 │    └─ bool _otel_ctx_initialized                                    │
 │                                                                     │
 │  OtelContexts (otel_context.cpp)                                    │
-│    ├─ getSpanId(record, &spanId) — acquire load of valid flag       │
-│    └─ setAttribute(record, key, value, len) — detach/compact/attach │
+│    └─ getSpanId(record, &spanId) — acquire load of valid flag       │
 │                                                                     │
 │  custom_labels_current_set_v2 (thread_local, DLLEXPORT)             │
 │    └─ OTEP #4947 TLS pointer for external profiler discovery        │
