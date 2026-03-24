@@ -65,7 +65,8 @@ DLLEXPORT extern thread_local OtelThreadContextRecord* custom_labels_current_set
  *
  * Each thread gets a pre-allocated OtelThreadContextRecord cached in
  * ProfiledThread. The TLS pointer custom_labels_current_set_v2 is set
- * to the record when context is active, or nullptr when inactive.
+ * permanently to the record during thread initialization and never nulled.
+ * Context activity is indicated solely by the valid flag in the record.
  *
  * Signal safety: signal handlers must never access
  * custom_labels_current_set_v2 directly (TLS lazy init can deadlock

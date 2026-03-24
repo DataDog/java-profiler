@@ -551,39 +551,36 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeOtelTls0(JNIEnv* env, jclass 
 
   OtelThreadContextRecord* record = thrd->getOtelContextRecord();
 
-  // Fill metadata[7]: [recordAddress, VALID_OFFSET, TRACE_ID_OFFSET,
-  //                    SPAN_ID_OFFSET, ATTRS_DATA_SIZE_OFFSET, ATTRS_DATA_OFFSET,
-  //                    LRS_SIDECAR_OFFSET]
-  if (metadata != nullptr && env->GetArrayLength(metadata) >= 7) {
-    jlong meta[7];
-    meta[0] = (jlong)(uintptr_t)record;
-    meta[1] = (jlong)offsetof(OtelThreadContextRecord, valid);
-    meta[2] = (jlong)offsetof(OtelThreadContextRecord, trace_id);
-    meta[3] = (jlong)offsetof(OtelThreadContextRecord, span_id);
-    meta[4] = (jlong)offsetof(OtelThreadContextRecord, attrs_data_size);
-    meta[5] = (jlong)offsetof(OtelThreadContextRecord, attrs_data);
-    meta[6] = (jlong)(DD_TAGS_CAPACITY * sizeof(u32)); // LRS sidecar offset in sidecar buffer
-    env->SetLongArrayRegion(metadata, 0, 7, meta);
+  // Fill metadata[6]: [VALID_OFFSET, TRACE_ID_OFFSET, SPAN_ID_OFFSET,
+  //                    ATTRS_DATA_SIZE_OFFSET, ATTRS_DATA_OFFSET, LRS_SIDECAR_OFFSET]
+  // Note: recordAddress is no longer needed — the TLS pointer is set permanently in
+  // initializeOtelTls() and is never written from Java.
+  if (metadata != nullptr && env->GetArrayLength(metadata) >= 6) {
+    jlong meta[6];
+    meta[0] = (jlong)offsetof(OtelThreadContextRecord, valid);
+    meta[1] = (jlong)offsetof(OtelThreadContextRecord, trace_id);
+    meta[2] = (jlong)offsetof(OtelThreadContextRecord, span_id);
+    meta[3] = (jlong)offsetof(OtelThreadContextRecord, attrs_data_size);
+    meta[4] = (jlong)offsetof(OtelThreadContextRecord, attrs_data);
+    meta[5] = (jlong)(DD_TAGS_CAPACITY * sizeof(u32)); // LRS sidecar offset in sidecar buffer
+    env->SetLongArrayRegion(metadata, 0, 6, meta);
   }
 
-  // Create 3 DirectByteBuffers: [record, tlsPtr, sidecar]
+  // Create 2 DirectByteBuffers: [record, sidecar]
+  // tlsPtrBuffer removed: custom_labels_current_set_v2 is set permanently by initializeOtelTls().
   jclass bbClass = env->FindClass("java/nio/ByteBuffer");
-  jobjectArray result = env->NewObjectArray(3, bbClass, nullptr);
+  jobjectArray result = env->NewObjectArray(2, bbClass, nullptr);
 
   // recordBuffer: 640 bytes over the OtelThreadContextRecord
   jobject recordBuf = env->NewDirectByteBuffer((void*)record, (jlong)OTEL_MAX_RECORD_SIZE);
   env->SetObjectArrayElement(result, 0, recordBuf);
-
-  // tlsPtrBuffer: 8 bytes over &custom_labels_current_set_v2
-  jobject tlsPtrBuf = env->NewDirectByteBuffer((void*)&custom_labels_current_set_v2, (jlong)sizeof(void*));
-  env->SetObjectArrayElement(result, 1, tlsPtrBuf);
 
   // sidecarBuffer: covers _otel_tag_encodings[DD_TAGS_CAPACITY] + _otel_local_root_span_id (contiguous)
   static_assert(DD_TAGS_CAPACITY * sizeof(u32) % alignof(u64) == 0,
       "tag encodings array size must be aligned to u64 for contiguous sidecar layout");
   size_t sidecarSize = DD_TAGS_CAPACITY * sizeof(u32) + sizeof(u64);
   jobject sidecarBuf = env->NewDirectByteBuffer((void*)thrd->getOtelTagEncodingsPtr(), (jlong)sidecarSize);
-  env->SetObjectArrayElement(result, 2, sidecarBuf);
+  env->SetObjectArrayElement(result, 1, sidecarBuf);
 
   return result;
 }

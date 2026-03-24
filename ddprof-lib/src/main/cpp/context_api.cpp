@@ -39,8 +39,11 @@ void ContextApi::shutdown() {
  */
 void ContextApi::initializeOtelTls(ProfiledThread* thrd) {
     SignalBlocker blocker;
-    // First access to custom_labels_current_set_v2 triggers TLS init
-    custom_labels_current_set_v2 = nullptr;
+    // Set the TLS pointer permanently to this thread's record.
+    // First access here triggers TLS slot initialization (needed on musl).
+    // The pointer remains stable for the thread's lifetime; external profilers
+    // rely solely on the valid flag for consistency, not pointer nullness.
+    custom_labels_current_set_v2 = thrd->getOtelContextRecord();
     thrd->markOtelContextInitialized();
 }
 

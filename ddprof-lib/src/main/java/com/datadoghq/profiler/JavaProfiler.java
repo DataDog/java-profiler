@@ -305,12 +305,12 @@ public final class JavaProfiler {
     }
 
     private static ThreadContext initializeThreadContext() {
-        long[] metadata = new long[7];
+        long[] metadata = new long[6];
         ByteBuffer[] buffers = initializeOtelTls0(metadata);
         if (buffers == null) {
             throw new IllegalStateException("Failed to initialize OTEL TLS — ProfiledThread not available");
         }
-        return new ThreadContext(buffers[0], buffers[1], buffers[2], metadata);
+        return new ThreadContext(buffers[0], buffers[1], metadata);
     }
 
     private static native boolean init0();
@@ -345,17 +345,17 @@ public final class JavaProfiler {
     private static native String getStatus0();
 
     /**
-     * Initializes OTEL TLS for the current thread and returns 3 DirectByteBuffers.
+     * Initializes OTEL TLS for the current thread and returns 2 DirectByteBuffers.
+     * Sets custom_labels_current_set_v2 permanently to the thread's OtelThreadContextRecord.
      *
      * @param metadata output array filled with:
-     *   [0] recordAddress — native pointer to OtelThreadContextRecord
-     *   [1] VALID_OFFSET — offset of 'valid' field in the record
-     *   [2] TRACE_ID_OFFSET — offset of 'trace_id' field in the record
-     *   [3] SPAN_ID_OFFSET — offset of 'span_id' field in the record
-     *   [4] ATTRS_DATA_SIZE_OFFSET — offset of 'attrs_data_size' field
-     *   [5] ATTRS_DATA_OFFSET — offset of 'attrs_data' field
-     *   [6] LRS_SIDECAR_OFFSET — offset of local_root_span_id in sidecar buffer
-     * @return array of 3 ByteBuffers: [recordBuffer, tlsPtrBuffer, sidecarBuffer]
+     *   [0] VALID_OFFSET — offset of 'valid' field in the record
+     *   [1] TRACE_ID_OFFSET — offset of 'trace_id' field in the record
+     *   [2] SPAN_ID_OFFSET — offset of 'span_id' field in the record
+     *   [3] ATTRS_DATA_SIZE_OFFSET — offset of 'attrs_data_size' field
+     *   [4] ATTRS_DATA_OFFSET — offset of 'attrs_data' field
+     *   [5] LRS_SIDECAR_OFFSET — offset of local_root_span_id in sidecar buffer
+     * @return array of 2 ByteBuffers: [recordBuffer, sidecarBuffer]
      */
     private static native ByteBuffer[] initializeOtelTls0(long[] metadata);
 

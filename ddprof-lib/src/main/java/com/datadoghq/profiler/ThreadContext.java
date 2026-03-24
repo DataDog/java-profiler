@@ -67,35 +67,29 @@ public final class ThreadContext {
     private final int lrsSidecarOffset; // localRootSpanId offset in sidecar
 
     private final ByteBuffer recordBuffer;   // 640 bytes, OtelThreadContextRecord
-    private final ByteBuffer tlsPtrBuffer;   // 8 bytes, &custom_labels_current_set_v2
     private final ByteBuffer sidecarBuffer;  // tag encodings + LRS
-    private final long recordAddress;        // for re-attach step
 
     /**
-     * Creates a ThreadContext from the three DirectByteBuffers returned by native initializeOtelTls0.
+     * Creates a ThreadContext from the two DirectByteBuffers returned by native initializeOtelTls0.
      *
      * @param recordBuffer 640-byte buffer over OtelThreadContextRecord
-     * @param tlsPtrBuffer 8-byte buffer over &amp;custom_labels_current_set_v2
      * @param sidecarBuffer buffer over tag encodings + local root span id
-     * @param metadata array with [recordAddress, VALID_OFFSET, TRACE_ID_OFFSET,
-     *                 SPAN_ID_OFFSET, ATTRS_DATA_SIZE_OFFSET, ATTRS_DATA_OFFSET,
-     *                 LRS_SIDECAR_OFFSET]
+     * @param metadata array with [VALID_OFFSET, TRACE_ID_OFFSET, SPAN_ID_OFFSET,
+     *                 ATTRS_DATA_SIZE_OFFSET, ATTRS_DATA_OFFSET, LRS_SIDECAR_OFFSET]
      */
-    public ThreadContext(ByteBuffer recordBuffer, ByteBuffer tlsPtrBuffer, ByteBuffer sidecarBuffer, long[] metadata) {
+    public ThreadContext(ByteBuffer recordBuffer, ByteBuffer sidecarBuffer, long[] metadata) {
         // Record buffer uses native order for uint16_t attrs_data_size (read by C as native uint16_t).
         // trace_id/span_id are uint8_t[] arrays requiring big-endian — handled via Long.reverseBytes()
         // in setContextDirect(). Only little-endian platforms are supported.
         this.recordBuffer = recordBuffer.order(ByteOrder.nativeOrder());
-        this.tlsPtrBuffer = tlsPtrBuffer.order(ByteOrder.nativeOrder());
         this.sidecarBuffer = sidecarBuffer.order(ByteOrder.nativeOrder());
-        this.recordAddress = metadata[0];
-        this.validOffset = (int) metadata[1];
-        this.traceIdOffset = (int) metadata[2];
-        this.spanIdOffset = (int) metadata[3];
-        this.attrsDataSizeOffset = (int) metadata[4];
-        this.attrsDataOffset = (int) metadata[5];
+        this.validOffset = (int) metadata[0];
+        this.traceIdOffset = (int) metadata[1];
+        this.spanIdOffset = (int) metadata[2];
+        this.attrsDataSizeOffset = (int) metadata[3];
+        this.attrsDataOffset = (int) metadata[4];
         this.maxAttrsDataSize = OTEL_MAX_RECORD_SIZE - this.attrsDataOffset;
-        this.lrsSidecarOffset = (int) metadata[6];
+        this.lrsSidecarOffset = (int) metadata[5];
         if (ByteOrder.nativeOrder() != ByteOrder.LITTLE_ENDIAN) {
             throw new UnsupportedOperationException(
                 "ByteBuffer context path requires little-endian platform");
@@ -109,7 +103,6 @@ public final class ThreadContext {
         this.sidecarBuffer.putLong(this.lrsSidecarOffset, 0);
         this.recordBuffer.put(this.validOffset, (byte) 0);
         this.recordBuffer.putShort(this.attrsDataSizeOffset, (short) 0);
-        this.tlsPtrBuffer.putLong(0, 0);
     }
 
     /**
@@ -297,21 +290,19 @@ public final class ThreadContext {
 
     // ---- OTEP record helpers (called between detach/attach) ----
 
-    /** Detach TLS pointer + invalidate record. Must be paired with attach(). */
+    /** Invalidate record. Must be paired with attach(). */
     private void detach() {
-        BUFFER_WRITER.writeOrderedLong(tlsPtrBuffer, 0, 0);
         recordBuffer.put(validOffset, (byte) 0);
         BUFFER_WRITER.storeFence();
     }
 
-    /** Validate record + re-attach TLS pointer. */
+    /** Validate record. */
     private void attach() {
         // storeFence ensures all record writes are visible before valid=1.
-        // The volatile TLS pointer write provides a release barrier that
-        // prevents valid=1 from being reordered past the pointer publication.
+        // The TLS pointer (custom_labels_current_set_v2) is permanent and never
+        // written here; external profilers rely solely on the valid flag.
         BUFFER_WRITER.storeFence();
         recordBuffer.put(validOffset, (byte) 1);
-        BUFFER_WRITER.writeVolatileLong(tlsPtrBuffer, 0, recordAddress);
     }
 
     /**
