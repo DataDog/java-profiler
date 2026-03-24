@@ -1467,12 +1467,12 @@ void Recording::writeContext(Buffer *buf, Context &context) {
 void Recording::writeCurrentContext(Buffer *buf) {
   u64 spanId = 0;
   u64 rootSpanId = 0;
-  ContextApi::get(spanId, rootSpanId);
+  bool hasContext = ContextApi::get(spanId, rootSpanId);
   buf->putVar64(spanId);
   buf->putVar64(rootSpanId);
 
   size_t numAttrs = Profiler::instance()->numContextAttributes();
-  ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+  ProfiledThread* thrd = hasContext ? ProfiledThread::currentSignalSafe() : nullptr;
   for (size_t i = 0; i < numAttrs; i++) {
     buf->putVar32(thrd != nullptr ? thrd->getOtelTagEncoding(i) : 0);
   }

@@ -4,7 +4,7 @@
 
 The Thread-Local Context (TLS Context) system provides a high-performance,
 signal-handler-safe mechanism for capturing distributed tracing context
-(trace IDs, span IDs, local root span IDs, and custom attributes) during
+(trace IDs, span IDs, and custom attributes) during
 profiling events. It enables the profiler to correlate performance samples
 with active traces.
 
@@ -14,8 +14,9 @@ sole context storage format. Java code writes tracing context into
 thread-local `DirectByteBuffer`s mapped to native structs. Two consumer
 paths read this context concurrently:
 
-1. **DD signal handler (SIGPROF)** — reads integer tag encodings from
-   a sidecar buffer and span/root-span IDs from the OTEL record.
+1. **DD signal handler (SIGPROF)** — reads integer tag encodings and
+   root-span ID from the sidecar buffer, and span ID from the OTEL record
+   (ignores trace ID)
 2. **External OTEP-compliant profilers** — discover the
    `custom_labels_current_set_v2` TLS symbol via ELF dynsym and read
    the `OtelThreadContextRecord` directly.
@@ -57,18 +58,18 @@ For benchmark data, see
 │                       Application Thread                            │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  Tracer calls ThreadContext.put(lrs, spanId, trHi, trLo)           │
+│  Tracer calls ThreadContext.put(lrs, spanId, trHi, trLo)            │
 │         │                                                           │
 │         ▼                                                           │
 │  ┌───────────────────────────────────────────────────────────────┐  │
 │  │  setContextDirect()                                           │  │
-│  │  1. writeOrderedLong(sidecarBuffer, lrsSidecarOffset, lrs)    │  │
-│  │  2. detach()  — TLS ptr ← 0, valid ← 0, storeFence          │  │
+│  │  1. detach()  — TLS ptr ← 0, valid ← 0, storeFence            │  │
+│  │  2. writeOrderedLong(sidecarBuffer, lrsSidecarOffset, lrs)    │  │
 │  │  3. recordBuffer.putLong(traceIdOffset, reverseBytes(trHi))   │  │
 │  │     recordBuffer.putLong(traceIdOffset+8, reverseBytes(trLo)) │  │
 │  │     recordBuffer.putLong(spanIdOffset, reverseBytes(spanId))  │  │
-│  │  4. replaceOtepAttribute(LRS, lrsUtf8)                       │  │
-│  │  5. attach() — storeFence, valid ← 1, volatile TLS ptr write │  │
+│  │  4. replaceOtepAttribute(LRS, lrsUtf8)                        │  │
+│  │  5. attach() — storeFence, valid ← 1, volatile TLS ptr write  │  │
 │  └───────────────────────────────────────────────────────────────┘  │
 │         │                                                           │
 │         ▼                                                           │
@@ -79,15 +80,15 @@ For benchmark data, see
 │  │ │ span_id[8]    (BE)   │       │  │ │ local_root_span_id(u64)││  │
 │  │ │ valid          (u8)  │       │  │ └────────────────────────┘│  │
 │  │ │ reserved       (u8)  │       │  └───────────────────────────┘  │
-│  │ │ attrs_data_size(u16) │       │                                 │
+│  │ │ attrs_data_size(u16) │       │         ▲ (DD signal handler)   │
 │  │ │ attrs_data[612]      │       │  ┌───────────────────────────┐  │
 │  │ └──────────────────────┘       │  │ TLS pointer (8B)          │  │
 │  └────────────────────────────────┘  │ &custom_labels_current_   │  │
-│         ▲                    ▲       │  set_v2                    │  │
+│         ▲                    ▲       │  set_v2                   │  │
 │         │                    │       └───────────────────────────┘  │
 │  DD signal handler     External OTEP                                │
-│  reads sidecar +       profiler reads                               │
-│  span/root IDs         full record via                              │
+│  reads span_id         profiler reads                               │
+│  from record           full record via                              │
 │                        TLS symbol                                   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -95,33 +96,33 @@ For benchmark data, see
 ### Component Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          Java Layer                                 │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  JavaProfiler                                                       │
+┌──────────────────────────────────────────────────────────────────────┐
+│                          Java Layer                                  │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  JavaProfiler                                                        │
 │    ├─ ThreadLocal<ThreadContext> tlsContextStorage                   │
-│    ├─ initializeOtelTls0(long[] metadata) → ByteBuffer[3]           │
-│    └─ registerConstant0(String value) → int encoding                │
-│                                                                     │
+│    ├─ initializeOtelTls0(long[] metadata) → ByteBuffer[3]            │
+│    └─ registerConstant0(String value) → int encoding                 │
+│                                                                      │
 │  ThreadContext (per thread)                                          │
 │    ├─ recordBuffer  (640B DirectByteBuffer → OtelThreadContextRecord)│
-│    ├─ tlsPtrBuffer  (8B DirectByteBuffer → &custom_labels_...v2)    │
-│    ├─ sidecarBuffer (DirectByteBuffer → tag encodings + LRS)        │
-│    ├─ put(lrs, spanId, trHi, trLo)  → setContextDirect()           │
-│    ├─ setContextAttribute(keyIdx, value) → setContextAttributeDirect│
-│    └─ Process-wide caches:                                          │
-│         ├─ attrCache[256]: String → {int encoding, byte[] utf8}     │
-│         └─ lrsCache[256]:  long   → byte[] decimalUtf8              │
-│                                                                     │
-│  BufferWriter (memory ordering abstraction)                         │
-│    ├─ BufferWriter8  (Java 8:  Unsafe)                              │
-│    │    ├─ putOrderedLong / putLongVolatile                         │
-│    │    └─ storeFence → Unsafe.storeFence()                         │
-│    └─ BufferWriter9  (Java 9+: VarHandle)                           │
-│         ├─ setRelease / setVolatile                                 │
-│         └─ storeFence → VarHandle.storeStoreFence()                 │
-└─────────────────────────────────────────────────────────────────────┘
+│    ├─ tlsPtrBuffer  (8B DirectByteBuffer → &custom_labels_...v2)     │
+│    ├─ sidecarBuffer (DirectByteBuffer → tag encodings + LRS)         │
+│    ├─ put(lrs, spanId, trHi, trLo)  → setContextDirect()             │
+│    ├─ setContextAttribute(keyIdx, value) → setContextAttributeDirect │
+│    └─ Process-wide caches:                                           │
+│         ├─ attrCache[256]: String → {int encoding, byte[] utf8}      │
+│         └─ lrsCache[256]:  long   → byte[] decimalUtf8               │
+│                                                                      │
+│  BufferWriter (memory ordering abstraction)                          │
+│    ├─ BufferWriter8  (Java 8:  Unsafe)                               │
+│    │    ├─ putOrderedLong / putLongVolatile                          │
+│    │    └─ storeFence → Unsafe.storeFence()                          │
+│    └─ BufferWriter9  (Java 9+: VarHandle)                            │
+│         ├─ setRelease / setVolatile                                  │
+│         └─ storeFence → VarHandle.storeStoreFence()                  │
+└──────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         Native Layer                                │
@@ -189,9 +190,9 @@ any string lookup.
 Each entry in `attrs_data` is encoded as:
 
 ```
-┌──────────────┬──────────────┬──────────────────────┐
+┌──────────────┬──────────────┬───────────────────────┐
 │ key_index(1) │ value_len(1) │ value_utf8[value_len] │
-└──────────────┴──────────────┴──────────────────────┘
+└──────────────┴──────────────┴───────────────────────┘
 ```
 
 - `key_index` 0 is reserved for the local root span ID (decimal string).
@@ -223,6 +224,7 @@ Time 0:  detach()
            storeFence()                            ← drain store buffer
 
 Time 1:  Mutate record fields
+           writeOrderedLong(sidecarBuffer, lrsSidecarOffset, lrs) ← update sidecar LRS
            recordBuffer.putLong(traceIdOffset, ...)
            recordBuffer.putLong(spanIdOffset, ...)
            replaceOtepAttribute(...)
@@ -242,11 +244,11 @@ Time 2:  attach()
 // flightRecorder.cpp — Recording::writeCurrentContext()
 void Recording::writeCurrentContext(Buffer *buf) {
     u64 spanId = 0, rootSpanId = 0;
-    ContextApi::get(spanId, rootSpanId);  // acquire-loads valid flag
+    bool hasContext = ContextApi::get(spanId, rootSpanId);  // acquire-loads valid flag
     buf->putVar64(spanId);
     buf->putVar64(rootSpanId);
 
-    ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+    ProfiledThread* thrd = hasContext ? ProfiledThread::currentSignalSafe() : nullptr;
     for (size_t i = 0; i < numAttrs; i++) {
         buf->putVar32(thrd != nullptr ? thrd->getOtelTagEncoding(i) : 0);
     }
@@ -287,12 +289,10 @@ published only after the record is fully written and `valid` is set.
 Even though the signal handler runs on the same thread as the writer,
 barriers are essential:
 
-1. **Compiler reordering** — the JIT may reorder stores. Without
-   barriers, `valid=1` could be emitted before the data fields.
-2. **CPU store buffer (ARM)** — ARM can reorder stores arbitrarily.
+1. **CPU store buffer (ARM)** — ARM can reorder stores arbitrarily.
    The signal handler interrupt frame may not see buffered stores without
    an explicit `DMB` instruction.
-3. **Cross-thread reads** — the external OTEP profiler reads from a
+2. **Cross-thread reads** — the external OTEP profiler reads from a
    different thread, requiring release/acquire pairing.
 
 ### Barrier Taxonomy
@@ -386,10 +386,10 @@ if (value.equals(attrCacheKeys[slot])) {
     encoding = attrCacheEncodings[slot];  // int read
     utf8 = attrCacheBytes[slot];          // ref read
 }
-// Write to sidecar (DD signal handler reads this)
-BUFFER_WRITER.writeOrderedInt(sidecarBuffer, keyIndex * 4, encoding);
-// Write to OTEP attrs_data (external profilers read this)
+// Both sidecar and OTEP attrs_data are written inside the detach/attach window
+// so a signal handler never sees a new sidecar encoding alongside old attrs_data.
 detach();
+BUFFER_WRITER.writeOrderedInt(sidecarBuffer, keyIndex * 4, encoding);
 replaceOtepAttribute(otepKeyIndex, utf8);
 attach();
 ```
@@ -414,6 +414,8 @@ reads context in bounded time (~15 ns) with no allocation:
    - Read `_otel_local_root_span_id` from sidecar.
 2. For each registered attribute:
    - `thrd->getOtelTagEncoding(i)` — direct u32 read from sidecar.
+   - Only read when `hasContext` is true; emits 0 otherwise, so tag
+     encodings are never emitted alongside a zero span ID.
 
 No dictionary lookup, no string comparison, no allocation. The
 encodings written to JFR events are resolved later during JFR parsing.
@@ -450,35 +452,47 @@ Full benchmark data and analysis:
 
 ## Testing
 
-### Unit Tests (C++)
-
-`ddprof-lib/src/test/cpp/context_sanity_ut.cpp`:
-
-- **BasicReadWrite** — verifies field read/write on `Context` struct.
-- **SequentialWriteReadCycles** — validates memory ordering across
-  multiple write/read cycles with explicit fences.
-- **TlsMechanism** — verifies TLS initialization and read-back via
-  `ProfiledThread`.
-
 ### Integration Tests (Java)
 
-`ddprof-test/src/test/java/`:
+`ddprof-test/src/test/java/com/datadoghq/profiler/ContextSanityTest.java`:
 
-- **Context wall clock** — validates context propagation through
-  profiling samples and JFR event correlation.
-- **Multi-threaded updates** — concurrent context updates from multiple
-  threads, validating thread-local isolation.
-- **OTEL context storage** — verifies the OTEP record is correctly
-  populated and attribute TLV encoding is correct.
+- **testBasicContextWriteRead** — verifies span/root-span ID round-trip
+  via `setContext` / `getThreadContext`.
+- **testSequentialContextUpdates**, **testRepeatedContextWrites** —
+  validates repeated writes with varying values.
+- **testZeroContext** — verifies `clearContext` zeros all fields.
+- **testThreadIsolation** — concurrent writes from multiple threads,
+  validating thread-local isolation.
+
+`ddprof-test/src/test/java/com/datadoghq/profiler/context/OtelContextStorageModeTest.java`:
+
+- **testOtelStorageModeContext** — context round-trips correctly in OTEL
+  storage mode with JFR event correlation.
+- **testOtelModeClearContext** — `clearContext` sets all OTEP fields to zero.
+- **testOtelModeCustomAttributes** — verifies attribute TLV encoding in
+  `attrs_data` via `setContextAttribute`.
+- **testOtelModeAttributeOverflow** — overflow of `attrs_data` is handled
+  gracefully (returns false, no crash).
+
+`ddprof-test/src/test/java/com/datadoghq/profiler/wallclock/ContextWallClockTest.java`:
+
+- **test** — validates context propagation through wall-clock profiling
+  samples and JFR event correlation across cstack modes.
+
+`ddprof-test/src/test/java/com/datadoghq/profiler/context/TagContextTest.java`:
+
+- **test** — validates integer tag/attribute context propagation through
+  profiling samples.
 
 ### JMH Benchmarks
 
-`ddprof-stresstest/src/jmh/java/.../ThreadContextBenchmark.java`:
+`ddprof-stresstest/src/jmh/java/com/datadoghq/profiler/stresstest/scenarios/throughput/ThreadContextBenchmark.java`:
 
 - Single-threaded: `setContextFull`, `setAttrCacheHit`, `spanLifecycle`,
   `clearContext`, `getContext`.
-- Multi-threaded: `@Threads(2)` and `@Threads(4)` variants for false
-  sharing detection.
+- Multi-threaded: `setContextFull_2t/4t`, `spanLifecycle_2t/4t` —
+  `@Threads(2)` and `@Threads(4)` variants to verify linear scaling
+  (absence of false sharing).
 
 ## OTEP References
 

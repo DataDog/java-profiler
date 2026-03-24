@@ -222,13 +222,11 @@ public final class ThreadContext {
             attrCacheKeys[slot] = value;
         }
 
-        // Write encoding to sidecar (DD signal handler reads this)
-        BUFFER_WRITER.writeOrderedInt(sidecarBuffer, keyIndex * 4, encoding);
-
-        // Write OTEP attrs_data entry (external profilers read this)
-        // otepKeyIndex is offset by 1: index 0 is reserved for LRS
+        // Write both sidecar and OTEP attrs_data inside the detach/attach window
+        // so a signal handler never sees a new sidecar encoding alongside old attrs_data.
         int otepKeyIndex = keyIndex + 1;
         detach();
+        BUFFER_WRITER.writeOrderedInt(sidecarBuffer, keyIndex * 4, encoding);
         boolean written = replaceOtepAttribute(otepKeyIndex, utf8);
         attach();
         return written;
