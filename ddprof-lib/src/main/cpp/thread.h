@@ -126,6 +126,7 @@ public:
     _pc = pc;
     _sp = sp;
     _span_id = span_id;
+    _otel_local_root_span_id = root_span_id;
     _recording_epoch = recording_epoch;
     return 0;
   }
