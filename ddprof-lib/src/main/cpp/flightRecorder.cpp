@@ -1456,25 +1456,11 @@ void Recording::writeUnwindFailures(Buffer *buf) {
 }
 
 void Recording::writeContext(Buffer *buf, Context &context) {
-  u64 spanId = 0;
-  u64 rootSpanId = 0;
-  u64 stored = context.checksum;
-  if (stored != 0) {
-    spanId = context.spanId;
-    rootSpanId = context.rootSpanId;
-    u64 computed = Contexts::checksum(spanId, rootSpanId);
-    if (stored != computed) {
-      TEST_LOG("Invalid context checksum: ctx=%p, tid=%d", &context, OS::threadId());
-      spanId = 0;
-      rootSpanId = 0;
-    }
-  }
-  buf->putVar64(spanId);
-  buf->putVar64(rootSpanId);
+  buf->putVar64(context.spanId);
+  buf->putVar64(context.rootSpanId);
 
   for (size_t i = 0; i < Profiler::instance()->numContextAttributes(); i++) {
-    Tag tag = context.get_tag(i);
-    buf->putVar32(tag.value);
+    buf->putVar32(context.get_tag(i).value);
   }
 }
 

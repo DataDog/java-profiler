@@ -18,7 +18,6 @@
 #define _CONTEXT_H
 
 #include "arch.h"
-#include "common.h"
 
 static const u32 DD_TAGS_CAPACITY = 10;
 
@@ -28,21 +27,11 @@ typedef struct {
 
 class alignas(DEFAULT_CACHE_LINE_SIZE) Context {
 public:
-  volatile u64 spanId;
-  volatile u64 rootSpanId;
-  volatile u64 checksum;
+  u64 spanId;
+  u64 rootSpanId;
   Tag tags[DD_TAGS_CAPACITY];
 
   Tag get_tag(int i) { return tags[i]; }
-};
-
-class Contexts {
-public:
-  static u64 checksum(u64 spanId, u64 rootSpanId) {
-    u64 swappedRootSpanId = ((rootSpanId & 0xFFFFFFFFULL) << 32) | (rootSpanId >> 32);
-    u64 computed = (spanId * KNUTH_MULTIPLICATIVE_CONSTANT) ^ (swappedRootSpanId * KNUTH_MULTIPLICATIVE_CONSTANT);
-    return computed == 0 ? 0xffffffffffffffffull : computed;
-  }
 };
 
 #endif /* _CONTEXT_H */

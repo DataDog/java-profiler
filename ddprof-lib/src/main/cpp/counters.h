@@ -41,7 +41,6 @@
   X(CONTEXT_STORAGE_PAGES, "context_storage_pages")                            \
   X(CONTEXT_BOUNDS_MISS_INITS, "context_bounds_miss_inits")                    \
   X(CONTEXT_BOUNDS_MISS_GETS, "context_bounds_miss_gets")                      \
-  X(CONTEXT_CHECKSUM_REJECT_GETS, "context_checksum_reject_gets")              \
   X(CONTEXT_NULL_PAGE_GETS, "context_null_page_gets")                          \
   X(CONTEXT_ALLOC_FAILS, "context_alloc_fails")                                \
   X(CALLTRACE_STORAGE_BYTES, "calltrace_storage_bytes")                        \

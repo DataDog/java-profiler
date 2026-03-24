@@ -59,8 +59,8 @@ public:
     /**
      * Snapshot the current thread's context into a Context struct.
      *
-     * Populates a Context with spanId, rootSpanId (from sidecar),
-     * checksum, and tag encodings (from sidecar) so that writeContext()
+     * Populates a Context with spanId, rootSpanId (from sidecar)
+     * and tag encodings (from sidecar) so that writeContext()
      * works for both live and deferred event paths.
      *
      * @return A Context struct representing the current thread's context
