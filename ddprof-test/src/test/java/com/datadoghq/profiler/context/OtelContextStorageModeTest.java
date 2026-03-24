@@ -147,4 +147,91 @@ public class OtelContextStorageModeTest {
         // Short values should still work for remaining slots
         assertTrue(ctx.setContextAttribute(3, "short"), "Short attr after overflow should work");
     }
+
+    @Test
+    public void testMaxValueContext() {
+        long maxValue = Long.MAX_VALUE;
+        profiler.setContext(maxValue, maxValue, 0, maxValue);
+
+        ThreadContext ctx = profiler.getThreadContext();
+        assertEquals(maxValue, ctx.getSpanId(), "SpanId should be MAX_VALUE");
+        assertEquals(maxValue, ctx.getRootSpanId(), "RootSpanId should be MAX_VALUE");
+    }
+
+    @Test
+    public void testSequentialContextUpdates() {
+        profiler.setContext(2L, 1L, 0, 1L);
+        assertEquals(1L, profiler.getThreadContext().getSpanId());
+        assertEquals(2L, profiler.getThreadContext().getRootSpanId());
+
+        profiler.setContext(20L, 10L, 0, 10L);
+        assertEquals(10L, profiler.getThreadContext().getSpanId());
+        assertEquals(20L, profiler.getThreadContext().getRootSpanId());
+
+        profiler.setContext(200L, 100L, 0, 100L);
+        assertEquals(100L, profiler.getThreadContext().getSpanId());
+        assertEquals(200L, profiler.getThreadContext().getRootSpanId());
+    }
+
+    @Test
+    public void testRepeatedContextWrites() {
+        for (int i = 1; i <= 1000; i++) {
+            long spanId = i * 2L;
+            long rootSpanId = i * 2L + 1;
+            profiler.setContext(rootSpanId, spanId, 0, spanId);
+            assertEquals(spanId, profiler.getThreadContext().getSpanId(), "SpanId mismatch at iteration " + i);
+            assertEquals(rootSpanId, profiler.getThreadContext().getRootSpanId(), "RootSpanId mismatch at iteration " + i);
+        }
+    }
+
+    @Test
+    public void testNestedContextUpdates() {
+        profiler.setContext(100L, 100L, 0, 100L);
+        assertEquals(100L, profiler.getThreadContext().getSpanId());
+        assertEquals(100L, profiler.getThreadContext().getRootSpanId());
+
+        profiler.setContext(200L, 200L, 0, 200L);
+        assertEquals(200L, profiler.getThreadContext().getSpanId());
+        assertEquals(200L, profiler.getThreadContext().getRootSpanId());
+
+        profiler.setContext(350L, 400L, 0, 400L);
+        assertEquals(400L, profiler.getThreadContext().getSpanId());
+        assertEquals(350L, profiler.getThreadContext().getRootSpanId());
+
+        profiler.clearContext();
+        assertEquals(0L, profiler.getThreadContext().getSpanId());
+        assertEquals(0L, profiler.getThreadContext().getRootSpanId());
+    }
+
+    @Test
+    public void testThreadIsolation() throws InterruptedException {
+        long threadASpanId = 1000L;
+        long threadARootSpanId = 1001L;
+        profiler.setContext(threadARootSpanId, threadASpanId, 0, threadASpanId);
+        assertEquals(threadASpanId, profiler.getThreadContext().getSpanId());
+        assertEquals(threadARootSpanId, profiler.getThreadContext().getRootSpanId());
+
+        final long threadBSpanId = 2000L;
+        final long threadBRootSpanId = 2001L;
+        final AssertionError[] threadBError = {null};
+
+        Thread threadB = new Thread(() -> {
+            try {
+                profiler.setContext(threadBRootSpanId, threadBSpanId, 0, threadBSpanId);
+                assertEquals(threadBSpanId, profiler.getThreadContext().getSpanId());
+                assertEquals(threadBRootSpanId, profiler.getThreadContext().getRootSpanId());
+            } catch (AssertionError e) {
+                threadBError[0] = e;
+            }
+        }, "TestThread-B");
+
+        threadB.start();
+        threadB.join();
+
+        if (threadBError[0] != null) throw threadBError[0];
+
+        // Thread A's context must be unaffected
+        assertEquals(threadASpanId, profiler.getThreadContext().getSpanId());
+        assertEquals(threadARootSpanId, profiler.getThreadContext().getRootSpanId());
+    }
 }
