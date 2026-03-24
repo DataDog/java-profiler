@@ -77,7 +77,7 @@ public:
     /**
      * Read span_id from a record pointer (signal-safe).
      * Checks the valid flag with acquire semantics before reading.
-     * Returns false if the record is null or invalid (being mutated).
+     * Returns false if the record is invalid (being mutated). record must not be null.
      */
     static bool getSpanId(OtelThreadContextRecord* record, u64& span_id);
 

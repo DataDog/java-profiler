@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <cassert>
 #include "otel_context.h"
 #include "thread.h"
 
@@ -36,9 +37,7 @@ u64 OtelContexts::bytesToU64(const uint8_t* in) {
 }
 
 bool OtelContexts::getSpanId(OtelThreadContextRecord* record, u64& span_id) {
-    if (record == nullptr) {
-        return false;
-    }
+    assert(record != nullptr);
     if (__atomic_load_n(&record->valid, __ATOMIC_ACQUIRE) != 1) {
         return false;
     }
