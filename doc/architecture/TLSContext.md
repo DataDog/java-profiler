@@ -37,9 +37,9 @@ For benchmark data, see
 2. **Signal Handler Safety** — all signal-handler reads use lock-free
    atomic loads with acquire semantics; no allocation, no locks, no
    syscalls.
-3. **Detach/Attach Publication Protocol** — a `valid` flag and TLS
-   pointer are cleared before mutation and restored after, with
-   `storeFence` barriers between steps.
+3. **Detach/Attach Publication Protocol** — the `valid` flag is cleared
+   before mutation and set after, with `storeFence` barriers between
+   steps. The TLS pointer is set permanently at thread init.
 4. **Two-Phase Attribute Registration** — string attribute values are
    registered in the native Dictionary once via JNI; subsequent uses
    are zero-JNI ByteBuffer writes from a per-process encoding cache.
@@ -63,13 +63,13 @@ For benchmark data, see
 │         ▼                                                           │
 │  ┌───────────────────────────────────────────────────────────────┐  │
 │  │  setContextDirect()                                           │  │
-│  │  1. detach()  — TLS ptr ← 0, valid ← 0, storeFence            │  │
+│  │  1. detach()  — valid ← 0, storeFence                         │  │
 │  │  2. writeOrderedLong(sidecarBuffer, lrsSidecarOffset, lrs)    │  │
 │  │  3. recordBuffer.putLong(traceIdOffset, reverseBytes(trHi))   │  │
 │  │     recordBuffer.putLong(traceIdOffset+8, reverseBytes(trLo)) │  │
 │  │     recordBuffer.putLong(spanIdOffset, reverseBytes(spanId))  │  │
 │  │  4. replaceOtepAttribute(LRS, lrsUtf8)                        │  │
-│  │  5. attach() — storeFence, valid ← 1, volatile TLS ptr write  │  │
+│  │  5. attach() — storeFence, valid ← 1                          │  │
 │  └───────────────────────────────────────────────────────────────┘  │
 │         │                                                           │
 │         ▼                                                           │
@@ -102,12 +102,11 @@ For benchmark data, see
 │                                                                      │
 │  JavaProfiler                                                        │
 │    ├─ ThreadLocal<ThreadContext> tlsContextStorage                   │
-│    ├─ initializeOtelTls0(long[] metadata) → ByteBuffer[3]            │
+│    ├─ initializeOtelTls0(long[] metadata) → ByteBuffer[2]            │
 │    └─ registerConstant0(String value) → int encoding                 │
 │                                                                      │
 │  ThreadContext (per thread)                                          │
 │    ├─ recordBuffer  (640B DirectByteBuffer → OtelThreadContextRecord)│
-│    ├─ tlsPtrBuffer  (8B DirectByteBuffer → &custom_labels_...v2)     │
 │    ├─ sidecarBuffer (DirectByteBuffer → tag encodings + LRS)         │
 │    ├─ put(lrs, spanId, trHi, trLo)  → setContextDirect()             │
 │    ├─ setContextAttribute(keyIdx, value) → setContextAttributeDirect │
@@ -219,7 +218,6 @@ a partially-written record.
 Java writer timeline:
 ──────────────────────────────────────────────────────────────────
 Time 0:  detach()
-           writeOrderedLong(tlsPtrBuffer, 0, 0)   ← null TLS ptr
            recordBuffer.put(validOffset, 0)        ← mark invalid
            storeFence()                            ← drain store buffer
 
@@ -234,7 +232,6 @@ Time 1:  Mutate record fields
 Time 2:  attach()
            storeFence()                            ← ensure writes visible
            recordBuffer.put(validOffset, 1)        ← mark valid
-           writeVolatileLong(tlsPtrBuffer, 0, addr) ← publish TLS ptr
 ──────────────────────────────────────────────────────────────────
 ```
 
@@ -274,13 +271,10 @@ as 1.
 External profilers follow the OTEP #4947 protocol:
 
 1. Discover `custom_labels_current_set_v2` via ELF `dlsym`.
-2. Read the `OtelThreadContextRecord*` pointer. If null, the thread has
-   no active context.
+2. Read the `OtelThreadContextRecord*` pointer. The pointer is set
+   permanently at thread init and is never null after that point.
 3. Check `valid == 1`. If not, the record is being updated — skip.
 4. Read `trace_id`, `span_id`, `attrs_data` from the record.
-
-The volatile TLS pointer write in `attach()` ensures the pointer is
-published only after the record is fully written and `valid` is set.
 
 ## Memory Ordering
 
@@ -300,7 +294,6 @@ barriers are essential:
 | Operation | Java 8 | Java 9+ | ARM | x86 |
 |-----------|--------|---------|-----|-----|
 | `writeOrderedLong` | `Unsafe.putOrderedLong` | `VarHandle.setRelease` | STR + DMB ISHST | MOV + compiler barrier |
-| `writeVolatileLong` | `Unsafe.putLongVolatile` | `VarHandle.setVolatile` | DMB ISH + STR + DMB ISH | LOCK MOV or MFENCE |
 | `storeFence` | `Unsafe.storeFence` | `VarHandle.storeStoreFence` | DMB ISHST (~2 ns) | compiler barrier (free) |
 
 On x86, `storeFence` compiles to a no-op at the hardware level (TSO
@@ -310,9 +303,9 @@ ARM, it compiles to `DMB ISHST` (~2 ns).
 ### Why storeFence, Not fullFence
 
 The detach/attach protocol only needs store-store ordering — all
-operations are writes (to the record, to the valid flag, to the TLS
-pointer). There are no load-dependent ordering requirements on the
-writer side. `storeFence` costs ~2 ns on ARM vs ~50 ns for `fullFence`.
+operations are writes (to the record and the valid flag). There are no
+load-dependent ordering requirements on the writer side. `storeFence`
+costs ~2 ns on ARM vs ~50 ns for `fullFence`.
 
 ## Initialization
 
@@ -322,21 +315,21 @@ When a thread first accesses its `ThreadContext` via the `ThreadLocal`:
 
 ```java
 // JavaProfiler.initializeThreadContext()
-long[] metadata = new long[7];
+long[] metadata = new long[6];
 ByteBuffer[] buffers = initializeOtelTls0(metadata);
-return new ThreadContext(buffers[0], buffers[1], buffers[2], metadata);
+return new ThreadContext(buffers[0], buffers[1], metadata);
 ```
 
 The native `initializeOtelTls0` (in `javaApi.cpp`):
 
 1. Gets the calling thread's `ProfiledThread` (creates one if needed).
-2. Zeroes the `OtelThreadContextRecord` and marks it initialized.
+2. Sets `custom_labels_current_set_v2` permanently to the thread's
+   `OtelThreadContextRecord` (triggering TLS slot init on musl).
 3. Fills the `metadata` array with field offsets (computed via
    `offsetof`), so Java code writes to the correct positions regardless
    of struct packing changes.
-4. Creates three `DirectByteBuffer`s mapped to:
+4. Creates two `DirectByteBuffer`s mapped to:
    - `_otel_ctx_record` (640 bytes)
-   - `&custom_labels_current_set_v2` (8 bytes)
    - `_otel_tag_encodings` + `_otel_local_root_span_id` (48 bytes)
 5. Returns the buffer array.
 
