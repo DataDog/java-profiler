@@ -86,9 +86,9 @@ void ContextApi::registerAttributeKeys(const char** keys, int count) {
     }
 
     // Build NULL-terminated key array for the process context config.
-    // Index 0 is reserved for local_root_span_id; user keys start at index 1.
+    // Index LOCAL_ROOT_SPAN_ATTR_INDEX (0) is reserved for local_root_span_id; user keys start at index 1.
     const char* key_ptrs[MAX_ATTRIBUTE_KEYS + 2]; // +1 reserved, +1 null
-    key_ptrs[0] = "dd.local_root_span_id";
+    key_ptrs[LOCAL_ROOT_SPAN_ATTR_INDEX] = "datadog.local_root_span_id";
     for (int i = 0; i < _attribute_key_count; i++) {
         key_ptrs[i + 1] = _attribute_keys[i];
     }
