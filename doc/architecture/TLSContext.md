@@ -447,25 +447,20 @@ Full benchmark data and analysis:
 
 ### Integration Tests (Java)
 
-`ddprof-test/src/test/java/com/datadoghq/profiler/ContextSanityTest.java`:
-
-- **testBasicContextWriteRead** — verifies span/root-span ID round-trip
-  via `setContext` / `getThreadContext`.
-- **testSequentialContextUpdates**, **testRepeatedContextWrites** —
-  validates repeated writes with varying values.
-- **testZeroContext** — verifies `clearContext` zeros all fields.
-- **testThreadIsolation** — concurrent writes from multiple threads,
-  validating thread-local isolation.
-
 `ddprof-test/src/test/java/com/datadoghq/profiler/context/OtelContextStorageModeTest.java`:
 
-- **testOtelStorageModeContext** — context round-trips correctly in OTEL
-  storage mode with JFR event correlation.
+- **testOtelStorageModeContext** — context round-trips correctly with JFR running.
 - **testOtelModeClearContext** — `clearContext` sets all OTEP fields to zero.
 - **testOtelModeCustomAttributes** — verifies attribute TLV encoding in
   `attrs_data` via `setContextAttribute`.
 - **testOtelModeAttributeOverflow** — overflow of `attrs_data` is handled
   gracefully (returns false, no crash).
+- **testMaxValueContext** — `Long.MAX_VALUE` round-trips correctly.
+- **testSequentialContextUpdates**, **testRepeatedContextWrites** —
+  repeated writes with varying values.
+- **testNestedContextUpdates** — nested set/clear sequence.
+- **testThreadIsolation** — concurrent writes from multiple threads,
+  validating thread-local isolation.
 
 `ddprof-test/src/test/java/com/datadoghq/profiler/wallclock/ContextWallClockTest.java`:
 
