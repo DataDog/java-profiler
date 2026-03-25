@@ -6,9 +6,28 @@
 
 #include "hotspot/vmStructs.h"
 #include "jvmThread.h"
+
 VMThread* VMThread::current() {
-    void* current = JVMThread::current();
-    return VMThread::cast(current);
+    return VMThread::cast(JVMThread::current());
+}
+
+VMThread* VMThread::fromJavaThread(JNIEnv* env, jthread thread) {
+    assert(_eetop != nullptr);
+    if (_eetop != nullptr) {
+        void* thr = (void*)env->GetLongField(thread, _eetop);
+        return VMThread::cast(thr);
+    } else {
+        return nullptr;
+    }
+}
+
+int VMThread::nativeThreadId(JNIEnv* jni, jthread thread) {
+//    assert(_has_native_thread_id);
+    if (_has_native_thread_id) {
+        VMThread* vm_thread = fromJavaThread(jni, thread);
+        return vm_thread != NULL ? vm_thread->osThreadId() : -1;
+    }
+    return -1;
 }
 
 VMNMethod* VMMethod::code() {

@@ -4,6 +4,7 @@
  */
 
 #include "jvmThread.h"
+#include "hotspot/vmStructs.inline.h"
 #include "j9/j9Ext.h"
 
 pthread_key_t JVMThread::_thread_key = pthread_key_t(-1);
@@ -22,15 +23,12 @@ bool JVMThread::initialize() {
         break;
     }
   }
-
   assert(_tid != nullptr);
-  assert(!VM::isHotspot() || _eetop != nullptr);
-
-  if (VM::isHotspot()) {
-    VMThread::initialize(current_thread);
-  }
-
   return true;
+}
+
+int JVMThread::native_thread_id(JNIEnv* jni, jthread thread) {
+    return VM::isOpenJ9() ? J9Ext::GetOSThreadID(thread) : VMThread::nativeThreadId(jni, thread);
 }
 
 void* JVMThread::current_thread_slow() {
@@ -46,16 +44,9 @@ void* JVMThread::current_thread_slow() {
         return nullptr;
     }
 
-    // Get eetop field - a bridge from Java Thread to VMThread
-    if ((_eetop = env->GetFieldID(thread_class, "eetop", "J")) == NULL) {
-       // No such field - probably not a HotSpot JVM
-       env->ExceptionClear();
-    }
-
     if (VM::isOpenJ9()) {
       return J9Ext::j9thread_self();
     } else {
-      assert(_eetop != nullptr);
-      return (void*)env->GetLongField(thread, _eetop);
+      return VMThread::initialize(thread);
     }
 }

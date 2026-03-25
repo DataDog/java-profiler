@@ -41,17 +41,7 @@ public:
         return _thread_key;
     }
 
-    static inline int native_thread_id(JNIEnv* jni, jthread thread) {
-        return VM::isOpenJ9() ? J9Ext::GetOSThreadID(thread) : VMThread::nativeThreadId(jni, thread);
-    }
-
-    static void* fromJavaThread(JNIEnv* env, jthread thread) {
-        if (_eetop != nullptr) {
-            return (void*)env->GetLongField(thread, _eetop);
-        } else {
-            return nullptr;
-        }
-    }
+    static int native_thread_id(JNIEnv* jni, jthread thread);
 
     static inline jlong javaThreadId(JNIEnv* env, jthread thread) {
        return env->GetLongField(thread, _tid);

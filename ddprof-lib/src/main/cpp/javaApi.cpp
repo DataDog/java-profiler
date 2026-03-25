@@ -22,13 +22,13 @@
 #include "common.h"
 #include "engine.h"
 #include "incbin.h"
+#include "jvmThread.h"
 #include "os.h"
 #include "otel_process_ctx.h"
 #include "profiler.h"
 #include "thread.h"
 #include "tsc.h"
 #include "vmEntry.h"
-#include "hotspot/vmStructs.h"
 #include "wallClock.h"
 #include <errno.h>
 #include <fstream>
@@ -296,7 +296,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   if (tid < 0) {
     return;
   }
-  int origin_tid = VMThread::nativeThreadId(env, origin);
+  int origin_tid = JVMThread::native_thread_id(env, origin);
   if (origin_tid < 0) {
     return;
   }

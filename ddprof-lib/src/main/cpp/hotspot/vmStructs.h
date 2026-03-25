@@ -351,6 +351,7 @@ class VMStructs {
 #undef DECLARE_LONG_CONSTANT_VAR
 
 
+    static jfieldID _eetop;
     static jfieldID _klass;
     static intptr_t _env_offset;
     static void* _java_thread_vtbl[6];
@@ -690,13 +691,13 @@ enum JVMJavaThreadState {
 
 DECLARE(VMThread)
   public:
-    static void initialize(void* current);
+    static void* initialize(jthread thread);
 
     static inline VMThread* current();
-    static int nativeThreadId(JNIEnv* jni, jthread thread);
+    static inline int nativeThreadId(JNIEnv* jni, jthread thread);
+    static inline VMThread* fromJavaThread(JNIEnv* env, jthread thread);
 
     int osThreadId();
-
     JNIEnv* jni();
 
     const void** vtable() {
