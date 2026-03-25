@@ -33,12 +33,6 @@ class ProfiledThread;
 class ContextApi {
 public:
     /**
-     * Shutdown context storage.
-     * Releases resources allocated during initialization.
-     */
-    static void shutdown();
-
-    /**
      * Initialize OTel TLS for the given thread on first use.
      * Must be called with signals blocked (SignalBlocker).
      */
@@ -76,17 +70,8 @@ public:
      */
     static void registerAttributeKeys(const char** keys, int count);
 
-    static const int MAX_ATTRIBUTE_KEYS = 32;
-
     // Reserved attribute index for local root span ID in OTEL attrs_data.
     static const uint8_t LOCAL_ROOT_SPAN_ATTR_INDEX = 0;
-
-private:
-    static char* _attribute_keys[MAX_ATTRIBUTE_KEYS];
-    static int _attribute_key_count;
-
-    // Free registered attribute keys (shared by shutdown() and registerAttributeKeys())
-    static void freeAttributeKeys();
 };
 
 #endif /* _CONTEXT_API_H */

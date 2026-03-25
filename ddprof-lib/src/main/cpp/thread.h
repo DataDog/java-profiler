@@ -228,13 +228,9 @@ public:
 
   // OTEL JFR tag encoding sidecar — populated by JNI thread, read by signal handler
   inline u32* getOtelTagEncodingsPtr() { return _otel_tag_encodings; }
-  inline void setOtelTagEncoding(u32 idx, u32 val) {
-    if (idx < DD_TAGS_CAPACITY) _otel_tag_encodings[idx] = val;
-  }
   inline u32 getOtelTagEncoding(u32 idx) const {
     return idx < DD_TAGS_CAPACITY ? _otel_tag_encodings[idx] : 0;
   }
-  inline void setOtelLocalRootSpanId(u64 id) { _otel_local_root_span_id = id; }
   inline u64 getOtelLocalRootSpanId() const { return _otel_local_root_span_id; }
 
   inline void clearOtelSidecar() {

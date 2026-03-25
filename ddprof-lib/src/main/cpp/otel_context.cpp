@@ -21,13 +21,6 @@
 // OTEP #4947 TLS pointer — visible in dynsym for external profiler discovery
 DLLEXPORT thread_local OtelThreadContextRecord* custom_labels_current_set_v2 = nullptr;
 
-void OtelContexts::u64ToBytes(u64 val, uint8_t* out) {
-    for (int i = 7; i >= 0; i--) {
-        out[i] = val & 0xFF;
-        val >>= 8;
-    }
-}
-
 u64 OtelContexts::bytesToU64(const uint8_t* in) {
     u64 val = 0;
     for (int i = 0; i < 8; i++) {

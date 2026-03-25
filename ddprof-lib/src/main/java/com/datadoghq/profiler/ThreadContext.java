@@ -411,6 +411,21 @@ public final class ThreadContext {
         return null;
     }
 
+    /**
+     * Reads the trace ID from the OTEP record as a 32-char lowercase hex string.
+     * The trace ID is stored big-endian; this method returns it as-is.
+     * Intended for tests only.
+     */
+    public String readTraceId() {
+        StringBuilder sb = new StringBuilder(32);
+        for (int i = 0; i < 16; i++) {
+            int b = recordBuffer.get(traceIdOffset + i) & 0xFF;
+            sb.append(HEX_DIGITS[b >> 4]);
+            sb.append(HEX_DIGITS[b & 0xF]);
+        }
+        return sb.toString();
+    }
+
     private static native int registerConstant0(String value);
     private static native long[] getContext0();
 }

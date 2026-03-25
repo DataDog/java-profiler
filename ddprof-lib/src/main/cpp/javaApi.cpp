@@ -567,7 +567,6 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeOtelTls0(JNIEnv* env, jclass 
   }
 
   // Create 2 DirectByteBuffers: [record, sidecar]
-  // tlsPtrBuffer removed: custom_labels_current_set_v2 is set permanently by initializeOtelTls().
   jclass bbClass = env->FindClass("java/nio/ByteBuffer");
   jobjectArray result = env->NewObjectArray(2, bbClass, nullptr);
 
@@ -595,38 +594,27 @@ Java_com_datadoghq_profiler_ThreadContext_registerConstant0(JNIEnv* env, jclass 
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_OTelContext_registerAttributeKeys0(JNIEnv* env, jclass unused, jobjectArray keys) {
-  if (keys == nullptr) {
-    return;
-  }
-  int count = env->GetArrayLength(keys);
-  if (count <= 0) {
-    return;
-  }
-  if (count > ContextApi::MAX_ATTRIBUTE_KEYS) {
-    count = ContextApi::MAX_ATTRIBUTE_KEYS;
-  }
+  int count = (keys != nullptr) ? env->GetArrayLength(keys) : 0;
+  int n = count < (int)DD_TAGS_CAPACITY ? count : (int)DD_TAGS_CAPACITY;
 
-  const char* key_ptrs[ContextApi::MAX_ATTRIBUTE_KEYS];
-  JniString* jni_strings[ContextApi::MAX_ATTRIBUTE_KEYS];
+  const char* key_ptrs[DD_TAGS_CAPACITY];
+  JniString* jni_strings[DD_TAGS_CAPACITY];
 
-  for (int i = 0; i < count; i++) {
+  for (int i = 0; i < n; i++) {
     jstring jstr = (jstring)env->GetObjectArrayElement(keys, i);
     if (jstr == nullptr) {
-      // Clean up already-allocated strings and bail
-      for (int j = 0; j < i; j++) {
-        delete jni_strings[j];
-      }
+      for (int j = 0; j < i; j++) delete jni_strings[j];
       return;
     }
     jni_strings[i] = new JniString(env, jstr);
     key_ptrs[i] = jni_strings[i]->c_str();
   }
 
-  ContextApi::registerAttributeKeys(key_ptrs, count);
+  // Always call registerAttributeKeys even with n==0 so the reserved
+  // datadog.local_root_span_id key (index 0) is published in the process context.
+  ContextApi::registerAttributeKeys(key_ptrs, n);
 
-  for (int i = 0; i < count; i++) {
-    delete jni_strings[i];
-  }
+  for (int i = 0; i < n; i++) delete jni_strings[i];
 }
 
 // For testing only — production code gets context from the tracer, not the profiler.

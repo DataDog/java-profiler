@@ -81,8 +81,7 @@ public:
      */
     static bool getSpanId(OtelThreadContextRecord* record, u64& span_id);
 
-    // Byte conversion helpers (big-endian, W3C trace context)
-    static void u64ToBytes(u64 val, uint8_t* out);
+    // Byte conversion helper (big-endian, W3C trace context)
     static u64 bytesToU64(const uint8_t* in);
 };
 

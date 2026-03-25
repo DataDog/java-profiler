@@ -23,13 +23,6 @@
 #include "thread.h"
 #include <cstring>
 
-// Static member initialization
-char* ContextApi::_attribute_keys[MAX_ATTRIBUTE_KEYS] = {};
-int ContextApi::_attribute_key_count = 0;
-
-void ContextApi::shutdown() {
-    freeAttributeKeys();
-}
 
 /**
  * Initialize OTel TLS for the current thread on first use.
@@ -70,34 +63,20 @@ Context ContextApi::snapshot() {
     return thrd->snapshotContext(numAttrs);
 }
 
-void ContextApi::freeAttributeKeys() {
-    int count = _attribute_key_count;
-    _attribute_key_count = 0;
-    for (int i = 0; i < count; i++) {
-        char* key = _attribute_keys[i];
-        _attribute_keys[i] = nullptr;
-        free(key);
-    }
-}
-
 void ContextApi::registerAttributeKeys(const char** keys, int count) {
-    freeAttributeKeys();
-
     // Clip to DD_TAGS_CAPACITY: that is the actual sidecar slot limit and the
     // maximum keyIndex accepted by ThreadContext.setContextAttribute.
-    _attribute_key_count = count < (int)DD_TAGS_CAPACITY ? count : (int)DD_TAGS_CAPACITY;
-    for (int i = 0; i < _attribute_key_count; i++) {
-        _attribute_keys[i] = strdup(keys[i]);
-    }
+    int n = count < (int)DD_TAGS_CAPACITY ? count : (int)DD_TAGS_CAPACITY;
 
     // Build NULL-terminated key array for the process context config.
     // Index LOCAL_ROOT_SPAN_ATTR_INDEX (0) is reserved for local_root_span_id; user keys start at index 1.
-    const char* key_ptrs[MAX_ATTRIBUTE_KEYS + 2]; // +1 reserved, +1 null
+    // otel_process_ctx_publish copies all strings, so no strdup is needed.
+    const char* key_ptrs[DD_TAGS_CAPACITY + 2]; // +1 reserved, +1 null
     key_ptrs[LOCAL_ROOT_SPAN_ATTR_INDEX] = "datadog.local_root_span_id";
-    for (int i = 0; i < _attribute_key_count; i++) {
-        key_ptrs[i + 1] = _attribute_keys[i];
+    for (int i = 0; i < n; i++) {
+        key_ptrs[i + 1] = keys[i];
     }
-    key_ptrs[_attribute_key_count + 1] = nullptr;
+    key_ptrs[n + 1] = nullptr;
 
     otel_thread_ctx_config_data config = {
         .schema_version = "tlsdesc_v1_dev",

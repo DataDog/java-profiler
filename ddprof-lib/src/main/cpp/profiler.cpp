@@ -1578,9 +1578,6 @@ Error Profiler::stop() {
   // owned by library metadata, so we must keep library patches active until after serialization
   LibraryPatcher::unpatch_libraries();
 
-  // Shutdown context storage (frees attribute keys)
-  ContextApi::shutdown();
-
   _state = IDLE;
   return Error::OK;
 }
