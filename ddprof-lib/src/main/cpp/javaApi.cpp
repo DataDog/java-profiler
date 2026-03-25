@@ -629,6 +629,7 @@ Java_com_datadoghq_profiler_OTelContext_registerAttributeKeys0(JNIEnv* env, jcla
   }
 }
 
+// For testing only — production code gets context from the tracer, not the profiler.
 extern "C" DLLEXPORT jlongArray JNICALL
 Java_com_datadoghq_profiler_ThreadContext_getContext0(JNIEnv* env, jclass unused) {
   u64 spanId = 0;

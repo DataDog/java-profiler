@@ -30,11 +30,16 @@ public final class ThreadContext {
     private static final int MAX_CUSTOM_SLOTS = 10;
     private static final int OTEL_MAX_RECORD_SIZE = 640;
     private static final int LRS_OTEP_KEY_INDEX = 0;
+    // LRS is always a fixed 16-hex-char value in attrs_data (zero-padded u64).
+    // The entry header is 2 bytes (key_index + length), giving 18 bytes total.
+    private static final int LRS_FIXED_VALUE_LEN = 16;
+    private static final int LRS_ENTRY_SIZE = 2 + LRS_FIXED_VALUE_LEN;
+    private static final byte[] HEX_DIGITS = {'0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'};
 
     private static final BufferWriter BUFFER_WRITER = new BufferWriter();
 
-    // ---- Process-wide bounded direct-mapped caches ----
-    // Both caches store {int encoding, byte[] utf8Bytes} per entry.
+    // ---- Process-wide bounded direct-mapped cache for attribute values ----
+    // Stores {int encoding, byte[] utf8Bytes} per entry.
     // - encoding: Dictionary constant pool ID for DD JFR sidecar
     // - utf8Bytes: UTF-8 value for OTEP attrs_data (external profilers)
     //
@@ -45,10 +50,6 @@ public final class ThreadContext {
     // On profiler restart, ThreadContext instances are recreated.
     private static final int CACHE_SIZE = 256;
     private static final int CACHE_MASK = CACHE_SIZE - 1;
-
-    // LRS cache: long lrsValue → byte[] decimalUtf8 (for OTEP attrs_data)
-    private static final long[] lrsCacheKeys = new long[CACHE_SIZE];
-    private static final byte[][] lrsCacheBytes = new byte[CACHE_SIZE][];
 
     // Attribute value cache: String value → {int encoding, byte[] utf8}
     // Keyed by value string (not by keyIndex) — same string always maps to
@@ -102,7 +103,15 @@ public final class ThreadContext {
         }
         this.sidecarBuffer.putLong(this.lrsSidecarOffset, 0);
         this.recordBuffer.put(this.validOffset, (byte) 0);
-        this.recordBuffer.putShort(this.attrsDataSizeOffset, (short) 0);
+        // Pre-initialize the fixed-size LRS entry at attrs_data[0..LRS_ENTRY_SIZE-1]:
+        //   key_index=0, length=16, value=16 zero hex bytes.
+        // The entry is always present; updates overwrite only the 16 value bytes.
+        this.recordBuffer.put(this.attrsDataOffset, (byte) LRS_OTEP_KEY_INDEX);
+        this.recordBuffer.put(this.attrsDataOffset + 1, (byte) LRS_FIXED_VALUE_LEN);
+        for (int i = 0; i < LRS_FIXED_VALUE_LEN; i++) {
+            this.recordBuffer.put(this.attrsDataOffset + 2 + i, (byte) '0');
+        }
+        this.recordBuffer.putShort(this.attrsDataSizeOffset, (short) LRS_ENTRY_SIZE);
     }
 
     /**
@@ -246,11 +255,12 @@ public final class ThreadContext {
         BUFFER_WRITER.writeOrderedLong(sidecarBuffer, lrsSidecarOffset, localRootSpanId);
 
         if (trHi == 0 && trLo == 0 && spanId == 0) {
-            // Clear: zero all fields + sidecar, leave detached
+            // Clear: zero trace/span IDs, LRS hex bytes, and sidecar; trim attrs to LRS entry
             recordBuffer.putLong(traceIdOffset, 0);
             recordBuffer.putLong(traceIdOffset + 8, 0);
             recordBuffer.putLong(spanIdOffset, 0);
-            recordBuffer.putShort(attrsDataSizeOffset, (short) 0);
+            writeLrsHex(0);
+            recordBuffer.putShort(attrsDataSizeOffset, (short) LRS_ENTRY_SIZE);
             for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
                 sidecarBuffer.putInt(i * 4, 0);
             }
@@ -263,36 +273,25 @@ public final class ThreadContext {
         recordBuffer.putLong(traceIdOffset + 8, Long.reverseBytes(trLo));
         recordBuffer.putLong(spanIdOffset, Long.reverseBytes(spanId));
 
-        // Write local root span ID as a decimal UTF-8 OTEP attribute at key_index=0
-        if (localRootSpanId != 0) {
-            byte[] lrsUtf8 = lookupLrs(localRootSpanId);
-            replaceOtepAttribute(LRS_OTEP_KEY_INDEX, lrsUtf8);
-        } else {
-            removeOtepAttribute(LRS_OTEP_KEY_INDEX);
-        }
+        // Update the fixed-size LRS hex entry in-place (always 16 bytes at attrs_data[2..17])
+        writeLrsHex(localRootSpanId);
 
         attach();
     }
 
-    // ---- LRS cache ----
+    // ---- LRS helpers ----
 
     /**
-     * Look up LRS decimal UTF-8 bytes from the process-wide cache.
-     * On miss: converts to unsigned decimal string and caches the UTF-8 bytes.
-     * Allocates one byte[] per unique LRS value (cached for reuse).
+     * Overwrite the 16 hex value bytes of the fixed LRS entry in-place.
+     * The entry header (key_index=0, length=16) is pre-initialized and never touched.
+     * Called between detach() and attach(); no allocation.
      */
-    private static byte[] lookupLrs(long lrs) {
-        int slot = Long.hashCode(lrs) & CACHE_MASK;
-        byte[] utf8 = lrsCacheKeys[slot] == lrs ? lrsCacheBytes[slot] : null;
-        if (utf8 == null) {
-            utf8 = Long.toUnsignedString(lrs).getBytes(StandardCharsets.UTF_8);
-            // Write bytes BEFORE key — key acts as commit for concurrent readers.
-            // Fence ensures ARM cores see the bytes before the key that guards them.
-            lrsCacheBytes[slot] = utf8;
-            BUFFER_WRITER.storeFence();
-            lrsCacheKeys[slot] = lrs;
+    private void writeLrsHex(long val) {
+        int base = attrsDataOffset + 2; // skip key_index byte + length byte
+        for (int i = 15; i >= 0; i--) {
+            recordBuffer.put(base + i, HEX_DIGITS[(int)(val & 0xF)]);
+            val >>>= 4;
         }
-        return utf8;
     }
 
     // ---- OTEP record helpers (called between detach/attach) ----
@@ -369,6 +368,38 @@ public final class ThreadContext {
             }
         }
         return found ? writePos : currentSize;
+    }
+
+    /**
+     * Reads a custom attribute value from attrs_data by key index.
+     * Scans the attrs_data entries and returns the UTF-8 string for the matching key.
+     *
+     * @param keyIndex 0-based user key index (same as passed to setContextAttribute)
+     * @return the attribute value string, or null if not set
+     */
+    public String readContextAttribute(int keyIndex) {
+        if (keyIndex < 0 || keyIndex >= MAX_CUSTOM_SLOTS) {
+            return null;
+        }
+        int otepKeyIndex = keyIndex + 1;
+        int size = recordBuffer.getShort(attrsDataSizeOffset) & 0xFFFF;
+        int pos = 0;
+        while (pos + 2 <= size) {
+            int k = recordBuffer.get(attrsDataOffset + pos) & 0xFF;
+            int len = recordBuffer.get(attrsDataOffset + pos + 1) & 0xFF;
+            if (pos + 2 + len > size) {
+                break;
+            }
+            if (k == otepKeyIndex) {
+                byte[] bytes = new byte[len];
+                for (int i = 0; i < len; i++) {
+                    bytes[i] = recordBuffer.get(attrsDataOffset + pos + 2 + i);
+                }
+                return new String(bytes, StandardCharsets.UTF_8);
+            }
+            pos += 2 + len;
+        }
+        return null;
     }
 
     private static native int registerConstant0(String value);

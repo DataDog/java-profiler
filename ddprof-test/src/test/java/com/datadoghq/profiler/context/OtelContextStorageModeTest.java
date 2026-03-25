@@ -114,7 +114,11 @@ public class OtelContextStorageModeTest {
         result = ctx.setContextAttribute(1, "postgresql");
         assertTrue(result, "setContextAttribute for second key should succeed");
 
-        // Verify trace context is still intact
+        // Verify attribute values round-trip correctly through attrs_data
+        assertEquals("GET /api/users", ctx.readContextAttribute(0), "http.route should round-trip");
+        assertEquals("postgresql", ctx.readContextAttribute(1), "db.system should round-trip");
+
+        // Verify trace context is still intact after attribute writes
         assertEquals(spanId, ctx.getSpanId(), "SpanId should match after setAttribute");
         assertEquals(localRootSpanId, ctx.getRootSpanId(), "LocalRootSpanId should match after setAttribute");
     }
@@ -135,8 +139,9 @@ public class OtelContextStorageModeTest {
 
         ThreadContext ctx = profiler.getThreadContext();
 
-        // LRS "2" occupies 3 bytes (key=1, len=1, value=1) in attrs_data.
-        // Each 255-char attr = 257 bytes per entry. Two fit; third overflows.
+        // LRS is a fixed 18-byte entry (key=1, len=16, 16 hex value bytes).
+        // Available for custom attrs: 612 - 18 = 594 bytes.
+        // Each 255-char attr = 257 bytes. Two fit (514 ≤ 594); third overflows (771 > 594).
         StringBuilder sb = new StringBuilder(255);
         for (int i = 0; i < 255; i++) sb.append('x');
         String longValue = sb.toString();
