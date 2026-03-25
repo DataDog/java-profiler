@@ -36,7 +36,7 @@ static const int OTEL_MAX_ATTRS_DATA_SIZE = OTEL_MAX_RECORD_SIZE - OTEL_HEADER_S
  *   offset 0x00: trace_id[16]      — W3C 128-bit trace ID (big-endian)
  *   offset 0x10: span_id[8]        — 64-bit span ID (big-endian)
  *   offset 0x18: valid             — 1 = record ready for reading
- *   offset 0x19: _reserved         — alignment padding
+ *   offset 0x19: _reserved         — OTEP spec reserved, must be 0
  *   offset 0x1A: attrs_data_size   — number of valid bytes in attrs_data
  *   offset 0x1C: attrs_data[612]   — encoded key/value attribute pairs
  *

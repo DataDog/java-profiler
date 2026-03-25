@@ -193,7 +193,7 @@ public final class ThreadContext {
      * @return true if the attribute was set successfully
      */
     public boolean setContextAttribute(int keyIndex, String value) {
-        if (keyIndex < 0 || keyIndex > 255 || value == null) {
+        if (keyIndex < 0 || keyIndex >= MAX_CUSTOM_SLOTS || value == null) {
             return false;
         }
         return setContextAttributeDirect(keyIndex, value);
