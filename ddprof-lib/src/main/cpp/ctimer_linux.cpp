@@ -22,7 +22,7 @@
 #include "debugSupport.h"
 #include "libraries.h"
 #include "profiler.h"
-#include "hotspot/vmStructs.h"
+#include "threadState.inline.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <sys/syscall.h>

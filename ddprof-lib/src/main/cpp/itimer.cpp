@@ -21,7 +21,7 @@
 #include "profiler.h"
 #include "stackWalker.h"
 #include "thread.h"
-#include "hotspot/vmStructs.h"
+#include "threadState.inline.h"
 #include "guards.h"
 #include <sys/time.h>
 
