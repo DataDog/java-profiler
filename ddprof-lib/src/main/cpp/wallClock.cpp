@@ -15,6 +15,7 @@
 #include "profiler.h"
 #include "stackFrame.h"
 #include "thread.h"
+#include "threadState.inline.h"
 #include "guards.h"
 #include <math.h>
 #include <random>
