@@ -64,11 +64,12 @@ For benchmark data, see
 │  ┌───────────────────────────────────────────────────────────────┐  │
 │  │  setContextDirect()                                           │  │
 │  │  1. detach()  — valid ← 0, storeFence                         │  │
-│  │  2. writeOrderedLong(sidecarBuffer, lrsSidecarOffset, lrs)    │  │
-│  │  3. recordBuffer.putLong(traceIdOffset, reverseBytes(trHi))   │  │
+│  │  2. recordBuffer.putLong(traceIdOffset, reverseBytes(trHi))   │  │
 │  │     recordBuffer.putLong(traceIdOffset+8, reverseBytes(trLo)) │  │
 │  │     recordBuffer.putLong(spanIdOffset, reverseBytes(spanId))  │  │
-│  │  4. replaceOtepAttribute(LRS, lrsUtf8)                        │  │
+│  │  3. sidecar[0..9] ← 0, attrs_data_size ← LRS_ENTRY_SIZE      │  │
+│  │  4. writeOrderedLong(sidecarBuffer, lrsSidecarOffset, lrs)    │  │
+│  │     writeLrsHex(lrs) — update fixed LRS entry in attrs_data   │  │
 │  │  5. attach() — storeFence, valid ← 1                          │  │
 │  └───────────────────────────────────────────────────────────────┘  │
 │         │                                                           │
@@ -222,10 +223,11 @@ Time 0:  detach()
            storeFence()                            ← drain store buffer
 
 Time 1:  Mutate record fields
-           writeOrderedLong(sidecarBuffer, lrsSidecarOffset, lrs) ← update sidecar LRS
            recordBuffer.putLong(traceIdOffset, ...)
            recordBuffer.putLong(spanIdOffset, ...)
-           replaceOtepAttribute(...)
+           sidecar[0..9] ← 0, attrs_data_size ← LRS_ENTRY_SIZE  ← reset custom attrs
+           writeOrderedLong(sidecarBuffer, lrsSidecarOffset, lrs) ← update sidecar LRS
+           writeLrsHex(lrs)                                       ← update LRS in attrs_data
 
          ⚡ SIGPROF may arrive here — handler sees valid=0, skips record
 

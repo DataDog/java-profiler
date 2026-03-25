@@ -280,6 +280,13 @@ public final class ThreadContext {
         recordBuffer.putLong(traceIdOffset + 8, Long.reverseBytes(trLo));
         recordBuffer.putLong(spanIdOffset, Long.reverseBytes(spanId));
 
+        // Reset custom attribute state so the previous span's values don't leak
+        // into this span. Callers set attributes again via setContextAttribute().
+        for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
+            sidecarBuffer.putInt(i * 4, 0);
+        }
+        recordBuffer.putShort(attrsDataSizeOffset, (short) LRS_ENTRY_SIZE);
+
         // Update LRS sidecar and OTEP attrs_data inside the detach/attach window so a
         // signal handler never sees the new LRS with old trace/span IDs.
         BUFFER_WRITER.writeOrderedLong(sidecarBuffer, lrsSidecarOffset, localRootSpanId);

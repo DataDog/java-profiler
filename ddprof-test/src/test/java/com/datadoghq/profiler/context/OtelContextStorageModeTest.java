@@ -69,6 +69,8 @@ public class OtelContextStorageModeTest {
         ThreadContext ctx = profiler.getThreadContext();
         assertEquals(spanId, ctx.getSpanId(), "SpanId should match");
         assertEquals(localRootSpanId, ctx.getRootSpanId(), "LocalRootSpanId should match");
+        // Verify the 128-bit trace ID round-trips through the OTEP record (big-endian)
+        assertEquals("55556666777788889999aaaabbbbcccc", ctx.readTraceId(), "TraceId should match");
     }
 
     /**
@@ -238,5 +240,29 @@ public class OtelContextStorageModeTest {
         // Thread A's context must be unaffected
         assertEquals(threadASpanId, profiler.getThreadContext().getSpanId());
         assertEquals(threadARootSpanId, profiler.getThreadContext().getRootSpanId());
+    }
+
+    /**
+     * Tests that a direct span-to-span transition (no clearContext in between)
+     * does not leak custom attributes from the previous span.
+     */
+    @Test
+    public void testSpanTransitionClearsAttributes() throws Exception {
+        Path jfrFile = Files.createTempFile("otel-ctx-transition", ".jfr");
+        profiler.execute(String.format("start,cpu=1ms,attributes=http.route,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profilerStarted = true;
+
+        OTelContext.getInstance().registerAttributeKeys("http.route");
+
+        // Span A: set a custom attribute
+        profiler.setContext(0x1L, 0x1L, 0L, 0x1L);
+        ThreadContext ctx = profiler.getThreadContext();
+        ctx.setContextAttribute(0, "/api/spanA");
+
+        // Transition directly to span B without clearing
+        profiler.setContext(0x2L, 0x2L, 0L, 0x2L);
+
+        // Span A's attribute must not be visible in span B's context
+        assertNull(ctx.readContextAttribute(0), "Custom attribute must be cleared on span transition");
     }
 }
