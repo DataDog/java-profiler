@@ -697,6 +697,7 @@ DECLARE(VMThread)
     static inline int nativeThreadId(JNIEnv* jni, jthread thread);
     static inline VMThread* fromJavaThread(JNIEnv* env, jthread thread);
     static ExecutionMode getExecutionMode();
+    static OSThreadState getOSThreadState();
 
     int osThreadId();
     JNIEnv* jni();

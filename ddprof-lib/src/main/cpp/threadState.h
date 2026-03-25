@@ -26,5 +26,6 @@ enum class ExecutionMode : int {
 };
 
 inline ExecutionMode getThreadExecutionMode();
+inline OSThreadState getOSThreadState();
 
 #endif // JAVA_PROFILER_LIBRARY_THREAD_STATE_H

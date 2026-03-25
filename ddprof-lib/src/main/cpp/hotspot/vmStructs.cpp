@@ -676,7 +676,17 @@ ExecutionMode VMThread::getExecutionMode() {
   }
 }
 
-
+OSThreadState VMThread::getOSThreadState() {
+  VMThread* vm_thread = VMThread::current();
+  assert(vm_thread != nullptr);
+  int raw_thread_state = vm_thread ? vm_thread->state() : 0;
+  bool is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
+  OSThreadState state = OSThreadState::UNKNOWN;
+  if (is_java_thread) {
+    state = vm_thread->osThreadState();
+  }
+  return state;
+}
 
 int VMThread::osThreadId() {
     const char* osthread = *(const char**) at(_thread_osthread_offset);
