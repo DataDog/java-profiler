@@ -220,6 +220,22 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
   return acceptValue;
 }
 
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlock0(
+    JNIEnv *env, jclass unused, jlong startTicks, jlong endTicks,
+    jlong spanId, jlong rootSpanId, jlong blocker, jlong unblockingSpanId) {
+  TaskBlockEvent event;
+  event._start_ticks = (u64)startTicks;
+  event._end_ticks = (u64)endTicks;
+  event._span_id = (u64)spanId;
+  event._root_span_id = (u64)rootSpanId;
+  event._blocker = (uintptr_t)blocker;
+  event._unblocking_span_id = (u64)unblockingSpanId;
+  int tid = ProfiledThread::currentTid();
+  Profiler::instance()->recordTaskBlock(tid, &event);
+}
+
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_registerConstant0(JNIEnv *env,
                                                            jclass unused,

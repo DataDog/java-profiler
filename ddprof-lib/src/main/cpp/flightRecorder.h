@@ -278,6 +278,7 @@ public:
   void recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event);
   void recordTraceRoot(Buffer *buf, int tid, TraceRootEvent *event);
   void recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event);
+  void recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event);
   void recordAllocation(RecordingBuffer *buf, int tid, u64 call_trace_id,
                         AllocEvent *event);
   void recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
@@ -344,6 +345,7 @@ public:
   void wallClockEpoch(int lock_index, WallClockEpochEvent *event);
   void recordTraceRoot(int lock_index, int tid, TraceRootEvent *event);
   void recordQueueTime(int lock_index, int tid, QueueTimeEvent *event);
+  void recordTaskBlock(int lock_index, int tid, TaskBlockEvent *event);
 
   bool active() const { return _rec != NULL; }
 

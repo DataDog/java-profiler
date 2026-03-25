@@ -179,6 +179,17 @@ void JfrMetadata::initialize(
               << field("localRootSpanId", T_LONG, "Local Root Span ID")
               << field("parentSpanId", T_LONG, "Parent Span ID"))
 
+          << (type("datadog.TaskBlock", T_TASK_BLOCK, "Task Block")
+              << category("Datadog")
+              << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+              << field("duration", T_LONG, "Duration", F_DURATION_TICKS)
+              << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
+              << field("stackTrace", T_STACK_TRACE, "Stack Trace", F_CPOOL)
+              << field("spanId", T_LONG, "Span ID")
+              << field("localRootSpanId", T_LONG, "Local Root Span ID")
+              << field("blocker", T_LONG, "Blocker Object Hash", F_UNSIGNED)
+              << field("unblockingSpanId", T_LONG, "Unblocking Span ID"))
+
           << (type("datadog.QueueTime", T_QUEUE_TIME, "Queue Time")
                   << category("Datadog")
                   << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)

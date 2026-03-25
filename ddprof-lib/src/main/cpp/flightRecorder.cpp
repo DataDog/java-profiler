@@ -1543,6 +1543,23 @@ void Recording::recordTraceRoot(Buffer *buf, int tid, TraceRootEvent *event) {
   flushIfNeeded(buf);
 }
 
+
+void Recording::recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event) {
+  flushIfNeeded(buf);
+  int start = buf->skip(1);
+  buf->putVar64(T_TASK_BLOCK);
+  buf->putVar64(event->_start_ticks);
+  buf->putVar64(event->_end_ticks - event->_start_ticks);
+  buf->putVar32(tid);
+  buf->put8(0);
+  buf->putVar64(event->_span_id);
+  buf->putVar64(event->_root_span_id);
+  buf->putVar64((u64)event->_blocker);
+  buf->putVar64(event->_unblocking_span_id);
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
 void Recording::recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_QUEUE_TIME);
@@ -1758,6 +1775,19 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid,
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
       rec->recordQueueTime(buf, tid, event);
+    }
+  }
+}
+
+
+void FlightRecorder::recordTaskBlock(int lock_index, int tid,
+                                     TaskBlockEvent *event) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->recordTaskBlock(buf, tid, event);
     }
   }
 }

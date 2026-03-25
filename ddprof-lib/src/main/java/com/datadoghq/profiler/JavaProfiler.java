@@ -192,6 +192,19 @@ public final class JavaProfiler {
     }
 
     /**
+     * Records a blocking interval for the current span.
+     * @param startTicks TSC tick at block entry
+     * @param endTicks TSC tick at block exit
+     * @param spanId the span that was blocked
+     * @param rootSpanId the local root span ID
+     * @param blocker identity hash code of the blocking object
+     */
+    public void recordTaskBlock(long startTicks, long endTicks,
+                                long spanId, long rootSpanId, long blocker, long unblockingSpanId) {
+        recordTaskBlock0(startTicks, endTicks, spanId, rootSpanId, blocker, unblockingSpanId);
+    }
+
+    /**
      * Add the given thread to the set of profiled threads.
      * 'filter' option must be enabled to use this method.
      */
@@ -339,6 +352,8 @@ public final class JavaProfiler {
     private static native int getTid0();
 
     private static native boolean recordTrace0(long rootSpanId, long parentSpanId, long startTicks, String endpoint, String operation, int sizeLimit);
+
+    private static native void recordTaskBlock0(long startTicks, long endTicks, long spanId, long rootSpanId, long blocker, long unblockingSpanId);
 
     private static native int registerConstant0(String value);
 

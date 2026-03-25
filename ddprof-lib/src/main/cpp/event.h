@@ -167,6 +167,15 @@ public:
         _label(label), _operation(operation){};
 };
 
+typedef struct TaskBlockEvent {
+  u64 _start_ticks;
+  u64 _end_ticks;
+  u64 _span_id;
+  u64 _root_span_id;
+  uintptr_t _blocker;
+  u64 _unblocking_span_id;
+} TaskBlockEvent;
+
 typedef struct QueueTimeEvent {
   u64 _start;
   u64 _end;
