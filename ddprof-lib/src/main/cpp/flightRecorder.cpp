@@ -1543,7 +1543,6 @@ void Recording::recordTraceRoot(Buffer *buf, int tid, TraceRootEvent *event) {
   flushIfNeeded(buf);
 }
 
-
 void Recording::recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event) {
   flushIfNeeded(buf);
   int start = buf->skip(1);
@@ -1556,6 +1555,22 @@ void Recording::recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event) {
   buf->putVar64(event->_root_span_id);
   buf->putVar64((u64)event->_blocker);
   buf->putVar64(event->_unblocking_span_id);
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
+void Recording::recordSpanNode(Buffer *buf, int tid, u64 spanId, u64 parentSpanId, u64 rootSpanId,
+                                u64 startNanos, u64 durationNanos, u32 encodedOperation, u32 encodedResource) {
+  flushIfNeeded(buf);
+  int start = buf->skip(1);
+  buf->putVar64(T_SPAN_NODE);
+  buf->putVar64(spanId);
+  buf->putVar64(parentSpanId);
+  buf->putVar64(rootSpanId);
+  buf->putVar64(startNanos);
+  buf->putVar64(durationNanos);
+  buf->putVar32(encodedOperation);
+  buf->putVar32(encodedResource);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1779,7 +1794,6 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid,
   }
 }
 
-
 void FlightRecorder::recordTaskBlock(int lock_index, int tid,
                                      TaskBlockEvent *event) {
   OptionalSharedLockGuard locker(&_rec_lock);
@@ -1788,6 +1802,18 @@ void FlightRecorder::recordTaskBlock(int lock_index, int tid,
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
       rec->recordTaskBlock(buf, tid, event);
+    }
+  }
+}
+
+void FlightRecorder::recordSpanNode(int lock_index, int tid, u64 spanId, u64 parentSpanId, u64 rootSpanId,
+                                    u64 startNanos, u64 durationNanos, u32 encodedOperation, u32 encodedResource) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->recordSpanNode(buf, tid, spanId, parentSpanId, rootSpanId, startNanos, durationNanos, encodedOperation, encodedResource);
     }
   }
 }

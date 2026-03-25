@@ -376,6 +376,8 @@ public:
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
   void recordTaskBlock(int tid, TaskBlockEvent *event);
+  void recordSpanNode(int tid, u64 spanId, u64 parentSpanId, u64 rootSpanId,
+                      u64 startNanos, u64 durationNanos, u32 encodedOperation, u32 encodedResource);
   void writeLog(LogLevel level, const char *message);
   void writeLog(LogLevel level, const char *message, size_t len);
   void writeDatadogProfilerSetting(int tid, int length, const char *name,

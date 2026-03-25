@@ -204,6 +204,13 @@ public final class JavaProfiler {
         recordTaskBlock0(startTicks, endTicks, spanId, rootSpanId, blocker, unblockingSpanId);
     }
 
+    public void recordSpanNode(long spanId, long parentSpanId, long rootSpanId,
+                               long startNanos, long durationNanos,
+                               int encodedOperation, int encodedResource) {
+        recordSpanNode0(spanId, parentSpanId, rootSpanId, startNanos, durationNanos,
+                        encodedOperation, encodedResource);
+    }
+
     /**
      * Add the given thread to the set of profiled threads.
      * 'filter' option must be enabled to use this method.
@@ -354,6 +361,8 @@ public final class JavaProfiler {
     private static native boolean recordTrace0(long rootSpanId, long parentSpanId, long startTicks, String endpoint, String operation, int sizeLimit);
 
     private static native void recordTaskBlock0(long startTicks, long endTicks, long spanId, long rootSpanId, long blocker, long unblockingSpanId);
+
+    private static native void recordSpanNode0(long spanId, long parentSpanId, long rootSpanId, long startNanos, long durationNanos, int encodedOperation, int encodedResource);
 
     private static native int registerConstant0(String value);
 

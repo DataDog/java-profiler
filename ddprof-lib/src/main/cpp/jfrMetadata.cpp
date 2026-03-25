@@ -190,6 +190,16 @@ void JfrMetadata::initialize(
               << field("blocker", T_LONG, "Blocker Object Hash", F_UNSIGNED)
               << field("unblockingSpanId", T_LONG, "Unblocking Span ID"))
 
+          << (type("datadog.SpanNode", T_SPAN_NODE, "Span Node")
+              << category("Datadog")
+              << field("spanId", T_LONG, "Span ID")
+              << field("parentSpanId", T_LONG, "Parent Span ID")
+              << field("localRootSpanId", T_LONG, "Local Root Span ID")
+              << field("startNanos", T_LONG, "Start Time (epoch ns)")
+              << field("durationNanos", T_LONG, "Duration (ns)")
+              << field("encodedOperation", T_INT, "Encoded Operation Name")
+              << field("encodedResource", T_INT, "Encoded Resource Name"))
+
           << (type("datadog.QueueTime", T_QUEUE_TIME, "Queue Time")
                   << category("Datadog")
                   << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)

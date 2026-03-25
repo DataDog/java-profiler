@@ -279,6 +279,8 @@ public:
   void recordTraceRoot(Buffer *buf, int tid, TraceRootEvent *event);
   void recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event);
   void recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event);
+  void recordSpanNode(Buffer *buf, int tid, u64 spanId, u64 parentSpanId, u64 rootSpanId,
+                      u64 startNanos, u64 durationNanos, u32 encodedOperation, u32 encodedResource);
   void recordAllocation(RecordingBuffer *buf, int tid, u64 call_trace_id,
                         AllocEvent *event);
   void recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
@@ -346,6 +348,8 @@ public:
   void recordTraceRoot(int lock_index, int tid, TraceRootEvent *event);
   void recordQueueTime(int lock_index, int tid, QueueTimeEvent *event);
   void recordTaskBlock(int lock_index, int tid, TaskBlockEvent *event);
+  void recordSpanNode(int lock_index, int tid, u64 spanId, u64 parentSpanId, u64 rootSpanId,
+                      u64 startNanos, u64 durationNanos, u32 encodedOperation, u32 encodedResource);
 
   bool active() const { return _rec != NULL; }
 
