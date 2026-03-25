@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef _HOTSPOT_WALLCLOCK_H
-#define _HOTSPOT_WALLCLOCK_H
+#ifndef _WALLCLOCK_H
+#define _WALLCLOCK_H
 
 #include "engine.h"
 #include "os.h"
@@ -154,4 +154,4 @@ class WallClockASGCT : public BaseWallClock {
     }
 };
 
-#endif // _HOTSPOT_WALLCLOCK_H
+#endif // _WALLCLOCK_H

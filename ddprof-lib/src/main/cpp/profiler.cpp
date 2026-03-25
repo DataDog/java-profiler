@@ -14,6 +14,7 @@
 #include "dwarf.h"
 #include "flightRecorder.h"
 #include "itimer.h"
+#include "hotspot/vmStructs.h"
 #include "j9/j9Ext.h"
 #include "j9/j9WallClock.h"
 #include "jvmThread.h"
@@ -27,8 +28,7 @@
 #include "symbols.h"
 #include "thread.h"
 #include "tsc.h"
-#include "hotspot/vmStructs.h"
-#include "hotspot/wallClock.h"
+#include "wallClock.h"
 #include <algorithm>
 #include <dlfcn.h>
 #include <fstream>

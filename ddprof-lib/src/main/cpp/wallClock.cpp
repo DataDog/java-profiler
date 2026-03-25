@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "hotspot/wallClock.h"
+#include "wallClock.h"
 #include "hotspot/vmStructs.inline.h"
 
 #include "stackFrame.h"
@@ -79,10 +79,13 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   }
 
   ExecutionEvent event;
-  VMThread *vm_thread = VMThread::current();
-  if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
-      vm_thread = NULL;
+  void* thread = JVMThread::current();
+  VMThread* vm_thread = nullptr;
+
+  if (thread != NULL && VM::isHotspot()) {
+      vm_thread = VMThread::cast(thread);
   }
+  
   int raw_thread_state = vm_thread ? vm_thread->state() : 0;
   bool is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
   bool is_initialized = is_java_thread;
@@ -93,7 +96,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     if (os_state != OSThreadState::UNKNOWN) {
       state = os_state;
     }
-    mode = VMThread::getExecutionMode();
+    mode = getThreadExecutionMode();
   }
   if (state == OSThreadState::UNKNOWN) {
     if (inSyscall(ucontext)) {
