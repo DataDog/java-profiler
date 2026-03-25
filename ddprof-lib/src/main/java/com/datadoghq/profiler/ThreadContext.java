@@ -211,6 +211,12 @@ public final class ThreadContext {
         int encoding;
         byte[] utf8;
         if (value.equals(attrCacheKeys[slot])) {
+            // Full fence pairs with the storeFence in the write path.
+            // On ARM, without this barrier the processor may speculatively load
+            // encoding/bytes before the key read is resolved, seeing values from
+            // a previous cache occupant and writing the wrong JFR constant ID.
+            // storeFence() alone is insufficient here (it only orders stores).
+            BUFFER_WRITER.fullFence();
             encoding = attrCacheEncodings[slot];
             utf8 = attrCacheBytes[slot];
         } else {
@@ -249,11 +255,6 @@ public final class ThreadContext {
     private void setContextDirect(long localRootSpanId, long spanId, long trHi, long trLo) {
         detach();
 
-        // Update LRS in sidecar inside the detach/attach window to avoid a
-        // brief inconsistency where a signal handler sees the new LRS with
-        // the old trace/span IDs.
-        BUFFER_WRITER.writeOrderedLong(sidecarBuffer, lrsSidecarOffset, localRootSpanId);
-
         if (trHi == 0 && trLo == 0 && spanId == 0) {
             // Clear: zero trace/span IDs, LRS hex bytes, and sidecar; trim attrs to LRS entry
             recordBuffer.putLong(traceIdOffset, 0);
@@ -273,7 +274,9 @@ public final class ThreadContext {
         recordBuffer.putLong(traceIdOffset + 8, Long.reverseBytes(trLo));
         recordBuffer.putLong(spanIdOffset, Long.reverseBytes(spanId));
 
-        // Update the fixed-size LRS hex entry in-place (always 16 bytes at attrs_data[2..17])
+        // Update LRS sidecar and OTEP attrs_data inside the detach/attach window so a
+        // signal handler never sees the new LRS with old trace/span IDs.
+        BUFFER_WRITER.writeOrderedLong(sidecarBuffer, lrsSidecarOffset, localRootSpanId);
         writeLrsHex(localRootSpanId);
 
         attach();
