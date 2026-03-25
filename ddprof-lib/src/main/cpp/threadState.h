@@ -1,7 +1,6 @@
 #ifndef JAVA_PROFILER_LIBRARY_THREAD_STATE_H
 #define JAVA_PROFILER_LIBRARY_THREAD_STATE_H
 
-#include "jvmti.h"
 
 enum class OSThreadState : int {
   UNKNOWN = 0,
@@ -25,48 +24,6 @@ enum class ExecutionMode : int {
   SAFEPOINT = 4,
   SYSCALL = 5
 };
-
-static ExecutionMode convertJvmExecutionState(int state) {
-  switch (state) {
-  case 4:
-  case 5:
-    return ExecutionMode::NATIVE;
-  case 6:
-  case 7:
-    return ExecutionMode::JVM;
-  case 8:
-  case 9:
-    return ExecutionMode::JAVA;
-  case 10:
-  case 11:
-    return ExecutionMode::SAFEPOINT;
-  default:
-    return ExecutionMode::UNKNOWN;
-  }
-}
-
-/**
- * Determines the execution mode from a VMThread's state.
- *
- * This function distinguishes Java threads from JVM internal threads based on their state.
- * Java threads have states in [_thread_in_native, _thread_max_state) range [4, 12).
- * JVM internal threads (GC, Compiler) have state 0 or outside this range.
- *
- * CRITICAL: This function is safe to call from signal handlers. It does NOT call VM::jni()
- * which would trigger __tls_get_addr for thread-local JNIEnv lookup. If the signal interrupts
- * during TLS initialization (e.g., ForkJoinWorkerThread startup), VM::jni() would cause
- * re-entrant TLS allocation and heap corruption.
- *
- * Thread states are defined in OpenJDK:
- * https://github.com/openjdk/jdk/blob/master/src/hotspot/share/utilities/globalDefinitions.hpp
- * Search for "enum JavaThreadState"
- *
- * @param vm_thread The VMThread pointer (can be null)
- * @return ExecutionMode::UNKNOWN if vm_thread is null,
- *         ExecutionMode::JVM for JVM internal threads,
- *         or the appropriate execution mode for Java threads
- */
- class VMThread;
 
 inline ExecutionMode getThreadExecutionMode();
 

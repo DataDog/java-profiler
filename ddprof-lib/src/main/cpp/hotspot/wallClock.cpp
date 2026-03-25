@@ -1,10 +1,12 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "wallClock.h"
+#include "hotspot/wallClock.h"
+#include "hotspot/vmStructs.inline.h"
+
 #include "stackFrame.h"
 #include "context.h"
 #include "debugSupport.h"
@@ -78,7 +80,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   }
 
   ExecutionEvent event;
-  VMThread *vm_thread =(VMThread*) JVMThread::current();
+  VMThread *vm_thread = VMThread::current();
   if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
       vm_thread = NULL;
   }

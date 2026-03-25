@@ -1,11 +1,11 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef _WALLCLOCK_H
-#define _WALLCLOCK_H
+#ifndef _HOTSPOT_WALLCLOCK_H
+#define _HOTSPOT_WALLCLOCK_H
 
 #include "engine.h"
 #include "os.h"
@@ -154,4 +154,4 @@ class WallClockASGCT : public BaseWallClock {
     }
 };
 
-#endif // _WALLCLOCK_H
+#endif // _HOTSPOT_WALLCLOCK_H

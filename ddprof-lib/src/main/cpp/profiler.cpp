@@ -28,7 +28,7 @@
 #include "thread.h"
 #include "tsc.h"
 #include "hotspot/vmStructs.h"
-#include "wallClock.h"
+#include "hotspot/wallClock.h"
 #include <algorithm>
 #include <dlfcn.h>
 #include <fstream>
