@@ -176,7 +176,8 @@ void JfrMetadata::initialize(
               << field("stackTrace", T_STACK_TRACE, "Stack Trace", F_CPOOL)
               << field("endpoint", T_STRING, "Endpoint", F_CPOOL)
               << field("operation", T_ATTRIBUTE_VALUE, "Operation", F_CPOOL)
-              << field("localRootSpanId", T_LONG, "Local Root Span ID"))
+              << field("localRootSpanId", T_LONG, "Local Root Span ID")
+              << field("parentSpanId", T_LONG, "Parent Span ID"))
 
           << (type("datadog.QueueTime", T_QUEUE_TIME, "Queue Time")
                   << category("Datadog")

@@ -162,10 +162,25 @@ public final class JavaProfiler {
     }
 
     /**
+     * Records the completion of the trace root with causal DAG metadata.
+     * @param rootSpanId the local root span ID
+     * @param parentSpanId the parent span ID (0 if none)
+     * @param startTicks TSC tick captured at span start via {@link #getCurrentTicks()}
+     * @param endpoint the endpoint/resource name
+     * @param operation the operation name
+     * @param sizeLimit max number of distinct endpoints to track
+     */
+    public boolean recordTraceRoot(long rootSpanId, long parentSpanId, long startTicks,
+                                   String endpoint, String operation, int sizeLimit) {
+        return recordTrace0(rootSpanId, parentSpanId, startTicks, endpoint, operation, sizeLimit);
+    }
+
+    /**
      * Records the completion of the trace root
      */
+    @Deprecated
     public boolean recordTraceRoot(long rootSpanId, String endpoint, String operation, int sizeLimit) {
-        return recordTrace0(rootSpanId, endpoint, operation, sizeLimit);
+        return recordTrace0(rootSpanId, 0L, 0L, endpoint, operation, sizeLimit);
     }
 
     /**
@@ -173,7 +188,7 @@ public final class JavaProfiler {
      */
     @Deprecated
     public boolean recordTraceRoot(long rootSpanId, String endpoint, int sizeLimit) {
-        return recordTrace0(rootSpanId, endpoint, null, sizeLimit);
+        return recordTrace0(rootSpanId, 0L, 0L, endpoint, null, sizeLimit);
     }
 
     /**
@@ -323,7 +338,7 @@ public final class JavaProfiler {
 
     private static native int getTid0();
 
-    private static native boolean recordTrace0(long rootSpanId, String endpoint, String operation, int sizeLimit);
+    private static native boolean recordTrace0(long rootSpanId, long parentSpanId, long startTicks, String endpoint, String operation, int sizeLimit);
 
     private static native int registerConstant0(String value);
 

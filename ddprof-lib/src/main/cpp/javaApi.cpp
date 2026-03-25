@@ -199,8 +199,8 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0(JNIEnv *env,
 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
-    JNIEnv *env, jclass unused, jlong rootSpanId, jstring endpoint,
-    jstring operation, jint sizeLimit) {
+    JNIEnv *env, jclass unused, jlong rootSpanId, jlong parentSpanId,
+    jlong startTicks, jstring endpoint, jstring operation, jint sizeLimit) {
   JniString endpoint_str(env, endpoint);
   u32 endpointLabel = Profiler::instance()->stringLabelMap()->bounded_lookup(
       endpoint_str.c_str(), endpoint_str.length(), sizeLimit);
@@ -212,7 +212,8 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
       operationLabel = Profiler::instance()->contextValueMap()->bounded_lookup(
           operation_str.c_str(), operation_str.length(), 1 << 16);
     }
-    TraceRootEvent event(rootSpanId, endpointLabel, operationLabel);
+    TraceRootEvent event(rootSpanId, (u64)parentSpanId, (u64)startTicks,
+                         endpointLabel, operationLabel);
     int tid = ProfiledThread::currentTid();
     Profiler::instance()->recordTraceRoot(tid, &event);
   }
