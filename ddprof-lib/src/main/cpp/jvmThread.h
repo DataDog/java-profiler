@@ -21,7 +21,6 @@ class JVMThread {
 private:
     static pthread_key_t _thread_key;
     static jfieldID _tid;
-    static jfieldID _eetop;
 
 public:
     static bool is_initialized() {

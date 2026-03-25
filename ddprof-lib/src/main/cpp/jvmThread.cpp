@@ -9,7 +9,6 @@
 
 pthread_key_t JVMThread::_thread_key = pthread_key_t(-1);
 jfieldID JVMThread::_tid = nullptr;
-jfieldID JVMThread::_eetop = nullptr;
 
 bool JVMThread::initialize() {
   void* current_thread = current_thread_slow();
@@ -24,7 +23,7 @@ bool JVMThread::initialize() {
     }
   }
   assert(_tid != nullptr);
-  return true;
+  return _thread_key != pthread_key_t(-1);
 }
 
 int JVMThread::native_thread_id(JNIEnv* jni, jthread thread) {

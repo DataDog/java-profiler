@@ -696,6 +696,7 @@ DECLARE(VMThread)
     static inline VMThread* current();
     static inline int nativeThreadId(JNIEnv* jni, jthread thread);
     static inline VMThread* fromJavaThread(JNIEnv* env, jthread thread);
+    static ExecutionMode getExecutionMode();
 
     int osThreadId();
     JNIEnv* jni();
@@ -704,6 +705,7 @@ DECLARE(VMThread)
         assert(SafeAccess::isReadable(this));
         return *(const void***)this;
     }
+
 
     // This thread is considered a JavaThread if at least 2 of the selected 3 vtable entries
     // match those of a known JavaThread (which is either application thread or AttachListener).

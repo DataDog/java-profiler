@@ -14,7 +14,7 @@
 #include "jvmThread.h"
 #include "safeAccess.h"
 #include "spinLock.h"
-#include "common.h"
+#include "threadState.h"
 
 CodeCache* VMStructs::_libjvm = nullptr;
 bool VMStructs::_has_class_names = false;
@@ -627,6 +627,56 @@ void* VMThread::initialize(jthread thread) {
     memcpy(_java_thread_vtbl, vm_thread->vtable(), sizeof(_java_thread_vtbl));
     return (void*)vm_thread;
 }
+
+static ExecutionMode convertJvmExecutionState(int state) {
+  switch (state) {
+  case 4:
+  case 5:
+    return ExecutionMode::NATIVE;
+  case 6:
+  case 7:
+    return ExecutionMode::JVM;
+  case 8:
+  case 9:
+    return ExecutionMode::JAVA;
+  case 10:
+  case 11:
+    return ExecutionMode::SAFEPOINT;
+  default:
+    return ExecutionMode::UNKNOWN;
+  }
+}
+
+ExecutionMode VMThread::getExecutionMode() {
+  assert(VM::isHotspot());
+  
+  VMThread* vm_thread = VMThread::current();
+  // Not a JVM thread - native thread, e.g. thread launched by JNI code
+  if (vm_thread == nullptr) {
+    return ExecutionMode::NATIVE;
+  }
+
+  ProfiledThread *prof_thread = ProfiledThread::currentSignalSafe();
+  bool is_java_thread = prof_thread != nullptr && prof_thread->isJavaThread();
+
+  // A Java thread that JVM tells us via jvmti `ThreadStart()` callback.
+  if (is_java_thread) {
+    int raw_thread_state = vm_thread->state();
+
+    // Java threads: [4, 12) = [_thread_in_native, _thread_max_state)
+    // JVM internal threads: 0 or outside this range
+    is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
+
+    return is_java_thread ? convertJvmExecutionState(raw_thread_state)
+                        : ExecutionMode::JVM;
+  } else {
+    // It is a JVM internal thread, may or may not be a Java thread, 
+    // e.g. Compiler thread or GC thread, etc
+    return ExecutionMode::JVM;
+  }
+}
+
+
 
 int VMThread::osThreadId() {
     const char* osthread = *(const char**) at(_thread_osthread_offset);

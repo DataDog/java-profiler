@@ -15,7 +15,6 @@
 #include "profiler.h"
 #include "stackFrame.h"
 #include "thread.h"
-#include "threadState.inline.h"
 #include "guards.h"
 #include <math.h>
 #include <random>
@@ -94,7 +93,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     if (os_state != OSThreadState::UNKNOWN) {
       state = os_state;
     }
-    mode = getThreadExecutionMode();
+    mode = VMThread::getExecutionMode();
   }
   if (state == OSThreadState::UNKNOWN) {
     if (inSyscall(ucontext)) {

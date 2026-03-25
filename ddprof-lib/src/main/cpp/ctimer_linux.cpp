@@ -22,7 +22,6 @@
 #include "debugSupport.h"
 #include "libraries.h"
 #include "profiler.h"
-#include "threadState.inline.h"
 #include "hotspot/vmStructs.h"
 #include <assert.h>
 #include <stdlib.h>
