@@ -66,7 +66,6 @@ class BaseWallClock : public Engine {
         if (slot_id != -1) {
           thread_filter->remove(slot_id);
         }
-      }
 
       u64 startTime = TSC::ticks();
       WallClockEpochEvent epoch(startTime);
