@@ -67,7 +67,8 @@ For benchmark data, see
 │  │  2. recordBuffer.putLong(traceIdOffset, reverseBytes(trHi))   │  │
 │  │     recordBuffer.putLong(traceIdOffset+8, reverseBytes(trLo)) │  │
 │  │     recordBuffer.putLong(spanIdOffset, reverseBytes(spanId))  │  │
-│  │  3. sidecar[0..9] ← 0, attrs_data_size ← LRS_ENTRY_SIZE      │  │
+│  │  3. sidecar[0..9] ← 0                                         │  │
+│  │     attrs_data_size ← LRS_ENTRY_SIZE (keeps fixed LRS at [0]) │  │
 │  │  4. writeOrderedLong(sidecarBuffer, lrsSidecarOffset, lrs)    │  │
 │  │     writeLrsHex(lrs) — update fixed LRS entry in attrs_data   │  │
 │  │  5. attach() — storeFence, valid ← 1                          │  │
@@ -112,8 +113,7 @@ For benchmark data, see
 │    ├─ put(lrs, spanId, trHi, trLo)  → setContextDirect()             │
 │    ├─ setContextAttribute(keyIdx, value) → setContextAttributeDirect │
 │    └─ Process-wide caches:                                           │
-│         ├─ attrCache[256]: String → {int encoding, byte[] utf8}      │
-│         └─ lrsCache[256]:  long   → byte[] decimalUtf8               │
+│         └─ attrCache[256]: String → {int encoding, byte[] utf8}      │
 │                                                                      │
 │  BufferWriter (memory ordering abstraction)                          │
 │    ├─ BufferWriter8  (Java 8:  Unsafe)                               │
@@ -195,7 +195,7 @@ Each entry in `attrs_data` is encoded as:
 └──────────────┴──────────────┴───────────────────────┘
 ```
 
-- `key_index` 0 is reserved for the local root span ID (decimal string).
+- `key_index` 0 is reserved for the local root span ID (16-char zero-padded lowercase hex string, always fixed at attrs_data[0..17]).
 - `key_index` 1..N correspond to user-registered attributes offset by 1.
 
 ## The Detach/Attach Publication Protocol
@@ -225,7 +225,8 @@ Time 0:  detach()
 Time 1:  Mutate record fields
            recordBuffer.putLong(traceIdOffset, ...)
            recordBuffer.putLong(spanIdOffset, ...)
-           sidecar[0..9] ← 0, attrs_data_size ← LRS_ENTRY_SIZE  ← reset custom attrs
+           sidecar[0..9] ← 0                                          ← zero tag encodings
+           attrs_data_size ← LRS_ENTRY_SIZE  ← keep only fixed LRS entry at attrs_data[0]
            writeOrderedLong(sidecarBuffer, lrsSidecarOffset, lrs) ← update sidecar LRS
            writeLrsHex(lrs)                                       ← update LRS in attrs_data
 
