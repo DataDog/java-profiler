@@ -224,7 +224,13 @@ public final class ThreadContext {
             // Allocates byte[] once per unique value; cached for reuse.
             encoding = registerConstant0(value);
             if (encoding < 0) {
+                // Dictionary full: clear sidecar AND remove the OTEP attrs_data entry
+                // so both views stay consistent (both report no value for this key).
+                int otepKeyIndex = keyIndex + 1;
+                detach();
                 BUFFER_WRITER.writeOrderedInt(sidecarBuffer, keyIndex * 4, 0);
+                removeOtepAttribute(otepKeyIndex);
+                attach();
                 return false;
             }
             utf8 = value.getBytes(StandardCharsets.UTF_8);

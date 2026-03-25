@@ -83,7 +83,9 @@ void ContextApi::freeAttributeKeys() {
 void ContextApi::registerAttributeKeys(const char** keys, int count) {
     freeAttributeKeys();
 
-    _attribute_key_count = count < MAX_ATTRIBUTE_KEYS ? count : MAX_ATTRIBUTE_KEYS;
+    // Clip to DD_TAGS_CAPACITY: that is the actual sidecar slot limit and the
+    // maximum keyIndex accepted by ThreadContext.setContextAttribute.
+    _attribute_key_count = count < (int)DD_TAGS_CAPACITY ? count : (int)DD_TAGS_CAPACITY;
     for (int i = 0; i < _attribute_key_count; i++) {
         _attribute_keys[i] = strdup(keys[i]);
     }
