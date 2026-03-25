@@ -1,0 +1,49 @@
+version: 2
+updates:
+- package-ecosystem: gradle
+  directory: /
+  schedule:
+    interval: weekly
+    day: monday
+  open-pull-requests-limit: 5
+  labels:
+  - dependencies
+  - no-release-notes
+  ignore:
+  - dependency-name: org.junit-pioneer:junit-pioneer
+    versions:
+    - '>=2.0.0'
+  groups:
+    gradle-minor:
+      update-types:
+      - minor
+      - patch
+  cooldown:
+    default-days: 14
+- package-ecosystem: gradle
+  directory: /build-logic
+  schedule:
+    interval: weekly
+    day: monday
+  open-pull-requests-limit: 5
+  labels:
+  - dependencies
+  - no-release-notes
+  groups:
+    gradle-minor:
+      update-types:
+      - minor
+      - patch
+  cooldown:
+    default-days: 14
+- package-ecosystem: github-actions
+  directory: /
+  schedule:
+    interval: weekly
+    day: monday
+  open-pull-requests-limit: 5
+  labels:
+  - dependencies
+  - no-release-notes
+  cooldown:
+    default-days: 14
