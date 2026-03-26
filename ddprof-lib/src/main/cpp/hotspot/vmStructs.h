@@ -690,11 +690,11 @@ enum JVMJavaThreadState {
 };
 
 DECLARE(VMThread)
+  friend class JVMThread;
   public:
     static void* initialize(jthread thread);
 
     static inline VMThread* current();
-    static inline int nativeThreadId(JNIEnv* jni, jthread thread);
     static inline VMThread* fromJavaThread(JNIEnv* env, jthread thread);
     static ExecutionMode getExecutionMode();
     static OSThreadState getOSThreadState();
@@ -782,6 +782,8 @@ DECLARE(VMThread)
     }
 
     inline VMMethod* compiledMethod();
+private:
+    static inline int nativeThreadId(JNIEnv* jni, jthread thread);
 DECLARE_END
 
 DECLARE(VMConstMethod)

@@ -22,7 +22,6 @@ VMThread* VMThread::fromJavaThread(JNIEnv* env, jthread thread) {
 }
 
 int VMThread::nativeThreadId(JNIEnv* jni, jthread thread) {
-//    assert(_has_native_thread_id);
     if (_has_native_thread_id) {
         VMThread* vm_thread = fromJavaThread(jni, thread);
         return vm_thread != NULL ? vm_thread->osThreadId() : -1;
