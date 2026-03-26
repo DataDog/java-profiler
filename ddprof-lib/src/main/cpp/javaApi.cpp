@@ -587,6 +587,6 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused) {
 #ifdef DEBUG
   Context& ctx = Contexts::get();
-  TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu, checksum=%lu", OS::threadId(), ctx.spanId, ctx.rootSpanId, ctx.checksum);
+  TEST_LOG("===> Context: tid:%u, spanId=%llu, rootSpanId=%llu, checksum=%llu", OS::threadId(), ctx.spanId, ctx.rootSpanId, ctx.checksum);
 #endif // DEBUG
 }

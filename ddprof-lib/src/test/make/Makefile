@@ -26,7 +26,7 @@ $(OBJDIR):
 	mkdir -p $(OBJDIR)
 
 $(OBJDIR)/%.o : ${SRCDIR}/%.cpp | $(OBJDIR)
-	${CC} ${CFLAGS} -DEBUG -DPROFILER_VERSION=\"snapshot\" ${INCLUDES}   -c  $<  -o  $@
+	${CC} ${CFLAGS} -DDEBUG -DPROFILER_VERSION=\"snapshot\" ${INCLUDES}   -c  $<  -o  $@
 
 clean :
 	@rm -rf $(OBJDIR)

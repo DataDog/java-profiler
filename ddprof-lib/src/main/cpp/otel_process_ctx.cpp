@@ -279,7 +279,7 @@ static otel_process_ctx_result otel_process_ctx_update(uint64_t monotonic_publis
   // Step: Prepare the new payload to be published
   // The payload SHOULD be ready and valid before trying to actually update the mapping.
   uint32_t payload_size = 0;
-  char *payload;
+  char *payload = nullptr;
   otel_process_ctx_result result = otel_process_ctx_encode_protobuf_payload(&payload, &payload_size, *data);
   if (!result.success) return result;
 
@@ -756,6 +756,21 @@ static otel_process_ctx_result otel_process_ctx_encode_protobuf_payload(char **o
       }
     }
 
+    // Helper to free thread_ctx_config and its contents on failure paths.
+    // This prevents scan-build false positives: the struct and its heap fields
+    // are freed here so the caller's otel_process_ctx_read_data_drop sees null.
+    auto free_thread_ctx_config = [&]() {
+      if (!data_out->thread_ctx_config) return;
+      auto *cfg = (otel_thread_ctx_config_data *)data_out->thread_ctx_config;
+      if (cfg->schema_version) free((void*)cfg->schema_version);
+      if (cfg->attribute_key_map) {
+        for (size_t i = 0; cfg->attribute_key_map[i]; i++) free((void*)cfg->attribute_key_map[i]);
+        free((void*)cfg->attribute_key_map);
+      }
+      free(cfg);
+      data_out->thread_ctx_config = nullptr;
+    };
+
     // Parse extra attributes (field 2)
     while (ptr < end_ptr) {
       uint8_t extra_ctx_field;
@@ -773,12 +788,21 @@ static otel_process_ctx_result otel_process_ctx_encode_protobuf_payload(char **o
         uint8_t kv_field;
         if (!read_protobuf_tag(&ptr, kv_end, &kv_field) || kv_field != 1) return false;
         if (!read_protobuf_string(&ptr, kv_end, key_buffer)) return false;
-        if (!data_out->thread_ctx_config) {
-          otel_thread_ctx_config_data *setup = (otel_thread_ctx_config_data *) calloc(1, sizeof(otel_thread_ctx_config_data));
-          if (!setup) return false;
-          data_out->thread_ctx_config = setup;
+        otel_thread_ctx_config_data *cfg = (otel_thread_ctx_config_data *)data_out->thread_ctx_config;
+        if (!cfg) {
+          cfg = (otel_thread_ctx_config_data *) calloc(1, sizeof(otel_thread_ctx_config_data));
+          if (!cfg) return false;
+          if (!read_protobuf_array_value_strings(&ptr, kv_end, value_buffer, &cfg->attribute_key_map)) {
+            free(cfg);
+            return false;
+          }
+          data_out->thread_ctx_config = cfg;
+        } else {
+          if (!read_protobuf_array_value_strings(&ptr, kv_end, value_buffer, &cfg->attribute_key_map)) {
+            free_thread_ctx_config();
+            return false;
+          }
         }
-        if (!read_protobuf_array_value_strings(&ptr, kv_end, value_buffer, &((otel_thread_ctx_config_data *)data_out->thread_ctx_config)->attribute_key_map)) return false;
       } else {
         if (!read_protobuf_keyvalue(&ptr, kv_end, key_buffer, value_buffer)) return false;
 
@@ -787,15 +811,19 @@ static otel_process_ctx_result otel_process_ctx_encode_protobuf_payload(char **o
 
         // Dispatch based on key
         if (strcmp(key_buffer, "threadlocal.schema_version") == 0) {
-          otel_thread_ctx_config_data *setup = (otel_thread_ctx_config_data *) calloc(1, sizeof(otel_thread_ctx_config_data));
-          if (!setup) { free(value); return false; }
-          setup->schema_version = value;
-          data_out->thread_ctx_config = setup;
+          if (!data_out->thread_ctx_config) {
+            data_out->thread_ctx_config = (const otel_thread_ctx_config_data *) calloc(1, sizeof(otel_thread_ctx_config_data));
+            if (!data_out->thread_ctx_config) { free(value); return false; }
+          }
+          auto *cfg = (otel_thread_ctx_config_data *)data_out->thread_ctx_config;
+          if (cfg->schema_version) free((void*)cfg->schema_version);
+          cfg->schema_version = value;
         } else {
           char *key = strdup(key_buffer);
           if (!key || extra_attributes_index + 2 >= extra_attributes_capacity) {
             free(key);
             free(value);
+            free_thread_ctx_config();
             return false;
           }
           data_out->extra_attributes[extra_attributes_index] = key;
