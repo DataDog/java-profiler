@@ -29,18 +29,17 @@ typedef ssize_t (*FlushCallback)(char *data, int len);
 class Buffer {
 private:
   int _offset;
+  static const int _limit = BUFFER_SIZE - sizeof(int);
 protected:
   // this array is 'extended' by the RecordingBuffer
   // this will confuse sanitizers and most of the sane people but it seems to
   // work
-  char* _data;
+  char _data[_limit];
 
-  Buffer() : _offset(0) { }
 public:
+  Buffer() : _offset(0) { memset(_data, 0, _limit); }
 
-  int limit() const {
-    return BUFFER_SIZE - sizeof(Buffer);
-  }
+  virtual int limit() const { return _limit; }
 
   bool flushIfNeeded(FlushCallback callback, int limit = BUFFER_LIMIT) {
     if (_offset > limit) {
@@ -219,24 +218,21 @@ public:
 
 class RecordingBuffer : public Buffer {
 private:
+  static const int _limit = RECORDING_BUFFER_SIZE - sizeof(Buffer);
   // we reserve 8KiB to overflow in to in case event serialisers in
   // the flight recorder are buggy. If we ever use the overflow,
   // which is sized to accommodate the largest possible string, we
   // will truncate and may produce a corrupt recording, but we will
   // not write into arbitrary memory.
-  static const int LIMIT = RECORDING_BUFFER_SIZE - sizeof(Buffer);
+  char _buf[_limit + RECORDING_BUFFER_OVERFLOW];
 
 public:
   RecordingBuffer() : Buffer() {
-    _data = (char*)malloc(LIMIT * sizeof(char));
-    memset(_data, 0, LIMIT * sizeof(char));
+    new (_data + sizeof(_data)) char[sizeof(_buf)];
+    memset(_buf, 0, _limit);
   }
 
-  virtual ~RecordingBuffer() {
-    free(_data);
-  }
-
-  int limit() const { return LIMIT; }
+  int limit() const override { return _limit; }
 
   bool flushIfNeeded(FlushCallback callback,
                      int limit = RECORDING_BUFFER_LIMIT) {
