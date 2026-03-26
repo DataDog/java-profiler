@@ -1,5 +1,5 @@
-#ifndef JAVA_PROFILER_LIBRARY_THREAD_STATE_H
-#define JAVA_PROFILER_LIBRARY_THREAD_STATE_H
+#ifndef _THREADSTATE_H
+#define _THREADSTATE_H
 
 
 enum class OSThreadState : int {
@@ -28,4 +28,4 @@ enum class ExecutionMode : int {
 inline ExecutionMode getThreadExecutionMode();
 inline OSThreadState getOSThreadState();
 
-#endif // JAVA_PROFILER_LIBRARY_THREAD_STATE_H
+#endif // _THREADSTATE_H

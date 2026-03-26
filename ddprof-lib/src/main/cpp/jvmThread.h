@@ -8,11 +8,8 @@
 
 #include <cassert>
 #include <jni.h>
+#include <jvmti.h>
 #include <pthread.h>
-
-#include "hotspot/vmStructs.h"
-#include "j9/j9Ext.h"
-#include "vmEntry.h"
 
 /**
  * JVMThread represents a native JVM thread that is JVM implementation agnostic
@@ -23,7 +20,7 @@ private:
     static jfieldID _tid;
 
 public:
-    static bool is_initialized() {
+    static bool isInitialized() {
         return _thread_key != pthread_key_t(-1);
     }
 
@@ -33,6 +30,7 @@ public:
      */
     static bool initialize();
     static inline void* current() {
+        assert(isInitialized());
         return pthread_getspecific(_thread_key);
     }
 
@@ -40,7 +38,7 @@ public:
         return _thread_key;
     }
 
-    static int native_thread_id(JNIEnv* jni, jthread thread);
+    static int nativeThreadId(JNIEnv* jni, jthread thread);
 
     static inline jlong javaThreadId(JNIEnv* env, jthread thread) {
        return env->GetLongField(thread, _tid);
@@ -51,7 +49,7 @@ public:
     }
 
 private:
-    static void* current_thread_slow();
+    static void* currentThreadSlow();
 };
 
 #endif // _JVMTHREAD_H

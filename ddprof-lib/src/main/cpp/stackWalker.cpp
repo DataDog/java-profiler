@@ -848,7 +848,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 }
 
 void StackWalker::checkFault(ProfiledThread* thrd) {
-    if (!JVMThread::is_initialized()) {
+    if (!JVMThread::isInitialized()) {
         // JVM has not been loaded or VMStructs have not been initialized yet
         return;
     }

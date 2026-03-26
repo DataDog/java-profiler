@@ -6,12 +6,13 @@
 #include "jvmThread.h"
 #include "hotspot/vmStructs.inline.h"
 #include "j9/j9Ext.h"
+#include "vmEntry.h"
 
 pthread_key_t JVMThread::_thread_key = pthread_key_t(-1);
 jfieldID JVMThread::_tid = nullptr;
 
 bool JVMThread::initialize() {
-  void* current_thread = current_thread_slow();
+  void* current_thread = currentThreadSlow();
   if (current_thread == nullptr) {
     return false;
   }
@@ -26,11 +27,11 @@ bool JVMThread::initialize() {
   return _thread_key != pthread_key_t(-1);
 }
 
-int JVMThread::native_thread_id(JNIEnv* jni, jthread thread) {
+int JVMThread::nativeThreadId(JNIEnv* jni, jthread thread) {
     return VM::isOpenJ9() ? J9Ext::GetOSThreadID(thread) : VMThread::nativeThreadId(jni, thread);
 }
 
-void* JVMThread::current_thread_slow() {
+void* JVMThread::currentThreadSlow() {
     jthread thread;
     if (VM::jvmti()->GetCurrentThread(&thread) != JVMTI_ERROR_NONE) {
         return nullptr;

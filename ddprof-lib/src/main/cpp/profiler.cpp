@@ -142,7 +142,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     ProfiledThread::release();
   } else {
     // ProfiledThread already cleaned up - try to get tid from JVMTI as fallback
-    tid = JVMThread::native_thread_id(jni, thread);
+    tid = JVMThread::nativeThreadId(jni, thread);
     if (tid < 0) {
       // No ProfiledThread AND can't get tid from JVMTI - nothing we can do
       return;
@@ -1154,7 +1154,7 @@ void Profiler::updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
     native_thread_id = ProfiledThread::currentTid();
     assert(native_thread_id != -1);
   } else {
-    native_thread_id = JVMThread::native_thread_id(jni, thread);
+    native_thread_id = JVMThread::nativeThreadId(jni, thread);
   }
 
   if (native_thread_id >= 0 &&
@@ -1274,7 +1274,7 @@ Engine *Profiler::selectAllocEngine(Arguments &args) {
 }
 
 Error Profiler::checkJvmCapabilities() {
-  if (!JVMThread::is_initialized()) {
+  if (!JVMThread::isInitialized()) {
     return Error("Could not find JVMThread bridge. Unsupported JVM?");
   }
 

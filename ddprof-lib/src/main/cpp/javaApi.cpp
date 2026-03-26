@@ -21,6 +21,7 @@
 #include "counters.h"
 #include "common.h"
 #include "engine.h"
+#include "hotspot/vmStructs.h"
 #include "incbin.h"
 #include "jvmThread.h"
 #include "os.h"
@@ -295,7 +296,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   if (tid < 0) {
     return;
   }
-  int origin_tid = JVMThread::native_thread_id(env, origin);
+  int origin_tid = JVMThread::nativeThreadId(env, origin);
   if (origin_tid < 0) {
     return;
   }

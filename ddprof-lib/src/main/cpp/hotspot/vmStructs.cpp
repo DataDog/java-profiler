@@ -678,8 +678,10 @@ ExecutionMode VMThread::getExecutionMode() {
 
 OSThreadState VMThread::getOSThreadState() {
   VMThread* vm_thread = VMThread::current();
-  assert(vm_thread != nullptr);
-  int raw_thread_state = vm_thread ? vm_thread->state() : 0;
+  if (vm_thread == nullptr) {
+    return OSThreadState::UNKNOWN;
+  }
+  int raw_thread_state = vm_thread->state();
   bool is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
   OSThreadState state = OSThreadState::UNKNOWN;
   if (is_java_thread) {
