@@ -596,8 +596,11 @@ void ElfParser::parseDwarfInfo() {
     ElfProgramHeader* eh_frame_hdr = findProgramHeader(PT_GNU_EH_FRAME);
     if (eh_frame_hdr != NULL) {
         if (eh_frame_hdr->p_vaddr != 0) {
+            // Parse per-PC frame descriptions and detect per-library default frame layout.
+            // On aarch64 this distinguishes GCC (LINKED_FRAME_SIZE=0) from clang
+            // (LINKED_FRAME_CLANG_SIZE=16) conventions for each shared library.
             DwarfParser dwarf(_cc->name(), _base, at(eh_frame_hdr));
-            _cc->setDwarfTable(dwarf.table(), dwarf.count());
+            _cc->setDwarfTable(dwarf.table(), dwarf.count(), dwarf.detectedDefaultFrame());
         } else if (strcmp(_cc->name(), "[vdso]") == 0) {
             FrameDesc* table = (FrameDesc*)malloc(sizeof(FrameDesc));
             *table = FrameDesc::empty_frame;

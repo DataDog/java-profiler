@@ -104,6 +104,7 @@ DwarfParser::DwarfParser(const char *name, const char *image_base,
 
   _code_align = sizeof(instruction_t);
   _data_align = -(int)sizeof(void *);
+  _linked_frame_size = -1;
 
   parse(eh_frame_hdr);
 }
@@ -410,6 +411,14 @@ void DwarfParser::addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off,
 
   // cfa_reg and cfa_off can be encoded to a single 32 bit value, considering the existing and supported systems
   u32 cfa = static_cast<u32>(cfa_off) << 8 | static_cast<u32>(cfa_reg & 0xff);
+
+  // Detect the linked frame size from the first FP-based entry with a non-zero offset.
+  // Both GCC and Clang emit DW_REG_FP with cfa_off = LINKED_FRAME_CLANG_SIZE in function
+  // bodies after the prologue completes. Terminal records use cfa_off = 0 (LINKED_FRAME_SIZE
+  // on aarch64) and do not influence detection.
+  if (_linked_frame_size < 0 && cfa_reg == DW_REG_FP && cfa_off > 0) {
+    _linked_frame_size = cfa_off;
+  }
 
   if (_prev == NULL || (_prev->loc == loc && --_count >= 0) ||
       _prev->cfa != cfa || _prev->fp_off != fp_off || _prev->pc_off != pc_off) {
