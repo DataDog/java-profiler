@@ -11,6 +11,7 @@ on:
           - "major"
           - "minor"
           - "patch"
+          - "retag"
         default: "minor"
       dry_run:
         description: Perform the release dry-run
@@ -56,14 +57,14 @@ jobs:
           echo "Release type: $TYPE"
 
           # Branch validation
-          if [ "$TYPE" != "patch" ]; then
-            if [ "$BRANCH" != "main" ]; then
-              echo "::error::Major or minor releases can only be performed from 'main' branch"
+          if [ "$TYPE" == "patch" ] || [ "$TYPE" == "retag" ]; then
+            if [[ ! $BRANCH =~ ^release/[0-9]+\.[0-9]+\._$ ]]; then
+              echo "::error::${TYPE^} can only be performed from 'release/*' branches (format: release/X.Y._)"
               exit 1
             fi
           else
-            if [[ ! $BRANCH =~ ^release/[0-9]+\.[0-9]+\._$ ]]; then
-              echo "::error::Patch releases can only be performed from 'release/*' branches (format: release/X.Y._)"
+            if [ "$BRANCH" != "main" ]; then
+              echo "::error::Major or minor releases can only be performed from 'main' branch"
               exit 1
             fi
           fi
@@ -104,6 +105,19 @@ jobs:
             else
               RELEASE_VERSION="$BASE"
             fi
+          elif [ "$TYPE" == "retag" ]; then
+            # Retag reuses the current version; tag must already exist
+            RELEASE_VERSION="$BASE"
+            if ! git rev-parse "v_${RELEASE_VERSION}" >/dev/null 2>&1; then
+              echo "::error::Tag v_${RELEASE_VERSION} does not exist. Use a normal release to create a new tag."
+              exit 1
+            fi
+            # Refuse if the GitHub release is already public
+            IS_DRAFT=$(gh release view "v_${RELEASE_VERSION}" --json isDraft --jq '.isDraft' 2>/dev/null || echo "not-found")
+            if [ "$IS_DRAFT" == "false" ]; then
+              echo "::error::GitHub release v_${RELEASE_VERSION} is already public. Retagging is not allowed."
+              exit 1
+            fi
           else
             # PATCH always increments
             RELEASE_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
@@ -112,8 +126,8 @@ jobs:
           # Compute release branch
           RELEASE_BRANCH="release/${RELEASE_VERSION%.*}._"
 
-          # Check if tag already exists
-          if git rev-parse "v_${RELEASE_VERSION}" >/dev/null 2>&1; then
+          # Check if tag already exists (skip for retag, which requires it to exist)
+          if [ "$TYPE" != "retag" ] && git rev-parse "v_${RELEASE_VERSION}" >/dev/null 2>&1; then
             echo "::error::Tag v_${RELEASE_VERSION} already exists"
             exit 1
           fi
@@ -137,7 +151,7 @@ jobs:
 
   pre-release-tests:
     needs: validate-inputs
-    if: ${{ inputs.dry_run != true && inputs.skip_tests != true }}
+    if: ${{ inputs.dry_run != true && inputs.skip_tests != true && inputs.release_type != 'retag' }}
     uses: ./.github/workflows/test_workflow.yml
     with:
       configuration: '["debug", "asan"]'
@@ -148,7 +162,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check test results
-        if: ${{ inputs.dry_run != true && inputs.skip_tests != true && needs.pre-release-tests.result != 'success' }}
+        if: ${{ inputs.dry_run != true && inputs.skip_tests != true && inputs.release_type != 'retag' && needs.pre-release-tests.result != 'success' }}
         run: |
           echo "::error::Pre-release tests failed. Cannot proceed with release."
           exit 1
