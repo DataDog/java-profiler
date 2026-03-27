@@ -184,14 +184,23 @@ public final class ThreadContext {
 
     /**
      * Sets a custom attribute on the current thread's context by string value.
-     * Uses a process-wide encoding cache to avoid JNI for repeated values
+     * Uses a per-thread encoding cache to avoid JNI for repeated values
      * (the common case). On cache miss, a single JNI call registers the value
      * in the native Dictionary; subsequent calls with the same value are
      * zero-JNI ByteBuffer writes.
      *
+     * <p><b>High-cardinality values are not supported.</b> Each unique value
+     * permanently occupies one slot in the native Dictionary, which is bounded
+     * at 65536 entries across all threads for the JVM lifetime. Once exhausted,
+     * this method returns {@code false} and clears the attribute. Use only
+     * low-cardinality values (e.g. endpoint names, DB system names). UUIDs,
+     * request IDs, and other per-request-unique strings will exhaust the
+     * Dictionary and cause attributes to be silently dropped.
+     *
      * @param keyIndex Index into the registered attribute key map (0-based)
      * @param value The string value for this attribute
-     * @return true if the attribute was set successfully
+     * @return true if the attribute was set successfully, false if the
+     *         Dictionary is full or the keyIndex is out of range
      */
     public boolean setContextAttribute(int keyIndex, String value) {
         if (keyIndex < 0 || keyIndex >= MAX_CUSTOM_SLOTS || value == null) {
