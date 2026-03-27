@@ -181,36 +181,6 @@ public class OtelContextStorageModeTest {
     }
 
     @Test
-    public void testRepeatedContextWrites() {
-        for (int i = 1; i <= 1000; i++) {
-            long spanId = i * 2L;
-            long rootSpanId = i * 2L + 1;
-            profiler.setContext(rootSpanId, spanId, 0, spanId);
-            assertEquals(spanId, profiler.getThreadContext().getSpanId(), "SpanId mismatch at iteration " + i);
-            assertEquals(rootSpanId, profiler.getThreadContext().getRootSpanId(), "RootSpanId mismatch at iteration " + i);
-        }
-    }
-
-    @Test
-    public void testNestedContextUpdates() {
-        profiler.setContext(100L, 100L, 0, 100L);
-        assertEquals(100L, profiler.getThreadContext().getSpanId());
-        assertEquals(100L, profiler.getThreadContext().getRootSpanId());
-
-        profiler.setContext(200L, 200L, 0, 200L);
-        assertEquals(200L, profiler.getThreadContext().getSpanId());
-        assertEquals(200L, profiler.getThreadContext().getRootSpanId());
-
-        profiler.setContext(350L, 400L, 0, 400L);
-        assertEquals(400L, profiler.getThreadContext().getSpanId());
-        assertEquals(350L, profiler.getThreadContext().getRootSpanId());
-
-        profiler.clearContext();
-        assertEquals(0L, profiler.getThreadContext().getSpanId());
-        assertEquals(0L, profiler.getThreadContext().getRootSpanId());
-    }
-
-    @Test
     public void testThreadIsolation() throws InterruptedException {
         long threadASpanId = 1000L;
         long threadARootSpanId = 1001L;

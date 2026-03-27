@@ -286,11 +286,17 @@ External profilers follow the OTEP #4947 protocol:
 Even though the signal handler runs on the same thread as the writer,
 barriers are essential:
 
-1. **CPU store buffer (ARM)** — ARM can reorder stores arbitrarily.
-   The signal handler interrupt frame may not see buffered stores without
-   an explicit `DMB` instruction.
+1. **Compiler reordering** — the JIT compiler may reorder stores
+   arbitrarily. A signal handler running on the same thread will never
+   observe CPU-level store-buffer reordering (the CPU always presents
+   its own stores in program order to itself), but it *will* observe
+   any reordering introduced by the compiler. `storeFence` acts as a
+   compiler barrier that prevents the JIT from sinking stores past it.
 2. **Cross-thread reads** — the external OTEP profiler reads from a
-   different thread, requiring release/acquire pairing.
+   different thread. Here both compiler *and* CPU reordering matter,
+   requiring release/acquire pairing. On ARM, `storeFence` compiles to
+   `DMB ISHST`, providing the hardware store-store barrier needed for
+   cross-thread visibility.
 
 ### Barrier Taxonomy
 
@@ -385,7 +391,7 @@ if (value.equals(attrCacheKeys[slot])) {
 // Both sidecar and OTEP attrs_data are written inside the detach/attach window
 // so a signal handler never sees a new sidecar encoding alongside old attrs_data.
 detach();
-BUFFER_WRITER.writeOrderedInt(sidecarBuffer, keyIndex * 4, encoding);
+sidecarBuffer.putInt(keyIndex * 4, encoding);
 replaceOtepAttribute(otepKeyIndex, utf8);
 attach();
 ```
@@ -459,11 +465,11 @@ Full benchmark data and analysis:
 - **testOtelModeAttributeOverflow** — overflow of `attrs_data` is handled
   gracefully (returns false, no crash).
 - **testMaxValueContext** — `Long.MAX_VALUE` round-trips correctly.
-- **testSequentialContextUpdates**, **testRepeatedContextWrites** —
-  repeated writes with varying values.
-- **testNestedContextUpdates** — nested set/clear sequence.
+- **testSequentialContextUpdates** — repeated writes with varying values.
 - **testThreadIsolation** — concurrent writes from multiple threads,
   validating thread-local isolation.
+- **testSpanTransitionClearsAttributes** — direct span-to-span transition
+  without `clearContext` does not leak custom attributes from the previous span.
 
 `ddprof-test/src/test/java/com/datadoghq/profiler/wallclock/ContextWallClockTest.java`:
 

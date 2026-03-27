@@ -169,7 +169,7 @@ public final class ThreadContext {
         }
         int otepKeyIndex = keyIndex + 1;
         detach();
-        BUFFER_WRITER.writeOrderedInt(sidecarBuffer, keyIndex * 4, 0);
+        sidecarBuffer.putInt(keyIndex * 4, 0);
         removeOtepAttribute(otepKeyIndex);
         attach();
     }
@@ -226,11 +226,7 @@ public final class ThreadContext {
             if (encoding < 0) {
                 // Dictionary full: clear sidecar AND remove the OTEP attrs_data entry
                 // so both views stay consistent (both report no value for this key).
-                int otepKeyIndex = keyIndex + 1;
-                detach();
-                BUFFER_WRITER.writeOrderedInt(sidecarBuffer, keyIndex * 4, 0);
-                removeOtepAttribute(otepKeyIndex);
-                attach();
+                clearContextAttribute(keyIndex);
                 return false;
             }
             utf8 = value.getBytes(StandardCharsets.UTF_8);
@@ -247,7 +243,7 @@ public final class ThreadContext {
         // so a signal handler never sees a new sidecar encoding alongside old attrs_data.
         int otepKeyIndex = keyIndex + 1;
         detach();
-        BUFFER_WRITER.writeOrderedInt(sidecarBuffer, keyIndex * 4, encoding);
+        sidecarBuffer.putInt(keyIndex * 4, encoding);
         boolean written = replaceOtepAttribute(otepKeyIndex, utf8);
         attach();
         return written;
