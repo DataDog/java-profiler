@@ -123,6 +123,8 @@ protected:
     void TearDown() override {
         // Restore original SIGSEGV handler
         sigaction(SIGSEGV, &saved_segv_action, nullptr);
+        // Reset static interception state so tests don't bleed into each other
+        OS::resetSignalHandlersForTesting();
     }
 };
 

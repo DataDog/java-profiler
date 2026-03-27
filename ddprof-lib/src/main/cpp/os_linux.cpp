@@ -756,10 +756,10 @@ void OS::protectSignalHandlers(SigAction segvHandler, SigAction busHandler) {
     // Save the current (JVM's) signal handlers BEFORE we install ours.
     // These will be returned as oldact when we intercept other libraries' sigaction calls,
     // so they chain to JVM instead of back to us (which would cause infinite loops).
-    if (!_orig_handlers_saved && _real_sigaction != nullptr) {
+    if (!__atomic_load_n(&_orig_handlers_saved, __ATOMIC_ACQUIRE) && _real_sigaction != nullptr) {
         _real_sigaction(SIGSEGV, nullptr, &_orig_segv_sigaction);
         _real_sigaction(SIGBUS, nullptr, &_orig_bus_sigaction);
-        _orig_handlers_saved = true;
+        __atomic_store_n(&_orig_handlers_saved, true, __ATOMIC_RELEASE);
     }
     _protected_segv_handler = segvHandler;
     _protected_bus_handler = busHandler;
@@ -773,7 +773,67 @@ SigAction OS::getBusChainTarget() {
     return __atomic_load_n(&_bus_chain_target, __ATOMIC_ACQUIRE);
 }
 
-// sigaction hook - called via GOT patching to intercept sigaction calls
+// sigaction_hook - intercepts sigaction(2) calls from any library via GOT patching.
+//
+// PROBLEM SOLVED
+// ==============
+// Without interception, a library (e.g. wasmtime) can overwrite our SIGSEGV handler:
+//
+//   Before:   kernel --> our_handler --> JVM_handler
+//   After lib calls sigaction(SIGSEGV, lib_handler, &oldact):
+//             kernel --> lib_handler
+//   lib_handler stores oldact = our_handler as its chain target
+//   => when lib chains on unhandled fault: lib_handler --> our_handler --> lib_handler --> ...
+//      INFINITE LOOP
+//
+// HANDLER CHAIN AFTER SETUP
+// ==========================
+//
+//   protectSignalHandlers()          replaceSigsegvHandler()     LibraryPatcher::patch_sigaction()
+//         |                                  |                            |
+//         v                                  v                            v
+//   save JVM handler               install our_handler         GOT-patch sigaction
+//   into _orig_segv_sigaction      as real OS handler          => all future sigaction()
+//                                                                 calls go through us
+//
+//   Signal delivery chain:
+//
+//     kernel
+//       |
+//       v
+//     our_handler  (installed via replaceSigsegvHandler, never displaced)
+//       |
+//       +-- handled by us? --> done
+//       |
+//       v (not handled)
+//     _segv_chain_target  (lib_handler, set when we intercepted lib's sigaction call)
+//       |
+//       +-- handled by lib? --> done
+//       |
+//       v (lib chains to its saved oldact)
+//     _orig_segv_sigaction  (JVM's original handler, what we returned as oldact to lib)
+//       |
+//       v
+//     JVM handles or terminates
+//
+// INTERCEPTION LOGIC (this function)
+// ===================================
+// Case 1 - Install call [act != nullptr, SA_SIGINFO]:
+//   - Save lib's handler as _segv_chain_target (we'll call it if we can't handle)
+//   - Return _orig_segv_sigaction as oldact (NOT our handler, to break the loop)
+//   - Do NOT actually install lib's handler (keep ours on top)
+//
+// Case 2 - Query-only call [act == nullptr, oldact != nullptr]:
+//   - Return _orig_segv_sigaction as oldact (same reason: lib must not see our handler)
+//   - A lib that queries, stores the result, then uses it as a chain target would
+//     loop if we returned our handler here.
+//
+// Case 3 - 1-arg handler [act != nullptr, no SA_SIGINFO]:
+//   - Pass through: we cannot safely chain 1-arg handlers (different calling convention)
+//
+// Case 4 - Any other signal, or protection not yet active:
+//   - Pass through to real sigaction unchanged.
+//
 static int sigaction_hook(int signum, const struct sigaction* act, struct sigaction* oldact) {
     // _real_sigaction must be resolved before any GOT patching happens
     if (_real_sigaction == nullptr) {
@@ -782,10 +842,14 @@ static int sigaction_hook(int signum, const struct sigaction* act, struct sigact
     }
 
     // If this is SIGSEGV or SIGBUS and we have protected handlers installed,
-    // intercept the call to keep our handler on top
-    if (act != nullptr) {
-        if (signum == SIGSEGV && _protected_segv_handler != nullptr) {
-            // Only intercept SA_SIGINFO handlers (3-arg form) for safe chaining
+    // intercept the call to keep our handler on top.
+    // We intercept both install calls (act != nullptr) and query-only calls (act == nullptr)
+    // to ensure callers always see the JVM's original handler, never ours.
+    // A caller that gets our handler as oldact and later chains to it would cause an
+    // infinite loop: us -> them -> us -> ...
+    if (signum == SIGSEGV && _protected_segv_handler != nullptr) {
+        if (act != nullptr) {
+            // Install call: only intercept SA_SIGINFO handlers (3-arg form) for safe chaining
             if (act->sa_flags & SA_SIGINFO) {
                 SigAction new_handler = act->sa_sigaction;
                 // Don't intercept if it's our own handler being installed
@@ -793,9 +857,8 @@ static int sigaction_hook(int signum, const struct sigaction* act, struct sigact
                     // Save their handler as our chain target
                     __atomic_exchange_n(&_segv_chain_target, new_handler, __ATOMIC_ACQ_REL);
                     if (oldact != nullptr) {
-                        // Return the original (JVM's) handler, not our handler.
-                        // This way, when the intercepted library chains to "previous",
-                        // it goes to JVM, not back to us (which would cause infinite loops).
+                        // Return the original (JVM's) handler, not ours, to prevent
+                        // the caller from chaining back to us.
                         *oldact = _orig_segv_sigaction;
                     }
                     Counters::increment(SIGACTION_INTERCEPTED);
@@ -804,19 +867,28 @@ static int sigaction_hook(int signum, const struct sigaction* act, struct sigact
                 }
             }
             // Let 1-arg handlers (without SA_SIGINFO) pass through - we can't safely chain them
-        } else if (signum == SIGBUS && _protected_bus_handler != nullptr) {
+        } else if (oldact != nullptr) {
+            // Query-only call: return the JVM's original handler, not ours.
+            // Same reason: a caller that stores our handler and later chains to it causes loops.
+            *oldact = _orig_segv_sigaction;
+            return 0;
+        }
+    } else if (signum == SIGBUS && _protected_bus_handler != nullptr) {
+        if (act != nullptr) {
             if (act->sa_flags & SA_SIGINFO) {
                 SigAction new_handler = act->sa_sigaction;
                 if (new_handler != _protected_bus_handler) {
                     __atomic_exchange_n(&_bus_chain_target, new_handler, __ATOMIC_ACQ_REL);
                     if (oldact != nullptr) {
-                        // Return the original (JVM's) handler, not our handler.
                         *oldact = _orig_bus_sigaction;
                     }
                     Counters::increment(SIGACTION_INTERCEPTED);
                     return 0;
                 }
             }
+        } else if (oldact != nullptr) {
+            *oldact = _orig_bus_sigaction;
+            return 0;
         }
     }
 
@@ -826,6 +898,17 @@ static int sigaction_hook(int signum, const struct sigaction* act, struct sigact
 
 void* OS::getSigactionHook() {
     return (void*)sigaction_hook;
+}
+
+void OS::resetSignalHandlersForTesting() {
+    __atomic_store_n(&_orig_handlers_saved, false, __ATOMIC_RELEASE);
+    memset(&_orig_segv_sigaction, 0, sizeof(_orig_segv_sigaction));
+    memset(&_orig_bus_sigaction, 0, sizeof(_orig_bus_sigaction));
+    _protected_segv_handler = nullptr;
+    _protected_bus_handler = nullptr;
+    __atomic_store_n(&_segv_chain_target, (SigAction)nullptr, __ATOMIC_RELEASE);
+    __atomic_store_n(&_bus_chain_target, (SigAction)nullptr, __ATOMIC_RELEASE);
+    // _real_sigaction is intentionally not reset: safe to reuse across tests
 }
 
 #endif // __linux__

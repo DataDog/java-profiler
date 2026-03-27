@@ -500,4 +500,8 @@ void* OS::getSigactionHook() {
     return nullptr;  // No sigaction interception on macOS
 }
 
+void OS::resetSignalHandlersForTesting() {
+    // No-op: no sigaction interception state on macOS
+}
+
 #endif // __APPLE__

@@ -569,7 +569,7 @@ class ProfilerTestPlugin : Plugin<Project> {
                 val profilerLibProject = project.rootProject.findProject(profilerLibProjectPath)
 
                 if (profilerLibProject != null && testTask != null) {
-                    // Wire test -> gtest dependency (C++ unit tests run before Java integration tests)
+                    // gtest runs before test (C++ unit tests run before Java integration tests)
                     val gtestTaskName = "gtest${capitalizedCfgName}"
                     try {
                         val gtestTask = profilerLibProject.tasks.named(gtestTaskName)

@@ -51,7 +51,6 @@ static void (*orig_trapHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 static void (*orig_segvHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 static void (*orig_busHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 
-
 static Engine noop_engine;
 static PerfEvents perf_events;
 static WallClockASGCT wall_asgct_engine;
@@ -1141,11 +1140,6 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
     thrd->exitCrashHandler();
   }
   return 0;  // not handled, safe to chain
-}
-
-// Legacy wrapper for external callers (if any)
-bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  return crashHandlerInternal(signo, siginfo, ucontext) > 0;
 }
 
 void Profiler::setupSignalHandlers() {
