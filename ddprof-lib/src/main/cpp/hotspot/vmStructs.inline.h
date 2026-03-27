@@ -11,17 +11,13 @@ VMThread* VMThread::current() {
     return VMThread::cast(JVMThread::current());
 }
 
-void* VMThread::fromJavaThreadRaw(JNIEnv* env, jthread thread) {
+VMThread* VMThread::fromJavaThread(JNIEnv* env, jthread thread) {
     assert(_eetop != nullptr);
     if (_eetop != nullptr) {
-        return (void*)env->GetLongField(thread, _eetop);
+        return VMThread::cast((void*)env->GetLongField(thread, _eetop));
     } else {
         return nullptr;
     }
-}
-
-VMThread* VMThread::fromJavaThread(JNIEnv* env, jthread thread) {
-    return VMThread::cast(VMThread::fromJavaThreadRaw(env, thread));
 }
 
 int VMThread::nativeThreadId(JNIEnv* jni, jthread thread) {

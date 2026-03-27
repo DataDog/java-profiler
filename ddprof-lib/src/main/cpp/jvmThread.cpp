@@ -6,6 +6,7 @@
 #include "jvmThread.h"
 #include "hotspot/vmStructs.inline.h"
 #include "j9/j9Ext.h"
+#include "zing/zingSupport.h"
 #include "vmEntry.h"
 
 pthread_key_t JVMThread::_thread_key = pthread_key_t(-1);
@@ -46,7 +47,10 @@ void* JVMThread::currentThreadSlow() {
 
     if (VM::isOpenJ9()) {
       return J9Ext::j9thread_self();
+    } else if (VM::isZing()) {
+      return ZingSupport::initialize(thread);
     } else {
+      assert(VM::isHotspot());
       return VMThread::initialize(thread);
     }
 }

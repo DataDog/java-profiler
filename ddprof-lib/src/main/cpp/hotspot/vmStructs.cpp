@@ -620,7 +620,7 @@ void* VMThread::initialize(jthread thread) {
         return nullptr;
     }
 
-    void* vm_thread = fromJavaThreadRaw(env, thread);
+    void* vm_thread = fromJavaThread(env, thread);
     assert(vm_thread != nullptr);
     _has_native_thread_id = _thread_osthread_offset >= 0 && _osthread_id_offset >= 0;
     _env_offset = (intptr_t)env - (intptr_t)vm_thread;
