@@ -38,26 +38,26 @@ public final class ThreadContext {
 
     private static final BufferWriter BUFFER_WRITER = new BufferWriter();
 
-    // ---- Process-wide bounded direct-mapped cache for attribute values ----
+    // ---- Per-thread bounded direct-mapped cache for attribute values ----
     // Stores {int encoding, byte[] utf8Bytes} per entry.
     // - encoding: Dictionary constant pool ID for DD JFR sidecar
     // - utf8Bytes: UTF-8 value for OTEP attrs_data (external profilers)
     //
-    // Collision evicts the old entry. Races between threads cause benign
-    // cache misses (redundant work), never corruption.
-    // The Dictionary (contextValueMap) is never cleared — not even across profiler
-    // restarts — so cached encodings remain valid for the JVM lifetime.
-    // ThreadContext instances are recreated on restart, but this static cache is not
-    // cleared; that is safe because encodings in the Dictionary are stable forever.
+    // Instance (not static) so that only the owning thread ever reads or writes
+    // the cache arrays — no cross-thread races, no memory barriers needed.
+    // Collision evicts the old entry; a miss triggers one JNI registerConstant0() call.
+    // The Dictionary (contextValueMap) is never cleared, so encodings remain valid
+    // for the JVM lifetime. On profiler restart the ThreadContext instance is recreated,
+    // clearing the cache; the first miss per value pays one JNI call to re-populate.
     private static final int CACHE_SIZE = 256;
     private static final int CACHE_MASK = CACHE_SIZE - 1;
 
     // Attribute value cache: String value → {int encoding, byte[] utf8}
     // Keyed by value string (not by keyIndex) — same string always maps to
     // same encoding regardless of key slot.
-    private static final String[] attrCacheKeys = new String[CACHE_SIZE];
-    private static final int[] attrCacheEncodings = new int[CACHE_SIZE];
-    private static final byte[][] attrCacheBytes = new byte[CACHE_SIZE][];
+    private final String[] attrCacheKeys = new String[CACHE_SIZE];
+    private final int[] attrCacheEncodings = new int[CACHE_SIZE];
+    private final byte[][] attrCacheBytes = new byte[CACHE_SIZE][];
 
     // OTEP record field offsets (from packed struct)
     private final int validOffset;
@@ -207,17 +207,11 @@ public final class ThreadContext {
     private boolean setContextAttributeDirect(int keyIndex, String value) {
         if (keyIndex >= MAX_CUSTOM_SLOTS) return false;
 
-        // Resolve encoding + UTF-8 bytes from process-wide cache
+        // Resolve encoding + UTF-8 bytes from per-thread cache
         int slot = value.hashCode() & CACHE_MASK;
         int encoding;
         byte[] utf8;
         if (value.equals(attrCacheKeys[slot])) {
-            // Full fence pairs with the storeFence in the write path.
-            // On ARM, without this barrier the processor may speculatively load
-            // encoding/bytes before the key read is resolved, seeing values from
-            // a previous cache occupant and writing the wrong JFR constant ID.
-            // storeFence() alone is insufficient here (it only orders stores).
-            BUFFER_WRITER.fullFence();
             encoding = attrCacheEncodings[slot];
             utf8 = attrCacheBytes[slot];
         } else {
@@ -231,12 +225,8 @@ public final class ThreadContext {
                 return false;
             }
             utf8 = value.getBytes(StandardCharsets.UTF_8);
-            // Write encoding + bytes BEFORE the key — the key acts as the
-            // commit for concurrent readers. The fence ensures ARM cores see
-            // the values before the key that guards them.
             attrCacheEncodings[slot] = encoding;
             attrCacheBytes[slot] = utf8;
-            BUFFER_WRITER.storeFence();
             attrCacheKeys[slot] = value;
         }
 
