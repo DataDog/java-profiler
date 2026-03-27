@@ -157,6 +157,7 @@ class OS {
     static SigAction getSegvChainTarget();
     static SigAction getBusChainTarget();
     static void* getSigactionHook();
+    static void resetSignalHandlersForTesting();
 
     static int getMaxThreadId(int floor) {
         int maxThreadId = getMaxThreadId();
