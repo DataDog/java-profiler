@@ -69,11 +69,6 @@ public class OtelContextStorageModeTest {
         ThreadContext ctx = profiler.getThreadContext();
         assertEquals(spanId, ctx.getSpanId(), "SpanId should match");
         assertEquals(localRootSpanId, ctx.getRootSpanId(), "LocalRootSpanId should match");
-
-        // Stop profiler before reading trace ID bytes: CPU sampling signals (1ms) can cause
-        // JVM deoptimization events that interfere with direct ByteBuffer reads in debug builds.
-        profiler.stop();
-        profilerStarted = false;
         // Verify the 128-bit trace ID round-trips through the OTEP record (big-endian)
         assertEquals("55556666777788889999aaaabbbbcccc", ctx.readTraceId(), "TraceId should match");
     }

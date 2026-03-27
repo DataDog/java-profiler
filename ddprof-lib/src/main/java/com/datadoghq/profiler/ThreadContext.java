@@ -427,8 +427,8 @@ public final class ThreadContext {
         StringBuilder sb = new StringBuilder(32);
         for (int i = 0; i < 16; i++) {
             int b = recordBuffer.get(traceIdOffset + i) & 0xFF;
-            sb.append(HEX_DIGITS[b >> 4]);
-            sb.append(HEX_DIGITS[b & 0xF]);
+            sb.append((char) HEX_DIGITS[b >> 4]);
+            sb.append((char) HEX_DIGITS[b & 0xF]);
         }
         return sb.toString();
     }
