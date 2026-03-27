@@ -36,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.*;
  *   <li>Basic write and read operations (ordered and volatile semantics)</li>
  *   <li>Release (ordered) semantics for single-threaded signal handler safety</li>
  *   <li>Volatile (full barrier) semantics ensuring visibility across threads</li>
- *   <li>Return value validation</li>
+ *   <li>Correct write semantics (ordered and volatile)</li>
  *   <li>Int and long write operations</li>
  *   <li>Various offsets and buffer positions</li>
  *   <li>Edge cases and boundary conditions</li>
@@ -80,10 +80,9 @@ public class BufferWriterTest {
         ByteBuffer buffer = createBuffer(16);
         long expectedValue = 0x123456789ABCDEF0L;
 
-        long returnedValue = bufferWriter.writeOrderedLong(buffer, 0, expectedValue);
+        bufferWriter.writeOrderedLong(buffer, 0, expectedValue);
         long actualValue = buffer.getLong(0);
 
-        assertEquals(expectedValue, returnedValue, "Return value should match written value");
         assertEquals(expectedValue, actualValue, "Buffer value should match written value");
     }
 
@@ -95,10 +94,9 @@ public class BufferWriterTest {
         ByteBuffer buffer = createBuffer(16);
         long expectedValue = 0xFEDCBA9876543210L;
 
-        long returnedValue = bufferWriter.writeVolatileLong(buffer, 0, expectedValue);
+        bufferWriter.writeVolatileLong(buffer, 0, expectedValue);
         long actualValue = buffer.getLong(0);
 
-        assertEquals(expectedValue, returnedValue, "Return value should match written value");
         assertEquals(expectedValue, actualValue, "Buffer value should match written value");
     }
 
@@ -151,9 +149,7 @@ public class BufferWriterTest {
         };
 
         for (int i = 0; i < offsets.length; i++) {
-            long returnedValue = bufferWriter.writeOrderedLong(buffer, offsets[i], expectedValues[i]);
-            assertEquals(expectedValues[i], returnedValue,
-                String.format("Return value at offset %d should match", offsets[i]));
+            bufferWriter.writeOrderedLong(buffer, offsets[i], expectedValues[i]);
         }
 
         for (int i = 0; i < offsets.length; i++) {
@@ -210,10 +206,8 @@ public class BufferWriterTest {
 
         for (int i = 0; i < specialValues.length; i++) {
             int offset = i * 8;
-            long returnedValue = bufferWriter.writeOrderedLong(buffer, offset, specialValues[i]);
+            bufferWriter.writeOrderedLong(buffer, offset, specialValues[i]);
             long actualValue = buffer.getLong(offset);
-            assertEquals(specialValues[i], returnedValue,
-                    String.format("Return value 0x%X should match written value", specialValues[i]));
             assertEquals(specialValues[i], actualValue,
                     String.format("Special value 0x%X should be written correctly", specialValues[i]));
         }

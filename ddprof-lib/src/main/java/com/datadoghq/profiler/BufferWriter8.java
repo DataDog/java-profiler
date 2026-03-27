@@ -39,15 +39,13 @@ public final class BufferWriter8 implements BufferWriter.Impl {
     }
 
     @Override
-    public long writeOrderedLong(ByteBuffer buffer, int offset, long value) {
+    public void writeOrderedLong(ByteBuffer buffer, int offset, long value) {
         UNSAFE.putOrderedLong(null, ((DirectBuffer) buffer).address() + offset, value);
-        return UNSAFE.getLong(((DirectBuffer) buffer).address() + offset);
     }
 
     @Override
-    public long writeAndReleaseLong(ByteBuffer buffer, int offset, long value) {
+    public void writeAndReleaseLong(ByteBuffer buffer, int offset, long value) {
         UNSAFE.putLongVolatile(null, ((DirectBuffer) buffer).address() + offset, value);
-        return UNSAFE.getLong(((DirectBuffer) buffer).address() + offset);
     }
 
     @Override

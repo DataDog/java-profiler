@@ -141,7 +141,7 @@ public class OtelContextStorageModeTest {
 
         ThreadContext ctx = profiler.getThreadContext();
 
-        // LRS is a fixed 18-byte entry (key=1, len=16, 16 hex value bytes).
+        // LRS is a fixed 18-byte entry (key=0, len=16, 16 hex value bytes).
         // Available for custom attrs: 612 - 18 = 594 bytes.
         // Each 255-char attr = 257 bytes. Two fit (514 ≤ 594); third overflows (771 > 594).
         StringBuilder sb = new StringBuilder(255);

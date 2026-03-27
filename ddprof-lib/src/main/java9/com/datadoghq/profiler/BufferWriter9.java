@@ -38,17 +38,15 @@ public final class BufferWriter9 implements BufferWriter.Impl {
     }
 
     @Override
-    public long writeOrderedLong(ByteBuffer buffer, int offset, long value) {
+    public void writeOrderedLong(ByteBuffer buffer, int offset, long value) {
         // setRelease provides ordered write semantics (matches Unsafe.putOrderedLong)
         LONG_VIEW_VH.setRelease(buffer, offset, value);
-        return (long) LONG_VIEW_VH.get(buffer, offset);
     }
 
     @Override
-    public long writeAndReleaseLong(ByteBuffer buffer, int offset, long value) {
+    public void writeAndReleaseLong(ByteBuffer buffer, int offset, long value) {
         // setVolatile provides full volatile semantics (matches Unsafe.putLongVolatile)
         LONG_VIEW_VH.setVolatile(buffer, offset, value);
-        return (long) LONG_VIEW_VH.get(buffer, offset);
     }
 
     @Override

@@ -71,9 +71,8 @@ public final class BufferWriter {
          * @param buffer the direct ByteBuffer to write to
          * @param offset the offset in bytes from the buffer's base address
          * @param value the long value to write
-         * @return the written value
          */
-        long writeOrderedLong(ByteBuffer buffer, int offset, long value);
+        void writeOrderedLong(ByteBuffer buffer, int offset, long value);
 
         /**
          * Writes a long value to the buffer at the specified offset with volatile write semantics
@@ -89,9 +88,8 @@ public final class BufferWriter {
          * @param buffer the direct ByteBuffer to write to
          * @param offset the offset in bytes from the buffer's base address
          * @param value the long value to write
-         * @return the written value
          */
-        long writeAndReleaseLong(ByteBuffer buffer, int offset, long value);
+        void writeAndReleaseLong(ByteBuffer buffer, int offset, long value);
 
         /**
          * Writes an int value to the buffer at the specified offset with ordered write semantics
@@ -189,10 +187,9 @@ public final class BufferWriter {
      * @param buffer the direct ByteBuffer to write to
      * @param offset the offset in bytes from the buffer's base address
      * @param value the long value to write
-     * @return the written value
      */
-    public long writeOrderedLong(ByteBuffer buffer, int offset, long value) {
-        return impl.writeOrderedLong(buffer, offset, value);
+    public void writeOrderedLong(ByteBuffer buffer, int offset, long value) {
+        impl.writeOrderedLong(buffer, offset, value);
     }
 
     /**
@@ -209,10 +206,9 @@ public final class BufferWriter {
      * @param buffer the direct ByteBuffer to write to
      * @param offset the offset in bytes from the buffer's base address
      * @param value the long value to write
-     * @return the written value
      */
-    public long writeVolatileLong(ByteBuffer buffer, int offset, long value) {
-        return impl.writeAndReleaseLong(buffer, offset, value);
+    public void writeVolatileLong(ByteBuffer buffer, int offset, long value) {
+        impl.writeAndReleaseLong(buffer, offset, value);
     }
 
     /**
