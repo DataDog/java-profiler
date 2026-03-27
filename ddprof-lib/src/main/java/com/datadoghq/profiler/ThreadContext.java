@@ -259,12 +259,13 @@ public final class ThreadContext {
         detach();
 
         if (trHi == 0 && trLo == 0 && spanId == 0) {
-            // Clear: zero trace/span IDs, LRS hex bytes, and sidecar; trim attrs to LRS entry
+            // Clear: zero trace/span IDs, LRS hex bytes, and sidecar.
+            // attrsDataSize is not reset here: valid stays 0 (no attach), so no reader
+            // can see attrs_data, and the next setContext will reset it before attach().
             recordBuffer.putLong(traceIdOffset, 0);
             recordBuffer.putLong(traceIdOffset + 8, 0);
             recordBuffer.putLong(spanIdOffset, 0);
             writeLrsHex(0);
-            recordBuffer.putShort(attrsDataSizeOffset, (short) LRS_ENTRY_SIZE);
             for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
                 sidecarBuffer.putInt(i * 4, 0);
             }
