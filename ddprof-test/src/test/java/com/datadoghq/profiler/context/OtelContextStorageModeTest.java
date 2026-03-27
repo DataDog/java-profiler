@@ -25,6 +25,8 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -234,5 +236,62 @@ public class OtelContextStorageModeTest {
 
         // Span A's attribute must not be visible in span B's context
         assertNull(ctx.readContextAttribute(0), "Custom attribute must be cleared on span transition");
+    }
+
+    /**
+     * Tests that the per-thread attribute cache isolates threads correctly.
+     * "FB" and "Ea" have equal hashCode() (both 2236), so they map to the same
+     * cache slot. With per-thread caches each thread owns its slot independently.
+     */
+    @Test
+    public void testAttributeCacheIsolation() throws Exception {
+        Path jfrFile = Files.createTempFile("otel-attr-cache-iso", ".jfr");
+        profiler.execute(String.format("start,cpu=1ms,attributes=attr0,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profilerStarted = true;
+        OTelContext.getInstance().registerAttributeKeys("attr0");
+
+        final String valueA = "FB"; // hashCode = 2236, slot 188
+        final String valueB = "Ea"; // hashCode = 2236, same slot
+        final AssertionError[] errors = {null, null};
+        final CountDownLatch bothWritten = new CountDownLatch(2);
+
+        Thread threadA = new Thread(() -> {
+            try {
+                profiler.setContext(1L, 1L, 0L, 1L);
+                ThreadContext ctx = profiler.getThreadContext();
+                assertTrue(ctx.setContextAttribute(0, valueA));
+                bothWritten.countDown();
+                bothWritten.await(5, TimeUnit.SECONDS);
+                // After thread B has written "Ea" to its own slot, A must still read "FB"
+                assertEquals(valueA, ctx.readContextAttribute(0));
+            } catch (AssertionError e) {
+                errors[0] = e;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }, "TestThread-CacheA");
+
+        Thread threadB = new Thread(() -> {
+            try {
+                profiler.setContext(2L, 2L, 0L, 2L);
+                ThreadContext ctx = profiler.getThreadContext();
+                assertTrue(ctx.setContextAttribute(0, valueB));
+                bothWritten.countDown();
+                bothWritten.await(5, TimeUnit.SECONDS);
+                assertEquals(valueB, ctx.readContextAttribute(0));
+            } catch (AssertionError e) {
+                errors[1] = e;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }, "TestThread-CacheB");
+
+        threadA.start();
+        threadB.start();
+        threadA.join(10_000);
+        threadB.join(10_000);
+
+        if (errors[0] != null) throw errors[0];
+        if (errors[1] != null) throw errors[1];
     }
 }
