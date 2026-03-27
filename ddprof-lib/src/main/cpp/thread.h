@@ -117,7 +117,7 @@ public:
    * @return Cached call_trace_id if collapsing is allowed, 0 otherwise
    */
   u64 lookupWallclockCallTraceId(u64 pc, u64 sp, u32 recording_epoch,
-                                  u64 span_id, u64 root_span_id) {
+                                  bool context_valid, u64 span_id, u64 root_span_id) {
     if (_pc == pc && _sp == sp && _span_id == span_id &&
         _otel_local_root_span_id == root_span_id && _recording_epoch == recording_epoch &&
         _call_trace_id != 0) {
@@ -126,7 +126,12 @@ public:
     _pc = pc;
     _sp = sp;
     _span_id = span_id;
-    _otel_local_root_span_id = root_span_id;
+    // Only update the sidecar when context is valid (valid=1). If the signal fires
+    // between detach() and attach() in Java, ContextApi::get returns valid=0 with
+    // root_span_id=0; writing that would clobber the value Java just stored.
+    if (context_valid) {
+      _otel_local_root_span_id = root_span_id;
+    }
     _recording_epoch = recording_epoch;
     return 0;
   }

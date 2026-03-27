@@ -218,16 +218,6 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
   return acceptValue;
 }
 
-extern "C" DLLEXPORT jint JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_registerConstant0(JNIEnv *env,
-                                                           jclass unused,
-                                                           jstring value) {
-  JniString value_str(env, value);
-  u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
-      value_str.c_str(), value_str.length(), 1 << 16);
-  return encoding == INT_MAX ? -1 : encoding;
-}
-
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_dump0(JNIEnv *env, jclass unused,
                                                jstring path) {

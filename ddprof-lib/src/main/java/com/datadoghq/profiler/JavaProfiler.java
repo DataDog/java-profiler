@@ -219,13 +219,6 @@ public final class JavaProfiler {
     }
 
     /**
-     * Registers a constant so that its encoding can be used in place of the string
-     * @param key the key to be written into the attribute value constant pool
-     */
-    int registerConstant(String key) {
-        return registerConstant0(key);
-    }
-
     /**
      * Dumps the JFR recording at the provided path
      * @param recording the path to the recording
@@ -322,8 +315,6 @@ public final class JavaProfiler {
     private static native int getTid0();
 
     private static native boolean recordTrace0(long rootSpanId, String endpoint, String operation, int sizeLimit);
-
-    private static native int registerConstant0(String value);
 
     private static native void dump0(String recordingFilePath);
 

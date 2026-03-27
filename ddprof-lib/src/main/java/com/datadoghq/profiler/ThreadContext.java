@@ -45,9 +45,10 @@ public final class ThreadContext {
     //
     // Collision evicts the old entry. Races between threads cause benign
     // cache misses (redundant work), never corruption.
-    // The Dictionary (contextValueMap) is never cleared within a profiler
-    // session, so encodings remain valid until the profiler is stopped.
-    // On profiler restart, ThreadContext instances are recreated.
+    // The Dictionary (contextValueMap) is never cleared — not even across profiler
+    // restarts — so cached encodings remain valid for the JVM lifetime.
+    // ThreadContext instances are recreated on restart, but this static cache is not
+    // cleared; that is safe because encodings in the Dictionary are stable forever.
     private static final int CACHE_SIZE = 256;
     private static final int CACHE_MASK = CACHE_SIZE - 1;
 
@@ -308,7 +309,10 @@ public final class ThreadContext {
 
     // ---- OTEP record helpers (called between detach/attach) ----
 
-    /** Invalidate record. Must be paired with attach(). */
+    /**
+     * Invalidates the record (sets valid=0). Typically followed by attach(), but the
+     * clear path intentionally leaves the record invalid without calling attach().
+     */
     private void detach() {
         recordBuffer.put(validOffset, (byte) 0);
         BUFFER_WRITER.storeFence();

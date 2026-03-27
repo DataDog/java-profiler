@@ -65,7 +65,6 @@ static const otel_process_ctx_data empty_data = {
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <time.h>
-#include <sys/syscall.h>
 #include <unistd.h>
 
 #define KEY_VALUE_LIMIT 4096

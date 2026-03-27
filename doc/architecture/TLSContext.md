@@ -445,7 +445,7 @@ are embedded in its own heap-allocated `ProfiledThread`.
 
 ### Instrumentation Budget
 
-At ~35 ns per span (set IDs + one attribute + clear), a single thread
+At ~35 ns per span (`spanLifecycle` 30.4 ns + `clearContext` 5.0 ns), a single thread
 can sustain ~28 million span transitions per second. For a web
 application at 100K requests/second, this is <0.004% of CPU time.
 
