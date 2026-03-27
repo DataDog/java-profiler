@@ -620,12 +620,12 @@ void* VMThread::initialize(jthread thread) {
         return nullptr;
     }
 
-    VMThread* vm_thread = fromJavaThread(env, thread);
+    void* vm_thread = fromJavaThreadRaw(env, thread);
     assert(vm_thread != nullptr);
     _has_native_thread_id = _thread_osthread_offset >= 0 && _osthread_id_offset >= 0;
     _env_offset = (intptr_t)env - (intptr_t)vm_thread;
-    memcpy(_java_thread_vtbl, vm_thread->vtable(), sizeof(_java_thread_vtbl));
-    return (void*)vm_thread;
+    memcpy(_java_thread_vtbl, VMThread::cast(vm_thread)->vtable(), sizeof(_java_thread_vtbl));
+    return vm_thread;
 }
 
 static ExecutionMode convertJvmExecutionState(int state) {

@@ -17,7 +17,7 @@
 class JVMThread {
 private:
     static pthread_key_t _thread_key;
-    static jfieldID _tid;
+    static jmethodID _tid;
 
 public:
     static bool isInitialized() {
@@ -41,7 +41,7 @@ public:
     static int nativeThreadId(JNIEnv* jni, jthread thread);
 
     static inline jlong javaThreadId(JNIEnv* env, jthread thread) {
-       return env->GetLongField(thread, _tid);
+       return env->CallLongMethod(thread, _tid);
     }
 
     static inline bool hasJavaThreadId() {
