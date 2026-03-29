@@ -105,8 +105,14 @@ jobs:
               RELEASE_VERSION="$BASE"
             fi
           else
-            # PATCH always increments
-            RELEASE_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+            # PATCH: increment only when the current version is already tagged
+            # (first patch after a minor/major release); subsequent patches start
+            # from the already-bumped dev version in build.gradle.kts.
+            if [ "$ALREADY_RELEASED" == "true" ]; then
+              RELEASE_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+            else
+              RELEASE_VERSION="$BASE"
+            fi
           fi
 
           # Compute release branch

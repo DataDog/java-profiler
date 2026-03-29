@@ -60,6 +60,16 @@ if [ "$TYPE" == "PATCH" ]; then
     echo "Patch release can be created only for 'release/*' branch."
     exit 1
   fi
+  # First patch after a minor/major release: the current version is already tagged.
+  # Pre-increment the patch so we tag the next version (e.g. 1.40.0 -> 1.40.1).
+  if git rev-parse "v_${BASE}" >/dev/null 2>&1; then
+    if [ -z "$DRYRUN" ]; then
+      ./gradlew incrementVersion --versionIncrementType=PATCH
+      BASE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
+    else
+      echo "[DRY-RUN] Version $BASE is already tagged; would pre-increment patch before tagging"
+    fi
+  fi
   RELEASE_BRANCH="release/${BASE%.*}._"
   create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
 fi
