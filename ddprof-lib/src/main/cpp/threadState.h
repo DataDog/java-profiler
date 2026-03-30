@@ -1,6 +1,10 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #ifndef _THREADSTATE_H
 #define _THREADSTATE_H
-
 
 enum class OSThreadState : int {
   UNKNOWN = 0,

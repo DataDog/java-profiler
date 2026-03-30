@@ -1,3 +1,9 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+
 #include "jvm.h"
 #include "log.h"
 #include "hotspot/vmStructs.h"
