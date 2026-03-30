@@ -779,7 +779,7 @@ DECLARE(VMThread)
     // Safe because 'this' is the current live thread (we are in its signal handler).
     static bool isExceptionActive() {
         if (_thread_exception_offset < 0) return false;
-        VMThread* vt = current();
+        void* vt = JVMThread::current();
         if (vt == nullptr) return false;
         return *(const void* const*)((const char*)vt + _thread_exception_offset) != nullptr;
     }
