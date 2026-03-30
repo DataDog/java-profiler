@@ -24,6 +24,7 @@ bool JVMThread::initialize() {
         break;
     }
   }
+  // _tid is initialized in currentThreadSlow()
   assert(_tid != nullptr);
   return _thread_key != pthread_key_t(-1);
 }
