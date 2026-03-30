@@ -19,7 +19,7 @@ void* ZingSupport::initialize(jthread thread) {
     jfieldID eetop = nullptr;
     // Get eetop field - a bridge from Java Thread to JVMThread
     if ((eetop = env->GetFieldID(thread_class, "eetop", "J")) == nullptr) {
-        // No such field - probably not a HotSpot JVM
+        // No such field - probably not use standard java library
         env->ExceptionClear();
         return nullptr;
     }
