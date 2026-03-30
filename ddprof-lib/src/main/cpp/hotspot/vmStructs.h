@@ -14,6 +14,7 @@
 #include <type_traits>
 #include "codeCache.h"
 #include "counters.h"
+#include "jvmThread.h"
 #include "safeAccess.h"
 #include "thread.h"
 #include "threadState.h"
@@ -1132,7 +1133,7 @@ inline bool crashProtectionActive() {
     // is equally redundant — any bad read will be caught by the SIGSEGV handler.
     // Uses VMThread::isExceptionActive() which reads the field directly without
     // going through at() to avoid recursive assertion.
-    return VMThread::current() != nullptr && VMThread::isExceptionActive();
+    return JVMThread::key() != pthread_key_t(-1) && VMThread::isExceptionActive();
 }
 
 #endif // _HOTSPOT_VMSTRUCTS_H
