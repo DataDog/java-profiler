@@ -10,7 +10,7 @@
 #include "vmEntry.h"
 
 pthread_key_t JVMThread::_thread_key = pthread_key_t(-1);
-jmethodID JVMThread::_tid = nullptr;
+jfieldID JVMThread::_tid = nullptr;
 
 bool JVMThread::initialize() {
   void* current_thread = currentThreadSlow();
@@ -41,7 +41,7 @@ void* JVMThread::currentThreadSlow() {
 
     JNIEnv* env = VM::jni();
     jclass thread_class = env->FindClass("java/lang/Thread");
-    if (thread_class == NULL || (_tid = env->GetMethodID(thread_class, "getId", "()J")) == NULL) {
+    if (thread_class == NULL || (_tid = env->GetFieldID(thread_class, "tid", "J")) == NULL) {
         env->ExceptionClear();
         return nullptr;
     }
