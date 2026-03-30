@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026 Datadog, Inc
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -9,7 +10,7 @@
 #include <string.h>
 #include <sys/syscall.h>
 #include "stackFrame.h"
-#include "vmStructs.h"
+#include "hotspot/vmStructs.h"
 
 
 #ifdef __APPLE__

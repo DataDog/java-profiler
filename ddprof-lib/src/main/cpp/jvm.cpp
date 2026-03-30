@@ -1,6 +1,12 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+
 #include "jvm.h"
 #include "log.h"
-#include "vmStructs.h"
+#include "hotspot/vmStructs.h"
 
 bool JVM::_is_readable_pointer_resolved = false;
 is_readable_pointer_fn JVM::_is_readable_pointer = NULL;

@@ -1,18 +1,20 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2026 Datadog, Inc
+ * Copyright 2025, 2026 Datadog, Inc
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef _VMSTRUCTS_H
-#define _VMSTRUCTS_H
+#ifndef _HOTSPOT_VMSTRUCTS_H
+#define _HOTSPOT_VMSTRUCTS_H
 
 #include <initializer_list>
+#include <jni.h>
 #include <jvmti.h>
 #include <stdint.h>
 #include <type_traits>
 #include "codeCache.h"
 #include "counters.h"
+#include "jvmThread.h"
 #include "safeAccess.h"
 #include "thread.h"
 #include "threadState.h"
@@ -31,10 +33,6 @@ class VMNMethod;
 // sending SIGABRT which is uncatchable by crash protection.
 // When crash protection is active the assert is redundant — any bad read will
 // be caught by the SIGSEGV handler and recovered via longjmp — so we skip it.
-//
-// Defined at the bottom of this file after VMThread is declared so that the
-// VMThread fallback path (isExceptionActive) is accessible without forward-
-// declaring the full class.
 inline bool crashProtectionActive();
 
 template <typename T>
@@ -352,9 +350,7 @@ class VMStructs {
 
 
     static jfieldID _eetop;
-    static jfieldID _tid;
     static jfieldID _klass;
-    static int _tls_index;
     static intptr_t _env_offset;
     static void* _java_thread_vtbl[6];
 
@@ -442,10 +438,6 @@ class VMStructs {
 
     static bool hasNativeThreadId() {
         return _has_native_thread_id;
-    }
-
-    static bool hasJavaThreadId() {
-        return _tid != NULL;
     }
 
     static bool isInterpretedFrameValidFunc(const void* pc) {
@@ -696,31 +688,23 @@ enum JVMJavaThreadState {
 };
 
 DECLARE(VMThread)
+  friend class JVMThread;
   public:
-    static VMThread* current();
+    static void* initialize(jthread thread);
 
-    static int key() {
-        return _tls_index;
-    }
-
-    static VMThread* fromJavaThread(JNIEnv* env, jthread thread) {
-        return VMThread::cast_raw((const void*)env->GetLongField(thread, _eetop));
-    }
-
-    static jlong javaThreadId(JNIEnv* env, jthread thread) {
-        return env->GetLongField(thread, _tid);
-    }
-
-    static int nativeThreadId(JNIEnv* jni, jthread thread);
+    static inline VMThread* current();
+    static inline VMThread* fromJavaThread(JNIEnv* env, jthread thread);
+    static ExecutionMode getExecutionMode();
+    static OSThreadState getOSThreadState();
 
     int osThreadId();
-
     JNIEnv* jni();
 
     const void** vtable() {
         assert(SafeAccess::isReadable(this));
         return *(const void***)this;
     }
+
 
     // This thread is considered a JavaThread if at least 2 of the selected 3 vtable entries
     // match those of a known JavaThread (which is either application thread or AttachListener).
@@ -795,7 +779,7 @@ DECLARE(VMThread)
     // Safe because 'this' is the current live thread (we are in its signal handler).
     static bool isExceptionActive() {
         if (_thread_exception_offset < 0) return false;
-        VMThread* vt = current();
+        void* vt = JVMThread::current();
         if (vt == nullptr) return false;
         return *(const void* const*)((const char*)vt + _thread_exception_offset) != nullptr;
     }
@@ -807,6 +791,8 @@ DECLARE(VMThread)
     }
 
     inline VMMethod* compiledMethod();
+private:
+    static inline int nativeThreadId(JNIEnv* jni, jthread thread);
 DECLARE_END
 
 DECLARE(VMConstMethod)
@@ -1146,7 +1132,7 @@ inline bool crashProtectionActive() {
     // is equally redundant — any bad read will be caught by the SIGSEGV handler.
     // Uses VMThread::isExceptionActive() which reads the field directly without
     // going through at() to avoid recursive assertion.
-    return VMThread::key() >= 0 && VMThread::isExceptionActive();
+    return JVMThread::key() != pthread_key_t(-1) && VMThread::isExceptionActive();
 }
 
-#endif // _VMSTRUCTS_H
+#endif // _HOTSPOT_VMSTRUCTS_H

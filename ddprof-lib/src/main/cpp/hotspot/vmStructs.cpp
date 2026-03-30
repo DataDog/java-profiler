@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2025, 2026 Datadog, Inc
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -7,14 +8,14 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
-#include "vmStructs.h"
+#include "hotspot/vmStructs.inline.h"
 #include "vmEntry.h"
-#include "j9Ext.h"
 #include "jniHelper.h"
 #include "jvmHeap.h"
+#include "jvmThread.h"
 #include "safeAccess.h"
 #include "spinLock.h"
-#include "common.h"
+#include "threadState.h"
 
 CodeCache* VMStructs::_libjvm = nullptr;
 bool VMStructs::_has_class_names = false;
@@ -79,11 +80,8 @@ DECLARE_LONG_CONSTANTS_DO(INIT_LONG_CONSTANT, INIT_LONG_CONSTANT)
 #undef INIT_INT_CONSTANT
 #undef INIT_LONG_CONSTANT
 
-
-jfieldID VMStructs::_eetop;
-jfieldID VMStructs::_tid;
+jfieldID VMStructs::_eetop = NULL;
 jfieldID VMStructs::_klass = NULL;
-int VMStructs::_tls_index = -1;
 intptr_t VMStructs::_env_offset = -1;
 void* VMStructs::_java_thread_vtbl[6];
 
@@ -122,7 +120,6 @@ void VMStructs::init(CodeCache* libjvm) {
 void VMStructs::ready() {
     resolveOffsets();
     patchSafeFetch();
-    initThreadBridge();
 }
 
 bool matchAny(const char* target_name, std::initializer_list<const char*> names) {
@@ -482,51 +479,6 @@ void VMStructs::patchSafeFetch() {
     }
 }
 
-void VMStructs::initTLS(void* vm_thread) {
-    for (int i = 0; i < 1024; i++) {
-        if (pthread_getspecific((pthread_key_t)i) == vm_thread) {
-            _tls_index = i;
-            break;
-        }
-    }
-}
-
-void VMStructs::initThreadBridge() {
-    jthread thread;
-    if (VM::jvmti()->GetCurrentThread(&thread) != 0) {
-        return;
-    }
-
-    JNIEnv* env = VM::jni();
-    jclass thread_class = env->FindClass("java/lang/Thread");
-    if (thread_class == NULL || (_tid = env->GetFieldID(thread_class, "tid", "J")) == NULL) {
-        env->ExceptionClear();
-        return;
-    }
-
-    if (VM::isOpenJ9()) {
-        void* j9thread = J9Ext::j9thread_self();
-        if (j9thread != NULL) {
-            initTLS(j9thread);
-        }
-    } else {
-        // Get eetop field - a bridge from Java Thread to VMThread
-        if ((_eetop = env->GetFieldID(thread_class, "eetop", "J")) == NULL) {
-            // No such field - probably not a HotSpot JVM
-            env->ExceptionClear();
-            return;
-        }
-
-        VMThread* vm_thread = VMThread::fromJavaThread(env, thread);
-        if (vm_thread != NULL) {
-            _has_native_thread_id = _thread_osthread_offset >= 0 && _osthread_id_offset >= 0;
-            initTLS(vm_thread);
-            _env_offset = (intptr_t)env - (intptr_t)vm_thread;
-            memcpy(_java_thread_vtbl, vm_thread->vtable(), sizeof(_java_thread_vtbl));
-        }
-    }
-}
-
 // ===== Datadog-specific VMStructs extensions =====
 
 void VMStructs::initUnsafeFunctions() {
@@ -654,16 +606,89 @@ void VMStructs::checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni,
     jvmti->Deallocate((unsigned char *)method_name);
 }
 
-VMThread* VMThread::current() {
-    return _tls_index >= 0 ? (VMThread*)pthread_getspecific((pthread_key_t)_tls_index) : NULL;
+void* VMThread::initialize(jthread thread) {
+    JNIEnv* env = VM::jni();
+    jclass thread_class = env->FindClass("java/lang/Thread");
+    if (thread_class == NULL) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+
+    // Get eetop field - a bridge from Java Thread to VMThread
+    if ((_eetop = env->GetFieldID(thread_class, "eetop", "J")) == NULL) {
+        // No such field - probably not a HotSpot JVM
+        env->ExceptionClear();
+        return nullptr;
+    }
+
+    void* vm_thread = fromJavaThread(env, thread);
+    assert(vm_thread != nullptr);
+    _has_native_thread_id = _thread_osthread_offset >= 0 && _osthread_id_offset >= 0;
+    _env_offset = (intptr_t)env - (intptr_t)vm_thread;
+    memcpy(_java_thread_vtbl, VMThread::cast(vm_thread)->vtable(), sizeof(_java_thread_vtbl));
+    return vm_thread;
 }
 
-int VMThread::nativeThreadId(JNIEnv* jni, jthread thread) {
-    if (_has_native_thread_id) {
-        VMThread* vm_thread = fromJavaThread(jni, thread);
-        return vm_thread != NULL ? vm_thread->osThreadId() : -1;
-    }
-    return VM::isOpenJ9() ? J9Ext::GetOSThreadID(thread) : -1;
+static ExecutionMode convertJvmExecutionState(int state) {
+  switch (state) {
+  case 4:
+  case 5:
+    return ExecutionMode::NATIVE;
+  case 6:
+  case 7:
+    return ExecutionMode::JVM;
+  case 8:
+  case 9:
+    return ExecutionMode::JAVA;
+  case 10:
+  case 11:
+    return ExecutionMode::SAFEPOINT;
+  default:
+    return ExecutionMode::UNKNOWN;
+  }
+}
+
+ExecutionMode VMThread::getExecutionMode() {
+  assert(VM::isHotspot());
+  
+  VMThread* vm_thread = VMThread::current();
+  // Not a JVM thread - native thread, e.g. thread launched by JNI code
+  if (vm_thread == nullptr) {
+    return ExecutionMode::NATIVE;
+  }
+
+  ProfiledThread *prof_thread = ProfiledThread::currentSignalSafe();
+  bool is_java_thread = prof_thread != nullptr && prof_thread->isJavaThread();
+
+  // A Java thread that JVM tells us via jvmti `ThreadStart()` callback.
+  if (is_java_thread) {
+    int raw_thread_state = vm_thread->state();
+
+    // Java threads: [4, 12) = [_thread_in_native, _thread_max_state)
+    // JVM internal threads: 0 or outside this range
+    is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
+
+    return is_java_thread ? convertJvmExecutionState(raw_thread_state)
+                        : ExecutionMode::JVM;
+  } else {
+    // It is a JVM internal thread, may or may not be a Java thread, 
+    // e.g. Compiler thread or GC thread, etc
+    return ExecutionMode::JVM;
+  }
+}
+
+OSThreadState VMThread::getOSThreadState() {
+  VMThread* vm_thread = VMThread::current();
+  if (vm_thread == nullptr) {
+    return OSThreadState::UNKNOWN;
+  }
+  int raw_thread_state = vm_thread->state();
+  bool is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
+  OSThreadState state = OSThreadState::UNKNOWN;
+  if (is_java_thread) {
+    state = vm_thread->osThreadState();
+  }
+  return state;
 }
 
 int VMThread::osThreadId() {

@@ -1,10 +1,12 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "wallClock.h"
+#include "hotspot/vmStructs.inline.h"
+
 #include "stackFrame.h"
 #include "context.h"
 #include "debugSupport.h"
@@ -14,7 +16,6 @@
 #include "stackFrame.h"
 #include "thread.h"
 #include "threadState.inline.h"
-#include "vmStructs.h"
 #include "guards.h"
 #include <math.h>
 #include <random>
@@ -79,22 +80,8 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   }
 
   ExecutionEvent event;
-  VMThread *vm_thread = VMThread::current();
-  if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
-      vm_thread = NULL;
-  }
-  int raw_thread_state = vm_thread ? vm_thread->state() : 0;
-  bool is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
-  bool is_initialized = is_java_thread;
-  OSThreadState state = OSThreadState::UNKNOWN;
-  ExecutionMode mode = ExecutionMode::UNKNOWN;
-  if (vm_thread && is_initialized) {
-    OSThreadState os_state = vm_thread->osThreadState();
-    if (os_state != OSThreadState::UNKNOWN) {
-      state = os_state;
-    }
-    mode = getThreadExecutionMode();
-  }
+  OSThreadState state = getOSThreadState();
+  ExecutionMode mode = getThreadExecutionMode();
   if (state == OSThreadState::UNKNOWN) {
     if (inSyscall(ucontext)) {
       state = OSThreadState::SYSCALL;
