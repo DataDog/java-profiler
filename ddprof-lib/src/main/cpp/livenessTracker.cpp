@@ -1,5 +1,5 @@
 /*
- * Copyright 2021, 2025, Datadog, Inc.
+ * Copyright 2021, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -10,6 +10,7 @@
 
 #include "arch.h"
 #include "context.h"
+#include "hotspot/vmStructs.h"
 #include "incbin.h"
 #include "jniHelper.h"
 #include "livenessTracker.h"
@@ -18,7 +19,6 @@
 #include "profiler.h"
 #include "thread.h"
 #include "tsc.h"
-#include "vmStructs.h"
 #include <jni.h>
 #include <string.h>
 

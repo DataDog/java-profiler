@@ -1,6 +1,6 @@
 /*
  * Copyright 2022 Andrei Pangin
- * Copyright 2024, 2025 Datadog, Inc
+ * Copyright 2024, 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,14 +15,13 @@
  * limitations under the License.
  */
 
-#ifndef _J9EXT_H
-#define _J9EXT_H
+#ifndef _J9_J9EXT_H
+#define _J9_J9EXT_H
 
 #include <jvmti.h>
 
 #include "log.h"
 #include "vmEntry.h"
-#include "vmStructs.h"
 
 #define JVMTI_EXT(f, ...) ((jvmtiError(*)(jvmtiEnv *, __VA_ARGS__))f)
 
@@ -72,6 +71,8 @@ static inline int sanitizeJ9FrameType(jint j9_type) {
 }
 
 class J9Ext {
+  friend class JVMThread;
+  friend class J9WallClock;
 private:
   static jvmtiEnv *_jvmti;
 
@@ -119,14 +120,6 @@ public:
   }
 
   static bool initialize(jvmtiEnv *jvmti, const void *j9thread_self);
-
-  static int GetOSThreadID(jthread thread) {
-    jlong thread_id;
-    return JVMTI_EXT(_GetOSThreadID, jthread, jlong *)(_jvmti, thread,
-                                                       &thread_id) == 0
-               ? (int)thread_id
-               : -1;
-  }
 
   static JNIEnv *GetJ9vmThread(jthread thread) {
     JNIEnv *result;
@@ -177,6 +170,15 @@ public:
   }
 
   static int InstrumentableObjectAlloc_id;
+
+private:
+    static int GetOSThreadID(jthread thread) {
+      jlong thread_id;
+      return JVMTI_EXT(_GetOSThreadID, jthread, jlong *)(_jvmti, thread,
+                                                         &thread_id) == 0
+                 ? (int)thread_id
+                 : -1;
+    }
 };
 
-#endif // _J9EXT_H
+#endif // _J9_J9EXT_H

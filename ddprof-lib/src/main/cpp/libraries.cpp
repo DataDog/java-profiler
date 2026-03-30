@@ -1,12 +1,12 @@
 #include "codeCache.h"
 #include "common.h"
+#include "hotspot/vmStructs.h"
 #include "libraries.h"
 #include "libraryPatcher.h"
 #include "log.h"
 #include "symbols.h"
 #include "symbols_linux.h"
 #include "vmEntry.h"
-#include "vmStructs.h"
 
 void Libraries::mangle(const char *name, char *buf, size_t size) {
   char *buf_end = buf + size;

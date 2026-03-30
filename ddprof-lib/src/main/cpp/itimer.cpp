@@ -1,6 +1,6 @@
 /*
  * Copyright 2018 Andrei Pangin
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,7 +22,6 @@
 #include "stackWalker.h"
 #include "thread.h"
 #include "threadState.inline.h"
-#include "vmStructs.h"
 #include "guards.h"
 #include <sys/time.h>
 

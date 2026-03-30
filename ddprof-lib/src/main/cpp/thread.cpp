@@ -1,8 +1,12 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #include "thread.h"
 #include "os.h"
 #include "profiler.h"
 #include "common.h"
-#include "vmStructs.h"
 #include <time.h>
 
 pthread_key_t ProfiledThread::_tls_key;

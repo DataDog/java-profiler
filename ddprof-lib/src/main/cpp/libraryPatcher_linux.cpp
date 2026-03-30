@@ -1,9 +1,13 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #include "libraryPatcher.h"
 
 #ifdef __linux__
 #include "counters.h"
 #include "profiler.h"
-#include "vmStructs.h"
 #include "guards.h"
 
 #include <cassert>

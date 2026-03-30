@@ -4,7 +4,7 @@ OBJDIR := ./../../../build/scanbuild_obj
 CFLAGS := -O0 -Wall -std=c++17 -fno-omit-frame-pointer -momit-leaf-frame-pointer -fvisibility=hidden
 SRCS := ${wildcard ${SRCDIR}/*.cpp }
 OBJS=${patsubst ${SRCDIR}/%.cpp,${OBJDIR}/%.o,${SRCS}}
-INCLUDES := -I$(JAVA_HOME)/include -I../../../../malloc-shim/src/main/public
+INCLUDES := -I$(SRCDIR) -I$(JAVA_HOME)/include -I../../../../malloc-shim/src/main/public
 
 OS := $(shell uname -s)
 ifeq ($(OS),Darwin)

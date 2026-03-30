@@ -1,5 +1,6 @@
 /*
  * Copyright 2016 Andrei Pangin
+ * Copyright 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,15 +22,15 @@
 #include "counters.h"
 #include "common.h"
 #include "engine.h"
+#include "hotspot/vmStructs.h"
 #include "incbin.h"
+#include "jvmThread.h"
 #include "os.h"
 #include "otel_process_ctx.h"
 #include "profiler.h"
 #include "thread.h"
 #include "tsc.h"
 #include "vmEntry.h"
-#include "vmStructs.h"
-#include "wallClock.h"
 #include <errno.h>
 #include <fstream>
 #include <sstream>
@@ -296,7 +297,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   if (tid < 0) {
     return;
   }
-  int origin_tid = VMThread::nativeThreadId(env, origin);
+  int origin_tid = JVMThread::nativeThreadId(env, origin);
   if (origin_tid < 0) {
     return;
   }

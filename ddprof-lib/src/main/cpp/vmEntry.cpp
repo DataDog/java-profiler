@@ -8,14 +8,15 @@
 #include "vmEntry.h"
 #include "arguments.h"
 #include "context.h"
-#include "j9Ext.h"
+#include "j9/j9Ext.h"
 #include "jniHelper.h"
+#include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
 #include "os.h"
 #include "profiler.h"
 #include "safeAccess.h"
-#include "vmStructs.h"
+#include "hotspot/vmStructs.h"
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,7 +47,6 @@ jvmtiError(JNICALL *VM::_orig_RetransformClasses)(jvmtiEnv *, jint,
                                                   const jclass *classes);
 
 void *VM::_libjvm;
-void *VM::_libjava;
 AsyncGetCallTrace VM::_asyncGetCallTrace;
 JVM_GetManagement VM::_getManagement;
 
@@ -491,11 +491,11 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
 void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
   Profiler::check_JDK_8313796_workaround();
   Profiler::setupSignalHandlers();
-  {
+  JVMThread::initialize();
+  if (isHotspot()) {
     JitWriteProtection jit(true);
     VMStructs::ready();
   }
-  _libjava = getLibraryHandle("libjava.so");
 }
 
 void VM::applyPatch(char *func, const char *patch, const char *end_patch) {

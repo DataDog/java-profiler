@@ -1,5 +1,6 @@
 /*
  * Copyright 2021 Andrei Pangin
+  * Copyright 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +15,8 @@
  * limitations under the License.
  */
 
-#ifndef _J9WALLCLOCK_H
-#define _J9WALLCLOCK_H
+#ifndef _J9_J9WALLCLOCK_H
+#define _J9_J9WALLCLOCK_H
 
 #include "engine.h"
 #include <pthread.h>
@@ -54,4 +55,4 @@ public:
   inline void enableEvents(bool enabled) { _enabled = enabled; }
 };
 
-#endif // _J9WALLCLOCK_H
+#endif // _J9_J9WALLCLOCK_H
