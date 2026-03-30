@@ -32,10 +32,7 @@ class VMNMethod;
 // sending SIGABRT which is uncatchable by crash protection.
 // When crash protection is active the assert is redundant — any bad read will
 // be caught by the SIGSEGV handler and recovered via longjmp — so we skip it.
-inline bool crashProtectionActive() {
-    ProfiledThread* pt = ProfiledThread::currentSignalSafe();
-    return pt != nullptr && pt->isCrashProtectionActive();
-}
+inline bool crashProtectionActive();
 
 template <typename T>
 inline T* cast_to(const void* ptr) {
@@ -776,6 +773,17 @@ DECLARE(VMThread)
         return *(void**) at(_thread_exception_offset);
     }
 
+    // Returns true if setjmp crash protection is currently active for this thread.
+    // Reads the exception field via direct pointer arithmetic, deliberately bypassing
+    // at() and its crashProtectionActive() assertion to avoid infinite recursion.
+    // Safe because 'this' is the current live thread (we are in its signal handler).
+    static bool isExceptionActive() {
+        if (_thread_exception_offset < 0) return false;
+        VMThread* vt = current();
+        if (vt == nullptr) return false;
+        return *(const void* const*)((const char*)vt + _thread_exception_offset) != nullptr;
+    }
+
     NOADDRSANITIZE VMJavaFrameAnchor* anchor() {
         if (!cachedIsJavaThread()) return NULL;
         assert(_thread_anchor_offset >= 0);
@@ -1112,5 +1120,19 @@ class InterpreterFrame : VMStructs {
         return _interpreter_frame_bcp_offset;
     }
 };
+
+// Defined here (after VMThread) so the VMThread::isExceptionActive() fallback
+// is accessible. The forward declaration at the top of this file allows cast_to()
+// to reference it before VMThread is declared.
+inline bool crashProtectionActive() {
+    ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+    if (pt != nullptr && pt->isCrashProtectionActive()) return true;
+    // Fallback for threads without ProfiledThread TLS (e.g. JVM internal threads):
+    // if walkVM has set up setjmp protection via vm_thread->exception(), the assert
+    // is equally redundant — any bad read will be caught by the SIGSEGV handler.
+    // Uses VMThread::isExceptionActive() which reads the field directly without
+    // going through at() to avoid recursive assertion.
+    return VMThread::current() != nullptr && VMThread::isExceptionActive();
+}
 
 #endif // _HOTSPOT_VMSTRUCTS_H

@@ -20,6 +20,8 @@ updates:
           - "patch"
 
   # Gradle dependencies (build-logic composite build)
+    cooldown:
+      default-days: 2
   - package-ecosystem: "gradle"
     directory: "/build-logic"
     schedule:
@@ -36,6 +38,8 @@ updates:
           - "patch"
 
   # GitHub Actions
+    cooldown:
+      default-days: 2
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -45,3 +49,5 @@ updates:
     labels:
       - "dependencies"
       - "no-release-notes"
+    cooldown:
+      default-days: 2

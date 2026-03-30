@@ -1045,81 +1045,102 @@ void Profiler::disableEngines() {
 }
 
 void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  if (!crashHandler(signo, siginfo, ucontext)) {
-    // Check dynamic chain target first (set by intercepted sigaction calls)
-    SigAction chain = OS::getSegvChainTarget();
-    if (chain != nullptr) {
-      chain(signo, siginfo, ucontext);
-    } else if (orig_segvHandler != nullptr) {
-      orig_segvHandler(signo, siginfo, ucontext);
-    }
+  if (crashHandlerInternal(signo, siginfo, ucontext)) {
+    return;  // Handled
+  }
+  // Not handled, chain to next handler
+  SigAction chain = OS::getSegvChainTarget();
+  if (chain != nullptr) {
+    chain(signo, siginfo, ucontext);
+  } else if (orig_segvHandler != nullptr) {
+    orig_segvHandler(signo, siginfo, ucontext);
   }
 }
 
 void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  if (!crashHandler(signo, siginfo, ucontext)) {
-    // Check dynamic chain target first (set by intercepted sigaction calls)
-    SigAction chain = OS::getBusChainTarget();
-    if (chain != nullptr) {
-      chain(signo, siginfo, ucontext);
-    } else if (orig_busHandler != nullptr) {
-      orig_busHandler(signo, siginfo, ucontext);
-    }
+  if (crashHandlerInternal(signo, siginfo, ucontext)) {
+    return;  // Handled
+  }
+  // Not handled, chain to next handler
+  SigAction chain = OS::getBusChainTarget();
+  if (chain != nullptr) {
+    chain(signo, siginfo, ucontext);
+  } else if (orig_busHandler != nullptr) {
+    orig_busHandler(signo, siginfo, ucontext);
   }
 }
 
-bool Profiler::crashHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+// Returns: 0 = not handled (chain to next handler), non-zero = handled
+int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext) {
   ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
-  if (thrd != nullptr && !thrd->enterCrashHandler()) {
-    // we are already in a crash handler; don't recurse!
-    return false;
-  }
 
+  // First, try to handle safefetch - this doesn't need TLS or any protection
+  // because it directly checks the PC and modifies ucontext to skip the fault.
+  // This must be checked first before any reentrancy checks.
   if (SafeAccess::handle_safefetch(signo, ucontext)) {
-    if (thrd != nullptr) {
-      thrd->exitCrashHandler();
-    }
-    return true;
+    return 1;  // handled
   }
 
-  uintptr_t fault_address = (uintptr_t)siginfo->si_addr;
+  // Reentrancy protection: use TLS-based tracking if available.
+  // If TLS is not available, we can only safely handle faults that we can
+  // prove are from our protected code paths (checked via sameStack heuristic
+  // in StackWalker::checkFault). For anything else, we must chain immediately
+  // to avoid claiming faults that aren't ours.
+  bool have_tls_protection = false;
+  if (thrd != nullptr) {
+    if (!thrd->enterCrashHandler()) {
+      // we are already in a crash handler; don't recurse!
+      return 0;  // not handled, safe to chain
+    }
+    have_tls_protection = true;
+  }
+  // If thrd == nullptr, we proceed but with limited handling capability.
+  // Only StackWalker::checkFault (which has its own sameStack fallback)
+  // and the JDK-8313796 workaround can safely handle faults without TLS.
+
   StackFrame frame(ucontext);
   uintptr_t pc = frame.pc();
+
+  uintptr_t fault_address = (uintptr_t)siginfo->si_addr;
   if (pc == fault_address) {
     // it is 'pc' that is causing the fault; can not access it safely
-    if (thrd != nullptr) {
+    if (have_tls_protection) {
       thrd->exitCrashHandler();
     }
-    return false;
+    return 0;  // not handled, safe to chain
   }
 
   if (WX_MEMORY && Trap::isFaultInstruction(pc)) {
-    if (thrd != nullptr) {
+    if (have_tls_protection) {
       thrd->exitCrashHandler();
     }
-    return true;
+    return 1;  // handled
   }
 
   if (VM::isHotspot()) {
     // the following checks require vmstructs and therefore HotSpot
 
+    // StackWalker::checkFault has its own fallback for when TLS is unavailable:
+    // it uses sameStack() heuristic to check if we're in a protected stack walk.
+    // If the fault is from our protected walk, it will longjmp and never return.
+    // If it returns, the fault wasn't from our code.
     StackWalker::checkFault(thrd);
 
     // Workaround for JDK-8313796 if needed. Setting cstack=dwarf also helps
     if (_need_JDK_8313796_workaround &&
         VMStructs::isInterpretedFrameValidFunc((const void *)pc) &&
         frame.skipFaultInstruction()) {
-      if (thrd != nullptr) {
+      if (have_tls_protection) {
         thrd->exitCrashHandler();
       }
-      return true;
+      return 1;  // handled
     }
   }
 
-  if (thrd != nullptr) {
+  if (have_tls_protection) {
     thrd->exitCrashHandler();
   }
-  return false;
+  return 0;  // not handled, safe to chain
 }
 
 void Profiler::setupSignalHandlers() {
@@ -1127,11 +1148,13 @@ void Profiler::setupSignalHandlers() {
   if (__sync_bool_compare_and_swap(&_signals_initialized, false, true)) {
       if (VM::isHotspot() || VM::isOpenJ9()) {
         // HotSpot and J9 tolerate interposed SIGSEGV/SIGBUS handler; other JVMs probably not
+        // IMPORTANT: protectSignalHandlers must be called BEFORE replaceSigsegvHandler so that
+        // the original (JVM's) handlers are saved before we install ours. This way, when we
+        // intercept other libraries' sigaction calls and return oldact, we return the JVM's
+        // handler (not ours), preventing infinite chaining loops.
+        OS::protectSignalHandlers(segvHandler, busHandler);
         orig_segvHandler = OS::replaceSigsegvHandler(segvHandler);
         orig_busHandler = OS::replaceSigbusHandler(busHandler);
-        // Protect our handlers from being overwritten by other libraries (e.g., wasmtime).
-        // Their handlers will be stored as chain targets and called from our handlers.
-        OS::protectSignalHandlers(segvHandler, busHandler);
         // Patch sigaction GOT in libraries with broken signal handlers (already loaded)
         LibraryPatcher::patch_sigaction();
       }
