@@ -33,6 +33,10 @@ class VMNMethod;
 // sending SIGABRT which is uncatchable by crash protection.
 // When crash protection is active the assert is redundant — any bad read will
 // be caught by the SIGSEGV handler and recovered via longjmp — so we skip it.
+//
+// Defined at the bottom of this file after VMThread is declared so that the
+// VMThread fallback path (isExceptionActive) is accessible without forward-
+// declaring the full class.
 inline bool crashProtectionActive();
 
 template <typename T>
@@ -704,7 +708,6 @@ DECLARE(VMThread)
         assert(SafeAccess::isReadable(this));
         return *(const void***)this;
     }
-
 
     // This thread is considered a JavaThread if at least 2 of the selected 3 vtable entries
     // match those of a known JavaThread (which is either application thread or AttachListener).

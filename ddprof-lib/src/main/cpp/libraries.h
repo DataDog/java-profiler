@@ -23,7 +23,8 @@ class Libraries {
   // Get library by index (used for remote symbolication unpacking)
   // Note: Parameter is uint32_t to match lib_index packing (17 bits = max 131K libraries)
   CodeCache *getLibraryByIndex(uint32_t index) const {
-    if (index < _native_libs.count()) {
+    assert(_native_libs.count() >= 0);
+    if (index < static_cast<uint32_t>(_native_libs.count())) {
       return _native_libs[index];
     }
     return nullptr;

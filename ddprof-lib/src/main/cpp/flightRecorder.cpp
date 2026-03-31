@@ -808,7 +808,7 @@ void Recording::writeMetadata(Buffer *buf) {
 
   std::vector<std::string> &strings = JfrMetadata::strings();
   buf->putVar64(strings.size());
-  for (int i = 0; i < strings.size(); i++) {
+  for (size_t i = 0; i < strings.size(); i++) {
     const char *string = strings[i].c_str();
     int length = strlen(string);
     flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - length);
@@ -842,14 +842,14 @@ void Recording::writeElement(Buffer *buf, const Element *e) {
   buf->putVar64(e->_name);
 
   buf->putVar64(e->_attributes.size());
-  for (int i = 0; i < e->_attributes.size(); i++) {
+  for (size_t i = 0; i < e->_attributes.size(); i++) {
     flushIfNeeded(buf);
     buf->putVar64(e->_attributes[i]._key);
     buf->putVar64(e->_attributes[i]._value);
   }
 
   buf->putVar64(e->_children.size());
-  for (int i = 0; i < e->_children.size(); i++) {
+  for (size_t i = 0; i < e->_children.size(); i++) {
     flushIfNeeded(buf);
     writeElement(buf, e->_children[i]);
   }
@@ -1426,7 +1426,7 @@ void Recording::writeCounters(Buffer *buf) {
   long long *counters = Counters::getCounters();
   if (counters) {
     std::vector<const char *> names = Counters::describeCounters();
-    for (int i = 0; i < names.size(); i++) {
+    for (size_t i = 0; i < names.size(); i++) {
       int start = buf->skip(1);
       buf->putVar64(T_DATADOG_COUNTER);
       buf->putVar64(_start_ticks);
@@ -1683,10 +1683,11 @@ void FlightRecorder::stop() {
 }
 
 Error FlightRecorder::dump(const char *filename, const int length) {
+  assert(length >= 0);
   ExclusiveLockGuard locker(&_rec_lock);
   Recording* rec = _rec;
   if (rec != nullptr) {
-    if (_filename.length() != length ||
+    if (_filename.length() != static_cast<size_t>(length) ||
         strncmp(filename, _filename.c_str(), length) != 0) {
       // if the filename to dump the recording to is specified move the current
       // working file there

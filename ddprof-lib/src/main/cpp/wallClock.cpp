@@ -105,10 +105,9 @@ Error BaseWallClock::start(Arguments &args) {
   }
   _interval = interval ? interval : DEFAULT_WALL_INTERVAL;
 
-    _reservoir_size =
+  _reservoir_size =
             args._wall_threads_per_tick ?
-            args._wall_threads_per_tick
-                                                : DEFAULT_WALL_THREADS_PER_TICK;
+            args._wall_threads_per_tick : DEFAULT_WALL_THREADS_PER_TICK;
 
   initialize(args);
 

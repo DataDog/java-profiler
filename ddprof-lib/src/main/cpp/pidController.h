@@ -50,9 +50,10 @@ public:
                 int sampling_window, double cutoff_secs)
       : _target(target_per_second * sampling_window),
         _proportional_gain(proportional_gain),
-        _integral_gain(integral_gain * sampling_window),
         _derivative_gain(derivative_gain / sampling_window),
-        _alpha(computeAlpha(sampling_window / cutoff_secs)), _avg_error(0),
+        _integral_gain(integral_gain * sampling_window),
+        _alpha(computeAlpha(sampling_window / cutoff_secs)),
+        _avg_error(0),
         _integral_value(0) {}
 
   double compute(u64 input, double time_delta_seconds);

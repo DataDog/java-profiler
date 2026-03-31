@@ -38,6 +38,8 @@ Context& Contexts::initializeContextTls() {
   return ctx;
 }
 
+static Context DD_EMPTY_CONTEXT = {};
+
 Context& Contexts::get() {
   ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
   if (thrd == nullptr || !thrd->isContextTlsInitialized()) {

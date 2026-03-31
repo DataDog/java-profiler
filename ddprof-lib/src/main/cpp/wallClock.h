@@ -29,9 +29,9 @@ class BaseWallClock : public Engine {
     // Profiler::recordSample().
     int _reservoir_size;
 
-      pthread_t _thread;
-      virtual void timerLoop() = 0;
-      virtual void initialize(Arguments& args) {};
+    pthread_t _thread;
+    virtual void timerLoop() = 0;
+    virtual void initialize(Arguments& args) {};
 
     static void *threadEntry(void *wall_clock) {
       ((BaseWallClock *)wall_clock)->timerLoop();
@@ -113,9 +113,9 @@ class BaseWallClock : public Engine {
 
 public:
   BaseWallClock() :
+        _running(false),
         _interval(LONG_MAX),
         _reservoir_size(0),
-        _running(false),
         _thread(0) {}
     virtual ~BaseWallClock() = default;
 

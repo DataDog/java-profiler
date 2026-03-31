@@ -279,7 +279,7 @@ static otel_process_ctx_result otel_process_ctx_update(uint64_t monotonic_publis
   // Step: Prepare the new payload to be published
   // The payload SHOULD be ready and valid before trying to actually update the mapping.
   uint32_t payload_size = 0;
-  char *payload;
+  char *payload = nullptr;
   otel_process_ctx_result result = otel_process_ctx_encode_protobuf_payload(&payload, &payload_size, *data);
   if (!result.success) return result;
 

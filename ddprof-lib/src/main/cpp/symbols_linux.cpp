@@ -135,14 +135,6 @@ static void ensure_main_phdr_initialized() {
     pthread_once(&_main_phdr_once, init_main_phdr_once);
 }
 
-static Range range_for_fbase(void* fbase) {
-    Range r = {0, 0};
-    if (!fbase) return r;
-    UnifiedCtx ctx = {fbase, &r, NULL, NULL, NULL, NULL, NULL};
-    dl_iterate_phdr(&unified_phdr_cb, &ctx);
-    return r;
-}
-
 static void init_lib_ranges_once() {
     if (g_lib_ranges_inited) return;
     g_lib_ranges_inited = true;
@@ -666,13 +658,13 @@ const char* ElfParser::getDebuginfodCache() {
     const char* env_vars[] = {"DEBUGINFOD_CACHE_PATH", "XDG_CACHE_HOME", "HOME"};
     const char* suffixes[] = {"/", "debuginfod_client/", ".cache/debuginfod_client/"};
 
-    for (int i = 0; i < sizeof(env_vars) / sizeof(env_vars[0]); i++) {
+    for (size_t i = 0; i < sizeof(env_vars) / sizeof(env_vars[0]); i++) {
         const char* env_val = getenv(env_vars[i]);
         if (!env_val || !env_val[0]) {
             continue;
         }
 
-        if (snprintf(_debuginfod_cache_buf, sizeof(_debuginfod_cache_buf), "%s/%s", env_val, suffixes[i]) < sizeof(_debuginfod_cache_buf)) {
+        if (snprintf(_debuginfod_cache_buf, sizeof(_debuginfod_cache_buf), "%s/%s", env_val, suffixes[i]) < static_cast<int>(sizeof(_debuginfod_cache_buf))) {
             return _debuginfod_cache_buf;
         }
     }

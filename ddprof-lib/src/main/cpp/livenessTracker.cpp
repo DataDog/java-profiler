@@ -97,7 +97,7 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
   _table_lock.lock();
 
   u32 sz;
-  for (int i = 0; i < (sz = _table_size); i++) {
+  for (u32 i = 0; i < (sz = _table_size); i++) {
     jobject ref = env->NewLocalRef(_table[i].ref);
     if (ref != nullptr) {
       if (tracked_thread_ids != nullptr) {
@@ -207,8 +207,6 @@ void LivenessTracker::stop() {
   // do not disable GC notifications here - the tracker is supposed to survive
   // multiple recordings
 }
-
-static int _min(int a, int b) { return a < b ? a : b; }
 
 Error LivenessTracker::initialize(Arguments &args) {
   _enabled = args._gc_generations || args._record_liveness;

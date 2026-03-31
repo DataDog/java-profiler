@@ -1103,7 +1103,7 @@ HeapUsage HeapUsage::get(bool allow_jmx) {
             usage._maxSize = summary.maxSize();
         }
     }
-    if (usage._maxSize == -1 && _memory_usage_func != NULL && allow_jmx && isJMXSupported()) {
+    if (usage._maxSize == size_t(-1) && _memory_usage_func != NULL && allow_jmx && isJMXSupported()) {
         // this path is for non-hotspot JVMs
         // we need to patch the native method binding for JMX GetMemoryUsage to
         // capture the native method pointer first also, it requires JMX and

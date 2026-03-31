@@ -229,7 +229,7 @@ private:
 public:
   RecordingBuffer() : Buffer() {
     new (_data + sizeof(_data)) char[sizeof(_buf)];
-    memset(_buf, 0, _limit); 
+    memset(_buf, 0, _limit);
   }
 
   int limit() const override { return _limit; }

@@ -74,7 +74,7 @@ const int INITIAL_PC_OFFSET = DW_LINK_REGISTER;
 
 struct FrameDesc {
     u32 loc;
-    int cfa;
+    u32 cfa;
     int fp_off;
     int pc_off;
 
