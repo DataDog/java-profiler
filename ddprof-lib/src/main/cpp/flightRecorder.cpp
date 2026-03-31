@@ -1468,6 +1468,8 @@ void Recording::writeCurrentContext(Buffer *buf) {
   u64 spanId = 0;
   u64 rootSpanId = 0;
   bool hasContext = ContextApi::get(spanId, rootSpanId);
+  // spanId/rootSpanId are initialized to 0 above; ContextApi::get() only updates them
+  // on success, so 0s are always written when there is no valid context.
   buf->putVar64(spanId);
   buf->putVar64(rootSpanId);
 

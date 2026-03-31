@@ -25,24 +25,26 @@
 
 
 /**
- * Initialize OTel TLS for the current thread on first use.
- * Triggers the first access to custom_labels_current_set_v2 (TLS init).
- * Must be called with signals blocked to prevent musl TLS deadlock.
+ * Initialize context TLS for the current thread on first use.
+ * Must be called with signals blocked to prevent musl TLS deadlock:
+ * on musl, the first write to a TLS variable triggers lazy slot allocation,
+ * which acquires an internal lock that is also held during signal delivery,
+ * causing deadlock if a signal fires mid-init.
  * The OtelThreadContextRecord is already zero-initialized by the ProfiledThread ctor.
  */
-void ContextApi::initializeOtelTls(ProfiledThread* thrd) {
+void ContextApi::initializeContextTLS(ProfiledThread* thrd) {
     SignalBlocker blocker;
     // Set the TLS pointer permanently to this thread's record.
-    // First access here triggers TLS slot initialization (needed on musl).
+    // This first write triggers musl's TLS slot initialization (see above).
     // The pointer remains stable for the thread's lifetime; external profilers
     // rely solely on the valid flag for consistency, not pointer nullness.
     custom_labels_current_set_v2 = thrd->getOtelContextRecord();
-    thrd->markOtelContextInitialized();
+    thrd->markContextInitialized();
 }
 
 bool ContextApi::get(u64& span_id, u64& root_span_id) {
     ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
-    if (thrd == nullptr || !thrd->isOtelContextInitialized()) {
+    if (thrd == nullptr || !thrd->isContextInitialized()) {
         return false;
     }
 

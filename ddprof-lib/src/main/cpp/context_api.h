@@ -33,29 +33,35 @@ class ProfiledThread;
 class ContextApi {
 public:
     /**
-     * Initialize OTel TLS for the given thread on first use.
+     * Initialize context TLS for the given thread on first use.
      * Must be called with signals blocked (SignalBlocker).
      */
-    static void initializeOtelTls(ProfiledThread* thrd);
+    static void initializeContextTLS(ProfiledThread* thrd);
 
     /**
-     * Read context for the current thread.
+     * Read span ID and local root span ID for the current thread.
      *
      * Used by signal handlers to get the current trace context.
-     * Returns false if the context is invalid (torn read or uninitialized).
+     * Returns false if the OTEP valid flag is not set (record being mutated
+     * or thread not yet initialized). Sets span_id and root_span_id to 0
+     * on failure; does not detect torn reads (the valid flag guards that).
+     *
+     * Unlike snapshot(), this reads only spanId and rootSpanId — use
+     * snapshot() when tag encodings are also needed.
      *
      * @param span_id Output: the span ID
-     * @param root_span_id Output: the root span ID
-     * @return true if context was successfully read
+     * @param root_span_id Output: the root span ID (from sidecar)
+     * @return true if the valid flag was set and context was read
      */
     static bool get(u64& span_id, u64& root_span_id);
 
     /**
-     * Snapshot the current thread's context into a Context struct.
+     * Snapshot the current thread's full context into a Context struct.
      *
      * Populates a Context with spanId, rootSpanId (from sidecar)
      * and tag encodings (from sidecar) so that writeContextSnapshot()
-     * works for both live and deferred event paths.
+     * works for both live and deferred event paths. Unlike get(), this
+     * also captures custom attribute tag encodings.
      *
      * @return A Context struct representing the current thread's context
      */
@@ -64,9 +70,10 @@ public:
     /**
      * Register attribute key names and publish them in the process context.
      * Must be called before setAttribute().
+     * Keys beyond DD_TAGS_CAPACITY are silently clipped.
      *
      * @param keys Array of key name strings
-     * @param count Number of keys
+     * @param count Number of keys (clipped to DD_TAGS_CAPACITY)
      */
     static void registerAttributeKeys(const char** keys, int count);
 

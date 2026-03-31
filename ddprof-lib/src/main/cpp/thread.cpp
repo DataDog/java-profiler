@@ -101,11 +101,15 @@ void ProfiledThread::releaseFromBuffer() {
     _filter_slot_id = -1;
     _unwind_failures.clear();
 
-    // Detach the TLS pointer before clearing the record, so external
-    // profilers don't see a stale pointer to a recycled record.
+    // Null the TLS pointer so external profilers that dereference the pointer
+    // (rather than just checking the valid flag) don't access a recycled record.
+    // This is distinct from the valid flag: valid guards the OTEP write protocol
+    // between the Java writer and native reader, but does not protect recycling.
     __atomic_store_n(&custom_labels_current_set_v2, (OtelThreadContextRecord*)nullptr, __ATOMIC_RELEASE);
-    // Mark uninitialized FIRST so signal handlers short-circuit before
-    // reading partially-zeroed data during the memset below.
+    // Mark uninitialized BEFORE zeroing the record, so that our own signal handlers
+    // short-circuit before reading partially-zeroed data during the memset below.
+    // (The valid flag is zeroed by memset too, but _otel_ctx_initialized guards
+    // the isContextInitialized() check which runs before any record access.)
     _otel_ctx_initialized = false;
     clearOtelSidecar();
     memset(&_otel_ctx_record, 0, sizeof(_otel_ctx_record));

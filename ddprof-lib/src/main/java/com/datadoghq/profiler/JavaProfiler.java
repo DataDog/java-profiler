@@ -188,7 +188,7 @@ public final class JavaProfiler {
     }
 
     /**
-     * Sets trace context with full 128-bit W3C trace ID and local root span ID.
+     * Sets trace context with full 128-bit W3C trace ID, span ID, and local root span ID.
      *
      * @param localRootSpanId Local root span ID (for endpoint correlation)
      * @param spanId Span identifier
@@ -200,7 +200,8 @@ public final class JavaProfiler {
     }
 
     /**
-     * Clears context identifier for current thread.
+     * Resets the current thread's context to zero (traceId=0, spanId=0, localRootSpanId=0).
+     * Custom context attributes are also cleared.
      */
     public void clearContext() {
         tlsContextStorage.get().put(0, 0, 0, 0);
@@ -298,7 +299,7 @@ public final class JavaProfiler {
 
     private static ThreadContext initializeThreadContext() {
         long[] metadata = new long[6];
-        ByteBuffer[] buffers = initializeOtelTls0(metadata);
+        ByteBuffer[] buffers = initializeContextTLS0(metadata);
         if (buffers == null) {
             throw new IllegalStateException("Failed to initialize OTEL TLS — ProfiledThread not available");
         }
@@ -335,7 +336,7 @@ public final class JavaProfiler {
     private static native String getStatus0();
 
     /**
-     * Initializes OTEL TLS for the current thread and returns 2 DirectByteBuffers.
+     * Initializes context TLS for the current thread and returns 2 DirectByteBuffers.
      * Sets custom_labels_current_set_v2 permanently to the thread's OtelThreadContextRecord.
      *
      * @param metadata output array filled with:
@@ -347,7 +348,7 @@ public final class JavaProfiler {
      *   [5] LRS_SIDECAR_OFFSET — offset of local_root_span_id in sidecar buffer
      * @return array of 2 ByteBuffers: [recordBuffer, sidecarBuffer]
      */
-    private static native ByteBuffer[] initializeOtelTls0(long[] metadata);
+    private static native ByteBuffer[] initializeContextTLS0(long[] metadata);
 
     public ThreadContext getThreadContext() {
         return tlsContextStorage.get();

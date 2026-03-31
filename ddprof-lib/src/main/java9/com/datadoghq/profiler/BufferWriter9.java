@@ -44,21 +44,9 @@ public final class BufferWriter9 implements BufferWriter.Impl {
     }
 
     @Override
-    public void writeAndReleaseLong(ByteBuffer buffer, int offset, long value) {
-        // setVolatile provides full volatile semantics (matches Unsafe.putLongVolatile)
-        LONG_VIEW_VH.setVolatile(buffer, offset, value);
-    }
-
-    @Override
     public void writeInt(ByteBuffer buffer, int offset, int value) {
         // setRelease provides ordered write semantics (matches Unsafe.putOrderedInt)
         INT_VIEW_VH.setRelease(buffer, offset, value);
-    }
-
-    @Override
-    public void writeAndReleaseInt(ByteBuffer buffer, int offset, int value) {
-        // setVolatile provides full volatile semantics (matches Unsafe.putIntVolatile)
-        INT_VIEW_VH.setVolatile(buffer, offset, value);
     }
 
     @Override

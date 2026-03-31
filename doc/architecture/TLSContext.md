@@ -104,7 +104,7 @@ For benchmark data, see
 │                                                                      │
 │  JavaProfiler                                                        │
 │    ├─ ThreadLocal<ThreadContext> tlsContextStorage                   │
-│    ├─ initializeOtelTls0(long[] metadata) → ByteBuffer[2]            │
+│    ├─ initializeContextTLS0(long[] metadata) → ByteBuffer[2]            │
 │    └─ registerConstant0(String value) → int encoding                 │
 │                                                                      │
 │  ThreadContext (per thread)                                          │
@@ -325,11 +325,11 @@ When a thread first accesses its `ThreadContext` via the `ThreadLocal`:
 ```java
 // JavaProfiler.initializeThreadContext()
 long[] metadata = new long[6];
-ByteBuffer[] buffers = initializeOtelTls0(metadata);
+ByteBuffer[] buffers = initializeContextTLS0(metadata);
 return new ThreadContext(buffers[0], buffers[1], metadata);
 ```
 
-The native `initializeOtelTls0` (in `javaApi.cpp`):
+The native `initializeContextTLS0` (in `javaApi.cpp`):
 
 1. Gets the calling thread's `ProfiledThread` (creates one if needed).
 2. Sets `custom_labels_current_set_v2` permanently to the thread's
@@ -347,13 +347,13 @@ hot-path operations are pure Java ByteBuffer writes.
 
 ### Signal-Safe TLS Access
 
-Signal handlers cannot call `initializeOtelTls0` (it may allocate). The
+Signal handlers cannot call `initializeContextTLS0` (it may allocate). The
 read path uses a pre-initialized pointer:
 
 ```cpp
 // ProfiledThread::currentSignalSafe() — no allocation, no TLS lazy init
 ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
-if (thrd == nullptr || !thrd->isOtelContextInitialized()) {
+if (thrd == nullptr || !thrd->isContextInitialized()) {
     return false;  // emit zeros
 }
 ```

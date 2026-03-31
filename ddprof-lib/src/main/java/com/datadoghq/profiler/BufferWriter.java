@@ -75,23 +75,6 @@ public final class BufferWriter {
         void writeOrderedLong(ByteBuffer buffer, int offset, long value);
 
         /**
-         * Writes a long value to the buffer at the specified offset with volatile write semantics
-         * (full memory barrier).
-         *
-         * <p>Volatile write provides full memory barrier semantics - prevents reordering with both
-         * prior and subsequent operations. This is equivalent to writing to a volatile field.
-         *
-         * <p>Used for writing sentinel values (e.g., checksums) that signal completion of a write
-         * sequence. Ensures that if a signal handler observes this write, all prior writes in the
-         * sequence are also visible.
-         *
-         * @param buffer the direct ByteBuffer to write to
-         * @param offset the offset in bytes from the buffer's base address
-         * @param value the long value to write
-         */
-        void writeAndReleaseLong(ByteBuffer buffer, int offset, long value);
-
-        /**
          * Writes an int value to the buffer at the specified offset with ordered write semantics
          * (release barrier).
          *
@@ -106,23 +89,6 @@ public final class BufferWriter {
          * @param value the int value to write
          */
         void writeInt(ByteBuffer buffer, int offset, int value);
-
-        /**
-         * Writes an int value to the buffer at the specified offset with volatile write semantics
-         * (full memory barrier).
-         *
-         * <p>Volatile write provides full memory barrier semantics - prevents reordering with both
-         * prior and subsequent operations. This is equivalent to writing to a volatile field.
-         *
-         * <p>Used for writing sentinel values that signal completion of a write sequence. Ensures
-         * that if a signal handler observes this write, all prior writes in the sequence are also
-         * visible.
-         *
-         * @param buffer the direct ByteBuffer to write to
-         * @param offset the offset in bytes from the buffer's base address
-         * @param value the int value to write
-         */
-        void writeAndReleaseInt(ByteBuffer buffer, int offset, int value);
 
         /**
          * Executes a full memory fence (barrier).
@@ -193,25 +159,6 @@ public final class BufferWriter {
     }
 
     /**
-     * Writes a long value to the buffer at the specified offset with volatile write semantics
-     * (full memory barrier).
-     *
-     * <p>Volatile write provides full memory barrier semantics - prevents reordering with both
-     * prior and subsequent operations. This is equivalent to writing to a volatile field.
-     *
-     * <p>This is typically used for writing checksums or other sentinel values that signal
-     * completion of a write sequence. Ensures that if a signal handler observes this write,
-     * all prior writes in the sequence are also visible.
-     *
-     * @param buffer the direct ByteBuffer to write to
-     * @param offset the offset in bytes from the buffer's base address
-     * @param value the long value to write
-     */
-    public void writeVolatileLong(ByteBuffer buffer, int offset, long value) {
-        impl.writeAndReleaseLong(buffer, offset, value);
-    }
-
-    /**
      * Writes an int value to the buffer at the specified offset with ordered write semantics
      * (release barrier).
      *
@@ -228,25 +175,6 @@ public final class BufferWriter {
      */
     public void writeOrderedInt(ByteBuffer buffer, int offset, int value) {
         impl.writeInt(buffer, offset, value);
-    }
-
-    /**
-     * Writes an int value to the buffer at the specified offset with volatile write semantics
-     * (full memory barrier).
-     *
-     * <p>Volatile write provides full memory barrier semantics - prevents reordering with both
-     * prior and subsequent operations. This is equivalent to writing to a volatile field.
-     *
-     * <p>This is typically used for writing sentinel values that signal completion of a write
-     * sequence. Ensures that if a signal handler observes this write, all prior writes in the
-     * sequence are also visible.
-     *
-     * @param buffer the direct ByteBuffer to write to
-     * @param offset the offset in bytes from the buffer's base address
-     * @param value the int value to write
-     */
-    public void writeVolatileInt(ByteBuffer buffer, int offset, int value) {
-        impl.writeAndReleaseInt(buffer, offset, value);
     }
 
     /**

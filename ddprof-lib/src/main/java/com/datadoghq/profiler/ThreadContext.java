@@ -72,7 +72,7 @@ public final class ThreadContext {
     private final ByteBuffer sidecarBuffer;  // tag encodings + LRS
 
     /**
-     * Creates a ThreadContext from the two DirectByteBuffers returned by native initializeOtelTls0.
+     * Creates a ThreadContext from the two DirectByteBuffers returned by native initializeContextTLS0.
      *
      * @param recordBuffer 640-byte buffer over OtelThreadContextRecord
      * @param sidecarBuffer buffer over tag encodings + local root span id
@@ -100,7 +100,7 @@ public final class ThreadContext {
         // The native ProfiledThread survives across sessions, so the sidecar may hold
         // old tag encodings and the record may hold old attrs_data.
         for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
-            this.sidecarBuffer.putInt(i * 4, 0);
+            this.sidecarBuffer.putInt(i * Integer.BYTES, 0);
         }
         this.sidecarBuffer.putLong(this.lrsSidecarOffset, 0);
         this.recordBuffer.put(this.validOffset, (byte) 0);
@@ -170,7 +170,7 @@ public final class ThreadContext {
         }
         int otepKeyIndex = keyIndex + 1;
         detach();
-        sidecarBuffer.putInt(keyIndex * 4, 0);
+        sidecarBuffer.putInt(keyIndex * Integer.BYTES, 0);
         removeOtepAttribute(otepKeyIndex);
         attach();
     }
@@ -178,7 +178,7 @@ public final class ThreadContext {
     public void copyCustoms(int[] value) {
         int len = Math.min(value.length, MAX_CUSTOM_SLOTS);
         for (int i = 0; i < len; i++) {
-            value[i] = sidecarBuffer.getInt(i * 4);
+            value[i] = sidecarBuffer.getInt(i * Integer.BYTES);
         }
     }
 
@@ -243,7 +243,7 @@ public final class ThreadContext {
         // so a signal handler never sees a new sidecar encoding alongside old attrs_data.
         int otepKeyIndex = keyIndex + 1;
         detach();
-        sidecarBuffer.putInt(keyIndex * 4, encoding);
+        sidecarBuffer.putInt(keyIndex * Integer.BYTES, encoding);
         boolean written = replaceOtepAttribute(otepKeyIndex, utf8);
         attach();
         return written;
@@ -258,17 +258,7 @@ public final class ThreadContext {
         detach();
 
         if (trHi == 0 && trLo == 0 && spanId == 0) {
-            // Clear: zero trace/span IDs, LRS hex bytes, and sidecar.
-            // attrsDataSize is not reset here: valid stays 0 (no attach), so no reader
-            // can see attrs_data, and the next setContext will reset it before attach().
-            recordBuffer.putLong(traceIdOffset, 0);
-            recordBuffer.putLong(traceIdOffset + 8, 0);
-            recordBuffer.putLong(spanIdOffset, 0);
-            writeLrsHex(0);
-            for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
-                sidecarBuffer.putInt(i * 4, 0);
-            }
-            BUFFER_WRITER.writeOrderedLong(sidecarBuffer, lrsSidecarOffset, 0);
+            clearContextDirect();
             return;
         }
 
@@ -280,8 +270,11 @@ public final class ThreadContext {
         // Reset custom attribute state so the previous span's values don't leak
         // into this span. Callers set attributes again via setContextAttribute().
         for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
-            sidecarBuffer.putInt(i * 4, 0);
+            // i * Integer.BYTES: byte offset into sidecar buffer for int slot i
+            sidecarBuffer.putInt(i * Integer.BYTES, 0);
         }
+        // Reset attrs_data_size to contain only the fixed LRS entry, discarding
+        // any custom attribute entries written during the previous span.
         recordBuffer.putShort(attrsDataSizeOffset, (short) LRS_ENTRY_SIZE);
 
         // Update LRS sidecar and OTEP attrs_data inside the detach/attach window so a
@@ -293,6 +286,23 @@ public final class ThreadContext {
     }
 
     // ---- LRS helpers ----
+
+    /**
+     * Zeros trace/span IDs, sidecar encodings, and LRS. Called between detach() and the
+     * return in the all-zero path; valid stays 0 (no attach) so no reader can see attrs_data.
+     * attrs_data_size is not reset here; the next non-zero setContext call will reset it
+     * before attach().
+     */
+    private void clearContextDirect() {
+        recordBuffer.putLong(traceIdOffset, 0);
+        recordBuffer.putLong(traceIdOffset + 8, 0);
+        recordBuffer.putLong(spanIdOffset, 0);
+        writeLrsHex(0);
+        for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
+            sidecarBuffer.putInt(i * Integer.BYTES, 0);
+        }
+        BUFFER_WRITER.writeOrderedLong(sidecarBuffer, lrsSidecarOffset, 0);
+    }
 
     /**
      * Overwrite the 16 hex value bytes of the fixed LRS entry in-place.
@@ -324,6 +334,9 @@ public final class ThreadContext {
         // The TLS pointer (custom_labels_current_set_v2) is permanent and never
         // written here; external profilers rely solely on the valid flag.
         BUFFER_WRITER.storeFence();
+        // Plain put is sufficient: signal handlers run on the same hardware thread,
+        // so they observe stores in program order — no volatile needed for same-thread
+        // visibility. The preceding storeFence() provides the release barrier.
         recordBuffer.put(validOffset, (byte) 1);
     }
 
@@ -389,6 +402,7 @@ public final class ThreadContext {
     /**
      * Reads a custom attribute value from attrs_data by key index.
      * Scans the attrs_data entries and returns the UTF-8 string for the matching key.
+     * Intended for tests only.
      *
      * @param keyIndex 0-based user key index (same as passed to setContextAttribute)
      * @return the attribute value string, or null if not set

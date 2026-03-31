@@ -186,12 +186,12 @@ public:
     __atomic_store_n(&_in_critical_section, false, __ATOMIC_RELEASE);
   }
   
-  // OTel context TLS (OTEP #4947)
-  inline void markOtelContextInitialized() {
+  // Context TLS (OTEP #4947)
+  inline void markContextInitialized() {
     _otel_ctx_initialized = true;
   }
 
-  inline bool isOtelContextInitialized() {
+  inline bool isContextInitialized() {
     return _otel_ctx_initialized;
   }
 
@@ -231,7 +231,8 @@ public:
   inline bool isCrashProtectionActive() const { return _crash_protection_active; }
   inline void setCrashProtectionActive(bool active) { _crash_protection_active = active; }
 
-  // OTEL JFR tag encoding sidecar — populated by JNI thread, read by signal handler
+  // JFR tag encoding sidecar — populated by JNI thread, read by signal handler
+  // (flightRecorder.cpp writeCurrentContext / wallClock.cpp collapsing).
   inline u32* getOtelTagEncodingsPtr() { return _otel_tag_encodings; }
   inline u32 getOtelTagEncoding(u32 idx) const {
     return idx < DD_TAGS_CAPACITY ? _otel_tag_encodings[idx] : 0;
