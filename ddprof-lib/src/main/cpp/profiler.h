@@ -215,7 +215,6 @@ public:
 
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       _calltrace_buffer[i] = NULL;
-      new (&_locks[i])SpinLock();
     }
   }
 

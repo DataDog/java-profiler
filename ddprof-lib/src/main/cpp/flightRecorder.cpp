@@ -1687,7 +1687,7 @@ Error FlightRecorder::dump(const char *filename, const int length) {
   ExclusiveLockGuard locker(&_rec_lock);
   Recording* rec = _rec;
   if (rec != nullptr) {
-    if (_filename.length() != size_t(length) ||
+    if (_filename.length() != static_cast<size_t>(length) ||
         strncmp(filename, _filename.c_str(), length) != 0) {
       // if the filename to dump the recording to is specified move the current
       // working file there
