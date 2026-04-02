@@ -15,13 +15,14 @@
  * limitations under the License.
  */
 
-#ifndef _J9_J9EXT_H
-#define _J9_J9EXT_H
+#ifndef _J9_J9SUPPORT_H
+#define _J9_J9SUPPORT_H
 
 #include <jvmti.h>
 
 #include "log.h"
 #include "vmEntry.h"
+#include "stackWalker.h"
 
 #define JVMTI_EXT(f, ...) ((jvmtiError(*)(jvmtiEnv *, __VA_ARGS__))f)
 
@@ -70,7 +71,7 @@ static inline int sanitizeJ9FrameType(jint j9_type) {
   return FRAME_JIT_COMPILED;
 }
 
-class J9Ext {
+class J9Support {
   friend class JVMThread;
   friend class J9WallClock;
 private:
@@ -118,6 +119,8 @@ public:
     jvmti->Deallocate((unsigned char *)sampler);
     return asgct;
   }
+
+  static int walkJavaStack(StackWalkRequest& request);
 
   static bool initialize(jvmtiEnv *jvmti, const void *j9thread_self);
 
@@ -181,4 +184,4 @@ private:
     }
 };
 
-#endif // _J9_J9EXT_H
+#endif // _J9_J9SUPPORT_H

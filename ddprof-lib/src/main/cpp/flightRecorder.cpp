@@ -16,7 +16,6 @@
 #include "incbin.h"
 #include "jfrMetadata.h"
 #include "jniHelper.h"
-#include "jvm.h"
 #include "os.h"
 #include "profiler.h"
 #include "rustDemangler.h"

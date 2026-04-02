@@ -6,6 +6,7 @@
 
 #include "zingSupport.h"
 
+#include "asyncSampleMutex.h"
 #include "vmEntry.h"
 #include <jni.h>
 
@@ -26,3 +27,4 @@ void* ZingSupport::initialize(jthread thread) {
 
     return (void*)env->GetLongField(thread, eetop);
 }
+

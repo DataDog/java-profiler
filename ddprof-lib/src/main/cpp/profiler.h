@@ -58,43 +58,6 @@ class VM;
 
 enum State { NEW, IDLE, RUNNING, TERMINATED };
 
-/**
- * Converts a BCI_* frame type value to the corresponding EventType enum value.
- *
- * This conversion is necessary because Datadog's implementation uses BCI_* values
- * (from ASGCT_CallFrameType) directly as event type identifiers, while upstream
- * StackWalker::walkVM() expects EventType enum values for its logic.
- *
- * BCI_* values are special frame types with negative values (except BCI_CPU=0)
- * that indicate non-standard frame information in call traces. EventType values
- * are positive enum indices used for event categorization in the upstream code.
- *
- * @param bci_type A BCI_* value (e.g., BCI_CPU, BCI_WALL, BCI_ALLOC)
- * @return The corresponding EventType enum value
- */
-inline EventType eventTypeFromBCI(jint bci_type) {
-    switch (bci_type) {
-        case BCI_CPU:
-            return EXECUTION_SAMPLE;  // CPU samples map to execution samples
-        case BCI_WALL:
-            return WALL_CLOCK_SAMPLE;
-        case BCI_ALLOC:
-            return ALLOC_SAMPLE;
-        case BCI_ALLOC_OUTSIDE_TLAB:
-            return ALLOC_OUTSIDE_TLAB;
-        case BCI_LIVENESS:
-            return LIVE_OBJECT;
-        case BCI_LOCK:
-            return LOCK_SAMPLE;
-        case BCI_PARK:
-            return PARK_SAMPLE;
-        default:
-            // For unknown or invalid BCI types, default to EXECUTION_SAMPLE
-            // This maintains backward compatibility and prevents undefined behavior
-            return EXECUTION_SAMPLE;
-    }
-}
-
 // Aligned to satisfy SpinLock member alignment requirement (64 bytes)  
 // Required because this class contains multiple SpinLock members:
 // _class_map_lock, _locks[], and _stubs_lock
@@ -170,15 +133,11 @@ private:
   void onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
   void onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
 
-  const char *asgctError(int code);
   u32 getLockIndex(int tid);
-  bool isAddressInCode(uintptr_t addr);
   int getNativeTrace(void *ucontext, ASGCT_CallFrame *frames, int event_type,
                      int tid, StackContext *java_ctx, bool *truncated, int lock_index);
   int getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
                         StackContext *java_ctx, bool *truncated);
-  void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames,
-                      VMNMethod *nmethod);
   void updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                         bool self = false);
   void updateJavaThreadNames();
@@ -218,24 +177,35 @@ public:
     }
   }
 
-  static Profiler *instance() {
+  static inline Profiler *instance() {
     return _instance;
   }
 
-  int status(char* status, int max_len);
 
-  const char* cstack() {
-    switch (_cstack) {
-      case CSTACK_DEFAULT: return "default";
-      case CSTACK_NO: return "no";
-      case CSTACK_FP: return "fp";
-      case CSTACK_DWARF: return "dwarf";
-      case CSTACK_LBR: return "lbr";
-      case CSTACK_VM: {
-        return _features.mixed ? "vmx" : "vm";
-      }
-      default: return "default";
+  inline void incFailure(int type) {
+    if (type < ASGCT_FAILURE_TYPES) {
+      atomicIncRelaxed(_failures[type]);
     }
+  }
+
+  int status(char* status, int max_len);
+  static const char *asgctError(int code);
+
+  
+  inline int safe_mode() const {
+    return _safe_mode;
+  }
+
+  inline const Libraries* libraries() const {
+    return _libs;
+  }
+
+  inline CStack cstackMode() const {
+    return _cstack;
+  }
+
+  inline const StackWalkFeatures& stackWalkFeatures() const {
+    return _features;
   }
 
   u64 total_samples() { return _total_samples; }
@@ -250,6 +220,7 @@ public:
   u32 numContextAttributes() { return _num_context_attributes; }
   ThreadFilter *threadFilter() { return &_thread_filter; }
 
+  const char* cstack() const;
   int lookupClass(const char *key, size_t length);
   void processCallTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor) {
     if (!_omit_stacktraces) {
@@ -280,7 +251,7 @@ public:
   Error flushJfr();
   Error dump(const char *path, const int length);
   void logStats();
-    void switchThreadEvents(jvmtiEventMode mode);
+  void switchThreadEvents(jvmtiEventMode mode);
 
   /**
    * Remote symbolication packed data layout (BCI_NATIVE_FRAME_REMOTE):
@@ -388,8 +359,6 @@ public:
   const void *resolveSymbol(const char *name);
   const char *getLibraryName(const char *native_symbol);
   const char *findNativeMethod(const void *address);
-  CodeBlob *findRuntimeStub(const void *address);
-  bool isAddressInCode(const void *pc, bool include_stubs = true);
 
   static void segvHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void busHandler(int signo, siginfo_t *siginfo, void *ucontext);
@@ -398,20 +367,6 @@ public:
   static int registerThread(int tid);
   static void unregisterThread(int tid);
 
-  // CompiledMethodLoad is also needed to enable DebugNonSafepoints info by
-  // default
-  static void JNICALL CompiledMethodLoad(jvmtiEnv *jvmti, jmethodID method,
-                                         jint code_size, const void *code_addr,
-                                         jint map_length,
-                                         const jvmtiAddrLocationMap *map,
-                                         const void *compile_info) {
-    instance()->addJavaMethod(code_addr, code_size, method);
-  }
-
-  static void JNICALL DynamicCodeGenerated(jvmtiEnv *jvmti, const char *name,
-                                           const void *address, jint length) {
-    instance()->addRuntimeStub(address, length, name);
-  }
 
   static void JNICALL ThreadStart(jvmtiEnv *jvmti, JNIEnv *jni,
                                   jthread thread) {

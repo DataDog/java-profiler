@@ -8,6 +8,7 @@
 #define _ZING_ZINGSUPPORT_H
 
 #include <jvmti.h>
+#include "stackWalker.h"
 
 class ZingSupport {
 public:
