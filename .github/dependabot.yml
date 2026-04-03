@@ -10,6 +10,7 @@ updates:
     labels:
       - "dependencies"
       - "no-release-notes"
+      - "no-review"
     ignore:
       - dependency-name: "org.junit-pioneer:junit-pioneer"
         versions: [">=2.0.0"]
@@ -31,6 +32,7 @@ updates:
     labels:
       - "dependencies"
       - "no-release-notes"
+      - "no-review"
     groups:
       gradle-minor:
         update-types:
@@ -49,5 +51,6 @@ updates:
     labels:
       - "dependencies"
       - "no-release-notes"
+      - "no-review"
     cooldown:
       default-days: 2
