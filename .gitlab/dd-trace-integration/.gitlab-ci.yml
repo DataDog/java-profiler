@@ -281,7 +281,7 @@ report-dd-trace-results:
 post-pr-comment:
   extends: .retry-config
   stage: integration-test
-  tags: [ "runner:apm-k8s-tweaked-metal" ]
+  tags: [ "arch:amd64" ]
   image: registry.ddbuild.io/ci/async-profiler-build-amd64:v49110984-amd64-benchmarks@sha256:b952a00db56a22a83392fca37b93c7664bc86d8e81e29e3e2ef2e33042024d2f
   needs:
     - job: prepare-patched-agent
