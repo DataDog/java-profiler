@@ -1,0 +1,78 @@
+# Common GitLab CI templates and configurations
+# Include this file in pipeline configurations to reuse common patterns
+
+# Retry configuration for transient failures
+.retry-config:
+  retry:
+    max: 2
+    when:
+      - unmet_prerequisites
+      - runner_system_failure
+      - data_integrity_failure
+      - api_failure
+      - scheduler_failure
+      - archived_failure
+      - stale_schedule
+      - unknown_failure
+
+# Gradle/Maven cache configuration (push+pull)
+.cache-config:
+  cache:
+    key:
+      files:
+        - gradle/wrapper/gradle-wrapper.properties
+      prefix: build-${CI_COMMIT_REF_SLUG}
+    fallback_keys:
+      - build-${CI_DEFAULT_BRANCH}
+      - build-main
+    paths:
+      - .gradle/caches/
+      - .gradle/wrapper/
+      - .m2/repository/
+
+# Read-only variant — extends base config and overrides policy
+.cache-config-pull:
+  extends: .cache-config
+  cache:
+    policy: pull
+
+# Service account for jobs that publish artifacts or read SSM secrets
+.deploy-sa:
+  variables:
+    KUBERNETES_SERVICE_ACCOUNT_OVERWRITE: java-profiler
+
+# Install gh and crane when not already present in the image.
+# Extend this in before_script for jobs that need GitHub CLI or crane.
+.bootstrap-gh-tools:
+  before_script:
+    - |
+      mkdir -p /tmp/bootstrap-bin
+      if ! command -v crane >/dev/null 2>&1; then
+        curl -fsSL "https://github.com/google/go-containerregistry/releases/download/v0.19.1/go-containerregistry_Linux_x86_64.tar.gz" \
+          | tar -xz -C /tmp/bootstrap-bin crane
+      fi
+      if ! command -v gh >/dev/null 2>&1; then
+        curl -fsSL "https://github.com/cli/cli/releases/download/v2.45.0/gh_2.45.0_linux_amd64.tar.gz" \
+          | tar -xz -C /tmp/bootstrap-bin --strip-components=2 'gh_2.45.0_linux_amd64/bin/gh'
+      fi
+      export PATH="/tmp/bootstrap-bin:$PATH"
+
+# Common job to determine versions (runs from the CI checkout)
+.get-versions:
+  stage: prepare
+  rules:
+    - if: '$DOWNSTREAM == null'
+      when: always
+    - when: never
+  interruptible: true
+  tags: [ "arch:amd64" ]
+  image: ${PREPARE_IMAGE}
+  script:
+    - set -x
+    - source .gitlab/scripts/includes.sh
+    - echo "CURRENT_VERSION=$(get_current_version)" > build.env
+    - echo "PREVIOUS_VERSION=$(get_previous_version)" >> build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+    expire_in: 1 day

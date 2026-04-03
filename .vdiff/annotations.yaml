@@ -1,0 +1,29 @@
+- id: 27fc7941-fac1-447c-9668-30f25bab5ad9
+  file: build-logic/conventions/src/main/kotlin/com/datadoghq/profiler/ProfilerTestPlugin.kt
+  base_ref: v_1.39.0
+  head_ref: main
+  line_start: 255
+  line_end: 258
+  side: head
+  context: ''
+  text: my annotation
+  author: human
+  created: 2026-03-21T17:00:35.360904Z
+  resolved: false
+  replies:
+  - author: human
+    text: yeah
+    created: 2026-03-21T18:03:34.224545Z
+- id: f1e5e0a2-d4f5-44d1-94cd-5e429f450ee2
+  file: build-logic/conventions/src/main/kotlin/com/datadoghq/profiler/ProfilerTestPlugin.kt
+  base_ref: v_1.39.0
+  head_ref: main
+  line_start: 260
+  line_end: 260
+  side: head
+  context: ''
+  text: interesting stuff
+  author: human
+  created: 2026-03-21T17:00:51.447846Z
+  resolved: false
+  replies: []
