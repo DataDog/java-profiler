@@ -66,7 +66,7 @@ notify-slack:
       when: on_failure
     - when: never
   image: registry.ddbuild.io/slack-notifier:latest
-  tags: [ "arch:amd64" ]
+  tags: [ "arch:arm64" ]
   needs:
     - get-versions
     - reliability-amd64
@@ -80,7 +80,7 @@ publish-reliability-gh-pages:
     - if: '$CI_PIPELINE_SOURCE == "schedule" && ($CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_BRANCH == "main")'
       when: always
   image: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
-  tags: [ "arch:amd64" ]
+  tags: [ "arch:arm64" ]
   id_tokens:
     DDOCTOSTS_ID_TOKEN:
       aud: dd-octo-sts

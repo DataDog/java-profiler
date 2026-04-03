@@ -37,7 +37,7 @@ check-image-updates:
       when: manual
       allow_failure: true
   extends: .bootstrap-gh-tools
-  tags: ["arch:amd64"]
+  tags: ["arch:arm64"]
   image: ${DD_OCTO_STS_IMAGE}
   id_tokens:
     DDOCTOSTS_ID_TOKEN:
@@ -99,7 +99,7 @@ rebuild-images-pr:
     - job: rebuild-images
       artifacts: true
   extends: .bootstrap-gh-tools
-  tags: ["arch:amd64"]
+  tags: ["arch:arm64"]
   image: ${DD_OCTO_STS_IMAGE}
   id_tokens:
     DDOCTOSTS_ID_TOKEN:
