@@ -536,6 +536,8 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     ASGCT_CallFrame *native_stop = frames + num_frames;
     num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
                                  &java_ctx, &truncated, lock_index);
+    assert(num_frames >= 0);
+                                 
     int max_remaining = _max_stack_depth - num_frames;
     if (max_remaining > 0) {
       // Walk Java frames if we have room, but only for mixed mode or CPU/Wall events with cstack enabled. For async events, we want to avoid walking Java frames in the signal handler if possible, since it can lead to deadlocks. Instead, we'll try to get the Java trace asynchronously after the signal handler returns.
@@ -543,6 +545,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
       num_frames += JVMSupport::walkJavaStack(request);
     }
   
+    assert(num_frames >= 0);
     if (num_frames == 0) {
       num_frames += makeFrame(frames + num_frames, BCI_ERROR, "no_Java_frame");
     }

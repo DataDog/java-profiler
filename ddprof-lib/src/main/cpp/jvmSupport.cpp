@@ -6,7 +6,10 @@
 #include "jvmSupport.h"
 
 #include "asyncSampleMutex.h"
+#include "frames.h"
+#include "common.h"
 #include "os.h"
+#include "profiler.h"
 #include "thread.h"
 
 #include "hotspot/hotspotSupport.h"
@@ -36,5 +39,18 @@ int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* 
     // AsyncGetCallTrace writes to ASGCT_CallFrame array
     ASGCT_CallTrace trace = {jni, 0, frames};
     VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
-    return trace.num_frames;
+    if (trace.num_frames > 0) {
+        return trace.num_frames;
+    }
+
+    const char* err_string = Profiler::asgctError(trace.num_frames);
+    if (err_string == NULL) {
+        // No Java stack, because thread is not in Java context
+        return 0;
+    }
+
+    TEST_LOG("asyncGetCallTrace returned %d frames\n", trace.num_frames);
+
+    Profiler::instance()->incFailure(trace.num_frames);
+    return makeFrame(frames, BCI_ERROR, err_string);
 }
