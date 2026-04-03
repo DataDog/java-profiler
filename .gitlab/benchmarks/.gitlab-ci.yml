@@ -65,7 +65,7 @@ variables:
 
 benchmarks-candidate-amd64:
   extends: .benchmark_job
-  tags: ["runner:apm-k8s-tweaked-metal"]
+  tags: ["arch:amd64"]
   image: $BENCHMARK_IMAGE_AMD64
 
 benchmarks-candidate-aarch64:
@@ -78,7 +78,7 @@ benchmarks-candidate-aarch64:
 
 publish-benchmark-gh-pages:
   stage: benchmarks
-  tags: ["runner:apm-k8s-tweaked-metal"]
+  tags: ["arch:amd64"]
   image: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
   id_tokens:
     DDOCTOSTS_ID_TOKEN:

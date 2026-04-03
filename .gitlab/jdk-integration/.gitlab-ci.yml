@@ -13,7 +13,7 @@ benchmark-with-jdk:
     - if: '$BENCHMARK_JDK == null || $DOWNSTREAM == null'
       when: never
     - when: always
-  tags: [ "runner:apm-k8s-tweaked-metal" ]
+  tags: [ "arch:amd64" ]
   image: $BENCHMARK_IMAGE_AMD64
 
 test-with-jdk:
