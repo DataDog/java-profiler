@@ -66,7 +66,7 @@ notify-slack:
       when: on_failure
     - when: never
   image: registry.ddbuild.io/slack-notifier:latest
-  tags: [ "arch:arm64" ]
+  tags: [ "arch:amd64" ]
   needs:
     - get-versions
     - reliability-amd64

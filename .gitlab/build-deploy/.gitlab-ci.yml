@@ -303,7 +303,7 @@ notify-slack-on-success:
       artifacts: false
   when: on_success
   image: registry.ddbuild.io/slack-notifier:latest
-  tags: ["arch:arm64"]
+  tags: ["arch:amd64"]
   script:
     - .gitlab/build-deploy/notify_channel.sh success $(cat version.txt)
 
@@ -317,7 +317,7 @@ notify-slack-on-failure:
       artifacts: true
   when: on_failure
   image: registry.ddbuild.io/slack-notifier:latest
-  tags: ["arch:arm64"]
+  tags: ["arch:amd64"]
   script:
     - .gitlab/build-deploy/notify_channel.sh alert $(cat version.txt)
 
