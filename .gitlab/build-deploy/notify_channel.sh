@@ -16,8 +16,9 @@ PIPELINE_LINK="<$PIPELINE_URL|pipeline #$CI_PIPELINE_ID>"
 COMMIT_URL="https://github.com/DataDog/java-profiler/commit/$COMMIT_SHA"
 COMMIT_LINK="<$COMMIT_URL|${COMMIT_SHA:0:8}>"
 
-BRANCH_URL="https://github.com/DataDog/java-profiler/tree/$CI_COMMIT_BRANCH"
-BRANCH_LINK="<$BRANCH_URL|$CI_COMMIT_BRANCH>"
+BRANCH="${CI_COMMIT_BRANCH:-${CI_COMMIT_REF_NAME:-unknown}}"
+BRANCH_URL="https://github.com/DataDog/java-profiler/tree/$BRANCH"
+BRANCH_LINK="<$BRANCH_URL|$BRANCH>"
 
 # get status from argument
 STATUS=$1
