@@ -127,9 +127,6 @@ private:
   void enableEngines();
   void disableEngines();
 
-  void addJavaMethod(const void *address, int length, jmethodID method);
-  void addRuntimeStub(const void *address, int length, const char *name);
-
   void onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
   void onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
 

@@ -23,7 +23,6 @@ enum StackRecovery {
 
 
 class JVMSupport {
-    friend class HotspotSupport;
     static int asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* ucontext);
 public:
     static int walkJavaStack(StackWalkRequest& request);

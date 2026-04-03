@@ -6,6 +6,8 @@
 #ifndef _HOTSPOT_JITCODECACHE_H
 #define _HOTSPOT_JITCODECACHE_H
 
+#include <atomic>
+
 #include "codeCache.h"
 #include "spinLock.h"
 
@@ -14,8 +16,8 @@ class JitCodeCache {
 private:
     static SpinLock _stubs_lock;
     static CodeCache _runtime_stubs;
-    static const void *_call_stub_begin;
-    static const void *_call_stub_end;
+    static std::atomic<const void *> _call_stub_begin;
+    static std::atomic<const void *> _call_stub_end;
 
 public:
     static void JNICALL CompiledMethodLoad(jvmtiEnv *jvmti, jmethodID method,
@@ -27,7 +29,9 @@ public:
                                            const void *address, jint length);
                                            
     static inline bool isCallStub(const void *address) {
-        return _call_stub_begin != nullptr && address >= _call_stub_begin && address < _call_stub_end;
+        return _call_stub_end.load(std::memory_order_relaxed) != nullptr &&
+               address >= _call_stub_begin.load(std::memory_order_relaxed) &&
+               address < _call_stub_end.load(std::memory_order_relaxed);
     }
     
     static CodeBlob* findRuntimeStub(const void *address);

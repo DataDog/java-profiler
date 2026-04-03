@@ -9,8 +9,8 @@
 
 SpinLock JitCodeCache::_stubs_lock;
 CodeCache JitCodeCache::_runtime_stubs("[stubs]");
-const void *JitCodeCache::_call_stub_begin = nullptr;
-const void *JitCodeCache::_call_stub_end = nullptr;
+std::atomic<const void *> JitCodeCache::_call_stub_begin = { nullptr };
+std::atomic<const void *> JitCodeCache::_call_stub_end = { nullptr };
 
 // CompiledMethodLoad is also needed to enable DebugNonSafepoints info by
 // default
@@ -31,8 +31,9 @@ void JNICALL JitCodeCache::DynamicCodeGenerated(jvmtiEnv *jvmti, const char *nam
   if (name[0] == 'I' && strcmp(name, "Interpreter") == 0) {
     CodeHeap::setInterpreterStart(address);
   } else if (strcmp(name, "call_stub") == 0) {
-    _call_stub_begin = address;
-    _call_stub_end = (const char *)address + length;
+    _call_stub_begin.store(address, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_release);
+    _call_stub_end.store((const char *)address + length, std::memory_order_relaxed);
   }
 
   CodeHeap::updateBounds(address, (const char *)address + length);

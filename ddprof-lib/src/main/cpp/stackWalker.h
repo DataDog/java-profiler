@@ -72,9 +72,7 @@ namespace StackWalkValidation {
 }
 
 typedef struct _StackWalkReuqest {
-    StackWalkFeatures features;
     jint event_type;
-    enum CStack cstack;
     u32 lock_index;
     void* ucontext;
     ASGCT_CallFrame* frames;

@@ -7,7 +7,6 @@
 
 #include "asyncSampleMutex.h"
 #include "frames.h"
-#include "common.h"
 #include "os.h"
 #include "profiler.h"
 #include "thread.h"
@@ -25,7 +24,6 @@ int JVMSupport::walkJavaStack(StackWalkRequest& request) {
     assert(false && "Unsupported JVM");
     return 0;
 }
-
 
 int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* ucontext) {
     JNIEnv *jni = VM::jni();
@@ -48,8 +46,6 @@ int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* 
         // No Java stack, because thread is not in Java context
         return 0;
     }
-
-    TEST_LOG("asyncGetCallTrace returned %d frames\n", trace.num_frames);
 
     Profiler::instance()->incFailure(trace.num_frames);
     return makeFrame(frames, BCI_ERROR, err_string);

@@ -541,7 +541,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     int max_remaining = _max_stack_depth - num_frames;
     if (max_remaining > 0) {
       // Walk Java frames if we have room, but only for mixed mode or CPU/Wall events with cstack enabled. For async events, we want to avoid walking Java frames in the signal handler if possible, since it can lead to deadlocks. Instead, we'll try to get the Java trace asynchronously after the signal handler returns.
-      StackWalkRequest request = {_features, event_type, _cstack, lock_index, ucontext, frames + num_frames, max_remaining, &java_ctx, &truncated};
+      StackWalkRequest request = {event_type, lock_index, ucontext, frames + num_frames, max_remaining, &java_ctx, &truncated};
       num_frames += JVMSupport::walkJavaStack(request);
     }
   

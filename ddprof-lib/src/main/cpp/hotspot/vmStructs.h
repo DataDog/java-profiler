@@ -41,6 +41,7 @@ inline bool crashProtectionActive();
 
 template <typename T>
 inline T* cast_to(const void* ptr) {
+    assert(VM::isHotspot()); // This should only be used in HotSpot-specific code
     assert(T::type_size() > 0); // Ensure type size has been initialized
     assert(crashProtectionActive() || ptr == nullptr || SafeAccess::isReadableRange(ptr, T::type_size()));
     return reinterpret_cast<T*>(const_cast<void*>(ptr));
