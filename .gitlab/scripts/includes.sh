@@ -17,9 +17,10 @@ function get_version() {
     return 1
   fi
 
+  local branch="${CI_COMMIT_BRANCH:-${CI_COMMIT_REF_NAME:-}}"
   local default_branch="${CI_DEFAULT_BRANCH:-main}"
-  if [ "${CI_COMMIT_BRANCH}" != "${default_branch}" ] && [ "${CI_COMMIT_BRANCH}" != "main" ]; then
-    local suffix=$(echo "$CI_COMMIT_BRANCH" | tr '/' '_')
+  if [ -n "${branch}" ] && [ "${branch}" != "${default_branch}" ] && [ "${branch}" != "main" ]; then
+    local suffix=$(echo "$branch" | tr '/' '_')
     version=$(echo "$version" | sed "s#-SNAPSHOT#-${suffix}-SNAPSHOT#g")
   fi
   echo "${version}"
