@@ -48,6 +48,6 @@ notify-slack:
   stage: notify
   when: on_failure
   image: registry.ddbuild.io/slack-notifier:latest
-  tags: ["arch:arm64"]
+  tags: ["arch:amd64"]
   script:
     - .gitlab/jdk-integration/notify_channel.sh "${JDK_VERSION}" "${DEBUG_LEVEL}" "${HASH}"
