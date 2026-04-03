@@ -76,7 +76,7 @@ class ScanBuildPlugin : Plugin<Project> {
                 // StackWalker::walkVM: the jmp_buf address is stored in vm_thread->exception()
                 // for the duration of the stack walk and is always restored before the function
                 // returns.  The analyzer cannot prove the lifetime is safe, but we can.
-                "--disable-checker", "core.StackAddressEscape",
+                "-disable-checker", "core.StackAddressEscape",
                 "--use-analyzer", analyzer,
                 "make", "-j$parallelJobs"
             )
