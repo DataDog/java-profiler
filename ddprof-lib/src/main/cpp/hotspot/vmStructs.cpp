@@ -35,6 +35,9 @@ int VMStructs::_narrow_klass_shift = -1;
 int VMStructs::_interpreter_frame_bcp_offset = 0;
 unsigned char VMStructs::_unsigned5_base = 0;
 const void* VMStructs::_call_stub_return = nullptr;
+const void* VMStructs::_cont_return_barrier   = nullptr;
+const void* VMStructs::_cont_entry_return_pc  = nullptr;
+VMNMethod*  VMStructs::_enter_special_nm       = nullptr;
 const void* VMStructs::_interpreter_start = nullptr;
 VMNMethod* VMStructs::_interpreter_nm = nullptr;
 const void* VMStructs::_interpreted_frame_valid_start = nullptr;
@@ -44,6 +47,7 @@ const void* VMStructs::_interpreted_frame_valid_end = nullptr;
 // Initialize type size to 0
 #define INIT_TYPE_SIZE(name, names) uint64_t VMStructs::TYPE_SIZE_NAME(name) = 0;
 DECLARE_TYPES_DO(INIT_TYPE_SIZE)
+DECLARE_V21_TYPES_DO(INIT_TYPE_SIZE)
 #undef INIT_TYPE_SIZE
 
 #define offset_value -1
@@ -62,6 +66,7 @@ DECLARE_TYPES_DO(INIT_TYPE_SIZE)
     field_type VMStructs::var = field_type##_value;
 
 DECLARE_TYPE_FIELD_DO(DO_NOTHING, INIT_FIELD, INIT_FIELD_WITH_VERSION, DO_NOTHING)
+DECLARE_V21_TYPE_FIELD_DO(DO_NOTHING, INIT_FIELD, INIT_FIELD_WITH_VERSION, DO_NOTHING)
 
 #undef INIT_FIELD
 #undef INIT_FIELD_WITH_VERSION
@@ -175,6 +180,7 @@ void VMStructs::init_offsets_and_addresses() {
 
 #define END_TYPE() continue; }
         DECLARE_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
+        DECLARE_V21_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
 #undef MATCH_TYPE_NAMES
 #undef READ_FIELD_VALUE
 #undef READ_FIELD_VALUE_WITH_VERSION
@@ -205,6 +211,7 @@ void VMStructs::init_type_sizes() {
         }
 
         DECLARE_TYPES_DO(READ_TYPE_SIZE)
+        DECLARE_V21_TYPES_DO(READ_TYPE_SIZE)
 
 #undef READ_TYPE_SIZE   
 
@@ -271,12 +278,21 @@ void VMStructs::verify_offsets() {
     }
 
 // Verify type sizes
+// Note: DECLARE_V21_TYPES_DO (VMContinuationEntry) is intentionally excluded here.
+// ContinuationEntry is not exported in gHotSpotVMTypes before JDK 27 (added via JDK-8378985);
+// asserting type_size() > 0 would SIGABRT on any JDK 21-26 build.
 #define VERIFY_TYPE_SIZE(name, names) assert(TYPE_SIZE_NAME(name) > 0);
     DECLARE_TYPES_DO(VERIFY_TYPE_SIZE);
 #undef VERIFY_TYPE_SIZE
 
 
 // Verify offsets and addresses
+// Note: DECLARE_V21_TYPE_FIELD_DO is intentionally excluded here.
+// Continuation-related fields (_cont_entry_offset, _cont_return_barrier_addr,
+// _cont_entry_return_pc_addr, _cont_entry_parent_offset) are absent from
+// gHotSpotVMStructs in all JDK 21-26 builds: ContinuationEntry was not
+// exported in the vmStructs table until JDK 27 (JDK-8378985). walkVM degrades
+// gracefully when they are missing.
 #define offset_value -1
 #define address_value nullptr
 
@@ -391,6 +407,25 @@ void VMStructs::resolveOffsets() {
     if (_call_stub_return_addr != NULL) {
         _call_stub_return = *(const void**)_call_stub_return_addr;
     }
+    if (_cont_return_barrier_addr != NULL) {
+        _cont_return_barrier = *(const void**)_cont_return_barrier_addr;
+    }
+    if (_cont_entry_return_pc_addr != NULL) {
+        _cont_entry_return_pc = *(const void**)_cont_entry_return_pc_addr;
+    }
+    // Fallback for JDK 21-26: StubRoutines::_cont_returnBarrier and
+    // ContinuationEntry::_return_pc are absent from gHotSpotVMStructs before
+    // JDK 27 (added via JDK-8378985).  Resolve them via C++ symbol lookup.
+    // Symbol names use Itanium C++ ABI mangling (GCC/Clang), which matches
+    // the HotSpot build toolchain on all supported platforms.
+    if (_cont_return_barrier == nullptr && VM::hotspot_version() >= 21) {
+        const void** sym = (const void**)_libjvm->findSymbol("_ZN12StubRoutines19_cont_returnBarrierE");
+        if (sym != nullptr) _cont_return_barrier = *sym;
+    }
+    if (_cont_entry_return_pc == nullptr && VM::hotspot_version() >= 21) {
+        const void** sym = (const void**)_libjvm->findSymbol("_ZN17ContinuationEntry10_return_pcE");
+        if (sym != nullptr) _cont_entry_return_pc = *sym;
+    }
 
     // Since JDK 23, _metadata_offset is relative to _data_offset. See metadata()
     if (_nmethod_immutable_offset < 0) {
@@ -439,6 +474,14 @@ void VMStructs::resolveOffsets() {
     }
     if (_interpreter_nm == NULL && _interpreter_start != NULL) {
         _interpreter_nm = CodeHeap::findNMethod(_interpreter_start);
+    }
+    if (_enter_special_nm == NULL && _cont_entry_return_pc != NULL) {
+        // On JDK 27+, enterSpecial is a proper nmethod; findNMethod succeeds.
+        // On JDK 21-26, it is a RuntimeBlob; findNMethod returns NULL and
+        // _enter_special_nm stays NULL.  The cont_entry_return_pc boundary is
+        // then detected via isContEntryReturnPc() in the walk loop rather than
+        // nmethod identity.
+        _enter_special_nm = CodeHeap::findNMethod(_cont_entry_return_pc);
     }
 }
 

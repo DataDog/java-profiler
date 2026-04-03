@@ -292,9 +292,11 @@ Error Arguments::parse(const char *args) {
         } else if (strcmp(value, "vm") == 0) {
           _cstack = CSTACK_VM;
         } else if (strcmp(value, "vmx") == 0) {
-          // cstack=vmx is a shorthand for cstack=vm,features=mixed
+          // cstack=vmx is a shorthand for cstack=vm,features=mixed; carrier-frame
+          // unwinding is enabled automatically since vmx already traverses entry frames
           _cstack = CSTACK_VM;
           _features.mixed = 1;
+          _features.carrier_frames = 1;
         } else {
           _cstack = CSTACK_NO;
         }

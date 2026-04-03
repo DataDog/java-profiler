@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <cstdlib>
 #include <setjmp.h>
 #include "stackWalker.h"
 #include "dwarf.h"
@@ -18,6 +19,19 @@
 
 const uintptr_t MAX_WALK_SIZE = 0x100000;
 const intptr_t MAX_FRAME_SIZE_WORDS = StackWalkValidation::MAX_FRAME_SIZE / sizeof(void*);  // 0x8000 = 32768 words
+
+#ifdef NDEBUG
+static const bool CONT_UNWIND_DISABLED = false;
+#else
+// DEBUG-only: when set, both continuation-unwind detection branches
+// (cont_entry_return_pc for fully-thawed VTs, cont_returnBarrier for VTs
+// with frozen frames) are skipped, reproducing pre-fix behaviour.
+// Used by negative integration tests to verify that carrier frames are not
+// visible and walk-error sentinels do appear without the fix.
+// NOTE: the env var is evaluated once at library load time; it must be set
+// in the environment before the profiler agent is attached.
+static const bool CONT_UNWIND_DISABLED = (std::getenv("DDPROF_DISABLE_CONT_UNWIND") != nullptr);
+#endif
 
 static ucontext_t empty_ucontext{};
 
@@ -323,6 +337,9 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
 
     const void* prev_native_pc = NULL;
 
+    // Last ContinuationEntry crossed; advanced via parent() for nested continuations.
+    VMContinuationEntry* cont_entry = nullptr;
+
     // Saved anchor data — preserved across anchor consumption so inline
     // recovery can redirect even after the anchor pointer has been set to NULL.
     // Recovery is one-shot: once attempted, we do not retry to avoid
@@ -338,6 +355,80 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     if (details && vm_thread != NULL && vm_thread->cachedIsJavaThread()) {
         anchor = vm_thread->anchor();
     }
+
+    static const char* CONT_ROOT_FRAME = "JVM Continuation";
+
+    // Advances through a continuation boundary to the carrier frame.
+    // Without carrier_frames (default, cstack=vm): always stops with a "JVM Continuation"
+    // synthetic root frame — VT frames are complete, carrier internals are noise.
+    // With carrier_frames (cstack=vmx): attempts to walk through; failures emit BCI_ERROR
+    // so the sample is truthfully marked truncated.
+    // Walks cont_entry->parent() on repeated calls to handle nested continuations
+    // (_parent not triggered by standard single-level VTs today, but required
+    // once any runtime layers continuations on top of VTs).
+    //
+    // all_frames_thawed: true when the bottom VT frame's return PC is
+    //         cont_entry_return_pc (all VT frames are thawed — CPU-bound VT),
+    //         false when it is cont_returnBarrier (frozen frames remain in the
+    //         StackChunk — VT parked and just remounted).
+    //         Needed to derive entry_fp on JDK 21-26 where ContinuationEntry
+    //         type size is absent from vmStructs and contEntry() returns nullptr.
+    //
+    // Returns true to continue the walk, false to break.
+    auto walkThroughContinuation = [&](bool all_frames_thawed) -> bool {
+        if (depth >= actual_max_depth) return false;
+        if (!features.carrier_frames) {
+            fillFrame(frames[depth++], BCI_NATIVE_FRAME, CONT_ROOT_FRAME);
+            return false;
+        }
+
+        uintptr_t entry_fp;
+
+        if (VMContinuationEntry::type_size() > 0) {
+            // ContinuationEntry is known via vmStructs (JDK 27+, and JDK 21-26
+            // on distros that expose it).  Walk the linked list of entries for
+            // nested-continuation support and derive the enterSpecial frame FP
+            // from the struct layout (entry + type_size).
+            cont_entry = (cont_entry != nullptr) ? cont_entry->parent() : vm_thread->contEntry();
+            if (cont_entry == nullptr) {
+                Counters::increment(WALKVM_CONT_ENTRY_NULL);
+                fillFrame(frames[depth++], BCI_ERROR, "break_cont_entry_null");
+                return false;
+            }
+            entry_fp = cont_entry->entryFP();
+        } else {
+            // ContinuationEntry absent from vmStructs (musl/minimal JDK 21-26).
+            // Derive the enterSpecial frame FP from the current fp:
+            //   all frames thawed (pc == cont_entry_return_pc): fp IS the
+            //     enterSpecial frame FP.
+            //   frozen frames remain (pc == cont_returnBarrier): the saved
+            //     caller FP at *fp leads to the enterSpecial frame on the
+            //     carrier stack.
+            // Nested continuation tracking is unavailable without type_size().
+            entry_fp = all_frames_thawed ? fp : (uintptr_t)SafeAccess::load((void**)fp);
+        }
+
+        if (!StackWalkValidation::isValidFP(entry_fp)) {
+            fillFrame(frames[depth++], BCI_ERROR, "break_cont_entry_fp");
+            return false;
+        }
+        // entry_fp has been range-checked by isValidFP above; any remaining
+        // SIGSEGV from a stale/concurrently-freed pointer is caught by the
+        // setjmp crash protection in walkVM (checkFault -> longjmp).
+        uintptr_t carrier_fp = *(uintptr_t*)entry_fp;
+        const void* carrier_pc = ((const void**)entry_fp)[FRAME_PC_SLOT];
+        uintptr_t carrier_sp = entry_fp + (FRAME_PC_SLOT + 1) * sizeof(void*);
+        if (!StackWalkValidation::isValidFP(carrier_fp) ||
+            StackWalkValidation::inDeadZone(carrier_pc) ||
+            !StackWalkValidation::isValidSP(carrier_sp, sp, bottom)) {
+            fillFrame(frames[depth++], BCI_ERROR, "break_cont_carrier_sp");
+            return false;
+        }
+        sp = carrier_sp;
+        fp = carrier_fp;
+        pc = carrier_pc;
+        return true;
+    };
 
     unwind_loop:
 
@@ -369,8 +460,44 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 break;
             }
             prev_native_pc = NULL; // we are in JVM code, no previous 'native' PC
+
+            // Both continuation boundary PCs are JVM stubs whose findNMethod()
+            // returns NULL; detect them by exact-PC match before the nmethod
+            // dispatch below.
+            // cont_returnBarrier: bottom thawed frame returns here when frozen
+            //   frames remain in the StackChunk (blocking/remounted VT).
+            // cont_entry_return_pc: bottom thawed frame returns here when the
+            //   continuation is fully thawed (CPU-bound VT, never yielded).
+            if (!CONT_UNWIND_DISABLED && VMStructs::isContReturnBarrier(pc)) {
+                Counters::increment(WALKVM_CONT_BARRIER_HIT);
+                if (walkThroughContinuation(false)) continue;
+                break;
+            }
+            if (!CONT_UNWIND_DISABLED && VMStructs::isContEntryReturnPc(pc)) {
+                Counters::increment(WALKVM_ENTER_SPECIAL_HIT);
+                if (walkThroughContinuation(true)) continue;
+                break;
+            }
+
             VMNMethod* nm = CodeHeap::findNMethod(pc);
             if (nm == NULL) {
+                // On JDK 21+ builds, the continuation entry PC may be absent
+                // from vmStructs OR resolved but pointing to the wrong address
+                // (some distributions expose the symbol at the wrong address, so
+                // the exact-PC check above never fires).  Attempt a fully-thawed
+                // continuation walk whenever we see an unknown nmethod after
+                // collecting Java frames.  walkThroughContinuation validates the
+                // fp chain and emits BCI_ERROR cleanly on mismatch, so false
+                // positives are safe.
+                if (!CONT_UNWIND_DISABLED
+                        && features.carrier_frames
+                        && VM::hotspot_version() >= 21
+                        && depth > 0
+                        && vm_thread != NULL && vm_thread->isCarryingVirtualThread()) {
+                    Counters::increment(WALKVM_CONT_SPECULATIVE_HIT);
+                    if (walkThroughContinuation(true)) continue;
+                    break;
+                }
                 if (anchor == NULL) {
                     // Add an error frame only if we cannot recover
                     fillFrame(frames[depth++], BCI_ERROR, "unknown_nmethod");
@@ -381,7 +508,13 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
             // Always prefer JavaFrameAnchor when it is available,
             // since it provides reliable SP and FP.
             // Do not treat the topmost stub as Java frame.
-            if (anchor != NULL && (depth > 0 || !nm->isStub())) {
+            // Exception: when VT carrier-frame unwinding is active, skip the anchor
+            // redirect — it can bypass the continuation boundary by jumping directly
+            // into carrier frames, causing walkThroughContinuation to never fire.
+            // The continuation mechanism finds carrier frames on its own.
+            bool anchor_eligible = anchor != NULL && (depth > 0 || !nm->isStub());
+            bool cont_unwind_active = features.carrier_frames && !CONT_UNWIND_DISABLED;
+            if (anchor_eligible && !cont_unwind_active) {
                 Counters::increment(WALKVM_ANCHOR_CONSUMED);
                 // Preserve anchor data before consumption — getFrame() is read-only
                 // but we set anchor=NULL below, losing the pointer for later recovery.
@@ -394,6 +527,10 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                     anchor = NULL;
                     continue;  // NMethod has changed as a result of correction
                 }
+                anchor = NULL;
+            } else if (anchor_eligible && cont_unwind_active) {
+                // Clear the anchor without redirecting so it doesn't corrupt fp
+                // for the continuation boundary walk.
                 anchor = NULL;
             }
 
@@ -444,6 +581,15 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 fillFrame(frames[depth++], BCI_ERROR, "break_interpreted");
                 break;
             } else if (nm->isNMethod()) {
+                // enterSpecial is a generated native nmethod that acts as the
+                // continuation entry stub. It has no JavaCallWrapper, so
+                // isEntryFrame() will not fire for it. Detect it by identity
+                // and navigate to the carrier thread via ContinuationEntry.
+                if (!CONT_UNWIND_DISABLED && nm == VMStructs::enterSpecialNMethod()) {
+                    Counters::increment(WALKVM_ENTER_SPECIAL_HIT);
+                    if (walkThroughContinuation(true)) continue;
+                    break;
+                }
                 // Check if deoptimization is in progress before walking compiled frames
                 if (vm_thread != NULL && vm_thread->inDeopt()) {
                     fillFrame(frames[depth++], BCI_ERROR, "break_deopt_compiled");
@@ -502,7 +648,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
                 Counters::increment(WALKVM_BREAK_COMPILED);
                 fillFrame(frames[depth++], BCI_ERROR, "break_compiled");
                 break;
-            } else if (nm->isEntryFrame(pc) && !features.mixed) {
+            } else if (nm->isEntryFrame(pc) && (!features.mixed || features.carrier_frames)) {
                 VMJavaFrameAnchor* next_anchor = VMJavaFrameAnchor::fromEntryFrame(fp);
                 if (next_anchor == NULL) {
                     fillFrame(frames[depth++], BCI_ERROR, "break_entry_frame");
