@@ -1,0 +1,60 @@
+ARG BASEIMAGE=registry.ddbuild.io/images/base/gbi-ubuntu_2404:release
+FROM ${BASEIMAGE}
+
+USER root
+
+# Create non-root user for security
+RUN useradd --create-home --shell /bin/bash --uid 1001 ci-user
+
+# Install Node.js 20 and npm
+# Default seems to be 14 which does not work with datadog-ci
+RUN set -x \
+    && apt-get update && apt-get -y install --no-install-recommends curl xz-utils\
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    pipx=1.4.3-1 \
+    binutils \
+    jq \
+    && npm install -g @datadog/datadog-ci@3.16.0 \
+    && apt-get -y clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install GitHub CLI
+RUN set -x \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y gh \
+    && apt-get -y clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# awscli is not available in Ubuntu 2404 for some inexplicable reason so lets install in via other means
+RUN PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin pipx install awscli
+
+# Install Go 1.22.3
+RUN set -x \
+    && curl -LO https://golang.org/dl/go1.22.3.linux-amd64.tar.gz \
+    && tar -C /usr/local -xzf go1.22.3.linux-amd64.tar.gz \
+    && rm go1.22.3.linux-amd64.tar.gz
+
+# Set up Go environment for root and install Crane
+ENV PATH="/usr/local/go/bin:${PATH}"
+ENV GOPATH="/root/go"
+ENV GOBIN="/usr/local/bin"
+
+# Install Crane version 0.19.1 directly to /usr/local/bin so it's available for all users
+RUN set -x \
+    && go install github.com/google/go-containerregistry/cmd/crane@v0.19.1
+
+# Switch to non-root user
+USER ci-user
+WORKDIR /home/ci-user
+
+# Set PATH for the ci-user (crane is now in /usr/local/bin)
+ENV PATH="/usr/local/go/bin:/usr/local/bin:${PATH}"
+
+# Verify installation (as non-root user)
+RUN node -v && npm -v && go version && crane version && datadog-ci --help && jq --version && gh --version

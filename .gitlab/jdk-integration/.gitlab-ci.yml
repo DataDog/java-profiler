@@ -1,0 +1,53 @@
+stages: [trigger, notify]
+
+benchmark-with-jdk:
+  stage: trigger
+  timeout: 6h
+  variables:
+    DOWNSTREAM: "${DOWNSTREAM}"
+    BENCHMARK_JDK: "${BENCHMARK_JDK}"
+    ITERATIONS: "${BENCHMARK_ITERATIONS:-1}"
+    MODES: "${BENCHMARK_MODES:-cpu,wall,alloc,memleak}"
+    KUBERNETES_SERVICE_ACCOUNT_OVERWRITE: java-profiler
+  rules:
+    - if: '$BENCHMARK_JDK == null || $DOWNSTREAM == null'
+      when: never
+    - when: always
+  tags: [ "runner:apm-k8s-tweaked-metal" ]
+  image: $BENCHMARK_IMAGE_AMD64
+
+test-with-jdk:
+  stage: trigger
+  variables:
+    JDK_VERSION: "${JDK_VERSION}"
+    HASH: "${HASH}"
+    DEBUG_LEVEL: "${DEBUG_LEVEL}"
+  rules:
+    - if: '$JDK_VERSION == null || $DEBUG_LEVEL == null || $HASH == null || $DOWNSTREAM == null'
+      when: never
+    - when: always
+  image: "registry.ddbuild.io/ci/openjdk-build:${JDK_VERSION}-${DEBUG_LEVEL}-${HASH}"
+  tags: [ "arch:amd64" ]
+  script:
+    - apt update && DEBIAN_FRONTEND=noninteractive apt install -y --no-install-recommends curl git moreutils awscli amazon-ecr-credential-helper gnupg2 build-essential g++ zip unzip cmake
+    - curl -s "https://get.sdkman.io" | bash
+    - source "$HOME/.sdkman/bin/sdkman-init.sh"
+    - sdk install java 11.0.18-tem
+    - export TEST_JAVA_HOME=/usr/lib/jvm
+    - export JAVA_HOME=/root/.sdkman/candidates/java/11.0.18-tem
+    - export JDK_TOOL_OPTIONS="-XX:ErrorFile=/tmp/hs_err_pid_%p.log"
+    - ./gradlew :ddprof-test:testDebug --max-workers=1 --no-build-cache --stacktrace --info --no-watch-fs --no-daemon
+  artifacts:
+    when: always
+    name: "test-with-jdk-${JDK_VERSION}-${DEBUG_LEVEL}-${HASH}.zip"
+    paths:
+      - ddprof-test/build/reports
+      - /tmp/hs_err*.log
+
+notify-slack:
+  stage: notify
+  when: on_failure
+  image: registry.ddbuild.io/slack-notifier:latest
+  tags: ["arch:amd64"]
+  script:
+    - .gitlab/jdk-integration/notify_channel.sh "${JDK_VERSION}" "${DEBUG_LEVEL}" "${HASH}"
