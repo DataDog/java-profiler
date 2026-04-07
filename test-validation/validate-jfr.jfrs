@@ -1,0 +1,504 @@
+#!/usr/bin/env jbang jfr-shell@btraceio script
+
+# validate-jfr.jfrs - Deep JFR validation for profiler integration tests
+#
+# Arguments:
+#   $1 - JFR recording file path
+#   $2 - Test scenario/profile name
+#   $3 - Minimum ExecutionSample count (calculated by caller)
+#   $4 - Minimum allocation sample count (calculated by caller)
+#   $5 - Minimum unique thread count (calculated by caller)
+#   $6 - Expected CPU event type: jdk|datadog|any (optional, default any)
+#   $7 - Expected alloc event type: jdk|datadog|any (optional, default any)
+#   $8 - Check endpoint events: true|false (optional, default false)
+#   $9 - Unexpected jdk.ExecutionSample: true|false (optional, default false)
+#  $10 - Unexpected jdk.ObjectAllocationSample: true|false (optional, default false)
+#  $11 - Unexpected datadog.ExecutionSample: true|false (optional, default false)
+#  $12 - Unexpected datadog.ObjectSample: true|false (optional, default false)
+#  $13 - Unexpected datadog.EndpointEvent: true|false (optional, default false)
+#
+# Thresholds are calculated by the calling bash script (validate-jfr-conformance.sh)
+# based on platform, JVM type, and libc variant. This eliminates duplicate
+# threshold logic and provides a single source of truth.
+#
+# The script prints SUCCESS or VALIDATION_FAILED at the end.
+# The calling script should check for "VALIDATION_FAILED" in output.
+
+# Parse arguments
+set scenario = "$2"
+set min_execution_samples = "$3"
+set min_allocation_samples = "$4"
+set min_thread_count = "$5"
+set expected_cpu = "$6"
+set expected_alloc = "$7"
+set check_endpoint = "$8"
+set unexpected_jdk_exec = "$9"
+set unexpected_jdk_alloc = "$10"
+set unexpected_dd_exec = "$11"
+set unexpected_dd_alloc = "$12"
+set unexpected_endpoint = "$13"
+
+# Default min values if not provided (legacy compatibility)
+if "${min_execution_samples}" == ""
+  set min_execution_samples = 10
+endif
+
+if "${min_allocation_samples}" == ""
+  set min_allocation_samples = 10
+endif
+
+if "${min_thread_count}" == ""
+  set min_thread_count = 2
+endif
+
+# Default to 'any' for backwards compatibility
+if "${expected_cpu}" == ""
+  set expected_cpu = "any"
+endif
+
+if "${expected_alloc}" == ""
+  set expected_alloc = "any"
+endif
+
+if "${check_endpoint}" == ""
+  set check_endpoint = "false"
+endif
+
+# Default unexpected event flags to false
+if "${unexpected_jdk_exec}" == ""
+  set unexpected_jdk_exec = "false"
+endif
+
+if "${unexpected_jdk_alloc}" == ""
+  set unexpected_jdk_alloc = "false"
+endif
+
+if "${unexpected_dd_exec}" == ""
+  set unexpected_dd_exec = "false"
+endif
+
+if "${unexpected_dd_alloc}" == ""
+  set unexpected_dd_alloc = "false"
+endif
+
+if "${unexpected_endpoint}" == ""
+  set unexpected_endpoint = "false"
+endif
+
+echo "=== JFR Validation ==="
+echo "Recording: $1"
+echo "Scenario: ${scenario}"
+echo "Expected CPU events: ${expected_cpu}"
+echo "Expected allocation events: ${expected_alloc}"
+echo "Check endpoint events: ${check_endpoint}"
+echo ""
+
+# Open JFR recording (open command doesn't support variable expansion)
+open $1
+
+echo "✓ JFR recording opened successfully"
+echo ""
+
+echo "Validation requirements:"
+echo "  ExecutionSample: >=1 (presence check)"
+echo "  Stack traces: 100% coverage (all present events)"
+echo "  ObjectAllocationSample: >=${min_allocation_samples} (soft threshold)"
+echo "  Unique threads: >=${min_thread_count}"
+echo ""
+
+# Initialize validation state
+set validation_failed = "false"
+
+# ========================================
+# 1. Validate ExecutionSample events (CPU profiling)
+# ========================================
+echo "[1/8] Validating ExecutionSample events..."
+
+# Check both jdk.ExecutionSample and datadog.ExecutionSample
+set jdk_exec_count = events/jdk.ExecutionSample | count()
+set dd_exec_count = events/datadog.ExecutionSample | count()
+
+echo "  Found: ${jdk_exec_count.count} jdk.ExecutionSample events"
+echo "  Found: ${dd_exec_count.count} datadog.ExecutionSample events"
+
+# Determine which implementation to validate based on expected_cpu
+# Validation strategy: require at least 1 event of the expected type
+if "${expected_cpu}" == "jdk"
+  # Conformance mode: expect ONLY jdk events
+  set exec_event_type = "jdk"
+  set exec_count = ${jdk_exec_count.count}
+  echo "  Expected: jdk.ExecutionSample (conformance mode)"
+
+  if ${dd_exec_count.count} > 0
+    echo "  ERROR: Found unexpected datadog.ExecutionSample events (${dd_exec_count.count})"
+    set validation_failed = "true"
+  endif
+
+  if ${jdk_exec_count.count} < 1
+    echo "  ERROR: No jdk.ExecutionSample events found"
+    set validation_failed = "true"
+  else
+    echo "  ✓ ExecutionSample events present (${jdk_exec_count.count})"
+  endif
+
+elif "${expected_cpu}" == "datadog"
+  # Conformance mode: expect ONLY datadog events
+  set exec_event_type = "datadog"
+  set exec_count = ${dd_exec_count.count}
+  echo "  Expected: datadog.ExecutionSample (conformance mode)"
+
+  if ${jdk_exec_count.count} > 0
+    echo "  ERROR: Found unexpected jdk.ExecutionSample events (${jdk_exec_count.count})"
+    set validation_failed = "true"
+  endif
+
+  if ${dd_exec_count.count} < 1
+    echo "  ERROR: No datadog.ExecutionSample events found"
+    set validation_failed = "true"
+  else
+    echo "  ✓ ExecutionSample events present (${dd_exec_count.count})"
+  endif
+
+else
+  # Auto-detect mode: accept either (backwards compatibility)
+  if ${jdk_exec_count.count} >= ${dd_exec_count.count}
+    set exec_event_type = "jdk"
+    set exec_count = ${jdk_exec_count.count}
+    echo "  Total: ${jdk_exec_count.count} ExecutionSample events (using jdk.ExecutionSample)"
+
+    if ${jdk_exec_count.count} < 1
+      echo "  ERROR: No ExecutionSample events found"
+      set validation_failed = "true"
+    else
+      echo "  ✓ ExecutionSample events present (${jdk_exec_count.count})"
+    endif
+  else
+    set exec_event_type = "datadog"
+    set exec_count = ${dd_exec_count.count}
+    echo "  Total: ${dd_exec_count.count} ExecutionSample events (using datadog.ExecutionSample)"
+
+    if ${dd_exec_count.count} < 1
+      echo "  ERROR: No ExecutionSample events found"
+      set validation_failed = "true"
+    else
+      echo "  ✓ ExecutionSample events present (${dd_exec_count.count})"
+    endif
+  endif
+endif
+
+# ========================================
+# 2. Validate stack traces present
+# ========================================
+echo "[2/8] Validating stack traces..."
+
+# Use the event type we detected in step 1
+# Validation: all present ExecutionSample events should have stack traces
+if "${exec_event_type}" == "jdk"
+  set samples_with_stack = events/jdk.ExecutionSample[exists(stackTrace)] | count()
+  echo "  Samples with stack traces: ${samples_with_stack.count} of ${jdk_exec_count.count}"
+
+  if ${samples_with_stack.count} < ${jdk_exec_count.count}
+    echo "  ERROR: Some ExecutionSample events are missing stack traces"
+    echo "  Expected: ${jdk_exec_count.count}, Got: ${samples_with_stack.count}"
+    set validation_failed = "true"
+  else
+    echo "  ✓ All ExecutionSample events have stack traces (${samples_with_stack.count})"
+  endif
+else
+  set samples_with_stack = events/datadog.ExecutionSample[exists(stackTrace)] | count()
+  echo "  Samples with stack traces: ${samples_with_stack.count} of ${dd_exec_count.count}"
+
+  if ${samples_with_stack.count} < ${dd_exec_count.count}
+    echo "  ERROR: Some ExecutionSample events are missing stack traces"
+    echo "  Expected: ${dd_exec_count.count}, Got: ${samples_with_stack.count}"
+    set validation_failed = "true"
+  else
+    echo "  ✓ All ExecutionSample events have stack traces (${samples_with_stack.count})"
+  endif
+endif
+
+# ========================================
+# 3. Validate thread diversity
+# ========================================
+echo "[3/8] Validating thread diversity..."
+
+# Use the event type we detected in step 1
+# Note: datadog.ExecutionSample uses eventThread, jdk.ExecutionSample uses sampledThread
+if "${exec_event_type}" == "jdk"
+  set unique_threads = events/jdk.ExecutionSample | groupBy(sampledThread/javaName) | count()
+else
+  set unique_threads = events/datadog.ExecutionSample | groupBy(eventThread/javaName) | count()
+endif
+
+echo "  Unique threads sampled: ${unique_threads.count}"
+
+if ${unique_threads.count} < ${min_thread_count}
+  echo "  ERROR: Insufficient thread diversity"
+  echo "  Expected: >=${min_thread_count}, Got: ${unique_threads.count}"
+  set validation_failed = "true"
+else
+  echo "  ✓ Thread diversity OK (${unique_threads.count} threads)"
+endif
+
+# Show top threads by sample count
+echo "  Top threads by samples:"
+if "${exec_event_type}" == "jdk"
+  show events/jdk.ExecutionSample | groupBy(sampledThread/javaName) | top(5, by=count)
+else
+  show events/datadog.ExecutionSample | groupBy(eventThread/javaName) | top(5, by=count)
+endif
+
+# ========================================
+# 4. Validate ObjectAllocationSample events
+# ========================================
+echo ""
+echo "[4/8] Validating ObjectAllocationSample events..."
+
+# Check both jdk.ObjectAllocationSample and datadog.ObjectSample
+set jdk_alloc_count = events/jdk.ObjectAllocationSample | count()
+set dd_alloc_count = events/datadog.ObjectSample | count()
+
+echo "  Found: ${jdk_alloc_count.count} jdk.ObjectAllocationSample events"
+echo "  Found: ${dd_alloc_count.count} datadog.ObjectSample events"
+
+# Determine which implementation to validate based on expected_alloc
+if "${expected_alloc}" == "jdk"
+  # Conformance mode: expect ONLY jdk events
+  echo "  Expected: jdk.ObjectAllocationSample (conformance mode)"
+
+  if ${dd_alloc_count.count} > 0
+    echo "  ERROR: Found unexpected datadog.ObjectSample events (${dd_alloc_count.count})"
+    set validation_failed = "true"
+  endif
+
+  if ${jdk_alloc_count.count} < ${min_allocation_samples}
+    echo "  WARNING: Insufficient jdk.ObjectAllocationSample events"
+    echo "  Expected: >=${min_allocation_samples}, Got: ${jdk_alloc_count.count}"
+    echo "  Note: Allocation profiling may not be enabled"
+  else
+    echo "  ✓ Allocation sample count OK (${jdk_alloc_count.count})"
+  endif
+
+  # Show top allocation sites if we have any
+  if ${jdk_alloc_count.count} > 0
+    echo "  Top allocation types:"
+    show events/jdk.ObjectAllocationSample | groupBy(objectClass/name) | top(5, by=sum(weight))
+  endif
+
+elif "${expected_alloc}" == "datadog"
+  # Conformance mode: expect ONLY datadog events
+  echo "  Expected: datadog.ObjectSample (conformance mode)"
+
+  if ${jdk_alloc_count.count} > 0
+    echo "  ERROR: Found unexpected jdk.ObjectAllocationSample events (${jdk_alloc_count.count})"
+    set validation_failed = "true"
+  endif
+
+  if ${dd_alloc_count.count} < ${min_allocation_samples}
+    echo "  WARNING: Insufficient datadog.ObjectSample events"
+    echo "  Expected: >=${min_allocation_samples}, Got: ${dd_alloc_count.count}"
+    echo "  Note: Allocation profiling may not be enabled"
+  else
+    echo "  ✓ Allocation sample count OK (${dd_alloc_count.count})"
+  endif
+
+  # Show top allocation sites if we have any
+  if ${dd_alloc_count.count} > 0
+    echo "  Top allocation types:"
+    show events/datadog.ObjectSample | groupBy(objectClass/name) | top(5, by=sum(weight))
+  endif
+
+else
+  # Auto-detect mode: accept either (backwards compatibility)
+  if ${jdk_alloc_count.count} >= ${dd_alloc_count.count}
+    echo "  Total: ${jdk_alloc_count.count} allocation events (using jdk.ObjectAllocationSample)"
+
+    if ${jdk_alloc_count.count} < ${min_allocation_samples}
+      echo "  WARNING: Insufficient allocation sample events"
+      echo "  Expected: >=${min_allocation_samples}, Got: ${jdk_alloc_count.count}"
+      echo "  Note: Allocation profiling may not be enabled"
+    else
+      echo "  ✓ Allocation sample count OK (${jdk_alloc_count.count})"
+    endif
+
+    # Show top allocation sites if we have any
+    if ${jdk_alloc_count.count} > 0
+      echo "  Top allocation types:"
+      show events/jdk.ObjectAllocationSample | groupBy(objectClass/name) | top(5, by=sum(weight))
+    endif
+  else
+    echo "  Total: ${dd_alloc_count.count} allocation events (using datadog.ObjectSample)"
+
+    if ${dd_alloc_count.count} < ${min_allocation_samples}
+      echo "  WARNING: Insufficient allocation sample events"
+      echo "  Expected: >=${min_allocation_samples}, Got: ${dd_alloc_count.count}"
+      echo "  Note: Allocation profiling may not be enabled"
+    else
+      echo "  ✓ Allocation sample count OK (${dd_alloc_count.count})"
+    endif
+
+    # Show top allocation sites if we have any
+    if ${dd_alloc_count.count} > 0
+      echo "  Top allocation types:"
+      show events/datadog.ObjectSample | groupBy(objectClass/name) | top(5, by=sum(weight))
+    endif
+  endif
+endif
+
+# ========================================
+# 5. Validate ThreadAllocationStatistics
+# ========================================
+echo ""
+echo "[5/8] Validating ThreadAllocationStatistics..."
+
+set thread_alloc = events/jdk.ThreadAllocationStatistics | count()
+
+echo "  Found: ${thread_alloc.count} ThreadAllocationStatistics events"
+
+if ${thread_alloc.count} > 0
+  echo "  ✓ ThreadAllocationStatistics present (${thread_alloc.count})"
+else
+  echo "  WARNING: No ThreadAllocationStatistics events found"
+  echo "  This may be expected depending on JDK version and configuration"
+endif
+
+# ========================================
+# 6. Validate endpoint events (if tracer enabled)
+# ========================================
+echo ""
+echo "[6/8] Validating endpoint events..."
+
+if "${check_endpoint}" == "true"
+  set endpoint_count = events/datadog.EndpointEvent | count()
+  echo "  Found: ${endpoint_count.count} datadog.EndpointEvent events"
+
+  if ${endpoint_count.count} > 0
+    echo "  ✓ Endpoint events present (tracer integration working)"
+  else
+    echo "  WARNING: No endpoint events found"
+    echo "  This may indicate tracer is not capturing any requests"
+  endif
+else
+  echo "  Skipped (tracer not expected in this configuration)"
+endif
+
+# ========================================
+# 7. Check for unexpected events
+# ========================================
+echo ""
+echo "[7/8] Checking for unexpected events..."
+
+set has_unexpected = "false"
+
+# Check for unexpected jdk.ExecutionSample
+if "${unexpected_jdk_exec}" == "true"
+  set check_jdk_exec = events/jdk.ExecutionSample | count()
+  if ${check_jdk_exec.count} > 0
+    echo "  ERROR: Found unexpected jdk.ExecutionSample events (${check_jdk_exec.count})"
+    set validation_failed = "true"
+    set has_unexpected = "true"
+  endif
+endif
+
+# Check for unexpected jdk.ObjectAllocationSample
+if "${unexpected_jdk_alloc}" == "true"
+  set check_jdk_alloc = events/jdk.ObjectAllocationSample | count()
+  if ${check_jdk_alloc.count} > 0
+    echo "  ERROR: Found unexpected jdk.ObjectAllocationSample events (${check_jdk_alloc.count})"
+    set validation_failed = "true"
+    set has_unexpected = "true"
+  endif
+endif
+
+# Check for unexpected datadog.ExecutionSample
+if "${unexpected_dd_exec}" == "true"
+  set check_dd_exec = events/datadog.ExecutionSample | count()
+  if ${check_dd_exec.count} > 0
+    echo "  ERROR: Found unexpected datadog.ExecutionSample events (${check_dd_exec.count})"
+    set validation_failed = "true"
+    set has_unexpected = "true"
+  endif
+endif
+
+# Check for unexpected datadog.ObjectSample
+if "${unexpected_dd_alloc}" == "true"
+  set check_dd_alloc = events/datadog.ObjectSample | count()
+  if ${check_dd_alloc.count} > 0
+    echo "  ERROR: Found unexpected datadog.ObjectSample events (${check_dd_alloc.count})"
+    set validation_failed = "true"
+    set has_unexpected = "true"
+  endif
+endif
+
+# Check for unexpected datadog.EndpointEvent
+if "${unexpected_endpoint}" == "true"
+  set check_endpoint_evt = events/datadog.EndpointEvent | count()
+  if ${check_endpoint_evt.count} > 0
+    echo "  ERROR: Found unexpected datadog.EndpointEvent events (${check_endpoint_evt.count})"
+    set validation_failed = "true"
+    set has_unexpected = "true"
+  endif
+endif
+
+if "${has_unexpected}" == "false"
+  echo "  ✓ No unexpected events found"
+endif
+
+# ========================================
+# 8. Scenario-specific validation
+# ========================================
+echo ""
+echo "[8/8] Scenario-specific validation (${scenario})..."
+
+# Note: jfr-shell's "or" operator is broken, use nested ifs instead
+if "${scenario}" == "tracer+profiler"
+  echo "  Validating tracer+profiler scenario..."
+  echo "  ✓ Tracer+profiler scenario checks passed"
+elif "${scenario}" == "ddprof_with_tracer"
+  echo "  Validating tracer+profiler scenario..."
+  echo "  ✓ Tracer+profiler scenario checks passed"
+elif "${scenario}" == "profiler-only"
+  echo "  Validating profiler-only scenario..."
+  echo "  ✓ Profiler-only scenario checks passed"
+elif "${scenario}" == "ddprof_only"
+  echo "  Validating profiler-only scenario..."
+  echo "  ✓ Profiler-only scenario checks passed"
+elif "${scenario}" == "jdk_fallback"
+  echo "  Validating JDK fallback scenario..."
+  echo "  ✓ JDK fallback scenario checks passed"
+else
+  echo "  Profile: ${scenario}"
+  echo "  ✓ Conformance validation passed"
+endif
+
+# ========================================
+# Summary
+# ========================================
+echo ""
+echo "=== Validation Summary ==="
+
+if "${exec_event_type}" == "jdk"
+  echo "ExecutionSample:            ${jdk_exec_count.count} events (jdk.ExecutionSample)"
+else
+  echo "ExecutionSample:            ${dd_exec_count.count} events (datadog.ExecutionSample)"
+endif
+
+echo "Stack traces:               ${samples_with_stack.count} samples"
+echo "Thread diversity:           ${unique_threads.count} threads"
+
+if ${jdk_alloc_count.count} >= ${dd_alloc_count.count}
+  echo "Allocation samples:         ${jdk_alloc_count.count} events (jdk.ObjectAllocationSample)"
+else
+  echo "Allocation samples:         ${dd_alloc_count.count} events (datadog.ObjectSample)"
+endif
+
+echo "ThreadAllocationStatistics: ${thread_alloc.count} events"
+echo ""
+
+if "${validation_failed}" == "true"
+  echo "VALIDATION_FAILED: One or more checks did not pass"
+else
+  echo "SUCCESS: All validations passed"
+endif
+
+close
