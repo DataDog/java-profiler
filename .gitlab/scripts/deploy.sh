@@ -29,13 +29,6 @@ if [ "$MODE" = "publish" ] || [ "$MODE" = "all" ]; then
   export GPG_PASSWORD=$(aws ssm get-parameter --region ${AWS_REGION} --name ${SSM_PREFIX}.signing.gpg_passphrase --with-decryption --query "Parameter.Value" --out text)
 fi
 
-# Determine whether signing is available (key present and non-empty)
-SIGNING_SKIP_FLAG=""
-if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
-  echo "WARNING: GPG_PRIVATE_KEY not set — signing will be skipped"
-  SIGNING_SKIP_FLAG="-Psigning.skip=true"
-fi
-
 source .gitlab/scripts/includes.sh
 
 LIB_VERSION=$(get_version)
@@ -44,11 +37,15 @@ echo "com.datadoghq:ddprof:${LIB_VERSION}" > version.txt
 # Assemble task (always needed for artifact creation)
 if [ "$MODE" = "assemble" ] || [ "$MODE" = "all" ]; then
   echo "=== Assembling artifact ==="
-  ./gradlew -Pskip-native -Pskip-tests -Pddprof_version="${LIB_VERSION}" -PbuildInfo.build.number=$CI_JOB_ID -Pwith-libs="$(pwd)/libs" ${SIGNING_SKIP_FLAG} :ddprof-lib:jar assembleAll --exclude-task compileFuzzer --exclude-task sign --max-workers=1 --no-build-cache --stacktrace --info --no-watch-fs --no-daemon
+  ./gradlew -Pskip-native -Pskip-tests -Pddprof_version="${LIB_VERSION}" -PbuildInfo.build.number=$CI_JOB_ID -Pwith-libs="$(pwd)/libs" :ddprof-lib:jar assembleAll --exclude-task compileFuzzer --exclude-task sign --max-workers=1 --no-build-cache --stacktrace --info --no-watch-fs --no-daemon
 fi
 
 # Publish task (only when publishing to Maven Central)
 if [ "$MODE" = "publish" ] || [ "$MODE" = "all" ]; then
   echo "=== Publishing to Sonatype ==="
-  ./gradlew -Pskip-native -Pskip-tests -Pddprof_version="${LIB_VERSION}" -PbuildInfo.build.number=$CI_JOB_ID -Pwith-libs="$(pwd)/libs" ${SIGNING_SKIP_FLAG} publishToSonatype closeAndReleaseSonatypeStagingRepository --exclude-task compileFuzzer --max-workers=1 --no-build-cache --stacktrace --info --no-watch-fs --no-daemon
+  if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
+    echo "ERROR: GPG_PRIVATE_KEY is not set — run the create_key CI job first to provision the signing key in SSM (ci.java-profiler.signing.gpg_private_key)"
+    exit 1
+  fi
+  ./gradlew -Pskip-native -Pskip-tests -Pddprof_version="${LIB_VERSION}" -PbuildInfo.build.number=$CI_JOB_ID -Pwith-libs="$(pwd)/libs" publishToSonatype closeAndReleaseSonatypeStagingRepository --exclude-task compileFuzzer --max-workers=1 --no-build-cache --stacktrace --info --no-watch-fs --no-daemon
 fi
