@@ -153,6 +153,18 @@ class DwarfParser {
         }
     }
 
+    u32 getLeb(const char* end) {
+        u32 result = 0;
+        for (u32 shift = 0; _ptr < end; shift += 7) {
+            u8 b = *_ptr++;
+            result |= (b & 0x7f) << shift;
+            if ((b & 0x80) == 0) {
+                return result;
+            }
+        }
+        return result;
+    }
+
     int getSLeb() {
         int result = 0;
         for (u32 shift = 0; ; shift += 7) {
@@ -167,6 +179,21 @@ class DwarfParser {
         }
     }
 
+    int getSLeb(const char* end) {
+        int result = 0;
+        for (u32 shift = 0; _ptr < end; shift += 7) {
+            u8 b = *_ptr++;
+            result |= (b & 0x7f) << shift;
+            if ((b & 0x80) == 0) {
+                if ((b & 0x40) != 0 && (shift += 7) < 32) {
+                    result |= ~0U << shift;
+                }
+                return result;
+            }
+        }
+        return result;
+    }
+
     void skipLeb() {
         while (*_ptr++ & 0x80) {}
     }
@@ -179,6 +206,7 @@ class DwarfParser {
         return ptr + offset;
     }
 
+    void init(const char* name, const char* image_base);
     void parse(const char* eh_frame_hdr);
     void parseEhFrame(const char* eh_frame, size_t size);
     void parseCie();
@@ -193,6 +221,9 @@ class DwarfParser {
     DwarfParser(const char* name, const char* image_base, const char* eh_frame_hdr);
     DwarfParser(const char* name, const char* image_base, const char* eh_frame, size_t eh_frame_size);
 
+    // Ownership of the returned pointer transfers to the caller.
+    // The caller is responsible for freeing it with free() (not delete[]).
+    // DwarfParser has no destructor; _table is left dangling after this call is used.
     FrameDesc* table() const {
         return _table;
     }

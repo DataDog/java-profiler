@@ -141,4 +141,53 @@ TEST(DwarfEhFrame, CieAndFde) {
     delete dwarf;
 }
 
+// --- Bounds-guard tests ---
+
+TEST(DwarfEhFrame, TruncatedRecord) {
+    // Build a valid CIE then truncate the buffer so record_end > section_end.
+    // The length-overflow guard should fire and produce no records.
+    std::vector<uint8_t> buf;
+    appendCie(buf);   // 15 bytes: length=11, so record_end = 15
+    buf.resize(10);   // section_end = 10 < record_end → overflow guard triggers
+    DwarfParser* dwarf = parseBuf(buf);
+    EXPECT_EQ(dwarf->count(), 0);
+    free(dwarf->table());
+    delete dwarf;
+}
+
+TEST(DwarfEhFrame, ShortCieBody) {
+    // CIE with length=4: body is exactly cie_id (4 bytes), nothing else.
+    // After reading cie_id, _ptr == record_end; the version/augmentation guard triggers.
+    std::vector<uint8_t> buf;
+    put32(buf, 4);   // length = 4
+    put32(buf, 0);   // cie_id = 0 → CIE
+    appendTerminator(buf);
+    DwarfParser* dwarf = parseBuf(buf);
+    EXPECT_EQ(dwarf->count(), 0);
+    free(dwarf->table());
+    delete dwarf;
+}
+
+TEST(DwarfEhFrame, FdeAugDataOverrun) {
+    // CIE with 'z' augmentation followed by an FDE whose aug-data-length encodes
+    // a value (100) larger than remaining bytes in the record (0).
+    // The FDE should be skipped without a crash.
+    std::vector<uint8_t> buf;
+    appendCie(buf);  // 15 bytes; _has_z_augmentation = true
+
+    // FDE body: cie_offset(4) + range_start(4) + range_len(4) + aug_data_len(1) = 13
+    // aug_data_len = 100 but no aug data bytes follow → _ptr += 100 > record_end → break
+    uint32_t cie_id_field_offset = static_cast<uint32_t>(buf.size()) + 4;
+    put32(buf, 13);                       // length
+    put32(buf, cie_id_field_offset - 0);  // cie_offset back to CIE at offset 0
+    put32(buf, 0);                        // range_start pcrel
+    put32(buf, 128);                      // range_len
+    put8(buf, 100);                       // aug_data_len = 100 but 0 bytes of aug data follow
+    appendTerminator(buf);
+    DwarfParser* dwarf = parseBuf(buf);
+    EXPECT_EQ(dwarf->count(), 0);
+    free(dwarf->table());
+    delete dwarf;
+}
+
 #endif  // DWARF_SUPPORTED

@@ -34,8 +34,6 @@ class MachOParser {
     CodeCache* _cc;
     const mach_header* _image_base;
     const char* _vmaddr_slide;
-    const char* _eh_frame;
-    size_t _eh_frame_size;
 
     static const char* add(const void* base, uint64_t offset) {
         return (const char*)base + offset;
@@ -127,8 +125,7 @@ class MachOParser {
 
   public:
     MachOParser(CodeCache* cc, const mach_header* image_base, const char* vmaddr_slide) :
-        _cc(cc), _image_base(image_base), _vmaddr_slide(vmaddr_slide),
-        _eh_frame(NULL), _eh_frame_size(0) {}
+        _cc(cc), _image_base(image_base), _vmaddr_slide(vmaddr_slide) {}
 
     bool parse() {
         if (_image_base->magic != MH_MAGIC_64) {
@@ -143,6 +140,8 @@ class MachOParser {
         const symtab_command* symtab = NULL;
         const dysymtab_command* dysymtab = NULL;
         const section_64* stubs_section = NULL;
+        const char* eh_frame = NULL;
+        size_t eh_frame_size = 0;
         for (uint32_t i = 0; i < header->ncmds; i++) {
             if (lc->cmd == LC_SEGMENT_64) {
                 const segment_command_64* sc = (const segment_command_64*)lc;
@@ -151,8 +150,8 @@ class MachOParser {
                     stubs_section = findSection(sc, "__stubs");
                     const section_64* eh_frame_section = findSection(sc, "__eh_frame");
                     if (eh_frame_section != NULL) {
-                        _eh_frame = _vmaddr_slide + eh_frame_section->addr;
-                        _eh_frame_size = eh_frame_section->size;
+                        eh_frame = _vmaddr_slide + eh_frame_section->addr;
+                        eh_frame_size = eh_frame_section->size;
                     }
                 } else if (strcmp(sc->segname, "__LINKEDIT") == 0) {
                     link_base = _vmaddr_slide + sc->vmaddr - sc->fileoff;
@@ -177,8 +176,8 @@ class MachOParser {
             }
         }
 
-        if (DWARF_SUPPORTED && _eh_frame != NULL && _eh_frame_size > 0) {
-            DwarfParser dwarf(_cc->name(), _vmaddr_slide, _eh_frame, _eh_frame_size);
+        if (DWARF_SUPPORTED && eh_frame != NULL && eh_frame_size > 0) {
+            DwarfParser dwarf(_cc->name(), _vmaddr_slide, eh_frame, eh_frame_size);
             _cc->setDwarfTable(dwarf.table(), dwarf.count(), dwarf.detectedDefaultFrame());
         } else {
             // No __eh_frame (clang compact-unwind-only libraries): fall back to the
