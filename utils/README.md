@@ -2,7 +2,9 @@
 
 This directory contains utility scripts for managing the java-profiler project.
 
-## Release Script
+---
+
+## Release
 
 ### `release.sh`
 
@@ -28,88 +30,22 @@ Triggers the Validated Release workflow using GitHub CLI to create a new release
 - `--commit <sha>`: Specify commit SHA to release (default: interactive selection)
 - `--help`: Show help message
 
-**Examples:**
+**Branch rules:**
+- **Major/Minor releases**: must be run from `main`
+- **Patch releases**: must be run from a `release/X.Y._` branch
 
-1. **Interactive commit selection** (recommended first step):
-   ```bash
-   ./utils/release.sh minor
-   ```
-   This will show a nice arrow-key navigable menu of the last 10 commits.
+**Release flow:**
+1. Validates inputs and branch rules
+2. Interactive commit selection (or use `--commit`)
+3. Triggers GitHub Actions "Validated Release" workflow
+4. Workflow runs pre-release tests, creates annotated git tag
+5. Tag push triggers GitLab build pipeline
+6. GitLab builds multi-platform artifacts and publishes to Maven Central
+7. GitHub workflows create release with assets
 
-2. **Perform an actual minor release** from main branch:
-   ```bash
-   ./utils/release.sh minor --no-dry-run
-   ```
+---
 
-3. **Release a specific commit**:
-   ```bash
-   ./utils/release.sh patch --commit abc123def456 --no-dry-run
-   ```
-
-4. **Perform a patch release** from a release branch:
-   ```bash
-   # Ensure you're on a release/X.Y._ branch
-   git checkout release/1.35._
-   ./utils/release.sh patch --no-dry-run
-   ```
-
-5. **Emergency patch** without tests (use with caution):
-   ```bash
-   ./utils/release.sh patch --no-dry-run --skip-tests
-   ```
-
-**Branch Rules:**
-- **Major/Minor releases**: Must be run from the `main` branch
-- **Patch releases**: Must be run from a `release/X.Y._` branch
-
-**Interactive Features:**
-- **Commit Selection**: If no `--commit` is specified, the script shows an interactive menu of the last 10 commits
-- Use ↑/↓ arrow keys to navigate
-- Press Enter to select a commit
-- Press 'q' to quit
-- **Comprehensive Summary**: After execution, displays a detailed summary of all actions performed, including any errors or warnings
-
-**Release Flow:**
-1. Script validates inputs and branch rules
-2. Interactive commit selection (or use specified commit)
-3. Triggers GitHub Actions "Validated Release" workflow on selected commit
-4. Workflow runs pre-release tests (testDebug + testAsan)
-5. Workflow creates annotated git tag
-6. Tag push triggers GitLab build pipeline
-7. GitLab builds multi-platform artifacts
-8. GitLab publishes to Maven Central
-9. GitHub workflows create release with assets
-10. Script displays comprehensive execution summary
-
-**Monitoring:**
-
-After triggering the release, monitor progress:
-
-```bash
-# Watch the workflow run in real-time
-gh run watch
-
-# List recent workflow runs
-gh run list --workflow=release-validated.yml --limit 5
-
-# View in browser
-gh workflow view release-validated.yml --web
-```
-
-**Troubleshooting:**
-
-If the release fails:
-
-1. **Tests fail**: Fix the issues and re-run
-2. **Tag already exists**: Delete the tag and retry:
-   ```bash
-   git tag -d v_X.Y.Z
-   git push origin :v_X.Y.Z
-   ```
-3. **GitLab build fails**: Check GitLab pipeline and retry
-4. **Authentication issues**: Run `gh auth login`
-
-## Backport Script
+## Backport
 
 ### `backport-pr.sh`
 
@@ -118,7 +54,7 @@ Cherry-picks a merged PR onto a release branch, pushes the backport branch, and 
 **Prerequisites:**
 - [GitHub CLI](https://cli.github.com/) installed and authenticated
 - [jq](https://jqlang.github.io/jq/) installed
-- Clean working tree (no uncommitted changes)
+- Clean working tree
 
 **Usage:**
 ```bash
@@ -126,58 +62,87 @@ Cherry-picks a merged PR onto a release branch, pushes the backport branch, and 
 ```
 
 **Arguments:**
-- `<release-name>`: Target release branch suffix, e.g. `1.9._` (maps to `release/1.9._`). If omitted, the script presents an interactive picker of the 10 most recent release branches.
-- `<pr-number-or-url>`: PR number (`420`) or full GitHub URL (`https://github.com/DataDog/java-profiler/pull/420`).
-- `--dry-run`: Show what would happen without making any changes.
+- `<release-name>`: Target release branch suffix, e.g. `1.9._` (maps to `release/1.9._`). If omitted, an interactive picker is shown.
+- `<pr-number-or-url>`: PR number (`420`) or full GitHub URL.
+- `--dry-run`: Preview without making changes.
 
 **Examples:**
 ```bash
-# Backport PR #420 to release/1.9._
 ./utils/backport-pr.sh 1.9._ 420
-
-# Same, using a URL
-./utils/backport-pr.sh 1.9._ https://github.com/DataDog/java-profiler/pull/420
-
-# Interactive branch selection
-./utils/backport-pr.sh 420
-
-# Preview without making changes
+./utils/backport-pr.sh 420          # interactive branch selection
 ./utils/backport-pr.sh --dry-run 1.9._ 420
 ```
 
-**Features:**
-- Interactive release branch picker when no branch is specified
-- Accepts both PR numbers and full GitHub URLs
-- Single GitHub API call for all PR metadata
-- Warns if the PR is not merged and asks for confirmation
-- Handles squashed/garbage-collected commits by falling back to the merge commit
-- Detects and cleans up existing backport branches from previous attempts
-- Guided recovery on cherry-pick conflicts (does not leave you stranded)
-- Comments on the original PR with a link to the backport for traceability
-- Colored terminal output (degrades gracefully in non-TTY contexts)
-- Restores the original branch on completion or failure
+---
 
-## Patch dd-java-agent Script
+## Testing
 
-### `patch-dd-java-agent.sh`
+### `run-docker-tests.sh`
 
-Patches a `dd-java-agent.jar` with locally-built ddprof library contents for quick local testing without a full dd-trace-java rebuild.
+Runs tests in Docker across various OS/libc/JDK combinations, mirroring the CI matrix locally.
 
 **Usage:**
 ```bash
-DD_AGENT_JAR=path/to/dd-java-agent.jar DDPROF_JAR=path/to/ddprof.jar ./utils/patch-dd-java-agent.sh
+./utils/run-docker-tests.sh [options]
+  --libc=glibc|musl               (default: glibc)
+  --jdk=8|11|17|21|25|8-j9|...   (default: 21)
+  --arch=x64|aarch64              (default: auto-detect)
+  --config=debug|release|asan|tsan (default: debug)
+  --tests="TestPattern"           (optional)
+  --gtest                         (enable C++ gtests)
+  --shell                         (drop to shell instead of running tests)
+  --mount                         (mount local repo instead of cloning)
+  --rebuild                       (force rebuild of Docker images)
 ```
 
-## Cherry-Pick Scripts
+### `patch-dd-java-agent.sh`
 
-### `cherry.sh`
+Patches a `dd-java-agent.jar` with a locally-built ddprof library for quick local testing without a full dd-trace-java rebuild.
 
-Helper script for cherry-picking commits from upstream async-profiler.
-
-### `init_cherypick_repo.sh`
-
-Initializes the repository for cherry-picking from upstream.
+**Usage:**
+```bash
+DD_AGENT_JAR=path/to/dd-java-agent.jar DDPROF_JAR=path/to/ddprof.jar \
+  ./utils/patch-dd-java-agent.sh
+```
 
 ---
 
-For more information about the release process, see `.github/workflows/release-validated.yml`.
+## Upstream Tracking
+
+See [README_UPSTREAM_TRACKER.md](README_UPSTREAM_TRACKER.md) for full documentation.
+
+### `check_upstream_changes.sh`
+
+Wrapper to compare local files against a given upstream async-profiler commit and produce a change report.
+
+### `track_upstream_changes.sh`
+
+Core change detection and report generation logic.
+
+### `generate_tracked_files.sh`
+
+Identifies which local files should be tracked against upstream (based on async-profiler copyright headers).
+
+### `check_contribution_candidates.sh`
+
+Identifies divergences from upstream async-profiler that could be contributed back.
+
+### `find_contribution_candidates.sh`
+
+Core diff analysis and report generation for contribution candidate detection.
+
+---
+
+## CI / Ops
+
+### `update-sonatype-credentials.sh`
+
+Updates the Sonatype (Maven Central) OSSRH credentials stored in AWS SSM, used by the CI publish pipeline.
+
+**Prerequisites:**
+- AWS CLI authenticated with `ssm:PutParameter` permission
+
+**Usage:**
+```bash
+./utils/update-sonatype-credentials.sh <username> <token>
+```
