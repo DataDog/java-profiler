@@ -209,10 +209,10 @@ Context ProfiledThread::snapshotContext(size_t numAttrs) {
   if (ContextApi::get(span_id, root_span_id)) {
     ctx.spanId = span_id;
     ctx.rootSpanId = root_span_id;
-  }
-  size_t count = numAttrs < DD_TAGS_CAPACITY ? numAttrs : DD_TAGS_CAPACITY;
-  for (size_t i = 0; i < count; i++) {
-    ctx.tags[i].value = _otel_tag_encodings[i];
+    size_t count = numAttrs < DD_TAGS_CAPACITY ? numAttrs : DD_TAGS_CAPACITY;
+    for (size_t i = 0; i < count; i++) {
+      ctx.tags[i].value = _otel_tag_encodings[i];
+    }
   }
   return ctx;
 }

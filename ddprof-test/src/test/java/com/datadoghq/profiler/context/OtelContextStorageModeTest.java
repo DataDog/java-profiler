@@ -227,6 +227,26 @@ public class OtelContextStorageModeTest {
     }
 
     /**
+     * Stress-tests the OTEP context path with many sequential writes to catch
+     * buffer corruption or stale-value leaks over repeated updates.
+     */
+    @Test
+    public void testRepeatedContextWrites() {
+        for (int i = 1; i <= 1000; i++) {
+            long spanId = (long) i;
+            long rootSpanId = (long) (i + 10000);
+            profiler.setContext(rootSpanId, spanId, 0L, spanId);
+            assertEquals(spanId, profiler.getThreadContext().getSpanId(),
+                    "spanId mismatch at iteration " + i);
+            assertEquals(rootSpanId, profiler.getThreadContext().getRootSpanId(),
+                    "rootSpanId mismatch at iteration " + i);
+        }
+        profiler.clearContext();
+        assertEquals(0, profiler.getThreadContext().getSpanId(), "spanId should be 0 after clear");
+        assertEquals(0, profiler.getThreadContext().getRootSpanId(), "rootSpanId should be 0 after clear");
+    }
+
+    /**
      * Tests that the per-thread attribute cache isolates threads correctly.
      * "FB" and "Ea" have equal hashCode() (both 2236), so they map to the same
      * cache slot. With per-thread caches each thread owns its slot independently.

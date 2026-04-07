@@ -609,32 +609,6 @@ Java_com_datadoghq_profiler_OTelContext_registerAttributeKeys0(JNIEnv* env, jcla
   for (int i = 0; i < n; i++) delete jni_strings[i];
 }
 
-// Reads back the current thread's OTEP context. Used by tests and context-propagation
-// utilities; the tracer typically gets span/trace IDs from its own storage, not here.
-extern "C" DLLEXPORT jlongArray JNICALL
-Java_com_datadoghq_profiler_ThreadContext_getContext0(JNIEnv* env, jclass unused) {
-  u64 spanId = 0;
-  u64 rootSpanId = 0;
-
-  // Read context via ContextApi (OTEL TLS record)
-  // If read fails (torn read or write in progress), return zeros
-  if (!ContextApi::get(spanId, rootSpanId)) {
-    spanId = 0;
-    rootSpanId = 0;
-  }
-
-  // Create result array [spanId, rootSpanId]
-  jlongArray result = env->NewLongArray(2);
-  if (result == nullptr) {
-    return nullptr;
-  }
-
-  jlong values[2] = {(jlong)spanId, (jlong)rootSpanId};
-  env->SetLongArrayRegion(result, 0, 2, values);
-
-  return result;
-}
-
 // ---- test and debug utilities
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_testlog(JNIEnv* env, jclass unused, jstring msg) {

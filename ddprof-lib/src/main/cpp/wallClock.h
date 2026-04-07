@@ -59,12 +59,15 @@ class BaseWallClock : public Engine {
       int self = OS::threadId();
       ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
       
-      // We don't want to profile ourselves in wall time
+      // We don't want to profile ourselves in wall time.
+      // current may be null if this thread is still initializing its ProfiledThread
+      // (wall-clock thread startup races with JVMTI ThreadStart). Safe to skip removal.
       ProfiledThread* current = ProfiledThread::current();
-      assert(current != nullptr);
-      int slot_id = current->filterSlotId();
-      if (slot_id != -1) {
-        thread_filter->remove(slot_id);
+      if (current != nullptr) {
+        int slot_id = current->filterSlotId();
+        if (slot_id != -1) {
+          thread_filter->remove(slot_id);
+        }
       }
 
       u64 startTime = TSC::ticks();

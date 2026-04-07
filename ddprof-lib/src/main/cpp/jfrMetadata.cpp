@@ -26,6 +26,8 @@ bool JfrMetadata::_initialized = false;
 
 JfrMetadata::JfrMetadata() : Element("root") {}
 
+// Must only be called after all profiler engines are stopped and no signal
+// handlers can fire. std::vector/std::map are not async-signal-safe.
 void JfrMetadata::reset() {
   _root._children.clear();
   _root._attributes.clear();

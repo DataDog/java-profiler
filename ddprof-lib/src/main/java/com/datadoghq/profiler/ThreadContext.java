@@ -116,21 +116,19 @@ public final class ThreadContext {
     }
 
     /**
-     * Reads both span ID and root span ID in a single call.
-     *
-     * @return array with [spanId, rootSpanId], or [0, 0] if not set
+     * Returns the current span ID.
+     * Reads directly from the OTEP record buffer (big-endian bytes → native long).
      */
-    public long[] getContext() {
-        long[] ctx = getContext0();
-        return ctx != null ? ctx : new long[2];
-    }
-
     public long getSpanId() {
-        return getContext()[0];
+        return Long.reverseBytes(recordBuffer.getLong(spanIdOffset));
     }
 
+    /**
+     * Returns the current local root span ID.
+     * Reads directly from the sidecar buffer (native long).
+     */
     public long getRootSpanId() {
-        return getContext()[1];
+        return sidecarBuffer.getLong(lrsSidecarOffset);
     }
 
     /**
@@ -140,6 +138,9 @@ public final class ThreadContext {
      * Note: this produces a synthetic trace_id of [0, spanId] in the OTEP record.
      * External OTEP readers will see this as a real W3C trace ID. Callers needing
      * correct OTEP interop must use the 4-arg {@link #put(long, long, long, long)}.
+     *
+     * <p>Parameter mapping to the 4-arg API: {@code spanId} → {@code spanId},
+     * {@code rootSpanId} → {@code localRootSpanId} (first argument).
      *
      * @deprecated Use {@link #put(long, long, long, long)} instead.
      */
@@ -372,6 +373,9 @@ public final class ThreadContext {
     /**
      * Scan attrs_data and compact out the entry with the given key_index.
      * Returns the new attrs_data size after compaction.
+     *
+     * <p>{@code otepKeyIndex} is always {@code keyIndex + 1} for user attributes,
+     * so it is never 0. Index 0 is reserved for the fixed LRS entry.
      */
     private int compactOtepAttribute(int otepKeyIndex) {
         int currentSize = recordBuffer.getShort(attrsDataSizeOffset) & 0xFFFF;
@@ -448,5 +452,4 @@ public final class ThreadContext {
     }
 
     private static native int registerConstant0(String value);
-    private static native long[] getContext0();
 }
