@@ -48,9 +48,13 @@ bool ContextApi::get(u64& span_id, u64& root_span_id) {
         return false;
     }
 
-    if (!OtelContexts::getSpanId(thrd->getOtelContextRecord(), span_id)) {
+    OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+    if (__atomic_load_n(&record->valid, __ATOMIC_ACQUIRE) != 1) {
         return false;
     }
+    u64 val = 0;
+    for (int i = 0; i < 8; i++) { val = (val << 8) | record->span_id[i]; }
+    span_id = val;
 
     root_span_id = thrd->getOtelLocalRootSpanId();
     return true;

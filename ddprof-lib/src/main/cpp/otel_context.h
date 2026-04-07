@@ -64,22 +64,15 @@ DLLEXPORT extern thread_local OtelThreadContextRecord* otel_thread_ctx_v1;
  * OTEL context storage manager (OTEP #4947 TLS pointer model).
  *
  * Each thread gets a pre-allocated OtelThreadContextRecord cached in
- * ProfiledThread. The TLS pointer otel_thread_ctx_v1 is set
- * permanently to the record during thread initialization and never nulled.
+ * ProfiledThread. The TLS pointer otel_thread_ctx_v1 is set permanently
+ * to the record during thread initialization; detach/attach (context writes)
+ * never touch it. It is nulled on thread exit (in releaseFromBuffer) to
+ * prevent external profilers from dereferencing a recycled record.
  * Context activity is indicated solely by the valid flag in the record.
  *
  * Signal safety: signal handlers must never access
  * otel_thread_ctx_v1 directly (TLS lazy init can deadlock
  * in musl). Instead they read via ProfiledThread::getOtelContextRecord().
  */
-class OtelContexts {
-public:
-    /**
-     * Read span_id from a record pointer (signal-safe).
-     * Checks the valid flag with acquire semantics before reading.
-     * Returns false if the record is invalid (being mutated). record must not be null.
-     */
-    static bool getSpanId(OtelThreadContextRecord* record, u64& span_id);
-};
 
 #endif /* _OTEL_CONTEXT_H */

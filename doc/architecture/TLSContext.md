@@ -275,7 +275,9 @@ External profilers follow the OTEP #4947 protocol:
 
 1. Discover `otel_thread_ctx_v1` via ELF `dlsym`.
 2. Read the `OtelThreadContextRecord*` pointer. The pointer is set
-   permanently at thread init and is never null after that point.
+   permanently at thread init; detach/attach never modify it. It is nulled
+   on thread exit to prevent use-after-recycle — check for null before
+   dereferencing.
 3. Check `valid == 1`. If not, the record is being updated — skip.
 4. Read `trace_id`, `span_id`, `attrs_data` from the record.
 
@@ -283,22 +285,24 @@ External profilers follow the OTEP #4947 protocol:
 
 ### Why Barriers Are Needed
 
-Both consumers (signal handler and external OTEP profiler) are subject
-to **compiler reordering only** — neither experiences CPU store-buffer
-reordering when reading:
+Both consumers need to see field writes ordered before `valid=1`, but for
+different reasons:
 
-- The **signal handler** runs on the same thread as the writer. Same-thread
-  execution guarantees that the CPU presents its own stores in program order,
-  so only compiler reordering is a concern.
-- The **external OTEP profiler** (e.g. eBPF) reads user-space TLS memory from kernel
-  context via a perf event eBPF probe. The thread is paused at the sample point by
-  the kernel, so the CPU has already committed all prior stores from that thread.
-  Only compiler reordering is a concern here too.
+- The **signal handler** runs on the same thread as the writer. The CPU presents
+  its own stores in program order, so CPU store-buffer reordering is not a
+  concern. The JIT compiler can still reorder stores arbitrarily, so a compiler
+  barrier is required.
+- The **external OTEP profiler** (e.g. eBPF using scheduler events) attaches a
+  `sched_switch` tracepoint that fires on the same CPU that was executing the
+  thread. The Linux scheduler acquires `rq_lock` before the tracepoint fires,
+  which includes a full hardware memory barrier (`smp_mb__before_spinlock` on
+  ARM). By the time the eBPF probe runs, all prior user-space stores from that
+  thread are globally visible — including any stores ordered by `DMB ISHST`.
 
-In both cases `storeFence` is a compiler barrier that prevents the JIT from
-sinking record field writes past the `valid=1` store. On ARM it also emits
-`DMB ISHST` as a side effect, but correctness does not depend on the hardware
-ordering — same-thread CPU visibility makes that unnecessary.
+In both cases `storeFence` serves as a compiler barrier that prevents the JIT
+from sinking record field writes past the `valid=1` store. On ARM it also emits
+`DMB ISHST`, which is required to order field writes before `valid=1` at the
+hardware level — this is not a mere side effect.
 
 ### Barrier Taxonomy
 
