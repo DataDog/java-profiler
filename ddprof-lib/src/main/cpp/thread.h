@@ -129,6 +129,9 @@ public:
     // between detach() and attach() in Java, ContextApi::get returns valid=0 with
     // root_span_id=0; writing that would clobber the value Java just stored.
     if (context_valid) {
+      // Plain store is safe: naturally-aligned u64 stores/loads are atomic on
+      // x86-64 and aarch64 (the only supported targets). The Java writer uses
+      // sidecarBuffer.putLong() which is a single aligned 8-byte store.
       _otel_local_root_span_id = root_span_id;
     }
     _recording_epoch = recording_epoch;

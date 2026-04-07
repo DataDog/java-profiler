@@ -293,6 +293,12 @@ public final class ThreadContext {
      * attrs_data_size is not reset here; the next non-zero setContext call will reset it
      * before attach(). This is safe because valid remains 0 after clear, so no reader will
      * observe the stale attrs_data_size.
+     *
+     * <p>External OTEP readers see valid=0 and skip the record — they cannot distinguish
+     * "cleared" from "being mutated". This is intentional: without also resetting
+     * attrs_data_size here, publishing valid=1 with a stale attrs_data_size would expose
+     * a partially-valid record. The cleared state is effectively invisible to external
+     * readers until the next non-zero setContext call publishes it.
      */
     private void clearContextDirect() {
         recordBuffer.putLong(traceIdOffset, 0);

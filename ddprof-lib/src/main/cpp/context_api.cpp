@@ -23,6 +23,9 @@
 #include "thread.h"
 #include <cstring>
 
+// Reserved attribute index for local root span ID in OTEL attrs_data.
+// Only used within this translation unit; not part of the public ContextApi header.
+static const uint8_t LOCAL_ROOT_SPAN_ATTR_INDEX = 0;
 
 /**
  * Initialize context TLS for the current thread on first use.

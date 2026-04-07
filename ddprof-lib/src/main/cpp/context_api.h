@@ -78,8 +78,6 @@ public:
      */
     static void registerAttributeKeys(const char** keys, int count);
 
-    // Reserved attribute index for local root span ID in OTEL attrs_data.
-    static const uint8_t LOCAL_ROOT_SPAN_ATTR_INDEX = 0;
 };
 
 #endif /* _CONTEXT_API_H */

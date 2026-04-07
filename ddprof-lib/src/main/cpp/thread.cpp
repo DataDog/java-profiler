@@ -110,7 +110,9 @@ void ProfiledThread::releaseFromBuffer() {
     // short-circuit before reading partially-zeroed data during the memset below.
     // (The valid flag is zeroed by memset too, but _otel_ctx_initialized guards
     // the isContextInitialized() check which runs before any record access.)
-    _otel_ctx_initialized = false;
+    // Use __ATOMIC_RELEASE so the compiler cannot reorder this store after the
+    // memset on ARM with aggressive optimizations.
+    __atomic_store_n(&_otel_ctx_initialized, false, __ATOMIC_RELEASE);
     clearOtelSidecar();
     memset(&_otel_ctx_record, 0, sizeof(_otel_ctx_record));
 

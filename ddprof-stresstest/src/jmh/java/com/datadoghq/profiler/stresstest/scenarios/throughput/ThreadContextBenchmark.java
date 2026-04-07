@@ -126,8 +126,8 @@ public class ThreadContextBenchmark {
     }
 
     @Benchmark
-    public long[] getContext(ThreadState ts) {
-        return ts.ctx.getContext();
+    public long getSpanId(ThreadState ts) {
+        return ts.ctx.getSpanId();
     }
 
     @Benchmark

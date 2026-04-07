@@ -42,7 +42,6 @@ of 1.
 ```
 Benchmark                                 Mode  Cnt   Score   Error  Units
 ThreadContextBenchmark.clearContext       avgt    9   5.011 ± 0.039  ns/op
-ThreadContextBenchmark.getContext         avgt    9  71.557 ± 1.162  ns/op
 ThreadContextBenchmark.setAttrCacheHit   avgt    9  10.707 ± 0.077  ns/op
 ThreadContextBenchmark.setContextFull    avgt    9  11.104 ± 0.338  ns/op
 ThreadContextBenchmark.setContextFull_2t avgt    9  11.081 ± 0.105  ns/op
@@ -60,16 +59,17 @@ ThreadContextBenchmark.spanLifecycle_4t  avgt    9  32.203 ± 0.309  ns/op
 | `setContextFull` | 11.104 | ± 0.338 | Write localRootSpanId, spanId, traceIdHigh, traceIdLow (4-arg put) |
 | `setAttrCacheHit`| 10.707 | ± 0.077 | Set string attribute (dictionary cache hit)    |
 | `spanLifecycle`  | 30.430 | ± 0.129 | `setContextFull` + `setAttrCacheHit` combined  |
-| `getContext`     | 71.557 | ± 1.162 | Read context into a `long[]` (allocates)       |
 
 `spanLifecycle` at ~30.4 ns is consistent with the sum of its parts:
 `setContextFull` (~11.1 ns) + `setAttrCacheHit` (~10.7 ns) + loop and
 call overhead (~8.6 ns). All error bars are under 2% of the score,
 indicating stable measurements.
 
-`getContext` is the most expensive operation at ~71.6 ns, dominated by
-the `long[]` allocation on the return path. This is a read-side
-operation, not on the span start/end hot path.
+Note: the original `getContext` benchmark (71.6 ns, dominated by `long[]` allocation)
+was removed when `getContext()` was replaced by direct `DirectByteBuffer` reads in
+`getSpanId()` and `getRootSpanId()`, eliminating the JNI call and the array allocation.
+The `getSpanId` benchmark was added as a replacement but was not run at the time of
+this report.
 
 ### False Sharing Analysis
 
@@ -124,7 +124,6 @@ divergences; the vendor difference does not materially affect the comparison.
 | `setContextFull` |        20.0 |             11.104 |   1.8x  |
 | `setAttrCacheHit`|       114.8 |             10.707 |  10.7x  |
 | `spanLifecycle`  |       146.3 |             30.430 |   4.8x  |
-| `getContext`     |        68.8 |             71.557 |   0.96x |
 
 The span lifecycle hot path improved by **4.8x** (146 ns to 30 ns).
 The dominant contributor is `setContextAttribute`, which improved by
@@ -273,11 +272,10 @@ represents less than 0.004% of available CPU time.
    allocation strategy (one heap allocation per thread) provides
    sufficient cache-line isolation.
 
-2. **`getContext` allocation.** The `long[]` allocation in `getContext`
-   (~71.6 ns) could be eliminated by passing a reusable buffer, but
-   this is a read-side operation not on the span start/end critical
-   path. Only worth optimizing if profiling shows GC pressure from
-   high-frequency context reads.
+2. **`getContext` allocation (resolved).** The original `getContext` method
+   allocated a `long[]` per call (~71.6 ns). This was resolved by replacing
+   `getContext()` with direct `DirectByteBuffer` reads in `getSpanId()` and
+   `getRootSpanId()`, eliminating both the JNI call and the array allocation.
 
 3. **Higher thread counts.** To stress-test on server hardware, add
    `@Threads(8)` and `@Threads(16)` variants and run on a machine with
