@@ -57,7 +57,7 @@ ThreadContextBenchmark.spanLifecycle_4t  avgt    9  32.203 ± 0.309  ns/op
 | Benchmark        | ns/op  | Error   | Description                                    |
 |------------------|--------|---------|------------------------------------------------|
 | `clearContext`   |  5.011 | ± 0.039 | Zero-fill all four context fields              |
-| `setContextFull` | 11.104 | ± 0.338 | Write localRootSpanId, spanId, epoch, and opId |
+| `setContextFull` | 11.104 | ± 0.338 | Write localRootSpanId, spanId, traceIdHigh, traceIdLow (4-arg put) |
 | `setAttrCacheHit`| 10.707 | ± 0.077 | Set string attribute (dictionary cache hit)    |
 | `spanLifecycle`  | 30.430 | ± 0.129 | `setContextFull` + `setAttrCacheHit` combined  |
 | `getContext`     | 71.557 | ± 1.162 | Read context into a `long[]` (allocates)       |
@@ -115,6 +115,8 @@ The "JNI" column was captured on Java 25 (Temurin 25.0.2) where
 `ThreadContext` routed all writes through JNI native methods. The
 "ByteBuffer" column is the current implementation on Java 25 (Zulu
 25.0.2) where all hot-path writes go through `DirectByteBuffer`.
+Both are standard OpenJDK 25 distributions with no profiling-relevant
+divergences; the vendor difference does not materially affect the comparison.
 
 | Benchmark        | JNI (ns/op) | ByteBuffer (ns/op) | Speedup |
 |------------------|------------:|-------------------:|--------:|

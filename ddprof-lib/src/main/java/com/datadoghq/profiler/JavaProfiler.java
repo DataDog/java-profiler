@@ -366,7 +366,7 @@ public final class JavaProfiler {
 
     /**
      * Resets the cached ThreadContext for the current thread.
-     * The next call to {@link #getThreadContext()} or {@link #setContext(long, long)}
+     * The next call to {@link #getThreadContext()} or any {@code setContext} overload
      * will re-create it with fresh OTEL TLS buffers.
      */
     public void resetThreadContext() {

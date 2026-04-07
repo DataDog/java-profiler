@@ -63,9 +63,9 @@ class BaseWallClock : public Engine {
       ProfiledThread* current = ProfiledThread::current();
       assert(current != nullptr);
       int slot_id = current->filterSlotId();
-        if (slot_id != -1) {
-          thread_filter->remove(slot_id);
-        }
+      if (slot_id != -1) {
+        thread_filter->remove(slot_id);
+      }
 
       u64 startTime = TSC::ticks();
       WallClockEpochEvent epoch(startTime);

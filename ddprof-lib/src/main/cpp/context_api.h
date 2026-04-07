@@ -43,8 +43,9 @@ public:
      *
      * Used by signal handlers to get the current trace context.
      * Returns false if the OTEP valid flag is not set (record being mutated
-     * or thread not yet initialized). Sets span_id and root_span_id to 0
-     * on failure; does not detect torn reads (the valid flag guards that).
+     * or thread not yet initialized). Does not modify span_id or root_span_id
+     * on failure; callers must pre-initialize output parameters to their
+     * desired default. Does not detect torn reads (the valid flag guards that).
      *
      * Unlike snapshot(), this reads only spanId and rootSpanId — use
      * snapshot() when tag encodings are also needed.

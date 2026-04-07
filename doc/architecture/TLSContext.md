@@ -462,13 +462,12 @@ Full benchmark data and analysis:
 `ddprof-test/src/test/java/com/datadoghq/profiler/context/OtelContextStorageModeTest.java`:
 
 - **testOtelStorageModeContext** — context round-trips correctly with JFR running.
-- **testOtelModeClearContext** — `clearContext` sets all OTEP fields to zero.
 - **testOtelModeCustomAttributes** — verifies attribute TLV encoding in
   `attrs_data` via `setContextAttribute`.
 - **testOtelModeAttributeOverflow** — overflow of `attrs_data` is handled
   gracefully (returns false, no crash).
-- **testMaxValueContext** — `Long.MAX_VALUE` round-trips correctly.
-- **testSequentialContextUpdates** — repeated writes with varying values.
+- **testSequentialContextUpdates** — repeated writes with varying values,
+  `Long.MAX_VALUE` round-trip, and `clearContext` resetting both IDs to zero.
 - **testThreadIsolation** — concurrent writes from multiple threads,
   validating thread-local isolation.
 - **testSpanTransitionClearsAttributes** — direct span-to-span transition

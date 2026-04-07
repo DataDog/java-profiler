@@ -609,7 +609,8 @@ Java_com_datadoghq_profiler_OTelContext_registerAttributeKeys0(JNIEnv* env, jcla
   for (int i = 0; i < n; i++) delete jni_strings[i];
 }
 
-// For testing only — production code gets context from the tracer, not the profiler.
+// Reads back the current thread's OTEP context. Used by tests and context-propagation
+// utilities; the tracer typically gets span/trace IDs from its own storage, not here.
 extern "C" DLLEXPORT jlongArray JNICALL
 Java_com_datadoghq_profiler_ThreadContext_getContext0(JNIEnv* env, jclass unused) {
   u64 spanId = 0;

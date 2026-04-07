@@ -214,7 +214,6 @@ public final class ThreadContext {
      * UTF-8 value (external profilers) via ByteBuffer.
      */
     private boolean setContextAttributeDirect(int keyIndex, String value) {
-        if (keyIndex >= MAX_CUSTOM_SLOTS) return false;
 
         // Resolve encoding + UTF-8 bytes from per-thread cache
         int slot = value.hashCode() & CACHE_MASK;
@@ -291,7 +290,8 @@ public final class ThreadContext {
      * Zeros trace/span IDs, sidecar encodings, and LRS. Called between detach() and the
      * return in the all-zero path; valid stays 0 (no attach) so no reader can see attrs_data.
      * attrs_data_size is not reset here; the next non-zero setContext call will reset it
-     * before attach().
+     * before attach(). This is safe because valid remains 0 after clear, so no reader will
+     * observe the stale attrs_data_size.
      */
     private void clearContextDirect() {
         recordBuffer.putLong(traceIdOffset, 0);
