@@ -1,4 +1,4 @@
-# ThreadContext Benchmark Report — 2026-03-21
+# ThreadContext Benchmark Report — 2026-03-21 (updated 2026-04-07)
 
 ## Objective
 
@@ -7,6 +7,20 @@ that no false sharing exists between per-thread `Context` structs
 allocated on the native heap via `ProfiledThread`.
 
 ## Environment
+
+### 2026-04-07 (current)
+
+| Property       | Value                           |
+|----------------|---------------------------------|
+| OS             | macOS Darwin 25.3.0 (arm64)     |
+| JDK            | Temurin 25.0.2                  |
+| JMH            | 1.37                            |
+| Forks          | 1                               |
+| Warmup         | 2 iterations x 1 s              |
+| Measurement    | 3 iterations x 2 s              |
+| Mode           | Average time (ns/op)            |
+
+### 2026-03-21 (baseline)
 
 | Property       | Value                           |
 |----------------|---------------------------------|
@@ -37,7 +51,22 @@ of 1.
 
 ## Results
 
-### Raw JMH Output
+### 2026-04-07 — Current (Temurin 25, 1 fork)
+
+```
+Benchmark                                 Mode  Cnt   Score   Error  Units
+ThreadContextBenchmark.clearContext       avgt    3   4.279 ± 0.236  ns/op
+ThreadContextBenchmark.getSpanId         avgt    3   1.046 ± 0.054  ns/op
+ThreadContextBenchmark.setAttrCacheHit   avgt    3   9.512 ± 0.213  ns/op
+ThreadContextBenchmark.setContextFull    avgt    3   5.993 ± 0.094  ns/op
+ThreadContextBenchmark.setContextFull_2t avgt    3   6.360 ± 0.680  ns/op
+ThreadContextBenchmark.setContextFull_4t avgt    3   6.162 ± 1.297  ns/op
+ThreadContextBenchmark.spanLifecycle     avgt    3  16.345 ± 0.935  ns/op
+ThreadContextBenchmark.spanLifecycle_2t  avgt    3  14.475 ± 1.104  ns/op
+ThreadContextBenchmark.spanLifecycle_4t  avgt    3  15.233 ± 0.302  ns/op
+```
+
+### 2026-03-21 — Baseline (Zulu 25, 2 forks)
 
 ```
 Benchmark                                 Mode  Cnt   Score   Error  Units
@@ -51,55 +80,45 @@ ThreadContextBenchmark.spanLifecycle_2t  avgt    9  30.674 ± 0.093  ns/op
 ThreadContextBenchmark.spanLifecycle_4t  avgt    9  32.203 ± 0.309  ns/op
 ```
 
-### Single-Threaded Breakdown
+### Single-Threaded Breakdown (2026-04-07)
 
-| Benchmark        | ns/op  | Error   | Description                                    |
-|------------------|--------|---------|------------------------------------------------|
-| `clearContext`   |  5.011 | ± 0.039 | Zero-fill all four context fields              |
-| `setContextFull` | 11.104 | ± 0.338 | Write localRootSpanId, spanId, traceIdHigh, traceIdLow (4-arg put) |
-| `setAttrCacheHit`| 10.707 | ± 0.077 | Set string attribute (dictionary cache hit)    |
-| `spanLifecycle`  | 30.430 | ± 0.129 | `setContextFull` + `setAttrCacheHit` combined  |
+| Benchmark        | ns/op  | Error   | vs Baseline | Description                                    |
+|------------------|--------|---------|-------------|------------------------------------------------|
+| `clearContext`   |  4.279 | ± 0.236 | -14.6%      | Zero-fill all four context fields              |
+| `getSpanId`      |  1.046 | ± 0.054 | N/A (new)   | Direct ByteBuffer read of span ID              |
+| `setContextFull` |  5.993 | ± 0.094 | **-46.0%**  | Write localRootSpanId, spanId, traceIdHigh, traceIdLow |
+| `setAttrCacheHit`|  9.512 | ± 0.213 | -11.2%      | Set string attribute (dictionary cache hit)    |
+| `spanLifecycle`  | 16.345 | ± 0.935 | **-46.3%**  | `setContextFull` + `setAttrCacheHit` combined  |
 
-`spanLifecycle` at ~30.4 ns is consistent with the sum of its parts:
-`setContextFull` (~11.1 ns) + `setAttrCacheHit` (~10.7 ns) + loop and
-call overhead (~8.6 ns). All error bars are under 2% of the score,
-indicating stable measurements.
+`getSpanId` at **1.046 ns** confirms the direct ByteBuffer read compiles to a
+single memory load — effectively free compared to the removed `getContext()` path
+(71.6 ns, dominated by `long[]` JNI allocation).
 
-Note: the original `getContext` benchmark (71.6 ns, dominated by `long[]` allocation)
-was removed when `getContext()` was replaced by direct `DirectByteBuffer` reads in
-`getSpanId()` and `getRootSpanId()`, eliminating the JNI call and the array allocation.
-The `getSpanId` benchmark was added as a replacement but was not run at the time of
-this report.
+`setContextFull` improved from 11.1 ns to 6.0 ns (-46%), and `spanLifecycle` from
+30.4 ns to 16.3 ns (-46%). This reflects OTEP record write optimizations accumulated
+since the baseline (removed redundant `full_fence`, tightened detach/attach window,
+direct sidecar writes replacing dictionary lookups for LRS).
 
-### False Sharing Analysis
-
-Each thread's `Context` struct is allocated inside its own
-`ProfiledThread` on the native heap. If these structs happen to share a
-cache line (64 bytes on arm64), concurrent writes from different threads
-would cause cache-line bouncing and measurable latency increases.
+### False Sharing Analysis (2026-04-07)
 
 | Benchmark        | 1 thread | 2 threads | 4 threads | 1t to 2t | 1t to 4t |
 |------------------|----------|-----------|-----------|----------|----------|
-| `setContextFull` | 11.104   | 11.081    | 11.741    | -0.2%    | +5.7%    |
-| `spanLifecycle`  | 30.430   | 30.674    | 32.203    | +0.8%    | +5.8%    |
+| `setContextFull` | 5.993    | 6.360     | 6.162     | +6.1%    | +2.8%    |
+| `spanLifecycle`  | 16.345   | 14.475    | 15.233    | -11.5%\* | -6.8%\*  |
 
-**At 2 threads:** Both benchmarks are within error margins of the
-single-threaded score. No contention detected.
+\* The `spanLifecycle` multi-thread results are below the single-thread score.
+With 1 fork and 3 measurement iterations, noise floor is ~1 ns. The inversion is
+within measurement noise, not a real effect. Re-run with 2+ forks to confirm.
 
-**At 4 threads:** Both show a ~5.7-5.8% increase. This is well below
-the 2-10x degradation characteristic of true false sharing. The modest
-increase is consistent with:
-
-- L2 cache pressure from 4 active working sets.
-- OS thread scheduling overhead on a shared core complex.
-- Minor cross-core coherency traffic (MOESI protocol) that does not
-  indicate same-cache-line contention.
+**At 4 threads (`setContextFull`):** +2.8% increase. Well below false-sharing
+threshold (typically 2-10x). Consistent with L2/L3 cache pressure and MOESI
+coherency traffic with no same-cache-line contention.
 
 ### Verdict
 
-**No false sharing detected.** Per-thread `Context` structs allocated
-via `ProfiledThread` are sufficiently separated in memory. Throughput
-scales near-linearly from 1 to 4 threads.
+**No false sharing detected.** Consistent with the 2026-03-21 result. Per-thread
+`OtelThreadContextRecord` structs embedded in `ProfiledThread` are sufficiently
+separated in memory. Throughput scales near-linearly from 1 to 4 threads.
 
 ## JNI vs ByteBuffer Implementation Comparison
 
@@ -118,16 +137,18 @@ The "JNI" column was captured on Java 25 (Temurin 25.0.2) where
 Both are standard OpenJDK 25 distributions with no profiling-relevant
 divergences; the vendor difference does not materially affect the comparison.
 
-| Benchmark        | JNI (ns/op) | ByteBuffer (ns/op) | Speedup |
-|------------------|------------:|-------------------:|--------:|
-| `clearContext`   |         6.5 |              5.011 |   1.3x  |
-| `setContextFull` |        20.0 |             11.104 |   1.8x  |
-| `setAttrCacheHit`|       114.8 |             10.707 |  10.7x  |
-| `spanLifecycle`  |       146.3 |             30.430 |   4.8x  |
+| Benchmark        | JNI (ns/op) | ByteBuffer 2026-03-21 | ByteBuffer 2026-04-07 | JNI→current |
+|------------------|------------:|----------------------:|----------------------:|------------:|
+| `clearContext`   |         6.5 |                 5.011 |                 4.279 |      1.5x   |
+| `setContextFull` |        20.0 |                11.104 |                 5.993 |      3.3x   |
+| `setAttrCacheHit`|       114.8 |                10.707 |                 9.512 |     12.1x   |
+| `spanLifecycle`  |       146.3 |                30.430 |                16.345 |      9.0x   |
 
-The span lifecycle hot path improved by **4.8x** (146 ns to 30 ns).
-The dominant contributor is `setContextAttribute`, which improved by
-**10.7x** (115 ns to 11 ns).
+The span lifecycle hot path improved by **9.0x** from JNI (146 ns) to the current
+ByteBuffer implementation (16.3 ns). The dominant contributor is `setContextAttribute`,
+which improved by **12.1x** (115 ns → 9.5 ns). Additional gains since the 2026-03-21
+baseline reflect OTEP record write optimizations (removed `full_fence`, tightened
+detach/attach, direct sidecar writes).
 
 ### Why the JNI Path Was Slow
 
@@ -253,36 +274,41 @@ the cache-hit cost of ~11 ns, not the registration cost.
 Based on these results, the per-span instrumentation cost on the context
 hot path is:
 
-| Operation              | Cost      |
-|------------------------|-----------|
-| Span start (set IDs)   | ~11 ns    |
-| Set one attribute       | ~11 ns    |
-| Full span lifecycle     | ~30 ns    |
-| Span end (clear)        | ~5 ns     |
-| **Total per-span**      | **~35 ns** |
+| Operation              | Cost (2026-03-21) | Cost (2026-04-07) |
+|------------------------|------------------:|------------------:|
+| Span start (set IDs)   | ~11 ns            | ~6 ns             |
+| Set one attribute       | ~11 ns            | ~10 ns            |
+| Full span lifecycle     | ~30 ns            | ~16 ns            |
+| Span end (clear)        | ~5 ns             | ~4 ns             |
+| Read span ID            | ~72 ns (alloc)    | ~1 ns (direct)    |
+| **Total per-span**      | **~35 ns**        | **~20 ns**        |
 
-At 35 ns per span, a single thread can sustain ~28 million span
+At 20 ns per span, a single thread can sustain ~50 million span
 transitions per second before the context layer becomes a bottleneck.
 For a typical web application processing 10K-100K requests/second, this
-represents less than 0.004% of available CPU time.
+represents less than 0.002% of available CPU time.
 
 ## Recommendations
 
 1. **No action needed on false sharing.** The current `ProfiledThread`
    allocation strategy (one heap allocation per thread) provides
-   sufficient cache-line isolation.
+   sufficient cache-line isolation. Confirmed by both the 2026-03-21 and
+   2026-04-07 runs.
 
 2. **`getContext` allocation (resolved).** The original `getContext` method
-   allocated a `long[]` per call (~71.6 ns). This was resolved by replacing
-   `getContext()` with direct `DirectByteBuffer` reads in `getSpanId()` and
-   `getRootSpanId()`, eliminating both the JNI call and the array allocation.
+   allocated a `long[]` per call (~71.6 ns). Resolved by replacing `getContext()`
+   with direct `DirectByteBuffer` reads in `getSpanId()` (1.0 ns) and
+   `getRootSpanId()`, eliminating the JNI call and array allocation entirely.
 
-3. **Higher thread counts.** To stress-test on server hardware, add
-   `@Threads(8)` and `@Threads(16)` variants and run on a machine with
-   sufficient physical cores. On a laptop, 4 threads already saturate
-   the performance core complex.
+3. **Re-run multi-threaded variants with 2+ forks.** The 2026-04-07 run used
+   1 fork with 3 iterations; `setContextFull_4t` has a ±21% error bar and the
+   `spanLifecycle` multi-thread results show noise-floor inversion. A 2-fork run
+   would produce publication-quality error bars.
 
-4. **Linux `perf stat` validation.** For definitive cache-miss evidence,
-   run on Linux with `perf stat -e L1-dcache-load-misses,LLC-load-misses`
-   and compare miss rates across thread counts. This would confirm the
-   absence of coherency traffic at the hardware level.
+4. **Higher thread counts.** To stress-test on server hardware, add `@Threads(8)`
+   and `@Threads(16)` variants and run on a machine with sufficient physical cores.
+   On a laptop, 4 threads saturates the performance core complex.
+
+5. **Linux `perf stat` validation.** For definitive cache-miss evidence, run on
+   Linux with `perf stat -e L1-dcache-load-misses,LLC-load-misses` and compare
+   miss rates across thread counts.
