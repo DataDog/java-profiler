@@ -42,7 +42,7 @@ For benchmark data, see
    steps. The TLS pointer is set permanently at thread init.
 4. **Two-Phase Attribute Registration** — string attribute values are
    registered in the native Dictionary once via JNI; subsequent uses
-   are zero-JNI ByteBuffer writes from a per-process encoding cache.
+   are zero-JNI ByteBuffer writes from a per-thread encoding cache.
 5. **Platform Independence** — correct on both strong (x86/TSO) and
    weak (ARM) memory models via explicit `storeFence` / volatile write
    barriers.
@@ -311,7 +311,8 @@ hardware level — this is not a mere side effect.
 | `storeFence` | `Unsafe.storeFence` | `VarHandle.storeStoreFence` | DMB ISHST (~2 ns) | compiler barrier (free) |
 
 On x86, `storeFence` is a compiler-only barrier (TSO guarantees hardware
-store ordering for free). On ARM it compiles to `DMB ISHST` (~2 ns).
+store ordering for free; Java 9+ `VarHandle.storeStoreFence` emits no
+hardware instruction on x86). On ARM it compiles to `DMB ISHST` (~2 ns).
 
 ### Why storeFence, Not fullFence
 

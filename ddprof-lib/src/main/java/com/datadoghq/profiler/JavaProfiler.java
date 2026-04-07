@@ -180,9 +180,15 @@ public final class JavaProfiler {
      * Passing context identifier to a profiler. This ID is thread-local and is dumped in
      * the JFR output only. 0 is a reserved value for "no-context".
      *
+     * <p>Note: {@code rootSpanId} maps to {@code localRootSpanId} internally. A synthetic
+     * trace_id of {@code [0, spanId]} is written to the OTEP record. For correct W3C
+     * trace ID interop use {@link #setContext(long, long, long, long)}.
+     *
      * @param spanId Span identifier that should be stored for current thread
-     * @param rootSpanId Root Span identifier that should be stored for current thread
+     * @param rootSpanId Local root span identifier (used for endpoint correlation)
+     * @deprecated Use {@link #setContext(long, long, long, long)} for full OTEP interop.
      */
+    @Deprecated
     public void setContext(long spanId, long rootSpanId) {
         tlsContextStorage.get().put(spanId, rootSpanId);
     }

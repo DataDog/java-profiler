@@ -146,7 +146,7 @@ public final class ThreadContext {
     @Deprecated
     public long put(long spanId, long rootSpanId) {
         put(rootSpanId, spanId, 0, spanId);
-        return 0;
+        return 0; // Return type kept for ABI compatibility; value carries no meaning.
     }
 
     /**

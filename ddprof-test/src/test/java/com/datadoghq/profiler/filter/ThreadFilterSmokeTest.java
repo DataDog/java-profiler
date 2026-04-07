@@ -32,6 +32,7 @@ public class ThreadFilterSmokeTest extends AbstractProfilerTest {
     doThreadFiltering();
   }
 
+  @SuppressWarnings("deprecation")
   private void doThreadFiltering() throws Exception {
     Future<?>[] futures = new Future[1000];
     for (int i = 0; i < futures.length; i++) {

@@ -110,6 +110,7 @@ public:
    * @param pc Program counter from ucontext
    * @param sp Stack pointer from ucontext
    * @param recording_epoch Current profiling session epoch
+   * @param context_valid True if the OTEP valid flag was set; controls whether _otel_local_root_span_id is updated
    * @param span_id Current trace span ID
    * @param root_span_id Current trace root span ID
    * @return Cached call_trace_id if collapsing is allowed, 0 otherwise
@@ -196,7 +197,6 @@ public:
   inline OtelThreadContextRecord* getOtelContextRecord() {
     return &_otel_ctx_record;
   }
-
 
   // JavaThread status cache — avoids repeated vtable checks in VMThread::isJavaThread().
   // JVMTI ThreadStart only fires for application threads, not for JVM-internal
