@@ -1,0 +1,162 @@
+# JFR Event Conformance Specification
+#
+# This file defines expected JFR events based on profiler configuration.
+# Used by validate-jfr.jfrs to ensure the correct events are emitted.
+
+# Event type definitions
+event_types:
+  cpu_profiling:
+    jdk: "jdk.ExecutionSample"
+    datadog: "datadog.ExecutionSample"
+    fields:
+      jdk:
+        thread: "sampledThread"
+        stack: "stackTrace"
+      datadog:
+        thread: "eventThread"
+        stack: "stackTrace"
+
+  allocation_profiling:
+    jdk: "jdk.ObjectAllocationSample"
+    datadog: "datadog.ObjectSample"
+    fields:
+      jdk:
+        class: "objectClass/name"
+        weight: "weight"
+      datadog:
+        class: "objectClass/name"
+        weight: "weight"
+
+  thread_stats:
+    jdk: "jdk.ThreadAllocationStatistics"
+    # No datadog equivalent
+
+  endpoint_events:
+    datadog: "datadog.EndpointEvent"
+    # Only present when tracer is enabled
+
+# Configuration profiles
+# Each profile defines which events should be present and which implementation to use
+profiles:
+
+  # Profile: ddprof enabled, tracer disabled
+  ddprof_only:
+    description: "Datadog profiler enabled, tracer disabled"
+    matches:
+      dd.profiling.ddprof.enabled: true
+      dd.trace.enabled: false
+    expected_events:
+      cpu_profiling:
+        implementation: datadog
+        required: true
+        min_count_formula: "2 * test_duration * threshold_multiplier"
+        min_threads: 3
+      allocation_profiling:
+        implementation: datadog
+        required: false  # May be disabled
+        min_count_formula: "10 * test_duration * threshold_multiplier"
+      thread_stats:
+        implementation: jdk
+        required: false  # JDK-version dependent
+    unexpected_events:
+      - "jdk.ExecutionSample"
+      - "jdk.ObjectAllocationSample"
+      - "datadog.EndpointEvent"
+
+  # Profile: ddprof enabled, tracer enabled
+  ddprof_with_tracer:
+    description: "Datadog profiler and tracer both enabled"
+    matches:
+      dd.profiling.ddprof.enabled: true
+      dd.trace.enabled: true
+    expected_events:
+      cpu_profiling:
+        implementation: datadog
+        required: true
+        min_count_formula: "2 * test_duration * threshold_multiplier"
+        min_threads: 3
+      allocation_profiling:
+        implementation: datadog
+        required: false
+        min_count_formula: "10 * test_duration * threshold_multiplier"
+      endpoint_events:
+        implementation: datadog
+        required: true
+        min_count: 1
+      thread_stats:
+        implementation: jdk
+        required: false
+    unexpected_events:
+      - "jdk.ExecutionSample"
+      - "jdk.ObjectAllocationSample"
+
+  # Profile: ddprof disabled (fallback to JDK events)
+  jdk_fallback:
+    description: "Datadog profiler disabled, using JDK profiling"
+    matches:
+      dd.profiling.ddprof.enabled: false
+    expected_events:
+      cpu_profiling:
+        implementation: jdk
+        required: true
+        min_count_formula: "2 * test_duration * threshold_multiplier"
+        min_threads: 3
+      allocation_profiling:
+        implementation: jdk
+        required: false
+        min_count_formula: "10 * test_duration * threshold_multiplier"
+      thread_stats:
+        implementation: jdk
+        required: false
+    unexpected_events:
+      - "datadog.ExecutionSample"
+      - "datadog.ObjectSample"
+      - "datadog.EndpointEvent"
+
+  # Profile: Auto-detect (current behavior - accept either)
+  auto_detect:
+    description: "Auto-detect profiler implementation (for compatibility)"
+    matches:
+      auto: true
+    expected_events:
+      cpu_profiling:
+        implementation: any  # Accept jdk or datadog
+        required: true
+        min_count_formula: "2 * test_duration * threshold_multiplier"
+        min_threads: 3
+      allocation_profiling:
+        implementation: any
+        required: false
+        min_count_formula: "10 * test_duration * threshold_multiplier"
+      thread_stats:
+        implementation: jdk
+        required: false
+    unexpected_events: []  # Don't fail on unexpected events
+
+# Threshold multipliers (REFERENCE ONLY)
+# ========================================
+# SINGLE SOURCE OF TRUTH: validate-jfr-conformance.sh
+# This section is documentation only. The bash script calculates actual
+# thresholds and passes them to validate-jfr.jfrs. Do not duplicate logic.
+# ========================================
+#
+# Multipliers are combined as: platform_arch * libc * jvm
+multipliers:
+  platform_arch:
+    x64: 1.0
+    arm64: 0.5          # ARM64 emulation has lower sampling rates
+  libc:
+    glibc: 1.0
+    musl: 0.15          # Docker-on-runner overhead + Alpine scheduler differences
+  jvm:
+    hotspot: 1.0
+    openj9: 0.3         # Significantly fewer samples due to different JIT behavior
+  combined_formula: "platform_arch * libc * jvm"
+  # Worst case (arm64-musl-openj9): 0.5 * 0.15 * 0.3 = 0.0225 (2.25% of baseline)
+
+# Test duration scaling
+# Events scale linearly with test duration
+duration_scaling:
+  base_duration: 60  # seconds
+  cpu_samples_per_second: 2
+  allocation_samples_per_second: 10
