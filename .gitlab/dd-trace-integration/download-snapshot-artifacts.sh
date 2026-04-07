@@ -245,12 +245,16 @@ else
   log_info "ddprof: skipping (using existing artifact)"
 fi
 
+# Run Maven from a temp dir to avoid picking up the Gradle project's pom.xml (or a stale empty one)
+MVN_WORK_DIR=$(mktemp -d)
+trap "rm -rf ${MVN_WORK_DIR}" EXIT
+
 # Download dd-java-agent
 log_info "Downloading dd-java-agent:${DD_TRACE_VERSION}..."
-if mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
+if (cd "${MVN_WORK_DIR}" && mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
     -DrepoUrl="${SNAPSHOT_REPO}" \
     -Dartifact="com.datadoghq:dd-java-agent:${DD_TRACE_VERSION}" \
-    -q > /tmp/mvn-dd-trace.log 2>&1; then
+    -q > /tmp/mvn-dd-trace.log 2>&1); then
   log_info "Successfully downloaded dd-java-agent"
 else
   log_error "Failed to download dd-java-agent"
@@ -262,10 +266,10 @@ fi
 # Download ddprof (skip if --skip-ddprof flag is set)
 if [ "${SKIP_DDPROF}" = "false" ]; then
   log_info "Downloading ddprof:${DDPROF_VERSION}..."
-  if mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
+  if (cd "${MVN_WORK_DIR}" && mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
       -DrepoUrl="${SNAPSHOT_REPO}" \
       -Dartifact="com.datadoghq:ddprof:${DDPROF_VERSION}" \
-      -q > /tmp/mvn-ddprof.log 2>&1; then
+      -q > /tmp/mvn-ddprof.log 2>&1); then
     log_info "Successfully downloaded ddprof"
   else
     log_error "Failed to download ddprof"
