@@ -35,7 +35,7 @@ RESULTS_BASE="${RESULTS_BASE:-${PROJECT_ROOT}/integration-test-results}"
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 PIPELINE_ID="${CI_PIPELINE_ID:-0}"
 PIPELINE_URL="${CI_PIPELINE_URL:-#}"
-DDPROF_BRANCH="${DDPROF_COMMIT_BRANCH:-${CI_COMMIT_BRANCH:-main}}"
+DDPROF_BRANCH="${DDPROF_COMMIT_BRANCH:-main}"
 DDPROF_SHA="${DDPROF_COMMIT_SHA:-$(cat "${PROJECT_ROOT}/ddprof-commit-sha.txt" 2>/dev/null || echo unknown)}"
 
 # Read version from version.txt if available
