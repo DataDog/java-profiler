@@ -1,0 +1,37 @@
+# Octo-STS Trust Policy for Image Update PRs
+#
+# This is a DOCUMENTATION COPY of the policy that should be created in the
+# GitHub repository: DataDog/async-profiler-build
+#
+# Location in GitHub repo: .github/chainguard/update-images.sts.yaml
+#
+# PURPOSE:
+# This policy allows the GitLab CI check-image-updates job to:
+# - Push branches to the repository
+# - Create pull requests for image updates
+#
+# BOOTSTRAP:
+# On first run, the create-image-update-pr.sh script will automatically
+# include this policy file in the PR if it doesn't exist. After merging
+# that first PR, subsequent runs will use Octo-STS for authentication.
+#
+# For the bootstrap run, set GITHUB_TOKEN as a CI variable with a
+# personal access token that has 'repo' scope.
+#
+# DOCUMENTATION:
+# - Octo-STS: https://edu.chainguard.dev/open-source/octo-sts/
+# - GitLab OIDC: https://docs.gitlab.com/ee/ci/secrets/id_token_authentication.html
+
+# GitLab OIDC issuer
+issuer: https://gitlab.ddbuild.io
+
+# Match GitLab CI jobs from the async-profiler-build project
+# The scheduled job runs on main, but we allow any branch for manual triggers
+subject_pattern: project_path:DataDog/apm-reliability/async-profiler-build:ref_type:branch:ref:.*
+
+# GitHub API permissions
+permissions:
+  # Required to push branches
+  contents: write
+  # Required to create PRs
+  pull_requests: write

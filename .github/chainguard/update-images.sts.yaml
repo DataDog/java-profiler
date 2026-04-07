@@ -1,0 +1,17 @@
+# Octo-STS Trust Policy for Image Update PRs
+#
+# Allows the GitLab CI check-image-updates and rebuild-images-pr jobs to push
+# branches and create pull requests for CI image reference updates.
+#
+# Referenced by: scripts/create-image-update-pr.sh (OCTO_STS_POLICY=update-images)
+
+# GitLab OIDC issuer
+issuer: https://gitlab.ddbuild.io
+
+# Match GitLab CI jobs from the async-profiler-build project on any branch
+subject_pattern: project_path:DataDog/java-profiler:ref_type:branch:ref:.*
+
+# GitHub API permissions
+permissions:
+  contents: write
+  pull_requests: write
