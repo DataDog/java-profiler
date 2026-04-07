@@ -26,7 +26,7 @@ class ProfiledThread;
 /**
  * Unified context API for trace/span context storage.
  *
- * Uses OTEP #4947 TLS pointer (custom_labels_current_set_v2) for all
+ * Uses OTEP #4947 TLS pointer (otel_thread_ctx_v1) for all
  * context reads and writes. The OTEP record is embedded in ProfiledThread
  * and discovered by external profilers via ELF dynsym.
  */

@@ -38,7 +38,7 @@ void ContextApi::initializeContextTLS(ProfiledThread* thrd) {
     // This first write triggers musl's TLS slot initialization (see above).
     // The pointer remains stable for the thread's lifetime; external profilers
     // rely solely on the valid flag for consistency, not pointer nullness.
-    custom_labels_current_set_v2 = thrd->getOtelContextRecord();
+    otel_thread_ctx_v1 = thrd->getOtelContextRecord();
     thrd->markContextInitialized();
 }
 

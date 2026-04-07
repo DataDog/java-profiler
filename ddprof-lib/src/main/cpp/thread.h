@@ -55,7 +55,7 @@ private:
 
   u64 _pc;
   u64 _sp;
-  u64 _span_id;
+  u64 _span_id;  // Wall-clock collapsing cache: last-seen span ID (not a context store — read from _otel_ctx_record on each signal, cached here to detect "same as last time")
   volatile u32 _crash_depth;
   int _buffer_pos;
   int _tid;

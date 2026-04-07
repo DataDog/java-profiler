@@ -337,7 +337,7 @@ public final class JavaProfiler {
 
     /**
      * Initializes context TLS for the current thread and returns 2 DirectByteBuffers.
-     * Sets custom_labels_current_set_v2 permanently to the thread's OtelThreadContextRecord.
+     * Sets otel_thread_ctx_v1 permanently to the thread's OtelThreadContextRecord.
      *
      * @param metadata output array filled with:
      *   [0] VALID_OFFSET — offset of 'valid' field in the record

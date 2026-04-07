@@ -18,7 +18,7 @@ paths read this context concurrently:
    root-span ID from the sidecar buffer, and span ID from the OTEL record
    (ignores trace ID)
 2. **External OTEP-compliant profilers** — discover the
-   `custom_labels_current_set_v2` TLS symbol via ELF dynsym and read
+   `otel_thread_ctx_v1` TLS symbol via ELF dynsym and read
    the `OtelThreadContextRecord` directly.
 
 All writes from Java are zero-JNI on the hot path (cache-hit case),
@@ -137,7 +137,7 @@ For benchmark data, see
 │  OtelContexts (otel_context.cpp)                                    │
 │    └─ getSpanId(record, &spanId) — acquire load of valid flag       │
 │                                                                     │
-│  custom_labels_current_set_v2 (thread_local, DLLEXPORT)             │
+│  otel_thread_ctx_v1 (thread_local, DLLEXPORT)             │
 │    └─ OTEP #4947 TLS pointer for external profiler discovery        │
 │                                                                     │
 │  Recording::writeCurrentContext(Buffer*)  (signal handler)           │
@@ -208,7 +208,7 @@ Java-side mutation:
 1. **SIGPROF signal handler** — interrupts the writing thread
    mid-sequence, runs on the same thread.
 2. **External OTEP profiler** — reads from a different thread via the
-   `custom_labels_current_set_v2` TLS pointer.
+   `otel_thread_ctx_v1` TLS pointer.
 
 Both must see either a complete old state or a complete new state, never
 a partially-written record.
@@ -273,7 +273,7 @@ as 1.
 
 External profilers follow the OTEP #4947 protocol:
 
-1. Discover `custom_labels_current_set_v2` via ELF `dlsym`.
+1. Discover `otel_thread_ctx_v1` via ELF `dlsym`.
 2. Read the `OtelThreadContextRecord*` pointer. The pointer is set
    permanently at thread init and is never null after that point.
 3. Check `valid == 1`. If not, the record is being updated — skip.
@@ -281,40 +281,40 @@ External profilers follow the OTEP #4947 protocol:
 
 ## Memory Ordering
 
-### Why Same-Thread Needs Barriers
+### Why Barriers Are Needed
 
-Even though the signal handler runs on the same thread as the writer,
-barriers are essential:
+Both consumers (signal handler and external OTEP profiler) are subject
+to **compiler reordering only** — neither experiences CPU store-buffer
+reordering when reading:
 
-1. **Compiler reordering** — the JIT compiler may reorder stores
-   arbitrarily. A signal handler running on the same thread will never
-   observe CPU-level store-buffer reordering (the CPU always presents
-   its own stores in program order to itself), but it *will* observe
-   any reordering introduced by the compiler. `storeFence` acts as a
-   compiler barrier that prevents the JIT from sinking stores past it.
-2. **Cross-thread reads** — the external OTEP profiler reads from a
-   different thread. Here both compiler *and* CPU reordering matter,
-   requiring release/acquire pairing. On ARM, `storeFence` compiles to
-   `DMB ISHST`, providing the hardware store-store barrier needed for
-   cross-thread visibility.
+- The **signal handler** runs on the same thread as the writer. Same-thread
+  execution guarantees that the CPU presents its own stores in program order,
+  so only compiler reordering is a concern.
+- The **external OTEP profiler** (e.g. eBPF) reads user-space TLS memory from kernel
+  context via a perf event eBPF probe. The thread is paused at the sample point by
+  the kernel, so the CPU has already committed all prior stores from that thread.
+  Only compiler reordering is a concern here too.
+
+In both cases `storeFence` is a compiler barrier that prevents the JIT from
+sinking record field writes past the `valid=1` store. On ARM it also emits
+`DMB ISHST` as a side effect, but correctness does not depend on the hardware
+ordering — same-thread CPU visibility makes that unnecessary.
 
 ### Barrier Taxonomy
 
 | Operation | Java 8 | Java 9+ | ARM | x86 |
 |-----------|--------|---------|-----|-----|
-| `writeOrderedLong` | `Unsafe.putOrderedLong` | `VarHandle.setRelease` | STR + DMB ISHST | MOV + compiler barrier |
 | `storeFence` | `Unsafe.storeFence` | `VarHandle.storeStoreFence` | DMB ISHST (~2 ns) | compiler barrier (free) |
 
-On x86, `storeFence` compiles to a no-op at the hardware level (TSO
-provides free store-store ordering); it remains a compiler barrier. On
-ARM, it compiles to `DMB ISHST` (~2 ns).
+On x86, `storeFence` is a compiler-only barrier (TSO guarantees hardware
+store ordering for free). On ARM it compiles to `DMB ISHST` (~2 ns).
 
 ### Why storeFence, Not fullFence
 
-The detach/attach protocol only needs store-store ordering — all
-operations are writes (to the record and the valid flag). There are no
-load-dependent ordering requirements on the writer side. `storeFence`
-costs ~2 ns on ARM vs ~50 ns for `fullFence`.
+The detach/attach protocol only requires store-store ordering — all
+operations on the hot path are writes. There are no load-dependent
+ordering requirements on the writer side. `storeFence` (~2 ns on ARM)
+is sufficient; a full fence (~50 ns on ARM) would be wasteful.
 
 ## Initialization
 
@@ -332,7 +332,7 @@ return new ThreadContext(buffers[0], buffers[1], metadata);
 The native `initializeContextTLS0` (in `javaApi.cpp`):
 
 1. Gets the calling thread's `ProfiledThread` (creates one if needed).
-2. Sets `custom_labels_current_set_v2` permanently to the thread's
+2. Sets `otel_thread_ctx_v1` permanently to the thread's
    `OtelThreadContextRecord` (triggering TLS slot init on musl).
 3. Fills the `metadata` array with field offsets (computed via
    `offsetof`), so Java code writes to the correct positions regardless
@@ -494,7 +494,7 @@ Full benchmark data and analysis:
 ## OTEP References
 
 - [OTEP #4947 — Profiling Signal Conventions](https://github.com/open-telemetry/oteps/pull/4947):
-  Defines the `custom_labels_current_set_v2` TLS symbol, the
+  Defines the `otel_thread_ctx_v1` TLS symbol, the
   `OtelThreadContextRecord` struct layout, and the publication protocol
   (valid flag + TLS pointer atomics).
 - [OpenTelemetry Profiling SIG](https://github.com/open-telemetry/opentelemetry-specification/tree/main/specification/profiles):

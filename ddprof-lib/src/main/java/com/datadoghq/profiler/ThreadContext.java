@@ -279,7 +279,7 @@ public final class ThreadContext {
 
         // Update LRS sidecar and OTEP attrs_data inside the detach/attach window so a
         // signal handler never sees the new LRS with old trace/span IDs.
-        BUFFER_WRITER.writeOrderedLong(sidecarBuffer, lrsSidecarOffset, localRootSpanId);
+        sidecarBuffer.putLong(lrsSidecarOffset, localRootSpanId);
         writeLrsHex(localRootSpanId);
 
         attach();
@@ -301,7 +301,7 @@ public final class ThreadContext {
         for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
             sidecarBuffer.putInt(i * Integer.BYTES, 0);
         }
-        BUFFER_WRITER.writeOrderedLong(sidecarBuffer, lrsSidecarOffset, 0);
+        sidecarBuffer.putLong(lrsSidecarOffset, 0);
     }
 
     /**
@@ -331,7 +331,7 @@ public final class ThreadContext {
     /** Validate record. */
     private void attach() {
         // storeFence ensures all record writes are visible before valid=1.
-        // The TLS pointer (custom_labels_current_set_v2) is permanent and never
+        // The TLS pointer (otel_thread_ctx_v1) is permanent and never
         // written here; external profilers rely solely on the valid flag.
         BUFFER_WRITER.storeFence();
         // Plain put is sufficient: signal handlers run on the same hardware thread,

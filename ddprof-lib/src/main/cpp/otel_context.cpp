@@ -16,12 +16,11 @@
 
 #include <cassert>
 #include "otel_context.h"
-#include "thread.h"
 
 // OTEP #4947 TLS pointer — visible in dynsym for external profiler discovery
-DLLEXPORT thread_local OtelThreadContextRecord* custom_labels_current_set_v2 = nullptr;
+DLLEXPORT thread_local OtelThreadContextRecord* otel_thread_ctx_v1 = nullptr;
 
-u64 OtelContexts::bytesToU64(const uint8_t* in) {
+static u64 bytesToU64(const uint8_t* in) {
     u64 val = 0;
     for (int i = 0; i < 8; i++) {
         val = (val << 8) | in[i];

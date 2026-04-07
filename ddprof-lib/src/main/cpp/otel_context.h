@@ -46,7 +46,7 @@ static const int OTEL_MAX_ATTRS_DATA_SIZE = OTEL_MAX_RECORD_SIZE - OTEL_HEADER_S
  *   value:     uint8[length] — UTF-8 value bytes
  *
  * Discovery: external profilers find the TLS pointer
- * custom_labels_current_set_v2 via ELF dynsym table.
+ * otel_thread_ctx_v1 via ELF dynsym table.
  */
 struct __attribute__((packed)) OtelThreadContextRecord {
     uint8_t  trace_id[16];
@@ -58,18 +58,18 @@ struct __attribute__((packed)) OtelThreadContextRecord {
 };
 
 // OTEP #4947 TLS pointer — MUST appear in dynsym for external profiler discovery
-DLLEXPORT extern thread_local OtelThreadContextRecord* custom_labels_current_set_v2;
+DLLEXPORT extern thread_local OtelThreadContextRecord* otel_thread_ctx_v1;
 
 /**
  * OTEL context storage manager (OTEP #4947 TLS pointer model).
  *
  * Each thread gets a pre-allocated OtelThreadContextRecord cached in
- * ProfiledThread. The TLS pointer custom_labels_current_set_v2 is set
+ * ProfiledThread. The TLS pointer otel_thread_ctx_v1 is set
  * permanently to the record during thread initialization and never nulled.
  * Context activity is indicated solely by the valid flag in the record.
  *
  * Signal safety: signal handlers must never access
- * custom_labels_current_set_v2 directly (TLS lazy init can deadlock
+ * otel_thread_ctx_v1 directly (TLS lazy init can deadlock
  * in musl). Instead they read via ProfiledThread::getOtelContextRecord().
  */
 class OtelContexts {
@@ -80,9 +80,6 @@ public:
      * Returns false if the record is invalid (being mutated). record must not be null.
      */
     static bool getSpanId(OtelThreadContextRecord* record, u64& span_id);
-
-    // Byte conversion helper (big-endian, W3C trace context)
-    static u64 bytesToU64(const uint8_t* in);
 };
 
 #endif /* _OTEL_CONTEXT_H */

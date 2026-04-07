@@ -49,11 +49,6 @@ public final class BufferWriter8 implements BufferWriter.Impl {
     }
 
     @Override
-    public void fullFence() {
-        UNSAFE.fullFence();
-    }
-
-    @Override
     public void storeFence() {
         UNSAFE.storeFence();
     }

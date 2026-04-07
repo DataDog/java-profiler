@@ -75,27 +75,11 @@ public class OtelContextStorageModeTest {
         assertEquals("55556666777788889999aaaabbbbcccc", ctx.readTraceId(), "TraceId should match");
     }
 
-    /**
-     * Tests that clearing context sets values back to zero.
-     */
-    @Test
-    public void testOtelModeClearContext() throws Exception {
-        Path jfrFile = Files.createTempFile("otel-ctx-clear", ".jfr");
-
-        profiler.execute(String.format("start,cpu=1ms,attributes=tag1;tag2;tag3,jfr,file=%s", jfrFile.toAbsolutePath()));
-        profilerStarted = true;
-
-        profiler.setContext(0xCAFEBABEL, 0xDEADBEEFL, 0L, 0x12345678L);
-        profiler.clearContext();
-
-        ThreadContext ctx = profiler.getThreadContext();
-        assertEquals(0, ctx.getSpanId(), "SpanId should be zero after clear");
-        assertEquals(0, ctx.getRootSpanId(), "RootSpanId should be zero after clear");
-    }
 
     /**
-     * Tests that custom attributes round-trip correctly.
-     * Registers attribute keys, sets values via setContextAttribute.
+     * Tests that custom attributes are correctly written to and read back from
+     * the OTEP record's attrs_data (via DirectByteBuffer). Verifies the
+     * sidecar encoding is set and the UTF-8 value appears in attrs_data.
      */
     @Test
     public void testOtelModeCustomAttributes() throws Exception {
@@ -157,16 +141,11 @@ public class OtelContextStorageModeTest {
         assertTrue(ctx.setContextAttribute(3, "short"), "Short attr after overflow should work");
     }
 
-    @Test
-    public void testMaxValueContext() {
-        long maxValue = Long.MAX_VALUE;
-        profiler.setContext(maxValue, maxValue, 0, maxValue);
-
-        ThreadContext ctx = profiler.getThreadContext();
-        assertEquals(maxValue, ctx.getSpanId(), "SpanId should be MAX_VALUE");
-        assertEquals(maxValue, ctx.getRootSpanId(), "RootSpanId should be MAX_VALUE");
-    }
-
+    /**
+     * Tests sequential context updates including boundary values and clearing.
+     * Verifies that each setContext overwrites the previous values, that MAX_VALUE
+     * round-trips correctly, and that clearContext resets both IDs to zero.
+     */
     @Test
     public void testSequentialContextUpdates() {
         profiler.setContext(2L, 1L, 0, 1L);
@@ -180,6 +159,15 @@ public class OtelContextStorageModeTest {
         profiler.setContext(200L, 100L, 0, 100L);
         assertEquals(100L, profiler.getThreadContext().getSpanId());
         assertEquals(200L, profiler.getThreadContext().getRootSpanId());
+
+        long maxValue = Long.MAX_VALUE;
+        profiler.setContext(maxValue, maxValue, 0, maxValue);
+        assertEquals(maxValue, profiler.getThreadContext().getSpanId(), "SpanId should be MAX_VALUE");
+        assertEquals(maxValue, profiler.getThreadContext().getRootSpanId(), "RootSpanId should be MAX_VALUE");
+
+        profiler.clearContext();
+        assertEquals(0, profiler.getThreadContext().getSpanId(), "SpanId should be zero after clear");
+        assertEquals(0, profiler.getThreadContext().getRootSpanId(), "RootSpanId should be zero after clear");
     }
 
     @Test

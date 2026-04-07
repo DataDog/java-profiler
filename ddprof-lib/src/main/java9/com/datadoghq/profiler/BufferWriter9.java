@@ -50,11 +50,6 @@ public final class BufferWriter9 implements BufferWriter.Impl {
     }
 
     @Override
-    public void fullFence() {
-        VarHandle.fullFence();
-    }
-
-    @Override
     public void storeFence() {
         VarHandle.storeStoreFence();
     }

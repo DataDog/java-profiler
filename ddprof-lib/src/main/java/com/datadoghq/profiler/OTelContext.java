@@ -235,7 +235,7 @@ public final class OTelContext {
      * @param keys Attribute key names (e.g. "http.route", "db.system")
      */
     public void registerAttributeKeys(String... keys) {
-        if (!libraryLoadResult.succeeded || keys == null) {
+        if (!libraryLoadResult.succeeded) {
             return;
         }
         registerAttributeKeys0(keys);

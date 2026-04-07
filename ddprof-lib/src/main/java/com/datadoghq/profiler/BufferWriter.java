@@ -91,15 +91,6 @@ public final class BufferWriter {
         void writeInt(ByteBuffer buffer, int offset, int value);
 
         /**
-         * Executes a full memory fence (barrier).
-         *
-         * <p>A full fence prevents reordering of any memory operations across the fence boundary.
-         * Operations before the fence will complete before any operations after the fence begin.
-         * This is equivalent to calling both a load fence and a store fence.
-         */
-        void fullFence();
-
-        /**
          * Executes a store-store memory fence.
          *
          * <p>Ensures that stores before the fence are visible before stores after it.
@@ -175,16 +166,6 @@ public final class BufferWriter {
      */
     public void writeOrderedInt(ByteBuffer buffer, int offset, int value) {
         impl.writeInt(buffer, offset, value);
-    }
-
-    /**
-     * Executes a full memory fence (barrier).
-     *
-     * <p>A full fence prevents reordering of any memory operations across the fence boundary.
-     * Used in the OTEP publication protocol between invalidate and validate steps.
-     */
-    public void fullFence() {
-        impl.fullFence();
     }
 
     /**

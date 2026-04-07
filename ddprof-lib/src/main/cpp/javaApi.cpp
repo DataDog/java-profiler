@@ -543,8 +543,6 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jcla
 
   // Fill metadata[6]: [VALID_OFFSET, TRACE_ID_OFFSET, SPAN_ID_OFFSET,
   //                    ATTRS_DATA_SIZE_OFFSET, ATTRS_DATA_OFFSET, LRS_SIDECAR_OFFSET]
-  // Note: recordAddress is no longer needed — the TLS pointer is set permanently in
-  // initializeContextTLS() and is never written from Java.
   if (metadata != nullptr && env->GetArrayLength(metadata) >= 6) {
     jlong meta[6];
     meta[0] = (jlong)offsetof(OtelThreadContextRecord, valid);
