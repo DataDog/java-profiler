@@ -172,7 +172,7 @@ public final class BufferWriter {
      * Executes a store-store memory fence.
      *
      * <p>Ensures stores before the fence are globally visible before stores after it.
-     * Cheaper than {@link #fullFence()} on weakly-ordered architectures (ARM).
+     * On ARM this emits DMB ISHST (~2 ns); on x86 it is a compiler-only barrier.
      */
     public void storeFence() {
         impl.storeFence();
