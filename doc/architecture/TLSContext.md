@@ -69,7 +69,7 @@ For benchmark data, see
 │  │     recordBuffer.putLong(spanIdOffset, reverseBytes(spanId))  │  │
 │  │  3. sidecar[0..9] ← 0                                         │  │
 │  │     attrs_data_size ← LRS_ENTRY_SIZE (keeps fixed LRS at [0]) │  │
-│  │  4. writeOrderedLong(sidecarBuffer, lrsSidecarOffset, lrs)    │  │
+│  │  4. sidecarBuffer.putLong(lrsSidecarOffset, lrs)              │  │
 │  │     writeLrsHex(lrs) — update fixed LRS entry in attrs_data   │  │
 │  │  5. attach() — storeFence, valid ← 1                          │  │
 │  └───────────────────────────────────────────────────────────────┘  │
@@ -85,8 +85,8 @@ For benchmark data, see
 │  │ │ attrs_data_size(u16) │       │         ▲ (DD signal handler)   │
 │  │ │ attrs_data[612]      │       │  ┌───────────────────────────┐  │
 │  │ └──────────────────────┘       │  │ TLS pointer (8B)          │  │
-│  └────────────────────────────────┘  │ &custom_labels_current_   │  │
-│         ▲                    ▲       │  set_v2                   │  │
+│  └────────────────────────────────┘  │ otel_thread_ctx_v1        │  │
+│         ▲                    ▲       │ (thread_local, DLLEXPORT) │  │
 │         │                    │       └───────────────────────────┘  │
 │  DD signal handler     External OTEP                                │
 │  reads span_id         profiler reads                               │
@@ -112,15 +112,15 @@ For benchmark data, see
 │    ├─ sidecarBuffer (DirectByteBuffer → tag encodings + LRS)         │
 │    ├─ put(lrs, spanId, trHi, trLo)  → setContextDirect()             │
 │    ├─ setContextAttribute(keyIdx, value) → setContextAttributeDirect │
-│    └─ Process-wide caches:                                           │
-│         └─ attrCache[256]: String → {int encoding, byte[] utf8}      │
+│    └─ Per-thread caches:                                             │
+│         └─ attrCache[CACHE_SIZE]: String → {int encoding, byte[] utf8}│
 │                                                                      │
 │  BufferWriter (memory ordering abstraction)                          │
 │    ├─ BufferWriter8  (Java 8:  Unsafe)                               │
-│    │    ├─ putOrderedLong / putLongVolatile                          │
+│    │    ├─ putOrderedLong / putOrderedInt                            │
 │    │    └─ storeFence → Unsafe.storeFence()                          │
 │    └─ BufferWriter9  (Java 9+: VarHandle)                            │
-│         ├─ setRelease / setVolatile                                  │
+│         ├─ setRelease                                                │
 │         └─ storeFence → VarHandle.storeStoreFence()                  │
 └──────────────────────────────────────────────────────────────────────┘
 
@@ -134,15 +134,12 @@ For benchmark data, see
 │    ├─ u64 _otel_local_root_span_id                                  │
 │    └─ bool _otel_ctx_initialized                                    │
 │                                                                     │
-│  OtelContexts (otel_context.cpp)                                    │
-│    └─ getSpanId(record, &spanId) — acquire load of valid flag       │
-│                                                                     │
-│  otel_thread_ctx_v1 (thread_local, DLLEXPORT)             │
+│  otel_thread_ctx_v1 (thread_local, DLLEXPORT)                       │
 │    └─ OTEP #4947 TLS pointer for external profiler discovery        │
 │                                                                     │
 │  Recording::writeCurrentContext(Buffer*)  (signal handler)           │
 │    ├─ ContextApi::get(spanId, rootSpanId)                           │
-│    │    └─ OtelContexts::getSpanId() with acquire fence             │
+│    │    └─ acquire load of valid flag, big-endian decode of span_id │
 │    └─ thrd->getOtelTagEncoding(i) for each attribute                │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -227,7 +224,7 @@ Time 1:  Mutate record fields
            recordBuffer.putLong(spanIdOffset, ...)
            sidecar[0..9] ← 0                                          ← zero tag encodings
            attrs_data_size ← LRS_ENTRY_SIZE  ← keep only fixed LRS entry at attrs_data[0]
-           writeOrderedLong(sidecarBuffer, lrsSidecarOffset, lrs) ← update sidecar LRS
+           sidecarBuffer.putLong(lrsSidecarOffset, lrs)           ← update sidecar LRS
            writeLrsHex(lrs)                                       ← update LRS in attrs_data
 
          ⚡ SIGPROF may arrive here — handler sees valid=0, skips record
@@ -248,6 +245,7 @@ void Recording::writeCurrentContext(Buffer *buf) {
     buf->putVar64(spanId);
     buf->putVar64(rootSpanId);
 
+    size_t numAttrs = Profiler::instance()->numContextAttributes();
     ProfiledThread* thrd = hasContext ? ProfiledThread::currentSignalSafe() : nullptr;
     for (size_t i = 0; i < numAttrs; i++) {
         buf->putVar32(thrd != nullptr ? thrd->getOtelTagEncoding(i) : 0);
@@ -255,14 +253,16 @@ void Recording::writeCurrentContext(Buffer *buf) {
 }
 ```
 
-`ContextApi::get()` calls `OtelContexts::getSpanId()` which performs:
+`ContextApi::get()` performs (context_api.cpp):
 
 ```cpp
-// otel_context.cpp
+OtelThreadContextRecord* record = thrd->getOtelContextRecord();
 if (__atomic_load_n(&record->valid, __ATOMIC_ACQUIRE) != 1) {
     return false;  // record is being mutated — emit zeros
 }
-span_id = bytesToU64(record->span_id);
+u64 val = 0;
+for (int i = 0; i < 8; i++) { val = (val << 8) | record->span_id[i]; }
+span_id = val;
 ```
 
 The acquire fence pairs with the writer's `storeFence` + `valid=1`
@@ -376,8 +376,7 @@ encoding = registerConstant0(value);  // JNI → Dictionary lookup
 utf8 = value.getBytes(UTF_8);        // one allocation, cached
 attrCacheEncodings[slot] = encoding;
 attrCacheBytes[slot] = utf8;
-BUFFER_WRITER.storeFence();           // publish data before key
-attrCacheKeys[slot] = value;          // commit
+attrCacheKeys[slot] = value;          // cache is per-thread; no fence needed
 ```
 
 `registerConstant0` crosses JNI once to register the value in the
