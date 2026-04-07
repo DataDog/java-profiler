@@ -80,10 +80,8 @@ private:
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _otel_ctx_initialized(false), _crash_protection_active(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
 
-  ~ProfiledThread() = default;
-  void releaseFromBuffer();
-
   virtual ~ProfiledThread() { }
+  void releaseFromBuffer();
 public:
   static ProfiledThread *forTid(int tid) { return new ProfiledThread(-1, tid); }
   static ProfiledThread *inBuffer(int buffer_pos) {
