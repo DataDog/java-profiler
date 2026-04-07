@@ -37,7 +37,7 @@ echo "com.datadoghq:ddprof:${LIB_VERSION}" > version.txt
 # Assemble task (always needed for artifact creation)
 if [ "$MODE" = "assemble" ] || [ "$MODE" = "all" ]; then
   echo "=== Assembling artifact ==="
-  ./gradlew -Pskip-native -Pskip-tests -Pddprof_version="${LIB_VERSION}" -PbuildInfo.build.number=$CI_JOB_ID -Pwith-libs="$(pwd)/libs" :ddprof-lib:jar assembleAll --exclude-task compileFuzzer --max-workers=1 --no-build-cache --stacktrace --info --no-watch-fs --no-daemon
+  ./gradlew -Pskip-native -Pskip-tests -Pddprof_version="${LIB_VERSION}" -PbuildInfo.build.number=$CI_JOB_ID -Pwith-libs="$(pwd)/libs" :ddprof-lib:jar assembleAll --exclude-task compileFuzzer --exclude-task sign --max-workers=1 --no-build-cache --stacktrace --info --no-watch-fs --no-daemon
 fi
 
 # Publish task (only when publishing to Maven Central)
