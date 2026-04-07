@@ -13,7 +13,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="${SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${SCRIPT_DIR}/../.."
 REPORTS_DIR="${1:-${PROJECT_ROOT}/reports}"
 export MAX_HISTORY=10
 
@@ -120,11 +120,11 @@ mkdir -p _data integration benchmarks reliability
 log_info "Updating benchmark test history..."
 
 # Generate run JSON for this pipeline
-if "${SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if "${SCRIPT_DIR}/generate-run-json.sh" "${REPORTS_DIR}" > "${RUN_JSON_FILE}" 2>/dev/null; then
   log_info "Generated run JSON"
 
   # Update history (prepend new run, keep last MAX_HISTORY)
-  if "${SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if "${SCRIPT_DIR}/../common/update-history.sh" benchmarks "${RUN_JSON_FILE}" "." 2>/dev/null; then
     log_info "Updated benchmark history"
   else
     log_warn "Failed to update history"
@@ -135,14 +135,14 @@ fi
 
 # Generate dashboard and index pages
 log_info "Generating dashboard..."
-if "${SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if "${SCRIPT_DIR}/../common/generate-dashboard.sh" "." 2>&1; then
   log_info "Generated dashboard index.md"
 else
   log_warn "Failed to generate dashboard"
 fi
 
 log_info "Generating benchmark index..."
-if "${SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if "${SCRIPT_DIR}/../common/generate-index.sh" benchmarks "." 2>/dev/null; then
   log_info "Generated benchmarks/index.md"
 else
   log_warn "Failed to generate benchmark index"

@@ -343,7 +343,7 @@ fi
 # ========================================
 log_info "Compiling test application..."
 
-TEST_APP_SRC="${PROJECT_ROOT}/.gitlab/test-apps/ProfilerTestApp.java"
+TEST_APP_SRC="${PROJECT_ROOT}/test-apps/ProfilerTestApp.java"
 TEST_APP_DIR="/tmp/test-app-$$"
 
 if [ ! -f "${TEST_APP_SRC}" ]; then
