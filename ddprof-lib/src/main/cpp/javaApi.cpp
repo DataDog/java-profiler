@@ -19,6 +19,8 @@
 
 #include "arch.h"
 #include "context.h"
+#include "context_api.h"
+#include "guards.h"
 #include "counters.h"
 #include "common.h"
 #include "engine.h"
@@ -136,9 +138,7 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
   ProfiledThread *current = ProfiledThread::current();
-  if (unlikely(current == nullptr)) {
-    return;
-  }
+  assert(current != nullptr);
   int tid = current->tid();
   if (unlikely(tid < 0)) {
     return;
@@ -165,9 +165,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
   ProfiledThread *current = ProfiledThread::current();
-  if (unlikely(current == nullptr)) {
-    return;
-  }
+  assert(current != nullptr);
   int tid = current->tid();
   if (unlikely(tid < 0)) {
     return;
@@ -218,16 +216,6 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
     Profiler::instance()->recordTraceRoot(tid, &event);
   }
   return acceptValue;
-}
-
-extern "C" DLLEXPORT jint JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_registerConstant0(JNIEnv *env,
-                                                           jclass unused,
-                                                           jstring value) {
-  JniString value_str(env, value);
-  u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
-      value_str.c_str(), value_str.length(), 1 << 16);
-  return encoding == INT_MAX ? -1 : encoding;
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -470,7 +458,7 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
     .telemetry_sdk_name = "dd-trace-java",
     .resource_attributes = host_name_attrs,
     .extra_attributes = NULL,
-    .thread_ctx_config = NULL
+    .thread_ctx_config = NULL  // Set later by ContextApi::registerAttributeKeys() when keys are known
   };
 
   otel_process_ctx_result result = otel_process_ctx_publish(&data);
@@ -542,38 +530,83 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
 #endif
 }
 
-extern "C" DLLEXPORT jobject JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_initializeContextTls0(JNIEnv* env, jclass unused, jintArray offsets) {
-  Context& ctx = Contexts::initializeContextTls();
+extern "C" DLLEXPORT jobjectArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jclass unused, jlongArray metadata) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  assert(thrd != nullptr);
 
-  // Populate offsets array with actual struct field offsets
-  if (offsets != nullptr) {
-    jint offsetValues[4];
-    offsetValues[0] = (jint)offsetof(Context, spanId);
-    offsetValues[1] = (jint)offsetof(Context, rootSpanId);
-    offsetValues[2] = (jint)offsetof(Context, checksum);
-    offsetValues[3] = (jint)offsetof(Context, tags);
-    env->SetIntArrayRegion(offsets, 0, 4, offsetValues);
+  if (!thrd->isContextInitialized()) {
+    ContextApi::initializeContextTLS(thrd);
   }
 
-  return env->NewDirectByteBuffer((void *)&ctx, (jlong)sizeof(Context));
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+
+  // Fill metadata[6]: [VALID_OFFSET, TRACE_ID_OFFSET, SPAN_ID_OFFSET,
+  //                    ATTRS_DATA_SIZE_OFFSET, ATTRS_DATA_OFFSET, LRS_SIDECAR_OFFSET]
+  if (metadata != nullptr && env->GetArrayLength(metadata) >= 6) {
+    jlong meta[6];
+    meta[0] = (jlong)offsetof(OtelThreadContextRecord, valid);
+    meta[1] = (jlong)offsetof(OtelThreadContextRecord, trace_id);
+    meta[2] = (jlong)offsetof(OtelThreadContextRecord, span_id);
+    meta[3] = (jlong)offsetof(OtelThreadContextRecord, attrs_data_size);
+    meta[4] = (jlong)offsetof(OtelThreadContextRecord, attrs_data);
+    meta[5] = (jlong)(DD_TAGS_CAPACITY * sizeof(u32)); // LRS sidecar offset in sidecar buffer
+    env->SetLongArrayRegion(metadata, 0, 6, meta);
+  }
+
+  // Create 2 DirectByteBuffers: [record, sidecar]
+  jclass bbClass = env->FindClass("java/nio/ByteBuffer");
+  jobjectArray result = env->NewObjectArray(2, bbClass, nullptr);
+
+  // recordBuffer: 640 bytes over the OtelThreadContextRecord
+  jobject recordBuf = env->NewDirectByteBuffer((void*)record, (jlong)OTEL_MAX_RECORD_SIZE);
+  env->SetObjectArrayElement(result, 0, recordBuf);
+
+  // sidecarBuffer: covers _otel_tag_encodings[DD_TAGS_CAPACITY] + _otel_local_root_span_id (contiguous)
+  static_assert(DD_TAGS_CAPACITY * sizeof(u32) % alignof(u64) == 0,
+      "tag encodings array size must be aligned to u64 for contiguous sidecar layout");
+  size_t sidecarSize = DD_TAGS_CAPACITY * sizeof(u32) + sizeof(u64);
+  jobject sidecarBuf = env->NewDirectByteBuffer((void*)thrd->getOtelTagEncodingsPtr(), (jlong)sidecarSize);
+  env->SetObjectArrayElement(result, 1, sidecarBuf);
+
+  return result;
 }
 
-extern "C" DLLEXPORT jlong JNICALL
-Java_com_datadoghq_profiler_ThreadContext_setContext0(JNIEnv* env, jclass unused, jlong spanId, jlong rootSpanId) {
-  Context& ctx = Contexts::get();
-
-  ctx.spanId = spanId;
-  ctx.rootSpanId = rootSpanId;
-  ctx.checksum = Contexts::checksum(spanId, rootSpanId);
-
-  return ctx.checksum;
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_ThreadContext_registerConstant0(JNIEnv* env, jclass unused, jstring value) {
+  JniString value_str(env, value);
+  u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
+      value_str.c_str(), value_str.length(), 1 << 16);
+  return encoding == INT_MAX ? -1 : encoding;
 }
 
 extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_ThreadContext_setContextSlot0(JNIEnv* env, jclass unused, jint offset, jint value) {
-  Context& ctx = Contexts::get();
-  ctx.tags[offset].value = (u32)value;
+Java_com_datadoghq_profiler_OTelContext_registerAttributeKeys0(JNIEnv* env, jclass unused, jobjectArray keys) {
+  int count = (keys != nullptr) ? env->GetArrayLength(keys) : 0;
+  int n = count < (int)DD_TAGS_CAPACITY ? count : (int)DD_TAGS_CAPACITY;
+  if (count > n) {
+    LOG_WARN("registerAttributeKeys: %d keys requested but capacity is %d; extra keys will be ignored",
+             count, (int)DD_TAGS_CAPACITY);
+  }
+
+  const char* key_ptrs[DD_TAGS_CAPACITY];
+  JniString* jni_strings[DD_TAGS_CAPACITY];
+
+  for (int i = 0; i < n; i++) {
+    jstring jstr = (jstring)env->GetObjectArrayElement(keys, i);
+    if (jstr == nullptr) {
+      for (int j = 0; j < i; j++) delete jni_strings[j];
+      return;
+    }
+    jni_strings[i] = new JniString(env, jstr);
+    key_ptrs[i] = jni_strings[i]->c_str();
+  }
+
+  // Always call registerAttributeKeys even with n==0 so the reserved
+  // datadog.local_root_span_id key (index 0) is published in the process context.
+  ContextApi::registerAttributeKeys(key_ptrs, n);
+
+  for (int i = 0; i < n; i++) delete jni_strings[i];
 }
 
 // ---- test and debug utilities
@@ -586,8 +619,7 @@ Java_com_datadoghq_profiler_JavaProfiler_testlog(JNIEnv* env, jclass unused, jst
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused) {
-#ifdef DEBUG
-  Context& ctx = Contexts::get();
-  TEST_LOG("===> Context: tid:%u, spanId=%llu, rootSpanId=%llu, checksum=%llu", OS::threadId(), ctx.spanId, ctx.rootSpanId, ctx.checksum);
-#endif // DEBUG
+  u64 spanId = 0, rootSpanId = 0;
+  ContextApi::get(spanId, rootSpanId);
+  TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu", OS::threadId(), spanId, rootSpanId);
 }

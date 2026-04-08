@@ -259,6 +259,7 @@ public:
   JfrMetadata();
 
   static void initialize(const std::vector<std::string> &contextAttributes);
+  static void reset();
 
   static Element *root() { return &_root; }
 
