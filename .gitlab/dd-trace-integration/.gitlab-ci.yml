@@ -1,0 +1,307 @@
+# dd-trace-java Integration Tests
+# Tests the java-profiler ddprof-lib artifact with patched dd-java-agent
+
+variables:
+  DD_TRACE_VERSION:
+    value: ""
+    description: "dd-java-agent snapshot version to download (empty = auto-detect latest)"
+
+prepare-patched-agent:
+  extends: .retry-config
+  stage: integration-test
+  tags: [ "arch:amd64" ]
+  image: ${BUILD_IMAGE_X64}
+  needs:
+    - job: prepare:start
+      artifacts: true
+    - job: build-artifact
+      artifacts: true
+  rules:
+    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - when: on_success
+  interruptible: true
+  timeout: 10m
+  script:
+    - |
+      echo "=== Preparing Patched dd-java-agent ==="
+
+      echo "Using ddprof.jar from build-artifact job"
+      echo "Available artifacts:"
+      ls -lh ddprof-lib/build/libs/ || echo "Directory not found"
+
+      LIB_VERSION=$(awk -F ':' '{print $3}' version.txt)
+      DDPROF_JAR="ddprof-lib/build/libs/ddprof-lib-${LIB_VERSION}.jar"
+      if [ ! -f "${DDPROF_JAR}" ]; then
+        echo "ERROR: ddprof JAR not found at ${DDPROF_JAR} (version=${LIB_VERSION})"
+        ls -lh ddprof-lib/build/libs/ || true
+        exit 1
+      fi
+
+      echo "Found: ${DDPROF_JAR}"
+      cp "${DDPROF_JAR}" ddprof.jar
+      ls -lh ddprof.jar
+
+      if [ -n "${DD_TRACE_VERSION}" ]; then
+        .gitlab/dd-trace-integration/download-snapshot-artifacts.sh \
+          --dd-trace-version "${DD_TRACE_VERSION}" \
+          --skip-ddprof
+      else
+        .gitlab/dd-trace-integration/download-snapshot-artifacts.sh \
+          --skip-ddprof
+      fi
+
+      .gitlab/dd-trace-integration/patch-dd-java-agent.sh
+
+      DD_AGENT_JAR=dd-java-agent-original.jar \
+      DDPROF_JAR=ddprof.jar \
+      PATCHED_JAR=dd-java-agent-patched.jar \
+        .gitlab/dd-trace-integration/verify-patch-compatibility.sh | tee compatibility-check.log
+
+      DDPROF_SHA=$(git rev-parse HEAD)
+      echo "${DDPROF_SHA}" > ddprof-commit-sha.txt
+      echo "Captured ddprof SHA: ${DDPROF_SHA}"
+
+      echo ""
+      echo "=== Patched agent prepared successfully ==="
+  artifacts:
+    name: patched-agent
+    paths:
+      - dd-java-agent-patched.jar
+      - dd-java-agent-original.jar
+      - ddprof.jar
+      - ddprof-commit-sha.txt
+      - compatibility-check.log
+    expire_in: 1 day
+
+.integration_test_base:
+  extends: .retry-config
+  stage: integration-test
+  needs:
+    - job: prepare:start
+      artifacts: true
+    - job: build-artifact
+      artifacts: true
+    - job: prepare-patched-agent
+      artifacts: true
+  rules:
+    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - when: on_success
+  interruptible: true
+  timeout: 10m
+  allow_failure: true
+  script:
+    - |
+      echo "=== Integration Test ==="
+      echo "Platform: ${ARCH}-${LIBC_VARIANT}"
+      echo "JVM: ${JVM_TYPE} JDK${JAVA_VERSION}"
+      echo ""
+
+      if command -v apt-get &> /dev/null; then
+        apt-get update -qq && apt-get install -y -qq curl wget unzip bc ca-certificates
+      elif command -v apk &> /dev/null; then
+        apk add --no-cache curl wget unzip bc bash ca-certificates
+      fi
+
+      JDK_INSTALLED=false
+      if command -v apt-get &> /dev/null; then
+        if apt-get install -y -qq openjdk-${JAVA_VERSION}-jdk 2>/dev/null || apt-get install -y -qq openjdk-${JAVA_VERSION}-jre-headless 2>/dev/null; then
+          JDK_INSTALLED=true
+        fi
+      elif command -v apk &> /dev/null; then
+        JDK_INSTALLED=false
+      fi
+
+      if [ "${JDK_INSTALLED}" = false ]; then
+        ARCH_NAME=$(uname -m)
+        case "${ARCH_NAME}" in
+          x86_64) JDK_ARCH="amd64" ;;
+          aarch64) JDK_ARCH="aarch64" ;;
+          *) echo "ERROR: Unsupported architecture: ${ARCH_NAME}"; exit 1 ;;
+        esac
+
+        if command -v apk &> /dev/null; then
+          JDK_LIBC="musl"
+        else
+          JDK_LIBC="glibc"
+        fi
+
+        JDK_DIR="/opt/java/jdk-${JAVA_VERSION}"
+        mkdir -p /opt/java
+
+        if [ "${JDK_LIBC}" = "musl" ]; then
+          case "${JAVA_VERSION}" in
+            8)  LIBERICA_VERSION="8u482+10" ;;
+            11) LIBERICA_VERSION="11.0.30+9" ;;
+            17) LIBERICA_VERSION="17.0.18+10" ;;
+            21) LIBERICA_VERSION="21.0.10+10" ;;
+            25) LIBERICA_VERSION="25.0.2+12" ;;
+            *) echo "ERROR: Unsupported JDK version: ${JAVA_VERSION}"; exit 1 ;;
+          esac
+          case "${JDK_ARCH}" in
+            amd64) LIBERICA_ARCH="x64" ;;
+            *) LIBERICA_ARCH="${JDK_ARCH}" ;;
+          esac
+          DOWNLOAD_URL="https://download.bell-sw.com/java/${LIBERICA_VERSION}/bellsoft-jdk${LIBERICA_VERSION}-linux-${LIBERICA_ARCH}-musl-lite.tar.gz"
+        else
+          case "${JDK_ARCH}" in
+            amd64) ADOPTIUM_ARCH="x64" ;;
+            *) ADOPTIUM_ARCH="${JDK_ARCH}" ;;
+          esac
+          DOWNLOAD_URL="https://api.adoptium.net/v3/binary/latest/${JAVA_VERSION}/ga/linux/${ADOPTIUM_ARCH}/jdk/hotspot/normal/eclipse"
+        fi
+
+        MAX_RETRIES=3
+        for attempt in $(seq 1 $MAX_RETRIES); do
+          if curl -Lk --retry 3 --retry-delay 5 "${DOWNLOAD_URL}" | tar xzf - -C /opt/java; then
+            break
+          fi
+          [ $attempt -lt $MAX_RETRIES ] && sleep 10 || exit 1
+        done
+
+        EXTRACTED_DIR=$(find /opt/java -maxdepth 1 -type d \( -name "jdk-*" -o -name "jdk8u*" \) ! -name "jdk-${JAVA_VERSION}" | head -1)
+        [ -z "${EXTRACTED_DIR}" ] && exit 1
+        ln -sf "${EXTRACTED_DIR}" "${JDK_DIR}"
+        export JAVA_HOME="${JDK_DIR}"
+      else
+        export JAVA_HOME=$(find /usr/lib/jvm -name "java-${JAVA_VERSION}-*" -type d | head -1)
+        [ -z "${JAVA_HOME}" ] && export JAVA_HOME=$(find /usr/lib/jvm -name "openjdk-${JAVA_VERSION}" -type d | head -1)
+        [ -z "${JAVA_HOME}" ] && export JAVA_HOME=$(find /usr/lib/jvm -name "java-1.${JAVA_VERSION}*" -type d | head -1)
+        [ -z "${JAVA_HOME}" ] && export JAVA_HOME=$(find /usr/lib/jvm -maxdepth 1 -type d | grep -E "(jdk|java|openjdk)" | head -1)
+        [ -z "${JAVA_HOME}" ] && exit 1
+      fi
+
+      echo "Using JAVA_HOME: ${JAVA_HOME}"
+      ${JAVA_HOME}/bin/java -version
+
+      .gitlab/dd-trace-integration/install-prerequisites.sh
+      .gitlab/dd-trace-integration/run-integration-test.sh
+
+      echo ""
+      echo "=== All tests completed successfully ==="
+  artifacts:
+    when: always
+    name: "integration-test-${LIBC_VARIANT}-${ARCH}-${JVM_TYPE}-jdk${JAVA_VERSION}"
+    paths:
+      - integration-test-results/${LIBC_VARIANT}-${ARCH}-${JVM_TYPE}-jdk${JAVA_VERSION}/
+    expire_in: 7 days
+
+integration-test-x64-glibc:
+  extends: .integration_test_base
+  tags: [ "arch:amd64" ]
+  image: ${BUILD_IMAGE_X64}
+  parallel:
+    matrix:
+      - JVM_TYPE: hotspot
+        JAVA_VERSION: [8, 11, 17, 21, 25]
+      - JVM_TYPE: openj9
+        JAVA_VERSION: [8, 11, 17, 21, 25]
+  variables:
+    LIBC_VARIANT: glibc
+    ARCH: x64
+
+integration-test-x64-musl:
+  extends: .integration_test_base
+  tags: [ "arch:amd64" ]
+  image: ${BUILD_IMAGE_X64_MUSL}
+  parallel:
+    matrix:
+      - JVM_TYPE: hotspot
+        JAVA_VERSION: [8, 11, 17, 21, 25]
+      - JVM_TYPE: openj9
+        JAVA_VERSION: [8, 11, 17, 21, 25]
+  variables:
+    LIBC_VARIANT: musl
+    ARCH: x64
+
+integration-test-arm64-glibc:
+  extends: .integration_test_base
+  tags: [ "arch:arm64" ]
+  image: ${BUILD_IMAGE_ARM64}
+  parallel:
+    matrix:
+      - JVM_TYPE: hotspot
+        JAVA_VERSION: [8, 11, 17, 21, 25]
+      - JVM_TYPE: openj9
+        JAVA_VERSION: [8, 11, 17, 21, 25]
+  variables:
+    LIBC_VARIANT: glibc
+    ARCH: arm64
+
+integration-test-arm64-musl:
+  extends: .integration_test_base
+  tags: [ "arch:arm64" ]
+  image: ${BUILD_IMAGE_ARM64_MUSL}
+  parallel:
+    matrix:
+      - JVM_TYPE: hotspot
+        JAVA_VERSION: [8, 11, 17, 21, 25]
+      - JVM_TYPE: openj9
+        JAVA_VERSION: [8, 11, 17, 21, 25]
+  variables:
+    LIBC_VARIANT: musl
+    ARCH: arm64
+
+report-dd-trace-results:
+  extends: .retry-config
+  stage: integration-test
+  tags: [ "arch:arm64" ]
+  image: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
+  id_tokens:
+    DDOCTOSTS_ID_TOKEN:
+      aud: dd-octo-sts
+  needs:
+    - job: prepare-patched-agent
+      artifacts: true
+    - job: integration-test-x64-glibc
+      artifacts: true
+    - job: integration-test-x64-musl
+      artifacts: true
+    - job: integration-test-arm64-glibc
+      artifacts: true
+    - job: integration-test-arm64-musl
+      artifacts: true
+  rules:
+    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - when: on_success
+  interruptible: true
+  timeout: 10m
+  script:
+    - ./.gitlab/dd-trace-integration/publish-gh-pages.sh
+  allow_failure: true
+
+post-pr-comment:
+  extends: .retry-config
+  stage: integration-test
+  tags: [ "arch:arm64" ]
+  image: registry.ddbuild.io/ci/async-profiler-build-amd64:v49110984-amd64-benchmarks@sha256:b952a00db56a22a83392fca37b93c7664bc86d8e81e29e3e2ef2e33042024d2f
+  needs:
+    - job: prepare-patched-agent
+      artifacts: true
+    - job: integration-test-x64-glibc
+      artifacts: true
+    - job: integration-test-x64-musl
+      artifacts: true
+    - job: integration-test-arm64-glibc
+      artifacts: true
+    - job: integration-test-arm64-musl
+      artifacts: true
+  rules:
+    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - when: on_success
+  interruptible: true
+  timeout: 5m
+  script:
+    - .gitlab/dd-trace-integration/post-pr-comment.sh integration-test-results
+  allow_failure: true
