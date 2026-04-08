@@ -629,8 +629,10 @@ void* VMThread::initialize(jthread thread) {
     return vm_thread;
 }
 
-bool VMThread::isJavaThread() {
-    VMThread* vm_thread = VMThread::current();
+bool VMThread::isJavaThread(VMThread* vm_thread) {
+    // Must be current thread
+    assert(vm_thread == VMThread::current());
+
     // Not a JVM thread - native thread, e.g. thread launched by JNI code
     if (vm_thread == nullptr) {
         return false;
@@ -643,8 +645,15 @@ bool VMThread::isJavaThread() {
         return true;
     }
 
+    // jvmti ThreadStart does not callback to JVM internal threads, e.g. Compiler threads, which also JavaThreads,
+    // let's check the vtable pointer to make sure it is a Java thread. 
     // A Java thread should have the same vtable as the one we got from a known Java thread during initialization
-    return vm_thread->hasJavaThreadVtable();
+    bool is_java_thread = vm_thread->hasJavaThreadVtable();
+    if (is_java_thread) {
+        // Mark the thread as Java thread for future quick check
+        prof_thread->setJavaThread();
+    }
+    return is_java_thread;
 }
 
 static ExecutionMode convertJvmExecutionState(int state) {
@@ -668,25 +677,18 @@ static ExecutionMode convertJvmExecutionState(int state) {
 
 ExecutionMode VMThread::getExecutionMode() {
   assert(VM::isHotspot());
-  
   VMThread* vm_thread = VMThread::current();
-  // Not a JVM thread - native thread, e.g. thread launched by JNI code
   if (vm_thread == nullptr) {
     return ExecutionMode::NATIVE;
   }
 
-  ProfiledThread *prof_thread = ProfiledThread::currentSignalSafe();
-  bool is_java_thread = prof_thread != nullptr && prof_thread->isJavaThread();
-
-  // A Java thread that JVM tells us via jvmti `ThreadStart()` callback.
-  if (is_java_thread) {
+  if (isJavaThread(vm_thread)) {
     int raw_thread_state = vm_thread->state();
-
     // Java threads: [4, 12) = [_thread_in_native, _thread_max_state)
     // JVM internal threads: 0 or outside this range
-    is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
+    bool is_in_java = raw_thread_state >= 4 && raw_thread_state < 12;
 
-    return is_java_thread ? convertJvmExecutionState(raw_thread_state)
+    return is_in_java ? convertJvmExecutionState(raw_thread_state)
                         : ExecutionMode::JVM;
   } else {
     // It is a JVM internal thread, may or may not be a Java thread, 
@@ -1002,7 +1004,7 @@ OSThreadState VMThread::osThreadState() {
 }
 
 int VMThread::state() {
-    if (!cachedIsJavaThread()) return 0;
+    if (!isJavaThread()) return 0;
     int offset = VMStructs::thread_state_offset();
     if (offset >= 0) {
         int* state = (int*)at(offset);

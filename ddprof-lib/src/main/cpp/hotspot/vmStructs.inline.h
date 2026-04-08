@@ -23,6 +23,10 @@ VMThread* VMThread::fromJavaThread(JNIEnv* env, jthread thread) {
     }
 }
 
+bool VMThread::isJavaThread() {
+    return isJavaThread(VMThread::current());
+} 
+
 int VMThread::nativeThreadId(JNIEnv* jni, jthread thread) {
     if (_has_native_thread_id) {
         VMThread* vm_thread = fromJavaThread(jni, thread);
@@ -53,7 +57,7 @@ VMNMethod* VMMethod::code() {
 }
 
 VMMethod* VMThread::compiledMethod() {
-    if (!cachedIsJavaThread()) return NULL;
+    if (!!isJavaThread()) return NULL;
     assert(_comp_method_offset >= 0);
     assert(_comp_env_offset >= 0);
     assert(_comp_task_offset >= 0);

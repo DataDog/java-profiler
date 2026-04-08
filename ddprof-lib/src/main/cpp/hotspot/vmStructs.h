@@ -699,31 +699,13 @@ DECLARE(VMThread)
     static inline VMThread* current();
     static inline VMThread* fromJavaThread(JNIEnv* env, jthread thread);
     // Is current thread a JavaThread
-    static bool isJavaThread();
+    static inline bool isJavaThread();
+    static bool isJavaThread(VMThread* thread);
     static ExecutionMode getExecutionMode();
     static OSThreadState getOSThreadState();
 
     int osThreadId();
     JNIEnv* jni();
-
-    // Cached version of isJavaThread(). On first call per thread, computes the
-    // vtable check and caches the result in ProfiledThread for O(1) subsequent
-    // lookups. This is needed because JVMTI ThreadStart only fires for application
-    // threads, not for JVM-internal JavaThread subclasses (CompilerThread, etc.).
-    bool cachedIsJavaThread() {
-        ProfiledThread* pt = ProfiledThread::currentSignalSafe();
-        if (pt != NULL) {
-            if (!pt->isJavaThreadKnown()) {
-                pt->cacheJavaThread(isJavaThread());
-            }
-            bool result = pt->isJavaThread();
-            if (!result) Counters::increment(WALKVM_CACHED_NOT_JAVA);
-            return result;
-        }
-        bool result = isJavaThread();
-        if (!result) Counters::increment(WALKVM_CACHED_NOT_JAVA);
-        return result;
-    }
 
     OSThreadState osThreadState();
 
@@ -734,7 +716,7 @@ DECLARE(VMThread)
     }
 
     bool inDeopt() {
-        if (!cachedIsJavaThread()) return false;
+        if (!isJavaThread()) return false;
         assert(_thread_vframe_offset >= 0);
         return SafeAccess::loadPtr((void**) at(_thread_vframe_offset), nullptr) != NULL;
     }
@@ -775,7 +757,7 @@ DECLARE(VMThread)
     }
 
     NOADDRSANITIZE VMJavaFrameAnchor* anchor() {
-        if (!cachedIsJavaThread()) return NULL;
+        if (!isJavaThread()) return NULL;
         assert(_thread_anchor_offset >= 0);
         return VMJavaFrameAnchor::cast(at(_thread_anchor_offset));
     }

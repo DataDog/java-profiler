@@ -335,7 +335,7 @@ __attribute__((no_sanitize("address"))) int StackWalker::walkVM(void* ucontext, 
     // Show extended frame types and stub frames for execution-type events
     bool details = event_type <= MALLOC_SAMPLE || features.mixed;
 
-    if (details && vm_thread != NULL && vm_thread->cachedIsJavaThread()) {
+    if (details && vm_thread != NULL && VMThread::isJavaThread(vm_thread)) {
         anchor = vm_thread->anchor();
     }
 

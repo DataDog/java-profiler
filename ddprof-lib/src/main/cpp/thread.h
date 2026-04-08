@@ -37,7 +37,6 @@ private:
 
   // Misc flags
   static constexpr u32 FLAG_JAVA_THREAD = 0x01;
-  static constexpr u32 FLAG_JAVA_THREAD_KNOWN = 0x02;
 
   // Free slot recycling - lock-free stack of available buffer slots
   // Note: Using plain int with GCC atomic builtins instead of std::atomic
@@ -197,25 +196,13 @@ public:
 
   // Called from JVMTI ThreadStart callback for threads known to be Java threads.
   inline void setJavaThread() {
-    _misc_flags |= (FLAG_JAVA_THREAD | FLAG_JAVA_THREAD_KNOWN);
+    _misc_flags |= FLAG_JAVA_THREAD;
   }
 
   // Returns the cached JavaThread status. Only valid after setJavaThread() or
   // cacheJavaThread() has been called (check isJavaThreadKnown() first).
   inline bool isJavaThread() const {
     return (_misc_flags & FLAG_JAVA_THREAD) != 0;
-  }
-
-  // Returns true if the JavaThread status has been determined and cached.
-  inline bool isJavaThreadKnown() const {
-    return (_misc_flags & FLAG_JAVA_THREAD_KNOWN) != 0;
-  }
-
-  // Caches the result of VMThread::isJavaThread() vtable check.
-  // Sets FLAG_JAVA_THREAD_KNOWN unconditionally; sets FLAG_JAVA_THREAD if isJava is true.
-  // Written from the signal handler on the owning thread — no cross-thread visibility concern.
-  inline void cacheJavaThread(bool isJava) {
-    _misc_flags |= FLAG_JAVA_THREAD_KNOWN | (isJava ? FLAG_JAVA_THREAD : 0);
   }
 
   inline bool isCrashProtectionActive() const { return _crash_protection_active; }
