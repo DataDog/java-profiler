@@ -214,7 +214,8 @@ void JfrMetadata::initialize(
                   << field("queueType", T_CLASS, "Queue Type", F_CPOOL)
                   << field("queueLength", T_INT, "Queue Length on Entry")
                   << field("spanId", T_LONG, "Span ID")
-                  << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
+                  << field("localRootSpanId", T_LONG, "Local Root Span ID")
+                  << field("submittingSpanId", T_LONG, "Submitting Span ID") ||
               contextAttributes)
 
           << (type("datadog.HeapUsage", T_HEAP_USAGE, "JVM Heap Usage")

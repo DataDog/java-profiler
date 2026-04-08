@@ -184,6 +184,7 @@ typedef struct QueueTimeEvent {
   u32 _origin;
   u32 _queueType;
   u32 _queueLength;
+  u64 _submitting_span_id;
 } QueueTimeEvent;
 
 #endif // _EVENT_H
