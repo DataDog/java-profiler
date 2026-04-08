@@ -24,6 +24,9 @@ echo "Using Java @ ${JAVA_HOME}"
 
 source .gitlab/scripts/includes.sh
 
+# Remove any zero-byte or corrupt JARs from the Gradle cache (can result from partial downloads)
+find .gradle -name "*.jar" -size 0 -delete 2>/dev/null || true
+
 function onexit {
   mkdir -p "${REPO_ROOT}/test/${TARGET}/reports"
   mkdir -p "${REPO_ROOT}/test/${TARGET}/logs"
