@@ -10,7 +10,7 @@ function get_version() {
   if [ -z "$gradlecmd" ]; then
     gradlecmd="./gradlew"
   fi
-  ${gradlecmd} printVersion --max-workers=1 --build-cache --stacktrace --info --no-watch-fs --no-daemon | grep 'Version:' | cut -f2 -d' ' > .version
+  ${gradlecmd} printVersion --max-workers=1 --no-build-cache --stacktrace --info --no-watch-fs --no-daemon | grep 'Version:' | cut -f2 -d' ' > .version
   local version=$(cat .version)
   if [ -z "$version" ]; then
     echo "ERROR: Failed to determine version from Gradle printVersion task" >&2

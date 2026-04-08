@@ -3,11 +3,6 @@ plugins {
 }
 
 repositories {
-    val proxy = gradle.startParameter.projectProperties["mavenRepositoryProxy"]
-        ?: System.getenv("ORG_GRADLE_PROJECT_mavenRepositoryProxy")
-    if (proxy != null) {
-        maven { url = uri(proxy) }
-    }
     gradlePluginPortal()
     mavenCentral()
 }

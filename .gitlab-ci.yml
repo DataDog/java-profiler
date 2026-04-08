@@ -16,7 +16,6 @@ default:
   before_script:
     - '[ "${CANCELLED:-}" != "true" ] || { echo "No PR for this branch — skipping job"; exit 0; }'
     - export ORG_GRADLE_PROJECT_mavenRepositoryProxy=${MAVEN_REPOSITORY_PROXY}
-    - export ORG_GRADLE_PROJECT_gradlePluginProxy=${MAVEN_REPOSITORY_PROXY}
 
 stages:
   - images
