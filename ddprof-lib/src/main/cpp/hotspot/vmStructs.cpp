@@ -733,7 +733,8 @@ jmethodID VMMethod::id() {
 
 jmethodID VMMethod::validatedId() {
     jmethodID method_id = id();
-    if (!_can_dereference_jmethod_id || (goodPtr(method_id) && *(VMMethod**)method_id == this)) {
+    if (!_can_dereference_jmethod_id || 
+        ((goodPtr(method_id) && SafeAccess::loadPtr((void**)method_id, nullptr) == this))) {
         return method_id;
     }
     return NULL;
