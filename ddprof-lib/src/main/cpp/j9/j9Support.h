@@ -120,8 +120,6 @@ public:
     return asgct;
   }
 
-  static int walkJavaStack(StackWalkRequest& request);
-
   static bool initialize(jvmtiEnv *jvmti, const void *j9thread_self);
 
   static JNIEnv *GetJ9vmThread(jthread thread) {

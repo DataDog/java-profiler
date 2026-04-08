@@ -20,7 +20,7 @@ using StackWalkValidation::aligned;
 using StackWalkValidation::MAX_FRAME_SIZE;
 using StackWalkValidation::sameStack;
 
-bool isAddressInCode(const void *pc, bool include_stubs = true) {
+static bool isAddressInCode(const void *pc, bool include_stubs = true) {
   if (CodeHeap::contains(pc)) {
     return CodeHeap::findNMethod(pc) != NULL &&
            (include_stubs || !JitCodeCache::isCallStub(pc));
@@ -34,7 +34,7 @@ bool isAddressInCode(const void *pc, bool include_stubs = true) {
  *
  * This conversion is necessary because Datadog's implementation uses BCI_* values
  * (from ASGCT_CallFrameType) directly as event type identifiers, while upstream
- * StackWalker::walkVM() expects EventType enum values for its logic.
+ * HotspotSupport::walkVM() expects EventType enum values for its logic.
  *
  * BCI_* values are special frame types with negative values (except BCI_CPU=0)
  * that indicate non-standard frame information in call traces. EventType values
@@ -117,32 +117,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         return walkVM(ucontext, frames, max_depth, features, event_type,
                       (const void*)frame.pc(), frame.sp(), frame.fp(), lock_index, truncated);
     }
-}
-
-__attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, VMJavaFrameAnchor* anchor, EventType event_type, int lock_index, bool* truncated) {
-    uintptr_t sp = anchor->lastJavaSP();
-    if (sp == 0) {
-        return 0;
-    }
-
-    uintptr_t fp = anchor->lastJavaFP();
-    if (fp == 0) {
-        fp = sp;
-    }
-
-    const void* pc = anchor->lastJavaPC();
-    if (pc == NULL || !CodeHeap::contains(pc)) {
-        // lastJavaPC is NULL (thread not in Java→native transition) or points outside
-        // the tracked CodeHeap range (e.g. interpreter/stub code in a separately mmap'd
-        // region). Read the actual return address from the stack frame instead.
-        if (!aligned(sp)) {
-            return 0;
-        }
-        pc = ((const void**)sp)[-1];
-    }
-
-    StackWalkFeatures no_features{};
-    return walkVM(ucontext, frames, max_depth, no_features, event_type, pc, sp, fp, lock_index, truncated);
 }
 
 __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,

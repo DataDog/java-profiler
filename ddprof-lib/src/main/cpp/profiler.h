@@ -133,8 +133,6 @@ private:
   u32 getLockIndex(int tid);
   int getNativeTrace(void *ucontext, ASGCT_CallFrame *frames, int event_type,
                      int tid, StackContext *java_ctx, bool *truncated, int lock_index);
-  int getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames, int max_depth,
-                        StackContext *java_ctx, bool *truncated);
   void updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                         bool self = false);
   void updateJavaThreadNames();

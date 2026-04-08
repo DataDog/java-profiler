@@ -10,10 +10,6 @@ inline int makeFrame(ASGCT_CallFrame *frames, jint type, jmethodID id) {
   return 1;
 }
 
-inline int makeFrame(ASGCT_CallFrame *frames, jint type, uintptr_t id) {
-  return makeFrame(frames, type, (jmethodID)id);
-}
-
 inline int makeFrame(ASGCT_CallFrame *frames, jint type,
                             const char *id) {
   return makeFrame(frames, type, (jmethodID)id);

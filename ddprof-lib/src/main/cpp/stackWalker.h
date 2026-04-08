@@ -71,7 +71,7 @@ namespace StackWalkValidation {
     }
 }
 
-typedef struct _StackWalkReuqest {
+typedef struct _StackWalkRequest {
     jint event_type;
     u32 lock_index;
     void* ucontext;

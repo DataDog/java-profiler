@@ -19,9 +19,6 @@ private:
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, 
                       StackWalkFeatures features, EventType event_type,
                       int lock_index, bool* truncated = nullptr);
-    static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
-                      VMJavaFrameAnchor* anchor, EventType event_type, int lock_index,
-                      bool* truncated = nullptr);
 
     static int getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
                                  int max_depth, StackContext *java_ctx,

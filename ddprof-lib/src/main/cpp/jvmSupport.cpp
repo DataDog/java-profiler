@@ -47,6 +47,6 @@ int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* 
         return 0;
     }
 
-    Profiler::instance()->incFailure(trace.num_frames);
+    Profiler::instance()->incFailure(-trace.num_frames);
     return makeFrame(frames, BCI_ERROR, err_string);
 }
