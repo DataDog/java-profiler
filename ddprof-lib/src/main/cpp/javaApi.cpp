@@ -200,8 +200,8 @@ Java_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0(JNIEnv *env,
 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
-    JNIEnv *env, jclass unused, jlong rootSpanId, jstring endpoint,
-    jstring operation, jint sizeLimit) {
+    JNIEnv *env, jclass unused, jlong rootSpanId, jlong parentSpanId,
+    jlong startTicks, jstring endpoint, jstring operation, jint sizeLimit) {
   JniString endpoint_str(env, endpoint);
   u32 endpointLabel = Profiler::instance()->stringLabelMap()->bounded_lookup(
       endpoint_str.c_str(), endpoint_str.length(), sizeLimit);
@@ -213,11 +213,39 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
       operationLabel = Profiler::instance()->contextValueMap()->bounded_lookup(
           operation_str.c_str(), operation_str.length(), 1 << 16);
     }
-    TraceRootEvent event(rootSpanId, endpointLabel, operationLabel);
+    TraceRootEvent event(rootSpanId, (u64)parentSpanId, (u64)startTicks,
+                         endpointLabel, operationLabel);
     int tid = ProfiledThread::currentTid();
     Profiler::instance()->recordTraceRoot(tid, &event);
   }
   return acceptValue;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlock0(
+    JNIEnv *env, jclass unused, jlong startTicks, jlong endTicks,
+    jlong spanId, jlong rootSpanId, jlong blocker, jlong unblockingSpanId) {
+  TaskBlockEvent event;
+  event._start_ticks = (u64)startTicks;
+  event._end_ticks = (u64)endTicks;
+  event._span_id = (u64)spanId;
+  event._root_span_id = (u64)rootSpanId;
+  event._blocker = (uintptr_t)blocker;
+  event._unblocking_span_id = (u64)unblockingSpanId;
+  int tid = ProfiledThread::currentTid();
+  Profiler::instance()->recordTaskBlock(tid, &event);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_recordSpanNode0(
+    JNIEnv *env, jclass unused,
+    jlong spanId, jlong parentSpanId, jlong rootSpanId,
+    jlong startNanos, jlong durationNanos,
+    jint encodedOperation, jint encodedResource) {
+  int tid = ProfiledThread::currentTid();
+  Profiler::instance()->recordSpanNode(tid, (u64)spanId, (u64)parentSpanId, (u64)rootSpanId,
+                                       (u64)startNanos, (u64)durationNanos,
+                                       (u32)encodedOperation, (u32)encodedResource);
 }
 
 extern "C" DLLEXPORT jint JNICALL
@@ -292,7 +320,8 @@ static int dictionarizeClassName(JNIEnv* env, jstring className) {
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
     JNIEnv *env, jclass unused, jlong startTime, jlong endTime, jstring task,
-    jstring scheduler, jthread origin, jstring queueType, jint queueLength) {
+    jstring scheduler, jthread origin, jstring queueType, jint queueLength,
+    jlong submittingSpanId) {
   int tid = ProfiledThread::currentTid();
   if (tid < 0) {
     return;
@@ -322,6 +351,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   event._origin = origin_tid;
   event._queueType = queue_type_offset;
   event._queueLength = queueLength;
+  event._submitting_span_id = (u64)submittingSpanId;
   Profiler::instance()->recordQueueTime(tid, &event);
 }
 

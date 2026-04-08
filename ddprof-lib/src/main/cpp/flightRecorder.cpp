@@ -1531,13 +1531,57 @@ void Recording::recordTraceRoot(Buffer *buf, int tid, TraceRootEvent *event) {
   flushIfNeeded(buf);
   int start = buf->skip(1);
   buf->putVar64(T_ENDPOINT);
-  buf->putVar64(TSC::ticks());
-  buf->put8(0);
+  buf->putVar64(event->_start_ticks);
+  buf->putVar64(TSC::ticks() - event->_start_ticks);
   buf->putVar32(tid);
   buf->put8(0);
   buf->putVar32(event->_label);
   buf->putVar32(event->_operation);
   buf->putVar64(event->_local_root_span_id);
+  buf->putVar64(event->_parent_span_id);
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
+void Recording::recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event) {
+  flushIfNeeded(buf);
+  int start = buf->skip(1);
+  buf->putVar64(T_TASK_BLOCK);
+  buf->putVar64(event->_start_ticks);
+  buf->putVar64(event->_end_ticks - event->_start_ticks);
+  buf->putVar32(tid);
+  buf->put8(0);
+  buf->putVar64(event->_span_id);
+  buf->putVar64(event->_root_span_id);
+  buf->putVar64((u64)event->_blocker);
+  buf->putVar64(event->_unblocking_span_id);
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
+void Recording::recordSpanNode(Buffer *buf, int tid, u64 spanId, u64 parentSpanId, u64 rootSpanId,
+                                u64 startNanos, u64 durationNanos, u32 encodedOperation, u32 encodedResource) {
+  // Convert epoch nanoseconds to JFR ticks so that standard JFR tooling (JMC, Mission
+  // Control) can correlate SpanNode events with other events on the recording timeline.
+  // _start_time is in microseconds; multiply by 1000 to get the recording epoch in nanos.
+  u64 start_epoch_nanos = _start_time * 1000ULL;
+  u64 startTicks = _start_ticks + (u64)((double)(long long)(startNanos - start_epoch_nanos)
+                                        * TSC::frequency() / NANOTIME_FREQ);
+  u64 durationTicks = (u64)((double)durationNanos * TSC::frequency() / NANOTIME_FREQ);
+
+  flushIfNeeded(buf);
+  int start = buf->skip(1);
+  buf->putVar64(T_SPAN_NODE);
+  buf->putVar64(startTicks);       // startTime (F_TIME_TICKS)
+  buf->putVar64(durationTicks);    // duration (F_DURATION_TICKS)
+  buf->putVar32(tid);              // eventThread (F_CPOOL)
+  buf->putVar64(spanId);
+  buf->putVar64(parentSpanId);
+  buf->putVar64(rootSpanId);
+  buf->putVar64(startNanos);       // startNanos — epoch ns, used by backend extractor
+  buf->putVar64(durationNanos);    // durationNanos — ns
+  buf->putVar32(encodedOperation);
+  buf->putVar32(encodedResource);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1554,6 +1598,7 @@ void Recording::recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event) {
   buf->putVar64(event->_queueType);
   buf->putVar64(event->_queueLength);
   writeContext(buf, Contexts::get());
+  buf->putVar64(event->_submitting_span_id);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1758,6 +1803,30 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid,
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
       rec->recordQueueTime(buf, tid, event);
+    }
+  }
+}
+
+void FlightRecorder::recordTaskBlock(int lock_index, int tid,
+                                     TaskBlockEvent *event) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->recordTaskBlock(buf, tid, event);
+    }
+  }
+}
+
+void FlightRecorder::recordSpanNode(int lock_index, int tid, u64 spanId, u64 parentSpanId, u64 rootSpanId,
+                                    u64 startNanos, u64 durationNanos, u32 encodedOperation, u32 encodedResource) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->recordSpanNode(buf, tid, spanId, parentSpanId, rootSpanId, startNanos, durationNanos, encodedOperation, encodedResource);
     }
   }
 }

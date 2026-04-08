@@ -155,13 +155,26 @@ public:
 class TraceRootEvent {
 public:
   u64 _local_root_span_id;
+  u64 _parent_span_id;
+  u64 _start_ticks;
   u32 _label;
   u32 _operation;
 
-  TraceRootEvent(u64 local_root_span_id, u32 label, u32 operation)
-      : _local_root_span_id(local_root_span_id), _label(label),
-        _operation(operation){};
+  TraceRootEvent(u64 local_root_span_id, u64 parent_span_id, u64 start_ticks,
+                 u32 label, u32 operation)
+      : _local_root_span_id(local_root_span_id),
+        _parent_span_id(parent_span_id), _start_ticks(start_ticks),
+        _label(label), _operation(operation){};
 };
+
+typedef struct TaskBlockEvent {
+  u64 _start_ticks;
+  u64 _end_ticks;
+  u64 _span_id;
+  u64 _root_span_id;
+  uintptr_t _blocker;
+  u64 _unblocking_span_id;
+} TaskBlockEvent;
 
 typedef struct QueueTimeEvent {
   u64 _start;
@@ -171,6 +184,7 @@ typedef struct QueueTimeEvent {
   u32 _origin;
   u32 _queueType;
   u32 _queueLength;
+  u64 _submitting_span_id;
 } QueueTimeEvent;
 
 #endif // _EVENT_H

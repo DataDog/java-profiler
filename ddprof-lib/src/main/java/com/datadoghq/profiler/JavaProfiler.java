@@ -162,10 +162,25 @@ public final class JavaProfiler {
     }
 
     /**
+     * Records the completion of the trace root with causal DAG metadata.
+     * @param rootSpanId the local root span ID
+     * @param parentSpanId the parent span ID (0 if none)
+     * @param startTicks TSC tick captured at span start via {@link #getCurrentTicks()}
+     * @param endpoint the endpoint/resource name
+     * @param operation the operation name
+     * @param sizeLimit max number of distinct endpoints to track
+     */
+    public boolean recordTraceRoot(long rootSpanId, long parentSpanId, long startTicks,
+                                   String endpoint, String operation, int sizeLimit) {
+        return recordTrace0(rootSpanId, parentSpanId, startTicks, endpoint, operation, sizeLimit);
+    }
+
+    /**
      * Records the completion of the trace root
      */
+    @Deprecated
     public boolean recordTraceRoot(long rootSpanId, String endpoint, String operation, int sizeLimit) {
-        return recordTrace0(rootSpanId, endpoint, operation, sizeLimit);
+        return recordTrace0(rootSpanId, 0L, 0L, endpoint, operation, sizeLimit);
     }
 
     /**
@@ -173,7 +188,27 @@ public final class JavaProfiler {
      */
     @Deprecated
     public boolean recordTraceRoot(long rootSpanId, String endpoint, int sizeLimit) {
-        return recordTrace0(rootSpanId, endpoint, null, sizeLimit);
+        return recordTrace0(rootSpanId, 0L, 0L, endpoint, null, sizeLimit);
+    }
+
+    /**
+     * Records a blocking interval for the current span.
+     * @param startTicks TSC tick at block entry
+     * @param endTicks TSC tick at block exit
+     * @param spanId the span that was blocked
+     * @param rootSpanId the local root span ID
+     * @param blocker identity hash code of the blocking object
+     */
+    public void recordTaskBlock(long startTicks, long endTicks,
+                                long spanId, long rootSpanId, long blocker, long unblockingSpanId) {
+        recordTaskBlock0(startTicks, endTicks, spanId, rootSpanId, blocker, unblockingSpanId);
+    }
+
+    public void recordSpanNode(long spanId, long parentSpanId, long rootSpanId,
+                               long startNanos, long durationNanos,
+                               int encodedOperation, int encodedResource) {
+        recordSpanNode0(spanId, parentSpanId, rootSpanId, startNanos, durationNanos,
+                        encodedOperation, encodedResource);
     }
 
     /**
@@ -279,8 +314,9 @@ public final class JavaProfiler {
                                 Class<?> scheduler,
                                 Class<?> queueType,
                                 int queueLength,
-                                Thread origin) {
-        recordQueueEnd0(startTicks, endTicks, task.getName(), scheduler.getName(), origin, queueType.getName(), queueLength);
+                                Thread origin,
+                                long submittingSpanId) {
+        recordQueueEnd0(startTicks, endTicks, task.getName(), scheduler.getName(), origin, queueType.getName(), queueLength, submittingSpanId);
     }
 
     /**
@@ -323,7 +359,11 @@ public final class JavaProfiler {
 
     private static native int getTid0();
 
-    private static native boolean recordTrace0(long rootSpanId, String endpoint, String operation, int sizeLimit);
+    private static native boolean recordTrace0(long rootSpanId, long parentSpanId, long startTicks, String endpoint, String operation, int sizeLimit);
+
+    private static native void recordTaskBlock0(long startTicks, long endTicks, long spanId, long rootSpanId, long blocker, long unblockingSpanId);
+
+    private static native void recordSpanNode0(long spanId, long parentSpanId, long rootSpanId, long startNanos, long durationNanos, int encodedOperation, int encodedResource);
 
     private static native int registerConstant0(String value);
 
@@ -335,7 +375,7 @@ public final class JavaProfiler {
 
     private static native void recordSettingEvent0(String name, String value, String unit);
 
-    private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin, String queueType, int queueLength);
+    private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin, String queueType, int queueLength, long submittingSpanId);
 
     private static native long currentTicks0();
 
