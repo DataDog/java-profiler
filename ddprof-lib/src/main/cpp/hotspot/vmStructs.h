@@ -698,26 +698,13 @@ DECLARE(VMThread)
 
     static inline VMThread* current();
     static inline VMThread* fromJavaThread(JNIEnv* env, jthread thread);
+    // Is current thread a JavaThread
+    static bool isJavaThread();
     static ExecutionMode getExecutionMode();
     static OSThreadState getOSThreadState();
 
     int osThreadId();
     JNIEnv* jni();
-
-    const void** vtable() {
-        assert(SafeAccess::isReadable(this));
-        return *(const void***)this;
-    }
-
-    // This thread is considered a JavaThread if at least 2 of the selected 3 vtable entries
-    // match those of a known JavaThread (which is either application thread or AttachListener).
-    // Indexes were carefully chosen to work on OpenJDK 8 to 25, both product an debug builds.
-    bool isJavaThread() {
-        const void** vtbl = vtable();
-        return (vtbl[1] == _java_thread_vtbl[1]) +
-               (vtbl[3] == _java_thread_vtbl[3]) +
-               (vtbl[5] == _java_thread_vtbl[5]) >= 2;
-    }
 
     // Cached version of isJavaThread(). On first call per thread, computes the
     // vtable check and caches the result in ProfiledThread for O(1) subsequent
@@ -796,6 +783,9 @@ DECLARE(VMThread)
     inline VMMethod* compiledMethod();
 private:
     static inline int nativeThreadId(JNIEnv* jni, jthread thread);
+    inline void** vtable();
+    inline bool hasJavaThreadVtable();
+
 DECLARE_END
 
 DECLARE(VMConstMethod)

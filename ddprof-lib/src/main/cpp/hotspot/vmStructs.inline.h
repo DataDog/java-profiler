@@ -31,6 +31,21 @@ int VMThread::nativeThreadId(JNIEnv* jni, jthread thread) {
     return -1;
 }
 
+void** VMThread::vtable() {
+    assert(SafeAccess::isReadable(this));
+    return *(void***)this;
+}
+
+ // This thread is considered a JavaThread if at least 2 of the selected 3 vtable entries
+ // match those of a known JavaThread (which is either application thread or AttachListener).
+ // Indexes were carefully chosen to work on OpenJDK 8 to 25, both product an debug builds.
+ bool VMThread::hasJavaThreadVtable() {
+    void** vtbl = vtable();
+    return (SafeAccess::load(&vtbl[1]) == _java_thread_vtbl[1]) +
+           (SafeAccess::load(&vtbl[3]) == _java_thread_vtbl[3]) +
+           (SafeAccess::load(&vtbl[5]) == _java_thread_vtbl[5]) >= 2;
+ }
+
 VMNMethod* VMMethod::code() {
     assert(_method_code_offset >= 0);
     const void* code_ptr = *(const void**) at(_method_code_offset);

@@ -629,6 +629,24 @@ void* VMThread::initialize(jthread thread) {
     return vm_thread;
 }
 
+bool VMThread::isJavaThread() {
+    VMThread* vm_thread = VMThread::current();
+    // Not a JVM thread - native thread, e.g. thread launched by JNI code
+    if (vm_thread == nullptr) {
+        return false;
+    }
+
+    // More reliable and safer check for Java thread.
+    // The flag is set in jvmti ThreadStart callback, and cleared in ThreadEnd callback.
+    ProfiledThread *prof_thread = ProfiledThread::currentSignalSafe();
+    if (prof_thread != nullptr && prof_thread->isJavaThread()) {
+        return true;
+    }
+
+    // A Java thread should have the same vtable as the one we got from a known Java thread during initialization
+    return vm_thread->hasJavaThreadVtable();
+}
+
 static ExecutionMode convertJvmExecutionState(int state) {
   switch (state) {
   case 4:
