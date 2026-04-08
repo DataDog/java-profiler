@@ -1598,6 +1598,7 @@ void Recording::recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event) {
   buf->putVar64(event->_queueType);
   buf->putVar64(event->_queueLength);
   writeContext(buf, Contexts::get());
+  buf->putVar64(event->_submitting_span_id);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }

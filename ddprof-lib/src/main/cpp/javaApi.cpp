@@ -319,7 +319,8 @@ static int dictionarizeClassName(JNIEnv* env, jstring className) {
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
     JNIEnv *env, jclass unused, jlong startTime, jlong endTime, jstring task,
-    jstring scheduler, jthread origin, jstring queueType, jint queueLength) {
+    jstring scheduler, jthread origin, jstring queueType, jint queueLength,
+    jlong submittingSpanId) {
   int tid = ProfiledThread::currentTid();
   if (tid < 0) {
     return;
@@ -349,6 +350,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   event._origin = origin_tid;
   event._queueType = queue_type_offset;
   event._queueLength = queueLength;
+  event._submitting_span_id = (u64)submittingSpanId;
   Profiler::instance()->recordQueueTime(tid, &event);
 }
 
