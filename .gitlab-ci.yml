@@ -157,3 +157,4 @@ include:
   - local: .gitlab/build-deploy/.gitlab-ci.yml
   - local: .gitlab/benchmarks/.gitlab-ci.yml
   - local: .gitlab/reliability/.gitlab-ci.yml
+  - local: .gitlab/dd-trace-integration/.gitlab-ci.yml
