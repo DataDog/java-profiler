@@ -1,15 +1,3 @@
-pluginManagement {
-    def proxy = gradle.startParameter.projectProperties['mavenRepositoryProxy']
-        ?: System.getenv('ORG_GRADLE_PROJECT_mavenRepositoryProxy')
-    repositories {
-        if (proxy) {
-            maven { url proxy }
-        }
-        gradlePluginPortal()
-        mavenCentral()
-    }
-}
-
 rootProject.name = 'build-logic'
 
 include 'conventions'
