@@ -29,7 +29,7 @@ public:
                                            const void *address, jint length);
                                            
     static inline bool isCallStub(const void *address) {
-        return _call_stub_end.load(std::memory_order_relaxed) != nullptr &&
+        return _call_stub_end.load(std::memory_order_acquire) != nullptr &&
                address >= _call_stub_begin.load(std::memory_order_relaxed) &&
                address < _call_stub_end.load(std::memory_order_relaxed);
     }

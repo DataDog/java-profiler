@@ -32,6 +32,7 @@ void JNICALL JitCodeCache::DynamicCodeGenerated(jvmtiEnv *jvmti, const char *nam
     CodeHeap::setInterpreterStart(address);
   } else if (strcmp(name, "call_stub") == 0) {
     _call_stub_begin.store(address, std::memory_order_relaxed);
+    // This fence ensures that _call_stub_begin is visible before _call_stub_end, so that isCallStub() works correctly
     std::atomic_thread_fence(std::memory_order_release);
     _call_stub_end.store((const char *)address + length, std::memory_order_relaxed);
   }
