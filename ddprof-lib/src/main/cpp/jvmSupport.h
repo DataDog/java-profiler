@@ -15,9 +15,8 @@ enum StackRecovery {
   UNKNOWN_JAVA = (1 << 0),
   POP_STUB = (1 << 1),
   POP_METHOD = (1 << 2),
-  UNWIND_NATIVE = (1 << 3),
-  LAST_JAVA_PC = (1 << 4),
-  GC_TRACES = (1 << 5),
+  LAST_JAVA_PC = (1 << 3),
+  GC_TRACES = (1 << 4),
   PROBE_SP = 0x100,
 };
 
