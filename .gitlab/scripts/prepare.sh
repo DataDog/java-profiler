@@ -31,3 +31,6 @@ echo "com.datadoghq:ddprof:${LIB_VERSION}" > version.txt
 
 # Export CI_COMMIT_BRANCH so downstream jobs inherit the resolved value
 echo "CI_COMMIT_BRANCH=${CI_COMMIT_BRANCH}" >> build.env
+# Export DDPROF_COMMIT_BRANCH/SHA for integration test scripts (legacy variable names)
+echo "DDPROF_COMMIT_BRANCH=${CI_COMMIT_BRANCH}" >> build.env
+echo "DDPROF_COMMIT_SHA=${CI_COMMIT_SHA}" >> build.env
