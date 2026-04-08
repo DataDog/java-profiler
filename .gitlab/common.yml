@@ -21,10 +21,10 @@
     key:
       files:
         - gradle/wrapper/gradle-wrapper.properties
-      prefix: build-${CI_COMMIT_REF_SLUG}
+      prefix: build-v2-${CI_COMMIT_REF_SLUG}
     fallback_keys:
-      - build-${CI_DEFAULT_BRANCH}
-      - build-main
+      - build-v2-${CI_DEFAULT_BRANCH}
+      - build-v2-main
     paths:
       - .gradle/caches/
       - .gradle/wrapper/
