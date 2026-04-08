@@ -1,6 +1,29 @@
 {
   "runs": [
     {
+      "id": "106694559",
+      "timestamp": "2026-04-08T16:27:27Z",
+      "ddprof_branch": "main",
+      "ddprof_sha": "74b51a507ed3416e4ee60c1eb00714ef27903118",
+      "ddprof_pr": null,
+      "pipeline": {
+        "id": "106694559",
+        "url": "https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/106694559"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 39,
+        "passed_jobs": 39,
+        "failed_jobs": 0,
+        "total_scenarios": 78,
+        "passed_scenarios": 78,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "106685198",
       "timestamp": "2026-04-08T15:53:18Z",
       "ddprof_branch": "main",
