@@ -16,8 +16,6 @@
 inline constexpr uintptr_t MAX_WALK_SIZE = 0x100000;
 inline constexpr intptr_t MAX_FRAME_SIZE_WORDS = StackWalkValidation::MAX_FRAME_SIZE / sizeof(void*);  // 0x8000 = 32768 words
 
-inline ucontext_t empty_ucontext{};
-
 // AArch64: on Linux, frame link is stored at the top of the frame,
 // while on macOS, frame link is at the bottom.
 inline uintptr_t defaultSenderSP(uintptr_t sp, uintptr_t fp) {

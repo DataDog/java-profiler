@@ -6,7 +6,6 @@
 
 #include "zingSupport.h"
 
-#include "asyncSampleMutex.h"
 #include "vmEntry.h"
 #include <jni.h>
 

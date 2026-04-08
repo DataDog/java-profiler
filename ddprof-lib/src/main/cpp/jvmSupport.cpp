@@ -33,6 +33,9 @@ int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* 
     }
 
     AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());
+    if (!mutex.acquired()) {
+        return 0;
+    }
   
     JitWriteProtection jit(false);
     // AsyncGetCallTrace writes to ASGCT_CallFrame array

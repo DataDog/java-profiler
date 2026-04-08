@@ -99,7 +99,7 @@ CodeCache *Libraries::findLibraryByName(const char *lib_name) {
   return NULL;
 }
 
-CodeCache *Libraries::findLibraryByAddress(const void *address) const{
+CodeCache *Libraries::findLibraryByAddress(const void *address) const {
   const int native_lib_count = _native_libs.count();
   for (int i = 0; i < native_lib_count; i++) {
     CodeCache *lib = _native_libs[i];

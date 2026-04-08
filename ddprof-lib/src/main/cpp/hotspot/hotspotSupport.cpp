@@ -66,7 +66,7 @@ inline EventType eventTypeFromBCI(jint bci_type) {
     }
 }
 
-void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *nmethod) {
+static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *nmethod) {
   if (nmethod->isNMethod() && nmethod->isAlive()) {
     VMMethod *method = nmethod->method();
     if (method == NULL) {
@@ -106,6 +106,7 @@ void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *nmethod)
   }
 }
 
+static ucontext_t empty_ucontext{};
 
 __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                         StackWalkFeatures features, EventType event_type, int lock_index, bool* truncated) {

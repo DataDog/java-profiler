@@ -22,7 +22,6 @@
 
 #include "log.h"
 #include "vmEntry.h"
-#include "stackWalker.h"
 
 #define JVMTI_EXT(f, ...) ((jvmtiError(*)(jvmtiEnv *, __VA_ARGS__))f)
 
