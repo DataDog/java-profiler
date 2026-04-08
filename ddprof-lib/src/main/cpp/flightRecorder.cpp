@@ -1561,14 +1561,25 @@ void Recording::recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event) {
 
 void Recording::recordSpanNode(Buffer *buf, int tid, u64 spanId, u64 parentSpanId, u64 rootSpanId,
                                 u64 startNanos, u64 durationNanos, u32 encodedOperation, u32 encodedResource) {
+  // Convert epoch nanoseconds to JFR ticks so that standard JFR tooling (JMC, Mission
+  // Control) can correlate SpanNode events with other events on the recording timeline.
+  // _start_time is in microseconds; multiply by 1000 to get the recording epoch in nanos.
+  u64 start_epoch_nanos = _start_time * 1000ULL;
+  u64 startTicks = _start_ticks + (u64)((double)(long long)(startNanos - start_epoch_nanos)
+                                        * TSC::frequency() / NANOTIME_FREQ);
+  u64 durationTicks = (u64)((double)durationNanos * TSC::frequency() / NANOTIME_FREQ);
+
   flushIfNeeded(buf);
   int start = buf->skip(1);
   buf->putVar64(T_SPAN_NODE);
+  buf->putVar64(startTicks);       // startTime (F_TIME_TICKS)
+  buf->putVar64(durationTicks);    // duration (F_DURATION_TICKS)
+  buf->putVar32(tid);              // eventThread (F_CPOOL)
   buf->putVar64(spanId);
   buf->putVar64(parentSpanId);
   buf->putVar64(rootSpanId);
-  buf->putVar64(startNanos);
-  buf->putVar64(durationNanos);
+  buf->putVar64(startNanos);       // startNanos — epoch ns, used by backend extractor
+  buf->putVar64(durationNanos);    // durationNanos — ns
   buf->putVar32(encodedOperation);
   buf->putVar32(encodedResource);
   writeEventSizePrefix(buf, start);

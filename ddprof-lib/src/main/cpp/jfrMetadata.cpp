@@ -192,6 +192,9 @@ void JfrMetadata::initialize(
 
           << (type("datadog.SpanNode", T_SPAN_NODE, "Span Node")
               << category("Datadog")
+              << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+              << field("duration", T_LONG, "Duration", F_DURATION_TICKS)
+              << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
               << field("spanId", T_LONG, "Span ID")
               << field("parentSpanId", T_LONG, "Parent Span ID")
               << field("localRootSpanId", T_LONG, "Local Root Span ID")
