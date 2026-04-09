@@ -218,7 +218,7 @@ public class NettySocketEventTest extends AbstractProfilerTest {
                             // or special markers like [Unknown], or native method indicators
                             if (typeName.contains(".so") ||  // Shared library
                                 typeName.contains("[Unknown]") ||  // Unknown native code
-                                typeName.equals("") ||  // Empty type for native frames
+                                typeName.isEmpty() ||  // Empty type for native frames
                                 (methodName != null && (
                                     methodName.contains("writev") ||
                                     methodName.contains("readv") ||
