@@ -703,7 +703,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
 void HotspotSupport::checkFault(ProfiledThread* thrd) {
     if (!JVMThread::isInitialized()) {
-        // JVM has not been loaded or have not been initialized yet
+        // JVM has not been loaded or has not been initialized yet
         return;
     }
 

@@ -60,7 +60,7 @@ enum State { NEW, IDLE, RUNNING, TERMINATED };
 
 // Aligned to satisfy SpinLock member alignment requirement (64 bytes)  
 // Required because this class contains multiple SpinLock members:
-// _class_map_lock, _locks[], and _stubs_lock
+// _class_map_lock and _locks[]
 class alignas(alignof(SpinLock)) Profiler {
   friend VM;
 
@@ -111,7 +111,6 @@ private:
   volatile jvmtiEventMode _thread_events_state;
 
   Libraries* _libs;
-  CodeCache _runtime_stubs;
   u32 _num_context_attributes;
   bool _omit_stacktraces;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
@@ -160,7 +159,7 @@ public:
         _total_samples(0), _failures(), _class_map_lock(),
         _max_stack_depth(0), _features(), _safe_mode(0), _cstack(CSTACK_NO),
         _thread_events_state(JVMTI_DISABLE), _libs(Libraries::instance()),
-        _runtime_stubs("[stubs]"),_num_context_attributes(0), _omit_stacktraces(false),
+        _num_context_attributes(0), _omit_stacktraces(false),
         _remote_symbolication(false), _dlopen_entry(NULL) {
 
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
