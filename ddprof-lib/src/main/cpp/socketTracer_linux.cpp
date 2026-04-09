@@ -381,6 +381,7 @@ void SocketTracer::unpatchLibraries() {
 #undef UNPATCH
     }
     _patched_count = 0;
+    _initialized   = false;
     _orig_read       = nullptr;
     _orig_write      = nullptr;
     _orig_readv      = nullptr;

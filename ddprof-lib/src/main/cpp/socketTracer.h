@@ -82,6 +82,7 @@ public:
   static void patchLibraries() {}
   static void unpatchLibraries() {}
   static bool isInitialized() { return false; }
+  static bool isNettyLibrary(const char*) { return false; }
 };
 
 #endif  // __linux__
