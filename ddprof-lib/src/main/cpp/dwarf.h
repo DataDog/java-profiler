@@ -155,9 +155,9 @@ class DwarfParser {
 
     u32 getLeb(const char* end) {
         u32 result = 0;
-        for (u32 shift = 0; _ptr < end; shift += 7) {
+        for (u32 shift = 0; _ptr < end && shift < 32; shift += 7) {
             u8 b = *_ptr++;
-            result |= (b & 0x7f) << shift;
+            result |= (u32)(b & 0x7f) << shift;
             if ((b & 0x80) == 0) {
                 return result;
             }

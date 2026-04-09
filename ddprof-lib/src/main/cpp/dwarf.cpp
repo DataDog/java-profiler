@@ -230,8 +230,8 @@ void DwarfParser::parseEhFrame(const char *eh_frame, size_t size) {
         }
       }
       parseInstructions(range_start, record_end);
-      addRecord(range_start + range_len, DW_REG_FP, LINKED_FRAME_SIZE,
-                -LINKED_FRAME_SIZE, -LINKED_FRAME_SIZE + DW_STACK_SLOT);
+      addRecord(range_start + range_len, DW_REG_FP, LINKED_FRAME_CLANG_SIZE,
+                -LINKED_FRAME_CLANG_SIZE, -LINKED_FRAME_CLANG_SIZE + DW_STACK_SLOT);
     }
 
     _ptr = record_end;

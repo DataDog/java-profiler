@@ -99,9 +99,13 @@ void CodeCache::copyFrom(const CodeCache& other) {
   _imports_patchable = other._imports_patchable;
 
   _dwarf_table_length = other._dwarf_table_length;
-  _dwarf_table = (FrameDesc*)malloc(_dwarf_table_length * sizeof(FrameDesc));
-  memcpy(_dwarf_table, other._dwarf_table,
-         _dwarf_table_length * sizeof(FrameDesc));
+  if (_dwarf_table_length > 0) {
+    _dwarf_table = (FrameDesc*)malloc(_dwarf_table_length * sizeof(FrameDesc));
+    memcpy(_dwarf_table, other._dwarf_table,
+           _dwarf_table_length * sizeof(FrameDesc));
+  } else {
+    _dwarf_table = nullptr;
+  }
   _default_frame = other._default_frame;
 
   _capacity = other._capacity;
