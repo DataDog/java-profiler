@@ -15,23 +15,23 @@
  * limitations under the License.
  */
 
-#include "j9Ext.h"
+#include "j9/j9Support.h"
 #include "os.h"
 #include <string.h>
 
-jvmtiEnv *J9Ext::_jvmti;
+jvmtiEnv *J9Support::_jvmti;
 
-void *(*J9Ext::_j9thread_self)() = NULL;
+void *(*J9Support::_j9thread_self)() = NULL;
 
-jvmtiExtensionFunction J9Ext::_GetOSThreadID = NULL;
-jvmtiExtensionFunction J9Ext::_GetJ9vmThread = NULL;
-jvmtiExtensionFunction J9Ext::_GetStackTraceExtended = NULL;
-jvmtiExtensionFunction J9Ext::_GetAllStackTracesExtended = NULL;
+jvmtiExtensionFunction J9Support::_GetOSThreadID = NULL;
+jvmtiExtensionFunction J9Support::_GetJ9vmThread = NULL;
+jvmtiExtensionFunction J9Support::_GetStackTraceExtended = NULL;
+jvmtiExtensionFunction J9Support::_GetAllStackTracesExtended = NULL;
 
-int J9Ext::InstrumentableObjectAlloc_id = -1;
+int J9Support::InstrumentableObjectAlloc_id = -1;
 
 // Look for OpenJ9-specific JVM TI extension
-bool J9Ext::initialize(jvmtiEnv *jvmti, const void *j9thread_self) {
+bool J9Support::initialize(jvmtiEnv *jvmti, const void *j9thread_self) {
   _jvmti = jvmti;
   _j9thread_self = (void *(*)())j9thread_self;
 

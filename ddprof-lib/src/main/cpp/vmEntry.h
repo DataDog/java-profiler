@@ -68,7 +68,7 @@ typedef struct RemoteFrameInfo {
 #endif
 } RemoteFrameInfo;
 
-typedef struct {
+typedef struct _asgct_callframe {
     jint bci;
     LP64_ONLY(jint padding;)
     union {

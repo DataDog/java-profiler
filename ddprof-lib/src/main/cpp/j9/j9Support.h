@@ -15,8 +15,8 @@
  * limitations under the License.
  */
 
-#ifndef _J9_J9EXT_H
-#define _J9_J9EXT_H
+#ifndef _J9_J9SUPPORT_H
+#define _J9_J9SUPPORT_H
 
 #include <jvmti.h>
 
@@ -70,7 +70,7 @@ static inline int sanitizeJ9FrameType(jint j9_type) {
   return FRAME_JIT_COMPILED;
 }
 
-class J9Ext {
+class J9Support {
   friend class JVMThread;
   friend class J9WallClock;
 private:
@@ -181,4 +181,4 @@ private:
     }
 };
 
-#endif // _J9_J9EXT_H
+#endif // _J9_J9SUPPORT_H

@@ -5,7 +5,7 @@
 
 #include "jvmThread.h"
 #include "hotspot/vmStructs.inline.h"
-#include "j9/j9Ext.h"
+#include "j9/j9Support.h"
 #include "zing/zingSupport.h"
 #include "vmEntry.h"
 
@@ -30,7 +30,7 @@ bool JVMThread::initialize() {
 }
 
 int JVMThread::nativeThreadId(JNIEnv* jni, jthread thread) {
-    return VM::isOpenJ9() ? J9Ext::GetOSThreadID(thread) : VMThread::nativeThreadId(jni, thread);
+    return VM::isOpenJ9() ? J9Support::GetOSThreadID(thread) : VMThread::nativeThreadId(jni, thread);
 }
 
 void* JVMThread::currentThreadSlow() {
@@ -47,7 +47,7 @@ void* JVMThread::currentThreadSlow() {
     }
 
     if (VM::isOpenJ9()) {
-      return J9Ext::j9thread_self();
+      return J9Support::j9thread_self();
     } else if (VM::isZing()) {
       return ZingSupport::initialize(thread);
     } else {
