@@ -1,5 +1,5 @@
 /*
- * Copyright 2021, 2022 Datadog, Inc
+ * Copyright 2026, Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,24 +14,7 @@
  * limitations under the License.
  */
 
-#ifndef _CONTEXT_H
-#define _CONTEXT_H
+#include "otel_context.h"
 
-#include "arch.h"
-
-static const u32 DD_TAGS_CAPACITY = 10;
-
-typedef struct {
-  u32 value;
-} Tag;
-
-class alignas(DEFAULT_CACHE_LINE_SIZE) Context {
-public:
-  u64 spanId;
-  u64 rootSpanId;
-  Tag tags[DD_TAGS_CAPACITY];
-
-  Tag get_tag(int i) { return tags[i]; }
-};
-
-#endif /* _CONTEXT_H */
+// OTEP #4947 TLS pointer — visible in dynsym for external profiler discovery
+DLLEXPORT thread_local OtelThreadContextRecord* otel_thread_ctx_v1 = nullptr;

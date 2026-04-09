@@ -79,17 +79,32 @@ static const otel_process_ctx_data empty_data = {
 #ifndef MFD_CLOEXEC
   #define MFD_CLOEXEC 1U
 #endif
+
 #ifndef MFD_ALLOW_SEALING
   #define MFD_ALLOW_SEALING 2U
 #endif
+
 #ifndef MFD_NOEXEC_SEAL
   #define MFD_NOEXEC_SEAL 8U
 #endif
 
-// memfd_create(2) libc wrapper was added in glibc 2.27; provide a syscall fallback for older systems (e.g. CentOS 7 / glibc 2.17)
-#if defined(__NR_memfd_create) && defined(__GLIBC__) && (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ < 27))
-  static inline int memfd_create(const char *name, unsigned int flags) {
-    return (int) syscall(__NR_memfd_create, name, flags);
+// memfd_create is not declared in glibc < 2.27; use syscall() directly.
+// Provide __NR_memfd_create for architectures where old kernel headers omit it.
+#ifndef __NR_memfd_create
+  #if defined(__x86_64__)
+    #define __NR_memfd_create 319
+  #elif defined(__aarch64__)
+    #define __NR_memfd_create 279
+  #elif defined(__arm__)
+    #define __NR_memfd_create 385
+  #elif defined(__i386__)
+    #define __NR_memfd_create 356
+  #endif
+#endif
+
+#ifdef __NR_memfd_create
+  static int _otel_memfd_create(const char *name, unsigned int flags) {
+    return (int)syscall(__NR_memfd_create, name, flags);
   }
 #endif
 
@@ -167,11 +182,15 @@ otel_process_ctx_result otel_process_ctx_publish(const otel_process_ctx_data *da
   // Step: Create the mapping
   const ssize_t mapping_size = sizeof(otel_process_ctx_mapping);
   published_state.publisher_pid = getpid(); // This allows us to detect in forks that we shouldn't touch the mapping
-  int fd = memfd_create("OTEL_CTX", MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL);
+#ifdef __NR_memfd_create
+  int fd = _otel_memfd_create("OTEL_CTX", MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL);
   if (fd < 0) {
     // MFD_NOEXEC_SEAL is a newer flag; older kernels reject unknown flags, so let's retry without it
-    fd = memfd_create("OTEL_CTX", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    fd = _otel_memfd_create("OTEL_CTX", MFD_CLOEXEC | MFD_ALLOW_SEALING);
   }
+#else
+  int fd = -1; // memfd_create unavailable; fall through to anonymous mmap below
+#endif
   bool failed_to_close_fd = false;
   if (fd >= 0) {
     // Try to create mapping from memfd

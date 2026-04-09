@@ -10,6 +10,7 @@
 
 #include "arch.h"
 #include "context.h"
+#include "context_api.h"
 #include "hotspot/vmStructs.h"
 #include "incbin.h"
 #include "jniHelper.h"
@@ -321,7 +322,7 @@ retry:
     _table[idx].skipped = skipped;
     _table[idx].age = 0;
     _table[idx].call_trace_id = call_trace_id;
-    _table[idx].ctx = Contexts::get();
+    _table[idx].ctx = ContextApi::snapshot();
   }
 
   _table_lock.unlockShared();

@@ -16,7 +16,7 @@
  */
 
 #include "j9WallClock.h"
-#include "j9Ext.h"
+#include "j9/j9Support.h"
 #include "profiler.h"
 #include "threadState.h"
 #include <stdlib.h>
@@ -74,7 +74,7 @@ void J9WallClock::timerLoop() {
 
     jvmtiStackInfoExtended *stack_infos;
     jint thread_count;
-    if (J9Ext::GetAllStackTracesExtended(
+    if (J9Support::GetAllStackTracesExtended(
             _max_stack_depth, (void **)&stack_infos, &thread_count) == 0) {
       for (int i = 0; i < thread_count; i++) {
         jvmtiStackInfoExtended *si = &stack_infos[i];
@@ -95,7 +95,7 @@ void J9WallClock::timerLoop() {
           frames[j].bci = FrameType::encode(sanitizeJ9FrameType(fi->type), fi->location);
         }
 
-        int tid = J9Ext::GetOSThreadID(si->thread);
+        int tid = J9Support::GetOSThreadID(si->thread);
         if (tid == -1) {
           // clearly an invalid TID; skip the thread
           continue;

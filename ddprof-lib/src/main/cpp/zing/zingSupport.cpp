@@ -26,3 +26,4 @@ void* ZingSupport::initialize(jthread thread) {
 
     return (void*)env->GetLongField(thread, eetop);
 }
+

@@ -8,12 +8,14 @@ variables:
   FORCE_BUILD:
     value: ""
     description: "Force build even if no new commits (any non-empty value)"
+  MAVEN_REPOSITORY_PROXY: "https://depot-read-api-java.us1.ddbuild.io/magicmirror/magicmirror/@current/"
 
 default:
   tags: ["arch:amd64"]
   interruptible: true
   before_script:
     - '[ "${CANCELLED:-}" != "true" ] || { echo "No PR for this branch — skipping job"; exit 0; }'
+    - export ORG_GRADLE_PROJECT_mavenRepositoryProxy=${MAVEN_REPOSITORY_PROXY}
 
 stages:
   - images
@@ -157,3 +159,4 @@ include:
   - local: .gitlab/build-deploy/.gitlab-ci.yml
   - local: .gitlab/benchmarks/.gitlab-ci.yml
   - local: .gitlab/reliability/.gitlab-ci.yml
+  - local: .gitlab/dd-trace-integration/.gitlab-ci.yml

@@ -8,7 +8,7 @@
 #include "vmEntry.h"
 #include "arguments.h"
 #include "context.h"
-#include "j9/j9Ext.h"
+#include "j9/j9Support.h"
 #include "jniHelper.h"
 #include "jvmThread.h"
 #include "libraries.h"
@@ -17,6 +17,7 @@
 #include "profiler.h"
 #include "safeAccess.h"
 #include "hotspot/vmStructs.h"
+#include "hotspot/jitCodeCache.h"
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
@@ -242,7 +243,7 @@ bool VM::initShared(JavaVM* vm) {
   Libraries *libraries = Libraries::instance();
   libraries->updateSymbols(false);
 
-  _openj9 = !_hotspot && J9Ext::initialize(
+  _openj9 = !_hotspot && J9Support::initialize(
                              _jvmti, libraries->resolveSymbol("j9thread_self*"));
 
   if (_openj9) {
@@ -428,8 +429,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.VMDeath = VMDeath;
   callbacks.ClassLoad = ClassLoad;
   callbacks.ClassPrepare = ClassPrepare;
-  callbacks.CompiledMethodLoad = Profiler::CompiledMethodLoad;
-  callbacks.DynamicCodeGenerated = Profiler::DynamicCodeGenerated;
+  callbacks.CompiledMethodLoad = JitCodeCache::CompiledMethodLoad;
+  callbacks.DynamicCodeGenerated = JitCodeCache::DynamicCodeGenerated;
   callbacks.ThreadStart = Profiler::ThreadStart;
   callbacks.ThreadEnd = Profiler::ThreadEnd;
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;

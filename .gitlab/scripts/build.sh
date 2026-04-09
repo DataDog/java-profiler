@@ -24,6 +24,20 @@ echo "Using Java @ ${JAVA_HOME}"
 
 source .gitlab/scripts/includes.sh
 
+# Remove corrupt JARs from Gradle caches (non-ZIP content from failed/proxied downloads)
+# JARs not starting with PK magic bytes are invalid and must be deleted before Gradle reads them
+for cache_dir in .gradle ~/.gradle; do
+  if [ -d "$cache_dir" ]; then
+    find "$cache_dir" -name "*.jar" | while IFS= read -r jar; do
+      magic=$(head -c 2 "$jar" 2>/dev/null | od -A n -t x1 | tr -d ' \n')
+      if [ "$magic" != "504b" ]; then
+        echo "WARN: removing corrupt JAR (magic=${magic:-empty}): $jar"
+        rm -f "$jar"
+      fi
+    done
+  fi
+done
+
 function onexit {
   mkdir -p "${REPO_ROOT}/test/${TARGET}/reports"
   mkdir -p "${REPO_ROOT}/test/${TARGET}/logs"
@@ -37,7 +51,7 @@ function onexit {
 trap onexit EXIT
 
 set -x
-./gradlew -Pddprof_version="$(get_version)" -Pskip-cpp-tests :ddprof-lib:assembleReleaseJar --build-cache --stacktrace --info --no-watch-fs --no-daemon
+./gradlew -Pddprof_version="$(get_version)" -Pskip-cpp-tests :ddprof-lib:assembleReleaseJar --no-build-cache --stacktrace --info --no-watch-fs --no-daemon
 
 mkdir -p "${REPO_ROOT}/libs"
 cp -r "${REPO_ROOT}/ddprof-lib/build/native/release/META-INF/native-libs/"* "${REPO_ROOT}/libs/"
