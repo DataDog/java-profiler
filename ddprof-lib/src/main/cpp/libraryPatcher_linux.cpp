@@ -95,6 +95,7 @@ static void* start_routine_wrapper_spec(void* args) {
         delete_routine_info(thr);
         init_thread_tls();
         tid = ProfiledThread::currentTid();
+        ProfiledThread::currentSignalSafe()->startInitWindow();
         Profiler::registerThread(tid);
     }
     void* result = routine(params);
@@ -154,6 +155,7 @@ static void* start_routine_wrapper(void* args) {
         delete thr;
         ProfiledThread::initCurrentThread();
         tid = ProfiledThread::currentTid();
+        ProfiledThread::currentSignalSafe()->startInitWindow();
         Profiler::registerThread(tid);
     }
     void* result = nullptr;

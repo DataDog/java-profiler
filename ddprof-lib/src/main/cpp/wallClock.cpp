@@ -67,8 +67,12 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   }
   ProfiledThread *current = ProfiledThread::currentSignalSafe();
   // Guard against the race window between Profiler::registerThread() and
-  // thread_native_entry setting JVM TLS (see PROF-13072 / CTimer::signalHandler).
-  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr) {
+  // thread_native_entry setting JVM TLS (PROF-13072): skip at most one signal
+  // per thread. Pure native threads (where JVMThread::current() is always null)
+  // are allowed through once the one-shot window expires.
+  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
+      && current->inInitWindow()) {
+    current->tickInitWindow();
     return;
   }
   int tid = current != NULL ? current->tid() : OS::threadId();

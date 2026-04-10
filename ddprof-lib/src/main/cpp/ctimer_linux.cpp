@@ -157,14 +157,13 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   int tid = 0;
   ProfiledThread *current = ProfiledThread::currentSignalSafe();
   assert(current == nullptr || !current->isDeepCrashHandler());
-  // If the JVM has initialized its thread TLS key but this thread has not yet
-  // called pd_set_thread() (race window between Profiler::registerThread() and
-  // thread_native_entry), Thread::current() inside ASGCT returns nullptr and
-  // crashes in JFR allocation paths.  Skip the sample instead.
-  // Side-effect: threads that never call pd_set_thread() (non-JVM native threads
-  // that were created before the JVM initialized) are also skipped, which is
-  // acceptable given the crash severity.
-  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr) {
+  // Guard against the race window between Profiler::registerThread() and
+  // thread_native_entry setting JVM TLS (PROF-13072): skip at most one signal
+  // per thread. Pure native threads (where JVMThread::current() is always null)
+  // are allowed through once the one-shot window expires.
+  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
+      && current->inInitWindow()) {
+    current->tickInitWindow();
     errno = saved_errno;
     return;
   }
