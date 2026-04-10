@@ -72,6 +72,17 @@ static void init_thread_tls() {
     ProfiledThread::initCurrentThread();
 }
 
+// Arm the CPU timer with profiling signals blocked and open the init window
+// (PROF-13072). Kept noinline for the same stack-protector reason as
+// delete_routine_info: SignalBlocker's sigset_t must not appear in
+// start_routine_wrapper_spec's own stack frame on musl/aarch64.
+__attribute__((noinline))
+static void start_window_and_register(int tid) {
+    SignalBlocker blocker;
+    ProfiledThread::currentSignalSafe()->startInitWindow();
+    Profiler::registerThread(tid);
+}
+
 // Wrapper around the real start routine.
 // The wrapper:
 // 1. Register the newly created thread to profiler
@@ -82,22 +93,12 @@ static void init_thread_tls() {
 __attribute__((visibility("hidden")))
 static void* start_routine_wrapper_spec(void* args) {
     RoutineInfo* thr = (RoutineInfo*)args;
-    func_start_routine routine;
-    void* params;
-    int tid;
-    {
-        // Keep signals blocked across delete_routine_info, init_thread_tls, and
-        // registerThread for the same reasons as start_routine_wrapper: ASAN
-        // lock-ordering and the JVM TLS race window (PROF-13072).
-        SignalBlocker blocker;
-        routine = thr->routine();
-        params = thr->args();
-        delete_routine_info(thr);
-        init_thread_tls();
-        tid = ProfiledThread::currentTid();
-        ProfiledThread::currentSignalSafe()->startInitWindow();
-        Profiler::registerThread(tid);
-    }
+    func_start_routine routine = thr->routine();
+    void* params = thr->args();
+    delete_routine_info(thr);
+    init_thread_tls();
+    int tid = ProfiledThread::currentTid();
+    start_window_and_register(tid);
     void* result = routine(params);
     Profiler::unregisterThread(tid);
     ProfiledThread::release();
