@@ -777,26 +777,8 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
     return 0;
   }
 
-  int state = vm_thread->state();
-  /**  from OpenJDK
-   https://github.com/openjdk/jdk/blob/7455bb23c1d18224e48e91aae4f11fe114d04fab/src/hotspot/share/utilities/globalDefinitions.hpp#L1030
-  enum JavaThreadState {
-      _thread_uninitialized     =  0, // should never happen (missing initialization) 
-      _thread_new               =  2, // just starting up, i.e., in process of being initialized 
-      _thread_new_trans         =  3, // corresponding transition state (not used, included for completeness) 
-      _thread_in_native         =  4, // running in native code 
-      _thread_in_native_trans   =  5, // corresponding transition state 
-      _thread_in_vm             =  6, // running in VM
-      _thread_in_vm_trans       =  7, // corresponding transition state
-      _thread_in_Java           =  8, // running in Java or in stub code
-      _thread_in_Java_trans     =  9, // corresponding transition state (not used, included for completeness)
-      _thread_blocked           = 10, // blocked in vm 
-      _thread_blocked_trans     = 11, // corresponding transition state
-      _thread_max_state         = 12  // maximum thread state+1 - used forstatistics allocation
-  };
-  **/
-
-  bool in_java = (state == 8 || state == 9);
+  JVMJavaThreadState state = vm_thread->state();
+  bool in_java = (state == _thread_in_Java || state == _thread_in_Java_trans);
   if (in_java && java_ctx->sp != 0) {
     // skip ahead to the Java frames before calling AGCT
     frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);

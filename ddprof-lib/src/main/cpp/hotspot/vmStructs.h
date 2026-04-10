@@ -710,7 +710,7 @@ DECLARE(VMThread)
 
     OSThreadState osThreadState();
 
-    enum JVMJavaThreadState state();
+    JVMJavaThreadState state();
 
     bool inDeopt() {
         if (!isJavaThread(this)) return false;

@@ -648,7 +648,7 @@ bool VMThread::isJavaThread(VMThread* vm_thread) {
         }
     }
 
-    // jvmti ThreadStart does not callback to JVM internal threads, e.g. Compiler threads, which also JavaThreads,
+    // jvmti ThreadStart does not callback to JVM internal threads, e.g. Compiler threads, which are also JavaThreads,
     // let's check the vtable pointer to make sure it is a Java thread. 
     // A Java thread should have the same vtable as the one we got from a known Java thread during initialization
     bool is_java_thread = vm_thread->hasJavaThreadVtable();
@@ -662,7 +662,7 @@ bool VMThread::isJavaThread(VMThread* vm_thread) {
     return is_java_thread;
 }
 
-static ExecutionMode convertJvmExecutionState(enum JVMJavaThreadState state) {
+static ExecutionMode convertJvmExecutionState(JVMJavaThreadState state) {
   switch (state) {
   case _thread_uninitialized:
   case _thread_new:
@@ -694,7 +694,7 @@ ExecutionMode VMThread::getExecutionMode() {
   }
 
   if (isJavaThread(vm_thread)) {
-    enum JVMJavaThreadState thread_state = vm_thread->state();
+    JVMJavaThreadState thread_state = vm_thread->state();
     return convertJvmExecutionState(thread_state);
   } else {
     // It is a JVM internal thread, may or may not be a Java thread, 
@@ -1004,7 +1004,7 @@ OSThreadState VMThread::osThreadState() {
     return OSThreadState::UNKNOWN;
 }
 
-enum JVMJavaThreadState VMThread::state() {
+JVMJavaThreadState VMThread::state() {
     int state = 0;
     // Only Java threads have the thread state
     if (isJavaThread(this)) {
@@ -1020,7 +1020,7 @@ enum JVMJavaThreadState VMThread::state() {
             }
         }
     }
-    return static_cast<enum JVMJavaThreadState>(state);
+    return static_cast<JVMJavaThreadState>(state);
 }
 
 bool HeapUsage::is_jmx_attempted = false;
