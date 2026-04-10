@@ -782,7 +782,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   if (in_java && java_ctx->sp != 0) {
     // skip ahead to the Java frames before calling AGCT
     frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);
-  } else if (state != 0) {
+  } else if (state != _thread_uninitialized) {
     VMJavaFrameAnchor* a = vm_thread->anchor();
     if (a == nullptr || a->lastJavaSP() == 0) {
       // we haven't found the top Java frame ourselves, and the lastJavaSP wasn't
@@ -792,7 +792,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       return 0;
     }
   }
-  bool blocked_in_vm = (state == 10 || state == 11);
+  bool blocked_in_vm = (state == _thread_blocked || state == _thread_blocked_trans);
   // avoid unwinding during deoptimization
   if (blocked_in_vm && vm_thread->osThreadState() == OSThreadState::RUNNABLE) {
     Counters::increment(AGCT_BLOCKED_IN_VM);

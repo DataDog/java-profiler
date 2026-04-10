@@ -699,8 +699,6 @@ DECLARE(VMThread)
 
     static inline VMThread* current();
     static inline VMThread* fromJavaThread(JNIEnv* env, jthread thread);
-    // Is current thread a JavaThread
-    static inline bool isJavaThread();
     static bool isJavaThread(VMThread* thread);
     static ExecutionMode getExecutionMode();
     static OSThreadState getOSThreadState();

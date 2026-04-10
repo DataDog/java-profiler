@@ -630,13 +630,13 @@ void* VMThread::initialize(jthread thread) {
 }
 
 bool VMThread::isJavaThread(VMThread* vm_thread) {
-    // Must be called from current thread
-    assert(vm_thread == VMThread::current());
-
     // Not a JVM thread - native thread, e.g. thread launched by JNI code
     if (vm_thread == nullptr) {
         return false;
     }
+
+    // Must be called from current thread
+    assert(vm_thread == VMThread::current());
 
     // JVMTI ThreadStart callback may have set the flag, which is reliable.
     // Or we may already compute and cache it, so use it instead.
@@ -697,8 +697,6 @@ ExecutionMode VMThread::getExecutionMode() {
     JVMJavaThreadState thread_state = vm_thread->state();
     return convertJvmExecutionState(thread_state);
   } else {
-    // It is a JVM internal thread, may or may not be a Java thread, 
-    // e.g. Compiler thread or GC thread, etc
     return ExecutionMode::JVM;
   }
 }
@@ -1005,18 +1003,16 @@ OSThreadState VMThread::osThreadState() {
 }
 
 JVMJavaThreadState VMThread::state() {
+    assert(isJavaThread(this) && "Must be a Java thread");
     int state = 0;
-    // Only Java threads have the thread state
-    if (isJavaThread(this)) {
-        int offset = VMStructs::thread_state_offset();
-        if (offset >= 0) {
-            int* state_addr = (int*)at(offset);
-            if (state_addr != nullptr) {
-                state = SafeAccess::safeFetch32(state_addr, 0);
-                // Checking for bad data
-                if (state >= _thread_max_state || state < 0) {
-                    state = 0;
-                }
+    int offset = VMStructs::thread_state_offset();
+    if (offset >= 0) {
+        int* state_addr = (int*)at(offset);
+        if (state_addr != nullptr) {
+            state = SafeAccess::safeFetch32(state_addr, 0);
+            // Checking for bad data
+            if (state >= _thread_max_state || state < 0) {
+                state = 0;
             }
         }
     }
