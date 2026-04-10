@@ -638,10 +638,9 @@ bool VMThread::isJavaThread(VMThread* vm_thread) {
         return false;
     }
 
-    // More reliable and safer check for Java thread.
-    // The flag is set in jvmti ThreadStart callback, and cleared in ThreadEnd callback.
+    // JVMTI ThreadStart callback may have set the flag, which is reliable.
+    // Or we may already compute and cache it, so use it instead.
     ProfiledThread *prof_thread = ProfiledThread::currentSignalSafe();
-    enum ProfiledThread::ThreadType type;
     if (prof_thread != nullptr) {
         ProfiledThread::ThreadType type =  prof_thread->threadType();
         if (type != ProfiledThread::ThreadType::TYPE_UNKNOWN) {
@@ -656,6 +655,9 @@ bool VMThread::isJavaThread(VMThread* vm_thread) {
     // Cache the thread type for future quick check
     if (prof_thread != nullptr) {
         prof_thread->setJavaThread(is_java_thread);
+    }
+    if (!is_java_thread) {
+        Counters::increment(WALKVM_CACHED_NOT_JAVA);
     }
     return is_java_thread;
 }
@@ -706,7 +708,7 @@ OSThreadState VMThread::getOSThreadState() {
   if (vm_thread == nullptr) {
     return OSThreadState::UNKNOWN;
   }
-
+  // All hotspot JVM threads have osThread fields
   return vm_thread->osThreadState();
 }
 
