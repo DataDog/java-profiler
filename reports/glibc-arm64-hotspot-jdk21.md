@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk21
 
 ## glibc-arm64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-04-10 15:42:03 EDT
+**Date:** 2026-04-10 19:29:53 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 130 |
-| Sample Rate | 2.17/sec |
-| Health Score | 136% |
-| Threads | 10 |
-| Allocations | 71 |
+| CPU Samples | 78 |
+| Sample Rate | 1.30/sec |
+| Health Score | 81% |
+| Threads | 11 |
+| Allocations | 60 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 84 |
-| Sample Rate | 1.40/sec |
-| Health Score | 87% |
-| Threads | 13 |
-| Allocations | 69 |
+| CPU Samples | 81 |
+| Sample Rate | 1.35/sec |
+| Health Score | 84% |
+| Threads | 11 |
+| Allocations | 81 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1775849921 64
-1775849926 64
-1775849931 64
-1775849936 64
-1775849941 64
-1775849946 64
-1775849951 64
-1775849956 64
-1775849961 64
-1775849966 64
-1775849971 64
-1775849976 64
-1775849981 64
-1775849986 64
-1775849991 64
-1775849996 64
-1775850001 64
-1775850006 64
-1775850011 64
-1775850016 64
+1775863515 64
+1775863520 64
+1775863525 64
+1775863530 64
+1775863535 64
+1775863540 64
+1775863545 64
+1775863550 64
+1775863555 64
+1775863560 64
+1775863565 64
+1775863570 64
+1775863575 64
+1775863580 64
+1775863585 64
+1775863590 64
+1775863595 64
+1775863600 64
+1775863605 64
+1775863610 64
 ```
 </details>
 
