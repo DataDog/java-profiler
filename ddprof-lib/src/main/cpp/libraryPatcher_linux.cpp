@@ -82,12 +82,21 @@ static void init_thread_tls() {
 __attribute__((visibility("hidden")))
 static void* start_routine_wrapper_spec(void* args) {
     RoutineInfo* thr = (RoutineInfo*)args;
-    func_start_routine routine = thr->routine();
-    void* params = thr->args();
-    delete_routine_info(thr);
-    init_thread_tls();
-    int tid = ProfiledThread::currentTid();
-    Profiler::registerThread(tid);
+    func_start_routine routine;
+    void* params;
+    int tid;
+    {
+        // Keep signals blocked across delete_routine_info, init_thread_tls, and
+        // registerThread for the same reasons as start_routine_wrapper: ASAN
+        // lock-ordering and the JVM TLS race window (PROF-13072).
+        SignalBlocker blocker;
+        routine = thr->routine();
+        params = thr->args();
+        delete_routine_info(thr);
+        init_thread_tls();
+        tid = ProfiledThread::currentTid();
+        Profiler::registerThread(tid);
+    }
     void* result = routine(params);
     Profiler::unregisterThread(tid);
     ProfiledThread::release();
@@ -126,6 +135,7 @@ static void* start_routine_wrapper(void* args) {
     RoutineInfo* thr = (RoutineInfo*)args;
     func_start_routine routine;
     void* params;
+    int tid;
     {
         // Block profiling signals while accessing and freeing RoutineInfo
         // and during TLS initialization. Under ASAN, new/delete/
@@ -133,14 +143,19 @@ static void* start_routine_wrapper(void* args) {
         // allocator lock. A profiling signal during any of these calls
         // runs ASAN-instrumented code that tries to acquire the same
         // lock, causing deadlock.
+        // registerThread is also kept inside the blocker so that the CPU
+        // timer is armed while SIGPROF/SIGVTALRM are masked.  Any pending
+        // signal fires only after signals are re-enabled (when the blocker
+        // scope exits), at which point JVMThread::current() is still null
+        // and the guard in CTimer::signalHandler discards the sample safely.
         SignalBlocker blocker;
         routine = thr->routine();
         params = thr->args();
         delete thr;
         ProfiledThread::initCurrentThread();
+        tid = ProfiledThread::currentTid();
+        Profiler::registerThread(tid);
     }
-    int tid = ProfiledThread::currentTid();
-    Profiler::registerThread(tid);
     void* result = nullptr;
     // Handle pthread_exit() bypass - the thread calls pthread_exit()
     // instead of normal termination

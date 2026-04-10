@@ -11,6 +11,7 @@
 #include "context.h"
 #include "context_api.h"
 #include "debugSupport.h"
+#include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
 #include "profiler.h"
@@ -65,6 +66,11 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     return;  // Another critical section is active, defer profiling
   }
   ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  // Guard against the race window between Profiler::registerThread() and
+  // thread_native_entry setting JVM TLS (see PROF-13072 / CTimer::signalHandler).
+  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr) {
+    return;
+  }
   int tid = current != NULL ? current->tid() : OS::threadId();
   Shims::instance().setSighandlerTid(tid);
   u64 call_trace_id = 0;

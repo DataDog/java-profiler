@@ -20,6 +20,7 @@
 #include "guards.h"
 #include "ctimer.h"
 #include "debugSupport.h"
+#include "jvmThread.h"
 #include "libraries.h"
 #include "profiler.h"
 #include "threadState.inline.h"
@@ -156,6 +157,17 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   int tid = 0;
   ProfiledThread *current = ProfiledThread::currentSignalSafe();
   assert(current == nullptr || !current->isDeepCrashHandler());
+  // If the JVM has initialized its thread TLS key but this thread has not yet
+  // called pd_set_thread() (race window between Profiler::registerThread() and
+  // thread_native_entry), Thread::current() inside ASGCT returns nullptr and
+  // crashes in JFR allocation paths.  Skip the sample instead.
+  // Side-effect: threads that never call pd_set_thread() (non-JVM native threads
+  // that were created before the JVM initialized) are also skipped, which is
+  // acceptable given the crash severity.
+  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr) {
+    errno = saved_errno;
+    return;
+  }
   if (current != NULL) {
     current->noteCPUSample(Profiler::instance()->recordingEpoch());
     tid = current->tid();
