@@ -664,13 +664,12 @@ bool VMThread::isJavaThread(VMThread* vm_thread) {
 
 static ExecutionMode convertJvmExecutionState(JVMJavaThreadState state) {
   switch (state) {
-  case _thread_uninitialized:
-  case _thread_new:
-  case _thread_new_trans:
-    return ExecutionMode::UNKNOWN;
   case _thread_in_native:
   case _thread_in_native_trans:
     return ExecutionMode::NATIVE;
+  case _thread_uninitialized:
+  case _thread_new:
+  case _thread_new_trans:
   case _thread_in_vm:
   case _thread_in_vm_trans:
     return ExecutionMode::JVM;
@@ -681,7 +680,6 @@ static ExecutionMode convertJvmExecutionState(JVMJavaThreadState state) {
   case _thread_blocked_trans:
     return ExecutionMode::SAFEPOINT;
   default:
-    assert(false && "Should not reach here");
     return ExecutionMode::UNKNOWN;
   }
 }
