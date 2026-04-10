@@ -642,7 +642,7 @@ bool VMThread::isJavaThread(VMThread* vm_thread) {
     // Or we may already compute and cache it, so use it instead.
     ProfiledThread *prof_thread = ProfiledThread::currentSignalSafe();
     if (prof_thread != nullptr) {
-        ProfiledThread::ThreadType type =  prof_thread->threadType();
+        ProfiledThread::ThreadType type = prof_thread->threadType();
         if (type != ProfiledThread::ThreadType::TYPE_UNKNOWN) {
             return type == ProfiledThread::ThreadType::TYPE_JAVA_THREAD;
         }
