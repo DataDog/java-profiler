@@ -19,7 +19,15 @@
 #include <sys/types.h>
 #include <vector>
 
-class ProfiledThread : public ThreadLocalData {     
+class ProfiledThread : public ThreadLocalData {    
+public:
+  enum ThreadType : u32 {
+    TYPE_UNKNOWN = 0,
+    TYPE_JAVA_THREAD = 0x1,
+    TYPE_NOT_JAVA_THREAD = 0x2,
+    TYPE_MASK = 0x3
+  };
+
 private:
   // We are allowing several levels of nesting because we can be
   // eg. in a crash handler when wallclock signal kicks in,
@@ -33,9 +41,6 @@ private:
   static int _buffer_size;
   static volatile int _running_buffer_pos;
   static ProfiledThread** _buffer;
-
-  // Misc flags
-  static constexpr u32 FLAG_JAVA_THREAD = 0x01;
 
   // Free slot recycling - lock-free stack of available buffer slots
   // Note: Using plain int with GCC atomic builtins instead of std::atomic
@@ -206,14 +211,16 @@ public:
   // here for O(1) subsequent lookups via VMThread::cachedIsJavaThread().
 
   // Called from JVMTI ThreadStart callback for threads known to be Java threads.
-  inline void setJavaThread() {
-    _misc_flags |= FLAG_JAVA_THREAD;
+  inline void setJavaThread(bool is_java) {
+    if (is_java) {
+      _misc_flags |= ((_misc_flags & ~TYPE_MASK) | TYPE_JAVA_THREAD);
+    } else {
+      _misc_flags |= ((_misc_flags & ~TYPE_MASK) | TYPE_NOT_JAVA_THREAD);
+    }
   }
 
-  // Returns the cached JavaThread status. Only valid after setJavaThread() or
-  // cacheJavaThread() has been called (check isJavaThreadKnown() first).
-  inline bool isJavaThread() const {
-    return (_misc_flags & FLAG_JAVA_THREAD) != 0;
+  inline enum ThreadType threadType() const {
+    return static_cast<ThreadType>(_misc_flags & TYPE_MASK);
   }
 
   inline bool isCrashProtectionActive() const { return _crash_protection_active; }

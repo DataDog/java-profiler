@@ -710,7 +710,7 @@ DECLARE(VMThread)
 
     OSThreadState osThreadState();
 
-    int state();
+    enum JVMJavaThreadState state();
 
     bool inJava() {
         return state() == 8;

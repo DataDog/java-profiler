@@ -68,7 +68,7 @@ static CTimer ctimer;
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   ProfiledThread::initCurrentThread();
   ProfiledThread *current = ProfiledThread::current();
-  current->setJavaThread();
+  current->setJavaThread(true);
   int tid = current->tid();
   if (_thread_filter.enabled()) {
     int slot_id = _thread_filter.registerThread();
