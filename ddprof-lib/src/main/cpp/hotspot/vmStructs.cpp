@@ -725,7 +725,7 @@ JNIEnv* VMThread::jni() {
     if (_env_offset < 0) {
         return VM::jni();  // fallback for non-HotSpot JVM
     }
-    return isJavaThread() ? (JNIEnv*) at(_env_offset) : NULL;
+    return isJavaThread(this) ? (JNIEnv*) at(_env_offset) : NULL;
 }
 
 jmethodID VMMethod::id() {
@@ -1007,14 +1007,14 @@ OSThreadState VMThread::osThreadState() {
 enum JVMJavaThreadState VMThread::state() {
     int state = 0;
     // Only Java threads have the thread state
-    if (isJavaThread()) {
+    if (isJavaThread(this)) {
         int offset = VMStructs::thread_state_offset();
         if (offset >= 0) {
             int* state_addr = (int*)at(offset);
             if (state_addr != nullptr) {
                 state = SafeAccess::safeFetch32(state_addr, 0);
                 // Checking for bad data
-                if (state > _thread_max_state || state < 0) {
+                if (state >= _thread_max_state || state < 0) {
                     state = 0;
                 }
             }

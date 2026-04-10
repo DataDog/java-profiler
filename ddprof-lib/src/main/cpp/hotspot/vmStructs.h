@@ -713,7 +713,7 @@ DECLARE(VMThread)
     enum JVMJavaThreadState state();
 
     bool inDeopt() {
-        if (!isJavaThread()) return false;
+        if (!isJavaThread(this)) return false;
         assert(_thread_vframe_offset >= 0);
         return SafeAccess::loadPtr((void**) at(_thread_vframe_offset), nullptr) != NULL;
     }
@@ -754,7 +754,7 @@ DECLARE(VMThread)
     }
 
     NOADDRSANITIZE VMJavaFrameAnchor* anchor() {
-        if (!isJavaThread()) return NULL;
+        if (!isJavaThread(this)) return NULL;
         assert(_thread_anchor_offset >= 0);
         return VMJavaFrameAnchor::cast(at(_thread_anchor_offset));
     }
