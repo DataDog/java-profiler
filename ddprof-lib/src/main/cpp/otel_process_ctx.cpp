@@ -806,10 +806,16 @@ static otel_process_ctx_result otel_process_ctx_encode_protobuf_payload(char **o
 
         // Dispatch based on key
         if (strcmp(key_buffer, "threadlocal.schema_version") == 0) {
-          otel_thread_ctx_config_data *setup = (otel_thread_ctx_config_data *) calloc(1, sizeof(otel_thread_ctx_config_data));
-          if (!setup) { free(value); return false; }
-          setup->schema_version = value;
-          data_out->thread_ctx_config = setup;
+          if (!data_out->thread_ctx_config) {
+            otel_thread_ctx_config_data *setup = (otel_thread_ctx_config_data *) calloc(1, sizeof(otel_thread_ctx_config_data));
+            if (!setup) { free(value); return false; }
+            data_out->thread_ctx_config = setup;
+          } else {
+            if (((otel_thread_ctx_config_data *)data_out->thread_ctx_config)->schema_version) {
+              free((void *)((otel_thread_ctx_config_data *)data_out->thread_ctx_config)->schema_version);
+            }
+          }
+          ((otel_thread_ctx_config_data *)data_out->thread_ctx_config)->schema_version = value;
         } else {
           char *key = strdup(key_buffer);
           if (!key || extra_attributes_index + 2 >= extra_attributes_capacity) {
