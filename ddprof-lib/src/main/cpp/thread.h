@@ -25,7 +25,7 @@ public:
     TYPE_UNKNOWN = 0,
     TYPE_JAVA_THREAD = 0x1,
     TYPE_NOT_JAVA_THREAD = 0x2,
-    TYPE_MASK = 0x3
+    TYPE_MASK = TYPE_JAVA_THREAD | TYPE_NOT_JAVA_THREAD
   };
 
 private:
@@ -205,17 +205,12 @@ public:
     return &_otel_ctx_record;
   }
 
-  // JavaThread status cache — avoids repeated vtable checks in VMThread::isJavaThread().
-  // JVMTI ThreadStart only fires for application threads, not for JVM-internal
-  // JavaThread subclasses (CompilerThread, etc.), so we cache the vtable result
-  // here for O(1) subsequent lookups via VMThread::cachedIsJavaThread().
-
-  // Called from JVMTI ThreadStart callback for threads known to be Java threads.
+  // Record java thread state
   inline void setJavaThread(bool is_java) {
     if (is_java) {
-      _misc_flags |= ((_misc_flags & ~TYPE_MASK) | TYPE_JAVA_THREAD);
+      _misc_flags = ((_misc_flags & ~TYPE_MASK) | TYPE_JAVA_THREAD);
     } else {
-      _misc_flags |= ((_misc_flags & ~TYPE_MASK) | TYPE_NOT_JAVA_THREAD);
+      _misc_flags = ((_misc_flags & ~TYPE_MASK) | TYPE_NOT_JAVA_THREAD);
     }
   }
 

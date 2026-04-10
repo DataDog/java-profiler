@@ -712,10 +712,6 @@ DECLARE(VMThread)
 
     enum JVMJavaThreadState state();
 
-    bool inJava() {
-        return state() == 8;
-    }
-
     bool inDeopt() {
         if (!isJavaThread()) return false;
         assert(_thread_vframe_offset >= 0);

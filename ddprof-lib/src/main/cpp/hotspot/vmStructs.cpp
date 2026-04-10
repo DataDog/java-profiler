@@ -630,7 +630,7 @@ void* VMThread::initialize(jthread thread) {
 }
 
 bool VMThread::isJavaThread(VMThread* vm_thread) {
-    // Must be current thread
+    // Must be called from current thread
     assert(vm_thread == VMThread::current());
 
     // Not a JVM thread - native thread, e.g. thread launched by JNI code
@@ -642,8 +642,11 @@ bool VMThread::isJavaThread(VMThread* vm_thread) {
     // The flag is set in jvmti ThreadStart callback, and cleared in ThreadEnd callback.
     ProfiledThread *prof_thread = ProfiledThread::currentSignalSafe();
     enum ProfiledThread::ThreadType type;
-    if (prof_thread != nullptr && (type =  prof_thread->threadType()) != ProfiledThread::ThreadType::TYPE_JAVA_THREAD) {
-        return type == ProfiledThread::ThreadType::TYPE_JAVA_THREAD;
+    if (prof_thread != nullptr) {
+        ProfiledThread::ThreadType type =  prof_thread->threadType();
+        if (type != ProfiledThread::ThreadType::TYPE_UNKNOWN) {
+            return type == ProfiledThread::ThreadType::TYPE_JAVA_THREAD;
+        }
     }
 
     // jvmti ThreadStart does not callback to JVM internal threads, e.g. Compiler threads, which also JavaThreads,
@@ -703,13 +706,8 @@ OSThreadState VMThread::getOSThreadState() {
   if (vm_thread == nullptr) {
     return OSThreadState::UNKNOWN;
   }
-  int raw_thread_state = vm_thread->state();
-  bool is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
-  OSThreadState state = OSThreadState::UNKNOWN;
-  if (is_java_thread) {
-    state = vm_thread->osThreadState();
-  }
-  return state;
+
+  return vm_thread->osThreadState();
 }
 
 int VMThread::osThreadId() {
