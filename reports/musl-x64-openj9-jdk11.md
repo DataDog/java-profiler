@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk11
 
 ## musl-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-04-12 21:18:05 EDT
+**Date:** 2026-04-12 21:18:54 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,26 +28,27 @@ title: musl-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 487 |
-| Sample Rate | 8.12/sec |
-| Health Score | 507% |
+| CPU Samples | 604 |
+| Sample Rate | 10.07/sec |
+| Health Score | 629% |
 | Threads | 8 |
-| Allocations | 369 |
+| Allocations | 395 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 687 |
-| Sample Rate | 11.45/sec |
-| Health Score | 716% |
+| CPU Samples | 714 |
+| Sample Rate | 11.90/sec |
+| Health Score | 744% |
 | Threads | 9 |
-| Allocations | 521 |
+| Allocations | 530 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
+1776042881 32
 1776042886 32
 1776042891 32
 1776042896 32
@@ -67,7 +68,6 @@ title: musl-x64-openj9-jdk11
 1776042966 32
 1776042971 32
 1776042976 32
-1776042981 32
 ```
 </details>
 
