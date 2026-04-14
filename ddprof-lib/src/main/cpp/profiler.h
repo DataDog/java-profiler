@@ -338,6 +338,12 @@ public:
   void recordWallClockEpoch(int tid, WallClockEpochEvent *event);
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
+  void recordDeadlock(int tid, u64 deadlock_id, u64 call_trace_id,
+                      const char *lock_name, int lock_owner_tid,
+                      u64 lock_owner_call_trace_id);
+  void recordDeadlockWithCapture(JNIEnv *env, jthread thread,
+                                 const char *lock_name,
+                                 jthread lock_owner_thread, u64 deadlock_id);
   void writeLog(LogLevel level, const char *message);
   void writeLog(LogLevel level, const char *message, size_t len);
   void writeDatadogProfilerSetting(int tid, int length, const char *name,

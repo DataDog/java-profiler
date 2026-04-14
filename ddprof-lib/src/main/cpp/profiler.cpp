@@ -601,6 +601,65 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
   _locks[lock_index].unlock();
 }
 
+void Profiler::recordDeadlock(int tid, u64 deadlock_id, u64 call_trace_id,
+                              const char *lock_name, int lock_owner_tid,
+                              u64 lock_owner_call_trace_id) {
+  u32 lock_index = getLockIndex(tid);
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    return;
+  }
+  _jfr.recordDeadlock(lock_index, tid, deadlock_id, call_trace_id, lock_name,
+                      lock_owner_tid, lock_owner_call_trace_id);
+  _locks[lock_index].unlock();
+}
+
+static u64 captureStackTrace(jthread thread, CallTraceStorage &storage,
+                             int max_depth) {
+  const int MAX_DEADLOCK_FRAMES = 128;
+  int depth = max_depth > 0 && max_depth < MAX_DEADLOCK_FRAMES
+                  ? max_depth
+                  : MAX_DEADLOCK_FRAMES;
+  jvmtiFrameInfo jvmti_frames[MAX_DEADLOCK_FRAMES];
+  ASGCT_CallFrame asgct_frames[MAX_DEADLOCK_FRAMES];
+  int num_frames = 0;
+
+  if (VM::jvmti()->GetStackTrace(thread, 0, depth, jvmti_frames,
+                                 &num_frames) != JVMTI_ERROR_NONE ||
+      num_frames <= 0) {
+    return 0;
+  }
+
+  for (int i = 0; i < num_frames; i++) {
+    asgct_frames[i].bci = (jint)jvmti_frames[i].location;
+    asgct_frames[i].method_id = jvmti_frames[i].method;
+    LP64_ONLY(asgct_frames[i].padding = 0;)
+  }
+
+  return storage.put(num_frames, asgct_frames, num_frames >= depth, 1);
+}
+
+void Profiler::recordDeadlockWithCapture(JNIEnv *env, jthread thread,
+                                         const char *lock_name,
+                                         jthread lock_owner_thread,
+                                         u64 deadlock_id) {
+  int tid = JVMThread::nativeThreadId(env, thread);
+  int lock_owner_tid = JVMThread::nativeThreadId(env, lock_owner_thread);
+  if (tid < 0 || lock_owner_tid < 0) {
+    return;
+  }
+
+  u64 call_trace_id = captureStackTrace(thread, _call_trace_storage,
+                                        _max_stack_depth);
+  u64 lock_owner_trace_id = captureStackTrace(lock_owner_thread,
+                                              _call_trace_storage,
+                                              _max_stack_depth);
+
+  recordDeadlock(tid, deadlock_id, call_trace_id, lock_name, lock_owner_tid,
+                 lock_owner_trace_id);
+}
+
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
                                     ASGCT_CallFrame *frames, bool truncated,
                                     jint event_type, Event *event) {

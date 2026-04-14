@@ -313,6 +313,18 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   Profiler::instance()->recordQueueTime(tid, &event);
 }
 
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_recordDeadlock0(
+    JNIEnv *env, jclass unused, jthread thread, jstring lockName,
+    jthread lockOwnerThread, jlong deadlockId) {
+  if (thread == NULL || lockOwnerThread == NULL || lockName == NULL) {
+    return;
+  }
+  JniString lock_name_str(env, lockName);
+  Profiler::instance()->recordDeadlockWithCapture(
+      env, thread, lock_name_str.c_str(), lockOwnerThread, (u64)deadlockId);
+}
+
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_currentTicks0(JNIEnv *env,
                                                        jclass unused) {
