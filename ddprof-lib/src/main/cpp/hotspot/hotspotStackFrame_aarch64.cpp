@@ -78,6 +78,64 @@ static inline bool isZeroSizeFrame(const char* name) {
     }
 }
 
+static inline bool isEntryBarrier(instruction_t* ip) {
+    // ldr  w9, [x28, #32]
+    // cmp  x8, x9
+    return ip[0] == 0xb9402389 && ip[1] == 0xeb09011f;
+}
+
+static inline bool isFrameComplete(instruction_t* entry, instruction_t* ip) {
+    // Frame is fully constructed after sp is decremented by the frame size.
+    // Check if there is such an instruction anywhere between
+    // the method entry and the current instruction pointer.
+    while (--ip >= entry) {
+        if ((*ip & 0xff8003ff) == 0xd10003ff) {  // sub sp, sp, #frame_size
+            return true;
+        }
+    }
+    return false;
+}
+
+
+static inline bool isPollReturn(instruction_t* ip) {
+    // JDK 17+
+    //   add  sp, sp, #0x30
+    //   ldr  x8, [x28, #832]
+    //   cmp  sp, x8
+    //   b.hi offset
+    //   ret
+    //
+    // JDK 11
+    //   add  sp, sp, #0x30
+    //   ldr  x8, [x28, #264]
+    //   ldr  wzr, [x8]
+    //   ret
+    //
+    // JDK 8
+    //   add  sp, sp, #0x30
+    //   adrp x8, polling_page
+    //   ldr  wzr, [x8]
+    //   ret
+    //
+    if ((ip[0] & 0xffc003ff) == 0xf9400388 && (ip[-1] & 0xff8003ff) == 0x910003ff) {
+        // ldr x8, preceded by add sp
+        return true;
+    } else if ((ip[0] & 0x9f00001f) == 0x90000008 && (ip[-1] & 0xff8003ff) == 0x910003ff) {
+        // adrp x8, preceded by add sp
+        return true;
+    } else if (ip[0] == 0xeb2863ff && ip[2] == 0xd65f03c0) {
+        // cmp sp, x8, followed by ret
+        return true;
+    } else if ((ip[0] & 0xff000010) == 0x54000000 && ip[1] == 0xd65f03c0) {
+        // b.cond, followed by ret
+        return true;
+    } else if (ip[0] == 0xb940011f && ip[1] == 0xd65f03c0) {
+        // ldr wzr, followed by ret
+        return true;
+    }
+    return false;
+}
+
  NOSANALIGSANITIZE bool HotspotStackFrame::unwindCompiled(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     instruction_t* ip = (instruction_t*)pc;
     instruction_t* entry = (instruction_t*)nm->entry();
@@ -217,64 +275,6 @@ NOSANALIGSANITIZE bool HotspotStackFrame::unwindStub(instruction_t* entry, const
         }
     }
 
-    return false;
-}
-
-static inline bool isEntryBarrier(instruction_t* ip) {
-    // ldr  w9, [x28, #32]
-    // cmp  x8, x9
-    return ip[0] == 0xb9402389 && ip[1] == 0xeb09011f;
-}
-
-static inline bool isFrameComplete(instruction_t* entry, instruction_t* ip) {
-    // Frame is fully constructed after sp is decremented by the frame size.
-    // Check if there is such an instruction anywhere between
-    // the method entry and the current instruction pointer.
-    while (--ip >= entry) {
-        if ((*ip & 0xff8003ff) == 0xd10003ff) {  // sub sp, sp, #frame_size
-            return true;
-        }
-    }
-    return false;
-}
-
-
-static inline bool isPollReturn(instruction_t* ip) {
-    // JDK 17+
-    //   add  sp, sp, #0x30
-    //   ldr  x8, [x28, #832]
-    //   cmp  sp, x8
-    //   b.hi offset
-    //   ret
-    //
-    // JDK 11
-    //   add  sp, sp, #0x30
-    //   ldr  x8, [x28, #264]
-    //   ldr  wzr, [x8]
-    //   ret
-    //
-    // JDK 8
-    //   add  sp, sp, #0x30
-    //   adrp x8, polling_page
-    //   ldr  wzr, [x8]
-    //   ret
-    //
-    if ((ip[0] & 0xffc003ff) == 0xf9400388 && (ip[-1] & 0xff8003ff) == 0x910003ff) {
-        // ldr x8, preceded by add sp
-        return true;
-    } else if ((ip[0] & 0x9f00001f) == 0x90000008 && (ip[-1] & 0xff8003ff) == 0x910003ff) {
-        // adrp x8, preceded by add sp
-        return true;
-    } else if (ip[0] == 0xeb2863ff && ip[2] == 0xd65f03c0) {
-        // cmp sp, x8, followed by ret
-        return true;
-    } else if ((ip[0] & 0xff000010) == 0x54000000 && ip[1] == 0xd65f03c0) {
-        // b.cond, followed by ret
-        return true;
-    } else if (ip[0] == 0xb940011f && ip[1] == 0xd65f03c0) {
-        // ldr wzr, followed by ret
-        return true;
-    }
     return false;
 }
 
