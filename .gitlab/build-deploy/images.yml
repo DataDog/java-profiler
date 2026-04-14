@@ -1,0 +1,11 @@
+stages:
+  - images
+variables:
+  # Base images for the build docker images
+  OPENJDK_BASE_IMAGE: bellsoft/liberica-openjdk-debian:21
+  OPENJDK_BASE_IMAGE_ARM64: bellsoft/liberica-openjdk-debian:21-aarch64
+  OPENJDK_BASE_IMAGE_MUSL: bellsoft/liberica-openjdk-alpine-musl:21
+  OPENJDK_BASE_IMAGE_ARM64_MUSL: bellsoft/liberica-openjdk-alpine-musl:21
+  BASE_IMAGE_LIBC_2_17: centos:7
+
+  DOCKER_IMAGE: 486234852809.dkr.ecr.us-east-1.amazonaws.com/images/docker:24.0.4-gbi-focal

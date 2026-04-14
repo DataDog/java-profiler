@@ -41,6 +41,7 @@ inline bool crashProtectionActive();
 
 template <typename T>
 inline T* cast_to(const void* ptr) {
+    assert(VM::isHotspot()); // This should only be used in HotSpot-specific code
     assert(T::type_size() > 0); // Ensure type size has been initialized
     assert(crashProtectionActive() || ptr == nullptr || SafeAccess::isReadableRange(ptr, T::type_size()));
     return reinterpret_cast<T*>(const_cast<void*>(ptr));
@@ -764,56 +765,19 @@ DECLARE(VMThread)
 
     static inline VMThread* current();
     static inline VMThread* fromJavaThread(JNIEnv* env, jthread thread);
+    static bool isJavaThread(VMThread* thread);
     static ExecutionMode getExecutionMode();
     static OSThreadState getOSThreadState();
 
     int osThreadId();
     JNIEnv* jni();
 
-    const void** vtable() {
-        assert(SafeAccess::isReadable(this));
-        return *(const void***)this;
-    }
-
-    // This thread is considered a JavaThread if at least 2 of the selected 3 vtable entries
-    // match those of a known JavaThread (which is either application thread or AttachListener).
-    // Indexes were carefully chosen to work on OpenJDK 8 to 25, both product an debug builds.
-    bool isJavaThread() {
-        const void** vtbl = vtable();
-        return (vtbl[1] == _java_thread_vtbl[1]) +
-               (vtbl[3] == _java_thread_vtbl[3]) +
-               (vtbl[5] == _java_thread_vtbl[5]) >= 2;
-    }
-
-    // Cached version of isJavaThread(). On first call per thread, computes the
-    // vtable check and caches the result in ProfiledThread for O(1) subsequent
-    // lookups. This is needed because JVMTI ThreadStart only fires for application
-    // threads, not for JVM-internal JavaThread subclasses (CompilerThread, etc.).
-    bool cachedIsJavaThread() {
-        ProfiledThread* pt = ProfiledThread::currentSignalSafe();
-        if (pt != NULL) {
-            if (!pt->isJavaThreadKnown()) {
-                pt->cacheJavaThread(isJavaThread());
-            }
-            bool result = pt->isJavaThread();
-            if (!result) Counters::increment(WALKVM_CACHED_NOT_JAVA);
-            return result;
-        }
-        bool result = isJavaThread();
-        if (!result) Counters::increment(WALKVM_CACHED_NOT_JAVA);
-        return result;
-    }
-
     OSThreadState osThreadState();
 
-    int state();
-
-    bool inJava() {
-        return state() == 8;
-    }
+    JVMJavaThreadState state();
 
     bool inDeopt() {
-        if (!cachedIsJavaThread()) return false;
+        if (!isJavaThread(this)) return false;
         assert(_thread_vframe_offset >= 0);
         return SafeAccess::loadPtr((void**) at(_thread_vframe_offset), nullptr) != NULL;
     }
@@ -854,7 +818,7 @@ DECLARE(VMThread)
     }
 
     NOADDRSANITIZE VMJavaFrameAnchor* anchor() {
-        if (!cachedIsJavaThread()) return NULL;
+        if (!isJavaThread(this)) return NULL;
         assert(_thread_anchor_offset >= 0);
         return VMJavaFrameAnchor::cast(at(_thread_anchor_offset));
     }
@@ -883,6 +847,9 @@ DECLARE(VMThread)
     inline VMMethod* compiledMethod();
 private:
     static inline int nativeThreadId(JNIEnv* jni, jthread thread);
+    inline void** vtable();
+    inline bool hasJavaThreadVtable();
+
 DECLARE_END
 
 DECLARE(VMConstMethod)

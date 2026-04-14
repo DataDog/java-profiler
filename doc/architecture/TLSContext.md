@@ -2,678 +2,504 @@
 
 ## Overview
 
-The Thread-Local Context (TLS Context) system provides a high-performance, signal-handler-safe mechanism for capturing distributed tracing context (span IDs, root span IDs, and custom tags) during profiling events. This design enables the profiler to correlate performance samples with active traces, providing rich contextual information for distributed system debugging.
+The Thread-Local Context (TLS Context) system provides a high-performance,
+signal-handler-safe mechanism for capturing distributed tracing context
+(trace IDs, span IDs, and custom attributes) during
+profiling events. It enables the profiler to correlate performance samples
+with active traces.
 
-The system uses a shared-memory architecture where Java code writes tracing context into thread-local direct ByteBuffers, and native signal handlers (SIGPROF) safely read this context without locks or blocking operations. Memory ordering guarantees protect against torn reads and ensure consistency even when signal handlers interrupt context writes mid-sequence.
+The system uses OTEL profiling signal conventions
+([OTEP #4947](https://github.com/open-telemetry/oteps/pull/4947)) as its
+sole context storage format. Java code writes tracing context into
+thread-local `DirectByteBuffer`s mapped to native structs. Two consumer
+paths read this context concurrently:
+
+1. **DD signal handler (SIGPROF)** — reads integer tag encodings and
+   root-span ID from the sidecar buffer, and span ID from the OTEL record
+   (ignores trace ID)
+2. **External OTEP-compliant profilers** — discover the
+   `otel_thread_ctx_v1` TLS symbol via ELF dynsym and read
+   the `OtelThreadContextRecord` directly.
+
+All writes from Java are zero-JNI on the hot path (cache-hit case),
+using `DirectByteBuffer` with explicit memory ordering. A detach/attach
+publication protocol ensures readers see either a complete old record or
+a complete new record, never a torn intermediate state.
+
+For benchmark data, see
+[ThreadContext Benchmark Report](../performance/reports/thread-context-benchmark-2026-03-21.md).
 
 ## Core Design Principles
 
-1. **Zero-Copy Shared Memory**: Java writes to direct ByteBuffers mapped to native thread-local storage
-2. **Signal Handler Safety**: All reads from signal handlers use lock-free atomic operations
-3. **Memory Ordering Guarantees**: Explicit release/acquire semantics prevent torn reads
-4. **Checksum Validation**: Knuth multiplicative hash detects inconsistent reads
-5. **Platform Independence**: Correct behavior on both strong (x86) and weak (ARM) memory models
-6. **Low Overhead**: Typical write ~10-20ns, read ~5-10ns (no syscalls, no locks)
+1. **Zero-Copy Shared Memory** — Java writes to `DirectByteBuffer`s
+   mapped to native `ProfiledThread` fields; no data copying between
+   Java and native heaps.
+2. **Signal Handler Safety** — all signal-handler reads use lock-free
+   atomic loads with acquire semantics; no allocation, no locks, no
+   syscalls.
+3. **Detach/Attach Publication Protocol** — the `valid` flag is cleared
+   before mutation and set after, with `storeFence` barriers between
+   steps. The TLS pointer is set permanently at thread init.
+4. **Two-Phase Attribute Registration** — string attribute values are
+   registered in the native Dictionary once via JNI; subsequent uses
+   are zero-JNI ByteBuffer writes from a per-thread encoding cache.
+5. **Platform Independence** — correct on both strong (x86/TSO) and
+   weak (ARM) memory models via explicit `storeFence` / volatile write
+   barriers.
+6. **Low Overhead** — typical span lifecycle write ~30 ns, sidecar
+   encoding read ~2 ns (no syscalls, no locks).
 
-## Architecture Overview
+## Architecture
 
 ### High-Level Data Flow
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                      Application Thread                          │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Tracer Updates Context                                          │
-│         ↓                                                        │
-│  ThreadContext.put(spanId, rootSpanId)                           │
-│         ↓                                                        │
-│  BufferWriter (ordered writes with memory barriers)              │
-│         ↓                                                        │
-│  ┌────────────────────────────────────────────┐                  │
-│  │  Direct ByteBuffer (thread_local)          │                  │
-│  │  ┌──────────────┬──────────────┬─────────┐ │                  │
-│  │  │ spanId (u64) │rootSpanId(64)│checksum │ │                  │
-│  │  │              │              │  (u64)  │ │                  │
-│  │  └──────────────┴──────────────┴─────────┘ │                  │
-│  └────────────────────────────────────────────┘                  │
-│         ↕ (mapped to same memory)                                │
-│  ┌────────────────────────────────────────────┐                  │
-│  │  Native Context struct (thread_local)      │                  │
-│  │  volatile u64 spanId;                      │                  │
-│  │  volatile u64 rootSpanId;                  │                  │
-│  │  volatile u64 checksum;                    │                  │
-│  │  Tag tags[10];                             │                  │
-│  └────────────────────────────────────────────┘                  │
-│         ↑                                                        │
-│  Signal Handler Reads (SIGPROF)                                  │
-│         ↓                                                        │
-│  Recording::writeContext()                                       │
-│         ↓                                                        │
-│  JFR Event with Trace Context                                    │
-└──────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                       Application Thread                            │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Tracer calls ThreadContext.put(lrs, spanId, trHi, trLo)            │
+│         │                                                           │
+│         ▼                                                           │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │  setContextDirect()                                           │  │
+│  │  1. detach()  — valid ← 0, storeFence                         │  │
+│  │  2. recordBuffer.putLong(traceIdOffset, reverseBytes(trHi))   │  │
+│  │     recordBuffer.putLong(traceIdOffset+8, reverseBytes(trLo)) │  │
+│  │     recordBuffer.putLong(spanIdOffset, reverseBytes(spanId))  │  │
+│  │  3. sidecar[0..9] ← 0                                         │  │
+│  │     attrs_data_size ← LRS_ENTRY_SIZE (keeps fixed LRS at [0]) │  │
+│  │  4. sidecarBuffer.putLong(lrsSidecarOffset, lrs)              │  │
+│  │     writeLrsHex(lrs) — update fixed LRS entry in attrs_data   │  │
+│  │  5. attach() — storeFence, valid ← 1                          │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│         │                                                           │
+│         ▼                                                           │
+│  ┌────────────────────────────────┐  ┌───────────────────────────┐  │
+│  │ OtelThreadContextRecord (640B) │  │ Sidecar buffer            │  │
+│  │ ┌──────────────────────┐       │  │ ┌────────────────────────┐│  │
+│  │ │ trace_id[16]  (BE)   │       │  │ │ tag_encodings[10] (u32)││  │
+│  │ │ span_id[8]    (BE)   │       │  │ │ local_root_span_id(u64)││  │
+│  │ │ valid          (u8)  │       │  │ └────────────────────────┘│  │
+│  │ │ reserved       (u8)  │       │  └───────────────────────────┘  │
+│  │ │ attrs_data_size(u16) │       │         ▲ (DD signal handler)   │
+│  │ │ attrs_data[612]      │       │  ┌───────────────────────────┐  │
+│  │ └──────────────────────┘       │  │ TLS pointer (8B)          │  │
+│  └────────────────────────────────┘  │ otel_thread_ctx_v1        │  │
+│         ▲                    ▲       │ (thread_local, DLLEXPORT) │  │
+│         │                    │       └───────────────────────────┘  │
+│  DD signal handler     External OTEP                                │
+│  reads span_id         profiler reads                               │
+│  from record           full record via                              │
+│                        TLS symbol                                   │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Component Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Java Layer                               │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ThreadContext (per thread)                                     │
-│    │                                                            │
-│    ├─ ByteBuffer buffer (direct, maps to native Context)        │
-│    ├─ BufferWriter (version-agnostic ordered writes)            │
-│    └─ put(spanId, rootSpanId) / putCustom(offset, value)        │
-│         │                                                       │
-│         └─ Java 17+: JNI call → setContext0()                   │
-│         └─ Java 8-16: Pure Java → putContextJava()              │
-│                                                                 │
-│  BufferWriter (memory ordering abstraction)                     │
-│    │                                                            │
-│    ├─ BufferWriter8 (Java 8: Unsafe)                            │
-│    │    └─ putOrderedLong() / putLongVolatile()                 │
-│    │                                                            │
-│    └─ BufferWriter9 (Java 9+: VarHandle)                        │
-│         └─ setRelease() / setVolatile()                         │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                          Java Layer                                  │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  JavaProfiler                                                        │
+│    ├─ ThreadLocal<ThreadContext> tlsContextStorage                   │
+│    ├─ initializeContextTLS0(long[] metadata) → ByteBuffer[2]            │
+│    └─ registerConstant0(String value) → int encoding                 │
+│                                                                      │
+│  ThreadContext (per thread)                                          │
+│    ├─ recordBuffer  (640B DirectByteBuffer → OtelThreadContextRecord)│
+│    ├─ sidecarBuffer (DirectByteBuffer → tag encodings + LRS)         │
+│    ├─ put(lrs, spanId, trHi, trLo)  → setContextDirect()             │
+│    ├─ setContextAttribute(keyIdx, value) → setContextAttributeDirect │
+│    └─ Per-thread caches:                                             │
+│         └─ attrCache[CACHE_SIZE]: String → {int encoding, byte[] utf8}│
+│                                                                      │
+│  BufferWriter (memory ordering abstraction)                          │
+│    ├─ BufferWriter8  (Java 8:  Unsafe)                               │
+│    │    ├─ putOrderedLong / putOrderedInt                            │
+│    │    └─ storeFence → Unsafe.storeFence()                          │
+│    └─ BufferWriter9  (Java 9+: VarHandle)                            │
+│         ├─ setRelease                                                │
+│         └─ storeFence → VarHandle.storeStoreFence()                  │
+└──────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────┐
-│                       Native Layer                              │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  Context struct (thread_local, cache-aligned)                   │
-│    ├─ volatile u64 spanId                                       │
-│    ├─ volatile u64 rootSpanId                                   │
-│    ├─ volatile u64 checksum                                     │
-│    └─ Tag tags[10]                                              │
-│                                                                 │
-│  Contexts class (static access)                                 │
-│    ├─ initializeContextTls() → creates and maps Context         │
-│    ├─ get() → signal-safe TLS access via ProfiledThread         │
-│    └─ checksum(spanId, rootSpanId) → validation                 │
-│                                                                 │
-│  Recording::writeContext() (signal handler)                     │
-│    └─ Reads context with checksum validation                    │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Native Layer                                │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ProfiledThread (per thread, heap-allocated)                        │
+│    ├─ OtelThreadContextRecord _otel_ctx_record                      │
+│    ├─ alignas(8) u32 _otel_tag_encodings[DD_TAGS_CAPACITY]          │
+│    ├─ u64 _otel_local_root_span_id                                  │
+│    └─ bool _otel_ctx_initialized                                    │
+│                                                                     │
+│  otel_thread_ctx_v1 (thread_local, DLLEXPORT)                       │
+│    └─ OTEP #4947 TLS pointer for external profiler discovery        │
+│                                                                     │
+│  Recording::writeCurrentContext(Buffer*)  (signal handler)           │
+│    ├─ ContextApi::get(spanId, rootSpanId)                           │
+│    │    └─ acquire load of valid flag, big-endian decode of span_id │
+│    └─ thrd->getOtelTagEncoding(i) for each attribute                │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Memory Layout
 
-### Context Structure
+### OtelThreadContextRecord
+
+The OTEP #4947 record is a packed struct embedded in each `ProfiledThread`:
 
 ```
-Offset  Size   Field           Description
+Offset  Size   Field             Description
 ──────────────────────────────────────────────────────────────────
-0x00    8      spanId          Current trace span ID
-0x08    8      rootSpanId      Root span ID for trace
-0x10    8      checksum        Knuth hash of spanId ^ rootSpanId
-0x18    4      tags[0]         Custom tag slot 0
-0x1C    4      tags[1]         Custom tag slot 1
-...
-0x3C    4      tags[9]         Custom tag slot 9
+0x00    16     trace_id          128-bit W3C trace ID (big-endian)
+0x10     8     span_id           64-bit span ID (big-endian)
+0x18     1     valid             1 = record is consistent, 0 = in-progress
+0x19     1     _reserved         Reserved (must be 0)
+0x1A     2     attrs_data_size   Size of attrs_data in bytes (LE uint16)
+0x1C   612     attrs_data        TLV-encoded key/value attribute entries
 ──────────────────────────────────────────────────────────────────
-Total: 64 bytes (cache-aligned)
+Total: 640 bytes (OTEL_MAX_RECORD_SIZE)
 ```
 
-The structure is cache-aligned (64 bytes on most platforms) to:
-- Avoid false sharing between threads
-- Maximize cache locality for hot fields (spanId, rootSpanId, checksum)
-- Ensure atomic visibility on architectures with split cache lines
+### Sidecar Buffer
 
-## The Write Protocol
-
-### Signal Handler Race Condition
-
-The fundamental challenge: **signal handlers interrupt the writing thread mid-sequence**
+The sidecar is a contiguous, 8-byte-aligned region in `ProfiledThread`
+that the DD signal handler reads directly:
 
 ```
-Thread Timeline:
-─────────────────────────────────────────────────────────────────
-Time 0:  write(checksum = 0)         ← Mark in-progress
-Time 1:  write(spanId = 123)
-Time 2:  write(rootSpanId = 456)
-         ⚡ SIGNAL (SIGPROF) ARRIVES  ← Signal handler interrupts!
-                                      ← Handler MUST see consistent state
-Time 3:  write(checksum = valid)     ← Never executed yet
-─────────────────────────────────────────────────────────────────
+Offset  Size   Field                     Description
+──────────────────────────────────────────────────────────────────
+0x00    40     _otel_tag_encodings[10]   Dictionary encoding per attribute (u32)
+0x28     8     _otel_local_root_span_id  Local root span ID (u64)
+──────────────────────────────────────────────────────────────────
+Total: 48 bytes
 ```
 
-### Write Sequence with Memory Ordering
+The sidecar fields are exposed to Java as a single `DirectByteBuffer`.
+Tag encodings are integer IDs from the profiler's `Dictionary` constant
+pool — the signal handler writes them directly into JFR events without
+any string lookup.
 
-```java
-public long putContextJava(long spanId, long rootSpanId) {
-    long checksum = computeContextChecksum(spanId, rootSpanId);
+### attrs_data TLV Encoding
 
-    // Step 1: Mark in-progress (RELEASE semantics)
-    //   - Prevents reordering with prior operations
-    //   - Visible before subsequent data writes
-    BUFFER_WRITER.writeOrderedLong(buffer, CHECKSUM_OFFSET, 0);
+Each entry in `attrs_data` is encoded as:
 
-    // Step 2: Write data fields (RELEASE semantics)
-    //   - Prevents reordering with prior writes
-    //   - Must complete before final checksum
-    BUFFER_WRITER.writeOrderedLong(buffer, SPAN_ID_OFFSET, spanId);
-    BUFFER_WRITER.writeOrderedLong(buffer, ROOT_SPAN_ID_OFFSET, rootSpanId);
-
-    // Step 3: Signal completion (VOLATILE semantics)
-    //   - Full memory barrier
-    //   - Prevents reordering with BOTH prior and subsequent operations
-    //   - Ensures all prior writes are visible before this write
-    BUFFER_WRITER.writeVolatileLong(buffer, CHECKSUM_OFFSET, checksum);
-
-    return checksum;
-}
+```
+┌──────────────┬──────────────┬───────────────────────┐
+│ key_index(1) │ value_len(1) │ value_utf8[value_len] │
+└──────────────┴──────────────┴───────────────────────┘
 ```
 
-### Read Sequence in Signal Handler
+- `key_index` 0 is reserved for the local root span ID (16-char zero-padded lowercase hex string, always fixed at attrs_data[0..17]).
+- `key_index` 1..N correspond to user-registered attributes offset by 1.
+
+## The Detach/Attach Publication Protocol
+
+### Problem
+
+Two concurrent readers may observe the record at any point during a
+Java-side mutation:
+
+1. **SIGPROF signal handler** — interrupts the writing thread
+   mid-sequence, runs on the same thread.
+2. **External OTEP profiler** — reads from a different thread via the
+   `otel_thread_ctx_v1` TLS pointer.
+
+Both must see either a complete old state or a complete new state, never
+a partially-written record.
+
+### Protocol
+
+```
+Java writer timeline:
+──────────────────────────────────────────────────────────────────
+Time 0:  detach()
+           recordBuffer.put(validOffset, 0)        ← mark invalid
+           storeFence()                            ← drain store buffer
+
+Time 1:  Mutate record fields
+           recordBuffer.putLong(traceIdOffset, ...)
+           recordBuffer.putLong(spanIdOffset, ...)
+           sidecar[0..9] ← 0                                          ← zero tag encodings
+           attrs_data_size ← LRS_ENTRY_SIZE  ← keep only fixed LRS entry at attrs_data[0]
+           sidecarBuffer.putLong(lrsSidecarOffset, lrs)           ← update sidecar LRS
+           writeLrsHex(lrs)                                       ← update LRS in attrs_data
+
+         ⚡ SIGPROF may arrive here — handler sees valid=0, skips record
+
+Time 2:  attach()
+           storeFence()                            ← ensure writes visible
+           recordBuffer.put(validOffset, 1)        ← mark valid
+──────────────────────────────────────────────────────────────────
+```
+
+### Reader: DD Signal Handler
 
 ```cpp
-void Recording::writeContext(Buffer *buf, Context &context) {
-    // Step 1: Read checksum FIRST
-    u64 stored = context.checksum;
-
-    // Step 2: Check if write is in-progress or complete
-    if (stored == 0) {
-        // Write in-progress or no context set
-        // Safe: emit zeros
-        buf->putVar64(0);  // spanId
-        buf->putVar64(0);  // rootSpanId
-        return;
-    }
-
-    // Step 3: Read data fields
-    // Memory ordering guarantees these are valid if checksum != 0
-    u64 spanId = context.spanId;
-    u64 rootSpanId = context.rootSpanId;
-
-    // Step 4: Validate checksum
-    u64 computed = Contexts::checksum(spanId, rootSpanId);
-    if (stored != computed) {
-        // Torn read detected! (race condition caught)
-        TEST_LOG("Invalid context checksum: ctx=%p, tid=%d", &context, OS::threadId());
-        spanId = 0;
-        rootSpanId = 0;
-    }
-
-    // Step 5: Emit validated context
+// flightRecorder.cpp — Recording::writeCurrentContext()
+void Recording::writeCurrentContext(Buffer *buf) {
+    u64 spanId = 0, rootSpanId = 0;
+    bool hasContext = ContextApi::get(spanId, rootSpanId);  // acquire-loads valid flag
     buf->putVar64(spanId);
     buf->putVar64(rootSpanId);
+
+    size_t numAttrs = Profiler::instance()->numContextAttributes();
+    ProfiledThread* thrd = hasContext ? ProfiledThread::currentSignalSafe() : nullptr;
+    for (size_t i = 0; i < numAttrs; i++) {
+        buf->putVar32(thrd != nullptr ? thrd->getOtelTagEncoding(i) : 0);
+    }
 }
 ```
 
-## Memory Ordering Requirements
+`ContextApi::get()` performs (context_api.cpp):
 
-### Why Same-Thread Needs Memory Barriers
-
-Even though the writer and reader execute on the **same thread**, memory barriers are essential because:
-
-#### 1. Compiler Reordering
-Without barriers, the JIT compiler can reorder:
-```java
-// Source code order:
-write(checksum=0);
-write(spanId=123);
-write(checksum=valid);
-
-// Compiler could reorder to:
-write(spanId=123);
-write(checksum=valid);  ← Checksum set BEFORE in-progress marker!
-write(checksum=0);
-```
-
-#### 2. CPU Store Buffer Reordering (Weak Memory Models)
-On ARM (weakly-ordered architecture):
-- Stores may be buffered and reordered by the CPU
-- Signal handler executes in different execution context (interrupt frame)
-- Store buffer contents may not be visible to interrupt context without barriers
-
-On x86 (strongly-ordered architecture):
-- Stores naturally ordered (FIFO store buffer)
-- BUT compiler can still reorder without barriers
-- Release/acquire semantics provide compiler barriers
-
-#### 3. Signal Handler Execution Context
-Signal handlers are special:
-- Interrupt the current execution asynchronously
-- Execute in a different stack frame
-- May have different cache/store buffer visibility
-- Require explicit memory ordering guarantees
-
-### Memory Ordering Semantics
-
-#### Release Semantics (Ordered Writes)
-Used for: `writeOrderedLong()`, `writeOrderedInt()`
-
-**Guarantees:**
-- All prior memory operations complete before this write
-- This write is visible before subsequent operations begin
-- Prevents reordering with prior operations
-- One-way barrier: prior → this (but subsequent can move up)
-
-**Implementation:**
-- Java 8: `Unsafe.putOrderedLong()` → Store-Release
-- Java 9+: `VarHandle.setRelease()` → Store-Release
-- ARM: Translates to `STR` + `DMB ISH` (Data Memory Barrier, Inner Shareable)
-- x86: Translates to `MOV` + compiler barrier (x86 stores are naturally ordered)
-
-#### Volatile Semantics (Full Barrier)
-Used for: `writeVolatileLong()`, `writeVolatileInt()`
-
-**Guarantees:**
-- All prior memory operations complete before this write
-- This write completes before any subsequent operations begin
-- Prevents reordering with BOTH prior and subsequent operations
-- Two-way barrier: prior → this → subsequent
-
-**Implementation:**
-- Java 8: `Unsafe.putLongVolatile()` → Store-Release + Full Fence
-- Java 9+: `VarHandle.setVolatile()` → Sequential Consistency
-- ARM: Translates to `DMB ISH; STR; DMB ISH` (barriers on both sides)
-- x86: Translates to `LOCK MOV` or `MFENCE` (locked operation or memory fence)
-
-### Platform-Specific Behavior
-
-#### x86/x64 (Strong Memory Model)
-**Hardware Guarantees:**
-- Store-Store ordering: Stores execute in program order (FIFO store buffer)
-- Store-Load reordering: Stores can be reordered after subsequent loads
-- Atomic visibility: Naturally aligned 64-bit stores are atomic
-
-**What We Still Need:**
-- Compiler barriers to prevent JIT reordering
-- MFENCE for volatile writes to prevent Store-Load reordering
-- Memory model is strong, but not sequentially consistent
-
-**Performance:**
-- Release writes: ~1-2 cycles (MOV + compiler barrier)
-- Volatile writes: ~30-100 cycles (MFENCE is expensive)
-
-#### ARM/AArch64 (Weak Memory Model)
-**Hardware Guarantees:**
-- Almost none! ARM can reorder stores arbitrarily
-- No guarantee that other cores see stores in program order
-- Even same-thread observers (like signal handlers) may see reordering
-
-**What We Need:**
-- DMB ISH (Data Memory Barrier, Inner Shareable) for release semantics
-- Full barriers (DMB ISH before and after) for volatile semantics
-- Explicit memory ordering for everything
-
-**Performance:**
-- Release writes: ~10-20 cycles (STR + DMB ISH)
-- Volatile writes: ~40-80 cycles (DMB + STR + DMB)
-- DMB is relatively cheaper on modern ARM than MFENCE on x86
-
-### C++ Volatile Keyword (Insufficient)
-
-The C++ `Context` struct uses `volatile`:
 ```cpp
-volatile u64 spanId;
-volatile u64 rootSpanId;
-volatile u64 checksum;
+OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+if (__atomic_load_n(&record->valid, __ATOMIC_ACQUIRE) != 1) {
+    return false;  // record is being mutated — emit zeros
+}
+u64 val = 0;
+for (int i = 0; i < 8; i++) { val = (val << 8) | record->span_id[i]; }
+span_id = val;
 ```
 
-**What C++ volatile provides:**
-- Prevents compiler from optimizing away reads/writes
-- Forces memory access (no register caching)
-- Prevents reordering of accesses to the SAME volatile variable
+The acquire fence pairs with the writer's `storeFence` + `valid=1`
+sequence, ensuring all record field writes are visible if `valid` reads
+as 1.
 
-**What C++ volatile DOES NOT provide:**
-- No CPU memory barriers
-- No ordering guarantees between DIFFERENT volatile variables
-- No atomic guarantees (reads/writes can tear on 32-bit platforms)
-- **Signal handler sees checksum != 0 does NOT guarantee spanId/rootSpanId visible!**
+### Reader: External OTEP Profiler
 
-**Result:** Java-side memory barriers are ESSENTIAL for correctness.
+External profilers follow the OTEP #4947 protocol:
 
-## Checksum Algorithm
+1. Discover `otel_thread_ctx_v1` via ELF `dlsym`.
+2. Read the `OtelThreadContextRecord*` pointer. The pointer is set
+   permanently at thread init; detach/attach never modify it. It is nulled
+   on thread exit to prevent use-after-recycle — check for null before
+   dereferencing.
+3. Check `valid == 1`. If not, the record is being updated — skip.
+4. Read `trace_id`, `span_id`, `attrs_data` from the record.
 
-### Knuth Multiplicative Hash
+## Memory Ordering
 
-The checksum uses Knuth's multiplicative hash with XOR for collision resistance:
+### Why Barriers Are Needed
+
+Both consumers need to see field writes ordered before `valid=1`, but for
+different reasons:
+
+- The **signal handler** runs on the same thread as the writer. The CPU presents
+  its own stores in program order, so CPU store-buffer reordering is not a
+  concern. The JIT compiler can still reorder stores arbitrarily, so a compiler
+  barrier is required.
+- The **external OTEP profiler** (e.g. eBPF using scheduler events) attaches a
+  `sched_switch` tracepoint that fires on the same CPU that was executing the
+  thread. The Linux scheduler acquires `rq_lock` before the tracepoint fires,
+  which includes a full hardware memory barrier (`smp_mb__before_spinlock` on
+  ARM). By the time the eBPF probe runs, all prior user-space stores from that
+  thread are globally visible — including any stores ordered by `DMB ISHST`.
+
+In both cases `storeFence` serves as a compiler barrier that prevents the JIT
+from sinking record field writes past the `valid=1` store. On ARM it also emits
+`DMB ISHST`, which is required to order field writes before `valid=1` at the
+hardware level — this is not a mere side effect.
+
+### Barrier Taxonomy
+
+| Operation | Java 8 | Java 9+ | ARM | x86 |
+|-----------|--------|---------|-----|-----|
+| `storeFence` | `Unsafe.storeFence` | `VarHandle.storeStoreFence` | DMB ISHST (~2 ns) | compiler barrier (free) |
+
+On x86, `storeFence` is a compiler-only barrier (TSO guarantees hardware
+store ordering for free; Java 9+ `VarHandle.storeStoreFence` emits no
+hardware instruction on x86). On ARM it compiles to `DMB ISHST` (~2 ns).
+
+### Why storeFence, Not fullFence
+
+The detach/attach protocol only requires store-store ordering — all
+operations on the hot path are writes. There are no load-dependent
+ordering requirements on the writer side. `storeFence` (~2 ns on ARM)
+is sufficient; a full fence (~50 ns on ARM) would be wasteful.
+
+## Initialization
+
+### Per-Thread TLS Setup
+
+When a thread first accesses its `ThreadContext` via the `ThreadLocal`:
 
 ```java
-public static long computeContextChecksum(long spanId, long rootSpanId) {
-    // Knuth's golden ratio constant for 64-bit values
-    // φ = (1 + √5) / 2, constant = 2^64 / φ
-    final long KNUTH_CONSTANT = 0x9E3779B97F4A7C15L;
+// JavaProfiler.initializeThreadContext()
+long[] metadata = new long[6];
+ByteBuffer[] buffers = initializeContextTLS0(metadata);
+return new ThreadContext(buffers[0], buffers[1], metadata);
+```
 
-    // Hash spanId
-    long hashSpanId = spanId * KNUTH_CONSTANT;
+The native `initializeContextTLS0` (in `javaApi.cpp`):
 
-    // Swap rootSpanId halves to maximize avalanche effect
-    long swappedRootSpanId = ((rootSpanId & 0xFFFFFFFFL) << 32)
-                            | (rootSpanId >>> 32);
-    long hashRootSpanId = swappedRootSpanId * KNUTH_CONSTANT;
+1. Gets the calling thread's `ProfiledThread` (creates one if needed).
+2. Sets `otel_thread_ctx_v1` permanently to the thread's
+   `OtelThreadContextRecord` (triggering TLS slot init on musl).
+3. Fills the `metadata` array with field offsets (computed via
+   `offsetof`), so Java code writes to the correct positions regardless
+   of struct packing changes.
+4. Creates two `DirectByteBuffer`s mapped to:
+   - `_otel_ctx_record` (640 bytes)
+   - `_otel_tag_encodings` + `_otel_local_root_span_id` (48 bytes)
+5. Returns the buffer array.
 
-    // XOR for combining (prevents simple bit correlation)
-    long computed = hashSpanId ^ hashRootSpanId;
+This is the only JNI call in the initialization path. After this, all
+hot-path operations are pure Java ByteBuffer writes.
 
-    // Ensure checksum is never 0 (0 is reserved for "in-progress")
-    return computed == 0 ? 0xffffffffffffffffL : computed;
+### Signal-Safe TLS Access
+
+Signal handlers cannot call `initializeContextTLS0` (it may allocate). The
+read path uses a pre-initialized pointer:
+
+```cpp
+// ProfiledThread::currentSignalSafe() — no allocation, no TLS lazy init
+ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+if (thrd == nullptr || !thrd->isContextInitialized()) {
+    return false;  // emit zeros
 }
 ```
 
-**Design Rationale:**
+## Two-Phase Attribute Registration
 
-1. **Multiplicative Hash**: Provides excellent avalanche effect (changing one bit changes ~50% of output bits)
-2. **Half-Swap**: Maximizes bit mixing between high and low halves of rootSpanId
-3. **XOR Combination**: Symmetric, fast, prevents simple bit-level correlations
-4. **Zero Avoidance**: 0 is reserved for "write in-progress" marker
+String attributes are set via `ThreadContext.setContextAttribute(keyIndex, value)`.
+The hot path avoids JNI by splitting the work into two phases:
 
-**Collision Probability:**
-- For 64-bit hash output: ~2^-64 per pair (effectively zero)
-- Torn reads: Detected with high probability (requires matching hash of corrupted data)
+### Phase 1: Registration (cache miss)
 
-## Performance Characteristics
-
-### Write Path Performance
-
-**Pure Java Path** (Java 8-16):
-```
-writeOrderedLong(checksum=0)      ~5-10ns   (release barrier)
-writeOrderedLong(spanId)          ~5-10ns   (release barrier)
-writeOrderedLong(rootSpanId)      ~5-10ns   (release barrier)
-writeVolatileLong(checksum)       ~20-50ns  (full barrier)
-────────────────────────────────────────────
-Total: ~35-80ns per context update
-```
-
-**JNI Path** (Java 17+):
-```
-JNI transition overhead          ~5-10ns   (modern JVMs, @CriticalNative-like)
-Direct struct writes             ~2-5ns    (compiler optimizes to MOV)
-────────────────────────────────────────────
-Total: ~10-20ns per context update
-```
-
-**Comparison:** JNI path is 2-4x faster on Java 17+ due to:
-- Elimination of BufferWriter indirection
-- Direct native code generation (no JIT warm-up needed)
-- Optimized JNI calling conventions in modern JVMs
-
-### Read Path Performance (Signal Handler)
-
-```
-ProfiledThread::getContextTlsPtr()  ~2ns    (cached pointer read)
-context.checksum read               ~2-5ns  (volatile read)
-context.spanId read                 ~2-5ns  (volatile read, likely cached)
-context.rootSpanId read             ~2-5ns  (volatile read, likely cached)
-Checksum computation                ~3-8ns  (2 multiply, 1 XOR, 1 shift)
-────────────────────────────────────────────
-Total: ~11-25ns per context read
-```
-
-**Signal Handler Budget:**
-- Target: <500ns per sample (including stack walking)
-- Context read: ~15ns (~3% of budget)
-- Acceptable overhead for rich trace context
-
-## Signal Handler Safety
-
-### TLS Access Safety
-
-**Problem:** Direct TLS access (`thread_local context_tls_v1`) can deadlock:
-```cpp
-// DANGEROUS - DO NOT USE IN SIGNAL HANDLER
-Context& ctx = context_tls_v1;  // May trigger TLS lazy initialization
-                                // Lazy init calls malloc()
-                                // malloc() may hold lock
-                                // → DEADLOCK
-```
-
-**Solution:** Pre-initialized pointer via `ProfiledThread`:
-```cpp
-// SAFE - Pre-initialized pointer, no TLS access
-Context& Contexts::get() {
-    ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
-    if (thrd == nullptr || !thrd->isContextTlsInitialized()) {
-        return DD_EMPTY_CONTEXT;  // Safe fallback
-    }
-    // Return via cached pointer - no TLS lazy initialization
-    return *thrd->getContextTlsPtr();
-}
-```
-
-### Initialization Protocol
-
-```cpp
-// During thread initialization (NOT in signal handler):
-Context& Contexts::initializeContextTls() {
-    // First access to TLS - may trigger lazy initialization
-    Context& ctx = context_tls_v1;
-
-    // Store pointer in ProfiledThread for signal-safe access
-    ProfiledThread::current()->markContextTlsInitialized(&ctx);
-
-    return ctx;
-}
-```
-
-Java side:
-```java
-// Called during JavaProfiler initialization for each thread
-ByteBuffer buffer = JavaProfiler.initializeContextTls0();
-ThreadContext context = new ThreadContext(buffer);
-```
-
-### Lock-Free Guarantees
-
-The read path is completely lock-free:
-1. **No mutex locks**: Signal handler never acquires locks
-2. **No atomic RMW operations**: Only loads (no compare-and-swap)
-3. **No memory allocation**: All data structures pre-allocated
-4. **No system calls**: Pure memory reads with checksum validation
-5. **Bounded time**: Worst case ~25ns (no unbounded loops)
-
-## Version-Specific Implementations
-
-### BufferWriter Architecture
-
-```
-┌────────────────────────────────────────────────────────────┐
-│              BufferWriter (public API)                     │
-├────────────────────────────────────────────────────────────┤
-│  writeOrderedLong(buffer, offset, value)                   │
-│  writeVolatileLong(buffer, offset, value)                  │
-│  writeOrderedInt(buffer, offset, value)                    │
-│  writeVolatileInt(buffer, offset, value)                   │
-└────────────────────────────────────────────────────────────┘
-                          │
-          ┌───────────────┴───────────────┐
-          │                               │
-┌─────────▼──────────┐      ┌─────────────▼─────────┐
-│  BufferWriter8     │      │   BufferWriter9       │
-│  (Java 8)          │      │   (Java 9+)           │
-├────────────────────┤      ├───────────────────────┤
-│ Unsafe-based       │      │ VarHandle-based       │
-│                    │      │                       │
-│ putOrderedLong()   │      │ setRelease()          │
-│ putLongVolatile()  │      │ setVolatile()         │
-│ putOrderedInt()    │      │ setRelease()          │
-│ putIntVolatile()   │      │ setVolatile()         │
-└────────────────────┘      └───────────────────────┘
-```
-
-### Java 8 Implementation (Unsafe)
+On the first call with a new string value:
 
 ```java
-public final class BufferWriter8 implements BufferWriter.Impl {
-    private static final Unsafe UNSAFE;
-
-    @Override
-    public long writeOrderedLong(ByteBuffer buffer, int offset, long value) {
-        // putOrderedLong: Store-Release semantics
-        //   - ARM: STR + DMB ISH
-        //   - x86: MOV + compiler barrier
-        UNSAFE.putOrderedLong(null,
-            ((DirectBuffer) buffer).address() + offset, value);
-        return UNSAFE.getLong(((DirectBuffer) buffer).address() + offset);
-    }
-
-    @Override
-    public long writeAndReleaseLong(ByteBuffer buffer, int offset, long value) {
-        // putLongVolatile: Full volatile semantics
-        //   - ARM: DMB ISH; STR; DMB ISH
-        //   - x86: LOCK MOV or MFENCE
-        UNSAFE.putLongVolatile(null,
-            ((DirectBuffer) buffer).address() + offset, value);
-        return UNSAFE.getLong(((DirectBuffer) buffer).address() + offset);
-    }
-
-    @Override
-    public void writeInt(ByteBuffer buffer, int offset, int value) {
-        UNSAFE.putOrderedInt(null,
-            ((DirectBuffer) buffer).address() + offset, value);
-    }
-
-    @Override
-    public void writeAndReleaseInt(ByteBuffer buffer, int offset, int value) {
-        UNSAFE.putIntVolatile(null,
-            ((DirectBuffer) buffer).address() + offset, value);
-    }
-
-    @Override
-    public void fullFence() {
-        UNSAFE.fullFence();  // Equivalent to __atomic_thread_fence(__ATOMIC_SEQ_CST)
-    }
-}
+encoding = registerConstant0(value);  // JNI → Dictionary lookup
+utf8 = value.getBytes(UTF_8);        // one allocation, cached
+attrCacheEncodings[slot] = encoding;
+attrCacheBytes[slot] = utf8;
+attrCacheKeys[slot] = value;          // cache is per-thread; no fence needed
 ```
 
-### Java 9+ Implementation (VarHandle)
+`registerConstant0` crosses JNI once to register the value in the
+native `Dictionary` and returns an integer encoding.
+
+### Phase 2: Cached Write (cache hit, zero JNI)
+
+On subsequent calls with the same string:
 
 ```java
-public final class BufferWriter9 implements BufferWriter.Impl {
-    private static final VarHandle LONG_VIEW_VH;
-    private static final VarHandle INT_VIEW_VH;
-
-    static {
-        LONG_VIEW_VH = MethodHandles.byteBufferViewVarHandle(
-            long[].class, ByteOrder.nativeOrder());
-        INT_VIEW_VH = MethodHandles.byteBufferViewVarHandle(
-            int[].class, ByteOrder.nativeOrder());
-    }
-
-    @Override
-    public long writeOrderedLong(ByteBuffer buffer, int offset, long value) {
-        // setRelease: Store-Release semantics (matches putOrderedLong)
-        //   - Prevents prior stores from reordering after this
-        //   - One-way barrier: prior → this
-        LONG_VIEW_VH.setRelease(buffer, offset, value);
-        return (long) LONG_VIEW_VH.get(buffer, offset);
-    }
-
-    @Override
-    public long writeAndReleaseLong(ByteBuffer buffer, int offset, long value) {
-        // setVolatile: Full volatile semantics (matches putLongVolatile)
-        //   - Sequential consistency
-        //   - Two-way barrier: prior → this → subsequent
-        LONG_VIEW_VH.setVolatile(buffer, offset, value);
-        return (long) LONG_VIEW_VH.get(buffer, offset);
-    }
-
-    @Override
-    public void writeInt(ByteBuffer buffer, int offset, int value) {
-        INT_VIEW_VH.setRelease(buffer, offset, value);
-    }
-
-    @Override
-    public void writeAndReleaseInt(ByteBuffer buffer, int offset, int value) {
-        INT_VIEW_VH.setVolatile(buffer, offset, value);
-    }
-
-    @Override
-    public void fullFence() {
-        VarHandle.fullFence();
-    }
+if (value.equals(attrCacheKeys[slot])) {
+    encoding = attrCacheEncodings[slot];  // int read
+    utf8 = attrCacheBytes[slot];          // ref read
 }
+// Both sidecar and OTEP attrs_data are written inside the detach/attach window
+// so a signal handler never sees a new sidecar encoding alongside old attrs_data.
+detach();
+sidecarBuffer.putInt(keyIndex * 4, encoding);
+replaceOtepAttribute(otepKeyIndex, utf8);
+attach();
 ```
 
-## Testing and Validation
+The cache is a 256-slot direct-mapped structure keyed by
+`value.hashCode() & 0xFF`. Collisions evict the old entry (benign —
+causes a redundant `registerConstant0` call). In production web
+applications with 5–50 unique attribute values, the hit rate is
+effectively 100%.
 
-### Unit Tests (C++)
+## Signal Handler Read Path
 
-Located in `ddprof-lib/src/test/cpp/context_sanity_ut.cpp`:
+`Recording::writeCurrentContext()` executes in the SIGPROF handler and
+reads context in bounded time (~15 ns) with no allocation:
 
-**Test: Basic Read/Write**
-```cpp
-TEST(ContextSanityTest, BasicReadWrite) {
-    Context ctx;
-    ctx.spanId = 100;
-    ctx.rootSpanId = 200;
-    ctx.checksum = 300;
+1. `ContextApi::get(spanId, rootSpanId)`:
+   - `ProfiledThread::currentSignalSafe()` — cached pointer, no TLS
+     lazy init.
+   - `__atomic_load_n(&record->valid, __ATOMIC_ACQUIRE)` — if 0, emit
+     zeros (record is being mutated).
+   - Read `span_id` from `OtelThreadContextRecord`.
+   - Read `_otel_local_root_span_id` from sidecar.
+2. For each registered attribute:
+   - `thrd->getOtelTagEncoding(i)` — direct u32 read from sidecar.
+   - Only read when `hasContext` is true; emits 0 otherwise, so tag
+     encodings are never emitted alongside a zero span ID.
 
-    EXPECT_EQ(ctx.spanId, 100ULL);
-    EXPECT_EQ(ctx.rootSpanId, 200ULL);
-    EXPECT_EQ(ctx.checksum, 300ULL);
-}
-```
+No dictionary lookup, no string comparison, no allocation. The
+encodings written to JFR events are resolved later during JFR parsing.
 
-**Test: Sequential Write/Read Cycles**
-```cpp
-TEST(ContextSanityTest, SequentialWriteReadCycles) {
-    Context ctx;
-    // Multiple write/read cycles with memory fences
-    __atomic_thread_fence(__ATOMIC_ACQUIRE);
-    // Validates memory ordering across cycles
-}
-```
+## Performance
 
-**Test: TLS Mechanism**
-```cpp
-TEST(ContextSanityTest, TlsMechanism) {
-    Context& ctx = Contexts::initializeContextTls();
-    // Write via one reference
-    ctx.spanId = 123;
-    // Read via TLS getter
-    Context& readCtx = Contexts::get();
-    EXPECT_EQ(readCtx.spanId, 123ULL);
-}
-```
+### Write Path Costs (arm64, Java 25)
+
+| Operation | ns/op | Path |
+|-----------|------:|------|
+| `clearContext` | 5.0 | detach + zero fields |
+| `setContextFull` | 11.1 | detach + 3 putLong + attach |
+| `setAttrCacheHit` | 10.7 | cache lookup + sidecar write + detach/attach |
+| `spanLifecycle` | 30.4 | `setContextFull` + `setAttrCacheHit` |
+
+### Multi-Threaded Scaling
+
+| Benchmark | 1 thread | 2 threads | 4 threads |
+|-----------|----------|-----------|-----------|
+| `setContextFull` | 11.1 ns | 11.1 ns | 11.7 ns |
+| `spanLifecycle` | 30.4 ns | 30.7 ns | 32.2 ns |
+
+No false sharing: each thread's `OtelThreadContextRecord` and sidecar
+are embedded in its own heap-allocated `ProfiledThread`.
+
+### Instrumentation Budget
+
+At ~35 ns per span (`spanLifecycle` 30.4 ns + `clearContext` 5.0 ns), a single thread
+can sustain ~28 million span transitions per second. For a web
+application at 100K requests/second, this is <0.004% of CPU time.
+
+Full benchmark data and analysis:
+[thread-context-benchmark-2026-03-21.md](../performance/reports/thread-context-benchmark-2026-03-21.md)
+
+## Testing
 
 ### Integration Tests (Java)
 
-Located in `ddprof-test/src/test/java/`:
+`ddprof-test/src/test/java/com/datadoghq/profiler/context/OtelContextStorageModeTest.java`:
 
-**Test: Context Wall Clock**
-- Tests context propagation through profiling samples
-- Validates checksum computation
-- Verifies JFR event correlation
+- **testOtelStorageModeContext** — context round-trips correctly with JFR running.
+- **testOtelModeCustomAttributes** — verifies attribute TLV encoding in
+  `attrs_data` via `setContextAttribute`.
+- **testOtelModeAttributeOverflow** — overflow of `attrs_data` is handled
+  gracefully (returns false, no crash).
+- **testSequentialContextUpdates** — repeated writes with varying values,
+  `Long.MAX_VALUE` round-trip, and `clearContext` resetting both IDs to zero.
+- **testThreadIsolation** — concurrent writes from multiple threads,
+  validating thread-local isolation.
+- **testSpanTransitionClearsAttributes** — direct span-to-span transition
+  without `clearContext` does not leak custom attributes from the previous span.
 
-**Test: Multi-threaded Updates**
-- Concurrent context updates from multiple threads
-- Stress testing for race conditions
-- Validates thread-local isolation
+`ddprof-test/src/test/java/com/datadoghq/profiler/wallclock/ContextWallClockTest.java`:
 
-### Stress Testing
+- **test** — validates context propagation through wall-clock profiling
+  samples and JFR event correlation across cstack modes.
 
-**Approach:**
-1. Generate high-frequency context updates (>1M/sec per thread)
-2. Trigger profiling signals at high rate (>10K/sec)
-3. Validate all JFR events have valid checksums
-4. Run on both x86 and ARM platforms
-5. Test with TSan (ThreadSanitizer) build configuration
+`ddprof-test/src/test/java/com/datadoghq/profiler/context/TagContextTest.java`:
 
-**Success Criteria:**
-- Zero checksum validation failures
-- No torn reads detected
-- No TSan warnings
-- Consistent behavior across platforms
+- **test** — validates integer tag/attribute context propagation through
+  profiling samples.
 
-## Future Enhancements
+### JMH Benchmarks
 
-### Potential Optimizations
+`ddprof-stresstest/src/jmh/java/com/datadoghq/profiler/stresstest/scenarios/throughput/ThreadContextBenchmark.java`:
 
-1. **Lockless Custom Tags**: Currently custom tags use ordered writes without checksum protection
-2. **Batched Updates**: Batch multiple context updates with single final barrier
-3. **Adaptive Checksums**: Skip checksum when signal frequency is low
-4. **NUMA-Aware Allocation**: Allocate context on local NUMA node for better cache locality
+- Single-threaded: `setContextFull`, `setAttrCacheHit`, `spanLifecycle`,
+  `clearContext`, `getContext`.
+- Multi-threaded: `setContextFull_2t/4t`, `spanLifecycle_2t/4t` —
+  `@Threads(2)` and `@Threads(4)` variants to verify linear scaling
+  (absence of false sharing).
 
-### Monitoring and Observability
+## OTEP References
 
-1. **Checksum Failure Metrics**: Track rate of torn reads (should be ~0)
-2. **Write Latency Histograms**: P50/P99/P999 write latencies
-3. **Read Latency in Signal Handler**: Impact on total sample collection time
-4. **Platform-Specific Behavior**: Compare x86 vs ARM performance characteristics
+- [OTEP #4947 — Profiling Signal Conventions](https://github.com/open-telemetry/oteps/pull/4947):
+  Defines the `otel_thread_ctx_v1` TLS symbol, the
+  `OtelThreadContextRecord` struct layout, and the publication protocol
+  (valid flag + TLS pointer atomics).
+- [OpenTelemetry Profiling SIG](https://github.com/open-telemetry/opentelemetry-specification/tree/main/specification/profiles):
+  Broader context for profiling signal integration in the OTel
+  ecosystem.

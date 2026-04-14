@@ -81,18 +81,20 @@ namespace StackWalkValidation {
     }
 }
 
-class StackWalker {
-    static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
-                      StackWalkFeatures features, EventType event_type,
-                      const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated);
+typedef struct {
+    jint event_type;
+    u32 lock_index;
+    void* ucontext;
+    ASGCT_CallFrame* frames;
+    int max_depth;
+    StackContext* java_ctx;
+    bool* truncated;
+} StackWalkRequest;
 
+class StackWalker {
   public:
     static int walkFP(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated = nullptr);
     static int walkDwarf(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated = nullptr);
-    static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, StackWalkFeatures features, EventType event_type, int lock_index, bool* truncated = nullptr);
-    static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, VMJavaFrameAnchor* anchor, EventType event_type, int lock_index, bool* truncated = nullptr);
-
-    static void checkFault(ProfiledThread* thrd = nullptr);
 };
 
 #endif // _STACKWALKER_H

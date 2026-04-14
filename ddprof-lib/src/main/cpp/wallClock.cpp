@@ -9,6 +9,7 @@
 
 #include "stackFrame.h"
 #include "context.h"
+#include "context_api.h"
 #include "debugSupport.h"
 #include "libraries.h"
 #include "log.h"
@@ -69,11 +70,16 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   u64 call_trace_id = 0;
   if (current != NULL && _collapsing) {
     StackFrame frame(ucontext);
-    Context &context = Contexts::get();
+    u64 spanId = 0, rootSpanId = 0;
+    // contextValid is not redundant with (spanId==0 && rootSpanId==0): a cleared
+    // context has spanId=0 and contextValid=true, while an uninitialized/mid-write
+    // thread has spanId=0 and contextValid=false. lookupWallclockCallTraceId uses
+    // contextValid to decide whether to update the sidecar _otel_local_root_span_id.
+    bool contextValid = ContextApi::get(spanId, rootSpanId);
     call_trace_id = current->lookupWallclockCallTraceId(
         (u64)frame.pc(), (u64)frame.sp(),
         Profiler::instance()->recordingEpoch(),
-        context.spanId, context.rootSpanId);
+        contextValid, spanId, rootSpanId);
     if (call_trace_id != 0) {
       Counters::increment(SKIPPED_WALLCLOCK_UNWINDS);
     }

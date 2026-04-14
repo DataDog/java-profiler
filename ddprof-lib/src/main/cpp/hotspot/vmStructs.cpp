@@ -672,19 +672,55 @@ void* VMThread::initialize(jthread thread) {
     return vm_thread;
 }
 
-static ExecutionMode convertJvmExecutionState(int state) {
+bool VMThread::isJavaThread(VMThread* vm_thread) {
+    // Not a JVM thread - native thread, e.g. thread launched by JNI code
+    if (vm_thread == nullptr) {
+        return false;
+    }
+
+    // Must be called from current thread
+    assert(vm_thread == VMThread::current());
+
+    // JVMTI ThreadStart callback may have set the flag, which is reliable.
+    // Or we may already compute and cache it, so use it instead.
+    ProfiledThread *prof_thread = ProfiledThread::currentSignalSafe();
+    if (prof_thread != nullptr) {
+        ProfiledThread::ThreadType type = prof_thread->threadType();
+        if (type != ProfiledThread::ThreadType::TYPE_UNKNOWN) {
+            return type == ProfiledThread::ThreadType::TYPE_JAVA_THREAD;
+        }
+    }
+
+    // jvmti ThreadStart does not callback to JVM internal threads, e.g. Compiler threads, which are also JavaThreads,
+    // let's check the vtable pointer to make sure it is a Java thread. 
+    // A Java thread should have the same vtable as the one we got from a known Java thread during initialization
+    bool is_java_thread = vm_thread->hasJavaThreadVtable();
+    // Cache the thread type for future quick check
+    if (prof_thread != nullptr) {
+        prof_thread->setJavaThread(is_java_thread);
+    }
+    if (!is_java_thread) {
+        Counters::increment(WALKVM_CACHED_NOT_JAVA);
+    }
+    return is_java_thread;
+}
+
+static ExecutionMode convertJvmExecutionState(JVMJavaThreadState state) {
   switch (state) {
-  case 4:
-  case 5:
+  case _thread_in_native:
+  case _thread_in_native_trans:
     return ExecutionMode::NATIVE;
-  case 6:
-  case 7:
+  case _thread_uninitialized:
+  case _thread_new:
+  case _thread_new_trans:
+  case _thread_in_vm:
+  case _thread_in_vm_trans:
     return ExecutionMode::JVM;
-  case 8:
-  case 9:
+  case _thread_in_Java:
+  case _thread_in_Java_trans:
     return ExecutionMode::JAVA;
-  case 10:
-  case 11:
+  case _thread_blocked:
+  case _thread_blocked_trans:
     return ExecutionMode::SAFEPOINT;
   default:
     return ExecutionMode::UNKNOWN;
@@ -693,29 +729,15 @@ static ExecutionMode convertJvmExecutionState(int state) {
 
 ExecutionMode VMThread::getExecutionMode() {
   assert(VM::isHotspot());
-  
   VMThread* vm_thread = VMThread::current();
-  // Not a JVM thread - native thread, e.g. thread launched by JNI code
   if (vm_thread == nullptr) {
     return ExecutionMode::NATIVE;
   }
 
-  ProfiledThread *prof_thread = ProfiledThread::currentSignalSafe();
-  bool is_java_thread = prof_thread != nullptr && prof_thread->isJavaThread();
-
-  // A Java thread that JVM tells us via jvmti `ThreadStart()` callback.
-  if (is_java_thread) {
-    int raw_thread_state = vm_thread->state();
-
-    // Java threads: [4, 12) = [_thread_in_native, _thread_max_state)
-    // JVM internal threads: 0 or outside this range
-    is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
-
-    return is_java_thread ? convertJvmExecutionState(raw_thread_state)
-                        : ExecutionMode::JVM;
+  if (isJavaThread(vm_thread)) {
+    JVMJavaThreadState thread_state = vm_thread->state();
+    return convertJvmExecutionState(thread_state);
   } else {
-    // It is a JVM internal thread, may or may not be a Java thread, 
-    // e.g. Compiler thread or GC thread, etc
     return ExecutionMode::JVM;
   }
 }
@@ -725,13 +747,8 @@ OSThreadState VMThread::getOSThreadState() {
   if (vm_thread == nullptr) {
     return OSThreadState::UNKNOWN;
   }
-  int raw_thread_state = vm_thread->state();
-  bool is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
-  OSThreadState state = OSThreadState::UNKNOWN;
-  if (is_java_thread) {
-    state = vm_thread->osThreadState();
-  }
-  return state;
+  // All hotspot JVM threads have osThread fields
+  return vm_thread->osThreadState();
 }
 
 int VMThread::osThreadId() {
@@ -747,7 +764,7 @@ JNIEnv* VMThread::jni() {
     if (_env_offset < 0) {
         return VM::jni();  // fallback for non-HotSpot JVM
     }
-    return isJavaThread() ? (JNIEnv*) at(_env_offset) : NULL;
+    return isJavaThread(this) ? (JNIEnv*) at(_env_offset) : NULL;
 }
 
 jmethodID VMMethod::id() {
@@ -776,7 +793,8 @@ jmethodID VMMethod::id() {
 
 jmethodID VMMethod::validatedId() {
     jmethodID method_id = id();
-    if (!_can_dereference_jmethod_id || (goodPtr(method_id) && *(VMMethod**)method_id == this)) {
+    if (!_can_dereference_jmethod_id || 
+        ((goodPtr(method_id) && SafeAccess::loadPtr((void**)method_id, nullptr) == this))) {
         return method_id;
     }
     return NULL;
@@ -1025,23 +1043,21 @@ OSThreadState VMThread::osThreadState() {
     return OSThreadState::UNKNOWN;
 }
 
-int VMThread::state() {
-    if (!cachedIsJavaThread()) return 0;
+JVMJavaThreadState VMThread::state() {
+    assert(isJavaThread(this) && "Must be a Java thread");
+    int state = 0;
     int offset = VMStructs::thread_state_offset();
     if (offset >= 0) {
-        int* state = (int*)at(offset);
-        if (state == nullptr) {
-            return 0;
-        } else {
-            int value = SafeAccess::safeFetch32(state, 0);
+        int* state_addr = (int*)at(offset);
+        if (state_addr != nullptr) {
+            state = SafeAccess::safeFetch32(state_addr, 0);
             // Checking for bad data
-            if (value > _thread_max_state) {
-                value = 0;
+            if (state >= _thread_max_state || state < 0) {
+                state = 0;
             }
-            return value;
         }
     }
-    return 0;
+    return static_cast<JVMJavaThreadState>(state);
 }
 
 bool HeapUsage::is_jmx_attempted = false;

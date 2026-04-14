@@ -1,5 +1,5 @@
 /*
- * Copyright 2025, Datadog, Inc
+ * Copyright 2025, 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,10 +16,11 @@
 package com.datadoghq.profiler.stresstest.scenarios.throughput;
 
 import com.datadoghq.profiler.JavaProfiler;
+import com.datadoghq.profiler.OTelContext;
 import com.datadoghq.profiler.ThreadContext;
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
@@ -31,52 +32,106 @@ import org.openjdk.jmh.annotations.OutputTimeUnit;
 import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
-import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
-import org.openjdk.jmh.infra.Blackhole;
 
 /**
- * Benchmark comparing ThreadContext implementations:
- * - JNI-based native implementation (putContextNative)
- * - DirectByteBuffer-based Java implementation (putContextJava)
+ * Benchmarks for ThreadContext operations — measures the per-call cost of
+ * context set/get/attribute operations on the span start/end hot path.
  *
- * <p>Tests various thread counts to measure both single-threaded overhead
- * and multi-threaded contention characteristics.
+ * <p>Run: ./gradlew :ddprof-stresstest:jmh -PjmhInclude="ThreadContextBenchmark"
+ *
+ * <p>Run with different JAVA_HOME to compare JNI (17+) vs ByteBuffer (&lt;17) paths.
  */
-@State(Scope.Benchmark)
+@BenchmarkMode(Mode.AverageTime)
+@OutputTimeUnit(TimeUnit.NANOSECONDS)
+@Fork(value = 2, warmups = 0)
+@Warmup(iterations = 3, time = 1)
+@Measurement(iterations = 5, time = 2)
 public class ThreadContextBenchmark {
-    private JavaProfiler profiler;
 
-    @Setup(Level.Trial)
-    public void setup() throws IOException {
-        // Initialize profiler to set up native context
-        profiler = JavaProfiler.getInstance();
+    private static final String[] ROUTES = {
+        "GET /api/users", "POST /api/orders", "GET /api/health",
+        "PUT /api/users/{id}", "DELETE /api/sessions"
+    };
+
+    @State(Scope.Benchmark)
+    public static class ProfilerState {
+        JavaProfiler profiler;
+
+        @Setup(Level.Trial)
+        public void setup() throws Exception {
+            profiler = JavaProfiler.getInstance();
+            Path jfr = Files.createTempFile("bench", ".jfr");
+            profiler.execute("start,cpu=10ms,attributes=http.route,jfr,file=" + jfr.toAbsolutePath());
+            OTelContext.getInstance().registerAttributeKeys("http.route");
+        }
     }
 
-    // Single-threaded benchmark
-    @Benchmark
-    @BenchmarkMode(Mode.Throughput)
-    @Fork(value = 3, warmups = 1)
-    @Warmup(iterations = 3, time = 1)
-    @Measurement(iterations = 5, time = 3)
-    @Threads(1)
-    @OutputTimeUnit(TimeUnit.MICROSECONDS)
-    public void setContext01() {
-        ThreadContext ctx = profiler.getThreadContext();
-        ctx.put(0x123456789ABCDEFL, 0xFEDCBA987654321L);
+    @State(Scope.Thread)
+    public static class ThreadState {
+        ThreadContext ctx;
+        long spanId;
+        long localRootSpanId;
+        int counter;
+
+        @Setup(Level.Trial)
+        public void setup(ProfilerState ps) {
+            ctx = ps.profiler.getThreadContext();
+            spanId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+            localRootSpanId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+        }
     }
 
-    // Multi-threaded benchmark: 2 threads
     @Benchmark
-    @BenchmarkMode(Mode.Throughput)
-    @Fork(value = 3, warmups = 1)
-    @Warmup(iterations = 3, time = 1)
-    @Measurement(iterations = 5, time = 3)
+    public void setContextFull(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
+    }
+
+    @Benchmark
+    public boolean setAttrCacheHit(ThreadState ts) {
+        return ts.ctx.setContextAttribute(0, ROUTES[ts.counter++ % ROUTES.length]);
+    }
+
+    @Benchmark
+    public void spanLifecycle(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
+        ts.ctx.setContextAttribute(0, ROUTES[ts.counter++ % ROUTES.length]);
+    }
+
+    @Benchmark
     @Threads(2)
-    @OutputTimeUnit(TimeUnit.MICROSECONDS)
-    public void setContext02() {
-        ThreadContext ctx = profiler.getThreadContext();
-        ctx.put(0x123456789ABCDEFL, 0xFEDCBA987654321L);
+    public void setContextFull_2t(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
+    }
+
+    @Benchmark
+    @Threads(4)
+    public void setContextFull_4t(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
+    }
+
+    @Benchmark
+    @Threads(2)
+    public void spanLifecycle_2t(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
+        ts.ctx.setContextAttribute(0, ROUTES[ts.counter++ % ROUTES.length]);
+    }
+
+    @Benchmark
+    @Threads(4)
+    public void spanLifecycle_4t(ThreadState ts) {
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
+        ts.ctx.setContextAttribute(0, ROUTES[ts.counter++ % ROUTES.length]);
+    }
+
+    @Benchmark
+    public long getSpanId(ThreadState ts) {
+        return ts.ctx.getSpanId();
+    }
+
+    @Benchmark
+    public void clearContext(ThreadState ts) {
+        ts.ctx.put(0, 0, 0, 0);
     }
 }

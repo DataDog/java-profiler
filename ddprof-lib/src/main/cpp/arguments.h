@@ -224,8 +224,7 @@ public:
         _context_attributes({}),
         _lightweight(false),
         _enable_method_cleanup(true),
-        _remote_symbolication(false) { }
-
+        _remote_symbolication(false) {}
 
   ~Arguments();
 

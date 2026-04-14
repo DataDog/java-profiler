@@ -68,7 +68,7 @@ jobs:
       sdkman_path: ${{ steps.export-path.outputs.sdkman_path }}
     steps:
       - name: Cache SDKMan! AMD64
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: sdkman
           key: sdkman-amd64-${{ github.run_id }}
@@ -96,7 +96,7 @@ jobs:
         run: |
           curl -s "https://get.sdkman.io" | bash
       - name: Upload SDKMAN! as Artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sdkman-installation-amd64
           path: ${{ env.SDKMAN_DIR }}
@@ -109,7 +109,7 @@ jobs:
       sdkman_path: ${{ steps.export-path.outputs.sdkman_path }}
     steps:
       - name: Cache SDKMan! AARCH64
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: sdkman
           key: sdkman-aarch64-${{ github.run_id }}
@@ -136,7 +136,7 @@ jobs:
         run: |
           curl -s "https://get.sdkman.io" | bash
       - name: Upload SDKMAN! as Artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sdkman-installation-aarch64
           path: ${{ env.SDKMAN_DIR }}
@@ -154,7 +154,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Try restore cache JDK ${{ matrix.java_variant }}
         id: cache-jdk
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
@@ -193,7 +193,7 @@ jobs:
 
       - name: Save JDK ${{ matrix.java_variant }} cache
         if: steps.check-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
@@ -217,7 +217,7 @@ jobs:
           apk update && apk add curl zip unzip bash tar
       - name: Cache JDK ${{ matrix.java_variant }}
         id: cache-jdk
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
@@ -243,7 +243,7 @@ jobs:
 
       - name: Save JDK ${{ matrix.java_variant }} cache
         if: steps.check-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
@@ -265,7 +265,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Cache JDK ${{ matrix.java_variant }}
         id: cache-jdk
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
@@ -303,7 +303,7 @@ jobs:
 
       - name: Save JDK ${{ matrix.java_variant }} cache
         if: steps.check-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
@@ -326,7 +326,7 @@ jobs:
           sudo apt update && sudo apt install -y curl zip unzip bash tar
       - name: Cache JDK ${{ matrix.java_variant }}
         id: cache-jdk
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
@@ -352,7 +352,7 @@ jobs:
 
       - name: Save JDK ${{ matrix.java_variant }} cache
         if: steps.check-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}

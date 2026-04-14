@@ -7,6 +7,7 @@
 #ifndef _WALLCLOCK_H
 #define _WALLCLOCK_H
 
+#include <cassert>
 #include "engine.h"
 #include "os.h"
 #include "profiler.h"
@@ -58,7 +59,9 @@ class BaseWallClock : public Engine {
       int self = OS::threadId();
       ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
       
-      // We don't want to profile ourselves in wall time
+      // We don't want to profile ourselves in wall time.
+      // current may be null if this thread is still initializing its ProfiledThread
+      // (wall-clock thread startup races with JVMTI ThreadStart). Safe to skip removal.
       ProfiledThread* current = ProfiledThread::current();
       if (current != nullptr) {
         int slot_id = current->filterSlotId();
