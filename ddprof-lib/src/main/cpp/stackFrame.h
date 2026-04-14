@@ -55,9 +55,6 @@ class StackFrame {
 
     void adjustSP(const void* entry, const void* pc, uintptr_t& sp);
 
-    bool canUnwind(const void*& pc);
-    bool unwindAtomicStub(const void*& pc);
-
     bool skipFaultInstruction();
 
     bool checkInterruptedSyscall();

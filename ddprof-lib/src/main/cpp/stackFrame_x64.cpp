@@ -72,11 +72,6 @@ void StackFrame::ret() {
     sp() += 8;
 }
 
-bool StackFrame::unwindAtomicStub(const void*& pc) {
-    // Not needed
-    return false;
-}
-
 void StackFrame::adjustSP(const void* entry, const void* pc, uintptr_t& sp) {
     // Not needed
 }

@@ -6,7 +6,8 @@
 
 #ifdef __x86_64__
 
- #include "hotspot/hotspotStackFrame.h"
+#include <string.h> 
+#include "hotspot/hotspotStackFrame.h"
 
  __attribute__((no_sanitize("address"))) bool HotspotStackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     instruction_t* ip = (instruction_t*)pc;
@@ -173,9 +174,8 @@ bool HotspotStackFrame::unwindEpilogue(VMNMethod* nm, uintptr_t& pc, uintptr_t& 
     return false;
 }
 
-bool HotspotStackFrame::unwindAtomicStub(const void*& pc) {
+bool HotspotStackFrame::unwindAtomicStub(const StackFrame& frame, const void*& pc) {
     return false;
 }
-
 
 #endif // __x86_64__

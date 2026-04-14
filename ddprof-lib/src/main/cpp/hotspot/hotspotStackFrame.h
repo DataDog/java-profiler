@@ -31,7 +31,7 @@ public:
     bool unwindPrologue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
     bool unwindEpilogue(VMNMethod* nm, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp);
 
-    static bool unwindAtomicStub(const void*& pc);
+    static bool unwindAtomicStub(const StackFrame& frame, const void*& pc);
 };
 
 #endif // _HOTSPOT_HOTSPOTSTACKFRAME_H
