@@ -173,4 +173,9 @@ bool HotspotStackFrame::unwindEpilogue(VMNMethod* nm, uintptr_t& pc, uintptr_t& 
     return false;
 }
 
+bool HotspotStackFrame::unwindAtomicStub(const void*& pc) {
+    return false;
+}
+
+
 #endif // __x86_64__

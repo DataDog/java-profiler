@@ -6,8 +6,8 @@
 #ifndef _JVMSUPPORT_H
 #define _JVMSUPPORT_H
 
+#include "stackFrame.h"
 #include "stackWalker.h"
-#include "vmEntry.h"
 
 // Stack recovery techniques used to workaround AsyncGetCallTrace flaws.
 // Can be disabled with 'safemode' option.
@@ -25,6 +25,8 @@ class JVMSupport {
     static int asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* ucontext);
 public:
     static int walkJavaStack(StackWalkRequest& request);
+    static inline bool canUnwind(const void*& pc);
+    static inline bool isJitCode(const void* pc);
 };
 
 #endif // _JVMSUPPORT_H

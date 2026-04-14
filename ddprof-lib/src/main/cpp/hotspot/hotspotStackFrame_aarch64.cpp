@@ -278,4 +278,18 @@ NOSANALIGSANITIZE bool HotspotStackFrame::unwindStub(instruction_t* entry, const
     return false;
 }
 
+bool HotspotStackFrame::unwindAtomicStub(const void*& pc) {
+    // VM threads may call generated atomic stubs, which are not normally walkable
+    const void* lr = (const void*)link();
+    if (VMStructs::libjvm()->contains(lr)) {
+        VMNMethod* nm = CodeHeap::findNMethod(pc);
+        if (nm != NULL && strncmp(nm->name(), "Stub", 4) == 0) {
+            pc = lr;
+            return true;
+        }
+    }
+    return false;
+}
+
+
 #endif // __aarch64__
