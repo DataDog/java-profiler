@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
- #ifdef __aarch64__
+#ifdef __aarch64__
 
 #include <string.h>
 #include "hotspot/hotspotStackFrame.h"
