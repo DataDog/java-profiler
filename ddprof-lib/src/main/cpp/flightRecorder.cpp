@@ -1645,12 +1645,6 @@ void Recording::recordDeadlock(Buffer *buf, int tid, u64 deadlock_id,
                                u64 call_trace_id, const char *lock_name,
                                int lock_owner_tid,
                                u64 lock_owner_call_trace_id) {
-  // Truncate lock_name to fit within a single-byte event size prefix (max 255).
-  // Fixed overhead: ~75 bytes for 7 varints + event type + size prefix.
-  size_t lock_name_len = strlen(lock_name);
-  if (lock_name_len > 160) {
-    lock_name_len = 160;
-  }
   flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - MAX_STRING_LENGTH - MAX_JFR_EVENT_SIZE);
   int start = buf->skip(1);
   buf->putVar64(T_DEADLOCK);
@@ -1658,7 +1652,8 @@ void Recording::recordDeadlock(Buffer *buf, int tid, u64 deadlock_id,
   buf->putVar64(deadlock_id);
   buf->putVar64(tid);
   buf->putVar64(call_trace_id);
-  buf->putUtf8(lock_name, lock_name_len);
+  // Truncate to fit within the single-byte event size prefix (max 255 bytes total)
+  buf->putUtf8(lock_name, min((size_t)160, strlen(lock_name)));
   buf->putVar64(lock_owner_tid);
   buf->putVar64(lock_owner_call_trace_id);
   writeEventSizePrefix(buf, start);

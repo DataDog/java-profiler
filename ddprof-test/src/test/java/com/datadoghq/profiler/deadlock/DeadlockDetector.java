@@ -14,7 +14,9 @@
  * limitations under the License.
  */
 
-package com.datadoghq.profiler;
+package com.datadoghq.profiler.deadlock;
+
+import com.datadoghq.profiler.JavaProfiler;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
@@ -34,9 +36,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Periodic deadlock detector using JMX ThreadMXBean.
- * When a deadlock is detected, emits native JFR events with real JVMTI-captured
- * stacktraces for both the deadlocked thread and the lock owner.
+ * Test-only deadlock detector for exercising the native deadlock event recording.
+ * Production detection is handled by dd-trace-java's DeadlockEventFactory;
+ * java-profiler only provides the {@link JavaProfiler#recordDeadlock} recording API.
  */
 final class DeadlockDetector {
     private final JavaProfiler profiler;

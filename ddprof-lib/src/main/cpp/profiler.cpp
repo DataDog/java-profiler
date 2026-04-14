@@ -615,6 +615,9 @@ void Profiler::recordDeadlock(int tid, u64 deadlock_id, u64 call_trace_id,
   _locks[lock_index].unlock();
 }
 
+// WARNING: JVMTI GetStackTrace may trigger a safepoint depending on the Java
+// version and the target thread's state. This function must NEVER be called
+// from an async signal handler.
 static u64 captureStackTrace(jthread thread, CallTraceStorage &storage,
                              int max_depth) {
   const int MAX_DEADLOCK_FRAMES = 128;

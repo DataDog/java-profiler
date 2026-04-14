@@ -238,30 +238,6 @@ public final class JavaProfiler {
         recordDeadlock0(thread, lockName, lockOwnerThread, deadlockId);
     }
 
-    private volatile DeadlockDetector deadlockDetector;
-
-    /**
-     * Starts periodic deadlock detection.
-     * @param intervalMs polling interval in milliseconds
-     */
-    public synchronized void startDeadlockDetector(long intervalMs) {
-        stopDeadlockDetector();
-        DeadlockDetector detector = new DeadlockDetector(this);
-        detector.start(intervalMs);
-        this.deadlockDetector = detector;
-    }
-
-    /**
-     * Stops the deadlock detector if running.
-     */
-    public synchronized void stopDeadlockDetector() {
-        DeadlockDetector detector = this.deadlockDetector;
-        if (detector != null) {
-            detector.stop();
-            this.deadlockDetector = null;
-        }
-    }
-
     /**
      * Dumps the JFR recording at the provided path
      * @param recording the path to the recording

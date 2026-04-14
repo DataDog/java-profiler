@@ -2,7 +2,6 @@ package com.datadoghq.profiler.deadlock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.IMCStackTrace;
 import org.openjdk.jmc.common.item.IAttribute;
@@ -27,29 +26,17 @@ public class DeadlockDetectionTest extends AbstractProfilerTest {
     private static final IAttribute<String> LOCK_NAME =
             attr("lockName", "lockName", "", PLAIN_TEXT);
 
-    private volatile Thread deadlockThread1;
-    private volatile Thread deadlockThread2;
+    private Thread deadlockThread1;
+    private Thread deadlockThread2;
+    private DeadlockDetector detector;
 
     @Override
     protected String getProfilerCommand() {
         return "cpu=10ms";
     }
 
-    @AfterEach
-    public void cleanupDeadlockedThreads() {
-        // Interrupt deadlocked threads so they don't leak
-        Thread t1 = deadlockThread1;
-        Thread t2 = deadlockThread2;
-        if (t1 != null) {
-            t1.interrupt();
-        }
-        if (t2 != null) {
-            t2.interrupt();
-        }
-    }
-
-    @Test
-    public void testDeadlockDetectionEmitsEvents() throws Exception {
+    @Override
+    protected void before() throws Exception {
         Object lock1 = new Object();
         Object lock2 = new Object();
         CountDownLatch bothLocked = new CountDownLatch(2);
@@ -89,17 +76,33 @@ public class DeadlockDetectionTest extends AbstractProfilerTest {
         deadlockThread1.start();
         deadlockThread2.start();
 
-        // Wait for both threads to acquire their first lock
         bothLocked.await();
         Thread.sleep(200); // Let the deadlock form
 
-        // Start deadlock detector with a short interval
-        profiler.startDeadlockDetector(100);
+        detector = new DeadlockDetector(profiler);
+        detector.start(100);
+    }
 
+    @Override
+    protected void after() throws Exception {
+        if (detector != null) {
+            detector.stop();
+            detector = null;
+        }
+        if (deadlockThread1 != null) {
+            deadlockThread1.interrupt();
+        }
+        if (deadlockThread2 != null) {
+            deadlockThread2.interrupt();
+        }
+    }
+
+    @Test
+    public void testDeadlockDetectionEmitsEvents() throws Exception {
         // Wait for detection
         Thread.sleep(1500);
 
-        profiler.stopDeadlockDetector();
+        detector.stop();
         stopProfiler();
 
         // Verify events
@@ -138,7 +141,6 @@ public class DeadlockDetectionTest extends AbstractProfilerTest {
             }
         }
 
-        // All events should share the same deadlockId
         assertEquals(1, deadlockIds.size(),
                 "Expected all events to share the same deadlock ID, got: " + deadlockIds);
         assertTrue(hasStackTraces, "Expected at least one event with a non-empty stack trace");
