@@ -50,7 +50,7 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
 
         // ASGCT re-enabled for versions containing the OpenJ9 0.51 fix (eclipse-openj9/openj9#20577)
         String sampler = "jvmti";
-        if (Platform.isJavaVersion(8) && Platform.isJavaVersionAtLeast(8, 0, 452)) {
+        if (Platform.isJavaVersion(8) && Platform.isJavaVersionAtLeast(8, 0, 451)) {
             sampler = "asgct";
         } else if (Platform.isJavaVersion(11) && Platform.isJavaVersionAtLeast(11, 0, 27)) {
             sampler = "asgct";
