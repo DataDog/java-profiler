@@ -7,7 +7,6 @@
 #define _SFRAME_H
 
 #include "dwarf.h"
-#include <stddef.h>
 #include <stdint.h>
 
 #ifndef PT_GNU_SFRAME
