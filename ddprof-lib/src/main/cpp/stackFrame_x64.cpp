@@ -34,36 +34,36 @@ uintptr_t& StackFrame::retval() {
     return (uintptr_t&)REG(RAX, rax);
 }
 
-uintptr_t StackFrame::link() {
+uintptr_t StackFrame::link() const {
     // No link register on x86
     return 0;
 }
 
-uintptr_t StackFrame::arg0() {
+uintptr_t StackFrame::arg0() const {
     return (uintptr_t)REG(RDI, rdi);
 }
 
-uintptr_t StackFrame::arg1() {
+uintptr_t StackFrame::arg1() const {
     return (uintptr_t)REG(RSI, rsi);
 }
 
-uintptr_t StackFrame::arg2() {
+uintptr_t StackFrame::arg2() const {
     return (uintptr_t)REG(RDX, rdx);
 }
 
-uintptr_t StackFrame::arg3() {
+uintptr_t StackFrame::arg3() const {
     return (uintptr_t)REG(RCX, rcx);
 }
 
-uintptr_t StackFrame::jarg0() {
+uintptr_t StackFrame::jarg0() const {
     return arg1();
 }
 
-uintptr_t StackFrame::method() {
+uintptr_t StackFrame::method() const {
     return (uintptr_t)REG(RBX, rbx);
 }
 
-uintptr_t StackFrame::senderSP() {
+uintptr_t StackFrame::senderSP() const {
     return (uintptr_t)REG(R13, r13);
 }
 

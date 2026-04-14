@@ -42,14 +42,14 @@ class StackFrame {
     uintptr_t& fp();
 
     uintptr_t& retval();
-    uintptr_t link();
-    uintptr_t arg0();
-    uintptr_t arg1();
-    uintptr_t arg2();
-    uintptr_t arg3();
-    uintptr_t jarg0();
-    uintptr_t method();
-    uintptr_t senderSP();
+    uintptr_t link() const;
+    uintptr_t arg0() const;
+    uintptr_t arg1() const;
+    uintptr_t arg2() const;
+    uintptr_t arg3() const;
+    uintptr_t jarg0() const;
+    uintptr_t method() const;
+    uintptr_t senderSP() const;
 
     void ret();
 

@@ -37,35 +37,35 @@ uintptr_t& StackFrame::retval() {
     return (uintptr_t&)REG(regs[0], x[0]);
 }
 
-uintptr_t StackFrame::link() {
+uintptr_t StackFrame::link() const {
     return (uintptr_t)REG(regs[30], lr);
 }
 
-uintptr_t StackFrame::arg0() {
+uintptr_t StackFrame::arg0() const {
     return (uintptr_t)REG(regs[0], x[0]);
 }
 
-uintptr_t StackFrame::arg1() {
+uintptr_t StackFrame::arg1() const {
     return (uintptr_t)REG(regs[1], x[1]);
 }
 
-uintptr_t StackFrame::arg2() {
+uintptr_t StackFrame::arg2() const {
     return (uintptr_t)REG(regs[2], x[2]);
 }
 
-uintptr_t StackFrame::arg3() {
+uintptr_t StackFrame::arg3() const {
     return (uintptr_t)REG(regs[3], x[3]);
 }
 
-uintptr_t StackFrame::jarg0() {
+uintptr_t StackFrame::jarg0() const {
     return arg1();
 }
 
-uintptr_t StackFrame::method() {
+uintptr_t StackFrame::method() const {
     return (uintptr_t)REG(regs[12], x[12]);
 }
 
-uintptr_t StackFrame::senderSP() {
+uintptr_t StackFrame::senderSP() const {
     return (uintptr_t)REG(regs[19], x[19]);
 }
 
