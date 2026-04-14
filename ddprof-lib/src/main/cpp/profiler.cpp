@@ -16,7 +16,7 @@
 #include "dwarf.h"
 #include "flightRecorder.h"
 #include "itimer.h"
-#include "hotspot/vmStructs.h"
+#include "hotspot/vmStructs.inline.h"
 #include "hotspot/hotspotSupport.h"
 #include "j9/j9Support.h"
 #include "j9/j9WallClock.h"
