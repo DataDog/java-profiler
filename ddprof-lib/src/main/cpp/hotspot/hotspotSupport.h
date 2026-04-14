@@ -7,6 +7,7 @@
 #ifndef _HOTSPOT_HOTSPOTSUPPORT_H
 #define _HOTSPOT_HOTSPOTSUPPORT_H
 
+#include "hotspot/hotspotStackFrame.h"
 #include "stackWalker.h"
 
 class ProfiledThread;

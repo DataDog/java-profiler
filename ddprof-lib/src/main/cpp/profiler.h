@@ -52,7 +52,6 @@ union CallTraceBuffer {
 };
 
 class FrameName;
-class VMNMethod;
 class StackContext;
 class VM;
 

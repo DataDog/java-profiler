@@ -5,7 +5,6 @@
  */
 
 #include "wallClock.h"
-#include "hotspot/vmStructs.inline.h"
 
 #include "stackFrame.h"
 #include "context.h"

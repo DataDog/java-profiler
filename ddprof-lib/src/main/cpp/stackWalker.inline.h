@@ -8,7 +8,6 @@
 #define _STACKWALKER_INLINE_H
 
 #include "stackWalker.h"
-#include "hotspot/vmStructs.h"
 #include "safeAccess.h"
 
 #include <ucontext.h>
@@ -45,14 +44,6 @@ inline void fillFrame(ASGCT_CallFrame& frame, ASGCT_CallFrameType type, u32 clas
 inline void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, jmethodID method) {
     frame.bci = FrameType::encode(type, bci);
     frame.method_id = method;
-}
-
-inline jmethodID getMethodId(VMMethod* method) {
-    if (!StackWalkValidation::inDeadZone(method) && StackWalkValidation::aligned((uintptr_t)method)
-            && SafeAccess::isReadableRange(method, VMMethod::type_size())) {
-        return method->validatedId();
-    }
-    return NULL;
 }
 
 #endif // _STACKWALKER_INLINE_H
