@@ -14,7 +14,7 @@ slf4j = "2.0.17"
 # Profiler runtime
 jmc = "8.1.0"
 jol = "0.17"
-lz4 = "1.10.4"
+lz4 = "1.11.0"
 snappy = "1.1.10.8"
 zstd = "1.5.7-7"
 
