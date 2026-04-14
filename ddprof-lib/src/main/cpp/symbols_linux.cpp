@@ -24,6 +24,7 @@
 #include <sys/auxv.h>
 #include "symbols.h"
 #include "dwarf.h"
+#include "sframe.h"
 #include "fdtransferClient.h"
 #include "log.h"
 #include "os.h"
@@ -593,6 +594,22 @@ void ElfParser::parseDynamicSection() {
 void ElfParser::parseDwarfInfo() {
     if (!DWARF_SUPPORTED) return;
 
+    // Try SFrame first (simpler format, faster parsing, no opcode interpretation).
+    ElfProgramHeader* sframe_phdr = findProgramHeader(PT_GNU_SFRAME);
+    if (sframe_phdr != NULL && sframe_phdr->p_vaddr != 0) {
+        const char* section_base = at(sframe_phdr);
+        u32 section_offset = static_cast<u32>(section_base - _base);
+        SFrameParser sframe(_cc->name(), section_base,
+                            static_cast<size_t>(sframe_phdr->p_memsz), section_offset);
+        if (sframe.parse()) {
+            _cc->setDwarfTable(sframe.table(), sframe.count(),
+                               sframe.detectedDefaultFrame());
+            return;
+        }
+        // SFrame parse failed; fall through to DWARF
+    }
+
+    // Existing DWARF path (unchanged).
     ElfProgramHeader* eh_frame_hdr = findProgramHeader(PT_GNU_EH_FRAME);
     if (eh_frame_hdr != NULL) {
         if (eh_frame_hdr->p_vaddr != 0) {
@@ -602,7 +619,7 @@ void ElfParser::parseDwarfInfo() {
             DwarfParser dwarf(_cc->name(), _base, at(eh_frame_hdr));
             _cc->setDwarfTable(dwarf.table(), dwarf.count(), dwarf.detectedDefaultFrame());
         } else if (strcmp(_cc->name(), "[vdso]") == 0) {
-            FrameDesc* table = (FrameDesc*)malloc(sizeof(FrameDesc));
+            FrameDesc* table = static_cast<FrameDesc*>(malloc(sizeof(FrameDesc)));
             *table = FrameDesc::empty_frame;
             _cc->setDwarfTable(table, 1);
         }
