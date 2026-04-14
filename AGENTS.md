@@ -351,6 +351,11 @@ The profiler uses a sophisticated double-buffered storage system for call traces
 
 ## Critical Implementation Details
 
+### JVM support 
+- **Three supported JVM implementations**: Hotspot, J9 and Zing
+- **JVM implementation specific code**: Implementation specific code are organized under hotspot, j9 and zing subdirectories respectively
+- **Shared code**: Shared code is JVM implementation independent, must not refer to JVM implementation specific code directly, but through abstraction files - jvmSupport.*, jvmThread.* and vmEntry.*
+
 ### Thread Safety and Performance
 - **Lock-free Hot Paths**: Signal handlers avoid blocking operations
 - **Thread-local Buffers**: Per-thread recording buffers minimize contention
