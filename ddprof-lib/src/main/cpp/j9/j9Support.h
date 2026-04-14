@@ -85,12 +85,16 @@ private:
 
 public:
   static bool can_use_ASGCT() {
-    // as of 21.0.6 the use of ASGCT will lead to almost immediate crash
-    //   or livelock on J9
-    return (VM::java_version() == 8 && VM::java_update_version() >= 361) ||
-           (VM::java_version() == 11 && VM::java_update_version() >= 18) ||
-           (VM::java_version() == 17 && VM::java_update_version() >= 6) ||
-           (VM::java_version() >= 18 && VM::java_version() < 21);
+    // J9's ASGCT is not async-signal-safe prior to OpenJ9 0.51. Calling ASGCT
+    // from a signal handler that interrupted a thread inside jitMethodMonitorEntry
+    // causes a livelock: jitWalkStackFrames calls getSendSlotsFromSignature which
+    // acquires a non-reentrant JIT lock already held by the interrupted thread.
+    // Fixed upstream in eclipse-openj9/openj9#20577 (0.51, April 2025 refresh):
+    //   JDK 8u452, JDK 11.0.27, JDK 17.0.15, JDK 21.0.7
+    return (VM::java_version() == 8 && VM::java_update_version() >= 452) ||
+           (VM::java_version() == 11 && VM::java_update_version() >= 27) ||
+           (VM::java_version() == 17 && VM::java_update_version() >= 15) ||
+           (VM::java_version() == 21 && VM::java_update_version() >= 7);
   }
 
   static bool is_jvmti_jmethodid_safe() {
