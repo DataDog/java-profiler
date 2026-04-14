@@ -26,5 +26,4 @@ bool JVMSupport::isJitCode(const void* pc) {
     }
 }
 
-
 #endif // _JVMSUPPORT_INLINE_H

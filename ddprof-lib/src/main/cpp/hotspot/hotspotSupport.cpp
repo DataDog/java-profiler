@@ -36,8 +36,6 @@ static jmethodID getMethodId(VMMethod* method) {
     return NULL;
 }
 
-
-
 /**
  * Converts a BCI_* frame type value to the corresponding EventType enum value.
  *

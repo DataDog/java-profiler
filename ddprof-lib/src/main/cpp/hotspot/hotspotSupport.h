@@ -33,6 +33,7 @@ public:
     static inline bool canUnwind(const StackFrame& frame, const void*& pc) {
         return HotspotStackFrame::unwindAtomicStub(frame, pc);
     }
+
     static inline bool isJitCode(const void* p) {
         return JitCodeCache::isJitCode(p);
     }

@@ -6,10 +6,10 @@
 
  #ifdef __aarch64__
 
- #include <string.h>
- #include "hotspot/hotspotStackFrame.h"
+#include <string.h>
+#include "hotspot/hotspotStackFrame.h"
 
- static inline bool isSTP(instruction_t insn) {
+static inline bool isSTP(instruction_t insn) {
     // stp  xn, xm, [sp, #-imm]!
     // stp  dn, dm, [sp, #-imm]!
     return (insn & 0xffe003e0) == 0xa9a003e0 || (insn & 0xffe003e0) == 0x6da003e0;
