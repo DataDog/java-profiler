@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-04-15 07:58:09 EDT
+**Date:** 2026-04-15 08:57:50 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 21 |
-| CPU Cores (end) | 21 |
+| CPU Cores (start) | 70 |
+| CPU Cores (end) | 70 |
 | Throttling | 0% |
 
 ### Test Results
@@ -32,7 +32,7 @@ title: glibc-x64-openj9-jdk25
 | Sample Rate | 7.43/sec |
 | Health Score | 464% |
 | Threads | 9 |
-| Allocations | 381 |
+| Allocations | 362 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
@@ -41,33 +41,33 @@ title: glibc-x64-openj9-jdk25
 | CPU Samples | 650 |
 | Sample Rate | 10.83/sec |
 | Health Score | 677% |
-| Threads | 10 |
-| Allocations | 497 |
+| Threads | 12 |
+| Allocations | 514 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 21-21 cores)</summary>
+<summary>CPU Timeline (1 unique values: 70-70 cores)</summary>
 
 ```
-1776253879 21
-1776253884 21
-1776253889 21
-1776253894 21
-1776253899 21
-1776253904 21
-1776253909 21
-1776253914 21
-1776253919 21
-1776253924 21
-1776253929 21
-1776253934 21
-1776253939 21
-1776253944 21
-1776253949 21
-1776253954 21
-1776253959 21
-1776253964 21
-1776253969 21
-1776253974 21
+1776257614 70
+1776257619 70
+1776257624 70
+1776257629 70
+1776257634 70
+1776257639 70
+1776257644 70
+1776257649 70
+1776257654 70
+1776257659 70
+1776257664 70
+1776257669 70
+1776257674 70
+1776257679 70
+1776257684 70
+1776257689 70
+1776257694 70
+1776257699 70
+1776257704 70
+1776257709 70
 ```
 </details>
 
