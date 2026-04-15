@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Reproducer harness for the java-profiler + wasmtime crash.
+# Reproducer harness for the java-profiler + wasmtime hang.
 #
-# Run under nohup on an x86_64 Linux machine:
+# Run on an x86_64 Linux machine (with or without nohup):
 #   nohup ./run-reproducer.sh > reproducer.log 2>&1 &
 #
-# Stops on the first JVM crash (non-zero exit code).
-# Artifacts: hs_err_<pid>.log and core.<pid> in the working directory.
+# Exit codes from the JVM:
+#   42  — hang detected (worker thread stalled); thread dump printed to stdout.
+#   0   — clean run (all workers made progress); retried automatically.
+#   other — unexpected crash; stopped immediately.
 
 set -u
 
@@ -25,10 +27,6 @@ if [[ ! -x "$JAVA" ]]; then
   exit 1
 fi
 
-# Enable core dumps in this shell. Fail fast if the kernel disallows it
-# (e.g. container with hard limit 0) so we don't silently lose core files.
-ulimit -c unlimited || { echo "ERROR: ulimit -c unlimited failed — core dumps will not be generated." >&2; exit 1; }
-
 attempt=0
 start_epoch=$(date +%s)
 
@@ -38,16 +36,16 @@ while true; do
   elapsed=$((now - start_epoch))
   echo "[run $attempt | ${elapsed}s] launching JVM"
 
-  "$JAVA" \
-    -XX:+CreateCoredumpOnCrash \
-    "-XX:ErrorFile=$SCRIPT_DIR/hs_err_%p.log" \
-    -jar "$JAR"
+  "$JAVA" -jar "$JAR"
 
   exit_code=$?
 
-  if [[ $exit_code -ne 0 ]]; then
-    echo "[run $attempt] JVM exited with code $exit_code — crash detected. Stopping."
-    echo "Check $SCRIPT_DIR/hs_err_*.log and core.* for diagnostics."
+  if [[ $exit_code -eq 42 ]]; then
+    echo "[run $attempt] HANG DETECTED (exit 42). Stopping."
+    echo "Thread dump was printed to stdout above."
+    exit 0
+  elif [[ $exit_code -ne 0 ]]; then
+    echo "[run $attempt] JVM exited with unexpected code $exit_code. Stopping."
     exit 0
   fi
 
