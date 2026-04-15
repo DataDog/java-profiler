@@ -24,6 +24,9 @@ asm = "9.9.1"
 # Benchmarking
 jmh = "1.37"
 
+# Reproducer dependencies
+wasmtime = "0.19.0"
+
 [libraries]
 # JUnit 5
 junit-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "junit" }
@@ -50,6 +53,9 @@ asm = { module = "org.ow2.asm:asm", version.ref = "asm" }
 # JMH benchmarking
 jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }
 jmh-annprocess = { module = "org.openjdk.jmh:jmh-generator-annprocess", version.ref = "jmh" }
+
+# Reproducer
+wasmtime-java = { module = "io.github.kawamuray.wasmtime:wasmtime-java", version.ref = "wasmtime" }
 
 [bundles]
 # Core testing framework (JUnit + logging + launcher API for custom test runner)
