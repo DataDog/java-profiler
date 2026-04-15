@@ -84,7 +84,7 @@ final class DeadlockDetector {
         reportedCycles.clear();
     }
 
-    private void check() {
+    void check() {
         try {
             long[] deadlockedIds = synchronizerSupported
                     ? threadMXBean.findDeadlockedThreads()

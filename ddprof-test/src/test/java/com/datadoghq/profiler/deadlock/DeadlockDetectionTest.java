@@ -28,7 +28,6 @@ public class DeadlockDetectionTest extends AbstractProfilerTest {
 
     private Thread deadlockThread1;
     private Thread deadlockThread2;
-    private DeadlockDetector detector;
 
     @Override
     protected String getProfilerCommand() {
@@ -79,20 +78,11 @@ public class DeadlockDetectionTest extends AbstractProfilerTest {
         bothLocked.await();
         Thread.sleep(200); // Let the deadlock form
 
-        detector = new DeadlockDetector(profiler);
-        detector.start(100);
-        // Let one detection cycle complete, then stop to avoid multiple cycles
-        // producing different deadlock IDs
-        Thread.sleep(200);
-        detector.stop();
+        new DeadlockDetector(profiler).check();
     }
 
     @Override
     protected void after() throws Exception {
-        if (detector != null) {
-            detector.stop();
-            detector = null;
-        }
         if (deadlockThread1 != null) {
             deadlockThread1.interrupt();
         }
