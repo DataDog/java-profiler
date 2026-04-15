@@ -15,6 +15,7 @@ import java.lang.management.ThreadInfo;
 import java.lang.management.ThreadMXBean;
 import java.util.Collections;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * Hang reproducer for java-profiler + wasmtime signal handler interaction.
@@ -45,13 +46,25 @@ public class WasmtimeReproducer {
     private static final long SPIN_COUNT = 10_000_000L;
     private static final long MONITOR_INTERVAL_MS = 5_000;
     private static final int HANG_EXIT_CODE = 42;
+    // When true, park on hang instead of exiting — keeps the JVM alive for GDB attachment.
+    private static final boolean PAUSE_ON_HANG =
+            Boolean.getBoolean("pause.on.hang");
 
     public static void main(String[] args) throws Exception {
-        startProfiler();
+        long pid = ProcessHandle.current().pid();
+        System.out.printf("[main] pid=%d — to attach GDB: gdb -p %d%n", pid, pid);
 
+        // Compile the WASM module BEFORE starting the profiler.
+        // wasmtime's Cranelift JIT + cache serialization makes I/O syscalls that
+        // return EINTR when interrupted by the profiler's wall-clock signal.
+        // Pre-Rust-1.64 I/O does not auto-retry on EINTR, causing the compilation
+        // to fail and retry in an infinite loop.
         byte[] wasmBytes = loadWasmBytes();
         Engine engine = new Engine();
         Module module = new Module(engine, wasmBytes);
+        System.out.println("[main] WASM module compiled");
+
+        startProfiler();
 
         int total = SPIN_WORKERS + TRAP_WORKERS;
         AtomicLong[] counters = new AtomicLong[total];
@@ -192,6 +205,19 @@ public class WasmtimeReproducer {
                                 "HANG DETECTED on %s after %ds (counter stuck at %d)%n",
                                 name, elapsedSec, cur);
                         dumpThreads();
+                        if (PAUSE_ON_HANG) {
+                            long pid = ProcessHandle.current().pid();
+                            System.out.printf(
+                                    "[hang] JVM paused for GDB. Attach with:%n"
+                                    + "  gdb -p %d%n"
+                                    + "Then run:%n"
+                                    + "  set print thread-events off%n"
+                                    + "  thread apply all bt%n"
+                                    + "Send SIGKILL when done: kill -9 %d%n",
+                                    pid, pid);
+                            System.out.flush();
+                            LockSupport.park();  // wait indefinitely
+                        }
                         System.exit(HANG_EXIT_CODE);
                     }
                     prev[i] = cur;

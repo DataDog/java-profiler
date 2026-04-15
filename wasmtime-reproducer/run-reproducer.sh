@@ -36,7 +36,7 @@ while true; do
   elapsed=$((now - start_epoch))
   echo "[run $attempt | ${elapsed}s] launching JVM"
 
-  "$JAVA" -jar "$JAR"
+  "$JAVA" -Dpause.on.hang=true -jar "$JAR"
 
   exit_code=$?
 
