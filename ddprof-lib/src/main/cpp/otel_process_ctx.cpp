@@ -669,6 +669,8 @@ static otel_process_ctx_result otel_process_ctx_encode_protobuf_payload(char **o
   // Reads an AnyValue.array_value (field 5) from ptr; ptr must be at KeyValue.value (tag 2).
   // Allocates a NULL-terminated array of strings and sets *out_array immediately. On error the caller must free it.
   static bool read_protobuf_array_value_strings(char **ptr, char *end_ptr, char *value_buffer, const char ***out_array) {
+    // Reject duplicate fields — if the output pointer already holds a value, the protobuf data is malformed
+    if (*out_array) return false;
     uint8_t field;
     if (!read_protobuf_tag(ptr, end_ptr, &field) || field != 2) return false;
     uint16_t any_len;
