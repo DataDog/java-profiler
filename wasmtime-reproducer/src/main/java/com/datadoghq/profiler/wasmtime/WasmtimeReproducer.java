@@ -17,20 +17,31 @@ import java.util.Collections;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Hang reproducer for java-profiler + wasmtime interaction.
+ * Hang reproducer for java-profiler + wasmtime signal handler interaction.
  *
- * Starts java-profiler with cpu+wall profiling, then runs N worker threads each
- * executing a compute-intensive WASM export (spin.wasm countdown loop) in a tight
- * loop.  A monitor thread checks per-worker progress counters every 5 s; if any
- * counter is unchanged the thread has stalled — it prints a full thread dump and
- * exits with code 42 (hang detected).
+ * Two classes of workers run concurrently under cpu+wall profiling at 1 ms:
+ *
+ * SpinWorkerThread  — calls spin(i64)->i64 in a tight loop, keeping Cranelift
+ *                     JIT'd code executing while SIGPROF fires. Exercises frame-
+ *                     pointer-less stack unwinding and signal-mask conflicts.
+ *
+ * TrapWorkerThread  — repeatedly calls trap()->() (WASM unreachable), which
+ *                     forces wasmtime's SIGSEGV/trap handler chain to fire.
+ *                     Re-creates Store+Instance on every iteration because a
+ *                     WASM trap leaves the store's internal state undefined.
+ *                     Exercises the SIGSEGV handler chain collision with SIGPROF.
+ *
+ * A MonitorThread checks per-worker progress counters every 5 s. If any counter
+ * is unchanged the thread has stalled — it prints a full ThreadMXBean dump and
+ * exits with code 42.
  *
  * Shared across threads: Engine, Module (immutable after construction).
  * Per-thread:           Store, Instance (not thread-safe).
  */
 public class WasmtimeReproducer {
 
-    private static final int WORKER_THREADS = Math.max(4, Runtime.getRuntime().availableProcessors());
+    private static final int SPIN_WORKERS = Math.max(4, Runtime.getRuntime().availableProcessors());
+    private static final int TRAP_WORKERS = Math.max(2, SPIN_WORKERS / 2);
     private static final long SPIN_COUNT = 10_000_000L;
     private static final long MONITOR_INTERVAL_MS = 5_000;
     private static final int HANG_EXIT_CODE = 42;
@@ -42,12 +53,20 @@ public class WasmtimeReproducer {
         Engine engine = new Engine();
         Module module = new Module(engine, wasmBytes);
 
-        AtomicLong[] counters = new AtomicLong[WORKER_THREADS];
-        Thread[] workers = new Thread[WORKER_THREADS];
-        for (int i = 0; i < WORKER_THREADS; i++) {
+        int total = SPIN_WORKERS + TRAP_WORKERS;
+        AtomicLong[] counters = new AtomicLong[total];
+        Thread[] workers = new Thread[total];
+
+        for (int i = 0; i < SPIN_WORKERS; i++) {
             counters[i] = new AtomicLong(0);
-            workers[i] = new WorkerThread(i, engine, module, counters[i]);
+            workers[i] = new SpinWorkerThread(i, engine, module, counters[i]);
             workers[i].setDaemon(false);
+        }
+        for (int i = 0; i < TRAP_WORKERS; i++) {
+            int idx = SPIN_WORKERS + i;
+            counters[idx] = new AtomicLong(0);
+            workers[idx] = new TrapWorkerThread(i, engine, module, counters[idx]);
+            workers[idx].setDaemon(false);
         }
 
         Thread monitor = new MonitorThread(counters);
@@ -62,14 +81,19 @@ public class WasmtimeReproducer {
         }
     }
 
-    private static class WorkerThread extends Thread {
+    /**
+     * Runs spin(SPIN_COUNT) in a tight loop.
+     * Exercises: SIGPROF arriving inside Cranelift JIT'd code (signal mask
+     * conflicts, frame-pointer-less stack unwinding, sigaltstack collisions).
+     */
+    private static class SpinWorkerThread extends Thread {
         private final int id;
         private final Engine engine;
         private final Module module;
         private final AtomicLong counter;
 
-        WorkerThread(int id, Engine engine, Module module, AtomicLong counter) {
-            super("worker-" + id);
+        SpinWorkerThread(int id, Engine engine, Module module, AtomicLong counter) {
+            super("spin-worker-" + id);
             this.id = id;
             this.engine = engine;
             this.module = module;
@@ -83,13 +107,55 @@ public class WasmtimeReproducer {
                  Instance instance = new Instance(store, module, Collections.<Extern>emptyList())) {
                 Func spinFn = instance.getFunc(store, "spin").orElseThrow(
                         () -> new RuntimeException("'spin' export not found"));
-                System.out.printf("[worker-%d] started%n", id);
+                System.out.printf("[spin-worker-%d] started%n", id);
                 while (!Thread.currentThread().isInterrupted()) {
                     spinFn.call(store, Val.fromI64(SPIN_COUNT));
                     counter.incrementAndGet();
                 }
             } catch (Exception e) {
-                System.err.printf("[worker-%d] ERROR: %s%n", id, e.getMessage());
+                System.err.printf("[spin-worker-%d] ERROR: %s%n", id, e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Repeatedly triggers a WASM unreachable trap, forcing wasmtime's
+     * SIGSEGV/SIGBUS trap-handler chain to fire on every iteration.
+     *
+     * Re-creates Store+Instance each iteration: after a WASM trap the store's
+     * internal state is undefined. The creation/destruction cycle also stresses
+     * wasmtime's JIT compilation phase under concurrent SIGPROF signals.
+     *
+     * Exercises: SIGSEGV handler chain collision with SIGPROF.
+     */
+    private static class TrapWorkerThread extends Thread {
+        private final int id;
+        private final Engine engine;
+        private final Module module;
+        private final AtomicLong counter;
+
+        TrapWorkerThread(int id, Engine engine, Module module, AtomicLong counter) {
+            super("trap-worker-" + id);
+            this.id = id;
+            this.engine = engine;
+            this.module = module;
+            this.counter = counter;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public void run() {
+            System.out.printf("[trap-worker-%d] started%n", id);
+            while (!Thread.currentThread().isInterrupted()) {
+                try (Store<Void> store = new Store<>(null, engine);
+                     Instance instance = new Instance(store, module, Collections.<Extern>emptyList())) {
+                    Func trapFn = instance.getFunc(store, "trap").orElseThrow(
+                            () -> new RuntimeException("'trap' export not found"));
+                    trapFn.call(store);
+                } catch (RuntimeException e) {
+                    // expected: wasmtime converts the WASM unreachable trap into a RuntimeException
+                }
+                counter.incrementAndGet();
             }
         }
     }
@@ -119,9 +185,12 @@ public class WasmtimeReproducer {
                 for (int i = 0; i < counters.length; i++) {
                     long cur = counters[i].get();
                     if (cur == prev[i]) {
+                        String name = i < SPIN_WORKERS
+                                ? "spin-worker-" + i
+                                : "trap-worker-" + (i - SPIN_WORKERS);
                         System.out.printf(
-                                "HANG DETECTED on worker-%d after %ds (counter stuck at %d)%n",
-                                i, elapsedSec, cur);
+                                "HANG DETECTED on %s after %ds (counter stuck at %d)%n",
+                                name, elapsedSec, cur);
                         dumpThreads();
                         System.exit(HANG_EXIT_CODE);
                     }
