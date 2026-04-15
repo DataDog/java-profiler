@@ -354,7 +354,7 @@ The profiler uses a sophisticated double-buffered storage system for call traces
 ### JVM support
 - **Three supported JVM implementations**: Hotspot, J9 and Zing
 - **JVM implementation specific code**: Implementation-specific code is organized under hotspot, j9 and zing subdirectories respectively
-- **Shared code**: Shared code is JVM implementation independent, must not refer to JVM implementation specific code directly, but through abstraction files - jvmSupport.h, jvmSupport.inline.h, jvmSupport.cpp, jvmThread.h, jvmThread.cpp vmEntry.h, vmEntry.cpp and javaApi.cpp
+- **Shared code**: Shared code is JVM implementation independent, must not refer to JVM implementation specific code directly, but through abstraction files - jvmSupport.h, jvmSupport.inline.h, jvmSupport.cpp, jvmThread.h, jvmThread.cpp, vmEntry.h, vmEntry.cpp and javaApi.cpp
 
 ### Thread Safety and Performance
 - **Lock-free Hot Paths**: Signal handlers avoid blocking operations
