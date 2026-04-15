@@ -81,6 +81,10 @@ public class DeadlockDetectionTest extends AbstractProfilerTest {
 
         detector = new DeadlockDetector(profiler);
         detector.start(100);
+        // Let one detection cycle complete, then stop to avoid multiple cycles
+        // producing different deadlock IDs
+        Thread.sleep(200);
+        detector.stop();
     }
 
     @Override
@@ -99,10 +103,6 @@ public class DeadlockDetectionTest extends AbstractProfilerTest {
 
     @Test
     public void testDeadlockDetectionEmitsEvents() throws Exception {
-        // Wait for detection
-        Thread.sleep(1500);
-
-        detector.stop();
         stopProfiler();
 
         // Verify events
