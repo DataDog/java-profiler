@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-04-14 18:05:37 EDT
+**Date:** 2026-04-15 07:24:19 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 337 |
-| Sample Rate | 5.62/sec |
-| Health Score | 351% |
+| CPU Samples | 363 |
+| Sample Rate | 6.05/sec |
+| Health Score | 378% |
 | Threads | 8 |
-| Allocations | 367 |
+| Allocations | 390 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 556 |
-| Sample Rate | 9.27/sec |
-| Health Score | 579% |
+| CPU Samples | 513 |
+| Sample Rate | 8.55/sec |
+| Health Score | 534% |
 | Threads | 10 |
-| Allocations | 472 |
+| Allocations | 498 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 28-28 cores)</summary>
 
 ```
-1776204079 28
-1776204084 28
-1776204089 28
-1776204094 28
-1776204099 28
-1776204104 28
-1776204109 28
-1776204114 28
-1776204119 28
-1776204124 28
-1776204129 28
-1776204134 28
-1776204139 28
-1776204144 28
-1776204149 28
-1776204154 28
-1776204159 28
-1776204164 28
-1776204169 28
-1776204174 28
+1776252027 28
+1776252032 28
+1776252037 28
+1776252042 28
+1776252047 28
+1776252052 28
+1776252057 28
+1776252062 28
+1776252067 28
+1776252072 28
+1776252077 28
+1776252082 28
+1776252087 28
+1776252092 28
+1776252097 28
+1776252102 28
+1776252107 28
+1776252112 28
+1776252117 28
+1776252122 28
 ```
 </details>
 
