@@ -23,6 +23,8 @@
 #include <string.h>
 #include <sys/mman.h>
 
+#include "antithesis_instrumentation.h"
+
 // JVM TI agent return codes
 const int ARGUMENTS_ERROR = 100;
 const int COMMAND_ERROR = 200;
