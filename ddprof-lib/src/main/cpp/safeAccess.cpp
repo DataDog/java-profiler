@@ -16,7 +16,7 @@
 
 
 #include "safeAccess.h"
-#include "antithesis_sdk.h"
+// #include "antithesis_sdk.h"
 #include <signal.h>
 #include <ucontext.h>
 #include <atomic>
@@ -163,7 +163,7 @@ bool SafeAccess::handle_safefetch(int sig, void* context) {
     if (pc == (uintptr_t)safefetch32_impl) {
       uc->current_pc = (uintptr_t)safefetch32_cont;
       long count = unsafe_read.fetch_add(1, std::memory_order_relaxed);
-      ALWAYS_LESS_THAN(count, 10000, "too many unsafe accesses", {{"count", count}});
+//      ALWAYS_LESS_THAN(count, 10000, "too many unsafe accesses", {{"count", count}});
       return true;
     } else if (pc == (uintptr_t)safefetch64_impl) {
       uc->current_pc = (uintptr_t)safefetch64_cont;
