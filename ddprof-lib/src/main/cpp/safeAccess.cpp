@@ -19,7 +19,7 @@
 #include "antithesis_sdk.h"
 #include <signal.h>
 #include <ucontext.h>
-#include <stdatomic.h>
+#include <atomic>
 
 extern "C" int safefetch32_cont(int* adr, int errValue);
 extern "C" int64_t safefetch64_cont(int64_t* adr, int64_t errValue);
