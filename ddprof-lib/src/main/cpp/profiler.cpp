@@ -258,7 +258,7 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
        _cstack == CSTACK_DEFAULT)) {
     return 0;
   }
-  int max_depth = min(_max_stack_depth, MAX_NATIVE_FRAMES);
+  int max_depth = std::min(_max_stack_depth, MAX_NATIVE_FRAMES);
   const void *callchain[max_depth + 1]; // we can read one frame past when trying to figure out whether the result is truncated
   int native_frames = 0;
 

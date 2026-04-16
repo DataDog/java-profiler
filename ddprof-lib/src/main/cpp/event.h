@@ -23,7 +23,6 @@
 #include <cstring>
 #include <memory>
 #include <stdint.h>
-using namespace std;
 
 #define MAX_STRING_LEN 8191
 
