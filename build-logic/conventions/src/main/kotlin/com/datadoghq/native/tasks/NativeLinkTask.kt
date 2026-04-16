@@ -346,9 +346,9 @@ abstract class NativeLinkTask @Inject constructor(
         }
 
         // Strip symbols if requested
-        if (stripSymbols.get()) {
-            stripLibrary(outFile)
-        }
+//        if (stripSymbols.get()) {
+//            stripLibrary(outFile)
+//        }
 
         val sizeKB = outFile.length() / 1024
         logNormal("Successfully linked ${outFile.name} (${sizeKB}KB)")

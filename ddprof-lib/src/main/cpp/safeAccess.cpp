@@ -16,7 +16,7 @@
 
 
 #include "safeAccess.h"
-// #include "antithesis_sdk.h"
+#include "antithesis_sdk.h"
 #include <signal.h>
 #include <ucontext.h>
 #include <atomic>
@@ -154,7 +154,7 @@ extern "C" int64_t safefetch64_cont(int64_t* adr, int64_t errValue);
   #endif
 #endif
 
-static std::atomic<long> unsafe_read { 0 };
+static std::atomic<int> unsafe_read { 0 };
 
 bool SafeAccess::handle_safefetch(int sig, void* context) {
   ucontext_t* uc = (ucontext_t*)context;
@@ -162,8 +162,8 @@ bool SafeAccess::handle_safefetch(int sig, void* context) {
   if ((sig == SIGSEGV || sig == SIGBUS) && uc != nullptr) {
     if (pc == (uintptr_t)safefetch32_impl) {
       uc->current_pc = (uintptr_t)safefetch32_cont;
-      long count = unsafe_read.fetch_add(1, std::memory_order_relaxed);
-//      ALWAYS_LESS_THAN(count, 10000, "too many unsafe accesses", {{"count", count}});
+      int count = unsafe_read.fetch_add(1, std::memory_order_relaxed);
+      ALWAYS_LESS_THAN(count, 10000, "too many unsafe accesses", {{"count", count}});
       return true;
     } else if (pc == (uintptr_t)safefetch64_impl) {
       uc->current_pc = (uintptr_t)safefetch64_cont;

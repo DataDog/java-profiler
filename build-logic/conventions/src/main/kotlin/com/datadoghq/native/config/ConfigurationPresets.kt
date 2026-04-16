@@ -67,7 +67,7 @@ object ConfigurationPresets {
             "-fvisibility=hidden",
             "-fdata-sections",
             "-ffunction-sections",
-            "-std=c++17",
+            "-std=c++20",
             "-DPROFILER_VERSION=\"$version\"",
             "-DCOUNTERS"
         )
