@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk11
 
 ## glibc-arm64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-04-16 08:32:28 EDT
+**Date:** 2026-04-16 08:50:21 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 117 |
-| Sample Rate | 1.95/sec |
-| Health Score | 122% |
+| CPU Samples | 133 |
+| Sample Rate | 2.22/sec |
+| Health Score | 139% |
 | Threads | 9 |
-| Allocations | 56 |
+| Allocations | 50 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 107 |
-| Sample Rate | 1.78/sec |
-| Health Score | 111% |
-| Threads | 12 |
-| Allocations | 57 |
+| CPU Samples | 390 |
+| Sample Rate | 6.50/sec |
+| Health Score | 406% |
+| Threads | 13 |
+| Allocations | 143 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1776342312 64
-1776342317 64
-1776342322 64
-1776342327 64
-1776342332 64
-1776342337 64
-1776342342 64
-1776342347 64
-1776342352 64
-1776342357 64
-1776342362 64
-1776342367 64
-1776342372 64
-1776342377 64
-1776342382 64
-1776342387 64
-1776342392 64
-1776342397 64
-1776342402 64
-1776342407 64
+1776343547 64
+1776343552 64
+1776343557 64
+1776343562 64
+1776343567 64
+1776343572 64
+1776343577 64
+1776343582 64
+1776343587 64
+1776343592 64
+1776343597 64
+1776343602 64
+1776343607 64
+1776343612 64
+1776343617 64
+1776343622 64
+1776343627 64
+1776343632 64
+1776343637 64
+1776343642 64
 ```
 </details>
 
