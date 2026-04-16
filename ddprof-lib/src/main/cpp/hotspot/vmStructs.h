@@ -133,11 +133,13 @@ inline T* cast_to(const void* ptr) {
     f(VMContinuationEntry,    MATCH_SYMBOLS("ContinuationEntry"))
 
 // Fields for JDK 21+ virtual-thread / continuation support.
-// ContinuationEntry was not exported in gHotSpotVMStructs until JDK 27
-// (JDK-8378985), so these fields are absent from the table in all JDK 21-26
-// builds and are populated via C++ mangled-symbol fallback instead.  They are
-// intentionally excluded from verify_offsets() so that a missing entry causes
-// graceful degradation rather than SIGABRT.
+// Note: JavaThread::_cont_entry (the offset to the thread's ContinuationEntry
+// pointer) is always exported in gHotSpotVMStructs on JDK 21+.  However,
+// ContinuationEntry's own internal fields (_parent, _return_pc) were not
+// exported until JDK 27 (JDK-8378985), so those fields are absent from the
+// table in JDK 21-26 builds and are populated via C++ mangled-symbol fallback
+// instead.  They are intentionally excluded from verify_offsets() so that a
+// missing entry causes graceful degradation rather than SIGABRT.
 #define DECLARE_V21_TYPE_FIELD_DO(type_begin, field, field_with_version, type_end) \
     type_begin(VMJavaThread, MATCH_SYMBOLS("JavaThread", "Thread"))                \
         field_with_version(_cont_entry_offset, offset, 21, MAX_VERSION, MATCH_SYMBOLS("_cont_entry")) \

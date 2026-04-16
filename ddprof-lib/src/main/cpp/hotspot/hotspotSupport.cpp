@@ -134,32 +134,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     }
 }
 
-__attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, VMJavaFrameAnchor* anchor, EventType event_type, int lock_index, bool* truncated) {
-    uintptr_t sp = anchor->lastJavaSP();
-    if (sp == 0) {
-        return 0;
-    }
-
-    uintptr_t fp = anchor->lastJavaFP();
-    if (fp == 0) {
-        fp = sp;
-    }
-
-    const void* pc = anchor->lastJavaPC();
-    if (pc == NULL || !CodeHeap::contains(pc)) {
-        // lastJavaPC is NULL (thread not in Java→native transition) or points outside
-        // the tracked CodeHeap range (e.g. interpreter/stub code in a separately mmap'd
-        // region). Read the actual return address from the stack frame instead.
-        if (!StackWalkValidation::aligned(sp)) {
-            return 0;
-        }
-        pc = ((const void**)sp)[-1];
-    }
-
-    StackWalkFeatures no_features{};
-    return walkVM(ucontext, frames, max_depth, no_features, event_type, pc, sp, fp, lock_index, truncated);
-}
-
 __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                         StackWalkFeatures features, EventType event_type,
                         const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated) {
@@ -390,7 +364,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             // into carrier frames, causing walkThroughContinuation to never fire.
             // The continuation mechanism finds carrier frames on its own.
             bool anchor_eligible = anchor != NULL && (depth > 0 || !nm->isStub());
-            bool cont_unwind_active = features.carrier_frames && !CONT_UNWIND_DISABLED;
+            bool cont_unwind_active = features.carrier_frames && !CONT_UNWIND_DISABLED
+                && vm_thread != NULL && vm_thread->isCarryingVirtualThread();
             if (anchor_eligible && !cont_unwind_active) {
                 Counters::increment(WALKVM_ANCHOR_CONSUMED);
                 // Preserve anchor data before consumption — getFrame() is read-only

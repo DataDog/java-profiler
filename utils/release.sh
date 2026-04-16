@@ -78,7 +78,7 @@ read_key() {
 # Function to show interactive release branch picker (for patch releases)
 select_release_branch() {
     mapfile -t branches < <(git branch -r --list 'origin/release/[0-9]*.[0-9]*._' \
-        | sed 's|[[:space:]]*origin/||' | sort -V 2>&1)
+        | sed 's|[[:space:]]*origin/||' | sort -V 2>/dev/null)
 
     if [ ${#branches[@]} -eq 0 ]; then
         print_error "No release branches found matching release/X.Y._" >&2
