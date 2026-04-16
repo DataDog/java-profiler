@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk8
 
 ## glibc-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-04-16 06:02:56 EDT
+**Date:** 2026-04-16 06:24:10 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 135 |
-| Sample Rate | 2.25/sec |
-| Health Score | 141% |
+| CPU Samples | 154 |
+| Sample Rate | 2.57/sec |
+| Health Score | 161% |
 | Threads | 5 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 191 |
-| Sample Rate | 3.18/sec |
-| Health Score | 199% |
-| Threads | 6 |
+| CPU Samples | 213 |
+| Sample Rate | 3.55/sec |
+| Health Score | 222% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1776333337 32
-1776333342 32
-1776333347 32
-1776333352 32
-1776333357 32
-1776333362 32
-1776333367 32
-1776333372 32
-1776333377 32
-1776333382 32
-1776333387 32
-1776333392 32
-1776333397 32
-1776333402 32
-1776333407 32
-1776333412 32
-1776333417 32
-1776333422 32
-1776333427 32
-1776333432 32
+1776334538 32
+1776334543 32
+1776334548 32
+1776334553 32
+1776334558 32
+1776334563 32
+1776334568 32
+1776334573 32
+1776334578 32
+1776334583 32
+1776334588 32
+1776334593 32
+1776334598 32
+1776334603 32
+1776334608 32
+1776334613 32
+1776334618 32
+1776334623 32
+1776334628 32
+1776334633 32
 ```
 </details>
 
