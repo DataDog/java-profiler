@@ -334,6 +334,14 @@ int OS::getCpuCount() {
     return sysctlbyname("hw.logicalcpu", &cpu_count, &size, NULL, 0) == 0 ? cpu_count : 1;
 }
 
+int OS::getCgroupCpuMillicores() {
+    return -1; // not applicable on macOS
+}
+
+long OS::getContainerMemoryLimit() {
+    return -1; // not applicable on macOS
+}
+
 u64 OS::getProcessCpuTime(u64* utime, u64* stime) {
     struct tms buf;
     clock_t real = times(&buf);

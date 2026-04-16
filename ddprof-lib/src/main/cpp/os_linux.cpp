@@ -361,6 +361,90 @@ int OS::getCpuCount() {
     return sysconf(_SC_NPROCESSORS_ONLN);
 }
 
+int OS::getCgroupCpuMillicores() {
+    // Try cgroup v2 first
+    int fd = open("/sys/fs/cgroup/cpu.max", O_RDONLY);
+    if (fd != -1) {
+        char buf[64] = {0};
+        ssize_t r = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (r > 0) {
+            if (strncmp(buf, "max", 3) == 0) {
+                return -1; // unconstrained
+            }
+            long quota, period;
+            if (sscanf(buf, "%ld %ld", &quota, &period) == 2 && period > 0) {
+                return (int)(quota * 1000 / period);
+            }
+        }
+    }
+
+    // Fall back to cgroup v1
+    long quota = -1;
+    long period = 100000; // default 100ms
+
+    fd = open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", O_RDONLY);
+    if (fd != -1) {
+        char buf[32] = {0};
+        ssize_t r = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (r > 0) {
+            quota = atol(buf);
+        }
+    }
+
+    if (quota <= 0) {
+        return -1; // unconstrained or unavailable
+    }
+
+    fd = open("/sys/fs/cgroup/cpu/cpu.cfs_period_us", O_RDONLY);
+    if (fd != -1) {
+        char buf[32] = {0};
+        ssize_t r = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (r > 0) {
+            long p = atol(buf);
+            if (p > 0) period = p;
+        }
+    }
+
+    return (int)(quota * 1000 / period);
+}
+
+long OS::getContainerMemoryLimit() {
+    // Try cgroup v2 first
+    int fd = open("/sys/fs/cgroup/memory.max", O_RDONLY);
+    if (fd != -1) {
+        char buf[32] = {0};
+        ssize_t r = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (r > 0) {
+            if (strncmp(buf, "max", 3) == 0) {
+                return -1; // unconstrained
+            }
+            long limit = atol(buf);
+            if (limit > 0) return limit;
+        }
+    }
+
+    // Fall back to cgroup v1
+    fd = open("/sys/fs/cgroup/memory/memory.limit_in_bytes", O_RDONLY);
+    if (fd != -1) {
+        char buf[32] = {0};
+        ssize_t r = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (r > 0) {
+            long limit = atol(buf);
+            // A limit of 9223372036854771712 (LLONG_MAX rounded) means unconstrained
+            if (limit > 0 && limit < 0x7ffffffffffff000L) {
+                return limit;
+            }
+        }
+    }
+
+    return -1;
+}
+
 u64 OS::getProcessCpuTime(u64* utime, u64* stime) {
     struct tms buf;
     clock_t real = times(&buf);

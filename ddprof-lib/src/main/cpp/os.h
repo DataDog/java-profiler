@@ -132,6 +132,8 @@ class OS {
 
     static bool getCpuDescription(char* buf, size_t size);
     static int getCpuCount();
+    static int getCgroupCpuMillicores();
+    static long getContainerMemoryLimit();
     static u64 getProcessCpuTime(u64* utime, u64* stime);
     static u64 getTotalCpuTime(u64* utime, u64* stime);
 

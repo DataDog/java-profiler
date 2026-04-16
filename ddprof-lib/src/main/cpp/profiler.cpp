@@ -35,6 +35,7 @@
 #include "utils.h"
 #include "wallClock.h"
 #include "frames.h"
+#include "sanityCheck.h"
 
 #include <algorithm>
 #include <dlfcn.h>
@@ -1017,6 +1018,18 @@ Error Profiler::start(Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
   if (_state > IDLE) {
     return Error("Profiler already started");
+  }
+
+  if (!args._skip_sanity_checks) {
+    static Error sanity_result = Error::OK;
+    static bool sanity_checked = false;
+    if (!sanity_checked) {
+      sanity_checked = true;
+      sanity_result = SanityChecker::runChecks(args);
+    }
+    if (sanity_result) {
+      return sanity_result;
+    }
   }
 
   Error error = checkJvmCapabilities();
