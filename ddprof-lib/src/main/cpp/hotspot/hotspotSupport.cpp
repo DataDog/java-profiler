@@ -238,10 +238,10 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         uintptr_t entry_fp;
 
         if (VMContinuationEntry::type_size() > 0) {
-            // ContinuationEntry is known via vmStructs (JDK 27+, and JDK 21-26
-            // on distros that expose it).  Walk the linked list of entries for
-            // nested-continuation support and derive the enterSpecial frame FP
-            // from the struct layout (entry + type_size).
+            // ContinuationEntry is known via vmStructs (JDK 27+, added by
+            // JDK-8378985).  Walk the linked list of entries for nested-
+            // continuation support and derive the enterSpecial frame FP from
+            // the struct layout (entry + type_size).
             cont_entry = (cont_entry != nullptr) ? cont_entry->parent() : vm_thread->contEntry();
             if (cont_entry == nullptr) {
                 Counters::increment(WALKVM_CONT_ENTRY_NULL);
@@ -250,7 +250,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             }
             entry_fp = cont_entry->entryFP();
         } else {
-            // ContinuationEntry absent from vmStructs (musl/minimal JDK 21-26).
+            // ContinuationEntry absent from vmStructs (JDK 21-26).
             // Derive the enterSpecial frame FP from the current fp:
             //   all frames thawed (pc == cont_entry_return_pc): fp IS the
             //     enterSpecial frame FP.

@@ -133,13 +133,13 @@ inline T* cast_to(const void* ptr) {
     f(VMContinuationEntry,    MATCH_SYMBOLS("ContinuationEntry"))
 
 // Fields for JDK 21+ virtual-thread / continuation support.
-// Note: JavaThread::_cont_entry (the offset to the thread's ContinuationEntry
-// pointer) is always exported in gHotSpotVMStructs on JDK 21+.  However,
-// ContinuationEntry's own internal fields (_parent, _return_pc) were not
-// exported until JDK 27 (JDK-8378985), so those fields are absent from the
-// table in JDK 21-26 builds and are populated via C++ mangled-symbol fallback
-// instead.  They are intentionally excluded from verify_offsets() so that a
-// missing entry causes graceful degradation rather than SIGABRT.
+// Note: JavaThread::_cont_entry, ContinuationEntry (type and fields), and
+// StubRoutines::_cont_returnBarrier were all added to gHotSpotVMStructs /
+// gHotSpotVMTypes in JDK 27 (JDK-8378985).  On JDK 21-26 none of these
+// are in the VM tables; offsets and addresses are populated via C++ mangled-
+// symbol fallback instead.  They are intentionally excluded from
+// verify_offsets() so that a missing entry causes graceful degradation
+// rather than SIGABRT.
 #define DECLARE_V21_TYPE_FIELD_DO(type_begin, field, field_with_version, type_end) \
     type_begin(VMJavaThread, MATCH_SYMBOLS("JavaThread", "Thread"))                \
         field_with_version(_cont_entry_offset, offset, 21, MAX_VERSION, MATCH_SYMBOLS("_cont_entry")) \
@@ -826,10 +826,10 @@ DECLARE(VMThread)
     }
 
     // Returns true when this thread is currently executing a virtual thread
-    // (i.e. JavaThread::_cont_entry is non-null).  Available on all JDK 21+
-    // builds because _cont_entry is a field of JavaThread, which is always
-    // exported in gHotSpotVMStructs.  Does NOT require ContinuationEntry type
-    // size, so it works on JDK 21-26 where type_size() == 0.
+    // (i.e. JavaThread::_cont_entry is non-null).  On JDK 21-26 the offset
+    // is resolved via C++ mangled-symbol fallback (not gHotSpotVMStructs).
+    // Does NOT require ContinuationEntry type_size(), so it works on
+    // JDK 21-26 where type_size() == 0.
     bool isCarryingVirtualThread() const {
         if (_cont_entry_offset < 0) return false;
         return SafeAccess::loadPtr((void**) const_cast<VMThread*>(this)->at(_cont_entry_offset), nullptr) != nullptr;
