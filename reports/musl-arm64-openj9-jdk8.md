@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk8
 
 ## musl-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-04-17 08:49:15 EDT
+**Date:** 2026-04-17 10:21:32 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 102 |
-| Sample Rate | 1.70/sec |
-| Health Score | 106% |
+| CPU Samples | 341 |
+| Sample Rate | 5.68/sec |
+| Health Score | 355% |
 | Threads | 9 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: musl-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 129 |
-| Sample Rate | 2.15/sec |
-| Health Score | 134% |
-| Threads | 13 |
+| CPU Samples | 77 |
+| Sample Rate | 1.28/sec |
+| Health Score | 80% |
+| Threads | 9 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1776429788 64
-1776429793 64
-1776429798 64
-1776429803 64
-1776429808 64
-1776429813 64
-1776429818 64
-1776429823 64
-1776429829 64
-1776429834 64
-1776429839 64
-1776429844 64
-1776429849 64
-1776429854 64
-1776429859 64
-1776429864 64
-1776429869 64
-1776429874 64
-1776429879 64
-1776429884 64
+1776435105 64
+1776435110 64
+1776435115 64
+1776435120 64
+1776435125 64
+1776435130 64
+1776435135 64
+1776435140 64
+1776435145 64
+1776435150 64
+1776435155 64
+1776435160 64
+1776435165 64
+1776435170 64
+1776435175 64
+1776435180 64
+1776435185 64
+1776435190 64
+1776435195 64
+1776435200 64
 ```
 </details>
 
