@@ -967,3 +967,93 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   }
   return java_frames; 
 }
+
+
+void HotspotSupport::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
+    assert(VM::isHotspot() && "Hotspot only");
+
+    jint class_count = 0;
+    jclass *classes = nullptr;
+    int loaded_count = 0;
+
+    if (jvmti->GetLoadedClasses(&class_count, &classes) == 0) {
+        for (int i = 0; i < class_count; i++) {
+            jclass klass = classes[i];
+            jobject cld;
+            // Hotpsot only: loaded by bootstrap class loader, which is never unloaded,
+            // we use Method instead.
+            if (jvmti->GetClassLoader(klass, &cld) == JVMTI_ERROR_NONE && cld == nullptr) {
+                VMOopHandle* klass_handle = (VMOopHandle*)klass;
+                VMKlass* vmklass = VMKlass::fromOop(klass_handle->oop());
+                assert(vmklass != nullptr);
+                VMClassLoaderData* cld = vmklass->classLoaderData();
+                assert(cld != nullptr);
+                char* signature_ptr;
+                jvmti->GetClassSignature(klass, &signature_ptr, nullptr);
+                TEST_LOG("processing bootstrap class %s", signature_ptr);
+                // Lambda classes can be unloaded, exlcude them
+                if (!cld->hasClassMirrorHolder() && !cld->isAnonymous()) {
+                    TEST_LOG("Skipping  class %s",signature_ptr);
+                    continue;
+                }
+                loadMethodIDsImpl(jvmti, jni, klass);
+                loaded_count++;
+            }
+        }
+        jvmti->Deallocate((unsigned char *)classes);
+    }
+    TEST_LOG("Preloaded jmethodIDs for %d/%d classes", loaded_count, class_count);
+}
+
+static void patchClassLoaderData(JNIEnv* jni, jclass klass) {
+  bool needs_patch = VM::hotspot_version() == 8;
+  if (needs_patch) {
+    // Workaround for JVM bug https://bugs.openjdk.org/browse/JDK-8062116
+    // Preallocate space for jmethodIDs at the beginning of the list (rather than at the end)
+    // This is relevant only for JDK 8 - later versions do not have this bug
+    if (VMStructs::hasClassLoaderData()) {
+      VMKlass *vmklass = VMKlass::fromJavaClass(jni, klass);
+      int method_count = vmklass->methodCount();
+      if (method_count > 0) {
+        VMClassLoaderData *cld = vmklass->classLoaderData();
+        cld->lock();
+        for (int i = 0; i < method_count; i += MethodList::SIZE) {
+          *cld->methodList() = new MethodList(*cld->methodList());
+        }
+        cld->unlock();
+      }
+    }
+  }
+}
+
+bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
+    patchClassLoaderData(jni, klass);
+
+    jobject cld;
+    // Hotpsot only: loaded by bootstrap class loader, which is never unloaded,
+    // we use Method instead.
+    if (jvmti->GetClassLoader(klass, &cld) == JVMTI_ERROR_NONE && cld == nullptr) {
+        VMOopHandle* klass_handle = VMOopHandle::cast(klass);
+        VMKlass* vmklass = VMKlass::fromOop(klass_handle->oop());
+        assert(vmklass != nullptr);
+        VMClassLoaderData* cld = vmklass->classLoaderData();
+        assert(cld != nullptr);
+        char* signature_ptr;
+        jvmti->GetClassSignature(klass, &signature_ptr, nullptr);
+        TEST_LOG("processing bootstrap class %s", signature_ptr);
+        // Lambda classes can be unloaded, exlcude them
+        if (!cld->hasClassMirrorHolder() && !cld->isAnonymous()) {
+            TEST_LOG("Skipping  class %s",signature_ptr);
+            return false;
+        }
+    }
+
+    return JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);
+}
+
+void JNICALL HotspotSupport::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                                         jmethodID method, void *address,
+                                         void **new_address_ptr) {
+    VMStructs::NativeMethodBind(jvmti, jni, thread, method, address, new_address_ptr);
+}
+

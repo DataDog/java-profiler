@@ -8,6 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include "hotspot/compressedLinenumberStream.h"
 #include "hotspot/vmStructs.inline.h"
 #include "vmEntry.h"
 #include "jniHelper.h"
@@ -755,6 +756,35 @@ jmethodID VMMethod::validatedId() {
         return method_id;
     }
     return NULL;
+}
+
+bool VMMethod::getLineNumberTable(jint* entry_count_ptr,
+                                   jvmtiLineNumberEntry** table_ptr) {
+    if (!hasLineNumberTable()) {
+        return false;
+    }
+
+    assert(entry_count_ptr != nullptr);
+    assert(table_ptr != nullptr);
+    unsigned char* table_start = (unsigned char*)codeBase() + codeSize();
+    int count = 0;
+    CompressedLineNumberStream stream(table_start);
+    while (stream.read_pair()) {
+        count++;
+    }
+
+    jvmtiLineNumberEntry* table = (jvmtiLineNumberEntry*)malloc(count * sizeof(jvmtiLineNumberEntry));
+    stream.reset();
+    count = 0;
+    while (stream.read_pair()) {
+        table[count].start_location = (jlocation)stream.bci();
+        table[count].line_number = (jint)stream.line();
+        count++;
+    }
+    *table_ptr = table;
+    *entry_count_ptr = count;
+
+    return true;
 }
 
 VMNMethod* CodeHeap::findNMethod(char* heap, const void* pc) {

@@ -10,7 +10,6 @@
 #include "profiler.h"
 #include "stackFrame.h"
 #include "symbols.h"
-#include "hotspot/vmStructs.inline.h"
 #include "jvmThread.h"
 #include "thread.h"
 

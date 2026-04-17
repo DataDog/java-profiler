@@ -104,7 +104,7 @@ inline T* cast_to(const void* ptr) {
  *  For example:
  *   f(VMClassLoaderData,    MATCH_SYMBOLS("ClassLoaderData")) ->
  *   if (matchAny((char*)[] {"ClassLoaderData", nullptr})) {
- *      _ClassLoaderData_size = size;
+ *      _VMClassLoaderData_size = size;
  *      continue;
  *    }
  * 
@@ -126,7 +126,8 @@ inline T* cast_to(const void* ptr) {
     f(VMMethod,             MATCH_SYMBOLS("Method"))            \
     f(VMNMethod,            MATCH_SYMBOLS("nmethod"))           \
     f(VMSymbol,             MATCH_SYMBOLS("Symbol"))            \
-    f(VMThread,             MATCH_SYMBOLS("Thread"))
+    f(VMThread,             MATCH_SYMBOLS("Thread"))            \
+    f(VMOopHandle,          MATCH_SYMBOLS("OopHandle"))
 
 /**
  * Following macros define field offsets, addresses or values of JVM classes that are exported by
@@ -170,6 +171,10 @@ typedef void* address;
     type_begin(VMConstMethod, MATCH_SYMBOLS("ConstMethod"))                                                         \
         field(_constmethod_constants_offset, offset, MATCH_SYMBOLS("_constants"))                                   \
         field(_constmethod_idnum_offset, offset, MATCH_SYMBOLS("_method_idnum"))                                    \
+        field(_constmethod_flags_offset, offset, MATCH_SYMBOLS("_flags._flags", "_flags"))                          \
+        field(_constmethod_code_size, offset, MATCH_SYMBOLS("_code_size"))                                          \
+        field(_constmethod_name_index_offset, offset, MATCH_SYMBOLS("_name_index"))                                 \
+        field(_constmethod_sig_index_offset, offset, MATCH_SYMBOLS("_signatire+index"))                             \
     type_end()                                                                                                      \
     type_begin(VMConstantPool, MATCH_SYMBOLS("ConstantPool"))                                                       \
         field(_pool_holder_offset, offset, MATCH_SYMBOLS("_pool_holder"))                                           \
@@ -182,6 +187,8 @@ typedef void* address;
     type_end()                                                                                                      \
     type_begin(VMClassLoaderData, MATCH_SYMBOLS("ClassLoaderData"))                                                 \
         field(_class_loader_data_next_offset, offset, MATCH_SYMBOLS("_next"))                                       \
+        field_with_version(_class_loader_data_has_class_mirror_holder_offset, offset, 17, MAX_VERSION, MATCH_SYMBOLS("_has_class_mirror_holder")) \
+        field_with_version(_class_loader_data_is_anonymous_offset, offset, 11, MAX_VERSION, MATCH_SYMBOLS("_is_anonymous")) \
     type_end()                                                                                                      \
     type_begin(VMJavaClass, MATCH_SYMBOLS("java_lang_Class"))                                                       \
         field(_klass_offset_addr, address, MATCH_SYMBOLS("_klass_offset"))                                          \
@@ -274,6 +281,9 @@ typedef void* address;
         field(_narrow_klass_base_addr, address, MATCH_SYMBOLS("_narrow_klass._base", "_base"))                      \
         field(_narrow_klass_shift_addr, address, MATCH_SYMBOLS("_narrow_klass._shift", "_shift"))                   \
         field(_collected_heap_addr, address, MATCH_SYMBOLS("_collectedHeap"))                                       \
+    type_end()                                                                                                      \
+    type_begin(VMOopHandle, MATCH_SYMBOLS("OopHandle"))                                                             \
+        field(_oop_handle_obj_offset, offset, MATCH_SYMBOLS("_obj"))                                                \
     type_end()
 
 /**
@@ -401,6 +411,13 @@ class VMStructs {
         const char* ptr = (const char*)this + offset;
         assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
         return ptr;
+    }
+
+    const char* at(int offset) const {
+        const char* ptr = (const char*)this + offset;
+        assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
+        return ptr;
+    
     }
 
     static bool goodPtr(const void* ptr) {
@@ -574,6 +591,9 @@ DECLARE(VMClassLoaderData)
     MethodList** methodList() {
         return (MethodList**) at(sizeof(uintptr_t) * 6 + 8);
     }
+
+    inline bool hasClassMirrorHolder() const;
+    inline bool isAnonymous() const;
 DECLARE_END
 
 DECLARE(VMKlass)    
@@ -676,6 +696,11 @@ DECLARE(VMJavaFrameAnchor)
     }
 DECLARE_END
 
+DECLARE(VMOopHandle)
+public:
+    inline uintptr_t oop() const;
+DECLARE_END
+
 // Copied from JDK's globalDefinitions.hpp 'JavaThreadState' enum
 enum JVMJavaThreadState {
     _thread_uninitialized     =  0, // should never happen (missing initialization)
@@ -768,13 +793,22 @@ DECLARE_END
 DECLARE(VMConstMethod)
 DECLARE_END
 
+DECLARE(VMConstantPool)
+public:
+    inline VMKlass* holder() const;
+    inline VMSymbol* symbolAt(int index) const;
+private:
+    inline intptr_t* base() const;
+DECLARE_END
 
 DECLARE(VMMethod)   
-    private:
+private:
+    // ref: constMethodFlags.hpp in hotspot src
+    static constexpr uint32_t has_linenumber_table = 1 << 0;
+
     static bool check_jmethodID_J9(jmethodID id);
     static bool check_jmethodID_hotspot(jmethodID id);
-
-  public:
+public:
     jmethodID id();
 
     // Performs extra validation when VMMethod comes from incomplete frame
@@ -793,8 +827,17 @@ DECLARE(VMMethod)
         return *(const char**) at(_method_constmethod_offset) + VMConstMethod::type_size();
     }
 
-    inline VMNMethod* code();
-
+    inline VMNMethod* code() const;
+    inline uint16_t codeSize() const;
+    inline uint32_t flags() const;
+    inline bool hasLineNumberTable() const;
+    inline void* codeBase() const;
+    inline VMConstantPool* constantPool() const;
+    inline VMSymbol* name() const;
+    inline VMSymbol* signature() const;
+    inline VMKlass* methodHolder() const;
+    bool getLineNumberTable(jint* entry_count_ptr,
+                       jvmtiLineNumberEntry** table_ptr);
     static bool check_jmethodID(jmethodID id);
 DECLARE_END
 

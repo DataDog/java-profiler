@@ -10,6 +10,8 @@
 #include "hotspot/vmStructs.h"
 #include "jvmThread.h"
 
+#include <cassert>
+
 VMThread* VMThread::current() {
     return VMThread::cast(JVMThread::current());
 }
@@ -46,7 +48,88 @@ bool VMThread::hasJavaThreadVtable() {
            (SafeAccess::load(&vtbl[5]) == _java_thread_vtbl[5]) >= 2;
 }
 
-VMNMethod* VMMethod::code() {
+bool VMClassLoaderData::isAnonymous() const {
+    if (_class_loader_data_is_anonymous_offset >= 0) {
+        return *(bool*) at(_class_loader_data_is_anonymous_offset);
+    }
+    return false;    
+}
+
+bool VMClassLoaderData::hasClassMirrorHolder() const {
+    if (_class_loader_data_has_class_mirror_holder_offset >= 0) {             
+        return  *(bool*) at(_class_loader_data_has_class_mirror_holder_offset);
+    }
+    return false;
+}
+
+VMKlass* VMConstantPool::holder() const {
+    assert(_pool_holder_offset >= 0);
+    return VMKlass::cast(at(_pool_holder_offset));
+}
+
+VMSymbol* VMConstantPool::symbolAt(int index) const {
+    return VMSymbol::cast(&base()[index]);
+}
+
+intptr_t* VMConstantPool::base() const {
+    assert(_VMConstantPool_size > 0);
+    return (intptr_t*)(((char*)this) + _VMConstantPool_size);
+}
+
+uint16_t VMMethod::codeSize() const {
+    assert(_constmethod_code_size >= 0);
+    address code_size_addr =  *(unsigned char**)at(_method_constmethod_offset) + _constmethod_code_size;
+    uint16_t code_size = *(uint16_t*)code_size_addr;
+    TEST_LOG("VMMethod::codeSize(): code_size=%u\n", code_size);
+    return code_size;
+}
+
+uint32_t VMMethod::flags() const {
+    assert(_constmethod_flags_offset >= 0);
+    return *(uint32_t*) ( *(const char**) at(_method_constmethod_offset) + _constmethod_flags_offset );
+}
+
+bool VMMethod::hasLineNumberTable() const {
+    return (flags() & has_linenumber_table) != 0;
+}
+
+address VMMethod::codeBase() const {
+    assert(_method_constmethod_offset >= 0);
+    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
+    return (address)(const_method+1);
+}
+
+VMConstantPool* VMMethod::constantPool() const {
+    assert(_method_constmethod_offset >= 0);
+    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
+    assert(goodPtr(const_method));
+    assert(_constmethod_constants_offset >= 0);
+    VMConstantPool* cpool = *(VMConstantPool**) (const_method + _constmethod_constants_offset);
+    return cpool;
+}
+
+VMSymbol* VMMethod::name() const {
+    VMConstantPool* cpool = constantPool();
+    assert(_method_constmethod_offset >= 0);
+    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
+    assert(goodPtr(const_method));
+    assert(_constmethod_name_index_offset >= 0);
+    int name_index = *(uint16_t*) (const_method + _constmethod_name_index_offset);
+    return cpool->symbolAt(name_index);
+
+}
+
+VMSymbol* VMMethod::signature() const {
+    VMConstantPool* cpool = constantPool();
+    assert(_method_constmethod_offset >= 0);
+    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
+    assert(goodPtr(const_method));
+    assert(_constmethod_sig_index_offset >= 0);
+    int signature_index = *(uint16_t*) (const_method + _constmethod_sig_index_offset);
+    return cpool->symbolAt(signature_index);
+}
+
+VMNMethod* VMMethod::code() const {
     assert(_method_code_offset >= 0);
     const void* code_ptr = *(const void**) at(_method_code_offset);
     return VMNMethod::cast(code_ptr);
@@ -65,6 +148,11 @@ VMMethod* VMThread::compiledMethod() {
         }
     }
     return NULL;
+}
+
+uintptr_t VMOopHandle::oop() const {
+    assert(_oop_handle_obj_offset >= 0);
+    return *(uintptr_t*) at(_oop_handle_obj_offset);
 }
 
 #endif // _HOTSPOT_VMSTRUCTS_INLINE_H
