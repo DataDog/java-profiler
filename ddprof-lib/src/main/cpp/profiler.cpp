@@ -940,6 +940,36 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
   _locks[lock_index].unlock();
 }
 
+void JNICALL Profiler::MonitorContendedEnterCallback(jvmtiEnv *jvmti, JNIEnv *jni,
+                                                     jthread thread, jobject object) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr) return;
+  Context& ctx = Contexts::get();
+  if (ctx.spanId == 0) return;
+  thrd->_monitor_block.start_ticks  = TSC::ticks();
+  thrd->_monitor_block.span_id      = ctx.spanId;
+  thrd->_monitor_block.root_span_id = ctx.rootSpanId;
+  thrd->_monitor_block.obj_addr     = (uintptr_t)(void*)object;
+}
+
+void JNICALL Profiler::MonitorContendedEnteredCallback(jvmtiEnv *jvmti, JNIEnv *jni,
+                                                       jthread thread, jobject object) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr || thrd->_monitor_block.obj_addr == 0) return;
+
+  TaskBlockEvent event;
+  event._start_ticks        = thrd->_monitor_block.start_ticks;
+  event._end_ticks          = TSC::ticks();
+  event._span_id            = thrd->_monitor_block.span_id;
+  event._root_span_id       = thrd->_monitor_block.root_span_id;
+  event._blocker            = thrd->_monitor_block.obj_addr;
+  event._unblocking_span_id = 0;
+
+  thrd->_monitor_block.obj_addr = 0;
+
+  instance()->recordTaskBlock(ProfiledThread::currentTid(), &event);
+}
+
 void Profiler::recordTaskBlock(int tid, TaskBlockEvent *event) {
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&

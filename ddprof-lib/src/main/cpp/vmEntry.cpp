@@ -435,6 +435,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
   callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;
   callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
+  callbacks.MonitorContendedEnter   = Profiler::MonitorContendedEnterCallback;
+  callbacks.MonitorContendedEntered = Profiler::MonitorContendedEnteredCallback;
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
@@ -445,6 +447,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
                                    JVMTI_EVENT_DYNAMIC_CODE_GENERATED, NULL);
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND,
                                    NULL);
+  _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTER,   NULL);
+  _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTERED, NULL);
 
   if (hotspot_version() == 0 || !CodeHeap::available()) {
     // Workaround for JDK-8173361: avoid CompiledMethodLoad events when possible

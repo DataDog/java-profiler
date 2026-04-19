@@ -423,6 +423,11 @@ public:
     instance()->onThreadEnd(jvmti, jni, thread);
   }
 
+  static void JNICALL MonitorContendedEnterCallback(jvmtiEnv *jvmti, JNIEnv *jni,
+                                                    jthread thread, jobject object);
+  static void JNICALL MonitorContendedEnteredCallback(jvmtiEnv *jvmti, JNIEnv *jni,
+                                                      jthread thread, jobject object);
+
   // Keep backward compatibility with the upstream async-profiler
   inline CodeCache* findLibraryByAddress(const void *address) {
   #ifdef DEBUG
