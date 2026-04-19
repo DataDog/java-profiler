@@ -196,6 +196,9 @@ typedef void* address;
         field(_osthread_id_offset, offset, MATCH_SYMBOLS("_thread_id"))                                             \
         field_with_version(_osthread_state_offset, offset, 10, MAX_VERSION, MATCH_SYMBOLS("_state"))                \
     type_end()                                                                                                      \
+    type_begin(VMObjectMonitor, MATCH_SYMBOLS("ObjectMonitor"))                                                     \
+        field(_monitor_owner_offset, offset, MATCH_SYMBOLS("_owner"))                                               \
+    type_end()                                                                                                      \
     type_begin(VMThreadShadow, MATCH_SYMBOLS("ThreadShadow"))                                                         \
         field(_thread_exception_offset, offset, MATCH_SYMBOLS("_exception_file"))                                   \
     type_end()                                                                                                      \
@@ -713,6 +716,11 @@ DECLARE(VMThread)
     static int nativeThreadId(JNIEnv* jni, jthread thread);
 
     int osThreadId();
+
+    // Returns the span ID of the JavaThread currently owning the given monitor
+    // object, reading ObjectMonitor::_owner directly without a safepoint.
+    // Returns 0 if the owner cannot be determined.
+    static u64 monitorOwnerSpanId(const void* object);
 
     JNIEnv* jni();
 

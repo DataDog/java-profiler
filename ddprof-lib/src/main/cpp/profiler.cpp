@@ -946,10 +946,11 @@ void JNICALL Profiler::MonitorContendedEnterCallback(jvmtiEnv *jvmti, JNIEnv *jn
   if (thrd == nullptr) return;
   Context& ctx = Contexts::get();
   if (ctx.spanId == 0) return;
-  thrd->_monitor_block.start_ticks  = TSC::ticks();
-  thrd->_monitor_block.span_id      = ctx.spanId;
-  thrd->_monitor_block.root_span_id = ctx.rootSpanId;
-  thrd->_monitor_block.obj_addr     = (uintptr_t)(void*)object;
+  thrd->_monitor_block.start_ticks        = TSC::ticks();
+  thrd->_monitor_block.span_id            = ctx.spanId;
+  thrd->_monitor_block.root_span_id       = ctx.rootSpanId;
+  thrd->_monitor_block.obj_addr           = (uintptr_t)(void*)object;
+  thrd->_monitor_block.unblocking_span_id = VMThread::monitorOwnerSpanId((const void*)object);
 }
 
 void JNICALL Profiler::MonitorContendedEnteredCallback(jvmtiEnv *jvmti, JNIEnv *jni,
@@ -963,7 +964,7 @@ void JNICALL Profiler::MonitorContendedEnteredCallback(jvmtiEnv *jvmti, JNIEnv *
   event._span_id            = thrd->_monitor_block.span_id;
   event._root_span_id       = thrd->_monitor_block.root_span_id;
   event._blocker            = thrd->_monitor_block.obj_addr;
-  event._unblocking_span_id = 0;
+  event._unblocking_span_id = thrd->_monitor_block.unblocking_span_id;
 
   thrd->_monitor_block.obj_addr = 0;
 

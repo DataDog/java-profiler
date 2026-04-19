@@ -54,16 +54,6 @@ private:
   static int popFreeSlot();    // Returns -1 if no free slots
   static void pushFreeSlot(int slot_index);
 
-  // In-flight state for monitor contention tracking (MonitorContendedEnter →
-  // MonitorContendedEntered). Keyed on obj_addr == 0 meaning "no contention in
-  // progress". Object addresses are never 0 in the JVM.
-  struct MonitorBlockState {
-    u64 start_ticks;
-    u64 span_id;
-    u64 root_span_id;
-    uintptr_t obj_addr;
-  };
-
   u64 _pc;
   u64 _sp;
   u64 _span_id;
@@ -81,7 +71,6 @@ private:
   bool _ctx_tls_initialized;
   bool _crash_protection_active;
   Context* _ctx_tls_ptr;
-  MonitorBlockState _monitor_block{};
 
   ProfiledThread(int buffer_pos, int tid)
       : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _root_span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
@@ -90,7 +79,20 @@ private:
   void releaseFromBuffer();
 
 public:
+  // In-flight state for monitor contention tracking (MonitorContendedEnter →
+  // MonitorContendedEntered). Keyed on obj_addr == 0 meaning "no contention in
+  // progress". Object addresses are never 0 in the JVM.
+  struct MonitorBlockState {
+    u64 start_ticks;
+    u64 span_id;
+    u64 root_span_id;
+    uintptr_t obj_addr;
+    u64 unblocking_span_id;
+  };
+  MonitorBlockState _monitor_block{};
+
   static ProfiledThread *forTid(int tid) { return new ProfiledThread(-1, tid); }
+  static ProfiledThread* findByTid(int tid);
   static ProfiledThread *inBuffer(int buffer_pos) {
     return new ProfiledThread(buffer_pos, 0);
   }

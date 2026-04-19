@@ -133,6 +133,15 @@ ProfiledThread *ProfiledThread::currentSignalSafe() {
   return __atomic_load_n(&_tls_key_initialized, __ATOMIC_ACQUIRE) ? (ProfiledThread *)pthread_getspecific(_tls_key) : nullptr;
 }
 
+ProfiledThread* ProfiledThread::findByTid(int tid) {
+  int size = __atomic_load_n(&_running_buffer_pos, __ATOMIC_ACQUIRE);
+  for (int i = 0; i < size; i++) {
+    ProfiledThread* t = _buffer[i];
+    if (t != nullptr && t->_tid == tid) return t;
+  }
+  return nullptr;
+}
+
 int ProfiledThread::popFreeSlot() {
   int current_top;
   int new_top;

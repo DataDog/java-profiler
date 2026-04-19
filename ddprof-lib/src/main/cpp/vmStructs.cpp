@@ -9,6 +9,8 @@
 #include <stdarg.h>
 #include "vmStructs.h"
 #include "vmEntry.h"
+#include "context.h"
+#include "thread.h"
 #include "j9Ext.h"
 #include "jniHelper.h"
 #include "jvmHeap.h"
@@ -673,6 +675,38 @@ int VMThread::osThreadId() {
         return SafeAccess::load32((int32_t*)(osthread + _osthread_id_offset), -1);
     }
     return -1;
+}
+
+u64 VMThread::monitorOwnerSpanId(const void* object) {
+    if (_monitor_owner_offset == 0) return 0;
+
+    // Read the mark word from the object header.
+    uintptr_t mark = (uintptr_t)SafeAccess::load((void**)object, nullptr);
+
+    // At MonitorContendedEnter time the monitor must be inflated (MONITOR_BIT set
+    // in bits [1:0]). Guard defensively for any narrow races.
+    if ((mark & 0x3) != MONITOR_BIT) return 0;
+
+    // Extract ObjectMonitor* (pointer stored in bits 63:2, 4-byte aligned).
+    const char* monitor = (const char*)(mark & ~(uintptr_t)0x3);
+
+    // Read ObjectMonitor::_owner (JavaThread*).
+    const char* owner_thread = (const char*)SafeAccess::load(
+        (void**)(monitor + _monitor_owner_offset), nullptr);
+    if (owner_thread == nullptr) return 0;
+
+    // JavaThread* -> OS thread ID via existing VMThread infrastructure.
+    int owner_tid = VMThread::cast(owner_thread)->osThreadId();
+    if (owner_tid <= 0) return 0;
+
+    // OS thread ID -> ProfiledThread* -> span ID.
+    ProfiledThread* owner = ProfiledThread::findByTid(owner_tid);
+    if (owner == nullptr || !owner->isContextTlsInitialized()) return 0;
+
+    Context* ctx = owner->getContextTlsPtr();
+    if (ctx == nullptr) return 0;
+
+    return ctx->spanId; // volatile u64, safe to read cross-thread on x86/aarch64
 }
 
 JNIEnv* VMThread::jni() {
