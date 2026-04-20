@@ -1612,7 +1612,7 @@ void Recording::recordNativeSocketSample(Buffer *buf, int tid, u64 call_trace_id
   buf->putUtf8(event->_remote_addr);
   buf->putVar64(event->_bytes);
   buf->putFloat(event->_weight);
-  writeContext(buf, Contexts::get());
+  writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
