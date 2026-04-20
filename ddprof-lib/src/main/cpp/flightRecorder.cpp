@@ -1565,8 +1565,14 @@ void Recording::recordSpanNode(Buffer *buf, int tid, u64 spanId, u64 parentSpanI
   // Control) can correlate SpanNode events with other events on the recording timeline.
   // _start_time is in microseconds; multiply by 1000 to get the recording epoch in nanos.
   u64 start_epoch_nanos = _start_time * 1000ULL;
-  u64 startTicks = _start_ticks + (u64)((double)(long long)(startNanos - start_epoch_nanos)
-                                        * TSC::frequency() / NANOTIME_FREQ);
+  // Use signed arithmetic: a span that started in a previous JFR chunk has
+  // startNanos < start_epoch_nanos. Unsigned subtraction would wrap around and
+  // produce a huge positive u64, making (u64)(negative_double) undefined behaviour.
+  // With signed delta the result is a negative tick offset, placing the event just
+  // before the chunk boundary, which is the correct behaviour for pre-chunk spans.
+  long long delta_nanos = (long long)startNanos - (long long)start_epoch_nanos;
+  long long delta_ticks = (long long)((double)delta_nanos * TSC::frequency() / NANOTIME_FREQ);
+  u64 startTicks = (u64)((long long)_start_ticks + delta_ticks);
   u64 durationTicks = (u64)((double)durationNanos * TSC::frequency() / NANOTIME_FREQ);
 
   flushIfNeeded(buf);
