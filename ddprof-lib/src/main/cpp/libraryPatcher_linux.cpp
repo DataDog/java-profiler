@@ -77,10 +77,12 @@ static void init_thread_tls() {
 // delete_routine_info: SignalBlocker's sigset_t must not appear in
 // start_routine_wrapper_spec's own stack frame on musl/aarch64.
 __attribute__((noinline))
-static void start_window_and_register(int tid) {
+static void start_window_and_register() {
     SignalBlocker blocker;
-    ProfiledThread::currentSignalSafe()->startInitWindow();
-    Profiler::registerThread(tid);
+    if (ProfiledThread *pt = ProfiledThread::currentSignalSafe()) {
+        pt->startInitWindow();
+    }
+    Profiler::registerThread(ProfiledThread::currentTid());
 }
 
 // Wrapper around the real start routine.
@@ -97,10 +99,9 @@ static void* start_routine_wrapper_spec(void* args) {
     void* params = thr->args();
     delete_routine_info(thr);
     init_thread_tls();
-    int tid = ProfiledThread::currentTid();
-    start_window_and_register(tid);
+    start_window_and_register();
     void* result = routine(params);
-    Profiler::unregisterThread(tid);
+    Profiler::unregisterThread(ProfiledThread::currentTid());
     ProfiledThread::release();
     return result;
 }

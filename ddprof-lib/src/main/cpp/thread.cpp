@@ -99,6 +99,7 @@ void ProfiledThread::releaseFromBuffer() {
     _call_trace_id = 0;
     _recording_epoch = 0;
     _filter_slot_id = -1;
+    _init_window = 0;
     _unwind_failures.clear();
 
     // Null the TLS pointer so external profilers that dereference the pointer
