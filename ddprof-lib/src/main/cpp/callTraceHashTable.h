@@ -72,6 +72,7 @@ private:
   CallTrace *storeCallTrace(int num_frames, ASGCT_CallFrame *frames,
                             bool truncated, u64 trace_id);
   CallTrace *findCallTrace(LongHashTable *table, u64 hash);
+  void decrementCounters();
   
 
 public:
