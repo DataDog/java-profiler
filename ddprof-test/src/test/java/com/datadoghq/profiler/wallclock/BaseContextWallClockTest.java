@@ -202,6 +202,8 @@ final class BaseContextWallClockTest {
             assertInRange(test.getRecordedCounterValue("calltrace_storage_bytes"), 1024, 8 * 1024 * 1024);
             // live counters are 0 after stop (all traces freed - correct, non-leaking behaviour)
             Map<String, Long> debugCounters = profiler.getDebugCounters();
+            assertEquals(0, debugCounters.get("calltrace_storage_traces"));
+            assertEquals(0, debugCounters.get("calltrace_storage_bytes"));
             assertEquals(0, debugCounters.get("linear_allocator_bytes"));
             assertEquals(0, debugCounters.get("linear_allocator_chunks"));
             assertInRange(debugCounters.get("thread_ids_count"), 1, 100);

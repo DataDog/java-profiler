@@ -113,7 +113,12 @@ void CallTraceHashTable::decrementCounters() {
   const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
   long long freed_bytes = 0;
   long long freed_traces = 0;
+  size_t estimated_entries = 0;
+  for (LongHashTable *t = _table; t != nullptr; t = t->prev()) {
+    estimated_entries += t->size();
+  }
   std::unordered_set<CallTrace*> seen;
+  seen.reserve(estimated_entries);
   for (LongHashTable *t = _table; t != nullptr; t = t->prev()) {
     u64 *keys = t->keys();
     CallTraceSample *values = t->values();
