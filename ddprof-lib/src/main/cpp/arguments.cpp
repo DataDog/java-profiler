@@ -382,6 +382,9 @@ Error Arguments::parse(const char *args) {
         msg = "nativemem must be >= 0";
       }
 
+      CASE("natsock")
+      _nativesocket = true;
+
       DEFAULT()
       if (_unknown_arg == NULL)
         _unknown_arg = arg;

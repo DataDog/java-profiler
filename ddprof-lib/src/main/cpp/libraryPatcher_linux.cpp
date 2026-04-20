@@ -7,8 +7,9 @@
 
 #ifdef __linux__
 #include "counters.h"
-#include "profiler.h"
 #include "guards.h"
+#include "nativeSocketSampler.h"
+#include "profiler.h"
 
 #include <cassert>
 #include <cxxabi.h>
@@ -25,6 +26,9 @@ PatchEntry LibraryPatcher::_patched_entries[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_size = 0;
 PatchEntry LibraryPatcher::_sigaction_entries[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_sigaction_size = 0;
+PatchEntry LibraryPatcher::_socket_entries[MAX_NATIVE_LIBS];
+int        LibraryPatcher::_socket_size = 0;
+bool       LibraryPatcher::_socket_active = false;
 
 void LibraryPatcher::initialize() {
   if (_profiler_name == nullptr) {
@@ -331,5 +335,120 @@ void LibraryPatcher::patch_sigaction() {
     }
   }
 }
+
+#if defined(__GLIBC__)
+void LibraryPatcher::patch_socket_functions() {
+  // Pre-resolve the real libc symbols via RTLD_NEXT *before* acquiring _lock.
+  // RTLD_NEXT finds the first definition after this DSO in load order,
+  // bypassing unresolved lazy-binding stubs that would otherwise trigger
+  // _dl_runtime_resolve and silently overwrite the hook in the GOT.
+  // May resolve to an LD_PRELOAD interposer (e.g. libasan) — intentional.
+  auto pre_send   = (NativeSocketSampler::send_fn)  dlsym(RTLD_NEXT, "send");
+  auto pre_recv   = (NativeSocketSampler::recv_fn)  dlsym(RTLD_NEXT, "recv");
+  auto pre_write  = (NativeSocketSampler::write_fn) dlsym(RTLD_NEXT, "write");
+  auto pre_read   = (NativeSocketSampler::read_fn)  dlsym(RTLD_NEXT, "read");
+  if (!pre_send || !pre_recv || !pre_write || !pre_read) {
+    return;
+  }
+
+  const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
+  int num_of_libs = native_libs.count();
+  ExclusiveLockGuard locker(&_lock);
+  // Assign pre-resolved pointers unconditionally — in-flight hook invocations
+  // dereference _orig_send/_recv/_write/_read with no guard; a null window
+  // between reset and re-assignment would crash.
+  NativeSocketSampler::_orig_send  = pre_send;
+  NativeSocketSampler::_orig_recv  = pre_recv;
+  NativeSocketSampler::_orig_write = pre_write;
+  NativeSocketSampler::_orig_read  = pre_read;
+  for (int index = 0; index < num_of_libs; index++) {
+    CodeCache* lib = native_libs.at(index);
+    if (lib == nullptr) continue;
+    if (lib->name() == nullptr) continue;
+
+    char path[PATH_MAX];
+    char* resolved_path = realpath(lib->name(), path);
+    if (resolved_path != nullptr && strcmp(resolved_path, _profiler_name) == 0) {
+      continue;
+    }
+
+    void** send_location  = (void**)lib->findImport(im_send);
+    void** recv_location  = (void**)lib->findImport(im_recv);
+    void** write_location = (void**)lib->findImport(im_write);
+    void** read_location  = (void**)lib->findImport(im_read);
+
+    if (send_location == nullptr && recv_location == nullptr
+        && write_location == nullptr && read_location == nullptr) continue;
+
+    bool already_patched = false;
+    for (int i = 0; i < _socket_size; i++) {
+      if (_socket_entries[i]._lib == lib) {
+        already_patched = true;
+        break;
+      }
+    }
+    if (already_patched) continue;
+
+    // Count how many slots this library needs before committing any patches.
+    int needed = (send_location  != nullptr ? 1 : 0)
+               + (recv_location  != nullptr ? 1 : 0)
+               + (write_location != nullptr ? 1 : 0)
+               + (read_location  != nullptr ? 1 : 0);
+    if (_socket_size + needed > MAX_NATIVE_LIBS) continue;
+
+    if (send_location != nullptr) {
+      void* orig = (void*)__atomic_load_n(send_location, __ATOMIC_RELAXED);
+      _socket_entries[_socket_size]._lib      = lib;
+      _socket_entries[_socket_size]._location = send_location;
+      _socket_entries[_socket_size]._func     = orig;
+      __atomic_store_n(send_location, (void*)NativeSocketSampler::send_hook, __ATOMIC_RELAXED);
+      _socket_size++;
+    }
+    if (recv_location != nullptr) {
+      void* orig = (void*)__atomic_load_n(recv_location, __ATOMIC_RELAXED);
+      _socket_entries[_socket_size]._lib      = lib;
+      _socket_entries[_socket_size]._location = recv_location;
+      _socket_entries[_socket_size]._func     = orig;
+      __atomic_store_n(recv_location, (void*)NativeSocketSampler::recv_hook, __ATOMIC_RELAXED);
+      _socket_size++;
+    }
+    if (write_location != nullptr) {
+      void* orig = (void*)__atomic_load_n(write_location, __ATOMIC_RELAXED);
+      _socket_entries[_socket_size]._lib      = lib;
+      _socket_entries[_socket_size]._location = write_location;
+      _socket_entries[_socket_size]._func     = orig;
+      __atomic_store_n(write_location, (void*)NativeSocketSampler::write_hook, __ATOMIC_RELAXED);
+      _socket_size++;
+    }
+    if (read_location != nullptr) {
+      void* orig = (void*)__atomic_load_n(read_location, __ATOMIC_RELAXED);
+      _socket_entries[_socket_size]._lib      = lib;
+      _socket_entries[_socket_size]._location = read_location;
+      _socket_entries[_socket_size]._func     = orig;
+      __atomic_store_n(read_location, (void*)NativeSocketSampler::read_hook, __ATOMIC_RELAXED);
+      _socket_size++;
+    }
+  }
+
+  _socket_active = true;
+}
+
+void LibraryPatcher::unpatch_socket_functions() {
+  ExclusiveLockGuard locker(&_lock);
+  _socket_active = false;
+  for (int index = 0; index < _socket_size; index++) {
+    __atomic_store_n(_socket_entries[index]._location, _socket_entries[index]._func, __ATOMIC_RELAXED);
+  }
+  _socket_size = 0;
+  // _orig_send/_orig_recv/_orig_write/_orig_read are intentionally NOT nulled.
+  // In-flight hook invocations that entered before PLT entries were restored
+  // above may still be executing and will dereference these pointers.
+  // They remain valid (pointing to the real libc functions) until the next
+  // patch_socket_functions() call.
+}
+#else // !__GLIBC__
+void LibraryPatcher::patch_socket_functions() {}
+void LibraryPatcher::unpatch_socket_functions() {}
+#endif // __GLIBC__
 
 #endif // __linux__
