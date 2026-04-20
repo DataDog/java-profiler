@@ -128,22 +128,27 @@ inline T* cast_to(const void* ptr) {
     f(VMSymbol,               MATCH_SYMBOLS("Symbol"))            \
     f(VMThread,               MATCH_SYMBOLS("Thread"))
 
-// Continuation-related types. Functionally needed for virtual-thread support
-// (JDK 21+), but only exported via gHotSpotVMTypes starting in JDK 27
-// (JDK-8378985). On JDK 8-26 type_size() stays 0 and the C++ mangled-symbol
-// fallback is used instead.
-#define DECLARE_V21_TYPES_DO(f) \
+// ContinuationEntry type. Only exported via gHotSpotVMTypes starting in
+// JDK 27 (JDK-8378985); there is no mangled-symbol fallback for its size.
+// On JDK <27 type_size() stays 0 and any code that needs the layout
+// (contEntry(), parent()) bails out.
+#define DECLARE_V27_TYPES_DO(f) \
     f(VMContinuationEntry,    MATCH_SYMBOLS("ContinuationEntry"))
 
-// Fields for virtual-thread / continuation support.
-// JavaThread::_cont_entry, ContinuationEntry (type and fields), and
-// StubRoutines::_cont_returnBarrier were all added to gHotSpotVMStructs /
-// gHotSpotVMTypes in JDK 27 (JDK-8378985).  On JDK 21-26 none of these
-// are in the VM tables; offsets and addresses are populated via C++ mangled-
-// symbol fallback instead.  They are intentionally excluded from
-// verify_offsets() so that a missing entry causes graceful degradation
-// rather than SIGABRT.
-#define DECLARE_V21_TYPE_FIELD_DO(type_begin, field, field_with_version, type_end) \
+// Fields for virtual-thread / continuation support, all added to
+// gHotSpotVMStructs / gHotSpotVMTypes in JDK 27 (JDK-8378985):
+//   - JavaThread::_cont_entry            -> _cont_entry_offset
+//   - StubRoutines::_cont_returnBarrier  -> _cont_return_barrier_addr
+//   - ContinuationEntry::_return_pc      -> _cont_entry_return_pc_addr
+//   - ContinuationEntry::_parent         -> _cont_entry_parent_offset
+// On JDK <27 these stay at their default (-1 / nullptr).  The two stub
+// *addresses* (_cont_return_barrier, _cont_entry_return_pc) are separately
+// resolved via Itanium-mangled symbol lookup in resolveOffsets() so the
+// cont_returnBarrier / cont_entry_return_pc frame-boundary checks still work
+// on JDK 21-26; the _offset fields have no such fallback.  All entries are
+// intentionally excluded from verify_offsets() so a missing entry causes
+// graceful degradation rather than SIGABRT.
+#define DECLARE_V27_TYPE_FIELD_DO(type_begin, field, field_with_version, type_end) \
     type_begin(VMJavaThread, MATCH_SYMBOLS("JavaThread", "Thread"))                \
         field_with_version(_cont_entry_offset, offset, 27, MAX_VERSION, MATCH_SYMBOLS("_cont_entry")) \
     type_end()                                                                     \
@@ -355,7 +360,7 @@ class VMStructs {
     static uint64_t TYPE_SIZE_NAME(name);
 
     DECLARE_TYPES_DO(DECLARE_TYPE_SIZE_VAR)
-    DECLARE_V21_TYPES_DO(DECLARE_TYPE_SIZE_VAR)
+    DECLARE_V27_TYPES_DO(DECLARE_TYPE_SIZE_VAR)
 #undef DECLARE_TYPE_SIZE_VAR
 
 // Declare vmStructs' field offsets and addresses
@@ -368,7 +373,7 @@ class VMStructs {
     static field_type var;
 
     DECLARE_TYPE_FIELD_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DECLARE_TYPE_FIELD_WITH_VERSION, DO_NOTHING)
-    DECLARE_V21_TYPE_FIELD_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DECLARE_TYPE_FIELD_WITH_VERSION, DO_NOTHING)
+    DECLARE_V27_TYPE_FIELD_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DECLARE_TYPE_FIELD_WITH_VERSION, DO_NOTHING)
 #undef DECLARE_TYPE_FIELD
 #undef DECLARE_TYPE_FIELD_WITH_VERSION
 #undef DO_NOTHING
@@ -829,18 +834,19 @@ DECLARE(VMThread)
     }
 
     // Returns true when this thread is currently executing a virtual thread
-    // (i.e. JavaThread::_cont_entry is non-null).  On JDK 21-26 the offset
-    // is resolved via C++ mangled-symbol fallback (not gHotSpotVMStructs).
-    // Does NOT require ContinuationEntry type_size(), so it works on
-    // JDK 21-26 where type_size() == 0.
+    // (i.e. JavaThread::_cont_entry is non-null).  _cont_entry_offset is
+    // only populated on JDK 27+ (from gHotSpotVMStructs, JDK-8378985); there
+    // is no symbol fallback, so this returns false on JDK <27.
+    // Does NOT require ContinuationEntry type_size().
     bool isCarryingVirtualThread() const {
         if (_cont_entry_offset < 0) return false;
         return SafeAccess::loadPtr((void**) const_cast<VMThread*>(this)->at(_cont_entry_offset), nullptr) != nullptr;
     }
 
     // Returns the innermost active ContinuationEntry for this thread, or nullptr
-    // if none exists or ContinuationEntry layout is unavailable (JDK 21-26,
-    // where ContinuationEntry is not in gHotSpotVMTypes so type_size() == 0).
+    // if none exists or ContinuationEntry layout is unavailable (JDK <27, where
+    // neither _cont_entry_offset nor ContinuationEntry are in gHotSpotVMStructs/
+    // gHotSpotVMTypes so type_size() == 0).
     // Used by stackWalker to locate the enterSpecial frame when crossing the
     // virtual-thread continuation boundary.
     VMContinuationEntry* contEntry() {

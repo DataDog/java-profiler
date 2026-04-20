@@ -47,7 +47,7 @@ const void* VMStructs::_interpreted_frame_valid_end = nullptr;
 // Initialize type size to 0
 #define INIT_TYPE_SIZE(name, names) uint64_t VMStructs::TYPE_SIZE_NAME(name) = 0;
 DECLARE_TYPES_DO(INIT_TYPE_SIZE)
-DECLARE_V21_TYPES_DO(INIT_TYPE_SIZE)
+DECLARE_V27_TYPES_DO(INIT_TYPE_SIZE)
 #undef INIT_TYPE_SIZE
 
 #define offset_value -1
@@ -66,7 +66,7 @@ DECLARE_V21_TYPES_DO(INIT_TYPE_SIZE)
     field_type VMStructs::var = field_type##_value;
 
 DECLARE_TYPE_FIELD_DO(DO_NOTHING, INIT_FIELD, INIT_FIELD_WITH_VERSION, DO_NOTHING)
-DECLARE_V21_TYPE_FIELD_DO(DO_NOTHING, INIT_FIELD, INIT_FIELD_WITH_VERSION, DO_NOTHING)
+DECLARE_V27_TYPE_FIELD_DO(DO_NOTHING, INIT_FIELD, INIT_FIELD_WITH_VERSION, DO_NOTHING)
 
 #undef INIT_FIELD
 #undef INIT_FIELD_WITH_VERSION
@@ -180,7 +180,7 @@ void VMStructs::init_offsets_and_addresses() {
 
 #define END_TYPE() continue; }
         DECLARE_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
-        DECLARE_V21_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
+        DECLARE_V27_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
 #undef MATCH_TYPE_NAMES
 #undef READ_FIELD_VALUE
 #undef READ_FIELD_VALUE_WITH_VERSION
@@ -211,7 +211,7 @@ void VMStructs::init_type_sizes() {
         }
 
         DECLARE_TYPES_DO(READ_TYPE_SIZE)
-        DECLARE_V21_TYPES_DO(READ_TYPE_SIZE)
+        DECLARE_V27_TYPES_DO(READ_TYPE_SIZE)
 
 #undef READ_TYPE_SIZE   
 
@@ -278,7 +278,7 @@ void VMStructs::verify_offsets() {
     }
 
 // Verify type sizes
-// Note: DECLARE_V21_TYPES_DO (VMContinuationEntry) is intentionally excluded here.
+// Note: DECLARE_V27_TYPES_DO (VMContinuationEntry) is intentionally excluded here.
 // ContinuationEntry is not exported in gHotSpotVMTypes before JDK 27 (added via JDK-8378985);
 // asserting type_size() > 0 would SIGABRT on any JDK 21-26 build.
 #define VERIFY_TYPE_SIZE(name, names) assert(TYPE_SIZE_NAME(name) > 0);
@@ -287,7 +287,7 @@ void VMStructs::verify_offsets() {
 
 
 // Verify offsets and addresses
-// Note: DECLARE_V21_TYPE_FIELD_DO is intentionally excluded here.
+// Note: DECLARE_V27_TYPE_FIELD_DO is intentionally excluded here.
 // Continuation-related fields (_cont_entry_offset, _cont_return_barrier_addr,
 // _cont_entry_return_pc_addr, _cont_entry_parent_offset) are absent from
 // gHotSpotVMStructs in all JDK 21-26 builds: ContinuationEntry was not
