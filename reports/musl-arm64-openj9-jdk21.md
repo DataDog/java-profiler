@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk21
 
 ## musl-arm64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-04-20 10:20:32 EDT
+**Date:** 2026-04-20 10:31:18 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 84 |
-| Sample Rate | 1.40/sec |
-| Health Score | 87% |
+| CPU Samples | 82 |
+| Sample Rate | 1.37/sec |
+| Health Score | 86% |
 | Threads | 11 |
-| Allocations | 76 |
+| Allocations | 69 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 718 |
-| Sample Rate | 11.97/sec |
-| Health Score | 748% |
-| Threads | 11 |
-| Allocations | 497 |
+| CPU Samples | 80 |
+| Sample Rate | 1.33/sec |
+| Health Score | 83% |
+| Threads | 9 |
+| Allocations | 61 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1776694350 64
-1776694355 64
-1776694360 64
-1776694365 64
-1776694370 64
-1776694375 64
-1776694380 64
-1776694385 64
-1776694390 64
-1776694395 64
-1776694400 64
-1776694405 64
-1776694410 64
-1776694415 64
-1776694420 64
-1776694425 64
-1776694430 64
-1776694435 64
-1776694440 64
-1776694445 64
+1776695141 64
+1776695146 64
+1776695151 64
+1776695156 64
+1776695161 64
+1776695166 64
+1776695171 64
+1776695176 64
+1776695181 64
+1776695186 64
+1776695191 64
+1776695196 64
+1776695201 64
+1776695206 64
+1776695211 64
+1776695216 64
+1776695222 64
+1776695227 64
+1776695232 64
+1776695237 64
 ```
 </details>
 
