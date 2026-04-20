@@ -72,6 +72,19 @@ static void init_thread_tls() {
     ProfiledThread::initCurrentThread();
 }
 
+// Arm the CPU timer with profiling signals blocked and open the init window
+// (PROF-13072). Kept noinline for the same stack-protector reason as
+// delete_routine_info: SignalBlocker's sigset_t must not appear in
+// start_routine_wrapper_spec's own stack frame on musl/aarch64.
+__attribute__((noinline))
+static void start_window_and_register() {
+    SignalBlocker blocker;
+    if (ProfiledThread *pt = ProfiledThread::currentSignalSafe()) {
+        pt->startInitWindow();
+    }
+    Profiler::registerThread(ProfiledThread::currentTid());
+}
+
 // Wrapper around the real start routine.
 // The wrapper:
 // 1. Register the newly created thread to profiler
@@ -86,10 +99,9 @@ static void* start_routine_wrapper_spec(void* args) {
     void* params = thr->args();
     delete_routine_info(thr);
     init_thread_tls();
-    int tid = ProfiledThread::currentTid();
-    Profiler::registerThread(tid);
+    start_window_and_register();
     void* result = routine(params);
-    Profiler::unregisterThread(tid);
+    Profiler::unregisterThread(ProfiledThread::currentTid());
     ProfiledThread::release();
     return result;
 }
@@ -126,6 +138,7 @@ static void* start_routine_wrapper(void* args) {
     RoutineInfo* thr = (RoutineInfo*)args;
     func_start_routine routine;
     void* params;
+    int tid;
     {
         // Block profiling signals while accessing and freeing RoutineInfo
         // and during TLS initialization. Under ASAN, new/delete/
@@ -133,14 +146,20 @@ static void* start_routine_wrapper(void* args) {
         // allocator lock. A profiling signal during any of these calls
         // runs ASAN-instrumented code that tries to acquire the same
         // lock, causing deadlock.
+        // registerThread is also kept inside the blocker so that the CPU
+        // timer is armed while SIGPROF/SIGVTALRM are masked.  Any pending
+        // signal fires only after signals are re-enabled (when the blocker
+        // scope exits), at which point JVMThread::current() is still null
+        // and the guard in CTimer::signalHandler discards the sample safely.
         SignalBlocker blocker;
         routine = thr->routine();
         params = thr->args();
         delete thr;
         ProfiledThread::initCurrentThread();
+        tid = ProfiledThread::currentTid();
+        ProfiledThread::currentSignalSafe()->startInitWindow();
+        Profiler::registerThread(tid);
     }
-    int tid = ProfiledThread::currentTid();
-    Profiler::registerThread(tid);
     void* result = nullptr;
     // Handle pthread_exit() bypass - the thread calls pthread_exit()
     // instead of normal termination

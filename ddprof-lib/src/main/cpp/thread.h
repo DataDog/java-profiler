@@ -69,6 +69,7 @@ private:
   u32 _recording_epoch;
   u32 _misc_flags;
   int _filter_slot_id; // Slot ID for thread filtering
+  uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   UnwindFailures _unwind_failures;
   bool _otel_ctx_initialized;
   bool _crash_protection_active;
@@ -81,7 +82,8 @@ private:
 
   ProfiledThread(int buffer_pos, int tid)
       : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
-        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _otel_ctx_initialized(false), _crash_protection_active(false),
+        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _init_window(0),
+        _otel_ctx_initialized(false), _crash_protection_active(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
 
   virtual ~ProfiledThread() { }
@@ -180,7 +182,16 @@ public:
 
   int filterSlotId() { return _filter_slot_id; }
   void setFilterSlotId(int slotId) { _filter_slot_id = slotId; }
-  
+
+  // JVM thread init race window (PROF-13072): skip at most one signal that fires
+  // between Profiler::registerThread() and the JVM's pd_set_thread() call.
+  // Pure native threads (e.g. NativeThreadCreator) also see nullptr from
+  // JVMThread::current(), so the window auto-expires after one skip, allowing
+  // their subsequent samples through.
+  inline bool inInitWindow() const { return _init_window > 0; }
+  inline void startInitWindow() { _init_window = 1; }
+  inline void tickInitWindow() { if (_init_window > 0) --_init_window; }
+
   // Signal handler reentrancy protection
   bool tryEnterCriticalSection() {
     // Uses GCC atomic builtin (no malloc, async-signal-safe)
