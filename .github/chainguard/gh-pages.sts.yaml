@@ -1,0 +1,26 @@
+# Octo-STS Trust Policy for GitHub Pages Publishing
+# This policy allows GitLab CI to push integration test reports to gh-pages branch
+#
+# Trust Policy Location: .github/chainguard/gh-pages.sts.yaml
+# Referenced by: scripts/get-github-token-via-octo-sts.sh (OCTO_STS_POLICY=gh-pages)
+#
+# How it works:
+# 1. GitLab CI generates OIDC token with issuer: https://gitlab.ddbuild.io
+# 2. Token includes claims: project_path, ref, namespace_path, etc.
+# 3. Octo-STS validates token against this policy
+# 4. If valid, Octo-STS returns short-lived GitHub token with specified permissions
+
+# GitLab OIDC issuer
+issuer: https://gitlab.ddbuild.io
+
+# Match GitLab CI jobs from any branch (needed for PR comments)
+# GitLab token includes: project_path=DataDog/java-profiler, ref=<branch>
+subject_pattern: project_path:DataDog/java-profiler:ref_type:branch:ref:.*
+
+# GitHub API permissions for the returned token
+# contents:write - Required to push to gh-pages branch
+permissions:
+  contents: write
+
+# Token lifetime (default: 1 hour)
+# Short-lived tokens reduce security risk

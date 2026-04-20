@@ -85,7 +85,7 @@ static void init_overflow_trace() {
   CallTraceHashTable::_overflow_trace.frames[0] = {BCI_ERROR, LP64_ONLY(0 COMMA) (jmethodID)"storage_overflow"};
 }
 
-CallTraceHashTable::CallTraceHashTable() : _allocator(CALL_TRACE_CHUNK), _instance_id(0), _parent_storage(nullptr) {
+CallTraceHashTable::CallTraceHashTable() : _instance_id(0), _parent_storage(nullptr), _allocator(CALL_TRACE_CHUNK) {
   // Instance ID will be set externally via setInstanceId()
   
   // Start with initial capacity, allowing expansion as needed

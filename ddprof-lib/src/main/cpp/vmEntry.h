@@ -1,6 +1,6 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2021, 2025 Datadog, Inc
+ * Copyright 2021, 2026 Datadog, Inc
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -68,7 +68,7 @@ typedef struct RemoteFrameInfo {
 #endif
 } RemoteFrameInfo;
 
-typedef struct {
+typedef struct _asgct_callframe {
     jint bci;
     LP64_ONLY(jint padding;)
     union {
@@ -144,7 +144,6 @@ private:
 
 public:
   static void *_libjvm;
-  static void *_libjava;
   static AsyncGetCallTrace _asyncGetCallTrace;
   static JVM_GetManagement _getManagement;
 

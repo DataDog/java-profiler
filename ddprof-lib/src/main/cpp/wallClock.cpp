@@ -1,12 +1,14 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "wallClock.h"
+
 #include "stackFrame.h"
 #include "context.h"
+#include "context_api.h"
 #include "debugSupport.h"
 #include "libraries.h"
 #include "log.h"
@@ -14,7 +16,6 @@
 #include "stackFrame.h"
 #include "thread.h"
 #include "threadState.inline.h"
-#include "vmStructs.h"
 #include "guards.h"
 #include <math.h>
 #include <random>
@@ -68,33 +69,24 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   u64 call_trace_id = 0;
   if (current != NULL && _collapsing) {
     StackFrame frame(ucontext);
-    Context &context = Contexts::get();
+    u64 spanId = 0, rootSpanId = 0;
+    // contextValid is not redundant with (spanId==0 && rootSpanId==0): a cleared
+    // context has spanId=0 and contextValid=true, while an uninitialized/mid-write
+    // thread has spanId=0 and contextValid=false. lookupWallclockCallTraceId uses
+    // contextValid to decide whether to update the sidecar _otel_local_root_span_id.
+    bool contextValid = ContextApi::get(spanId, rootSpanId);
     call_trace_id = current->lookupWallclockCallTraceId(
         (u64)frame.pc(), (u64)frame.sp(),
         Profiler::instance()->recordingEpoch(),
-        context.spanId, context.rootSpanId);
+        contextValid, spanId, rootSpanId);
     if (call_trace_id != 0) {
       Counters::increment(SKIPPED_WALLCLOCK_UNWINDS);
     }
   }
 
   ExecutionEvent event;
-  VMThread *vm_thread = VMThread::current();
-  if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
-      vm_thread = NULL;
-  }
-  int raw_thread_state = vm_thread ? vm_thread->state() : 0;
-  bool is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
-  bool is_initialized = is_java_thread;
-  OSThreadState state = OSThreadState::UNKNOWN;
-  ExecutionMode mode = ExecutionMode::UNKNOWN;
-  if (vm_thread && is_initialized) {
-    OSThreadState os_state = vm_thread->osThreadState();
-    if (os_state != OSThreadState::UNKNOWN) {
-      state = os_state;
-    }
-    mode = getThreadExecutionMode();
-  }
+  OSThreadState state = getOSThreadState();
+  ExecutionMode mode = getThreadExecutionMode();
   if (state == OSThreadState::UNKNOWN) {
     if (inSyscall(ucontext)) {
       state = OSThreadState::SYSCALL;
@@ -118,10 +110,9 @@ Error BaseWallClock::start(Arguments &args) {
   }
   _interval = interval ? interval : DEFAULT_WALL_INTERVAL;
 
-    _reservoir_size =
+  _reservoir_size =
             args._wall_threads_per_tick ?
-            args._wall_threads_per_tick
-                                                : DEFAULT_WALL_THREADS_PER_TICK;
+            args._wall_threads_per_tick : DEFAULT_WALL_THREADS_PER_TICK;
 
   initialize(args);
 

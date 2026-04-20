@@ -63,6 +63,7 @@ CodeCache::CodeCache(const char *name, short lib_index,
 
   _dwarf_table = NULL;
   _dwarf_table_length = 0;
+  _default_frame = &FrameDesc::default_frame;
 
   _capacity = INITIAL_CODE_CACHE_CAPACITY;
   _count = 0;
@@ -98,9 +99,14 @@ void CodeCache::copyFrom(const CodeCache& other) {
   _imports_patchable = other._imports_patchable;
 
   _dwarf_table_length = other._dwarf_table_length;
-  _dwarf_table = new FrameDesc[_dwarf_table_length];
-  memcpy(_dwarf_table, other._dwarf_table,
-         _dwarf_table_length * sizeof(FrameDesc));
+  if (_dwarf_table_length > 0) {
+    _dwarf_table = (FrameDesc*)malloc(_dwarf_table_length * sizeof(FrameDesc));
+    memcpy(_dwarf_table, other._dwarf_table,
+           _dwarf_table_length * sizeof(FrameDesc));
+  } else {
+    _dwarf_table = nullptr;
+  }
+  _default_frame = other._default_frame;
 
   _capacity = other._capacity;
   _count = other._count;
@@ -118,7 +124,7 @@ CodeCache &CodeCache::operator=(const CodeCache &other) {
   }
 
   NativeFunc::destroy(_name);
-  delete[] _dwarf_table;
+  free(_dwarf_table);
   delete[] _blobs;
   free(_build_id);
 
@@ -133,7 +139,7 @@ CodeCache::~CodeCache() {
   }
   NativeFunc::destroy(_name);
   delete[] _blobs;
-  delete[] _dwarf_table;
+  free(_dwarf_table);
   free(_build_id);  // Free build-id memory
 }
 
@@ -282,7 +288,7 @@ void CodeCache::findSymbolsByPrefix(std::vector<const char *> &prefixes,
   for (int i = 0; i < _count; i++) {
     const char *blob_name = _blobs[i]._name;
     if (blob_name != NULL) {
-      for (int i = 0; i < prefixes.size(); i++) {
+      for (size_t i = 0; i < prefixes.size(); i++) {
         if (strncmp(blob_name, prefixes[i], prefix_lengths[i]) == 0) {
           symbols.push_back(_blobs[i]._start);
         }
@@ -388,16 +394,15 @@ void CodeCache::makeImportsPatchable() {
   }
 }
 
-void CodeCache::setDwarfTable(FrameDesc *table, int length) {
+void CodeCache::setDwarfTable(FrameDesc *table, int length, const FrameDesc &default_frame) {
   _dwarf_table = table;
   _dwarf_table_length = length;
+  _default_frame = &default_frame;
 }
 
 FrameDesc CodeCache::findFrameDesc(const void *pc) {
   if (_dwarf_table == NULL || _dwarf_table_length == 0) {
-    // No DWARF data available - use default frame pointer unwinding
-    // This handles OpenJ9 and other VMs that don't provide DWARF info
-    return FrameDesc::default_frame;
+    return *_default_frame;
   }
 
   u32 target_loc = (const char *)pc - _text_base;
@@ -420,7 +425,7 @@ FrameDesc CodeCache::findFrameDesc(const void *pc) {
   } else if (target_loc - _plt_offset < _plt_size) {
     return FrameDesc::empty_frame;
   } else {
-    return FrameDesc::default_frame;
+    return *_default_frame;
   }
 }
 

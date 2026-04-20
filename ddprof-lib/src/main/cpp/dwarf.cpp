@@ -1,5 +1,6 @@
 /*
  * Copyright 2021 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -92,8 +93,7 @@ FrameDesc FrameDesc::default_frame = {0, DW_REG_FP | LINKED_FRAME_SIZE << 8,
 FrameDesc FrameDesc::default_clang_frame = {0, DW_REG_FP | LINKED_FRAME_CLANG_SIZE << 8, -LINKED_FRAME_CLANG_SIZE, -LINKED_FRAME_CLANG_SIZE + DW_STACK_SLOT};
 FrameDesc FrameDesc::no_dwarf_frame = {0, DW_REG_INVALID, DW_REG_INVALID, DW_REG_INVALID};
 
-DwarfParser::DwarfParser(const char *name, const char *image_base,
-                         const char *eh_frame_hdr) {
+void DwarfParser::init(const char *name, const char *image_base) {
   _name = name;
   _image_base = image_base;
 
@@ -104,8 +104,20 @@ DwarfParser::DwarfParser(const char *name, const char *image_base,
 
   _code_align = sizeof(instruction_t);
   _data_align = -(int)sizeof(void *);
+  _linked_frame_size = -1;
+  _has_z_augmentation = false;
+}
 
+DwarfParser::DwarfParser(const char *name, const char *image_base,
+                         const char *eh_frame_hdr) {
+  init(name, image_base);
   parse(eh_frame_hdr);
+}
+
+DwarfParser::DwarfParser(const char *name, const char *image_base,
+                         const char *eh_frame, size_t eh_frame_size) {
+  init(name, image_base);
+  parseEhFrame(eh_frame, eh_frame_size);
 }
 
 static constexpr u8 omit_sign_bit(u8 value) {
@@ -140,6 +152,93 @@ void DwarfParser::parse(const char *eh_frame_hdr) {
   for (int i = 0; i < fde_count; i++) {
     _ptr = eh_frame_hdr + table[i * 2];
     parseFde();
+  }
+}
+
+// Parse raw .eh_frame (or __eh_frame on macOS) without a binary-search index.
+// Records are CIE/FDE sequences laid out linearly; terminated by a 4-byte zero or EOF.
+void DwarfParser::parseEhFrame(const char *eh_frame, size_t size) {
+  if (eh_frame == NULL || size < 4) {
+    return;
+  }
+  const char *section_end = eh_frame + size;
+  _ptr = eh_frame;
+
+  while (_ptr + 4 <= section_end) {
+    const char *record_start = _ptr;
+    u32 length = get32();
+    if (length == 0) {
+      break;  // terminator
+    }
+    if (length == 0xffffffff) {
+      break;  // 64-bit DWARF not supported
+    }
+
+    if (length > (size_t)(section_end - record_start) - 4) {
+      break;
+    }
+    const char *record_end = record_start + 4 + length;
+
+    u32 cie_id = get32();
+
+    if (cie_id == 0) {
+      // CIE: update code and data alignment factors.
+      // Layout after cie_id: [1-byte version][augmentation string \0][code_align LEB][data_align SLEB]
+      //   [return_address_register][augmentation data (if 'z')]...
+      // return_address_register and everything after data_align are not consumed; _ptr = record_end
+      // at the bottom of the loop skips them.
+      //
+      // _has_z_augmentation is overwritten by every CIE encountered.  The DWARF spec allows
+      // multiple CIEs with different augmentation strings in a single .eh_frame section, so
+      // strictly speaking each FDE should resolve its own CIE via the backward cie_id offset.
+      // We intentionally skip that: macOS binaries compiled by clang typically emit a single CIE
+      // per module, and this parser is only called for macOS __eh_frame sections.  Multi-CIE
+      // binaries are not produced by the toolchains we target here.
+      if (_ptr >= record_end) {
+        _ptr = record_end;
+        continue;
+      }
+      _ptr++;  // skip version
+      if (_ptr >= record_end) {
+        _ptr = record_end;
+        continue;
+      }
+      _has_z_augmentation = (*_ptr == 'z');
+      while (_ptr < record_end && *_ptr++) {
+      }  // skip null-terminated augmentation string
+      if (_ptr >= record_end) {
+        _ptr = record_end;
+        continue;
+      }
+      _code_align = getLeb(record_end);
+      _data_align = getSLeb(record_end);
+    } else {
+      // FDE: parse frame description for the covered PC range.
+      // After cie_id: [pcrel-range-start 4 bytes][range-len 4 bytes][aug-data-len LEB][aug-data][instructions]
+      // Assumes DW_EH_PE_pcrel | DW_EH_PE_sdata4 encoding for range-start (clang macOS default).
+      // The augmentation data length field (and the data itself) is only present when the CIE
+      // augmentation string starts with 'z'.
+      if (_ptr + 8 > record_end) {
+        break;
+      }
+      u32 range_start = (u32)(getPtr() - _image_base);
+      u32 range_len = get32();
+      if (_has_z_augmentation) {
+        _ptr += getLeb(record_end);  // getLeb reads the length; advance past the augmentation data bytes
+        if (_ptr > record_end) {
+          break;
+        }
+      }
+      parseInstructions(range_start, record_end);
+      addRecord(range_start + range_len, DW_REG_FP, LINKED_FRAME_CLANG_SIZE,
+                -LINKED_FRAME_CLANG_SIZE, -LINKED_FRAME_CLANG_SIZE + DW_STACK_SLOT);
+    }
+
+    _ptr = record_end;
+  }
+
+  if (_count > 1) {
+    qsort(_table, _count, sizeof(FrameDesc), FrameDesc::comparator);
   }
 }
 
@@ -410,6 +509,14 @@ void DwarfParser::addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off,
 
   // cfa_reg and cfa_off can be encoded to a single 32 bit value, considering the existing and supported systems
   u32 cfa = static_cast<u32>(cfa_off) << 8 | static_cast<u32>(cfa_reg & 0xff);
+
+  // Detect the linked frame size from the first FP-based entry with a non-zero offset.
+  // Both GCC and Clang emit DW_REG_FP with cfa_off = LINKED_FRAME_CLANG_SIZE in function
+  // bodies after the prologue completes. Terminal records use cfa_off = 0 (LINKED_FRAME_SIZE
+  // on aarch64) and do not influence detection.
+  if (_linked_frame_size < 0 && cfa_reg == DW_REG_FP && cfa_off > 0) {
+    _linked_frame_size = cfa_off;
+  }
 
   if (_prev == NULL || (_prev->loc == loc && --_count >= 0) ||
       _prev->cfa != cfa || _prev->fp_off != fp_off || _prev->pc_off != pc_off) {

@@ -135,14 +135,6 @@ static void ensure_main_phdr_initialized() {
     pthread_once(&_main_phdr_once, init_main_phdr_once);
 }
 
-static Range range_for_fbase(void* fbase) {
-    Range r = {0, 0};
-    if (!fbase) return r;
-    UnifiedCtx ctx = {fbase, &r, NULL, NULL, NULL, NULL, NULL};
-    dl_iterate_phdr(&unified_phdr_cb, &ctx);
-    return r;
-}
-
 static void init_lib_ranges_once() {
     if (g_lib_ranges_inited) return;
     g_lib_ranges_inited = true;
@@ -604,8 +596,11 @@ void ElfParser::parseDwarfInfo() {
     ElfProgramHeader* eh_frame_hdr = findProgramHeader(PT_GNU_EH_FRAME);
     if (eh_frame_hdr != NULL) {
         if (eh_frame_hdr->p_vaddr != 0) {
+            // Parse per-PC frame descriptions and detect per-library default frame layout.
+            // On aarch64 this distinguishes GCC (LINKED_FRAME_SIZE=0) from clang
+            // (LINKED_FRAME_CLANG_SIZE=16) conventions for each shared library.
             DwarfParser dwarf(_cc->name(), _base, at(eh_frame_hdr));
-            _cc->setDwarfTable(dwarf.table(), dwarf.count());
+            _cc->setDwarfTable(dwarf.table(), dwarf.count(), dwarf.detectedDefaultFrame());
         } else if (strcmp(_cc->name(), "[vdso]") == 0) {
             FrameDesc* table = (FrameDesc*)malloc(sizeof(FrameDesc));
             *table = FrameDesc::empty_frame;
@@ -663,13 +658,13 @@ const char* ElfParser::getDebuginfodCache() {
     const char* env_vars[] = {"DEBUGINFOD_CACHE_PATH", "XDG_CACHE_HOME", "HOME"};
     const char* suffixes[] = {"/", "debuginfod_client/", ".cache/debuginfod_client/"};
 
-    for (int i = 0; i < sizeof(env_vars) / sizeof(env_vars[0]); i++) {
+    for (size_t i = 0; i < sizeof(env_vars) / sizeof(env_vars[0]); i++) {
         const char* env_val = getenv(env_vars[i]);
         if (!env_val || !env_val[0]) {
             continue;
         }
 
-        if (snprintf(_debuginfod_cache_buf, sizeof(_debuginfod_cache_buf), "%s/%s", env_val, suffixes[i]) < sizeof(_debuginfod_cache_buf)) {
+        if (snprintf(_debuginfod_cache_buf, sizeof(_debuginfod_cache_buf), "%s/%s", env_val, suffixes[i]) < static_cast<int>(sizeof(_debuginfod_cache_buf))) {
             return _debuginfod_cache_buf;
         }
     }

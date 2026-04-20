@@ -33,7 +33,7 @@ static inline u64 rdtsc() {
 }
 
 // Returns true if this CPU has a good ("invariant") timestamp counter
-static bool cpuHasGoodTimestampCounter() {
+inline bool cpuHasGoodTimestampCounter() {
     unsigned int eax, ebx, ecx, edx;
 
     // Check if CPUID supports misc feature flags
@@ -59,7 +59,7 @@ static inline u64 rdtsc() {
     return value;
 }
 
-static bool cpuHasGoodTimestampCounter() {
+inline bool cpuHasGoodTimestampCounter() {
     // AARCH64 always has a good timestamp counter.
     return true;
 }

@@ -3,7 +3,7 @@
 
 #include <jni.h>
 
-static bool jniExceptionCheck(JNIEnv *jni, bool describe = false) {
+inline bool jniExceptionCheck(JNIEnv *jni, bool describe = false) {
   if (jni->ExceptionCheck()) {
     if (describe) {
       jni->ExceptionDescribe();

@@ -1,8 +1,13 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #include "thread.h"
+#include "context_api.h"
+#include "otel_context.h"
 #include "os.h"
-#include "profiler.h"
-#include "common.h"
-#include "vmStructs.h"
+#include <cstring>
 #include <time.h>
 
 pthread_key_t ProfiledThread::_tls_key;
@@ -86,6 +91,7 @@ void ProfiledThread::releaseFromBuffer() {
     // Reset the thread object for reuse (clear thread-specific data)
     _tid = 0;
     _pc = 0;
+    _sp = 0;
     _span_id = 0;
     _crash_depth = 0;
     _cpu_epoch = 0;
@@ -94,6 +100,21 @@ void ProfiledThread::releaseFromBuffer() {
     _recording_epoch = 0;
     _filter_slot_id = -1;
     _unwind_failures.clear();
+
+    // Null the TLS pointer so external profilers that dereference the pointer
+    // (rather than just checking the valid flag) don't access a recycled record.
+    // This is distinct from the valid flag: valid guards the OTEP write protocol
+    // between the Java writer and native reader, but does not protect recycling.
+    __atomic_store_n(&otel_thread_ctx_v1, (OtelThreadContextRecord*)nullptr, __ATOMIC_RELEASE);
+    // Mark uninitialized BEFORE zeroing the record, so that our own signal handlers
+    // short-circuit before reading partially-zeroed data during the memset below.
+    // (The valid flag is zeroed by memset too, but _otel_ctx_initialized guards
+    // the isContextInitialized() check which runs before any record access.)
+    // Use __ATOMIC_RELEASE so the compiler cannot reorder this store after the
+    // memset on ARM with aggressive optimizations.
+    __atomic_store_n(&_otel_ctx_initialized, false, __ATOMIC_RELEASE);
+    clearOtelSidecar();
+    memset(&_otel_ctx_record, 0, sizeof(_otel_ctx_record));
 
     // Put this ProfiledThread object back in the buffer for reuse
     _buffer[_buffer_pos] = this;
@@ -182,4 +203,18 @@ void ProfiledThread::cleanupBuffer() {
   _buffer_size = 0;
   _running_buffer_pos = 0;
   _free_stack_top = -1;
+}
+
+Context ProfiledThread::snapshotContext(size_t numAttrs) {
+  Context ctx = {};
+  u64 span_id = 0, root_span_id = 0;
+  if (ContextApi::get(span_id, root_span_id)) {
+    ctx.spanId = span_id;
+    ctx.rootSpanId = root_span_id;
+    size_t count = numAttrs < DD_TAGS_CAPACITY ? numAttrs : DD_TAGS_CAPACITY;
+    for (size_t i = 0; i < count; i++) {
+      ctx.tags[i].value = _otel_tag_encodings[i];
+    }
+  }
+  return ctx;
 }

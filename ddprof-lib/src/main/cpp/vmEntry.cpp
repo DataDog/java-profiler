@@ -8,14 +8,16 @@
 #include "vmEntry.h"
 #include "arguments.h"
 #include "context.h"
-#include "j9Ext.h"
+#include "j9/j9Support.h"
 #include "jniHelper.h"
+#include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
 #include "os.h"
 #include "profiler.h"
 #include "safeAccess.h"
-#include "vmStructs.h"
+#include "hotspot/vmStructs.h"
+#include "hotspot/jitCodeCache.h"
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,7 +48,6 @@ jvmtiError(JNICALL *VM::_orig_RetransformClasses)(jvmtiEnv *, jint,
                                                   const jclass *classes);
 
 void *VM::_libjvm;
-void *VM::_libjava;
 AsyncGetCallTrace VM::_asyncGetCallTrace;
 JVM_GetManagement VM::_getManagement;
 
@@ -141,17 +142,19 @@ JavaFullVersion JavaVersionAccess::get_java_version(char* prop_value) {
     version.major = 8;
     version.update = atoi(prop_value + 3);
   } else if (strncmp(prop_value, "JRE 1.8.0", 9) == 0) {
-    // IBM JDK 8 does not report the 'real' version in any property accessible
-    // from JVMTI The only piece of info we can use has the following format
-    // `JRE 1.8.0 <some text> 20230313_47323 <some more text>`
-    // Considering that JDK 8.0.361 is the only release in 2023 we can use
-    // that part of the version string to pretend anything after year 2023
-    // inclusive is 8.0.361. Not perfect, but this is the only thing we have.
+    // Old IBM SDK JDK 8 embeds only a build date (YYYYMMDD) in its version
+    // string, not the update number. Map known date ranges to update numbers:
+    //   >= 20250328: IBM SDK SR8 FP45 (JDK 8u451, J9 VM build date for OpenJ9
+    //                0.51 which fixes the ASGCT livelock; eclipse-openj9#20577)
+    //   >= 20230313: IBM SDK SR6 FP11 (JDK 8u361, first 2023 quarterly release)
+    //   otherwise:   IBM SDK SR6 FP10 or earlier (JDK 8u351)
     version.major = 8;
     char *idx = strstr(prop_value, " 202");
     if (idx != NULL) {
-      int year = atol(idx + 1);
-      if (year >= 2023) {
+      long date = atol(idx + 1);
+      if (date >= 20250328L) {
+        version.update = 451;
+      } else if (date >= 20230313L) {
         version.update = 361;
       } else {
         version.update = 351;
@@ -242,7 +245,7 @@ bool VM::initShared(JavaVM* vm) {
   Libraries *libraries = Libraries::instance();
   libraries->updateSymbols(false);
 
-  _openj9 = !_hotspot && J9Ext::initialize(
+  _openj9 = !_hotspot && J9Support::initialize(
                              _jvmti, libraries->resolveSymbol("j9thread_self*"));
 
   if (_openj9) {
@@ -428,8 +431,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.VMDeath = VMDeath;
   callbacks.ClassLoad = ClassLoad;
   callbacks.ClassPrepare = ClassPrepare;
-  callbacks.CompiledMethodLoad = Profiler::CompiledMethodLoad;
-  callbacks.DynamicCodeGenerated = Profiler::DynamicCodeGenerated;
+  callbacks.CompiledMethodLoad = JitCodeCache::CompiledMethodLoad;
+  callbacks.DynamicCodeGenerated = JitCodeCache::DynamicCodeGenerated;
   callbacks.ThreadStart = Profiler::ThreadStart;
   callbacks.ThreadEnd = Profiler::ThreadEnd;
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
@@ -491,11 +494,11 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
 void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
   Profiler::check_JDK_8313796_workaround();
   Profiler::setupSignalHandlers();
-  {
+  JVMThread::initialize();
+  if (isHotspot()) {
     JitWriteProtection jit(true);
     VMStructs::ready();
   }
-  _libjava = getLibraryHandle("libjava.so");
 }
 
 void VM::applyPatch(char *func, const char *patch, const char *end_patch) {

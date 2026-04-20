@@ -1,6 +1,6 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -74,7 +74,7 @@ const int INITIAL_PC_OFFSET = DW_LINK_REGISTER;
 
 struct FrameDesc {
     u32 loc;
-    int cfa;
+    u32 cfa;
     int fp_off;
     int pc_off;
 
@@ -82,6 +82,17 @@ struct FrameDesc {
     static FrameDesc default_frame;
     static FrameDesc default_clang_frame;
     static FrameDesc no_dwarf_frame;
+
+    // Best-guess fallback frame layout when a PC doesn't map to any known library.
+    // Per-library detection overrides this: on macOS via __eh_frame section presence,
+    // on Linux via DwarfParser::detectedDefaultFrame().
+    static const FrameDesc& fallback_default_frame() {
+#if defined(__APPLE__) && defined(__aarch64__)
+        return default_clang_frame;
+#else
+        return default_frame;
+#endif
+    }
 
     static int comparator(const void* p1, const void* p2) {
         FrameDesc* fd1 = (FrameDesc*)p1;
@@ -104,6 +115,8 @@ class DwarfParser {
 
     u32 _code_align;
     int _data_align;
+    int _linked_frame_size;  // detected from FP-based DWARF entries; -1 = undetected
+    bool _has_z_augmentation;
 
     const char* add(size_t size) {
         const char* ptr = _ptr;
@@ -140,6 +153,18 @@ class DwarfParser {
         }
     }
 
+    u32 getLeb(const char* end) {
+        u32 result = 0;
+        for (u32 shift = 0; _ptr < end && shift < 32; shift += 7) {
+            u8 b = *_ptr++;
+            result |= (u32)(b & 0x7f) << shift;
+            if ((b & 0x80) == 0) {
+                return result;
+            }
+        }
+        return result;
+    }
+
     int getSLeb() {
         int result = 0;
         for (u32 shift = 0; ; shift += 7) {
@@ -154,6 +179,21 @@ class DwarfParser {
         }
     }
 
+    int getSLeb(const char* end) {
+        int result = 0;
+        for (u32 shift = 0; _ptr < end; shift += 7) {
+            u8 b = *_ptr++;
+            result |= (b & 0x7f) << shift;
+            if ((b & 0x80) == 0) {
+                if ((b & 0x40) != 0 && (shift += 7) < 32) {
+                    result |= ~0U << shift;
+                }
+                return result;
+            }
+        }
+        return result;
+    }
+
     void skipLeb() {
         while (*_ptr++ & 0x80) {}
     }
@@ -166,7 +206,9 @@ class DwarfParser {
         return ptr + offset;
     }
 
+    void init(const char* name, const char* image_base);
     void parse(const char* eh_frame_hdr);
+    void parseEhFrame(const char* eh_frame, size_t size);
     void parseCie();
     void parseFde();
     void parseInstructions(u32 loc, const char* end);
@@ -177,13 +219,24 @@ class DwarfParser {
 
   public:
     DwarfParser(const char* name, const char* image_base, const char* eh_frame_hdr);
+    DwarfParser(const char* name, const char* image_base, const char* eh_frame, size_t eh_frame_size);
 
+    // Ownership of the returned pointer transfers to the caller.
+    // The caller is responsible for freeing it with free() (not delete[]).
+    // DwarfParser has no destructor; _table is left dangling after this call is used.
     FrameDesc* table() const {
         return _table;
     }
 
     int count() const {
         return _count;
+    }
+
+    const FrameDesc& detectedDefaultFrame() const {
+        if (_linked_frame_size == LINKED_FRAME_CLANG_SIZE && LINKED_FRAME_CLANG_SIZE != LINKED_FRAME_SIZE) {
+            return FrameDesc::default_clang_frame;
+        }
+        return FrameDesc::default_frame;
     }
 };
 

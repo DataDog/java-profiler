@@ -10,6 +10,7 @@ updates:
     labels:
       - "dependencies"
       - "no-release-notes"
+      - "no-review"
     ignore:
       - dependency-name: "org.junit-pioneer:junit-pioneer"
         versions: [">=2.0.0"]
@@ -20,6 +21,8 @@ updates:
           - "patch"
 
   # Gradle dependencies (build-logic composite build)
+    cooldown:
+      default-days: 2
   - package-ecosystem: "gradle"
     directory: "/build-logic"
     schedule:
@@ -29,6 +32,7 @@ updates:
     labels:
       - "dependencies"
       - "no-release-notes"
+      - "no-review"
     groups:
       gradle-minor:
         update-types:
@@ -36,6 +40,8 @@ updates:
           - "patch"
 
   # GitHub Actions
+    cooldown:
+      default-days: 2
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -45,3 +51,6 @@ updates:
     labels:
       - "dependencies"
       - "no-release-notes"
+      - "no-review"
+    cooldown:
+      default-days: 2

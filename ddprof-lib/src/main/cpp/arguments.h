@@ -202,6 +202,7 @@ public:
         _wall(-1),
         _wall_collapsing(false),
         _wall_threads_per_tick(DEFAULT_WALL_THREADS_PER_TICK),
+        _wallclock_sampler(ASGCT),
         _memory(-1),
         _record_allocations(false),
         _record_liveness(false),
@@ -220,7 +221,6 @@ public:
         _clock(CLK_DEFAULT),
         _jfr_options(0),
         _context_attributes({}),
-        _wallclock_sampler(ASGCT),
         _lightweight(false),
         _enable_method_cleanup(true),
         _remote_symbolication(false) {}

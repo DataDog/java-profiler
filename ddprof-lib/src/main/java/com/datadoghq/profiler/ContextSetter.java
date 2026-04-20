@@ -4,15 +4,12 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 public class ContextSetter {
 
     private static final int TAGS_STORAGE_LIMIT = 10;
     private final List<String> attributes;
     private final JavaProfiler profiler;
-
-    private final ConcurrentHashMap<String, Integer> jniCache = new ConcurrentHashMap<>();
 
     public ContextSetter(JavaProfiler profiler, List<String> attributes) {
         this.profiler = profiler;
@@ -24,21 +21,6 @@ public class ContextSetter {
                 this.attributes.add(attribute);
             }
         }
-    }
-
-    public int encode(String key) {
-        if (key != null) {
-            Integer encoding = jniCache.get(key);
-            if (encoding != null) {
-                return encoding;
-            } else if (jniCache.size() <= 1 << 16) {
-                int e = profiler.registerConstant(key);
-                if (e > 0 && jniCache.putIfAbsent(key, e) == null) {
-                    return e;
-                }
-            }
-        }
-        return 0;
     }
 
     public int[] snapshotTags() {
@@ -63,19 +45,7 @@ public class ContextSetter {
 
     public boolean setContextValue(int offset, String value) {
         if (offset >= 0) {
-            int encoding = encode(value);
-            if (encoding >= 0) {
-                setContextValue(offset, encoding);
-                return true;
-            }
-        }
-        return false;
-    }
-
-    public boolean setContextValue(int offset, int encoding) {
-        if (offset >= 0 && encoding >= 0) {
-            profiler.setContextValue(offset, encoding);
-            return true;
+            return profiler.setContextAttribute(offset, value);
         }
         return false;
     }
@@ -86,7 +56,7 @@ public class ContextSetter {
 
     public boolean clearContextValue(int offset) {
         if (offset >= 0) {
-            profiler.setContextValue(offset, 0);
+            profiler.clearContextAttribute(offset);
             return true;
         }
         return false;

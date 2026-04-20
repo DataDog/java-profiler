@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -11,6 +12,7 @@
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
+#include "dwarf.h"
 #include "symbols.h"
 #include "log.h"
 
@@ -138,13 +140,19 @@ class MachOParser {
         const symtab_command* symtab = NULL;
         const dysymtab_command* dysymtab = NULL;
         const section_64* stubs_section = NULL;
-
+        const char* eh_frame = NULL;
+        size_t eh_frame_size = 0;
         for (uint32_t i = 0; i < header->ncmds; i++) {
             if (lc->cmd == LC_SEGMENT_64) {
                 const segment_command_64* sc = (const segment_command_64*)lc;
                 if (strcmp(sc->segname, "__TEXT") == 0) {
                     _cc->updateBounds(_image_base, add(_image_base, sc->vmsize));
                     stubs_section = findSection(sc, "__stubs");
+                    const section_64* eh_frame_section = findSection(sc, "__eh_frame");
+                    if (eh_frame_section != NULL) {
+                        eh_frame = _vmaddr_slide + eh_frame_section->addr;
+                        eh_frame_size = eh_frame_section->size;
+                    }
                 } else if (strcmp(sc->segname, "__LINKEDIT") == 0) {
                     link_base = _vmaddr_slide + sc->vmaddr - sc->fileoff;
                 } else if (strcmp(sc->segname, "__DATA") == 0 || strcmp(sc->segname, "__DATA_CONST") == 0) {
@@ -166,6 +174,17 @@ class MachOParser {
                 if (symbol_ptr[1] != NULL) loadImports(symtab, dysymtab, symbol_ptr[1], link_base);
                 if (stubs_section != NULL) loadStubSymbols(symtab, dysymtab, stubs_section, link_base);
             }
+        }
+
+        if (DWARF_SUPPORTED && eh_frame != NULL && eh_frame_size > 0) {
+            DwarfParser dwarf(_cc->name(), _vmaddr_slide, eh_frame, eh_frame_size);
+            _cc->setDwarfTable(dwarf.table(), dwarf.count(), dwarf.detectedDefaultFrame());
+        } else {
+            // No __eh_frame (clang compact-unwind-only libraries): fall back to the
+            // library-wide default frame.  On aarch64, clang uses a different frame
+            // layout from GCC, so we must pass fallback_default_frame() rather than
+            // letting CodeCache keep its constructor default of FrameDesc::default_frame.
+            _cc->setDwarfTable(NULL, 0, FrameDesc::fallback_default_frame());
         }
 
         return true;
@@ -228,6 +247,10 @@ void Symbols::initLibraryRanges() {
 
 bool Symbols::isLibcOrPthreadAddress(uintptr_t pc) {
     return false;
+}
+
+void Symbols::clearParsingCaches() {
+    _parsed_libraries.clear();
 }
 
 #endif // __APPLE__

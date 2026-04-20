@@ -142,12 +142,6 @@ private:
     std::unordered_set<CallTrace*> _traces_buffer;           // All traces for JFR processing
     std::unordered_set<u64> _preserve_set_buffer;           // Preserve set for current cycle
     
-    
-private:
-
-    
-
-
 public:
     CallTraceStorage();
     ~CallTraceStorage();

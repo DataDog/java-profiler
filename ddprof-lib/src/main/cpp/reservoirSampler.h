@@ -46,12 +46,13 @@ public:
 
     std::vector<T>& sample(const std::vector<T> &input) {
         _reservoir.clear();
-        for (int i = 0; i < _size && i < input.size(); i++) {
+        for (int i = 0; i < _size && i < (int)input.size(); i++) {
             _reservoir.push_back(input[i]);
         }
         double weight = exp(log(_uniform(_generator)) / _size);
         int target = _size + (int) (log(_uniform(_generator)) / log(1 - weight));
-        while (target < input.size()) {
+        assert(target >= 0);
+        while (target < (int)input.size()) {
             _reservoir[_random_index(_generator)] = input[target];
             weight *= exp(log(_uniform(_generator)) / _size);
             target += (int) (log(_uniform(_generator)) / log(1 - weight));

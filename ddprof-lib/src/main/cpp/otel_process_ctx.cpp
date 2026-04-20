@@ -63,6 +63,7 @@ static const otel_process_ctx_data empty_data = {
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -75,8 +76,36 @@ static const otel_process_ctx_data empty_data = {
   #define PR_SET_VMA_ANON_NAME  0
 #endif
 
+#ifndef MFD_CLOEXEC
+  #define MFD_CLOEXEC 1U
+#endif
+
+#ifndef MFD_ALLOW_SEALING
+  #define MFD_ALLOW_SEALING 2U
+#endif
+
 #ifndef MFD_NOEXEC_SEAL
   #define MFD_NOEXEC_SEAL 8U
+#endif
+
+// memfd_create is not declared in glibc < 2.27; use syscall() directly.
+// Provide __NR_memfd_create for architectures where old kernel headers omit it.
+#ifndef __NR_memfd_create
+  #if defined(__x86_64__)
+    #define __NR_memfd_create 319
+  #elif defined(__aarch64__)
+    #define __NR_memfd_create 279
+  #elif defined(__arm__)
+    #define __NR_memfd_create 385
+  #elif defined(__i386__)
+    #define __NR_memfd_create 356
+  #endif
+#endif
+
+#ifdef __NR_memfd_create
+  static int _otel_memfd_create(const char *name, unsigned int flags) {
+    return (int)syscall(__NR_memfd_create, name, flags);
+  }
 #endif
 
 /**
@@ -153,11 +182,15 @@ otel_process_ctx_result otel_process_ctx_publish(const otel_process_ctx_data *da
   // Step: Create the mapping
   const ssize_t mapping_size = sizeof(otel_process_ctx_mapping);
   published_state.publisher_pid = getpid(); // This allows us to detect in forks that we shouldn't touch the mapping
-  int fd = memfd_create("OTEL_CTX", MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL);
+#ifdef __NR_memfd_create
+  int fd = _otel_memfd_create("OTEL_CTX", MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL);
   if (fd < 0) {
     // MFD_NOEXEC_SEAL is a newer flag; older kernels reject unknown flags, so let's retry without it
-    fd = memfd_create("OTEL_CTX", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    fd = _otel_memfd_create("OTEL_CTX", MFD_CLOEXEC | MFD_ALLOW_SEALING);
   }
+#else
+  int fd = -1; // memfd_create unavailable; fall through to anonymous mmap below
+#endif
   bool failed_to_close_fd = false;
   if (fd >= 0) {
     // Try to create mapping from memfd
@@ -265,7 +298,7 @@ static otel_process_ctx_result otel_process_ctx_update(uint64_t monotonic_publis
   // Step: Prepare the new payload to be published
   // The payload SHOULD be ready and valid before trying to actually update the mapping.
   uint32_t payload_size = 0;
-  char *payload;
+  char *payload = nullptr;
   otel_process_ctx_result result = otel_process_ctx_encode_protobuf_payload(&payload, &payload_size, *data);
   if (!result.success) return result;
 
@@ -636,6 +669,8 @@ static otel_process_ctx_result otel_process_ctx_encode_protobuf_payload(char **o
   // Reads an AnyValue.array_value (field 5) from ptr; ptr must be at KeyValue.value (tag 2).
   // Allocates a NULL-terminated array of strings and sets *out_array immediately. On error the caller must free it.
   static bool read_protobuf_array_value_strings(char **ptr, char *end_ptr, char *value_buffer, const char ***out_array) {
+    // Reject duplicate fields — if the output pointer already holds a value, the protobuf data is malformed
+    if (*out_array) return false;
     uint8_t field;
     if (!read_protobuf_tag(ptr, end_ptr, &field) || field != 2) return false;
     uint16_t any_len;
@@ -773,10 +808,16 @@ static otel_process_ctx_result otel_process_ctx_encode_protobuf_payload(char **o
 
         // Dispatch based on key
         if (strcmp(key_buffer, "threadlocal.schema_version") == 0) {
-          otel_thread_ctx_config_data *setup = (otel_thread_ctx_config_data *) calloc(1, sizeof(otel_thread_ctx_config_data));
-          if (!setup) { free(value); return false; }
-          setup->schema_version = value;
-          data_out->thread_ctx_config = setup;
+          if (!data_out->thread_ctx_config) {
+            otel_thread_ctx_config_data *setup = (otel_thread_ctx_config_data *) calloc(1, sizeof(otel_thread_ctx_config_data));
+            if (!setup) { free(value); return false; }
+            data_out->thread_ctx_config = setup;
+          } else {
+            if (((otel_thread_ctx_config_data *)data_out->thread_ctx_config)->schema_version) {
+              free((void *)((otel_thread_ctx_config_data *)data_out->thread_ctx_config)->schema_version);
+            }
+          }
+          ((otel_thread_ctx_config_data *)data_out->thread_ctx_config)->schema_version = value;
         } else {
           char *key = strdup(key_buffer);
           if (!key || extra_attributes_index + 2 >= extra_attributes_capacity) {
