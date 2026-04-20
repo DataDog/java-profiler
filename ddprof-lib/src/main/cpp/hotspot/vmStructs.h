@@ -128,12 +128,15 @@ inline T* cast_to(const void* ptr) {
     f(VMSymbol,               MATCH_SYMBOLS("Symbol"))            \
     f(VMThread,               MATCH_SYMBOLS("Thread"))
 
-// Types only present in JDK 21+ (Project Loom); size is 0 on older JDKs
+// Continuation-related types. Functionally needed for virtual-thread support
+// (JDK 21+), but only exported via gHotSpotVMTypes starting in JDK 27
+// (JDK-8378985). On JDK 8-26 type_size() stays 0 and the C++ mangled-symbol
+// fallback is used instead.
 #define DECLARE_V21_TYPES_DO(f) \
     f(VMContinuationEntry,    MATCH_SYMBOLS("ContinuationEntry"))
 
-// Fields for JDK 21+ virtual-thread / continuation support.
-// Note: JavaThread::_cont_entry, ContinuationEntry (type and fields), and
+// Fields for virtual-thread / continuation support.
+// JavaThread::_cont_entry, ContinuationEntry (type and fields), and
 // StubRoutines::_cont_returnBarrier were all added to gHotSpotVMStructs /
 // gHotSpotVMTypes in JDK 27 (JDK-8378985).  On JDK 21-26 none of these
 // are in the VM tables; offsets and addresses are populated via C++ mangled-
@@ -142,14 +145,14 @@ inline T* cast_to(const void* ptr) {
 // rather than SIGABRT.
 #define DECLARE_V21_TYPE_FIELD_DO(type_begin, field, field_with_version, type_end) \
     type_begin(VMJavaThread, MATCH_SYMBOLS("JavaThread", "Thread"))                \
-        field_with_version(_cont_entry_offset, offset, 21, MAX_VERSION, MATCH_SYMBOLS("_cont_entry")) \
+        field_with_version(_cont_entry_offset, offset, 27, MAX_VERSION, MATCH_SYMBOLS("_cont_entry")) \
     type_end()                                                                     \
     type_begin(VMStubRoutine, MATCH_SYMBOLS("StubRoutines"))                      \
-        field_with_version(_cont_return_barrier_addr, address, 21, MAX_VERSION, MATCH_SYMBOLS("_cont_returnBarrier")) \
+        field_with_version(_cont_return_barrier_addr, address, 27, MAX_VERSION, MATCH_SYMBOLS("_cont_returnBarrier")) \
     type_end()                                                                     \
     type_begin(VMContinuationEntry, MATCH_SYMBOLS("ContinuationEntry"))           \
-        field_with_version(_cont_entry_return_pc_addr, address, 21, MAX_VERSION, MATCH_SYMBOLS("_return_pc")) \
-        field_with_version(_cont_entry_parent_offset,  offset,  21, MAX_VERSION, MATCH_SYMBOLS("_parent"))    \
+        field_with_version(_cont_entry_return_pc_addr, address, 27, MAX_VERSION, MATCH_SYMBOLS("_return_pc")) \
+        field_with_version(_cont_entry_parent_offset,  offset,  27, MAX_VERSION, MATCH_SYMBOLS("_parent"))    \
     type_end()
 
 /**
