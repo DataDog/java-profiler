@@ -153,10 +153,13 @@ class GtestTaskBuilder(
 
             executable = binary.absolutePath
 
-            // Set test environment variables from configuration
-            config.testEnvironment.get().forEach { (key, value) ->
-                environment(key, value)
-            }
+            // Set test environment variables from configuration.
+            // LD_PRELOAD is excluded: gtest binaries are compiled with -fsanitize=address
+            // and already have libasan.so in their NEEDED entries. Preloading it again
+            // causes "incompatible ASan runtimes" → immediate abort before any test runs.
+            config.testEnvironment.get()
+                .filter { (key, _) -> key != "LD_PRELOAD" }
+                .forEach { (key, value) -> environment(key, value) }
 
             inputs.files(binary)
 

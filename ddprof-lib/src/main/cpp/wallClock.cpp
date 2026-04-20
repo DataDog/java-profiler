@@ -5,12 +5,12 @@
  */
 
 #include "wallClock.h"
-#include "hotspot/vmStructs.inline.h"
 
 #include "stackFrame.h"
 #include "context.h"
 #include "context_api.h"
 #include "debugSupport.h"
+#include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
 #include "profiler.h"
@@ -65,6 +65,15 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     return;  // Another critical section is active, defer profiling
   }
   ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  // Guard against the race window between Profiler::registerThread() and
+  // thread_native_entry setting JVM TLS (PROF-13072): skip at most one signal
+  // per thread. Pure native threads (where JVMThread::current() is always null)
+  // are allowed through once the one-shot window expires.
+  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
+      && current->inInitWindow()) {
+    current->tickInitWindow();
+    return;
+  }
   int tid = current != NULL ? current->tid() : OS::threadId();
   Shims::instance().setSighandlerTid(tid);
   u64 call_trace_id = 0;

@@ -11,6 +11,8 @@
 #include "codeCache.h"
 #include "spinLock.h"
 
+#include "hotspot/vmStructs.h"
+
 // The class tracks JIT-compiled code and ranges
 class JitCodeCache {
 private:
@@ -36,6 +38,9 @@ public:
     }
     
     static CodeBlob* findRuntimeStub(const void *address);
+    static bool isJitCode(const void* pc) {
+        return CodeHeap::contains(pc);
+    }
 };
 
 #endif // _HOTSPOT_JITCODECACHE_H

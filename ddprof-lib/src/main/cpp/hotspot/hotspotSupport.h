@@ -7,6 +7,9 @@
 #ifndef _HOTSPOT_HOTSPOTSUPPORT_H
 #define _HOTSPOT_HOTSPOTSUPPORT_H
 
+#include "hotspot/hotspotStackFrame.h"
+#include "hotspot/jitCodeCache.h"
+#include "stackFrame.h"
 #include "stackWalker.h"
 
 class ProfiledThread;
@@ -27,6 +30,13 @@ private:
 public:
     static void checkFault(ProfiledThread* thrd = nullptr);
     static int walkJavaStack(StackWalkRequest& request);
+    static inline bool canUnwind(const StackFrame& frame, const void*& pc) {
+        return HotspotStackFrame::unwindAtomicStub(frame, pc);
+    }
+
+    static inline bool isJitCode(const void* p) {
+        return JitCodeCache::isJitCode(p);
+    }
 };
 
 #endif // _HOTSPOT_HOTSPOTSUPPORT_H
