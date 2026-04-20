@@ -347,7 +347,10 @@ void LibraryPatcher::patch_socket_functions() {
   auto pre_recv   = (NativeSocketSampler::recv_fn)  dlsym(RTLD_NEXT, "recv");
   auto pre_write  = (NativeSocketSampler::write_fn) dlsym(RTLD_NEXT, "write");
   auto pre_read   = (NativeSocketSampler::read_fn)  dlsym(RTLD_NEXT, "read");
+  TEST_LOG("patch_socket_functions dlsym send=%p recv=%p write=%p read=%p",
+           (void*)pre_send, (void*)pre_recv, (void*)pre_write, (void*)pre_read);
   if (!pre_send || !pre_recv || !pre_write || !pre_read) {
+    TEST_LOG("patch_socket_functions EARLY RETURN: at least one dlsym returned NULL");
     return;
   }
 
@@ -387,14 +390,24 @@ void LibraryPatcher::patch_socket_functions() {
         break;
       }
     }
-    if (already_patched) continue;
+    if (already_patched) {
+      TEST_LOG("patch_socket_functions SKIP (already patched): %s", lib->name());
+      continue;
+    }
 
     // Count how many slots this library needs before committing any patches.
     int needed = (send_location  != nullptr ? 1 : 0)
                + (recv_location  != nullptr ? 1 : 0)
                + (write_location != nullptr ? 1 : 0)
                + (read_location  != nullptr ? 1 : 0);
-    if (_socket_size + needed > MAX_NATIVE_LIBS) continue;
+    if (_socket_size + needed > MAX_NATIVE_LIBS) {
+      TEST_LOG("patch_socket_functions SKIP (MAX_NATIVE_LIBS): %s needed=%d _socket_size=%d",
+               lib->name(), needed, _socket_size);
+      continue;
+    }
+    TEST_LOG("patch_socket_functions PATCH %s send=%p recv=%p write=%p read=%p",
+             lib->name(), (void*)send_location, (void*)recv_location,
+             (void*)write_location, (void*)read_location);
 
     if (send_location != nullptr) {
       void* orig = (void*)__atomic_load_n(send_location, __ATOMIC_RELAXED);
@@ -430,12 +443,15 @@ void LibraryPatcher::patch_socket_functions() {
     }
   }
 
+  TEST_LOG("patch_socket_functions DONE total_slots=%d num_libs_scanned=%d",
+           _socket_size, num_of_libs);
   _socket_active = true;
 }
 
 void LibraryPatcher::unpatch_socket_functions() {
   ExclusiveLockGuard locker(&_lock);
   _socket_active = false;
+  TEST_LOG("unpatch_socket_functions restoring %d slot(s)", _socket_size);
   for (int index = 0; index < _socket_size; index++) {
     __atomic_store_n(_socket_entries[index]._location, _socket_entries[index]._func, __ATOMIC_RELAXED);
   }

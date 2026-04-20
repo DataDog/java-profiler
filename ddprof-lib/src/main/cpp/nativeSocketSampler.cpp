@@ -7,6 +7,7 @@
 
 #if defined(__linux__) && defined(__GLIBC__)
 
+#include "common.h"
 #include "flightRecorder.h"
 #include "libraryPatcher.h"
 #include "os.h"
@@ -15,12 +16,24 @@
 #include "vmEntry.h"
 
 #include <arpa/inet.h>
+#include <atomic>
 #include <netinet/in.h>
 #include <string.h>
 #include <sys/socket.h>
 
 static thread_local PoissonSampler _send_sampler;
 static thread_local PoissonSampler _recv_sampler;
+
+// Debug-only hook-fire counters, paired with TEST_LOG (common.h). Gated at
+// compile time to keep release hot paths free of cross-thread atomic writes.
+#ifdef DEBUG
+static std::atomic<uint64_t> _send_hook_calls{0};
+static std::atomic<uint64_t> _recv_hook_calls{0};
+static std::atomic<uint64_t> _write_hook_calls{0};
+static std::atomic<uint64_t> _read_hook_calls{0};
+static std::atomic<uint64_t> _record_accept_calls{0};
+static std::atomic<uint64_t> _record_reject_calls{0};
+#endif
 
 NativeSocketSampler* const NativeSocketSampler::_instance = new NativeSocketSampler();
 NativeSocketSampler::send_fn  NativeSocketSampler::_orig_send  = nullptr;
@@ -86,9 +99,28 @@ bool NativeSocketSampler::shouldSample(u64 duration_ticks, int op, float &weight
 
 void NativeSocketSampler::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 op) {
     float weight = 0.0f;
-    if (!shouldSample(t1 - t0, op, weight)) {
+    bool sampled = shouldSample(t1 - t0, op, weight);
+    if (!sampled) {
+#ifdef DEBUG
+        uint64_t n = _record_reject_calls.fetch_add(1, std::memory_order_relaxed);
+        if (n < 3 || (n & 0x3FF) == 0) {
+            TEST_LOG("NativeSocketSampler::recordEvent REJECT #%llu fd=%d op=%u bytes=%zd dur_ticks=%llu",
+                     (unsigned long long)(n + 1), fd, (unsigned)op, bytes,
+                     (unsigned long long)(t1 - t0));
+        }
+#endif
         return;
     }
+#ifdef DEBUG
+    {
+        uint64_t n = _record_accept_calls.fetch_add(1, std::memory_order_relaxed);
+        if (n < 3 || (n & 0x3F) == 0) {
+            TEST_LOG("NativeSocketSampler::recordEvent ACCEPT #%llu fd=%d op=%u bytes=%zd dur_ticks=%llu weight=%f",
+                     (unsigned long long)(n + 1), fd, (unsigned)op, bytes,
+                     (unsigned long long)(t1 - t0), (double)weight);
+        }
+    }
+#endif
 
     std::string addr;
     {
@@ -125,6 +157,15 @@ void NativeSocketSampler::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 
 }
 
 ssize_t NativeSocketSampler::send_hook(int fd, const void* buf, size_t len, int flags) {
+#ifdef DEBUG
+    {
+        uint64_t n = _send_hook_calls.fetch_add(1, std::memory_order_relaxed);
+        if (n < 3 || (n & 0x3FF) == 0) {
+            TEST_LOG("NativeSocketSampler::send_hook #%llu fd=%d len=%zu flags=0x%x",
+                     (unsigned long long)(n + 1), fd, len, flags);
+        }
+    }
+#endif
     u64 t0 = TSC::ticks();
     ssize_t ret = _orig_send(fd, buf, len, flags);
     u64 t1 = TSC::ticks();
@@ -135,6 +176,15 @@ ssize_t NativeSocketSampler::send_hook(int fd, const void* buf, size_t len, int 
 }
 
 ssize_t NativeSocketSampler::recv_hook(int fd, void* buf, size_t len, int flags) {
+#ifdef DEBUG
+    {
+        uint64_t n = _recv_hook_calls.fetch_add(1, std::memory_order_relaxed);
+        if (n < 3 || (n & 0x3FF) == 0) {
+            TEST_LOG("NativeSocketSampler::recv_hook #%llu fd=%d len=%zu flags=0x%x",
+                     (unsigned long long)(n + 1), fd, len, flags);
+        }
+    }
+#endif
     u64 t0 = TSC::ticks();
     ssize_t ret = _orig_recv(fd, buf, len, flags);
     u64 t1 = TSC::ticks();
@@ -147,8 +197,24 @@ ssize_t NativeSocketSampler::recv_hook(int fd, void* buf, size_t len, int flags)
 ssize_t NativeSocketSampler::write_hook(int fd, const void* buf, size_t len) {
     NativeSocketSampler* self = _instance;
     if (!self->isSocket(fd)) {
+#ifdef DEBUG
+        uint64_t n = _write_hook_calls.fetch_add(1, std::memory_order_relaxed);
+        if (n < 3 || (n & 0x3FF) == 0) {
+            TEST_LOG("NativeSocketSampler::write_hook #%llu fd=%d len=%zu is_socket=0",
+                     (unsigned long long)(n + 1), fd, len);
+        }
+#endif
         return _orig_write(fd, buf, len);
     }
+#ifdef DEBUG
+    {
+        uint64_t n = _write_hook_calls.fetch_add(1, std::memory_order_relaxed);
+        if (n < 3 || (n & 0x3FF) == 0) {
+            TEST_LOG("NativeSocketSampler::write_hook #%llu fd=%d len=%zu is_socket=1",
+                     (unsigned long long)(n + 1), fd, len);
+        }
+    }
+#endif
     u64 t0 = TSC::ticks();
     ssize_t ret = _orig_write(fd, buf, len);
     u64 t1 = TSC::ticks();
@@ -161,8 +227,24 @@ ssize_t NativeSocketSampler::write_hook(int fd, const void* buf, size_t len) {
 ssize_t NativeSocketSampler::read_hook(int fd, void* buf, size_t len) {
     NativeSocketSampler* self = _instance;
     if (!self->isSocket(fd)) {
+#ifdef DEBUG
+        uint64_t n = _read_hook_calls.fetch_add(1, std::memory_order_relaxed);
+        if (n < 3 || (n & 0x3FF) == 0) {
+            TEST_LOG("NativeSocketSampler::read_hook #%llu fd=%d len=%zu is_socket=0",
+                     (unsigned long long)(n + 1), fd, len);
+        }
+#endif
         return _orig_read(fd, buf, len);
     }
+#ifdef DEBUG
+    {
+        uint64_t n = _read_hook_calls.fetch_add(1, std::memory_order_relaxed);
+        if (n < 3 || (n & 0x3FF) == 0) {
+            TEST_LOG("NativeSocketSampler::read_hook #%llu fd=%d len=%zu is_socket=1",
+                     (unsigned long long)(n + 1), fd, len);
+        }
+    }
+#endif
     u64 t0 = TSC::ticks();
     ssize_t ret = _orig_read(fd, buf, len);
     u64 t1 = TSC::ticks();
@@ -197,11 +279,30 @@ Error NativeSocketSampler::start(Arguments &args) {
     for (int i = 0; i < FD_TYPE_CACHE_SIZE; i++) {
         _fd_type_cache[i].store(FD_TYPE_UNKNOWN, std::memory_order_relaxed);
     }
+#ifdef DEBUG
+    _send_hook_calls.store(0, std::memory_order_relaxed);
+    _recv_hook_calls.store(0, std::memory_order_relaxed);
+    _write_hook_calls.store(0, std::memory_order_relaxed);
+    _read_hook_calls.store(0, std::memory_order_relaxed);
+    _record_accept_calls.store(0, std::memory_order_relaxed);
+    _record_reject_calls.store(0, std::memory_order_relaxed);
+    TEST_LOG("NativeSocketSampler::start interval_ticks=%ld tsc_freq=%llu",
+             init_interval, (unsigned long long)TSC::frequency());
+#endif
     LibraryPatcher::patch_socket_functions();
     return Error::OK;
 }
 
 void NativeSocketSampler::stop() {
+#ifdef DEBUG
+    TEST_LOG("NativeSocketSampler::stop summary send=%llu recv=%llu write=%llu read=%llu accept=%llu reject=%llu",
+             (unsigned long long)_send_hook_calls.load(std::memory_order_relaxed),
+             (unsigned long long)_recv_hook_calls.load(std::memory_order_relaxed),
+             (unsigned long long)_write_hook_calls.load(std::memory_order_relaxed),
+             (unsigned long long)_read_hook_calls.load(std::memory_order_relaxed),
+             (unsigned long long)_record_accept_calls.load(std::memory_order_relaxed),
+             (unsigned long long)_record_reject_calls.load(std::memory_order_relaxed));
+#endif
     LibraryPatcher::unpatch_socket_functions();
     clearFdCache();
 }
