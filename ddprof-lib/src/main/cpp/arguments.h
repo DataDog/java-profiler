@@ -195,6 +195,7 @@ public:
   bool _remote_symbolication;  // Enable remote symbolication for native frames
   bool _jvmtistacks;           // Delegate CPU/wall stack walks to HotSpot JFR RequestStackTrace extension
   bool _nativesocket;
+  long _nativesocket_interval;  // initial sampling period in nanoseconds; 0 = engine default
 
   Arguments(bool persistent = false)
       : _buf(NULL),
@@ -232,7 +233,8 @@ public:
         _enable_method_cleanup(true),
         _remote_symbolication(false),
         _jvmtistacks(false),
-        _nativesocket(false) {}
+        _nativesocket(false),
+        _nativesocket_interval(0) {}
 
   ~Arguments();
 
