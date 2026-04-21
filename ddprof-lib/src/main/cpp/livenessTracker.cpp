@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "arch.h"
+#include "common.h"
 #include "context.h"
 #include "context_api.h"
 #include "hotspot/vmStructs.h"
@@ -89,6 +90,8 @@ void LivenessTracker::flush(std::set<int> &tracked_thread_ids) {
 void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
   JNIEnv *env = VM::jni();
   u64 start = OS::nanotime(), end;
+  TEST_LOG("LivenessTracker::flush_table entry _record_heap_usage=%d _enabled=%d env=%p",
+           (int)_record_heap_usage, (int)_enabled, (void*)env);
 
   // make sure that the tracking table is cleaned up before we start flushing it
   // this is to make sure we are including as few false 'live' objects as
@@ -137,6 +140,8 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
       used = HeapUsage::get()._used;
       isLastGc = false;
     }
+    TEST_LOG("LivenessTracker::flush_table writeHeapUsage used=%zu isLastGc=%d",
+             used, (int)isLastGc);
     Profiler::instance()->writeHeapUsage(used, isLastGc);
   }
 
@@ -198,6 +203,7 @@ Error LivenessTracker::start(Arguments &args) {
 }
 
 void LivenessTracker::stop() {
+  TEST_LOG("LivenessTracker::stop entry _enabled=%d", (int)_enabled);
   if (!_enabled) {
     // disabled
     return;
