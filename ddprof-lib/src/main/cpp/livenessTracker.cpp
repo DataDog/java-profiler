@@ -217,8 +217,15 @@ void LivenessTracker::stop() {
 
 Error LivenessTracker::initialize(Arguments &args) {
   _enabled = args._gc_generations || args._record_liveness;
+  TEST_LOG("LivenessTracker::initialize entry _enabled=%d _initialized=%d "
+           "args._record_heap_usage=%d args._record_liveness=%d args._gc_generations=%d "
+           "args._memory=%ld hotspot_version=%d",
+           (int)_enabled, (int)_initialized,
+           (int)args._record_heap_usage, (int)args._record_liveness,
+           (int)args._gc_generations, (long)args._memory, VM::hotspot_version());
 
   if (!_enabled) {
+    TEST_LOG("LivenessTracker::initialize RETURN (!_enabled)");
     return Error::OK;
   }
 
@@ -228,6 +235,7 @@ Error LivenessTracker::initialize(Arguments &args) {
     // different arguments for liveness tracking those will be ignored it is
     // required in order to be able to track the object liveness across many
     // recordings
+    TEST_LOG("LivenessTracker::initialize RETURN (_initialized)");
     return _stored_error;
   }
   _initialized = true;
@@ -236,6 +244,7 @@ Error LivenessTracker::initialize(Arguments &args) {
     Log::warn("Liveness tracking requires Java 11+");
     // disable liveness tracking
     _table_max_cap = 0;
+    TEST_LOG("LivenessTracker::initialize RETURN (hotspot<11: %d)", VM::hotspot_version());
     return _stored_error = Error::OK;
   }
 
@@ -246,6 +255,7 @@ Error LivenessTracker::initialize(Arguments &args) {
     Log::warn("Liveness tracking requires heap size information");
     // disable liveness tracking
     _table_max_cap = 0;
+    TEST_LOG("LivenessTracker::initialize RETURN (initialize_table err)");
     return _stored_error = Error::OK;
   }
   if (!(_Class = env->FindClass("java/lang/Class"))) {
@@ -260,10 +270,13 @@ Error LivenessTracker::initialize(Arguments &args) {
     Log::warn("Liveness tracking requires access to java.lang.Class#getName()");
     // disable liveness tracking
     _table_max_cap = 0;
+    TEST_LOG("LivenessTracker::initialize RETURN (Class lookup err)");
     return _stored_error = Error::OK;
   }
 
   _subsample_ratio = args._live_samples_ratio;
+  TEST_LOG("LivenessTracker::initialize assigning _record_heap_usage=%d",
+           (int)args._record_heap_usage);
 
   _table_size = 0;
   _table_cap =
