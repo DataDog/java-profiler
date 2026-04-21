@@ -19,7 +19,9 @@ abstract class NativeSocketTestBase extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "natsock";
+        // 100us initial period keeps P high enough that fast localhost I/O
+        // reliably produces events across small test workloads.
+        return "natsock=100us";
     }
 
     /**
