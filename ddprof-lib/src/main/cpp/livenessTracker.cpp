@@ -9,7 +9,6 @@
 #include <thread>
 
 #include "arch.h"
-#include "common.h"
 #include "context.h"
 #include "context_api.h"
 #include "hotspot/vmStructs.h"
@@ -90,8 +89,6 @@ void LivenessTracker::flush(std::set<int> &tracked_thread_ids) {
 void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
   JNIEnv *env = VM::jni();
   u64 start = OS::nanotime(), end;
-  TEST_LOG("LivenessTracker::flush_table entry _record_heap_usage=%d _enabled=%d env=%p",
-           (int)_record_heap_usage, (int)_enabled, (void*)env);
 
   // make sure that the tracking table is cleaned up before we start flushing it
   // this is to make sure we are including as few false 'live' objects as
@@ -140,8 +137,6 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
       used = HeapUsage::get()._used;
       isLastGc = false;
     }
-    TEST_LOG("LivenessTracker::flush_table writeHeapUsage used=%zu isLastGc=%d",
-             used, (int)isLastGc);
     Profiler::instance()->writeHeapUsage(used, isLastGc);
   }
 
@@ -203,7 +198,6 @@ Error LivenessTracker::start(Arguments &args) {
 }
 
 void LivenessTracker::stop() {
-  TEST_LOG("LivenessTracker::stop entry _enabled=%d", (int)_enabled);
   if (!_enabled) {
     // disabled
     return;
@@ -217,15 +211,12 @@ void LivenessTracker::stop() {
 
 Error LivenessTracker::initialize(Arguments &args) {
   _enabled = args._gc_generations || args._record_liveness;
-  TEST_LOG("LivenessTracker::initialize entry _enabled=%d _initialized=%d "
-           "args._record_heap_usage=%d args._record_liveness=%d args._gc_generations=%d "
-           "args._memory=%ld hotspot_version=%d",
-           (int)_enabled, (int)_initialized,
-           (int)args._record_heap_usage, (int)args._record_liveness,
-           (int)args._gc_generations, (long)args._memory, VM::hotspot_version());
+  // Per-call toggles that must reflect the current start's arguments even when
+  // the tracker's table is reused from a prior initialize (_initialized=true).
+  // On musl the test JVM is not forked per test, so the singleton survives.
+  _record_heap_usage = args._record_heap_usage;
 
   if (!_enabled) {
-    TEST_LOG("LivenessTracker::initialize RETURN (!_enabled)");
     return Error::OK;
   }
 
@@ -240,7 +231,6 @@ Error LivenessTracker::initialize(Arguments &args) {
     // different arguments for liveness tracking those will be ignored it is
     // required in order to be able to track the object liveness across many
     // recordings
-    TEST_LOG("LivenessTracker::initialize RETURN (_initialized)");
     return _stored_error;
   }
   _initialized = true;
@@ -249,7 +239,6 @@ Error LivenessTracker::initialize(Arguments &args) {
     Log::warn("Liveness tracking requires Java 11+");
     // disable liveness tracking
     _table_max_cap = 0;
-    TEST_LOG("LivenessTracker::initialize RETURN (hotspot<11: %d)", VM::hotspot_version());
     return _stored_error = Error::OK;
   }
 
@@ -260,7 +249,6 @@ Error LivenessTracker::initialize(Arguments &args) {
     Log::warn("Liveness tracking requires heap size information");
     // disable liveness tracking
     _table_max_cap = 0;
-    TEST_LOG("LivenessTracker::initialize RETURN (initialize_table err)");
     return _stored_error = Error::OK;
   }
   if (!(_Class = env->FindClass("java/lang/Class"))) {
@@ -275,13 +263,10 @@ Error LivenessTracker::initialize(Arguments &args) {
     Log::warn("Liveness tracking requires access to java.lang.Class#getName()");
     // disable liveness tracking
     _table_max_cap = 0;
-    TEST_LOG("LivenessTracker::initialize RETURN (Class lookup err)");
     return _stored_error = Error::OK;
   }
 
   _subsample_ratio = args._live_samples_ratio;
-  TEST_LOG("LivenessTracker::initialize assigning _record_heap_usage=%d",
-           (int)args._record_heap_usage);
 
   _table_size = 0;
   _table_cap =
