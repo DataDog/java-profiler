@@ -65,21 +65,16 @@ static void delete_routine_info(RoutineInfo* thr) {
     delete thr;
 }
 
-// Initialize the current thread's TLS with profiling signals blocked.
-// Kept noinline for the same stack-protector reason as delete_routine_info.
-__attribute__((noinline))
-static void init_thread_tls() {
-    SignalBlocker blocker;
-    ProfiledThread::initCurrentThread();
-}
-
-// Arm the CPU timer with profiling signals blocked and open the init window
-// (PROF-13072). Kept noinline for the same stack-protector reason as
+// Initialize the current thread's TLS, open the init window (PROF-13072), and
+// register the thread with the profiler — all under a single SignalBlocker so
+// profiling signals cannot fire in the gap between initCurrentThread() and
+// startInitWindow().  Kept noinline for the same stack-protector reason as
 // delete_routine_info: SignalBlocker's sigset_t must not appear in
 // start_routine_wrapper_spec's own stack frame on musl/aarch64.
 __attribute__((noinline))
-static void start_window_and_register() {
+static void init_tls_and_register() {
     SignalBlocker blocker;
+    ProfiledThread::initCurrentThread();
     if (ProfiledThread *pt = ProfiledThread::currentSignalSafe()) {
         pt->startInitWindow();
     }
@@ -99,9 +94,8 @@ static void* start_routine_wrapper_spec(void* args) {
     func_start_routine routine = thr->routine();
     void* params = thr->args();
     delete_routine_info(thr);
-    init_thread_tls();
-    start_window_and_register();
-    // Capture tid from TLS while it is guaranteed non-null (set by init_thread_tls above).
+    init_tls_and_register();
+    // Capture tid from TLS while it is guaranteed non-null (set by init_tls_and_register above).
     // Using a cached tid avoids the lazy-allocating ProfiledThread::current() path inside
     // the catch block, which may call 'new' at an unsafe point during forced unwind.
     int tid = ProfiledThread::currentTid();

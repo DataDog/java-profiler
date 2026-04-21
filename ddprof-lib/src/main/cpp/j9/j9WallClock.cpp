@@ -58,16 +58,14 @@ void J9WallClock::stop() {
 }
 
 void J9WallClock::timerLoop() {
-  JNIEnv *jni = VM::attachThread("java-profiler Sampler");
-  jvmtiEnv *jvmti = VM::jvmti();
-
-  int max_frames = _max_stack_depth + MAX_NATIVE_FRAMES + RESERVED_FRAMES;
-  ASGCT_CallFrame *frames =
-      (ASGCT_CallFrame *)malloc(max_frames * sizeof(ASGCT_CallFrame));
-
   // IBM J9 may cancel this thread via abi::__forced_unwind during JVM shutdown.
-  // Catch it to ensure free(frames) and VM::detachThread() always run, then
-  // re-throw so the thread exits properly through the normal unwind path.
+  // Catch it to ensure free(frames) and VM::detachThread() always run — including
+  // if the unwind fires during setup (VM::attachThread or malloc) before the
+  // sampling loop starts — then re-throw so the thread exits properly through
+  // the normal unwind path.  jni and frames are declared before the try and
+  // initialized to null so the catch handler's cleanup is safe in either case:
+  // free(nullptr) is a no-op, and detachThread() is only called when attach
+  // succeeded.
   //
   // PushLocalFrame / PopLocalFrame balance: if the forced unwind fires between
   // PushLocalFrame and PopLocalFrame, the outstanding JNI local frame is released
@@ -75,7 +73,15 @@ void J9WallClock::timerLoop() {
   // destroy the current stack frame's local references.  The common cancellation
   // point is OS::sleep() which runs after PopLocalFrame, so no imbalance occurs
   // in the typical case.
+  JNIEnv *jni = nullptr;
+  ASGCT_CallFrame *frames = nullptr;
   try {
+    jni = VM::attachThread("java-profiler Sampler");
+    jvmtiEnv *jvmti = VM::jvmti();
+
+    int max_frames = _max_stack_depth + MAX_NATIVE_FRAMES + RESERVED_FRAMES;
+    frames = (ASGCT_CallFrame *)malloc(max_frames * sizeof(ASGCT_CallFrame));
+
     while (_running) {
       if (!_enabled) {
         OS::sleep(_interval);
