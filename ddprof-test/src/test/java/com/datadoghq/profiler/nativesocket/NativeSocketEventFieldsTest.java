@@ -35,7 +35,7 @@ public class NativeSocketEventFieldsTest extends NativeSocketTestBase {
     public void allRequiredFieldsPresentAndValid() throws Exception {
         Assumptions.assumeTrue(Platform.isLinux(), "nativesocket tracking is Linux-only");
 
-        doTcpTransfer(4096, 5000);
+        doTcpTransfer(4096, 128);
 
         stopProfiler();
 

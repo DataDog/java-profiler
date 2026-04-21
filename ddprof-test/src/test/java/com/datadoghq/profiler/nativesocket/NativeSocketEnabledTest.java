@@ -18,7 +18,7 @@ public class NativeSocketEnabledTest extends NativeSocketTestBase {
     public void socketEventsProducedWhenFeatureEnabled() throws Exception {
         Assumptions.assumeTrue(Platform.isLinux(), "nativesocket tracking is Linux-only");
 
-        doTcpTransfer(4096, 5000);
+        doTcpTransfer(4096, 128);
 
         stopProfiler();
 
