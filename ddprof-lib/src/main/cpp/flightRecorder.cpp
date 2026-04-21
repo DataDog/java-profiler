@@ -1603,8 +1603,11 @@ void Recording::recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event) {
   buf->putVar64(event->_scheduler);
   buf->putVar64(event->_queueType);
   buf->putVar64(event->_queueLength);
-  buf->putVar64(event->_submitting_span_id);
+  // Schema order: spanId (pos 9) and localRootSpanId (pos 10) come from the thread context,
+  // then submittingSpanId (pos 11). Writing submittingSpanId first was wrong — it landed at
+  // position 9 while the schema expects the consuming spanId there.
   writeContext(buf, Contexts::get());
+  buf->putVar64(event->_submitting_span_id);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }

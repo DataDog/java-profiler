@@ -51,6 +51,54 @@ public class QueueTimeTest extends AbstractProfilerTest {
         }
     }
 
+    /**
+     * Regression test for the QueueTime field serialization order bug: submittingSpanId was
+     * written before writeContext(), placing it at field position 9 (where the schema expects
+     * the consuming spanId). This caused the backend to read completely wrong span IDs.
+     * <p>
+     * Verifies that all three span-ID fields (spanId, localRootSpanId, submittingSpanId) round-trip
+     * correctly when they are all distinct and non-zero.
+     */
+    @Test
+    public void testQueueTimeFieldOrder() throws Exception {
+        IAttribute<IQuantity> submittingSpanIdAttr = attr("submittingSpanId", "", "", NUMBER);
+
+        Thread origin = Thread.currentThread();
+        origin.setName("origin-field-order");
+        // Use distinct, non-zero values so any field-order swap is detectable:
+        //   consuming spanId=7, rootSpanId=42 (set via setContext), submittingSpanId=99.
+        long start = profiler.getCurrentTicks();
+        Runnable worker = () -> {
+            profiler.setContext(7, 42);
+            long now = profiler.getCurrentTicks();
+            profiler.recordQueueTime(start, now, QueueTimeTest.class, QueueTimeTest.class,
+                    ArrayBlockingQueue.class, 1, origin, 99L);
+            profiler.clearContext();
+        };
+        Thread thread = new Thread(worker, "destination-field-order");
+        Thread.sleep(10);
+        thread.start();
+        thread.join();
+        stopProfiler();
+
+        IItemCollection events = verifyEvents("datadog.QueueTime");
+        boolean found = false;
+        for (IItemIterable it : events) {
+            IMemberAccessor<IQuantity, IItem> spanIdAccessor = SPAN_ID.getAccessor(it.getType());
+            IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(it.getType());
+            IMemberAccessor<IQuantity, IItem> submittingAccessor = submittingSpanIdAttr.getAccessor(it.getType());
+            for (IItem item : it) {
+                if (spanIdAccessor.getMember(item).longValue() == 7) {
+                    found = true;
+                    assertEquals(7, spanIdAccessor.getMember(item).longValue(), "spanId must be the consuming span (not the submitting span)");
+                    assertEquals(42, rootSpanIdAccessor.getMember(item).longValue(), "localRootSpanId must be the root");
+                    assertEquals(99, submittingAccessor.getMember(item).longValue(), "submittingSpanId must be the submitting span (not the root)");
+                }
+            }
+        }
+        assertTrue(found, "Expected at least one QueueTime event with spanId=7");
+    }
+
     @Test
     public void testRecordQueueTime() throws Exception {
         Thread origin = Thread.currentThread();
