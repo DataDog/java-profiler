@@ -35,7 +35,10 @@ public class NativeSocketRemoteAddressTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "natsock";
+        // 100us period keeps sampling probability high enough that the 16
+        // short-lived connections reliably produce at least one event whose
+        // remoteAddress points at the known server port.
+        return "natsock=100us";
     }
 
     @RetryingTest(3)
