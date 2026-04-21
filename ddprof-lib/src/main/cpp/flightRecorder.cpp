@@ -1799,6 +1799,7 @@ void FlightRecorder::recordTraceRoot(int lock_index, int tid,
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
       rec->recordTraceRoot(buf, tid, event);
+      rec->addThread(lock_index, tid);
     }
   }
 }
@@ -1811,6 +1812,7 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid,
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
       rec->recordQueueTime(buf, tid, event);
+      rec->addThread(lock_index, tid);
     }
   }
 }
@@ -1823,6 +1825,7 @@ void FlightRecorder::recordTaskBlock(int lock_index, int tid,
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
       rec->recordTaskBlock(buf, tid, event);
+      rec->addThread(lock_index, tid);
     }
   }
 }
@@ -1835,6 +1838,11 @@ void FlightRecorder::recordSpanNode(int lock_index, int tid, u64 spanId, u64 par
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
       rec->recordSpanNode(buf, tid, spanId, parentSpanId, rootSpanId, startNanos, durationNanos, encodedOperation, encodedResource);
+      // Register the emitting thread in the JFR thread CPOOL so that JMC can resolve
+      // the eventThread reference. Without this, threads that emit SpanNode events but
+      // have no CPU/wall profiling samples in the current chunk are absent from the
+      // CPOOL, causing IMCThread to be null in the backend and threadId=0 ("unknown span").
+      rec->addThread(lock_index, tid);
     }
   }
 }
