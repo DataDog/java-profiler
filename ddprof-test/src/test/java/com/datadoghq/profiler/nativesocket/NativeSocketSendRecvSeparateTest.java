@@ -31,7 +31,10 @@ public class NativeSocketSendRecvSeparateTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "natsock";
+        // 100us initial sampling period: a single 256KB localhost write
+        // completes in ~100-500us giving P ~= 0.6-1.0 per call, so both
+        // SEND and RECV directions are sampled reliably over 32 iterations.
+        return "natsock=100us";
     }
 
     @RetryingTest(3)

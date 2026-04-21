@@ -262,8 +262,15 @@ Error NativeSocketSampler::check(Arguments &args) {
 }
 
 Error NativeSocketSampler::start(Arguments &args) {
-    // Default interval: 1 ms in TSC ticks (time-weighted sampling).
-    long init_interval = (long)(TSC::frequency() / 1000);
+    // Initial sampling period: args._nativesocket_interval (ns) when > 0,
+    // otherwise 1 ms default.  Converted to TSC ticks (time-weighted sampling).
+    long init_interval;
+    if (args._nativesocket_interval > 0) {
+        init_interval = (long)((u64)args._nativesocket_interval
+                               * TSC::frequency() / 1000000000ULL);
+    } else {
+        init_interval = (long)(TSC::frequency() / 1000);
+    }
     if (init_interval < 1) {
         init_interval = DEFAULT_INTERVAL_TICKS;
     }

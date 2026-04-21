@@ -194,6 +194,7 @@ public:
   bool _enable_method_cleanup;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
   bool _nativesocket;
+  long _nativesocket_interval;  // initial sampling period in nanoseconds; 0 = engine default
 
   Arguments(bool persistent = false)
       : _buf(NULL),
@@ -230,7 +231,8 @@ public:
         _lightweight(false),
         _enable_method_cleanup(true),
         _remote_symbolication(false),
-        _nativesocket(false) {}
+        _nativesocket(false),
+        _nativesocket_interval(0) {}
 
   ~Arguments();
 
