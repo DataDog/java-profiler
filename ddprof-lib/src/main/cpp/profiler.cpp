@@ -683,21 +683,17 @@ void Profiler::writeDatadogProfilerSetting(int tid, int length,
 
 void Profiler::writeHeapUsage(long value, bool live) {
   int tid = ProfiledThread::currentTid();
-  TEST_LOG("Profiler::writeHeapUsage tid=%d value=%ld live=%d", tid, value, (int)live);
   if (tid < 0) {
-    TEST_LOG("Profiler::writeHeapUsage BAIL (tid<0)");
     return;
   }
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
       !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
-    TEST_LOG("Profiler::writeHeapUsage BAIL (lock)");
     return;
   }
   _jfr.recordHeapUsage(lock_index, value, live);
   _locks[lock_index].unlock();
-  TEST_LOG("Profiler::writeHeapUsage OK lock_index=%u", lock_index);
 }
 
 void *Profiler::dlopen_hook(const char *filename, int flags) {
