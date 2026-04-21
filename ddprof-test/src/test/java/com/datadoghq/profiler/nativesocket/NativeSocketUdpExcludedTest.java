@@ -34,7 +34,10 @@ public class NativeSocketUdpExcludedTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "natsock";
+        // 100us period strengthens the negative assertion: any UDP traffic
+        // that accidentally leaks through the TCP filter would be far more
+        // likely to produce a sampled event at this tighter interval.
+        return "natsock=100us";
     }
 
     @RetryingTest(3)

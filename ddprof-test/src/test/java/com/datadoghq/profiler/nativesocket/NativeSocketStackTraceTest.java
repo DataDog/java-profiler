@@ -31,7 +31,8 @@ public class NativeSocketStackTraceTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "natsock";
+        // 100us period keeps sampling probability high on short localhost I/O.
+        return "natsock=100us";
     }
 
     @RetryingTest(3)
