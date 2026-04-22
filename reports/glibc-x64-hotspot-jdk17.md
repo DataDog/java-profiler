@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk17
 
 ## glibc-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-04-22 09:42:18 EDT
+**Date:** 2026-04-22 10:14:36 EDT
 
 ### Configuration
 | Setting | Value |
@@ -19,7 +19,7 @@ title: glibc-x64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | CPU Cores (start) | 48 |
-| CPU Cores (end) | 48 |
+| CPU Cores (end) | 44 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,9 +28,9 @@ title: glibc-x64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 386 |
-| Sample Rate | 6.43/sec |
-| Health Score | 402% |
+| CPU Samples | 497 |
+| Sample Rate | 8.28/sec |
+| Health Score | 517% |
 | Threads | 9 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 584 |
-| Sample Rate | 9.73/sec |
-| Health Score | 608% |
+| CPU Samples | 633 |
+| Sample Rate | 10.55/sec |
+| Health Score | 659% |
 | Threads | 10 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
+<summary>CPU Timeline (2 unique values: 44-48 cores)</summary>
 
 ```
-1776865035 48
-1776865040 48
-1776865045 48
-1776865050 48
-1776865055 48
-1776865060 48
-1776865065 48
-1776865070 48
-1776865075 48
-1776865080 48
-1776865085 48
-1776865090 48
-1776865095 48
-1776865100 48
-1776865105 48
-1776865110 48
-1776865115 48
-1776865120 48
-1776865125 48
-1776865130 48
+1776866826 48
+1776866831 48
+1776866836 48
+1776866841 48
+1776866846 48
+1776866851 48
+1776866856 48
+1776866861 44
+1776866866 44
+1776866871 44
+1776866876 44
+1776866881 44
+1776866886 44
+1776866891 44
+1776866896 44
+1776866901 44
+1776866906 44
+1776866911 44
+1776866916 44
+1776866921 44
 ```
 </details>
 
