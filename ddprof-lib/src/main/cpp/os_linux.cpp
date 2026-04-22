@@ -497,7 +497,11 @@ void OS::forwardForeignSignal(int signo, siginfo_t* siginfo, void* ucontext) {
     }
 
     if (prev.sa_flags & SA_SIGINFO) {
-        if (prev.sa_sigaction != nullptr) {
+        // SIG_DFL (== 0) is caught by the nullptr check; SIG_IGN (== 1) is stored
+        // as sa_sigaction == (void*)1 when SA_SIGINFO happens to be set — calling it
+        // would jump to address 0x1.
+        if (prev.sa_sigaction != nullptr
+                && prev.sa_sigaction != reinterpret_cast<decltype(prev.sa_sigaction)>(SIG_IGN)) {
             prev.sa_sigaction(signo, siginfo, ucontext);
         }
     } else if (prev.sa_handler != SIG_DFL && prev.sa_handler != SIG_IGN

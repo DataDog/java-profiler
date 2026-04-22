@@ -184,7 +184,7 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // Reject signals that did not originate from our timer_create timers.
   // This guards against Go's process-wide setitimer(ITIMER_PROF) and other
   // foreign SIGPROF sources that would otherwise drive our handler onto
-  // threads we never registered — see doc/plans/2026-04-21-signal-origin-validation.md.
+  // threads we never registered — see doc/plans/SignalOriginValidation.md.
   if (!OS::shouldProcessSignal(siginfo, SI_TIMER, SignalCookie::cpu())) {
     Counters::increment(CTIMER_SIGNAL_FOREIGN);
     OS::forwardForeignSignal(signo, siginfo, ucontext);
