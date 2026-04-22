@@ -59,6 +59,13 @@ public final class ThreadContext {
     private final int[] attrCacheEncodings = new int[CACHE_SIZE];
     private final byte[][] attrCacheBytes = new byte[CACHE_SIZE][];
 
+    // Per-slot read-back cache: indexedValueCache[keyIndex] = the String last
+    // successfully written to attrs_data at that slot. Kept in sync by every
+    // write (setContextAttributeDirect) and clear (clearContextAttribute,
+    // setContextDirect). Allows readContextAttribute to return without scanning
+    // attrs_data or allocating on the warm path.
+    private final String[] indexedValueCache = new String[MAX_CUSTOM_SLOTS];
+
     // OTEP record field offsets (from packed struct)
     private final int validOffset;
     private final int traceIdOffset;
@@ -174,6 +181,7 @@ public final class ThreadContext {
         sidecarBuffer.putInt(keyIndex * Integer.BYTES, 0);
         removeOtepAttribute(otepKeyIndex);
         attach();
+        indexedValueCache[keyIndex] = null;
     }
 
     public void copyCustoms(int[] value) {
@@ -246,6 +254,9 @@ public final class ThreadContext {
         sidecarBuffer.putInt(keyIndex * Integer.BYTES, encoding);
         boolean written = replaceOtepAttribute(otepKeyIndex, utf8);
         attach();
+        // Keep the read-back cache in sync. Only cache on successful attrs_data write;
+        // on overflow (written=false) the slot was compacted out so null is correct.
+        indexedValueCache[keyIndex] = written ? value : null;
         return written;
     }
 
@@ -272,6 +283,7 @@ public final class ThreadContext {
         for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
             // i * Integer.BYTES: byte offset into sidecar buffer for int slot i
             sidecarBuffer.putInt(i * Integer.BYTES, 0);
+            indexedValueCache[i] = null;
         }
         // Reset attrs_data_size to contain only the fixed LRS entry, discarding
         // any custom attribute entries written during the previous span.
@@ -307,6 +319,7 @@ public final class ThreadContext {
         writeLrsHex(0);
         for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
             sidecarBuffer.putInt(i * Integer.BYTES, 0);
+            indexedValueCache[i] = null;
         }
         sidecarBuffer.putLong(lrsSidecarOffset, 0);
     }
@@ -410,13 +423,11 @@ public final class ThreadContext {
     }
 
     /**
-     * Reads a custom attribute value from attrs_data by key index.
-     * Scans the attrs_data entries and returns the UTF-8 string for the matching key.
+     * Reads a custom attribute value by key index.
+     * Returns the cached String from the last successful write on this thread (zero allocation).
+     * Falls back to scanning attrs_data when the cache is cold (e.g. after a session restart).
      * Used by {@code ContextSetter.readContextValue()} to support snapshot/restore of
      * nested profiling scopes.
-     *
-     * <p>Allocates a {@code byte[]} and a {@code String} per call. Not safe for
-     * signal handlers. Fine at scope-open/close granularity; avoid in tight inner loops.
      *
      * @param keyIndex 0-based user key index (same as passed to setContextAttribute)
      * @return the attribute value string, or null if not set
@@ -425,6 +436,11 @@ public final class ThreadContext {
         if (keyIndex < 0 || keyIndex >= MAX_CUSTOM_SLOTS) {
             return null;
         }
+        String cached = indexedValueCache[keyIndex];
+        if (cached != null) {
+            return cached;
+        }
+        // Cold path: scan attrs_data (only on first read after session restart).
         int otepKeyIndex = keyIndex + 1;
         int size = recordBuffer.getShort(attrsDataSizeOffset) & 0xFFFF;
         int pos = 0;

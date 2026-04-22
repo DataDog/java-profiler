@@ -55,7 +55,6 @@ public class ContextSetter {
      * or {@code null} if no value is set or the offset is negative.
      *
      * <p>Reads from thread-local storage — caller and setter must be the same thread.
-     * Allocates a {@code String} per call; avoid in tight inner loops.
      */
     public String readContextValue(int offset) {
         if (offset >= 0) {
