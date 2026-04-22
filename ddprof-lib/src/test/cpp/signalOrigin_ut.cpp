@@ -7,6 +7,8 @@
 #include <signal.h>
 #include <string.h>
 #include <atomic>
+#include <cstdlib>
+#include <ctime>
 #include <string>
 
 #include "os.h"

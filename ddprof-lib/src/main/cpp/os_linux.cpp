@@ -329,7 +329,7 @@ SigAction OS::installSignalHandler(int signo, SigAction action, SigHandler handl
     // _valid==true sees a fully-initialised oldaction. See also the reader
     // side in forwardForeignSignal.
     if (rc == 0 && action != NULL && signo > 0 && signo < MAX_SIGNALS
-        && !installed_oldaction_valid[signo]
+        && !__atomic_load_n(&installed_oldaction_valid[signo], __ATOMIC_RELAXED)
         && oldsa.sa_sigaction != action) {
         installed_oldaction[signo] = oldsa;
         __atomic_store_n(&installed_oldaction_valid[signo], true, __ATOMIC_RELEASE);

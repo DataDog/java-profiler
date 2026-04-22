@@ -16,7 +16,6 @@
 #include "log.h"
 #include "profiler.h"
 #include "signalCookie.h"
-#include "stackFrame.h"
 #include "thread.h"
 #include "threadState.inline.h"
 #include "guards.h"

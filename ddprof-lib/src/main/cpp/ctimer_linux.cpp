@@ -97,13 +97,14 @@ int CTimer::registerThread(int tid) {
   ts.it_interval.tv_nsec = _interval % 1000000000;
   ts.it_value = ts.it_interval;
   if (syscall(__NR_timer_settime, timer, 0, &ts, NULL) < 0) {
-    // Arming failed — the timer exists but will never fire, which is
-    // indistinguishable at the sample level from "no foreign signal matched
-    // our cookie". Surface the failure, delete the timer, and release the
-    // slot so the next registration attempt can retry.
+    // Arming failed after publishing the timer in _timers[tid]. Reclaim the
+    // slot only if it still contains this timer; otherwise a concurrent
+    // unregisterThread(tid) has already claimed responsibility for cleanup
+    // (avoids a double timer_delete).
     Log::warn("timer_settime failed for tid=%d: %s", tid, strerror(errno));
-    __atomic_store_n(&_timers[tid], 0, __ATOMIC_RELEASE);
-    syscall(__NR_timer_delete, timer);
+    if (__sync_bool_compare_and_swap(&_timers[tid], timer + 1, 0)) {
+      syscall(__NR_timer_delete, timer);
+    }
     return -1;
   }
   return 0;
