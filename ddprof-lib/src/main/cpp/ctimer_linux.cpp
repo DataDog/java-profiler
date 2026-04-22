@@ -17,12 +17,14 @@
 
 #ifdef __linux__
 
+#include "counters.h"
 #include "guards.h"
 #include "ctimer.h"
 #include "debugSupport.h"
 #include "jvmThread.h"
 #include "libraries.h"
 #include "profiler.h"
+#include "signalCookie.h"
 #include "threadState.inline.h"
 #include <assert.h>
 #include <stdlib.h>
@@ -53,7 +55,15 @@ int CTimer::registerThread(int tid) {
   }
 
   struct sigevent sev;
-  sev.sigev_value.sival_ptr = NULL;
+  // Zero the whole struct first so any padding / future fields the kernel
+  // inspects (sigev_notify_function, sigev_notify_attributes on glibc) are
+  // not populated from stack garbage.
+  memset(&sev, 0, sizeof(sev));
+  // Cookie identifying this timer as ddprof-owned. When the signal is delivered
+  // the handler checks siginfo->si_value.sival_ptr against SignalCookie::cpu()
+  // and drops/forwards any SIGPROF that does not carry it (e.g. from a Go
+  // runtime's setitimer(ITIMER_PROF) or a foreign library's raise()).
+  sev.sigev_value.sival_ptr = SignalCookie::cpu();
   sev.sigev_signo = _signal;
   sev.sigev_notify = SIGEV_THREAD_ID;
   ((int *)&sev.sigev_notify)[1] = tid;
@@ -119,6 +129,12 @@ Error CTimer::start(Arguments &args) {
     _max_timers = max_timers;
   }
 
+  // Prime the origin-check cache from this non-signal context before any
+  // SIGPROF can fire — reading the env var lazily from the handler itself
+  // would go through a C++ function-local-static guard, which is not
+  // async-signal-safe.
+  OS::primeSignalOriginCheck();
+
   OS::installSignalHandler(_signal, signalHandler);
 
   // Register all existing threads
@@ -143,6 +159,17 @@ void CTimer::stop() {
 }
 
 void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  // Reject signals that did not originate from our timer_create timers.
+  // This guards against Go's process-wide setitimer(ITIMER_PROF) and other
+  // foreign SIGPROF sources that would otherwise drive our handler onto
+  // threads we never registered — see doc/plans/2026-04-21-signal-origin-validation.md.
+  if (!OS::isOwnSignal(siginfo, SI_TIMER, SignalCookie::cpu())) {
+    Counters::increment(CTIMER_SIGNAL_FOREIGN);
+    OS::forwardForeignSignal(signo, siginfo, ucontext);
+    return;
+  }
+  Counters::increment(CTIMER_SIGNAL_OWN);
+
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs;
   if (!cs.entered()) {

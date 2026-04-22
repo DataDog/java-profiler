@@ -127,6 +127,40 @@ class OS {
     static int getProfilingSignal(int mode);
     static bool sendSignalToThread(int thread_id, int signo);
 
+    // Per-thread queued signal with payload cookie (rt_tgsigqueueinfo on Linux).
+    // Payload carries `cookie` in si_value.sival_ptr; receiver sees si_code == SI_QUEUE.
+    // Used by engines that need to distinguish their own signals from foreign ones.
+    static bool queueSignalToThread(int thread_id, int signo, void* cookie);
+
+    // Signal origin check used from signal-handler context. Async-signal-safe.
+    // `expected_si_code` is typically SI_TIMER (timer_create) or SI_QUEUE
+    // (rt_tgsigqueueinfo). Returns true iff origin checks are disabled
+    // (accept-all fallback) or the incoming siginfo matches both the expected
+    // si_code and the expected cookie.
+    static bool isOwnSignal(siginfo_t* siginfo, int expected_si_code, void* expected_cookie);
+
+    // Forwards a signal we decided not to process to the previously-installed
+    // handler (as captured by installSignalHandler). Applies the previous
+    // handler's sa_mask so chained handlers see the same signal-blocking
+    // environment they would have under normal kernel delivery.
+    // Itself async-signal-safe; the forwarded handler's safety is the
+    // caller's concern.
+    static void forwardForeignSignal(int signo, siginfo_t* siginfo, void* ucontext);
+
+    // Runtime feature flag: signal origin check enabled? Reads DDPROF_SIGNAL_ORIGIN_CHECK
+    // env var and caches the result. Default on; set to "false"/"0"/"off"/"no"
+    // to disable (regression tests only). MUST be called at least once from a
+    // non-signal context before any signal handler can fire — the engine
+    // `start()` paths are responsible for priming this cache via
+    // primeSignalOriginCheck().
+    static bool signalOriginCheckEnabled();
+
+    // Prime the signalOriginCheckEnabled() cache from non-signal context.
+    // Called by engine start() paths before installing handlers. Safe to call
+    // multiple times; no-op after the first call unless forceReload=true
+    // (used only by unit tests).
+    static void primeSignalOriginCheck(bool forceReload = false);
+
     static void* safeAlloc(size_t size);
     static void safeFree(void* addr, size_t size);
 

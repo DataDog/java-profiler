@@ -6,6 +6,7 @@
 
 #include "wallClock.h"
 
+#include "counters.h"
 #include "stackFrame.h"
 #include "context.h"
 #include "context_api.h"
@@ -14,6 +15,7 @@
 #include "libraries.h"
 #include "log.h"
 #include "profiler.h"
+#include "signalCookie.h"
 #include "stackFrame.h"
 #include "thread.h"
 #include "threadState.inline.h"
@@ -51,6 +53,16 @@ bool WallClockASGCT::inSyscall(void *ucontext) {
 
 void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
                                     void *ucontext) {
+  // Reject any SIGVTALRM that did not originate from our rt_tgsigqueueinfo
+  // send. Defends against stray in-process tgkill / external sigqueue that
+  // would otherwise drive our wallclock sampling path.
+  if (!OS::isOwnSignal(siginfo, SI_QUEUE, SignalCookie::wallclock())) {
+    Counters::increment(WALLCLOCK_SIGNAL_FOREIGN);
+    OS::forwardForeignSignal(signo, siginfo, ucontext);
+    return;
+  }
+  Counters::increment(WALLCLOCK_SIGNAL_OWN);
+
   WallClockASGCT *engine = reinterpret_cast<WallClockASGCT *>(Profiler::instance()->wallEngine());
   if (signo == SIGVTALRM) {
     engine->signalHandler(signo, siginfo, ucontext, engine->_interval);
@@ -152,6 +164,8 @@ bool BaseWallClock::isEnabled() const {
 
 void WallClockASGCT::initialize(Arguments& args) {
   _collapsing = args._wall_collapsing;
+  // Prime the origin-check cache before installing the SIGVTALRM handler.
+  OS::primeSignalOriginCheck();
   OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
 }
 
@@ -177,7 +191,10 @@ void WallClockASGCT::timerLoop() {
     };
 
     auto sampleThreads = [&](int tid, int& num_failures, int& threads_already_exited, int& permission_denied) {
-      if (!OS::sendSignalToThread(tid, SIGVTALRM)) {
+      // Deliver SIGVTALRM with a cookie so our handler can distinguish this
+      // signal from any other in-process sender (see signalCookie.h /
+      // wallClock.cpp sharedSignalHandler).
+      if (!OS::queueSignalToThread(tid, SIGVTALRM, SignalCookie::wallclock())) {
         num_failures++;
         if (errno != 0) {
           if (errno == ESRCH) {

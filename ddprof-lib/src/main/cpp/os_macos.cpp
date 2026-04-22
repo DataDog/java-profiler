@@ -310,6 +310,32 @@ bool OS::sendSignalToThread(int thread_id, int signo) {
 #endif
 }
 
+// macOS does not expose rt_tgsigqueueinfo. Fall back to plain per-thread
+// delivery without a payload. The Go-setitimer deadlock the origin check
+// defends against is Linux-specific, so macOS can keep the pre-fix behaviour.
+bool OS::queueSignalToThread(int thread_id, int signo, void* /*cookie*/) {
+    return sendSignalToThread(thread_id, signo);
+}
+
+// On macOS the origin-check helper degrades to "accept everything" since the
+// fallback sender cannot carry a cookie. Handlers that call this helper
+// therefore behave exactly as before on macOS.
+bool OS::isOwnSignal(siginfo_t* /*siginfo*/, int /*expected_si_code*/, void* /*expected_cookie*/) {
+    return true;
+}
+
+void OS::forwardForeignSignal(int /*signo*/, siginfo_t* /*siginfo*/, void* /*ucontext*/) {
+    // No-op on macOS — see comment above.
+}
+
+bool OS::signalOriginCheckEnabled() {
+    return false;
+}
+
+void OS::primeSignalOriginCheck(bool /*forceReload*/) {
+    // No-op on macOS.
+}
+
 void* OS::safeAlloc(size_t size) {
     // mmap() is not guaranteed to be async signal safe, but in practice, it is.
     // There is no a reasonable alternative anyway.
