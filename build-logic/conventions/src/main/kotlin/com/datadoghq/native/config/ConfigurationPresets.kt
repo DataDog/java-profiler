@@ -69,7 +69,8 @@ object ConfigurationPresets {
             "-ffunction-sections",
             "-std=c++20",
             "-DPROFILER_VERSION=\"$version\"",
-            "-DCOUNTERS"
+            "-DCOUNTERS",
+            "-fsanitize-coverage=trace-pc-guard"
         )
         // Define __musl__ when building on musl libc (it doesn't define this by default)
         if (PlatformUtils.isMusl()) {
@@ -85,7 +86,8 @@ object ConfigurationPresets {
         "-lpthread",
         "-lm",
         "-lrt",
-        "-Wl,--build-id"
+        "-Wl,--build-id",
+        "-fsanitize-coverage=trace-pc-guard"
     )
 
     private fun commonMacosCompilerArgs(version: String): List<String> =
@@ -104,7 +106,7 @@ object ConfigurationPresets {
         when (platform) {
             Platform.LINUX -> {
                 config.compilerArgs.set(
-                    listOf("-O3", "-DNDEBUG", "-g") + commonLinuxCompilerArgs(version)
+                    listOf("-O3", "-g") + commonLinuxCompilerArgs(version)
                 )
                 config.linkerArgs.set(
                     commonLinuxLinkerArgs() + listOf(

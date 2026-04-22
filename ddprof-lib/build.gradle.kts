@@ -197,19 +197,6 @@ val javadocJar by tasks.registering(Jar::class) {
 val isGitlabCI = System.getenv("GITLAB_CI") != null
 val isCI = System.getenv("CI") != null
 
-nativeBuild {
-    // Apply to all configurations
-    commonCompilerArgs(
-        "-fsanitize-coverage=trace-pc-guard",
-        "-g",
-    )
-
-    commonLinkerArgs(
-        "-Wl,--build-id",
-        "-fsanitize-coverage=trace-pc-guard",
-    )
-}
-
 publishing {
   publications {
     create<MavenPublication>("assembled") {
