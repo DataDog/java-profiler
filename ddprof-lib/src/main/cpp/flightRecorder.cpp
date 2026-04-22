@@ -1603,11 +1603,28 @@ void Recording::recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event) {
   buf->putVar64(event->_scheduler);
   buf->putVar64(event->_queueType);
   buf->putVar64(event->_queueLength);
-  // Schema order: spanId (pos 9) and localRootSpanId (pos 10) come from the thread context,
-  // then submittingSpanId (pos 11). Writing submittingSpanId first was wrong — it landed at
-  // position 9 while the schema expects the consuming spanId there.
-  writeContext(buf, Contexts::get());
-  buf->putVar64(event->_submitting_span_id);
+  // The schema declares fields in this order:
+  //   spanId, localRootSpanId, submittingSpanId, contextAttr[0..n]
+  // writeContext() would emit spanId + localRootSpanId + contextAttrs[0..n] in one shot,
+  // leaving no room to insert submittingSpanId between localRootSpanId and contextAttrs.
+  // Inline the context fields manually so submittingSpanId lands at the correct position.
+  Context &ctx = Contexts::get();
+  u64 spanId = 0, rootSpanId = 0;
+  u64 stored = ctx.checksum;
+  if (stored != 0) {
+    spanId = ctx.spanId;
+    rootSpanId = ctx.rootSpanId;
+    if (stored != Contexts::checksum(spanId, rootSpanId)) {
+      spanId = 0;
+      rootSpanId = 0;
+    }
+  }
+  buf->putVar64(spanId);                      // schema pos: spanId
+  buf->putVar64(rootSpanId);                  // schema pos: localRootSpanId
+  buf->putVar64(event->_submitting_span_id);  // schema pos: submittingSpanId (CORRECT position)
+  for (size_t i = 0; i < Profiler::instance()->numContextAttributes(); i++) {
+    buf->putVar32(ctx.get_tag(i).value);      // schema pos: contextAttr[i]
+  }
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
