@@ -33,7 +33,7 @@ one event per 512 KiB allocated). Passing `nativemem=0` records every allocation
                               ┌──────────────────────────┐
                               │  MallocTracer::           │  mallocTracer.cpp/h
                               │  shouldSample()           │
-                              │  recordSample() ──────►  │  profiler.cpp
+                              │  recordMalloc() ──────►  │  profiler.cpp
                               └────────────┬─────────────┘
                                            │ walkVM (CSTACK_VM)
                                            ▼
@@ -69,11 +69,11 @@ Each hook calls the saved original function first, then records the event:
 | Hook | Calls | Records |
 |------|-------|---------|
 | `malloc_hook(size)` | `_orig_malloc(size)` | `recordMalloc(ret, size)` if `ret != NULL && size != 0` |
-| `calloc_hook(num, size)` | `_orig_calloc(num, size)` | `recordMalloc(ret, num*size)` if `ret != NULL` |
+| `calloc_hook(num, size)` | `_orig_calloc(num, size)` | `recordMalloc(ret, total)` if `ret != NULL && num != 0 && size != 0` (total = num×size, clamped to `SIZE_MAX` on overflow) |
 | `realloc_hook(addr, size)` | `_orig_realloc(addr, size)` | `recordMalloc(ret, size)` if `ret != NULL && size > 0` |
 | `free_hook(addr)` | `_orig_free(addr)` | — (forwards only) |
-| `posix_memalign_hook(…)` | `_orig_posix_memalign(…)` | `recordMalloc(*memptr, size)` if `ret == 0` |
-| `aligned_alloc_hook(align, size)` | `_orig_aligned_alloc(align, size)` | `recordMalloc(ret, size)` if `ret != NULL` |
+| `posix_memalign_hook(…)` | `_orig_posix_memalign(…)` | `recordMalloc(*memptr, size)` if `ret == 0 && memptr != NULL && *memptr != NULL && size != 0` |
+| `aligned_alloc_hook(align, size)` | `_orig_aligned_alloc(align, size)` | `recordMalloc(ret, size)` if `ret != NULL && size != 0` |
 
 ---
 
@@ -81,30 +81,42 @@ Each hook calls the saved original function first, then records the event:
 
 `MallocTracer::start()` (called once per profiler session) runs:
 
-1. **`resolveMallocSymbols()`** — calls each intercepted function at least once so
-   the profiler library's own PLT stubs are resolved by the dynamic linker. This
-   ensures that subsequent `SAVE_IMPORT` reads get the real libc function pointers
-   rather than the PLT resolver.
+1. Resets per-session counters (`_interval`, `_bytes_until_sample`, `_sample_count`,
+   `_last_config_update_ts`).
 
-2. **`SAVE_IMPORT(func)`** — reads the resolved GOT entry for each symbol from the
-   profiler library's own import table and stores it in the corresponding
-   `_orig_<func>` static pointer.
+2. On the **first call only** (`!_initialized`), calls `initialize()`:
 
-3. **`detectNestedMalloc()`** — probes whether the platform's `calloc` implementation
-   calls `malloc` internally (as musl does). If so, `calloc_hook` and
-   `posix_memalign_hook` are replaced with dummy variants (`calloc_hook_dummy`,
-   `posix_memalign_hook_dummy`) that forward to the originals without recording, to
-   prevent double-accounting. The dummy hooks preserve the caller frame pointer so
-   that the actual call site is not obscured.
+   a. **`resolveMallocSymbols()`** — calls each intercepted function at least once so
+      the profiler library's own PLT stubs are resolved by the dynamic linker. This
+      ensures that subsequent `SAVE_IMPORT` reads get the real libc function pointers
+      rather than the PLT resolver.
 
-4. **`patchLibraries()`** — iterates over all currently loaded native libraries and
+   b. **`SAVE_IMPORT(func)`** — reads the resolved GOT entry for each symbol from the
+      profiler library's own import table and stores it in the corresponding
+      `_orig_<func>` static pointer.
+
+   c. **`detectNestedMalloc()`** — probes whether the platform's `calloc`
+      implementation calls `malloc` internally (as musl does), and whether
+      `posix_memalign` calls `aligned_alloc` internally. If either is detected, the
+      corresponding hook is replaced with a dummy variant (`calloc_hook_dummy` or
+      `posix_memalign_hook_dummy`) that forwards to the original without recording,
+      preventing double-accounting. The dummy hooks preserve the caller frame pointer
+      so that the actual call site is not obscured.
+
+   d. **`lib->mark(...)`** — marks the profiler's own hook functions in the code cache
+      so the stack walker can identify them as profiler frames.
+
+   Then sets `_initialized = true`.
+
+3. **`patchLibraries()`** — iterates over all currently loaded native libraries and
    writes the hook addresses into each library's GOT, under `_patch_lock`.
    `_patched_libs` is a monotonic counter so that already-patched libraries are
    skipped on subsequent calls.
 
-`_initialized` is set to `true` after the first successful `initialize()` call.
-`patchLibraries()` is called again on every subsequent `start()` to pick up any
-libraries loaded between profiler sessions.
+4. Sets `_running = true` to enable recording.
+
+`patchLibraries()` is called again on every `start()` to pick up any libraries
+loaded between profiler sessions.
 
 ---
 
@@ -138,14 +150,15 @@ Allocation recording uses Poisson-interval sampling via `MallocTracer::shouldSam
 ```cpp
 // mallocTracer.cpp — lock-free CAS loop with Poisson jitter
 static bool shouldSample(size_t size) {
-    if (_interval <= 1) return true;         // nativemem=0: record every allocation
+    if (_interval <= 1) return true;         // nativemem=0 or nativemem=1: record every allocation
     while (true) {
         u64 prev = _bytes_until_sample;
-        if (prev > size) {
+        if (size < prev) {
             if (__sync_bool_compare_and_swap(&_bytes_until_sample, prev, prev - size))
                 return false;
         } else {
-            if (__sync_bool_compare_and_swap(&_bytes_until_sample, prev, nextPoissonInterval()))
+            u64 next = nextPoissonInterval();
+            if (__sync_bool_compare_and_swap(&_bytes_until_sample, prev, next))
                 return true;
         }
     }
@@ -154,9 +167,9 @@ static bool shouldSample(size_t size) {
 
 `_bytes_until_sample` is a shared volatile counter decremented by each allocation's
 size. When exhausted, a new Poisson-distributed interval is generated via
-`nextPoissonInterval()` (using `-interval * ln(uniform_random)`), providing random
-jitter that avoids synchronization artifacts. Multiple threads compete via CAS so no
-mutex is needed.
+`nextPoissonInterval()` (using `-interval * ln(uniform_random)` where the random
+value is derived from TSC ticks via XOR-shift), providing random jitter that avoids
+synchronization artifacts. Multiple threads compete via CAS so no mutex is needed.
 
 A PID controller (`updateConfiguration()`) periodically adjusts `_interval` to
 maintain approximately `TARGET_SAMPLES_PER_WINDOW` (100) samples per second.
@@ -172,45 +185,64 @@ NULL`). Native stack unwinding via frame pointers or DWARF requires a signal con
 as the starting point, so neither `CSTACK_DEFAULT` nor `CSTACK_FP` can produce
 useful traces for malloc events.
 
-`CSTACK_VM` starts from `__builtin_return_address` for the initial frame and walks
-native frames via DWARF. It then uses HotSpot's `JavaFrameAnchor` (lastJavaPC /
-lastJavaSP / lastJavaFP) to transition from native to Java frames. This works
-correctly from inside a malloc hook because the anchor is set whenever the JVM has
-transitioned from Java to native.
+`CSTACK_VM` starts from `callerPC()` (which expands to `__builtin_return_address(0)`
+on x86/x86_64/aarch64) for the initial frame and uses HotSpot's `JavaFrameAnchor`
+(lastJavaPC / lastJavaSP / lastJavaFP) to transition from native to Java frames.
+This works correctly from inside a malloc hook because the anchor is set whenever
+the JVM has transitioned from Java to native.
 
 ### Default stack mode
 
 `CSTACK_DEFAULT` is the initial default (`arguments.h`). At profiler start,
-`profiler.cpp` promotes it to `CSTACK_VM` when VMStructs are available on the
-platform. If VMStructs are not available, it stays at `CSTACK_DEFAULT`:
+`profiler.cpp` promotes it to `CSTACK_VM` when VMStructs are available **and the OS
+is Linux**. If neither condition is met, it falls back to `CSTACK_DWARF` (if
+supported) or `CSTACK_NO`:
+
+```cpp
+if (_cstack == CSTACK_DEFAULT) {
+    if (VMStructs::hasStackStructs() && OS::isLinux()) {
+        _cstack = CSTACK_VM;
+    } else if (DWARF_SUPPORTED) {
+        _cstack = CSTACK_DWARF;
+    }
+}
+```
+
+If `CSTACK_VM` is explicitly requested but `VMStructs` are not available, the
+profiler resets to `CSTACK_DEFAULT` and logs an error:
 
 ```cpp
 } else if (_cstack == CSTACK_VM) {
     if (!VMStructs::hasStackStructs()) {
         _cstack = CSTACK_DEFAULT;
-        Log::warn("VMStructs stack walking is not supported …");
+        Log::error("VMStructs stack walking is not supported on this JVM/platform, "
+                   "defaulting to frame pointer unwinding. Native malloc stack traces will be unavailable.");
     }
 }
 ```
 
-### Code path in `recordSample`
+### Code path for malloc stack walking
+
+`recordSample` in `profiler.cpp` calls `getNativeTrace()` first. For
+`_cstack >= CSTACK_VM`, `getNativeTrace` returns 0 immediately (native frames are
+not collected via `walkFP`/`walkDwarf`). Then `JVMSupport::walkJavaStack()` is
+called, which dispatches to `HotspotSupport::walkJavaStack()`:
 
 ```cpp
-// profiler.cpp — stack walking for malloc events
-if (event_type == BCI_NATIVE_MALLOC && _cstack >= CSTACK_VM) {
-    // walkVM walks native frames via DWARF/FP and, when native unwinding
-    // fails, falls back to the JavaFrameAnchor to reach Java frames.
-    int vm_frames = StackWalker::walkVM(ucontext /*NULL*/, frames + num_frames,
-                                        max_remaining, _features,
-                                        eventTypeFromBCI(event_type),
-                                        lock_index, &truncated);
-    num_frames += vm_frames;
+// hotspot/hotspotSupport.cpp — walkJavaStack for malloc events
+} else if (request.event_type == BCI_CPU || request.event_type == BCI_WALL || request.event_type == BCI_NATIVE_MALLOC) {
+    if (cstack >= CSTACK_VM) {
+        java_frames = walkVM(ucontext, frames, max_depth, features,
+                             eventTypeFromBCI(request.event_type),
+                             lock_index, truncated);
+    }
+    // ...
 }
 ```
 
-`getNativeTrace` returns 0 immediately for `_cstack >= CSTACK_VM` (line 316), so
-native frames from `walkFP`/`walkDwarf` are not collected — `walkVM` is the sole
-source of both native and Java frames for malloc events.
+`HotspotSupport::walkVM` is the sole source of both native and Java frames for
+malloc events. When called with `ucontext == NULL` (as it is for malloc hooks),
+it seeds the unwind with `callerPC()` / `callerSP()` / `callerFP()`.
 
 ---
 
@@ -229,6 +261,8 @@ A single event type is defined in `jfrMetadata.cpp` under the
 | `address` | `long` (address) | Returned pointer value |
 | `size` | `long` (bytes) | Requested allocation size |
 | `weight` | `float` | Statistical sample weight based on Poisson sampling probability |
+| `spanId` | `long` | Span ID from current context (optional, from context attributes) |
+| `localRootSpanId` | `long` | Local root span ID from current context (optional, from context attributes) |
 
 Events are written by `Recording::recordMallocSample()` in `flightRecorder.cpp`:
 
@@ -240,7 +274,7 @@ buf->putVar64(call_trace_id);
 buf->putVar64(event->_address);
 buf->putVar64(event->_size);
 buf->putFloat(event->_weight);
-writeContext(buf, Contexts::get());
+writeCurrentContext(buf);
 ```
 
 ---
@@ -287,7 +321,9 @@ is intentional for 100% sampling but can produce very high event volumes.
 correctly) but not recorded. Sampled mallocs mean most frees would match nothing,
 and the immense event volume with no stack traces provides no actionable insight.
 
-**HotSpot / Linux only for full stack traces.** `CSTACK_VM` requires
-`VMStructs::hasStackStructs()`, which is only true on HotSpot JVMs on Linux. On other
-platforms the profiler falls back to `CSTACK_DEFAULT` and malloc events will have
-empty stack traces.
+**HotSpot / Linux only for interleaved native+Java stack traces.** `CSTACK_VM`
+requires `VMStructs::hasStackStructs() && OS::isLinux()`, which is only true on
+HotSpot JVMs on Linux. On other platforms the profiler falls back to `CSTACK_DWARF`
+(if supported) or `CSTACK_DEFAULT`. Native frames are still captured via FP/DWARF
+unwinding and Java frames via ASGCT, but they are not interleaved through
+`JavaFrameAnchor` as they are with `CSTACK_VM`.

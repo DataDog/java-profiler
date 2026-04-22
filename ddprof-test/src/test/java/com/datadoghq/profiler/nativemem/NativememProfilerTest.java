@@ -29,9 +29,10 @@ import static org.openjdk.jmc.common.unit.UnitLookup.ADDRESS;
 /**
  * Smoke tests for native memory (malloc) profiling.
  *
- * <p>Runs with {@code cstack=vm} and {@code cstack=vmx}. In {@code vmx} mode the
- * stack trace is expected to contain {@code allocateDirect} because the mixed-mode
- * walker captures the Java call chain that triggered the native allocation.
+ * <p>Runs with {@code cstack=vm}, {@code cstack=vmx}, {@code cstack=dwarf}, and
+ * {@code cstack=fp}. All modes capture Java frames (vm/vmx via JavaFrameAnchor,
+ * dwarf/fp via ASGCT), so {@code allocateDirect} is expected in stack traces for
+ * all of them.
  */
 public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
 
@@ -53,7 +54,7 @@ public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
 
     @RetryTest(3)
     @TestTemplate
-    @ValueSource(strings = {"vm", "vmx"})
+    @ValueSource(strings = {"vm", "vmx", "dwarf", "fp"})
     public void shouldRecordMallocSamples() throws InterruptedException {
         // GOT patching conflicts with ASan/TSan interceptors: both replace malloc/free
         // symbols, causing undefined behavior or crashes when hooks chain into each other.
@@ -88,7 +89,7 @@ public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
         }
         assertTrue(foundMinSize, "expected at least one malloc event with size >= 1024 bytes");
 
-        // Both vm and vmx capture the Java call chain; allocateDirect must appear in stack traces
+        // All cstack modes capture Java frames (vm/vmx via JavaFrameAnchor, dwarf/fp via ASGCT)
         verifyStackTraces("profiler.Malloc", "allocateDirect");
 
         buffers.clear(); // keep alive until after stop

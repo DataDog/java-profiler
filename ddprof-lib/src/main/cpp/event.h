@@ -93,7 +93,7 @@ class MallocEvent : public Event {
 public:
   u64 _start_time;
   uintptr_t _address;
-  u64 _size; // 0 for free events
+  u64 _size;
   float _weight;
 
   MallocEvent() : Event(), _start_time(0), _address(0), _size(0), _weight(1.0f) {}

@@ -1143,8 +1143,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   } else if (_cstack == CSTACK_VM) {
     if (!VMStructs::hasStackStructs()) {
       _cstack = CSTACK_DEFAULT;
-      Log::error("VMStructs stack walking is not supported on this JVM/platform, "
-                 "defaulting to frame pointer unwinding. Native malloc stack traces will be unavailable.");
+      Log::error("VMStructs stack walking is not supported on this JVM/platform, defaulting to frame pointer unwinding.");
     }
   }
 

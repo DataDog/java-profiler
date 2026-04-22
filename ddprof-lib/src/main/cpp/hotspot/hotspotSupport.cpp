@@ -957,11 +957,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   int java_frames = 0;
   if (features.mixed) {
     java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
-  } else if (request.event_type == BCI_NATIVE_MALLOC) {
-    if (cstack >= CSTACK_VM) {
-      java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
-    }
-  } else if (request.event_type == BCI_CPU || request.event_type == BCI_WALL) {
+  } else if (request.event_type == BCI_CPU || request.event_type == BCI_WALL || request.event_type == BCI_NATIVE_MALLOC) {
     if (cstack >= CSTACK_VM) {
         java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
     } else {
