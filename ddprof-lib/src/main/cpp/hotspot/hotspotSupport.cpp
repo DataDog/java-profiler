@@ -12,7 +12,6 @@
 #include "hotspot/vmStructs.inline.h"
 #include "jvmSupport.h"
 #include "profiler.h"
-#include "stackFrame.h"
 #include "stackWalker.inline.h"
 #include "frames.h"
 
@@ -30,8 +29,8 @@ static bool isAddressInCode(const void *pc, bool include_stubs = true) {
   }
 }
 
-inline jmethodID getMethodId(VMMethod* method) {
-    if (!StackWalkValidation::inDeadZone(method) && StackWalkValidation::aligned((uintptr_t)method)
+static jmethodID getMethodId(VMMethod* method) {
+    if (!inDeadZone(method) && aligned((uintptr_t)method)
             && SafeAccess::isReadableRange(method, VMMethod::type_size())) {
         return method->validatedId();
     }
@@ -128,7 +127,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         return walkVM(&empty_ucontext, frames, max_depth, features, event_type,
                       callerPC(), (uintptr_t)callerSP(), (uintptr_t)callerFP(), lock_index, truncated);
     } else {
-        StackFrame frame(ucontext);
+        HotspotStackFrame frame(ucontext);
         return walkVM(ucontext, frames, max_depth, features, event_type,
                       (const void*)frame.pc(), frame.sp(), frame.fp(), lock_index, truncated);
     }
@@ -139,7 +138,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated) {
     // VMStructs is only available for hotspot JVM 
     assert(VM::isHotspot());
-    StackFrame frame(ucontext);
+    HotspotStackFrame frame(ucontext);
     uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
 
     Profiler* profiler = Profiler::instance();
@@ -771,7 +770,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
     return 0;
   }
 
-  StackFrame frame(ucontext);
+  HotspotStackFrame frame(ucontext);
   uintptr_t saved_pc, saved_sp, saved_fp;
   if (ucontext != NULL) {
     saved_pc = frame.pc();

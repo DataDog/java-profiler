@@ -1,5 +1,6 @@
 #include "codeCache.h"
 #include "common.h"
+#include "findLibraryImpl.h"
 #include "hotspot/vmStructs.h"
 #include "libraries.h"
 #include "libraryPatcher.h"
@@ -100,12 +101,5 @@ CodeCache *Libraries::findLibraryByName(const char *lib_name) {
 }
 
 CodeCache *Libraries::findLibraryByAddress(const void *address) const {
-  const int native_lib_count = _native_libs.count();
-  for (int i = 0; i < native_lib_count; i++) {
-    CodeCache *lib = _native_libs[i];
-    if (lib != NULL && lib->contains(address)) {
-      return lib;
-    }
-  }
-  return NULL;
+  return findLibraryByAddressImpl<CodeCache>(_native_libs, address);
 }

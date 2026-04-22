@@ -475,4 +475,26 @@ public abstract class AbstractProfilerTest {
     assertNotEquals(0, cumulatedEvents, "no events found for " + eventType);
     assertTrue(unmatched.isEmpty(), "couldn't find " + eventType + " with " + unmatched);
   }
+
+  /**
+   * Returns the value of a named counter from {@code datadog.ProfilerCounter} events in the JFR
+   * recording. These events are written before the final cleanup ({@code processTraces}), so they
+   * capture the pre-cleanup state.
+   *
+   * @return the counter value, or -1 if no matching event is found
+   */
+  public long getRecordedCounterValue(String counterName) {
+    IItemCollection events = verifyEvents("datadog.ProfilerCounter", false);
+    for (IItemIterable iterable : events) {
+      IMemberAccessor<String, IItem> nameAccessor = NAME.getAccessor(iterable.getType());
+      IMemberAccessor<IQuantity, IItem> countAccessor = COUNT.getAccessor(iterable.getType());
+      if (nameAccessor == null || countAccessor == null) continue;
+      for (IItem item : iterable) {
+        if (counterName.equals(nameAccessor.getMember(item))) {
+          return countAccessor.getMember(item).longValue();
+        }
+      }
+    }
+    return -1;
+  }
 }

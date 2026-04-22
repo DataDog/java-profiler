@@ -10,6 +10,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "thread.h"
+#include "vmEntry.h"
 
 #include "hotspot/hotspotSupport.h"
 

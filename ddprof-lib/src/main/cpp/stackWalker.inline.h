@@ -8,7 +8,6 @@
 #define _STACKWALKER_INLINE_H
 
 #include "stackWalker.h"
-#include "hotspot/vmStructs.h"
 #include "safeAccess.h"
 
 #include <ucontext.h>

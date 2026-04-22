@@ -7,6 +7,9 @@
 #ifndef _HOTSPOT_HOTSPOTSUPPORT_H
 #define _HOTSPOT_HOTSPOTSUPPORT_H
 
+#include "hotspot/hotspotStackFrame.h"
+#include "hotspot/jitCodeCache.h"
+#include "stackFrame.h"
 #include "stackWalker.h"
 
 #include <jni.h>
@@ -33,9 +36,16 @@ private:
 public:
     static void checkFault(ProfiledThread* thrd = nullptr);
     static int walkJavaStack(StackWalkRequest& request);
+
+    static inline bool canUnwind(const StackFrame& frame, const void*& pc) {
+        return HotspotStackFrame::unwindAtomicStub(frame, pc);
+    }
+
+    static inline bool isJitCode(const void* p) {
+        return JitCodeCache::isJitCode(p);
+    }
+
     static void loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni);
-
-
     static void JNICALL NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni,
                                          jthread thread, jmethodID method,
                                          void *address, void **new_address_ptr);

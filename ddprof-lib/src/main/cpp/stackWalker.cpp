@@ -10,6 +10,7 @@
 #include "profiler.h"
 #include "stackFrame.h"
 #include "symbols.h"
+#include "jvmSupport.inline.h"
 #include "jvmThread.h"
 #include "thread.h"
 
@@ -42,7 +43,7 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
 
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
-        if (CodeHeap::contains(pc) && !(depth == 0 && frame.unwindAtomicStub(pc)) &&
+        if (JVMSupport::isJitCode(pc) && !(depth == 0 && JVMSupport::canUnwind(frame, pc)) &&
             JVMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
             java_ctx->set(pc, sp, fp);
             break;
@@ -100,7 +101,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
 
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
-        if (CodeHeap::contains(pc) && !(depth == 0 && frame.unwindAtomicStub(pc)) &&
+        if (JVMSupport::isJitCode(pc) && !(depth == 0 && JVMSupport::canUnwind(frame, pc)) &&
             JVMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
             // Don't dereference pc as it may point to unreadable memory
             // frame.adjustSP(page_start, pc, sp);

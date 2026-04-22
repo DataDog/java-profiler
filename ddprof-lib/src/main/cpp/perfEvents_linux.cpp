@@ -22,6 +22,7 @@
 #include "context.h"
 #include "guards.h"
 #include "debugSupport.h"
+#include "jvmSupport.inline.h"
 #include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
@@ -989,7 +990,7 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
           u64 ip = ring.next();
           if (ip < PERF_CONTEXT_MAX) {
             const void *iptr = (const void *)ip;
-            if (CodeHeap::contains(iptr) || depth >= max_depth) {
+            if (JVMSupport::isJitCode(iptr) || depth >= max_depth) {
               // Stop at the first Java frame
               java_ctx->pc = iptr;
               goto stack_complete;
@@ -1003,7 +1004,7 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
 
           // Last userspace PC is stored right after branch stack
           const void *pc = (const void *)ring.peek(bnr * 3 + 2);
-          if (CodeHeap::contains(pc) || depth >= max_depth) {
+          if (JVMSupport::isJitCode(pc) || depth >= max_depth) {
             java_ctx->pc = pc;
             goto stack_complete;
           }
@@ -1014,13 +1015,13 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
             const void *to = (const void *)ring.next();
             ring.next();
 
-            if (CodeHeap::contains(to) || depth >= max_depth) {
+            if (JVMSupport::isJitCode(to) || depth >= max_depth) {
               java_ctx->pc = to;
               goto stack_complete;
             }
             callchain[depth++] = to;
 
-            if (CodeHeap::contains(from) || depth >= max_depth) {
+            if (JVMSupport::isJitCode(from) || depth >= max_depth) {
               java_ctx->pc = from;
               goto stack_complete;
             }

@@ -6,6 +6,7 @@
 #ifndef _JVMSUPPORT_H
 #define _JVMSUPPORT_H
 
+#include "stackFrame.h"
 #include "stackWalker.h"
 #include "vmEntry.h"
 
@@ -30,14 +31,16 @@ class JVMSupport {
 
 public:
     static int walkJavaStack(StackWalkRequest& request);
+    static inline bool canUnwind(const StackFrame& frame, const void*& pc);
+    static inline bool isJitCode(const void* pc);
 
     static void loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni);
     static bool loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 
     // JVMTI callback
-  static void JNICALL ClassPrepare(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+    static void JNICALL ClassPrepare(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                                    jclass klass);
-  static void JNICALL ClassLoad(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+    static void JNICALL ClassLoad(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                                 jclass klass);
 };
 
