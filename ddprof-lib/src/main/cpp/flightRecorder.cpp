@@ -1582,14 +1582,14 @@ void Recording::recordAllocation(RecordingBuffer *buf, int tid,
 void Recording::recordMallocSample(Buffer *buf, int tid, u64 call_trace_id,
                                    MallocEvent *event) {
   int start = buf->skip(1);
-  buf->putVar64(event->_size != 0 ? T_MALLOC : T_FREE);
+  buf->putVar64(T_MALLOC);
   buf->putVar64(event->_start_time);
   buf->putVar32(tid);
   buf->putVar64(call_trace_id);
   buf->putVar64(event->_address);
-  if (event->_size != 0) {
-    buf->putVar64(event->_size);
-  }
+  buf->putVar64(event->_size);
+  buf->putFloat(event->_weight);
+  writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
