@@ -13,11 +13,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <link.h>
+#include <pthread.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/mman.h>
 #include <sys/sendfile.h>
 #include <sys/stat.h>
@@ -29,6 +31,7 @@
 #include <unistd.h>
 #include "common.h"
 #include "counters.h"
+#include "log.h"
 #include "os.h"
 
 #ifndef __musl__
