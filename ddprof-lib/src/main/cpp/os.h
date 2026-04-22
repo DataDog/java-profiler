@@ -155,8 +155,10 @@ class OS {
     // DDPROF_FORWARD_APPLY_SIGMASK=1 is set, also reproduces the previous
     // handler's sa_mask so the chained handler sees the same signal-blocking
     // environment it would under normal kernel delivery.
-    // Itself async-signal-safe; the forwarded handler's safety is the
-    // caller's concern.
+    // Async-signal-safe on the fast path (no sa_mask applied). When
+    // DDPROF_FORWARD_APPLY_SIGMASK=1 is set, the slow path uses raw
+    // rt_sigprocmask syscalls which are async-signal-safe. The forwarded
+    // handler's safety is the caller's concern.
     static void forwardForeignSignal(int signo, siginfo_t* siginfo, void* ucontext);
 
     // Runtime feature flag: is the signal origin check active? Reads

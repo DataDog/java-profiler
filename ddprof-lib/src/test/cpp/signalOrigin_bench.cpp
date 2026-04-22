@@ -199,9 +199,7 @@ static void classifierHandler(int signo, siginfo_t* siginfo, void* ucontext) {
 TEST_F(SignalOriginBench, FastPath_ClassifierPlusEmptyMaskForward) {
     // Pre-install the foreign handler so OS::installSignalHandler captures it
     // as the oldaction to chain to.
-    struct sigaction foreign_sa;
     ASSERT_EQ(0, setupForeignHandler(kBenchSignal, /*with_mask=*/false, &saved_action));
-    sigaction(kBenchSignal, nullptr, &foreign_sa);  // query current
 
     OS::installSignalHandler(kBenchSignal, classifierHandler);
 

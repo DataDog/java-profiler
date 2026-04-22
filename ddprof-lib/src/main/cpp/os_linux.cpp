@@ -492,7 +492,7 @@ void OS::forwardForeignSignal(int signo, siginfo_t* siginfo, void* ucontext) {
             }
         }
         if (need_mask) {
-            pthread_sigmask(SIG_BLOCK, &prev.sa_mask, &saved_mask);
+            syscall(__NR_rt_sigprocmask, SIG_BLOCK, &prev.sa_mask, &saved_mask, sizeof(sigset_t));
         }
     }
 
@@ -522,7 +522,7 @@ void OS::forwardForeignSignal(int signo, siginfo_t* siginfo, void* ucontext) {
     }
 
     if (need_mask) {
-        pthread_sigmask(SIG_SETMASK, &saved_mask, nullptr);
+        syscall(__NR_rt_sigprocmask, SIG_SETMASK, &saved_mask, nullptr, sizeof(sigset_t));
     }
 }
 
