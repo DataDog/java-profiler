@@ -66,6 +66,8 @@ inline EventType eventTypeFromBCI(jint bci_type) {
             return LOCK_SAMPLE;
         case BCI_PARK:
             return PARK_SAMPLE;
+        case BCI_NATIVE_MALLOC:
+            return MALLOC_SAMPLE;
         default:
             // For unknown or invalid BCI types, default to EXECUTION_SAMPLE
             // This maintains backward compatibility and prevents undefined behavior
@@ -955,6 +957,10 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   int java_frames = 0;
   if (features.mixed) {
     java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
+  } else if (request.event_type == BCI_NATIVE_MALLOC) {
+    if (cstack >= CSTACK_VM) {
+      java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
+    }
   } else if (request.event_type == BCI_CPU || request.event_type == BCI_WALL) {
     if (cstack >= CSTACK_VM) {
         java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
