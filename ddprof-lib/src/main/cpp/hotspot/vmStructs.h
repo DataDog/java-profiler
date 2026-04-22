@@ -127,7 +127,8 @@ inline T* cast_to(const void* ptr) {
     f(VMNMethod,            MATCH_SYMBOLS("nmethod"))           \
     f(VMSymbol,             MATCH_SYMBOLS("Symbol"))            \
     f(VMThread,             MATCH_SYMBOLS("Thread"))            \
-    f(VMOopHandle,          MATCH_SYMBOLS("OopHandle"))
+    f(VMOopHandle,          MATCH_SYMBOLS("OopHandle"))         \
+    f(VMClasses,            MATCH_SYMBOLS("vmClasses"))
 
 /**
  * Following macros define field offsets, addresses or values of JVM classes that are exported by
@@ -284,6 +285,10 @@ typedef void* address;
     type_end()                                                                                                      \
     type_begin(VMOopHandle, MATCH_SYMBOLS("OopHandle"))                                                             \
         field(_oop_handle_obj_offset, offset, MATCH_SYMBOLS("_obj"))                                                \
+    type_end()                                                                                                      \
+    type_begin(VMClasses, MATCH_SYMBOLS("vmClasses"))                                                               \
+        field(_obj_class_addr, address, MATCH_SYMBOLS("_klasses[static_cast<int>(vmClassID::Object_klass_knum)]"))  \
+        field(_thread_class_addr, address, MATCH_SYMBOLS("_klasses[static_cast<int>(vmClassID::Thread_klass_knum)]")) \
     type_end()
 
 /**
@@ -790,15 +795,17 @@ private:
 
 DECLARE_END
 
-DECLARE(VMConstMethod)
-DECLARE_END
-
 DECLARE(VMConstantPool)
 public:
     inline VMKlass* holder() const;
     inline VMSymbol* symbolAt(int index) const;
 private:
     inline intptr_t* base() const;
+DECLARE_END
+
+DECLARE(VMConstMethod)
+public:
+    inline VMConstantPool* constants() const;
 DECLARE_END
 
 DECLARE(VMMethod)   
@@ -827,6 +834,7 @@ public:
         return *(const char**) at(_method_constmethod_offset) + VMConstMethod::type_size();
     }
 
+    inline VMConstMethod* constMethod() const;
     inline VMNMethod* code() const;
     inline uint16_t codeSize() const;
     inline uint32_t flags() const;
@@ -976,6 +984,12 @@ DECLARE(VMNMethod)
     }
 
     int findScopeOffset(const void* pc);
+DECLARE_END
+
+DECLARE(VMClasses)
+public:
+    static inline VMKlass* obj_klass();
+    static inline VMKlass* thread_klass();
 DECLARE_END
 
 class CodeHeap : VMStructs {

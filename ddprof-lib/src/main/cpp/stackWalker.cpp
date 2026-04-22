@@ -43,7 +43,7 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
         if (CodeHeap::contains(pc) && !(depth == 0 && frame.unwindAtomicStub(pc)) &&
-            VMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
+            JVMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
             java_ctx->set(pc, sp, fp);
             break;
         }

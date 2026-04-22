@@ -38,6 +38,21 @@ void** VMThread::vtable() {
     return *(void***)this;
 }
 
+VMMethod* VMThread::compiledMethod() {
+    if (!isJavaThread(this)) return NULL;
+    assert(_comp_method_offset >= 0);
+    assert(_comp_env_offset >= 0);
+    assert(_comp_task_offset >= 0);
+    const char* env = *(const char**) at(_comp_env_offset);
+    if (env != NULL) {
+        const char* task = *(const char**) (env + _comp_task_offset);
+        if (task != NULL) {
+            return VMMethod::load_then_cast((const void*)(task + _comp_method_offset));
+        }
+    }
+    return NULL;
+}
+
 // This thread is considered a JavaThread if at least 2 of the selected 3 vtable entries
 // match those of a known JavaThread (which is either application thread or AttachListener).
 // Indexes were carefully chosen to work on OpenJDK 8 to 25, both product an debug builds.
@@ -74,6 +89,10 @@ VMSymbol* VMConstantPool::symbolAt(int index) const {
 intptr_t* VMConstantPool::base() const {
     assert(_VMConstantPool_size > 0);
     return (intptr_t*)(((char*)this) + _VMConstantPool_size);
+}
+
+VMConstMethod* VMMethod::constMethod() const {
+    return VMConstMethod::load_then_cast(at(_method_constmethod_offset));
 }
 
 uint16_t VMMethod::codeSize() const {
@@ -135,24 +154,24 @@ VMNMethod* VMMethod::code() const {
     return VMNMethod::cast(code_ptr);
 }
 
-VMMethod* VMThread::compiledMethod() {
-    if (!isJavaThread(this)) return NULL;
-    assert(_comp_method_offset >= 0);
-    assert(_comp_env_offset >= 0);
-    assert(_comp_task_offset >= 0);
-    const char* env = *(const char**) at(_comp_env_offset);
-    if (env != NULL) {
-        const char* task = *(const char**) (env + _comp_task_offset);
-        if (task != NULL) {
-            return VMMethod::load_then_cast((const void*)(task + _comp_method_offset));
-        }
-    }
-    return NULL;
+VMKlass* VMMethod::methodHolder() const {
+    return constMethod()->constants()->holder();
+}
+
+VMConstantPool* VMConstMethod::constants() const {
+    return VMConstantPool::load_then_cast(at(_constmethod_constants_offset));
 }
 
 uintptr_t VMOopHandle::oop() const {
     assert(_oop_handle_obj_offset >= 0);
     return *(uintptr_t*) at(_oop_handle_obj_offset);
+}
+
+VMKlass* VMClasses::obj_klass() {
+    return VMKlass::load_then_cast(_obj_class_addr);
+}
+VMKlass* VMClasses::thread_klass() {
+    return VMKlass::load_then_cast(_thread_class_addr);
 }
 
 #endif // _HOTSPOT_VMSTRUCTS_INLINE_H

@@ -6,6 +6,7 @@
 
 #include <setjmp.h>
 #include "asyncSampleMutex.h"
+#include "hotspot/classloader.inline.h"
 #include "hotspot/hotspotSupport.h"
 #include "hotspot/jitCodeCache.h"
 #include "hotspot/vmStructs.inline.h"
@@ -27,6 +28,14 @@ static bool isAddressInCode(const void *pc, bool include_stubs = true) {
   } else {
     return Profiler::instance()->libraries()->findLibraryByAddress(pc) != NULL;
   }
+}
+
+inline jmethodID getMethodId(VMMethod* method) {
+    if (!StackWalkValidation::inDeadZone(method) && StackWalkValidation::aligned((uintptr_t)method)
+            && SafeAccess::isReadableRange(method, VMMethod::type_size())) {
+        return method->validatedId();
+    }
+    return NULL;
 }
 
 /**
@@ -104,6 +113,11 @@ static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *n
       }
     }
   }
+}
+
+static inline void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, const VMMethod* method) {
+    frame.bci = FrameType::encode(type, bci);
+    frame.method = static_cast<const void*>(method);
 }
 
 static ucontext_t empty_ucontext{};
@@ -258,15 +272,21 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
                 bool is_plausible_interpreter_frame = StackWalkValidation::isPlausibleInterpreterFrame(fp, sp, bcp_offset);
                 if (is_plausible_interpreter_frame) {
-                    VMMethod* method = ((VMMethod**)fp)[InterpreterFrame::method_offset];
+                    VMMethod* method = VMMethod::load_then_cast(((void**)fp)[InterpreterFrame::method_offset]);
+                    assert(method != nullptr && "No method for the interpreter frame");
+
                     jmethodID method_id = getMethodId(method);
-                    if (method_id != NULL) {
+                    if (method_id != NULL || VMClassLoader::isLoadedByBootstrapClassLoader(method)) {
                         Counters::increment(WALKVM_JAVA_FRAME_OK);
                         const char* bytecode_start = method->bytecode();
                         const char* bcp = ((const char**)fp)[bcp_offset];
                         int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
-                        fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
+                        if (method_id != nullptr) {
+                            fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
+                        } else {
+                            fillFrame(frames[depth++], FRAME_INTERPRETED_METHOD, bci, method);
 
+                        }
                         sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
                         pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
                         fp = *(uintptr_t*)fp;
@@ -277,10 +297,13 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 if (depth == 0) {
                     VMMethod* method = (VMMethod*)frame.method();
                     jmethodID method_id = getMethodId(method);
-                    if (method_id != NULL) {
+                    if (method_id != NULL || VMClassLoader::isLoadedByBootstrapClassLoader(method)) {
                         Counters::increment(WALKVM_JAVA_FRAME_OK);
-                        fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id);
-
+                        if (method_id != nullptr) {
+                            fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id);
+                        } else {
+                            fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method);
+                        }
                         if (is_plausible_interpreter_frame) {
                             pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
                             sp = frame.senderSP();
@@ -969,42 +992,6 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
 }
 
 
-void HotspotSupport::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
-    assert(VM::isHotspot() && "Hotspot only");
-
-    jint class_count = 0;
-    jclass *classes = nullptr;
-    int loaded_count = 0;
-
-    if (jvmti->GetLoadedClasses(&class_count, &classes) == 0) {
-        for (int i = 0; i < class_count; i++) {
-            jclass klass = classes[i];
-            jobject cld;
-            // Hotpsot only: loaded by bootstrap class loader, which is never unloaded,
-            // we use Method instead.
-            if (jvmti->GetClassLoader(klass, &cld) == JVMTI_ERROR_NONE && cld == nullptr) {
-                VMOopHandle* klass_handle = (VMOopHandle*)klass;
-                VMKlass* vmklass = VMKlass::fromOop(klass_handle->oop());
-                assert(vmklass != nullptr);
-                VMClassLoaderData* cld = vmklass->classLoaderData();
-                assert(cld != nullptr);
-                char* signature_ptr;
-                jvmti->GetClassSignature(klass, &signature_ptr, nullptr);
-                TEST_LOG("processing bootstrap class %s", signature_ptr);
-                // Lambda classes can be unloaded, exlcude them
-                if (!cld->hasClassMirrorHolder() && !cld->isAnonymous()) {
-                    TEST_LOG("Skipping  class %s",signature_ptr);
-                    continue;
-                }
-                loadMethodIDsImpl(jvmti, jni, klass);
-                loaded_count++;
-            }
-        }
-        jvmti->Deallocate((unsigned char *)classes);
-    }
-    TEST_LOG("Preloaded jmethodIDs for %d/%d classes", loaded_count, class_count);
-}
-
 static void patchClassLoaderData(JNIEnv* jni, jclass klass) {
   bool needs_patch = VM::hotspot_version() == 8;
   if (needs_patch) {
@@ -1026,13 +1013,22 @@ static void patchClassLoaderData(JNIEnv* jni, jclass klass) {
   }
 }
 
+constexpr const char* LAMBDA_PREFIX = "Ljava/lang/invoke/LambdaForm$";
+// constexpr const size_t LAMBDA_PREFIX_LEN = strlen(LAMBDA_PREFIX);
+static bool isLambdaClass(const char* signature) {
+    return strncmp(signature, LAMBDA_PREFIX, strlen(LAMBDA_PREFIX)) == 0 ||
+           strstr(signature, "$$Lambda.") != nullptr ||
+           strstr(signature, ".lambda$") != nullptr;
+}
+
 bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
+
     patchClassLoaderData(jni, klass);
 
-    jobject cld;
+    jobject cl;
     // Hotpsot only: loaded by bootstrap class loader, which is never unloaded,
     // we use Method instead.
-    if (jvmti->GetClassLoader(klass, &cld) == JVMTI_ERROR_NONE && cld == nullptr) {
+    if (jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE && cl == nullptr) {
         VMOopHandle* klass_handle = VMOopHandle::cast(klass);
         VMKlass* vmklass = VMKlass::fromOop(klass_handle->oop());
         assert(vmklass != nullptr);
@@ -1042,9 +1038,11 @@ bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
         jvmti->GetClassSignature(klass, &signature_ptr, nullptr);
         TEST_LOG("processing bootstrap class %s", signature_ptr);
         // Lambda classes can be unloaded, exlcude them
-        if (!cld->hasClassMirrorHolder() && !cld->isAnonymous()) {
+        if (!isLambdaClass(signature_ptr)) {
             TEST_LOG("Skipping  class %s",signature_ptr);
             return false;
+        } else {
+            TEST_LOG("Lambda class: %s", signature_ptr);
         }
     }
 
