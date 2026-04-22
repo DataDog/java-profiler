@@ -30,9 +30,11 @@ import static org.openjdk.jmc.common.unit.UnitLookup.ADDRESS;
  * Smoke tests for native memory (malloc) profiling.
  *
  * <p>Runs with {@code cstack=vm}, {@code cstack=vmx}, {@code cstack=dwarf}, and
- * {@code cstack=fp}. All modes capture Java frames (vm/vmx via JavaFrameAnchor,
- * dwarf/fp via ASGCT), so {@code allocateDirect} is expected in stack traces for
- * all of them.
+ * {@code cstack=fp}. All modes produce usable Java stacks for malloc events:
+ * vm/vmx seed from {@code callerPC()}/{@code JavaFrameAnchor} via
+ * {@code HotspotSupport::walkVM}; dwarf/fp hand a {@code NULL ucontext} to
+ * {@code AsyncGetCallTrace}, which falls back to the JavaFrameAnchor populated
+ * by the Java → native transition.
  */
 public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
 
@@ -89,7 +91,8 @@ public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
         }
         assertTrue(foundMinSize, "expected at least one malloc event with size >= 1024 bytes");
 
-        // All cstack modes capture Java frames (vm/vmx via JavaFrameAnchor, dwarf/fp via ASGCT)
+        // All cstack modes capture Java frames (vm/vmx via JavaFrameAnchor,
+        // dwarf/fp via ASGCT with the anchor-based fallback for NULL ucontext).
         verifyStackTraces("profiler.Malloc", "allocateDirect");
 
         buffers.clear(); // keep alive until after stop

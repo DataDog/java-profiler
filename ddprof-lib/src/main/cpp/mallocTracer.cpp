@@ -108,6 +108,8 @@ Mutex MallocTracer::_patch_lock;
 int MallocTracer::_patched_libs = 0;
 bool MallocTracer::_initialized = false;
 volatile bool MallocTracer::_running = false;
+PidController MallocTracer::_pid(MallocTracer::TARGET_SAMPLES_PER_WINDOW,
+    31, 511, 3, MallocTracer::CONFIG_UPDATE_CHECK_PERIOD_SECS, 15);
 
 static pthread_t _current_thread;
 static volatile bool _nested_malloc = false;
@@ -205,9 +207,11 @@ void MallocTracer::initialize() {
         [](const char* s) -> bool {
             return strcmp(s, "malloc_hook") == 0
                 || strcmp(s, "calloc_hook") == 0
+                || strcmp(s, "calloc_hook_dummy") == 0
                 || strcmp(s, "realloc_hook") == 0
                 || strcmp(s, "free_hook") == 0
                 || strcmp(s, "posix_memalign_hook") == 0
+                || strcmp(s, "posix_memalign_hook_dummy") == 0
                 || strcmp(s, "aligned_alloc_hook") == 0;
         },
         MARK_ASYNC_PROFILER);
@@ -273,9 +277,7 @@ bool MallocTracer::shouldSample(size_t size) {
 }
 
 void MallocTracer::updateConfiguration(u64 events, double time_coefficient) {
-    static PidController pid(TARGET_SAMPLES_PER_WINDOW,
-        31, 511, 3, CONFIG_UPDATE_CHECK_PERIOD_SECS, 15);
-    double signal = pid.compute(events, time_coefficient);
+    double signal = _pid.compute(events, time_coefficient);
     int64_t new_interval = (int64_t)_interval - (int64_t)signal;
     if (new_interval < (int64_t)_configured_interval)
         new_interval = (int64_t)_configured_interval;
@@ -320,6 +322,9 @@ Error MallocTracer::start(Arguments& args) {
     _interval = _configured_interval;
     _bytes_until_sample = _configured_interval > 1 ? nextPoissonInterval() : 0;
     _sample_count = 0;
+    // Clear accumulated integral/derivative so a fresh session is not biased by
+    // state from a prior one (relevant for tests that stop and restart the profiler).
+    _pid.reset();
     __atomic_store_n(&_last_config_update_ts, OS::nanotime(), __ATOMIC_RELEASE);
 
     if (!_initialized) {

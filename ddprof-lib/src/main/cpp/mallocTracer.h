@@ -11,6 +11,7 @@
 #include "engine.h"
 #include "event.h"
 #include "mutex.h"
+#include "pidController.h"
 
 class MallocTracer : public Engine {
   private:
@@ -27,6 +28,7 @@ class MallocTracer : public Engine {
     static int _patched_libs;
     static bool _initialized;
     static volatile bool _running;
+    static PidController _pid;
 
     static void initialize();
     static void patchLibraries();
