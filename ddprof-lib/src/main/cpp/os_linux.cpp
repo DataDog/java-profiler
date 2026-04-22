@@ -526,10 +526,10 @@ bool OS::signalOriginCheckEnabled() {
     return __atomic_load_n(&s_origin_check_enabled, __ATOMIC_RELAXED);
 }
 
-// Parse a boolean env-var value. Returns false for empty / unrecognised /
-// unset, and logs a warning when the value is set but not one of the
-// documented spellings so operators don't silently get the default.
-// `default_value` is returned for unset (null) and silently-accepted-empty.
+// Parse a boolean env-var value. Returns `default_value` for unset (null) and
+// for values that trim to empty. Logs a warning and returns `default_value`
+// when the value is set but not one of the documented spellings so operators
+// don't silently get the default.
 // Expected spellings are case-insensitive and trimmed of surrounding whitespace.
 static bool parseBoolEnv(const char* name, const char* v, bool default_value) {
     if (v == nullptr) {
