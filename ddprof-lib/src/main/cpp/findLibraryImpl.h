@@ -28,7 +28,7 @@
 // that falls through to the O(n) linear scan.
 
 template<typename CacheEntry, typename CacheArray>
-static inline CacheEntry* findLibraryByAddressImpl(const CacheArray& libs, const void* address) {
+inline CacheEntry* findLibraryByAddressImpl(const CacheArray& libs, const void* address) {
     static volatile int last_hit = 0;
     const int count = libs.count();
     int hint = last_hit;
