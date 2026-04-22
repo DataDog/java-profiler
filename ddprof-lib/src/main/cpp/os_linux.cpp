@@ -469,8 +469,8 @@ void OS::forwardForeignSignal(int signo, siginfo_t* siginfo, void* ucontext) {
         // Probe prev.sa_mask for any set signal. POSIX offers no constant-time
         // "is empty?" primitive, and looping sigismember over all signals
         // inside a hot signal handler would cost more than the pthread_sigmask
-        // syscalls it is meant to avoid. We memcmp against a zero-initialised
-        // sigset_t instead:
+        // syscalls it is meant to avoid. We scan the raw bytes of sa_mask for
+        // any non-zero word, which exploits the fact that:
         //   - glibc defines sigset_t as a fixed-size bitmap (__sigset_t
         //     containing an unsigned-long array); zero bits == empty set.
         //   - musl defines sigset_t identically (unsigned long array).
@@ -478,9 +478,19 @@ void OS::forwardForeignSignal(int signo, siginfo_t* siginfo, void* ucontext) {
         //     sigset_t via sigemptyset to all-zero bytes.
         // This is not POSIX-guaranteed but is reliable on every Linux libc
         // we ship against. A future port to a libc that encodes "empty" as
-        // non-zero bytes would need sigismember loop here.
-        static const sigset_t empty_sigset = {};
-        need_mask = memcmp(&prev.sa_mask, &empty_sigset, sizeof(empty_sigset)) != 0;
+        // non-zero bytes would need a sigismember loop here.
+        //
+        // We use an inline word/byte loop instead of memcmp: memcmp is not on
+        // the POSIX async-signal-safe list (signal-safety(7)), and
+        // forwardForeignSignal is documented as async-signal-safe in os.h.
+        // The loop compiles to a handful of loads and has no libc dependency.
+        const unsigned char* p = reinterpret_cast<const unsigned char*>(&prev.sa_mask);
+        for (size_t i = 0; i < sizeof(prev.sa_mask); ++i) {
+            if (p[i] != 0) {
+                need_mask = true;
+                break;
+            }
+        }
         if (need_mask) {
             pthread_sigmask(SIG_BLOCK, &prev.sa_mask, &saved_mask);
         }
@@ -520,22 +530,36 @@ bool OS::signalOriginCheckEnabled() {
 // unset, and logs a warning when the value is set but not one of the
 // documented spellings so operators don't silently get the default.
 // `default_value` is returned for unset (null) and silently-accepted-empty.
-// Expected spellings are case-insensitive and trimmed of leading whitespace.
+// Expected spellings are case-insensitive and trimmed of surrounding whitespace.
 static bool parseBoolEnv(const char* name, const char* v, bool default_value) {
     if (v == nullptr) {
         return default_value;
     }
-    // Skip leading whitespace (users who typed "=1 " in a shell).
-    while (*v == ' ' || *v == '\t') ++v;
-    if (*v == '\0') {
+    // Trim leading and trailing whitespace (users who typed "=1 " or "\t1\n").
+    const char* start = v;
+    while (*start == ' ' || *start == '\t' || *start == '\n' ||
+           *start == '\r' || *start == '\f' || *start == '\v') {
+        ++start;
+    }
+    if (*start == '\0') {
         return default_value;
     }
-    if (strcasecmp(v, "false") == 0 || strcasecmp(v, "0") == 0 ||
-        strcasecmp(v, "off")   == 0 || strcasecmp(v, "no") == 0) {
+    const char* end = start + strlen(start);
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' ||
+                           end[-1] == '\r' || end[-1] == '\f' || end[-1] == '\v')) {
+        --end;
+    }
+    size_t len = (size_t)(end - start);
+    if ((len == 5 && strncasecmp(start, "false", 5) == 0) ||
+        (len == 1 && strncasecmp(start, "0",     1) == 0) ||
+        (len == 3 && strncasecmp(start, "off",   3) == 0) ||
+        (len == 2 && strncasecmp(start, "no",    2) == 0)) {
         return false;
     }
-    if (strcasecmp(v, "true") == 0 || strcasecmp(v, "1") == 0 ||
-        strcasecmp(v, "on")   == 0 || strcasecmp(v, "yes") == 0) {
+    if ((len == 4 && strncasecmp(start, "true",  4) == 0) ||
+        (len == 1 && strncasecmp(start, "1",     1) == 0) ||
+        (len == 2 && strncasecmp(start, "on",    2) == 0) ||
+        (len == 3 && strncasecmp(start, "yes",   3) == 0)) {
         return true;
     }
     Log::warn("%s has unrecognised value %s; using default (%s). "

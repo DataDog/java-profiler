@@ -71,9 +71,11 @@ int CTimer::registerThread(int tid) {
   sev.sigev_signo = _signal;
   sev.sigev_notify = SIGEV_THREAD_ID;
   // glibc/musl layout convention: sigev_notify_thread_id sits immediately
-  // after sigev_notify inside the union (writes to &sev.sigev_notify + 4).
-  // Guard against a future libc change by statically asserting the layout.
-  static_assert(offsetof(struct sigevent, sigev_notify) + sizeof(int)
+  // after sigev_notify inside the union — the tid is written as the *second*
+  // int starting at &sev.sigev_notify, so bytes [sizeof(int), 2*sizeof(int))
+  // of that int-pointer must be in-bounds of struct sigevent. Guard against
+  // a future libc change by statically asserting that both ints fit.
+  static_assert(offsetof(struct sigevent, sigev_notify) + 2 * sizeof(int)
                     <= sizeof(struct sigevent),
                 "sigevent layout assumption broken: tid write would overflow");
   ((int *)&sev.sigev_notify)[1] = tid;
