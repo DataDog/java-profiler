@@ -16,7 +16,7 @@
 #include "dwarf.h"
 #include "flightRecorder.h"
 #include "itimer.h"
-#include "hotspot/vmStructs.h"
+#include "hotspot/vmStructs.inline.h"
 #include "hotspot/hotspotSupport.h"
 #include "j9/j9Support.h"
 #include "j9/j9WallClock.h"
@@ -471,6 +471,24 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
         frames[i].bci = bci;
         // see https://github.com/async-profiler/async-profiler/pull/1090
         LP64_ONLY(frames[i].padding = 0;)
+      }
+      // On JDK 21+, GetStackTrace on a virtual thread returns only the VT's
+      // logical stack; it stops at the continuation boundary and never includes
+      // carrier-thread frames.  Without a synthetic root the trace appears
+      // truncated to the UI backend, which attributes it to "Missing Frames".
+      // Detect the VT case via JavaThread::_cont_entry being non-null on the
+      // carrier.  This field is in gHotSpotVMStructs on all JDK 21+ builds so
+      // isCarryingVirtualThread() works regardless of JDK version.  Append a
+      // synthetic "JVM Continuation" root frame to mark the boundary
+      // explicitly, matching the behaviour of walkVM without carrier_frames.
+      if (VM::hotspot_version() >= 21 && num_frames < _max_stack_depth) {
+        VMThread* carrier = VMThread::current();
+        if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
+          frames[num_frames].bci = BCI_NATIVE_FRAME;
+          frames[num_frames].method_id = (jmethodID) "JVM Continuation";
+          LP64_ONLY(frames[num_frames].padding = 0;)
+          num_frames++;
+        }
       }
     }
 

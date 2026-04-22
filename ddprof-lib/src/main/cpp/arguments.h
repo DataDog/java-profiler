@@ -122,7 +122,8 @@ struct StackWalkFeatures {
     unsigned short vtable_target : 1;  // show receiver classes of vtable/itable stubs
     unsigned short comp_task     : 1;  // display current compilation task for JIT threads
     unsigned short pc_addr       : 1;  // record exact PC address for each sample
-    unsigned short _padding      : 3;  // pad structure to 16 bits
+    unsigned short carrier_frames: 1;  // walk through VT continuation boundary to carrier frames (enabled automatically with cstack=vmx)
+    unsigned short _padding      : 2;  // pad structure to 16 bits
 };
 
 struct Multiplier {

@@ -52,6 +52,16 @@ namespace StackWalkValidation {
         return (uintptr_t)hi - (uintptr_t)lo < SAME_STACK_DISTANCE;
     }
 
+    // Check if a frame pointer is plausibly valid (not in dead zone, properly aligned)
+    static inline bool isValidFP(uintptr_t fp) {
+        return !inDeadZone((const void*)fp) && aligned(fp);
+    }
+
+    // Check if a stack pointer is within [lo, hi) and properly aligned
+    static inline bool isValidSP(uintptr_t sp, uintptr_t lo, uintptr_t hi) {
+        return sp > lo && sp < hi && aligned(sp);
+    }
+
     // Drop unknown leaf frame (method_id == NULL at index 0).
     // Returns the new depth after removal.
     static inline int dropUnknownLeaf(ASGCT_CallFrame* frames, int depth) {
