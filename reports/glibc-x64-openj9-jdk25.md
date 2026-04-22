@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-04-22 12:39:21 EDT
+**Date:** 2026-04-22 12:49:40 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 396 |
-| Sample Rate | 6.60/sec |
-| Health Score | 412% |
+| CPU Samples | 433 |
+| Sample Rate | 7.22/sec |
+| Health Score | 451% |
 | Threads | 8 |
 | Allocations | 388 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 555 |
-| Sample Rate | 9.25/sec |
-| Health Score | 578% |
+| CPU Samples | 478 |
+| Sample Rate | 7.97/sec |
+| Health Score | 498% |
 | Threads | 9 |
-| Allocations | 518 |
+| Allocations | 510 |
 
 <details>
 <summary>CPU Timeline (2 unique values: 25-27 cores)</summary>
 
 ```
-1776875613 27
-1776875618 27
-1776875623 27
-1776875628 27
-1776875633 27
-1776875638 27
-1776875643 27
-1776875648 27
-1776875653 27
-1776875659 27
-1776875664 27
-1776875669 27
-1776875674 27
-1776875679 27
-1776875684 27
-1776875689 27
-1776875694 27
-1776875699 27
-1776875704 27
-1776875709 27
+1776876354 27
+1776876359 27
+1776876364 27
+1776876369 27
+1776876374 27
+1776876379 27
+1776876384 27
+1776876389 27
+1776876394 27
+1776876399 27
+1776876404 27
+1776876409 27
+1776876414 27
+1776876419 27
+1776876424 27
+1776876429 25
+1776876434 25
+1776876439 25
+1776876444 25
+1776876449 25
 ```
 </details>
 
