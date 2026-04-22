@@ -191,7 +191,11 @@ public class CStackInjector implements TestTemplateInvocationContextProvider {
                                         method.invoke(testInstance);
                                     }
                                 }
-                                testMethod.invoke(testInstance, parameter);
+                                if (testMethod.getParameterCount() == 0) {
+                                    testMethod.invoke(testInstance);
+                                } else {
+                                    testMethod.invoke(testInstance, parameter);
+                                }
                                 return; // If the test passes, stop retrying
                             } catch (InvocationTargetException e) {
                                 throwable = e.getTargetException();
