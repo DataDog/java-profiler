@@ -27,7 +27,7 @@ runs:
           fi
       - name: Cache Build JDK [${{ inputs.arch }}]
         id: cache_build_jdk
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
             jdks/${{ steps.infer_build_jdk.outputs.build_jdk }}
@@ -37,7 +37,7 @@ runs:
           enableCrossOsArchive: true
       - name: Cache JDK ${{ inputs.version }} [${{ inputs.arch }}]
         id: cache_jdk
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
             jdks/jdk${{ inputs.version }}
