@@ -132,6 +132,37 @@ if (prev.sa_flags & SA_SIGINFO) {
 `OS::installSignalHandler` already captures this via the `oldact` out-parameter
 of `sigaction` — just need to make it retrievable by signal number.
 
+#### sa_mask chaining — opt-in via env var
+
+By default, chained handlers run under whatever signal mask the profiler's
+handler was given by the kernel (which has `signo` blocked because we install
+without `SA_NODEFER`). This is the **fast chain path**: no `pthread_sigmask`
+syscalls, ~24 ns pure function cost, ~37 ns end-to-end including signal
+delivery (measurements from `signalOrigin_bench.cpp` on Linux x86_64).
+
+Applying `prev.sa_mask` faithfully — so the chained handler sees the same
+masked environment the kernel would have given it under normal delivery —
+requires two `pthread_sigmask` calls (`SIG_BLOCK` then `SIG_SETMASK`). On
+modern Linux this measures ~1 µs per foreign signal, ~30% per-signal
+end-to-end overhead.
+
+Because the realistic foreign-signal sources this plan targets
+(Go's `ITIMER_PROF`, `raise()`, most `tgkill` callers) do not rely on
+`sa_mask` for correctness, we take the fast path by default and expose an
+env-var escape hatch:
+
+| Env var value | Behavior |
+|---|---|
+| `DDPROF_FORWARD_APPLY_SIGMASK=1` (or `true` / `on` / `yes`) | Slow path: `pthread_sigmask` block+restore around the chained call |
+| unset / any other value | Fast path (default): no mask syscalls; chained handler runs with only `signo` blocked |
+
+Enable the slow path when profiling exposes a chained handler that depends
+on the kernel's normal masked environment — e.g. a crash handler installed
+before the profiler that expects other fatal signals blocked during its run.
+
+SIGSEGV / SIGBUS forwarding is not affected by this flag — those use the
+existing SafeAccess PC-range discrimination, not `forwardForeignSignal`.
+
 ## Implementation steps
 
 1. **`os.h` / `os_linux.cpp`**: add the three helper functions + previous-action

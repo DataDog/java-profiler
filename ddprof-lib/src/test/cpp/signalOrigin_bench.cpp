@@ -111,6 +111,8 @@ protected:
             GTEST_SKIP() << "Set BENCH_SIGNAL_ORIGIN=1 to run the benchmark";
         }
         memset(&saved_action, 0, sizeof(saved_action));
+        // Default prime — slow-path tests below override and re-prime.
+        unsetenv("DDPROF_FORWARD_APPLY_SIGMASK");
         OS::primeSignalOriginCheck(/*forceReload=*/true);
     }
 
@@ -118,6 +120,14 @@ protected:
         if (saved_action.sa_handler != nullptr || saved_action.sa_sigaction != nullptr) {
             sigaction(kBenchSignal, &saved_action, nullptr);
         }
+        unsetenv("DDPROF_FORWARD_APPLY_SIGMASK");
+        OS::primeSignalOriginCheck(/*forceReload=*/true);
+    }
+
+    // Enable sa_mask-respecting chain for the slow-path benchmark variants.
+    void enableSigmaskChain() {
+        setenv("DDPROF_FORWARD_APPLY_SIGMASK", "1", 1);
+        OS::primeSignalOriginCheck(/*forceReload=*/true);
     }
 };
 
@@ -171,6 +181,8 @@ TEST_F(SignalOriginBench, FastPath_ClassifierPlusEmptyMaskForward) {
 // -------- SLOW PATH: classifier rejects, prev handler has non-empty sa_mask --------
 
 TEST_F(SignalOriginBench, SlowPath_ClassifierPlusMaskedForward) {
+    // Slow-path chain is opt-in behind DDPROF_FORWARD_APPLY_SIGMASK.
+    enableSigmaskChain();
     // Install a "foreign" handler with a non-empty sa_mask so
     // forwardForeignSignal has to call pthread_sigmask twice.
     ASSERT_EQ(0, setupForeignHandler(kBenchSignal, /*with_mask=*/true, &saved_action));
@@ -298,6 +310,7 @@ TEST_F(SignalOriginBench, Pure_ForwardFastPath) {
 }
 
 TEST_F(SignalOriginBench, Pure_ForwardSlowPath) {
+    enableSigmaskChain();
     // Non-empty mask → pthread_sigmask twice per call.
     ASSERT_EQ(0, setupForeignHandler(kPureBenchSignal, /*with_mask=*/true, &saved_action));
     OS::installSignalHandler(kPureBenchSignal, classifierHandler);

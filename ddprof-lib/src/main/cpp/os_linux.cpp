@@ -376,8 +376,16 @@ bool OS::queueSignalToThread(int thread_id, int signo, void* cookie) {
 // any inter-thread memory ordering, does not establish happens-before, and
 // offers no protection against torn reads on wider types. Use explicit
 // __atomic_* primitives when multi-thread visibility matters.
-static bool s_origin_check_enabled = true;
-static bool s_origin_check_primed  = false;
+static bool s_origin_check_enabled    = true;
+static bool s_origin_check_primed     = false;
+
+// Opt-in sa_mask-respecting chain in forwardForeignSignal(). Off by default:
+// saves 2× pthread_sigmask syscalls per foreign signal (~1 µs on modern Linux,
+// ~30% of the per-signal end-to-end cost). Set DDPROF_FORWARD_APPLY_SIGMASK=1
+// if the chained handler is known to require the kernel's normal sa_mask
+// environment (rare — SIGSEGV/SIGBUS handlers are the main case and are out
+// of scope here).
+static bool s_forward_apply_sigmask   = false;
 
 bool OS::isOwnSignal(siginfo_t* siginfo, int expected_si_code, void* expected_cookie) {
     // Relaxed load — the flag is written once in primeSignalOriginCheck()
@@ -407,23 +415,29 @@ void OS::forwardForeignSignal(int signo, siginfo_t* siginfo, void* ucontext) {
     // snapshot even if a concurrent installSignalHandler is mid-rewrite.
     struct sigaction prev = installed_oldaction[signo];
 
-    // Fast path: most previous handlers have an empty sa_mask, and our own
-    // handler was installed without SA_NODEFER — which means the kernel has
-    // already blocked `signo` for the duration of the current handler run.
-    // In that case there is nothing extra to block; calling pthread_sigmask
-    // would only cost two syscalls per foreign signal with no observable
-    // effect. At high profiling rates alongside e.g. Go's ITIMER_PROF that
-    // adds up to thousands of redundant kernel transitions per second, so
-    // we check for an empty mask first.
+    // By default we chain WITHOUT reproducing prev.sa_mask. Our own handler
+    // was installed without SA_NODEFER so the kernel has already blocked
+    // `signo` for the duration of this handler, which covers the common
+    // reentrancy concern. Benchmarks show that applying sa_mask via
+    // pthread_sigmask(SIG_BLOCK)+SIG_SETMASK costs ~1 µs per foreign signal
+    // (two rt_sigprocmask syscalls) — ~30% per-signal overhead in the
+    // slow-path micro-benchmark. In the trivyjni / Go-ITIMER_PROF scenario
+    // the plan targets, prev.sa_mask is empty anyway so the correctness
+    // cost is zero.
     //
-    // Slow path: prev.sa_mask has bits set — the chained handler expects
-    // those signals blocked during its run. Apply that mask via
-    // pthread_sigmask(SIG_BLOCK,...) and restore on return.
-    static const sigset_t empty_sigset = {};
-    bool need_mask = memcmp(&prev.sa_mask, &empty_sigset, sizeof(empty_sigset)) != 0;
+    // Correctness escape hatch: set DDPROF_FORWARD_APPLY_SIGMASK=1 to
+    // enable the slow path. Use this when the chained handler is known
+    // to rely on the kernel's normal sa_mask environment (e.g. a JVM
+    // crash handler that expects other fatal signals blocked during its
+    // run). Default off keeps high-frequency profiling cheap.
     sigset_t saved_mask;
-    if (need_mask) {
-        pthread_sigmask(SIG_BLOCK, &prev.sa_mask, &saved_mask);
+    bool need_mask = false;
+    if (__atomic_load_n(&s_forward_apply_sigmask, __ATOMIC_RELAXED)) {
+        static const sigset_t empty_sigset = {};
+        need_mask = memcmp(&prev.sa_mask, &empty_sigset, sizeof(empty_sigset)) != 0;
+        if (need_mask) {
+            pthread_sigmask(SIG_BLOCK, &prev.sa_mask, &saved_mask);
+        }
     }
 
     if (prev.sa_flags & SA_SIGINFO) {
@@ -463,11 +477,25 @@ void OS::primeSignalOriginCheck(bool forceReload) {
             enabled = false;
         }
     }
-    // Write enabled first, then publish primed=true with a release-store.
-    // A concurrent isOwnSignal() that sees primed=true through an
-    // acquire-load is guaranteed to see the final `enabled` value.
-    __atomic_store_n(&s_origin_check_enabled, enabled, __ATOMIC_RELAXED);
-    __atomic_store_n(&s_origin_check_primed,  true,    __ATOMIC_RELEASE);
+
+    // Opt-in slow chain path — default off. See the comment on
+    // s_forward_apply_sigmask for the trade-off.
+    const char* m = getenv("DDPROF_FORWARD_APPLY_SIGMASK");
+    bool apply_mask = false;
+    if (m != nullptr) {
+        if (strcasecmp(m, "true") == 0 || strcasecmp(m, "1") == 0 ||
+            strcasecmp(m, "on") == 0  || strcasecmp(m, "yes") == 0) {
+            apply_mask = true;
+        }
+    }
+
+    // Write data bits first, then publish primed=true with a release-store.
+    // A concurrent isOwnSignal() / forwardForeignSignal() that sees
+    // primed=true through an acquire-load is guaranteed to see the final
+    // values of enabled and apply_mask.
+    __atomic_store_n(&s_origin_check_enabled,  enabled,    __ATOMIC_RELAXED);
+    __atomic_store_n(&s_forward_apply_sigmask, apply_mask, __ATOMIC_RELAXED);
+    __atomic_store_n(&s_origin_check_primed,   true,       __ATOMIC_RELEASE);
 }
 
 void* OS::safeAlloc(size_t size) {
