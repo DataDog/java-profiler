@@ -412,7 +412,11 @@ public final class ThreadContext {
     /**
      * Reads a custom attribute value from attrs_data by key index.
      * Scans the attrs_data entries and returns the UTF-8 string for the matching key.
-     * Intended for tests only.
+     * Used by {@code ContextSetter.readContextValue()} to support snapshot/restore of
+     * nested profiling scopes.
+     *
+     * <p>Allocates a {@code byte[]} and a {@code String} per call. Not safe for
+     * signal handlers. Fine at scope-open/close granularity; avoid in tight inner loops.
      *
      * @param keyIndex 0-based user key index (same as passed to setContextAttribute)
      * @return the attribute value string, or null if not set

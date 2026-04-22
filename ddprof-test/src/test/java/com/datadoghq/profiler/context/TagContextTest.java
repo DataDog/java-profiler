@@ -138,6 +138,40 @@ public class TagContextTest extends AbstractProfilerTest {
         }
     }
 
+    @Test
+    public void testSnapshotRestore() throws Exception {
+        // J9 does not initialize ThreadContext for non-profiled threads; skip.
+        Assumptions.assumeTrue(!Platform.isJ9());
+        ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
+
+        // Initially both slots are empty
+        assertNull(contextSetter.readContextValue(0));
+        assertNull(contextSetter.readContextValue("tag2"));
+
+        // Set a value and read it back
+        assertTrue(contextSetter.setContextValue("tag1", "before"));
+        assertEquals("before", contextSetter.readContextValue(0));
+        assertEquals("before", contextSetter.readContextValue("tag1"));
+
+        // Snapshot the string, overwrite, then restore
+        String saved = contextSetter.readContextValue("tag1");
+        assertTrue(contextSetter.setContextValue("tag1", "inside"));
+        assertEquals("inside", contextSetter.readContextValue("tag1"));
+
+        // Restore via setContextValue
+        assertTrue(contextSetter.setContextValue("tag1", saved));
+        assertEquals("before", contextSetter.readContextValue("tag1"));
+
+        // put/clear/put cycle: verify offset stability across state transitions
+        assertTrue(contextSetter.clearContextValue("tag1"));
+        assertNull(contextSetter.readContextValue("tag1"));
+        assertTrue(contextSetter.setContextValue("tag1", "after"));
+        assertEquals("after", contextSetter.readContextValue("tag1"));
+
+        // tag2 was never set; readContextValue by name returns null
+        assertNull(contextSetter.readContextValue("tag2"));
+    }
+
     private void work(ContextSetter contextSetter, String contextAttribute, String contextValue)
             throws InterruptedException {
         assertTrue(contextSetter.setContextValue(contextAttribute, contextValue));

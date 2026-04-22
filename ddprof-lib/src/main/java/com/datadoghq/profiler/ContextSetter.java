@@ -50,6 +50,24 @@ public class ContextSetter {
         return false;
     }
 
+    /**
+     * Returns the string value currently set at the given attribute offset on this thread,
+     * or {@code null} if no value is set or the offset is negative.
+     *
+     * <p>Reads from thread-local storage — caller and setter must be the same thread.
+     * Allocates a {@code String} per call; avoid in tight inner loops.
+     */
+    public String readContextValue(int offset) {
+        if (offset >= 0) {
+            return profiler.readContextAttribute(offset);
+        }
+        return null;
+    }
+
+    public String readContextValue(String attribute) {
+        return readContextValue(offsetOf(attribute));
+    }
+
     public boolean clearContextValue(String attribute) {
         return clearContextValue(offsetOf(attribute));
     }

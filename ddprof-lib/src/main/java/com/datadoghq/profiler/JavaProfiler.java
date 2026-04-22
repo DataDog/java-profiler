@@ -225,7 +225,10 @@ public final class JavaProfiler {
         tlsContextStorage.get().copyCustoms(snapshot);
     }
 
-    /**
+    String readContextAttribute(int offset) {
+        return tlsContextStorage.get().readContextAttribute(offset);
+    }
+
     /**
      * Dumps the JFR recording at the provided path
      * @param recording the path to the recording
