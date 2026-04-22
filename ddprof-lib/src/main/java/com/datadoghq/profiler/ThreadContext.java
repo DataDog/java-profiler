@@ -441,6 +441,11 @@ public final class ThreadContext {
             return cached;
         }
         // Cold path: scan attrs_data (only on first read after session restart).
+        // Guard against stale attrs_data after clearContext(): valid=0 means the record
+        // was cleared and attrs_data_size was intentionally not reset (see clearContextDirect).
+        if (recordBuffer.get(validOffset) == 0) {
+            return null;
+        }
         int otepKeyIndex = keyIndex + 1;
         int size = recordBuffer.getShort(attrsDataSizeOffset) & 0xFFFF;
         int pos = 0;
@@ -455,7 +460,9 @@ public final class ThreadContext {
                 for (int i = 0; i < len; i++) {
                     bytes[i] = recordBuffer.get(attrsDataOffset + pos + 2 + i);
                 }
-                return new String(bytes, StandardCharsets.UTF_8);
+                String value = new String(bytes, StandardCharsets.UTF_8);
+                indexedValueCache[keyIndex] = value;
+                return value;
             }
             pos += 2 + len;
         }
