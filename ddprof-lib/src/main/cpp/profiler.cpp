@@ -114,6 +114,8 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   if (_thread_filter.enabled()) {
     int slot_id = _thread_filter.registerThread();
     current->setFilterSlotId(slot_id);
+    _thread_filter.setVMThread(slot_id, VMThread::current());
+    _thread_filter.setProfiledThread(slot_id, current);
     _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
   if (thread != NULL) {
@@ -134,6 +136,8 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     tid = current->tid();
     
     if (_thread_filter.enabled()) {
+      _thread_filter.setVMThread(slot_id, nullptr);
+      _thread_filter.setProfiledThread(slot_id, nullptr);
       _thread_filter.unregisterThread(slot_id);
       current->setFilterSlotId(-1);
     }
@@ -951,6 +955,12 @@ void JNICALL Profiler::MonitorContendedEnterCallback(jvmtiEnv *jvmti, JNIEnv *jn
   thrd->_monitor_block.root_span_id       = ctx.rootSpanId;
   thrd->_monitor_block.obj_addr           = (uintptr_t)(void*)object;
   thrd->_monitor_block.unblocking_span_id = VMThread::monitorOwnerSpanId((const void*)object);
+  // If this contention is the re-acquisition of a monitor after Object.wait(), capture
+  // the current owner as the notifier. Works when the notifier still holds the lock;
+  // falls back to 0 when the notifier released before this thread contended.
+  if (thrd->_monitor_wait.obj_addr == (uintptr_t)(void*)object) {
+    thrd->_monitor_wait.unblocking_span_id = VMThread::monitorOwnerSpanId((const void*)object);
+  }
 }
 
 void JNICALL Profiler::MonitorContendedEnteredCallback(jvmtiEnv *jvmti, JNIEnv *jni,
@@ -968,6 +978,50 @@ void JNICALL Profiler::MonitorContendedEnteredCallback(jvmtiEnv *jvmti, JNIEnv *
 
   thrd->_monitor_block.obj_addr = 0;
 
+  instance()->recordTaskBlock(ProfiledThread::currentTid(), &event);
+}
+
+// Object.wait() coverage for JDK 8-20: wait(long) is native on those versions, so BCI cannot
+// instrument it. MonitorWait fires at wait() entry; MonitorWaited fires at wait() exit (both on
+// the waiting thread). Span context is read from Contexts::get() — the C++ thread_local that is
+// kept up to date by the Java side via setContext() on every span activation.
+// On JDK 21+, these callbacks are NOT registered (ObjectWaitProfilingInstrumentation handles it).
+void JNICALL Profiler::MonitorWaitCallback(jvmtiEnv *jvmti, JNIEnv *jni,
+                                            jthread thread, jobject object, jlong timeout) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr) return;
+  Context& ctx = Contexts::get();
+  if (ctx.spanId == 0) return;
+  thrd->_monitor_wait.start_ticks  = TSC::ticks();
+  thrd->_monitor_wait.span_id      = ctx.spanId;
+  thrd->_monitor_wait.root_span_id = ctx.rootSpanId;
+  thrd->_monitor_wait.obj_addr     = (uintptr_t)(void*)object;
+}
+
+void JNICALL Profiler::MonitorWaitedCallback(jvmtiEnv *jvmti, JNIEnv *jni,
+                                              jthread thread, jobject object, jboolean timed_out) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr || thrd->_monitor_wait.obj_addr == 0) return;
+
+  u64 end_ticks = TSC::ticks();
+  // Duration filter: skip waits shorter than 1 ms (matches BCI and LockSupport thresholds).
+  if (TSC::ticks_to_nanos(end_ticks - thrd->_monitor_wait.start_ticks) < 1'000'000ULL) {
+    thrd->_monitor_wait.obj_addr = 0;
+    return;
+  }
+
+  TaskBlockEvent event;
+  event._start_ticks        = thrd->_monitor_wait.start_ticks;
+  event._end_ticks          = end_ticks;
+  event._span_id            = thrd->_monitor_wait.span_id;
+  event._root_span_id       = thrd->_monitor_wait.root_span_id;
+  event._blocker            = thrd->_monitor_wait.obj_addr;
+  // unblocking_span_id is captured in MonitorContendedEnterCallback when the waiting thread
+  // contends for the lock and the notifier still holds it. Zero if the notifier released first.
+  event._unblocking_span_id = thrd->_monitor_wait.unblocking_span_id;
+
+  thrd->_monitor_wait.obj_addr           = 0;
+  thrd->_monitor_wait.unblocking_span_id = 0;
   instance()->recordTaskBlock(ProfiledThread::currentTid(), &event);
 }
 
@@ -1443,6 +1497,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (!VMStructs::hasCompilerStructs()) {
       _features.comp_task = 0;
   }
+  _wall_park_min_ns = args._wall_park_min_ns;
   _safe_mode = args._safe_mode;
   if (VM::hotspot_version() < 8 || VM::isZing()) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
@@ -1457,6 +1512,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     if (current != nullptr) {
       int slot_id = _thread_filter.registerThread();
       current->setFilterSlotId(slot_id);
+      _thread_filter.setVMThread(slot_id, VMThread::current());
+      _thread_filter.setProfiledThread(slot_id, current);
       _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
     }
   }

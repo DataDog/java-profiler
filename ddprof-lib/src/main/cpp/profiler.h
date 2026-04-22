@@ -121,6 +121,7 @@ private:
   Dictionary _string_label_map;
   Dictionary _context_value_map;
   ThreadFilter _thread_filter;
+  u64 _wall_park_min_ns{1000000ULL};
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
   Engine *_cpu_engine;
@@ -247,6 +248,7 @@ public:
   Dictionary *contextValueMap() { return &_context_value_map; }
   u32 numContextAttributes() { return _num_context_attributes; }
   ThreadFilter *threadFilter() { return &_thread_filter; }
+  u64 parkMinDurationNs() const { return _wall_park_min_ns; }
 
   int lookupClass(const char *key, size_t length);
   void processCallTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor) {
@@ -427,6 +429,13 @@ public:
                                                     jthread thread, jobject object);
   static void JNICALL MonitorContendedEnteredCallback(jvmtiEnv *jvmti, JNIEnv *jni,
                                                       jthread thread, jobject object);
+
+  // Object.wait() coverage for JDK 8-20 (wait(long) is native there; BCI cannot instrument it).
+  // On JDK 21+, ObjectWaitProfilingInstrumentation (BCI) handles this instead.
+  static void JNICALL MonitorWaitCallback(jvmtiEnv *jvmti, JNIEnv *jni,
+                                          jthread thread, jobject object, jlong timeout);
+  static void JNICALL MonitorWaitedCallback(jvmtiEnv *jvmti, JNIEnv *jni,
+                                            jthread thread, jobject object, jboolean timed_out);
 
   // Keep backward compatibility with the upstream async-profiler
   inline CodeCache* findLibraryByAddress(const void *address) {

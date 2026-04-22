@@ -26,6 +26,7 @@ public class SleepTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=1ms";
+        // wallprecheck=false,wallpark=false: verify sampling still works when suppression is off
+        return "wall=1ms,wallprecheck=false,wallpark=false";
     }
 }

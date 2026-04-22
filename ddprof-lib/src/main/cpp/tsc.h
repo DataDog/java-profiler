@@ -106,6 +106,13 @@ class TSC {
     static u64 ticks_to_millis(u64 ticks) {
         return TSC_SUPPORTED ? 1000 * ticks / frequency() : ticks / 1000 / 1000;
     }
+
+    // Convert ticks to nanoseconds (overflow-safe: divide first, then scale remainder)
+    static u64 ticks_to_nanos(u64 ticks) {
+        if (!TSC_SUPPORTED) return ticks;
+        u64 freq = frequency();
+        return (ticks / freq) * 1000000000ULL + (ticks % freq) * 1000000000ULL / freq;
+    }
 };
 
 #endif // _TSC_H

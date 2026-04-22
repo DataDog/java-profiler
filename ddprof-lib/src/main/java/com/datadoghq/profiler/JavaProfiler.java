@@ -204,6 +204,14 @@ public final class JavaProfiler {
         recordTaskBlock0(startTicks, endTicks, spanId, rootSpanId, blocker, unblockingSpanId);
     }
 
+    public void parkEnter(long spanId, long rootSpanId) {
+        parkEnter0(spanId, rootSpanId);
+    }
+
+    public void parkExit(long blocker, long unblockingSpanId) {
+        parkExit0(blocker, unblockingSpanId);
+    }
+
     public void recordSpanNode(long spanId, long parentSpanId, long rootSpanId,
                                long startNanos, long durationNanos,
                                int encodedOperation, int encodedResource) {
@@ -362,6 +370,10 @@ public final class JavaProfiler {
     private static native boolean recordTrace0(long rootSpanId, long parentSpanId, long startTicks, String endpoint, String operation, int sizeLimit);
 
     private static native void recordTaskBlock0(long startTicks, long endTicks, long spanId, long rootSpanId, long blocker, long unblockingSpanId);
+
+    private static native void parkEnter0(long spanId, long rootSpanId);
+
+    private static native void parkExit0(long blocker, long unblockingSpanId);
 
     private static native void recordSpanNode0(long spanId, long parentSpanId, long rootSpanId, long startNanos, long durationNanos, int encodedOperation, int encodedResource);
 

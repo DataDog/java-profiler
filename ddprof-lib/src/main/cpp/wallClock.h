@@ -139,6 +139,8 @@ public:
 class WallClockASGCT : public BaseWallClock {
   private:
     bool _collapsing;
+    bool _precheck;
+    bool _park_check;
 
     static bool inSyscall(void* ucontext);
 
@@ -149,7 +151,7 @@ class WallClockASGCT : public BaseWallClock {
     void timerLoop() override;
 
   public:
-    WallClockASGCT() : BaseWallClock(), _collapsing(false) {}
+    WallClockASGCT() : BaseWallClock(), _collapsing(false), _precheck(true), _park_check(true) {}
     const char* name() override {
         return "WallClock (ASGCT)";
     }
