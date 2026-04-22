@@ -758,7 +758,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   }
 
   HotspotStackFrame frame(ucontext);
-  uintptr_t saved_pc, saved_sp, saved_fp;
+  uintptr_t saved_pc = 0, saved_sp = 0, saved_fp = 0;
   if (ucontext != NULL) {
     saved_pc = frame.pc();
     saved_sp = frame.sp();
@@ -782,9 +782,11 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       }
       return 1;
     }
-  } else {
-    return 0;
   }
+  // ucontext == NULL falls through (e.g. malloc hooks): ASGCT resolves the
+  // top Java frame from JavaThread::last_Java_sp / last_Java_pc, which are
+  // populated on every Java → native transition. This matches upstream
+  // async-profiler's behaviour in Profiler::getJavaTraceAsync.
 
   JVMJavaThreadState state = vm_thread->state();
   bool in_java = (state == _thread_in_Java || state == _thread_in_Java_trans);
