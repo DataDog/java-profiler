@@ -56,7 +56,7 @@ void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
   // Reject any SIGVTALRM that did not originate from our rt_tgsigqueueinfo
   // send. Defends against stray in-process tgkill / external sigqueue that
   // would otherwise drive our wallclock sampling path.
-  if (!OS::isOwnSignal(siginfo, SI_QUEUE, SignalCookie::wallclock())) {
+  if (!OS::shouldProcessSignal(siginfo, SI_QUEUE, SignalCookie::wallclock())) {
     Counters::increment(WALLCLOCK_SIGNAL_FOREIGN);
     OS::forwardForeignSignal(signo, siginfo, ucontext);
     return;
@@ -194,7 +194,7 @@ void WallClockASGCT::timerLoop() {
       // Deliver SIGVTALRM with a cookie so our handler can distinguish this
       // signal from any other in-process sender (see signalCookie.h /
       // wallClock.cpp sharedSignalHandler).
-      if (!OS::queueSignalToThread(tid, SIGVTALRM, SignalCookie::wallclock())) {
+      if (!OS::sendSignalWithCookie(tid, SIGVTALRM, SignalCookie::wallclock())) {
         num_failures++;
         if (errno != 0) {
           if (errno == ESRCH) {

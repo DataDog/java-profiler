@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <string.h>
 #include <atomic>
+#include <string>
 
 #include "os.h"
 #include "signalCookie.h"
@@ -15,8 +16,8 @@
 
 /**
  * Unit tests for the signal-origin validation helpers:
- *   OS::isOwnSignal(siginfo, expected_si_code, expected_cookie)
- *   OS::queueSignalToThread(tid, signo, cookie)
+ *   OS::shouldProcessSignal(siginfo, expected_si_code, expected_cookie)
+ *   OS::sendSignalWithCookie(tid, signo, cookie)
  *   OS::forwardForeignSignal(signo, siginfo, ucontext)
  *   OS::primeSignalOriginCheck(forceReload)
  *   OS::signalOriginCheckEnabled()
@@ -25,16 +26,58 @@
  * fakes directly and exercise the classifier / forwarder in isolation.
  */
 
+namespace {
+
+// Snapshot an env var's value at SetUp and restore it at TearDown, so a
+// developer who exported DDPROF_* in their shell to reproduce an issue does
+// not have their environment wiped by running the test binary.
+class EnvGuard {
+public:
+    explicit EnvGuard(const char* name)
+        : _name(name), _had_value(false) {
+        const char* v = getenv(name);
+        if (v != nullptr) {
+            _had_value = true;
+            _saved = v;
+        }
+    }
+    void reset() const {
+        if (_had_value) {
+            setenv(_name, _saved.c_str(), /*overwrite=*/1);
+        } else {
+            unsetenv(_name);
+        }
+    }
+private:
+    const char* _name;
+    bool _had_value;
+    std::string _saved;
+};
+
+}  // namespace
+
 class SignalOriginTest : public ::testing::Test {
 protected:
+    // Snapshot/restore env vars the tests mutate so the developer's shell
+    // exports survive a test run.
+    EnvGuard _guard_origin{"DDPROF_SIGNAL_ORIGIN_CHECK"};
+    EnvGuard _guard_mask{"DDPROF_FORWARD_APPLY_SIGMASK"};
+
     void SetUp() override {
-        // Default: origin check enabled.
+        // Default: origin check enabled, sigmask chain disabled.
         unsetenv("DDPROF_SIGNAL_ORIGIN_CHECK");
+        unsetenv("DDPROF_FORWARD_APPLY_SIGMASK");
         OS::primeSignalOriginCheck(/*forceReload=*/true);
+
+        // Wipe any installed_oldaction state from previous tests so chaining
+        // invariants can be observed in isolation.
+        OS::resetSignalHandlersForTesting();
     }
 
     void TearDown() override {
-        unsetenv("DDPROF_SIGNAL_ORIGIN_CHECK");
+        OS::resetSignalHandlersForTesting();
+        _guard_origin.reset();
+        _guard_mask.reset();
         OS::primeSignalOriginCheck(/*forceReload=*/true);
     }
 
@@ -49,28 +92,28 @@ protected:
 
 TEST_F(SignalOriginTest, AcceptsMatchingCookieAndSiCode) {
     siginfo_t si = makeSiginfo(SI_TIMER, SignalCookie::cpu());
-    EXPECT_TRUE(OS::isOwnSignal(&si, SI_TIMER, SignalCookie::cpu()));
+    EXPECT_TRUE(OS::shouldProcessSignal(&si, SI_TIMER, SignalCookie::cpu()));
 }
 
 TEST_F(SignalOriginTest, RejectsMismatchedSiCode) {
     siginfo_t si = makeSiginfo(SI_USER, SignalCookie::cpu());
-    EXPECT_FALSE(OS::isOwnSignal(&si, SI_TIMER, SignalCookie::cpu()));
+    EXPECT_FALSE(OS::shouldProcessSignal(&si, SI_TIMER, SignalCookie::cpu()));
 }
 
 TEST_F(SignalOriginTest, RejectsMismatchedCookie) {
     siginfo_t si = makeSiginfo(SI_TIMER, /*foreign=*/(void*)0xF00D);
-    EXPECT_FALSE(OS::isOwnSignal(&si, SI_TIMER, SignalCookie::cpu()));
+    EXPECT_FALSE(OS::shouldProcessSignal(&si, SI_TIMER, SignalCookie::cpu()));
 }
 
 TEST_F(SignalOriginTest, RejectsNullSiginfo) {
-    EXPECT_FALSE(OS::isOwnSignal(nullptr, SI_TIMER, SignalCookie::cpu()));
+    EXPECT_FALSE(OS::shouldProcessSignal(nullptr, SI_TIMER, SignalCookie::cpu()));
 }
 
 TEST_F(SignalOriginTest, WallclockCookieDistinctFromCpu) {
     EXPECT_NE(SignalCookie::cpu(), SignalCookie::wallclock());
     siginfo_t si = makeSiginfo(SI_QUEUE, SignalCookie::cpu());
     // CPU cookie with SI_QUEUE / wallclock cookie must not be accepted.
-    EXPECT_FALSE(OS::isOwnSignal(&si, SI_QUEUE, SignalCookie::wallclock()));
+    EXPECT_FALSE(OS::shouldProcessSignal(&si, SI_QUEUE, SignalCookie::wallclock()));
 }
 
 TEST_F(SignalOriginTest, FeatureFlagDisableAcceptsEverything) {
@@ -80,7 +123,7 @@ TEST_F(SignalOriginTest, FeatureFlagDisableAcceptsEverything) {
 
     // Any siginfo should be accepted when the flag is off.
     siginfo_t si = makeSiginfo(SI_USER, (void*)0xBADBAD);
-    EXPECT_TRUE(OS::isOwnSignal(&si, SI_TIMER, SignalCookie::cpu()));
+    EXPECT_TRUE(OS::shouldProcessSignal(&si, SI_TIMER, SignalCookie::cpu()));
 }
 
 TEST_F(SignalOriginTest, FeatureFlagAcceptsCommonDisableSpellings) {
@@ -91,13 +134,32 @@ TEST_F(SignalOriginTest, FeatureFlagAcceptsCommonDisableSpellings) {
     }
 }
 
+TEST_F(SignalOriginTest, FeatureFlagAcceptsCommonEnableSpellings) {
+    for (const char* v : {"true", "1", "on", "yes", "ON", "Yes"}) {
+        setenv("DDPROF_SIGNAL_ORIGIN_CHECK", v, 1);
+        OS::primeSignalOriginCheck(/*forceReload=*/true);
+        EXPECT_TRUE(OS::signalOriginCheckEnabled()) << "for value " << v;
+    }
+}
+
 TEST_F(SignalOriginTest, FeatureFlagDefaultOn) {
     unsetenv("DDPROF_SIGNAL_ORIGIN_CHECK");
     OS::primeSignalOriginCheck(/*forceReload=*/true);
     EXPECT_TRUE(OS::signalOriginCheckEnabled());
 }
 
-// -------- queueSignalToThread + receive on SIGUSR2 --------
+TEST_F(SignalOriginTest, FeatureFlagUnknownValueKeepsDefault) {
+    // Unknown values should not disable the origin check (default ON).
+    // A warning is emitted via Log::warn — not asserted here, just sanity.
+    for (const char* v : {"disable", "maybe", "2", "  "}) {
+        setenv("DDPROF_SIGNAL_ORIGIN_CHECK", v, 1);
+        OS::primeSignalOriginCheck(/*forceReload=*/true);
+        EXPECT_TRUE(OS::signalOriginCheckEnabled())
+            << "unknown value " << v << " should keep default";
+    }
+}
+
+// -------- sendSignalWithCookie + receive on SIGUSR2 --------
 
 static std::atomic<int> g_received_si_code{0};
 static std::atomic<void*> g_received_sival{nullptr};
@@ -120,7 +182,7 @@ TEST_F(SignalOriginTest, QueueSignalDeliversCookieAndSiCode) {
     g_received_sival.store(nullptr);
 
     void* cookie = (void*)0xCAFEBABE;
-    ASSERT_TRUE(OS::queueSignalToThread(OS::threadId(), SIGUSR2, cookie));
+    ASSERT_TRUE(OS::sendSignalWithCookie(OS::threadId(), SIGUSR2, cookie));
 
     // Give the signal a moment to be delivered (the delivery happens on
     // return from the syscall — usleep ensures the handler has completed).
@@ -141,6 +203,12 @@ static std::atomic<int> g_chained_calls{0};
 
 static void chainedHandler(int /*signo*/, siginfo_t* /*si*/, void* /*uc*/) {
     g_chained_calls.fetch_add(1);
+}
+
+static void secondChainedHandler(int /*signo*/, siginfo_t* /*si*/, void* /*uc*/) {
+    // Distinct from chainedHandler so installSignalHandler will not detect
+    // this as a self-install on a second call.
+    g_chained_calls.fetch_add(100);
 }
 
 TEST_F(SignalOriginTest, ForwardForeignSignalChainsToPrevious) {
@@ -176,6 +244,85 @@ TEST_F(SignalOriginTest, ForwardForeignSignalSilentOnUninstalledSignal) {
     siginfo_t si = makeSiginfo(SI_USER, (void*)0);
     OS::forwardForeignSignal(SIGUSR2, &si, nullptr);
     SUCCEED();
+}
+
+// -------- store-exactly-once invariant --------
+//
+// Regression test for the "installed_oldaction is captured once, never
+// overwritten" invariant. If a foreign library installs its handler over
+// ours after profiler start, and the profiler then re-installs (restart),
+// the captured prev must still be the ORIGINAL handler, not the foreign
+// one that briefly owned the slot.
+
+TEST_F(SignalOriginTest, ReinstallPreservesFirstCapturedPrev) {
+    struct sigaction saved;
+    sigaction(SIGUSR1, nullptr, &saved);
+
+    // Install the "original" (e.g. JVM-like) handler.
+    struct sigaction original;
+    memset(&original, 0, sizeof(original));
+    original.sa_sigaction = chainedHandler;
+    original.sa_flags = SA_SIGINFO;
+    sigemptyset(&original.sa_mask);
+    ASSERT_EQ(0, sigaction(SIGUSR1, &original, nullptr));
+
+    // First profiler install — captures original as prev.
+    OS::installSignalHandler(SIGUSR1, captureHandler);
+
+    // A foreign library sneaks in and overwrites our handler.
+    struct sigaction foreign;
+    memset(&foreign, 0, sizeof(foreign));
+    foreign.sa_sigaction = secondChainedHandler;
+    foreign.sa_flags = SA_SIGINFO;
+    sigemptyset(&foreign.sa_mask);
+    ASSERT_EQ(0, sigaction(SIGUSR1, &foreign, nullptr));
+
+    // Profiler re-installs (simulates restart). Before the fix, this would
+    // have overwritten our captured prev with `foreign` — losing the
+    // original chain target. With store-exactly-once, the original is kept.
+    OS::installSignalHandler(SIGUSR1, captureHandler);
+
+    g_chained_calls.store(0);
+    siginfo_t si = makeSiginfo(SI_USER, (void*)0);
+    si.si_signo = SIGUSR1;
+    OS::forwardForeignSignal(SIGUSR1, &si, nullptr);
+
+    // Expect the ORIGINAL chainedHandler (+1), not secondChainedHandler (+100).
+    EXPECT_EQ(1, g_chained_calls.load())
+        << "forwardForeignSignal chained to the wrong handler — "
+           "store-exactly-once invariant violated";
+
+    sigaction(SIGUSR1, &saved, nullptr);
+}
+
+// -------- resetSignalHandlersForTesting clears oldaction state --------
+
+TEST_F(SignalOriginTest, ResetForTestingClearsOldactionCache) {
+    struct sigaction saved;
+    struct sigaction prev_action;
+    memset(&prev_action, 0, sizeof(prev_action));
+    prev_action.sa_sigaction = chainedHandler;
+    prev_action.sa_flags = SA_SIGINFO;
+    sigemptyset(&prev_action.sa_mask);
+    ASSERT_EQ(0, sigaction(SIGUSR1, &prev_action, &saved));
+
+    OS::installSignalHandler(SIGUSR1, captureHandler);
+
+    // Confirm chaining is armed.
+    g_chained_calls.store(0);
+    siginfo_t si = makeSiginfo(SI_USER, (void*)0);
+    si.si_signo = SIGUSR1;
+    OS::forwardForeignSignal(SIGUSR1, &si, nullptr);
+    EXPECT_EQ(1, g_chained_calls.load());
+
+    // Reset and confirm the chain is cleared (forward becomes a no-op).
+    OS::resetSignalHandlersForTesting();
+    g_chained_calls.store(0);
+    OS::forwardForeignSignal(SIGUSR1, &si, nullptr);
+    EXPECT_EQ(0, g_chained_calls.load())
+        << "resetSignalHandlersForTesting did not clear installed_oldaction state";
+
+    sigaction(SIGUSR1, &saved, nullptr);
 }
 
 #endif  // __linux__

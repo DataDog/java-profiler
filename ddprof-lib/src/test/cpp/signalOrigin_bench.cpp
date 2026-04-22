@@ -15,12 +15,14 @@
  *   FAST_PATH     — our classifier is installed on top; prev handler has
  *                   an empty sa_mask (common case). forwardForeignSignal
  *                   short-circuits pthread_sigmask.
- *   SLOW_PATH     — prev handler has a non-empty sa_mask; forwardForeignSignal
- *                   applies SIG_BLOCK / SIG_SETMASK (two syscalls).
+ *   SLOW_PATH     — prev handler has a non-empty sa_mask AND
+ *                   DDPROF_FORWARD_APPLY_SIGMASK=1 is set (opt-in).
+ *                   forwardForeignSignal applies SIG_BLOCK / SIG_SETMASK
+ *                   (two syscalls).
  *
  * The delta between BASELINE and FAST_PATH is the overhead per foreign
- * signal when sa_mask chaining is not needed. The delta between FAST_PATH
- * and SLOW_PATH is the cost of the two pthread_sigmask calls.
+ * signal when sa_mask chaining is disabled (the default). The delta between
+ * FAST_PATH and SLOW_PATH is the cost of the two pthread_sigmask calls.
  *
  * The benchmark runs only when the env var BENCH_SIGNAL_ORIGIN is set, so
  * normal CI does not pay for it.
@@ -33,6 +35,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 
 #include "os.h"
 #include "signalCookie.h"
@@ -100,11 +103,41 @@ bool benchEnabled() {
     return v != nullptr && v[0] != '\0' && strcmp(v, "0") != 0;
 }
 
+// Snapshot/restore an env var — same pattern as signalOrigin_ut.cpp, so the
+// developer's own shell exports survive a test run.
+class EnvGuard {
+public:
+    explicit EnvGuard(const char* name)
+        : _name(name), _had_value(false) {
+        const char* v = getenv(name);
+        if (v != nullptr) { _had_value = true; _saved = v; }
+    }
+    void reset() const {
+        if (_had_value) setenv(_name, _saved.c_str(), 1);
+        else            unsetenv(_name);
+    }
+private:
+    const char* _name;
+    bool _had_value;
+    std::string _saved;
+};
+
+// Optimization barrier — prevents the compiler from hoisting /
+// constant-folding loop-invariant calls out of the measurement loop. A
+// simple `volatile bool sink` forces the STORE but not necessarily the CALL;
+// asm volatile with a read-write constraint makes the value `observable` at
+// every iteration so the compiler must re-emit the load path.
+inline void doNotOptimize(bool& v) {
+    asm volatile("" : "+r"(v) : : "memory");
+}
+
 }  // namespace
 
 class SignalOriginBench : public ::testing::Test {
 protected:
     struct sigaction saved_action;
+    EnvGuard _guard_mask{"DDPROF_FORWARD_APPLY_SIGMASK"};
+    EnvGuard _guard_origin{"DDPROF_SIGNAL_ORIGIN_CHECK"};
 
     void SetUp() override {
         if (!benchEnabled()) {
@@ -113,14 +146,18 @@ protected:
         memset(&saved_action, 0, sizeof(saved_action));
         // Default prime — slow-path tests below override and re-prime.
         unsetenv("DDPROF_FORWARD_APPLY_SIGMASK");
+        unsetenv("DDPROF_SIGNAL_ORIGIN_CHECK");
         OS::primeSignalOriginCheck(/*forceReload=*/true);
+        OS::resetSignalHandlersForTesting();
     }
 
     void TearDown() override {
+        OS::resetSignalHandlersForTesting();
         if (saved_action.sa_handler != nullptr || saved_action.sa_sigaction != nullptr) {
             sigaction(kBenchSignal, &saved_action, nullptr);
         }
-        unsetenv("DDPROF_FORWARD_APPLY_SIGMASK");
+        _guard_mask.reset();
+        _guard_origin.reset();
         OS::primeSignalOriginCheck(/*forceReload=*/true);
     }
 
@@ -148,14 +185,15 @@ TEST_F(SignalOriginBench, Baseline_NoClassifier) {
                 (unsigned long long)r.prev_calls);
 }
 
-// -------- FAST PATH: classifier rejects SI_USER, forwards to empty-mask prev --------
+// -------- FAST PATH: classifier rejects SI_TKILL from raise(), forwards --------
 
 static void classifierHandler(int signo, siginfo_t* siginfo, void* ucontext) {
-    if (!OS::isOwnSignal(siginfo, SI_TIMER, SignalCookie::cpu())) {
+    if (!OS::shouldProcessSignal(siginfo, SI_TIMER, SignalCookie::cpu())) {
         OS::forwardForeignSignal(signo, siginfo, ucontext);
         return;
     }
-    // Unreachable in this benchmark — raise() always produces SI_USER.
+    // Unreachable in this benchmark — raise() produces si_code=SI_TKILL on
+    // Linux (glibc raise() uses tgkill internally), never SI_TIMER.
 }
 
 TEST_F(SignalOriginBench, FastPath_ClassifierPlusEmptyMaskForward) {
@@ -202,21 +240,15 @@ TEST_F(SignalOriginBench, SlowPath_ClassifierPlusMaskedForward) {
 
 // -------- PURE FUNCTION CALL: no kernel, no signal delivery --------
 //
-// Calls OS::isOwnSignal + OS::forwardForeignSignal directly with a fabricated
-// siginfo_t, measuring only the in-process overhead of the origin-check
-// machinery. This isolates the cost we actually added — the scenarios above
-// include a constant ~300 ns per iteration for the kernel signal-delivery
-// path that is common to ALL three end-to-end variants.
+// Calls OS::shouldProcessSignal + OS::forwardForeignSignal directly with a
+// fabricated siginfo_t, measuring only the in-process overhead of the
+// origin-check machinery. This isolates the cost we actually added — the
+// scenarios above include a constant ~300 ns per iteration for the kernel
+// signal-delivery path that is common to ALL three end-to-end variants.
 //
-// Three variants:
-//   pure_classifier_reject     — isOwnSignal returns false (SI_USER)
-//   pure_classifier_accept     — isOwnSignal returns true  (SI_TIMER + cookie)
-//   pure_forward_fast_path     — forwardForeignSignal with empty-mask prev
-//   pure_forward_slow_path     — forwardForeignSignal with non-empty-mask prev
-//
-// The prev handler is a no-op that increments a counter, so timings for the
-// forward variants include the prev-call itself (one indirect call + an
-// atomic increment).
+// All measurement loops pass the `sink` through `doNotOptimize()` so the
+// compiler is forced to re-emit the call on every iteration instead of
+// CSE-ing a loop-invariant result.
 
 static const int kPureBenchSignal = SIGUSR1;
 static const int kPureIterations  = 5000000;  // more iters — fast path is ~ns
@@ -244,19 +276,20 @@ siginfo_t makeOwnSiginfo() {
 
 TEST_F(SignalOriginBench, Pure_ClassifierReject) {
     siginfo_t si = makeForeignSiginfo();
-    volatile bool sink = false;
+    bool sink = false;
 
     // Warm up.
     for (int i = 0; i < 10000; ++i) {
-        sink = OS::isOwnSignal(&si, SI_TIMER, SignalCookie::cpu());
+        sink = OS::shouldProcessSignal(&si, SI_TIMER, SignalCookie::cpu());
+        doNotOptimize(sink);
     }
 
     uint64_t start = nanosNow();
     for (int i = 0; i < kPureIterations; ++i) {
-        sink = OS::isOwnSignal(&si, SI_TIMER, SignalCookie::cpu());
+        sink = OS::shouldProcessSignal(&si, SI_TIMER, SignalCookie::cpu());
+        doNotOptimize(sink);
     }
     uint64_t end = nanosNow();
-    (void)sink;
     double ns = (double)(end - start) / (double)kPureIterations;
 
     std::printf("\n  [pure_classifier_reject] %.2f ns/call  (iters=%d)\n",
@@ -265,18 +298,19 @@ TEST_F(SignalOriginBench, Pure_ClassifierReject) {
 
 TEST_F(SignalOriginBench, Pure_ClassifierAccept) {
     siginfo_t si = makeOwnSiginfo();
-    volatile bool sink = false;
+    bool sink = false;
 
     for (int i = 0; i < 10000; ++i) {
-        sink = OS::isOwnSignal(&si, SI_TIMER, SignalCookie::cpu());
+        sink = OS::shouldProcessSignal(&si, SI_TIMER, SignalCookie::cpu());
+        doNotOptimize(sink);
     }
 
     uint64_t start = nanosNow();
     for (int i = 0; i < kPureIterations; ++i) {
-        sink = OS::isOwnSignal(&si, SI_TIMER, SignalCookie::cpu());
+        sink = OS::shouldProcessSignal(&si, SI_TIMER, SignalCookie::cpu());
+        doNotOptimize(sink);
     }
     uint64_t end = nanosNow();
-    (void)sink;
     double ns = (double)(end - start) / (double)kPureIterations;
 
     std::printf("\n  [pure_classifier_accept] %.2f ns/call  (iters=%d)\n",

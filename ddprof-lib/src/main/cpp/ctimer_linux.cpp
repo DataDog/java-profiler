@@ -23,11 +23,15 @@
 #include "debugSupport.h"
 #include "jvmThread.h"
 #include "libraries.h"
+#include "log.h"
 #include "profiler.h"
 #include "signalCookie.h"
 #include "threadState.inline.h"
 #include <assert.h>
+#include <errno.h>
+#include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
@@ -66,6 +70,12 @@ int CTimer::registerThread(int tid) {
   sev.sigev_value.sival_ptr = SignalCookie::cpu();
   sev.sigev_signo = _signal;
   sev.sigev_notify = SIGEV_THREAD_ID;
+  // glibc/musl layout convention: sigev_notify_thread_id sits immediately
+  // after sigev_notify inside the union (writes to &sev.sigev_notify + 4).
+  // Guard against a future libc change by statically asserting the layout.
+  static_assert(offsetof(struct sigevent, sigev_notify) + sizeof(int)
+                    <= sizeof(struct sigevent),
+                "sigevent layout assumption broken: tid write would overflow");
   ((int *)&sev.sigev_notify)[1] = tid;
 
   // Use raw syscalls, since libc wrapper allows only predefined clocks
@@ -86,7 +96,16 @@ int CTimer::registerThread(int tid) {
   ts.it_interval.tv_sec = (time_t)(_interval / 1000000000);
   ts.it_interval.tv_nsec = _interval % 1000000000;
   ts.it_value = ts.it_interval;
-  syscall(__NR_timer_settime, timer, 0, &ts, NULL);
+  if (syscall(__NR_timer_settime, timer, 0, &ts, NULL) < 0) {
+    // Arming failed — the timer exists but will never fire, which is
+    // indistinguishable at the sample level from "no foreign signal matched
+    // our cookie". Surface the failure, delete the timer, and release the
+    // slot so the next registration attempt can retry.
+    Log::warn("timer_settime failed for tid=%d: %s", tid, strerror(errno));
+    __atomic_store_n(&_timers[tid], 0, __ATOMIC_RELEASE);
+    syscall(__NR_timer_delete, timer);
+    return -1;
+  }
   return 0;
 }
 
@@ -163,7 +182,7 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // This guards against Go's process-wide setitimer(ITIMER_PROF) and other
   // foreign SIGPROF sources that would otherwise drive our handler onto
   // threads we never registered — see doc/plans/2026-04-21-signal-origin-validation.md.
-  if (!OS::isOwnSignal(siginfo, SI_TIMER, SignalCookie::cpu())) {
+  if (!OS::shouldProcessSignal(siginfo, SI_TIMER, SignalCookie::cpu())) {
     Counters::increment(CTIMER_SIGNAL_FOREIGN);
     OS::forwardForeignSignal(signo, siginfo, ucontext);
     return;

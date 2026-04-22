@@ -110,13 +110,24 @@ static SigAction installed_sigaction[MAX_SIGNALS];
 
 // Full previous sigaction per signal, used by forwardForeignSignal to chain
 // signals that do not originate from ddprof to whatever handler was installed
-// before us. Publication protocol: writer fills installed_oldaction[signo]
-// first, then __atomic_store_n(installed_oldaction_valid[signo], true,
-// __ATOMIC_RELEASE). Reader loads installed_oldaction_valid[signo] with
-// __ATOMIC_ACQUIRE before touching the struct. This guarantees a reader that
-// observes _valid==true sees a fully-initialised struct.
+// before us.
+//
+// Write protocol: installSignalHandler takes installed_oldaction_mutex
+// around the sigaction() call and the subsequent publish. This serialises
+// concurrent installers and ensures the struct write + _valid flag transition
+// are atomic with respect to other installers. The release-store on _valid
+// synchronises with the acquire-load in forwardForeignSignal so handlers on
+// other CPUs only observe the struct after it is fully written.
+//
+// Store-exactly-once: once installed_oldaction_valid[signo] is true, the
+// slot is frozen — subsequent installSignalHandler calls do NOT overwrite
+// the captured previous action. This preserves the ORIGINAL chain target
+// across profiler restarts or re-installs, even if a foreign library has
+// since overwritten our handler and re-chained us. Losing the original
+// would break the chain back to e.g. the JVM's SIGSEGV handler.
 static struct sigaction installed_oldaction[MAX_SIGNALS];
 static bool             installed_oldaction_valid[MAX_SIGNALS];
+static pthread_mutex_t  installed_oldaction_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 const size_t OS::page_size = sysconf(_SC_PAGESIZE);
 const size_t OS::page_mask = OS::page_size - 1;
@@ -287,24 +298,43 @@ SigAction OS::installSignalHandler(int signo, SigAction action, SigHandler handl
         }
     }
 
-    sigaction(signo, &sa, &oldsa);
+    // Take the mutex around sigaction() + publish so concurrent installers
+    // serialise, and a signal arriving mid-install always sees either the
+    // pre-install state (_valid=false → forward is a no-op) or the fully
+    // published post-install state.
+    pthread_mutex_lock(&installed_oldaction_mutex);
+
+    int rc = sigaction(signo, &sa, &oldsa);
 
     // Cache the full previous action so forwardForeignSignal can chain.
+    // Skip on sigaction() failure — otherwise we would publish uninitialised
+    // garbage as "the previous handler" and the forwarder would jump into it.
+    //
     // Only store in the sigaction (3-arg) path — 1-arg handlers are used for
     // transient SIG_IGN / SIG_DFL setups (e.g. ITimer::check) and are never
-    // meant to be forwarded to. Only remember a previous action when it
-    // actually differs from what we just installed — otherwise repeated
-    // installs would overwrite a useful previous action with our own.
+    // meant to be forwarded to.
+    //
+    // Store-exactly-once: once a slot is marked valid, preserve that capture.
+    // A foreign library may later install its own handler over ours; the
+    // next time we install (profiler restart) sigaction() would return the
+    // foreign handler as oldsa. Overwriting our stored oldaction with that
+    // would lose the ORIGINAL chain target (e.g. JVM's handler) and is never
+    // what we want — the original is what real chained delivery must reach.
     //
     // Publication is release-ordered: the struct write is visible before
     // _valid flips to true, so any handler on another CPU that observes
     // _valid==true sees a fully-initialised oldaction. See also the reader
     // side in forwardForeignSignal.
-    if (action != NULL && signo > 0 && signo < MAX_SIGNALS && oldsa.sa_sigaction != action) {
+    if (rc == 0 && action != NULL && signo > 0 && signo < MAX_SIGNALS
+        && !installed_oldaction_valid[signo]
+        && oldsa.sa_sigaction != action) {
         installed_oldaction[signo] = oldsa;
         __atomic_store_n(&installed_oldaction_valid[signo], true, __ATOMIC_RELEASE);
     }
-    return oldsa.sa_sigaction;
+
+    pthread_mutex_unlock(&installed_oldaction_mutex);
+
+    return rc == 0 ? oldsa.sa_sigaction : nullptr;
 }
 
 static void restoreSignalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
@@ -348,7 +378,7 @@ bool OS::sendSignalToThread(int thread_id, int signo) {
     return syscall(__NR_tgkill, processId(), thread_id, signo) == 0;
 }
 
-bool OS::queueSignalToThread(int thread_id, int signo, void* cookie) {
+bool OS::sendSignalWithCookie(int thread_id, int signo, void* cookie) {
     // Deliver a SIGQUEUE-style signal to a specific thread, carrying a cookie
     // the handler can use to confirm the signal originated from the profiler.
     // Uses rt_tgsigqueueinfo(2) directly so the same code path works on both
@@ -387,12 +417,12 @@ static bool s_origin_check_primed     = false;
 // of scope here).
 static bool s_forward_apply_sigmask   = false;
 
-bool OS::isOwnSignal(siginfo_t* siginfo, int expected_si_code, void* expected_cookie) {
+bool OS::shouldProcessSignal(siginfo_t* siginfo, int expected_si_code, void* expected_cookie) {
     // Relaxed load — the flag is written once in primeSignalOriginCheck()
     // (non-signal context, before any handler can fire) and never toggled
     // afterwards outside tests. No ordering requirement vs. subsequent fields.
     if (!__atomic_load_n(&s_origin_check_enabled, __ATOMIC_RELAXED)) {
-        // Origin check disabled — accept everything (pre-fix behaviour).
+        // Origin check disabled — process every signal (pre-fix behaviour).
         return true;
     }
     if (siginfo == nullptr || siginfo->si_code != expected_si_code) {
@@ -433,6 +463,19 @@ void OS::forwardForeignSignal(int signo, siginfo_t* siginfo, void* ucontext) {
     sigset_t saved_mask;
     bool need_mask = false;
     if (__atomic_load_n(&s_forward_apply_sigmask, __ATOMIC_RELAXED)) {
+        // Probe prev.sa_mask for any set signal. POSIX offers no constant-time
+        // "is empty?" primitive, and looping sigismember over all signals
+        // inside a hot signal handler would cost more than the pthread_sigmask
+        // syscalls it is meant to avoid. We memcmp against a zero-initialised
+        // sigset_t instead:
+        //   - glibc defines sigset_t as a fixed-size bitmap (__sigset_t
+        //     containing an unsigned-long array); zero bits == empty set.
+        //   - musl defines sigset_t identically (unsigned long array).
+        //   - Both target platforms (linux-x86_64, linux-aarch64) initialise
+        //     sigset_t via sigemptyset to all-zero bytes.
+        // This is not POSIX-guaranteed but is reliable on every Linux libc
+        // we ship against. A future port to a libc that encodes "empty" as
+        // non-zero bytes would need sigismember loop here.
         static const sigset_t empty_sigset = {};
         need_mask = memcmp(&prev.sa_mask, &empty_sigset, sizeof(empty_sigset)) != 0;
         if (need_mask) {
@@ -447,9 +490,17 @@ void OS::forwardForeignSignal(int signo, siginfo_t* siginfo, void* ucontext) {
     } else if (prev.sa_handler != SIG_DFL && prev.sa_handler != SIG_IGN
                && prev.sa_handler != nullptr) {
         // Chain to a 1-arg handler. Note: nullptr check is a safety net for
-        // uninitialised previous action (not a POSIX value). SIG_DFL / SIG_IGN
-        // are dropped silently — we are acting as a foreign-signal suppressor
-        // rather than reproducing the kernel's default action for these.
+        // uninitialised previous action (not a POSIX value).
+        //
+        // SIG_DFL / SIG_IGN fall through with no chain call:
+        //   - SIG_IGN: no handler to run — skipping matches the kernel's
+        //     ignore semantics.
+        //   - SIG_DFL: we do NOT reproduce the kernel's default action
+        //     (which for SIGPROF/SIGVTALRM is termination). A foreign
+        //     SIGPROF arriving when the prior state was SIG_DFL is simply
+        //     dropped. Reproducing the default would kill the process on
+        //     every foreign signal — strictly worse for the Go-ITIMER_PROF
+        //     scenario the classifier is designed to handle.
         prev.sa_handler(signo);
     }
 
@@ -462,6 +513,34 @@ bool OS::signalOriginCheckEnabled() {
     return __atomic_load_n(&s_origin_check_enabled, __ATOMIC_RELAXED);
 }
 
+// Parse a boolean env-var value. Returns false for empty / unrecognised /
+// unset, and logs a warning when the value is set but not one of the
+// documented spellings so operators don't silently get the default.
+// `default_value` is returned for unset (null) and silently-accepted-empty.
+// Expected spellings are case-insensitive and trimmed of leading whitespace.
+static bool parseBoolEnv(const char* name, const char* v, bool default_value) {
+    if (v == nullptr) {
+        return default_value;
+    }
+    // Skip leading whitespace (users who typed "=1 " in a shell).
+    while (*v == ' ' || *v == '\t') ++v;
+    if (*v == '\0') {
+        return default_value;
+    }
+    if (strcasecmp(v, "false") == 0 || strcasecmp(v, "0") == 0 ||
+        strcasecmp(v, "off")   == 0 || strcasecmp(v, "no") == 0) {
+        return false;
+    }
+    if (strcasecmp(v, "true") == 0 || strcasecmp(v, "1") == 0 ||
+        strcasecmp(v, "on")   == 0 || strcasecmp(v, "yes") == 0) {
+        return true;
+    }
+    Log::warn("%s has unrecognised value %s; using default (%s). "
+              "Expected one of: true/false/1/0/on/off/yes/no.",
+              name, v, default_value ? "enabled" : "disabled");
+    return default_value;
+}
+
 void OS::primeSignalOriginCheck(bool forceReload) {
     // Acquire-load on `primed` pairs with the release-store below. This
     // matters for forceReload=true paths in tests that concurrently write
@@ -469,30 +548,24 @@ void OS::primeSignalOriginCheck(bool forceReload) {
     if (__atomic_load_n(&s_origin_check_primed, __ATOMIC_ACQUIRE) && !forceReload) {
         return;
     }
-    const char* v = getenv("DDPROF_SIGNAL_ORIGIN_CHECK");
-    bool enabled = true;  // default ON
-    if (v != nullptr) {
-        if (strcasecmp(v, "false") == 0 || strcasecmp(v, "0") == 0 ||
-            strcasecmp(v, "off") == 0  || strcasecmp(v, "no") == 0) {
-            enabled = false;
-        }
-    }
-
-    // Opt-in slow chain path — default off. See the comment on
-    // s_forward_apply_sigmask for the trade-off.
-    const char* m = getenv("DDPROF_FORWARD_APPLY_SIGMASK");
-    bool apply_mask = false;
-    if (m != nullptr) {
-        if (strcasecmp(m, "true") == 0 || strcasecmp(m, "1") == 0 ||
-            strcasecmp(m, "on") == 0  || strcasecmp(m, "yes") == 0) {
-            apply_mask = true;
-        }
-    }
+    // Default ON — reject foreign signals.
+    bool enabled = parseBoolEnv("DDPROF_SIGNAL_ORIGIN_CHECK",
+                                getenv("DDPROF_SIGNAL_ORIGIN_CHECK"),
+                                /*default=*/true);
+    // Default OFF — slow chain path is opt-in. See s_forward_apply_sigmask.
+    bool apply_mask = parseBoolEnv("DDPROF_FORWARD_APPLY_SIGMASK",
+                                   getenv("DDPROF_FORWARD_APPLY_SIGMASK"),
+                                   /*default=*/false);
 
     // Write data bits first, then publish primed=true with a release-store.
-    // A concurrent isOwnSignal() / forwardForeignSignal() that sees
-    // primed=true through an acquire-load is guaranteed to see the final
-    // values of enabled and apply_mask.
+    // A concurrent signalOriginCheckEnabled() / forwardForeignSignal() that
+    // sees primed=true through an acquire-load is guaranteed to see the
+    // final values of enabled and apply_mask.
+    //
+    // IMPORTANT: the ordering guarantee only holds across prime → handler
+    // (the intended usage). It does NOT hold across forceReload=true
+    // reconfiguration while a signal is in flight — that is a test-only
+    // path and assumes the writer and any receiver are quiesced.
     __atomic_store_n(&s_origin_check_enabled,  enabled,    __ATOMIC_RELAXED);
     __atomic_store_n(&s_forward_apply_sigmask, apply_mask, __ATOMIC_RELAXED);
     __atomic_store_n(&s_origin_check_primed,   true,       __ATOMIC_RELEASE);
@@ -1086,6 +1159,18 @@ void OS::resetSignalHandlersForTesting() {
     _protected_bus_handler = nullptr;
     __atomic_store_n(&_segv_chain_target, (SigAction)nullptr, __ATOMIC_RELEASE);
     __atomic_store_n(&_bus_chain_target, (SigAction)nullptr, __ATOMIC_RELEASE);
+
+    // Clear the foreign-signal forwarding cache so tests that install and
+    // verify chaining start from a clean slate. Hold the publish mutex so a
+    // concurrent installSignalHandler cannot race with us during the reset.
+    pthread_mutex_lock(&installed_oldaction_mutex);
+    for (int i = 0; i < MAX_SIGNALS; ++i) {
+        __atomic_store_n(&installed_oldaction_valid[i], false, __ATOMIC_RELEASE);
+        memset(&installed_oldaction[i], 0, sizeof(installed_oldaction[i]));
+        installed_sigaction[i] = nullptr;
+    }
+    pthread_mutex_unlock(&installed_oldaction_mutex);
+
     // _real_sigaction is intentionally not reset: safe to reuse across tests
 }
 

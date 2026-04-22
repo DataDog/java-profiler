@@ -42,16 +42,19 @@ malloc lock held by the interrupted thread.
 
 ### Cookie strategy
 
-Static per-engine sentinels in a shared header. Use non-null, easily
-identifiable constants:
-
-Cookies live in `signalCookie.h` and are exposed via inline functions
-(`reinterpret_cast` is not allowed in `constexpr`):
+Cookies live in `signalCookie.h` and are the addresses of private static tag
+variables — unique per shared-library image, forgery-resistant against
+in-process attackers who would have to read the DSO's symbols to guess a
+valid cookie:
 
 ```cpp
 namespace SignalCookie {
-    inline void* cpu()       { return reinterpret_cast<void*>(0xDDDD01); }
-    inline void* wallclock() { return reinterpret_cast<void*>(0xDDDD02); }
+    namespace detail {
+        inline char cpu_tag;
+        inline char wallclock_tag;
+    }
+    inline void* cpu()       { return &detail::cpu_tag; }
+    inline void* wallclock() { return &detail::wallclock_tag; }
 }
 ```
 
@@ -61,6 +64,12 @@ wallclock. Rationale for wallclock needing a cookie: `SI_TKILL` +
 sending process's PID, and all threads in our process share the same PID, so
 that check accepts any in-process `tgkill` of SIGVTALRM (including from other
 libraries). Real isolation requires a payload.
+
+Earlier iterations used magic numbers (`reinterpret_cast<void*>(0xDDDD01)`).
+Symbol-address cookies are strictly stronger: they cannot collide with a
+legitimate pointer value from third-party code (the tag lives in a fresh
+DSO-private BSS slot), and they are resistant to an attacker who only knows
+the constants published in open-source headers.
 
 ### Portable per-thread queued signal
 

@@ -127,38 +127,54 @@ class OS {
     static int getProfilingSignal(int mode);
     static bool sendSignalToThread(int thread_id, int signo);
 
-    // Per-thread queued signal with payload cookie (rt_tgsigqueueinfo on Linux).
-    // Payload carries `cookie` in si_value.sival_ptr; receiver sees si_code == SI_QUEUE.
-    // Used by engines that need to distinguish their own signals from foreign ones.
-    static bool queueSignalToThread(int thread_id, int signo, void* cookie);
+    // Send a signal to a specific thread with a cookie payload (synchronous —
+    // the kernel queues it and returns). Uses rt_tgsigqueueinfo(2) on Linux;
+    // receiver sees si_code == SI_QUEUE with the cookie in si_value.sival_ptr.
+    // Engines use this when they need to discriminate their own signals from
+    // foreign ones in the handler.
+    static bool sendSignalWithCookie(int thread_id, int signo, void* cookie);
 
-    // Signal origin check used from signal-handler context. Async-signal-safe.
-    // `expected_si_code` is typically SI_TIMER (timer_create) or SI_QUEUE
-    // (rt_tgsigqueueinfo). Returns true iff origin checks are disabled
-    // (accept-all fallback) or the incoming siginfo matches both the expected
-    // si_code and the expected cookie.
-    static bool isOwnSignal(siginfo_t* siginfo, int expected_si_code, void* expected_cookie);
+    // Accept-policy for a signal in a handler context. Async-signal-safe.
+    //
+    // Returns true iff the signal SHOULD be processed by the caller's engine:
+    //   - origin check disabled (accept-all fallback, DDPROF_SIGNAL_ORIGIN_CHECK=0)
+    //     → true
+    //   - origin check enabled AND siginfo matches both expected_si_code and
+    //     expected_cookie → true
+    //   - otherwise → false
+    //
+    // Naming note: this is a policy predicate, NOT a pure "did this signal
+    // come from us?" identification. A `false` answer means "forward this to
+    // the chained handler"; a `true` answer means "process normally".
+    // `expected_si_code` is SI_TIMER (timer_create) or SI_QUEUE
+    // (sendSignalWithCookie).
+    static bool shouldProcessSignal(siginfo_t* siginfo, int expected_si_code, void* expected_cookie);
 
     // Forwards a signal we decided not to process to the previously-installed
-    // handler (as captured by installSignalHandler). Applies the previous
-    // handler's sa_mask so chained handlers see the same signal-blocking
-    // environment they would have under normal kernel delivery.
+    // handler (as captured by installSignalHandler). When
+    // DDPROF_FORWARD_APPLY_SIGMASK=1 is set, also reproduces the previous
+    // handler's sa_mask so the chained handler sees the same signal-blocking
+    // environment it would under normal kernel delivery.
     // Itself async-signal-safe; the forwarded handler's safety is the
     // caller's concern.
     static void forwardForeignSignal(int signo, siginfo_t* siginfo, void* ucontext);
 
-    // Runtime feature flag: signal origin check enabled? Reads DDPROF_SIGNAL_ORIGIN_CHECK
-    // env var and caches the result. Default on; set to "false"/"0"/"off"/"no"
-    // to disable (regression tests only). MUST be called at least once from a
-    // non-signal context before any signal handler can fire — the engine
-    // `start()` paths are responsible for priming this cache via
-    // primeSignalOriginCheck().
+    // Runtime feature flag: is the signal origin check active? Reads
+    // DDPROF_SIGNAL_ORIGIN_CHECK env var and caches the result. Default on;
+    // set to "false"/"0"/"off"/"no" to disable (regression tests only).
+    // Callers running from signal-handler context must ensure
+    // primeSignalOriginCheck() was called earlier from non-signal context
+    // so the env-var getenv() cost is not paid during signal delivery.
     static bool signalOriginCheckEnabled();
 
     // Prime the signalOriginCheckEnabled() cache from non-signal context.
-    // Called by engine start() paths before installing handlers. Safe to call
-    // multiple times; no-op after the first call unless forceReload=true
-    // (used only by unit tests).
+    // Called by engine start() paths before installing handlers so later
+    // env-var overrides are picked up. Safe to call multiple times; no-op
+    // after the first call unless forceReload=true (used only by unit tests).
+    //
+    // Without priming, the cache holds its safe defaults (origin check
+    // enabled, sigmask chain disabled) — signals still classify correctly
+    // even if priming never runs.
     static void primeSignalOriginCheck(bool forceReload = false);
 
     static void* safeAlloc(size_t size);
