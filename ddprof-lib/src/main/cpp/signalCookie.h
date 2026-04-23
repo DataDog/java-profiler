@@ -22,8 +22,15 @@
 // never collide with legitimate user-space pointers in third-party code.
 namespace SignalCookie {
     namespace detail {
+        // Place tags in a named section on Linux to prevent LTO from merging
+        // or reordering them across TUs (their addresses must be unique per DSO).
+#ifdef __linux__
+        [[gnu::section(".data.signal_cookie")]] inline char cpu_tag;
+        [[gnu::section(".data.signal_cookie")]] inline char wallclock_tag;
+#else
         inline char cpu_tag;
         inline char wallclock_tag;
+#endif
     }
     inline void* cpu()       { return &detail::cpu_tag; }
     inline void* wallclock() { return &detail::wallclock_tag; }

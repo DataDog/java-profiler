@@ -103,9 +103,8 @@ kernel-generated signals), so this is safe.
 
 ```cpp
 // os.h
-bool OS::isOwnTimerSignal(siginfo_t* si, void* expected_cookie);   // SI_TIMER + cookie
-bool OS::isOwnQueuedSignal(siginfo_t* si, void* expected_cookie);  // SI_QUEUE + cookie
-int  OS::queueSignalToThread(pid_t tid, int sig, void* cookie);    // rt_tgsigqueueinfo wrapper
+bool OS::shouldProcessSignal(siginfo_t* si, int expected_si_code, void* expected_cookie);
+bool OS::sendSignalWithCookie(int thread_id, int signo, void* cookie);   // rt_tgsigqueueinfo wrapper
 void OS::forwardForeignSignal(int signo, siginfo_t* si, void* uctx);
 ```
 
@@ -113,7 +112,7 @@ Handler skeleton:
 
 ```cpp
 void Engine::signalHandler(int signo, siginfo_t* si, void* uctx) {
-    if (!OS::isOwnTimerSignal(si, ENGINE_COOKIE)) {
+    if (!OS::shouldProcessSignal(si, SI_TIMER, ENGINE_COOKIE)) {
         Counters::increment(ENGINE_SIGNAL_FOREIGN);
         OS::forwardForeignSignal(signo, si, uctx);
         return;
@@ -135,7 +134,8 @@ if (prev.sa_flags & SA_SIGINFO) {
 } else if (prev.sa_handler != SIG_DFL && prev.sa_handler != SIG_IGN) {
     prev.sa_handler(signo);
 }
-// SIG_DFL / SIG_IGN: drop
+// SIG_DFL: drop (reproducing termination on every foreign signal is worse than ignoring it)
+// SIG_IGN: drop (matches kernel ignore semantics)
 ```
 
 `OS::installSignalHandler` already captures this via the `oldact` out-parameter
@@ -145,15 +145,16 @@ of `sigaction` — just need to make it retrievable by signal number.
 
 By default, chained handlers run under whatever signal mask the profiler's
 handler was given by the kernel (which has `signo` blocked because we install
-without `SA_NODEFER`). This is the **fast chain path**: no `pthread_sigmask`
-syscalls, ~24 ns pure function cost, ~37 ns end-to-end including signal
-delivery (measurements from `signalOrigin_bench.cpp` on Linux x86_64).
+without `SA_NODEFER`). This is the **fast chain path**: no mask-setup syscalls,
+~24 ns pure function cost, ~37 ns end-to-end including signal delivery
+(measurements from `signalOrigin_bench.cpp` on Linux x86_64).
 
 Applying `prev.sa_mask` faithfully — so the chained handler sees the same
 masked environment the kernel would have given it under normal delivery —
-requires two `pthread_sigmask` calls (`SIG_BLOCK` then `SIG_SETMASK`). On
-modern Linux this measures ~1 µs per foreign signal, ~30% per-signal
-end-to-end overhead.
+requires two raw `rt_sigprocmask` syscalls (`SIG_BLOCK` then `SIG_SETMASK`).
+On modern Linux this measures ~1 µs per foreign signal, ~30% per-signal
+end-to-end overhead. (`pthread_sigmask` is NOT used: it would call libc internals
+and is not async-signal-safe on all configurations.)
 
 Because the realistic foreign-signal sources this plan targets
 (Go's `ITIMER_PROF`, `raise()`, most `tgkill` callers) do not rely on
@@ -162,7 +163,7 @@ env-var escape hatch:
 
 | Env var value | Behavior |
 |---|---|
-| `DDPROF_FORWARD_APPLY_SIGMASK=1` (or `true` / `on` / `yes`) | Slow path: `pthread_sigmask` block+restore around the chained call |
+| `DDPROF_FORWARD_APPLY_SIGMASK=1` (or `true` / `on` / `yes`) | Slow path: `rt_sigprocmask` block+restore around the chained call |
 | unset / any other value | Fast path (default): no mask syscalls; chained handler runs with only `signo` blocked |
 
 Enable the slow path when profiling exposes a chained handler that depends
@@ -183,12 +184,12 @@ existing SafeAccess PC-range discrimination, not `forwardForeignSignal`.
    origin check must configure the profiler to use CTimer (the default).
 4. **`wallClock.cpp` + `os_linux.cpp`**:
    - Replace the current `OS::sendSignalToThread(tid, SIGVTALRM)` implementation
-     (uses `tgkill` under the hood) with `OS::queueSignalToThread(tid,
+     (uses `tgkill` under the hood) with `OS::sendSignalWithCookie(tid,
      SIGVTALRM, WALLCLOCK_COOKIE)` which invokes `rt_tgsigqueueinfo`
      directly — portable across glibc and musl.
    - Add `SI_QUEUE` + `WALLCLOCK_COOKIE` gate in
-     `WallClockASGCT::sharedSignalHandler` (current line 52) and the JVMTI
-     variant. Forward on mismatch.
+     `WallClockASGCT::sharedSignalHandler` (current line 52). Forward on mismatch.
+     (J9WallClock uses JVMTI GetAllStackTracesExtended polling — no signal handler — and is out of scope)
 5. **`counters.h`**: add `CPU_SIGNAL_FOREIGN` / `CPU_SIGNAL_OWN` and
    `WALLCLOCK_SIGNAL_FOREIGN` / `WALLCLOCK_SIGNAL_OWN` counters.
 6. **Feature flag**: gate the whole change behind `DDPROF_SIGNAL_ORIGIN_CHECK`

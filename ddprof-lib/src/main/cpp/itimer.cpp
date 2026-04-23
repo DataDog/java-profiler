@@ -30,6 +30,12 @@ long ITimer::_interval;
 CStack ITimer::_cstack;
 
 void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  // NOTE: ITimer uses setitimer(ITIMER_PROF) which delivers signals with
+  // si_code==SI_KERNEL — no sival payload is available. The signal-origin
+  // check implemented in CTimer/WallClock cannot be applied here. ITimer
+  // is therefore vulnerable to the foreign-SIGPROF deadlock scenario this
+  // feature addresses. Use CTimer (the default) when signal-origin
+  // validation is required.
   if (!_enabled)
     return;
   

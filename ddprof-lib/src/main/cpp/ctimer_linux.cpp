@@ -103,7 +103,11 @@ int CTimer::registerThread(int tid) {
     // slot only if it still contains this timer; otherwise a concurrent
     // unregisterThread(tid) has already claimed responsibility for cleanup
     // (avoids a double timer_delete).
-    Log::warn("timer_settime failed for tid=%d: %s", tid, strerror(errno));
+    int settime_errno = errno;
+    char errbuf[64];
+    strerror_r(settime_errno, errbuf, sizeof(errbuf));
+    Log::warn("timer_settime failed for tid=%d: %s", tid, errbuf);
+    errno = settime_errno;
     if (__sync_bool_compare_and_swap(&_timers[tid], timer + 1, 0)) {
       syscall(__NR_timer_delete, timer);
     }

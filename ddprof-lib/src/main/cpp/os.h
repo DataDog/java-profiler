@@ -122,6 +122,7 @@ class OS {
     static bool isLinux();
     static bool isMusl();
 
+    // Returns nullptr on sigaction() failure; returns the previous sa_sigaction otherwise.
     static SigAction installSignalHandler(int signo, SigAction action, SigHandler handler = NULL);
     static SigAction replaceCrashHandler(SigAction action);
     static int getProfilingSignal(int mode);
@@ -159,6 +160,15 @@ class OS {
     // DDPROF_FORWARD_APPLY_SIGMASK=1 is set, the slow path uses raw
     // rt_sigprocmask syscalls which are async-signal-safe. The forwarded
     // handler's safety is the caller's concern.
+    //
+    // Drop semantics (Linux): signals whose previous disposition was SIG_DFL or
+    // SIG_IGN are silently dropped — kernel-default termination is NOT reproduced
+    // (terminating the process on every forwarded foreign signal would be worse
+    // than ignoring it). Callers must not rely on default-action reproduction.
+    //
+    // macOS: always a no-op (rt_tgsigqueueinfo is unavailable so no cookie
+    // discrimination is possible; all signals are accepted by the engine handler
+    // and never forwarded). signalOriginCheckEnabled() returns false on macOS.
     static void forwardForeignSignal(int signo, siginfo_t* siginfo, void* ucontext);
 
     // Runtime feature flag: is the signal origin check active? Reads

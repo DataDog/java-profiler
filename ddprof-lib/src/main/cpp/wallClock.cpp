@@ -165,7 +165,9 @@ bool BaseWallClock::isEnabled() const {
 
 void WallClockASGCT::initialize(Arguments& args) {
   _collapsing = args._wall_collapsing;
-  // Prime the origin-check cache before installing the SIGVTALRM handler.
+  // J9WallClock uses JVMTI GetAllStackTracesExtended polling, not SIGVTALRM
+  // signals — it has no sharedSignalHandler and needs no signal-origin gate.
+  // Engines are started sequentially; this call is idempotent (no-op after first).
   OS::primeSignalOriginCheck();
   OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
 }
@@ -202,6 +204,9 @@ void WallClockASGCT::timerLoop() {
               threads_already_exited++;
           } else if (errno == EPERM) {
               permission_denied++;
+          } else if (errno == EAGAIN) {
+              // SIGVTALRM already pending on target thread — benign, skip.
+              num_failures--;
           } else {
               Log::debug("unexpected error %s", strerror(errno));
           }

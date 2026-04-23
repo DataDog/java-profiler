@@ -317,6 +317,11 @@ bool OS::sendSignalWithCookie(int thread_id, int signo, void* /*cookie*/) {
     return sendSignalToThread(thread_id, signo);
 }
 
+// On macOS, signalOriginCheckEnabled() returns false (feature off) and
+// shouldProcessSignal() returns true (accept-all). This is consistent:
+// no rt_tgsigqueueinfo means no cookie discrimination is possible, so
+// the handler degrades to pre-fix accept-all behaviour. callers must not
+// use signalOriginCheckEnabled() to infer rejection statistics on macOS.
 // On macOS the origin-check helper degrades to "accept everything" since the
 // fallback sender cannot carry a cookie. Handlers that call this helper
 // therefore behave exactly as before on macOS.

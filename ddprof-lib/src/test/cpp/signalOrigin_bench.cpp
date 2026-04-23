@@ -247,6 +247,10 @@ TEST_F(SignalOriginBench, SlowPath_ClassifierPlusMaskedForward) {
 // All measurement loops pass the `sink` through `doNotOptimize()` so the
 // compiler is forced to re-emit the call on every iteration instead of
 // CSE-ing a loop-invariant result.
+// NOTE: This file is compiled at -O0 in the test build, so reported ns/call
+// include function-call overhead for SignalCookie::cpu() and shouldProcessSignal
+// that disappears at -O2 in production (both inline to 3-4 instructions).
+// Production overhead is substantially lower than the figures printed here.
 
 static const int kPureBenchSignal = SIGUSR1;
 static const int kPureIterations  = 5000000;  // more iters — fast path is ~ns

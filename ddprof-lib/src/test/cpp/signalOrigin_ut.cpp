@@ -4,6 +4,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <pthread.h>
 #include <signal.h>
 #include <string.h>
 #include <atomic>
@@ -183,16 +184,20 @@ TEST_F(SignalOriginTest, QueueSignalDeliversCookieAndSiCode) {
     g_received_si_code.store(0);
     g_received_sival.store(nullptr);
 
+    // Block SIGUSR2 so the pending signal is delivered deterministically
+    // when we unblock — avoids a racy spin-wait and guarantees the handler
+    // has run before the EXPECT checks below.
+    sigset_t block_mask, old_mask;
+    sigemptyset(&block_mask);
+    sigaddset(&block_mask, SIGUSR2);
+    ASSERT_EQ(0, pthread_sigmask(SIG_BLOCK, &block_mask, &old_mask));
+
     void* cookie = (void*)0xCAFEBABE;
     ASSERT_TRUE(OS::sendSignalWithCookie(OS::threadId(), SIGUSR2, cookie));
 
-    // Give the signal a moment to be delivered (the delivery happens on
-    // return from the syscall — this nanosleep-based polling loop gives the
-    // handler time to complete).
-    for (int i = 0; i < 100 && g_received_si_code.load() == 0; ++i) {
-        struct timespec ts{0, 1000000}; // 1ms
-        nanosleep(&ts, nullptr);
-    }
+    // Restoring the old mask unblocks SIGUSR2; the kernel delivers the pending
+    // signal before pthread_sigmask returns.
+    ASSERT_EQ(0, pthread_sigmask(SIG_SETMASK, &old_mask, nullptr));
 
     EXPECT_EQ(SI_QUEUE, g_received_si_code.load());
     EXPECT_EQ(cookie, g_received_sival.load());
@@ -326,6 +331,37 @@ TEST_F(SignalOriginTest, ResetForTestingClearsOldactionCache) {
         << "resetSignalHandlersForTesting did not clear installed_oldaction state";
 
     sigaction(SIGUSR1, &saved, nullptr);
+}
+
+TEST_F(SignalOriginTest, ForwardAppliesSigmaskWhenEnabled) {
+    // Verify that the slow path (DDPROF_FORWARD_APPLY_SIGMASK=1) still
+    // chains to the previous SA_SIGINFO handler correctly.
+    EnvGuard guard_mask("DDPROF_FORWARD_APPLY_SIGMASK");
+    setenv("DDPROF_FORWARD_APPLY_SIGMASK", "1", /*overwrite=*/1);
+    OS::primeSignalOriginCheck(/*forceReload=*/true);
+
+    // Install a previous handler with a non-empty sa_mask.
+    struct sigaction prev_sa, saved;
+    memset(&prev_sa, 0, sizeof(prev_sa));
+    prev_sa.sa_sigaction = chainedHandler;
+    prev_sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&prev_sa.sa_mask);
+    sigaddset(&prev_sa.sa_mask, SIGUSR1);  // non-empty sa_mask
+    ASSERT_EQ(0, sigaction(SIGUSR1, &prev_sa, &saved));
+
+    OS::installSignalHandler(SIGUSR1, captureHandler);
+
+    g_chained_calls.store(0);
+    siginfo_t si = makeSiginfo(SI_USER, (void*)0);
+    si.si_signo = SIGUSR1;
+    OS::forwardForeignSignal(SIGUSR1, &si, nullptr);
+
+    EXPECT_EQ(1, g_chained_calls.load())
+        << "forwardForeignSignal with DDPROF_FORWARD_APPLY_SIGMASK=1 did not chain";
+
+    sigaction(SIGUSR1, &saved, nullptr);
+    guard_mask.reset();
+    OS::primeSignalOriginCheck(/*forceReload=*/true);
 }
 
 #endif  // __linux__
