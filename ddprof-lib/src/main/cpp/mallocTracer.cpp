@@ -253,6 +253,12 @@ bool MallocHooker::initialize() {
 // the leak detector, as it correctly tracks memory as freed regardless of how many times
 // recordMalloc is called with the same address.
 void MallocHooker::patchLibraries() {
+    // If initialize() hasn't resolved _orig_malloc yet, advancing _patched_libs here
+    // would consume library slots without patching them, causing a later real call
+    // (from MallocTracer::start) to find _patched_libs == native_lib_count and skip
+    // all libraries. This happens when dlopen_hook fires during a non-nativemem session.
+    if (_orig_malloc == NULL) return;
+
     MutexLocker ml(_patch_lock);
 
     const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
