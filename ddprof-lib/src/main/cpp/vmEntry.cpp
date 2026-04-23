@@ -429,7 +429,6 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   _jvmti->AddCapabilities(&capabilities);
 
   jvmtiEventCallbacks callbacks = {0};
-  _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
   callbacks.VMInit = VMInit;
   callbacks.VMDeath = VMDeath;
@@ -445,6 +444,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.DynamicCodeGenerated = JitCodeCache::DynamicCodeGenerated;
   callbacks.NativeMethodBind = HotspotSupport::NativeMethodBind;
 
+  _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_LOAD, NULL);

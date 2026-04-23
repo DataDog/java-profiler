@@ -175,7 +175,7 @@ typedef void* address;
         field(_constmethod_flags_offset, offset, MATCH_SYMBOLS("_flags._flags", "_flags"))                          \
         field(_constmethod_code_size, offset, MATCH_SYMBOLS("_code_size"))                                          \
         field(_constmethod_name_index_offset, offset, MATCH_SYMBOLS("_name_index"))                                 \
-        field(_constmethod_sig_index_offset, offset, MATCH_SYMBOLS("_signatire+index"))                             \
+        field(_constmethod_sig_index_offset, offset, MATCH_SYMBOLS("_signature_index"))                             \
     type_end()                                                                                                      \
     type_begin(VMConstantPool, MATCH_SYMBOLS("ConstantPool"))                                                       \
         field(_pool_holder_offset, offset, MATCH_SYMBOLS("_pool_holder"))                                           \
@@ -189,7 +189,7 @@ typedef void* address;
     type_begin(VMClassLoaderData, MATCH_SYMBOLS("ClassLoaderData"))                                                 \
         field(_class_loader_data_next_offset, offset, MATCH_SYMBOLS("_next"))                                       \
         field_with_version(_class_loader_data_has_class_mirror_holder_offset, offset, 17, MAX_VERSION, MATCH_SYMBOLS("_has_class_mirror_holder")) \
-        field_with_version(_class_loader_data_is_anonymous_offset, offset, 11, MAX_VERSION, MATCH_SYMBOLS("_is_anonymous")) \
+        field_with_version(_class_loader_data_is_anonymous_offset, offset, 11, 11, MATCH_SYMBOLS("_is_anonymous"))  \
     type_end()                                                                                                      \
     type_begin(VMJavaClass, MATCH_SYMBOLS("java_lang_Class"))                                                       \
         field(_klass_offset_addr, address, MATCH_SYMBOLS("_klass_offset"))                                          \
@@ -422,7 +422,6 @@ class VMStructs {
         const char* ptr = (const char*)this + offset;
         assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
         return ptr;
-    
     }
 
     static bool goodPtr(const void* ptr) {
@@ -798,21 +797,31 @@ DECLARE_END
 DECLARE(VMConstantPool)
 public:
     inline VMKlass* holder() const;
-    inline VMSymbol* symbolAt(int index) const;
+    inline VMSymbol* symbolAt(u16 index) const;
 private:
     inline intptr_t* base() const;
 DECLARE_END
 
 DECLARE(VMConstMethod)
+    // ref: constMethodFlags.hpp in hotspot src
+    static constexpr uint32_t has_linenumber_table = 1 << 0;
 public:
     inline VMConstantPool* constants() const;
+    inline uint16_t codeSize() const;
+    inline const char* base() const;
+    inline const char* codeEnd() const;
+    inline u16 nameIndex() const;
+    inline u16 signatureIndex() const;
+    inline VMSymbol* name() const;
+    inline VMSymbol* signature() const;
+    inline uint32_t flags() const;
+    inline bool hasLineNumberTable() const;
+    bool getLineNumberTable(jint* entry_count_ptr,
+                       jvmtiLineNumberEntry** table_ptr);
 DECLARE_END
 
 DECLARE(VMMethod)   
 private:
-    // ref: constMethodFlags.hpp in hotspot src
-    static constexpr uint32_t has_linenumber_table = 1 << 0;
-
     static bool check_jmethodID_J9(jmethodID id);
     static bool check_jmethodID_hotspot(jmethodID id);
 public:
@@ -836,16 +845,7 @@ public:
 
     inline VMConstMethod* constMethod() const;
     inline VMNMethod* code() const;
-    inline uint16_t codeSize() const;
-    inline uint32_t flags() const;
-    inline bool hasLineNumberTable() const;
-    inline void* codeBase() const;
-    inline VMConstantPool* constantPool() const;
-    inline VMSymbol* name() const;
-    inline VMSymbol* signature() const;
     inline VMKlass* methodHolder() const;
-    bool getLineNumberTable(jint* entry_count_ptr,
-                       jvmtiLineNumberEntry** table_ptr);
     static bool check_jmethodID(jmethodID id);
 DECLARE_END
 

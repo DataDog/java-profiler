@@ -79,11 +79,11 @@ bool VMClassLoaderData::hasClassMirrorHolder() const {
 
 VMKlass* VMConstantPool::holder() const {
     assert(_pool_holder_offset >= 0);
-    return VMKlass::cast(at(_pool_holder_offset));
+    return VMKlass::load_then_cast(at(_pool_holder_offset));
 }
 
-VMSymbol* VMConstantPool::symbolAt(int index) const {
-    return VMSymbol::cast(&base()[index]);
+VMSymbol* VMConstantPool::symbolAt(u16 index) const {
+    return VMSymbol::cast(*(void**)&base()[index]);
 }
 
 intptr_t* VMConstantPool::base() const {
@@ -95,59 +95,6 @@ VMConstMethod* VMMethod::constMethod() const {
     return VMConstMethod::load_then_cast(at(_method_constmethod_offset));
 }
 
-uint16_t VMMethod::codeSize() const {
-    assert(_constmethod_code_size >= 0);
-    address code_size_addr =  *(unsigned char**)at(_method_constmethod_offset) + _constmethod_code_size;
-    uint16_t code_size = *(uint16_t*)code_size_addr;
-    TEST_LOG("VMMethod::codeSize(): code_size=%u\n", code_size);
-    return code_size;
-}
-
-uint32_t VMMethod::flags() const {
-    assert(_constmethod_flags_offset >= 0);
-    return *(uint32_t*) ( *(const char**) at(_method_constmethod_offset) + _constmethod_flags_offset );
-}
-
-bool VMMethod::hasLineNumberTable() const {
-    return (flags() & has_linenumber_table) != 0;
-}
-
-address VMMethod::codeBase() const {
-    assert(_method_constmethod_offset >= 0);
-    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
-    return (address)(const_method+1);
-}
-
-VMConstantPool* VMMethod::constantPool() const {
-    assert(_method_constmethod_offset >= 0);
-    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
-    assert(goodPtr(const_method));
-    assert(_constmethod_constants_offset >= 0);
-    VMConstantPool* cpool = *(VMConstantPool**) (const_method + _constmethod_constants_offset);
-    return cpool;
-}
-
-VMSymbol* VMMethod::name() const {
-    VMConstantPool* cpool = constantPool();
-    assert(_method_constmethod_offset >= 0);
-    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
-    assert(goodPtr(const_method));
-    assert(_constmethod_name_index_offset >= 0);
-    int name_index = *(uint16_t*) (const_method + _constmethod_name_index_offset);
-    return cpool->symbolAt(name_index);
-
-}
-
-VMSymbol* VMMethod::signature() const {
-    VMConstantPool* cpool = constantPool();
-    assert(_method_constmethod_offset >= 0);
-    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
-    assert(goodPtr(const_method));
-    assert(_constmethod_sig_index_offset >= 0);
-    int signature_index = *(uint16_t*) (const_method + _constmethod_sig_index_offset);
-    return cpool->symbolAt(signature_index);
-}
-
 VMNMethod* VMMethod::code() const {
     assert(_method_code_offset >= 0);
     const void* code_ptr = *(const void**) at(_method_code_offset);
@@ -155,11 +102,61 @@ VMNMethod* VMMethod::code() const {
 }
 
 VMKlass* VMMethod::methodHolder() const {
-    return constMethod()->constants()->holder();
+//    return constMethod()->constants()->holder();
+    VMConstMethod* constMthd = constMethod();
+    VMConstantPool* pool = constMthd->constants();
+    VMKlass* holder = pool->holder();
+    return holder;
 }
 
 VMConstantPool* VMConstMethod::constants() const {
     return VMConstantPool::load_then_cast(at(_constmethod_constants_offset));
+}
+
+uint16_t VMConstMethod::codeSize() const {
+    assert(_constmethod_code_size >= 0);
+    uint16_t code_size = *(uint16_t*)at(_constmethod_code_size);
+    TEST_LOG("VMConstMethod::codeSize(): code_size=%u", code_size);
+    return code_size;
+}
+
+const char* VMConstMethod::base() const {
+    return (const char*)this + _VMConstMethod_size;
+}
+
+const char* VMConstMethod::codeEnd() const {
+    return base() + codeSize();
+}
+
+u16 VMConstMethod::nameIndex() const {
+    assert(_constmethod_name_index_offset >= 0 && "Invalid name index");
+    return *(u16*)at(_constmethod_name_index_offset);
+}
+
+u16 VMConstMethod::signatureIndex() const {
+    assert(_constmethod_sig_index_offset >= 0 && "Invalid signature index");
+    return *(u16*)at(_constmethod_sig_index_offset);
+}
+
+VMSymbol* VMConstMethod::name() const {
+    VMConstantPool* cpool = constants();
+    u16 name_index = nameIndex();
+    return cpool->symbolAt(name_index);
+}
+
+VMSymbol* VMConstMethod::signature() const {
+    VMConstantPool* cpool = constants();
+    u16 sig_index = signatureIndex();
+    return cpool->symbolAt(sig_index);
+}
+
+uint32_t VMConstMethod::flags() const {
+    assert(_constmethod_flags_offset >= 0);
+    return *(uint32_t*)at(_constmethod_flags_offset );
+}
+
+bool VMConstMethod::hasLineNumberTable() const {
+    return (flags() & has_linenumber_table) != 0;
 }
 
 uintptr_t VMOopHandle::oop() const {

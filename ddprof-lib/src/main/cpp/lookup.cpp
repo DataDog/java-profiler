@@ -20,7 +20,7 @@
 #include "profiler.h"
 #include "rustDemangler.h"
 
-#include "hotspot/vmStructs.h"
+#include "hotspot/vmStructs.inline.h"
 
 void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
                                   const char *lib_name) {
@@ -120,16 +120,12 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   char *class_name = nullptr;
   char *method_name = nullptr;
   char *method_sig = nullptr;
-  u32 class_name_id = 0;
-  u32 method_name_id = 0;
-  u32 method_sig_id = 0;
 
   jint line_number_table_size = 0;
   jvmtiLineNumberEntry *line_number_table = NULL;
 
   jvmti->GetPhase(&phase);
   if ((phase & (JVMTI_PHASE_START | JVMTI_PHASE_LIVE)) != 0) {
-    bool entry = false;
     if (VMMethod::check_jmethodID(method) &&
         jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
         // On some older versions of J9, the JVMTI call to GetMethodDeclaringClass will return OK = 0, but when a
@@ -157,101 +153,137 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         }
       }
 
-      // Check if the frame is Thread.run or inherits from it
-      if (strncmp(method_name, "run", 4) == 0 &&
-          strncmp(method_sig, "()V", 3) == 0) {
-        jclass Thread_class = jni->FindClass("java/lang/Thread");
-        jclass Class_class = jni->FindClass("java/lang/Class");
-        if (Thread_class != nullptr && Class_class != nullptr) {
-          jmethodID equals = jni->GetMethodID(Class_class,
-                                              "equals", "(Ljava/lang/Object;)Z");
-          if (equals != nullptr) {
-            jclass klass = method_class;
-            do {
-              entry = jni->CallBooleanMethod(Thread_class, equals, klass);
-              if (jniExceptionCheck(jni)) {
-                entry = false;
-                break;
-              }
-              if (entry) {
-                break;
-              }
-            } while ((klass = jni->GetSuperclass(klass)) != NULL);
-          }
-        }
-        // Clear any exceptions from the reflection calls above
-        jniExceptionCheck(jni);
-      } else if (strncmp(method_name, "main", 5) == 0 &&
-                 strncmp(method_sig, "(Ljava/lang/String;)V", 21)) {
-        // public static void main(String[] args) - 'public static' translates
-        // to modifier bits 0 and 3, hence check for '9'
-        entry = true;
-      }
+      fillMethodInfo(mi, method_class, class_name, method_name, method_sig, line_number_table_size, line_number_table);
 
-      // maybe we should store the lookups below in initialisation-time
-      // constants...
-      if (has_prefix(class_name,
-                     "Ljdk/internal/reflect/GeneratedConstructorAccessor")) {
-        class_name_id = _classes->lookup(
-            "jdk/internal/reflect/GeneratedConstructorAccessor");
-        method_name_id =
-            _symbols.lookup("Object "
-                            "jdk.internal.reflect.GeneratedConstructorAccessor."
-                            "newInstance(Object[])");
-        method_sig_id = _symbols.lookup(method_sig);
-      } else if (has_prefix(class_name,
-                            "Lsun/reflect/GeneratedConstructorAccessor")) {
-        class_name_id =
-            _classes->lookup("sun/reflect/GeneratedConstructorAccessor");
-        method_name_id = _symbols.lookup(
-            "Object "
-            "sun.reflect.GeneratedConstructorAccessor.newInstance(Object[])");
-        method_sig_id = _symbols.lookup(method_sig);
-      } else if (has_prefix(class_name,
-                            "Ljdk/internal/reflect/GeneratedMethodAccessor")) {
-        class_name_id =
-            _classes->lookup("jdk/internal/reflect.GeneratedMethodAccessor");
-        method_name_id =
-            _symbols.lookup("Object "
-                            "jdk.internal.reflect.GeneratedMethodAccessor."
-                            "invoke(Object, Object[])");
-        method_sig_id = _symbols.lookup(method_sig);
-      } else if (has_prefix(class_name,
-                            "Lsun/reflect/GeneratedMethodAccessor")) {
-        class_name_id = _classes->lookup("sun/reflect/GeneratedMethodAccessor");
-        method_name_id = _symbols.lookup(
-            "Object sun.reflect.GeneratedMethodAccessor.invoke(Object, "
-            "Object[])");
-        method_sig_id = _symbols.lookup(method_sig);
-      } else if (has_prefix(class_name, "Ljava/lang/invoke/LambdaForm$")) {
-        const int lambdaFormPrefixLength =
-            strlen("Ljava/lang/invoke/LambdaForm$");
-        // we want to normalise to java/lang/invoke/LambdaForm$MH,
-        // java/lang/invoke/LambdaForm$DMH, java/lang/invoke/LambdaForm$BMH,
-        if (has_prefix(class_name + lambdaFormPrefixLength, "MH")) {
-          class_name_id = _classes->lookup("java/lang/invoke/LambdaForm$MH");
-        } else if (has_prefix(class_name + lambdaFormPrefixLength, "BMH")) {
-          class_name_id = _classes->lookup("java/lang/invoke/LambdaForm$BMH");
-        } else if (has_prefix(class_name + lambdaFormPrefixLength, "DMH")) {
-          class_name_id = _classes->lookup("java/lang/invoke/LambdaForm$DMH");
-        } else {
-          // don't recognise the suffix, so don't normalise
-          class_name_id =
-              _classes->lookup(class_name + 1, strlen(class_name) - 2);
-        }
-        method_name_id = _symbols.lookup(method_name);
-        method_sig_id = _symbols.lookup(method_sig);
-      } else {
-        class_name_id =
-            _classes->lookup(class_name + 1, strlen(class_name) - 2);
-        method_name_id = _symbols.lookup(method_name);
-        method_sig_id = _symbols.lookup(method_sig);
+      // strings are null or came from JVMTI
+      if (method_name) {
+        jvmti->Deallocate((unsigned char *)method_name);
+      }
+      if (method_sig) {
+        jvmti->Deallocate((unsigned char *)method_sig);
+      }
+      if (class_name) {
+        jvmti->Deallocate((unsigned char *)class_name);
       }
     } else {
       Counters::increment(JMETHODID_SKIPPED);
-      class_name_id = _classes->lookup("");
-      method_name_id = _symbols.lookup("jvmtiError");
-      method_sig_id = _symbols.lookup("()L;");
+      mi->_class = _classes->lookup("");
+      mi->_name = _symbols.lookup("jvmtiError");
+      mi->_sig = _symbols.lookup("()L;");
+      mi->_type = FRAME_INTERPRETED;
+      mi->_is_entry = false;
+      if (line_number_table != nullptr) {
+        mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
+          line_number_table_size, line_number_table);
+        // Increment counter for tracking live line number tables
+        Counters::increment(LINE_NUMBER_TABLES);
+     }
+
+    }
+  }
+  jni->PopLocalFrame(NULL);
+}
+
+void Lookup::fillMethodInfo(MethodInfo *mi, jclass method_class, char* class_name, char* method_name, char* method_sig, jint line_number_table_size, jvmtiLineNumberEntry* line_number_table) {
+  bool entry = false;
+  u32 class_name_id = 0;
+  u32 method_name_id = 0;
+  u32 method_sig_id = 0;
+
+  JNIEnv *jni = VM::jni();
+  if (jni == nullptr) {
+    return;
+  }
+
+  // Check if the frame is Thread.run or inherits from it
+  if (strncmp(method_name, "run", 4) == 0 &&
+      strncmp(method_sig, "()V", 3) == 0) {
+    jclass Thread_class = jni->FindClass("java/lang/Thread");
+    jclass Class_class = jni->FindClass("java/lang/Class");
+    if (Thread_class != nullptr && Class_class != nullptr) {
+      jmethodID equals = jni->GetMethodID(Class_class,
+                                          "equals", "(Ljava/lang/Object;)Z");
+      if (equals != nullptr) {
+        jclass klass = method_class;
+        do {
+          entry = jni->CallBooleanMethod(Thread_class, equals, klass);
+          if (jniExceptionCheck(jni)) {
+            entry = false;
+            break;
+          }
+          if (entry) {
+            break;
+          }
+        } while ((klass = jni->GetSuperclass(klass)) != NULL);
+      }
+    }
+    // Clear any exceptions from the reflection calls above
+    jniExceptionCheck(jni);
+  } else if (strncmp(method_name, "main", 5) == 0 &&
+             strncmp(method_sig, "(Ljava/lang/String;)V", 21)) {
+      // public static void main(String[] args) - 'public static' translates
+      // to modifier bits 0 and 3, hence check for '9'
+      entry = true;
+  }
+
+  // maybe we should store the lookups below in initialisation-time
+  // constants...
+  if (has_prefix(class_name,
+                    "Ljdk/internal/reflect/GeneratedConstructorAccessor")) {
+      class_name_id = _classes->lookup(
+                    "jdk/internal/reflect/GeneratedConstructorAccessor");
+      method_name_id =
+      _symbols.lookup("Object "
+                      "jdk.internal.reflect.GeneratedConstructorAccessor."
+                      "newInstance(Object[])");
+      method_sig_id = _symbols.lookup(method_sig);
+  } else if (has_prefix(class_name,
+                        "Lsun/reflect/GeneratedConstructorAccessor")) {
+      class_name_id =
+      _classes->lookup("sun/reflect/GeneratedConstructorAccessor");
+      method_name_id = _symbols.lookup(
+            "Object "
+            "sun.reflect.GeneratedConstructorAccessor.newInstance(Object[])");
+      method_sig_id = _symbols.lookup(method_sig);
+  } else if (has_prefix(class_name,
+                        "Ljdk/internal/reflect/GeneratedMethodAccessor")) {
+      class_name_id =
+      _classes->lookup("jdk/internal/reflect.GeneratedMethodAccessor");
+      method_name_id =
+          _symbols.lookup("Object "
+                          "jdk.internal.reflect.GeneratedMethodAccessor."
+                          "invoke(Object, Object[])");
+      method_sig_id = _symbols.lookup(method_sig);
+  } else if (has_prefix(class_name,
+                        "Lsun/reflect/GeneratedMethodAccessor")) {
+      class_name_id = _classes->lookup("sun/reflect/GeneratedMethodAccessor");
+      method_name_id = _symbols.lookup(
+            "Object sun.reflect.GeneratedMethodAccessor.invoke(Object, "
+            "Object[])");
+      method_sig_id = _symbols.lookup(method_sig);
+  } else if (has_prefix(class_name, "Ljava/lang/invoke/LambdaForm$")) {
+      const int lambdaFormPrefixLength =
+          strlen("Ljava/lang/invoke/LambdaForm$");
+      // we want to normalise to java/lang/invoke/LambdaForm$MH,
+      // java/lang/invoke/LambdaForm$DMH, java/lang/invoke/LambdaForm$BMH,
+      if (has_prefix(class_name + lambdaFormPrefixLength, "MH")) {
+        class_name_id = _classes->lookup("java/lang/invoke/LambdaForm$MH");
+      } else if (has_prefix(class_name + lambdaFormPrefixLength, "BMH")) {
+        class_name_id = _classes->lookup("java/lang/invoke/LambdaForm$BMH");
+      } else if (has_prefix(class_name + lambdaFormPrefixLength, "DMH")) {
+        class_name_id = _classes->lookup("java/lang/invoke/LambdaForm$DMH");
+      } else {
+        // don't recognise the suffix, so don't normalise
+        class_name_id =
+            _classes->lookup(class_name + 1, strlen(class_name) - 2);
+      }
+      method_name_id = _symbols.lookup(method_name);
+      method_sig_id = _symbols.lookup(method_sig);
+  } else {
+      class_name_id =
+          _classes->lookup(class_name + 1, strlen(class_name) - 2);
+      method_name_id = _symbols.lookup(method_name);
+      method_sig_id = _symbols.lookup(method_sig);
     }
 
     mi->_class = class_name_id;
@@ -265,19 +297,6 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       // Increment counter for tracking live line number tables
       Counters::increment(LINE_NUMBER_TABLES);
     }
-
-    // strings are null or came from JVMTI
-    if (method_name) {
-      jvmti->Deallocate((unsigned char *)method_name);
-    }
-    if (method_sig) {
-      jvmti->Deallocate((unsigned char *)method_sig);
-    }
-    if (class_name) {
-      jvmti->Deallocate((unsigned char *)class_name);
-    }
-  }
-  jni->PopLocalFrame(NULL);
 }
 
 MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
@@ -293,8 +312,10 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     key = MethodMap::makeKey(frame.native_function_name);
   } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
     key = MethodMap::makeKey(frame.packed_remote_frame);
+  } else if (frame_type == FRAME_INTERPRETED_METHOD) {
+    TEST_LOG("Found FRAME_INTERPRETED_METHOD");
+    key = MethodMap::makeKey(frame.method);
   } else {
-    FrameTypeId frame_type = FrameType::decode(bci);
     assert(frame_type == FRAME_INTERPRETED || frame_type == FRAME_JIT_COMPILED ||
            frame_type == FRAME_INLINED || frame_type == FRAME_C1_COMPILED ||
            VM::isOpenJ9()); // OpenJ9 may have bugs that produce invalid frame types
@@ -349,8 +370,10 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
         TEST_LOG("WARNING: Library lookup failed for index %u", lib_index);
         fillNativeMethodInfo(mi, "unknown_library", nullptr);
       }
+    } else if (frame_type == FRAME_INTERPRETED_METHOD) {
+        fillJavaMethodInfo(mi, frame.method, first_time);
     } else {
-      fillJavaMethodInfo(mi, method, first_time);
+        fillJavaMethodInfo(mi, method, first_time);
     }
   }
 
@@ -375,4 +398,60 @@ u32 Lookup::getPackage(const char *class_name) {
   return _packages.lookup(class_name, package - class_name);
 }
 
-u32 Lookup::getSymbol(const char *name) { return _symbols.lookup(name); }
+u32 Lookup::getSymbol(const char *name) {
+  return _symbols.lookup(name); 
+}
+
+void Lookup::fillJavaMethodInfo(MethodInfo *mi, const void* method, bool first_time) {
+  assert(VM::isHotspot());
+  assert(method != nullptr);
+  VMMethod* vm_method = VMMethod::cast(method);
+  VMConstMethod* const_method = vm_method->constMethod();
+
+  VMSymbol* name_sym = const_method->name();
+  VMSymbol* sig_sym = const_method->signature();
+  VMKlass* klass = vm_method->methodHolder();
+  VMSymbol* klass_sym = klass->name();
+  char* method_name = (char*)malloc(name_sym->length() + 1);
+  char* method_signature = (char*)malloc(sig_sym->length() + 1);
+  char* klass_name = (char*)malloc(klass_sym->length() + 1);
+
+  memcpy(method_name, name_sym->body(), name_sym->length());
+  method_name[name_sym->length()] = '\0';
+  memcpy(method_signature, sig_sym->body(), sig_sym->length());
+  method_signature[sig_sym->length()] = '\0';
+  memcpy(klass_name, klass_sym->body(), klass_sym->length());
+  klass_name[klass_sym->length()] = '\0';
+
+  TEST_LOG("Lookup VMMethod: %s %s : Class: %s", method_name, method_signature, klass_name);
+  JNIEnv *jni = VM::jni();
+  jclass clz = jni->FindClass(klass_name);
+  assert(clz != nullptr && "Could not find jclass");
+  jint entry_count = 0;
+  jvmtiLineNumberEntry* table = nullptr;
+
+ /* 
+  jmethodID mthd = jni->GetMethodID(clz, method_name, method_signature);
+
+  jvmtiEnv* jvmti = VM::jvmti();
+  if (jvmti->GetLineNumberTable(mthd, &entry_count, &table) != JVMTI_ERROR_NONE) {
+    table = nullptr;
+    entry_count = 0;
+  }
+
+//  fillMethodInfo(mi, clz, klass_name, method_name, method_signature, entry_count, table);
+*/
+  if (first_time && const_method->hasLineNumberTable()) {
+    if (!const_method->getLineNumberTable(&entry_count, &table)) {
+      entry_count = 0;
+      table = nullptr;
+    } else {
+      TEST_LOG("Load line number table for %s count = %d", method_name, entry_count);
+    }
+  }
+  fillMethodInfo(mi, clz, klass_name, method_name, method_signature, -entry_count, table);
+
+  free(method_name);
+  free(method_signature);
+  free(klass_name);
+}

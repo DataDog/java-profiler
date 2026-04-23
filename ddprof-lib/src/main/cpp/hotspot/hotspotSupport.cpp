@@ -271,10 +271,11 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
                 bool is_plausible_interpreter_frame = StackWalkValidation::isPlausibleInterpreterFrame(fp, sp, bcp_offset);
                 if (is_plausible_interpreter_frame) {
-                    VMMethod* method = VMMethod::load_then_cast(((void**)fp)[InterpreterFrame::method_offset]);
+                    VMMethod* method = VMMethod::cast(((void**)fp)[InterpreterFrame::method_offset]);
                     assert(method != nullptr && "No method for the interpreter frame");
 
                     jmethodID method_id = getMethodId(method);
+//                    assert(method_id != nullptr || VMClassLoader::isLoadedByBootstrapClassLoader(method));
                     if (method_id != NULL || VMClassLoader::isLoadedByBootstrapClassLoader(method)) {
                         Counters::increment(WALKVM_JAVA_FRAME_OK);
                         const char* bytecode_start = method->bytecode();
@@ -283,8 +284,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         if (method_id != nullptr) {
                             fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
                         } else {
+                            TEST_LOG("Fill FRAME_INTERPRETED_METHOD frame");
                             fillFrame(frames[depth++], FRAME_INTERPRETED_METHOD, bci, method);
-
                         }
                         sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
                         pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
@@ -296,12 +297,14 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 if (depth == 0) {
                     VMMethod* method = (VMMethod*)frame.method();
                     jmethodID method_id = getMethodId(method);
+//                    assert(method_id != nullptr || VMClassLoader::isLoadedByBootstrapClassLoader(method));
                     if (method_id != NULL || VMClassLoader::isLoadedByBootstrapClassLoader(method)) {
                         Counters::increment(WALKVM_JAVA_FRAME_OK);
                         if (method_id != nullptr) {
                             fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id);
                         } else {
-                            fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method);
+                            TEST_LOG("Fill FRAME_INTERPRETED_METHOD frame");
+                            fillFrame(frames[depth++], FRAME_INTERPRETED_METHOD, 0, method);
                         }
                         if (is_plausible_interpreter_frame) {
                             pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
@@ -1013,11 +1016,13 @@ static void patchClassLoaderData(JNIEnv* jni, jclass klass) {
 }
 
 constexpr const char* LAMBDA_PREFIX = "Ljava/lang/invoke/LambdaForm$";
+constexpr const char* FFM_PREFIX = "Ljdk/internal/foreign/abi/";
 // constexpr const size_t LAMBDA_PREFIX_LEN = strlen(LAMBDA_PREFIX);
 static bool isLambdaClass(const char* signature) {
     return strncmp(signature, LAMBDA_PREFIX, strlen(LAMBDA_PREFIX)) == 0 ||
            strstr(signature, "$$Lambda.") != nullptr ||
-           strstr(signature, ".lambda$") != nullptr;
+           strstr(signature, ".lambda$") != nullptr ||
+           strncmp(signature, FFM_PREFIX, strlen(FFM_PREFIX)) == 0;
 }
 
 bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
@@ -1043,6 +1048,10 @@ bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
         } else {
             TEST_LOG("Lambda class: %s", signature_ptr);
         }
+    } else if (cl != nullptr) {
+        char* signature_ptr;
+        jvmti->GetClassSignature(klass, &signature_ptr, nullptr);
+        TEST_LOG("processing none bootstrap class %s", signature_ptr);
     }
 
     return JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);

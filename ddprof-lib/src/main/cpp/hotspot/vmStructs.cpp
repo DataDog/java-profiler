@@ -758,15 +758,15 @@ jmethodID VMMethod::validatedId() {
     return NULL;
 }
 
-bool VMMethod::getLineNumberTable(jint* entry_count_ptr,
-                                   jvmtiLineNumberEntry** table_ptr) {
+bool VMConstMethod::getLineNumberTable(jint* entry_count_ptr,
+                                       jvmtiLineNumberEntry** table_ptr) {
     if (!hasLineNumberTable()) {
         return false;
     }
 
     assert(entry_count_ptr != nullptr);
     assert(table_ptr != nullptr);
-    unsigned char* table_start = (unsigned char*)codeBase() + codeSize();
+    const char* table_start = codeEnd();
     int count = 0;
     CompressedLineNumberStream stream(table_start);
     while (stream.read_pair()) {

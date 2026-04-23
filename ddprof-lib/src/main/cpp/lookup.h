@@ -28,11 +28,14 @@ private:
                             const char *lib_name);
   void fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi);
   void cutArguments(char *func);
-  void fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time);
   bool has_prefix(const char *str, const char *prefix) const {
     return strncmp(str, prefix, strlen(prefix)) == 0;
   }
 
+  void fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time);
+  void fillJavaMethodInfo(MethodInfo *mi, const void* method, bool first_time);
+  void fillMethodInfo(MethodInfo *mi, jclass method_class, char* class_name, char* method_name, char* method_sig,
+                      jint line_number_table_size, jvmtiLineNumberEntry* line_number_table);
 public:
   Lookup(Recording *rec, MethodMap *method_map, Dictionary *classes)
       : _rec(rec), _method_map(method_map), _classes(classes), _packages(),

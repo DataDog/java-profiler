@@ -26,14 +26,14 @@ private:
   static const uint32_t MAX_VALUE = (uint32_t)-1;  // 2^^32-1
 
 
-  unsigned char* _buffer;
+  const char* _buffer;
   int _position;
 
   int _bci;
   int _line;
 
 public:
-  CompressedLineNumberStream(unsigned char* buffer);
+  CompressedLineNumberStream(const char* buffer);
 
   bool read_pair();
   void reset();

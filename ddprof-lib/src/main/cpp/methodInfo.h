@@ -18,6 +18,7 @@
 
 class SharedLineNumberTable {
 public:
+  /* positive: the table is allocated by jvmti. negative: the table is allocated profiler */
   int _size;
   void *_ptr;
 
@@ -51,7 +52,10 @@ public:
     }
 
     int i = 1;
-    while (i < _line_number_table->_size &&
+    int table_size = _line_number_table->_size;
+    table_size = table_size > 0 ? table_size : - table_size;
+
+    while (i < table_size &&
            bci >= ((jvmtiLineNumberEntry *)_line_number_table->_ptr)[i]
                       .start_location) {
       i++;

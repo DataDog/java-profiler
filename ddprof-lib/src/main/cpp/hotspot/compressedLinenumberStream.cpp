@@ -1,6 +1,6 @@
 #include "hotspot/compressedLinenumberStream.h"
 
-CompressedLineNumberStream::CompressedLineNumberStream(unsigned char* buffer) :
+CompressedLineNumberStream::CompressedLineNumberStream(const char* buffer) :
   _buffer(buffer), _position(0), _bci(0), _line(0) {
 };
 
@@ -29,7 +29,7 @@ bool CompressedLineNumberStream::read_pair() {
 uint32_t CompressedLineNumberStream::read_uint() {
     const int pos = _position;
     const uint32_t b_0 = (uint8_t)_buffer[pos];  //b_0 = a[0]
-    assert(b_0 >= X);
+    assert(b_0 >= X && "avoid excluded bytes");
     uint32_t sum = b_0 - X;
     if (sum < L) {  // common case
       _position = pos + 1;
