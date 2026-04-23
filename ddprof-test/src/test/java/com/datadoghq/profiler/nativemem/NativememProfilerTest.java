@@ -9,6 +9,7 @@ import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.junit.CStack;
 import com.datadoghq.profiler.junit.RetryTest;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.openjdk.jmc.common.item.IAttribute;
@@ -36,6 +37,15 @@ import static org.openjdk.jmc.common.unit.UnitLookup.ADDRESS;
 public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
 
     private static final IAttribute<IQuantity> MALLOC_ADDRESS = attr("address", "address", "", ADDRESS);
+
+    @BeforeAll
+    static void preloadNativeLib() {
+        // Ensure libddproftest.so is loaded before the profiler starts in @BeforeEach.
+        // patchLibraries() only patches libraries already in native_libs at call time;
+        // if the library loads after start() via dlopen_hook, glibc JVMs may not forward
+        // the System.loadLibrary dlopen through the patched GOT entry.
+        NativeAllocHelper.nativeMalloc(0, 0);
+    }
 
     public NativememProfilerTest(@CStack String cstack) {
         super(cstack);

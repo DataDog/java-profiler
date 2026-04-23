@@ -9,6 +9,7 @@ import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.junit.CStack;
 import com.datadoghq.profiler.junit.RetryTest;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.openjdk.jmc.common.item.IItem;
@@ -28,6 +29,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * these code paths via the {@code _interval <= 1} fast path.
  */
 public class NativememSampledProfilerTest extends CStackAwareAbstractProfilerTest {
+
+    @BeforeAll
+    static void preloadNativeLib() {
+        // Same as NativememProfilerTest: load libddproftest.so before the profiler starts
+        // so patchLibraries() finds it in native_libs and patches its malloc GOT entry.
+        NativeAllocHelper.nativeMalloc(0, 0);
+    }
 
     public NativememSampledProfilerTest(@CStack String cstack) {
         super(cstack);
