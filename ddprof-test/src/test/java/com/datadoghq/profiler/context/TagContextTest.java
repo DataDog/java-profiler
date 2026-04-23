@@ -142,6 +142,7 @@ public class TagContextTest extends AbstractProfilerTest {
     public void testSnapshotRestore() throws Exception {
         // J9 does not initialize ThreadContext for non-profiled threads; skip.
         Assumptions.assumeTrue(!Platform.isJ9());
+        registerCurrentThreadForWallClockProfiling();
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
 
         // Initially both slots are empty
