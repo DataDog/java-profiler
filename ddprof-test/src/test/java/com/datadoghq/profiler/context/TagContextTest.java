@@ -230,7 +230,7 @@ public class TagContextTest extends AbstractProfilerTest {
 
         // setContext() triggers setContextDirect which sets indexedValueCache[i]=ABSENT for all slots
         profiler.setContext(1L, 42L, 0L, 42L);
-        assertNull("tag1 must be null after setContext clears cache", contextSetter.readContextValue("tag1"));
+        assertNull(contextSetter.readContextValue("tag1"), "tag1 must be null after setContext clears cache");
     }
 
     @Test
