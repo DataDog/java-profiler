@@ -223,7 +223,7 @@ profiler resets to `CSTACK_DEFAULT` and logs an error:
 } else if (_cstack == CSTACK_VM) {
     if (!VMStructs::hasStackStructs()) {
         _cstack = CSTACK_DEFAULT;
-        Log::error("VMStructs stack walking is not supported on this JVM/platform, defaulting to frame pointer unwinding.");
+        Log::error("VMStructs stack walking is not supported on this JVM/platform, defaulting to the default native call stack unwinding mode.");
     }
 }
 ```

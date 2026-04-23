@@ -1205,7 +1205,16 @@ Error Profiler::start(Arguments &args, bool reset) {
     error = malloc_tracer.start(args);
     if (error) {
       Log::warn("%s", error.message());
-      error = Error::OK; // recoverable
+      if (_event_mask == EM_NATIVEMEM) {
+        // nativemem is the only requested mode: propagate the real error
+        disableEngines();
+        switchLibraryTrap(false);
+        lockAll();
+        _jfr.stop();
+        unlockAll();
+        return error;
+      }
+      error = Error::OK; // recoverable when other modes are also active
     } else {
       activated |= EM_NATIVEMEM;
     }
