@@ -181,9 +181,17 @@ maintain approximately `TARGET_SAMPLES_PER_WINDOW` (100) samples per second.
 ### Why `CSTACK_VM` is needed
 
 The malloc hooks execute on the calling thread with no signal context (`ucontext ==
-NULL`). Native stack unwinding via frame pointers or DWARF requires a signal context
-as the starting point, so neither `CSTACK_DEFAULT` nor `CSTACK_FP` can produce
-useful traces for malloc events.
+NULL`). Two distinct levels of stack capture are possible:
+
+- **Java-only stacks** (`CSTACK_DEFAULT`, `CSTACK_FP`, `CSTACK_DWARF`): Java frames
+  are still available via ASGCT / `JavaFrameAnchor`. When `ucontext == NULL`, the
+  profiler falls through to ASGCT so these modes do produce Java-level traces for
+  malloc events.
+
+- **Interleaved native + Java stacks** (`CSTACK_VM` only): Native frame unwinding
+  via frame pointers or DWARF requires a signal context as the starting point.
+  `CSTACK_VM` avoids this by seeding the unwind from `callerPC()` (no signal context
+  needed) and transitioning to Java frames via HotSpot's `JavaFrameAnchor`.
 
 `CSTACK_VM` starts from `callerPC()` (which expands to `__builtin_return_address(0)`
 on x86/x86_64/aarch64) for the initial frame and uses HotSpot's `JavaFrameAnchor`
@@ -215,8 +223,7 @@ profiler resets to `CSTACK_DEFAULT` and logs an error:
 } else if (_cstack == CSTACK_VM) {
     if (!VMStructs::hasStackStructs()) {
         _cstack = CSTACK_DEFAULT;
-        Log::error("VMStructs stack walking is not supported on this JVM/platform, "
-                   "defaulting to frame pointer unwinding. Native malloc stack traces will be unavailable.");
+        Log::error("VMStructs stack walking is not supported on this JVM/platform, defaulting to frame pointer unwinding.");
     }
 }
 ```

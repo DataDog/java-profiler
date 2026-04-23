@@ -336,9 +336,11 @@ Error MallocTracer::start(Arguments& args) {
         return Error("Failed to resolve malloc symbols; native memory profiling unavailable");
     }
 
-    // Patch first, then enable recording so hooks never run without valid _orig_* pointers.
-    patchLibraries();
+    // Enable recording before patching so a concurrent dlopen() during patchLibraries()
+    // sees running()==true and patches the new library via installHooks().
+    // _orig_* pointers are already resolved in initialize(), so this is safe.
     _running = true;
+    patchLibraries();
 
     return Error::OK;
 }

@@ -21,6 +21,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -72,13 +73,13 @@ public class NativememSampledProfilerTest extends CStackAwareAbstractProfilerTes
             for (IItem item : items) {
                 IQuantity size = sizeAccessor.getMember(item);
                 IQuantity weight = weightAccessor.getMember(item);
-                if (weight != null) {
-                    // Weight is 1 / (1 - exp(-size/interval)); that function is strictly > 1
-                    // for all positive sizes, so any Poisson-sampled event must carry weight >= 1.
-                    assertTrue(weight.doubleValue() >= 1.0,
-                        "weight must be >= 1.0 on the sampled path, got " + weight.doubleValue()
-                        + " (size=" + (size != null ? size.longValue() : "null") + ")");
-                }
+                assertNotNull(size, "profiler.Malloc event must have a non-null size field");
+                assertNotNull(weight, "profiler.Malloc event must have a non-null weight field");
+                // Weight is 1 / (1 - exp(-size/interval)); that function is strictly > 1
+                // for all positive sizes, so any Poisson-sampled event must carry weight >= 1.
+                assertTrue(weight.doubleValue() >= 1.0,
+                    "weight must be >= 1.0 on the sampled path, got " + weight.doubleValue()
+                    + " (size=" + size.longValue() + ")");
                 sampleCount++;
             }
         }

@@ -687,8 +687,6 @@ void *Profiler::dlopen_hook(const char *filename, int flags) {
     // Patch sigaction in newly loaded libraries
     LibraryPatcher::patch_sigaction();
     MallocTracer::installHooks();
-    // Patch sigaction in newly loaded libraries
-    LibraryPatcher::patch_sigaction();
     // Extract build-ids for newly loaded libraries if remote symbolication is enabled
     Profiler* profiler = instance();
     if (profiler != nullptr && profiler->_remote_symbolication) {
