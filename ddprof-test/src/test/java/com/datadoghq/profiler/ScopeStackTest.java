@@ -1,4 +1,4 @@
-package com.datadoghq.profiler.context;
+package com.datadoghq.profiler;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -9,9 +9,6 @@ import java.nio.ByteOrder;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
-import com.datadoghq.profiler.ScopeStack;
-import com.datadoghq.profiler.ThreadContext;
-
 /**
  * Pure-Java unit test for {@link ScopeStack}. Uses heap-backed {@link ByteBuffer}s so
  * no native library is required. Exercises depth accounting, underflow, and round-trip
@@ -19,10 +16,11 @@ import com.datadoghq.profiler.ThreadContext;
  */
 public class ScopeStackTest {
 
-    private static final int OTEL_MAX_RECORD_SIZE = 640;
-    private static final int SIDECAR_SIZE = 48;
-    private static final int COMBINED_SIZE = OTEL_MAX_RECORD_SIZE + SIDECAR_SIZE;
-    // Offsets mirror OtelThreadContextRecord in otel_context.h.
+    private static final int COMBINED_SIZE = ThreadContext.SNAPSHOT_SIZE;
+    private static final int RECORD_SIZE = ThreadContext.OTEL_MAX_RECORD_SIZE;
+    // Offsets mirror OtelThreadContextRecord in otel_context.h and the sidecar layout
+    // built by initializeContextTLS0 in javaApi.cpp. These are spec-fixed; guarded by
+    // static_asserts in native code.
     private static final int TRACE_ID_OFFSET = 0;
     private static final int SPAN_ID_OFFSET = 16;
     private static final int VALID_OFFSET = 24;
@@ -33,9 +31,9 @@ public class ScopeStackTest {
     private static ThreadContext newContext() {
         // Combined buffer aliases record + sidecar via slices sharing the same backing array.
         ByteBuffer combined = ByteBuffer.allocate(COMBINED_SIZE).order(ByteOrder.nativeOrder());
-        combined.position(0).limit(OTEL_MAX_RECORD_SIZE);
+        combined.position(0).limit(RECORD_SIZE);
         ByteBuffer record = combined.slice().order(ByteOrder.nativeOrder());
-        combined.position(OTEL_MAX_RECORD_SIZE).limit(COMBINED_SIZE);
+        combined.position(RECORD_SIZE).limit(COMBINED_SIZE);
         ByteBuffer sidecar = combined.slice().order(ByteOrder.nativeOrder());
         combined.position(0).limit(COMBINED_SIZE);
         long[] metadata = {

@@ -200,7 +200,8 @@ public class TagContextTest extends AbstractProfilerTest {
             }
         }
         assertTrue(overflowIndex >= 0, "Expected at least one write to overflow attrs_data");
-        assertNull(contextSetter.readContextValue("tag" + overflowIndex), "Overflowed slot must read null via cache");
+        assertNull(contextSetter.readContextValue("tag" + overflowIndex),
+                   "Overflowed slot must read null — the entry never landed in attrs_data");
     }
 
     @Test
@@ -212,9 +213,10 @@ public class TagContextTest extends AbstractProfilerTest {
         assertTrue(contextSetter.setContextValue("tag1", "before-put"));
         assertEquals("before-put", contextSetter.readContextValue("tag1"));
 
-        // setContext() triggers setContextDirect which sets indexedValueCache[i]=ABSENT for all slots
+        // setContext() triggers setContextDirect which resets attrs_data_size to the LRS entry only,
+        // dropping all user attribute entries — so scanning attrs_data for tag1 returns null.
         profiler.setContext(1L, 42L, 0L, 42L);
-        assertNull(contextSetter.readContextValue("tag1"), "tag1 must be null after setContext clears cache");
+        assertNull(contextSetter.readContextValue("tag1"), "tag1 must be null after setContext resets attrs_data");
     }
 
     @Test

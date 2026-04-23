@@ -29,11 +29,11 @@ import java.nio.charset.StandardCharsets;
 public final class ThreadContext {
     private static final int MAX_CUSTOM_SLOTS = 10;
     // Max UTF-8 byte length for a custom attribute value. Matches the 1-byte length
-    // field in the OTEP attrs_data entry header; values above this would be truncated
-    // silently by replaceOtepAttribute, so reject at the entry point instead — keeps
-    // the attrs_data view and any future diagnostic readers consistent.
+    // field in the OTEP attrs_data entry header. Enforced up front in setContextAttribute
+    // so replaceOtepAttribute can assume the input always fits.
     private static final int MAX_VALUE_BYTES = 255;
-    private static final int OTEL_MAX_RECORD_SIZE = 640;
+    // Package-private so ScopeStackTest can construct heap-backed buffers of matching size.
+    static final int OTEL_MAX_RECORD_SIZE = 640;
     private static final int SIDECAR_SIZE = MAX_CUSTOM_SLOTS * Integer.BYTES + Long.BYTES; // 48
     // Package-private so ScopeStack can size its byte[] scratch.
     static final int SNAPSHOT_SIZE = OTEL_MAX_RECORD_SIZE + SIDECAR_SIZE; // 688
@@ -406,10 +406,13 @@ public final class ThreadContext {
     /**
      * Replace or insert an attribute in attrs_data. Record must be detached.
      * Writes the pre-encoded UTF-8 bytes into the record.
+     *
+     * <p>Caller contract: {@code utf8.length <= MAX_VALUE_BYTES}, enforced at the public
+     * entry point in {@link #setContextAttributeDirect}.
      */
     private boolean replaceOtepAttribute(int otepKeyIndex, byte[] utf8) {
         int currentSize = compactOtepAttribute(otepKeyIndex);
-        int valueLen = Math.min(utf8.length, 255);
+        int valueLen = utf8.length;
         int entrySize = 2 + valueLen;
         if (currentSize + entrySize <= maxAttrsDataSize) {
             int base = attrsDataOffset + currentSize;
