@@ -499,7 +499,8 @@ void OS::forwardForeignSignal(int signo, siginfo_t* siginfo, void* ucontext) {
             }
         }
         if (need_mask) {
-            syscall(__NR_rt_sigprocmask, SIG_BLOCK, &prev.sa_mask, &saved_mask, sizeof(sigset_t));
+            need_mask = syscall(__NR_rt_sigprocmask, SIG_BLOCK, &prev.sa_mask, &saved_mask,
+                                sizeof(sigset_t)) == 0;
         }
     }
 
