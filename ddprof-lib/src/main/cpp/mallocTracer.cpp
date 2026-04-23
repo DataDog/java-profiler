@@ -176,7 +176,7 @@ static void resolveMallocSymbols() {
         free(p0);
     }
     void* p2 = calloc(1, 1);
-    void* p3 = aligned_alloc(1, 1);
+    void* p3 = aligned_alloc(sizeof(void*), sizeof(void*));
     void* p4 = NULL;
     if (posix_memalign(&p4, sizeof(void*), sizeof(void*)) == 0) free(p4);
     free(p3);
