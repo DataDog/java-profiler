@@ -18,10 +18,6 @@ import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.unit.IQuantity;
 
-import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.List;
-
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
@@ -63,10 +59,7 @@ public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
         // symbols, causing undefined behavior or crashes when hooks chain into each other.
         Assumptions.assumeFalse(isAsan() || isTsan());
 
-        List<ByteBuffer> buffers = new ArrayList<>();
-        for (int i = 0; i < 1000; i++) {
-            buffers.add(ByteBuffer.allocateDirect(1024));
-        }
+        triggerAllocations(1000);
 
         stopProfiler();
 
@@ -99,11 +92,12 @@ public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
         }
         assertTrue(foundMinSize, "expected at least one malloc event with size >= 1024 bytes");
 
-        // All cstack modes capture Java frames (vm/vmx via JavaFrameAnchor,
-        // dwarf/fp via ASGCT with the anchor-based fallback for NULL ucontext).
-        verifyStackTraces("profiler.Malloc", "allocateDirect", "shouldRecordMallocSamples");
+        // triggerAllocations is a Java wrapper so it appears in all cstack modes, including fp/dwarf.
+        verifyStackTraces("profiler.Malloc", "triggerAllocations", "shouldRecordMallocSamples");
+    }
 
-        buffers.clear(); // keep alive until after stop
+    private static void triggerAllocations(int count) {
+        NativeAllocHelper.nativeMalloc(1024, count);
     }
 
 }

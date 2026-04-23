@@ -909,6 +909,8 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
   writeBoolSetting(buf, T_MALLOC, "enabled", args._nativemem >= 0);
   if (args._nativemem >= 0) {
     writeIntSetting(buf, T_MALLOC, "nativemem", args._nativemem);
+    // samplingInterval=-1 means every allocation is recorded (nativemem=0).
+    writeIntSetting(buf, T_MALLOC, "samplingInterval", args._nativemem == 0 ? -1 : args._nativemem);
   }
 
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "debugSymbols",
@@ -1584,7 +1586,7 @@ void Recording::recordMallocSample(Buffer *buf, int tid, u64 call_trace_id,
   int start = buf->skip(1);
   buf->putVar64(T_MALLOC);
   buf->putVar64(event->_start_time);
-  buf->putVar32(tid);
+  buf->putVar64(tid);
   buf->putVar64(call_trace_id);
   buf->putVar64(event->_address);
   buf->putVar64(event->_size);

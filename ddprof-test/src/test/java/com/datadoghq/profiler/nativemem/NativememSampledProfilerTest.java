@@ -17,10 +17,6 @@ import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.unit.IQuantity;
 
-import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.List;
-
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -55,10 +51,7 @@ public class NativememSampledProfilerTest extends CStackAwareAbstractProfilerTes
         Assumptions.assumeFalse(isAsan() || isTsan());
 
         // Drive enough allocation volume through malloc to yield several Poisson samples.
-        List<ByteBuffer> buffers = new ArrayList<>();
-        for (int i = 0; i < 20_000; i++) {
-            buffers.add(ByteBuffer.allocateDirect(1024));
-        }
+        triggerAllocations(20_000);
 
         stopProfiler();
 
@@ -88,7 +81,9 @@ public class NativememSampledProfilerTest extends CStackAwareAbstractProfilerTes
         // regressions where the sampling path silently produces zero events.
         assertTrue(sampleCount >= 8,
             "expected at least 8 sampled malloc events, got " + sampleCount);
+    }
 
-        buffers.clear();
+    private static void triggerAllocations(int count) {
+        NativeAllocHelper.nativeMalloc(1024, count);
     }
 }
