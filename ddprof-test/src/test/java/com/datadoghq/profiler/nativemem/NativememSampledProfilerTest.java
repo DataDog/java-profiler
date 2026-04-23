@@ -67,9 +67,8 @@ public class NativememSampledProfilerTest extends CStackAwareAbstractProfilerTes
         for (IItemIterable items : events) {
             IMemberAccessor<IQuantity, IItem> sizeAccessor = SIZE.getAccessor(items.getType());
             IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT.getAccessor(items.getType());
-            if (sizeAccessor == null || weightAccessor == null) {
-                continue;
-            }
+            assertNotNull(sizeAccessor, "profiler.Malloc events must carry a size field");
+            assertNotNull(weightAccessor, "profiler.Malloc events must carry a weight field");
             for (IItem item : items) {
                 IQuantity size = sizeAccessor.getMember(item);
                 IQuantity weight = weightAccessor.getMember(item);

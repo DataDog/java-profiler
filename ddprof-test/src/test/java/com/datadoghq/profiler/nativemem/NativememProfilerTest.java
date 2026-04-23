@@ -22,6 +22,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
 import static org.openjdk.jmc.common.unit.UnitLookup.ADDRESS;
@@ -73,27 +74,34 @@ public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
         boolean foundMinSize = false;
         for (IItemIterable items : events) {
             IMemberAccessor<IQuantity, IItem> sizeAccessor = SIZE.getAccessor(items.getType());
+            IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT.getAccessor(items.getType());
             IMemberAccessor<IQuantity, IItem> addrAccessor = MALLOC_ADDRESS.getAccessor(items.getType());
             if (sizeAccessor == null) {
                 continue;
             }
+            assertNotNull(addrAccessor, "profiler.Malloc events must carry an address field");
+            assertNotNull(weightAccessor, "profiler.Malloc events must carry a weight field");
             for (IItem item : items) {
                 IQuantity size = sizeAccessor.getMember(item);
-                assertTrue(size == null || size.longValue() > 0, "allocation size must be positive");
-                if (size != null && size.longValue() >= 1024) {
+                assertNotNull(size, "profiler.Malloc event must have a non-null size field");
+                assertTrue(size.longValue() > 0, "allocation size must be positive");
+                if (size.longValue() >= 1024) {
                     foundMinSize = true;
                 }
-                if (addrAccessor != null) {
-                    IQuantity addr = addrAccessor.getMember(item);
-                    assertTrue(addr == null || addr.longValue() != 0, "malloc address must not be zero");
-                }
+                IQuantity addr = addrAccessor.getMember(item);
+                assertTrue(addr == null || addr.longValue() != 0, "malloc address must not be zero");
+                // nativemem=0 samples every allocation; weight must be exactly 1.0.
+                IQuantity weight = weightAccessor.getMember(item);
+                assertNotNull(weight, "profiler.Malloc event must have a non-null weight field");
+                assertTrue(Math.abs(weight.doubleValue() - 1.0) < 1e-6,
+                    "weight must be 1.0 for nativemem=0 (all allocations sampled), got " + weight.doubleValue());
             }
         }
         assertTrue(foundMinSize, "expected at least one malloc event with size >= 1024 bytes");
 
         // All cstack modes capture Java frames (vm/vmx via JavaFrameAnchor,
         // dwarf/fp via ASGCT with the anchor-based fallback for NULL ucontext).
-        verifyStackTraces("profiler.Malloc", "allocateDirect");
+        verifyStackTraces("profiler.Malloc", "allocateDirect", "shouldRecordMallocSamples");
 
         buffers.clear(); // keep alive until after stop
     }

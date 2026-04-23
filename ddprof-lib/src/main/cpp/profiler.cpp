@@ -1140,7 +1140,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     Log::warn("Branch stack is supported only with PMU events");
   } else if (_cstack == CSTACK_VM) {
     if (!VMStructs::hasStackStructs()) {
-      _cstack = CSTACK_DEFAULT;
+      _cstack = DWARF_SUPPORTED ? CSTACK_DWARF : CSTACK_NO;
       Log::error("VMStructs stack walking is not supported on this JVM/platform, defaulting to the default native call stack unwinding mode.");
     }
   }

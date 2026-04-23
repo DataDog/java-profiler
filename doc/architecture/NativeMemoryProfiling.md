@@ -217,12 +217,12 @@ if (_cstack == CSTACK_DEFAULT) {
 ```
 
 If `CSTACK_VM` is explicitly requested but `VMStructs` are not available, the
-profiler resets to `CSTACK_DEFAULT` and logs an error:
+profiler resets to `CSTACK_DWARF` (if supported) or `CSTACK_NO` and logs an error:
 
 ```cpp
 } else if (_cstack == CSTACK_VM) {
     if (!VMStructs::hasStackStructs()) {
-        _cstack = CSTACK_DEFAULT;
+        _cstack = DWARF_SUPPORTED ? CSTACK_DWARF : CSTACK_NO;
         Log::error("VMStructs stack walking is not supported on this JVM/platform, defaulting to the default native call stack unwinding mode.");
     }
 }
