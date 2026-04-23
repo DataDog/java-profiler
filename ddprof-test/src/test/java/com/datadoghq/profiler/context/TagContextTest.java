@@ -42,7 +42,12 @@ public class TagContextTest extends AbstractProfilerTest {
         registerCurrentThreadForWallClockProfiling();
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2", "tag1"));
 
-        String[] strings = IntStream.range(0, 10).mapToObj(String::valueOf).toArray(String[]::new);
+        // Use session-unique prefix so each @RetryingTest attempt registers fresh values in the
+        // native Dictionary. Without this, on musl (no JVM fork) the per-thread attrCacheKeys
+        // persists across retries: cache hits skip registerConstant0(), leaving
+        // dictionary_context_keys=0 on every retry after the first.
+        String pfx = Long.toHexString(System.nanoTime()) + "_";
+        String[] strings = IntStream.range(0, 10).mapToObj(i -> pfx + i).toArray(String[]::new);
         for (int i = 0; i < strings.length * 10; i++) {
             work(contextSetter, "tag1", strings[i % strings.length]);
         }
