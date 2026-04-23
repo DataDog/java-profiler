@@ -205,7 +205,8 @@ void WallClockASGCT::timerLoop() {
           } else if (errno == EPERM) {
               permission_denied++;
           } else if (errno == EAGAIN) {
-              // SIGVTALRM already pending on target thread — benign, skip.
+              // Signal queue limit (RLIMIT_SIGPENDING) reached; thread will
+              // still be sampled when the queue drains — benign, skip.
               num_failures--;
           } else {
               Log::debug("unexpected error %s", strerror(errno));

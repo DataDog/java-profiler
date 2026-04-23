@@ -36,8 +36,8 @@ malloc lock held by the interrupted thread.
 | `timer_create` (CTimer; ITimer post-migration) | `SI_TIMER` (-2) | `siginfo->si_value.sival_ptr == CPU_COOKIE` |
 | `rt_tgsigqueueinfo` (WallClock — new) | `SI_QUEUE` (-1) | `siginfo->si_value.sival_ptr == WALLCLOCK_COOKIE` |
 | `setitimer` (foreign — Go's CPU profiler) | `SI_KERNEL` / kernel-defined | none → untrusted, must forward |
-| `kill` / `raise` | `SI_USER` (0) | none → forward |
-| `tgkill` / `pthread_kill` (foreign) | `SI_TKILL` (-6) | none → untrusted, must forward |
+| `kill` (cross-process/thread) | `SI_USER` (0) | none → forward |
+| `raise` / `tgkill` / `pthread_kill` (foreign) | `SI_TKILL` (-6) | none → untrusted, must forward |
 | `sigqueue` from another process | `SI_QUEUE` (-1) + foreign cookie | cookie mismatch → forward |
 
 ### Cookie strategy
@@ -202,7 +202,7 @@ existing SafeAccess PC-range discrimination, not `forwardForeignSignal`.
      counter increments.
    - CPU: `setitimer(ITIMER_PROF)` → assert `FOREIGN` counter increments and
      signal is forwarded.
-   - CPU: `raise(SIGPROF)` (SI_USER, no cookie) → assert `FOREIGN`.
+   - CPU: `raise(SIGPROF)` (SI_TKILL on glibc/musl, no cookie) → assert `FOREIGN`.
    - Wallclock: `rt_tgsigqueueinfo(..., WALLCLOCK_COOKIE)` → assert `OWN`.
    - Wallclock: `tgkill(SIGVTALRM)` from another thread (no cookie) → assert
      `FOREIGN` and forwarded.
