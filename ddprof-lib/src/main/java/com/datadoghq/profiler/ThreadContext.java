@@ -65,11 +65,9 @@ public final class ThreadContext {
     // setContextDirect). Allows readContextAttribute to return without scanning
     // attrs_data or allocating on the warm path.
     // null = not yet scanned; ABSENT = scanned/cleared, known absent; other = cached value.
-    // ABSENT uses new String("") (not "") so it has a unique identity not shared with any
-    // interned literal. The == check in readContextAttribute relies on reference identity
-    // within a single ClassLoader. ThreadContext must not be loaded by multiple ClassLoaders;
-    // doing so would produce distinct ABSENT instances, causing the identity check to always
-    // fall through to the cold scan path.
+    // ABSENT uses new String("") (not "") so it has a unique identity distinct from the
+    // interned empty-string literal. The == check in readContextAttribute relies on that
+    // unique sentinel identity to distinguish "known absent" from actual cached values.
     private static final String ABSENT = new String("");
     private final String[] indexedValueCache = new String[MAX_CUSTOM_SLOTS];
 
