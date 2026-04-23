@@ -18,7 +18,6 @@ package com.datadoghq.profiler;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
 
 /**
  * Thread-local context for trace/span identification.
@@ -29,13 +28,15 @@ import java.util.Arrays;
  */
 public final class ThreadContext {
     private static final int MAX_CUSTOM_SLOTS = 10;
+    // Max UTF-8 byte length for a custom attribute value. Matches the 1-byte length
+    // field in the OTEP attrs_data entry header; values above this would be truncated
+    // silently by replaceOtepAttribute, so reject at the entry point instead — keeps
+    // the attrs_data view and any future diagnostic readers consistent.
+    private static final int MAX_VALUE_BYTES = 255;
     private static final int OTEL_MAX_RECORD_SIZE = 640;
     private static final int SIDECAR_SIZE = MAX_CUSTOM_SLOTS * Integer.BYTES + Long.BYTES; // 48
-    /**
-     * Total bytes covered by the combined snapshot buffer: OTEP record + tag encodings + LRS.
-     * Used by {@link #snapshot(byte[], int)} / {@link #restore(byte[], int)}.
-     */
-    public static final int SNAPSHOT_SIZE = OTEL_MAX_RECORD_SIZE + SIDECAR_SIZE; // 688
+    // Package-private so ScopeStack can size its byte[] scratch.
+    static final int SNAPSHOT_SIZE = OTEL_MAX_RECORD_SIZE + SIDECAR_SIZE; // 688
     private static final int LRS_OTEP_KEY_INDEX = 0;
     // LRS is always a fixed 16-hex-char value in attrs_data (zero-padded u64).
     // The entry header is 2 bytes (key_index + length), giving 18 bytes total.
@@ -65,18 +66,6 @@ public final class ThreadContext {
     private final String[] attrCacheKeys = new String[CACHE_SIZE];
     private final int[] attrCacheEncodings = new int[CACHE_SIZE];
     private final byte[][] attrCacheBytes = new byte[CACHE_SIZE][];
-
-    // Per-slot read-back cache: indexedValueCache[keyIndex] = the String last
-    // successfully written to attrs_data at that slot. Kept in sync by every
-    // write (setContextAttributeDirect) and clear (clearContextAttribute,
-    // setContextDirect). Allows readContextAttribute to return without scanning
-    // attrs_data or allocating on the warm path.
-    // null = not yet scanned; ABSENT = scanned/cleared, known absent; other = cached value.
-    // ABSENT uses new String("") (not "") so it has a unique identity distinct from the
-    // interned empty-string literal. The == check in readContextAttribute relies on that
-    // unique sentinel identity to distinguish "known absent" from actual cached values.
-    private static final String ABSENT = new String("");
-    private final String[] indexedValueCache = new String[MAX_CUSTOM_SLOTS];
 
     // OTEP record field offsets (from packed struct)
     private final int validOffset;
@@ -198,7 +187,6 @@ public final class ThreadContext {
         sidecarBuffer.putInt(keyIndex * Integer.BYTES, 0);
         removeOtepAttribute(otepKeyIndex);
         attach();
-        indexedValueCache[keyIndex] = ABSENT;
     }
 
     public void copyCustoms(int[] value) {
@@ -209,8 +197,8 @@ public final class ThreadContext {
     }
 
     /**
-     * Captures the full record + sidecar state into {@code scratch[offset .. offset+SNAPSHOT_SIZE)}.
-     * Pair with {@link #restore(byte[], int)} for nested-scope propagation.
+     * Captures the full record + sidecar state into {@code scratch[offset..offset+SNAPSHOT_SIZE)}.
+     * Pair with {@link #restore} for nested-scope propagation.
      *
      * <p>The detach/attach pair is required so the captured {@code valid} byte is always 0. When
      * {@link #restore} later memcpys the scratch back, the valid byte is overwritten mid-memcpy;
@@ -229,14 +217,11 @@ public final class ThreadContext {
      * going through {@link #recordBuffer}'s valid flag ({@code ContextApi::get} in native code),
      * which is the sole gate for sidecar reads (see {@code thread.h}). The scratch's own valid
      * byte is always 0 (enforced in {@link #snapshot}), so the memcpy never transiently republishes.
-     * {@link #indexedValueCache} is invalidated so the next read re-scans the restored attrs_data;
-     * {@code null} denotes "not yet scanned", distinct from {@link #ABSENT}.
      */
     public void restore(byte[] scratch, int offset) {
         detach();
         combinedBuffer.position(0);
         combinedBuffer.put(scratch, offset, SNAPSHOT_SIZE);
-        Arrays.fill(indexedValueCache, null);
         attach();
     }
 
@@ -255,21 +240,14 @@ public final class ThreadContext {
      * request IDs, and other per-request-unique strings will exhaust the
      * Dictionary and cause attributes to be silently dropped.
      *
-     * <p><b>Overflow and orphan encodings:</b> When {@code attrs_data} overflows
-     * (buffer full), the old entry for {@code keyIndex} is compacted out and the
-     * new value cannot be written. Both the sidecar and {@code indexedValueCache}
-     * are cleared so {@link #readContextAttribute} returns {@code null} for this
-     * slot. However, if the value was not already cached in the per-thread encoding
-     * cache, {@code registerConstant0} may have already registered it in the native
-     * Dictionary before the overflow was detected. That Dictionary entry cannot be
-     * removed — the native Dictionary is write-only for the JVM lifetime. The orphan
-     * encoding is harmless: it will not appear in JFR events because the sidecar is
-     * zeroed.
+     * <p><b>Value size limit.</b> The UTF-8 encoding of {@code value} must fit in
+     * {@value #MAX_VALUE_BYTES} bytes (the OTEP attrs_data entry length field is one byte).
+     * Oversized values are rejected up front — they never reach the Dictionary or attrs_data.
      *
      * @param keyIndex Index into the registered attribute key map (0-based)
      * @param value The string value for this attribute
-     * @return true if the attribute was set successfully, false if the
-     *         Dictionary is full, attrs_data overflows, or keyIndex is out of range
+     * @return true if the attribute was set successfully, false if the value is too long,
+     *         the Dictionary is full, attrs_data overflows, or keyIndex is out of range
      */
     public boolean setContextAttribute(int keyIndex, String value) {
         if (keyIndex < 0 || keyIndex >= MAX_CUSTOM_SLOTS || value == null) {
@@ -289,11 +267,17 @@ public final class ThreadContext {
         int encoding;
         byte[] utf8;
         if (value.equals(attrCacheKeys[slot])) {
+            // Cache hit — the value was previously validated and cached; no re-check needed.
             encoding = attrCacheEncodings[slot];
             utf8 = attrCacheBytes[slot];
         } else {
-            // Cache miss: register in Dictionary, encode UTF-8, cache both.
-            // Allocates byte[] once per unique value; cached for reuse.
+            // Cache miss: encode UTF-8 and validate size BEFORE touching the Dictionary.
+            // Rejecting here avoids an orphan Dictionary entry (the native Dictionary is
+            // write-only for the JVM lifetime and cannot be undone).
+            utf8 = value.getBytes(StandardCharsets.UTF_8);
+            if (utf8.length > MAX_VALUE_BYTES) {
+                return false;
+            }
             encoding = registerConstant0(value);
             if (encoding < 0) {
                 // Dictionary full: clear sidecar AND remove the OTEP attrs_data entry
@@ -301,7 +285,6 @@ public final class ThreadContext {
                 clearContextAttribute(keyIndex);
                 return false;
             }
-            utf8 = value.getBytes(StandardCharsets.UTF_8);
             attrCacheEncodings[slot] = encoding;
             attrCacheBytes[slot] = utf8;
             attrCacheKeys[slot] = value;
@@ -319,7 +302,6 @@ public final class ThreadContext {
             sidecarBuffer.putInt(keyIndex * Integer.BYTES, 0);
         }
         attach();
-        indexedValueCache[keyIndex] = written ? value : ABSENT;
         return written;
     }
 
@@ -346,7 +328,6 @@ public final class ThreadContext {
         for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
             // i * Integer.BYTES: byte offset into sidecar buffer for int slot i
             sidecarBuffer.putInt(i * Integer.BYTES, 0);
-            indexedValueCache[i] = ABSENT;
         }
         // Reset attrs_data_size to contain only the fixed LRS entry, discarding
         // any custom attribute entries written during the previous span.
@@ -382,7 +363,6 @@ public final class ThreadContext {
         writeLrsHex(0);
         for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
             sidecarBuffer.putInt(i * Integer.BYTES, 0);
-            indexedValueCache[i] = ABSENT;
         }
         sidecarBuffer.putLong(lrsSidecarOffset, 0);
     }
@@ -486,19 +466,10 @@ public final class ThreadContext {
     }
 
     /**
-     * Reads a custom attribute value by key index.
-     *
-     * <p>Warm path: O(1), zero-allocation — returns the cached value from
-     * {@code indexedValueCache[keyIndex]} when the slot was populated by a prior write
-     * on this thread. The cache is kept in sync by every write ({@link #setContextAttributeDirect})
-     * and clear ({@link #clearContextAttribute}, {@link #setContextDirect}).
-     *
-     * <p>Cold path: scans {@code attrs_data} on first read after profiler restart
-     * (when the Java cache is unpopulated but the native buffer has pre-existing data).
-     * Populates the cache slot on success to make subsequent reads warm.
-     *
-     * <p>Used by {@code ContextSetter.readContextValue()} to support snapshot/restore of
-     * nested profiling scopes.
+     * Reads a custom attribute value by key index by scanning {@code attrs_data}.
+     * Test-only path: in production, the profiler signal handler reads via sidecar
+     * encoding IDs and the OTEL eBPF profiler reads attrs_data directly — no Java
+     * reader is on any hot path. Allocates a new String from the UTF-8 bytes on each call.
      *
      * @param keyIndex 0-based user key index (same as passed to setContextAttribute)
      * @return the attribute value string, or null if not set
@@ -507,18 +478,7 @@ public final class ThreadContext {
         if (keyIndex < 0 || keyIndex >= MAX_CUSTOM_SLOTS) {
             return null;
         }
-        String cached = indexedValueCache[keyIndex];
-        if (cached == ABSENT) {
-            return null;
-        }
-        if (cached != null) {
-            return cached;
-        }
-        // Cold path: scan attrs_data (only on first read after session restart).
-        // valid=0 means the record has not been published yet by attach(), or was cleared
-        // by clearContextDirect() without resetting attrs_data_size. Either way there are
-        // no valid user attribute entries — only the LRS prefix may exist. Any future path
-        // that writes user attributes must set valid=1 via attach() first.
+        // valid=0 → record was detached or never published. No attrs_data to trust.
         if (recordBuffer.get(validOffset) == 0) {
             return null;
         }
@@ -536,13 +496,10 @@ public final class ThreadContext {
                 for (int i = 0; i < len; i++) {
                     bytes[i] = recordBuffer.get(attrsDataOffset + pos + 2 + i);
                 }
-                String value = new String(bytes, StandardCharsets.UTF_8);
-                indexedValueCache[keyIndex] = value;
-                return value;
+                return new String(bytes, StandardCharsets.UTF_8);
             }
             pos += 2 + len;
         }
-        indexedValueCache[keyIndex] = ABSENT;
         return null;
     }
 

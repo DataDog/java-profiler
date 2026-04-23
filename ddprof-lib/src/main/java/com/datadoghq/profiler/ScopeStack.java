@@ -15,8 +15,8 @@ import java.util.Arrays;
  * Per-thread stack of {@link ThreadContext} snapshots for nested scopes.
  *
  * <p>Provides bulk save/restore of the full OTEP record + sidecar state via one memcpy per
- * transition, avoiding per-attribute TLS resolution on scope enter/exit. Not thread-safe:
- * a single stack instance must be accessed only from its owning thread.
+ * transition. Not thread-safe: a single stack instance must be accessed only from its
+ * owning thread.
  *
  * <p>Storage is tiered to keep shallow nesting allocation-free:
  * <ul>

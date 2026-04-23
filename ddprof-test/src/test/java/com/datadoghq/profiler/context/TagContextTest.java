@@ -1,6 +1,5 @@
 package com.datadoghq.profiler.context;
 
-import java.lang.reflect.Field;
 import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -29,7 +28,6 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.ContextSetter;
-import com.datadoghq.profiler.ThreadContext;
 import static com.datadoghq.profiler.MoreAssertions.DICTIONARY_PAGE_SIZE;
 import static com.datadoghq.profiler.MoreAssertions.assertBoundedBy;
 import com.datadoghq.profiler.Platform;
@@ -180,25 +178,6 @@ public class TagContextTest extends AbstractProfilerTest {
 
         // tag2 was never set; readContextValue by name returns null
         assertNull(contextSetter.readContextValue("tag2"));
-    }
-
-    @Test
-    public void testColdPathScan() throws Exception {
-        // Simulate profiler restart: null the Java cache slot so the next read
-        // goes through the cold scan path and recovers the value from attrs_data.
-        Assumptions.assumeTrue(!Platform.isJ9());
-        registerCurrentThreadForWallClockProfiling();
-        ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
-
-        assertTrue(contextSetter.setContextValue("tag1", "cold-value"));
-        assertEquals("cold-value", contextSetter.readContextValue("tag1")); // warm path
-
-        Field cacheField = ThreadContext.class.getDeclaredField("indexedValueCache");
-        cacheField.setAccessible(true);
-        String[] cache = (String[]) cacheField.get(profiler.getThreadContext());
-        cache[0] = null; // null = cold, triggers attrs_data scan on next read
-
-        assertEquals("cold-value", contextSetter.readContextValue("tag1")); // cold path
     }
 
     @Test
