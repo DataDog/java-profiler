@@ -261,14 +261,19 @@ void MallocHooker::patchLibraries() {
     // _patched_libs is intentionally monotonic: hooks are permanent and cannot be
     // uninstalled safely (library unloading races). On profiler restart, only
     // newly-loaded libraries need patching.
+    TEST_LOG("MallocHooker::patchLibraries: _patched_libs=%d native_lib_count=%d _orig_malloc=%p",
+             _patched_libs, native_lib_count, (void*)_orig_malloc);
     while (_patched_libs < native_lib_count) {
         CodeCache* cc = native_libs[_patched_libs++];
 
         UnloadProtection handle(cc);
         if (!handle.isValid()) {
+            TEST_LOG("MallocHooker::patchLibraries: skipping (invalid handle) %s", cc->name());
             continue;
         }
 
+        TEST_LOG("MallocHooker::patchLibraries: patching %s has_malloc=%d",
+                 cc->name(), cc->findImport(im_malloc) != nullptr);
         if (_orig_malloc) cc->patchImport(im_malloc, (void*)malloc_hook);
         if (_orig_realloc) cc->patchImport(im_realloc, (void*)realloc_hook);
         if (_orig_aligned_alloc) cc->patchImport(im_aligned_alloc, (void*)aligned_alloc_hook);
