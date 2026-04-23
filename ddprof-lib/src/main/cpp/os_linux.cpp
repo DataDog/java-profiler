@@ -435,13 +435,20 @@ bool OS::shouldProcessSignal(siginfo_t* siginfo, int expected_si_code, void* exp
 }
 
 void OS::forwardForeignSignal(int signo, siginfo_t* siginfo, void* ucontext) {
+    // Preserve errno: syscall(rt_sigprocmask) on the slow path (and any
+    // chained handler) may set errno. Callers that save errno AFTER
+    // forwardForeignSignal (e.g. CTimer::signalHandler) would see a clobbered
+    // value without this guard.
+    int saved_errno = errno;
     if (signo <= 0 || signo >= MAX_SIGNALS) {
+        errno = saved_errno;
         return;
     }
     // Acquire-load the valid flag — synchronises with the release-store in
     // installSignalHandler so we only touch the oldaction struct after it
     // has been fully written.
     if (!__atomic_load_n(&installed_oldaction_valid[signo], __ATOMIC_ACQUIRE)) {
+        errno = saved_errno;
         return;
     }
     // Copy the stored action into a local so we pick a self-consistent
@@ -524,6 +531,7 @@ void OS::forwardForeignSignal(int signo, siginfo_t* siginfo, void* ucontext) {
     if (need_mask) {
         syscall(__NR_rt_sigprocmask, SIG_SETMASK, &saved_mask, nullptr, sizeof(sigset_t));
     }
+    errno = saved_errno;
 }
 
 bool OS::signalOriginCheckEnabled() {
