@@ -255,9 +255,12 @@ public final class ThreadContext {
         detach();
         sidecarBuffer.putInt(keyIndex * Integer.BYTES, encoding);
         boolean written = replaceOtepAttribute(otepKeyIndex, utf8);
+        if (!written) {
+            // attrs_data overflow: the old entry was compacted out and the new one
+            // couldn't fit. Zero the sidecar so both views agree there is no value.
+            sidecarBuffer.putInt(keyIndex * Integer.BYTES, 0);
+        }
         attach();
-        // Keep the read-back cache in sync. Only cache on successful attrs_data write;
-        // on overflow (written=false) the slot was compacted out; ABSENT prevents a futile rescan.
         indexedValueCache[keyIndex] = written ? value : ABSENT;
         return written;
     }
