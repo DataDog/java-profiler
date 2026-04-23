@@ -20,7 +20,7 @@
 #include "threadState.inline.h"
 #include "guards.h"
 #include <cerrno>
-#include <cstring>
+#include <string.h>
 #include <math.h>
 #include <random>
 #include <algorithm> // For std::sort and std::binary_search
