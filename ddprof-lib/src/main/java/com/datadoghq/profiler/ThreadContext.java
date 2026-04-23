@@ -64,6 +64,8 @@ public final class ThreadContext {
     // write (setContextAttributeDirect) and clear (clearContextAttribute,
     // setContextDirect). Allows readContextAttribute to return without scanning
     // attrs_data or allocating on the warm path.
+    // null = not yet scanned; ABSENT = scanned/cleared, known absent; other = cached value.
+    private static final String ABSENT = new String("");
     private final String[] indexedValueCache = new String[MAX_CUSTOM_SLOTS];
 
     // OTEP record field offsets (from packed struct)
@@ -181,7 +183,7 @@ public final class ThreadContext {
         sidecarBuffer.putInt(keyIndex * Integer.BYTES, 0);
         removeOtepAttribute(otepKeyIndex);
         attach();
-        indexedValueCache[keyIndex] = null;
+        indexedValueCache[keyIndex] = ABSENT;
     }
 
     public void copyCustoms(int[] value) {
@@ -255,8 +257,8 @@ public final class ThreadContext {
         boolean written = replaceOtepAttribute(otepKeyIndex, utf8);
         attach();
         // Keep the read-back cache in sync. Only cache on successful attrs_data write;
-        // on overflow (written=false) the slot was compacted out so null is correct.
-        indexedValueCache[keyIndex] = written ? value : null;
+        // on overflow (written=false) the slot was compacted out; ABSENT prevents a futile rescan.
+        indexedValueCache[keyIndex] = written ? value : ABSENT;
         return written;
     }
 
@@ -283,7 +285,7 @@ public final class ThreadContext {
         for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
             // i * Integer.BYTES: byte offset into sidecar buffer for int slot i
             sidecarBuffer.putInt(i * Integer.BYTES, 0);
-            indexedValueCache[i] = null;
+            indexedValueCache[i] = ABSENT;
         }
         // Reset attrs_data_size to contain only the fixed LRS entry, discarding
         // any custom attribute entries written during the previous span.
@@ -319,7 +321,7 @@ public final class ThreadContext {
         writeLrsHex(0);
         for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
             sidecarBuffer.putInt(i * Integer.BYTES, 0);
-            indexedValueCache[i] = null;
+            indexedValueCache[i] = ABSENT;
         }
         sidecarBuffer.putLong(lrsSidecarOffset, 0);
     }
@@ -437,6 +439,9 @@ public final class ThreadContext {
             return null;
         }
         String cached = indexedValueCache[keyIndex];
+        if (cached == ABSENT) {
+            return null;
+        }
         if (cached != null) {
             return cached;
         }
@@ -466,6 +471,7 @@ public final class ThreadContext {
             }
             pos += 2 + len;
         }
+        indexedValueCache[keyIndex] = ABSENT;
         return null;
     }
 
