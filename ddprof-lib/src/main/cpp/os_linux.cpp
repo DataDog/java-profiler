@@ -386,8 +386,8 @@ bool OS::sendSignalToThread(int thread_id, int signo) {
     return syscall(__NR_tgkill, processId(), thread_id, signo) == 0;
 }
 
-#ifndef SYS_rt_tgsigqueueinfo
-#error "SYS_rt_tgsigqueueinfo is not defined on this platform. \
+#ifndef __NR_rt_tgsigqueueinfo
+#error "__NR_rt_tgsigqueueinfo is not defined on this platform. \
 sendSignalWithCookie requires rt_tgsigqueueinfo(2). \
 Ensure your kernel headers define __NR_rt_tgsigqueueinfo."
 #endif
@@ -405,7 +405,7 @@ bool OS::sendSignalWithCookie(int thread_id, int signo, void* cookie) {
     si.si_signo = signo;
     si.si_code  = SI_QUEUE;
     si.si_value.sival_ptr = cookie;
-    return syscall(SYS_rt_tgsigqueueinfo, processId(), thread_id, signo, &si) == 0;
+    return syscall(__NR_rt_tgsigqueueinfo, processId(), thread_id, signo, &si) == 0;
 }
 
 // File-scope origin-check state. Written once in primeSignalOriginCheck()
