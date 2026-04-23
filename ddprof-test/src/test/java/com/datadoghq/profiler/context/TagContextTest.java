@@ -205,7 +205,9 @@ public class TagContextTest extends AbstractProfilerTest {
             attrs.add("tag" + i);
         }
         ContextSetter contextSetter = new ContextSetter(profiler, attrs);
-        String bigValue = "x".repeat(255);
+        char[] chars = new char[255];
+        java.util.Arrays.fill(chars, 'x');
+        String bigValue = new String(chars);
         int overflowIndex = -1;
         for (int i = 1; i <= 10; i++) {
             if (!contextSetter.setContextValue("tag" + i, bigValue)) {
@@ -213,8 +215,8 @@ public class TagContextTest extends AbstractProfilerTest {
                 break;
             }
         }
-        assertTrue("Expected at least one write to overflow attrs_data", overflowIndex >= 0);
-        assertNull("Overflowed slot must read null via cache", contextSetter.readContextValue("tag" + overflowIndex));
+        assertTrue(overflowIndex >= 0, "Expected at least one write to overflow attrs_data");
+        assertNull(contextSetter.readContextValue("tag" + overflowIndex), "Overflowed slot must read null via cache");
     }
 
     @Test
