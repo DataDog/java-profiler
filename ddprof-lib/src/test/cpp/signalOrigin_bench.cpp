@@ -14,7 +14,7 @@
  *                   straight to it. Measures the signal-delivery baseline.
  *   FAST_PATH     — our classifier is installed on top; prev handler has
  *                   an empty sa_mask (common case). forwardForeignSignal
- *                   short-circuits pthread_sigmask.
+ *                   skips rt_sigprocmask syscalls.
  *   SLOW_PATH     — prev handler has a non-empty sa_mask AND
  *                   DDPROF_FORWARD_APPLY_SIGMASK=1 is set (opt-in).
  *                   forwardForeignSignal applies SIG_BLOCK / SIG_SETMASK
@@ -22,7 +22,7 @@
  *
  * The delta between BASELINE and FAST_PATH is the overhead per foreign
  * signal when sa_mask chaining is disabled (the default). The delta between
- * FAST_PATH and SLOW_PATH is the cost of the two pthread_sigmask calls.
+ * FAST_PATH and SLOW_PATH is the cost of the two rt_sigprocmask syscalls.
  *
  * The benchmark runs only when the env var BENCH_SIGNAL_ORIGIN is set, so
  * normal CI does not pay for it.
@@ -61,7 +61,7 @@ int setupForeignHandler(int signo, bool with_mask, struct sigaction* saved_out) 
     sigemptyset(&sa.sa_mask);
     if (with_mask) {
         // Populate with a few signals to force forwardForeignSignal onto the
-        // slow path (non-empty sa_mask → pthread_sigmask block + restore).
+        // slow path (non-empty sa_mask → rt_sigprocmask block + restore).
         sigaddset(&sa.sa_mask, SIGUSR2);
         sigaddset(&sa.sa_mask, SIGALRM);
         sigaddset(&sa.sa_mask, SIGCHLD);
@@ -220,7 +220,7 @@ TEST_F(SignalOriginBench, SlowPath_ClassifierPlusMaskedForward) {
     // Slow-path chain is opt-in behind DDPROF_FORWARD_APPLY_SIGMASK.
     enableSigmaskChain();
     // Install a "foreign" handler with a non-empty sa_mask so
-    // forwardForeignSignal has to call pthread_sigmask twice.
+    // forwardForeignSignal has to invoke two rt_sigprocmask syscalls.
     ASSERT_EQ(0, setupForeignHandler(kBenchSignal, /*with_mask=*/true, &saved_action));
 
     OS::installSignalHandler(kBenchSignal, classifierHandler);
@@ -343,7 +343,7 @@ TEST_F(SignalOriginBench, Pure_ForwardFastPath) {
 
 TEST_F(SignalOriginBench, Pure_ForwardSlowPath) {
     enableSigmaskChain();
-    // Non-empty mask → pthread_sigmask twice per call.
+    // Non-empty mask → rt_sigprocmask twice per call.
     ASSERT_EQ(0, setupForeignHandler(kPureBenchSignal, /*with_mask=*/true, &saved_action));
     OS::installSignalHandler(kPureBenchSignal, classifierHandler);
 
