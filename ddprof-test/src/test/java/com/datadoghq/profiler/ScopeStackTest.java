@@ -16,31 +16,23 @@ import org.junit.jupiter.api.Test;
  */
 public class ScopeStackTest {
 
-    private static final int COMBINED_SIZE = ThreadContext.SNAPSHOT_SIZE;
-    private static final int RECORD_SIZE = ThreadContext.OTEL_MAX_RECORD_SIZE;
     // Offsets mirror OtelThreadContextRecord in otel_context.h and the sidecar layout
     // built by initializeContextTLS0 in javaApi.cpp. These are spec-fixed; guarded by
-    // static_asserts in native code.
+    // static_asserts in native code. All are absolute within the unified buffer.
     private static final int TRACE_ID_OFFSET = 0;
     private static final int SPAN_ID_OFFSET = 16;
     private static final int VALID_OFFSET = 24;
     private static final int ATTRS_DATA_SIZE_OFFSET = 26;
     private static final int ATTRS_DATA_OFFSET = 28;
-    private static final int LRS_SIDECAR_OFFSET = 40; // 10 * sizeof(u32)
+    private static final int LRS_OFFSET = 640 + 40; // after 640-byte record + 10 * sizeof(u32)
 
     private static ThreadContext newContext() {
-        // Combined buffer aliases record + sidecar via slices sharing the same backing array.
-        ByteBuffer combined = ByteBuffer.allocate(COMBINED_SIZE).order(ByteOrder.nativeOrder());
-        combined.position(0).limit(RECORD_SIZE);
-        ByteBuffer record = combined.slice().order(ByteOrder.nativeOrder());
-        combined.position(RECORD_SIZE).limit(COMBINED_SIZE);
-        ByteBuffer sidecar = combined.slice().order(ByteOrder.nativeOrder());
-        combined.position(0).limit(COMBINED_SIZE);
+        ByteBuffer buf = ByteBuffer.allocate(ThreadContext.SNAPSHOT_SIZE).order(ByteOrder.nativeOrder());
         long[] metadata = {
             VALID_OFFSET, TRACE_ID_OFFSET, SPAN_ID_OFFSET,
-            ATTRS_DATA_SIZE_OFFSET, ATTRS_DATA_OFFSET, LRS_SIDECAR_OFFSET
+            ATTRS_DATA_SIZE_OFFSET, ATTRS_DATA_OFFSET, LRS_OFFSET
         };
-        return new ThreadContext(record, sidecar, combined, metadata);
+        return new ThreadContext(buf, metadata);
     }
 
     private static void assumeLittleEndian() {

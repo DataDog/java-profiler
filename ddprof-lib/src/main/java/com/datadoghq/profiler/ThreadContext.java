@@ -15,6 +15,7 @@
  */
 package com.datadoghq.profiler;
 
+import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -32,8 +33,7 @@ public final class ThreadContext {
     // field in the OTEP attrs_data entry header. Enforced up front in setContextAttribute
     // so replaceOtepAttribute can assume the input always fits.
     private static final int MAX_VALUE_BYTES = 255;
-    // Package-private so ScopeStackTest can construct heap-backed buffers of matching size.
-    static final int OTEL_MAX_RECORD_SIZE = 640;
+    private static final int OTEL_MAX_RECORD_SIZE = 640;
     private static final int SIDECAR_SIZE = MAX_CUSTOM_SLOTS * Integer.BYTES + Long.BYTES; // 48
     // Package-private so ScopeStack can size its byte[] scratch.
     static final int SNAPSHOT_SIZE = OTEL_MAX_RECORD_SIZE + SIDECAR_SIZE; // 688
@@ -74,58 +74,56 @@ public final class ThreadContext {
     private final int attrsDataSizeOffset;
     private final int attrsDataOffset;
     private final int maxAttrsDataSize;
-    private final int lrsSidecarOffset; // localRootSpanId offset in sidecar
+    private final int lrsOffset; // localRootSpanId offset in the unified buffer
+    // Base offset of the tag-encoding sidecar within the unified buffer. Every tag slot i
+    // lives at ctxBuffer[tagEncodingsOffset + i * Integer.BYTES]. Equal to OTEL_MAX_RECORD_SIZE.
+    private static final int TAG_ENCODINGS_OFFSET = OTEL_MAX_RECORD_SIZE;
 
-    private final ByteBuffer recordBuffer;   // 640 bytes, OtelThreadContextRecord
-    private final ByteBuffer sidecarBuffer;  // tag encodings + LRS
-    // Aliases record + sidecar as one 688-byte contiguous region for bulk snapshot/restore
-    // via byte[] scratch. Byte-granular only; position state is thread-confined to this field.
-    private final ByteBuffer combinedBuffer;
+    // Single buffer spanning [OTEP record | tag_encodings | LRS] — 688 bytes contiguous.
+    // Used for per-field access AND for bulk snapshot/restore memcpy. Position state is
+    // thread-confined to snapshot/restore, which reset it before each bulk op.
+    private final ByteBuffer ctxBuffer;
 
     /**
-     * Creates a ThreadContext from the three DirectByteBuffers returned by native initializeContextTLS0.
+     * Creates a ThreadContext from the single DirectByteBuffer returned by native initializeContextTLS0.
      *
-     * @param recordBuffer 640-byte buffer over OtelThreadContextRecord
-     * @param sidecarBuffer buffer over tag encodings + local root span id
-     * @param combinedBuffer 688-byte buffer aliasing record + sidecar contiguously (for bulk snapshot)
-     * @param metadata array with [VALID_OFFSET, TRACE_ID_OFFSET, SPAN_ID_OFFSET,
-     *                 ATTRS_DATA_SIZE_OFFSET, ATTRS_DATA_OFFSET, LRS_SIDECAR_OFFSET]
+     * @param ctxBuffer 688-byte unified buffer spanning record + tag_encodings + LRS
+     * @param metadata array with absolute offsets [VALID, TRACE_ID, SPAN_ID,
+     *                 ATTRS_DATA_SIZE, ATTRS_DATA, LRS]
      */
-    public ThreadContext(ByteBuffer recordBuffer, ByteBuffer sidecarBuffer, ByteBuffer combinedBuffer, long[] metadata) {
-        // Record buffer uses native order for uint16_t attrs_data_size (read by C as native uint16_t).
+    public ThreadContext(ByteBuffer ctxBuffer, long[] metadata) {
+        // Uses native order for uint16_t attrs_data_size (read by C as native uint16_t).
         // trace_id/span_id are uint8_t[] arrays requiring big-endian — handled via Long.reverseBytes()
         // in setContextDirect(). Only little-endian platforms are supported.
-        this.recordBuffer = recordBuffer.order(ByteOrder.nativeOrder());
-        this.sidecarBuffer = sidecarBuffer.order(ByteOrder.nativeOrder());
-        this.combinedBuffer = combinedBuffer;
+        this.ctxBuffer = ctxBuffer.order(ByteOrder.nativeOrder());
         this.validOffset = (int) metadata[0];
         this.traceIdOffset = (int) metadata[1];
         this.spanIdOffset = (int) metadata[2];
         this.attrsDataSizeOffset = (int) metadata[3];
         this.attrsDataOffset = (int) metadata[4];
         this.maxAttrsDataSize = OTEL_MAX_RECORD_SIZE - this.attrsDataOffset;
-        this.lrsSidecarOffset = (int) metadata[5];
+        this.lrsOffset = (int) metadata[5];
         if (ByteOrder.nativeOrder() != ByteOrder.LITTLE_ENDIAN) {
             throw new UnsupportedOperationException(
                 "ByteBuffer context path requires little-endian platform");
         }
         // Zero sidecar + record to prevent stale encodings from a previous profiler session.
-        // The native ProfiledThread survives across sessions, so the sidecar may hold
+        // The native ProfiledThread survives across sessions, so the buffer may hold
         // old tag encodings and the record may hold old attrs_data.
         for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
-            this.sidecarBuffer.putInt(i * Integer.BYTES, 0);
+            this.ctxBuffer.putInt(TAG_ENCODINGS_OFFSET + i * Integer.BYTES, 0);
         }
-        this.sidecarBuffer.putLong(this.lrsSidecarOffset, 0);
-        this.recordBuffer.put(this.validOffset, (byte) 0);
+        this.ctxBuffer.putLong(this.lrsOffset, 0);
+        this.ctxBuffer.put(this.validOffset, (byte) 0);
         // Pre-initialize the fixed-size LRS entry at attrs_data[0..LRS_ENTRY_SIZE-1]:
         //   key_index=0, length=16, value=16 zero hex bytes.
         // The entry is always present; updates overwrite only the 16 value bytes.
-        this.recordBuffer.put(this.attrsDataOffset, (byte) LRS_OTEP_KEY_INDEX);
-        this.recordBuffer.put(this.attrsDataOffset + 1, (byte) LRS_FIXED_VALUE_LEN);
+        this.ctxBuffer.put(this.attrsDataOffset, (byte) LRS_OTEP_KEY_INDEX);
+        this.ctxBuffer.put(this.attrsDataOffset + 1, (byte) LRS_FIXED_VALUE_LEN);
         for (int i = 0; i < LRS_FIXED_VALUE_LEN; i++) {
-            this.recordBuffer.put(this.attrsDataOffset + 2 + i, (byte) '0');
+            this.ctxBuffer.put(this.attrsDataOffset + 2 + i, (byte) '0');
         }
-        this.recordBuffer.putShort(this.attrsDataSizeOffset, (short) LRS_ENTRY_SIZE);
+        this.ctxBuffer.putShort(this.attrsDataSizeOffset, (short) LRS_ENTRY_SIZE);
     }
 
     /**
@@ -133,15 +131,15 @@ public final class ThreadContext {
      * Reads directly from the OTEP record buffer (big-endian bytes → native long).
      */
     public long getSpanId() {
-        return Long.reverseBytes(recordBuffer.getLong(spanIdOffset));
+        return Long.reverseBytes(ctxBuffer.getLong(spanIdOffset));
     }
 
     /**
      * Returns the current local root span ID.
-     * Reads directly from the sidecar buffer (native long).
+     * Reads directly from the LRS region of ctxBuffer (native long).
      */
     public long getRootSpanId() {
-        return sidecarBuffer.getLong(lrsSidecarOffset);
+        return ctxBuffer.getLong(lrsOffset);
     }
 
     /**
@@ -184,7 +182,7 @@ public final class ThreadContext {
         }
         int otepKeyIndex = keyIndex + 1;
         detach();
-        sidecarBuffer.putInt(keyIndex * Integer.BYTES, 0);
+        ctxBuffer.putInt(TAG_ENCODINGS_OFFSET + keyIndex * Integer.BYTES, 0);
         removeOtepAttribute(otepKeyIndex);
         attach();
     }
@@ -192,7 +190,7 @@ public final class ThreadContext {
     public void copyCustoms(int[] value) {
         int len = Math.min(value.length, MAX_CUSTOM_SLOTS);
         for (int i = 0; i < len; i++) {
-            value[i] = sidecarBuffer.getInt(i * Integer.BYTES);
+            value[i] = ctxBuffer.getInt(TAG_ENCODINGS_OFFSET + i * Integer.BYTES);
         }
     }
 
@@ -207,21 +205,23 @@ public final class ThreadContext {
      */
     public void snapshot(byte[] scratch, int offset) {
         detach();
-        combinedBuffer.position(0);
-        combinedBuffer.get(scratch, offset, SNAPSHOT_SIZE);
+        // Cast to Buffer: ByteBuffer.position(int) only returns ByteBuffer since JDK 9 (covariant
+        // return). This source is compiled for Java 8 runtimes where the method lives on Buffer.
+        ((Buffer) ctxBuffer).position(0);
+        ctxBuffer.get(scratch, offset, SNAPSHOT_SIZE);
         attach();
     }
 
     /**
      * Restores a previously captured state. The detach/attach pair hides the memcpy from readers
-     * going through {@link #recordBuffer}'s valid flag ({@code ContextApi::get} in native code),
+     * going through {@link #ctxBuffer}'s valid flag ({@code ContextApi::get} in native code),
      * which is the sole gate for sidecar reads (see {@code thread.h}). The scratch's own valid
      * byte is always 0 (enforced in {@link #snapshot}), so the memcpy never transiently republishes.
      */
     public void restore(byte[] scratch, int offset) {
         detach();
-        combinedBuffer.position(0);
-        combinedBuffer.put(scratch, offset, SNAPSHOT_SIZE);
+        ((Buffer) ctxBuffer).position(0);
+        ctxBuffer.put(scratch, offset, SNAPSHOT_SIZE);
         attach();
     }
 
@@ -294,12 +294,12 @@ public final class ThreadContext {
         // so a signal handler never sees a new sidecar encoding alongside old attrs_data.
         int otepKeyIndex = keyIndex + 1;
         detach();
-        sidecarBuffer.putInt(keyIndex * Integer.BYTES, encoding);
+        ctxBuffer.putInt(TAG_ENCODINGS_OFFSET + keyIndex * Integer.BYTES, encoding);
         boolean written = replaceOtepAttribute(otepKeyIndex, utf8);
         if (!written) {
             // attrs_data overflow: the old entry was compacted out and the new one
             // couldn't fit. Zero the sidecar so both views agree there is no value.
-            sidecarBuffer.putInt(keyIndex * Integer.BYTES, 0);
+            ctxBuffer.putInt(TAG_ENCODINGS_OFFSET + keyIndex * Integer.BYTES, 0);
         }
         attach();
         return written;
@@ -319,23 +319,23 @@ public final class ThreadContext {
         }
 
         // Write trace_id (big-endian) + span_id (big-endian)
-        recordBuffer.putLong(traceIdOffset, Long.reverseBytes(trHi));
-        recordBuffer.putLong(traceIdOffset + 8, Long.reverseBytes(trLo));
-        recordBuffer.putLong(spanIdOffset, Long.reverseBytes(spanId));
+        ctxBuffer.putLong(traceIdOffset, Long.reverseBytes(trHi));
+        ctxBuffer.putLong(traceIdOffset + 8, Long.reverseBytes(trLo));
+        ctxBuffer.putLong(spanIdOffset, Long.reverseBytes(spanId));
 
         // Reset custom attribute state so the previous span's values don't leak
         // into this span. Callers set attributes again via setContextAttribute().
         for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
-            // i * Integer.BYTES: byte offset into sidecar buffer for int slot i
-            sidecarBuffer.putInt(i * Integer.BYTES, 0);
+            // offset into ctxBuffer for tag-encoding slot i
+            ctxBuffer.putInt(TAG_ENCODINGS_OFFSET + i * Integer.BYTES, 0);
         }
         // Reset attrs_data_size to contain only the fixed LRS entry, discarding
         // any custom attribute entries written during the previous span.
-        recordBuffer.putShort(attrsDataSizeOffset, (short) LRS_ENTRY_SIZE);
+        ctxBuffer.putShort(attrsDataSizeOffset, (short) LRS_ENTRY_SIZE);
 
         // Update LRS sidecar and OTEP attrs_data inside the detach/attach window so a
         // signal handler never sees the new LRS with old trace/span IDs.
-        sidecarBuffer.putLong(lrsSidecarOffset, localRootSpanId);
+        ctxBuffer.putLong(lrsOffset, localRootSpanId);
         writeLrsHex(localRootSpanId);
 
         attach();
@@ -357,14 +357,14 @@ public final class ThreadContext {
      * readers until the next non-zero setContext call publishes it.
      */
     private void clearContextDirect() {
-        recordBuffer.putLong(traceIdOffset, 0);
-        recordBuffer.putLong(traceIdOffset + 8, 0);
-        recordBuffer.putLong(spanIdOffset, 0);
+        ctxBuffer.putLong(traceIdOffset, 0);
+        ctxBuffer.putLong(traceIdOffset + 8, 0);
+        ctxBuffer.putLong(spanIdOffset, 0);
         writeLrsHex(0);
         for (int i = 0; i < MAX_CUSTOM_SLOTS; i++) {
-            sidecarBuffer.putInt(i * Integer.BYTES, 0);
+            ctxBuffer.putInt(TAG_ENCODINGS_OFFSET + i * Integer.BYTES, 0);
         }
-        sidecarBuffer.putLong(lrsSidecarOffset, 0);
+        ctxBuffer.putLong(lrsOffset, 0);
     }
 
     /**
@@ -375,7 +375,7 @@ public final class ThreadContext {
     private void writeLrsHex(long val) {
         int base = attrsDataOffset + 2; // skip key_index byte + length byte
         for (int i = 15; i >= 0; i--) {
-            recordBuffer.put(base + i, HEX_DIGITS[(int)(val & 0xF)]);
+            ctxBuffer.put(base + i, HEX_DIGITS[(int)(val & 0xF)]);
             val >>>= 4;
         }
     }
@@ -387,7 +387,7 @@ public final class ThreadContext {
      * clear path intentionally leaves the record invalid without calling attach().
      */
     private void detach() {
-        recordBuffer.put(validOffset, (byte) 0);
+        ctxBuffer.put(validOffset, (byte) 0);
         BUFFER_WRITER.storeFence();
     }
 
@@ -400,7 +400,7 @@ public final class ThreadContext {
         // Plain put is sufficient: signal handlers run on the same hardware thread,
         // so they observe stores in program order — no volatile needed for same-thread
         // visibility. The preceding storeFence() provides the release barrier.
-        recordBuffer.put(validOffset, (byte) 1);
+        ctxBuffer.put(validOffset, (byte) 1);
     }
 
     /**
@@ -416,23 +416,23 @@ public final class ThreadContext {
         int entrySize = 2 + valueLen;
         if (currentSize + entrySize <= maxAttrsDataSize) {
             int base = attrsDataOffset + currentSize;
-            recordBuffer.put(base, (byte) otepKeyIndex);
-            recordBuffer.put(base + 1, (byte) valueLen);
+            ctxBuffer.put(base, (byte) otepKeyIndex);
+            ctxBuffer.put(base + 1, (byte) valueLen);
             for (int i = 0; i < valueLen; i++) {
-                recordBuffer.put(base + 2 + i, utf8[i]);
+                ctxBuffer.put(base + 2 + i, utf8[i]);
             }
             currentSize += entrySize;
-            recordBuffer.putShort(attrsDataSizeOffset, (short) currentSize);
+            ctxBuffer.putShort(attrsDataSizeOffset, (short) currentSize);
             return true;
         }
-        recordBuffer.putShort(attrsDataSizeOffset, (short) currentSize);
+        ctxBuffer.putShort(attrsDataSizeOffset, (short) currentSize);
         return false;
     }
 
     /** Remove an attribute from attrs_data by compacting. Record must be detached. */
     private void removeOtepAttribute(int otepKeyIndex) {
         int currentSize = compactOtepAttribute(otepKeyIndex);
-        recordBuffer.putShort(attrsDataSizeOffset, (short) currentSize);
+        ctxBuffer.putShort(attrsDataSizeOffset, (short) currentSize);
     }
 
     /**
@@ -443,13 +443,13 @@ public final class ThreadContext {
      * so it is never 0. Index 0 is reserved for the fixed LRS entry.
      */
     private int compactOtepAttribute(int otepKeyIndex) {
-        int currentSize = recordBuffer.getShort(attrsDataSizeOffset) & 0xFFFF;
+        int currentSize = ctxBuffer.getShort(attrsDataSizeOffset) & 0xFFFF;
         int readPos = 0;
         int writePos = 0;
         boolean found = false;
         while (readPos + 2 <= currentSize) {
-            int k = recordBuffer.get(attrsDataOffset + readPos) & 0xFF;
-            int len = recordBuffer.get(attrsDataOffset + readPos + 1) & 0xFF;
+            int k = ctxBuffer.get(attrsDataOffset + readPos) & 0xFF;
+            int len = ctxBuffer.get(attrsDataOffset + readPos + 1) & 0xFF;
             if (readPos + 2 + len > currentSize) { currentSize = writePos; break; }
             if (k == otepKeyIndex) {
                 found = true;
@@ -457,8 +457,8 @@ public final class ThreadContext {
             } else {
                 if (found && writePos < readPos) {
                     for (int i = 0; i < 2 + len; i++) {
-                        recordBuffer.put(attrsDataOffset + writePos + i,
-                            recordBuffer.get(attrsDataOffset + readPos + i));
+                        ctxBuffer.put(attrsDataOffset + writePos + i,
+                            ctxBuffer.get(attrsDataOffset + readPos + i));
                     }
                 }
                 writePos += 2 + len;
@@ -482,22 +482,22 @@ public final class ThreadContext {
             return null;
         }
         // valid=0 → record was detached or never published. No attrs_data to trust.
-        if (recordBuffer.get(validOffset) == 0) {
+        if (ctxBuffer.get(validOffset) == 0) {
             return null;
         }
         int otepKeyIndex = keyIndex + 1;
-        int size = recordBuffer.getShort(attrsDataSizeOffset) & 0xFFFF;
+        int size = ctxBuffer.getShort(attrsDataSizeOffset) & 0xFFFF;
         int pos = 0;
         while (pos + 2 <= size) {
-            int k = recordBuffer.get(attrsDataOffset + pos) & 0xFF;
-            int len = recordBuffer.get(attrsDataOffset + pos + 1) & 0xFF;
+            int k = ctxBuffer.get(attrsDataOffset + pos) & 0xFF;
+            int len = ctxBuffer.get(attrsDataOffset + pos + 1) & 0xFF;
             if (pos + 2 + len > size) {
                 break;
             }
             if (k == otepKeyIndex) {
                 byte[] bytes = new byte[len];
                 for (int i = 0; i < len; i++) {
-                    bytes[i] = recordBuffer.get(attrsDataOffset + pos + 2 + i);
+                    bytes[i] = ctxBuffer.get(attrsDataOffset + pos + 2 + i);
                 }
                 return new String(bytes, StandardCharsets.UTF_8);
             }
@@ -514,7 +514,7 @@ public final class ThreadContext {
     public String readTraceId() {
         StringBuilder sb = new StringBuilder(32);
         for (int i = 0; i < 16; i++) {
-            int b = recordBuffer.get(traceIdOffset + i) & 0xFF;
+            int b = ctxBuffer.get(traceIdOffset + i) & 0xFF;
             sb.append((char) HEX_DIGITS[b >> 4]);
             sb.append((char) HEX_DIGITS[b & 0xF]);
         }
