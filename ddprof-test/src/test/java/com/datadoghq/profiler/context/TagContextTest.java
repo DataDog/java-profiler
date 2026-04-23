@@ -1,8 +1,11 @@
 package com.datadoghq.profiler.context;
 
+import java.lang.reflect.Field;
 import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
@@ -26,6 +29,7 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.ContextSetter;
+import com.datadoghq.profiler.ThreadContext;
 import static com.datadoghq.profiler.MoreAssertions.DICTIONARY_PAGE_SIZE;
 import static com.datadoghq.profiler.MoreAssertions.assertBoundedBy;
 import com.datadoghq.profiler.Platform;
@@ -146,12 +150,12 @@ public class TagContextTest extends AbstractProfilerTest {
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
 
         // Initially both slots are empty
-        assertNull(contextSetter.readContextValue(0));
+        assertNull(contextSetter.readContextValue(contextSetter.offsetOf("tag1")));
         assertNull(contextSetter.readContextValue("tag2"));
 
         // Set a value and read it back
         assertTrue(contextSetter.setContextValue("tag1", "before"));
-        assertEquals("before", contextSetter.readContextValue(0));
+        assertEquals("before", contextSetter.readContextValue(contextSetter.offsetOf("tag1")));
         assertEquals("before", contextSetter.readContextValue("tag1"));
 
         // Snapshot the string, overwrite, then restore
@@ -170,6 +174,73 @@ public class TagContextTest extends AbstractProfilerTest {
         assertEquals("after", contextSetter.readContextValue("tag1"));
 
         // tag2 was never set; readContextValue by name returns null
+        assertNull(contextSetter.readContextValue("tag2"));
+    }
+
+    @Test
+    public void testColdPathScan() throws Exception {
+        // Simulate profiler restart: null the Java cache slot so the next read
+        // goes through the cold scan path and recovers the value from attrs_data.
+        Assumptions.assumeTrue(!Platform.isJ9());
+        registerCurrentThreadForWallClockProfiling();
+        ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
+
+        assertTrue(contextSetter.setContextValue("tag1", "cold-value"));
+        assertEquals("cold-value", contextSetter.readContextValue("tag1")); // warm path
+
+        Field cacheField = ThreadContext.class.getDeclaredField("indexedValueCache");
+        cacheField.setAccessible(true);
+        String[] cache = (String[]) cacheField.get(profiler.getThreadContext());
+        cache[0] = null; // null = cold, triggers attrs_data scan on next read
+
+        assertEquals("cold-value", contextSetter.readContextValue("tag1")); // cold path
+    }
+
+    @Test
+    public void testAttrsDataOverflow() throws Exception {
+        Assumptions.assumeTrue(!Platform.isJ9());
+        registerCurrentThreadForWallClockProfiling();
+        List<String> attrs = new ArrayList<>();
+        for (int i = 1; i <= 10; i++) {
+            attrs.add("tag" + i);
+        }
+        ContextSetter contextSetter = new ContextSetter(profiler, attrs);
+        String bigValue = "x".repeat(255);
+        int overflowIndex = -1;
+        for (int i = 1; i <= 10; i++) {
+            if (!contextSetter.setContextValue("tag" + i, bigValue)) {
+                overflowIndex = i;
+                break;
+            }
+        }
+        assertTrue("Expected at least one write to overflow attrs_data", overflowIndex >= 0);
+        assertNull("Overflowed slot must read null via cache", contextSetter.readContextValue("tag" + overflowIndex));
+    }
+
+    @Test
+    public void testPutClearsCustomSlots() throws Exception {
+        Assumptions.assumeTrue(!Platform.isJ9());
+        registerCurrentThreadForWallClockProfiling();
+        ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
+
+        assertTrue(contextSetter.setContextValue("tag1", "before-put"));
+        assertEquals("before-put", contextSetter.readContextValue("tag1"));
+
+        // setContext() triggers setContextDirect which sets indexedValueCache[i]=ABSENT for all slots
+        profiler.setContext(1L, 42L, 0L, 42L);
+        assertNull("tag1 must be null after setContext clears cache", contextSetter.readContextValue("tag1"));
+    }
+
+    @Test
+    public void testCrossSlotIsolation() throws Exception {
+        Assumptions.assumeTrue(!Platform.isJ9());
+        registerCurrentThreadForWallClockProfiling();
+        ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
+
+        assertTrue(contextSetter.setContextValue("tag1", "v1"));
+        assertTrue(contextSetter.setContextValue("tag2", "v2"));
+        assertTrue(contextSetter.clearContextValue("tag2"));
+        assertEquals("v1", contextSetter.readContextValue("tag1"));
         assertNull(contextSetter.readContextValue("tag2"));
     }
 

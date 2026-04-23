@@ -225,6 +225,10 @@ public final class JavaProfiler {
         tlsContextStorage.get().copyCustoms(snapshot);
     }
 
+    /** Reads a custom attribute value by key index. Same-thread-only: delegates to the
+     *  calling thread's {@link ThreadContext} via TLS.
+     *  @param offset the attribute key index (from {@link ContextSetter#offsetOf})
+     *  @return the attribute value, or null if not set */
     String readContextAttribute(int offset) {
         return tlsContextStorage.get().readContextAttribute(offset);
     }

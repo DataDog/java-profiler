@@ -63,6 +63,17 @@ public class ContextSetter {
         return null;
     }
 
+    /**
+     * Reads the current value of the named context attribute.
+     * Resolves the attribute name to its registered offset via {@link #offsetOf(String)},
+     * then delegates to {@link #readContextValue(int)}. Returns {@code null} if the
+     * attribute was not set or the name is not registered.
+     *
+     * <p>Reads from thread-local storage — caller and setter must be the same thread.
+     *
+     * @param attribute the attribute name
+     * @return the current value, or null if absent or unregistered
+     */
     public String readContextValue(String attribute) {
         return readContextValue(offsetOf(attribute));
     }

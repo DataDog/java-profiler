@@ -65,6 +65,11 @@ public final class ThreadContext {
     // setContextDirect). Allows readContextAttribute to return without scanning
     // attrs_data or allocating on the warm path.
     // null = not yet scanned; ABSENT = scanned/cleared, known absent; other = cached value.
+    // ABSENT uses new String("") (not "") so it has a unique identity not shared with any
+    // interned literal. The == check in readContextAttribute relies on reference identity
+    // within a single ClassLoader. ThreadContext must not be loaded by multiple ClassLoaders;
+    // doing so would produce distinct ABSENT instances, causing the identity check to always
+    // fall through to the cold scan path.
     private static final String ABSENT = new String("");
     private final String[] indexedValueCache = new String[MAX_CUSTOM_SLOTS];
 
@@ -208,10 +213,21 @@ public final class ThreadContext {
      * request IDs, and other per-request-unique strings will exhaust the
      * Dictionary and cause attributes to be silently dropped.
      *
+     * <p><b>Overflow and orphan encodings:</b> When {@code attrs_data} overflows
+     * (buffer full), the old entry for {@code keyIndex} is compacted out and the
+     * new value cannot be written. Both the sidecar and {@code indexedValueCache}
+     * are cleared so {@link #readContextAttribute} returns {@code null} for this
+     * slot. However, if the value was not already cached in the per-thread encoding
+     * cache, {@code registerConstant0} may have already registered it in the native
+     * Dictionary before the overflow was detected. That Dictionary entry cannot be
+     * removed — the native Dictionary is write-only for the JVM lifetime. The orphan
+     * encoding is harmless: it will not appear in JFR events because the sidecar is
+     * zeroed.
+     *
      * @param keyIndex Index into the registered attribute key map (0-based)
      * @param value The string value for this attribute
      * @return true if the attribute was set successfully, false if the
-     *         Dictionary is full or the keyIndex is out of range
+     *         Dictionary is full, attrs_data overflows, or keyIndex is out of range
      */
     public boolean setContextAttribute(int keyIndex, String value) {
         if (keyIndex < 0 || keyIndex >= MAX_CUSTOM_SLOTS || value == null) {
@@ -429,9 +445,17 @@ public final class ThreadContext {
 
     /**
      * Reads a custom attribute value by key index.
-     * Returns the cached String from the last successful write on this thread (zero allocation).
-     * Falls back to scanning attrs_data when the cache is cold (e.g. after a session restart).
-     * Used by {@code ContextSetter.readContextValue()} to support snapshot/restore of
+     *
+     * <p>Warm path: O(1), zero-allocation — returns the cached value from
+     * {@code indexedValueCache[keyIndex]} when the slot was populated by a prior write
+     * on this thread. The cache is kept in sync by every write ({@link #setContextAttributeDirect})
+     * and clear ({@link #clearContextAttribute}, {@link #setContextDirect}).
+     *
+     * <p>Cold path: scans {@code attrs_data} on first read after profiler restart
+     * (when the Java cache is unpopulated but the native buffer has pre-existing data).
+     * Populates the cache slot on success to make subsequent reads warm.
+     *
+     * <p>Used by {@code ContextSetter.readContextValue()} to support snapshot/restore of
      * nested profiling scopes.
      *
      * @param keyIndex 0-based user key index (same as passed to setContextAttribute)
@@ -449,8 +473,10 @@ public final class ThreadContext {
             return cached;
         }
         // Cold path: scan attrs_data (only on first read after session restart).
-        // Guard against stale attrs_data after clearContext(): valid=0 means the record
-        // was cleared and attrs_data_size was intentionally not reset (see clearContextDirect).
+        // valid=0 means the record has not been published yet by attach(), or was cleared
+        // by clearContextDirect() without resetting attrs_data_size. Either way there are
+        // no valid user attribute entries — only the LRS prefix may exist. Any future path
+        // that writes user attributes must set valid=1 via attach() first.
         if (recordBuffer.get(validOffset) == 0) {
             return null;
         }
