@@ -286,8 +286,15 @@ public abstract class AbstractProfilerTest {
           long wallIntervalMillis = wallIntervalAccessor.getMember(item).longValueIn(MILLISECOND);
           if (!Platform.isJ9() && Platform.isJavaVersionAtLeast(11)) {
             // fixme J9 engine have weird defaults and need fixing
-            assertEquals(cpuInterval.toMillis(), cpuIntervalMillis);
-            assertEquals(wallInterval.toMillis(), wallIntervalMillis);
+            // Only assert intervals that were explicitly requested in the profiler
+            // command; engines not requested carry default intervals that do not
+            // match the (absent) command value.
+            if (cpuInterval.toMillis() > 0) {
+              assertEquals(cpuInterval.toMillis(), cpuIntervalMillis);
+            }
+            if (wallInterval.toMillis() > 0) {
+              assertEquals(wallInterval.toMillis(), wallIntervalMillis);
+            }
           }
         }
       }

@@ -67,6 +67,8 @@ inline EventType eventTypeFromBCI(jint bci_type) {
             return LOCK_SAMPLE;
         case BCI_PARK:
             return PARK_SAMPLE;
+        case BCI_NATIVE_MALLOC:
+            return MALLOC_SAMPLE;
         default:
             // For unknown or invalid BCI types, default to EXECUTION_SAMPLE
             // This maintains backward compatibility and prevents undefined behavior
@@ -901,7 +903,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   }
 
   HotspotStackFrame frame(ucontext);
-  uintptr_t saved_pc, saved_sp, saved_fp;
+  uintptr_t saved_pc = 0, saved_sp = 0, saved_fp = 0;
   if (ucontext != NULL) {
     saved_pc = frame.pc();
     saved_sp = frame.sp();
@@ -925,9 +927,13 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       }
       return 1;
     }
-  } else {
-    return 0;
   }
+  // Ported from upstream async-profiler (Profiler::getJavaTraceAsync in
+  // src/profiler.cpp): when ucontext is NULL — as it is for malloc hooks,
+  // which run outside any signal context — skip the PC-dependent pre-checks
+  // and fall through to ASGCT. ASGCT then resolves the top Java frame from
+  // JavaThread::last_Java_sp / last_Java_pc, which the JVM populates on every
+  // Java → native transition.
 
   JVMJavaThreadState state = vm_thread->state();
   bool in_java = (state == _thread_in_Java || state == _thread_in_Java_trans);
@@ -1100,7 +1106,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   int java_frames = 0;
   if (features.mixed) {
     java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
-  } else if (request.event_type == BCI_CPU || request.event_type == BCI_WALL) {
+  } else if (request.event_type == BCI_CPU || request.event_type == BCI_WALL || request.event_type == BCI_NATIVE_MALLOC) {
     if (cstack >= CSTACK_VM) {
         java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
     } else {
