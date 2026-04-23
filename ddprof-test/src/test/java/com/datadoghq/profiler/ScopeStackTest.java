@@ -1,6 +1,7 @@
 package com.datadoghq.profiler;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.nio.ByteBuffer;
@@ -128,5 +129,37 @@ public class ScopeStackTest {
         ctx.put(40L, 50L, 0L, 60L);
         stack.exit(ctx);
         assertEquals(5L, ctx.getSpanId());
+    }
+
+    @Test
+    public void snapshotOverClearedContextDoesNotRepublish() {
+        // Regression: snapshot() used to unconditionally re-attach, flipping valid back to 1
+        // after a zero-put clear. The clear path leaves attrs_data_size / attrs_data stale and
+        // relies on valid=0 to keep external readers from seeing the stale bytes. Here we verify
+        // the valid byte directly since setContextAttribute is a native path unavailable to
+        // pure-Java tests.
+        assumeLittleEndian();
+        ByteBuffer buf = ByteBuffer.allocate(ThreadContext.SNAPSHOT_SIZE).order(ByteOrder.nativeOrder());
+        long[] metadata = {
+            VALID_OFFSET, TRACE_ID_OFFSET, SPAN_ID_OFFSET,
+            ATTRS_DATA_SIZE_OFFSET, ATTRS_DATA_OFFSET, LRS_OFFSET
+        };
+        ThreadContext ctx = new ThreadContext(buf, metadata);
+        ScopeStack stack = new ScopeStack();
+
+        ctx.put(1L, 2L, 0L, 3L);
+        assertEquals(1, buf.get(VALID_OFFSET), "record must be published after non-zero put");
+
+        // Zero-put clear: leaves valid=0 (the all-zero early-return in setContextDirect).
+        ctx.put(0L, 0L, 0L, 0L);
+        assertEquals(0, buf.get(VALID_OFFSET), "record must be invalid after zero-put clear");
+
+        stack.enter(ctx);
+        assertEquals(0, buf.get(VALID_OFFSET),
+            "snapshot must preserve valid=0 — not republish a cleared record");
+
+        stack.exit(ctx);
+        assertEquals(0, buf.get(VALID_OFFSET),
+            "restore must replay valid=0 — not republish a cleared record");
     }
 }

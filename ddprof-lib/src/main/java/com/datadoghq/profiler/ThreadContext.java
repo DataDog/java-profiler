@@ -198,31 +198,52 @@ public final class ThreadContext {
      * Captures the full record + sidecar state into {@code scratch[offset..offset+SNAPSHOT_SIZE)}.
      * Pair with {@link #restore} for nested-scope propagation.
      *
-     * <p>The detach/attach pair is required so the captured {@code valid} byte is always 0. When
-     * {@link #restore} later memcpys the scratch back, the valid byte is overwritten mid-memcpy;
-     * if the scratch held {@code valid=1}, the live record would transiently expose itself as
-     * valid while still partially restored, racing any signal handler reading via ContextApi::get.
+     * <p>The detach/memcpy/re-publish pair hides the bulk read from any signal handler going
+     * through {@code ContextApi::get} — while {@code valid=0}, sidecar reads are gated off. The
+     * pre-snapshot {@code valid} state is preserved in {@code scratch[offset + validOffset]} so
+     * {@link #restore} can replay it. If the record was already invalid (e.g. the all-zero clear
+     * path in {@link #setContextDirect} leaves {@code valid=0} with a stale {@code attrs_data_size}
+     * / {@code attrs_data}), the live buffer is left invalid after snapshot — re-publishing would
+     * expose a cleared-but-stale record.
      */
     public void snapshot(byte[] scratch, int offset) {
+        byte priorValid = ctxBuffer.get(validOffset);
         detach();
         // Cast to Buffer: ByteBuffer.position(int) only returns ByteBuffer since JDK 9 (covariant
         // return). This source is compiled for Java 8 runtimes where the method lives on Buffer.
         ((Buffer) ctxBuffer).position(0);
         ctxBuffer.get(scratch, offset, SNAPSHOT_SIZE);
-        attach();
+        // Overwrite the valid byte in scratch (memcpy captured the post-detach 0) with the
+        // pre-snapshot value. restore() consults this to decide whether to re-attach.
+        scratch[offset + validOffset] = priorValid;
+        if (priorValid != 0) {
+            attach();
+        }
     }
 
     /**
-     * Restores a previously captured state. The detach/attach pair hides the memcpy from readers
-     * going through {@link #ctxBuffer}'s valid flag ({@code ContextApi::get} in native code),
-     * which is the sole gate for sidecar reads (see {@code thread.h}). The scratch's own valid
-     * byte is always 0 (enforced in {@link #snapshot}), so the memcpy never transiently republishes.
+     * Restores a previously captured state. The detach/memcpy/conditional-attach pair hides the
+     * memcpy from readers going through {@link #ctxBuffer}'s valid flag ({@code ContextApi::get}
+     * in native code), which is the sole gate for sidecar reads (see {@code thread.h}).
+     *
+     * <p>The valid byte inside scratch is cleared to 0 for the duration of the memcpy so that
+     * even if the captured state had {@code valid=1}, the live buffer cannot transiently observe
+     * {@code valid=1} alongside partially-written fields. The captured value is restored into
+     * scratch after the memcpy so subsequent snapshot/restore cycles keep working, and
+     * {@link #attach} re-publishes only when the saved state was itself valid — matching the
+     * semantics of {@link #snapshot}.
      */
     public void restore(byte[] scratch, int offset) {
+        int validIdx = offset + validOffset;
+        byte wasValid = scratch[validIdx];
+        scratch[validIdx] = 0;
         detach();
         ((Buffer) ctxBuffer).position(0);
         ctxBuffer.put(scratch, offset, SNAPSHOT_SIZE);
-        attach();
+        if (wasValid != 0) {
+            scratch[validIdx] = wasValid;
+            attach();
+        }
     }
 
     /**
