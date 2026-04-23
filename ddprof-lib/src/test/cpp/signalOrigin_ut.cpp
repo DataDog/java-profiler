@@ -187,7 +187,8 @@ TEST_F(SignalOriginTest, QueueSignalDeliversCookieAndSiCode) {
     ASSERT_TRUE(OS::sendSignalWithCookie(OS::threadId(), SIGUSR2, cookie));
 
     // Give the signal a moment to be delivered (the delivery happens on
-    // return from the syscall — usleep ensures the handler has completed).
+    // return from the syscall — this nanosleep-based polling loop gives the
+    // handler time to complete).
     for (int i = 0; i < 100 && g_received_si_code.load() == 0; ++i) {
         struct timespec ts{0, 1000000}; // 1ms
         nanosleep(&ts, nullptr);
