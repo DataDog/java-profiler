@@ -413,11 +413,11 @@ static bool s_origin_check_enabled    = true;
 static bool s_origin_check_primed     = false;
 
 // Opt-in sa_mask-respecting chain in forwardForeignSignal(). Off by default:
-// saves 2× pthread_sigmask syscalls per foreign signal (~1 µs on modern Linux,
-// ~30% of the per-signal end-to-end cost). Set DDPROF_FORWARD_APPLY_SIGMASK=1
-// if the chained handler is known to require the kernel's normal sa_mask
-// environment (rare — SIGSEGV/SIGBUS handlers are the main case and are out
-// of scope here).
+// avoids the extra signal-mask setup/restore work on each foreign signal
+// (~1 µs on modern Linux, ~30% of the per-signal end-to-end cost). Set
+// DDPROF_FORWARD_APPLY_SIGMASK=1 if the chained handler is known to require
+// the kernel's normal sa_mask environment (rare — SIGSEGV/SIGBUS handlers are
+// the main case and are out of scope here).
 static bool s_forward_apply_sigmask   = false;
 
 bool OS::shouldProcessSignal(siginfo_t* siginfo, int expected_si_code, void* expected_cookie) {
