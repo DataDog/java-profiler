@@ -554,9 +554,9 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jcla
     env->SetLongArrayRegion(metadata, 0, 6, meta);
   }
 
-  // Create 2 DirectByteBuffers: [record, sidecar]
+  // Create 3 DirectByteBuffers: [record, sidecar, combined]
   jclass bbClass = env->FindClass("java/nio/ByteBuffer");
-  jobjectArray result = env->NewObjectArray(2, bbClass, nullptr);
+  jobjectArray result = env->NewObjectArray(3, bbClass, nullptr);
 
   // recordBuffer: 640 bytes over the OtelThreadContextRecord
   jobject recordBuf = env->NewDirectByteBuffer((void*)record, (jlong)OTEL_MAX_RECORD_SIZE);
@@ -568,6 +568,20 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jcla
   size_t sidecarSize = DD_TAGS_CAPACITY * sizeof(u32) + sizeof(u64);
   jobject sidecarBuf = env->NewDirectByteBuffer((void*)thrd->getOtelTagEncodingsPtr(), (jlong)sidecarSize);
   env->SetObjectArrayElement(result, 1, sidecarBuf);
+
+  // combinedBuffer: single contiguous view over [record | tag_encodings | LRS] for bulk
+  // snapshot/restore. Contiguity is enforced by alignas(8) on _otel_ctx_record plus
+  // sizeof(OtelThreadContextRecord) being a multiple of 8 (see thread.h). The debug-only
+  // assert below traps any future struct reordering in debug CI runs.
+#ifdef DEBUG
+  uint8_t* record_start = reinterpret_cast<uint8_t*>(record);
+  uint8_t* sidecar_start = reinterpret_cast<uint8_t*>(thrd->getOtelTagEncodingsPtr());
+  assert(sidecar_start == record_start + OTEL_MAX_RECORD_SIZE
+         && "_otel_ctx_record and _otel_tag_encodings must be contiguous");
+#endif
+  size_t combinedSize = OTEL_MAX_RECORD_SIZE + sidecarSize;
+  jobject combinedBuf = env->NewDirectByteBuffer((void*)record, (jlong)combinedSize);
+  env->SetObjectArrayElement(result, 2, combinedBuf);
 
   return result;
 }

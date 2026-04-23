@@ -73,10 +73,15 @@ private:
   UnwindFailures _unwind_failures;
   bool _otel_ctx_initialized;
   bool _crash_protection_active;
-  OtelThreadContextRecord _otel_ctx_record;
+  // alignas(8) + sizeof(OtelThreadContextRecord)==640 (multiple of 8) guarantee
+  // _otel_tag_encodings sits at +640 with no padding, so the three fields form one
+  // 688-byte contiguous region exposed as a combined DirectByteBuffer.
+  alignas(8) OtelThreadContextRecord _otel_ctx_record;
   // These two fields MUST be contiguous and 8-byte aligned — the JNI layer
   // exposes them as a single DirectByteBuffer (sidecar), and VarHandle long
   // views require 8-byte alignment for the buffer base address.
+  // Read invariant: sidecar readers must gate on record->valid (see ContextApi::get).
+  // ThreadContext.restore() relies on this to perform a bulk memcpy under valid=0.
   alignas(8) u32 _otel_tag_encodings[DD_TAGS_CAPACITY];
   u64 _otel_local_root_span_id;
 

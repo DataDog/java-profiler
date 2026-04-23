@@ -18,6 +18,7 @@ package com.datadoghq.profiler;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 /**
  * Thread-local context for trace/span identification.
@@ -29,6 +30,12 @@ import java.nio.charset.StandardCharsets;
 public final class ThreadContext {
     private static final int MAX_CUSTOM_SLOTS = 10;
     private static final int OTEL_MAX_RECORD_SIZE = 640;
+    private static final int SIDECAR_SIZE = MAX_CUSTOM_SLOTS * Integer.BYTES + Long.BYTES; // 48
+    /**
+     * Total bytes covered by the combined snapshot buffer: OTEP record + tag encodings + LRS.
+     * Used by {@link #snapshot(byte[], int)} / {@link #restore(byte[], int)}.
+     */
+    public static final int SNAPSHOT_SIZE = OTEL_MAX_RECORD_SIZE + SIDECAR_SIZE; // 688
     private static final int LRS_OTEP_KEY_INDEX = 0;
     // LRS is always a fixed 16-hex-char value in attrs_data (zero-padded u64).
     // The entry header is 2 bytes (key_index + length), giving 18 bytes total.
@@ -82,21 +89,26 @@ public final class ThreadContext {
 
     private final ByteBuffer recordBuffer;   // 640 bytes, OtelThreadContextRecord
     private final ByteBuffer sidecarBuffer;  // tag encodings + LRS
+    // Aliases record + sidecar as one 688-byte contiguous region for bulk snapshot/restore
+    // via byte[] scratch. Byte-granular only; position state is thread-confined to this field.
+    private final ByteBuffer combinedBuffer;
 
     /**
-     * Creates a ThreadContext from the two DirectByteBuffers returned by native initializeContextTLS0.
+     * Creates a ThreadContext from the three DirectByteBuffers returned by native initializeContextTLS0.
      *
      * @param recordBuffer 640-byte buffer over OtelThreadContextRecord
      * @param sidecarBuffer buffer over tag encodings + local root span id
+     * @param combinedBuffer 688-byte buffer aliasing record + sidecar contiguously (for bulk snapshot)
      * @param metadata array with [VALID_OFFSET, TRACE_ID_OFFSET, SPAN_ID_OFFSET,
      *                 ATTRS_DATA_SIZE_OFFSET, ATTRS_DATA_OFFSET, LRS_SIDECAR_OFFSET]
      */
-    public ThreadContext(ByteBuffer recordBuffer, ByteBuffer sidecarBuffer, long[] metadata) {
+    public ThreadContext(ByteBuffer recordBuffer, ByteBuffer sidecarBuffer, ByteBuffer combinedBuffer, long[] metadata) {
         // Record buffer uses native order for uint16_t attrs_data_size (read by C as native uint16_t).
         // trace_id/span_id are uint8_t[] arrays requiring big-endian — handled via Long.reverseBytes()
         // in setContextDirect(). Only little-endian platforms are supported.
         this.recordBuffer = recordBuffer.order(ByteOrder.nativeOrder());
         this.sidecarBuffer = sidecarBuffer.order(ByteOrder.nativeOrder());
+        this.combinedBuffer = combinedBuffer;
         this.validOffset = (int) metadata[0];
         this.traceIdOffset = (int) metadata[1];
         this.spanIdOffset = (int) metadata[2];
@@ -194,6 +206,38 @@ public final class ThreadContext {
         for (int i = 0; i < len; i++) {
             value[i] = sidecarBuffer.getInt(i * Integer.BYTES);
         }
+    }
+
+    /**
+     * Captures the full record + sidecar state into {@code scratch[offset .. offset+SNAPSHOT_SIZE)}.
+     * Pair with {@link #restore(byte[], int)} for nested-scope propagation.
+     *
+     * <p>The detach/attach pair is required so the captured {@code valid} byte is always 0. When
+     * {@link #restore} later memcpys the scratch back, the valid byte is overwritten mid-memcpy;
+     * if the scratch held {@code valid=1}, the live record would transiently expose itself as
+     * valid while still partially restored, racing any signal handler reading via ContextApi::get.
+     */
+    public void snapshot(byte[] scratch, int offset) {
+        detach();
+        combinedBuffer.position(0);
+        combinedBuffer.get(scratch, offset, SNAPSHOT_SIZE);
+        attach();
+    }
+
+    /**
+     * Restores a previously captured state. The detach/attach pair hides the memcpy from readers
+     * going through {@link #recordBuffer}'s valid flag ({@code ContextApi::get} in native code),
+     * which is the sole gate for sidecar reads (see {@code thread.h}). The scratch's own valid
+     * byte is always 0 (enforced in {@link #snapshot}), so the memcpy never transiently republishes.
+     * {@link #indexedValueCache} is invalidated so the next read re-scans the restored attrs_data;
+     * {@code null} denotes "not yet scanned", distinct from {@link #ABSENT}.
+     */
+    public void restore(byte[] scratch, int offset) {
+        detach();
+        combinedBuffer.position(0);
+        combinedBuffer.put(scratch, offset, SNAPSHOT_SIZE);
+        Arrays.fill(indexedValueCache, null);
+        attach();
     }
 
     /**
