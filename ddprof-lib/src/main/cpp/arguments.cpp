@@ -376,6 +376,22 @@ Error Arguments::parse(const char *args) {
           }
       }
 
+      CASE("nosanity")
+      if (value != NULL) {
+        switch (value[0]) {
+        case 'n': // no
+        case 'f': // false
+        case '0': // 0
+          _skip_sanity_checks = false;
+          break;
+        default:
+          _skip_sanity_checks = true;
+        }
+      } else {
+        // bare 'nosanity' with no value means skip checks
+        _skip_sanity_checks = true;
+      }
+
       DEFAULT()
       if (_unknown_arg == NULL)
         _unknown_arg = arg;

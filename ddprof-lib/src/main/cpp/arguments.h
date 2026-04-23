@@ -190,6 +190,7 @@ public:
   bool _lightweight;
   bool _enable_method_cleanup;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
+  bool _skip_sanity_checks;
 
   Arguments(bool persistent = false)
       : _buf(NULL),
@@ -224,7 +225,8 @@ public:
         _context_attributes({}),
         _lightweight(false),
         _enable_method_cleanup(true),
-        _remote_symbolication(false) {}
+        _remote_symbolication(false),
+        _skip_sanity_checks(false) {}
 
   ~Arguments();
 
