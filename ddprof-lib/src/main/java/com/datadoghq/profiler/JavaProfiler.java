@@ -226,6 +226,18 @@ public final class JavaProfiler {
     }
 
     /**
+     * Records a deadlock event for a pair of deadlocked threads.
+     * The native side captures real stacktraces via JVMTI for both threads.
+     *
+     * @param thread the deadlocked thread
+     * @param lockName the lock this thread is waiting on
+     * @param lockOwnerThread the thread holding the lock
+     * @param deadlockId correlation ID grouping events in the same deadlock cycle
+     */
+    public void recordDeadlock(Thread thread, String lockName, Thread lockOwnerThread, long deadlockId) {
+        recordDeadlock0(thread, lockName, lockOwnerThread, deadlockId);
+    }
+
     /**
      * Dumps the JFR recording at the provided path
      * @param recording the path to the recording
@@ -332,6 +344,8 @@ public final class JavaProfiler {
     private static native void recordSettingEvent0(String name, String value, String unit);
 
     private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin, String queueType, int queueLength);
+
+    private static native void recordDeadlock0(Thread thread, String lockName, Thread lockOwnerThread, long deadlockId);
 
     private static native long currentTicks0();
 

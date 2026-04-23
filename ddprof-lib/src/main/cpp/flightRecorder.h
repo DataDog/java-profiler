@@ -289,6 +289,9 @@ public:
                         LockEvent *event);
   void recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
                      float machine_total);
+  void recordDeadlock(Buffer *buf, int tid, u64 deadlock_id,
+                      u64 call_trace_id, const char *lock_name,
+                      int lock_owner_tid, u64 lock_owner_call_trace_id);
 
   void addThread(int lock_index, int tid);
 
@@ -357,6 +360,10 @@ public:
                             const char *value, const char *unit);
 
   void recordHeapUsage(int lock_index, long value, bool live);
+
+  void recordDeadlock(int lock_index, int tid, u64 deadlock_id,
+                      u64 call_trace_id, const char *lock_name,
+                      int lock_owner_tid, u64 lock_owner_call_trace_id);
 };
 
 #endif // _FLIGHTRECORDER_H

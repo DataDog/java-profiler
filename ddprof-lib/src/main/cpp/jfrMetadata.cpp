@@ -298,6 +298,18 @@ void JfrMetadata::initialize(
               << field("name", T_STRING, "Name")
               << field("count", T_LONG, "Count"))
 
+          << (type("datadog.DeadlockedThread", T_DEADLOCK,
+                   "Deadlocked Thread")
+              << category("Datadog", "Profiling")
+              << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+              << field("deadlockId", T_LONG, "Deadlock ID")
+              << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
+              << field("stackTrace", T_STACK_TRACE, "Stack Trace", F_CPOOL)
+              << field("lockName", T_STRING, "Lock Name")
+              << field("lockOwnerThread", T_THREAD, "Lock Owner Thread", F_CPOOL)
+              << field("lockOwnerStackTrace", T_STACK_TRACE,
+                       "Lock Owner Stack Trace", F_CPOOL))
+
           << (type("jdk.OSInformation", T_OS_INFORMATION, "OS Information")
               << category("Operating System")
               << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)

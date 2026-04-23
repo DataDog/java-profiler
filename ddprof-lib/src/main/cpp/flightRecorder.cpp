@@ -1645,6 +1645,25 @@ void Recording::recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
   flushIfNeeded(buf);
 }
 
+void Recording::recordDeadlock(Buffer *buf, int tid, u64 deadlock_id,
+                               u64 call_trace_id, const char *lock_name,
+                               int lock_owner_tid,
+                               u64 lock_owner_call_trace_id) {
+  flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - MAX_STRING_LENGTH - MAX_JFR_EVENT_SIZE);
+  int start = buf->skip(1);
+  buf->putVar64(T_DEADLOCK);
+  buf->putVar64(TSC::ticks());
+  buf->putVar64(deadlock_id);
+  buf->putVar64(tid);
+  buf->putVar64(call_trace_id);
+  // Truncate to fit within the single-byte event size prefix (max 255 bytes total)
+  buf->putUtf8(lock_name, min((size_t)160, strlen(lock_name)));
+  buf->putVar64(lock_owner_tid);
+  buf->putVar64(lock_owner_call_trace_id);
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
 // assumption is that we hold the lock (with lock_index)
 void Recording::addThread(int lock_index, int tid) {
     int active = _active_index.load(std::memory_order_acquire);
@@ -1788,6 +1807,23 @@ void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
       rec->writeHeapUsage(buf, value, live);
+    }
+  }
+}
+
+void FlightRecorder::recordDeadlock(int lock_index, int tid, u64 deadlock_id,
+                                    u64 call_trace_id, const char *lock_name,
+                                    int lock_owner_tid,
+                                    u64 lock_owner_call_trace_id) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->recordDeadlock(buf, tid, deadlock_id, call_trace_id, lock_name,
+                          lock_owner_tid, lock_owner_call_trace_id);
+      rec->addThread(lock_index, tid);
+      rec->addThread(lock_index, lock_owner_tid);
     }
   }
 }
