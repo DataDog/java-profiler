@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-04-23 10:04:15 EDT
+**Date:** 2026-04-23 10:22:07 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 45 |
-| CPU Cores (end) | 49 |
+| CPU Cores (start) | 70 |
+| CPU Cores (end) | 74 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 396 |
-| Sample Rate | 6.60/sec |
-| Health Score | 412% |
+| CPU Samples | 719 |
+| Sample Rate | 11.98/sec |
+| Health Score | 749% |
 | Threads | 11 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 45-49 cores)</summary>
+<summary>CPU Timeline (4 unique values: 68-74 cores)</summary>
 
 ```
-1776952840 45
-1776952845 45
-1776952850 45
-1776952855 45
-1776952860 45
-1776952865 45
-1776952870 45
-1776952876 45
-1776952881 45
-1776952886 45
-1776952891 45
-1776952896 45
-1776952901 45
-1776952906 45
-1776952911 45
-1776952916 45
-1776952921 45
-1776952926 45
-1776952931 45
-1776952936 45
+1776953728 70
+1776953733 70
+1776953738 70
+1776953743 70
+1776953748 70
+1776953753 70
+1776953758 70
+1776953763 68
+1776953768 68
+1776953773 70
+1776953778 70
+1776953783 70
+1776953788 70
+1776953793 70
+1776953798 70
+1776953803 70
+1776953808 74
+1776953813 74
+1776953818 74
+1776953823 74
 ```
 </details>
 
