@@ -422,7 +422,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         if (method_id != nullptr) {
                             fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
                         } else {
-                            TEST_LOG("Fill FRAME_INTERPRETED_METHOD frame");
                             fillFrame(frames[depth++], FRAME_INTERPRETED_METHOD, bci, method);
                         }
                         sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
@@ -441,7 +440,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         if (method_id != nullptr) {
                             fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id);
                         } else {
-                            TEST_LOG("Fill FRAME_INTERPRETED_METHOD frame");
                             fillFrame(frames[depth++], FRAME_INTERPRETED_METHOD, 0, method);
                         }
                         if (is_plausible_interpreter_frame) {

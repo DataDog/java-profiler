@@ -809,7 +809,7 @@ bool VMConstMethod::getLineNumberTable(jint* entry_count_ptr,
 
     assert(entry_count_ptr != nullptr);
     assert(table_ptr != nullptr);
-    const char* table_start = codeEnd();
+    unsigned char* table_start = (unsigned char*)codeEnd();
     int count = 0;
     CompressedLineNumberStream stream(table_start);
     while (stream.read_pair()) {

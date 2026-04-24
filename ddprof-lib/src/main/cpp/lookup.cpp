@@ -430,12 +430,29 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, const void* method, bool first_t
   jint entry_count = 0;
   jvmtiLineNumberEntry* table = nullptr;
 
+// Debug linenumber table
+ #if 1
+   jmethodID mid = jni->GetMethodID(clz, method_name, method_signature);
+   jvmtiEnv* jvmti = VM::jvmti();
+   jint debug_count = 0;
+   jvmtiLineNumberEntry* debug_table = nullptr;
+
+   jvmti->GetLineNumberTable(mid, &debug_count, &debug_table);
+ #endif
+
   if (first_time && const_method->hasLineNumberTable()) {
     if (!const_method->getLineNumberTable(&entry_count, &table)) {
       entry_count = 0;
       table = nullptr;
     } else {
       TEST_LOG("Load line number table for %s count = %d", method_name, entry_count);
+      if (mid != nullptr) {
+        assert(entry_count == debug_count);
+        for (int index = 0; index < entry_count; index++) {
+          assert(debug_table[index].start_location == table[index].start_location && "start location does not match");
+          assert(debug_table[index].line_number == table[index].line_number && "line number does not match");
+        }
+      }
     }
   }
   fillMethodInfo(mi, clz, klass_name, method_name, method_signature, -entry_count, table);
