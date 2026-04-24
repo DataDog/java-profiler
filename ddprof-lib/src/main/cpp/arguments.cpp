@@ -292,9 +292,11 @@ Error Arguments::parse(const char *args) {
         } else if (strcmp(value, "vm") == 0) {
           _cstack = CSTACK_VM;
         } else if (strcmp(value, "vmx") == 0) {
-          // cstack=vmx is a shorthand for cstack=vm,features=mixed
+          // cstack=vmx is a shorthand for cstack=vm,features=mixed; carrier-frame
+          // unwinding is enabled automatically since vmx already traverses entry frames
           _cstack = CSTACK_VM;
           _features.mixed = 1;
+          _features.carrier_frames = 1;
         } else {
           _cstack = CSTACK_NO;
         }
@@ -374,6 +376,12 @@ Error Arguments::parse(const char *args) {
           }
       }
 
+      CASE("nativemem")
+      _nativemem = value == NULL ? 0 : parseUnits(value, BYTES);
+      if (_nativemem < 0) {
+        msg = "nativemem must be >= 0";
+      }
+
       DEFAULT()
       if (_unknown_arg == NULL)
         _unknown_arg = arg;
@@ -385,7 +393,7 @@ Error Arguments::parse(const char *args) {
     return Error(msg);
   }
 
-  if (_event == NULL && _cpu < 0 && _wall < 0 && _memory < 0) {
+  if (_event == NULL && _cpu < 0 && _wall < 0 && _memory < 0 && _nativemem < 0) {
     _event = EVENT_CPU;
   }
 

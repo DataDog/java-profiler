@@ -1,5 +1,6 @@
 /*
  * Copyright 2020 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -297,6 +298,18 @@ void JfrMetadata::initialize(
               << field("kind", T_STRING, "Kind")
               << field("name", T_STRING, "Name")
               << field("count", T_LONG, "Count"))
+
+          << (type("profiler.Malloc", T_MALLOC, "malloc")
+                  << category("Java Virtual Machine", "Native Memory")
+                  << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+                  << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
+                  << field("stackTrace", T_STACK_TRACE, "Stack Trace", F_CPOOL)
+                  << field("address", T_LONG, "Address", F_ADDRESS)
+                  << field("size", T_LONG, "Size", F_BYTES)
+                  << field("weight", T_FLOAT, "Sample weight")
+                  << field("spanId", T_LONG, "Span ID")
+                  << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
+              contextAttributes)
 
           << (type("jdk.OSInformation", T_OS_INFORMATION, "OS Information")
               << category("Operating System")

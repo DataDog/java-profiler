@@ -170,7 +170,6 @@ void WallClockASGCT::timerLoop() {
           if (tid != OS::threadId()) {
             tids.push_back(tid);
           }
-          tid = thread_list->next();
         }
         delete thread_list;
       }

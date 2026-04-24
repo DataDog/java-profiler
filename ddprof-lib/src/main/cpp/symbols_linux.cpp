@@ -22,6 +22,7 @@
 #include <linux/limits.h>
 #include <pthread.h>
 #include <sys/auxv.h>
+#include "common.h"
 #include "symbols.h"
 #include "dwarf.h"
 #include "fdtransferClient.h"
@@ -977,6 +978,7 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
         } else if (lib.image_base == NULL) {
             // Unlikely case when image base has not been found: not safe to access program headers.
             // Be careful: executable file is not always ELF, e.g. classes.jsa
+            TEST_LOG("parseLibraries: image_base==NULL for %s, skipping program headers", lib.file);
             ElfParser::parseFile(cc, lib.map_start, lib.file, true);
         } else {
             // Parse debug symbols first
@@ -985,6 +987,8 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
             UnloadProtection handle(cc);
             if (handle.isValid()) {
                 ElfParser::parseProgramHeaders(cc, lib.image_base, lib.map_end, OS::isMusl());
+            } else {
+                TEST_LOG("parseLibraries: UnloadProtection invalid for %s, skipping program headers", lib.file);
             }
         }
 

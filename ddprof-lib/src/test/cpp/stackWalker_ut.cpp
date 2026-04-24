@@ -82,3 +82,62 @@ TEST_F(StackWalkerTest, dropUnknownLeaf_unknown_non_leaf_not_dropped) {
     EXPECT_EQ(nullptr, frames[1].method_id);
     EXPECT_NE(nullptr, frames[2].method_id);
 }
+
+// ---- isValidFP ----
+
+TEST_F(StackWalkerTest, isValidFP_null_is_invalid) {
+    EXPECT_FALSE(StackWalkValidation::isValidFP(0));
+}
+
+TEST_F(StackWalkerTest, isValidFP_low_address_is_invalid) {
+    EXPECT_FALSE(StackWalkValidation::isValidFP(0x100));       // below DEAD_ZONE (0x1000)
+    EXPECT_FALSE(StackWalkValidation::isValidFP(0xfff));
+}
+
+TEST_F(StackWalkerTest, isValidFP_high_address_is_invalid) {
+    // Within DEAD_ZONE of UINTPTR_MAX (i.e. >= -DEAD_ZONE)
+    EXPECT_FALSE(StackWalkValidation::isValidFP(~(uintptr_t)0));         // UINTPTR_MAX
+    EXPECT_FALSE(StackWalkValidation::isValidFP(~(uintptr_t)0 - 0x100)); // still in dead zone
+}
+
+TEST_F(StackWalkerTest, isValidFP_misaligned_is_invalid) {
+    // Aligned address in valid range but with low bits set
+    EXPECT_FALSE(StackWalkValidation::isValidFP(0x10001));  // odd
+    EXPECT_FALSE(StackWalkValidation::isValidFP(0x10002));  // 2-byte aligned but not pointer-aligned
+}
+
+TEST_F(StackWalkerTest, isValidFP_valid_aligned_address) {
+    // Aligned addresses well within valid range should pass
+    EXPECT_TRUE(StackWalkValidation::isValidFP(0x10000));
+    EXPECT_TRUE(StackWalkValidation::isValidFP(0x7fff0000));
+}
+
+// ---- isValidSP ----
+
+TEST_F(StackWalkerTest, isValidSP_must_be_strictly_above_lo) {
+    uintptr_t lo = 0x1000;
+    uintptr_t hi = 0x5000;
+    EXPECT_FALSE(StackWalkValidation::isValidSP(lo, lo, hi));      // sp == lo: not strictly above
+    EXPECT_FALSE(StackWalkValidation::isValidSP(lo - 8, lo, hi));  // sp < lo
+}
+
+TEST_F(StackWalkerTest, isValidSP_must_be_strictly_below_hi) {
+    uintptr_t lo = 0x1000;
+    uintptr_t hi = 0x5000;
+    EXPECT_FALSE(StackWalkValidation::isValidSP(hi, lo, hi));      // sp == hi: not strictly below
+    EXPECT_FALSE(StackWalkValidation::isValidSP(hi + 8, lo, hi));  // sp > hi
+}
+
+TEST_F(StackWalkerTest, isValidSP_misaligned_is_invalid) {
+    uintptr_t lo = 0x1000;
+    uintptr_t hi = 0x5000;
+    EXPECT_FALSE(StackWalkValidation::isValidSP(0x2001, lo, hi));  // in range but misaligned
+}
+
+TEST_F(StackWalkerTest, isValidSP_valid_aligned_in_range) {
+    uintptr_t lo = 0x1000;
+    uintptr_t hi = 0x5000;
+    EXPECT_TRUE(StackWalkValidation::isValidSP(0x2000, lo, hi));
+    EXPECT_TRUE(StackWalkValidation::isValidSP(lo + 8, lo, hi));
+    EXPECT_TRUE(StackWalkValidation::isValidSP(hi - 8, lo, hi));
+}
