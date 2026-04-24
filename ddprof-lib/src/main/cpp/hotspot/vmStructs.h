@@ -129,6 +129,38 @@ inline T* cast_to(const void* ptr) {
     f(VMThread,             MATCH_SYMBOLS("Thread"))            \
     f(VMClasses,            MATCH_SYMBOLS("vmClasses", "SystemDictionary"))
 
+// ContinuationEntry type. Only exported via gHotSpotVMTypes starting in
+// JDK 27 (JDK-8378985); there is no mangled-symbol fallback for its size.
+// On JDK <27 type_size() stays 0 and any code that needs the layout
+// (contEntry(), parent()) bails out.
+#define DECLARE_V27_TYPES_DO(f) \
+    f(VMContinuationEntry,    MATCH_SYMBOLS("ContinuationEntry"))
+
+// Fields for virtual-thread / continuation support, all added to
+// gHotSpotVMStructs / gHotSpotVMTypes in JDK 27 (JDK-8378985):
+//   - JavaThread::_cont_entry            -> _cont_entry_offset
+//   - StubRoutines::_cont_returnBarrier  -> _cont_return_barrier_addr
+//   - ContinuationEntry::_return_pc      -> _cont_entry_return_pc_addr
+//   - ContinuationEntry::_parent         -> _cont_entry_parent_offset
+// On JDK <27 these stay at their default (-1 / nullptr).  The two stub
+// *addresses* (_cont_return_barrier, _cont_entry_return_pc) are separately
+// resolved via Itanium-mangled symbol lookup in resolveOffsets() so the
+// cont_returnBarrier / cont_entry_return_pc frame-boundary checks still work
+// on JDK 21-26; the _offset fields have no such fallback.  All entries are
+// intentionally excluded from verify_offsets() so a missing entry causes
+// graceful degradation rather than SIGABRT.
+#define DECLARE_V27_TYPE_FIELD_DO(type_begin, field, field_with_version, type_end) \
+    type_begin(VMJavaThread, MATCH_SYMBOLS("JavaThread", "Thread"))                \
+        field_with_version(_cont_entry_offset, offset, 27, MAX_VERSION, MATCH_SYMBOLS("_cont_entry")) \
+    type_end()                                                                     \
+    type_begin(VMStubRoutine, MATCH_SYMBOLS("StubRoutines"))                      \
+        field_with_version(_cont_return_barrier_addr, address, 27, MAX_VERSION, MATCH_SYMBOLS("_cont_returnBarrier")) \
+    type_end()                                                                     \
+    type_begin(VMContinuationEntry, MATCH_SYMBOLS("ContinuationEntry"))           \
+        field_with_version(_cont_entry_return_pc_addr, address, 27, MAX_VERSION, MATCH_SYMBOLS("_return_pc")) \
+        field_with_version(_cont_entry_parent_offset,  offset,  27, MAX_VERSION, MATCH_SYMBOLS("_parent"))    \
+    type_end()
+
 /**
  * Following macros define field offsets, addresses or values of JVM classes that are exported by
  * vmStructs.
@@ -325,6 +357,9 @@ class VMStructs {
     static int _interpreter_frame_bcp_offset;
     static unsigned char _unsigned5_base;
     static const void* _call_stub_return;
+    static const void* _cont_return_barrier;
+    static const void* _cont_entry_return_pc;
+    static VMNMethod*  _enter_special_nm;
     static const void* _interpreter_start;
     static VMNMethod* _interpreter_nm;
     static const void* _interpreted_frame_valid_start;
@@ -336,6 +371,7 @@ class VMStructs {
     static uint64_t TYPE_SIZE_NAME(name);
 
     DECLARE_TYPES_DO(DECLARE_TYPE_SIZE_VAR)
+    DECLARE_V27_TYPES_DO(DECLARE_TYPE_SIZE_VAR)
 #undef DECLARE_TYPE_SIZE_VAR
 
 // Declare vmStructs' field offsets and addresses
@@ -348,6 +384,7 @@ class VMStructs {
     static field_type var;
 
     DECLARE_TYPE_FIELD_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DECLARE_TYPE_FIELD_WITH_VERSION, DO_NOTHING)
+    DECLARE_V27_TYPE_FIELD_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DECLARE_TYPE_FIELD_WITH_VERSION, DO_NOTHING)
 #undef DECLARE_TYPE_FIELD
 #undef DECLARE_TYPE_FIELD_WITH_VERSION
 #undef DO_NOTHING
@@ -464,6 +501,21 @@ class VMStructs {
 
     static bool isInterpretedFrameValidFunc(const void* pc) {
         return pc >= _interpreted_frame_valid_start && pc < _interpreted_frame_valid_end;
+    }
+
+    static bool isContReturnBarrier(const void* pc) {
+        return _cont_return_barrier != nullptr && pc == _cont_return_barrier;
+    }
+
+    // True when the bottom VT frame's return PC is cont_entry_return_pc, meaning all
+    // VT frames are thawed (CPU-bound VT that never yielded).
+    // Available on JDK 21+ via vmStructs or symbol fallback.
+    static bool isContEntryReturnPc(const void* pc) {
+        return _cont_entry_return_pc != nullptr && pc == _cont_entry_return_pc;
+    }
+
+    static VMNMethod* enterSpecialNMethod() {
+        return _enter_special_nm;
     }
 
     // Datadog-specific extensions
@@ -696,6 +748,30 @@ DECLARE(VMJavaFrameAnchor)
     }
 DECLARE_END
 
+DECLARE(VMContinuationEntry)
+  public:
+    // Address of the enterSpecial frame's {saved_fp, return_addr} pair.
+    // Layout above this address: [saved_fp][return_addr_to_carrier][carrier_sp...]
+    // The ContinuationEntry struct is embedded on the carrier stack immediately
+    // below enterSpecial's saved-fp slot; its size() equals the JVM's
+    // ContinuationEntry::size() static method, confirmed at:
+    //   https://github.com/openjdk/jdk/blob/master/src/hotspot/share/runtime/continuationEntry.hpp
+    //   https://github.com/openjdk/jdk/blob/master/src/hotspot/share/runtime/continuationEntry.cpp
+    uintptr_t entryFP() const {
+        assert(type_size() > 0); // must not be called before ContinuationEntry is resolved
+        return (uintptr_t)this + type_size();
+    }
+
+    // Returns the enclosing ContinuationEntry when continuations are nested
+    // (e.g. a Continuation.run() call inside a virtual thread).  Returns
+    // nullptr when there is no enclosing entry or the field is unavailable.
+    VMContinuationEntry* parent() const {
+        if (_cont_entry_parent_offset < 0) return nullptr;
+        void* ptr = SafeAccess::loadPtr((void**) const_cast<VMContinuationEntry*>(this)->at(_cont_entry_parent_offset), nullptr);
+        return ptr != nullptr ? VMContinuationEntry::cast(ptr) : nullptr;
+    }
+DECLARE_END
+
 // Copied from JDK's globalDefinitions.hpp 'JavaThreadState' enum
 enum JVMJavaThreadState {
     _thread_uninitialized     =  0, // should never happen (missing initialization)
@@ -775,6 +851,28 @@ DECLARE(VMThread)
         if (!isJavaThread(this)) return NULL;
         assert(_thread_anchor_offset >= 0);
         return VMJavaFrameAnchor::cast(at(_thread_anchor_offset));
+    }
+
+    // Returns true when this thread is currently executing a virtual thread
+    // (i.e. JavaThread::_cont_entry is non-null).  _cont_entry_offset is
+    // only populated on JDK 27+ (from gHotSpotVMStructs, JDK-8378985); there
+    // is no symbol fallback, so this returns false on JDK <27.
+    // Does NOT require ContinuationEntry type_size().
+    bool isCarryingVirtualThread() const {
+        if (_cont_entry_offset < 0) return false;
+        return SafeAccess::loadPtr((void**) const_cast<VMThread*>(this)->at(_cont_entry_offset), nullptr) != nullptr;
+    }
+
+    // Returns the innermost active ContinuationEntry for this thread, or nullptr
+    // if none exists or ContinuationEntry layout is unavailable (JDK <27, where
+    // neither _cont_entry_offset nor ContinuationEntry are in gHotSpotVMStructs/
+    // gHotSpotVMTypes so type_size() == 0).
+    // Used by stackWalker to locate the enterSpecial frame when crossing the
+    // virtual-thread continuation boundary.
+    VMContinuationEntry* contEntry() {
+        if (_cont_entry_offset < 0 || VMContinuationEntry::type_size() == 0) return nullptr;
+        void* ptr = SafeAccess::loadPtr((void**) at(_cont_entry_offset), nullptr);
+        return ptr != nullptr ? VMContinuationEntry::cast(ptr) : nullptr;
     }
 
     inline VMMethod* compiledMethod();

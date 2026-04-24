@@ -33,6 +33,7 @@ enum ASGCT_CallFrameType {
   BCI_THREAD_ID = -17,          // method_id designates a thread
   BCI_ERROR = -18,              // method_id is an error string
   BCI_NATIVE_FRAME_REMOTE = -19, // method_id points to RemoteFrameInfo for remote symbolication
+  BCI_NATIVE_MALLOC = -20,       // native malloc/free sample (size stored in counter)
 };
 
 // See hotspot/src/share/vm/prims/forte.cpp
