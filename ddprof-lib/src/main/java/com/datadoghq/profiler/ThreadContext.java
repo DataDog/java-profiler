@@ -492,13 +492,13 @@ public final class ThreadContext {
     /**
      * Reads a custom attribute value by key index by scanning {@code attrs_data}.
      *
-     * <p><b>Test-only.</b> Reached in production solely via
-     * {@link JavaProfiler#readContextAttribute(int)} /
-     * {@code ContextSetter.readContextValue}, which exists to let tests verify snapshot/restore
-     * semantics from Java. Production profiler code is not on this path — the DD signal handler
-     * reads sidecar encoding IDs and the OTEL eBPF reader parses {@code attrs_data} directly
-     * from native memory. The per-call {@code byte[]} / {@code String} allocation is therefore
-     * acceptable; do not add a readback cache unless a real production consumer appears.
+     * <p><b>Test-only.</b> The only caller is {@code TagContextTest}, which uses it via
+     * {@link JavaProfiler#getThreadContext()} to verify that writes to the OTEP record are
+     * observable after set / clear / span-reset cycles. No production path — neither the DD
+     * signal handler nor the OTEL eBPF reader — ever calls this method: the DD handler reads
+     * sidecar encoding IDs and the OTEL reader parses {@code attrs_data} directly from native
+     * memory. The per-call {@code byte[]} / {@code String} allocation is therefore acceptable;
+     * do not introduce a readback cache unless a real production consumer appears.
      *
      * @param keyIndex 0-based user key index (same as passed to setContextAttribute)
      * @return the attribute value string, or null if not set

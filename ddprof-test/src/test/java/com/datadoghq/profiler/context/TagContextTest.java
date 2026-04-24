@@ -145,6 +145,14 @@ public class TagContextTest extends AbstractProfilerTest {
         }
     }
 
+    /**
+     * Reads the current value of {@code tag} via {@link ThreadContext#readContextAttribute}
+     * — the only readback path retained on the Java side (test-only).
+     */
+    private String readTag(ContextSetter contextSetter, String tag) {
+        return profiler.getThreadContext().readContextAttribute(contextSetter.offsetOf(tag));
+    }
+
     @Test
     public void testSnapshotRestore() throws Exception {
         // J9 does not initialize ThreadContext for non-profiled threads; skip.
@@ -153,31 +161,30 @@ public class TagContextTest extends AbstractProfilerTest {
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
 
         // Initially both slots are empty
-        assertNull(contextSetter.readContextValue(contextSetter.offsetOf("tag1")));
-        assertNull(contextSetter.readContextValue("tag2"));
+        assertNull(readTag(contextSetter, "tag1"));
+        assertNull(readTag(contextSetter, "tag2"));
 
         // Set a value and read it back
         assertTrue(contextSetter.setContextValue("tag1", "before"));
-        assertEquals("before", contextSetter.readContextValue(contextSetter.offsetOf("tag1")));
-        assertEquals("before", contextSetter.readContextValue("tag1"));
+        assertEquals("before", readTag(contextSetter, "tag1"));
 
         // Snapshot the string, overwrite, then restore
-        String saved = contextSetter.readContextValue("tag1");
+        String saved = readTag(contextSetter, "tag1");
         assertTrue(contextSetter.setContextValue("tag1", "inside"));
-        assertEquals("inside", contextSetter.readContextValue("tag1"));
+        assertEquals("inside", readTag(contextSetter, "tag1"));
 
         // Restore via setContextValue
         assertTrue(contextSetter.setContextValue("tag1", saved));
-        assertEquals("before", contextSetter.readContextValue("tag1"));
+        assertEquals("before", readTag(contextSetter, "tag1"));
 
         // put/clear/put cycle: verify offset stability across state transitions
         assertTrue(contextSetter.clearContextValue("tag1"));
-        assertNull(contextSetter.readContextValue("tag1"));
+        assertNull(readTag(contextSetter, "tag1"));
         assertTrue(contextSetter.setContextValue("tag1", "after"));
-        assertEquals("after", contextSetter.readContextValue("tag1"));
+        assertEquals("after", readTag(contextSetter, "tag1"));
 
-        // tag2 was never set; readContextValue by name returns null
-        assertNull(contextSetter.readContextValue("tag2"));
+        // tag2 was never set; readContextAttribute returns null
+        assertNull(readTag(contextSetter, "tag2"));
     }
 
     @Test
@@ -200,7 +207,7 @@ public class TagContextTest extends AbstractProfilerTest {
             }
         }
         assertTrue(overflowIndex >= 0, "Expected at least one write to overflow attrs_data");
-        assertNull(contextSetter.readContextValue("tag" + overflowIndex),
+        assertNull(readTag(contextSetter, "tag" + overflowIndex),
                    "Overflowed slot must read null — the entry never landed in attrs_data");
     }
 
@@ -211,12 +218,12 @@ public class TagContextTest extends AbstractProfilerTest {
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
 
         assertTrue(contextSetter.setContextValue("tag1", "before-put"));
-        assertEquals("before-put", contextSetter.readContextValue("tag1"));
+        assertEquals("before-put", readTag(contextSetter, "tag1"));
 
         // setContext() triggers setContextDirect which resets attrs_data_size to the LRS entry only,
         // dropping all user attribute entries — so scanning attrs_data for tag1 returns null.
         profiler.setContext(1L, 42L, 0L, 42L);
-        assertNull(contextSetter.readContextValue("tag1"), "tag1 must be null after setContext resets attrs_data");
+        assertNull(readTag(contextSetter, "tag1"), "tag1 must be null after setContext resets attrs_data");
     }
 
     @Test
@@ -228,8 +235,8 @@ public class TagContextTest extends AbstractProfilerTest {
         assertTrue(contextSetter.setContextValue("tag1", "v1"));
         assertTrue(contextSetter.setContextValue("tag2", "v2"));
         assertTrue(contextSetter.clearContextValue("tag2"));
-        assertEquals("v1", contextSetter.readContextValue("tag1"));
-        assertNull(contextSetter.readContextValue("tag2"));
+        assertEquals("v1", readTag(contextSetter, "tag1"));
+        assertNull(readTag(contextSetter, "tag2"));
     }
 
     private void work(ContextSetter contextSetter, String contextAttribute, String contextValue)
