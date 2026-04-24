@@ -24,7 +24,7 @@
 #include "counters.h"
 #include "common.h"
 #include "engine.h"
-#include "hotspot/vmStructs.h"
+#include "hotspot/vmStructs.inline.h"
 #include "incbin.h"
 #include "jvmThread.h"
 #include "os.h"
@@ -150,15 +150,18 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
   
   int slot_id = current->filterSlotId();
   if (unlikely(slot_id == -1)) {
-    // Thread doesn't have a slot ID yet (e.g., main thread), so register it
-    // Happens when we are not enabled before thread start
+    // Thread doesn't have a slot ID yet (e.g., main thread or profiler started
+    // after thread creation). Register now.
     slot_id = thread_filter->registerThread();
     current->setFilterSlotId(slot_id);
   }
-  
+
   if (unlikely(slot_id == -1)) {
     return;  // Failed to register thread
   }
+  // Refresh HotSpot VMThread* for wall thread-filter precheck (vmStructs OS state).
+  // HotSpot only: VMThread::current() asserts VM::isHotspot(). OpenJ9/Zing: leave null.
+  thread_filter->setVMThread(slot_id, VM::isHotspot() ? VMThread::current() : nullptr);
   thread_filter->add(tid, slot_id);
 }
 
