@@ -21,6 +21,7 @@
 
 #include "threadFilter.h"
 #include "arch.h"
+#include "hotspot/vmStructs.h"
 #include "os.h"
 #include <cassert>
 #include <cstdlib>
@@ -281,6 +282,39 @@ void ThreadFilter::collect(std::vector<int>& tids) const {
     // Optional: shrink if we over-reserved significantly
     if (tids.capacity() > tids.size() * 2) {
         tids.shrink_to_fit();
+    }
+}
+
+void ThreadFilter::setVMThread(SlotID slot_id, VMThread* vm_thread) {
+    if (slot_id < 0) return;
+    int chunk_idx = slot_id >> kChunkShift;
+    int slot_idx  = slot_id & kChunkMask;
+    ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
+    if (chunk != nullptr) {
+        chunk->slots[slot_idx].vm_thread.store(vm_thread, std::memory_order_release);
+    }
+}
+
+void ThreadFilter::collectWithState(std::vector<ThreadEntry>& entries) const {
+    entries.clear();
+    entries.reserve(512);
+
+    int num_chunks = _num_chunks.load(std::memory_order_relaxed);
+    for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
+        ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
+        if (chunk == nullptr) continue;
+
+        for (const auto& slot : chunk->slots) {
+            int slot_tid = slot.value.load(std::memory_order_acquire);
+            if (slot_tid != -1) {
+                VMThread* vm = slot.vm_thread.load(std::memory_order_acquire);
+                entries.push_back({slot_tid, vm});
+            }
+        }
+    }
+
+    if (entries.capacity() > entries.size() * 2) {
+        entries.shrink_to_fit();
     }
 }
 
