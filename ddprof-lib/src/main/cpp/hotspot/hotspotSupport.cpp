@@ -1033,11 +1033,6 @@ bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
     // Hotpsot only: loaded by bootstrap class loader, which is never unloaded,
     // we use Method instead.
     if (jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE && cl == nullptr) {
-        VMOopHandle* klass_handle = VMOopHandle::cast(klass);
-        VMKlass* vmklass = VMKlass::fromOop(klass_handle->oop());
-        assert(vmklass != nullptr);
-        VMClassLoaderData* cld = vmklass->classLoaderData();
-        assert(cld != nullptr);
         char* signature_ptr;
         jvmti->GetClassSignature(klass, &signature_ptr, nullptr);
         TEST_LOG("processing bootstrap class %s", signature_ptr);

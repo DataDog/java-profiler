@@ -430,17 +430,6 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, const void* method, bool first_t
   jint entry_count = 0;
   jvmtiLineNumberEntry* table = nullptr;
 
- /* 
-  jmethodID mthd = jni->GetMethodID(clz, method_name, method_signature);
-
-  jvmtiEnv* jvmti = VM::jvmti();
-  if (jvmti->GetLineNumberTable(mthd, &entry_count, &table) != JVMTI_ERROR_NONE) {
-    table = nullptr;
-    entry_count = 0;
-  }
-
-//  fillMethodInfo(mi, clz, klass_name, method_name, method_signature, entry_count, table);
-*/
   if (first_time && const_method->hasLineNumberTable()) {
     if (!const_method->getLineNumberTable(&entry_count, &table)) {
       entry_count = 0;

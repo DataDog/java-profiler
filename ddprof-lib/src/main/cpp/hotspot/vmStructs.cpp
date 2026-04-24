@@ -772,8 +772,15 @@ bool VMConstMethod::getLineNumberTable(jint* entry_count_ptr,
     while (stream.read_pair()) {
         count++;
     }
+    if (count == 0) {
+        return false;
+    }
 
     jvmtiLineNumberEntry* table = (jvmtiLineNumberEntry*)malloc(count * sizeof(jvmtiLineNumberEntry));
+    if (table == nullptr) {
+        return false;
+    }
+
     stream.reset();
     count = 0;
     while (stream.read_pair()) {

@@ -127,8 +127,7 @@ inline T* cast_to(const void* ptr) {
     f(VMNMethod,            MATCH_SYMBOLS("nmethod"))           \
     f(VMSymbol,             MATCH_SYMBOLS("Symbol"))            \
     f(VMThread,             MATCH_SYMBOLS("Thread"))            \
-    f(VMOopHandle,          MATCH_SYMBOLS("OopHandle"))         \
-    f(VMClasses,            MATCH_SYMBOLS("vmClasses"))
+    f(VMClasses,            MATCH_SYMBOLS("vmClasses", "SystemDictionary"))
 
 /**
  * Following macros define field offsets, addresses or values of JVM classes that are exported by
@@ -283,12 +282,9 @@ typedef void* address;
         field(_narrow_klass_shift_addr, address, MATCH_SYMBOLS("_narrow_klass._shift", "_shift"))                   \
         field(_collected_heap_addr, address, MATCH_SYMBOLS("_collectedHeap"))                                       \
     type_end()                                                                                                      \
-    type_begin(VMOopHandle, MATCH_SYMBOLS("OopHandle"))                                                             \
-        field(_oop_handle_obj_offset, offset, MATCH_SYMBOLS("_obj"))                                                \
-    type_end()                                                                                                      \
     type_begin(VMClasses, MATCH_SYMBOLS("vmClasses"))                                                               \
-        field(_obj_class_addr, address, MATCH_SYMBOLS("_klasses[static_cast<int>(vmClassID::Object_klass_knum)]"))  \
-        field(_thread_class_addr, address, MATCH_SYMBOLS("_klasses[static_cast<int>(vmClassID::Thread_klass_knum)]")) \
+        field(_obj_class_addr, address, MATCH_SYMBOLS("_klasses[static_cast<int>(vmClassID::Object_klass_knum)]", "_well_known_klasses[SystemDictionary::Object_klass_knum]"))  \
+        field(_thread_class_addr, address, MATCH_SYMBOLS("_klasses[static_cast<int>(vmClassID::Thread_klass_knum)]", "_well_known_klasses[SystemDictionary::Thread_klass_knum]")) \
     type_end()
 
 /**
@@ -698,11 +694,6 @@ DECLARE(VMJavaFrameAnchor)
         }
         return false;
     }
-DECLARE_END
-
-DECLARE(VMOopHandle)
-public:
-    inline uintptr_t oop() const;
 DECLARE_END
 
 // Copied from JDK's globalDefinitions.hpp 'JavaThreadState' enum

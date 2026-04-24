@@ -159,11 +159,6 @@ bool VMConstMethod::hasLineNumberTable() const {
     return (flags() & has_linenumber_table) != 0;
 }
 
-uintptr_t VMOopHandle::oop() const {
-    assert(_oop_handle_obj_offset >= 0);
-    return *(uintptr_t*) at(_oop_handle_obj_offset);
-}
-
 VMKlass* VMClasses::obj_klass() {
     return VMKlass::load_then_cast(_obj_class_addr);
 }
