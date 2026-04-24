@@ -491,12 +491,14 @@ public final class ThreadContext {
 
     /**
      * Reads a custom attribute value by key index by scanning {@code attrs_data}.
-     * Called from {@link JavaProfiler#readContextAttribute(int)} to support same-thread
-     * snapshot/restore in nested scopes, and from tests. Not on any profiler signal-handler
-     * or eBPF hot path — the profiler reads sidecar encodings and the OTEL eBPF reader
-     * parses {@code attrs_data} directly from native memory. Allocates a new {@code String}
-     * from the UTF-8 bytes on each call, so callers should limit invocations to scope
-     * open/close boundaries.
+     *
+     * <p><b>Test-only.</b> Reached in production solely via
+     * {@link JavaProfiler#readContextAttribute(int)} /
+     * {@code ContextSetter.readContextValue}, which exists to let tests verify snapshot/restore
+     * semantics from Java. Production profiler code is not on this path — the DD signal handler
+     * reads sidecar encoding IDs and the OTEL eBPF reader parses {@code attrs_data} directly
+     * from native memory. The per-call {@code byte[]} / {@code String} allocation is therefore
+     * acceptable; do not add a readback cache unless a real production consumer appears.
      *
      * @param keyIndex 0-based user key index (same as passed to setContextAttribute)
      * @return the attribute value string, or null if not set
