@@ -25,7 +25,7 @@
 #include <signal.h>
 
 class CTimer : public Engine {
-private:
+protected:
   // This is accessed from signal handlers, so must be async-signal-safe
   static bool _enabled;
   static long _interval;
@@ -38,6 +38,7 @@ private:
   int registerThread(int tid);
   void unregisterThread(int tid);
 
+private:
   // cppcheck-suppress unusedPrivateFunction
   static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
 
@@ -58,6 +59,24 @@ public:
 
   // Get the signal number used by CTimer (0 if not initialized)
   static int getSignal() { return _signal; }
+};
+
+// A CPU-time engine that reuses CTimer's per-thread timer_create / SIGPROF
+// dispatch, but instead of walking the stack in the signal handler delegates
+// the walk to HotSpot's JFR RequestStackTrace JVMTI extension. The sampled
+// event is emitted on our side with only a correlation ID; the JVM writes
+// the stack trace (and its own JFR stack-trace id) into the concurrent JFR
+// recording as jdk.AsyncStackTrace. See VM::canRequestStackTrace().
+class CTimerJvmti : public CTimer {
+private:
+  // cppcheck-suppress unusedPrivateFunction
+  static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
+
+public:
+  const char *name() { return "CTimerJvmti"; }
+
+  Error check(Arguments &args);
+  Error start(Arguments &args);
 };
 
 #else

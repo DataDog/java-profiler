@@ -142,6 +142,87 @@ void CTimer::stop() {
   }
 }
 
+Error CTimerJvmti::check(Arguments &args) {
+  if (!VM::canRequestStackTrace()) {
+    return Error("HotSpot RequestStackTrace JVMTI extension not available");
+  }
+  return CTimer::check(args);
+}
+
+Error CTimerJvmti::start(Arguments &args) {
+  if (!VM::canRequestStackTrace()) {
+    return Error("HotSpot RequestStackTrace JVMTI extension not available");
+  }
+  if (args._interval < 0) {
+    return Error("interval must be positive");
+  }
+
+  _interval = args.cpuSamplerInterval();
+  _cstack = args._cstack;
+  _signal = SIGPROF;
+
+  int max_timers = OS::getMaxThreadId();
+  if (max_timers != _max_timers) {
+    free(_timers);
+    _timers = (int *)calloc(max_timers, sizeof(int));
+    _max_timers = max_timers;
+  }
+
+  OS::installSignalHandler(_signal, CTimerJvmti::signalHandler);
+
+  Error result = Error::OK;
+  ThreadList *thread_list = OS::listThreads();
+  while (thread_list->hasNext()) {
+    int tid = thread_list->next();
+    int err = registerThread(tid);
+    if (err != 0) {
+      result = Error("Failed to register thread");
+    }
+  }
+  delete thread_list;
+
+  return Error::OK;
+}
+
+void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  CriticalSection cs;
+  if (!cs.entered()) {
+    return;
+  }
+  int saved_errno = errno;
+  if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
+    errno = saved_errno;
+    return;
+  }
+  int tid = 0;
+  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  assert(current == nullptr || !current->isDeepCrashHandler());
+  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
+      && current->inInitWindow()) {
+    current->tickInitWindow();
+    errno = saved_errno;
+    return;
+  }
+  if (current != NULL) {
+    current->noteCPUSample(Profiler::instance()->recordingEpoch());
+    tid = current->tid();
+  } else {
+    tid = OS::threadId();
+  }
+  Shims::instance().setSighandlerTid(tid);
+
+  ExecutionEvent event;
+  event._execution_mode = getThreadExecutionMode();
+  // Opted into JVMTI delegation; drop the sample if the JVM rejects the
+  // request (WRONG_PHASE if JFR is not recording, NOT_AVAILABLE if
+  // jdk.AsyncStackTrace is disabled). recordSampleDelegated() bumps the
+  // failure counters; there is no fallback to ASGCT in this engine.
+  (void)Profiler::instance()->recordSampleDelegated(ucontext, _interval, tid,
+                                                    BCI_CPU, &event);
+  Shims::instance().setSighandlerTid(-1);
+  errno = saved_errno;
+}
+
 void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs;

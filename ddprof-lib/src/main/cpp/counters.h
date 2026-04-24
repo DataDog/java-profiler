@@ -98,7 +98,12 @@
   X(WALKVM_CONT_ENTRY_NULL,     "walkvm_cont_entry_null")                      \
   X(NATIVE_LIBS_DROPPED, "native_libs_dropped")                                \
   X(SIGACTION_PATCHED_LIBS, "sigaction_patched_libs")                          \
-  X(SIGACTION_INTERCEPTED, "sigaction_intercepted")
+  X(SIGACTION_INTERCEPTED, "sigaction_intercepted")                            \
+  X(JVMTI_STACKS_INIT_OK, "jvmti_stacks_init_ok")                              \
+  X(JVMTI_STACKS_INIT_FAILED, "jvmti_stacks_init_failed")                      \
+  X(JVMTI_STACKS_REQUESTED, "jvmti_stacks_requested")                          \
+  X(JVMTI_STACKS_FAILED_WRONG_PHASE, "jvmti_stacks_failed_wrong_phase")        \
+  X(JVMTI_STACKS_FAILED_OTHER, "jvmti_stacks_failed_other")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS

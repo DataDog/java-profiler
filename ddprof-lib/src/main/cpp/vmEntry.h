@@ -127,6 +127,11 @@ private:
   static bool _can_intercept_binding;
   static bool _is_adaptive_gc_boundary_flag_set;
 
+  // HotSpot JFR async stack-trace extension (optional, JDK 27+).
+  static jvmtiExtensionFunction _request_stack_trace;
+  static jvmtiExtensionFunction _init_request_stack_trace;
+  static bool _request_stack_trace_initialized;
+
   static jvmtiError(JNICALL *_orig_RedefineClasses)(
       jvmtiEnv *, jint, const jvmtiClassDefinition *);
   static jvmtiError(JNICALL *_orig_RetransformClasses)(jvmtiEnv *, jint,
@@ -187,6 +192,14 @@ public:
 
   static bool isUseAdaptiveGCBoundarySet() {
     return _is_adaptive_gc_boundary_flag_set;
+  }
+
+  static bool canRequestStackTrace() {
+    return _request_stack_trace != nullptr && _request_stack_trace_initialized;
+  }
+
+  static jvmtiError requestStackTrace(void* ucontext, jlong user_data) {
+    return _request_stack_trace(_jvmti, (jthread)nullptr, ucontext, user_data);
   }
 
   static void JNICALL VMInit(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);

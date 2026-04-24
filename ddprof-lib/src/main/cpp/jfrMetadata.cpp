@@ -123,6 +123,7 @@ void JfrMetadata::initialize(
                   << field("state", T_THREAD_STATE, "Thread State", F_CPOOL)
                   << field("mode", T_EXECUTION_MODE, "Execution Mode", F_CPOOL)
                   << field("weight", T_LONG, "Sample weight")
+                  << field("correlationId", T_LONG, "Async Stack Trace Correlation ID")
                   << field("spanId", T_LONG, "Span ID")
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
               contextAttributes)
@@ -136,6 +137,7 @@ void JfrMetadata::initialize(
                   << field("state", T_THREAD_STATE, "Thread State", F_CPOOL)
                   << field("mode", T_EXECUTION_MODE, "Execution Mode", F_CPOOL)
                   << field("weight", T_LONG, "Sample weight")
+                  << field("correlationId", T_LONG, "Async Stack Trace Correlation ID")
                   << field("spanId", T_LONG, "Span ID")
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
               contextAttributes)
