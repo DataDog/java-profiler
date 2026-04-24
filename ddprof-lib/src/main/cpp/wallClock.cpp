@@ -202,7 +202,7 @@ void WallClockASGCT::timerLoop() {
         }
       }
 
-      if (!OS::sendSignalToThread(entry.tid, SIGVTALRM)) {
+      if (!OS::sendSignalWithCookie(entry.tid, SIGVTALRM, SignalCookie::wallclock())) {
         num_failures++;
         if (errno != 0) {
           if (errno == ESRCH) {

@@ -33,6 +33,6 @@ public class CollapsingSleepTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=~1ms";
+        return "wall=~1ms,wallprecheck=false";
     }
 }
