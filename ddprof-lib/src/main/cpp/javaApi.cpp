@@ -153,6 +153,8 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
     // Happens when we are not enabled before thread start
     slot_id = thread_filter->registerThread();
     current->setFilterSlotId(slot_id);
+    thread_filter->setVMThread(slot_id, VMThread::current());
+    thread_filter->setProfiledThread(slot_id, current);
   }
   
   if (unlikely(slot_id == -1)) {
@@ -229,6 +231,37 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlock0(
   event._end_ticks = (u64)endTicks;
   event._span_id = (u64)spanId;
   event._root_span_id = (u64)rootSpanId;
+  event._blocker = (uintptr_t)blocker;
+  event._unblocking_span_id = (u64)unblockingSpanId;
+  int tid = ProfiledThread::currentTid();
+  Profiler::instance()->recordTaskBlock(tid, &event);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
+    JNIEnv *env, jclass unused, jlong spanId, jlong rootSpanId) {
+  ProfiledThread *current = ProfiledThread::current();
+  if (current != nullptr) {
+    current->enterPark(TSC::ticks(), (u64)spanId, (u64)rootSpanId);
+  }
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
+    JNIEnv *env, jclass unused, jlong blocker, jlong unblockingSpanId) {
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) return;
+  u64 endTicks = TSC::ticks();
+  u64 startTicks = current->exitPark();
+  if (startTicks == 0) return;
+  u64 durationNs = TSC::ticks_to_nanos(endTicks - startTicks);
+  if (durationNs < Profiler::instance()->parkMinDurationNs()) return;
+  if (current->parkState().span_id == 0) return;  // no trace context — skip event
+  TaskBlockEvent event;
+  event._start_ticks = startTicks;
+  event._end_ticks = endTicks;
+  event._span_id = current->parkState().span_id;
+  event._root_span_id = current->parkState().root_span_id;
   event._blocker = (uintptr_t)blocker;
   event._unblocking_span_id = (u64)unblockingSpanId;
   int tid = ProfiledThread::currentTid();

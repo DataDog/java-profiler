@@ -362,6 +362,21 @@ Error Arguments::parse(const char *args) {
         _remote_symbolication = true;
       }
 
+      CASE("wallprecheck")
+      if (value != NULL) {
+        _wall_precheck = strcmp(value, "false") != 0 && strcmp(value, "0") != 0;
+      }
+
+      CASE("wallpark")
+      if (value != NULL) {
+        _wall_park = strcmp(value, "false") != 0 && strcmp(value, "0") != 0;
+      }
+
+      CASE("wallparkmin")
+      if (value != NULL) {
+        _wall_park_min_ns = (u64)strtoull(value, NULL, 10);
+      }
+
       CASE("wallsampler")
       if (value != NULL) {
           switch (value[0]) {

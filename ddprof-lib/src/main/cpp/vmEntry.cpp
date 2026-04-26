@@ -437,6 +437,12 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
   callbacks.MonitorContendedEnter   = Profiler::MonitorContendedEnterCallback;
   callbacks.MonitorContendedEntered = Profiler::MonitorContendedEnteredCallback;
+  // Object.wait() coverage for JDK 8-20 only: on JDK 21+, wait(long) is pure Java and
+  // ObjectWaitProfilingInstrumentation (BCI in dd-trace-java) handles it instead.
+  if (VM::java_version() < 21) {
+    callbacks.MonitorWait   = Profiler::MonitorWaitCallback;
+    callbacks.MonitorWaited = Profiler::MonitorWaitedCallback;
+  }
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
@@ -449,6 +455,10 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
                                    NULL);
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTER,   NULL);
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTERED, NULL);
+  if (VM::java_version() < 21) {
+    _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAIT,   NULL);
+    _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAITED, NULL);
+  }
 
   if (hotspot_version() == 0 || !CodeHeap::available()) {
     // Workaround for JDK-8173361: avoid CompiledMethodLoad events when possible

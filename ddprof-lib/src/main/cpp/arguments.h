@@ -166,6 +166,9 @@ public:
   long _cpu;
   long _wall;
   bool _wall_collapsing;
+  bool _wall_precheck;
+  bool _wall_park;
+  uint64_t _wall_park_min_ns;
   int _wall_threads_per_tick;
   WallclockSampler _wallclock_sampler;
   long _memory;
@@ -201,6 +204,9 @@ public:
         _cpu(-1),
         _wall(-1),
         _wall_collapsing(false),
+        _wall_precheck(true),
+        _wall_park(true),
+        _wall_park_min_ns(1000000ULL),  // 1 ms default
         _wall_threads_per_tick(DEFAULT_WALL_THREADS_PER_TICK),
         _memory(-1),
         _record_allocations(false),

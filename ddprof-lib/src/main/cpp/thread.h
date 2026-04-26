@@ -91,6 +91,27 @@ public:
   };
   MonitorBlockState _monitor_block{};
 
+  // Park state for Approach 2 signal suppression and off-CPU interval recording.
+  // start_ticks is the "is parked" flag: 0 = not parked, non-zero = parked since that TSC tick.
+  // Written by the parking thread; read by the timer thread for signal-suppression check.
+  struct ParkState {
+    std::atomic<u64> start_ticks{0};
+    u64 span_id{0};
+    u64 root_span_id{0};
+  };
+  ParkState _park_state{};
+
+  // In-flight state for Object.wait() tracking on JDK 8-20 (MonitorWait → MonitorWaited).
+  // Keyed on obj_addr == 0 meaning "not waiting". Mirrors MonitorBlockState layout.
+  struct MonitorWaitState {
+    u64       start_ticks{0};
+    u64       span_id{0};
+    u64       root_span_id{0};
+    uintptr_t obj_addr{0};
+    u64       unblocking_span_id{0};  // captured via MonitorContendedEnter, 0 if not available
+  };
+  MonitorWaitState _monitor_wait{};
+
   static ProfiledThread *forTid(int tid) { return new ProfiledThread(-1, tid); }
   static ProfiledThread* findByTid(int tid);
   static ProfiledThread *inBuffer(int buffer_pos) {
@@ -176,6 +197,22 @@ public:
 
   int filterSlotId() { return _filter_slot_id; }
   void setFilterSlotId(int slotId) { _filter_slot_id = slotId; }
+
+  void enterPark(u64 ticks, u64 span_id, u64 root_span_id) {
+    _park_state.span_id = span_id;
+    _park_state.root_span_id = root_span_id;
+    _park_state.start_ticks.store(ticks, std::memory_order_release);
+  }
+
+  u64 exitPark() {
+    return _park_state.start_ticks.exchange(0, std::memory_order_acq_rel);
+  }
+
+  bool isParked() const {
+    return _park_state.start_ticks.load(std::memory_order_acquire) != 0;
+  }
+
+  const ParkState& parkState() const { return _park_state; }
   
   // Signal handler reentrancy protection
   bool tryEnterCriticalSection() {
