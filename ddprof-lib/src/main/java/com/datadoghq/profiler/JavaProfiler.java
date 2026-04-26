@@ -204,6 +204,49 @@ public final class JavaProfiler {
         recordTaskBlock0(startTicks, endTicks, spanId, rootSpanId, blocker, unblockingSpanId);
     }
 
+    // ThreadLocals for parkEnter/parkExit state (stored per-thread to support nested parks).
+    private static final ThreadLocal<Long> PARK_ENTER_TICKS = new ThreadLocal<>();
+    private static final ThreadLocal<Long> PARK_ENTER_SPAN_ID = new ThreadLocal<>();
+    private static final ThreadLocal<Long> PARK_ENTER_ROOT_SPAN_ID = new ThreadLocal<>();
+
+    /**
+     * Called when a thread is about to park (LockSupport.park* entry). Records the current TSC
+     * tick and active span context so that {@link #parkExit} can emit a TaskBlock JFR event with
+     * accurate timing. Pure-Java implementation — native signal-suppression is not yet wired.
+     *
+     * @param spanId     the span ID active at park entry, or 0 if no active span
+     * @param rootSpanId the local root span ID active at park entry, or 0 if no active span
+     */
+    public void parkEnter(long spanId, long rootSpanId) {
+        PARK_ENTER_TICKS.set(currentTicks0());
+        PARK_ENTER_SPAN_ID.set(spanId);
+        PARK_ENTER_ROOT_SPAN_ID.set(rootSpanId);
+    }
+
+    /**
+     * Called when a thread returns from park (LockSupport.park* exit). Retrieves the tick saved
+     * by {@link #parkEnter} and emits a TaskBlock JFR event via the existing native path.
+     *
+     * @param blocker          identity hash code of the blocking object, or 0 if none
+     * @param unblockingSpanId the span ID of the thread that called unpark(), or 0 if unknown
+     */
+    public void parkExit(long blocker, long unblockingSpanId) {
+        Long startTicks = PARK_ENTER_TICKS.get();
+        Long spanId = PARK_ENTER_SPAN_ID.get();
+        Long rootSpanId = PARK_ENTER_ROOT_SPAN_ID.get();
+        // noinspection ThreadLocalSetWithNull
+        PARK_ENTER_TICKS.set(null);
+        // noinspection ThreadLocalSetWithNull
+        PARK_ENTER_SPAN_ID.set(null);
+        // noinspection ThreadLocalSetWithNull
+        PARK_ENTER_ROOT_SPAN_ID.set(null);
+        if (startTicks != null && spanId != null && spanId != 0) {
+            long endTicks = currentTicks0();
+            recordTaskBlock0(startTicks, endTicks,
+                    spanId, rootSpanId != null ? rootSpanId : 0L, blocker, unblockingSpanId);
+        }
+    }
+
     public void recordSpanNode(long spanId, long parentSpanId, long rootSpanId,
                                long startNanos, long durationNanos,
                                int encodedOperation, int encodedResource) {
