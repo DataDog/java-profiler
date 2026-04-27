@@ -190,8 +190,6 @@ void Lookup::fillMethodInfo(MethodInfo *mi, jclass method_class, char* class_nam
   u32 method_name_id = 0;
   u32 method_sig_id = 0;
 
-  TEST_LOG("FillMethodInfo: class: [%s] method: [%s] signature: [%s]", class_name, method_name, method_sig);
-
   JNIEnv *jni = VM::jni();
   if (jni == nullptr) {
     return;
@@ -315,7 +313,6 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
     key = MethodMap::makeKey(frame.packed_remote_frame);
   } else if (frame_type == FRAME_INTERPRETED_METHOD) {
-    TEST_LOG("Found FRAME_INTERPRETED_METHOD");
     key = MethodMap::makeKey(frame.method);
   } else {
     assert(frame_type == FRAME_INTERPRETED || frame_type == FRAME_JIT_COMPILED ||
@@ -433,8 +430,6 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, const void* method, bool first_t
   jmethodID mid = nullptr;
   if (first_time) {
       jmethodID mid = jni->GetMethodID(clz, method_name, method_signature);
-TEST_LOG("Lookup method ID for %s %s %s --> %d", klass_name, method_name, method_signature, mid != nullptr);
-
       jvmtiEnv* jvmti = VM::jvmti();
       if (mid != nullptr) {
         if (jvmti->GetLineNumberTable(mid, &entry_count, &table) != JVMTI_ERROR_NONE) {

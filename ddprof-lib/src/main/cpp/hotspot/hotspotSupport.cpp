@@ -1196,18 +1196,18 @@ bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
     if (jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE && cl == nullptr) {
         char* signature_ptr;
         jvmti->GetClassSignature(klass, &signature_ptr, nullptr);
-        TEST_LOG("processing bootstrap class %s", signature_ptr);
+//        TEST_LOG("processing bootstrap class %s", signature_ptr);
         // Lambda classes can be unloaded, exlcude them
         if (!isLambdaClass(signature_ptr)) {
-            TEST_LOG("Skipping  class %s",signature_ptr);
+//            TEST_LOG("Skipping  class %s",signature_ptr);
             return false;
         } else {
-            TEST_LOG("Lambda class: %s", signature_ptr);
+//            TEST_LOG("Lambda class: %s", signature_ptr);
         }
     } else if (cl != nullptr) {
         char* signature_ptr;
         jvmti->GetClassSignature(klass, &signature_ptr, nullptr);
-        TEST_LOG("processing none bootstrap class %s", signature_ptr);
+//        TEST_LOG("processing none bootstrap class %s", signature_ptr);
     }
 
     return JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);
