@@ -410,24 +410,24 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 bool is_plausible_interpreter_frame = StackWalkValidation::isPlausibleInterpreterFrame(fp, sp, bcp_offset);
                 if (is_plausible_interpreter_frame) {
                     VMMethod* method = VMMethod::cast(((void**)fp)[InterpreterFrame::method_offset]);
-                    assert(method != nullptr && "No method for the interpreter frame");
-
-                    jmethodID method_id = getMethodId(method);
-//                    assert(method_id != nullptr || VMClassLoader::isLoadedByBootstrapClassLoader(method));
-                    if (method_id != NULL || VMClassLoader::isLoadedByBootstrapClassLoader(method)) {
-                        Counters::increment(WALKVM_JAVA_FRAME_OK);
-                        const char* bytecode_start = method->bytecode();
-                        const char* bcp = ((const char**)fp)[bcp_offset];
-                        int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
-                        if (method_id != nullptr) {
-                            fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
-                        } else {
-                            fillFrame(frames[depth++], FRAME_INTERPRETED_METHOD, bci, method);
+                    if (method != nullptr) {
+                        jmethodID method_id = getMethodId(method);
+    //                    assert(method_id != nullptr || VMClassLoader::isLoadedByBootstrapClassLoader(method));
+                        if (method_id != NULL || VMClassLoader::isLoadedByBootstrapClassLoader(method)) {
+                            Counters::increment(WALKVM_JAVA_FRAME_OK);
+                            const char* bytecode_start = method->bytecode();
+                            const char* bcp = ((const char**)fp)[bcp_offset];
+                            int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
+                            if (method_id != nullptr) {
+                                fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
+                            } else {
+                                fillFrame(frames[depth++], FRAME_INTERPRETED_METHOD, bci, method);
+                            }
+                            sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
+                            pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
+                            fp = *(uintptr_t*)fp;
+                            continue;
                         }
-                        sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
-                        pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
-                        fp = *(uintptr_t*)fp;
-                        continue;
                     }
                 }
 
