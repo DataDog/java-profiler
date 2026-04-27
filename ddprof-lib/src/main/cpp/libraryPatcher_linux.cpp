@@ -11,6 +11,7 @@
 #include "guards.h"
 
 #include <cassert>
+#include <cxxabi.h>
 #include <dlfcn.h>
 #include <limits.h>
 #include <string.h>
@@ -64,21 +65,16 @@ static void delete_routine_info(RoutineInfo* thr) {
     delete thr;
 }
 
-// Initialize the current thread's TLS with profiling signals blocked.
-// Kept noinline for the same stack-protector reason as delete_routine_info.
-__attribute__((noinline))
-static void init_thread_tls() {
-    SignalBlocker blocker;
-    ProfiledThread::initCurrentThread();
-}
-
-// Arm the CPU timer with profiling signals blocked and open the init window
-// (PROF-13072). Kept noinline for the same stack-protector reason as
+// Initialize the current thread's TLS, open the init window (PROF-13072), and
+// register the thread with the profiler — all under a single SignalBlocker so
+// profiling signals cannot fire in the gap between initCurrentThread() and
+// startInitWindow().  Kept noinline for the same stack-protector reason as
 // delete_routine_info: SignalBlocker's sigset_t must not appear in
 // start_routine_wrapper_spec's own stack frame on musl/aarch64.
 __attribute__((noinline))
-static void start_window_and_register() {
+static void init_tls_and_register() {
     SignalBlocker blocker;
+    ProfiledThread::initCurrentThread();
     if (ProfiledThread *pt = ProfiledThread::currentSignalSafe()) {
         pt->startInitWindow();
     }
@@ -98,12 +94,25 @@ static void* start_routine_wrapper_spec(void* args) {
     func_start_routine routine = thr->routine();
     void* params = thr->args();
     delete_routine_info(thr);
-    init_thread_tls();
-    start_window_and_register();
-    void* result = routine(params);
-    Profiler::unregisterThread(ProfiledThread::currentTid());
+    init_tls_and_register();
+    // Capture tid from TLS while it is guaranteed non-null (set by init_tls_and_register above).
+    // Using a cached tid avoids the lazy-allocating ProfiledThread::current() path inside
+    // the catch block, which may call 'new' at an unsafe point during forced unwind.
+    int tid = ProfiledThread::currentTid();
+    // IBM J9 (and glibc pthread_cancel) use abi::__forced_unwind for thread teardown.
+    // Catch it explicitly so cleanup runs even during forced unwind, then re-throw
+    // to allow the thread to exit properly.  A plain catch(...) without re-throw
+    // would swallow the forced unwind and prevent the thread from actually exiting.
+    try {
+        routine(params);
+    } catch (abi::__forced_unwind&) {
+        Profiler::unregisterThread(tid);
+        ProfiledThread::release();
+        throw;
+    }
+    Profiler::unregisterThread(tid);
     ProfiledThread::release();
-    return result;
+    return nullptr;
 }
 
 static int pthread_create_hook_spec(pthread_t* thread,
@@ -124,12 +133,6 @@ static int pthread_create_hook_spec(pthread_t* thread,
 }
 
 #endif // __aarch64__
-
-static void thread_cleanup(void* arg) {
-    int tid = *static_cast<int*>(arg);
-    Profiler::unregisterThread(tid);
-    ProfiledThread::release();
-}
 
 // Wrapper around the real start routine.
 // See comments for start_routine_wrapper_spec() for details
@@ -160,13 +163,23 @@ static void* start_routine_wrapper(void* args) {
         ProfiledThread::currentSignalSafe()->startInitWindow();
         Profiler::registerThread(tid);
     }
-    void* result = nullptr;
-    // Handle pthread_exit() bypass - the thread calls pthread_exit()
-    // instead of normal termination
-    pthread_cleanup_push(thread_cleanup, &tid);
-    result = routine(params);
-    pthread_cleanup_pop(1);
-    return result;
+    // IBM J9 (and glibc pthread_cancel) use abi::__forced_unwind for thread
+    // teardown.  pthread_cleanup_push/pop creates a __pthread_cleanup_class
+    // with an implicitly-noexcept destructor; when J9's forced-unwind
+    // propagates through it, the C++ runtime calls std::terminate() → abort().
+    // Replacing with an explicit catch ensures cleanup runs on forced unwind
+    // without triggering terminate, and the re-throw lets the thread exit cleanly.
+    // pthread_exit() is also covered: on glibc it raises its own __forced_unwind.
+    try {
+        routine(params);
+    } catch (abi::__forced_unwind&) {
+        Profiler::unregisterThread(tid);
+        ProfiledThread::release();
+        throw;
+    }
+    Profiler::unregisterThread(tid);
+    ProfiledThread::release();
+    return nullptr;
 }
 
 static int pthread_create_hook(pthread_t* thread,
