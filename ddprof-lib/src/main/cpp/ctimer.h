@@ -94,6 +94,19 @@ public:
   static bool supported() { return false; }
 };
 
+class CTimerJvmti : public Engine {
+public:
+  const char *name() { return "CTimerJvmti"; }
+
+  Error check(Arguments &args) {
+    return Error("CTimerJvmti is not supported on this platform");
+  }
+
+  Error start(Arguments &args) {
+    return Error("CTimerJvmti is not supported on this platform");
+  }
+};
+
 #endif // __linux__
 
 #endif // _CTIMER_H

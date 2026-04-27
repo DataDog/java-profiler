@@ -64,6 +64,7 @@ static WallClockASGCT wall_asgct_engine;
 static WallClockJvmti wall_jvmti_engine;
 static J9WallClock j9_engine;
 static ITimer itimer;
+static ITimerJvmti itimer_jvmti;
 static CTimer ctimer;
 static CTimerJvmti ctimer_jvmti;
 
@@ -983,10 +984,18 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
       TEST_LOG("J9[cpu]=asgct");
     }
     // Prefer the JVMTI JFR-delegated engine when the HotSpot extension is
-    // available and the user opted into jvmtistacks.
-    if (args._jvmtistacks && !ctimer_jvmti.check(args)) {
-      TEST_LOG("HS[cpu]=ctimer_jvmti");
-      return &ctimer_jvmti;
+    // available and the user opted into jvmtistacks.  On Linux, CTimerJvmti
+    // uses per-thread CPU timers.  On other platforms (e.g. macOS) it is not
+    // supported, so fall back to ITimerJvmti which uses setitimer(ITIMER_PROF).
+    if (args._jvmtistacks) {
+      if (!ctimer_jvmti.check(args)) {
+        TEST_LOG("HS[cpu]=ctimer_jvmti");
+        return &ctimer_jvmti;
+      }
+      if (!itimer_jvmti.check(args)) {
+        TEST_LOG("HS[cpu]=itimer_jvmti");
+        return &itimer_jvmti;
+      }
     }
     return !ctimer.check(args)
                ? (Engine *)&ctimer

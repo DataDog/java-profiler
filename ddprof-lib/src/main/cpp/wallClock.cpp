@@ -262,9 +262,10 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
   event._thread_state = state;
   event._execution_mode = mode;
   event._weight = 1;
-  // Delegate the stack walk to the JVM. On rejection we drop the sample;
-  // recordSampleDelegated() increments the failure counters.
-  (void)Profiler::instance()->recordSampleDelegated(ucontext, last_sample, tid,
+  // Pass nullptr ucontext so the JVM uses safepoint-based stack walking.
+  // Passing the signal-frame PC causes the extension to reject samples where
+  // the thread is currently inside JVM-internal (non-Java) code.
+  (void)Profiler::instance()->recordSampleDelegated(nullptr, last_sample, tid,
                                                     BCI_WALL, &event);
   Shims::instance().setSighandlerTid(-1);
 }

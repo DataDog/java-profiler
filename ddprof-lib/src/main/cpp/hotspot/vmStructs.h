@@ -300,7 +300,7 @@ typedef void* address;
         field(_flag_type_offset, offset, MATCH_SYMBOLS("_type", "type"))                                            \
     type_end()                                                                                                      \
     type_begin(VMOop, MATCH_SYMBOLS("oopDesc"))                                                                     \
-        field(_oop_klass_offset, offset, MATCH_SYMBOLS("_metadata._klass"))                                         \
+        field(_oop_klass_offset, offset, MATCH_SYMBOLS("_metadata._klass", "_compressed_klass"))                    \
     type_end()                                                                                                      \
     type_begin(VMUniverse, MATCH_SYMBOLS("Universe", "CompressedKlassPointers"))                                    \
         field(_narrow_klass_base_addr, address, MATCH_SYMBOLS("_narrow_klass._base", "_base"))                      \
