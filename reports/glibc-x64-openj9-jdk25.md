@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-04-26 21:17:46 EDT
+**Date:** 2026-04-26 21:26:02 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 377 |
-| Sample Rate | 6.28/sec |
-| Health Score | 392% |
+| CPU Samples | 496 |
+| Sample Rate | 8.27/sec |
+| Health Score | 517% |
 | Threads | 8 |
-| Allocations | 424 |
+| Allocations | 369 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 508 |
-| Sample Rate | 8.47/sec |
-| Health Score | 529% |
+| CPU Samples | 541 |
+| Sample Rate | 9.02/sec |
+| Health Score | 564% |
 | Threads | 10 |
-| Allocations | 501 |
+| Allocations | 460 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1777252373 32
-1777252378 32
-1777252383 32
-1777252388 32
-1777252393 32
-1777252398 32
-1777252403 32
-1777252408 32
-1777252413 32
-1777252418 32
-1777252423 32
-1777252428 32
-1777252433 32
-1777252438 32
-1777252443 32
-1777252448 32
-1777252453 32
-1777252458 32
-1777252463 32
-1777252468 32
+1777252575 32
+1777252580 32
+1777252585 32
+1777252590 32
+1777252595 32
+1777252600 32
+1777252605 32
+1777252610 32
+1777252615 32
+1777252620 32
+1777252625 32
+1777252630 32
+1777252635 32
+1777252640 32
+1777252645 32
+1777252650 32
+1777252655 32
+1777252660 32
+1777252665 32
+1777252670 32
 ```
 </details>
 

@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk11
 
 ## glibc-arm64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-04-26 21:17:45 EDT
+**Date:** 2026-04-26 21:26:01 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 342 |
-| Sample Rate | 5.70/sec |
-| Health Score | 356% |
-| Threads | 11 |
-| Allocations | 187 |
+| CPU Samples | 133 |
+| Sample Rate | 2.22/sec |
+| Health Score | 139% |
+| Threads | 10 |
+| Allocations | 74 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 21 |
-| Sample Rate | 0.35/sec |
-| Health Score | 22% |
-| Threads | 6 |
-| Allocations | 10 |
+| CPU Samples | 34 |
+| Sample Rate | 0.57/sec |
+| Health Score | 36% |
+| Threads | 7 |
+| Allocations | 16 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1777252390 32
-1777252395 32
-1777252400 32
-1777252405 32
-1777252410 32
-1777252415 32
-1777252420 32
-1777252425 32
-1777252430 32
-1777252435 32
-1777252440 32
-1777252445 32
-1777252450 32
-1777252455 32
-1777252460 32
-1777252465 32
-1777252470 32
-1777252475 32
-1777252480 32
-1777252485 32
+1777252612 32
+1777252617 32
+1777252622 32
+1777252627 32
+1777252632 32
+1777252637 32
+1777252642 32
+1777252647 32
+1777252652 32
+1777252657 32
+1777252662 32
+1777252667 32
+1777252672 32
+1777252677 32
+1777252682 32
+1777252687 32
+1777252692 32
+1777252697 32
+1777252702 32
+1777252707 32
 ```
 </details>
 
