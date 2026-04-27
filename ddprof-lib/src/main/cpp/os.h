@@ -122,10 +122,72 @@ class OS {
     static bool isLinux();
     static bool isMusl();
 
+    // Returns nullptr on sigaction() failure; returns the previous sa_sigaction otherwise.
     static SigAction installSignalHandler(int signo, SigAction action, SigHandler handler = NULL);
     static SigAction replaceCrashHandler(SigAction action);
     static int getProfilingSignal(int mode);
     static bool sendSignalToThread(int thread_id, int signo);
+
+    // Send a signal to a specific thread with a cookie payload (synchronous —
+    // the kernel queues it and returns). Uses rt_tgsigqueueinfo(2) on Linux;
+    // receiver sees si_code == SI_QUEUE with the cookie in si_value.sival_ptr.
+    // Engines use this when they need to discriminate their own signals from
+    // foreign ones in the handler.
+    static bool sendSignalWithCookie(int thread_id, int signo, void* cookie);
+
+    // Accept-policy for a signal in a handler context. Async-signal-safe.
+    //
+    // Returns true iff the signal SHOULD be processed by the caller's engine:
+    //   - origin check disabled (accept-all fallback, DDPROF_SIGNAL_ORIGIN_CHECK=0)
+    //     → true
+    //   - origin check enabled AND siginfo matches both expected_si_code and
+    //     expected_cookie → true
+    //   - otherwise → false
+    //
+    // Naming note: this is a policy predicate, NOT a pure "did this signal
+    // come from us?" identification. A `false` answer means "forward this to
+    // the chained handler"; a `true` answer means "process normally".
+    // `expected_si_code` is SI_TIMER (timer_create) or SI_QUEUE
+    // (sendSignalWithCookie).
+    static bool shouldProcessSignal(siginfo_t* siginfo, int expected_si_code, void* expected_cookie);
+
+    // Forwards a signal we decided not to process to the previously-installed
+    // handler (as captured by installSignalHandler). When
+    // DDPROF_FORWARD_APPLY_SIGMASK=1 is set, also reproduces the previous
+    // handler's sa_mask so the chained handler sees the same signal-blocking
+    // environment it would under normal kernel delivery.
+    // Async-signal-safe on the fast path (no sa_mask applied). When
+    // DDPROF_FORWARD_APPLY_SIGMASK=1 is set, the slow path uses raw
+    // rt_sigprocmask syscalls which are async-signal-safe. The forwarded
+    // handler's safety is the caller's concern.
+    //
+    // Drop semantics (Linux): signals whose previous disposition was SIG_DFL or
+    // SIG_IGN are silently dropped — kernel-default termination is NOT reproduced
+    // (terminating the process on every forwarded foreign signal would be worse
+    // than ignoring it). Callers must not rely on default-action reproduction.
+    //
+    // macOS: always a no-op (rt_tgsigqueueinfo is unavailable so no cookie
+    // discrimination is possible; all signals are accepted by the engine handler
+    // and never forwarded). signalOriginCheckEnabled() returns false on macOS.
+    static void forwardForeignSignal(int signo, siginfo_t* siginfo, void* ucontext);
+
+    // Runtime feature flag: is the signal origin check active? Reads
+    // DDPROF_SIGNAL_ORIGIN_CHECK env var and caches the result. Default on;
+    // set to "false"/"0"/"off"/"no" to disable (regression tests only).
+    // Callers running from signal-handler context must ensure
+    // primeSignalOriginCheck() was called earlier from non-signal context
+    // so the env-var getenv() cost is not paid during signal delivery.
+    static bool signalOriginCheckEnabled();
+
+    // Prime the signalOriginCheckEnabled() cache from non-signal context.
+    // Called by engine start() paths before installing handlers so later
+    // env-var overrides are picked up. Safe to call multiple times; no-op
+    // after the first call unless forceReload=true (used only by unit tests).
+    //
+    // Without priming, the cache holds its safe defaults (origin check
+    // enabled, sigmask chain disabled) — signals still classify correctly
+    // even if priming never runs.
+    static void primeSignalOriginCheck(bool forceReload = false);
 
     static void* safeAlloc(size_t size);
     static void safeFree(void* addr, size_t size);
