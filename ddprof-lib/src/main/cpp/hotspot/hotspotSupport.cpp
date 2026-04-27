@@ -1181,6 +1181,7 @@ constexpr const char* FFM_PREFIX = "Ljdk/internal/foreign/abi/";
 static bool isLambdaClass(const char* signature) {
     return strncmp(signature, LAMBDA_PREFIX, strlen(LAMBDA_PREFIX)) == 0 ||
            strstr(signature, "$$Lambda.") != nullptr ||
+           strstr(signature, "$$Lambda$") != nullptr ||
            strstr(signature, ".lambda$") != nullptr ||
            strncmp(signature, FFM_PREFIX, strlen(FFM_PREFIX)) == 0;
 }

@@ -190,6 +190,8 @@ void Lookup::fillMethodInfo(MethodInfo *mi, jclass method_class, char* class_nam
   u32 method_name_id = 0;
   u32 method_sig_id = 0;
 
+  TEST_LOG("FillMethodInfo: class: [%s] method: [%s] signature: [%s]", class_name, method_name, method_sig);
+
   JNIEnv *jni = VM::jni();
   if (jni == nullptr) {
     return;
@@ -423,39 +425,30 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, const void* method, bool first_t
   memcpy(klass_name, klass_sym->body(), klass_sym->length());
   klass_name[klass_sym->length()] = '\0';
 
-  TEST_LOG("Lookup VMMethod: %s %s : Class: %s", method_name, method_signature, klass_name);
   JNIEnv *jni = VM::jni();
   jclass clz = jni->FindClass(klass_name);
   assert(clz != nullptr && "Could not find jclass");
   jint entry_count = 0;
   jvmtiLineNumberEntry* table = nullptr;
+  jmethodID mid = nullptr;
+  if (first_time) {
+      jmethodID mid = jni->GetMethodID(clz, method_name, method_signature);
+TEST_LOG("Lookup method ID for %s %s %s --> %d", klass_name, method_name, method_signature, mid != nullptr);
 
-// Debug linenumber table
- #if 1
-   jmethodID mid = jni->GetMethodID(clz, method_name, method_signature);
-   jvmtiEnv* jvmti = VM::jvmti();
-   jint debug_count = 0;
-   jvmtiLineNumberEntry* debug_table = nullptr;
-
-   jvmti->GetLineNumberTable(mid, &debug_count, &debug_table);
- #endif
-
-  if (first_time && const_method->hasLineNumberTable()) {
-    if (!const_method->getLineNumberTable(&entry_count, &table)) {
-      entry_count = 0;
-      table = nullptr;
-    } else {
-      TEST_LOG("Load line number table for %s count = %d", method_name, entry_count);
+      jvmtiEnv* jvmti = VM::jvmti();
       if (mid != nullptr) {
-        assert(entry_count == debug_count);
-        for (int index = 0; index < entry_count; index++) {
-          assert(debug_table[index].start_location == table[index].start_location && "start location does not match");
-          assert(debug_table[index].line_number == table[index].line_number && "line number does not match");
+        if (jvmti->GetLineNumberTable(mid, &entry_count, &table) != JVMTI_ERROR_NONE) {
+          if (table != nullptr) {
+            jvmti->Deallocate((unsigned char*)table);
+          }
+          entry_count = 0;
+          table = nullptr;
         }
+      } else {
+        jni->ExceptionClear();  
       }
-    }
   }
-  fillMethodInfo(mi, clz, klass_name, method_name, method_signature, -entry_count, table);
+  fillMethodInfo(mi, clz, klass_name, method_name, method_signature, entry_count, table);
 
   free(method_name);
   free(method_signature);

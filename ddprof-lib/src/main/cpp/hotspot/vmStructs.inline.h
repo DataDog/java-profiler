@@ -155,10 +155,6 @@ uint32_t VMConstMethod::flags() const {
     return *(uint32_t*)at(_constmethod_flags_offset );
 }
 
-bool VMConstMethod::hasLineNumberTable() const {
-    return (flags() & has_linenumber_table) != 0;
-}
-
 VMKlass* VMClasses::obj_klass() {
     return VMKlass::load_then_cast(_obj_class_addr);
 }

@@ -8,7 +8,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
-#include "hotspot/compressedLinenumberStream.h"
 #include "hotspot/vmStructs.inline.h"
 #include "vmEntry.h"
 #include "jniHelper.h"
@@ -226,7 +225,6 @@ void VMStructs::init_type_sizes() {
                 continue;                                         \
             }
 
-
 void VMStructs::init_constants() {
     // Int constants
     uintptr_t entry = readSymbol("gHotSpotVMIntConstants");
@@ -246,7 +244,6 @@ void VMStructs::init_constants() {
     // Special case
     _frame_entry_frame_call_wrapper_offset *= sizeof(uintptr_t);
 
-
     // Long constants
     entry = readSymbol("gHotSpotVMLongConstants");
     stride = readSymbol("gHotSpotVMLongConstantEntryArrayStride");
@@ -265,9 +262,7 @@ void VMStructs::init_constants() {
         }
     }
 }
-
 #undef READ_CONSTANT
-
 
 #ifdef DEBUG
 void VMStructs::verify_offsets() {
@@ -799,42 +794,6 @@ jmethodID VMMethod::validatedId() {
         return method_id;
     }
     return NULL;
-}
-
-bool VMConstMethod::getLineNumberTable(jint* entry_count_ptr,
-                                       jvmtiLineNumberEntry** table_ptr) {
-    if (!hasLineNumberTable()) {
-        return false;
-    }
-
-    assert(entry_count_ptr != nullptr);
-    assert(table_ptr != nullptr);
-    unsigned char* table_start = (unsigned char*)codeEnd();
-    int count = 0;
-    CompressedLineNumberStream stream(table_start);
-    while (stream.read_pair()) {
-        count++;
-    }
-    if (count == 0) {
-        return false;
-    }
-
-    jvmtiLineNumberEntry* table = (jvmtiLineNumberEntry*)malloc(count * sizeof(jvmtiLineNumberEntry));
-    if (table == nullptr) {
-        return false;
-    }
-
-    stream.reset();
-    count = 0;
-    while (stream.read_pair()) {
-        table[count].start_location = (jlocation)stream.bci();
-        table[count].line_number = (jint)stream.line();
-        count++;
-    }
-    *table_ptr = table;
-    *entry_count_ptr = count;
-
-    return true;
 }
 
 VMNMethod* CodeHeap::findNMethod(char* heap, const void* pc) {

@@ -314,7 +314,7 @@ typedef void* address;
         field(_narrow_klass_shift_addr, address, MATCH_SYMBOLS("_narrow_klass._shift", "_shift"))                   \
         field(_collected_heap_addr, address, MATCH_SYMBOLS("_collectedHeap"))                                       \
     type_end()                                                                                                      \
-    type_begin(VMClasses, MATCH_SYMBOLS("vmClasses"))                                                               \
+    type_begin(VMClasses, MATCH_SYMBOLS("vmClasses", "SystemDictionary"))                                           \
         field(_obj_class_addr, address, MATCH_SYMBOLS("_klasses[static_cast<int>(vmClassID::Object_klass_knum)]", "_well_known_klasses[SystemDictionary::Object_klass_knum]"))  \
         field(_thread_class_addr, address, MATCH_SYMBOLS("_klasses[static_cast<int>(vmClassID::Thread_klass_knum)]", "_well_known_klasses[SystemDictionary::Thread_klass_knum]")) \
     type_end()
@@ -892,8 +892,6 @@ private:
 DECLARE_END
 
 DECLARE(VMConstMethod)
-    // ref: constMethodFlags.hpp in hotspot src
-    static constexpr uint32_t has_linenumber_table = 1 << 0;
 public:
     inline VMConstantPool* constants() const;
     inline uint16_t codeSize() const;
@@ -904,9 +902,6 @@ public:
     inline VMSymbol* name() const;
     inline VMSymbol* signature() const;
     inline uint32_t flags() const;
-    inline bool hasLineNumberTable() const;
-    bool getLineNumberTable(jint* entry_count_ptr,
-                       jvmtiLineNumberEntry** table_ptr);
 DECLARE_END
 
 DECLARE(VMMethod)   
