@@ -12,7 +12,6 @@
 
 #include "arch.h"
 #include "codeCache.h"
-#include "frame.h"
 
 #ifdef __clang__
 #define DLLEXPORT __attribute__((visibility("default")))

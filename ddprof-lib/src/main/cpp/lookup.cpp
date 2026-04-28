@@ -305,8 +305,8 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   jint bci = frame.bci;
   FrameTypeId frame_type = FrameType::decode(bci);
 
-  jmethodID method = frame.method_id;
-  if (method == nullptr) {
+  jmethodID method_id = frame.method_id;
+  if (method_id == nullptr) {
     key = MethodMap::makeKey(UNKNOWN);
   } else if (bci == BCI_ERROR || bci == BCI_NATIVE_FRAME) {
     key = MethodMap::makeKey(frame.native_function_name);
@@ -318,7 +318,7 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     assert(frame_type == FRAME_INTERPRETED || frame_type == FRAME_JIT_COMPILED ||
            frame_type == FRAME_INLINED || frame_type == FRAME_C1_COMPILED ||
            VM::isOpenJ9()); // OpenJ9 may have bugs that produce invalid frame types
-    key = MethodMap::makeKey(method);
+    key = MethodMap::makeKey(method_id);
   }
 
   MethodInfo *mi = &(*_method_map)[key];
@@ -329,12 +329,12 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     if (first_time) {
       mi->_key = _method_map->size() + 1; // avoid zero key
     }
-    if (method == nullptr) {
+    if (method_id == nullptr) {
       fillNativeMethodInfo(mi, UNKNOWN, nullptr);
     } else if (bci == BCI_ERROR) {
-      fillNativeMethodInfo(mi, (const char *)method, nullptr);
+      fillNativeMethodInfo(mi, (const char *)method_id, nullptr);
     } else if (bci == BCI_NATIVE_FRAME) {
-      const char *name = (const char *)method;
+      const char *name = (const char *)method_id;
       fillNativeMethodInfo(mi, name,
                            Profiler::instance()->getLibraryName(name));
     } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
@@ -372,7 +372,7 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     } else if (frame_type == FRAME_INTERPRETED_METHOD) {
         fillJavaMethodInfo(mi, frame.method, first_time);
     } else {
-        fillJavaMethodInfo(mi, method, first_time);
+        fillJavaMethodInfo(mi, method_id, first_time);
     }
   }
 

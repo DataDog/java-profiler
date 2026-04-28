@@ -122,6 +122,7 @@ static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *n
 
 static inline void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, const VMMethod* method) {
     frame.bci = FrameType::encode(type, bci);
+    assert(FrameType::decode(frame.bci) == type && "FrameType::encode/decode is not reversable");
     frame.method = static_cast<const void*>(method);
 }
 
