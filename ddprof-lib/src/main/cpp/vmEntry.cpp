@@ -380,6 +380,40 @@ bool VM::initLibrary(JavaVM *vm) {
   return true;
 }
 
+void VM::probeJFRRequestStackTrace() {
+  jint ext_count = 0;
+  jvmtiExtensionFunctionInfo *ext_functions = nullptr;
+  if (_jvmti->GetExtensionFunctions(&ext_count, &ext_functions) == 0) {
+    for (jint i = 0; i < ext_count; i++) {
+      if (strcmp(ext_functions[i].id,
+                 "com.sun.hotspot.functions.RequestStackTrace") == 0) {
+        _request_stack_trace = ext_functions[i].func;
+      } else if (strcmp(ext_functions[i].id,
+                        "com.sun.hotspot.functions.InitializeRequestStackTrace") == 0) {
+        _init_request_stack_trace = ext_functions[i].func;
+      }
+    }
+    _jvmti->Deallocate((unsigned char *)ext_functions);
+  }
+
+  if (_agent_args._jvmtistacks) {
+    if (_request_stack_trace != nullptr && _init_request_stack_trace != nullptr) {
+      jvmtiError rc = _init_request_stack_trace(_jvmti);
+      if (rc == JVMTI_ERROR_NONE) {
+        _request_stack_trace_initialized = true;
+        Counters::increment(JVMTI_STACKS_INIT_OK);
+      } else {
+        Log::warn("InitializeRequestStackTrace failed: %d", rc);
+        Counters::increment(JVMTI_STACKS_INIT_FAILED);
+      }
+    } else {
+      Log::warn("jvmtistacks requested but HotSpot RequestStackTrace extension "
+                "is not available on this JVM");
+      Counters::increment(JVMTI_STACKS_INIT_FAILED);
+    }
+  }
+}
+
 bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   TEST_LOG("VM::initProfilerBridge");
   if (!initShared(vm)) {
@@ -431,44 +465,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
 
   _jvmti->AddCapabilities(&capabilities);
 
-  // Detect the HotSpot JFR async stack-trace JVMTI extension. Present on JDK 27+
-  // builds that expose the functions "com.sun.hotspot.functions.RequestStackTrace"
-  // and "com.sun.hotspot.functions.InitializeRequestStackTrace". If the user asked
-  // for jvmtistacks and both are present, initialise now (the JDK requires this
-  // to happen during Agent_OnLoad). After initialisation, signal handlers may
-  // delegate stack walks via VM::requestStackTrace().
   if (_hotspot) {
-    jint ext_count = 0;
-    jvmtiExtensionFunctionInfo *ext_functions = nullptr;
-    if (_jvmti->GetExtensionFunctions(&ext_count, &ext_functions) == 0) {
-      for (jint i = 0; i < ext_count; i++) {
-        if (strcmp(ext_functions[i].id,
-                   "com.sun.hotspot.functions.RequestStackTrace") == 0) {
-          _request_stack_trace = ext_functions[i].func;
-        } else if (strcmp(ext_functions[i].id,
-                          "com.sun.hotspot.functions.InitializeRequestStackTrace") == 0) {
-          _init_request_stack_trace = ext_functions[i].func;
-        }
-      }
-      _jvmti->Deallocate((unsigned char *)ext_functions);
-    }
-
-    if (_agent_args._jvmtistacks) {
-      if (_request_stack_trace != nullptr && _init_request_stack_trace != nullptr) {
-        jvmtiError rc = _init_request_stack_trace(_jvmti);
-        if (rc == JVMTI_ERROR_NONE) {
-          _request_stack_trace_initialized = true;
-          Counters::increment(JVMTI_STACKS_INIT_OK);
-        } else {
-          Log::warn("InitializeRequestStackTrace failed: %d", rc);
-          Counters::increment(JVMTI_STACKS_INIT_FAILED);
-        }
-      } else {
-        Log::warn("jvmtistacks requested but HotSpot RequestStackTrace extension "
-                  "is not available on this JVM");
-        Counters::increment(JVMTI_STACKS_INIT_FAILED);
-      }
-    }
+    probeJFRRequestStackTrace();
   }
 
   jvmtiEventCallbacks callbacks = {0};

@@ -144,6 +144,7 @@ private:
   static void loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni);
 
   static bool initShared(JavaVM *vm);
+  static void probeJFRRequestStackTrace();
 
   static CodeCache* openJvmLibrary();
 
