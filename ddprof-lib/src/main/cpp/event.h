@@ -188,8 +188,9 @@ typedef struct QueueTimeEvent {
   u32 _scheduler;
   u32 _origin;
   u32 _queueType;
-  u32 _queueLength;
-  u64 _submitting_span_id;
+    u32 _queueLength;
+    u64 _submitting_span_id;
+    u64 _consuming_span_id;  // 0: use current Context; else: override JFR spanId
 } QueueTimeEvent;
 
 #endif // _EVENT_H

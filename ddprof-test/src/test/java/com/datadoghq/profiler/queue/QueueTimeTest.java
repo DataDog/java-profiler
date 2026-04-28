@@ -99,6 +99,51 @@ public class QueueTimeTest extends AbstractProfilerTest {
         assertTrue(found, "Expected at least one QueueTime event with spanId=7");
     }
 
+    /**
+     * When {@code consumingSpanIdOverride} is non-zero, native code must use it for JFR
+     * {@code spanId} instead of the active {@code Contexts} span.
+     */
+    @Test
+    public void testQueueTimeConsumingSpanIdOverride() throws Exception {
+        Thread origin = Thread.currentThread();
+        origin.setName("origin-override");
+        long start = profiler.getCurrentTicks();
+        Runnable worker = () -> {
+            profiler.setContext(1, 2);
+            long now = profiler.getCurrentTicks();
+            long override = 88L;
+            profiler.recordQueueTime(
+                    start,
+                    now,
+                    QueueTimeTest.class,
+                    QueueTimeTest.class,
+                    ArrayBlockingQueue.class,
+                    1,
+                    origin,
+                    99L,
+                    override);
+            profiler.clearContext();
+        };
+        Thread thread = new Thread(worker, "destination-override");
+        Thread.sleep(10);
+        thread.start();
+        thread.join();
+        stopProfiler();
+
+        IItemCollection events = verifyEvents("datadog.QueueTime");
+        boolean found = false;
+        for (IItemIterable it : events) {
+            IMemberAccessor<IQuantity, IItem> acc = SPAN_ID.getAccessor(it.getType());
+            for (IItem item : it) {
+                if (acc.getMember(item).longValue() == 88) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assertTrue(found, "Expected QueueTime with spanId=88 from override");
+    }
+
     @Test
     public void testRecordQueueTime() throws Exception {
         Thread origin = Thread.currentThread();

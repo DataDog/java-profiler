@@ -353,7 +353,7 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
     JNIEnv *env, jclass unused, jlong startTime, jlong endTime, jstring task,
     jstring scheduler, jthread origin, jstring queueType, jint queueLength,
-    jlong submittingSpanId) {
+    jlong submittingSpanId, jlong consumingSpanIdOverride) {
   int tid = ProfiledThread::currentTid();
   if (tid < 0) {
     return;
@@ -384,6 +384,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   event._queueType = queue_type_offset;
   event._queueLength = queueLength;
   event._submitting_span_id = (u64)submittingSpanId;
+  event._consuming_span_id = (u64)consumingSpanIdOverride;
   Profiler::instance()->recordQueueTime(tid, &event);
 }
 

@@ -1619,6 +1619,11 @@ void Recording::recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event) {
       rootSpanId = 0;
     }
   }
+  if (event->_consuming_span_id != 0) {
+    // Java requested an explicit consuming span (e.g. self-loop disambiguation); keep root
+    // from the active context when consistent with the current trace.
+    spanId = event->_consuming_span_id;
+  }
   buf->putVar64(spanId);                      // schema pos: spanId
   buf->putVar64(rootSpanId);                  // schema pos: localRootSpanId
   buf->putVar64(event->_submitting_span_id);  // schema pos: submittingSpanId (CORRECT position)
