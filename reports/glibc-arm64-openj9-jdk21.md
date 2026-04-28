@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk21
 
 ## glibc-arm64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-04-28 11:22:29 EDT
+**Date:** 2026-04-28 12:10:02 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 82 |
-| Sample Rate | 1.37/sec |
-| Health Score | 86% |
-| Threads | 11 |
-| Allocations | 63 |
+| CPU Samples | 263 |
+| Sample Rate | 4.38/sec |
+| Health Score | 274% |
+| Threads | 10 |
+| Allocations | 187 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 98 |
-| Sample Rate | 1.63/sec |
-| Health Score | 102% |
-| Threads | 9 |
-| Allocations | 54 |
+| CPU Samples | 83 |
+| Sample Rate | 1.38/sec |
+| Health Score | 86% |
+| Threads | 13 |
+| Allocations | 55 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1777389461 64
-1777389466 64
-1777389471 64
-1777389476 64
-1777389481 64
-1777389486 64
-1777389491 64
-1777389496 64
-1777389501 64
-1777389506 64
-1777389511 64
-1777389516 64
-1777389521 64
-1777389526 64
-1777389531 64
-1777389536 64
-1777389541 64
-1777389546 64
-1777389551 64
-1777389556 64
+1777392258 64
+1777392263 64
+1777392268 64
+1777392273 64
+1777392278 64
+1777392283 64
+1777392288 64
+1777392293 64
+1777392298 64
+1777392303 64
+1777392308 64
+1777392313 64
+1777392318 64
+1777392323 64
+1777392328 64
+1777392333 64
+1777392338 64
+1777392343 64
+1777392348 64
+1777392353 64
 ```
 </details>
 
