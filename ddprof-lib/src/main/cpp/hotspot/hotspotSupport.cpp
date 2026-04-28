@@ -1109,6 +1109,26 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   } else if (request.event_type == BCI_NATIVE_MALLOC || request.event_type == BCI_NATIVE_SOCKET) {
     if (cstack >= CSTACK_VM) {
       java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
+    } else {
+        AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());
+        if (mutex.acquired()) {
+            java_frames = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated);
+            if (java_frames > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
+                VMNMethod* nmethod = CodeHeap::findNMethod(java_ctx->pc);
+                if (nmethod != NULL) {
+                    fillFrameTypes(frames, java_frames, nmethod);
+                }
+            }
+        }
+        if (java_frames > 0 && VM::hotspot_version() >= 21 && java_frames < max_depth) {
+            VMThread* carrier = VMThread::current();
+            if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
+                frames[java_frames].bci = BCI_NATIVE_FRAME;
+                frames[java_frames].method_id = (jmethodID) "JVM Continuation";
+                LP64_ONLY(frames[java_frames].padding = 0;)
+                java_frames++;
+            }
+        }
     }
   } else if (request.event_type == BCI_CPU || request.event_type == BCI_WALL) {
     if (cstack >= CSTACK_VM) {
