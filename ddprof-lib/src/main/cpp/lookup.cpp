@@ -413,39 +413,46 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, const void* method, bool first_t
   VMSymbol* klass_sym = klass->name();
   char* method_name = (char*)malloc(name_sym->length() + 1);
   char* method_signature = (char*)malloc(sig_sym->length() + 1);
-  char* klass_name = (char*)malloc(klass_sym->length() + 1);
+  int klass_name_len = klass_sym->length();
+  char* klass_name = (char*)malloc(klass_name_len + 1);
 
   memcpy(method_name, name_sym->body(), name_sym->length());
   method_name[name_sym->length()] = '\0';
   memcpy(method_signature, sig_sym->body(), sig_sym->length());
   method_signature[sig_sym->length()] = '\0';
-  memcpy(klass_name, klass_sym->body(), klass_sym->length());
-  klass_name[klass_sym->length()] = '\0';
+  memcpy(klass_name, klass_sym->body(), klass_name_len);
+  klass_name[klass_name_len] = '\0';
 
   JNIEnv *jni = VM::jni();
   jclass clz = jni->FindClass(klass_name);
-  assert(clz != nullptr && "Could not find jclass");
-  jint entry_count = 0;
-  jvmtiLineNumberEntry* table = nullptr;
   jmethodID mid = nullptr;
-  if (first_time) {
-      jmethodID mid = jni->GetMethodID(clz, method_name, method_signature);
-      jvmtiEnv* jvmti = VM::jvmti();
-      if (mid != nullptr) {
-        if (jvmti->GetLineNumberTable(mid, &entry_count, &table) != JVMTI_ERROR_NONE) {
-          if (table != nullptr) {
-            jvmti->Deallocate((unsigned char*)table);
-          }
-          entry_count = 0;
-          table = nullptr;
-        }
-      } else {
-        jni->ExceptionClear();  
-      }
+  if (clz == nullptr) {
+    jni->ExceptionClear();
+  } else {
+    mid = jni->GetMethodID(clz, method_name, method_signature);
+    if (mid != nullptr) {
+      fillJavaMethodInfo(mi, mid, first_time);      
+    } else {
+      jni->ExceptionClear();
+    }
   }
-  fillMethodInfo(mi, clz, klass_name, method_name, method_signature, entry_count, table);
+  
+  // Construct jvmti class signature, e.g. `Ljava/lang/Object;` which
+  // is expected by fillMethodInfo()
+  char* jvmti_klass_name = nullptr;
+  if (mid == nullptr) {
+    jvmti_klass_name = (char*)malloc(klass_name_len + 3);
+    jvmti_klass_name[0] = 'L';
+    memcpy(&jvmti_klass_name[1], klass_name, klass_name_len);
+    jvmti_klass_name[klass_name_len + 1] = ';';
+    jvmti_klass_name[klass_name_len + 2] = '\0';
+    jint entry_count = 0;
+    jvmtiLineNumberEntry* table = nullptr;
+    fillMethodInfo(mi, clz, jvmti_klass_name, method_name, method_signature, entry_count, table);
+  }
 
   free(method_name);
   free(method_signature);
   free(klass_name);
+  free(jvmti_klass_name);
 }

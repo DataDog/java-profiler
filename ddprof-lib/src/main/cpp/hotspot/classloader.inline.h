@@ -13,11 +13,12 @@
 
 bool VMClassLoader::isLoadedByBootstrapClassLoader(const VMMethod* method) {
     VMKlass* method_klass = method->methodHolder();
+    if (method_klass == nullptr) {
+        return false;
+    }
 
     // java/lang/Object must be loaded by bootstrap class loader
     VMKlass* obj_klass = VMClasses::obj_klass();
-
-    assert(method_klass != nullptr && "No Klass for the method");
     assert(obj_klass != nullptr && "VMClasses not yet initialized");
     assert(method_klass->classLoaderData() != nullptr && "Method holder has no class loader data");
     assert(obj_klass->classLoaderData() != nullptr && "Object class has no class loader data");

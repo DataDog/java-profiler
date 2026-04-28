@@ -47,6 +47,18 @@ inline T* cast_to(const void* ptr) {
     return reinterpret_cast<T*>(const_cast<void*>(ptr));
 }
 
+template <typename T>
+inline T* cast_or_null(const void* ptr) {
+    assert(VM::isHotspot()); // This should only be used in HotSpot-specific code
+    assert(T::type_size() > 0); // Ensure type size has been initialized
+    if(ptr == nullptr || SafeAccess::isReadableRange(ptr, T::type_size())) {
+        return reinterpret_cast<T*>(const_cast<void*>(ptr));
+    } else {
+        return nullptr;
+    }
+}
+
+
 #define TYPE_SIZE_NAME(name)    _##name##_size
 
 // MATCH_SYMBOLS macro expands into a string list, that is consumed by matchAny() method
@@ -71,7 +83,8 @@ inline T* cast_to(const void* ptr) {
     class name : VMStructs { \
       public: \
         static uint64_t type_size() { return TYPE_SIZE_NAME(name); } \
-        static name * cast(const void* ptr) { return cast_to<name>(ptr); } \
+        static name * cast(const void* ptr) { return ::cast_to<name>(ptr); } \
+        static name * cast_or_null(const void* ptr) { return ::cast_or_null<name>(ptr); } \
         static name * cast_raw(const void* ptr) { return (name *)ptr; } \
         static name * load_then_cast(const void* ptr) { \
             assert(ptr != nullptr); \
