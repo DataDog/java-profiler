@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk8
 
 ## musl-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-04-28 12:10:04 EDT
+**Date:** 2026-04-28 12:45:15 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 219 |
-| Sample Rate | 3.65/sec |
-| Health Score | 228% |
+| CPU Samples | 118 |
+| Sample Rate | 1.97/sec |
+| Health Score | 123% |
 | Threads | 8 |
 | Allocations | 0 |
 
@@ -38,9 +38,9 @@ title: musl-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 232 |
-| Sample Rate | 3.87/sec |
-| Health Score | 242% |
+| CPU Samples | 110 |
+| Sample Rate | 1.83/sec |
+| Health Score | 114% |
 | Threads | 12 |
 | Allocations | 0 |
 
@@ -48,26 +48,26 @@ title: musl-arm64-hotspot-jdk8
 <summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1777392268 64
-1777392273 64
-1777392278 64
-1777392283 64
-1777392288 64
-1777392293 64
-1777392298 64
-1777392303 64
-1777392308 64
-1777392313 64
-1777392318 64
-1777392323 64
-1777392328 64
-1777392333 64
-1777392338 64
-1777392343 64
-1777392348 64
-1777392353 64
-1777392358 64
-1777392363 64
+1777394321 64
+1777394326 64
+1777394331 64
+1777394336 64
+1777394341 64
+1777394346 64
+1777394351 64
+1777394356 64
+1777394361 64
+1777394366 64
+1777394371 64
+1777394376 64
+1777394381 64
+1777394386 64
+1777394391 64
+1777394396 64
+1777394401 64
+1777394406 64
+1777394411 64
+1777394416 64
 ```
 </details>
 
