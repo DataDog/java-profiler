@@ -77,6 +77,7 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     current->setFilterSlotId(slot_id);
     // VMThread / vmStructs are HotSpot-only; VMThread::current() asserts VM::isHotspot().
     _thread_filter.setVMThread(slot_id, VM::isHotspot() ? VMThread::current() : nullptr);
+    _thread_filter.setProfiledThread(slot_id, current);
     _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
   if (thread != NULL) {
@@ -98,6 +99,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     
     if (_thread_filter.enabled()) {
       _thread_filter.setVMThread(slot_id, nullptr);
+      _thread_filter.setProfiledThread(slot_id, nullptr);
       _thread_filter.unregisterThread(slot_id);
       current->setFilterSlotId(-1);
     }
@@ -1151,6 +1153,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     int slot_id = _thread_filter.registerThread();
     current->setFilterSlotId(slot_id);
     _thread_filter.setVMThread(slot_id, VM::isHotspot() ? VMThread::current() : nullptr);
+    _thread_filter.setProfiledThread(slot_id, current);
     _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
   }
 

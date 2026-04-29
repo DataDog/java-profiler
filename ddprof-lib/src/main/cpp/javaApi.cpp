@@ -162,6 +162,9 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
   // Refresh HotSpot VMThread* for wall thread-filter precheck (vmStructs OS state).
   // HotSpot only: VMThread::current() asserts VM::isHotspot(). OpenJ9/Zing: leave null.
   thread_filter->setVMThread(slot_id, VM::isHotspot() ? VMThread::current() : nullptr);
+  // Refresh ProfiledThread* so wall-clock mitigations can observe per-thread parked state.
+  // Publish pointer fields before publishing tid via add() to preserve visibility ordering.
+  thread_filter->setProfiledThread(slot_id, current);
   thread_filter->add(tid, slot_id);
 }
 
