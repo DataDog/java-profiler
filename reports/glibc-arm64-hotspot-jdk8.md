@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-04-29 05:44:23 EDT
+**Date:** 2026-04-29 06:49:03 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 83 |
-| Sample Rate | 1.38/sec |
-| Health Score | 86% |
+| CPU Samples | 88 |
+| Sample Rate | 1.47/sec |
+| Health Score | 92% |
 | Threads | 9 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 86 |
-| Sample Rate | 1.43/sec |
-| Health Score | 89% |
-| Threads | 12 |
+| CPU Samples | 415 |
+| Sample Rate | 6.92/sec |
+| Health Score | 432% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1777455260 64
-1777455265 64
-1777455270 64
-1777455275 64
-1777455280 64
-1777455285 64
-1777455290 64
-1777455295 64
-1777455300 64
-1777455305 64
-1777455310 64
-1777455315 64
-1777455320 64
-1777455325 64
-1777455330 64
-1777455335 64
-1777455340 64
-1777455345 64
-1777455350 64
-1777455355 64
+1777459449 64
+1777459454 64
+1777459459 64
+1777459464 64
+1777459469 64
+1777459474 64
+1777459479 64
+1777459484 64
+1777459489 64
+1777459494 64
+1777459499 64
+1777459504 64
+1777459509 64
+1777459514 64
+1777459519 64
+1777459524 64
+1777459529 64
+1777459534 64
+1777459539 64
+1777459544 64
 ```
 </details>
 
