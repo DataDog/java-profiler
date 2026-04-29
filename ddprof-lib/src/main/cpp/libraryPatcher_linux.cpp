@@ -342,10 +342,16 @@ void LibraryPatcher::patch_socket_functions() {
   // bypassing unresolved lazy-binding stubs that would otherwise trigger
   // _dl_runtime_resolve and silently overwrite the hook in the GOT.
   // May resolve to an LD_PRELOAD interposer (e.g. libasan) — intentional.
+  // On musl, RTLD_NEXT returns NULL when libc is loaded before this DSO in the
+  // link map; fall back to RTLD_DEFAULT which finds symbols globally.
   auto pre_send   = (NativeSocketSampler::send_fn)  dlsym(RTLD_NEXT, "send");
+  if (!pre_send)  pre_send  = (NativeSocketSampler::send_fn)  dlsym(RTLD_DEFAULT, "send");
   auto pre_recv   = (NativeSocketSampler::recv_fn)  dlsym(RTLD_NEXT, "recv");
+  if (!pre_recv)  pre_recv  = (NativeSocketSampler::recv_fn)  dlsym(RTLD_DEFAULT, "recv");
   auto pre_write  = (NativeSocketSampler::write_fn) dlsym(RTLD_NEXT, "write");
+  if (!pre_write) pre_write = (NativeSocketSampler::write_fn) dlsym(RTLD_DEFAULT, "write");
   auto pre_read   = (NativeSocketSampler::read_fn)  dlsym(RTLD_NEXT, "read");
+  if (!pre_read)  pre_read  = (NativeSocketSampler::read_fn)  dlsym(RTLD_DEFAULT, "read");
   TEST_LOG("patch_socket_functions dlsym send=%p recv=%p write=%p read=%p",
            (void*)pre_send, (void*)pre_recv, (void*)pre_write, (void*)pre_read);
   if (!pre_send || !pre_recv || !pre_write || !pre_read) {
