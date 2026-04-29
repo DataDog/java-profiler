@@ -172,7 +172,7 @@ TEST_F(NativeSocketSamplerHookTest, ReadHookCallsOrigReadAndReturnsValue) {
 TEST(ArgumentsNatsock, NegativeIntervalRejected) {
     Arguments args;
     Error e = args.parse("natsock=-1us");
-    ASSERT_TRUE(e) << "Expected error for negative natsock interval";
+    ASSERT_TRUE(static_cast<bool>(e)) << "Expected error for negative natsock interval";
     ASSERT_NE(std::string(e.message()).find("must be >= 0"), std::string::npos)
         << "Error message should mention 'must be >= 0'";
 }
