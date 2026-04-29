@@ -19,6 +19,7 @@
 #include "j9/j9Support.h"
 #include "profiler.h"
 #include "threadState.h"
+#include <cxxabi.h>
 #include <stdlib.h>
 
 volatile bool J9WallClock::_enabled = false;
@@ -57,68 +58,90 @@ void J9WallClock::stop() {
 }
 
 void J9WallClock::timerLoop() {
-  JNIEnv *jni = VM::attachThread("java-profiler Sampler");
-  jvmtiEnv *jvmti = VM::jvmti();
+  // IBM J9 may cancel this thread via abi::__forced_unwind during JVM shutdown.
+  // Catch it to ensure free(frames) and VM::detachThread() always run — including
+  // if the unwind fires during setup (VM::attachThread or malloc) before the
+  // sampling loop starts — then re-throw so the thread exits properly through
+  // the normal unwind path.  jni and frames are declared before the try and
+  // initialized to null so the catch handler's cleanup is safe in either case:
+  // free(nullptr) is a no-op, and detachThread() is only called when attach
+  // succeeded.
+  //
+  // PushLocalFrame / PopLocalFrame balance: if the forced unwind fires between
+  // PushLocalFrame and PopLocalFrame, the outstanding JNI local frame is released
+  // by DetachCurrentThread (called via VM::detachThread()), which is specified to
+  // destroy the current stack frame's local references.  The common cancellation
+  // point is OS::sleep() which runs after PopLocalFrame, so no imbalance occurs
+  // in the typical case.
+  JNIEnv *jni = nullptr;
+  ASGCT_CallFrame *frames = nullptr;
+  try {
+    jni = VM::attachThread("java-profiler Sampler");
+    jvmtiEnv *jvmti = VM::jvmti();
 
-  int max_frames = _max_stack_depth + MAX_NATIVE_FRAMES + RESERVED_FRAMES;
-  ASGCT_CallFrame *frames =
-      (ASGCT_CallFrame *)malloc(max_frames * sizeof(ASGCT_CallFrame));
+    int max_frames = _max_stack_depth + MAX_NATIVE_FRAMES + RESERVED_FRAMES;
+    frames = (ASGCT_CallFrame *)malloc(max_frames * sizeof(ASGCT_CallFrame));
 
-  while (_running) {
-    if (!_enabled) {
-      OS::sleep(_interval);
-      continue;
-    }
-
-    jni->PushLocalFrame(64);
-
-    jvmtiStackInfoExtended *stack_infos;
-    jint thread_count;
-    if (J9Support::GetAllStackTracesExtended(
-            _max_stack_depth, (void **)&stack_infos, &thread_count) == 0) {
-      for (int i = 0; i < thread_count; i++) {
-        jvmtiStackInfoExtended *si = &stack_infos[i];
-        if (si->frame_count <= 0) {
-          // no frames recorded
-          continue;
-        }
-        OSThreadState ts = (si->state & JVMTI_THREAD_STATE_RUNNABLE)
-                             ? OSThreadState::RUNNABLE
-                             : OSThreadState::SLEEPING;
-        if (!_sample_idle_threads && ts != OSThreadState::RUNNABLE) {
-          // in execution profiler mode the non-running threads are skipped
-          continue;
-        }
-        for (int j = 0; j < si->frame_count; j++) {
-          jvmtiFrameInfoExtended *fi = &si->frame_buffer[j];
-          frames[j].method_id = fi->method;
-          frames[j].bci = FrameType::encode(sanitizeJ9FrameType(fi->type), fi->location);
-        }
-
-        int tid = J9Support::GetOSThreadID(si->thread);
-        if (tid == -1) {
-          // clearly an invalid TID; skip the thread
-          continue;
-        }
-        ExecutionEvent event;
-        event._thread_state = ts;
-        if (ts == OSThreadState::RUNNABLE) {
-          Profiler::instance()->recordExternalSample(
-              _interval, tid, si->frame_count, frames, /*truncated=*/false,
-              BCI_CPU, &event);
-        }
-        if (_sample_idle_threads) {
-          Profiler::instance()->recordExternalSample(
-              _interval, tid, si->frame_count, frames, /*truncated=*/false,
-              BCI_WALL, &event);
-        }
+    while (_running) {
+      if (!_enabled) {
+        OS::sleep(_interval);
+        continue;
       }
-      jvmti->Deallocate((unsigned char *)stack_infos);
+
+      jni->PushLocalFrame(64);
+
+      jvmtiStackInfoExtended *stack_infos;
+      jint thread_count;
+      if (J9Support::GetAllStackTracesExtended(
+              _max_stack_depth, (void **)&stack_infos, &thread_count) == 0) {
+        for (int i = 0; i < thread_count; i++) {
+          jvmtiStackInfoExtended *si = &stack_infos[i];
+          if (si->frame_count <= 0) {
+            // no frames recorded
+            continue;
+          }
+          OSThreadState ts = (si->state & JVMTI_THREAD_STATE_RUNNABLE)
+                               ? OSThreadState::RUNNABLE
+                               : OSThreadState::SLEEPING;
+          if (!_sample_idle_threads && ts != OSThreadState::RUNNABLE) {
+            // in execution profiler mode the non-running threads are skipped
+            continue;
+          }
+          for (int j = 0; j < si->frame_count; j++) {
+            jvmtiFrameInfoExtended *fi = &si->frame_buffer[j];
+            frames[j].method_id = fi->method;
+            frames[j].bci = FrameType::encode(sanitizeJ9FrameType(fi->type), fi->location);
+          }
+
+          int tid = J9Support::GetOSThreadID(si->thread);
+          if (tid == -1) {
+            // clearly an invalid TID; skip the thread
+            continue;
+          }
+          ExecutionEvent event;
+          event._thread_state = ts;
+          if (ts == OSThreadState::RUNNABLE) {
+            Profiler::instance()->recordExternalSample(
+                _interval, tid, si->frame_count, frames, /*truncated=*/false,
+                BCI_CPU, &event);
+          }
+          if (_sample_idle_threads) {
+            Profiler::instance()->recordExternalSample(
+                _interval, tid, si->frame_count, frames, /*truncated=*/false,
+                BCI_WALL, &event);
+          }
+        }
+        jvmti->Deallocate((unsigned char *)stack_infos);
+      }
+
+      jni->PopLocalFrame(NULL);
+
+      OS::sleep(_interval);
     }
-
-    jni->PopLocalFrame(NULL);
-
-    OS::sleep(_interval);
+  } catch (abi::__forced_unwind&) {
+    free(frames);
+    VM::detachThread();  // DetachCurrentThread releases any outstanding JNI local frames
+    throw;
   }
 
   free(frames);
