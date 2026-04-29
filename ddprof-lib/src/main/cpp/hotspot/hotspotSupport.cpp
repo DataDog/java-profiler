@@ -1194,7 +1194,7 @@ bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
     // Hotpsot only: loaded by bootstrap class loader, which is never unloaded,
     // we use Method instead.
     if (jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE && cl == nullptr) {
-        char* signature_ptr;
+        char* signature_ptr = nullptr;
         jvmti->GetClassSignature(klass, &signature_ptr, nullptr);
 //        TEST_LOG("processing bootstrap class %s", signature_ptr);
         // Lambda classes can be unloaded, exlcude them
@@ -1211,6 +1211,52 @@ bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
     }
 
     return JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);
+}
+
+jmethodID HotspotSupport::resolve(const void* method) {
+  assert(VM::isHotspot());
+  assert(method != nullptr);
+  VMMethod* vm_method = VMMethod::cast(method);
+
+  // May have been populated by following code
+  jmethodID method_id = vm_method->validatedId();
+  if (method_id != nullptr) {
+    return method_id;
+  }
+
+  VMConstMethod* const_method = vm_method->constMethod();
+  VMSymbol* name_sym = const_method->name();
+  VMSymbol* sig_sym = const_method->signature();
+  VMKlass* klass = vm_method->methodHolder();
+  VMSymbol* klass_sym = klass->name();
+  char* method_name = (char*)malloc(name_sym->length() + 1);
+  char* method_signature = (char*)malloc(sig_sym->length() + 1);
+  int klass_name_len = klass_sym->length();
+  char* klass_name = (char*)malloc(klass_name_len + 1);
+
+  memcpy(method_name, name_sym->body(), name_sym->length());
+  method_name[name_sym->length()] = '\0';
+  memcpy(method_signature, sig_sym->body(), sig_sym->length());
+  method_signature[sig_sym->length()] = '\0';
+  memcpy(klass_name, klass_sym->body(), klass_name_len);
+  klass_name[klass_name_len] = '\0';
+
+  JNIEnv *jni = VM::jni();
+  jclass clz = jni->FindClass(klass_name);
+  if (clz == nullptr) {
+    jni->ExceptionClear();
+  } else {
+    method_id = jni->GetMethodID(clz, method_name, method_signature);
+    if (method_id == nullptr) {
+      jni->ExceptionClear();
+    }
+  }
+  
+  free(method_name);
+  free(method_signature);
+  free(klass_name);
+
+  return method_id;
 }
 
 void JNICALL HotspotSupport::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,

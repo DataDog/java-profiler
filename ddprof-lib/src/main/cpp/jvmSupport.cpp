@@ -12,8 +12,6 @@
 #include "thread.h"
 #include "vmEntry.h"
 
-#include "hotspot/hotspotSupport.h"
-
 #include <jni.h>
 #include <jvmti.h>
 
@@ -104,8 +102,7 @@ bool JVMSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
   return false;
 }
 
-
-    // JVMTI callbacks
+// JVMTI callbacks
 void JNICALL JVMSupport::ClassPrepare(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                                    jclass klass) {
     if (VM::isHotspot()) {

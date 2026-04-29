@@ -15,6 +15,7 @@
 #include "common.h"
 #include "counters.h"
 #include "jniHelper.h"
+#include "jvmSupport.h"
 #include "libraries.h"
 #include "methodInfo.h"
 #include "profiler.h"
@@ -128,16 +129,19 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   if ((phase & (JVMTI_PHASE_START | JVMTI_PHASE_LIVE)) != 0) {
     if (VMMethod::check_jmethodID(method) &&
         jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
+        // GetMethodDeclaringClass may return a jclass wrapping a stale/garbage oop when the class was
+        // unloaded between sample capture and dump (TOCTOU race with class unloading). Guard against
+        // null handles before calling GetClassSignature.
+        method_class != NULL &&
         // On some older versions of J9, the JVMTI call to GetMethodDeclaringClass will return OK = 0, but when a
         // classloader is unloaded they free all JNIIDs. This means that anyone holding on to a jmethodID is
         // pointing to corrupt data and the behaviour is undefined.
         // The behaviour is adjusted so that when asgct() is used or if `-XX:+KeepJNIIDs` is specified,
         // when a classloader is unloaded, the jmethodIDs are not freed, but instead marked as -1.
-        // The nested check below is to mitigate these crashes.
-        // In more recent versions, the condition above will short-circuit safely.
-        ((!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) && jvmti->GetClassSignature(method_class, &class_name, NULL) == 0) &&
+        // The check below mitigates these crashes on J9.
+        (!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) &&
+        jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
         jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
-
       if (first_time) {
         jvmtiError line_table_error = jvmti->GetLineNumberTable(method, &line_number_table_size,
                                   &line_number_table);
@@ -370,7 +374,9 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
         fillNativeMethodInfo(mi, "unknown_library", nullptr);
       }
     } else if (frame_type == FRAME_INTERPRETED_METHOD) {
-        fillJavaMethodInfo(mi, frame.method, first_time);
+        jmethodID id = JVMSupport::resolve(frame.method);
+        frame.bci = FrameType::encode(FRAME_INTERPRETED, bci);
+        fillJavaMethodInfo(mi, id, first_time);
     } else {
         fillJavaMethodInfo(mi, method_id, first_time);
     }
@@ -399,60 +405,4 @@ u32 Lookup::getPackage(const char *class_name) {
 
 u32 Lookup::getSymbol(const char *name) {
   return _symbols.lookup(name); 
-}
-
-void Lookup::fillJavaMethodInfo(MethodInfo *mi, const void* method, bool first_time) {
-  assert(VM::isHotspot());
-  assert(method != nullptr);
-  VMMethod* vm_method = VMMethod::cast(method);
-  VMConstMethod* const_method = vm_method->constMethod();
-
-  VMSymbol* name_sym = const_method->name();
-  VMSymbol* sig_sym = const_method->signature();
-  VMKlass* klass = vm_method->methodHolder();
-  VMSymbol* klass_sym = klass->name();
-  char* method_name = (char*)malloc(name_sym->length() + 1);
-  char* method_signature = (char*)malloc(sig_sym->length() + 1);
-  int klass_name_len = klass_sym->length();
-  char* klass_name = (char*)malloc(klass_name_len + 1);
-
-  memcpy(method_name, name_sym->body(), name_sym->length());
-  method_name[name_sym->length()] = '\0';
-  memcpy(method_signature, sig_sym->body(), sig_sym->length());
-  method_signature[sig_sym->length()] = '\0';
-  memcpy(klass_name, klass_sym->body(), klass_name_len);
-  klass_name[klass_name_len] = '\0';
-
-  JNIEnv *jni = VM::jni();
-  jclass clz = jni->FindClass(klass_name);
-  jmethodID mid = nullptr;
-  if (clz == nullptr) {
-    jni->ExceptionClear();
-  } else {
-    mid = jni->GetMethodID(clz, method_name, method_signature);
-    if (mid != nullptr) {
-      fillJavaMethodInfo(mi, mid, first_time);      
-    } else {
-      jni->ExceptionClear();
-    }
-  }
-  
-  // Construct jvmti class signature, e.g. `Ljava/lang/Object;` which
-  // is expected by fillMethodInfo()
-  char* jvmti_klass_name = nullptr;
-  if (mid == nullptr) {
-    jvmti_klass_name = (char*)malloc(klass_name_len + 3);
-    jvmti_klass_name[0] = 'L';
-    memcpy(&jvmti_klass_name[1], klass_name, klass_name_len);
-    jvmti_klass_name[klass_name_len + 1] = ';';
-    jvmti_klass_name[klass_name_len + 2] = '\0';
-    jint entry_count = 0;
-    jvmtiLineNumberEntry* table = nullptr;
-    fillMethodInfo(mi, clz, jvmti_klass_name, method_name, method_signature, entry_count, table);
-  }
-
-  free(method_name);
-  free(method_signature);
-  free(klass_name);
-  free(jvmti_klass_name);
 }

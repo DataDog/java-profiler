@@ -12,6 +12,10 @@
 #include <cassert>
 
 bool VMClassLoader::isLoadedByBootstrapClassLoader(const VMMethod* method) {
+    if (method == nullptr) {
+        return false;
+    }
+    
     VMKlass* method_klass = method->methodHolder();
     if (method_klass == nullptr) {
         return false;

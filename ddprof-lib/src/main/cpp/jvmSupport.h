@@ -6,6 +6,7 @@
 #ifndef _JVMSUPPORT_H
 #define _JVMSUPPORT_H
 
+#include "hotspot/hotspotSupport.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "vmEntry.h"
@@ -36,6 +37,15 @@ public:
 
     static void loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni);
     static bool loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
+
+    // Resolve method pointer to jmethodID
+    static jmethodID resolve(const void* method) {
+      if (VM::isHotspot()) {
+          return HotspotSupport::resolve(method);
+      } else {
+          assert(false && "Should not reache here");
+      }
+    }
 
     // JVMTI callback
     static void JNICALL ClassPrepare(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
