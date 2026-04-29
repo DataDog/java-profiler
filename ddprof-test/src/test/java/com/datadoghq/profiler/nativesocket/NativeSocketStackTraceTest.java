@@ -1,9 +1,12 @@
 package com.datadoghq.profiler.nativesocket;
 
-import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.CStackAwareAbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
+import com.datadoghq.profiler.junit.CStack;
+import com.datadoghq.profiler.junit.RetryTest;
 import org.junit.jupiter.api.Assumptions;
-import org.junitpioneer.jupiter.RetryingTest;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
@@ -21,8 +24,16 @@ import static org.junit.jupiter.api.Assertions.*;
  * Verifies that NativeSocketEvent events carry non-empty stack traces,
  * and that a recognizable Java call site from the test workload appears
  * in at least one event's stack trace.
+ *
+ * <p>Parameterized over cstack modes (vm, vmx, dwarf, fp) to exercise both
+ * the walkVM path (cstack &gt;= CSTACK_VM) and the AsyncGetCallTrace path
+ * (dwarf/fp) through the BCI_NATIVE_SOCKET code.
  */
-public class NativeSocketStackTraceTest extends AbstractProfilerTest {
+public class NativeSocketStackTraceTest extends CStackAwareAbstractProfilerTest {
+
+    public NativeSocketStackTraceTest(@CStack String cstack) {
+        super(cstack);
+    }
 
     @Override
     protected boolean isPlatformSupported() {
@@ -35,7 +46,9 @@ public class NativeSocketStackTraceTest extends AbstractProfilerTest {
         return "natsock=100us";
     }
 
-    @RetryingTest(3)
+    @RetryTest(3)
+    @TestTemplate
+    @ValueSource(strings = {"vm", "vmx", "dwarf", "fp"})
     public void stackTraceIsCapturedForSocketEvents() throws Exception {
         Assumptions.assumeTrue(Platform.isLinux(), "nativesocket tracking is Linux-only");
 

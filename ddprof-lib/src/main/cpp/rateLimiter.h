@@ -99,6 +99,9 @@ private:
                                                      std::memory_order_relaxed)) {
             return;
         }
+        // One-event-per-window imprecision: a concurrent recordFire() after this exchange
+        // loses its count for this window. Accepted: the PID controller tolerates this level
+        // of measurement noise without instability.
         long count = _event_count.exchange(0, std::memory_order_relaxed);
         double signal = _pid.compute(static_cast<u64>(count), 1.0);
         long new_interval = _interval.load(std::memory_order_relaxed)
@@ -106,6 +109,9 @@ private:
         if (new_interval < 1) {
             new_interval = 1;
         }
+        // Relaxed store: eventual consistency is acceptable. Threads reading _interval
+        // with relaxed loads will see the update within at most one additional window.
+        // Forcing release ordering here would add unnecessary cost on weak-ordering architectures.
         _interval.store(new_interval, std::memory_order_relaxed);
     }
 };

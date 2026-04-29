@@ -13,6 +13,7 @@ import java.net.Socket;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * On macOS the nativesocket feature is a no-op stub.
@@ -34,6 +35,11 @@ public class NativeSocketMacOsNoOpTest extends AbstractProfilerTest {
     @RetryingTest(3)
     public void noEventsOnMacOS() throws Exception {
         Assumptions.assumeTrue(Platform.isMac(), "This test targets macOS no-op behaviour");
+
+        // Profiler started in @BeforeEach without error; verify it is actually running
+        String status = profiler.getStatus();
+        assertTrue(status.contains("Running          : true"),
+                "Profiler should be running after start with nativesocket on macOS; status: " + status);
 
         doTcpTransfer(32 * 1024, 8);
 
