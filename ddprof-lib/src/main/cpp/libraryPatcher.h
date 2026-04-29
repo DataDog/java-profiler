@@ -3,6 +3,7 @@
 
 #include "codeCache.h"
 #include "spinLock.h"
+#include <atomic>
 
 #ifdef __linux__
 
@@ -39,7 +40,8 @@ private:
 public:
   // True while socket hooks are installed; read by Profiler::dlopen_hook
   // to decide whether to re-patch after a new library is loaded.
-  static bool        _socket_active;
+  // Low-probability race: stop() is called only on JVM exit; atomic<bool> is zero-cost insurance.
+  static std::atomic<bool> _socket_active;
   static void initialize();
   static void patch_libraries();
   static void unpatch_libraries();
@@ -49,7 +51,7 @@ public:
   // Called from Profiler::dlopen_hook after a new library is loaded.
   // No-op when socket hooks are not active.
   static inline void install_socket_hooks() {
-    if (_socket_active) {
+    if (_socket_active.load(std::memory_order_acquire)) {
       patch_socket_functions();
     }
   }

@@ -134,6 +134,9 @@ public:
         // Threshold crossed: advance by a fresh Exp draw so the next
         // inter-arrival gap is independent of all previous ones.
         _threshold += nextExp(interval);
+        // Float precision: when value >> interval, expf(-value/interval) rounds to 0.0f,
+        // so weight = 1.0f / (1.0f - 0.0f) = 1.0f. This is a conservative lower bound —
+        // large events count as weight >= 1.0. Intentional; avoids the cost of double arithmetic.
         float p = 1.0f - expf(-(float)value / (float)interval);
         weight = (p > 0.0f) ? 1.0f / p : 1.0f;
         return true;

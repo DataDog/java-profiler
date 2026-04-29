@@ -11,7 +11,7 @@
 #include "engine.h"
 #include "event.h"
 
-#if defined(__linux__) && defined(__GLIBC__)
+#if defined(__linux__)
 
 #include "poissonSampler.h"
 #include "rateLimiter.h"
@@ -29,10 +29,17 @@ class LibraryPatcher;
 // are safe inside hooks.
 //
 // fd-to-addr cache      : guarded by _fd_cache_mutex (std::mutex).
-// _fd_type_cache        : std::atomic<uint8_t> array, lock-free.  Entries:
-//                         0 = unknown, 1 = TCP socket, 2 = non-TCP.
-//                         Written once per fd; stale after fd reuse but the
-//                         worst outcome is a single missed event.
+//                         TOCTOU note: the cache is checked under lock, then
+//                         released for resolveAddr(); a concurrent thread may
+//                         emplace the same fd before re-acquisition. emplace()
+//                         is idempotent in that case (first writer wins).
+//                         Address staleness on fd reuse is accepted: worst case
+//                         is one misattributed event per reuse.
+// _fd_type_cache        : std::atomic<uint8_t> array, lock-free.  Entry encoding:
+//                         bits [7:4] = generation mod 16, bits [3:0] = type
+//                         (0=unknown, 1=TCP socket, 2=non-TCP).  Valid only when
+//                         high nibble matches _fd_cache_gen mod 16.  Stale entries
+//                         after fd reuse cause at most one extra getsockopt() call.
 // _rate_limiter         : RateLimiter — owns std::atomic interval, epoch, and
 //                         event count.  PID update races are resolved by CAS
 //                         inside RateLimiter::maybeUpdateInterval().
@@ -63,7 +70,8 @@ public:
     void  stop()                 override;
 
     // Clears the fd-to-address cache and resets the fd-type cache.
-    // Called only from stop(); intentionally NOT called on JFR chunk boundaries.
+    // Called from both start() (to reset state on restart) and stop().
+    // Intentionally NOT called on JFR chunk boundaries.
     void clearFdCache();
 
     // PLT hooks installed by LibraryPatcher::patch_socket_functions().
@@ -112,13 +120,17 @@ private:
     std::unordered_map<int, std::string> _fd_cache;
     std::mutex _fd_cache_mutex;
 
-    // fd-type cache for write/read hooks.  Values: 0=unknown, 1=TCP socket,
-    // 2=non-TCP.  Lock-free: one atomic byte per fd number.
+    // fd-type cache for write/read hooks.  Lock-free: one atomic byte per fd number.
+    // Encoding: bits [7:4] = generation mod 16, bits [3:0] = type (0=unknown/invalid,
+    // 1=TCP socket, 2=non-TCP).  An entry is valid only when its high nibble equals
+    // _fd_cache_gen mod 16.  Incrementing _fd_cache_gen invalidates all entries in
+    // O(1) without touching the 65536-entry array.
     // Fds outside [0, FD_TYPE_CACHE_SIZE) are probed on every call.
-    static const int  FD_TYPE_CACHE_SIZE = 65536;
+    static const int     FD_TYPE_CACHE_SIZE  = 65536;
     static const uint8_t FD_TYPE_UNKNOWN     = 0;
     static const uint8_t FD_TYPE_SOCKET      = 1;
     static const uint8_t FD_TYPE_NON_SOCKET  = 2;
+    std::atomic<uint8_t> _fd_cache_gen{0};   // incremented on each cache reset
     std::atomic<uint8_t> _fd_type_cache[FD_TYPE_CACHE_SIZE];
 
     NativeSocketSampler() = default;
@@ -143,7 +155,7 @@ private:
     void recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 op);
 };
 
-#else // !(__linux__ && __GLIBC__)
+#else // !__linux__
 
 class NativeSocketSampler : public Engine {
 public:
@@ -157,6 +169,6 @@ private:
     NativeSocketSampler() {}
 };
 
-#endif // __linux__ && __GLIBC__
+#endif // __linux__
 
 #endif // _NATIVESOCKETSAMPLER_H

@@ -14,7 +14,7 @@ abstract class NativeSocketTestBase extends AbstractProfilerTest {
 
     @Override
     protected boolean isPlatformSupported() {
-        return Platform.isLinux() && !Platform.isMusl();
+        return Platform.isLinux();
     }
 
     @Override
