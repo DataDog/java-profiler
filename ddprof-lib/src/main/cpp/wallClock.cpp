@@ -87,6 +87,13 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     current->tickInitWindow();
     return;
   }
+  // Parked suppression is evaluated on the sampled thread itself (TLS-backed
+  // ProfiledThread::currentSignalSafe()) to avoid dereferencing cross-thread
+  // ProfiledThread pointers that may race with thread teardown.
+  if (current != nullptr && current->isParkedForWallclock()) {
+    Counters::increment(WC_SIGNAL_SKIPPED_PARKED);
+    return;
+  }
   int tid = current != NULL ? current->tid() : OS::threadId();
   Shims::instance().setSighandlerTid(tid);
   u64 call_trace_id = 0;
@@ -182,7 +189,7 @@ void WallClockASGCT::timerLoop() {
         while (thread_list->hasNext()) {
           int tid = thread_list->next();
           if (tid != OS::threadId()) {
-            entries.push_back({tid, nullptr});
+            entries.push_back({tid, nullptr, nullptr});
           }
         }
         delete thread_list;

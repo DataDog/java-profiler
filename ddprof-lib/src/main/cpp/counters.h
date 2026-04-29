@@ -61,6 +61,7 @@
   X(AGCT_BLOCKED_IN_VM, "agct_blocked_in_vm")                                  \
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
   X(WC_SIGNAL_SKIPPED_SLEEPING,    "wc_signals_skipped_sleeping")               \
+  X(WC_SIGNAL_SKIPPED_PARKED,      "wc_signals_skipped_parked")                  \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
   X(CALLTRACE_STORAGE_DROPPED, "calltrace_storage_dropped_traces")             \
