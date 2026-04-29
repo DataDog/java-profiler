@@ -140,9 +140,13 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         // when a classloader is unloaded, the jmethodIDs are not freed, but instead marked as -1.
         // The check below mitigates these crashes on J9.
         (!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) &&
-        jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
-        jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
+        jvmti->GetClassSignature(method_class, &class_name, NULL) == JVMTI_ERROR_NONE &&
+        jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == JVMTI_ERROR_NONE) {
       if (first_time) {
+        if (jvmti->GetMethodModifiers(method, &mi->_modifiers) != JVMTI_ERROR_NONE) {
+          mi->_modifiers = 0;
+        }
+
         jvmtiError line_table_error = jvmti->GetLineNumberTable(method, &line_number_table_size,
                                   &line_number_table);
         // Defensive: if GetLineNumberTable failed, clean up any potentially allocated memory

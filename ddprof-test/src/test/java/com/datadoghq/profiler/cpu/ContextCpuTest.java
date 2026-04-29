@@ -72,8 +72,6 @@ public class ContextCpuTest extends CStackAwareAbstractProfilerTest {
                 IMemberAccessor<String, IItem> stateAccessor = THREAD_STATE.getAccessor(cpuSamples.getType());
                 for (IItem sample : cpuSamples) {
                     String stackTrace = frameAccessor.getMember(sample);
-                    System.out.println("Stack trace: ");
-                    System.out.println(stackTrace);
                     long spanId = spanIdAccessor.getMember(sample).longValue();
                     long rootSpanId = rootSpanIdAccessor.getMember(sample).longValue();
                     String state = stateAccessor.getMember(sample);

@@ -47,7 +47,6 @@ public:
 
     static jmethodID resolve(const void* method);
 
-    static void loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni);
     static void JNICALL NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni,
                                          jthread thread, jmethodID method,
                                          void *address, void **new_address_ptr);

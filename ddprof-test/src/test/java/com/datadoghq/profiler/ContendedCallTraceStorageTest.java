@@ -108,18 +108,12 @@ public class ContendedCallTraceStorageTest extends AbstractProfilerTest {
 
             // Trigger contention by calling dump during heavy allocation
             // This forces processTraces() to acquire exclusive lock while put() operations are active
-            try {
             for (int i = 0; i < 3; i++) {
                 Path tempDump = Paths.get("temp-contention-" + i + ".jfr");
                 dump(tempDump); // This will cause contention in CallTraceStorage
                 recordings.add(tempDump);
                 Thread.sleep(500);
             }
-        } catch (Throwable e) {
-            e.printStackTrace();
-            throw e;
-
-        }
             // Wait for all allocation threads to finish
             finishLatch.await();
             

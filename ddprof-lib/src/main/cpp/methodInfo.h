@@ -18,7 +18,6 @@
 
 class SharedLineNumberTable {
 public:
-  /* positive: the table is allocated by jvmti. negative: the table is allocated profiler */
   int _size;
   void *_ptr;
 

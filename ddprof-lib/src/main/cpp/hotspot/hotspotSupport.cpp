@@ -1189,7 +1189,6 @@ static bool isLambdaClass(const char* signature) {
 bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
 
     patchClassLoaderData(jni, klass);
-
     jobject cl;
     // Hotpsot only: loaded by bootstrap class loader, which is never unloaded,
     // we use Method instead.
@@ -1209,14 +1208,16 @@ bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
         jvmti->GetClassSignature(klass, &signature_ptr, nullptr);
 //        TEST_LOG("processing none bootstrap class %s", signature_ptr);
     }
-
     return JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);
 }
 
 jmethodID HotspotSupport::resolve(const void* method) {
   assert(VM::isHotspot());
   assert(method != nullptr);
-  VMMethod* vm_method = VMMethod::cast(method);
+  VMMethod* vm_method = VMMethod::cast_or_null(method);
+  if (vm_method == nullptr) {
+    return nullptr;
+  }
 
   // May have been populated by following code
   jmethodID method_id = vm_method->validatedId();
@@ -1249,6 +1250,10 @@ jmethodID HotspotSupport::resolve(const void* method) {
     method_id = jni->GetMethodID(clz, method_name, method_signature);
     if (method_id == nullptr) {
       jni->ExceptionClear();
+      method_id = jni->GetStaticMethodID(clz, method_name, method_signature);
+      if (method_id == nullptr) {
+        jni->ExceptionClear();
+      }
     }
   }
   
