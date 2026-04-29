@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk8
 
 ## musl-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-04-28 21:48:06 EDT
+**Date:** 2026-04-29 05:44:25 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 103 |
-| Sample Rate | 1.72/sec |
-| Health Score | 108% |
-| Threads | 9 |
+| CPU Samples | 143 |
+| Sample Rate | 2.38/sec |
+| Health Score | 149% |
+| Threads | 6 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 110 |
-| Sample Rate | 1.83/sec |
-| Health Score | 114% |
-| Threads | 12 |
+| CPU Samples | 136 |
+| Sample Rate | 2.27/sec |
+| Health Score | 142% |
+| Threads | 10 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1777427065 64
-1777427070 64
-1777427075 64
-1777427080 64
-1777427085 64
-1777427090 64
-1777427095 64
-1777427100 64
-1777427105 64
-1777427110 64
-1777427115 64
-1777427120 64
-1777427125 64
-1777427130 64
-1777427135 64
-1777427140 64
-1777427145 64
-1777427150 64
-1777427155 64
-1777427160 64
+1777455339 64
+1777455344 64
+1777455349 64
+1777455354 64
+1777455359 64
+1777455364 64
+1777455369 64
+1777455374 64
+1777455379 64
+1777455384 64
+1777455389 64
+1777455394 64
+1777455399 64
+1777455404 64
+1777455409 64
+1777455414 64
+1777455419 64
+1777455424 64
+1777455429 64
+1777455434 64
 ```
 </details>
 
