@@ -44,6 +44,7 @@ public:
           return HotspotSupport::resolve(method);
       } else {
           assert(false && "Should not reache here");
+          return nullptr;
       }
     }
 

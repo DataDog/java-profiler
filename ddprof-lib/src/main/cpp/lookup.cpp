@@ -180,13 +180,6 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       mi->_sig = _symbols.lookup("()L;");
       mi->_type = FRAME_INTERPRETED;
       mi->_is_entry = false;
-      if (line_number_table != nullptr) {
-        mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
-          line_number_table_size, line_number_table);
-        // Increment counter for tracking live line number tables
-        Counters::increment(LINE_NUMBER_TABLES);
-     }
-
     }
   }
   jni->PopLocalFrame(NULL);
@@ -228,7 +221,7 @@ void Lookup::fillMethodInfo(MethodInfo *mi, jclass method_class, char* class_nam
     // Clear any exceptions from the reflection calls above
     jniExceptionCheck(jni);
   } else if (strncmp(method_name, "main", 5) == 0 &&
-             strncmp(method_sig, "(Ljava/lang/String;)V", 21)) {
+             strncmp(method_sig, "(Ljava/lang/String;)V", 21) == 0) {
       // public static void main(String[] args) - 'public static' translates
       // to modifier bits 0 and 3, hence check for '9'
       entry = true;
@@ -378,8 +371,10 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
         fillNativeMethodInfo(mi, "unknown_library", nullptr);
       }
     } else if (frame_type == FRAME_INTERPRETED_METHOD) {
+        // Resolve this frame into FRAME_INTERPRETED
         jmethodID id = JVMSupport::resolve(frame.method);
         frame.bci = FrameType::encode(FRAME_INTERPRETED, bci);
+        frame.method_id = id;
         fillJavaMethodInfo(mi, id, first_time);
     } else {
         fillJavaMethodInfo(mi, method_id, first_time);
