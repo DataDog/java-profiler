@@ -116,16 +116,11 @@ VMConstantPool* VMConstMethod::constants() const {
 uint16_t VMConstMethod::codeSize() const {
     assert(_constmethod_code_size >= 0);
     uint16_t code_size = *(uint16_t*)at(_constmethod_code_size);
-    TEST_LOG("VMConstMethod::codeSize(): code_size=%u", code_size);
     return code_size;
 }
 
 const char* VMConstMethod::base() const {
     return (const char*)this + _VMConstMethod_size;
-}
-
-const char* VMConstMethod::codeEnd() const {
-    return base() + codeSize();
 }
 
 u16 VMConstMethod::nameIndex() const {
@@ -150,16 +145,8 @@ VMSymbol* VMConstMethod::signature() const {
     return cpool->symbolAt(sig_index);
 }
 
-uint32_t VMConstMethod::flags() const {
-    assert(_constmethod_flags_offset >= 0);
-    return *(uint32_t*)at(_constmethod_flags_offset );
-}
-
 VMKlass* VMClasses::obj_klass() {
     return VMKlass::load_then_cast(_obj_class_addr);
-}
-VMKlass* VMClasses::thread_klass() {
-    return VMKlass::load_then_cast(_thread_class_addr);
 }
 
 #endif // _HOTSPOT_VMSTRUCTS_INLINE_H

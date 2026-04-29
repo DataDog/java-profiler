@@ -151,7 +151,6 @@ const char *Profiler::asgctError(int code) {
     // Zing sometimes returns it
     return "unknown_state";
   default:
-    TEST_LOG("-> error: unexpected_state");
     // Should not happen
     return "unexpected_state";
   }

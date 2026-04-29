@@ -216,7 +216,6 @@ typedef void* address;
     type_begin(VMConstMethod, MATCH_SYMBOLS("ConstMethod"))                                                         \
         field(_constmethod_constants_offset, offset, MATCH_SYMBOLS("_constants"))                                   \
         field(_constmethod_idnum_offset, offset, MATCH_SYMBOLS("_method_idnum"))                                    \
-        field(_constmethod_flags_offset, offset, MATCH_SYMBOLS("_flags._flags", "_flags"))                          \
         field(_constmethod_code_size, offset, MATCH_SYMBOLS("_code_size"))                                          \
         field(_constmethod_name_index_offset, offset, MATCH_SYMBOLS("_name_index"))                                 \
         field(_constmethod_sig_index_offset, offset, MATCH_SYMBOLS("_signature_index"))                             \
@@ -329,7 +328,6 @@ typedef void* address;
     type_end()                                                                                                      \
     type_begin(VMClasses, MATCH_SYMBOLS("vmClasses", "SystemDictionary"))                                           \
         field(_obj_class_addr, address, MATCH_SYMBOLS("_klasses[static_cast<int>(vmClassID::Object_klass_knum)]", "_well_known_klasses[SystemDictionary::Object_klass_knum]"))  \
-        field(_thread_class_addr, address, MATCH_SYMBOLS("_klasses[static_cast<int>(vmClassID::Thread_klass_knum)]", "_well_known_klasses[SystemDictionary::Thread_klass_knum]")) \
     type_end()
 
 /**
@@ -909,7 +907,6 @@ public:
     inline VMConstantPool* constants() const;
     inline uint16_t codeSize() const;
     inline const char* base() const;
-    inline const char* codeEnd() const;
     inline u16 nameIndex() const;
     inline u16 signatureIndex() const;
     inline VMSymbol* name() const;
@@ -1086,7 +1083,6 @@ DECLARE_END
 DECLARE(VMClasses)
 public:
     static inline VMKlass* obj_klass();
-    static inline VMKlass* thread_klass();
 DECLARE_END
 
 class CodeHeap : VMStructs {
