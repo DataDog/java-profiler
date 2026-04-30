@@ -225,7 +225,6 @@ void VMStructs::init_type_sizes() {
                 continue;                                         \
             }
 
-
 void VMStructs::init_constants() {
     // Int constants
     uintptr_t entry = readSymbol("gHotSpotVMIntConstants");
@@ -245,7 +244,6 @@ void VMStructs::init_constants() {
     // Special case
     _frame_entry_frame_call_wrapper_offset *= sizeof(uintptr_t);
 
-
     // Long constants
     entry = readSymbol("gHotSpotVMLongConstants");
     stride = readSymbol("gHotSpotVMLongConstantEntryArrayStride");
@@ -264,9 +262,7 @@ void VMStructs::init_constants() {
         }
     }
 }
-
 #undef READ_CONSTANT
-
 
 #ifdef DEBUG
 void VMStructs::verify_offsets() {

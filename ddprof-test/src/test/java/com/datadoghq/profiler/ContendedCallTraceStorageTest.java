@@ -114,7 +114,6 @@ public class ContendedCallTraceStorageTest extends AbstractProfilerTest {
                 recordings.add(tempDump);
                 Thread.sleep(500);
             }
-            
             // Wait for all allocation threads to finish
             finishLatch.await();
             

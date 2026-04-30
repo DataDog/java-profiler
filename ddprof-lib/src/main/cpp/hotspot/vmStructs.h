@@ -47,6 +47,18 @@ inline T* cast_to(const void* ptr) {
     return reinterpret_cast<T*>(const_cast<void*>(ptr));
 }
 
+template <typename T>
+inline T* cast_or_null(const void* ptr) {
+    assert(VM::isHotspot()); // This should only be used in HotSpot-specific code
+    assert(T::type_size() > 0); // Ensure type size has been initialized
+    if(ptr == nullptr || SafeAccess::isReadableRange(ptr, T::type_size())) {
+        return reinterpret_cast<T*>(const_cast<void*>(ptr));
+    } else {
+        return nullptr;
+    }
+}
+
+
 #define TYPE_SIZE_NAME(name)    _##name##_size
 
 // MATCH_SYMBOLS macro expands into a string list, that is consumed by matchAny() method
@@ -71,7 +83,8 @@ inline T* cast_to(const void* ptr) {
     class name : VMStructs { \
       public: \
         static uint64_t type_size() { return TYPE_SIZE_NAME(name); } \
-        static name * cast(const void* ptr) { return cast_to<name>(ptr); } \
+        static name * cast(const void* ptr) { return ::cast_to<name>(ptr); } \
+        static name * cast_or_null(const void* ptr) { return ::cast_or_null<name>(ptr); } \
         static name * cast_raw(const void* ptr) { return (name *)ptr; } \
         static name * load_then_cast(const void* ptr) { \
             assert(ptr != nullptr); \
@@ -104,7 +117,7 @@ inline T* cast_to(const void* ptr) {
  *  For example:
  *   f(VMClassLoaderData,    MATCH_SYMBOLS("ClassLoaderData")) ->
  *   if (matchAny((char*)[] {"ClassLoaderData", nullptr})) {
- *      _ClassLoaderData_size = size;
+ *      _VMClassLoaderData_size = size;
  *      continue;
  *    }
  * 
@@ -117,16 +130,17 @@ inline T* cast_to(const void* ptr) {
  */
 
 #define DECLARE_TYPES_DO(f) \
-    f(VMClassLoaderData,      MATCH_SYMBOLS("ClassLoaderData"))   \
-    f(VMConstantPool,         MATCH_SYMBOLS("ConstantPool"))      \
-    f(VMConstMethod,          MATCH_SYMBOLS("ConstMethod"))       \
-    f(VMFlag,                 MATCH_SYMBOLS("JVMFlag", "Flag"))   \
-    f(VMJavaFrameAnchor,      MATCH_SYMBOLS("JavaFrameAnchor"))   \
-    f(VMKlass,                MATCH_SYMBOLS("Klass"))             \
-    f(VMMethod,               MATCH_SYMBOLS("Method"))            \
-    f(VMNMethod,              MATCH_SYMBOLS("nmethod"))           \
-    f(VMSymbol,               MATCH_SYMBOLS("Symbol"))            \
-    f(VMThread,               MATCH_SYMBOLS("Thread"))
+    f(VMClassLoaderData,    MATCH_SYMBOLS("ClassLoaderData"))   \
+    f(VMConstantPool,       MATCH_SYMBOLS("ConstantPool"))      \
+    f(VMConstMethod,        MATCH_SYMBOLS("ConstMethod"))       \
+    f(VMFlag,               MATCH_SYMBOLS("JVMFlag", "Flag"))   \
+    f(VMJavaFrameAnchor,    MATCH_SYMBOLS("JavaFrameAnchor"))   \
+    f(VMKlass,              MATCH_SYMBOLS("Klass"))             \
+    f(VMMethod,             MATCH_SYMBOLS("Method"))            \
+    f(VMNMethod,            MATCH_SYMBOLS("nmethod"))           \
+    f(VMSymbol,             MATCH_SYMBOLS("Symbol"))            \
+    f(VMThread,             MATCH_SYMBOLS("Thread"))            \
+    f(VMClasses,            MATCH_SYMBOLS("vmClasses", "SystemDictionary"))
 
 // ContinuationEntry type. Only exported via gHotSpotVMTypes starting in
 // JDK 27 (JDK-8378985); there is no mangled-symbol fallback for its size.
@@ -202,6 +216,9 @@ typedef void* address;
     type_begin(VMConstMethod, MATCH_SYMBOLS("ConstMethod"))                                                         \
         field(_constmethod_constants_offset, offset, MATCH_SYMBOLS("_constants"))                                   \
         field(_constmethod_idnum_offset, offset, MATCH_SYMBOLS("_method_idnum"))                                    \
+        field(_constmethod_code_size, offset, MATCH_SYMBOLS("_code_size"))                                          \
+        field(_constmethod_name_index_offset, offset, MATCH_SYMBOLS("_name_index"))                                 \
+        field(_constmethod_sig_index_offset, offset, MATCH_SYMBOLS("_signature_index"))                             \
     type_end()                                                                                                      \
     type_begin(VMConstantPool, MATCH_SYMBOLS("ConstantPool"))                                                       \
         field(_pool_holder_offset, offset, MATCH_SYMBOLS("_pool_holder"))                                           \
@@ -214,6 +231,8 @@ typedef void* address;
     type_end()                                                                                                      \
     type_begin(VMClassLoaderData, MATCH_SYMBOLS("ClassLoaderData"))                                                 \
         field(_class_loader_data_next_offset, offset, MATCH_SYMBOLS("_next"))                                       \
+        field_with_version(_class_loader_data_has_class_mirror_holder_offset, offset, 17, MAX_VERSION, MATCH_SYMBOLS("_has_class_mirror_holder")) \
+        field_with_version(_class_loader_data_is_anonymous_offset, offset, 11, 11, MATCH_SYMBOLS("_is_anonymous"))  \
     type_end()                                                                                                      \
     type_begin(VMJavaClass, MATCH_SYMBOLS("java_lang_Class"))                                                       \
         field(_klass_offset_addr, address, MATCH_SYMBOLS("_klass_offset"))                                          \
@@ -283,7 +302,7 @@ typedef void* address;
         field(_vs_high_offset, offset, MATCH_SYMBOLS("_high"))                                                      \
     type_end()                                                                                                      \
     type_begin(VMStubRoutine, MATCH_SYMBOLS("StubRoutines"))                                                        \
-        field(_call_stub_return_addr, address, MATCH_SYMBOLS("_call_stub_return_address"))                         \
+        field(_call_stub_return_addr, address, MATCH_SYMBOLS("_call_stub_return_address"))                          \
     type_end()                                                                                                      \
     type_begin(VMGrowableArray, MATCH_SYMBOLS("GrowableArrayBase", "GenericGrowableArray"))                         \
         field(_array_len_offset, offset, MATCH_SYMBOLS("_len"))                                                     \
@@ -306,6 +325,9 @@ typedef void* address;
         field(_narrow_klass_base_addr, address, MATCH_SYMBOLS("_narrow_klass._base", "_base"))                      \
         field(_narrow_klass_shift_addr, address, MATCH_SYMBOLS("_narrow_klass._shift", "_shift"))                   \
         field(_collected_heap_addr, address, MATCH_SYMBOLS("_collectedHeap"))                                       \
+    type_end()                                                                                                      \
+    type_begin(VMClasses, MATCH_SYMBOLS("vmClasses", "SystemDictionary"))                                           \
+        field(_obj_class_addr, address, MATCH_SYMBOLS("_klasses[static_cast<int>(vmClassID::Object_klass_knum)]", "_well_known_klasses[SystemDictionary::Object_klass_knum]"))  \
     type_end()
 
 /**
@@ -435,6 +457,12 @@ class VMStructs {
     static const void *findHeapUsageFunc();
 
     const char* at(int offset) {
+        const char* ptr = (const char*)this + offset;
+        assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
+        return ptr;
+    }
+
+    const char* at(int offset) const {
         const char* ptr = (const char*)this + offset;
         assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
         return ptr;
@@ -626,6 +654,9 @@ DECLARE(VMClassLoaderData)
     MethodList** methodList() {
         return (MethodList**) at(sizeof(uintptr_t) * 6 + 8);
     }
+
+    inline bool hasClassMirrorHolder() const;
+    inline bool isAnonymous() const;
 DECLARE_END
 
 DECLARE(VMKlass)    
@@ -863,16 +894,28 @@ private:
 
 DECLARE_END
 
-DECLARE(VMConstMethod)
+DECLARE(VMConstantPool)
+public:
+    inline VMKlass* holder() const;
+    inline VMSymbol* symbolAt(u16 index) const;
+private:
+    inline intptr_t* base() const;
 DECLARE_END
 
+DECLARE(VMConstMethod)
+public:
+    inline VMConstantPool* constants() const;
+    inline u16 nameIndex() const;
+    inline u16 signatureIndex() const;
+    inline VMSymbol* name() const;
+    inline VMSymbol* signature() const;
+DECLARE_END
 
 DECLARE(VMMethod)   
-    private:
+private:
     static bool check_jmethodID_J9(jmethodID id);
     static bool check_jmethodID_hotspot(jmethodID id);
-
-  public:
+public:
     jmethodID id();
 
     // Performs extra validation when VMMethod comes from incomplete frame
@@ -891,8 +934,9 @@ DECLARE(VMMethod)
         return *(const char**) at(_method_constmethod_offset) + VMConstMethod::type_size();
     }
 
-    inline VMNMethod* code();
-
+    inline VMConstMethod* constMethod() const;
+    inline VMNMethod* code() const;
+    inline VMKlass* methodHolder() const;
     static bool check_jmethodID(jmethodID id);
 DECLARE_END
 
@@ -1031,6 +1075,11 @@ DECLARE(VMNMethod)
     }
 
     int findScopeOffset(const void* pc);
+DECLARE_END
+
+DECLARE(VMClasses)
+public:
+    static inline VMKlass* obj_klass();
 DECLARE_END
 
 class CodeHeap : VMStructs {
