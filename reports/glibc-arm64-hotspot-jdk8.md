@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-04-29 20:55:20 EDT
+**Date:** 2026-04-30 05:30:08 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 385 |
-| Sample Rate | 6.42/sec |
-| Health Score | 401% |
+| CPU Samples | 302 |
+| Sample Rate | 5.03/sec |
+| Health Score | 314% |
 | Threads | 11 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 449 |
-| Sample Rate | 7.48/sec |
-| Health Score | 468% |
-| Threads | 13 |
+| CPU Samples | 90 |
+| Sample Rate | 1.50/sec |
+| Health Score | 94% |
+| Threads | 11 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1777510273 64
-1777510278 64
-1777510283 64
-1777510288 64
-1777510293 64
-1777510298 64
-1777510303 64
-1777510308 64
-1777510313 64
-1777510318 64
-1777510323 64
-1777510328 64
-1777510333 64
-1777510338 64
-1777510343 64
-1777510348 64
-1777510353 64
-1777510358 64
-1777510363 64
-1777510369 64
+1777541239 64
+1777541244 64
+1777541249 64
+1777541254 64
+1777541259 64
+1777541264 64
+1777541269 64
+1777541274 64
+1777541279 64
+1777541284 64
+1777541289 64
+1777541294 64
+1777541299 64
+1777541304 64
+1777541310 64
+1777541315 64
+1777541320 64
+1777541325 64
+1777541330 64
+1777541335 64
 ```
 </details>
 
