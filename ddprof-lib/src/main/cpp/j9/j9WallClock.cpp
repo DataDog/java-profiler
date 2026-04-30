@@ -75,7 +75,16 @@ void J9WallClock::timerLoop() {
   // in the typical case.
   JNIEnv *jni = nullptr;
   ASGCT_CallFrame *frames = nullptr;
+  // abi::__forced_unwind is declared by libstdc++ (any libc) but not by libc++,
+  // so the catch only compiles where libstdc++ is the active C++ stdlib.  Guard
+  // on __GLIBCXX__: defined by libstdc++ regardless of libc (glibc, musl, etc.),
+  // undefined under libc++ (macOS clang default, some Alpine/clang builds).
+  // The exception itself is raised by glibc's pthread_cancel — on platforms with
+  // a different cancellation mechanism (musl, macOS) the catch is harmless dead
+  // code but compiles cleanly under libstdc++.
+#if defined(__GLIBCXX__)
   try {
+#endif
     jni = VM::attachThread("java-profiler Sampler");
     jvmtiEnv *jvmti = VM::jvmti();
 
@@ -138,11 +147,13 @@ void J9WallClock::timerLoop() {
 
       OS::sleep(_interval);
     }
+#if defined(__GLIBCXX__)
   } catch (abi::__forced_unwind&) {
     free(frames);
     VM::detachThread();  // DetachCurrentThread releases any outstanding JNI local frames
     throw;
   }
+#endif
 
   free(frames);
 
