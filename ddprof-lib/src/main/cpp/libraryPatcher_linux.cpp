@@ -372,7 +372,7 @@ bool LibraryPatcher::patch_socket_functions() {
         cached_write == &NativeSocketSampler::write_hook ||
         cached_read  == &NativeSocketSampler::read_hook) {
       TEST_LOG("patch_socket_functions dlsym returned hook address; refusing to self-reference");
-      cached_send = cached_recv = nullptr;
+      cached_send = nullptr; cached_recv = nullptr;
       cached_write = nullptr; cached_read = nullptr;
       return false;
     }
