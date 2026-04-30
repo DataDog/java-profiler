@@ -75,6 +75,9 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   if (_thread_filter.enabled()) {
     int slot_id = _thread_filter.registerThread();
     current->setFilterSlotId(slot_id);
+    // VMThread / vmStructs are HotSpot-only; VMThread::current() asserts VM::isHotspot().
+    _thread_filter.setVMThread(slot_id, VM::isHotspot() ? VMThread::current() : nullptr);
+    _thread_filter.setProfiledThread(slot_id, current);
     _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
   if (thread != NULL) {
@@ -95,6 +98,8 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     tid = current->tid();
     
     if (_thread_filter.enabled()) {
+      _thread_filter.setVMThread(slot_id, nullptr);
+      _thread_filter.setProfiledThread(slot_id, nullptr);
       _thread_filter.unregisterThread(slot_id);
       current->setFilterSlotId(-1);
     }
@@ -629,6 +634,17 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
   _locks[lock_index].unlock();
 }
 
+void Profiler::recordTaskBlock(int tid, TaskBlockEvent *event) {
+  u32 lock_index = getLockIndex(tid);
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    return;
+  }
+  _jfr.recordTaskBlock(lock_index, tid, event);
+  _locks[lock_index].unlock();
+}
+
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
                                     ASGCT_CallFrame *frames, bool truncated,
                                     jint event_type, Event *event) {
@@ -1136,6 +1152,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     assert(current != nullptr);
     int slot_id = _thread_filter.registerThread();
     current->setFilterSlotId(slot_id);
+    _thread_filter.setVMThread(slot_id, VM::isHotspot() ? VMThread::current() : nullptr);
+    _thread_filter.setProfiledThread(slot_id, current);
     _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
   }
 

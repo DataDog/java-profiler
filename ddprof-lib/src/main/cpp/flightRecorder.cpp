@@ -1535,6 +1535,7 @@ void Recording::recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event) {
   buf->putVar64(event->_num_failed_samples);
   buf->putVar64(event->_num_exited_threads);
   buf->putVar64(event->_num_permission_denied);
+  buf->putVar64(event->_num_skipped_sleeping);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1566,6 +1567,19 @@ void Recording::recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event) {
   buf->putVar64(event->_queueType);
   buf->putVar64(event->_queueLength);
   writeCurrentContext(buf);
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
+void Recording::recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event) {
+  int start = buf->skip(1);
+  buf->putVar64(T_TASK_BLOCK);
+  buf->putVar64(event->_start);
+  buf->putVar64(event->_end - event->_start);
+  buf->putVar64(tid);
+  writeContextSnapshot(buf, event->_ctx);
+  buf->putVar64(event->_blocker);
+  buf->putVar64(event->_unblockingSpanId);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1785,6 +1799,18 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid,
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
       rec->recordQueueTime(buf, tid, event);
+    }
+  }
+}
+
+void FlightRecorder::recordTaskBlock(int lock_index, int tid,
+                                     TaskBlockEvent *event) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->recordTaskBlock(buf, tid, event);
     }
   }
 }

@@ -262,6 +262,8 @@ public class TagContextTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=1ms,filter=0,attributes=tag1;tag2;tag3";
+        // wallprecheck=false: work() calls Thread.sleep() while a context tag is set;
+        // the precheck would suppress signals during sleep and lose the tagged samples.
+        return "wall=1ms,filter=0,attributes=tag1;tag2;tag3,wallprecheck=false";
     }
 }

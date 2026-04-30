@@ -109,12 +109,13 @@ public:
   u32 _num_failed_samples;
   u32 _num_exited_threads;
   u32 _num_permission_denied;
+  u32 _num_skipped_sleeping;
 
   WallClockEpochEvent(u64 start_time)
       : _dirty(false), _start_time(start_time), _duration_millis(0),
         _num_samplable_threads(0), _num_successful_samples(0),
         _num_failed_samples(0), _num_exited_threads(0),
-        _num_permission_denied(0) {}
+        _num_permission_denied(0), _num_skipped_sleeping(0) {}
 
   bool hasChanged() { return _dirty; }
 
@@ -153,6 +154,10 @@ public:
     }
   }
 
+  void updateNumSkippedSleeping(u32 n) {
+    if (_num_skipped_sleeping != n) { _dirty = true; _num_skipped_sleeping = n; }
+  }
+
   void endEpoch(u64 millis) { _duration_millis = millis; }
 
   void clean() { _dirty = false; }
@@ -183,5 +188,14 @@ typedef struct QueueTimeEvent {
   u32 _queueType;
   u32 _queueLength;
 } QueueTimeEvent;
+
+typedef struct TaskBlockEvent {
+  u64 _start;
+  u64 _end;
+  u64 _blocker;
+  u64 _unblockingSpanId;
+  /** Span IDs and tag encodings for JFR (park exit uses snapshot from park enter). */
+  Context _ctx;
+} TaskBlockEvent;
 
 #endif // _EVENT_H

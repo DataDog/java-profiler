@@ -28,6 +28,8 @@ public:
     TYPE_MASK = TYPE_JAVA_THREAD | TYPE_NOT_JAVA_THREAD
   };
 
+  static constexpr u32 FLAG_PARKED = 0x4u;
+
 private:
   // We are allowing several levels of nesting because we can be
   // eg. in a crash handler when wallclock signal kicks in,
@@ -68,6 +70,8 @@ private:
   u64 _call_trace_id;
   u32 _recording_epoch;
   u32 _misc_flags;
+  u64 _park_start_ticks;
+  Context _park_context;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   UnwindFailures _unwind_failures;
@@ -87,14 +91,17 @@ private:
 
   ProfiledThread(int buffer_pos, int tid)
       : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
-        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _init_window(0),
+        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
+        _park_start_ticks(0), _park_context{},
+        _filter_slot_id(-1), _init_window(0),
         _otel_ctx_initialized(false), _crash_protection_active(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
 
-  virtual ~ProfiledThread() { }
+  virtual ~ProfiledThread() {}
   void releaseFromBuffer();
 public:
   static ProfiledThread *forTid(int tid) { return new ProfiledThread(-1, tid); }
+
   static ProfiledThread *inBuffer(int buffer_pos) {
     return new ProfiledThread(buffer_pos, 0);
   }
@@ -248,6 +255,30 @@ public:
   inline void clearOtelSidecar() {
     memset(_otel_tag_encodings, 0, sizeof(_otel_tag_encodings));
     _otel_local_root_span_id = 0;
+  }
+
+  inline void parkEnter(u64 span_id, u64 root_span_id, u64 start_ticks) {
+    _park_context.spanId = span_id;
+    _park_context.rootSpanId = root_span_id;
+    for (size_t i = 0; i < DD_TAGS_CAPACITY; i++) {
+      _park_context.tags[i].value = _otel_tag_encodings[i];
+    }
+    _park_start_ticks = start_ticks;
+    __atomic_fetch_or(&_misc_flags, FLAG_PARKED, __ATOMIC_RELEASE);
+  }
+
+  inline bool parkExit(u64 &start_ticks, Context &park_context) {
+    u32 prev = __atomic_fetch_and(&_misc_flags, ~FLAG_PARKED, __ATOMIC_ACQ_REL);
+    if ((prev & FLAG_PARKED) == 0) {
+      return false;
+    }
+    start_ticks = _park_start_ticks;
+    park_context = _park_context;
+    return true;
+  }
+
+  inline bool isParkedForWallclock() const {
+    return (__atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE) & FLAG_PARKED) != 0;
   }
 
   Context snapshotContext(size_t numAttrs);

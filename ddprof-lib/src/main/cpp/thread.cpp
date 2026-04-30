@@ -98,6 +98,9 @@ void ProfiledThread::releaseFromBuffer() {
     _wall_epoch = 0;
     _call_trace_id = 0;
     _recording_epoch = 0;
+    __atomic_fetch_and(&_misc_flags, ~FLAG_PARKED, __ATOMIC_RELEASE);
+    _park_start_ticks = 0;
+    memset(&_park_context, 0, sizeof(_park_context));
     _filter_slot_id = -1;
     _init_window = 0;
     _unwind_failures.clear();

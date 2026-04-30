@@ -38,6 +38,9 @@ public class WallClockThreadFilterTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=~1ms,filter=0";
+        // wallprecheck=false: this test exercises thread filter + JFR thread identity, not sleep
+        // suppression (see PrecheckTest). With wallprecheck=true and VMThread set on the filter
+        // slot, a thread sleeping the whole window receives no wall signals.
+        return "wall=~1ms,filter=0,wallprecheck=false";
     }
 }

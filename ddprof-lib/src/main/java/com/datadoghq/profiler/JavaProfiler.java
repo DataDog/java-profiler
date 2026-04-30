@@ -278,6 +278,39 @@ public final class JavaProfiler {
     }
 
     /**
+     * Records a {@code datadog.TaskBlock} interval for the current thread (direct API).
+     *
+     * @param startTicks TSC tick at block start
+     * @param endTicks TSC tick at block end
+     * @param spanId active span id when blocking began
+     * @param rootSpanId active local root span id when blocking began
+     * @param blocker blocker identity (e.g. monitor hash), or 0
+     * @param unblockingSpanId span id of unblocking thread, or 0
+     */
+    public void recordTaskBlock(long startTicks,
+                                long endTicks,
+                                long spanId,
+                                long rootSpanId,
+                                long blocker,
+                                long unblockingSpanId) {
+        recordTaskBlock0(startTicks, endTicks, spanId, rootSpanId, blocker, unblockingSpanId);
+    }
+
+    /**
+     * Called before {@code LockSupport.park}; native wall-clock sampling may skip SIGVTALRM for this interval.
+     */
+    public void parkEnter(long spanId, long rootSpanId) {
+        parkEnter0(spanId, rootSpanId);
+    }
+
+    /**
+     * Called after {@code LockSupport.park}; clears parked state and may emit {@code datadog.TaskBlock}.
+     */
+    public void parkExit(long blocker, long unblockingSpanId) {
+        parkExit0(blocker, unblockingSpanId);
+    }
+
+    /**
      * Get the ticks for the current thread.
      * @return ticks
      */
@@ -331,6 +364,12 @@ public final class JavaProfiler {
     private static native void recordSettingEvent0(String name, String value, String unit);
 
     private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin, String queueType, int queueLength);
+
+    private static native void recordTaskBlock0(long startTicks, long endTicks, long spanId, long rootSpanId, long blocker, long unblockingSpanId);
+
+    private static native void parkEnter0(long spanId, long rootSpanId);
+
+    private static native void parkExit0(long blocker, long unblockingSpanId);
 
     private static native long currentTicks0();
 
