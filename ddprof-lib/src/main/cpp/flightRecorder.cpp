@@ -1608,7 +1608,8 @@ void Recording::recordNativeSocketSample(Buffer *buf, int tid, u64 call_trace_id
   buf->putVar64(tid);
   buf->putVar64(call_trace_id);
   buf->putVar64(event->_end_time - event->_start_time);
-  buf->putUtf8(event->_operation == 0 ? "SEND" : "RECV");
+  static const char* const kOpNames[] = {"SEND", "RECV", "WRITE", "READ"};
+  buf->putUtf8(event->_operation < 4 ? kOpNames[event->_operation] : "UNKNOWN");
   buf->putUtf8(event->_remote_addr);
   buf->putVar64(event->_bytes);
   buf->putFloat(event->_weight);

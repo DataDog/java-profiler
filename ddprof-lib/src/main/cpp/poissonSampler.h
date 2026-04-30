@@ -175,10 +175,17 @@ private:
      *
      *   X = -interval * ln(U),   U ~ Uniform(0, 1]
      *
-     * U > 0 because the +0.5f offset in `((float)_rng + 0.5f) * 5.42101086e-20f` ensures
-     * the product is strictly positive even if _rng were 0. The xorshift64 invariant
+     * U > 0 because the +0.5 offset in `((double)_rng + 0.5) * 2^-64` ensures the
+     * product is strictly positive even if _rng were 0. The xorshift64 invariant
      * (_rng != 0) is independently required by the recurrence (0 is a fixed point).
-     * The magic constant 5.42101086e-20 ≈ 1/2^64 converts a u64 to [0, 1].
+     * The magic constant 5.421010862427522e-20 ≈ 1/2^64 converts a u64 to [0, 1].
+     *
+     * Use `double` (53 mantissa bits) rather than `float` (24): a 24-bit float
+     * scaled by 2^-64 clamps the smallest representable U to ~5e-21, capping the
+     * longest possible Exp draw at ~47*interval and biasing the inter-arrival
+     * distribution toward shorter gaps under fast traffic. With double, the smallest
+     * representable U is ~5e-20, which permits draws up to ~44*interval — but the
+     * truncation `(u64)(...)` no longer rounds away small Exp values to zero.
      *
      * ### Why xorshift64 instead of a C++ standard generator?
      *
@@ -218,8 +225,8 @@ private:
         _rng ^= _rng << 13;
         _rng ^= _rng >> 7;
         _rng ^= _rng << 17;
-        float u = ((float)_rng + 0.5f) * 5.42101086e-20f;
-        return (u64)(-(float)interval * logf(u));
+        double u = ((double)_rng + 0.5) * 5.421010862427522e-20;
+        return (u64)(-(double)interval * log(u));
     }
 };
 

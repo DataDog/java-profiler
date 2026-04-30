@@ -383,12 +383,15 @@ Error Arguments::parse(const char *args) {
       }
 
       CASE("natsock")
-      _nativesocket = true;
       if (value != NULL) {
         _nativesocket_interval = parseUnits(value, NANOS);
         if (_nativesocket_interval < 0) {
           msg = "natsock interval must be >= 0";
+        } else {
+          _nativesocket = true;
         }
+      } else {
+        _nativesocket = true;
       }
 
       DEFAULT()

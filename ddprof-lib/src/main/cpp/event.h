@@ -103,7 +103,7 @@ class NativeSocketEvent : public Event {
 public:
   u64  _start_time;          // TSC ticks at call entry
   u64  _end_time;            // TSC ticks at call return
-  u8   _operation;           // 0 = SEND, 1 = RECV
+  u8   _operation;           // 0 = SEND, 1 = RECV, 2 = WRITE, 3 = READ
   char _remote_addr[64];     // "ip:port" null-terminated string
   u64  _bytes;               // bytes transferred (return value of send/recv/write/read)
   float _weight;             // inverse-transform sample weight
