@@ -196,7 +196,8 @@ void WallClockASGCT::timerLoop() {
       }
     };
 
-    auto sampleThreads = [&](ThreadEntry entry, int& num_failures, int& threads_already_exited, int& permission_denied) {
+    auto sampleThreads = [&](ThreadEntry entry, int& num_failures, int& threads_already_exited,
+                             int& permission_denied, u32& num_skipped_sleeping) {
       if (_precheck && entry.vm_thread != nullptr) {
         OSThreadState state = entry.vm_thread->osThreadState();
         // SLEEPING: Thread.sleep() on JDK < 21.
@@ -205,6 +206,7 @@ void WallClockASGCT::timerLoop() {
         // time-based sleeping with no useful profiling signal.
         if (state == OSThreadState::SLEEPING || state == OSThreadState::CONDVAR_WAIT) {
           Counters::increment(WC_SIGNAL_SKIPPED_SLEEPING);
+          num_skipped_sleeping++;
           return false;
         }
       }
@@ -215,11 +217,10 @@ void WallClockASGCT::timerLoop() {
           if (errno == ESRCH) {
             threads_already_exited++;
           } else if (errno == EPERM) {
-              permission_denied++;
-          } else if (errno == EAGAIN) {
-              // Signal queue limit (RLIMIT_SIGPENDING) reached; signal was not
-              // delivered — count as missed sample.
             permission_denied++;
+          } else if (errno == EAGAIN) {
+            // Signal queue limit (RLIMIT_SIGPENDING) reached; not a permission error.
+            Counters::increment(WC_SIGNAL_QUEUE_FULL);
           } else {
             Log::debug("unexpected error %s", strerror(errno));
           }

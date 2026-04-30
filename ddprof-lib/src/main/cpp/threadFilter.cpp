@@ -328,10 +328,6 @@ void ThreadFilter::collectWithState(std::vector<ThreadEntry>& entries) const {
             }
         }
     }
-
-    if (entries.capacity() > entries.size() * 2) {
-        entries.shrink_to_fit();
-    }
 }
 
 void ThreadFilter::init(const char* filter) {

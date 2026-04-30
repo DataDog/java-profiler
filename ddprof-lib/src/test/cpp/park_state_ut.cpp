@@ -18,7 +18,7 @@
 #include "thread.h"
 
 TEST(ProfiledThreadParkStateTest, ParkFlagLifecycle) {
-  ProfiledThread* thread = ProfiledThread::forTid(12345);
+  ProfiledThread *thread = ProfiledThread::forTid(12345);
 
   EXPECT_FALSE(thread->isParkedForWallclock());
 
@@ -38,8 +38,8 @@ TEST(ProfiledThreadParkStateTest, ParkFlagLifecycle) {
 }
 
 TEST(ProfiledThreadParkStateTest, ParkEnterSnapshotsTagEncodings) {
-  ProfiledThread* thread = ProfiledThread::forTid(12346);
-  u32* tags = thread->getOtelTagEncodingsPtr();
+  ProfiledThread *thread = ProfiledThread::forTid(12346);
+  u32 *tags = thread->getOtelTagEncodingsPtr();
   tags[0] = 11;
   tags[1] = 22;
   tags[2] = 33;

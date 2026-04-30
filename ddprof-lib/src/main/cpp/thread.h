@@ -97,10 +97,11 @@ private:
         _otel_ctx_initialized(false), _crash_protection_active(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
 
-  virtual ~ProfiledThread() { }
+  virtual ~ProfiledThread() {}
   void releaseFromBuffer();
 public:
   static ProfiledThread *forTid(int tid) { return new ProfiledThread(-1, tid); }
+
   static ProfiledThread *inBuffer(int buffer_pos) {
     return new ProfiledThread(buffer_pos, 0);
   }

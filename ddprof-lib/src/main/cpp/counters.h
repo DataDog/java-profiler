@@ -62,6 +62,7 @@
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
   X(WC_SIGNAL_SKIPPED_SLEEPING,    "wc_signals_skipped_sleeping")               \
   X(WC_SIGNAL_SKIPPED_PARKED,      "wc_signals_skipped_parked")                  \
+  X(WC_SIGNAL_QUEUE_FULL,        "wc_signals_queue_full")                      \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
   X(CALLTRACE_STORAGE_DROPPED, "calltrace_storage_dropped_traces")             \
