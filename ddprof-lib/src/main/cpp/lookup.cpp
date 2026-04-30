@@ -147,7 +147,6 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         if (jvmti->GetMethodModifiers(method, &mi->_modifiers) != JVMTI_ERROR_NONE) {
           mi->_modifiers = 0;
         }
-
         jvmtiError line_table_error = jvmti->GetLineNumberTable(method, &line_number_table_size,
                                   &line_number_table);
         // Defensive: if GetLineNumberTable failed, clean up any potentially allocated memory
@@ -308,9 +307,8 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   FrameTypeId frame_type = FrameType::decode(bci);
   jmethodID method_id = frame.method_id;
 
-  // Resolve method into jmethodID
+  // Resolve this frame into FRAME_INTERPRETED
   if (frame_type == FRAME_INTERPRETED_METHOD) {
-    // Resolve this frame into FRAME_INTERPRETED
     method_id = JVMSupport::resolve(frame.method);
     frame.bci = FrameType::encode(FRAME_INTERPRETED, frame.bci);
     frame.method_id = method_id;
@@ -318,6 +316,7 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   }
 
   if (method_id == nullptr) {
+    TEST_LOG("Unknown: frameType = %d, bci = %d", (int)frame_type, bci);
     key = MethodMap::makeKey(UNKNOWN);
   } else if (bci == BCI_ERROR || bci == BCI_NATIVE_FRAME) {
     key = MethodMap::makeKey(frame.native_function_name);

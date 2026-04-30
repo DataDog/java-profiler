@@ -16,18 +16,22 @@ bool VMClassLoader::isLoadedByBootstrapClassLoader(const VMMethod* method) {
         return false;
     }
     
-    VMKlass* method_klass = method->methodHolder();
+    VMKlass* method_klass = method->safeMethodHolder();
     if (method_klass == nullptr) {
+        return false;
+    }
+
+    VMClassLoaderData* cld = method_klass->safeClassLoaderData();
+    if (cld == nullptr) {
         return false;
     }
 
     // java/lang/Object must be loaded by bootstrap class loader
     VMKlass* obj_klass = VMClasses::obj_klass();
     assert(obj_klass != nullptr && "VMClasses not yet initialized");
-    assert(method_klass->classLoaderData() != nullptr && "Method holder has no class loader data");
     assert(obj_klass->classLoaderData() != nullptr && "Object class has no class loader data");
 
-    return method_klass->classLoaderData() == obj_klass->classLoaderData();
+    return cld == obj_klass->classLoaderData();
 }
 
 #endif // _HOTSPOT_CLASSLOADER_INLINE_H

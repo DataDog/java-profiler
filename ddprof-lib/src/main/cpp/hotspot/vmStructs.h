@@ -88,8 +88,10 @@ inline T* cast_or_null(const void* ptr) {
         static name * cast_raw(const void* ptr) { return (name *)ptr; } \
         static name * load_then_cast(const void* ptr) { \
             assert(ptr != nullptr); \
-            return cast(*(const void**)ptr); }
-
+            return cast(*(const void**)ptr); } \
+        static name * safe_load_then_cast(const void* ptr) { \
+            assert(ptr != nullptr); \
+            return cast(SafeAccess::loadPtr((void**)ptr, nullptr)); }
 #define DECLARE_END  };
 
 /**
@@ -696,9 +698,14 @@ DECLARE(VMKlass)
         return VMSymbol::load_then_cast(at(_klass_name_offset));
     }
 
-    VMClassLoaderData* classLoaderData() {
+    VMClassLoaderData* classLoaderData() const {
         assert(_class_loader_data_offset >= 0);
         return VMClassLoaderData::load_then_cast(at(_class_loader_data_offset));
+    }
+
+    VMClassLoaderData* safeClassLoaderData() const {
+        assert(_class_loader_data_offset >= 0);
+        return VMClassLoaderData::safe_load_then_cast(at(_class_loader_data_offset));
     }
 
     int methodCount() {
@@ -897,6 +904,8 @@ DECLARE_END
 DECLARE(VMConstantPool)
 public:
     inline VMKlass* holder() const;
+    inline VMKlass* safeHolder() const;
+
     inline VMSymbol* symbolAt(u16 index) const;
 private:
     inline intptr_t* base() const;
@@ -905,6 +914,7 @@ DECLARE_END
 DECLARE(VMConstMethod)
 public:
     inline VMConstantPool* constants() const;
+    inline VMConstantPool* safeConstants() const;
     inline u16 nameIndex() const;
     inline u16 signatureIndex() const;
     inline VMSymbol* name() const;
@@ -935,8 +945,11 @@ public:
     }
 
     inline VMConstMethod* constMethod() const;
+    inline VMConstMethod* safeConstMethod() const;
     inline VMNMethod* code() const;
     inline VMKlass* methodHolder() const;
+    inline VMKlass* safeMethodHolder() const;
+    
     static bool check_jmethodID(jmethodID id);
 DECLARE_END
 

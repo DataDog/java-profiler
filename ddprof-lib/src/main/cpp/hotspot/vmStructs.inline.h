@@ -82,6 +82,11 @@ VMKlass* VMConstantPool::holder() const {
     return VMKlass::load_then_cast(at(_pool_holder_offset));
 }
 
+VMKlass* VMConstantPool::safeHolder() const {
+    assert(_pool_holder_offset >= 0);
+    return VMKlass::safe_load_then_cast(at(_pool_holder_offset));
+}
+
 VMSymbol* VMConstantPool::symbolAt(u16 index) const {
     return VMSymbol::cast(*(void**)&base()[index]);
 }
@@ -95,6 +100,10 @@ VMConstMethod* VMMethod::constMethod() const {
     return VMConstMethod::load_then_cast(at(_method_constmethod_offset));
 }
 
+VMConstMethod* VMMethod::safeConstMethod() const {
+    return VMConstMethod::safe_load_then_cast(at(_method_constmethod_offset));
+}
+
 VMNMethod* VMMethod::code() const {
     assert(_method_code_offset >= 0);
     const void* code_ptr = *(const void**) at(_method_code_offset);
@@ -102,15 +111,28 @@ VMNMethod* VMMethod::code() const {
 }
 
 VMKlass* VMMethod::methodHolder() const {
-//    return constMethod()->constants()->holder();
     VMConstMethod* constMthd = constMethod();
     VMConstantPool* pool = constMthd->constants();
     VMKlass* holder = pool->holder();
     return holder;
 }
 
+VMKlass* VMMethod::safeMethodHolder() const {
+    VMConstMethod* constMthd = safeConstMethod();
+    if (constMthd == nullptr) return nullptr;
+
+    VMConstantPool* pool = constMthd->safeConstants();
+    if (pool == nullptr) return nullptr;
+
+    return pool->safeHolder();
+}
+
 VMConstantPool* VMConstMethod::constants() const {
     return VMConstantPool::load_then_cast(at(_constmethod_constants_offset));
+}
+
+VMConstantPool* VMConstMethod::safeConstants() const {
+    return VMConstantPool::safe_load_then_cast(at(_constmethod_constants_offset));
 }
 
 u16 VMConstMethod::nameIndex() const {

@@ -103,7 +103,7 @@ static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *n
 
     jmethodID current_method_id = getMethodId(method);
     if (current_method_id == NULL) {
-        current_method_id = reinterpret_cast<jmethodID>(method);
+        return;
     }
 
     // Mark current_method as COMPILED and frames above current_method as
@@ -135,8 +135,8 @@ static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *n
 }
 
 static inline void fillFrame(ASGCT_CallFrame& frame, int bci, const VMMethod* method) {
+    assert(method != nullptr);
     frame.bci = FrameType::encode(FRAME_INTERPRETED_METHOD, bci);
-    assert(FrameType::decode(frame.bci) == FRAME_INTERPRETED_METHOD && "FrameType::encode/decode is not reversable");
     frame.method = static_cast<const void*>(method);
 }
 
@@ -490,7 +490,13 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 Counters::increment(WALKVM_JAVA_FRAME_OK);
                 int level = nm->level();
                 FrameTypeId type = details && level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED;
-                fillFrame(frames[depth++], type, 0, nm->method()->id());
+                VMMethod* method = VMMethod::cast_or_null((const void*)frame.method());
+                jmethodID method_id = getMethodId(method);
+                if (method_id != nullptr) {
+                    fillFrame(frames[depth++], type, 0, nm->method()->id());
+                } else if (VMClassLoader::isLoadedByBootstrapClassLoader(method)) {
+                    fillFrame(frames[depth++], 0, method);
+                }
 
                 if (nm->isFrameCompleteAt(pc)) {
                     if (depth == 1 && frame.unwindEpilogue(nm, (uintptr_t&)pc, sp, fp)) {
@@ -507,7 +513,13 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                                 type = scope_offset > 0 ? FRAME_INLINED :
                                        level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED;
                             }
-                            fillFrame(frames[depth++], type, scope.bci(), scope.method()->id());
+                            VMMethod* method = scope.method();
+                            jmethodID method_id = getMethodId(method);
+                            if (method_id != nullptr) {
+                                fillFrame(frames[depth++], type, scope.bci(), method_id);
+                            } else if (VMClassLoader::isLoadedByBootstrapClassLoader(method)) {
+                                fillFrame(frames[depth++], scope.bci(), scope.method());
+                            }
                         } while (scope_offset > 0 && depth < max_depth);
                     }
 
@@ -619,6 +631,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     jmethodID method_id = getMethodId(method);
                     if (method_id != NULL) {
                         fillFrame(frames[depth++], FRAME_JIT_COMPILED, 0, method_id);
+                    } else if (VMClassLoader::isLoadedByBootstrapClassLoader(method)) {
+                        fillFrame(frames[depth++], 0, method);
                     }
                 } else if (mark == MARK_THREAD_ENTRY) {
                     // Thread entry point detected via pre-computed mark - this is the root frame
@@ -1240,11 +1254,17 @@ jmethodID HotspotSupport::resolve(const void* method) {
     return method_id;
   }
 
-  VMConstMethod* const_method = vm_method->constMethod();
+  VMConstMethod* const_method = vm_method->safeConstMethod();
+  if (const_method == nullptr) {
+    return nullptr;
+  }
+
   VMSymbol* name_sym = const_method->name();
   VMSymbol* sig_sym = const_method->signature();
-  VMKlass* klass = vm_method->methodHolder();
+  VMKlass* klass = vm_method->safeMethodHolder();
   VMSymbol* klass_sym = klass->name();
+
+  
 
   char* method_name = (char*)malloc(name_sym->length() + 1);
   char* method_signature = (char*)malloc(sig_sym->length() + 1);
@@ -1262,20 +1282,18 @@ jmethodID HotspotSupport::resolve(const void* method) {
       jclass clz = jni->FindClass(klass_name);
       if (clz == nullptr) {
         jni->ExceptionClear();
-        TEST_LOG("Failed to resolve class: %s", klass_name);
       } else {
         method_id = jni->GetMethodID(clz, method_name, method_signature);
         if (method_id == nullptr) {
           jni->ExceptionClear();
           method_id = jni->GetStaticMethodID(clz, method_name, method_signature);
           if (method_id == nullptr) {
-            TEST_LOG("Failed to resolve method: %s %s", method_name, method_signature);
             jni->ExceptionClear();
           }
         }
       }
   }
-TEST_LOG("Resolved: %s: %s %s", klass_name, method_name, method_signature);
+// TEST_LOG("Resolved: %s: %s %s", klass_name, method_name, method_signature);
 
   free(method_name);
   free(method_signature);
