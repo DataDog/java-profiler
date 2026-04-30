@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk21
 
 ## musl-arm64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-04-30 09:02:45 EDT
+**Date:** 2026-04-30 09:25:04 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-openj9-jdk21
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 48 |
-| CPU Cores (end) | 43 |
+| CPU Cores (start) | 64 |
+| CPU Cores (end) | 64 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: musl-arm64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 9 |
-| Sample Rate | 0.15/sec |
-| Health Score | 9% |
-| Threads | 6 |
-| Allocations | 10 |
+| CPU Samples | 57 |
+| Sample Rate | 0.95/sec |
+| Health Score | 59% |
+| Threads | 12 |
+| Allocations | 45 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 43-48 cores)</summary>
+<summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1777553849 48
-1777553854 48
-1777553859 48
-1777553864 48
-1777553869 48
-1777553874 48
-1777553879 48
-1777553884 48
-1777553889 48
-1777553894 48
-1777553899 48
-1777553904 48
-1777553909 48
-1777553914 48
-1777553919 43
-1777553924 43
-1777553929 43
-1777553934 43
-1777553939 43
-1777553944 43
+1777555246 64
+1777555251 64
+1777555256 64
+1777555261 64
+1777555266 64
+1777555271 64
+1777555276 64
+1777555281 64
+1777555286 64
+1777555291 64
+1777555296 64
+1777555301 64
+1777555306 64
+1777555311 64
+1777555316 64
+1777555321 64
+1777555326 64
+1777555331 64
+1777555336 64
+1777555341 64
 ```
 </details>
 
