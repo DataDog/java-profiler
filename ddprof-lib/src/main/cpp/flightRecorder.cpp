@@ -1605,7 +1605,7 @@ void Recording::recordNativeSocketSample(Buffer *buf, int tid, u64 call_trace_id
   int start = buf->skip(1);
   buf->putVar64(T_NATIVE_SOCKET);
   buf->putVar64(event->_start_time);
-  buf->putVar32(tid);
+  buf->putVar64(tid);
   buf->putVar64(call_trace_id);
   buf->putVar64(event->_end_time - event->_start_time);
   buf->putUtf8(event->_operation == 0 ? "SEND" : "RECV");

@@ -35,6 +35,7 @@ static std::atomic<uint64_t> _record_accept_calls{0};
 static std::atomic<uint64_t> _record_reject_calls{0};
 #endif
 
+// intentional process-lifetime singleton — matches MallocTracer pattern; no destructor needed
 NativeSocketSampler* const NativeSocketSampler::_instance = new NativeSocketSampler();
 NativeSocketSampler::send_fn  NativeSocketSampler::_orig_send  = nullptr;
 NativeSocketSampler::recv_fn  NativeSocketSampler::_orig_recv  = nullptr;
@@ -45,17 +46,18 @@ std::string NativeSocketSampler::resolveAddr(int fd) {
     struct sockaddr_storage ss;
     socklen_t len = sizeof(ss);
     if (getpeername(fd, (struct sockaddr*)&ss, &len) != 0) {
+        TEST_LOG("NativeSocketSampler::resolveAddr getpeername fd=%d failed errno=%d", fd, errno);
         return "";
     }
     char host[INET6_ADDRSTRLEN];
     int port = 0;
     if (ss.ss_family == AF_INET) {
         struct sockaddr_in* s = (struct sockaddr_in*)&ss;
-        inet_ntop(AF_INET, &s->sin_addr, host, sizeof(host));
+        if (inet_ntop(AF_INET, &s->sin_addr, host, sizeof(host)) == nullptr) return "";
         port = ntohs(s->sin_port);
     } else if (ss.ss_family == AF_INET6) {
         struct sockaddr_in6* s = (struct sockaddr_in6*)&ss;
-        inet_ntop(AF_INET6, &s->sin6_addr, host, sizeof(host));
+        if (inet_ntop(AF_INET6, &s->sin6_addr, host, sizeof(host)) == nullptr) return "";
         port = ntohs(s->sin6_port);
     } else {
         return "";
@@ -63,16 +65,24 @@ std::string NativeSocketSampler::resolveAddr(int fd) {
     // [addr]:port — INET6_ADDRSTRLEN(46) + brackets(2) + colon(1) + port(5) + NUL(1) = 55; round to 64.
     static const int FORMATTED_ADDR_BUF = 64;
     char buf[FORMATTED_ADDR_BUF];
+    int n;
     if (ss.ss_family == AF_INET6) {
-        snprintf(buf, sizeof(buf), "[%s]:%d", host, port);
+        n = snprintf(buf, sizeof(buf), "[%s]:%d", host, port);
     } else {
-        snprintf(buf, sizeof(buf), "%s:%d", host, port);
+        n = snprintf(buf, sizeof(buf), "%s:%d", host, port);
     }
+    // Truncation is theoretical (buf is 64 bytes, max needed is 55), but snprintf
+    // already NUL-terminates on truncation; suppress unused-variable warning in release.
+    (void)n;
     return std::string(buf);
 }
 
 bool NativeSocketSampler::isSocket(int fd) {
-    if ((unsigned)fd >= (unsigned)FD_TYPE_CACHE_SIZE) {
+    // Accepts any SOCK_STREAM socket (including AF_UNIX); AF_INET/AF_INET6 filtering
+    // is deferred to resolveAddr() which is only called for sampled events. AF_UNIX
+    // will produce an empty remoteAddress field in the JFR event.
+    if (fd < 0) return false;
+    if ((size_t)fd >= (size_t)FD_TYPE_CACHE_SIZE) {
         int so_type;
         socklen_t solen = sizeof(so_type);
         return getsockopt(fd, SOL_SOCKET, SO_TYPE, &so_type, &solen) == 0
@@ -130,30 +140,30 @@ void NativeSocketSampler::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 
     }
 #endif
 
-    char addr[64] = {};
+    NativeSocketEvent event;
+    event._start_time = t0;
+    event._end_time   = t1;
+    event._operation  = op;
+    event._remote_addr[0] = '\0';
     {
         std::lock_guard<std::mutex> lock(_fd_cache_mutex);
         auto it = _fd_cache.find(fd);
         if (it != _fd_cache.end()) {
-            strncpy(addr, it->second.c_str(), sizeof(addr) - 1);
+            strncpy(event._remote_addr, it->second.c_str(), sizeof(event._remote_addr) - 1);
+            event._remote_addr[sizeof(event._remote_addr) - 1] = '\0';
         }
     }
     // TOCTOU: resolveAddr runs without the lock; concurrent emplace is safe (first writer wins).
-    if (addr[0] == '\0') {
+    if (event._remote_addr[0] == '\0') {
         std::string resolved = resolveAddr(fd);
-        strncpy(addr, resolved.c_str(), sizeof(addr) - 1);
+        strncpy(event._remote_addr, resolved.c_str(), sizeof(event._remote_addr) - 1);
+        event._remote_addr[sizeof(event._remote_addr) - 1] = '\0';
         std::lock_guard<std::mutex> lock(_fd_cache_mutex);
         if ((int)_fd_cache.size() < MAX_FD_CACHE) {
             _fd_cache.emplace(fd, resolved);
         }
     }
-
-    NativeSocketEvent event;
-    event._start_time = t0;
-    event._end_time   = t1;
-    event._operation  = op;
-    strncpy(event._remote_addr, addr, sizeof(event._remote_addr) - 1);
-    event._remote_addr[sizeof(event._remote_addr) - 1] = '\0';
+    // ret > 0 checked above; cast is safe.
     event._bytes  = (u64)bytes;
     event._weight = weight;
 
@@ -181,12 +191,7 @@ ssize_t NativeSocketSampler::send_hook(int fd, const void* buf, size_t len, int 
     }
 #endif
     u64 t0 = TSC::ticks();
-    ssize_t ret = _orig_send(fd, buf, len, flags);
-    u64 t1 = TSC::ticks();
-    if (ret > 0) {
-        _instance->recordEvent(fd, t0, t1, ret, 0);
-    }
-    return ret;
+    return record_if_positive(fd, _orig_send(fd, buf, len, flags), t0, TSC::ticks(), 0);
 }
 
 ssize_t NativeSocketSampler::recv_hook(int fd, void* buf, size_t len, int flags) {
@@ -201,12 +206,7 @@ ssize_t NativeSocketSampler::recv_hook(int fd, void* buf, size_t len, int flags)
     }
 #endif
     u64 t0 = TSC::ticks();
-    ssize_t ret = _orig_recv(fd, buf, len, flags);
-    u64 t1 = TSC::ticks();
-    if (ret > 0) {
-        _instance->recordEvent(fd, t0, t1, ret, 1);
-    }
-    return ret;
+    return record_if_positive(fd, _orig_recv(fd, buf, len, flags), t0, TSC::ticks(), 1);
 }
 
 ssize_t NativeSocketSampler::write_hook(int fd, const void* buf, size_t len) {
@@ -232,12 +232,7 @@ ssize_t NativeSocketSampler::write_hook(int fd, const void* buf, size_t len) {
     }
 #endif
     u64 t0 = TSC::ticks();
-    ssize_t ret = _orig_write(fd, buf, len);
-    u64 t1 = TSC::ticks();
-    if (ret > 0) {
-        self->recordEvent(fd, t0, t1, ret, 0);
-    }
-    return ret;
+    return record_if_positive(fd, _orig_write(fd, buf, len), t0, TSC::ticks(), 0);
 }
 
 ssize_t NativeSocketSampler::read_hook(int fd, void* buf, size_t len) {
@@ -263,12 +258,7 @@ ssize_t NativeSocketSampler::read_hook(int fd, void* buf, size_t len) {
     }
 #endif
     u64 t0 = TSC::ticks();
-    ssize_t ret = _orig_read(fd, buf, len);
-    u64 t1 = TSC::ticks();
-    if (ret > 0) {
-        self->recordEvent(fd, t0, t1, ret, 1);
-    }
-    return ret;
+    return record_if_positive(fd, _orig_read(fd, buf, len), t0, TSC::ticks(), 1);
 }
 
 Error NativeSocketSampler::check(Arguments &args) {

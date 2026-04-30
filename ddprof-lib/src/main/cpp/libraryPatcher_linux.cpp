@@ -26,7 +26,7 @@ PatchEntry LibraryPatcher::_patched_entries[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_size = 0;
 PatchEntry LibraryPatcher::_sigaction_entries[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_sigaction_size = 0;
-PatchEntry LibraryPatcher::_socket_entries[MAX_NATIVE_LIBS];
+PatchEntry LibraryPatcher::_socket_entries[4 * MAX_NATIVE_LIBS];
 int        LibraryPatcher::_socket_size = 0;
 std::atomic<bool> LibraryPatcher::_socket_active{false};
 
@@ -336,7 +336,7 @@ void LibraryPatcher::patch_sigaction() {
   }
 }
 
-void LibraryPatcher::patch_socket_functions() {
+bool LibraryPatcher::patch_socket_functions() {
   // Pre-resolve the real libc symbols via RTLD_NEXT *before* acquiring _lock.
   // RTLD_NEXT finds the first definition after this DSO in load order,
   // bypassing unresolved lazy-binding stubs that would otherwise trigger
@@ -356,7 +356,7 @@ void LibraryPatcher::patch_socket_functions() {
            (void*)pre_send, (void*)pre_recv, (void*)pre_write, (void*)pre_read);
   if (!pre_send || !pre_recv || !pre_write || !pre_read) {
     TEST_LOG("patch_socket_functions EARLY RETURN: at least one dlsym returned NULL");
-    return;
+    return false;
   }
 
   const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
@@ -381,11 +381,27 @@ void LibraryPatcher::patch_socket_functions() {
   // Only assign orig pointers on the first call (no hooks installed yet).
   // On re-entry via dlopen, RTLD_NEXT would resolve to the hook itself.
   if (_socket_size == 0) {
-    NativeSocketSampler::_orig_send  = pre_send;
-    NativeSocketSampler::_orig_recv  = pre_recv;
-    NativeSocketSampler::_orig_write = pre_write;
-    NativeSocketSampler::_orig_read  = pre_read;
+    NativeSocketSampler::setOriginalFunctions(pre_send, pre_recv, pre_write, pre_read);
   }
+  // TODO: hook table (name + hook fn) should be owned by NativeSocketSampler;
+  // LibraryPatcher should iterate an externally-provided table rather than
+  // hardcoding the four socket hooks here.
+  auto try_patch_slot = [&](void** location, void* hook_fn, const char* fn_name, CodeCache* lib) {
+    if (location == nullptr) return;
+    for (int i = 0; i < _socket_size; i++) {
+      if (_socket_entries[i]._location == location) return;
+    }
+    if (_socket_size < 4 * MAX_NATIVE_LIBS) {
+      void* orig = (void*)__atomic_load_n(location, __ATOMIC_ACQUIRE);
+      _socket_entries[_socket_size]._lib      = lib;
+      _socket_entries[_socket_size]._location = location;
+      _socket_entries[_socket_size]._func     = orig;
+      __atomic_store_n(location, hook_fn, __ATOMIC_RELEASE);
+      _socket_size++;
+    } else {
+      Log::warn("socket patch table full (%d slots), skipping %s in %s", 4 * MAX_NATIVE_LIBS, fn_name, lib ? lib->name() : "?");
+    }
+  };
   for (int index = 0; index < capped; index++) {
     CodeCache* lib = native_libs.at(index);
     if (lib == nullptr) continue;
@@ -407,67 +423,19 @@ void LibraryPatcher::patch_socket_functions() {
              lib->name(), (void*)send_location, (void*)recv_location,
              (void*)write_location, (void*)read_location);
 
-    if (send_location != nullptr) {
-      bool slot_patched = false;
-      for (int i = 0; i < _socket_size; i++) {
-        if (_socket_entries[i]._location == send_location) { slot_patched = true; break; }
-      }
-      if (!slot_patched && _socket_size < MAX_NATIVE_LIBS) {
-        void* orig = (void*)__atomic_load_n(send_location, __ATOMIC_ACQUIRE);
-        _socket_entries[_socket_size]._lib      = lib;
-        _socket_entries[_socket_size]._location = send_location;
-        _socket_entries[_socket_size]._func     = orig;
-        __atomic_store_n(send_location, (void*)NativeSocketSampler::send_hook, __ATOMIC_RELEASE);
-        _socket_size++;
-      }
-    }
-    if (recv_location != nullptr) {
-      bool slot_patched = false;
-      for (int i = 0; i < _socket_size; i++) {
-        if (_socket_entries[i]._location == recv_location) { slot_patched = true; break; }
-      }
-      if (!slot_patched && _socket_size < MAX_NATIVE_LIBS) {
-        void* orig = (void*)__atomic_load_n(recv_location, __ATOMIC_ACQUIRE);
-        _socket_entries[_socket_size]._lib      = lib;
-        _socket_entries[_socket_size]._location = recv_location;
-        _socket_entries[_socket_size]._func     = orig;
-        __atomic_store_n(recv_location, (void*)NativeSocketSampler::recv_hook, __ATOMIC_RELEASE);
-        _socket_size++;
-      }
-    }
-    if (write_location != nullptr) {
-      bool slot_patched = false;
-      for (int i = 0; i < _socket_size; i++) {
-        if (_socket_entries[i]._location == write_location) { slot_patched = true; break; }
-      }
-      if (!slot_patched && _socket_size < MAX_NATIVE_LIBS) {
-        void* orig = (void*)__atomic_load_n(write_location, __ATOMIC_ACQUIRE);
-        _socket_entries[_socket_size]._lib      = lib;
-        _socket_entries[_socket_size]._location = write_location;
-        _socket_entries[_socket_size]._func     = orig;
-        __atomic_store_n(write_location, (void*)NativeSocketSampler::write_hook, __ATOMIC_RELEASE);
-        _socket_size++;
-      }
-    }
-    if (read_location != nullptr) {
-      bool slot_patched = false;
-      for (int i = 0; i < _socket_size; i++) {
-        if (_socket_entries[i]._location == read_location) { slot_patched = true; break; }
-      }
-      if (!slot_patched && _socket_size < MAX_NATIVE_LIBS) {
-        void* orig = (void*)__atomic_load_n(read_location, __ATOMIC_ACQUIRE);
-        _socket_entries[_socket_size]._lib      = lib;
-        _socket_entries[_socket_size]._location = read_location;
-        _socket_entries[_socket_size]._func     = orig;
-        __atomic_store_n(read_location, (void*)NativeSocketSampler::read_hook, __ATOMIC_RELEASE);
-        _socket_size++;
-      }
-    }
+    // The _lock is held during patching to protect _socket_entries and _socket_size.
+    // Concurrent dlopen_hook calls serialize via the same lock in install_socket_hooks(),
+    // ensuring slot_patched checks and updates are atomic with respect to each other.
+    try_patch_slot(send_location,  (void*)NativeSocketSampler::send_hook,  "send",  lib);
+    try_patch_slot(recv_location,  (void*)NativeSocketSampler::recv_hook,  "recv",  lib);
+    try_patch_slot(write_location, (void*)NativeSocketSampler::write_hook, "write", lib);
+    try_patch_slot(read_location,  (void*)NativeSocketSampler::read_hook,  "read",  lib);
   }
 
   TEST_LOG("patch_socket_functions DONE total_slots=%d num_libs_scanned=%d",
            _socket_size, capped);
   _socket_active.store(true, std::memory_order_release);
+  return true;
 }
 
 void LibraryPatcher::unpatch_socket_functions() {

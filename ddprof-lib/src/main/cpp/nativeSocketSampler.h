@@ -54,8 +54,6 @@ class LibraryPatcher;
 //                         signal lock.
 
 class NativeSocketSampler : public Engine {
-    friend class LibraryPatcher;
-
 public:
     // Typedefs for libc send/recv/write/read signatures.
     typedef ssize_t (*send_fn)(int, const void*, size_t, int);
@@ -80,14 +78,29 @@ public:
     static ssize_t write_hook(int fd, const void* buf, size_t len);
     static ssize_t read_hook(int fd,        void* buf, size_t len);
 
-    // Original libc function pointers; set by LibraryPatcher, restored on stop.
+    // Called once by LibraryPatcher::patch_socket_functions() to install the
+    // real libc function pointers before any PLT entries are patched.
+    static void setOriginalFunctions(send_fn s, recv_fn r, write_fn w, read_fn rd) {
+        _orig_send = s; _orig_recv = r; _orig_write = w; _orig_read = rd;
+    }
+
+    // For testing only: retrieve the current original function pointers.
+    static void getOriginalFunctions(send_fn& s, recv_fn& r, write_fn& w, read_fn& rd) {
+        s = _orig_send; r = _orig_recv; w = _orig_write; rd = _orig_read;
+    }
+
+private:
+    static NativeSocketSampler* const _instance;
+
+    // Set once by setOriginalFunctions() (called under _lock, before PLT patching) and
+    // never reset to null while hooks are active.  No atomic needed: the __ATOMIC_RELEASE
+    // on each PLT patch provides a store-store barrier that keeps these assignments
+    // visible before the PLT entry becomes observable; the _socket_active release/acquire
+    // pair establishes happens-before for any hook that sees _socket_active=true.
     static send_fn  _orig_send;
     static recv_fn  _orig_recv;
     static write_fn _orig_write;
     static read_fn  _orig_read;
-
-private:
-    static NativeSocketSampler* const _instance;
 
     // Target aggregate event rate: ~83 events/s (~5000/min) across all four hooks
     // (send/write and recv/read) combined.
@@ -103,9 +116,9 @@ private:
     static constexpr double PID_D_GAIN    = 3.0;
     static constexpr double PID_CUTOFF_S  = 15.0;
 
-    // Default sampling interval in TSC ticks (~1 ms).
-    // Initialised in start() once TSC::frequency() is available.
-    static const long DEFAULT_INTERVAL_TICKS  = 1000000; // fallback; overwritten at start
+    // Default sampling interval in TSC ticks (equals 1 ms only on a ~1 GHz TSC;
+    // serves as a numeric floor for pathologically low TSC frequencies).
+    static const long DEFAULT_INTERVAL_TICKS  = 1000000; // fallback used in start() when the TSC-derived interval rounds to < 1
 
     // Rate limiter: owns the PID controller, interval, epoch, and fire counter.
     // NativeSocketSampler uses it directly (not via RateLimitedSampler) because
@@ -138,7 +151,7 @@ private:
     // Resolve the peer address for fd; returns empty string on failure.
     std::string resolveAddr(int fd);
 
-    // Returns true if fd is a connected TCP socket (SOCK_STREAM).
+    // Returns true if fd is a SOCK_STREAM socket (including AF_UNIX).
     // Uses the fd-type cache; calls getsockopt on first encounter per fd.
     bool isSocket(int fd);
 
@@ -153,6 +166,12 @@ private:
 
     // Common recording logic shared by all four hooks.
     void recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 op);
+
+    // Records the event if ret > 0; returns ret unchanged.  Shared tail for all four hooks.
+    static inline ssize_t record_if_positive(int fd, ssize_t ret, u64 t0, u64 t1, u8 op) {
+        if (ret > 0) _instance->recordEvent(fd, t0, t1, ret, op);
+        return ret;
+    }
 };
 
 #else // !__linux__

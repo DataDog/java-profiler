@@ -175,8 +175,9 @@ private:
      *
      *   X = -interval * ln(U),   U ~ Uniform(0, 1]
      *
-     * Adding 0.5 ULP before the float scaling centres the rounding and
-     * ensures U is never exactly 0 (which would produce +infinity).
+     * U > 0 because the +0.5f offset in `((float)_rng + 0.5f) * 5.42101086e-20f` ensures
+     * the product is strictly positive even if _rng were 0. The xorshift64 invariant
+     * (_rng != 0) is independently required by the recurrence (0 is a fixed point).
      * The magic constant 5.42101086e-20 ≈ 1/2^64 converts a u64 to [0, 1].
      *
      * ### Why xorshift64 instead of a C++ standard generator?
@@ -204,12 +205,14 @@ private:
      *      intercept arbitrary application threads; allocation and exception
      *      handling in that context would be unsafe.
      *
-     *   4. **Statistical sufficiency.**  xorshift64 passes the Diehard and
-     *      BigCrush test suites and is well-established for Monte Carlo
-     *      sampling.  The inverse-CDF transform amplifies non-uniformity
-     *      only near U ≈ 0 (i.e., extremely large Exp draws), which
-     *      correspond to very long inter-sample gaps — a rare tail that has
-     *      negligible effect on aggregate estimates.
+     *   4. **Statistical sufficiency.**  xorshift64 (Marsaglia 2003) passes the
+     *      Diehard battery; it fails some BigCrush tests for linear-algebra-based
+     *      statistics (MatrixRank, LinearComp), but those failure modes are
+     *      irrelevant to inverse-CDF Exp sampling for aggregate weight estimates.
+     *      The inverse-CDF transform amplifies non-uniformity only near U ≈ 0
+     *      (i.e., extremely large Exp draws), which correspond to very long
+     *      inter-sample gaps — a rare tail that has negligible effect on aggregate
+     *      estimates.
      */
     u64 nextExp(u64 interval) {
         _rng ^= _rng << 13;
