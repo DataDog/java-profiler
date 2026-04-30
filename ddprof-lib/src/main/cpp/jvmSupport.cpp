@@ -105,11 +105,7 @@ bool JVMSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
 // JVMTI callbacks
 void JNICALL JVMSupport::ClassPrepare(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                                    jclass klass) {
-    if (VM::isHotspot()) {
-        HotspotSupport::loadMethodIDsImpl(jvmti, jni, klass);
-    } else {
-        loadMethodIDsImpl(jvmti, jni, klass);
-    }
+    loadMethodIDs(jvmti, jni, klass);
 }
 
 void JNICALL JVMSupport::ClassLoad(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,

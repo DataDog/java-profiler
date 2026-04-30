@@ -143,6 +143,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         jvmti->GetClassSignature(method_class, &class_name, NULL) == JVMTI_ERROR_NONE &&
         jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == JVMTI_ERROR_NONE) {
       if (first_time) {
+        // Populate modifier (async profiler has this call)
         if (jvmti->GetMethodModifiers(method, &mi->_modifiers) != JVMTI_ERROR_NONE) {
           mi->_modifiers = 0;
         }
@@ -305,16 +306,23 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   unsigned long key;
   jint bci = frame.bci;
   FrameTypeId frame_type = FrameType::decode(bci);
-
   jmethodID method_id = frame.method_id;
+
+  // Resolve method into jmethodID
+  if (frame_type == FRAME_INTERPRETED_METHOD) {
+    // Resolve this frame into FRAME_INTERPRETED
+    method_id = JVMSupport::resolve(frame.method);
+    frame.bci = FrameType::encode(FRAME_INTERPRETED, frame.bci);
+    frame.method_id = method_id;
+    frame_type = FRAME_INTERPRETED;
+  }
+
   if (method_id == nullptr) {
     key = MethodMap::makeKey(UNKNOWN);
   } else if (bci == BCI_ERROR || bci == BCI_NATIVE_FRAME) {
     key = MethodMap::makeKey(frame.native_function_name);
   } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
     key = MethodMap::makeKey(frame.packed_remote_frame);
-  } else if (frame_type == FRAME_INTERPRETED_METHOD) {
-    key = MethodMap::makeKey(frame.method);
   } else {
     assert(frame_type == FRAME_INTERPRETED || frame_type == FRAME_JIT_COMPILED ||
            frame_type == FRAME_INLINED || frame_type == FRAME_C1_COMPILED ||
@@ -370,12 +378,6 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
         TEST_LOG("WARNING: Library lookup failed for index %u", lib_index);
         fillNativeMethodInfo(mi, "unknown_library", nullptr);
       }
-    } else if (frame_type == FRAME_INTERPRETED_METHOD) {
-        // Resolve this frame into FRAME_INTERPRETED
-        jmethodID id = JVMSupport::resolve(frame.method);
-        frame.bci = FrameType::encode(FRAME_INTERPRETED, bci);
-        frame.method_id = id;
-        fillJavaMethodInfo(mi, id, first_time);
     } else {
         fillJavaMethodInfo(mi, method_id, first_time);
     }

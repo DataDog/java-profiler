@@ -51,10 +51,7 @@ public:
     }
 
     int i = 1;
-    int table_size = _line_number_table->_size;
-    table_size = table_size > 0 ? table_size : - table_size;
-
-    while (i < table_size &&
+    while (i < _line_number_table->_size &&
            bci >= ((jvmtiLineNumberEntry *)_line_number_table->_ptr)[i]
                       .start_location) {
       i++;

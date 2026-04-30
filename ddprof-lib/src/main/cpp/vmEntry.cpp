@@ -487,7 +487,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   functions->RetransformClasses = RetransformClassesHook;
 
   if (attach) {
-    loadAllMethodIDs(_jvmti, jni());
+    JVMSupport::loadAllMethodIDs(_jvmti, jni());
     _jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);
     _jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD);
   } else {
@@ -536,13 +536,9 @@ void *VM::getLibraryHandle(const char *name) {
   return RTLD_DEFAULT;
 }
 
-void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
-  JVMSupport::loadAllMethodIDs(jvmti, jni);
-}
-
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     ready(jvmti, jni);
-    loadAllMethodIDs(jvmti, jni);
+    JVMSupport::loadAllMethodIDs(jvmti, jni);
 
     // initialize the heap usage tracking only after the VM is ready
     HeapUsage::initJMXUsage(VM::jni());

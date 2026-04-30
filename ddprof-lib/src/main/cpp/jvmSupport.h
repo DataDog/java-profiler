@@ -43,7 +43,7 @@ public:
       if (VM::isHotspot()) {
           return HotspotSupport::resolve(method);
       } else {
-          assert(false && "Should not reache here");
+          assert(false && "Should not reach here");
           return nullptr;
       }
     }

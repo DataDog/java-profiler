@@ -905,13 +905,10 @@ DECLARE_END
 DECLARE(VMConstMethod)
 public:
     inline VMConstantPool* constants() const;
-    inline uint16_t codeSize() const;
-    inline const char* base() const;
     inline u16 nameIndex() const;
     inline u16 signatureIndex() const;
     inline VMSymbol* name() const;
     inline VMSymbol* signature() const;
-    inline uint32_t flags() const;
 DECLARE_END
 
 DECLARE(VMMethod)   

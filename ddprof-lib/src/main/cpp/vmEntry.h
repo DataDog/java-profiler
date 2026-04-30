@@ -136,7 +136,6 @@ private:
   static void ready(jvmtiEnv *jvmti, JNIEnv *jni);
   static void applyPatch(char *func, const char *patch, const char *end_patch);
   static void *getLibraryHandle(const char *name);
-  static void loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni);
 
   static bool initShared(JavaVM *vm);
 
