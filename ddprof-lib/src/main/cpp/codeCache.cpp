@@ -350,11 +350,22 @@ void CodeCache::addImport(void **entry, const char *name) {
       case 'r':
           if (strcmp(name, "realloc") == 0) {
               saveImport(im_realloc, entry);
+          } else if (strcmp(name, "recv") == 0) {
+              saveImport(im_recv, entry);
+          } else if (strcmp(name, "read") == 0) {
+              saveImport(im_read, entry);
           }
           break;
       case 's':
-          if (strcmp(name, "sigaction") == 0) {
+          if (strcmp(name, "send") == 0) {
+              saveImport(im_send, entry);
+          } else if (strcmp(name, "sigaction") == 0) {
               saveImport(im_sigaction, entry);
+          }
+          break;
+      case 'w':
+          if (strcmp(name, "write") == 0) {
+              saveImport(im_write, entry);
           }
           break;
     }

@@ -283,6 +283,8 @@ public:
                         AllocEvent *event);
   void recordMallocSample(Buffer *buf, int tid, u64 call_trace_id,
                           MallocEvent *event);
+  void recordNativeSocketSample(Buffer *buf, int tid, u64 call_trace_id,
+                                NativeSocketEvent *event);
   void recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
                             ObjectLivenessEvent *event);
   void recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,
