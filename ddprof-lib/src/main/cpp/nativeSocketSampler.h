@@ -97,6 +97,14 @@ private:
     // on each PLT patch provides a store-store barrier that keeps these assignments
     // visible before the PLT entry becomes observable; the _socket_active release/acquire
     // pair establishes happens-before for any hook that sees _socket_active=true.
+    //
+    // ASSUMPTION (documented for any future port to a weaker memory model): we do not
+    // restart the profiler in production — start()/stop() are exercised only in tests.
+    // A formal data race would only be observable on a stop()→start() restart cycle when
+    // a stale-epoch hook is still in flight while setOriginalFunctions() rewrites these
+    // pointers.  On x86_64 and aarch64 aligned-pointer stores are atomic by hardware so
+    // no value tearing occurs in practice.  If restart-in-prod ever becomes a supported
+    // mode, declare these as std::atomic<...> with release/acquire pairing.
     static send_fn  _orig_send;
     static recv_fn  _orig_recv;
     static write_fn _orig_write;
@@ -129,17 +137,34 @@ private:
     // fd -> "ip:port" string cache.  Bounded to MAX_FD_CACHE entries; no
     // eviction is performed (entries for closed/reused fds are stale until
     // the next stop(), but stale addresses are a known, accepted limitation).
+    // Once the cache fills, _fd_cache_full latches true to skip further
+    // resolveAddr() calls — without this latch the hot path would degrade to
+    // per-event getpeername()+inet_ntop()+std::string allocation that gets
+    // thrown away (since emplace is gated on size).
     static const int MAX_FD_CACHE = 65536;
     std::unordered_map<int, std::string> _fd_cache;
     std::mutex _fd_cache_mutex;
+    std::atomic<bool> _fd_cache_full{false};
 
     // fd-type cache for write/read hooks.  Lock-free: one atomic byte per fd number.
-    // Encoding: bits [7:4] = generation mod 16, bits [3:0] = type (0=unknown/invalid,
-    // 1=TCP socket, 2=non-TCP).  An entry is valid only when its high nibble equals
-    // _fd_cache_gen mod 16.  Incrementing _fd_cache_gen invalidates all entries in
-    // O(1) without touching the 65536-entry array.
+    // Encoding: bits [7:4] = generation mod 16, bits [3:0] = type (0=unknown/invalid
+    // — implicit zero in fresh array, never written explicitly; 1=TCP socket;
+    // 2=non-TCP).  An entry is valid only when its high nibble equals _fd_cache_gen
+    // mod 16.  Incrementing _fd_cache_gen invalidates all entries in O(1) without
+    // touching the 65536-entry array.
+    //
+    // KNOWN LIMITATION (mod-16 generation wrap): _fd_cache_gen is only consulted via
+    // its low 4 bits.  After 16 start() cycles the generation wraps and stale entries
+    // from a previous incarnation become indistinguishable from current ones until each
+    // fd is naturally re-probed.  Profiler restarts are not exercised in production
+    // (only in tests), so the wrap is benign in practice.  If restart-in-prod ever
+    // becomes a supported mode, widen _fd_cache_gen to uint32_t and store the full
+    // generation in a wider per-fd cell.
     // Fds outside [0, FD_TYPE_CACHE_SIZE) are probed on every call.
     static const int     FD_TYPE_CACHE_SIZE  = 65536;
+    // FD_TYPE_UNKNOWN is the implicit value-zero sentinel for never-written entries
+    // and gen-mismatch entries; it is decoded by the (cached >> 4) != gen path in
+    // isSocket(), not by an explicit comparison against this constant.
     static const uint8_t FD_TYPE_UNKNOWN     = 0;
     static const uint8_t FD_TYPE_SOCKET      = 1;
     static const uint8_t FD_TYPE_NON_SOCKET  = 2;

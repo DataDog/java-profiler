@@ -72,10 +72,15 @@ public class NativeSocketEventFieldsTest extends NativeSocketTestBase {
             for (IItem item : items) {
                 String operation = operationAccessor.getMember(item);
                 assertNotNull(operation, "operation must not be null");
-                assertTrue(operation.equals("SEND") || operation.equals("RECV"),
-                        "operation must be SEND or RECV, got: " + operation);
-                if ("SEND".equals(operation)) foundSend = true;
-                if ("RECV".equals(operation)) foundRecv = true;
+                // op encodes the underlying syscall: SEND/RECV are emitted by send_hook/recv_hook;
+                // WRITE/READ are emitted by write_hook/read_hook.  Java sockets typically reach
+                // libc via write()/read(), so foundSend covers SEND and WRITE, foundRecv covers
+                // RECV and READ — both directions must be observed.
+                assertTrue(operation.equals("SEND") || operation.equals("RECV")
+                        || operation.equals("WRITE") || operation.equals("READ"),
+                        "operation must be one of SEND/RECV/WRITE/READ, got: " + operation);
+                if ("SEND".equals(operation) || "WRITE".equals(operation)) foundSend = true;
+                if ("RECV".equals(operation) || "READ".equals(operation))  foundRecv = true;
 
                 String remoteAddress = remoteAddressAccessor.getMember(item);
                 assertNotNull(remoteAddress, "remoteAddress must not be null");

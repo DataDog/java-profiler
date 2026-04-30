@@ -76,7 +76,9 @@ public class NativeSocketBytesAccuracyTest extends AbstractProfilerTest {
             IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT_ATTR.getAccessor(items.getType());
             if (opAccessor == null || durationAccessor == null || weightAccessor == null) continue;
             for (IItem item : items) {
-                if ("SEND".equals(opAccessor.getMember(item))) {
+                String op = opAccessor.getMember(item);
+                // Outbound direction: SEND (send syscall) or WRITE (write syscall on socket fd).
+                if ("SEND".equals(op) || "WRITE".equals(op)) {
                     IQuantity dur = durationAccessor.getMember(item);
                     IQuantity weight = weightAccessor.getMember(item);
                     if (dur != null && weight != null) {
@@ -90,9 +92,9 @@ public class NativeSocketBytesAccuracyTest extends AbstractProfilerTest {
 
         System.out.println("Wall time of transfers: " + wallNs + " ns");
         System.out.println("Scaled I/O time (sum of duration*weight): " + scaledDurationNs + " ns");
-        System.out.println("SEND event count: " + sendEventCount);
+        System.out.println("Outbound (SEND/WRITE) event count: " + sendEventCount);
 
-        assertTrue(sendEventCount > 0, "No SEND events recorded");
+        assertTrue(sendEventCount > 0, "No outbound (SEND/WRITE) events recorded");
         assertTrue(scaledDurationNs > 0.0, "sum(weight * duration) must be positive");
 
         // Generous 100x tolerance: scaled estimate must not exceed 100x wall time.

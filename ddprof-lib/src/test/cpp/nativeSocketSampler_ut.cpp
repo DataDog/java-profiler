@@ -19,6 +19,7 @@
 #if defined(__linux__)
 
 #include "nativeSocketSampler.h"
+#include "libraryPatcher.h"
 
 #include <atomic>
 #include <sys/socket.h>
@@ -245,9 +246,14 @@ static ssize_t stub_send_success(int /*fd*/, const void* /*buf*/, size_t len, in
 
 /**
  * Verifies that send_hook calls _orig_send and propagates a successful return
- * value. On a success path (ret > 0) the hook enters the sampling / recording
- * path; because no JVM is running the hook must still return the correct value
- * without crashing.
+ * value WHEN HOOKS ARE INACTIVE (the most common in-process state during tests).
+ * Because _socket_active is false the hook short-circuits to _orig_send and
+ * never reaches recordEvent / Profiler::recordSample — exercising recordEvent
+ * requires a running profiler with a recorder bound, which is not feasible in
+ * this gtest unit harness.
+ *
+ * To exercise the active-path short-circuit (i.e., the hook's outer guard
+ * branch), see SendHookActivePathReachesRecorderGuard below.
  */
 TEST_F(NativeSocketSamplerHookTest, SendHookSuccessPathReturnsBytes) {
     g_send_success_calls = 0;
@@ -257,9 +263,35 @@ TEST_F(NativeSocketSamplerHookTest, SendHookSuccessPathReturnsBytes) {
     ssize_t ret = NativeSocketSampler::send_hook(0, buf, sizeof(buf), 0);
 
     EXPECT_EQ(g_send_success_calls.load(), 1)
-        << "send_hook must call _orig_send exactly once on success path";
+        << "send_hook must call _orig_send exactly once on the inactive path";
     EXPECT_EQ(ret, (ssize_t)sizeof(buf))
         << "send_hook must propagate the byte count from _orig_send";
+}
+
+/**
+ * Verifies that with _socket_active flipped to true the hook actually takes
+ * the active branch (calls TSC::ticks twice and routes through record_if_positive).
+ * No JVM/recorder is running so recordEvent's downstream Profiler::recordSample
+ * is benign (returns without recording); we verify the orig fn is still called
+ * exactly once and the return value is propagated.
+ */
+TEST_F(NativeSocketSamplerHookTest, SendHookActivePathReachesRecorderGuard) {
+    g_send_success_calls = 0;
+    NativeSocketSampler::setOriginalFunctions(stub_send_success, stub_recv, stub_write, stub_read);
+
+    // Manually flip the active flag so the hook traverses the active branch.
+    // Restore in a guard; tearing down the fixture must observe it cleared.
+    bool prev = LibraryPatcher::_socket_active.exchange(true, std::memory_order_release);
+
+    char buf[16] = {};
+    ssize_t ret = NativeSocketSampler::send_hook(0, buf, sizeof(buf), 0);
+
+    LibraryPatcher::_socket_active.store(prev, std::memory_order_release);
+
+    EXPECT_EQ(g_send_success_calls.load(), 1)
+        << "send_hook must call _orig_send exactly once on the active path";
+    EXPECT_EQ(ret, (ssize_t)sizeof(buf))
+        << "send_hook must propagate the byte count from _orig_send on the active path";
 }
 
 /**

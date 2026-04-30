@@ -57,14 +57,17 @@ public class NativeSocketSendRecvSeparateTest extends AbstractProfilerTest {
             assertNotNull(opAccessor);
             for (IItem item : items) {
                 String op = opAccessor.getMember(item);
-                if ("SEND".equals(op)) sendCount++;
-                else if ("RECV".equals(op)) recvCount++;
+                // Java sockets reach libc via write()/read(); send()/recv() also possible.
+                // Group by direction: outbound (SEND, WRITE) vs inbound (RECV, READ).
+                if ("SEND".equals(op) || "WRITE".equals(op))      sendCount++;
+                else if ("RECV".equals(op) || "READ".equals(op))  recvCount++;
             }
         }
 
-        System.out.println("SEND events: " + sendCount + ", RECV events: " + recvCount);
-        assertTrue(sendCount > 0, "Expected at least one SEND event, got 0");
-        assertTrue(recvCount > 0, "Expected at least one RECV event, got 0");
+        System.out.println("Outbound (SEND/WRITE) events: " + sendCount
+                         + ", Inbound (RECV/READ) events: " + recvCount);
+        assertTrue(sendCount > 0, "Expected at least one outbound (SEND/WRITE) event, got 0");
+        assertTrue(recvCount > 0, "Expected at least one inbound (RECV/READ) event, got 0");
     }
 
     private void doUnidirectionalTransfer(int payloadSize, int iterations) throws Exception {
