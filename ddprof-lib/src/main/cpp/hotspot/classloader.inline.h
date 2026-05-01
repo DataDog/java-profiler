@@ -16,12 +16,12 @@ bool VMClassLoader::isLoadedByBootstrapClassLoader(const VMMethod* method) {
         return false;
     }
     
-    VMKlass* method_klass = method->safeMethodHolder();
+    VMKlass* method_klass = method->methodHolderSafe();
     if (method_klass == nullptr) {
         return false;
     }
 
-    VMClassLoaderData* cld = method_klass->safeClassLoaderData();
+    VMClassLoaderData* cld = method_klass->classLoaderDataSafe();
     if (cld == nullptr) {
         return false;
     }

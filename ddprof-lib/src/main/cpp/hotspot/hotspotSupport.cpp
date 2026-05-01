@@ -493,7 +493,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 VMMethod* method = VMMethod::cast_or_null((const void*)frame.method());
                 jmethodID method_id = getMethodId(method);
                 if (method_id != nullptr) {
-                    fillFrame(frames[depth++], type, 0, nm->method()->id());
+                    fillFrame(frames[depth++], type, 0, method_id);
                 } else if (VMClassLoader::isLoadedByBootstrapClassLoader(method)) {
                     fillFrame(frames[depth++], 0, method);
                 }
@@ -673,7 +673,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     // In HotSpot, lastJavaFP is non-zero only for interpreter frames;
                     // compiled frames record FP=0 in the anchor.
                     if (StackWalkValidation::isPlausibleInterpreterFrame(recovery_fp, recovery_sp, bcp_offset)) {
-                        VMMethod* method = ((VMMethod**)recovery_fp)[InterpreterFrame::method_offset];
+                        VMMethod* method = VMMethod::cast_or_null(((VMMethod**)recovery_fp)[InterpreterFrame::method_offset]);
                         jmethodID method_id = getMethodId(method);
                         if (method_id != nullptr || VMClassLoader::isLoadedByBootstrapClassLoader(method)) {
                             anchor = NULL;
@@ -1236,6 +1236,9 @@ bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
             jvmti->Deallocate((unsigned char*)signature_ptr);
         }
     }
+    if (cl != nullptr) {
+        jni->DeleteLocalRef(cl);
+    }
     patchClassLoaderData(jni, klass);
     return JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);
 }
@@ -1254,17 +1257,23 @@ jmethodID HotspotSupport::resolve(const void* method) {
     return method_id;
   }
 
-  VMConstMethod* const_method = vm_method->safeConstMethod();
+  VMConstMethod* const_method = vm_method->constMethodSafe();
   if (const_method == nullptr) {
     return nullptr;
   }
 
   VMSymbol* name_sym = const_method->name();
   VMSymbol* sig_sym = const_method->signature();
-  VMKlass* klass = vm_method->safeMethodHolder();
-  VMSymbol* klass_sym = klass->name();
+  VMKlass* klass = vm_method->methodHolderSafe();
 
-  
+  if (name_sym == nullptr || sig_sym == nullptr || klass == nullptr) {
+    return nullptr;
+  }
+
+  VMSymbol* klass_sym = klass->name();
+  if (klass_sym == nullptr) {
+    return nullptr;
+  }
 
   char* method_name = (char*)malloc(name_sym->length() + 1);
   char* method_signature = (char*)malloc(sig_sym->length() + 1);

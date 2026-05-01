@@ -82,13 +82,17 @@ VMKlass* VMConstantPool::holder() const {
     return VMKlass::load_then_cast(at(_pool_holder_offset));
 }
 
-VMKlass* VMConstantPool::safeHolder() const {
+VMKlass* VMConstantPool::holderSafe() const {
     assert(_pool_holder_offset >= 0);
     return VMKlass::safe_load_then_cast(at(_pool_holder_offset));
 }
 
 VMSymbol* VMConstantPool::symbolAt(u16 index) const {
     return VMSymbol::cast(*(void**)&base()[index]);
+}
+
+VMSymbol* VMConstantPool::symbolAtSafe(u16 index) const {
+    return VMSymbol::cast_or_null(*(void**)&base()[index]);
 }
 
 intptr_t* VMConstantPool::base() const {
@@ -100,7 +104,7 @@ VMConstMethod* VMMethod::constMethod() const {
     return VMConstMethod::load_then_cast(at(_method_constmethod_offset));
 }
 
-VMConstMethod* VMMethod::safeConstMethod() const {
+VMConstMethod* VMMethod::constMethodSafe() const {
     return VMConstMethod::safe_load_then_cast(at(_method_constmethod_offset));
 }
 
@@ -117,21 +121,21 @@ VMKlass* VMMethod::methodHolder() const {
     return holder;
 }
 
-VMKlass* VMMethod::safeMethodHolder() const {
-    VMConstMethod* constMthd = safeConstMethod();
+VMKlass* VMMethod::methodHolderSafe() const {
+    VMConstMethod* constMthd = constMethodSafe();
     if (constMthd == nullptr) return nullptr;
 
-    VMConstantPool* pool = constMthd->safeConstants();
+    VMConstantPool* pool = constMthd->constantsSafe();
     if (pool == nullptr) return nullptr;
 
-    return pool->safeHolder();
+    return pool->holderSafe();
 }
 
 VMConstantPool* VMConstMethod::constants() const {
     return VMConstantPool::load_then_cast(at(_constmethod_constants_offset));
 }
 
-VMConstantPool* VMConstMethod::safeConstants() const {
+VMConstantPool* VMConstMethod::constantsSafe() const {
     return VMConstantPool::safe_load_then_cast(at(_constmethod_constants_offset));
 }
 
@@ -148,13 +152,13 @@ u16 VMConstMethod::signatureIndex() const {
 VMSymbol* VMConstMethod::name() const {
     VMConstantPool* cpool = constants();
     u16 name_index = nameIndex();
-    return cpool->symbolAt(name_index);
+    return cpool->symbolAtSafe(name_index);
 }
 
 VMSymbol* VMConstMethod::signature() const {
     VMConstantPool* cpool = constants();
     u16 sig_index = signatureIndex();
-    return cpool->symbolAt(sig_index);
+    return cpool->symbolAtSafe(sig_index);
 }
 
 VMKlass* VMClasses::obj_klass() {

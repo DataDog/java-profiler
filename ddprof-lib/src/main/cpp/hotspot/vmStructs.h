@@ -218,7 +218,6 @@ typedef void* address;
     type_begin(VMConstMethod, MATCH_SYMBOLS("ConstMethod"))                                                         \
         field(_constmethod_constants_offset, offset, MATCH_SYMBOLS("_constants"))                                   \
         field(_constmethod_idnum_offset, offset, MATCH_SYMBOLS("_method_idnum"))                                    \
-        field(_constmethod_code_size, offset, MATCH_SYMBOLS("_code_size"))                                          \
         field(_constmethod_name_index_offset, offset, MATCH_SYMBOLS("_name_index"))                                 \
         field(_constmethod_sig_index_offset, offset, MATCH_SYMBOLS("_signature_index"))                             \
     type_end()                                                                                                      \
@@ -703,7 +702,7 @@ DECLARE(VMKlass)
         return VMClassLoaderData::load_then_cast(at(_class_loader_data_offset));
     }
 
-    VMClassLoaderData* safeClassLoaderData() const {
+    VMClassLoaderData* classLoaderDataSafe() const {
         assert(_class_loader_data_offset >= 0);
         return VMClassLoaderData::safe_load_then_cast(at(_class_loader_data_offset));
     }
@@ -904,9 +903,10 @@ DECLARE_END
 DECLARE(VMConstantPool)
 public:
     inline VMKlass* holder() const;
-    inline VMKlass* safeHolder() const;
+    inline VMKlass* holderSafe() const;
 
     inline VMSymbol* symbolAt(u16 index) const;
+    inline VMSymbol* symbolAtSafe(u16 index) const;
 private:
     inline intptr_t* base() const;
 DECLARE_END
@@ -914,11 +914,12 @@ DECLARE_END
 DECLARE(VMConstMethod)
 public:
     inline VMConstantPool* constants() const;
-    inline VMConstantPool* safeConstants() const;
-    inline u16 nameIndex() const;
-    inline u16 signatureIndex() const;
+    inline VMConstantPool* constantsSafe() const;
     inline VMSymbol* name() const;
     inline VMSymbol* signature() const;
+private:
+    inline u16 nameIndex() const;
+    inline u16 signatureIndex() const;
 DECLARE_END
 
 DECLARE(VMMethod)   
@@ -945,10 +946,10 @@ public:
     }
 
     inline VMConstMethod* constMethod() const;
-    inline VMConstMethod* safeConstMethod() const;
+    inline VMConstMethod* constMethodSafe() const;
     inline VMNMethod* code() const;
     inline VMKlass* methodHolder() const;
-    inline VMKlass* safeMethodHolder() const;
+    inline VMKlass* methodHolderSafe() const;
 
     static bool check_jmethodID(jmethodID id);
 DECLARE_END

@@ -12,9 +12,9 @@ enum FrameTypeId {
   FRAME_CPP = 4,
   FRAME_KERNEL = 5,
   FRAME_C1_COMPILED = 6,
-  FRAME_INTERPRETED_METHOD = 7,
-  FRAME_NATIVE_REMOTE = 8,  // Native frame with remote symbolication (build-id + pc-offset)
-  FRAME_TYPE_MAX = FRAME_NATIVE_REMOTE  // Maximum valid frame type
+  FRAME_NATIVE_REMOTE = 7,  // Native frame with remote symbolication (build-id + pc-offset)
+  FRAME_INTERPRETED_METHOD = 8,
+  FRAME_TYPE_MAX = FRAME_INTERPRETED_METHOD  // Maximum valid frame type
 };
 
 class FrameType {
