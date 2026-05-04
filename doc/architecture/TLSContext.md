@@ -64,30 +64,32 @@ For benchmark data, see
 │  ┌───────────────────────────────────────────────────────────────┐  │
 │  │  setContextDirect()                                           │  │
 │  │  1. detach()  — valid ← 0, storeFence                         │  │
-│  │  2. recordBuffer.putLong(traceIdOffset, reverseBytes(trHi))   │  │
-│  │     recordBuffer.putLong(traceIdOffset+8, reverseBytes(trLo)) │  │
-│  │     recordBuffer.putLong(spanIdOffset, reverseBytes(spanId))  │  │
-│  │  3. sidecar[0..9] ← 0                                         │  │
+│  │  2. ctxBuffer.putLong(traceIdOffset, reverseBytes(trHi))      │  │
+│  │     ctxBuffer.putLong(traceIdOffset+8, reverseBytes(trLo))    │  │
+│  │     ctxBuffer.putLong(spanIdOffset, reverseBytes(spanId))     │  │
+│  │  3. tag_encodings[0..9] ← 0                                   │  │
 │  │     attrs_data_size ← LRS_ENTRY_SIZE (keeps fixed LRS at [0]) │  │
-│  │  4. sidecarBuffer.putLong(lrsSidecarOffset, lrs)              │  │
+│  │  4. ctxBuffer.putLong(lrsOffset, lrs)                         │  │
 │  │     writeLrsHex(lrs) — update fixed LRS entry in attrs_data   │  │
 │  │  5. attach() — storeFence, valid ← 1                          │  │
 │  └───────────────────────────────────────────────────────────────┘  │
 │         │                                                           │
 │         ▼                                                           │
-│  ┌────────────────────────────────┐  ┌───────────────────────────┐  │
-│  │ OtelThreadContextRecord (640B) │  │ Sidecar buffer            │  │
-│  │ ┌──────────────────────┐       │  │ ┌────────────────────────┐│  │
-│  │ │ trace_id[16]  (BE)   │       │  │ │ tag_encodings[10] (u32)││  │
-│  │ │ span_id[8]    (BE)   │       │  │ │ local_root_span_id(u64)││  │
-│  │ │ valid          (u8)  │       │  │ └────────────────────────┘│  │
-│  │ │ reserved       (u8)  │       │  └───────────────────────────┘  │
-│  │ │ attrs_data_size(u16) │       │         ▲ (DD signal handler)   │
-│  │ │ attrs_data[612]      │       │  ┌───────────────────────────┐  │
-│  │ └──────────────────────┘       │  │ TLS pointer (8B)          │  │
-│  └────────────────────────────────┘  │ otel_thread_ctx_v1        │  │
-│         ▲                    ▲       │ (thread_local, DLLEXPORT) │  │
-│         │                    │       └───────────────────────────┘  │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ Unified ctxBuffer (688B, single DirectByteBuffer)            │   │
+│  │ ┌──────────────────────┐  ┌───────────────────────────┐      │   │
+│  │ │ OtelThreadContextRec │  │ tag_encodings[10] (u32)   │      │   │
+│  │ │   trace_id[16]  (BE) │  │ local_root_span_id  (u64) │      │   │
+│  │ │   span_id[8]    (BE) │  └───────────────────────────┘      │   │
+│  │ │   valid          (u8)│    offsets 640..688 in ctxBuffer    │   │
+│  │ │   reserved       (u8)│                                     │   │
+│  │ │   attrs_data_size(u16)│   ┌──────────────────────────────┐ │   │
+│  │ │   attrs_data[612]    │   │ TLS pointer (8B)             │ │   │
+│  │ └──────────────────────┘   │ otel_thread_ctx_v1           │ │   │
+│  │   offsets 0..640           │ (thread_local, DLLEXPORT)    │ │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│         ▲                    ▲                                      │
+│         │                    │                                      │
 │  DD signal handler     External OTEP                                │
 │  reads span_id         profiler reads                               │
 │  from record           full record via                              │
@@ -104,14 +106,14 @@ For benchmark data, see
 │                                                                      │
 │  JavaProfiler                                                        │
 │    ├─ ThreadLocal<ThreadContext> tlsContextStorage                   │
-│    ├─ initializeContextTLS0(long[] metadata) → ByteBuffer[2]            │
+│    ├─ initializeContextTLS0(long[] metadata) → ByteBuffer (688B)     │
 │    └─ registerConstant0(String value) → int encoding                 │
 │                                                                      │
 │  ThreadContext (per thread)                                          │
-│    ├─ recordBuffer  (640B DirectByteBuffer → OtelThreadContextRecord)│
-│    ├─ sidecarBuffer (DirectByteBuffer → tag encodings + LRS)         │
+│    ├─ ctxBuffer  (688B DirectByteBuffer — record + sidecar contiguous)│
 │    ├─ put(lrs, spanId, trHi, trLo)  → setContextDirect()             │
 │    ├─ setContextAttribute(keyIdx, value) → setContextAttributeDirect │
+│    ├─ snapshot(byte[], int) / restore(byte[], int)  ← nested scopes  │
 │    └─ Per-thread caches:                                             │
 │         └─ attrCache[CACHE_SIZE]: String → {int encoding, byte[] utf8}│
 │                                                                      │
@@ -216,22 +218,22 @@ a partially-written record.
 Java writer timeline:
 ──────────────────────────────────────────────────────────────────
 Time 0:  detach()
-           recordBuffer.put(validOffset, 0)        ← mark invalid
+           ctxBuffer.put(validOffset, 0)           ← mark invalid
            storeFence()                            ← drain store buffer
 
 Time 1:  Mutate record fields
-           recordBuffer.putLong(traceIdOffset, ...)
-           recordBuffer.putLong(spanIdOffset, ...)
-           sidecar[0..9] ← 0                                          ← zero tag encodings
-           attrs_data_size ← LRS_ENTRY_SIZE  ← keep only fixed LRS entry at attrs_data[0]
-           sidecarBuffer.putLong(lrsSidecarOffset, lrs)           ← update sidecar LRS
-           writeLrsHex(lrs)                                       ← update LRS in attrs_data
+           ctxBuffer.putLong(traceIdOffset, ...)
+           ctxBuffer.putLong(spanIdOffset, ...)
+           tag_encodings[0..9] ← 0                 ← zero tag encodings (offsets 640..680)
+           attrs_data_size ← LRS_ENTRY_SIZE        ← keep only fixed LRS entry at attrs_data[0]
+           ctxBuffer.putLong(lrsOffset, lrs)       ← update LRS at offset 680
+           writeLrsHex(lrs)                        ← update LRS hex entry in attrs_data
 
          ⚡ SIGPROF may arrive here — handler sees valid=0, skips record
 
 Time 2:  attach()
            storeFence()                            ← ensure writes visible
-           recordBuffer.put(validOffset, 1)        ← mark valid
+           ctxBuffer.put(validOffset, 1)           ← mark valid
 ──────────────────────────────────────────────────────────────────
 ```
 
@@ -330,8 +332,8 @@ When a thread first accesses its `ThreadContext` via the `ThreadLocal`:
 ```java
 // JavaProfiler.initializeThreadContext()
 long[] metadata = new long[6];
-ByteBuffer[] buffers = initializeContextTLS0(metadata);
-return new ThreadContext(buffers[0], buffers[1], metadata);
+ByteBuffer buffer = initializeContextTLS0(metadata);
+return new ThreadContext(buffer, metadata);
 ```
 
 The native `initializeContextTLS0` (in `javaApi.cpp`):
@@ -339,16 +341,20 @@ The native `initializeContextTLS0` (in `javaApi.cpp`):
 1. Gets the calling thread's `ProfiledThread` (creates one if needed).
 2. Sets `otel_thread_ctx_v1` permanently to the thread's
    `OtelThreadContextRecord` (triggering TLS slot init on musl).
-3. Fills the `metadata` array with field offsets (computed via
-   `offsetof`), so Java code writes to the correct positions regardless
-   of struct packing changes.
-4. Creates two `DirectByteBuffer`s mapped to:
-   - `_otel_ctx_record` (640 bytes)
-   - `_otel_tag_encodings` + `_otel_local_root_span_id` (48 bytes)
-5. Returns the buffer array.
+3. Fills the `metadata` array with absolute offsets into the unified
+   buffer (computed via `offsetof` for record fields; `OTEL_MAX_RECORD_SIZE
+   + DD_TAGS_CAPACITY*sizeof(u32) = 680` for the LRS offset), so Java code
+   writes to the correct positions regardless of struct packing changes.
+4. Creates a single `DirectByteBuffer` spanning the contiguous 688-byte
+   region: `_otel_ctx_record` (640 B) followed immediately by
+   `_otel_tag_encodings` (40 B) and `_otel_local_root_span_id` (8 B).
+   Contiguity is enforced by `alignas(8)` on `_otel_ctx_record` plus
+   `sizeof(OtelThreadContextRecord)` being a multiple of 8.
+5. Returns the single buffer.
 
 This is the only JNI call in the initialization path. After this, all
-hot-path operations are pure Java ByteBuffer writes.
+hot-path operations are pure Java ByteBuffer writes into offset regions
+of the one buffer.
 
 ### Signal-Safe TLS Access
 
@@ -395,7 +401,7 @@ if (value.equals(attrCacheKeys[slot])) {
 // Both sidecar and OTEP attrs_data are written inside the detach/attach window
 // so a signal handler never sees a new sidecar encoding alongside old attrs_data.
 detach();
-sidecarBuffer.putInt(keyIndex * 4, encoding);
+ctxBuffer.putInt(TAG_ENCODINGS_OFFSET + keyIndex * 4, encoding);
 replaceOtepAttribute(otepKeyIndex, utf8);
 attach();
 ```

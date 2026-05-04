@@ -910,6 +910,12 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
 
   writeBoolSetting(buf, T_ALLOC, "enabled", args._record_allocations);
   writeBoolSetting(buf, T_HEAP_LIVE_OBJECT, "enabled", args._record_liveness);
+  writeBoolSetting(buf, T_MALLOC, "enabled", args._nativemem >= 0);
+  if (args._nativemem >= 0) {
+    writeIntSetting(buf, T_MALLOC, "nativemem", args._nativemem);
+    // samplingInterval=-1 means every allocation is recorded (nativemem=0).
+    writeIntSetting(buf, T_MALLOC, "samplingInterval", args._nativemem == 0 ? -1 : args._nativemem);
+  }
 
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "debugSymbols",
                    VMStructs::libjvm()->hasDebugSymbols());
@@ -1579,6 +1585,21 @@ void Recording::recordAllocation(RecordingBuffer *buf, int tid,
   flushIfNeeded(buf);
 }
 
+void Recording::recordMallocSample(Buffer *buf, int tid, u64 call_trace_id,
+                                   MallocEvent *event) {
+  int start = buf->skip(1);
+  buf->putVar64(T_MALLOC);
+  buf->putVar64(event->_start_time);
+  buf->putVar64(tid);
+  buf->putVar64(call_trace_id);
+  buf->putVar64(event->_address);
+  buf->putVar64(event->_size);
+  buf->putFloat(event->_weight);
+  writeCurrentContext(buf);
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
 void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
                                      ObjectLivenessEvent *event) {
   int start = buf->skip(1);
@@ -1820,6 +1841,9 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
           break;
         case BCI_PARK:
           rec->recordThreadPark(buf, tid, call_trace_id, (LockEvent *)event);
+          break;
+        case BCI_NATIVE_MALLOC:
+          rec->recordMallocSample(buf, tid, call_trace_id, (MallocEvent *)event);
           break;
         }
         rec->flushIfNeeded(buf);

@@ -281,6 +281,8 @@ public:
   void recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event);
   void recordAllocation(RecordingBuffer *buf, int tid, u64 call_trace_id,
                         AllocEvent *event);
+  void recordMallocSample(Buffer *buf, int tid, u64 call_trace_id,
+                          MallocEvent *event);
   void recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
                             ObjectLivenessEvent *event);
   void recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,

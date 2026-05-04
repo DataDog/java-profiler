@@ -6,6 +6,7 @@
 
 #include "wallClock.h"
 
+#include "counters.h"
 #include "stackFrame.h"
 #include "context.h"
 #include "context_api.h"
@@ -14,10 +15,12 @@
 #include "libraries.h"
 #include "log.h"
 #include "profiler.h"
-#include "stackFrame.h"
+#include "signalCookie.h"
 #include "thread.h"
 #include "threadState.inline.h"
 #include "guards.h"
+#include <cerrno>
+#include <string.h>
 #include <math.h>
 #include <random>
 #include <algorithm> // For std::sort and std::binary_search
@@ -51,6 +54,16 @@ bool WallClockASGCT::inSyscall(void *ucontext) {
 
 void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
                                     void *ucontext) {
+  // Reject any SIGVTALRM that did not originate from our rt_tgsigqueueinfo
+  // send. Defends against stray in-process tgkill / external sigqueue that
+  // would otherwise drive our wallclock sampling path.
+  if (!OS::shouldProcessSignal(siginfo, SI_QUEUE, SignalCookie::wallclock())) {
+    Counters::increment(WALLCLOCK_SIGNAL_FOREIGN);
+    OS::forwardForeignSignal(signo, siginfo, ucontext);
+    return;
+  }
+  Counters::increment(WALLCLOCK_SIGNAL_OWN);
+
   WallClockASGCT *engine = reinterpret_cast<WallClockASGCT *>(Profiler::instance()->wallEngine());
   if (signo == SIGVTALRM) {
     engine->signalHandler(signo, siginfo, ucontext, engine->_interval);
@@ -152,6 +165,10 @@ bool BaseWallClock::isEnabled() const {
 
 void WallClockASGCT::initialize(Arguments& args) {
   _collapsing = args._wall_collapsing;
+  // J9WallClock uses JVMTI GetAllStackTracesExtended polling, not SIGVTALRM
+  // signals — it has no sharedSignalHandler and needs no signal-origin gate.
+  // Engines are started sequentially; this call is idempotent (no-op after first).
+  OS::primeSignalOriginCheck();
   OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
 }
 
@@ -176,13 +193,19 @@ void WallClockASGCT::timerLoop() {
     };
 
     auto sampleThreads = [&](int tid, int& num_failures, int& threads_already_exited, int& permission_denied) {
-      if (!OS::sendSignalToThread(tid, SIGVTALRM)) {
+      // Deliver SIGVTALRM with a cookie so our handler can distinguish this
+      // signal from any other in-process sender (see signalCookie.h /
+      // wallClock.cpp sharedSignalHandler).
+      if (!OS::sendSignalWithCookie(tid, SIGVTALRM, SignalCookie::wallclock())) {
         num_failures++;
         if (errno != 0) {
           if (errno == ESRCH) {
               threads_already_exited++;
           } else if (errno == EPERM) {
               permission_denied++;
+          } else if (errno == EAGAIN) {
+              // Signal queue limit (RLIMIT_SIGPENDING) reached; signal was not
+              // delivered — count as missed sample.
           } else {
               Log::debug("unexpected error %s", strerror(errno));
           }
