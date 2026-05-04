@@ -133,6 +133,15 @@ Error ITimerJvmti::check(Arguments &args) {
   if (!VM::canRequestStackTrace()) {
     return Error("HotSpot RequestStackTrace JVMTI extension not available");
   }
+
+  OS::installSignalHandler(SIGPROF, nullptr, SIG_IGN);
+  struct itimerval tv_on = {{1, 0}, {1, 0}};
+  if (setitimer(ITIMER_PROF, &tv_on, nullptr) != 0) {
+    return Error("ITIMER_PROF is not supported on this system");
+  }
+  struct itimerval tv_off = {{0, 0}, {0, 0}};
+  setitimer(ITIMER_PROF, &tv_off, nullptr);
+
   return Error::OK;
 }
 
