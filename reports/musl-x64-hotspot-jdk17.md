@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk17
 
 ## musl-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-05-03 21:22:14 EDT
+**Date:** 2026-05-03 21:22:24 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 528 |
-| Sample Rate | 8.80/sec |
-| Health Score | 550% |
+| CPU Samples | 519 |
+| Sample Rate | 8.65/sec |
+| Health Score | 541% |
 | Threads | 9 |
-| Allocations | 380 |
+| Allocations | 386 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 680 |
-| Sample Rate | 11.33/sec |
-| Health Score | 708% |
+| CPU Samples | 713 |
+| Sample Rate | 11.88/sec |
+| Health Score | 742% |
 | Threads | 10 |
-| Allocations | 490 |
+| Allocations | 521 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 56-56 cores)</summary>
+<summary>CPU Timeline (2 unique values: 54-56 cores)</summary>
 
 ```
-1777857399 56
-1777857404 56
-1777857409 56
-1777857414 56
-1777857419 56
-1777857424 56
-1777857429 56
-1777857434 56
-1777857439 56
-1777857444 56
-1777857449 56
-1777857454 56
-1777857459 56
-1777857464 56
-1777857469 56
-1777857474 56
-1777857479 56
-1777857484 56
-1777857489 56
-1777857494 56
+1777857119 56
+1777857124 56
+1777857129 56
+1777857134 56
+1777857139 54
+1777857144 54
+1777857149 54
+1777857154 54
+1777857159 54
+1777857164 54
+1777857169 54
+1777857174 54
+1777857179 54
+1777857184 56
+1777857189 56
+1777857194 56
+1777857199 56
+1777857204 56
+1777857209 56
+1777857214 56
 ```
 </details>
 
