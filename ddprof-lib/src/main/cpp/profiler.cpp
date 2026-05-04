@@ -1114,6 +1114,10 @@ Error Profiler::start(Arguments &args, bool reset) {
     return error;
   }
 
+  if (args._jvmtistacks && !VM::canRequestStackTrace()) {
+    VM::initializeRequestStackTrace();
+  }
+
   _omit_stacktraces = args._lightweight;
   _remote_symbolication = args._remote_symbolication;
   _event_mask =

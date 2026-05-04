@@ -397,21 +397,30 @@ void VM::probeJFRRequestStackTrace() {
   }
 
   if (_agent_args._jvmtistacks) {
-    if (_request_stack_trace != nullptr && _init_request_stack_trace != nullptr) {
-      jvmtiError rc = _init_request_stack_trace(_jvmti);
-      if (rc == JVMTI_ERROR_NONE) {
-        _request_stack_trace_initialized = true;
-        Counters::increment(JVMTI_STACKS_INIT_OK);
-      } else {
-        Log::warn("InitializeRequestStackTrace failed: %d", rc);
-        Counters::increment(JVMTI_STACKS_INIT_FAILED);
-      }
-    } else {
+    if (_request_stack_trace == nullptr || _init_request_stack_trace == nullptr) {
       Log::warn("jvmtistacks requested but HotSpot RequestStackTrace extension "
                 "is not available on this JVM");
       Counters::increment(JVMTI_STACKS_INIT_FAILED);
+    } else {
+      initializeRequestStackTrace();
     }
   }
+}
+
+// Must not be called from a signal handler — invokes JVMTI which is not async-signal-safe.
+bool VM::initializeRequestStackTrace() {
+  if (_request_stack_trace_initialized || _request_stack_trace == nullptr || _init_request_stack_trace == nullptr) {
+    return _request_stack_trace_initialized;
+  }
+  jvmtiError rc = _init_request_stack_trace(_jvmti);
+  if (rc == JVMTI_ERROR_NONE) {
+    _request_stack_trace_initialized = true;
+    Counters::increment(JVMTI_STACKS_INIT_OK);
+  } else {
+    Log::warn("InitializeRequestStackTrace failed: %d", rc);
+    Counters::increment(JVMTI_STACKS_INIT_FAILED);
+  }
+  return _request_stack_trace_initialized;
 }
 
 bool VM::initProfilerBridge(JavaVM *vm, bool attach) {

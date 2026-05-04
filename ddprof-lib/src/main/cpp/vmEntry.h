@@ -199,6 +199,9 @@ public:
     return _request_stack_trace != nullptr && _request_stack_trace_initialized;
   }
 
+  // Must not be called from a signal handler — invokes JVMTI which is not async-signal-safe.
+  static bool initializeRequestStackTrace();
+
   static jvmtiError requestStackTrace(void* ucontext, jlong user_data) {
     return _request_stack_trace(_jvmti, (jthread)nullptr, ucontext, user_data);
   }
