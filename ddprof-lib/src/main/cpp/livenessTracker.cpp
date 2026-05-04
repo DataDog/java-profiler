@@ -211,6 +211,10 @@ void LivenessTracker::stop() {
 
 Error LivenessTracker::initialize(Arguments &args) {
   _enabled = args._gc_generations || args._record_liveness;
+  // Per-call toggles that must reflect the current start's arguments even when
+  // the tracker's table is reused from a prior initialize (_initialized=true).
+  // On musl the test JVM is not forked per test, so the singleton survives.
+  _record_heap_usage = args._record_heap_usage;
 
   if (!_enabled) {
     return Error::OK;
@@ -264,8 +268,6 @@ Error LivenessTracker::initialize(Arguments &args) {
       std::min(2048, _table_max_cap); // with default 512k sampling interval, it's
                                    // enough for 1G of heap
   _table = (TrackingEntry *)malloc(sizeof(TrackingEntry) * _table_cap);
-
-  _record_heap_usage = args._record_heap_usage;
 
   _gc_epoch = 0;
   _last_gc_epoch = 0;

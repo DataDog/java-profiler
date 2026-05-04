@@ -8,6 +8,7 @@
 #include "profiler.h"
 #include "asyncSampleMutex.h"
 #include "mallocTracer.h"
+#include "nativeSocketSampler.h"
 #include "context.h"
 #include "context_api.h"
 #include "guards.h"
@@ -705,6 +706,7 @@ void *Profiler::dlopen_hook(const char *filename, int flags) {
     // Patch sigaction in newly loaded libraries
     LibraryPatcher::patch_sigaction();
     MallocTracer::installHooks();
+    LibraryPatcher::install_socket_hooks();
     // Extract build-ids for newly loaded libraries if remote symbolication is enabled
     Profiler* profiler = instance();
     if (profiler != nullptr && profiler->_remote_symbolication) {
@@ -1062,7 +1064,8 @@ Error Profiler::start(Arguments &args, bool reset) {
       (args._record_allocations || args._record_liveness || args._gc_generations
            ? EM_ALLOC
            : 0) |
-      (args._nativemem >= 0 ? EM_NATIVEMEM : 0);
+      (args._nativemem >= 0 ? EM_NATIVEMEM : 0) |
+      (args._nativesocket ? EM_NATIVESOCKET : 0);
 
   if (_event_mask == 0) {
     return Error("No profiling events specified");
@@ -1237,6 +1240,15 @@ Error Profiler::start(Arguments &args, bool reset) {
       activated |= EM_NATIVEMEM;
     }
   }
+  if (_event_mask & EM_NATIVESOCKET) {
+    error = NativeSocketSampler::instance()->start(args);
+    if (error) {
+      Log::warn("%s", error.message());
+      error = Error::OK; // recoverable
+    } else {
+      activated |= EM_NATIVESOCKET;
+    }
+  }
 
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
@@ -1277,6 +1289,8 @@ Error Profiler::stop() {
     _alloc_engine->stop();
   if (_event_mask & EM_NATIVEMEM)
     malloc_tracer.stop();
+  if (_event_mask & EM_NATIVESOCKET)
+    NativeSocketSampler::instance()->stop();
   if (_event_mask & EM_WALL)
     _wall_engine->stop();
   if (_event_mask & EM_CPU)
@@ -1327,6 +1341,9 @@ Error Profiler::check(Arguments &args) {
   }
   if (!error && args._nativemem >= 0) {
     error = malloc_tracer.check(args);
+  }
+  if (!error && args._nativesocket) {
+    error = NativeSocketSampler::instance()->check(args);
   }
   if (!error) {
     if (args._cstack == CSTACK_DWARF && !DWARF_SUPPORTED) {

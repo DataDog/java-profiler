@@ -34,6 +34,7 @@ enum ASGCT_CallFrameType {
   BCI_ERROR = -18,              // method_id is an error string
   BCI_NATIVE_FRAME_REMOTE = -19, // method_id points to RemoteFrameInfo for remote symbolication
   BCI_NATIVE_MALLOC = -20,       // native malloc/free sample (size stored in counter)
+  BCI_NATIVE_SOCKET = -21,       // native socket I/O sample (bytes stored in counter)
 };
 
 // See hotspot/src/share/vm/prims/forte.cpp

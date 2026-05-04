@@ -1600,6 +1600,24 @@ void Recording::recordMallocSample(Buffer *buf, int tid, u64 call_trace_id,
   flushIfNeeded(buf);
 }
 
+void Recording::recordNativeSocketSample(Buffer *buf, int tid, u64 call_trace_id,
+                                         NativeSocketEvent *event) {
+  int start = buf->skip(1);
+  buf->putVar64(T_NATIVE_SOCKET);
+  buf->putVar64(event->_start_time);
+  buf->putVar64(tid);
+  buf->putVar64(call_trace_id);
+  buf->putVar64(event->_end_time - event->_start_time);
+  static const char* const kOpNames[] = {"SEND", "RECV", "WRITE", "READ"};
+  buf->putUtf8(event->_operation < 4 ? kOpNames[event->_operation] : "UNKNOWN");
+  buf->putUtf8(event->_remote_addr);
+  buf->putVar64(event->_bytes);
+  buf->putFloat(event->_weight);
+  writeCurrentContext(buf);
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
 void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
                                      ObjectLivenessEvent *event) {
   int start = buf->skip(1);
@@ -1844,6 +1862,9 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
           break;
         case BCI_NATIVE_MALLOC:
           rec->recordMallocSample(buf, tid, call_trace_id, (MallocEvent *)event);
+          break;
+        case BCI_NATIVE_SOCKET:
+          rec->recordNativeSocketSample(buf, tid, call_trace_id, (NativeSocketEvent *)event);
           break;
         }
         rec->flushIfNeeded(buf);
