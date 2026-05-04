@@ -142,6 +142,8 @@ public:
 
   const char *message() { return _message; }
 
+  bool ok() const { return _message == NULL; }
+
   operator bool() { return _message != NULL; }
 };
 
