@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk21
 
 ## glibc-x64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-05-03 21:22:23 EDT
+**Date:** 2026-05-04 04:47:51 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 533 |
-| Sample Rate | 8.88/sec |
-| Health Score | 555% |
+| CPU Samples | 532 |
+| Sample Rate | 8.87/sec |
+| Health Score | 554% |
 | Threads | 9 |
-| Allocations | 356 |
+| Allocations | 378 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 632 |
-| Sample Rate | 10.53/sec |
-| Health Score | 658% |
-| Threads | 10 |
-| Allocations | 479 |
+| CPU Samples | 705 |
+| Sample Rate | 11.75/sec |
+| Health Score | 734% |
+| Threads | 11 |
+| Allocations | 478 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 54-54 cores)</summary>
 
 ```
-1777857205 54
-1777857210 54
-1777857215 54
-1777857220 54
-1777857225 54
-1777857230 54
-1777857235 54
-1777857240 54
-1777857245 54
-1777857250 54
-1777857255 54
-1777857260 54
-1777857265 54
-1777857270 54
-1777857275 54
-1777857280 54
-1777857285 54
-1777857290 54
-1777857295 54
-1777857300 54
+1777884058 54
+1777884063 54
+1777884068 54
+1777884073 54
+1777884078 54
+1777884083 54
+1777884088 54
+1777884093 54
+1777884098 54
+1777884103 54
+1777884108 54
+1777884113 54
+1777884118 54
+1777884123 54
+1777884128 54
+1777884133 54
+1777884138 54
+1777884143 54
+1777884148 54
+1777884153 54
 ```
 </details>
 
