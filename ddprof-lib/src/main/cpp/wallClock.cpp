@@ -220,3 +220,123 @@ void WallClockASGCT::timerLoop() {
 
     timerLoopCommon<int>(collectThreads, sampleThreads, doNothing, _reservoir_size, _interval);
 }
+
+// WallClockJvmti: mirrors WallClockASGCT's dispatch, but the signal handler
+// delegates the stack walk to HotSpot's JFR RequestStackTrace JVMTI extension
+// instead of invoking ASGCT. Used only when VM::canRequestStackTrace() is true
+// and the profiler has opted into jvmtistacks.
+
+bool WallClockJvmti::inSyscall(void *ucontext) {
+  StackFrame frame(ucontext);
+  uintptr_t pc = frame.pc();
+
+  if (StackFrame::isSyscall((instruction_t *)pc)) {
+    return true;
+  }
+
+  uintptr_t prev_pc = pc - SYSCALL_SIZE;
+  if ((pc & 0xfff) >= SYSCALL_SIZE ||
+      Libraries::instance()->findLibraryByAddress((instruction_t *)prev_pc) !=
+          NULL) {
+    if (StackFrame::isSyscall((instruction_t *)prev_pc) &&
+        frame.checkInterruptedSyscall()) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
+                                         void *ucontext) {
+  WallClockJvmti *engine =
+      reinterpret_cast<WallClockJvmti *>(Profiler::instance()->wallEngine());
+  if (signo == SIGVTALRM) {
+    engine->signalHandler(signo, siginfo, ucontext, engine->_interval);
+  }
+}
+
+void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
+                                   void *ucontext, u64 last_sample) {
+  CriticalSection cs;
+  if (!cs.entered()) {
+    return;
+  }
+  int saved_errno = errno;
+  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
+      && current->inInitWindow()) {
+    current->tickInitWindow();
+    return;
+  }
+  int tid = current != NULL ? current->tid() : OS::threadId();
+  Shims::instance().setSighandlerTid(tid);
+
+  ExecutionEvent event;
+  OSThreadState state = getOSThreadState();
+  ExecutionMode mode = getThreadExecutionMode();
+  if (state == OSThreadState::UNKNOWN) {
+    if (inSyscall(ucontext)) {
+      state = OSThreadState::SYSCALL;
+      mode = ExecutionMode::SYSCALL;
+    } else {
+      state = OSThreadState::RUNNABLE;
+    }
+  }
+  event._thread_state = state;
+  event._execution_mode = mode;
+  event._weight = 1;
+  // Pass nullptr ucontext so the JVM uses safepoint-based stack walking.
+  // Passing the signal-frame PC causes the extension to reject samples where
+  // the thread is currently inside JVM-internal (non-Java) code.
+  Profiler::instance()->recordSampleDelegated(nullptr, last_sample, tid,
+                                               BCI_WALL, &event);
+  Shims::instance().setSighandlerTid(-1);
+  errno = saved_errno;
+}
+
+void WallClockJvmti::initialize(Arguments &args) {
+  // Caller must have verified VM::canRequestStackTrace() before selecting
+  // this engine; see Profiler::selectWallEngine().
+  OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
+}
+
+void WallClockJvmti::timerLoop() {
+  auto collectThreads = [&](std::vector<int> &tids) {
+    if (Profiler::instance()->threadFilter()->enabled()) {
+      Profiler::instance()->threadFilter()->collect(tids);
+    } else {
+      ThreadList *thread_list = OS::listThreads();
+      while (thread_list->hasNext()) {
+        int tid = thread_list->next();
+        if (tid != OS::threadId()) {
+          tids.push_back(tid);
+        }
+      }
+      delete thread_list;
+    }
+  };
+
+  auto sampleThreads = [&](int tid, int &num_failures,
+                           int &threads_already_exited, int &permission_denied) {
+    if (!OS::sendSignalToThread(tid, SIGVTALRM)) {
+      num_failures++;
+      if (errno != 0) {
+        if (errno == ESRCH) {
+          threads_already_exited++;
+        } else if (errno == EPERM) {
+          permission_denied++;
+        } else {
+          Log::debug("unexpected error %s", strerror(errno));
+        }
+      }
+      return false;
+    }
+    return true;
+  };
+
+  auto doNothing = []() {};
+
+  timerLoopCommon<int>(collectThreads, sampleThreads, doNothing,
+                      _reservoir_size, _interval);
+}

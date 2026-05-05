@@ -364,6 +364,21 @@ Error Arguments::parse(const char *args) {
         _remote_symbolication = true;
       }
 
+      CASE("jvmtistacks")
+      if (value != NULL) {
+        switch (value[0]) {
+        case 'y': // yes
+        case 't': // true
+        case '1': // 1
+          _jvmtistacks = true;
+          break;
+        default:
+          _jvmtistacks = false;
+        }
+      } else {
+        _jvmtistacks = true;
+      }
+
       CASE("wallsampler")
       if (value != NULL) {
           switch (value[0]) {

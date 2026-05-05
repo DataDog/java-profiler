@@ -1496,6 +1496,7 @@ void Recording::writeEventSizePrefix(Buffer *buf, int start) {
 }
 
 void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
+                                      u64 correlation_id,
                                       ExecutionEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_EXECUTION_SAMPLE);
@@ -1505,12 +1506,14 @@ void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->put8(static_cast<int>(event->_thread_state));
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
+  buf->putVar64(correlation_id);
   writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
 
 void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
+                                   u64 correlation_id,
                                    ExecutionEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_METHOD_SAMPLE);
@@ -1520,6 +1523,7 @@ void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->put8(static_cast<int>(event->_thread_state));
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
+  buf->putVar64(correlation_id);
   writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
@@ -1822,11 +1826,11 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
       RecordingBuffer *buf = rec->buffer(lock_index);
       switch (event_type) {
       case BCI_CPU:
-          rec->recordExecutionSample(buf, tid, call_trace_id,
+          rec->recordExecutionSample(buf, tid, call_trace_id, 0,
                                      (ExecutionEvent *)event);
           break;
         case BCI_WALL:
-          rec->recordMethodSample(buf, tid, call_trace_id,
+          rec->recordMethodSample(buf, tid, call_trace_id, 0,
                                   (ExecutionEvent *)event);
           break;
         case BCI_ALLOC:
@@ -1849,6 +1853,33 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
         rec->flushIfNeeded(buf);
         rec->addThread(lock_index, tid);
       }
+  }
+}
+
+void FlightRecorder::recordEventDelegated(int lock_index, int tid,
+                                          u64 correlation_id, int event_type,
+                                          Event *event) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      RecordingBuffer *buf = rec->buffer(lock_index);
+      switch (event_type) {
+        case BCI_CPU:
+          rec->recordExecutionSample(buf, tid, 0, correlation_id,
+                                     (ExecutionEvent *)event);
+          break;
+        case BCI_WALL:
+          rec->recordMethodSample(buf, tid, 0, correlation_id,
+                                  (ExecutionEvent *)event);
+          break;
+        default:
+          // Delegation is only wired for CPU/wall samples in v1.
+          return;
+      }
+      rec->flushIfNeeded(buf);
+      rec->addThread(lock_index, tid);
+    }
   }
 }
 

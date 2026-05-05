@@ -17,6 +17,7 @@
 
 #include "itimer.h"
 #include "debugSupport.h"
+#include "jvmThread.h"
 #include "os.h"
 #include "profiler.h"
 #include "stackWalker.h"
@@ -95,4 +96,80 @@ Error ITimer::start(Arguments &args) {
 void ITimer::stop() {
   struct itimerval tv = {{0, 0}, {0, 0}};
   setitimer(ITIMER_PROF, &tv, NULL);
+}
+
+volatile bool ITimerJvmti::_enabled = false;
+long ITimerJvmti::_interval = 0;
+
+void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  CriticalSection cs;
+  if (!cs.entered()) {
+    return;
+  }
+  int saved_errno = errno;
+  if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
+    errno = saved_errno;
+    return;
+  }
+  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
+      && current->inInitWindow()) {
+    current->tickInitWindow();
+    errno = saved_errno;
+    return;
+  }
+  int tid = current ? current->tid() : OS::threadId();
+  if (current) {
+    current->noteCPUSample(Profiler::instance()->recordingEpoch());
+  }
+  Shims::instance().setSighandlerTid(tid);
+
+  ExecutionEvent event;
+  event._execution_mode = getThreadExecutionMode();
+  // setitimer(ITIMER_PROF) delivers SIGPROF to an arbitrary thread chosen by
+  // the OS, so ucontext may be from a JVM-internal thread.  Pass nullptr to
+  // force the JVM into safepoint-based stack walking instead.
+  Profiler::instance()->recordSampleDelegated(nullptr, _interval, tid,
+                                               BCI_CPU, &event);
+  Shims::instance().setSighandlerTid(-1);
+  errno = saved_errno;
+}
+
+Error ITimerJvmti::check(Arguments &args) {
+  if (!VM::canRequestStackTrace()) {
+    return Error("HotSpot RequestStackTrace JVMTI extension not available");
+  }
+
+  OS::installSignalHandler(SIGPROF, nullptr, SIG_IGN);
+  struct itimerval tv_on = {{1, 0}, {1, 0}};
+  if (setitimer(ITIMER_PROF, &tv_on, nullptr) != 0) {
+    return Error("ITIMER_PROF is not supported on this system");
+  }
+  struct itimerval tv_off = {{0, 0}, {0, 0}};
+  setitimer(ITIMER_PROF, &tv_off, nullptr);
+
+  return Error::OK;
+}
+
+Error ITimerJvmti::start(Arguments &args) {
+  if (args._interval < 0) {
+    return Error("interval must be positive");
+  }
+  _interval = args.cpuSamplerInterval();
+
+  OS::installSignalHandler(SIGPROF, signalHandler);
+
+  time_t sec = _interval / 1000000000;
+  suseconds_t usec = (_interval % 1000000000) / 1000;
+  struct itimerval tv = {{sec, usec}, {sec, usec}};
+  if (setitimer(ITIMER_PROF, &tv, nullptr) != 0) {
+    return Error("ITIMER_PROF is not supported on this system");
+  }
+  return Error::OK;
+}
+
+void ITimerJvmti::stop() {
+  struct itimerval tv = {};
+  setitimer(ITIMER_PROF, &tv, nullptr);
+  OS::installSignalHandler(SIGPROF, nullptr, SIG_IGN);
 }

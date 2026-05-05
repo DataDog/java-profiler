@@ -42,4 +42,32 @@ public:
   inline void enableEvents(bool enabled) { _enabled = enabled; }
 };
 
+// CPU-time engine identical to ITimer in its timer mechanism (process-wide
+// setitimer(ITIMER_PROF) / SIGPROF) but delegates stack collection to the
+// HotSpot JFR RequestStackTrace JVMTI extension instead of ASGCT.  Used on
+// platforms where per-thread CPU timers are unavailable (e.g. macOS), as a
+// macOS-compatible alternative to CTimerJvmti.  Because SIGPROF may land on
+// any thread, nullptr is passed as ucontext so the JVM uses safepoint-based
+// stack walking rather than relying on the signal-frame PC.
+class ITimerJvmti : public Engine {
+private:
+  static volatile bool _enabled;
+  static long _interval;
+
+  static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
+
+public:
+  const char *units() { return "ns"; }
+  const char *name()  { return "ITimerJvmti"; }
+  long interval() const { return _interval; }
+
+  Error check(Arguments &args);
+  Error start(Arguments &args);
+  void  stop();
+
+  inline void enableEvents(bool enabled) {
+    __atomic_store_n(&_enabled, enabled, __ATOMIC_RELEASE);
+  }
+};
+
 #endif // _ITIMER_H

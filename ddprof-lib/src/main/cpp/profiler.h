@@ -97,6 +97,7 @@ private:
   void *_timer_id;
 
   volatile u64 _total_samples;
+  alignas(DEFAULT_CACHE_LINE_SIZE) volatile u64 _sample_seq;
   u64 _failures[ASGCT_FAILURE_TYPES];
 
   SpinLock _class_map_lock;
@@ -155,7 +156,7 @@ public:
         _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
         _alloc_engine(NULL), _event_mask(0),
         _start_time(0), _stop_time(0), _epoch(0), _timer_id(NULL),
-        _total_samples(0), _failures(), _class_map_lock(),
+        _total_samples(0), _sample_seq(0), _failures(), _class_map_lock(),
         _max_stack_depth(0), _features(), _safe_mode(0), _cstack(CSTACK_NO),
         _thread_events_state(JVMTI_DISABLE), _libs(Libraries::instance()),
         _num_context_attributes(0), _omit_stacktraces(false),
@@ -329,6 +330,13 @@ public:
                          ASGCT_CallFrame *frames, int lock_index);
   void recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event);
+  // Delegated sample path: stack-walking is performed by the HotSpot JFR
+  // RequestStackTrace extension (the JVM emits the stack trace into its own
+  // JFR recording). We only emit the CPU/wall sample event with no
+  // stack-trace reference, tagged by the correlation ID we passed to
+  // RequestStackTrace as user_data.
+  void recordSampleDelegated(void *ucontext, u64 weight, int tid,
+                             jint event_type, Event *event);
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);
   void recordExternalSample(u64 weight, int tid, int num_frames,

@@ -63,9 +63,12 @@ static Engine noop_engine;
 static MallocTracer malloc_tracer;
 static PerfEvents perf_events;
 static WallClockASGCT wall_asgct_engine;
+static WallClockJvmti wall_jvmti_engine;
 static J9WallClock j9_engine;
 static ITimer itimer;
+static ITimerJvmti itimer_jvmti;
 static CTimer ctimer;
+static CTimerJvmti ctimer_jvmti;
 
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   ProfiledThread::initCurrentThread();
@@ -595,6 +598,43 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
   _locks[lock_index].unlock();
 }
 
+void Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
+                                     jint event_type, Event *event) {
+  if (!VM::canRequestStackTrace()) {
+    return;
+  }
+
+  // Reserve the correlation ID up-front so we can pass the same value to the
+  // JVM (as user_data) and to our own event.
+  u64 correlation_id = atomicIncRelaxed(_sample_seq);
+
+  Counters::increment(JVMTI_STACKS_REQUESTED);
+  jvmtiError rc = VM::requestStackTrace(ucontext, (jlong)correlation_id);
+  if (rc != JVMTI_ERROR_NONE) {
+    if (rc == JVMTI_ERROR_WRONG_PHASE) {
+      Counters::increment(JVMTI_STACKS_FAILED_WRONG_PHASE);
+    } else {
+      Counters::increment(JVMTI_STACKS_FAILED_OTHER);
+    }
+    return;
+  }
+
+  atomicIncRelaxed(_total_samples);
+  u32 lock_index = getLockIndex(tid);
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    atomicIncRelaxed(_failures[-ticks_skipped]);
+    Counters::increment(JVMTI_STACKS_DROPPED_LOCK);
+    // The JVM-side stack trace request is already in flight; we just drop our
+    // sample event. The dangling StackTraceRequest entry in the JVM recording
+    // will simply have no matching datadog event, which is harmless.
+    return;
+  }
+
+  _jfr.recordEventDelegated(lock_index, tid, correlation_id, event_type, event);
+  _locks[lock_index].unlock();
+}
 
 void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event) {
   u32 lock_index = getLockIndex(tid);
@@ -944,6 +984,20 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
       }
       TEST_LOG("J9[cpu]=asgct");
     }
+    // Prefer the JVMTI JFR-delegated engine when the HotSpot extension is
+    // available and the user opted into jvmtistacks.  On Linux, CTimerJvmti
+    // uses per-thread CPU timers.  On other platforms (e.g. macOS) it is not
+    // supported, so fall back to ITimerJvmti which uses setitimer(ITIMER_PROF).
+    if (args._jvmtistacks) {
+      if (!ctimer_jvmti.check(args)) {
+        TEST_LOG("HS[cpu]=ctimer_jvmti");
+        return &ctimer_jvmti;
+      }
+      if (!itimer_jvmti.check(args)) {
+        TEST_LOG("HS[cpu]=itimer_jvmti");
+        return &itimer_jvmti;
+      }
+    }
     return !ctimer.check(args)
                ? (Engine *)&ctimer
                : (!perf_events.check(args) ? (Engine *)&perf_events
@@ -978,6 +1032,11 @@ Engine *Profiler::selectWallEngine(Arguments &args) {
       TEST_LOG("J9[wall]=asgct");
       return (Engine *)&wall_asgct_engine;
     }
+  }
+  // jvmtistacks overrides _wallclock_sampler when the HotSpot extension is available.
+  if (args._jvmtistacks && VM::canRequestStackTrace()) {
+    TEST_LOG("HS[wall]=jvmti");
+    return (Engine *)&wall_jvmti_engine;
   }
   switch (args._wallclock_sampler) {
         case JVMTI:
@@ -1053,6 +1112,10 @@ Error Profiler::start(Arguments &args, bool reset) {
     return error;
   }
 
+  if (args._jvmtistacks && !VM::canRequestStackTrace()) {
+    VM::initializeRequestStackTrace();
+  }
+
   _omit_stacktraces = args._lightweight;
   _remote_symbolication = args._remote_symbolication;
   _event_mask =
@@ -1069,7 +1132,9 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   if (reset || _start_time == 0) {
-    // Reset counters
+    // Reset counters. _sample_seq is intentionally not reset: it is a
+    // monotonically increasing uniqueness generator for correlation IDs and
+    // must not repeat values across recording sessions.
     _total_samples = 0;
     memset(_failures, 0, sizeof(_failures));
 
@@ -1286,6 +1351,44 @@ Error Profiler::stop() {
   switchThreadEvents(JVMTI_DISABLE);
   updateJavaThreadNames();
   updateNativeThreadNames();
+
+  // If jvmtistacks delegation was used this recording, surface likely
+  // misconfigurations. The JVM returns WRONG_PHASE when JFR is not recording
+  // and NOT_AVAILABLE when JFR is recording but the StackTraceRequest event is
+  // disabled. If the request was accepted the JVM will have written the
+  // stack trace, so no warning is needed.
+  if (VM::canRequestStackTrace()) {
+    long long requested =
+        Counters::getCounter(JVMTI_STACKS_REQUESTED);
+    long long wrong_phase =
+        Counters::getCounter(JVMTI_STACKS_FAILED_WRONG_PHASE);
+    long long other =
+        Counters::getCounter(JVMTI_STACKS_FAILED_OTHER);
+    long long dropped_lock =
+        Counters::getCounter(JVMTI_STACKS_DROPPED_LOCK);
+    if (requested > 0 && wrong_phase * 2 >= requested) {
+      fprintf(stderr,
+              "[java-profiler] jvmtistacks: %lld of %lld stack-trace requests "
+              "were rejected with WRONG_PHASE, so no async stack traces were "
+              "emitted by the JVM. Start JFR (e.g. "
+              "-XX:StartFlightRecording=...) before or as the profiler starts.\n",
+              wrong_phase, requested);
+    } else if (requested > 0 && other * 2 >= requested) {
+      fprintf(stderr,
+              "[java-profiler] jvmtistacks: %lld of %lld stack-trace requests "
+              "were rejected with NOT_AVAILABLE. The jdk.StackTraceRequest event "
+              "is likely disabled; enable it in the JFR configuration, e.g. "
+              "-XX:StartFlightRecording=...,+jdk.StackTraceRequest#enabled=true.\n",
+              other, requested);
+    }
+    if (dropped_lock > 0) {
+      fprintf(stderr,
+              "[java-profiler] jvmtistacks: %lld of %lld stack-trace requests "
+              "were dropped due to lock contention; the corresponding "
+              "jdk.StackTraceRequest events will have no matching profiler event.\n",
+              dropped_lock, requested);
+    }
+  }
 
   // writing these out before stopping the JFR recording allows to report the
   // correct counts in the recording
