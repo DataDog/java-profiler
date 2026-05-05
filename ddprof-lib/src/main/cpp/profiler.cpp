@@ -604,9 +604,8 @@ bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
   }
 
   // Reserve the correlation ID up-front so we can pass the same value to the
-  // JVM (as user_data) and to our own event. Zero is reserved as "no
-  // correlation" on the wire, so we always start from 1.
-  u64 correlation_id = atomicInc(_sample_seq) + 1;
+  // JVM (as user_data) and to our own event.
+  u64 correlation_id = atomicIncRelaxed(_sample_seq);
 
   Counters::increment(JVMTI_STACKS_REQUESTED);
   jvmtiError rc = VM::requestStackTrace(ucontext, (jlong)correlation_id);

@@ -97,7 +97,7 @@ private:
   void *_timer_id;
 
   volatile u64 _total_samples;
-  volatile u64 _sample_seq;
+  alignas(DEFAULT_CACHE_LINE_SIZE) volatile u64 _sample_seq;
   u64 _failures[ASGCT_FAILURE_TYPES];
 
   SpinLock _class_map_lock;
