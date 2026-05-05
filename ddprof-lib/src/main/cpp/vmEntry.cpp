@@ -391,6 +391,13 @@ void VM::probeJFRRequestStackTrace() {
                         "com.sun.hotspot.functions.InitializeRequestStackTrace") == 0) {
         _init_request_stack_trace = ext_functions[i].func;
       }
+      for (jint j = 0; j < ext_functions[i].param_count; j++) {
+        _jvmti->Deallocate((unsigned char *)ext_functions[i].params[j].name);
+      }
+      _jvmti->Deallocate((unsigned char *)ext_functions[i].params);
+      _jvmti->Deallocate((unsigned char *)ext_functions[i].errors);
+      _jvmti->Deallocate((unsigned char *)ext_functions[i].id);
+      _jvmti->Deallocate((unsigned char *)ext_functions[i].short_description);
     }
     _jvmti->Deallocate((unsigned char *)ext_functions);
   }
