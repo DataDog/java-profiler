@@ -81,12 +81,12 @@ class BaseWallClock : public Engine {
         int num_failures = 0;
         int threads_already_exited = 0;
         int permission_denied = 0;
-        u32 num_skipped_sleeping = 0;
+        u32 num_skipped_precheck_os = 0;
         u32 num_successful_samples = 0;
         std::vector<ThreadType> sample = reservoir.sample(threads);
         for (ThreadType thread : sample) {
           if (sampleThreads(thread, num_failures, threads_already_exited, permission_denied,
-                            num_skipped_sleeping)) {
+                            num_skipped_precheck_os)) {
             num_successful_samples++;
           }
         }
@@ -94,7 +94,7 @@ class BaseWallClock : public Engine {
         epoch.updateNumSamplableThreads(threads.size());
         epoch.updateNumFailedSamples(num_failures);
         epoch.updateNumSuccessfulSamples(num_successful_samples);
-        epoch.updateNumSkippedSleeping(num_skipped_sleeping);
+        epoch.updateNumSkippedPrecheckOs(num_skipped_precheck_os);
         epoch.updateNumExitedThreads(threads_already_exited);
         epoch.updateNumPermissionDenied(permission_denied);
         u64 endTime = TSC::ticks();

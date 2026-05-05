@@ -15,9 +15,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Combined Approach A + B integration test:
- * - Approach A (precheck): sleeping thread should be skipped.
- * - Approach B (park flag): parked runnable thread should be skipped and produce TaskBlock.
- * - Correctness guard: runnable thread still produces MethodSample events.
+ * - Approach A (OS-state precheck): sleeping thread should be skipped ({@code SLEEPING} / {@code
+ *   CONDVAR_WAIT}).
+ * - Approach B (TLS park flag): runnable thread with {@code parkEnter}/{@code parkExit} should skip
+ *   signals and emit {@code datadog.TaskBlock}.
+ * - Correctness guard: purely runnable thread still produces MethodSample events.
  */
 public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
 
@@ -102,10 +104,10 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
                 "Expected runnable MethodSample events while mitigations are enabled");
 
         Map<String, Long> counters = profiler.getDebugCounters();
-        if (counters.containsKey("wc_signals_skipped_sleeping")) {
+        if (counters.containsKey("wc_signals_skipped_precheck_os")) {
             assertTrue(
-                    counters.get("wc_signals_skipped_sleeping") > 0,
-                    "Expected sleeping precheck counter to increase");
+                    counters.get("wc_signals_skipped_precheck_os") > 0,
+                    "Expected OS-state precheck counter to increase");
         }
         if (counters.containsKey("wc_signals_skipped_parked")) {
             assertTrue(

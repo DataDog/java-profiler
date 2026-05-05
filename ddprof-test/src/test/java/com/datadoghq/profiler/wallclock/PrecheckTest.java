@@ -11,20 +11,25 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Verifies the wallprecheck feature (wallprecheck=true, the default): the timer loop reads
- * osThreadState() before sending SIGVTALRM and skips threads in SLEEPING state (Thread.sleep).
- * A thread sleeping for 300 ms at a 1 ms interval should receive nearly zero signals.
+ * Verifies OS-thread-state precheck ({@code wallprecheck=true}, the default): the wall-clock timer
+ * thread reads {@code VMThread::osThreadState()} before {@code SIGVTALRM} and skips sending the
+ * signal when HotSpot reports {@code SLEEPING} or {@code CONDVAR_WAIT}. Legacy JDKs report {@code
+ * Thread.sleep} as {@code SLEEPING}; JDK 21+ uses a condvar wait path for sleep (often {@code
+ * CONDVAR_WAIT}), same broad category as {@code LockSupport.park}.
  *
- * <p>Runs only on JDK 11+: JDK 8 HotSpot often does not expose a consistent SLEEPING OSThread
- * state for Thread.sleep in vmStructs, so precheck cannot suppress signals reliably on JDK 8 CI.
+ * <p>A thread in {@code Thread.sleep} for 300 ms at a 1 ms wall interval should receive nearly zero
+ * wall samples (handful at sleep boundaries).
+ *
+ * <p>Runs only on JDK 11+: JDK 8 HotSpot often does not expose consistent OSThread states for sleep
+ * in vmStructs, so precheck cannot suppress signals reliably on JDK 8 CI.
  */
 public class PrecheckTest extends AbstractProfilerTest {
 
     @Test
     public void testSleepingThreadIsNotSampled() throws InterruptedException {
         Assumptions.assumeTrue(!Platform.isJ9());
-        // Wall precheck uses VMThread::osThreadState() -> SLEEPING (wallClock.cpp). JDK 8
-        // frequently misreports vs JDK 11+ across vendors/libcs (Oracle, musl, glibc), so
+        // Wall precheck uses VMThread::osThreadState() -> SLEEPING / CONDVAR_WAIT (wallClock.cpp).
+        // JDK 8 frequently misreports vs JDK 11+ across vendors/libcs (Oracle, musl, glibc), so
         // nearly all wall ticks still signal — CI sees hundreds of MethodSamples.
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
         registerCurrentThreadForWallClockProfiling();
@@ -34,8 +39,7 @@ public class PrecheckTest extends AbstractProfilerTest {
 
         stopProfiler();
 
-        // The timer thread reads osThreadState() and skips SIGVTALRM for SLEEPING threads,
-        // so sample count should be near zero (a handful may slip through at sleep entry/exit).
+        // Timer thread skips SIGVTALRM when OS state is SLEEPING or CONDVAR_WAIT (sleep/park paths).
         long sampleCount = verifyEvents("datadog.MethodSample", false)
                 .getAggregate(Aggregators.count()).longValue();
         assertTrue(sampleCount < 10,
@@ -43,9 +47,9 @@ public class PrecheckTest extends AbstractProfilerTest {
 
         // Confirm the suppression counter incremented (only available in COUNTERS-enabled builds).
         Map<String, Long> counters = profiler.getDebugCounters();
-        if (counters.containsKey("wc_signals_skipped_sleeping")) {
-            assertTrue(counters.get("wc_signals_skipped_sleeping") > 0,
-                    "wc_signals_skipped_sleeping should be > 0 for a 300 ms Thread.sleep()");
+        if (counters.containsKey("wc_signals_skipped_precheck_os")) {
+            assertTrue(counters.get("wc_signals_skipped_precheck_os") > 0,
+                    "wc_signals_skipped_precheck_os should be > 0 for a 300 ms Thread.sleep()");
         }
     }
 

@@ -21,12 +21,14 @@ import java.util.concurrent.locks.LockSupport;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Measures how many signals each precheck strategy would suppress for a workload
- * containing threads in each blocked state. Runs with wallprecheck=false so all
- * samples are collected; the distribution reveals the theoretical suppression rate.
+ * Measures theoretical wall-clock signal suppression from sample distributions. Runs with {@code
+ * wallprecheck=false} so every state is sampled; percentages estimate how often {@code
+ * wallprecheck=true} would skip {@code SIGVTALRM} based on HotSpot {@code OSThreadState}.
  *
- * Current precheck (SLEEPING only):         suppresses only Thread.sleep samples.
- * Aggressive precheck (all blocked states): would also suppress LockSupport.park and Object.wait.
+ * <p><strong>OS-state precheck (default {@code wallprecheck=true})</strong> skips signals when the
+ * JVM reports {@code SLEEPING} or {@code CONDVAR_WAIT}. That covers Thread.sleep (legacy {@code
+ * SLEEPING}; JDK 21+ sleep uses wait/park), {@code LockSupport.park}, and other condvar waits — not
+ * {@code Object.wait} ({@code OBJECT_WAIT}), which the current precheck does not skip.
  *
  * <p>Sample classification prefers Java thread name ({@code EVENT_THREAD_NAME}) for the fixed worker
  * threads when present, then JFR thread state, then stack strings — some JVMs (e.g. Graal on aarch64)
@@ -47,21 +49,21 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         AtomicBoolean stop = new AtomicBoolean(false);
         Object monitor = new Object();
 
-        // Thread in SLEEPING state (Thread.sleep) — suppressed by both precheck variants
+        // Thread.sleep — typically SLEEPING or (JDK 21+) CONDVAR_WAIT; matched by OS precheck
         Thread sleeping = new Thread(() -> {
             registerCurrentThreadForWallClockProfiling();
             ready.countDown();
             try { Thread.sleep(10_000); } catch (InterruptedException ignored) {}
         }, EFFICIENCY_SLEEPING);
 
-        // Thread in CONDVAR_WAIT state (LockSupport.parkNanos) — suppressed by old precheck only
+        // LockSupport.parkNanos — CONDVAR_WAIT; matched by OS precheck (same as JDK 21+ sleep path)
         Thread parked = new Thread(() -> {
             registerCurrentThreadForWallClockProfiling();
             ready.countDown();
             LockSupport.parkNanos(10_000_000_000L);
         }, EFFICIENCY_PARKED);
 
-        // Thread in OBJECT_WAIT state (Object.wait) — suppressed by old precheck only
+        // Object.wait — OBJECT_WAIT; not skipped by current OS-state precheck
         Thread waiting = new Thread(() -> {
             registerCurrentThreadForWallClockProfiling();
             ready.countDown();
@@ -70,7 +72,7 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
             }
         }, EFFICIENCY_WAITING);
 
-        // Thread in RUNNABLE state (CPU spin) — not suppressed by either precheck
+        // CPU spin — RUNNABLE; not skipped by OS-state precheck
         Thread working = new Thread(() -> {
             registerCurrentThreadForWallClockProfiling();
             ready.countDown();
@@ -179,16 +181,20 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         double pctObjectWait = 100.0 * objectWaitSamples  / total;
         double pctRunnable   = 100.0 * runnableSamples    / total;
 
-        double newPrecheckSuppression = pctSleep;
-        double oldPrecheckSuppression = pctSleep + pctPark + pctObjectWait;
+        double osPrecheckSuppression = pctSleep + pctPark;
+        double hypotheticalIfAlsoObjectWait = pctSleep + pctPark + pctObjectWait;
 
         System.out.printf("%nPrecheck efficiency report (wallprecheck=false baseline, %d total samples):%n", total);
         System.out.printf("  SLEEPING     (Thread.sleep):      %4d samples (%5.1f%%)%n", sleepSamples, pctSleep);
         System.out.printf("  CONDVAR_WAIT (LockSupport.park):  %4d samples (%5.1f%%)%n", parkSamples, pctPark);
         System.out.printf("  OBJECT_WAIT  (Object.wait):       %4d samples (%5.1f%%)%n", objectWaitSamples, pctObjectWait);
         System.out.printf("  RUNNABLE / other:                 %4d samples (%5.1f%%)%n", runnableSamples, pctRunnable);
-        System.out.printf("Current precheck (SLEEPING only):         %.1f%% of signals suppressed%n", newPrecheckSuppression);
-        System.out.printf("Aggressive precheck (all blocked states): %.1f%% of signals suppressed%n", oldPrecheckSuppression);
+        System.out.printf(
+                "OS-state precheck (SLEEPING + CONDVAR_WAIT):     %.1f%% of signals suppressed%n",
+                osPrecheckSuppression);
+        System.out.printf(
+                "Hypothetical if also suppressing OBJECT_WAIT:    %.1f%% of signals suppressed%n",
+                hypotheticalIfAlsoObjectWait);
 
         // Sanity: each controlled thread type should produce at least a few samples.
         // JDK 8 can collapse park/wait into WAITING-only classification depending on runtime/JFR details.
@@ -209,9 +215,8 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
      * {@code Thread.sleep} wakeups, plus a continuously-busy computation thread.
      *
      * This workload is representative of real applications where {@code LockSupport.park}
-     * dominates the thread state distribution. The output shows how aggressively each
-     * precheck variant would reduce signals, and what fraction of interesting blocking
-     * visibility each strategy sacrifices.
+     * dominates the thread state distribution. The printed suppression estimate uses {@code
+     * pctSleep + pctPark} to match OS-state precheck ({@code SLEEPING} + {@code CONDVAR_WAIT}).
      */
     @Test
     public void realisticServiceWorkload() throws Exception {
@@ -244,8 +249,7 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         primed.await();
         Thread.sleep(50); // let all pool threads return to idle (parked) state
 
-        // Scheduler: sleeps between submissions, simulating a periodic task trigger.
-        // Thread.sleep → SLEEPING, which is what the new precheck targets.
+        // Scheduler: sleeps between submissions. Thread.sleep → SLEEPING or (JDK 21+) CONDVAR_WAIT.
         Thread scheduler = new Thread(() -> {
             registerCurrentThreadForWallClockProfiling();
             while (!stop.get()) {
@@ -298,13 +302,13 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
                 if (stack == null) {
                     otherSamples++;
                 } else if (stack.contains("Thread.sleep") || stack.contains("sleep0")) {
-                    // SLEEPING — suppressed by new precheck
+                    // SLEEPING / JDK 21+ sleep-on-condvar — suppressed by OS-state precheck
                     sleepSamples++;
                 } else if (stack.contains("LockSupport.park") || stack.contains("Unsafe.park")) {
-                    // CONDVAR_WAIT — suppressed by old precheck only
+                    // CONDVAR_WAIT — suppressed by OS-state precheck together with sleep buckets above
                     parkSamples++;
                 } else {
-                    // RUNNABLE or other — not suppressed by either precheck
+                    // RUNNABLE or other — not skipped by OS-state precheck
                     otherSamples++;
                 }
             }
@@ -320,15 +324,18 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         double pctPark  = 100.0 * parkSamples  / total;
         double pctOther = 100.0 * otherSamples  / total;
 
-        double newPrecheckSuppression = pctSleep;
-        double oldPrecheckSuppression = pctSleep + pctPark;
+        double osPrecheckSuppression = pctSleep + pctPark;
 
         System.out.printf("%nRealistic service workload report (%d pool threads, 1 scheduler, 1 hot thread, 500ms):%n", POOL_SIZE);
-        System.out.printf("  SLEEPING     (Thread.sleep — scheduler):  %4d samples (%5.1f%%) — new precheck suppresses these%n", sleepSamples, pctSleep);
-        System.out.printf("  CONDVAR_WAIT (LockSupport.park — idle pool): %4d samples (%5.1f%%) — old precheck also suppressed these%n", parkSamples, pctPark);
-        System.out.printf("  RUNNABLE / other (active threads):        %4d samples (%5.1f%%) — never suppressed%n", otherSamples, pctOther);
-        System.out.printf("Current precheck (SLEEPING only):         %.1f%% of signals suppressed%n", newPrecheckSuppression);
-        System.out.printf("Aggressive precheck (all blocked states): %.1f%% of signals suppressed%n", oldPrecheckSuppression);
+        System.out.printf(
+                "  Scheduler sleep (Thread.sleep):           %4d samples (%5.1f%%)%n", sleepSamples, pctSleep);
+        System.out.printf(
+                "  Idle pool park (LockSupport.park):       %4d samples (%5.1f%%)%n", parkSamples, pctPark);
+        System.out.printf(
+                "  RUNNABLE / other (active work):          %4d samples (%5.1f%%)%n", otherSamples, pctOther);
+        System.out.printf(
+                "OS-state precheck (SLEEPING + CONDVAR_WAIT): %.1f%% of signals suppressed%n",
+                osPrecheckSuppression);
 
         // The idle pool threads should dominate: most samples should be parked
         assertTrue(parkSamples > otherSamples,

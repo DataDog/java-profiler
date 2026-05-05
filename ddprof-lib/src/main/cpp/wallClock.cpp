@@ -197,16 +197,19 @@ void WallClockASGCT::timerLoop() {
     };
 
     auto sampleThreads = [&](ThreadEntry entry, int& num_failures, int& threads_already_exited,
-                             int& permission_denied, u32& num_skipped_sleeping) {
+                             int& permission_denied, u32& num_skipped_precheck_os) {
       if (_precheck && entry.vm_thread != nullptr) {
         OSThreadState state = entry.vm_thread->osThreadState();
-        // SLEEPING: Thread.sleep() on JDK < 21.
-        // CONDVAR_WAIT: Thread.sleep() on JDK 21+ (switched from OSThreadSleepState
-        // to OSThreadWaitState(false) in JVM_Sleep). Both states represent pure
-        // time-based sleeping with no useful profiling signal.
+        // OS-thread-state precheck: skip SIGVTALRM when the JVM reports the platform
+        // thread is in SLEEPING or CONDVAR_WAIT (HotSpot OSThread enum).
+        //
+        // SLEEPING: legacy Thread.sleep path on older JDKs.
+        // CONDVAR_WAIT: LockSupport.park/parkNanos; also Thread.sleep on JDK 21+ (sleep_nanos
+        // uses OSThreadWaitState + condvar park). Not limited to sleep — any condvar wait shares
+        // this state; both branches avoid sampling clearly idle blocking here.
         if (state == OSThreadState::SLEEPING || state == OSThreadState::CONDVAR_WAIT) {
-          Counters::increment(WC_SIGNAL_SKIPPED_SLEEPING);
-          num_skipped_sleeping++;
+          Counters::increment(WC_SIGNAL_SKIPPED_PRECHECK_OS);
+          num_skipped_precheck_os++;
           return false;
         }
       }

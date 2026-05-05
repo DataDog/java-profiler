@@ -60,7 +60,7 @@
   X(AGCT_NATIVE_NO_JAVA_CONTEXT, "agct_native_no_java_context")                \
   X(AGCT_BLOCKED_IN_VM, "agct_blocked_in_vm")                                  \
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
-  X(WC_SIGNAL_SKIPPED_SLEEPING,    "wc_signals_skipped_sleeping")               \
+  X(WC_SIGNAL_SKIPPED_PRECHECK_OS, "wc_signals_skipped_precheck_os")          \
   X(WC_SIGNAL_SKIPPED_PARKED,      "wc_signals_skipped_parked")                  \
   X(WC_SIGNAL_QUEUE_FULL,        "wc_signals_queue_full")                      \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \

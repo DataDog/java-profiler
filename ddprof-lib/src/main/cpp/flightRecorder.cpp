@@ -1535,7 +1535,7 @@ void Recording::recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event) {
   buf->putVar64(event->_num_failed_samples);
   buf->putVar64(event->_num_exited_threads);
   buf->putVar64(event->_num_permission_denied);
-  buf->putVar64(event->_num_skipped_sleeping);
+  buf->putVar64(event->_num_skipped_precheck_os);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }

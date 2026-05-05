@@ -154,8 +154,9 @@ void JfrMetadata::initialize(
                        "Number of Exited Threads Before Handling Signal")
               << field("numPermissionDenied", T_INT,
                        "Number of Permission Denied Errors")
-              << field("numSkippedSleepingPrecheck", T_INT,
-                       "Signals Skipped Due to Sleeping Precheck"))
+              << field("numSkippedPrecheckOs", T_INT,
+                       "Signals skipped after OS-thread-state precheck (SLEEPING or "
+                       "CONDVAR_WAIT: sleep, park/parkNanos, JDK 21+ Thread.sleep via wait)"))
 
           << (type("datadog.ObjectSample", T_ALLOC, "Allocation sample")
                   << category("Datadog", "Profiling")
