@@ -239,6 +239,7 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
   if (!cs.entered()) {
     return;
   }
+  int saved_errno = errno;
   ProfiledThread *current = ProfiledThread::currentSignalSafe();
   if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
       && current->inInitWindow()) {
@@ -268,6 +269,7 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
   (void)Profiler::instance()->recordSampleDelegated(nullptr, last_sample, tid,
                                                     BCI_WALL, &event);
   Shims::instance().setSighandlerTid(-1);
+  errno = saved_errno;
 }
 
 void WallClockJvmti::initialize(Arguments &args) {
