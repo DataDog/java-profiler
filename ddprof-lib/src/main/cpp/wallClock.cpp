@@ -296,6 +296,8 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
 }
 
 void WallClockJvmti::initialize(Arguments &args) {
+  // Caller must have verified VM::canRequestStackTrace() before selecting
+  // this engine; see Profiler::selectWallEngine().
   OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
 }
 
