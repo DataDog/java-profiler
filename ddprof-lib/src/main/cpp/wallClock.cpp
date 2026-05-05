@@ -289,8 +289,8 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
   // Pass nullptr ucontext so the JVM uses safepoint-based stack walking.
   // Passing the signal-frame PC causes the extension to reject samples where
   // the thread is currently inside JVM-internal (non-Java) code.
-  (void)Profiler::instance()->recordSampleDelegated(nullptr, last_sample, tid,
-                                                    BCI_WALL, &event);
+  Profiler::instance()->recordSampleDelegated(nullptr, last_sample, tid,
+                                               BCI_WALL, &event);
   Shims::instance().setSighandlerTid(-1);
   errno = saved_errno;
 }

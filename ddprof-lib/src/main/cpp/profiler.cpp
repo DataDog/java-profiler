@@ -598,10 +598,10 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
   _locks[lock_index].unlock();
 }
 
-bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
+void Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
                                      jint event_type, Event *event) {
   if (!VM::canRequestStackTrace()) {
-    return false;
+    return;
   }
 
   // Reserve the correlation ID up-front so we can pass the same value to the
@@ -616,7 +616,7 @@ bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
     } else {
       Counters::increment(JVMTI_STACKS_FAILED_OTHER);
     }
-    return false;
+    return;
   }
 
   atomicIncRelaxed(_total_samples);
@@ -629,12 +629,11 @@ bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
     // The JVM-side stack trace request is already in flight; we just drop our
     // sample event. The dangling AsyncStackTrace entry in the JVM recording
     // will simply have no matching datadog event, which is harmless.
-    return true;
+    return;
   }
 
   _jfr.recordEventDelegated(lock_index, tid, correlation_id, event_type, event);
   _locks[lock_index].unlock();
-  return true;
 }
 
 void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event) {

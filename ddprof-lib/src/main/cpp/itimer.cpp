@@ -129,8 +129,8 @@ void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // setitimer(ITIMER_PROF) delivers SIGPROF to an arbitrary thread chosen by
   // the OS, so ucontext may be from a JVM-internal thread.  Pass nullptr to
   // force the JVM into safepoint-based stack walking instead.
-  (void)Profiler::instance()->recordSampleDelegated(nullptr, _interval, tid,
-                                                    BCI_CPU, &event);
+  Profiler::instance()->recordSampleDelegated(nullptr, _interval, tid,
+                                               BCI_CPU, &event);
   Shims::instance().setSighandlerTid(-1);
   errno = saved_errno;
 }

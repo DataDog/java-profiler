@@ -243,8 +243,8 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // request (WRONG_PHASE if JFR is not recording, NOT_AVAILABLE if
   // jdk.AsyncStackTrace is disabled). recordSampleDelegated() bumps the
   // failure counters; there is no fallback to ASGCT in this engine.
-  (void)Profiler::instance()->recordSampleDelegated(ucontext, _interval, tid,
-                                                    BCI_CPU, &event);
+  Profiler::instance()->recordSampleDelegated(ucontext, _interval, tid,
+                                               BCI_CPU, &event);
   Shims::instance().setSighandlerTid(-1);
   errno = saved_errno;
 }
