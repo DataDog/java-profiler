@@ -367,16 +367,13 @@ Error Arguments::parse(const char *args) {
       CASE("jvmtistacks")
       if (value != NULL) {
         switch (value[0]) {
-        case 'n': // no
-        case 'f': // false
-        case '0': // 0
-          _jvmtistacks = false;
-          break;
         case 'y': // yes
         case 't': // true
         case '1': // 1
-        default:
           _jvmtistacks = true;
+          break;
+        default:
+          _jvmtistacks = false;
         }
       } else {
         _jvmtistacks = true;
