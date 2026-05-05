@@ -7,6 +7,7 @@
 #include <cassert>
 #include "profiler.h"
 #include "asyncSampleMutex.h"
+#include "mallocTracer.h"
 #include "context.h"
 #include "context_api.h"
 #include "guards.h"
@@ -59,6 +60,7 @@ static void (*orig_segvHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 static void (*orig_busHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 
 static Engine noop_engine;
+static MallocTracer malloc_tracer;
 static PerfEvents perf_events;
 static WallClockASGCT wall_asgct_engine;
 static WallClockJvmti wall_jvmti_engine;
@@ -566,10 +568,9 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
                                  &java_ctx, &truncated, lock_index);
     assert(num_frames >= 0);
-                                 
+
     int max_remaining = _max_stack_depth - num_frames;
     if (max_remaining > 0) {
-      // Walk Java frames if we have room, but only for mixed mode or CPU/Wall events with cstack enabled. For async events, we want to avoid walking Java frames in the signal handler if possible, since it can lead to deadlocks. Instead, we'll try to get the Java trace asynchronously after the signal handler returns.
       StackWalkRequest request = {event_type, lock_index, ucontext, frames + num_frames, max_remaining, &java_ctx, &truncated};
       num_frames += JVMSupport::walkJavaStack(request);
     }
@@ -743,6 +744,7 @@ void *Profiler::dlopen_hook(const char *filename, int flags) {
     Libraries::instance()->updateSymbols(false);
     // Patch sigaction in newly loaded libraries
     LibraryPatcher::patch_sigaction();
+    MallocTracer::installHooks();
     // Extract build-ids for newly loaded libraries if remote symbolication is enabled
     Profiler* profiler = instance();
     if (profiler != nullptr && profiler->_remote_symbolication) {
@@ -1122,7 +1124,8 @@ Error Profiler::start(Arguments &args, bool reset) {
       (args._cpu >= 0 ? EM_CPU : 0) | (args._wall >= 0 ? EM_WALL : 0) |
       (args._record_allocations || args._record_liveness || args._gc_generations
            ? EM_ALLOC
-           : 0);
+           : 0) |
+      (args._nativemem >= 0 ? EM_NATIVEMEM : 0);
 
   if (_event_mask == 0) {
     return Error("No profiling events specified");
@@ -1219,8 +1222,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     Log::warn("Branch stack is supported only with PMU events");
   } else if (_cstack == CSTACK_VM) {
     if (!VMStructs::hasStackStructs()) {
-      return Error(
-          "VMStructs stack walking is not supported on this JVM/platform");
+      _cstack = DWARF_SUPPORTED ? CSTACK_DWARF : CSTACK_NO;
+      Log::error("VMStructs stack walking is not supported on this JVM/platform, defaulting to the default native call stack unwinding mode.");
     }
   }
 
@@ -1280,6 +1283,24 @@ Error Profiler::start(Arguments &args, bool reset) {
       }
     }
   }
+  if (_event_mask & EM_NATIVEMEM) {
+    error = malloc_tracer.start(args);
+    if (error) {
+      Log::warn("%s", error.message());
+      if (_event_mask == EM_NATIVEMEM) {
+        // nativemem is the only requested mode: propagate the real error
+        disableEngines();
+        switchLibraryTrap(false);
+        lockAll();
+        _jfr.stop();
+        unlockAll();
+        return error;
+      }
+      error = Error::OK; // recoverable when other modes are also active
+    } else {
+      activated |= EM_NATIVEMEM;
+    }
+  }
 
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
@@ -1318,6 +1339,8 @@ Error Profiler::stop() {
 
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();
+  if (_event_mask & EM_NATIVEMEM)
+    malloc_tracer.stop();
   if (_event_mask & EM_WALL)
     _wall_engine->stop();
   if (_event_mask & EM_CPU)
@@ -1394,6 +1417,9 @@ Error Profiler::check(Arguments &args) {
   if (!error && args._memory >= 0) {
     _alloc_engine = selectAllocEngine(args);
     error = _alloc_engine->check(args);
+  }
+  if (!error && args._nativemem >= 0) {
+    error = malloc_tracer.check(args);
   }
   if (!error) {
     if (args._cstack == CSTACK_DWARF && !DWARF_SUPPORTED) {

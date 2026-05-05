@@ -17,15 +17,21 @@
 
 #ifdef __linux__
 
+#include "counters.h"
 #include "guards.h"
 #include "ctimer.h"
 #include "debugSupport.h"
 #include "jvmThread.h"
 #include "libraries.h"
+#include "log.h"
 #include "profiler.h"
+#include "signalCookie.h"
 #include "threadState.inline.h"
 #include <assert.h>
+#include <errno.h>
+#include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
@@ -53,9 +59,25 @@ int CTimer::registerThread(int tid) {
   }
 
   struct sigevent sev;
-  sev.sigev_value.sival_ptr = NULL;
+  // Zero the whole struct first so any padding / future fields the kernel
+  // inspects (sigev_notify_function, sigev_notify_attributes on glibc) are
+  // not populated from stack garbage.
+  memset(&sev, 0, sizeof(sev));
+  // Cookie identifying this timer as ddprof-owned. When the signal is delivered
+  // the handler checks siginfo->si_value.sival_ptr against SignalCookie::cpu()
+  // and drops/forwards any SIGPROF that does not carry it (e.g. from a Go
+  // runtime's setitimer(ITIMER_PROF) or a foreign library's raise()).
+  sev.sigev_value.sival_ptr = SignalCookie::cpu();
   sev.sigev_signo = _signal;
   sev.sigev_notify = SIGEV_THREAD_ID;
+  // glibc/musl layout convention: sigev_notify_thread_id sits immediately
+  // after sigev_notify inside the union — the tid is written as the *second*
+  // int starting at &sev.sigev_notify, so bytes [sizeof(int), 2*sizeof(int))
+  // of that int-pointer must be in-bounds of struct sigevent. Guard against
+  // a future libc change by statically asserting that both ints fit.
+  static_assert(offsetof(struct sigevent, sigev_notify) + 2 * sizeof(int)
+                    <= sizeof(struct sigevent),
+                "sigevent layout assumption broken: tid write would overflow");
   ((int *)&sev.sigev_notify)[1] = tid;
 
   // Use raw syscalls, since libc wrapper allows only predefined clocks
@@ -76,7 +98,21 @@ int CTimer::registerThread(int tid) {
   ts.it_interval.tv_sec = (time_t)(_interval / 1000000000);
   ts.it_interval.tv_nsec = _interval % 1000000000;
   ts.it_value = ts.it_interval;
-  syscall(__NR_timer_settime, timer, 0, &ts, NULL);
+  if (syscall(__NR_timer_settime, timer, 0, &ts, NULL) < 0) {
+    // Arming failed after publishing the timer in _timers[tid]. Reclaim the
+    // slot only if it still contains this timer; otherwise a concurrent
+    // unregisterThread(tid) has already claimed responsibility for cleanup
+    // (avoids a double timer_delete).
+    int settime_errno = errno;
+    char errbuf[64];
+    strerror_r(settime_errno, errbuf, sizeof(errbuf));
+    Log::warn("timer_settime failed for tid=%d: %s", tid, errbuf);
+    errno = settime_errno;
+    if (__sync_bool_compare_and_swap(&_timers[tid], timer + 1, 0)) {
+      syscall(__NR_timer_delete, timer);
+    }
+    return -1;
+  }
   return 0;
 }
 
@@ -118,6 +154,12 @@ Error CTimer::start(Arguments &args) {
     _timers = (int *)calloc(max_timers, sizeof(int));
     _max_timers = max_timers;
   }
+
+  // Prime the origin-check cache from this non-signal context before any
+  // SIGPROF can fire — reading the env var lazily from the handler itself
+  // would go through a C++ function-local-static guard, which is not
+  // async-signal-safe.
+  OS::primeSignalOriginCheck();
 
   OS::installSignalHandler(_signal, signalHandler);
 
@@ -224,6 +266,17 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 }
 
 void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  // Reject signals that did not originate from our timer_create timers.
+  // This guards against Go's process-wide setitimer(ITIMER_PROF) and other
+  // foreign SIGPROF sources that would otherwise drive our handler onto
+  // threads we never registered — see doc/plans/SignalOriginValidation.md.
+  if (!OS::shouldProcessSignal(siginfo, SI_TIMER, SignalCookie::cpu())) {
+    Counters::increment(CTIMER_SIGNAL_FOREIGN);
+    OS::forwardForeignSignal(signo, siginfo, ucontext);
+    return;
+  }
+  Counters::increment(CTIMER_SIGNAL_OWN);
+
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs;
   if (!cs.entered()) {

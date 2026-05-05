@@ -176,14 +176,18 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
     bool entry = false;
     if (VMMethod::check_jmethodID(method) &&
         jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
+        // GetMethodDeclaringClass may return a jclass wrapping a stale/garbage oop when the class was
+        // unloaded between sample capture and dump (TOCTOU race with class unloading). Guard against
+        // null handles before calling GetClassSignature.
+        method_class != NULL &&
         // On some older versions of J9, the JVMTI call to GetMethodDeclaringClass will return OK = 0, but when a
         // classloader is unloaded they free all JNIIDs. This means that anyone holding on to a jmethodID is
         // pointing to corrupt data and the behaviour is undefined.
         // The behaviour is adjusted so that when asgct() is used or if `-XX:+KeepJNIIDs` is specified,
         // when a classloader is unloaded, the jmethodIDs are not freed, but instead marked as -1.
-        // The nested check below is to mitigate these crashes.
-        // In more recent versions, the condition above will short-circuit safely.
-        ((!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) && jvmti->GetClassSignature(method_class, &class_name, NULL) == 0) &&
+        // The check below mitigates these crashes on J9.
+        (!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) &&
+        jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
         jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
 
       if (first_time) {
@@ -906,6 +910,12 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
 
   writeBoolSetting(buf, T_ALLOC, "enabled", args._record_allocations);
   writeBoolSetting(buf, T_HEAP_LIVE_OBJECT, "enabled", args._record_liveness);
+  writeBoolSetting(buf, T_MALLOC, "enabled", args._nativemem >= 0);
+  if (args._nativemem >= 0) {
+    writeIntSetting(buf, T_MALLOC, "nativemem", args._nativemem);
+    // samplingInterval=-1 means every allocation is recorded (nativemem=0).
+    writeIntSetting(buf, T_MALLOC, "samplingInterval", args._nativemem == 0 ? -1 : args._nativemem);
+  }
 
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "debugSymbols",
                    VMStructs::libjvm()->hasDebugSymbols());
@@ -1579,6 +1589,21 @@ void Recording::recordAllocation(RecordingBuffer *buf, int tid,
   flushIfNeeded(buf);
 }
 
+void Recording::recordMallocSample(Buffer *buf, int tid, u64 call_trace_id,
+                                   MallocEvent *event) {
+  int start = buf->skip(1);
+  buf->putVar64(T_MALLOC);
+  buf->putVar64(event->_start_time);
+  buf->putVar64(tid);
+  buf->putVar64(call_trace_id);
+  buf->putVar64(event->_address);
+  buf->putVar64(event->_size);
+  buf->putFloat(event->_weight);
+  writeCurrentContext(buf);
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
 void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
                                      ObjectLivenessEvent *event) {
   int start = buf->skip(1);
@@ -1820,6 +1845,9 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
           break;
         case BCI_PARK:
           rec->recordThreadPark(buf, tid, call_trace_id, (LockEvent *)event);
+          break;
+        case BCI_NATIVE_MALLOC:
+          rec->recordMallocSample(buf, tid, call_trace_id, (MallocEvent *)event);
           break;
         }
         rec->flushIfNeeded(buf);

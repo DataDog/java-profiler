@@ -1012,6 +1012,12 @@ bool VMMethod::check_jmethodID_hotspot(jmethodID id) {
         }
     }
     if (VMStructs::class_loader_data_offset() >= 0) {
+        // Verify the Klass at cpool_holder is readable over the full range we're about to access,
+        // catching freed/reclaimed Klass memory between check_jmethodID and the JVMTI calls (PROF-14003).
+        if (!SafeAccess::isReadableRange(cpool_holder,
+                                         (size_t)VMStructs::class_loader_data_offset() + sizeof(void*))) {
+            return false;
+        }
         cl_data = (const char *)SafeAccess::load(
             (void **)(cpool_holder + VMStructs::class_loader_data_offset()));
         if (cl_data == NULL) {

@@ -7,7 +7,7 @@ plugins {
   java
   `maven-publish`
   signing
-  id("com.github.ben-manes.versions") version "0.53.0"
+  id("com.github.ben-manes.versions") version "0.54.0"
   id("de.undercouch.download") version "5.7.0"
   id("com.datadoghq.native-build")
   id("com.datadoghq.gtest")

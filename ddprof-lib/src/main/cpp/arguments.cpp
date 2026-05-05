@@ -394,6 +394,12 @@ Error Arguments::parse(const char *args) {
           }
       }
 
+      CASE("nativemem")
+      _nativemem = value == NULL ? 0 : parseUnits(value, BYTES);
+      if (_nativemem < 0) {
+        msg = "nativemem must be >= 0";
+      }
+
       DEFAULT()
       if (_unknown_arg == NULL)
         _unknown_arg = arg;
@@ -405,7 +411,7 @@ Error Arguments::parse(const char *args) {
     return Error(msg);
   }
 
-  if (_event == NULL && _cpu < 0 && _wall < 0 && _memory < 0) {
+  if (_event == NULL && _cpu < 0 && _wall < 0 && _memory < 0 && _nativemem < 0) {
     _event = EVENT_CPU;
   }
 
