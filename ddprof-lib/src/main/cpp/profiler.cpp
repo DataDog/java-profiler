@@ -1031,10 +1031,7 @@ Engine *Profiler::selectWallEngine(Arguments &args) {
       return (Engine *)&wall_asgct_engine;
     }
   }
-  // Prefer the JVMTI JFR-delegated engine when the HotSpot extension is
-  // available and the user opted into jvmtistacks. The engine-level
-  // _wallclock_sampler knob still takes precedence for users who explicitly
-  // request JVMTI/ASGCT.
+  // jvmtistacks overrides _wallclock_sampler when the HotSpot extension is available.
   if (args._jvmtistacks && VM::canRequestStackTrace()) {
     TEST_LOG("HS[wall]=jvmti");
     return (Engine *)&wall_jvmti_engine;
