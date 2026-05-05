@@ -195,38 +195,22 @@ Error CTimerJvmti::start(Arguments &args) {
   if (!VM::canRequestStackTrace()) {
     return Error("HotSpot RequestStackTrace JVMTI extension not available");
   }
-  if (args._interval < 0) {
-    return Error("interval must be positive");
-  }
-
-  _interval = args.cpuSamplerInterval();
-  _cstack = args._cstack;
-  _signal = SIGPROF;
-
-  int max_timers = OS::getMaxThreadId();
-  if (max_timers != _max_timers) {
-    free(_timers);
-    _timers = (int *)calloc(max_timers, sizeof(int));
-    _max_timers = max_timers;
-  }
-
+  Error result = CTimer::start(args);
+  if (result) return result;
+  // Override the signal handler installed by CTimer::start with our own,
+  // which delegates stack walking to the HotSpot JFR extension.
   OS::installSignalHandler(_signal, CTimerJvmti::signalHandler);
-
-  Error result = Error::OK;
-  ThreadList *thread_list = OS::listThreads();
-  while (thread_list->hasNext()) {
-    int tid = thread_list->next();
-    int err = registerThread(tid);
-    if (err != 0) {
-      result = Error("Failed to register thread");
-    }
-  }
-  delete thread_list;
-
   return Error::OK;
 }
 
 void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  if (!OS::shouldProcessSignal(siginfo, SI_TIMER, SignalCookie::cpu())) {
+    Counters::increment(CTIMER_SIGNAL_FOREIGN);
+    OS::forwardForeignSignal(signo, siginfo, ucontext);
+    return;
+  }
+  Counters::increment(CTIMER_SIGNAL_OWN);
+
   CriticalSection cs;
   if (!cs.entered()) {
     return;
