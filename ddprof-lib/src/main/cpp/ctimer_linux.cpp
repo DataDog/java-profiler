@@ -175,7 +175,7 @@ Error CTimer::start(Arguments &args) {
   }
   delete thread_list;
 
-  return Error::OK;
+  return result;
 }
 
 void CTimer::stop() {
