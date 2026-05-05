@@ -1132,9 +1132,10 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   if (reset || _start_time == 0) {
-    // Reset counters
+    // Reset counters. _sample_seq is intentionally not reset: it is a
+    // monotonically increasing uniqueness generator for correlation IDs and
+    // must not repeat values across recording sessions.
     _total_samples = 0;
-    _sample_seq = 0;
     memset(_failures, 0, sizeof(_failures));
 
     // Reset dictionaries and bitmaps
