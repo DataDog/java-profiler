@@ -627,7 +627,7 @@ void Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
     atomicIncRelaxed(_failures[-ticks_skipped]);
     Counters::increment(JVMTI_STACKS_DROPPED_LOCK);
     // The JVM-side stack trace request is already in flight; we just drop our
-    // sample event. The dangling AsyncStackTrace entry in the JVM recording
+    // sample event. The dangling StackTraceRequest entry in the JVM recording
     // will simply have no matching datadog event, which is harmless.
     return;
   }
@@ -1353,7 +1353,7 @@ Error Profiler::stop() {
 
   // If jvmtistacks delegation was used this recording, surface likely
   // misconfigurations. The JVM returns WRONG_PHASE when JFR is not recording
-  // and NOT_AVAILABLE when JFR is recording but the AsyncStackTrace event is
+  // and NOT_AVAILABLE when JFR is recording but the StackTraceRequest event is
   // disabled. If the request was accepted the JVM will have written the
   // stack trace, so no warning is needed.
   if (VM::canRequestStackTrace()) {
@@ -1375,9 +1375,9 @@ Error Profiler::stop() {
     } else if (requested > 0 && other * 2 >= requested) {
       fprintf(stderr,
               "[java-profiler] jvmtistacks: %lld of %lld stack-trace requests "
-              "were rejected with NOT_AVAILABLE. The jdk.AsyncStackTrace event "
+              "were rejected with NOT_AVAILABLE. The jdk.StackTraceRequest event "
               "is likely disabled; enable it in the JFR configuration, e.g. "
-              "-XX:StartFlightRecording=...,+jdk.AsyncStackTrace#enabled=true.\n",
+              "-XX:StartFlightRecording=...,+jdk.StackTraceRequest#enabled=true.\n",
               other, requested);
     }
     if (dropped_lock > 0) {

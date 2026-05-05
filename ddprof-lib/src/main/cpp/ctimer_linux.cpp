@@ -241,7 +241,7 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   event._execution_mode = getThreadExecutionMode();
   // Opted into JVMTI delegation; drop the sample if the JVM rejects the
   // request (WRONG_PHASE if JFR is not recording, NOT_AVAILABLE if
-  // jdk.AsyncStackTrace is disabled). recordSampleDelegated() bumps the
+  // jdk.StackTraceRequest is disabled). recordSampleDelegated() bumps the
   // failure counters; there is no fallback to ASGCT in this engine.
   Profiler::instance()->recordSampleDelegated(ucontext, _interval, tid,
                                                BCI_CPU, &event);

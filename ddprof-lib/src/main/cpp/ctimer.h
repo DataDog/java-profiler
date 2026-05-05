@@ -66,7 +66,7 @@ public:
 // the walk to HotSpot's JFR RequestStackTrace JVMTI extension. The sampled
 // event is emitted on our side with only a correlation ID; the JVM writes
 // the stack trace (and its own JFR stack-trace id) into the concurrent JFR
-// recording as jdk.AsyncStackTrace. See VM::canRequestStackTrace().
+// recording as jdk.StackTraceRequest. See VM::canRequestStackTrace().
 class CTimerJvmti : public CTimer {
 private:
   // cppcheck-suppress unusedPrivateFunction
