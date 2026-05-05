@@ -988,11 +988,11 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
     // uses per-thread CPU timers.  On other platforms (e.g. macOS) it is not
     // supported, so fall back to ITimerJvmti which uses setitimer(ITIMER_PROF).
     if (args._jvmtistacks) {
-      if (ctimer_jvmti.check(args).ok()) {
+      if (!ctimer_jvmti.check(args)) {
         TEST_LOG("HS[cpu]=ctimer_jvmti");
         return &ctimer_jvmti;
       }
-      if (itimer_jvmti.check(args).ok()) {
+      if (!itimer_jvmti.check(args)) {
         TEST_LOG("HS[cpu]=itimer_jvmti");
         return &itimer_jvmti;
       }
