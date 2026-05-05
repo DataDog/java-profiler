@@ -625,6 +625,7 @@ bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
       !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
     atomicIncRelaxed(_failures[-ticks_skipped]);
+    Counters::increment(JVMTI_STACKS_DROPPED_LOCK);
     // The JVM-side stack trace request is already in flight; we just drop our
     // sample event. The dangling AsyncStackTrace entry in the JVM recording
     // will simply have no matching datadog event, which is harmless.
@@ -1363,6 +1364,8 @@ Error Profiler::stop() {
         Counters::getCounter(JVMTI_STACKS_FAILED_WRONG_PHASE);
     long long other =
         Counters::getCounter(JVMTI_STACKS_FAILED_OTHER);
+    long long dropped_lock =
+        Counters::getCounter(JVMTI_STACKS_DROPPED_LOCK);
     if (requested > 0 && wrong_phase * 2 >= requested) {
       fprintf(stderr,
               "[java-profiler] jvmtistacks: %lld of %lld stack-trace requests "
@@ -1377,6 +1380,13 @@ Error Profiler::stop() {
               "is likely disabled; enable it in the JFR configuration, e.g. "
               "-XX:StartFlightRecording=...,+jdk.AsyncStackTrace#enabled=true.\n",
               other, requested);
+    }
+    if (dropped_lock > 0) {
+      fprintf(stderr,
+              "[java-profiler] jvmtistacks: %lld of %lld stack-trace requests "
+              "were dropped due to lock contention; the corresponding "
+              "jdk.StackTraceRequest events will have no matching profiler event.\n",
+              dropped_lock, requested);
     }
   }
 
