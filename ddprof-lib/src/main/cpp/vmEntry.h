@@ -128,9 +128,9 @@ private:
   static bool _is_adaptive_gc_boundary_flag_set;
 
   // HotSpot JFR async stack-trace extension (optional, JDK 27+).
+  // Null until InitializeRequestStackTrace succeeds; published with RELEASE.
   static jvmtiExtensionFunction _request_stack_trace;
   static jvmtiExtensionFunction _init_request_stack_trace;
-  static bool _request_stack_trace_initialized;
 
   static jvmtiError(JNICALL *_orig_RedefineClasses)(
       jvmtiEnv *, jint, const jvmtiClassDefinition *);
@@ -196,14 +196,15 @@ public:
   }
 
   static bool canRequestStackTrace() {
-    return _request_stack_trace != nullptr && _request_stack_trace_initialized;
+    return __atomic_load_n(&_request_stack_trace, __ATOMIC_ACQUIRE) != nullptr;
   }
 
   // Must not be called from a signal handler — invokes JVMTI which is not async-signal-safe.
   static bool initializeRequestStackTrace();
 
   static jvmtiError requestStackTrace(void* ucontext, jlong user_data) {
-    return _request_stack_trace(_jvmti, (jthread)nullptr, ucontext, user_data);
+    jvmtiExtensionFunction fn = __atomic_load_n(&_request_stack_trace, __ATOMIC_ACQUIRE);
+    return fn(_jvmti, (jthread)nullptr, ucontext, user_data);
   }
 
   static void JNICALL VMInit(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);

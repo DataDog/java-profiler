@@ -45,7 +45,6 @@ bool VM::_is_adaptive_gc_boundary_flag_set = false;
 
 jvmtiExtensionFunction VM::_request_stack_trace = nullptr;
 jvmtiExtensionFunction VM::_init_request_stack_trace = nullptr;
-bool VM::_request_stack_trace_initialized = false;
 
 jvmtiError(JNICALL *VM::_orig_RedefineClasses)(jvmtiEnv *, jint,
                                                const jvmtiClassDefinition *);
@@ -387,7 +386,7 @@ void VM::probeJFRRequestStackTrace() {
     for (jint i = 0; i < ext_count; i++) {
       if (strcmp(ext_functions[i].id,
                  "com.sun.hotspot.functions.RequestStackTrace") == 0) {
-        _request_stack_trace = ext_functions[i].func;
+        __atomic_store_n(&_request_stack_trace, ext_functions[i].func, __ATOMIC_RELEASE);
       } else if (strcmp(ext_functions[i].id,
                         "com.sun.hotspot.functions.InitializeRequestStackTrace") == 0) {
         _init_request_stack_trace = ext_functions[i].func;
@@ -409,18 +408,18 @@ void VM::probeJFRRequestStackTrace() {
 
 // Must not be called from a signal handler — invokes JVMTI which is not async-signal-safe.
 bool VM::initializeRequestStackTrace() {
-  if (_request_stack_trace_initialized || _request_stack_trace == nullptr || _init_request_stack_trace == nullptr) {
-    return _request_stack_trace_initialized;
+  if (__atomic_load_n(&_request_stack_trace, __ATOMIC_RELAXED) == nullptr || _init_request_stack_trace == nullptr) {
+    return false;
   }
   jvmtiError rc = _init_request_stack_trace(_jvmti);
   if (rc == JVMTI_ERROR_NONE) {
-    _request_stack_trace_initialized = true;
     Counters::increment(JVMTI_STACKS_INIT_OK);
-  } else {
-    Log::warn("InitializeRequestStackTrace failed: %d", rc);
-    Counters::increment(JVMTI_STACKS_INIT_FAILED);
+    return true;
   }
-  return _request_stack_trace_initialized;
+  Log::warn("InitializeRequestStackTrace failed: %d", rc);
+  __atomic_store_n(&_request_stack_trace, (jvmtiExtensionFunction)nullptr, __ATOMIC_RELEASE);
+  Counters::increment(JVMTI_STACKS_INIT_FAILED);
+  return false;
 }
 
 bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
