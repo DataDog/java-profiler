@@ -401,8 +401,7 @@ static DdprofGlobalSetup ddprof_global_setup;
             if (!pt->tryEnterCriticalSection()) _exit(5);
             pt->exitCriticalSection();
 
-            delete pt; // TLS already cleared; manual cleanup.
-            _exit(0);
+            _exit(0); // destructor is private; OS reclaims memory on exit.
         }
 
         // ---- parent: reap child and check exit code ----
