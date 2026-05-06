@@ -484,7 +484,7 @@ void Recording::copyTo(int target_fd) {
 
 off_t Recording::finishChunk() { return finishChunk(false); }
 
-off_t Recording::finishChunk(bool end_recording) {
+off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   jvmtiEnv *jvmti = VM::jvmti();
   JNIEnv *env = VM::jni();
 
@@ -583,6 +583,14 @@ off_t Recording::finishChunk(bool end_recording) {
 
   _buf->reset();
 
+  // Free line number tables while class pins from GetLoadedClasses are still held.
+  // This prevents a SIGSEGV when a JVM implementation frees JVMTI-allocated line
+  // number table memory on class unload — releasing pins before Deallocate would
+  // create a window where the memory backing _ptr becomes invalid.
+  if (do_cleanup) {
+    cleanupUnreferencedMethods();
+  }
+
   if (!err) {
     // delete all local references
     for (int i = 0; i < count; i++) {
@@ -595,10 +603,7 @@ off_t Recording::finishChunk(bool end_recording) {
 }
 
 void Recording::switchChunk(int fd) {
-  _chunk_start = finishChunk(fd > -1);
-
-  // Cleanup unreferenced methods after finishing the chunk
-  cleanupUnreferencedMethods();
+  _chunk_start = finishChunk(fd > -1, /*do_cleanup=*/true);
 
   TEST_LOG("MethodMap: %zu methods after cleanup", _method_map.size());
 

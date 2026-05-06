@@ -192,7 +192,7 @@ public:
   void copyTo(int target_fd);
   off_t finishChunk();
 
-  off_t finishChunk(bool end_recording);
+  off_t finishChunk(bool end_recording, bool do_cleanup = false);
   void switchChunk(int fd);
 
   void cpuMonitorCycle();
