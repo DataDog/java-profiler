@@ -18,7 +18,6 @@
     #include <thread>
     #include <vector>
     #include <algorithm>  // For std::sort
-    #include <atomic>
     #include <sys/wait.h>
     #include <unistd.h>
 
@@ -360,60 +359,50 @@ static DdprofGlobalSetup ddprof_global_setup;
       EXPECT_TRUE(globalCount > 0);
     }
 
-    // Verify that CriticalSection._thread_ptr is cleared (exit succeeds) after
-    // ProfiledThread::release() is called while profiling signals are in flight.
-    // Uses fork() for TLS isolation.  The child sends SIGVTALRM to itself in a
-    // tight loop while the main thread calls release(); a stuck _in_critical_section
-    // would prevent a subsequent CriticalSection from entering (via primary path on
-    // a freshly initialised thread).
-    TEST(ProfiledThreadTeardown, CriticalSectionClearedAfterRelease) {
+    // Deterministic regression for the CriticalSection::_thread_ptr capture fix.
+    //
+    // Bug: the old destructor re-fetched currentSignalSafe() at destruction time.
+    // If TLS was cleared between the ctor and dtor (e.g. release() called inside
+    // the CS scope as it was in the old onThreadEnd), the re-fetch returned nullptr
+    // and exitCriticalSection() was silently skipped, leaving _in_critical_section
+    // stuck true so no subsequent CS could enter on that ProfiledThread.
+    //
+    // Fix: the ctor captures _thread_ptr once; the dtor uses that pointer regardless
+    // of TLS state at destruction time.
+    //
+    // This test exercises the exact race window by calling clearCurrentThreadTLS()
+    // inside a live CriticalSection scope, then verifying the flag is cleared.
+    // Without the fix tryEnterCriticalSection() returns false (exit 5).
+    TEST(ProfiledThreadTeardown, CriticalSectionExitsEvenAfterTLSCleared) {
         pid_t pid = fork();
         ASSERT_NE(-1, pid);
 
         if (pid == 0) {
-            // ---- child process ----
-            // Install no-op handlers so signals don't kill us.
-            struct sigaction sa = {};
-            sa.sa_handler = SIG_IGN;
-            sigaction(SIGVTALRM, &sa, nullptr);
-            sigaction(SIGPROF,   &sa, nullptr);
-
-            // Initialise a ProfiledThread for this thread.
+            // ---- child process (fork isolates TLS from other tests) ----
             ProfiledThread::initCurrentThread();
+            ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+            if (pt == nullptr) _exit(2);
 
-            // Confirm we can enter the critical section initially.
+            // Baseline: entering critical section works.
+            if (!pt->tryEnterCriticalSection()) _exit(3);
+            pt->exitCriticalSection();
+
+            // Simulate the race: CriticalSection is constructed while TLS is valid
+            // (so _thread_ptr is captured), then TLS is cleared before the dtor runs.
             {
                 CriticalSection cs;
-                if (!cs.entered()) {
-                    _exit(2); // unexpected: critical section already held
-                }
-            } // exits critical section
+                if (!cs.entered()) _exit(4);
+                // Mimics the moment inside release() after pthread_setspecific(NULL).
+                ProfiledThread::clearCurrentThreadTLS();
+            } // dtor: old code → re-fetch nullptr → skip exit → _in_critical_section stuck
+              //        new code → _thread_ptr captured at ctor → exitCriticalSection called
 
-            // Hammer with signals while releasing.
-            std::atomic<bool> done{false};
-            std::thread sender([&done]() {
-                while (!done.load(std::memory_order_relaxed)) {
-                    kill(getpid(), SIGVTALRM);
-                    kill(getpid(), SIGPROF);
-                }
-            });
+            // _in_critical_section must be false; if the bug is present this fails.
+            if (!pt->tryEnterCriticalSection()) _exit(5);
+            pt->exitCriticalSection();
 
-            // Release tears down TLS (deletes the ProfiledThread).
-            ProfiledThread::release();
-
-            done.store(true, std::memory_order_relaxed);
-            sender.join();
-
-            // After release, currentSignalSafe() returns nullptr; CriticalSection
-            // falls through to the fallback bitmap path — it must still enter.
-            {
-                CriticalSection cs;
-                if (!cs.entered()) {
-                    _exit(3); // stuck: critical section not released by teardown
-                }
-            }
-
-            _exit(0); // success
+            delete pt; // TLS already cleared; manual cleanup.
+            _exit(0);
         }
 
         // ---- parent: reap child and check exit code ----

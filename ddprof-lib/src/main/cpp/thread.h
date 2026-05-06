@@ -82,6 +82,14 @@ public:
 
   static void initCurrentThread();
   static void release();
+  // Clears TLS without deleting the ProfiledThread. For unit tests only:
+  // simulates the moment inside release() after pthread_setspecific(NULL) but
+  // before delete, which is the race window the _thread_ptr fix covers.
+  static void clearCurrentThreadTLS() {
+    if (__atomic_load_n(&_tls_key_initialized, __ATOMIC_ACQUIRE)) {
+      pthread_setspecific(_tls_key, nullptr);
+    }
+  }
 
   static ProfiledThread *current();
   static ProfiledThread *currentSignalSafe(); // Signal-safe version that never allocates
