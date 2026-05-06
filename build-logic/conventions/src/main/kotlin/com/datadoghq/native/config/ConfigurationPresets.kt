@@ -186,25 +186,47 @@ object ConfigurationPresets {
             Platform.LINUX -> {
                 config.compilerArgs.set(asanCompilerArgs + commonLinuxCompilerArgs(version))
 
-                val libasan = PlatformUtils.locateLibasan(compiler)
-                val asanLinkerArgs = if (libasan != null) {
-                    listOf(
-                        "-L${File(libasan).parent}",
-                        "-lasan",
-                        "-lubsan",
+                val isClang = PlatformUtils.isClangCompiler(compiler)
+                val ldPreloadLib: String?
+                val baseLinkerArgs: List<String>
+                val asanLinkerArgs: List<String>
+
+                if (isClang) {
+                    // With clang, ASan/UBSan symbols in the shared library are resolved at runtime
+                    // by the full LLVM runtime (libclang_rt.asan-x86_64.so) loaded via LD_PRELOAD.
+                    // At link time, clang adds only asan_static stubs (weak trampolines without strong
+                    // definitions), so -Wl,-z,defs must be omitted — it would fail on unresolved
+                    // ASan/UBSan symbols. Explicitly linking GCC's -lasan/-lubsan is also wrong:
+                    // GCC's libubsan lacks LLVM-specific symbols (e.g. __ubsan_handle_function_type_mismatch_abort).
+                    ldPreloadLib = PlatformUtils.locateClangRtAsan(compiler)
+                    baseLinkerArgs = commonLinuxLinkerArgs().filter { it != "-Wl,-z,defs" }
+                    asanLinkerArgs = listOf(
                         "-fsanitize=address",
                         "-fsanitize=undefined",
                         "-fno-omit-frame-pointer"
                     )
                 } else {
-                    emptyList()
+                    ldPreloadLib = PlatformUtils.locateLibasan(compiler)
+                    baseLinkerArgs = commonLinuxLinkerArgs()
+                    asanLinkerArgs = if (ldPreloadLib != null) {
+                        listOf(
+                            "-L${File(ldPreloadLib).parent}",
+                            "-lasan",
+                            "-lubsan",
+                            "-fsanitize=address",
+                            "-fsanitize=undefined",
+                            "-fno-omit-frame-pointer"
+                        )
+                    } else {
+                        emptyList()
+                    }
                 }
 
-                config.linkerArgs.set(commonLinuxLinkerArgs() + asanLinkerArgs)
+                config.linkerArgs.set(baseLinkerArgs + asanLinkerArgs)
 
-                if (libasan != null) {
+                if (ldPreloadLib != null) {
                     config.testEnvironment.apply {
-                        put("LD_PRELOAD", libasan)
+                        put("LD_PRELOAD", ldPreloadLib)
                         put("ASAN_OPTIONS", "allocator_may_return_null=1:unwind_abort_on_malloc=1:use_sigaltstack=0:detect_stack_use_after_return=0:handle_segv=0:halt_on_error=0:abort_on_error=0:print_stacktrace=1:symbolize=1:log_path=/tmp/asan_%p.log:suppressions=$rootDir/gradle/sanitizers/asan.supp")
                         put("UBSAN_OPTIONS", "halt_on_error=0:abort_on_error=0:print_stacktrace=1:log_path=/tmp/ubsan_%p.log:suppressions=$rootDir/gradle/sanitizers/ubsan.supp")
                         put("LSAN_OPTIONS", "detect_leaks=0")

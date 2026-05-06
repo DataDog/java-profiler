@@ -10,6 +10,8 @@
 #include "hotspot/vmStructs.h"
 #include "jvmThread.h"
 
+#include <cassert>
+
 VMThread* VMThread::current() {
     return VMThread::cast(JVMThread::current());
 }
@@ -36,22 +38,6 @@ void** VMThread::vtable() {
     return *(void***)this;
 }
 
-// This thread is considered a JavaThread if at least 2 of the selected 3 vtable entries
-// match those of a known JavaThread (which is either application thread or AttachListener).
-// Indexes were carefully chosen to work on OpenJDK 8 to 25, both product an debug builds.
-bool VMThread::hasJavaThreadVtable() {
-    void** vtbl = vtable();
-    return (SafeAccess::load(&vtbl[1]) == _java_thread_vtbl[1]) +
-           (SafeAccess::load(&vtbl[3]) == _java_thread_vtbl[3]) +
-           (SafeAccess::load(&vtbl[5]) == _java_thread_vtbl[5]) >= 2;
-}
-
-VMNMethod* VMMethod::code() {
-    assert(_method_code_offset >= 0);
-    const void* code_ptr = *(const void**) at(_method_code_offset);
-    return VMNMethod::cast(code_ptr);
-}
-
 VMMethod* VMThread::compiledMethod() {
     if (!isJavaThread(this)) return NULL;
     assert(_comp_method_offset >= 0);
@@ -65,6 +51,181 @@ VMMethod* VMThread::compiledMethod() {
         }
     }
     return NULL;
+}
+
+// This thread is considered a JavaThread if at least 2 of the selected 3 vtable entries
+// match those of a known JavaThread (which is either application thread or AttachListener).
+// Indexes were carefully chosen to work on OpenJDK 8 to 25, both product an debug builds.
+bool VMThread::hasJavaThreadVtable() {
+    void** vtbl = vtable();
+    return (SafeAccess::load(&vtbl[1]) == _java_thread_vtbl[1]) +
+           (SafeAccess::load(&vtbl[3]) == _java_thread_vtbl[3]) +
+           (SafeAccess::load(&vtbl[5]) == _java_thread_vtbl[5]) >= 2;
+}
+
+jmethodID* VMKlass::ids() const {
+    return (jmethodID*) SafeAccess::loadPtr((void**)at(_jmethod_ids_offset), nullptr);
+}
+
+bool VMClassLoaderData::isAnonymous() const {
+    if (_class_loader_data_is_anonymous_offset >= 0) {
+        return *(bool*) at(_class_loader_data_is_anonymous_offset);
+    }
+    return false;    
+}
+
+bool VMClassLoaderData::hasClassMirrorHolder() const {
+    if (_class_loader_data_has_class_mirror_holder_offset >= 0) {             
+        return  *(bool*) at(_class_loader_data_has_class_mirror_holder_offset);
+    }
+    return false;
+}
+
+VMKlass* VMConstantPool::holder() const {
+    assert(_pool_holder_offset >= 0);
+    return VMKlass::load_then_cast(at(_pool_holder_offset));
+}
+
+VMKlass* VMConstantPool::holderSafe() const {
+    assert(_pool_holder_offset >= 0);
+    return VMKlass::safe_load_then_cast(at(_pool_holder_offset));
+}
+
+VMSymbol* VMConstantPool::symbolAt(u16 index) const {
+    return VMSymbol::cast(*(void**)&base()[index]);
+}
+
+VMSymbol* VMConstantPool::symbolAtSafe(u16 index) const {
+    return VMSymbol::cast_or_null(*(void**)&base()[index]);
+}
+
+intptr_t* VMConstantPool::base() const {
+    assert(_VMConstantPool_size > 0);
+    return (intptr_t*)(((char*)this) + _VMConstantPool_size);
+}
+
+jmethodID VMMethod::id() {
+    // We may find a bogus NMethod during stack walking, it does not always point to a valid VMMethod
+    VMConstMethod* const_method = constMethodSafe();
+    if (const_method == nullptr || !goodPtr((void*)const_method)) {
+        TEST_LOG("VMMethod::id: Bad constMethod");
+        return JMETHODID_NOT_WALKABLE;
+    }
+
+    VMConstantPool* pool = const_method->constantsSafe();
+    if (pool == nullptr || !goodPtr((void*)pool)) {
+        TEST_LOG("VMMethod::id: Bad VMConstantPool");
+        return JMETHODID_NOT_WALKABLE;
+    }
+
+    VMKlass* holder = pool->holderSafe();
+    if (holder == nullptr || !goodPtr((void*)holder)) {
+        TEST_LOG("VMMethod::id: Bad Pool holder");
+        return JMETHODID_NOT_WALKABLE;
+    }
+
+    jmethodID* ids = holder->ids();
+    // No jmethodID has been populated
+    if (ids == nullptr) {
+        return nullptr;
+    }
+
+    int16_t idnum = (int16_t)const_method->idnum();
+    if (idnum < 0) {
+        TEST_LOG("VMMethod::id: Bad idnum");
+        return JMETHODID_NOT_WALKABLE;
+    }
+    
+    int32_t len = SafeAccess::load32((int32_t*)ids, -1);
+    if (len < 0 || idnum >= len) {
+        TEST_LOG("VMMethod::id: Bad len: %d, idnum: %d", len, idnum);
+        return JMETHODID_NOT_WALKABLE;
+    }
+
+    jmethodID mid = (jmethodID) SafeAccess::loadPtr((void**)(&ids[idnum + 1]), (void*)JMETHODID_NOT_WALKABLE);
+    TEST_LOG("VMMethod::id fetch method id = 0x%zx", (unsigned long)mid);
+    return mid;
+}
+
+jmethodID VMMethod::validatedId() {
+    jmethodID method_id = id();
+    if (method_id != JMETHODID_NOT_WALKABLE && _can_dereference_jmethod_id) {
+        if ((goodPtr(method_id) && SafeAccess::loadPtr((void**)method_id, nullptr) == this)) {
+            return method_id;
+        } else {
+            return JMETHODID_NOT_WALKABLE;
+        }
+    }
+    return method_id;
+}
+
+int16_t VMConstMethod::idnum() const {
+    return (int16_t)SafeAccess::load32((int32_t*)at(_constmethod_idnum_offset), -1);
+}
+
+VMConstMethod* VMMethod::constMethod() const {
+    return VMConstMethod::load_then_cast(at(_method_constmethod_offset));
+}
+
+VMConstMethod* VMMethod::constMethodSafe() const {
+    return VMConstMethod::safe_load_then_cast(at(_method_constmethod_offset));
+}
+
+VMNMethod* VMMethod::code() const {
+    assert(_method_code_offset >= 0);
+    const void* code_ptr = *(const void**) at(_method_code_offset);
+    return VMNMethod::cast(code_ptr);
+}
+
+VMKlass* VMMethod::methodHolder() const {
+    VMConstMethod* constMthd = constMethod();
+    VMConstantPool* pool = constMthd->constants();
+    VMKlass* holder = pool->holder();
+    return holder;
+}
+
+VMKlass* VMMethod::methodHolderSafe() const {
+    VMConstMethod* constMthd = constMethodSafe();
+    if (constMthd == nullptr) return nullptr;
+
+    VMConstantPool* pool = constMthd->constantsSafe();
+    if (pool == nullptr) return nullptr;
+
+    return pool->holderSafe();
+}
+
+VMConstantPool* VMConstMethod::constants() const {
+    return VMConstantPool::load_then_cast(at(_constmethod_constants_offset));
+}
+
+VMConstantPool* VMConstMethod::constantsSafe() const {
+    return VMConstantPool::safe_load_then_cast(at(_constmethod_constants_offset));
+}
+
+u16 VMConstMethod::nameIndex() const {
+    assert(_constmethod_name_index_offset >= 0 && "Invalid name index");
+    return *(u16*)at(_constmethod_name_index_offset);
+}
+
+u16 VMConstMethod::signatureIndex() const {
+    assert(_constmethod_sig_index_offset >= 0 && "Invalid signature index");
+    return *(u16*)at(_constmethod_sig_index_offset);
+}
+
+VMSymbol* VMConstMethod::name() const {
+    VMConstantPool* cpool = constants();
+    u16 name_index = nameIndex();
+    return cpool->symbolAtSafe(name_index);
+}
+
+VMSymbol* VMConstMethod::signature() const {
+    VMConstantPool* cpool = constants();
+    u16 sig_index = signatureIndex();
+    return cpool->symbolAtSafe(sig_index);
+}
+
+VMKlass* VMClasses::obj_klass() {
+    return VMKlass::load_then_cast(_obj_class_addr);
 }
 
 #endif // _HOTSPOT_VMSTRUCTS_INLINE_H

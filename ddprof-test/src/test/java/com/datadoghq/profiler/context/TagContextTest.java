@@ -67,6 +67,7 @@ public class TagContextTest extends AbstractProfilerTest {
                 IMemberAccessor<String, IItem> stacktraceAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(wallclockSamples.getType());
                 for (IItem sample : wallclockSamples) {
                     String stacktrace = stacktraceAccessor.getMember(sample);
+System.out.println(stacktrace);
                     if (!stacktrace.contains("sleep")) {
                         // we don't know the context has been set for sure until the sleep has started
                         continue;
@@ -82,7 +83,6 @@ public class TagContextTest extends AbstractProfilerTest {
                         droppedSamplesWeight += weight;
                         continue;
                     }
-
                     String tag = tag1Accessor.getMember(sample);
                     weightsByTagValue.computeIfAbsent(tag, v -> new AtomicLong())
                             .addAndGet(weight);
@@ -92,6 +92,7 @@ public class TagContextTest extends AbstractProfilerTest {
             long sum = 0;
             long[] weights = new long[strings.length];
             System.out.println("Found tag values: " + weightsByTagValue.keySet());
+            System.out.println("Strings: " + strings.length);
             for (int i = 0; i < strings.length; i++) {
                 AtomicLong weight = weightsByTagValue.get(strings[i]);
                 assertNotNull(weight, "Weight for " + strings[i] + " not found. Found: " + weightsByTagValue.keySet());

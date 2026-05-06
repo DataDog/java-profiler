@@ -12,13 +12,17 @@
 
 #include "arch.h"
 #include "codeCache.h"
-#include "frame.h"
 
 #ifdef __clang__
 #define DLLEXPORT __attribute__((visibility("default")))
 #else
 #define DLLEXPORT __attribute__((visibility("default"), externally_visible))
 #endif
+
+#ifndef JMETHODID_NOT_WALKABLE
+#define JMETHODID_NOT_WALKABLE  (jmethodID)((uintptr_t)-1)
+#endif // JMETHODID_NOT_WALKABLE
+
 
 // Denotes ASGCT_CallFrame where method_id has special meaning (not jmethodID)
 enum ASGCT_CallFrameType {
@@ -76,6 +80,7 @@ typedef struct _asgct_callframe {
         jmethodID method_id;
         unsigned long packed_remote_frame; // packed RemoteFrameInfo data
         const char* native_function_name;
+        const void* method; // Hotspot only, direct pointer to JVM method
     };
 } ASGCT_CallFrame;
 
@@ -136,8 +141,6 @@ private:
   static void ready(jvmtiEnv *jvmti, JNIEnv *jni);
   static void applyPatch(char *func, const char *patch, const char *end_patch);
   static void *getLibraryHandle(const char *name);
-  static void loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
-  static void loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni);
 
   static bool initShared(JavaVM *vm);
 
@@ -193,15 +196,6 @@ public:
   static void JNICALL VMInit(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
   static void JNICALL VMDeath(jvmtiEnv *jvmti, JNIEnv *jni);
 
-  static void JNICALL ClassLoad(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
-                                jclass klass) {
-    // Needed only for AsyncGetCallTrace support
-  }
-
-  static void JNICALL ClassPrepare(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
-                                   jclass klass) {
-    loadMethodIDs(jvmti, jni, klass);
-  }
 
   static jvmtiError JNICALL
   RedefineClassesHook(jvmtiEnv *jvmti, jint class_count,
