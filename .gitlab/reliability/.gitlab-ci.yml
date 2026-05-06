@@ -56,8 +56,6 @@ reliability-aarch64:
   image: $BENCHMARK_IMAGE_ARM64
   variables:
     ARCH: aarch64
-    KUBERNETES_MEMORY_REQUEST: 200Gi
-    KUBERNETES_MEMORY_LIMIT: 200Gi
 
 # Chaos variant runs antagonists under a patched dd-java-agent. Pulls the
 # precomputed chaos.jar artifact from the chaos:build job (stresstest stage).
@@ -113,8 +111,6 @@ reliability-chaos-aarch64:
   image: $BENCHMARK_IMAGE_ARM64
   variables:
     ARCH: aarch64
-    KUBERNETES_MEMORY_REQUEST: 200Gi
-    KUBERNETES_MEMORY_LIMIT: 200Gi
 
 notify-slack:
   stage: notify
