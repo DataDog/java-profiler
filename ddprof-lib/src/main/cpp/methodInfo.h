@@ -79,8 +79,7 @@ class MethodMap : public std::map<unsigned long, MethodInfo> {
 public:
   static constexpr unsigned long ADDRESS_MARK = 0x8000000000000000ULL;
   static constexpr unsigned long REMOTE_FRAME_MARK = 0x4000000000000000ULL;
-  static constexpr unsigned long METHOD_MARK = 0xc000000000000000ULL;
-  static constexpr unsigned long KEY_TYPE_MASK = ADDRESS_MARK | REMOTE_FRAME_MARK | METHOD_MARK;
+  static constexpr unsigned long KEY_TYPE_MASK = ADDRESS_MARK | REMOTE_FRAME_MARK;
 
   MethodMap() {}
 
@@ -100,12 +99,6 @@ public:
     unsigned long key = packed_remote_frame;
     assert((key & KEY_TYPE_MASK) == 0);
     return (key | REMOTE_FRAME_MARK);
-  }
-
-  static unsigned long makeKey(const void* method) {
-    unsigned long key = reinterpret_cast<unsigned long>(method);
-    assert((key & KEY_TYPE_MASK) == 0);
-    return (key | METHOD_MARK);
   }
 };
 

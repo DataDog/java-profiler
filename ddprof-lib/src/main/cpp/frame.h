@@ -13,15 +13,15 @@ enum FrameTypeId {
   FRAME_KERNEL = 5,
   FRAME_C1_COMPILED = 6,
   FRAME_NATIVE_REMOTE = 7,  // Native frame with remote symbolication (build-id + pc-offset)
-  FRAME_INTERPRETED_METHOD = 8,
-  FRAME_TYPE_MAX = FRAME_INTERPRETED_METHOD  // Maximum valid frame type
+  FRAME_TYPE_MAX = FRAME_NATIVE_REMOTE  // Maximum valid frame type
 };
 
 class FrameType {
+  static constexpr int RAW_POIINTER_MASK = 1 << 30;
 public:
-  static inline int encode(int type, int bci) {
-    assert((type != FRAME_INTERPRETED_METHOD || VM::isHotspot()) && "FRAME_INTERPRETED_METHOD is only valid for hotspot");
-    return (1 << 24) | (type << 25) | (bci & 0xffffff);
+  static inline int encode(int type, int bci, bool rawPointer = false) {
+    assert((!rawPointer || VM::isHotspot()) && "Raw pointer is only valid for hotspot");
+    return (1 << 24) | (type << 25) | (bci & 0xffffff) | (rawPointer ? RAW_POIINTER_MASK : 0);
   }
 
   static inline FrameTypeId decode(int bci) {
@@ -30,8 +30,12 @@ public:
       return FRAME_JIT_COMPILED;
     }
     // Clamp to valid FrameTypeId range to defend against corrupted values
-    int raw_type = bci >> 25;
+    int raw_type = (bci & ~ RAW_POIINTER_MASK) >> 25;
     return (FrameTypeId)(raw_type <= FRAME_TYPE_MAX ? raw_type : FRAME_TYPE_MAX);
+  }
+
+  static inline bool isRawPointer(int bci) {
+    return bci > 0 && (bci & RAW_POIINTER_MASK) != 0;
   }
 };
 

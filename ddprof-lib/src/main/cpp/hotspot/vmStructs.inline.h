@@ -63,6 +63,10 @@ bool VMThread::hasJavaThreadVtable() {
            (SafeAccess::load(&vtbl[5]) == _java_thread_vtbl[5]) >= 2;
 }
 
+jmethodID* VMKlass::ids() const {
+    return (jmethodID*) SafeAccess::loadPtr((void**)at(_jmethod_ids_offset), nullptr);
+}
+
 bool VMClassLoaderData::isAnonymous() const {
     if (_class_loader_data_is_anonymous_offset >= 0) {
         return *(bool*) at(_class_loader_data_is_anonymous_offset);
@@ -98,6 +102,60 @@ VMSymbol* VMConstantPool::symbolAtSafe(u16 index) const {
 intptr_t* VMConstantPool::base() const {
     assert(_VMConstantPool_size > 0);
     return (intptr_t*)(((char*)this) + _VMConstantPool_size);
+}
+
+jmethodID VMMethod::id() {
+    // We may find a bogus NMethod during stack walking, it does not always point to a valid VMMethod
+    VMConstMethod* const_method = constMethodSafe();
+    if (const_method == nullptr || !goodPtr((void*)const_method)) {
+        return JMETHODID_NOT_WALKABLE;
+    }
+
+
+    VMConstantPool* pool = const_method->constantsSafe();
+    if (pool == nullptr || !goodPtr((void*)pool)) {
+        return JMETHODID_NOT_WALKABLE;
+    }
+
+    VMKlass* holder = pool->holderSafe();
+    if (holder == nullptr || !goodPtr((void*)holder)) {
+        return JMETHODID_NOT_WALKABLE;
+    }
+
+    jmethodID* ids = holder->ids();
+    // No jmethodID has been populated
+    if (ids == nullptr) {
+        return nullptr;
+    }
+
+    int16_t idnum = (int16_t)const_method->idnum();
+    if (idnum < 0) {
+        return JMETHODID_NOT_WALKABLE;
+    }
+    
+    int32_t len = SafeAccess::load32((int32_t*)ids, -1);
+    if (len < 0 || idnum >= len) {
+        return JMETHODID_NOT_WALKABLE;
+    }
+
+    return (jmethodID) SafeAccess::loadPtr((void**)(&ids[idnum + 1]), (void*)JMETHODID_NOT_WALKABLE);
+}
+
+jmethodID VMMethod::validatedId() {
+    jmethodID method_id = id();
+    if (method_id != JMETHODID_NOT_WALKABLE && _can_dereference_jmethod_id) {
+        if ((goodPtr(method_id) && SafeAccess::loadPtr((void**)method_id, nullptr) == this)) {
+            return method_id;
+        } else {
+            TEST_LOG("validateId not walkable");
+            return JMETHODID_NOT_WALKABLE;
+        }
+    }
+    return method_id;
+}
+
+int16_t VMConstMethod::idnum() const {
+    return (int16_t)SafeAccess::load32((int32_t*)at(_constmethod_idnum_offset), -1);
 }
 
 VMConstMethod* VMMethod::constMethod() const {

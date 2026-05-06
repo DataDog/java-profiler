@@ -24,7 +24,6 @@ class GCHeapSummary;
 class HeapUsage;
 class VMNMethod;
 
-
 // During stack walking in the profiler's signal handler, GC or class unloading
 // on another thread can free VMNMethod/VMMethod memory concurrently, making
 // pointers stale between the readability check and the actual dereference.
@@ -91,7 +90,7 @@ inline T* cast_or_null(const void* ptr) {
             return cast(*(const void**)ptr); } \
         static name * safe_load_then_cast(const void* ptr) { \
             if (ptr == nullptr) return nullptr; \
-            return cast(SafeAccess::loadPtr((void**)ptr, nullptr)); }
+            return cast_or_null(SafeAccess::loadPtr((void**)ptr, nullptr)); }
 #define DECLARE_END  };
 
 /**
@@ -692,6 +691,8 @@ DECLARE(VMKlass)
         }
     }
 
+    inline jmethodID* ids() const;
+
     VMSymbol* name() {
         assert(_klass_name_offset >= 0);
         return VMSymbol::load_then_cast(at(_klass_name_offset));
@@ -917,6 +918,7 @@ public:
     inline VMConstantPool* constantsSafe() const;
     inline VMSymbol* name() const;
     inline VMSymbol* signature() const;
+    inline int16_t idnum() const;
 private:
     inline u16 nameIndex() const;
     inline u16 signatureIndex() const;
@@ -927,10 +929,10 @@ private:
     static bool check_jmethodID_J9(jmethodID id);
     static bool check_jmethodID_hotspot(jmethodID id);
 public:
-    jmethodID id();
+    inline jmethodID id();
 
     // Performs extra validation when VMMethod comes from incomplete frame
-    jmethodID validatedId();
+    inline jmethodID validatedId();
 
     // Workaround for JDK-8313816
     static bool isStaleMethodId(jmethodID id) {
@@ -1059,6 +1061,11 @@ DECLARE(VMNMethod)
     VMMethod* method() {
         assert(_nmethod_method_offset >= 0);
         return VMMethod::load_then_cast((const void*)at(_nmethod_method_offset));
+    }
+
+    VMMethod* methodSafe() const {
+        assert(_nmethod_method_offset >= 0);
+        return VMMethod::safe_load_then_cast((const void*)at(_nmethod_method_offset));
     }
 
     char state() {

@@ -19,6 +19,11 @@
 #define DLLEXPORT __attribute__((visibility("default"), externally_visible))
 #endif
 
+#ifndef JMETHODID_NOT_WALKABLE
+#define JMETHODID_NOT_WALKABLE  (jmethodID)((uintptr_t)-1)
+#endif // JMETHODID_NOT_WALKABLE
+
+
 // Denotes ASGCT_CallFrame where method_id has special meaning (not jmethodID)
 enum ASGCT_CallFrameType {
   BCI_CPU = 0,                  // cpu time

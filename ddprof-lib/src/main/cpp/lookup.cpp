@@ -308,15 +308,13 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   jmethodID method_id = frame.method_id;
 
   // Resolve this frame into FRAME_INTERPRETED
-  if (frame_type == FRAME_INTERPRETED_METHOD) {
+  if (FrameType::isRawPointer(bci)) {
     method_id = JVMSupport::resolve(frame.method);
-    frame.bci = FrameType::encode(FRAME_INTERPRETED, frame.bci);
+    frame.bci = FrameType::encode(frame_type, frame.bci);
     frame.method_id = method_id;
-    frame_type = FRAME_INTERPRETED;
   }
 
   if (method_id == nullptr) {
-    TEST_LOG("Unknown: frameType = %d, bci = %d", (int)frame_type, bci);
     key = MethodMap::makeKey(UNKNOWN);
   } else if (bci == BCI_ERROR || bci == BCI_NATIVE_FRAME) {
     key = MethodMap::makeKey(frame.native_function_name);
