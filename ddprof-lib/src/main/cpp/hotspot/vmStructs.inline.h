@@ -108,17 +108,19 @@ jmethodID VMMethod::id() {
     // We may find a bogus NMethod during stack walking, it does not always point to a valid VMMethod
     VMConstMethod* const_method = constMethodSafe();
     if (const_method == nullptr || !goodPtr((void*)const_method)) {
+        TEST_LOG("VMMethod::id: Bad constMethod");
         return JMETHODID_NOT_WALKABLE;
     }
 
-
     VMConstantPool* pool = const_method->constantsSafe();
     if (pool == nullptr || !goodPtr((void*)pool)) {
+        TEST_LOG("VMMethod::id: Bad VMConstantPool");
         return JMETHODID_NOT_WALKABLE;
     }
 
     VMKlass* holder = pool->holderSafe();
     if (holder == nullptr || !goodPtr((void*)holder)) {
+        TEST_LOG("VMMethod::id: Bad Pool holder");
         return JMETHODID_NOT_WALKABLE;
     }
 
@@ -130,15 +132,19 @@ jmethodID VMMethod::id() {
 
     int16_t idnum = (int16_t)const_method->idnum();
     if (idnum < 0) {
+        TEST_LOG("VMMethod::id: Bad idnum");
         return JMETHODID_NOT_WALKABLE;
     }
     
     int32_t len = SafeAccess::load32((int32_t*)ids, -1);
     if (len < 0 || idnum >= len) {
+        TEST_LOG("VMMethod::id: Bad len: %d, idnum: %d", len, idnum);
         return JMETHODID_NOT_WALKABLE;
     }
 
-    return (jmethodID) SafeAccess::loadPtr((void**)(&ids[idnum + 1]), (void*)JMETHODID_NOT_WALKABLE);
+    jmethodID mid = (jmethodID) SafeAccess::loadPtr((void**)(&ids[idnum + 1]), (void*)JMETHODID_NOT_WALKABLE);
+    TEST_LOG("VMMethod::id fetch method id = 0x%zx", (unsigned long)mid);
+    return mid;
 }
 
 jmethodID VMMethod::validatedId() {
@@ -147,7 +153,6 @@ jmethodID VMMethod::validatedId() {
         if ((goodPtr(method_id) && SafeAccess::loadPtr((void**)method_id, nullptr) == this)) {
             return method_id;
         } else {
-            TEST_LOG("validateId not walkable");
             return JMETHODID_NOT_WALKABLE;
         }
     }

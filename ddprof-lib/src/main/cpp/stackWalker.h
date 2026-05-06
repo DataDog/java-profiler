@@ -62,9 +62,10 @@ namespace StackWalkValidation {
         return sp > lo && sp < hi && aligned(sp);
     }
 
-    // Drop unknown leaf frame (method_id == NULL at index 0).
+    // Drop unknown leaf frame (method_id == NULL or JMETHODID_NOT_WALKABLE at index 0).
     // Returns the new depth after removal.
     static inline int dropUnknownLeaf(ASGCT_CallFrame* frames, int depth) {
+        int saved = depth;
         if (depth > 0 && frames[0].method_id == JMETHODID_NOT_WALKABLE) {
             depth--;
             if (depth > 0) {

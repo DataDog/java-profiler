@@ -302,6 +302,8 @@ void Lookup::fillMethodInfo(MethodInfo *mi, jclass method_class, char* class_nam
 
 MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   static const char* UNKNOWN = "unknown";
+  static const char* NOT_WALKABLE = "not_walkable";
+
   unsigned long key;
   jint bci = frame.bci;
   FrameTypeId frame_type = FrameType::decode(bci);
@@ -310,12 +312,16 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   // Resolve this frame into FRAME_INTERPRETED
   if (FrameType::isRawPointer(bci)) {
     method_id = JVMSupport::resolve(frame.method);
+
+    TEST_LOG("Lookup resolving method: 0x%zu to 0x%zu", (unsigned long)frame.method, (unsigned long)method_id);
     frame.bci = FrameType::encode(frame_type, frame.bci);
     frame.method_id = method_id;
   }
 
   if (method_id == nullptr) {
     key = MethodMap::makeKey(UNKNOWN);
+  } else if (method_id == JMETHODID_NOT_WALKABLE) {
+    key = MethodMap::makeKey(NOT_WALKABLE);
   } else if (bci == BCI_ERROR || bci == BCI_NATIVE_FRAME) {
     key = MethodMap::makeKey(frame.native_function_name);
   } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
@@ -337,6 +343,8 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     }
     if (method_id == nullptr) {
       fillNativeMethodInfo(mi, UNKNOWN, nullptr);
+    } else if (method_id == JMETHODID_NOT_WALKABLE) {
+      fillNativeMethodInfo(mi, NOT_WALKABLE, nullptr);
     } else if (bci == BCI_ERROR) {
       fillNativeMethodInfo(mi, (const char *)method_id, nullptr);
     } else if (bci == BCI_NATIVE_FRAME) {

@@ -140,6 +140,7 @@ static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *n
 }
 
 static inline void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, const VMMethod* method) {
+    assert(false);
     assert(method != nullptr);
     frame.bci = FrameType::encode(type, bci, true /*raw method pointer*/);
     frame.method = static_cast<const void*>(method);
@@ -432,7 +433,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
                 bool is_plausible_interpreter_frame = StackWalkValidation::isPlausibleInterpreterFrame(fp, sp, bcp_offset);
                 if (is_plausible_interpreter_frame) {
-                    VMMethod* method = VMMethod::cast_or_null(((void**)fp)[InterpreterFrame::method_offset]);
+                    VMMethod* method = ((VMMethod**)fp)[InterpreterFrame::method_offset];
+                   // VMMethod* method = VMMethod::cast_or_null(((void**)fp)[InterpreterFrame::method_offset]);
                     jmethodID method_id = getMethodId(method);
                     if (method_id != JMETHODID_NOT_WALKABLE && (method_id != NULL || VMClassLoader::isLoadedByBootstrapClassLoader(method))) {
                         Counters::increment(WALKVM_JAVA_FRAME_OK);
@@ -495,7 +497,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 Counters::increment(WALKVM_JAVA_FRAME_OK);
                 int level = nm->level();
                 FrameTypeId type = details && level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED;
-                VMMethod* method = VMMethod::cast_or_null((const void*)frame.method());
+                VMMethod* method = VMMethod::cast_or_null(nm->method());
                 jmethodID method_id = getMethodId(method);
                 if (method_id != JMETHODID_NOT_WALKABLE) {
                     if (method_id != nullptr) {
@@ -522,15 +524,17 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                             }
                             VMMethod* method = scope.method();
                             jmethodID method_id = getMethodId(method);
-                            assert(method_id != JMETHODID_NOT_WALKABLE);
-                            if (method_id != nullptr && method_id != JMETHODID_NOT_WALKABLE) {
+                            if (method_id == nullptr || method_id == JMETHODID_NOT_WALKABLE) {
                                 fillFrame(frames[depth++], type, scope.bci(), method_id);
-                            } else if (method_id == nullptr && VMClassLoader::isLoadedByBootstrapClassLoader(method)) {
-                                fillFrame(frames[depth++], scope.bci(), scope.method());
+                            } else if (VMClassLoader::isLoadedByBootstrapClassLoader(method)) {
+                                fillFrame(frames[depth++], scope.bci(), method);
+                            } else {
+//                                assert(false && "Should not reach here");
+                                fillFrame(frames[depth++], type, scope.bci(), JMETHODID_NOT_WALKABLE);
                             }
                         } while (scope_offset > 0 && depth < max_depth);
                     }
-
+// TEST_LOG("After scope, depth: %d", depth);
                     // Handle situations when sp is temporarily changed in the compiled code
                     frame.adjustSP(nm->entry(), pc, sp);
 
@@ -683,7 +687,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     // In HotSpot, lastJavaFP is non-zero only for interpreter frames;
                     // compiled frames record FP=0 in the anchor.
                     if (StackWalkValidation::isPlausibleInterpreterFrame(recovery_fp, recovery_sp, bcp_offset)) {
-                        VMMethod* method = VMMethod::cast_or_null(((VMMethod**)recovery_fp)[InterpreterFrame::method_offset]);
+                        VMMethod* method = ((VMMethod**)recovery_fp)[InterpreterFrame::method_offset];
                         jmethodID method_id = getMethodId(method);
                         if (method_id != JMETHODID_NOT_WALKABLE && (method_id != nullptr || VMClassLoader::isLoadedByBootstrapClassLoader(method))) {
                             anchor = NULL;
@@ -850,7 +854,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 Counters::increment(WALKVM_ANCHOR_FALLBACK);
                 Counters::increment(WALKVM_JAVA_FRAME_OK);
                 anchor = NULL;
-                while (depth > 0 && frames[depth - 1].method_id == NULL) depth--;
+                while (depth > 0 && frames[depth - 1].method_id == JMETHODID_NOT_WALKABLE) depth--;
                 if (depth < actual_max_depth) {
                     const char* bytecode_start = method->bytecode();
                     const char* bcp = ((const char**)anchor_fp)[bcp_offset];
@@ -876,7 +880,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             }
             Counters::increment(WALKVM_ANCHOR_FALLBACK);
             anchor = NULL;
-            while (depth > 0 && frames[depth - 1].method_id == NULL) depth--;
+            while (depth > 0 && frames[depth - 1].method_id == JMETHODID_NOT_WALKABLE) depth--;
             if (sp != 0 && sp < bottom && aligned(sp)) {
                 goto unwind_loop;
             }
@@ -1255,19 +1259,23 @@ bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
 jmethodID HotspotSupport::resolve(const void* method) {
   assert(VM::isHotspot());
   assert(method != nullptr);
+  TEST_LOG("Resolve method");
   VMMethod* vm_method = VMMethod::cast_or_null(method);
   if (vm_method == nullptr) {
+  TEST_LOG("Resolve method nullptr");
     return nullptr;
   }
 
-  // May have been populated by following code
+  // May have been populated by following code or JMETHODID_NOT_WALKABLE
   jmethodID method_id = vm_method->validatedId();
   if (method_id != nullptr) {
+  TEST_LOG("Resolve method methodId = 0x%zu", (unsigned long)method_id);
     return method_id;
   }
 
   VMConstMethod* const_method = vm_method->constMethodSafe();
   if (const_method == nullptr) {
+  TEST_LOG("Resolve constMethod");
     return nullptr;
   }
 
@@ -1276,6 +1284,7 @@ jmethodID HotspotSupport::resolve(const void* method) {
   VMKlass* klass = vm_method->methodHolderSafe();
 
   if (name_sym == nullptr || sig_sym == nullptr || klass == nullptr) {
+TEST_LOG("Resolve method symbols");
     return nullptr;
   }
 
@@ -1316,6 +1325,7 @@ jmethodID HotspotSupport::resolve(const void* method) {
   free(method_name);
   free(method_signature);
   free(klass_name);
+TEST_LOG("Resolved method id = 0x%zu", (unsigned long)method_id);
 
   return method_id;
 }
