@@ -59,6 +59,63 @@ reliability-aarch64:
     KUBERNETES_MEMORY_REQUEST: 200Gi
     KUBERNETES_MEMORY_LIMIT: 200Gi
 
+# Chaos variant runs antagonists under a patched dd-java-agent. Pulls the
+# precomputed chaos.jar artifact from the chaos:build job (stresstest stage).
+.reliability_chaos_job:
+  stage: reliability
+  timeout: 6h
+  variables:
+    RUNTIME: "${RUNTIME}"
+  needs:
+    - get-versions
+    - job: chaos:build
+      artifacts: true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: always
+    - when: never
+  parallel:
+    matrix:
+      - CONFIG: ["profiler", "profiler+tracer"]
+        ALLOCATOR: ["gmalloc", "jemalloc", "tcmalloc"]
+  script:
+    - set +e
+    - echo "runtime=${RUNTIME}, config=${CONFIG}, allocator=${ALLOCATOR}, arch=${ARCH}"
+    - .gitlab/reliability/chaos_check.sh "$RUNTIME" "$CONFIG" "$ALLOCATOR" 2>err.log 1>out.log
+    - REASON=$(cat err.log | grep "FAIL:" | cut -f2 -d':') || true
+    - if [ -n "${REASON}" ]; then echo "REASON_${CONFIG}_${ALLOCATOR}_${ARCH}Xchaos=${REASON}" | tr '+' '_' >> build.env; exit 1; fi
+  after_script:
+    - |
+      if [[ "$CI_JOB_STATUS" == "failed" ]]; then
+        echo "REASON_${CONFIG}_${ALLOCATOR}_${ARCH}Xchaos=Unknown failure, perhaps timeout" | tr '+' '_' >> build.env
+      fi
+  artifacts:
+    name: "chaos-results-${ARCH}"
+    when: always
+    paths:
+      - hs_err.log
+      - err.log
+      - out.log
+    reports:
+      dotenv: build.env
+    expire_in: 1 day
+
+reliability-chaos-amd64:
+  extends: .reliability_chaos_job
+  tags: [ "arch:amd64" ]
+  image: $BENCHMARK_IMAGE_AMD64
+  variables:
+    ARCH: amd64
+
+reliability-chaos-aarch64:
+  extends: .reliability_chaos_job
+  tags: [ "arch:arm64" ]
+  image: $BENCHMARK_IMAGE_ARM64
+  variables:
+    ARCH: aarch64
+    KUBERNETES_MEMORY_REQUEST: 200Gi
+    KUBERNETES_MEMORY_LIMIT: 200Gi
+
 notify-slack:
   stage: notify
   rules:
@@ -71,6 +128,8 @@ notify-slack:
     - get-versions
     - reliability-amd64
     - reliability-aarch64
+    - reliability-chaos-amd64
+    - reliability-chaos-aarch64
   script:
     - .gitlab/reliability/notify_channel.sh "${CURRENT_VERSION}"
 
