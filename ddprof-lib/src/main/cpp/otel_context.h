@@ -69,8 +69,8 @@ DLLEXPORT extern thread_local OtelThreadContextRecord* otel_thread_ctx_v1;
  * Each thread gets a pre-allocated OtelThreadContextRecord cached in
  * ProfiledThread. The TLS pointer otel_thread_ctx_v1 is set permanently
  * to the record during thread initialization; detach/attach (context writes)
- * never touch it. It is nulled on thread exit (in releaseFromBuffer) to
- * prevent external profilers from dereferencing a recycled record.
+ * never touch it. It is nulled on thread exit to
+ * prevent external profilers from dereferencing a freed record.
  * Context activity is indicated solely by the valid flag in the record.
  *
  * Signal safety: signal handlers must never access

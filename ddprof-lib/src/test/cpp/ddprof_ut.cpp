@@ -4,8 +4,10 @@
     #include "buffers.h"
     #include "context.h"
     #include "counters.h"
+    #include "guards.h"
     #include "mutex.h"
     #include "os.h"
+    #include "thread.h"
     #include "unwindStats.h"
     #include "threadFilter.h"
     #include "threadInfo.h"
@@ -16,8 +18,9 @@
     #include <thread>
     #include <vector>
     #include <algorithm>  // For std::sort
-    #include <thread>
     #include <atomic>
+    #include <sys/wait.h>
+    #include <unistd.h>
 
 // Test name for crash handler
 static constexpr char DDPROF_TEST_NAME[] = "DdprofTest";
@@ -355,6 +358,69 @@ static DdprofGlobalSetup ddprof_global_setup;
         globalCount += count;
       }
       EXPECT_TRUE(globalCount > 0);
+    }
+
+    // Verify that CriticalSection._thread_ptr is cleared (exit succeeds) after
+    // ProfiledThread::release() is called while profiling signals are in flight.
+    // Uses fork() for TLS isolation.  The child sends SIGVTALRM to itself in a
+    // tight loop while the main thread calls release(); a stuck _in_critical_section
+    // would prevent a subsequent CriticalSection from entering (via primary path on
+    // a freshly initialised thread).
+    TEST(ProfiledThreadTeardown, CriticalSectionClearedAfterRelease) {
+        pid_t pid = fork();
+        ASSERT_NE(-1, pid);
+
+        if (pid == 0) {
+            // ---- child process ----
+            // Install no-op handlers so signals don't kill us.
+            struct sigaction sa = {};
+            sa.sa_handler = SIG_IGN;
+            sigaction(SIGVTALRM, &sa, nullptr);
+            sigaction(SIGPROF,   &sa, nullptr);
+
+            // Initialise a ProfiledThread for this thread.
+            ProfiledThread::initCurrentThread();
+
+            // Confirm we can enter the critical section initially.
+            {
+                CriticalSection cs;
+                if (!cs.entered()) {
+                    _exit(2); // unexpected: critical section already held
+                }
+            } // exits critical section
+
+            // Hammer with signals while releasing.
+            std::atomic<bool> done{false};
+            std::thread sender([&done]() {
+                while (!done.load(std::memory_order_relaxed)) {
+                    kill(getpid(), SIGVTALRM);
+                    kill(getpid(), SIGPROF);
+                }
+            });
+
+            // Release tears down TLS (deletes the ProfiledThread).
+            ProfiledThread::release();
+
+            done.store(true, std::memory_order_relaxed);
+            sender.join();
+
+            // After release, currentSignalSafe() returns nullptr; CriticalSection
+            // falls through to the fallback bitmap path — it must still enter.
+            {
+                CriticalSection cs;
+                if (!cs.entered()) {
+                    _exit(3); // stuck: critical section not released by teardown
+                }
+            }
+
+            _exit(0); // success
+        }
+
+        // ---- parent: reap child and check exit code ----
+        int status = 0;
+        ASSERT_NE(-1, waitpid(pid, &status, 0));
+        ASSERT_TRUE(WIFEXITED(status)) << "child crashed (signal " << WTERMSIG(status) << ")";
+        ASSERT_EQ(0, WEXITSTATUS(status)) << "child exited with code " << WEXITSTATUS(status);
     }
 
     int main(int argc, char **argv) {
