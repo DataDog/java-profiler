@@ -68,6 +68,8 @@ reliability-aarch64:
     - get-versions
     - job: chaos:build
       artifacts: true
+    - job: build-artifact
+      artifacts: true
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: always

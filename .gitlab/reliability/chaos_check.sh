@@ -20,12 +20,24 @@ curl -s "https://get.sdkman.io" | bash
 source "/root/.sdkman/bin/sdkman-init.sh" 1>/dev/null 2>/dev/null
 sdk install java 21.0.3-tem 1>/dev/null 2>/dev/null
 
-# Resolve published ddprof.jar (snapshot under test).
-mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
-    -DrepoUrl=https://central.sonatype.com/repository/maven-snapshots/ \
-    -Dartifact=com.datadoghq:ddprof:${CURRENT_VERSION}
+# Resolve ddprof.jar: prefer local build artifact, fall back to Maven snapshot.
+# Running mvn from /tmp avoids the empty pom.xml at the repo root.
+DDPROF_JAR_LOCAL=$(ls "${ROOT}/ddprof-lib/build/libs/ddprof-"*.jar 2>/dev/null | head -1)
+if [ -n "${DDPROF_JAR_LOCAL}" ] && [ -f "${DDPROF_JAR_LOCAL}" ]; then
+  DDPROF_JAR="${DDPROF_JAR_LOCAL}"
+  echo "Using local ddprof jar: ${DDPROF_JAR}"
+else
+  echo "Local ddprof jar not found — downloading ${CURRENT_VERSION} from Maven snapshots"
+  (cd /tmp && mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
+      -DrepoUrl=https://central.sonatype.com/repository/maven-snapshots/ \
+      -Dartifact=com.datadoghq:ddprof:${CURRENT_VERSION})
+  DDPROF_JAR="/root/.m2/repository/com/datadoghq/ddprof/${CURRENT_VERSION}/ddprof-${CURRENT_VERSION}.jar"
+fi
 
-DDPROF_JAR="/root/.m2/repository/com/datadoghq/ddprof/${CURRENT_VERSION}/ddprof-${CURRENT_VERSION}.jar"
+if [ ! -f "${DDPROF_JAR}" ]; then
+  echo "FAIL:ddprof jar unavailable" >&2
+  exit 1
+fi
 
 mkdir -p /var/lib/datadog
 wget -q -O /var/lib/datadog/dd-java-agent.jar 'https://dtdg.co/latest-java-tracer'
