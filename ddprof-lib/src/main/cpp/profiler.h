@@ -204,6 +204,7 @@ public:
   Engine *wallEngine() { return _wall_engine; }
 
   Dictionary *classMap() { return &_class_map; }
+  SpinLock *classMapLock() { return &_class_map_lock; }
   Dictionary *stringLabelMap() { return &_string_label_map; }
   Dictionary *contextValueMap() { return &_context_value_map; }
   u32 numContextAttributes() { return _num_context_attributes; }
