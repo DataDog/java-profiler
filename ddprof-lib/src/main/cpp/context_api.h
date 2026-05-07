@@ -20,6 +20,8 @@
 #include "arch.h"
 #include "context.h"
 #include <cstdint>
+#include <string>
+#include <vector>
 
 class ProfiledThread;
 
@@ -78,6 +80,12 @@ public:
      */
     static void registerAttributeKeys(const char** keys, int count);
 
+    /**
+     * std::vector overload of registerAttributeKeys, used from the C++ start
+     * path so that the attributes=... CLI argument auto-publishes the OTEP
+     * attribute_key_map without requiring an explicit Java-side call.
+     */
+    static void registerAttributeKeys(const std::vector<std::string>& keys);
 };
 
 #endif /* _CONTEXT_API_H */
