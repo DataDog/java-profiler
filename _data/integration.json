@@ -1,6 +1,50 @@
 {
   "runs": [
     {
+      "id": "112108639",
+      "timestamp": "2026-05-07T21:10:01Z",
+      "ddprof_branch": "main",
+      "ddprof_sha": "b9a3abd4cc1e632ad7b1702730e6832110011a5b",
+      "ddprof_pr": null,
+      "pipeline": {
+        "id": "112108639",
+        "url": "https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/112108639"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 20,
+        "failed_jobs": 20,
+        "total_scenarios": 60,
+        "passed_scenarios": 40,
+        "failed_scenarios": 20,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "glibc-arm64-hotspot-jdk21",
+          "glibc-arm64-hotspot-jdk25",
+          "glibc-arm64-openj9-jdk17",
+          "glibc-arm64-openj9-jdk21",
+          "glibc-arm64-openj9-jdk25",
+          "glibc-arm64-openj9-jdk8",
+          "glibc-x64-hotspot-jdk21",
+          "glibc-x64-openj9-jdk11",
+          "glibc-x64-openj9-jdk25",
+          "musl-arm64-hotspot-jdk25",
+          "musl-arm64-hotspot-jdk8",
+          "musl-arm64-openj9-jdk11",
+          "musl-arm64-openj9-jdk17",
+          "musl-arm64-openj9-jdk21",
+          "musl-arm64-openj9-jdk25",
+          "musl-x64-hotspot-jdk11",
+          "musl-x64-hotspot-jdk25",
+          "musl-x64-hotspot-jdk8",
+          "musl-x64-openj9-jdk17",
+          "musl-x64-openj9-jdk8"
+        ]
+      }
+    },
+    {
       "id": "112104248",
       "timestamp": "2026-05-07T20:54:28Z",
       "ddprof_branch": "main",
@@ -231,29 +275,6 @@
       "pipeline": {
         "id": "112014060",
         "url": "https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/112014060"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 40,
-        "failed_jobs": 0,
-        "total_scenarios": 80,
-        "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "112007172",
-      "timestamp": "2026-05-07T15:01:50Z",
-      "ddprof_branch": "main",
-      "ddprof_sha": "b8f17cf30fcf1eefea45a287f272149df731bd99",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "112007172",
-        "url": "https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/112007172"
       },
       "lib_version": "unknown",
       "status": "passed",
