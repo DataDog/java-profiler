@@ -398,6 +398,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
 
   jvmtiCapabilities potential_capabilities = {0};
   _jvmti->GetPotentialCapabilities(&potential_capabilities);
+  bool enable_object_wait_events = java_version() < 21;
 
   _can_sample_objects =
       potential_capabilities.can_generate_sampled_object_alloc_events &&
@@ -435,6 +436,10 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.DynamicCodeGenerated = JitCodeCache::DynamicCodeGenerated;
   callbacks.ThreadStart = Profiler::ThreadStart;
   callbacks.ThreadEnd = Profiler::ThreadEnd;
+  if (enable_object_wait_events) {
+    callbacks.MonitorWait = Profiler::MonitorWait;
+    callbacks.MonitorWaited = Profiler::MonitorWaited;
+  }
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
   callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;
   callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
@@ -448,6 +453,12 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
                                    JVMTI_EVENT_DYNAMIC_CODE_GENERATED, NULL);
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND,
                                    NULL);
+  if (enable_object_wait_events) {
+    _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAIT,
+                                     NULL);
+    _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAITED,
+                                     NULL);
+  }
 
   if (hotspot_version() == 0 || !CodeHeap::available()) {
     // Workaround for JDK-8173361: avoid CompiledMethodLoad events when possible

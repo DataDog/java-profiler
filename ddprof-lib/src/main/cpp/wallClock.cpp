@@ -19,6 +19,7 @@
 #include "thread.h"
 #include "threadState.inline.h"
 #include "guards.h"
+#include "wallClockCounters.h"
 #include <cerrno>
 #include <string.h>
 #include <math.h>
@@ -86,6 +87,23 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
       && current->inInitWindow()) {
     current->tickInitWindow();
     return;
+  }
+  // Parked suppression is evaluated on the sampled thread itself (TLS-backed
+  // ProfiledThread::currentSignalSafe()) to avoid dereferencing cross-thread
+  // ProfiledThread pointers that may race with thread teardown.
+  if (current != nullptr) {
+    ProfiledThread::ParkedWallClockState parked_state = current->parkedWallClockState();
+    if (parked_state != ProfiledThread::ParkedWallClockState::NOT_PARKED) {
+      Counters::increment(WC_SIGNAL_SKIPPED_PARKED);
+      if (parked_state == ProfiledThread::ParkedWallClockState::PARKED_ACTIVE_SPAN) {
+        Counters::increment(WC_SIGNAL_SKIPPED_PARKED_ACTIVE_SPAN);
+        WallClockCounters::incrementSkippedParkedActiveSpan();
+      } else {
+        Counters::increment(WC_SIGNAL_SKIPPED_PARKED_SPANLESS);
+        WallClockCounters::incrementSkippedParkedSpanless();
+      }
+      return;
+    }
   }
   int tid = current != NULL ? current->tid() : OS::threadId();
   Shims::instance().setSighandlerTid(tid);
@@ -165,6 +183,7 @@ bool BaseWallClock::isEnabled() const {
 
 void WallClockASGCT::initialize(Arguments& args) {
   _collapsing = args._wall_collapsing;
+  _precheck   = args._wall_precheck;
   // J9WallClock uses JVMTI GetAllStackTracesExtended polling, not SIGVTALRM
   // signals — it has no sharedSignalHandler and needs no signal-origin gate.
   // Engines are started sequentially; this call is idempotent (no-op after first).
@@ -173,41 +192,51 @@ void WallClockASGCT::initialize(Arguments& args) {
 }
 
 void WallClockASGCT::timerLoop() {
-    // todo: re-allocating the vector every time is not efficient
-    auto collectThreads = [&](std::vector<int>& tids) {
-      // Get thread IDs from the filter if it's enabled
-      // Otherwise list all threads in the system
+    auto collectThreads = [&](std::vector<ThreadEntry>& entries) {
       if (Profiler::instance()->threadFilter()->enabled()) {
-        Profiler::instance()->threadFilter()->collect(tids);
+        Profiler::instance()->threadFilter()->collectWithState(entries);
       } else {
         ThreadList *thread_list = OS::listThreads();
         while (thread_list->hasNext()) {
           int tid = thread_list->next();
-          // Don't include the current thread
           if (tid != OS::threadId()) {
-            tids.push_back(tid);
+            entries.push_back({tid, nullptr, nullptr});
           }
         }
         delete thread_list;
       }
     };
 
-    auto sampleThreads = [&](int tid, int& num_failures, int& threads_already_exited, int& permission_denied) {
-      // Deliver SIGVTALRM with a cookie so our handler can distinguish this
-      // signal from any other in-process sender (see signalCookie.h /
-      // wallClock.cpp sharedSignalHandler).
-      if (!OS::sendSignalWithCookie(tid, SIGVTALRM, SignalCookie::wallclock())) {
+    auto sampleThreads = [&](ThreadEntry entry, int& num_failures, int& threads_already_exited,
+                             int& permission_denied, u32& num_skipped_precheck_os) {
+      if (_precheck && entry.vm_thread != nullptr) {
+        OSThreadState state = entry.vm_thread->osThreadState();
+        // OS-thread-state precheck: skip SIGVTALRM when the JVM reports the platform
+        // thread is in SLEEPING or CONDVAR_WAIT (HotSpot OSThread enum).
+        //
+        // SLEEPING: legacy Thread.sleep path on older JDKs.
+        // CONDVAR_WAIT: LockSupport.park/parkNanos; also Thread.sleep on JDK 21+ (sleep_nanos
+        // uses OSThreadWaitState + condvar park). Not limited to sleep — any condvar wait shares
+        // this state; both branches avoid sampling clearly idle blocking here.
+        if (state == OSThreadState::SLEEPING || state == OSThreadState::CONDVAR_WAIT) {
+          Counters::increment(WC_SIGNAL_SKIPPED_PRECHECK_OS);
+          num_skipped_precheck_os++;
+          return false;
+        }
+      }
+
+      if (!OS::sendSignalWithCookie(entry.tid, SIGVTALRM, SignalCookie::wallclock())) {
         num_failures++;
         if (errno != 0) {
           if (errno == ESRCH) {
-              threads_already_exited++;
+            threads_already_exited++;
           } else if (errno == EPERM) {
-              permission_denied++;
+            permission_denied++;
           } else if (errno == EAGAIN) {
-              // Signal queue limit (RLIMIT_SIGPENDING) reached; signal was not
-              // delivered — count as missed sample.
+            // Signal queue limit (RLIMIT_SIGPENDING) reached; not a permission error.
+            Counters::increment(WC_SIGNAL_QUEUE_FULL);
           } else {
-              Log::debug("unexpected error %s", strerror(errno));
+            Log::debug("unexpected error %s", strerror(errno));
           }
         }
         return false;
@@ -218,5 +247,5 @@ void WallClockASGCT::timerLoop() {
     auto doNothing = []() {
     };
 
-    timerLoopCommon<int>(collectThreads, sampleThreads, doNothing, _reservoir_size, _interval);
+    timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, doNothing, _reservoir_size, _interval);
 }

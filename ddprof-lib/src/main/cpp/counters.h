@@ -60,6 +60,14 @@
   X(AGCT_NATIVE_NO_JAVA_CONTEXT, "agct_native_no_java_context")                \
   X(AGCT_BLOCKED_IN_VM, "agct_blocked_in_vm")                                  \
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
+  X(WC_SIGNAL_SKIPPED_PRECHECK_OS, "wc_signals_skipped_precheck_os")          \
+  X(WC_SIGNAL_SKIPPED_PARKED,      "wc_signals_skipped_parked")                  \
+  X(WC_SIGNAL_SKIPPED_PARKED_SPANLESS, "wc_signals_skipped_parked_spanless")    \
+  X(WC_SIGNAL_SKIPPED_PARKED_ACTIVE_SPAN, "wc_signals_skipped_parked_active_span") \
+  X(WC_SIGNAL_QUEUE_FULL,        "wc_signals_queue_full")                      \
+  X(TASK_BLOCK_EMITTED, "task_block_emitted")                                  \
+  X(TASK_BLOCK_SKIPPED_SPAN_ZERO, "task_block_skipped_span_zero")              \
+  X(TASK_BLOCK_SKIPPED_TOO_SHORT, "task_block_skipped_too_short")              \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
   X(CALLTRACE_STORAGE_DROPPED, "calltrace_storage_dropped_traces")             \

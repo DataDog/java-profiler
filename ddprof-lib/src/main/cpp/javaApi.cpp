@@ -24,12 +24,13 @@
 #include "counters.h"
 #include "common.h"
 #include "engine.h"
-#include "hotspot/vmStructs.h"
+#include "hotspot/vmStructs.inline.h"
 #include "incbin.h"
 #include "jvmThread.h"
 #include "os.h"
 #include "otel_process_ctx.h"
 #include "profiler.h"
+#include "taskBlockRecorder.h"
 #include "thread.h"
 #include "tsc.h"
 #include "vmEntry.h"
@@ -150,15 +151,21 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
   
   int slot_id = current->filterSlotId();
   if (unlikely(slot_id == -1)) {
-    // Thread doesn't have a slot ID yet (e.g., main thread), so register it
-    // Happens when we are not enabled before thread start
+    // Thread doesn't have a slot ID yet (e.g., main thread or profiler started
+    // after thread creation). Register now.
     slot_id = thread_filter->registerThread();
     current->setFilterSlotId(slot_id);
   }
-  
+
   if (unlikely(slot_id == -1)) {
     return;  // Failed to register thread
   }
+  // Refresh HotSpot VMThread* for wall thread-filter precheck (vmStructs OS state).
+  // HotSpot only: VMThread::current() asserts VM::isHotspot(). OpenJ9/Zing: leave null.
+  thread_filter->setVMThread(slot_id, VM::isHotspot() ? VMThread::current() : nullptr);
+  // Refresh ProfiledThread* so wall-clock mitigations can observe per-thread parked state.
+  // Publish pointer fields before publishing tid via add() to preserve visibility ordering.
+  thread_filter->setProfiledThread(slot_id, current);
   thread_filter->add(tid, slot_id);
 }
 
@@ -311,6 +318,48 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   event._queueType = queue_type_offset;
   event._queueLength = queueLength;
   Profiler::instance()->recordQueueTime(tid, &event);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlock0(
+    JNIEnv *env, jclass unused, jlong startTicks, jlong endTicks, jlong spanId,
+    jlong rootSpanId, jlong blocker, jlong unblockingSpanId) {
+  int tid = ProfiledThread::currentTid();
+  if (tid < 0) {
+    return;
+  }
+  Context context = ContextApi::snapshot();
+  context.spanId = (u64)spanId;
+  context.rootSpanId = (u64)rootSpanId;
+  recordTaskBlockIfEligible(tid, (u64)startTicks, (u64)endTicks, context,
+                            (u64)blocker, (u64)unblockingSpanId);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
+    JNIEnv *env, jclass unused, jlong spanId, jlong rootSpanId) {
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) {
+    return;
+  }
+  current->parkEnter(spanId, rootSpanId, TSC::ticks());
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
+    JNIEnv *env, jclass unused, jlong blocker, jlong unblockingSpanId) {
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) {
+    return;
+  }
+  u64 start_ticks = 0;
+  Context park_context = {};
+  if (!current->parkExit(start_ticks, park_context)) {
+    return;
+  }
+  u64 end_ticks = TSC::ticks();
+  recordTaskBlockIfEligible(current->tid(), start_ticks, end_ticks, park_context,
+                            (u64)blocker, (u64)unblockingSpanId);
 }
 
 extern "C" DLLEXPORT jlong JNICALL

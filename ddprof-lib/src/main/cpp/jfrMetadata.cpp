@@ -153,7 +153,20 @@ void JfrMetadata::initialize(
               << field("numExitedThreads", T_INT,
                        "Number of Exited Threads Before Handling Signal")
               << field("numPermissionDenied", T_INT,
-                       "Number of Permission Denied Errors"))
+                       "Number of Permission Denied Errors")
+              << field("numSkippedPrecheckOs", T_INT,
+                       "Signals skipped after OS-thread-state precheck (SLEEPING or "
+                       "CONDVAR_WAIT: sleep, park/parkNanos, JDK 21+ Thread.sleep via wait)")
+              << field("numSkippedParkedSpanless", T_LONG,
+                       "Signals suppressed for Java-level parked threads without an active span")
+              << field("numSkippedParkedActiveSpan", T_LONG,
+                       "Signals suppressed for Java-level parked threads with an active span")
+              << field("numTaskBlockEmitted", T_LONG,
+                       "TaskBlock events emitted for active-span blocking intervals")
+              << field("numTaskBlockSkippedSpanZero", T_LONG,
+                       "TaskBlock intervals skipped because no active span was captured")
+              << field("numTaskBlockSkippedTooShort", T_LONG,
+                       "TaskBlock intervals skipped because they were shorter than the recording threshold"))
 
           << (type("datadog.ObjectSample", T_ALLOC, "Allocation sample")
                   << category("Datadog", "Profiling")
@@ -203,6 +216,17 @@ void JfrMetadata::initialize(
                   << field("queueLength", T_INT, "Queue Length on Entry")
                   << field("spanId", T_LONG, "Span ID")
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
+              contextAttributes)
+
+          << (type("datadog.TaskBlock", T_TASK_BLOCK, "Task Block")
+                  << category("Datadog")
+                  << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+                  << field("duration", T_LONG, "Duration", F_DURATION_TICKS)
+                  << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
+                  << field("spanId", T_LONG, "Span ID")
+                  << field("localRootSpanId", T_LONG, "Local Root Span ID")
+                  << field("blocker", T_LONG, "Blocker Identity Hash")
+                  << field("unblockingSpanId", T_LONG, "Unblocking Span ID") ||
               contextAttributes)
 
           << (type("datadog.HeapUsage", T_HEAP_USAGE, "JVM Heap Usage")

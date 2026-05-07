@@ -217,6 +217,10 @@ Error LivenessTracker::initialize(Arguments &args) {
   }
 
   if (_initialized) {
+    // Tracker settings are sticky across recordings. Preserve the historical
+    // table/config behavior, but allow HeapUsage recording to be enabled later
+    // (e.g. if an earlier test initialized liveness without ':L').
+    _record_heap_usage = _record_heap_usage || args._record_heap_usage;
     // if the tracker was previously initialized return the stored result for
     // consistency this hack also means that if the profiler is started with
     // different arguments for liveness tracking those will be ignored it is

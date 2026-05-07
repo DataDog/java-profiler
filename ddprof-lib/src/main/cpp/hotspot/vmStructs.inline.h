@@ -9,12 +9,21 @@
 
 #include "hotspot/vmStructs.h"
 #include "jvmThread.h"
+#include "vmEntry.h"
 
 VMThread* VMThread::current() {
+    // JVMThread::current() is the native thread self pointer. On OpenJ9/Zing it
+    // is not a HotSpot JavaThread*; only HotSpot may reinterpret it as VMThread*.
+    if (!VM::isHotspot() || JVMThread::current() == nullptr) {
+        return nullptr;
+    }
     return VMThread::cast(JVMThread::current());
 }
 
 VMThread* VMThread::fromJavaThread(JNIEnv* env, jthread thread) {
+    if (!VM::isHotspot()) {
+        return nullptr;
+    }
     assert(_eetop != nullptr);
     if (_eetop != nullptr) {
         return VMThread::cast((void*)env->GetLongField(thread, _eetop));

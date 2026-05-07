@@ -337,6 +337,7 @@ public:
   void recordWallClockEpoch(int tid, WallClockEpochEvent *event);
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
+  bool recordTaskBlock(int tid, TaskBlockEvent *event);
   void writeLog(LogLevel level, const char *message);
   void writeLog(LogLevel level, const char *message, size_t len);
   void writeDatadogProfilerSetting(int tid, int length, const char *name,
@@ -365,6 +366,11 @@ public:
   static void JNICALL ThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     instance()->onThreadEnd(jvmti, jni, thread);
   }
+
+  static void JNICALL MonitorWait(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                                  jobject object, jlong timeout);
+  static void JNICALL MonitorWaited(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                                    jobject object, jboolean timed_out);
 
   // Keep backward compatibility with the upstream async-profiler
   inline CodeCache* findLibraryByAddress(const void *address) {
