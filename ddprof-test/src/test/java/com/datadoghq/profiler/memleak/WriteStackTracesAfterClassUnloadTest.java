@@ -93,41 +93,47 @@ public class WriteStackTracesAfterClassUnloadTest extends AbstractProfilerTest {
       // mcleanup=false isolates the test to the PROF-14547 read path; the
       // PROF-14545 cleanup path is covered separately by CleanupAfterClassUnloadTest.
       profiler.execute("start,cpu=1ms,jfr,mcleanup=false,file=" + baseFile.toAbsolutePath());
-      Thread.sleep(200); // let the profiler stabilize
+      try {
+        Thread.sleep(200); // let the profiler stabilize
 
-      // 1. Load a class, hammer its methods on this thread so the CPU profiler captures
-      //    many traces referencing it. Drop strong refs and return only a WeakReference.
-      WeakReference<ClassLoader> loaderRef = loadAndProfileDynamicClass();
+        // 1. Load a class, hammer its methods on this thread so the CPU profiler captures
+        //    many traces referencing it. Drop strong refs and return only a WeakReference.
+        WeakReference<ClassLoader> loaderRef = loadAndProfileDynamicClass();
 
-      // 2. Drop refs and GC until the class actually unloads.
-      long deadline = System.currentTimeMillis() + 8_000;
-      while (loaderRef.get() != null && System.currentTimeMillis() < deadline) {
-        System.gc();
-        Thread.sleep(20);
+        // 2. Drop refs and GC until the class actually unloads.
+        long deadline = System.currentTimeMillis() + 8_000;
+        while (loaderRef.get() != null && System.currentTimeMillis() < deadline) {
+          System.gc();
+          Thread.sleep(20);
+        }
+
+        // Skip the test (rather than pass spuriously) if the JVM declined to unload.
+        // Without unload the JVMTI line-number-table memory is never freed and the bug
+        // cannot manifest — running the dumps would prove nothing.
+        assumeTrue(loaderRef.get() == null,
+            "JVM did not unload the dynamic class within the deadline; cannot exercise PROF-14547");
+
+        // 3. Immediately dump several times. The first dump runs writeStackTraces over
+        //    the trace_buffer that still contains the unloaded method's traces; subsequent
+        //    dumps cover the rotation tail. With the bug, getLineNumber dereferences the
+        //    freed JVMTI memory → SIGSEGV. With the fix, _ptr is a malloc'd copy → safe.
+        for (int i = 0; i < 4; i++) {
+          profiler.dump(dumpFile);
+          Thread.sleep(10);
+        }
+
+        // 4. If the profiler crashed inside processCallTraces the JVM would have died and we
+        //    would never reach this line. The non-empty-output assertion is secondary — the
+        //    primary signal is reaching profiler.stop() at all.
+        assertTrue(Files.size(dumpFile) > 0,
+            "Profiler produced no output — SIGSEGV during writeStackTraces is suspected");
+      } finally {
+        try {
+          profiler.stop();
+        } finally {
+          resetThreadContext();
+        }
       }
-
-      // Skip the test (rather than pass spuriously) if the JVM declined to unload.
-      // Without unload the JVMTI line-number-table memory is never freed and the bug
-      // cannot manifest — running the dumps would prove nothing.
-      assumeTrue(loaderRef.get() == null,
-          "JVM did not unload the dynamic class within the deadline; cannot exercise PROF-14547");
-
-      // 3. Immediately dump several times. The first dump runs writeStackTraces over
-      //    the trace_buffer that still contains the unloaded method's traces; subsequent
-      //    dumps cover the rotation tail. With the bug, getLineNumber dereferences the
-      //    freed JVMTI memory → SIGSEGV. With the fix, _ptr is a malloc'd copy → safe.
-      for (int i = 0; i < 4; i++) {
-        profiler.dump(dumpFile);
-        Thread.sleep(10);
-      }
-
-      // 4. If the profiler crashed inside processCallTraces the JVM would have died and we
-      //    would never reach this line. The non-empty-output assertion is secondary — the
-      //    primary signal is reaching profiler.stop() at all.
-      profiler.stop();
-
-      assertTrue(Files.size(dumpFile) > 0,
-          "Profiler produced no output — SIGSEGV during writeStackTraces is suspected");
 
     } finally {
       try { Files.deleteIfExists(baseFile); } catch (IOException ignored) {}
