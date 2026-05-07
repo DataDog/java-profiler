@@ -68,7 +68,7 @@
   tags: [ "arch:amd64" ]
   image: ${PREPARE_IMAGE}
   script:
-    - set -euxo pipefail
+    - set -exo pipefail
     - source .gitlab/scripts/includes.sh
     - curl -s "https://get.sdkman.io" | bash
     - source "$HOME/.sdkman/bin/sdkman-init.sh"
