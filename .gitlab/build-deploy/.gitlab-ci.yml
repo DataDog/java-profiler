@@ -183,6 +183,10 @@ chaos:build:
   tags: [ "arch:amd64" ]
   image: ${BUILD_IMAGE_X64_2_17}
   script:
+    - |
+      if [ -z "${JAVA_HOME}" ] || [ ! -x "${JAVA_HOME}/bin/java" ]; then
+        export JAVA_HOME=~/.sdkman/candidates/java/current
+      fi
     - ./gradlew :ddprof-stresstest:chaosJar -q
   artifacts:
     paths:
