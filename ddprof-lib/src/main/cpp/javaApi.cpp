@@ -30,6 +30,7 @@
 #include "os.h"
 #include "otel_process_ctx.h"
 #include "profiler.h"
+#include "taskBlockRecorder.h"
 #include "thread.h"
 #include "tsc.h"
 #include "vmEntry.h"
@@ -319,12 +320,6 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   Profiler::instance()->recordQueueTime(tid, &event);
 }
 
-static inline bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks) {
-  static const u64 kMinTaskBlockNanos = 1000000; // 1 ms
-  u64 min_ticks = (TSC::frequency() * kMinTaskBlockNanos) / 1000000000ULL;
-  return end_ticks > start_ticks && (end_ticks - start_ticks) >= min_ticks;
-}
-
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlock0(
     JNIEnv *env, jclass unused, jlong startTicks, jlong endTicks, jlong spanId,
@@ -333,18 +328,11 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlock0(
   if (tid < 0) {
     return;
   }
-  if (!exceedsMinTaskBlockDuration(startTicks, endTicks) || spanId == 0) {
-    return;
-  }
-  TaskBlockEvent event{};
-  event._start = startTicks;
-  event._end = endTicks;
-  event._blocker = blocker;
-  event._unblockingSpanId = unblockingSpanId;
-  event._ctx = ContextApi::snapshot();
-  event._ctx.spanId = (u64)spanId;
-  event._ctx.rootSpanId = (u64)rootSpanId;
-  Profiler::instance()->recordTaskBlock(tid, &event);
+  Context context = ContextApi::snapshot();
+  context.spanId = (u64)spanId;
+  context.rootSpanId = (u64)rootSpanId;
+  recordTaskBlockIfEligible(tid, (u64)startTicks, (u64)endTicks, context,
+                            (u64)blocker, (u64)unblockingSpanId);
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -370,17 +358,8 @@ Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
     return;
   }
   u64 end_ticks = TSC::ticks();
-  if (!exceedsMinTaskBlockDuration(start_ticks, end_ticks) ||
-      park_context.spanId == 0) {
-    return;
-  }
-  TaskBlockEvent event{};
-  event._start = start_ticks;
-  event._end = end_ticks;
-  event._blocker = blocker;
-  event._unblockingSpanId = unblockingSpanId;
-  event._ctx = park_context;
-  Profiler::instance()->recordTaskBlock(current->tid(), &event);
+  recordTaskBlockIfEligible(current->tid(), start_ticks, end_ticks, park_context,
+                            (u64)blocker, (u64)unblockingSpanId);
 }
 
 extern "C" DLLEXPORT jlong JNICALL

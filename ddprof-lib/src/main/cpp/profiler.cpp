@@ -31,6 +31,7 @@
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
+#include "taskBlockRecorder.h"
 #include "thread.h"
 #include "tsc.h"
 #include "utils.h"
@@ -634,15 +635,16 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
   _locks[lock_index].unlock();
 }
 
-void Profiler::recordTaskBlock(int tid, TaskBlockEvent *event) {
+bool Profiler::recordTaskBlock(int tid, TaskBlockEvent *event) {
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
       !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
-    return;
+    return false;
   }
   _jfr.recordTaskBlock(lock_index, tid, event);
   _locks[lock_index].unlock();
+  return true;
 }
 
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
