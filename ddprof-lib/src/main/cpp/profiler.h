@@ -367,6 +367,11 @@ public:
     instance()->onThreadEnd(jvmti, jni, thread);
   }
 
+  static void JNICALL MonitorWait(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                                  jobject object, jlong timeout);
+  static void JNICALL MonitorWaited(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                                    jobject object, jboolean timed_out);
+
   // Keep backward compatibility with the upstream async-profiler
   inline CodeCache* findLibraryByAddress(const void *address) {
   #ifdef DEBUG

@@ -79,6 +79,10 @@ private:
   u32 _misc_flags;
   u64 _park_start_ticks;
   Context _park_context;
+  u64 _monitor_wait_start_ticks;
+  Context _monitor_wait_context;
+  u64 _monitor_wait_blocker;
+  bool _monitor_wait_active;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   UnwindFailures _unwind_failures;
@@ -100,6 +104,8 @@ private:
       : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
         _park_start_ticks(0), _park_context{},
+        _monitor_wait_start_ticks(0), _monitor_wait_context{}, _monitor_wait_blocker(0),
+        _monitor_wait_active(false),
         _filter_slot_id(-1), _init_window(0),
         _otel_ctx_initialized(false), _crash_protection_active(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
@@ -290,6 +296,34 @@ public:
 
   inline bool isParkedForWallclock() const {
     return (__atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE) & FLAG_PARKED) != 0;
+  }
+
+  inline ParkedWallClockState parkedWallClockState() const {
+    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
+    if ((flags & FLAG_PARKED) == 0) {
+      return ParkedWallClockState::NOT_PARKED;
+    }
+    return (flags & FLAG_PARKED_WITH_SPAN) != 0
+        ? ParkedWallClockState::PARKED_ACTIVE_SPAN
+        : ParkedWallClockState::PARKED_SPANLESS;
+  }
+
+  inline void monitorWaitEnter(u64 start_ticks, const Context& context, u64 blocker) {
+    _monitor_wait_start_ticks = start_ticks;
+    _monitor_wait_context = context;
+    _monitor_wait_blocker = blocker;
+    _monitor_wait_active = true;
+  }
+
+  inline bool monitorWaitExit(u64& start_ticks, Context& context, u64& blocker) {
+    if (!_monitor_wait_active) {
+      return false;
+    }
+    _monitor_wait_active = false;
+    start_ticks = _monitor_wait_start_ticks;
+    context = _monitor_wait_context;
+    blocker = _monitor_wait_blocker;
+    return true;
   }
 
   Context snapshotContext(size_t numAttrs);

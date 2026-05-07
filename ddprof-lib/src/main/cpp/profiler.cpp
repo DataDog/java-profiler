@@ -121,6 +121,37 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   _wall_engine->unregisterThread(tid);
 }
 
+void JNICALL Profiler::MonitorWait(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                                   jobject object, jlong timeout) {
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) {
+    return;
+  }
+
+  Context context = ContextApi::snapshot();
+  // The JNI local reference is only used as a blocker identity for this single
+  // wait interval; it is never dereferenced after the callback returns.
+  current->monitorWaitEnter(TSC::ticks(), context, (u64)(uintptr_t)object);
+}
+
+void JNICALL Profiler::MonitorWaited(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                                     jobject object, jboolean timed_out) {
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) {
+    return;
+  }
+
+  u64 start_ticks = 0;
+  Context context = {};
+  u64 blocker = 0;
+  if (!current->monitorWaitExit(start_ticks, context, blocker)) {
+    return;
+  }
+
+  recordTaskBlockIfEligible(current->tid(), start_ticks, TSC::ticks(), context,
+                            blocker, 0);
+}
+
 int Profiler::registerThread(int tid) {
   return _instance->_cpu_engine->registerThread(tid) |
          _instance->_wall_engine->registerThread(tid);
