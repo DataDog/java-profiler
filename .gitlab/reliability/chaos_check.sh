@@ -11,6 +11,11 @@ ALLOCATOR=${3:-gmalloc}
 
 echo "Chaos run: runtime=${RUNTIME}s config=${CONFIG} allocator=${ALLOCATOR}"
 
+if [ -z "${CURRENT_VERSION:-}" ]; then
+  echo "FAIL:CURRENT_VERSION is empty (get-versions dotenv missing)" >&2
+  exit 1
+fi
+
 curl -s "https://get.sdkman.io" | bash
 source "/root/.sdkman/bin/sdkman-init.sh" 1>/dev/null 2>/dev/null
 sdk install java 21.0.3-tem 1>/dev/null 2>/dev/null
@@ -18,7 +23,7 @@ sdk install java 21.0.3-tem 1>/dev/null 2>/dev/null
 # Resolve published ddprof.jar (snapshot under test).
 mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
     -DrepoUrl=https://central.sonatype.com/repository/maven-snapshots/ \
-    -Dartifact=com.datadoghq:ddprof:${CURRENT_VERSION} 1>/dev/null 2>/dev/null
+    -Dartifact=com.datadoghq:ddprof:${CURRENT_VERSION}
 
 DDPROF_JAR="/root/.m2/repository/com/datadoghq/ddprof/${CURRENT_VERSION}/ddprof-${CURRENT_VERSION}.jar"
 
