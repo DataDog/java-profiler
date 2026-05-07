@@ -31,6 +31,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Regression test for PROF-14545: SIGSEGV in Recording::cleanupUnreferencedMethods.
@@ -96,6 +97,8 @@ public class CleanupAfterClassUnloadTest extends AbstractProfilerTest {
         System.gc();
         Thread.sleep(30);
       }
+      assumeTrue(loaderRef.get() == null,
+          "Skipping: class loader not GC'd within 8 s — class unloading is required for this test to be meaningful");
 
       // 4. Run AGE_THRESHOLD+1 dump cycles so the method ages out and cleanup fires.
       //    The method is no longer referenced (no stack traces) → age increments each cycle.
