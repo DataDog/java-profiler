@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <climits>
 #include <cstdlib>
 #include <setjmp.h>
 #include "asyncSampleMutex.h"
@@ -530,8 +531,16 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     uintptr_t receiver = frame.jarg0();
                     if (receiver != 0) {
                         VMSymbol* symbol = VMKlass::fromOop(receiver)->name();
-                        u32 class_id = profiler->classMap()->lookup(symbol->body(), symbol->length());
-                        fillFrame(frames[depth++], BCI_ALLOC, class_id);
+                        // walkVM runs in a signal handler; the inserting lookup() calls
+                        // malloc/calloc and is async-signal-unsafe. Use bounded_lookup
+                        // with size_limit=0 so we never grow the dictionary here. On
+                        // miss (sentinel INT_MAX) drop the synthetic frame — the JVMTI
+                        // path will populate the entry from a non-signal context.
+                        u32 class_id = profiler->classMap()->bounded_lookup(
+                            symbol->body(), symbol->length(), 0);
+                        if (class_id != INT_MAX) {
+                            fillFrame(frames[depth++], BCI_ALLOC, class_id);
+                        }
                     }
                 }
 
