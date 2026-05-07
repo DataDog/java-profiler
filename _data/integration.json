@@ -1,6 +1,29 @@
 {
   "runs": [
     {
+      "id": "111967096",
+      "timestamp": "2026-05-07T12:05:16Z",
+      "ddprof_branch": "main",
+      "ddprof_sha": "unknown",
+      "ddprof_pr": null,
+      "pipeline": {
+        "id": "111967096",
+        "url": "https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/111967096"
+      },
+      "lib_version": "unknown",
+      "status": "unknown",
+      "summary": {
+        "total_jobs": 0,
+        "passed_jobs": 0,
+        "failed_jobs": 0,
+        "total_scenarios": 0,
+        "passed_scenarios": 0,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "111956950",
       "timestamp": "2026-05-07T11:09:44Z",
       "ddprof_branch": "main",
@@ -209,33 +232,6 @@
         "failed_scenarios": 0,
         "unknown_scenarios": 0,
         "failed_configs": []
-      }
-    },
-    {
-      "id": "111841865",
-      "timestamp": "2026-05-06T19:34:38Z",
-      "ddprof_branch": "main",
-      "ddprof_sha": "8516053421f858fa4c7c5e13b661e6567095f2fa",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "111841865",
-        "url": "https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/111841865"
-      },
-      "lib_version": "unknown",
-      "status": "partial",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 37,
-        "failed_jobs": 3,
-        "total_scenarios": 76,
-        "passed_scenarios": 76,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": [
-          "glibc-x64-openj9-jdk21",
-          "glibc-x64-openj9-jdk25",
-          "glibc-x64-openj9-jdk8"
-        ]
       }
     }
   ]
