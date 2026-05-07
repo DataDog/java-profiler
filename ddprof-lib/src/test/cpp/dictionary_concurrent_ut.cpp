@@ -18,7 +18,7 @@
 #include "spinLock.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 
-// PROF-14549 regression tests.
+// Regression tests for the dictionary concurrency contracts.
 //
 // These tests pin down two contracts:
 //   (1) bounded_lookup(key, length, 0) is read-only (no malloc/calloc) and
