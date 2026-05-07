@@ -22,8 +22,9 @@
 //
 // These tests pin down two contracts:
 //   (1) bounded_lookup(key, length, 0) is read-only (no malloc/calloc) and
-//       returns INT_MAX on miss. This is the contract walkVM relies on at
-//       hotspotSupport.cpp:388 to be async-signal-safe.
+//       returns INT_MAX on miss. This is the contract
+//       HotspotSupport::walkVM relies on in its vtable-target lookup block to
+//       be async-signal-safe.
 //   (2) Dictionary::collect, when externally guarded by a SpinLock taken
 //       shared, can run concurrently with shared-lock inserters and is
 //       serialized against an exclusive-lock Dictionary::clear() — matching
