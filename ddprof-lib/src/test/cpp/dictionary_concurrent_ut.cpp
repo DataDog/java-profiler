@@ -167,3 +167,86 @@ TEST(DictionaryConcurrent, ConcurrentInsertCollectClearWithExternalLock) {
     EXPECT_GT(total_collects.load(), 0L);
     EXPECT_GT(total_clears.load(), 0L);
 }
+
+// (3) Regression for PROF-14550: the walkVM vtable-target lookup path uses
+// OptionalSharedLockGuard (tryLockShared) + bounded_lookup(0). This must not
+// race a concurrent exclusive dict.clear() (Profiler::dump path).
+//
+// Without the guard, bounded_lookup reads row->keys and row->next while clear()
+// concurrently frees them — use-after-free / SIGSEGV. With the guard, clear()
+// holds the exclusive lock and signal-side readers either finish before clear
+// or fail tryLockShared and skip the lookup entirely.
+TEST(DictionaryConcurrent, SignalHandlerBoundedLookupVsDumpClear) {
+    Dictionary dict(/*id=*/0);
+    SpinLock lock;
+
+    // Pre-populate so bounded_lookup has real rows to traverse.
+    constexpr int kPreload = 64;
+    for (int i = 0; i < kPreload; ++i) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Lcom/example/Preloaded%d;", i);
+        lock.lock();
+        dict.lookup(buf, strlen(buf));
+        lock.unlock();
+    }
+
+    constexpr int kSignalThreads = 4;
+    const auto kDuration = std::chrono::milliseconds(500);
+
+    std::atomic<bool> stop{false};
+    std::atomic<long> total_reads{0};
+    std::atomic<long> total_skips{0};
+    std::atomic<long> total_clears{0};
+
+    // Simulate walkVM signal-handler threads: tryLockShared → bounded_lookup(0)
+    // → unlockShared. Mirrors the OptionalSharedLockGuard + ownsLock() guard in
+    // hotspotSupport.cpp.
+    std::vector<std::thread> signal_threads;
+    signal_threads.reserve(kSignalThreads);
+    for (int w = 0; w < kSignalThreads; ++w) {
+        signal_threads.emplace_back([&, w]() {
+            char buf[64];
+            int counter = 0;
+            while (!stop.load(std::memory_order_relaxed)) {
+                snprintf(buf, sizeof(buf), "Lcom/example/Preloaded%d;",
+                         counter % kPreload);
+                size_t len = strlen(buf);
+                OptionalSharedLockGuard guard(&lock);
+                if (guard.ownsLock()) {
+                    // Read-only; no malloc, no CAS — safe in signal context.
+                    unsigned int id = dict.bounded_lookup(buf, len, 0);
+                    // INT_MAX is fine: key was cleared by a concurrent dump.
+                    (void)id;
+                    total_reads.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    // Exclusive clear() holds the lock; drop the frame.
+                    total_skips.fetch_add(1, std::memory_order_relaxed);
+                }
+                ++counter;
+            }
+        });
+    }
+
+    // Simulate Profiler::dump: exclusive lock → _class_map.clear() → unlock.
+    std::thread dump_thread([&]() {
+        while (!stop.load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            lock.lock();
+            dict.clear();
+            lock.unlock();
+            total_clears.fetch_add(1, std::memory_order_relaxed);
+        }
+    });
+
+    std::this_thread::sleep_for(kDuration);
+    stop.store(true, std::memory_order_relaxed);
+
+    for (auto& t : signal_threads) {
+        t.join();
+    }
+    dump_thread.join();
+
+    // Both roles must have made progress.
+    EXPECT_GT(total_reads.load() + total_skips.load(), 0L);
+    EXPECT_GT(total_clears.load(), 0L);
+}
