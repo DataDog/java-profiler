@@ -47,8 +47,7 @@ static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 SharedLineNumberTable::~SharedLineNumberTable() {
   // _ptr is a malloc'd copy of the JVMTI line number table (see
   // Lookup::fillJavaMethodInfo). Freeing here is independent of class
-  // unload — fixes PROF-14545 (~SharedLineNumberTable Deallocate UAF)
-  // and PROF-14547 (getLineNumber UAF during writeStackTraces).
+  // unload, preventing use-after-free in ~SharedLineNumberTable and getLineNumber.
   if (_ptr != nullptr) {
     free(_ptr);
     Counters::decrement(LINE_NUMBER_TABLES);
@@ -299,7 +298,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
     if (line_number_table != nullptr) {
       // Detach from JVMTI lifetime: copy into our own buffer and deallocate
       // the JVMTI-allocated memory immediately. This keeps _ptr valid even
-      // after the underlying class is unloaded — see PROF-14547.
+      // after the underlying class is unloaded.
       void *owned_table = nullptr;
       if (line_number_table_size > 0) {
         size_t bytes = (size_t)line_number_table_size * sizeof(jvmtiLineNumberEntry);
@@ -922,8 +921,8 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
   writeBoolSetting(buf, T_MALLOC, "enabled", args._nativemem >= 0);
   if (args._nativemem >= 0) {
     writeIntSetting(buf, T_MALLOC, "nativemem", args._nativemem);
-    // samplingInterval=-1 means every allocation is recorded (nativemem=0).
-    writeIntSetting(buf, T_MALLOC, "samplingInterval", args._nativemem == 0 ? -1 : args._nativemem);
+    // samplingInterval=-1 signals "record every allocation"; mirrors shouldSample's interval<=1 threshold.
+    writeIntSetting(buf, T_MALLOC, "samplingInterval", args._nativemem <= 1 ? -1 : args._nativemem);
   }
 
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "debugSymbols",
