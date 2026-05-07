@@ -45,23 +45,11 @@ static const char *const SETTING_RING[] = {NULL, "kernel", "user", "any"};
 static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 
 SharedLineNumberTable::~SharedLineNumberTable() {
-  // Always attempt to deallocate if we have a valid pointer
-  // JVMTI spec requires that memory allocated by GetLineNumberTable
-  // must be freed with Deallocate
+  // _ptr is a malloc'd copy of the JVMTI line number table (see
+  // Lookup::fillJavaMethodInfo). Freeing here is independent of class
+  // unload, preventing use-after-free in ~SharedLineNumberTable and getLineNumber.
   if (_ptr != nullptr) {
-    jvmtiEnv *jvmti = VM::jvmti();
-    if (jvmti != nullptr) {
-      jvmtiError err = jvmti->Deallocate((unsigned char *)_ptr);
-      // If Deallocate fails, log it for debugging (this could indicate a JVM bug)
-      // JVMTI_ERROR_ILLEGAL_ARGUMENT means the memory wasn't allocated by JVMTI
-      // which would be a serious bug in GetLineNumberTable
-      if (err != JVMTI_ERROR_NONE) {
-        TEST_LOG("Unexpected error while deallocating linenumber table: %d", err);
-      }
-    } else {
-      TEST_LOG("WARNING: Cannot deallocate line number table - JVMTI is null");
-    }
-    // Decrement counter whenever destructor runs (symmetric with increment at creation)
+    free(_ptr);
     Counters::decrement(LINE_NUMBER_TABLES);
   }
 }
@@ -308,10 +296,30 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
     mi->_type = FRAME_INTERPRETED;
     mi->_is_entry = entry;
     if (line_number_table != nullptr) {
-      mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
-          line_number_table_size, line_number_table);
-      // Increment counter for tracking live line number tables
-      Counters::increment(LINE_NUMBER_TABLES);
+      // Detach from JVMTI lifetime: copy into our own buffer and deallocate
+      // the JVMTI-allocated memory immediately. This keeps _ptr valid even
+      // after the underlying class is unloaded.
+      void *owned_table = nullptr;
+      if (line_number_table_size > 0) {
+        size_t bytes = (size_t)line_number_table_size * sizeof(jvmtiLineNumberEntry);
+        owned_table = malloc(bytes);
+        if (owned_table != nullptr) {
+          memcpy(owned_table, line_number_table, bytes);
+        } else {
+          TEST_LOG("Failed to allocate %zu bytes for line number table copy", bytes);
+        }
+      }
+      jvmtiError dealloc_err = jvmti->Deallocate((unsigned char *)line_number_table);
+      if (dealloc_err != JVMTI_ERROR_NONE) {
+        TEST_LOG("Unexpected error while deallocating linenumber table: %d", dealloc_err);
+      }
+      line_number_table = nullptr;
+      if (owned_table != nullptr) {
+        mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
+            line_number_table_size, owned_table);
+        // Increment counter for tracking live line number tables
+        Counters::increment(LINE_NUMBER_TABLES);
+      }
     }
 
     // strings are null or came from JVMTI
@@ -913,8 +921,8 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
   writeBoolSetting(buf, T_MALLOC, "enabled", args._nativemem >= 0);
   if (args._nativemem >= 0) {
     writeIntSetting(buf, T_MALLOC, "nativemem", args._nativemem);
-    // samplingInterval=-1 means every allocation is recorded (nativemem=0).
-    writeIntSetting(buf, T_MALLOC, "samplingInterval", args._nativemem == 0 ? -1 : args._nativemem);
+    // samplingInterval=-1 signals "record every allocation"; mirrors shouldSample's interval<=1 threshold.
+    writeIntSetting(buf, T_MALLOC, "samplingInterval", args._nativemem <= 1 ? -1 : args._nativemem);
   }
 
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "debugSymbols",
