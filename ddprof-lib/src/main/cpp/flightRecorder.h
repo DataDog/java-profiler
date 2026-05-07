@@ -61,7 +61,7 @@ public:
   int _size;
   // Owned malloc'd buffer holding a copy of the JVMTI line number table.
   // Owning the memory (instead of holding the JVMTI-allocated pointer
-  // directly) keeps lifetime independent of class unload — see PROF-14547.
+  // directly) keeps lifetime independent of class unload.
   void *_ptr;
 
   SharedLineNumberTable(int size, void *ptr) : _size(size), _ptr(ptr) {}
