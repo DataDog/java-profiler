@@ -137,8 +137,25 @@ fi
 if [ "$JDK25_INSTALLED" = "false" ]; then
     log_warn "Failed to install JDK 25 for jbang"
     log_warn "JFR validation will be skipped"
-    # Create marker file to skip JFR validation
-    touch /tmp/skip-jfr-validation
+    echo "JDK 25 not available for jbang (Foojay API may be down)" > /tmp/skip-jfr-validation
+fi
+
+# ========================================
+# Pre-warm jfr-shell backend
+# ========================================
+# jafar-shell resolves its backend plugin (io.btrace:jfr-shell-jafar) from Maven at
+# runtime. If that artifact is unavailable (network restriction, version not yet
+# published), every validation run fails. Detect this early so we can skip gracefully.
+if [ ! -f /tmp/skip-jfr-validation ] && command -v jbang &> /dev/null; then
+    log_info "Pre-warming jfr-shell backend..."
+    PREWARM_OUT=$(jbang --java 25 jfr-shell@btraceio script /dev/null 2>&1 || true)
+    if echo "$PREWARM_OUT" | grep -q "No backends found\|No JFR backends available\|Failed to resolve artifact.*jfr-shell-jafar"; then
+        log_warn "jfr-shell backend unavailable (io.btrace:jfr-shell-jafar not resolvable from Maven)"
+        log_warn "JFR validation will be skipped"
+        echo "jfr-shell backend unavailable (io.btrace:jfr-shell-jafar not resolvable from Maven)" > /tmp/skip-jfr-validation
+    else
+        log_info "jfr-shell backend ready"
+    fi
 fi
 
 # ========================================
