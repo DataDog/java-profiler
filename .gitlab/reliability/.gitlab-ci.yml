@@ -81,7 +81,7 @@ reliability-aarch64:
   script:
     - set +e
     - echo "runtime=${RUNTIME}, config=${CONFIG}, allocator=${ALLOCATOR}, arch=${ARCH}"
-    - .gitlab/reliability/chaos_check.sh "$RUNTIME" "$CONFIG" "$ALLOCATOR" 2>err.log 1>out.log
+    - .gitlab/reliability/chaos_check.sh "$RUNTIME" "$CONFIG" "$ALLOCATOR" 2>err.log | tee out.log
     - REASON=$(cat err.log | grep "FAIL:" | cut -f2 -d':') || true
     - if [ -n "${REASON}" ]; then echo "REASON_${CONFIG}_${ALLOCATOR}_${ARCH}Xchaos=${REASON}" | tr '+' '_' >> build.env; exit 1; fi
   after_script:

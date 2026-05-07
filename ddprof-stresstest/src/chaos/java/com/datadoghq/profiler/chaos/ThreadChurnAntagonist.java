@@ -75,7 +75,7 @@ public final class ThreadChurnAntagonist implements Antagonist {
             }
             for (Thread t : batch) {
                 try {
-                    t.join();
+                    t.join(1_000L);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return;

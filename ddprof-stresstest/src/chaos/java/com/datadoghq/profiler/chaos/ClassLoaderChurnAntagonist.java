@@ -74,7 +74,7 @@ public final class ClassLoaderChurnAntagonist implements Antagonist {
                 Object result = m.invoke(null, uid);
                 sink.addAndGet((long) result);
             } catch (Throwable t) {
-                // Generation/invocation transients are not the failure signal we care about.
+                // transient; JVM crash is the signal we watch for
             }
             // loader + klass go out of scope here.
         }

@@ -118,8 +118,7 @@ public final class AllocStormAntagonist implements Antagonist {
                 FREE_MEMORY.invoke(UNSAFE, addr);
             }
         } catch (Throwable t) {
-            // Treat reflective invocation failure as native loop termination — the
-            // primary failure signal is JVM crash, not Java exceptions.
+            // reflective failure; JVM crash is the signal we watch for
         }
         sink.addAndGet(acc);
     }

@@ -18,7 +18,7 @@ fi
 
 curl -s "https://get.sdkman.io" | bash
 source "/root/.sdkman/bin/sdkman-init.sh" 1>/dev/null 2>/dev/null
-sdk install java 21.0.3-tem 1>/dev/null 2>/dev/null
+timeout 300 sdk install java 21.0.3-tem 1>/dev/null 2>/dev/null
 
 # Resolve ddprof.jar: prefer local build artifact, fall back to Maven snapshot.
 # Running mvn from /tmp avoids the empty pom.xml at the repo root.
@@ -40,7 +40,7 @@ if [ ! -f "${DDPROF_JAR}" ]; then
 fi
 
 mkdir -p /var/lib/datadog
-wget -q -O /var/lib/datadog/dd-java-agent.jar 'https://dtdg.co/latest-java-tracer'
+wget -q --timeout=120 --tries=3 -O /var/lib/datadog/dd-java-agent.jar 'https://dtdg.co/latest-java-tracer'
 
 # chaos.jar is produced once per pipeline by the chaos:build job (stresstest
 # stage) and pulled here as an artifact. Fall back to an inline build if the
@@ -109,6 +109,7 @@ esac
 
 echo "LD_PRELOAD=$LD_PRELOAD"
 
+timeout "$((RUNTIME + 300))" \
 java -javaagent:${PATCHED_AGENT} \
      ${ENABLEMENT} \
      -Ddd.profiling.upload.period=10 \
