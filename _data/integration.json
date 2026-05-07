@@ -1,6 +1,43 @@
 {
   "runs": [
     {
+      "id": "112104248",
+      "timestamp": "2026-05-07T20:54:28Z",
+      "ddprof_branch": "main",
+      "ddprof_sha": "b80d1d659748e0468aaab9fea6647ee576f453a6",
+      "ddprof_pr": null,
+      "pipeline": {
+        "id": "112104248",
+        "url": "https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/112104248"
+      },
+      "lib_version": "unknown",
+      "status": "partial",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 27,
+        "failed_jobs": 13,
+        "total_scenarios": 67,
+        "passed_scenarios": 54,
+        "failed_scenarios": 13,
+        "unknown_scenarios": 0,
+        "failed_configs": [
+          "glibc-arm64-hotspot-jdk11",
+          "glibc-arm64-hotspot-jdk21",
+          "glibc-arm64-hotspot-jdk8",
+          "glibc-arm64-openj9-jdk25",
+          "glibc-arm64-openj9-jdk8",
+          "glibc-x64-hotspot-jdk17",
+          "glibc-x64-hotspot-jdk8",
+          "glibc-x64-openj9-jdk11",
+          "glibc-x64-openj9-jdk25",
+          "musl-arm64-hotspot-jdk25",
+          "musl-arm64-openj9-jdk25",
+          "musl-x64-hotspot-jdk25",
+          "musl-x64-openj9-jdk21"
+        ]
+      }
+    },
+    {
       "id": "112099152",
       "timestamp": "2026-05-07T20:34:33Z",
       "ddprof_branch": "main",
@@ -217,29 +254,6 @@
       "pipeline": {
         "id": "112007172",
         "url": "https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/112007172"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 40,
-        "failed_jobs": 0,
-        "total_scenarios": 80,
-        "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "112005702",
-      "timestamp": "2026-05-07T14:58:40Z",
-      "ddprof_branch": "main",
-      "ddprof_sha": "fdbeb72f896644c9a1eefdd733c137ead9c71596",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "112005702",
-        "url": "https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/112005702"
       },
       "lib_version": "unknown",
       "status": "passed",
