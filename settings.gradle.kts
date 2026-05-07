@@ -1,6 +1,10 @@
 pluginManagement {
   includeBuild("build-logic")
+  val mavenRepositoryProxy = providers.gradleProperty("mavenRepositoryProxy").orNull
   repositories {
+    if (mavenRepositoryProxy != null) {
+      maven { url = uri(mavenRepositoryProxy) }
+    }
     gradlePluginPortal()
     mavenCentral()
   }
