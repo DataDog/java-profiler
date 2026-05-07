@@ -131,7 +131,7 @@ public class WriteStackTracesAfterClassUnloadTest extends AbstractProfilerTest {
         try {
           profiler.stop();
         } finally {
-          resetThreadContext();
+          profiler.resetThreadContext();
         }
       }
 
