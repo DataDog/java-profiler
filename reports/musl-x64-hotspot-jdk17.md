@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk17
 
 ## musl-x64-hotspot-jdk17 - ❌ FAIL
 
-**Date:** 2026-05-07 17:16:19 EDT
+**Date:** 2026-05-07 17:29:38 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-hotspot-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 60 |
-| CPU Cores (end) | 60 |
+| CPU Cores (start) | 57 |
+| CPU Cores (end) | 55 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,23 +45,22 @@ title: musl-x64-hotspot-jdk17
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 60-60 cores)</summary>
+<summary>CPU Timeline (2 unique values: 55-57 cores)</summary>
 
 ```
-1778188143 60
-1778188148 60
-1778188153 60
-1778188158 60
-1778188163 60
-1778188168 60
-1778188173 60
-1778188178 60
-1778188183 60
-1778188188 60
-1778188193 60
-1778188198 60
-1778188203 60
-1778188208 60
+1778189115 57
+1778189120 57
+1778189125 57
+1778189130 57
+1778189135 57
+1778189140 57
+1778189145 57
+1778189150 55
+1778189155 55
+1778189160 55
+1778189165 55
+1778189170 55
+1778189175 55
 ```
 </details>
 

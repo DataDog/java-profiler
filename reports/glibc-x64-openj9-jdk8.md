@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ❌ FAIL
 
-**Date:** 2026-05-07 17:16:18 EDT
+**Date:** 2026-05-07 17:29:37 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 61 |
-| CPU Cores (end) | 61 |
+| CPU Cores (start) | 76 |
+| CPU Cores (end) | 78 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,23 +45,22 @@ title: glibc-x64-openj9-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 61-61 cores)</summary>
+<summary>CPU Timeline (1 unique values: 76-76 cores)</summary>
 
 ```
-1778188153 61
-1778188158 61
-1778188163 61
-1778188168 61
-1778188173 61
-1778188178 61
-1778188183 61
-1778188188 61
-1778188193 61
-1778188198 61
-1778188203 61
-1778188208 61
-1778188213 61
-1778188218 61
+1778189109 76
+1778189114 76
+1778189119 76
+1778189124 76
+1778189129 76
+1778189134 76
+1778189139 76
+1778189144 76
+1778189149 76
+1778189154 76
+1778189159 76
+1778189164 76
+1778189169 76
 ```
 </details>
 
