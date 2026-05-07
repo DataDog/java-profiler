@@ -16,6 +16,7 @@
 #include "threadFilter.h"
 #include "threadState.h"
 #include "tsc.h"
+#include "wallClockCounters.h"
 
 class BaseWallClock : public Engine {
   private:
@@ -95,6 +96,12 @@ class BaseWallClock : public Engine {
         epoch.updateNumFailedSamples(num_failures);
         epoch.updateNumSuccessfulSamples(num_successful_samples);
         epoch.updateNumSkippedPrecheckOs(num_skipped_precheck_os);
+        WallClockCounterSnapshot counter_snapshot = WallClockCounters::drain();
+        epoch.updateNumSkippedParkedSpanless(counter_snapshot.skipped_parked_spanless);
+        epoch.updateNumSkippedParkedActiveSpan(counter_snapshot.skipped_parked_active_span);
+        epoch.updateNumTaskBlockEmitted(counter_snapshot.task_block_emitted);
+        epoch.updateNumTaskBlockSkippedSpanZero(counter_snapshot.task_block_skipped_span_zero);
+        epoch.updateNumTaskBlockSkippedTooShort(counter_snapshot.task_block_skipped_too_short);
         epoch.updateNumExitedThreads(threads_already_exited);
         epoch.updateNumPermissionDenied(permission_denied);
         u64 endTime = TSC::ticks();

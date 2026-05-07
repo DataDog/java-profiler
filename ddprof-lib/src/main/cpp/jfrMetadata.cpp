@@ -156,7 +156,17 @@ void JfrMetadata::initialize(
                        "Number of Permission Denied Errors")
               << field("numSkippedPrecheckOs", T_INT,
                        "Signals skipped after OS-thread-state precheck (SLEEPING or "
-                       "CONDVAR_WAIT: sleep, park/parkNanos, JDK 21+ Thread.sleep via wait)"))
+                       "CONDVAR_WAIT: sleep, park/parkNanos, JDK 21+ Thread.sleep via wait)")
+              << field("numSkippedParkedSpanless", T_LONG,
+                       "Signals suppressed for Java-level parked threads without an active span")
+              << field("numSkippedParkedActiveSpan", T_LONG,
+                       "Signals suppressed for Java-level parked threads with an active span")
+              << field("numTaskBlockEmitted", T_LONG,
+                       "TaskBlock events emitted for active-span blocking intervals")
+              << field("numTaskBlockSkippedSpanZero", T_LONG,
+                       "TaskBlock intervals skipped because no active span was captured")
+              << field("numTaskBlockSkippedTooShort", T_LONG,
+                       "TaskBlock intervals skipped because they were shorter than the recording threshold"))
 
           << (type("datadog.ObjectSample", T_ALLOC, "Allocation sample")
                   << category("Datadog", "Profiling")

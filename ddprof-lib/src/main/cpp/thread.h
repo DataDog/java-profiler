@@ -29,6 +29,13 @@ public:
   };
 
   static constexpr u32 FLAG_PARKED = 0x4u;
+  static constexpr u32 FLAG_PARKED_WITH_SPAN = 0x8u;
+
+  enum class ParkedWallClockState : u32 {
+    NOT_PARKED = 0,
+    PARKED_SPANLESS = 1,
+    PARKED_ACTIVE_SPAN = 2
+  };
 
 private:
   // We are allowing several levels of nesting because we can be
@@ -264,11 +271,15 @@ public:
       _park_context.tags[i].value = _otel_tag_encodings[i];
     }
     _park_start_ticks = start_ticks;
-    __atomic_fetch_or(&_misc_flags, FLAG_PARKED, __ATOMIC_RELEASE);
+    u32 flags = span_id != 0 ? (FLAG_PARKED | FLAG_PARKED_WITH_SPAN) : FLAG_PARKED;
+    if (span_id == 0) {
+      __atomic_fetch_and(&_misc_flags, ~FLAG_PARKED_WITH_SPAN, __ATOMIC_RELEASE);
+    }
+    __atomic_fetch_or(&_misc_flags, flags, __ATOMIC_RELEASE);
   }
 
   inline bool parkExit(u64 &start_ticks, Context &park_context) {
-    u32 prev = __atomic_fetch_and(&_misc_flags, ~FLAG_PARKED, __ATOMIC_ACQ_REL);
+    u32 prev = __atomic_fetch_and(&_misc_flags, ~(FLAG_PARKED | FLAG_PARKED_WITH_SPAN), __ATOMIC_ACQ_REL);
     if ((prev & FLAG_PARKED) == 0) {
       return false;
     }

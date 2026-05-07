@@ -19,6 +19,7 @@
 #include "thread.h"
 #include "threadState.inline.h"
 #include "guards.h"
+#include "wallClockCounters.h"
 #include <cerrno>
 #include <string.h>
 #include <math.h>
@@ -90,9 +91,19 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   // Parked suppression is evaluated on the sampled thread itself (TLS-backed
   // ProfiledThread::currentSignalSafe()) to avoid dereferencing cross-thread
   // ProfiledThread pointers that may race with thread teardown.
-  if (current != nullptr && current->isParkedForWallclock()) {
-    Counters::increment(WC_SIGNAL_SKIPPED_PARKED);
-    return;
+  if (current != nullptr) {
+    ProfiledThread::ParkedWallClockState parked_state = current->parkedWallClockState();
+    if (parked_state != ProfiledThread::ParkedWallClockState::NOT_PARKED) {
+      Counters::increment(WC_SIGNAL_SKIPPED_PARKED);
+      if (parked_state == ProfiledThread::ParkedWallClockState::PARKED_ACTIVE_SPAN) {
+        Counters::increment(WC_SIGNAL_SKIPPED_PARKED_ACTIVE_SPAN);
+        WallClockCounters::incrementSkippedParkedActiveSpan();
+      } else {
+        Counters::increment(WC_SIGNAL_SKIPPED_PARKED_SPANLESS);
+        WallClockCounters::incrementSkippedParkedSpanless();
+      }
+      return;
+    }
   }
   int tid = current != NULL ? current->tid() : OS::threadId();
   Shims::instance().setSighandlerTid(tid);
