@@ -531,15 +531,22 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     uintptr_t receiver = frame.jarg0();
                     if (receiver != 0) {
                         VMSymbol* symbol = VMKlass::fromOop(receiver)->name();
-                        // walkVM runs in a signal handler; the inserting lookup() calls
-                        // malloc/calloc and is async-signal-unsafe. Use bounded_lookup
-                        // with size_limit=0 so we never grow the dictionary here. On
-                        // miss (sentinel INT_MAX) drop the synthetic frame — the JVMTI
-                        // path will populate the entry from a non-signal context.
-                        u32 class_id = profiler->classMap()->bounded_lookup(
-                            symbol->body(), symbol->length(), 0);
-                        if (class_id != INT_MAX) {
-                            fillFrame(frames[depth++], BCI_ALLOC, class_id);
+                        // walkVM runs in a signal handler. _class_map is mutated
+                        // under _class_map_lock (shared by Profiler::lookupClass
+                        // inserters, exclusive by _class_map.clear() in the dump
+                        // path between unlockAll() and lock()). bounded_lookup
+                        // with size_limit=0 never inserts (no malloc), but it
+                        // still traverses row->next and reads row->keys, which
+                        // clear() concurrently frees. Take the lock shared via
+                        // try-lock; if an exclusive clear() is in progress, drop
+                        // the synthetic frame rather than read freed memory.
+                        OptionalSharedLockGuard guard(profiler->classMapLock());
+                        if (guard.ownsLock()) {
+                            u32 class_id = profiler->classMap()->bounded_lookup(
+                                symbol->body(), symbol->length(), 0);
+                            if (class_id != INT_MAX) {
+                                fillFrame(frames[depth++], BCI_ALLOC, class_id);
+                            }
                         }
                     }
                 }
