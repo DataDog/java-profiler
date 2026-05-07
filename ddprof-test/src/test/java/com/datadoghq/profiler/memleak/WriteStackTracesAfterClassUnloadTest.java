@@ -28,16 +28,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * Regression test for PROF-14547: SIGSEGV in {@code Profiler::processCallTraces} during
- * {@code Recording::writeStackTraces}.
+ * Regression test for a SIGSEGV in {@code Profiler::processCallTraces} during
+ * {@code Recording::writeStackTraces} triggered by class unload.
  *
  * <p><b>Bug:</b> {@code MethodInfo::_line_number_table->_ptr} held a raw pointer to JVMTI-allocated
  * memory returned by {@code GetLineNumberTable}. When the underlying class was unloaded, the JVM
  * freed that memory, leaving {@code _ptr} dangling. The crash manifested when
  * {@code MethodInfo::getLineNumber(bci)} dereferenced the freed memory while
- * {@code writeStackTraces} iterated traces that still referenced the now-unloaded method
- * (a peer manifestation of PROF-14545, which crashes inside
- * {@code SharedLineNumberTable::~SharedLineNumberTable} via {@code Deallocate}).
+ * {@code writeStackTraces} iterated traces that still referenced the now-unloaded method.
  *
  * <p><b>Test scenario (timing-sensitive — catches the bug aggressively under ASan):</b>
  * <ol>
@@ -54,7 +52,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *       SIGSEGV without the fix.</li>
  * </ol>
  *
- * <p>With the fix (PROF-14547), {@code SharedLineNumberTable} owns a malloc'd copy of the entries
+ * <p>With the fix, {@code SharedLineNumberTable} owns a malloc'd copy of the entries
  * (the JVMTI allocation is deallocated immediately at capture time inside
  * {@code Lookup::fillJavaMethodInfo}), so {@code _ptr} stays valid regardless of class unload.
  *
@@ -66,9 +64,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *       authoritative signal here.</li>
  *   <li>Class unload is JVM-discretionary; if the {@code WeakReference} doesn't clear within
  *       the deadline the test {@code assumeTrue}-skips rather than passing spuriously.</li>
- *   <li>{@code mcleanup=false} is set deliberately so a SIGSEGV here is unambiguously the
- *       PROF-14547 read path, not the PROF-14545 cleanup path covered by
- *       {@code CleanupAfterClassUnloadTest}.</li>
+ *   <li>{@code mcleanup=false} is set deliberately so a SIGSEGV here exercises the
+ *       {@code getLineNumber} read path, not the {@code ~SharedLineNumberTable} cleanup path
+ *       covered by {@code CleanupAfterClassUnloadTest}.</li>
  * </ul>
  */
 public class WriteStackTracesAfterClassUnloadTest extends AbstractProfilerTest {
@@ -86,12 +84,12 @@ public class WriteStackTracesAfterClassUnloadTest extends AbstractProfilerTest {
   public void testNoSigsegvInWriteStackTracesAfterClassUnload() throws Exception {
     stopProfiler();
 
-    Path baseFile = tempFile("prof14547-base");
-    Path dumpFile = tempFile("prof14547-dump");
+    Path baseFile = tempFile("class-unload-sigsegv-base");
+    Path dumpFile = tempFile("class-unload-sigsegv-dump");
 
     try {
-      // mcleanup=false isolates the test to the PROF-14547 read path; the
-      // PROF-14545 cleanup path is covered separately by CleanupAfterClassUnloadTest.
+      // mcleanup=false isolates the test to the writeStackTraces read path; the
+      // SharedLineNumberTable destructor path is covered by CleanupAfterClassUnloadTest.
       profiler.execute("start,cpu=1ms,jfr,mcleanup=false,file=" + baseFile.toAbsolutePath());
       try {
         Thread.sleep(200); // let the profiler stabilize
@@ -111,7 +109,7 @@ public class WriteStackTracesAfterClassUnloadTest extends AbstractProfilerTest {
         // Without unload the JVMTI line-number-table memory is never freed and the bug
         // cannot manifest — running the dumps would prove nothing.
         assumeTrue(loaderRef.get() == null,
-            "JVM did not unload the dynamic class within the deadline; cannot exercise PROF-14547");
+            "JVM did not unload the dynamic class within the deadline; cannot exercise the use-after-free scenario");
 
         // 3. Immediately dump several times. The first dump runs writeStackTraces over
         //    the trace_buffer that still contains the unloaded method's traces; subsequent
@@ -142,7 +140,7 @@ public class WriteStackTracesAfterClassUnloadTest extends AbstractProfilerTest {
   }
 
   private WeakReference<ClassLoader> loadAndProfileDynamicClass() throws Exception {
-    String className = "com/datadoghq/profiler/generated/Prof14547Class" + (classCounter++);
+    String className = "com/datadoghq/profiler/generated/DynamicUnloadClass" + (classCounter++);
     byte[] bytecode = generateClassBytecode(className);
 
     IsolatedClassLoader loader = new IsolatedClassLoader();
