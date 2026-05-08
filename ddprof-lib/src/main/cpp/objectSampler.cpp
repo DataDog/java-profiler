@@ -79,20 +79,24 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
   // JVMTI_ERROR_NONE without populating the out-parameter cannot leave
   // a stack-garbage pointer to be handed to Deallocate (PROF-14551).
   char *class_name = NULL;
-  if (jvmti->GetClassSignature(object_klass, &class_name, NULL) == 0 &&
-      class_name != NULL) {
-    const char *name_slice = NULL;
-    size_t name_len = 0;
-    int id = -1;
-    if (normalizeClassSignature(class_name, &name_slice, &name_len)) {
-      id = Profiler::instance()->lookupClass(name_slice, name_len);
-    }
-    jvmti->Deallocate((unsigned char *)class_name);
-    if (id == -1) {
-      return;
-    }
-    event._id = id;
+  if (jvmti->GetClassSignature(object_klass, &class_name, NULL) != 0 ||
+      class_name == NULL) {
+    // No usable class signature: dropping the sample avoids recording
+    // an allocation under the default class id 0, which would corrupt
+    // allocation attribution downstream.
+    return;
   }
+  const char *name_slice = NULL;
+  size_t name_len = 0;
+  int id = -1;
+  if (normalizeClassSignature(class_name, &name_slice, &name_len)) {
+    id = Profiler::instance()->lookupClass(name_slice, name_len);
+  }
+  jvmti->Deallocate((unsigned char *)class_name);
+  if (id == -1) {
+    return;
+  }
+  event._id = id;
 
   u64 call_trace_id = 0;
   // we do record the details and stacktraces only for when recording
