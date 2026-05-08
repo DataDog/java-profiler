@@ -11,11 +11,6 @@ ALLOCATOR=${3:-gmalloc}
 
 echo "Chaos run: runtime=${RUNTIME}s config=${CONFIG} allocator=${ALLOCATOR}"
 
-if [ -z "${CURRENT_VERSION:-}" ]; then
-  echo "FAIL:CURRENT_VERSION is empty (get-versions dotenv missing)" >&2
-  exit 1
-fi
-
 curl -s "https://get.sdkman.io" | bash
 source "/root/.sdkman/bin/sdkman-init.sh" 1>/dev/null 2>/dev/null
 timeout 300 sdk install java 21.0.3-tem 1>/dev/null 2>/dev/null
@@ -27,6 +22,10 @@ if [ -n "${DDPROF_JAR_LOCAL}" ] && [ -f "${DDPROF_JAR_LOCAL}" ]; then
   DDPROF_JAR="${DDPROF_JAR_LOCAL}"
   echo "Using local ddprof jar: ${DDPROF_JAR}"
 else
+  if [ -z "${CURRENT_VERSION:-}" ]; then
+    echo "FAIL:CURRENT_VERSION is empty and no local jar found (get-versions dotenv missing)" >&2
+    exit 1
+  fi
   echo "Local ddprof jar not found — downloading ${CURRENT_VERSION} from Maven snapshots"
   (cd /tmp && mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
       -DrepoUrl=https://central.sonatype.com/repository/maven-snapshots/ \
