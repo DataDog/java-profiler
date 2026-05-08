@@ -47,8 +47,14 @@ public:
   void unlock() { __sync_fetch_and_sub(&_lock, 1); }
 
   bool tryLockShared() {
-    int value;
-    while ((value = __atomic_load_n(&_lock, __ATOMIC_ACQUIRE)) <= 0) {
+    // Retry up to 5 times to handle transient CAS failures from concurrent
+    // shared acquirers. Returns false immediately if exclusive lock is held
+    // (value > 0) or after 5 failed CAS attempts.
+    for (int attempts = 0; attempts < 5; ++attempts) {
+      int value = __atomic_load_n(&_lock, __ATOMIC_ACQUIRE);
+      if (value > 0) {
+        return false;
+      }
       if (__sync_bool_compare_and_swap(&_lock, value, value - 1)) {
         return true;
       }
@@ -76,12 +82,16 @@ public:
     _lock->lockShared();
   }
   ~SharedLockGuard() {
-    _lock->unlockShared();
+    if (_lock != nullptr) {
+      _lock->unlockShared();
+    }
   }
-  // Non-copyable and non-movable
+  SharedLockGuard(SharedLockGuard&& other) : _lock(other._lock) {
+    other._lock = nullptr;
+  }
+  // Non-copyable, non-move-assignable
   SharedLockGuard(const SharedLockGuard&) = delete;
   SharedLockGuard& operator=(const SharedLockGuard&) = delete;
-  SharedLockGuard(SharedLockGuard&&) = delete;
   SharedLockGuard& operator=(SharedLockGuard&&) = delete;
 };
 
@@ -101,10 +111,12 @@ public:
   }
   bool ownsLock() { return _lock != nullptr; }
 
-  // Non-copyable and non-movable
+  OptionalSharedLockGuard(OptionalSharedLockGuard&& other) : _lock(other._lock) {
+    other._lock = nullptr;
+  }
+  // Non-copyable, non-move-assignable
   OptionalSharedLockGuard(const OptionalSharedLockGuard&) = delete;
   OptionalSharedLockGuard& operator=(const OptionalSharedLockGuard&) = delete;
-  OptionalSharedLockGuard(OptionalSharedLockGuard&&) = delete;
   OptionalSharedLockGuard& operator=(OptionalSharedLockGuard&&) = delete;
 };
 
