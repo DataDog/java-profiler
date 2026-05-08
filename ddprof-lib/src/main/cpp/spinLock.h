@@ -112,8 +112,8 @@ class OptionalSharedLockGuard {
   SpinLock* _lock;
 public:
   OptionalSharedLockGuard(SpinLock* lock) : _lock(lock) {
-    if (!_lock->tryLockShared()) {
-      // Locking failed, no need to unlock.
+    if (!_lock->tryLockSharedBounded()) {
+      // Locking failed (bounded retries exhausted or exclusive lock held); no unlock needed.
       _lock = nullptr;
     }
   }
