@@ -146,6 +146,10 @@ publish-reliability-gh-pages:
       artifacts: true
     - job: reliability-aarch64
       artifacts: true
+    - job: reliability-chaos-amd64
+      artifacts: true
+    - job: reliability-chaos-aarch64
+      artifacts: true
   timeout: 10m
   script:
     - ./.gitlab/reliability/publish-gh-pages.sh
