@@ -39,11 +39,16 @@ OUTPUT_FILE=""
 
 # Colors
 GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
 function log_info() {
   echo -e "${GREEN}[INFO]${NC} $*"
+}
+
+function log_warn() {
+  echo -e "${YELLOW}[WARN]${NC} $*"
 }
 
 function log_error() {
