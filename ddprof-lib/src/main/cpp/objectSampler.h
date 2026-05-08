@@ -22,6 +22,7 @@
 #include "jfrMetadata.h"
 #include "livenessTracker.h"
 #include <jvmti.h>
+#include <stddef.h>
 #include <time.h>
 
 typedef int (*get_sampling_interval)();
@@ -71,6 +72,14 @@ public:
   static void JNICALL SampledObjectAlloc(jvmtiEnv *jvmti, JNIEnv *jni,
                                          jthread thread, jobject object,
                                          jclass object_klass, jlong size);
+
+  // Validates a JVMTI class signature and produces the slice that is fed
+  // into Profiler::lookupClass. Returns false (and leaves *out_name and
+  // *out_len untouched) when class_name is null, empty, or "L" alone (a
+  // single 'L' would underflow the strip-the-Lname; transformation).
+  // Public for unit testing.
+  static bool normalizeClassSignature(const char *class_name,
+                                      const char **out_name, size_t *out_len);
 };
 
 #endif // _OBJECTSAMPLER_H

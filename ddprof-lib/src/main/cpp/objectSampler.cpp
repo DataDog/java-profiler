@@ -20,6 +20,30 @@
 
 ObjectSampler *const ObjectSampler::_instance = new ObjectSampler();
 
+bool ObjectSampler::normalizeClassSignature(const char *class_name,
+                                            const char **out_name,
+                                            size_t *out_len) {
+  if (class_name == NULL) {
+    return false;
+  }
+  size_t len = strlen(class_name);
+  if (len == 0) {
+    return false;
+  }
+  if (class_name[0] == 'L') {
+    // "Lname;" must have at least 2 chars so len - 2 does not underflow.
+    if (len < 2) {
+      return false;
+    }
+    *out_name = class_name + 1;
+    *out_len = len - 2;
+  } else {
+    *out_name = class_name;
+    *out_len = len;
+  }
+  return true;
+}
+
 void ObjectSampler::SampledObjectAlloc(jvmtiEnv *jvmti, JNIEnv *jni,
                                        jthread thread, jobject object,
                                        jclass object_klass, jlong size) {
@@ -36,18 +60,29 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
     return;
   }
 
+  // Phase guard: a SampledObjectAlloc callback can race with profiler
+  // teardown. If the global JVMTI env has already been cleared we must
+  // not issue any JVMTI calls (matches the pattern used in
+  // flightRecorder.cpp:174-191 and flightRecorder.cpp:47-67).
+  if (jvmti == NULL || VM::jvmti() == NULL) {
+    return;
+  }
+
   int tid = ProfiledThread::currentTid();
 
   AllocEvent event;
 
-  char *class_name;
-  if (jvmti->GetClassSignature(object_klass, &class_name, NULL) == 0) {
+  // Initialise to NULL so that a JVMTI implementation that returns
+  // JVMTI_ERROR_NONE without populating the out-parameter cannot leave
+  // a stack-garbage pointer to be handed to Deallocate (PROF-14551).
+  char *class_name = NULL;
+  if (jvmti->GetClassSignature(object_klass, &class_name, NULL) == 0 &&
+      class_name != NULL) {
+    const char *name_slice = NULL;
+    size_t name_len = 0;
     int id = -1;
-    if (class_name[0] == 'L') {
-      id = Profiler::instance()->lookupClass(class_name + 1,
-                                             strlen(class_name) - 2);
-    } else {
-      id = Profiler::instance()->lookupClass(class_name, strlen(class_name));
+    if (normalizeClassSignature(class_name, &name_slice, &name_len)) {
+      id = Profiler::instance()->lookupClass(name_slice, name_len);
     }
     jvmti->Deallocate((unsigned char *)class_name);
     if (id == -1) {
