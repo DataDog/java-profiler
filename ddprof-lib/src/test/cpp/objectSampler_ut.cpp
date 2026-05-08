@@ -44,15 +44,32 @@ TEST(ObjectSamplerTest, NormalizeStripsLname) {
     EXPECT_EQ(out_len, strlen("java/lang/String"));
 }
 
-TEST(ObjectSamplerTest, NormalizeAcceptsMinimalLname) {
-    // "L;" is a degenerate but technically well-formed signature; the
-    // resulting slice is empty but does not underflow.
-    const char *signature = "L;";
-    const char *out_name = nullptr;
+TEST(ObjectSamplerTest, NormalizeRejectsLnameWithEmptyBody) {
+    // "L;" has no body between 'L' and ';' so it must be rejected.
+    const char *out_name = (const char *)0xdeadbeef;
     size_t out_len = 99;
-    EXPECT_TRUE(ObjectSampler::normalizeClassSignature(signature, &out_name, &out_len));
-    EXPECT_EQ(out_name, signature + 1);
-    EXPECT_EQ(out_len, 0u);
+    EXPECT_FALSE(ObjectSampler::normalizeClassSignature("L;", &out_name, &out_len));
+    EXPECT_EQ(out_name, (const char *)0xdeadbeef);
+    EXPECT_EQ(out_len, 99u);
+}
+
+TEST(ObjectSamplerTest, NormalizeRejectsLnameMissingTrailingSemicolon) {
+    // "Ljava/lang/String" lacks the trailing ';' and must be rejected.
+    const char *out_name = (const char *)0xdeadbeef;
+    size_t out_len = 99;
+    EXPECT_FALSE(ObjectSampler::normalizeClassSignature("Ljava/lang/String", &out_name, &out_len));
+    EXPECT_EQ(out_name, (const char *)0xdeadbeef);
+    EXPECT_EQ(out_len, 99u);
+}
+
+TEST(ObjectSamplerTest, NormalizeRejectsNullOutName) {
+    size_t out_len = 0;
+    EXPECT_FALSE(ObjectSampler::normalizeClassSignature("Ljava/lang/String;", NULL, &out_len));
+}
+
+TEST(ObjectSamplerTest, NormalizeRejectsNullOutLen) {
+    const char *out_name = nullptr;
+    EXPECT_FALSE(ObjectSampler::normalizeClassSignature("Ljava/lang/String;", &out_name, NULL));
 }
 
 TEST(ObjectSamplerTest, NormalizePassesThroughPrimitiveArray) {

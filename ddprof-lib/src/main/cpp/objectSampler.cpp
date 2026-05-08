@@ -23,6 +23,9 @@ ObjectSampler *const ObjectSampler::_instance = new ObjectSampler();
 bool ObjectSampler::normalizeClassSignature(const char *class_name,
                                             const char **out_name,
                                             size_t *out_len) {
+  if (out_name == NULL || out_len == NULL) {
+    return false;
+  }
   if (class_name == NULL) {
     return false;
   }
@@ -31,8 +34,8 @@ bool ObjectSampler::normalizeClassSignature(const char *class_name,
     return false;
   }
   if (class_name[0] == 'L') {
-    // "Lname;" must have at least 2 chars so len - 2 does not underflow.
-    if (len < 2) {
+    // "Lname;" must have at least 3 chars (one body char) and a trailing ';'.
+    if (len < 3 || class_name[len - 1] != ';') {
       return false;
     }
     *out_name = class_name + 1;
