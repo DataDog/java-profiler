@@ -881,6 +881,9 @@ void Profiler::updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
     assert(native_thread_id != -1);
   } else {
     native_thread_id = JVMThread::nativeThreadId(jni, thread);
+    if (jni->ExceptionCheck()) {
+      jni->ExceptionClear();
+    }
   }
 
   if (native_thread_id >= 0 &&
@@ -901,6 +904,9 @@ void Profiler::updateJavaThreadNames() {
 
   JNIEnv *jni = VM::jni();
   for (int i = 0; i < thread_count; i++) {
+    if (thread_objects[i] == nullptr) {
+      continue;
+    }
     updateThreadName(jvmti, jni, thread_objects[i]);
     jni->DeleteLocalRef(thread_objects[i]);
   }
