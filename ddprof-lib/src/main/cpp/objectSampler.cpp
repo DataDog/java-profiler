@@ -74,15 +74,13 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
 
   AllocEvent event;
 
-  // Initialise to NULL so that a JVMTI implementation that returns
-  // JVMTI_ERROR_NONE without populating the out-parameter cannot leave
-  // a stack-garbage pointer to be handed to Deallocate.
+  // Initialise so a JVMTI impl that returns JVMTI_ERROR_NONE without
+  // populating class_name cannot hand a stack-garbage pointer to Deallocate.
   char *class_name = NULL;
   if (jvmti->GetClassSignature(object_klass, &class_name, NULL) != 0 ||
       class_name == NULL) {
-    // No usable class signature: dropping the sample avoids recording
-    // an allocation under the default class id 0, which would corrupt
-    // allocation attribution downstream.
+    // Drop the sample: recording it under the default class id 0
+    // would corrupt allocation attribution.
     return;
   }
   const char *name_slice = NULL;

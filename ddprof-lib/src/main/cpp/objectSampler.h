@@ -74,12 +74,10 @@ public:
                                          jthread thread, jobject object,
                                          jclass object_klass, jlong size);
 
-  // Validates a JVMTI class signature and produces the slice that is fed
-  // into Profiler::lookupClass. Returns false (and leaves *out_name and
-  // *out_len untouched) when out_name or out_len is null, when class_name
-  // is null or empty, or when an 'L'-prefixed signature does not match
-  // the full "Lname;" form (requires len >= 3 and a trailing ';').
-  // Public for unit testing.
+  // Strips the "L...;" wrapper from a JVMTI class signature for
+  // Profiler::lookupClass. Returns false (and leaves outputs untouched)
+  // when class_name is null/empty, the L-form is malformed, or either
+  // out pointer is null. Public for unit testing.
   static bool normalizeClassSignature(const char *class_name,
                                       const char **out_name, size_t *out_len);
 };

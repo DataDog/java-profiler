@@ -7,11 +7,9 @@
 #include <cstring>
 #include "../../main/cpp/objectSampler.h"
 
-// Regression tests for ObjectSampler::normalizeClassSignature. The helper
-// hardens the prelude of ObjectSampler::recordAllocation so that a null,
-// empty, or "L"-only class signature does not dereference a bad pointer
-// and does not underflow the strlen(name) - 2 length passed to
-// Profiler::lookupClass.
+// Regression tests for ObjectSampler::normalizeClassSignature, the
+// guard that recordAllocation uses against null, empty, or malformed
+// class signatures coming back from JVMTI.
 TEST(ObjectSamplerTest, NormalizeRejectsNull) {
     const char *out_name = (const char *)0xdeadbeef;
     size_t out_len = 99;
@@ -45,7 +43,6 @@ TEST(ObjectSamplerTest, NormalizeStripsLname) {
 }
 
 TEST(ObjectSamplerTest, NormalizeRejectsLnameWithEmptyBody) {
-    // "L;" has no body between 'L' and ';' so it must be rejected.
     const char *out_name = (const char *)0xdeadbeef;
     size_t out_len = 99;
     EXPECT_FALSE(ObjectSampler::normalizeClassSignature("L;", &out_name, &out_len));
@@ -54,7 +51,6 @@ TEST(ObjectSamplerTest, NormalizeRejectsLnameWithEmptyBody) {
 }
 
 TEST(ObjectSamplerTest, NormalizeRejectsLnameMissingTrailingSemicolon) {
-    // "Ljava/lang/String" lacks the trailing ';' and must be rejected.
     const char *out_name = (const char *)0xdeadbeef;
     size_t out_len = 99;
     EXPECT_FALSE(ObjectSampler::normalizeClassSignature("Ljava/lang/String", &out_name, &out_len));
