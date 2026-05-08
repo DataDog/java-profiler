@@ -47,9 +47,22 @@ public:
   void unlock() { __sync_fetch_and_sub(&_lock, 1); }
 
   bool tryLockShared() {
-    // Retry up to 5 times to handle transient CAS failures from concurrent
-    // shared acquirers. Returns false immediately if exclusive lock is held
-    // (value > 0) or after 5 failed CAS attempts.
+    // Spins until the exclusive lock is released, then acquires a shared lock.
+    // Returns false ONLY when an exclusive lock is observed (_lock > 0); never
+    // returns false spuriously. Callers must be prepared for this to block.
+    int value;
+    while ((value = __atomic_load_n(&_lock, __ATOMIC_ACQUIRE)) <= 0) {
+      if (__sync_bool_compare_and_swap(&_lock, value, value - 1)) {
+        return true;
+      }
+      spinPause();
+    }
+    return false;
+  }
+
+  // Signal-safe variant: returns false after at most 5 CAS attempts.
+  // Use only in signal-handler paths where spinning indefinitely is unsafe.
+  bool tryLockSharedBounded() {
     for (int attempts = 0; attempts < 5; ++attempts) {
       int value = __atomic_load_n(&_lock, __ATOMIC_ACQUIRE);
       if (value > 0) {
