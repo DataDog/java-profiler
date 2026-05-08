@@ -65,8 +65,7 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
 
   // Phase guard: a SampledObjectAlloc callback can race with profiler
   // teardown. If the global JVMTI env has already been cleared we must
-  // not issue any JVMTI calls (matches the pattern used in
-  // flightRecorder.cpp:174-191 and flightRecorder.cpp:47-67).
+  // not issue any JVMTI calls.
   if (jvmti == NULL || VM::jvmti() == NULL) {
     return;
   }
@@ -77,7 +76,7 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
 
   // Initialise to NULL so that a JVMTI implementation that returns
   // JVMTI_ERROR_NONE without populating the out-parameter cannot leave
-  // a stack-garbage pointer to be handed to Deallocate (PROF-14551).
+  // a stack-garbage pointer to be handed to Deallocate.
   char *class_name = NULL;
   if (jvmti->GetClassSignature(object_klass, &class_name, NULL) != 0 ||
       class_name == NULL) {

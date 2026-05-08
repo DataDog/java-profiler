@@ -7,7 +7,7 @@
 #include <cstring>
 #include "../../main/cpp/objectSampler.h"
 
-// Regression tests for the SIGSEGV reported in PROF-14551. The function
+// Regression tests for ObjectSampler::normalizeClassSignature. The helper
 // hardens the prelude of ObjectSampler::recordAllocation so that a null,
 // empty, or "L"-only class signature does not dereference a bad pointer
 // and does not underflow the strlen(name) - 2 length passed to
