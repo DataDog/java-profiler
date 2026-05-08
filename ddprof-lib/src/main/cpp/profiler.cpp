@@ -1181,6 +1181,9 @@ Error Profiler::start(Arguments &args, bool reset) {
   JfrMetadata::reset();
   JfrMetadata::initialize(args._context_attributes);
   _num_context_attributes = args._context_attributes.size();
+  // Initialize the OTel thread context so external profilers can decode
+  // the per-thread context, including custom attributes
+  ContextApi::registerAttributeKeys(args._context_attributes);
   error = _jfr.start(args, reset);
   if (error) {
     disableEngines();

@@ -113,3 +113,13 @@ void ContextApi::registerAttributeKeys(const char** keys, int count) {
     }
 #endif
 }
+
+void ContextApi::registerAttributeKeys(const std::vector<std::string>& keys) {
+    // Clip to DD_TAGS_CAPACITY before materializing C string pointers.
+    size_t n = keys.size() < DD_TAGS_CAPACITY ? keys.size() : DD_TAGS_CAPACITY;
+    const char* key_ptrs[DD_TAGS_CAPACITY];
+    for (size_t i = 0; i < n; i++) {
+        key_ptrs[i] = keys[i].c_str();
+    }
+    registerAttributeKeys(key_ptrs, (int)n);
+}

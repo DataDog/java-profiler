@@ -1,5 +1,6 @@
 package com.datadoghq.profiler.context;
 
+import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.OTelContext;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
@@ -141,5 +142,42 @@ public class ProcessContextTest {
         assertEquals("java", readContext.telemetrySdkLanguage, "Tracer language must survive registerAttributeKeys");
         assertEquals(tracerVersion, readContext.telemetrySdkVersion, "Tracer version must survive registerAttributeKeys");
         assertEquals("dd-trace-java", readContext.telemetrySdkName, "Tracer name must survive registerAttributeKeys");
+        assertArrayEquals(
+            new String[] {"datadog.local_root_span_id", "http.route", "db.system"},
+            readContext.attributeKeyMap,
+            "attribute_key_map should expose the reserved LRS slot followed by registered keys");
     }
+
+    /**
+     * Verifies that starting the profiler with attributes=... auto-publishes the
+     * OTEP attribute_key_map without an explicit OTelContext.registerAttributeKeys()
+     * call. This is the gap fixed in the ivoanjo/fix-otel-thread-ctx branch.
+     */
+    @Test
+    public void testStartAttributesAutoRegistersKeys() throws IOException {
+        Assumptions.assumeTrue(Platform.isLinux());
+
+        OTelContext context = OTelContext.getInstance();
+        // Publish a process context first so readProcessContext() returns non-null.
+        context.setProcessContext("auto-env", "auto-host", "auto-instance", "auto-service", "1.0.0", "auto-tracer-1.0.0");
+
+        JavaProfiler profiler = JavaProfiler.getInstance();
+        Path jfrFile = Files.createTempFile("auto-attrs", ".jfr");
+        try {
+            profiler.execute(String.format("start,cpu=1ms,attributes=http.route;db.system,jfr,file=%s", jfrFile.toAbsolutePath()));
+            try {
+                OTelContext.ProcessContext readContext = context.readProcessContext();
+                assertNotNull(readContext, "Process context must be readable");
+                assertArrayEquals(
+                    new String[] {"datadog.local_root_span_id", "http.route", "db.system"},
+                    readContext.attributeKeyMap,
+                    "attributes=... in start command should auto-publish attribute_key_map");
+            } finally {
+                profiler.stop();
+            }
+        } finally {
+            Files.deleteIfExists(jfrFile);
+        }
+    }
+
 }
