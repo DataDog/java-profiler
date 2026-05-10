@@ -83,7 +83,6 @@ private:
   Dictionary _string_label_map;
   Dictionary _context_value_map;
   ThreadFilter _thread_filter;
-  u64 _wall_park_min_ns{1000000ULL};
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
   Engine *_cpu_engine;
@@ -209,7 +208,6 @@ public:
   Dictionary *contextValueMap() { return &_context_value_map; }
   u32 numContextAttributes() { return _num_context_attributes; }
   ThreadFilter *threadFilter() { return &_thread_filter; }
-  u64 parkMinDurationNs() const { return _wall_park_min_ns; }
 
   const char* cstack() const;
   int lookupClass(const char *key, size_t length);

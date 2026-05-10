@@ -154,8 +154,6 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
     // Happens when we are not enabled before thread start
     slot_id = thread_filter->registerThread();
     current->setFilterSlotId(slot_id);
-    thread_filter->setVMThread(slot_id, VMThread::current());
-    thread_filter->setProfiledThread(slot_id, current);
   }
   
   if (unlikely(slot_id == -1)) {
@@ -254,7 +252,7 @@ Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
   u64 startTicks = current->exitPark();
   if (startTicks == 0) return;
   u64 durationNs = TSC::ticks_to_nanos(endTicks - startTicks);
-  if (durationNs < Profiler::instance()->parkMinDurationNs()) return;
+  if (durationNs < 1'000'000ULL) return;  // skip parks shorter than 1 ms
   if (current->parkState().span_id == 0) return;  // no trace context — skip event
   TaskBlockEvent event;
   event._start_ticks = startTicks;

@@ -242,6 +242,20 @@ public:
     __atomic_store_n(&_in_critical_section, false, __ATOMIC_RELEASE);
   }
   
+  // Park tracking for off-CPU interval recording (parkEnter0 / parkExit0).
+  inline void enterPark(u64 ticks, u64 span_id, u64 root_span_id) {
+    _park_state.span_id = span_id;
+    _park_state.root_span_id = root_span_id;
+    _park_state.start_ticks.store(ticks, std::memory_order_release);
+  }
+
+  // Returns the start_ticks captured by enterPark(), or 0 if not parked.
+  inline u64 exitPark() {
+    return _park_state.start_ticks.exchange(0, std::memory_order_acq_rel);
+  }
+
+  inline const ParkState& parkState() const { return _park_state; }
+
   // Context TLS (OTEP #4947)
   inline void markContextInitialized() {
     _otel_ctx_initialized = true;

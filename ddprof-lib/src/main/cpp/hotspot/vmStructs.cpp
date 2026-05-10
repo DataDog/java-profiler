@@ -12,7 +12,6 @@
 #include "vmEntry.h"
 #include "context.h"
 #include "thread.h"
-#include "j9Ext.h"
 #include "jniHelper.h"
 #include "jvmHeap.h"
 #include "jvmThread.h"
@@ -787,12 +786,14 @@ u64 VMThread::monitorOwnerSpanId(const void* object) {
 
     // OS thread ID -> ProfiledThread* -> span ID.
     ProfiledThread* owner = ProfiledThread::findByTid(owner_tid);
-    if (owner == nullptr || !owner->isContextTlsInitialized()) return 0;
+    if (owner == nullptr || !owner->isContextInitialized()) return 0;
 
-    Context* ctx = owner->getContextTlsPtr();
-    if (ctx == nullptr) return 0;
+    OtelThreadContextRecord* record = owner->getOtelContextRecord();
+    if (record == nullptr || !record->valid) return 0;
 
-    return ctx->spanId; // volatile u64, safe to read cross-thread on x86/aarch64
+    u64 span_id = 0;
+    for (int i = 0; i < 8; i++) { span_id = (span_id << 8) | record->span_id[i]; }
+    return span_id;
 }
 
 JNIEnv* VMThread::jni() {

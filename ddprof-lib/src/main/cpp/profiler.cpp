@@ -75,8 +75,6 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   if (_thread_filter.enabled()) {
     int slot_id = _thread_filter.registerThread();
     current->setFilterSlotId(slot_id);
-    _thread_filter.setVMThread(slot_id, VMThread::current());
-    _thread_filter.setProfiledThread(slot_id, current);
     _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
   if (thread != NULL) {
@@ -97,8 +95,6 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     tid = current->tid();
     
     if (_thread_filter.enabled()) {
-      _thread_filter.setVMThread(slot_id, nullptr);
-      _thread_filter.setProfiledThread(slot_id, nullptr);
       _thread_filter.unregisterThread(slot_id);
       current->setFilterSlotId(-1);
     }
@@ -637,7 +633,7 @@ void JNICALL Profiler::MonitorContendedEnterCallback(jvmtiEnv *jvmti, JNIEnv *jn
                                                      jthread thread, jobject object) {
   ProfiledThread* thrd = ProfiledThread::current();
   if (thrd == nullptr) return;
-  Context& ctx = Contexts::get();
+  Context ctx = ContextApi::snapshot();
   if (ctx.spanId == 0) return;
   thrd->_monitor_block.start_ticks        = TSC::ticks();
   thrd->_monitor_block.span_id            = ctx.spanId;
@@ -679,7 +675,7 @@ void JNICALL Profiler::MonitorWaitCallback(jvmtiEnv *jvmti, JNIEnv *jni,
                                             jthread thread, jobject object, jlong timeout) {
   ProfiledThread* thrd = ProfiledThread::current();
   if (thrd == nullptr) return;
-  Context& ctx = Contexts::get();
+  Context ctx = ContextApi::snapshot();
   if (ctx.spanId == 0) return;
   thrd->_monitor_wait.start_ticks  = TSC::ticks();
   thrd->_monitor_wait.span_id      = ctx.spanId;
@@ -1230,7 +1226,6 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (!VMStructs::hasCompilerStructs()) {
       _features.comp_task = 0;
   }
-  _wall_park_min_ns = args._wall_park_min_ns;
   _safe_mode = args._safe_mode;
   if (VM::hotspot_version() < 8 || VM::isZing()) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
@@ -1242,13 +1237,10 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Minor optim: Register the current thread (start thread won't be called)
   if (_thread_filter.enabled()) {
     ProfiledThread *current = ProfiledThread::current();
-    if (current != nullptr) {
-      int slot_id = _thread_filter.registerThread();
-      current->setFilterSlotId(slot_id);
-      _thread_filter.setVMThread(slot_id, VMThread::current());
-      _thread_filter.setProfiledThread(slot_id, current);
-      _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
-    }
+    assert(current != nullptr);
+    int slot_id = _thread_filter.registerThread();
+    current->setFilterSlotId(slot_id);
+    _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
   }
 
   _cpu_engine = selectCpuEngine(args);

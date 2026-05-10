@@ -24,15 +24,6 @@
 
 #include "arch.h"
 
-class VMThread;
-class ProfiledThread;
-
-struct ThreadEntry {
-    int tid;
-    VMThread* vm_thread;
-    ProfiledThread* profiled_thread;
-};
-
 class ThreadFilter {
 public:
     using SlotID = int;
@@ -57,21 +48,15 @@ public:
     void add(int tid, SlotID slot_id);
     void remove(SlotID slot_id);
     void collect(std::vector<int>& tids) const;
-    void setVMThread(SlotID slot_id, VMThread* vm_thread);
-    void setProfiledThread(SlotID slot_id, ProfiledThread* profiled_thread);
-    void collectWithState(std::vector<ThreadEntry>& entries) const;
 
     SlotID registerThread();
     void unregisterThread(SlotID slot_id);
 
 private:
-    // Optimized slot structure with padding to avoid false sharing.
-    // Pointers are placed before the int to avoid implicit alignment padding between them.
+    // Optimized slot structure with padding to avoid false sharing
     struct alignas(DEFAULT_CACHE_LINE_SIZE) Slot {
-        std::atomic<VMThread*>        vm_thread{nullptr};    // 8 bytes
-        std::atomic<ProfiledThread*>  profiled_thread{nullptr}; // 8 bytes
-        std::atomic<int>              value{-1};             // 4 bytes
-        char padding[DEFAULT_CACHE_LINE_SIZE - sizeof(vm_thread) - sizeof(profiled_thread) - sizeof(value)];
+        std::atomic<int> value{-1};
+        char padding[DEFAULT_CACHE_LINE_SIZE - sizeof(value)];  // Pad to cache line size
     };
     static_assert(sizeof(Slot) == DEFAULT_CACHE_LINE_SIZE, "Slot must be exactly one cache line");
 
