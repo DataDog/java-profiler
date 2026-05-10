@@ -1,0 +1,19 @@
+# Octo-STS Policy for PR Comments
+#
+# This file should be placed in the java-profiler repository at:
+#   .github/chainguard/async-profiler-build.pr-comment.sts.yaml
+#
+# It allows the java-profiler-build CI to post comments on PRs
+# with integration test results.
+#
+# Reference: https://github.com/chainguard-dev/octo-sts
+
+issuer: https://gitlab.ddbuild.io
+
+subject_pattern: project_path:DataDog/apm-reliability/async-profiler-build:*
+
+permissions:
+  # Required for posting PR comments (uses Issues API)
+  issues: write
+  # Required for looking up PRs by branch
+  pull_requests: read

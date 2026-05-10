@@ -1,6 +1,6 @@
 /*
  * Copyright 2017 Andrei Pangin
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,8 @@
 #include "context.h"
 #include "guards.h"
 #include "debugSupport.h"
+#include "jvmSupport.inline.h"
+#include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
 #include "os.h"
@@ -33,7 +35,6 @@
 #include "symbols.h"
 #include "thread.h"
 #include "threadState.inline.h"
-#include "vmStructs.h"
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -123,7 +124,7 @@ static void resolvePmuEventName(const char *device, char *event, size_t size) {
   }
 
   ssize_t r = read(fd, event, size);
-  if (r > 0 && (r == size || event[r - 1] == '\n')) {
+  if (r > 0 && (size_t(r) == size || event[r - 1] == '\n')) {
     event[r - 1] = 0;
   }
   close(fd);
@@ -147,7 +148,7 @@ static bool setPmuConfig(const char *device, const char *param, __u64 *config,
   ssize_t r = read(fd, buf, sizeof(buf));
   close(fd);
 
-  if (r > 0 && r < sizeof(buf)) {
+  if (r > 0 && r < (int)sizeof(buf)) {
     if (strncmp(buf, "config:", 7) == 0) {
       config[0] |= val << atoi(buf + 7);
       return true;
@@ -168,7 +169,8 @@ static void **_pthread_entry = NULL;
 // pthread_setspecific(). HotSpot puts VMThread into TLS on thread start, and
 // resets on thread end.
 static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
-  if (key != VMThread::key()) {
+  assert(JVMThread::isInitialized());
+  if (JVMThread::key() != key) {
     return pthread_setspecific(key, value);
   }
   if (pthread_getspecific(key) == value) {
@@ -988,7 +990,7 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
           u64 ip = ring.next();
           if (ip < PERF_CONTEXT_MAX) {
             const void *iptr = (const void *)ip;
-            if (CodeHeap::contains(iptr) || depth >= max_depth) {
+            if (JVMSupport::isJitCode(iptr) || depth >= max_depth) {
               // Stop at the first Java frame
               java_ctx->pc = iptr;
               goto stack_complete;
@@ -1002,7 +1004,7 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
 
           // Last userspace PC is stored right after branch stack
           const void *pc = (const void *)ring.peek(bnr * 3 + 2);
-          if (CodeHeap::contains(pc) || depth >= max_depth) {
+          if (JVMSupport::isJitCode(pc) || depth >= max_depth) {
             java_ctx->pc = pc;
             goto stack_complete;
           }
@@ -1013,13 +1015,13 @@ int PerfEvents::walkKernel(int tid, const void **callchain, int max_depth,
             const void *to = (const void *)ring.next();
             ring.next();
 
-            if (CodeHeap::contains(to) || depth >= max_depth) {
+            if (JVMSupport::isJitCode(to) || depth >= max_depth) {
               java_ctx->pc = to;
               goto stack_complete;
             }
             callchain[depth++] = to;
 
-            if (CodeHeap::contains(from) || depth >= max_depth) {
+            if (JVMSupport::isJitCode(from) || depth >= max_depth) {
               java_ctx->pc = from;
               goto stack_complete;
             }

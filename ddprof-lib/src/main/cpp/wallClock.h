@@ -1,12 +1,13 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _WALLCLOCK_H
 #define _WALLCLOCK_H
 
+#include <cassert>
 #include "engine.h"
 #include "os.h"
 #include "profiler.h"
@@ -15,7 +16,6 @@
 #include "threadFilter.h"
 #include "threadState.h"
 #include "tsc.h"
-#include "vmStructs.h"
 
 class BaseWallClock : public Engine {
   private:
@@ -30,9 +30,9 @@ class BaseWallClock : public Engine {
     // Profiler::recordSample().
     int _reservoir_size;
 
-      pthread_t _thread;
-      virtual void timerLoop() = 0;
-      virtual void initialize(Arguments& args) {};
+    pthread_t _thread;
+    virtual void timerLoop() = 0;
+    virtual void initialize(Arguments& args) {};
 
     static void *threadEntry(void *wall_clock) {
       ((BaseWallClock *)wall_clock)->timerLoop();
@@ -59,7 +59,9 @@ class BaseWallClock : public Engine {
       int self = OS::threadId();
       ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
       
-      // We don't want to profile ourselves in wall time
+      // We don't want to profile ourselves in wall time.
+      // current may be null if this thread is still initializing its ProfiledThread
+      // (wall-clock thread startup races with JVMTI ThreadStart). Safe to skip removal.
       ProfiledThread* current = ProfiledThread::current();
       if (current != nullptr) {
         int slot_id = current->filterSlotId();
@@ -114,9 +116,9 @@ class BaseWallClock : public Engine {
 
 public:
   BaseWallClock() :
+        _running(false),
         _interval(LONG_MAX),
         _reservoir_size(0),
-        _running(false),
         _thread(0) {}
     virtual ~BaseWallClock() = default;
 

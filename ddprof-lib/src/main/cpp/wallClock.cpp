@@ -1,21 +1,26 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "wallClock.h"
+
+#include "counters.h"
 #include "stackFrame.h"
 #include "context.h"
+#include "context_api.h"
 #include "debugSupport.h"
+#include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
 #include "profiler.h"
-#include "stackFrame.h"
+#include "signalCookie.h"
 #include "thread.h"
 #include "threadState.inline.h"
-#include "vmStructs.h"
 #include "guards.h"
+#include <cerrno>
+#include <string.h>
 #include <math.h>
 #include <random>
 #include <algorithm> // For std::sort and std::binary_search
@@ -49,6 +54,16 @@ bool WallClockASGCT::inSyscall(void *ucontext) {
 
 void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
                                     void *ucontext) {
+  // Reject any SIGVTALRM that did not originate from our rt_tgsigqueueinfo
+  // send. Defends against stray in-process tgkill / external sigqueue that
+  // would otherwise drive our wallclock sampling path.
+  if (!OS::shouldProcessSignal(siginfo, SI_QUEUE, SignalCookie::wallclock())) {
+    Counters::increment(WALLCLOCK_SIGNAL_FOREIGN);
+    OS::forwardForeignSignal(signo, siginfo, ucontext);
+    return;
+  }
+  Counters::increment(WALLCLOCK_SIGNAL_OWN);
+
   WallClockASGCT *engine = reinterpret_cast<WallClockASGCT *>(Profiler::instance()->wallEngine());
   if (signo == SIGVTALRM) {
     engine->signalHandler(signo, siginfo, ucontext, engine->_interval);
@@ -63,38 +78,38 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     return;  // Another critical section is active, defer profiling
   }
   ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  // Guard against the race window between Profiler::registerThread() and
+  // thread_native_entry setting JVM TLS (PROF-13072): skip at most one signal
+  // per thread. Pure native threads (where JVMThread::current() is always null)
+  // are allowed through once the one-shot window expires.
+  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
+      && current->inInitWindow()) {
+    current->tickInitWindow();
+    return;
+  }
   int tid = current != NULL ? current->tid() : OS::threadId();
   Shims::instance().setSighandlerTid(tid);
   u64 call_trace_id = 0;
   if (current != NULL && _collapsing) {
     StackFrame frame(ucontext);
-    Context &context = Contexts::get();
+    u64 spanId = 0, rootSpanId = 0;
+    // contextValid is not redundant with (spanId==0 && rootSpanId==0): a cleared
+    // context has spanId=0 and contextValid=true, while an uninitialized/mid-write
+    // thread has spanId=0 and contextValid=false. lookupWallclockCallTraceId uses
+    // contextValid to decide whether to update the sidecar _otel_local_root_span_id.
+    bool contextValid = ContextApi::get(spanId, rootSpanId);
     call_trace_id = current->lookupWallclockCallTraceId(
         (u64)frame.pc(), (u64)frame.sp(),
         Profiler::instance()->recordingEpoch(),
-        context.spanId, context.rootSpanId);
+        contextValid, spanId, rootSpanId);
     if (call_trace_id != 0) {
       Counters::increment(SKIPPED_WALLCLOCK_UNWINDS);
     }
   }
 
   ExecutionEvent event;
-  VMThread *vm_thread = VMThread::current();
-  if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
-      vm_thread = NULL;
-  }
-  int raw_thread_state = vm_thread ? vm_thread->state() : 0;
-  bool is_java_thread = raw_thread_state >= 4 && raw_thread_state < 12;
-  bool is_initialized = is_java_thread;
-  OSThreadState state = OSThreadState::UNKNOWN;
-  ExecutionMode mode = ExecutionMode::UNKNOWN;
-  if (vm_thread && is_initialized) {
-    OSThreadState os_state = vm_thread->osThreadState();
-    if (os_state != OSThreadState::UNKNOWN) {
-      state = os_state;
-    }
-    mode = getThreadExecutionMode();
-  }
+  OSThreadState state = getOSThreadState();
+  ExecutionMode mode = getThreadExecutionMode();
   if (state == OSThreadState::UNKNOWN) {
     if (inSyscall(ucontext)) {
       state = OSThreadState::SYSCALL;
@@ -118,10 +133,9 @@ Error BaseWallClock::start(Arguments &args) {
   }
   _interval = interval ? interval : DEFAULT_WALL_INTERVAL;
 
-    _reservoir_size =
+  _reservoir_size =
             args._wall_threads_per_tick ?
-            args._wall_threads_per_tick
-                                                : DEFAULT_WALL_THREADS_PER_TICK;
+            args._wall_threads_per_tick : DEFAULT_WALL_THREADS_PER_TICK;
 
   initialize(args);
 
@@ -151,6 +165,10 @@ bool BaseWallClock::isEnabled() const {
 
 void WallClockASGCT::initialize(Arguments& args) {
   _collapsing  = args._wall_collapsing;
+  // J9WallClock uses JVMTI GetAllStackTracesExtended polling, not SIGVTALRM
+  // signals — it has no sharedSignalHandler and needs no signal-origin gate.
+  // Engines are started sequentially; this call is idempotent (no-op after first).
+  OS::primeSignalOriginCheck();
   _precheck    = args._wall_precheck;
   _park_check  = args._wall_park;
   OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
@@ -167,7 +185,6 @@ void WallClockASGCT::timerLoop() {
           if (tid != OS::threadId()) {
             entries.push_back({tid, nullptr, nullptr});
           }
-          tid = thread_list->next();
         }
         delete thread_list;
       }
@@ -191,13 +208,16 @@ void WallClockASGCT::timerLoop() {
       if (_park_check && entry.profiled_thread != nullptr && entry.profiled_thread->isParked()) {
         Counters::increment(WC_SIGNAL_SKIPPED_PARKED); return false;
       }
-      if (!OS::sendSignalToThread(entry.tid, SIGVTALRM)) {
+      if (!OS::sendSignalWithCookie(tid, SIGVTALRM, SignalCookie::wallclock())) {
         num_failures++;
         if (errno != 0) {
           if (errno == ESRCH) {
             threads_already_exited++;
           } else if (errno == EPERM) {
-            permission_denied++;
+              permission_denied++;
+          } else if (errno == EAGAIN) {
+            // Signal queue limit (RLIMIT_SIGPENDING) reached; signal was not
+            // delivered — count as missed sample.
           } else {
             Log::debug("unexpected error %s", strerror(errno));
           }

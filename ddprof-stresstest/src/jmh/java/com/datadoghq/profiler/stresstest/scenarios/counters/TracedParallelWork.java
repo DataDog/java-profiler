@@ -59,6 +59,7 @@ public class TracedParallelWork {
 
     @Benchmark
     @Threads(8)
+    @SuppressWarnings("deprecation")
     public Object work(BenchmarkState state, Blackhole bh) throws ExecutionException, InterruptedException {
         try (Tracing.Context context = Tracing.newContext(state::newTraceId, state.profiler)) {
             state.profiler.setContext(context.getSpanId(), context.getRootSpanId());

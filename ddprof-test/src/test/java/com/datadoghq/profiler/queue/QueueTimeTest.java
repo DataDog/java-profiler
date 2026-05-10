@@ -41,6 +41,7 @@ public class QueueTimeTest extends AbstractProfilerTest {
         }
 
         @Override
+        @SuppressWarnings("deprecation")
         public void run() {
             profiler.setContext(1, 2);
             long now = profiler.getCurrentTicks();

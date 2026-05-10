@@ -1,6 +1,6 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2021, 2025 Datadog, Inc
+ * Copyright 2021, 2026 Datadog, Inc
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -33,6 +33,7 @@ enum ASGCT_CallFrameType {
   BCI_THREAD_ID = -17,          // method_id designates a thread
   BCI_ERROR = -18,              // method_id is an error string
   BCI_NATIVE_FRAME_REMOTE = -19, // method_id points to RemoteFrameInfo for remote symbolication
+  BCI_NATIVE_MALLOC = -20,       // native malloc/free sample (size stored in counter)
 };
 
 // See hotspot/src/share/vm/prims/forte.cpp
@@ -68,7 +69,7 @@ typedef struct RemoteFrameInfo {
 #endif
 } RemoteFrameInfo;
 
-typedef struct {
+typedef struct _asgct_callframe {
     jint bci;
     LP64_ONLY(jint padding;)
     union {
@@ -144,7 +145,6 @@ private:
 
 public:
   static void *_libjvm;
-  static void *_libjava;
   static AsyncGetCallTrace _asyncGetCallTrace;
   static JVM_GetManagement _getManagement;
 

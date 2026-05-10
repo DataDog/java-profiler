@@ -286,8 +286,15 @@ public abstract class AbstractProfilerTest {
           long wallIntervalMillis = wallIntervalAccessor.getMember(item).longValueIn(MILLISECOND);
           if (!Platform.isJ9() && Platform.isJavaVersionAtLeast(11)) {
             // fixme J9 engine have weird defaults and need fixing
-            assertEquals(cpuInterval.toMillis(), cpuIntervalMillis);
-            assertEquals(wallInterval.toMillis(), wallIntervalMillis);
+            // Only assert intervals that were explicitly requested in the profiler
+            // command; engines not requested carry default intervals that do not
+            // match the (absent) command value.
+            if (cpuInterval.toMillis() > 0) {
+              assertEquals(cpuInterval.toMillis(), cpuIntervalMillis);
+            }
+            if (wallInterval.toMillis() > 0) {
+              assertEquals(wallInterval.toMillis(), wallIntervalMillis);
+            }
           }
         }
       }
@@ -323,6 +330,7 @@ public abstract class AbstractProfilerTest {
   public final void stopProfiler() {
     if (!stopped) {
       profiler.stop();
+      profiler.resetThreadContext();
       stopped = true;
       checkConfig();
     }
@@ -473,5 +481,27 @@ public abstract class AbstractProfilerTest {
     }
     assertNotEquals(0, cumulatedEvents, "no events found for " + eventType);
     assertTrue(unmatched.isEmpty(), "couldn't find " + eventType + " with " + unmatched);
+  }
+
+  /**
+   * Returns the value of a named counter from {@code datadog.ProfilerCounter} events in the JFR
+   * recording. These events are written before the final cleanup ({@code processTraces}), so they
+   * capture the pre-cleanup state.
+   *
+   * @return the counter value, or -1 if no matching event is found
+   */
+  public long getRecordedCounterValue(String counterName) {
+    IItemCollection events = verifyEvents("datadog.ProfilerCounter", false);
+    for (IItemIterable iterable : events) {
+      IMemberAccessor<String, IItem> nameAccessor = NAME.getAccessor(iterable.getType());
+      IMemberAccessor<IQuantity, IItem> countAccessor = COUNT.getAccessor(iterable.getType());
+      if (nameAccessor == null || countAccessor == null) continue;
+      for (IItem item : iterable) {
+        if (counterName.equals(nameAccessor.getMember(item))) {
+          return countAccessor.getMember(item).longValue();
+        }
+      }
+    }
+    return -1;
   }
 }

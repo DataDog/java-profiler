@@ -41,7 +41,6 @@
   X(CONTEXT_STORAGE_PAGES, "context_storage_pages")                            \
   X(CONTEXT_BOUNDS_MISS_INITS, "context_bounds_miss_inits")                    \
   X(CONTEXT_BOUNDS_MISS_GETS, "context_bounds_miss_gets")                      \
-  X(CONTEXT_CHECKSUM_REJECT_GETS, "context_checksum_reject_gets")              \
   X(CONTEXT_NULL_PAGE_GETS, "context_null_page_gets")                          \
   X(CONTEXT_ALLOC_FAILS, "context_alloc_fails")                                \
   X(CALLTRACE_STORAGE_BYTES, "calltrace_storage_bytes")                        \
@@ -97,10 +96,18 @@
   X(WALKVM_STUB_FRAMESIZE_FALLBACK, "walkvm_stub_framesize_fallback")        \
   X(WALKVM_FP_CHAIN_ATTEMPT, "walkvm_fp_chain_attempt")                      \
   X(WALKVM_FP_CHAIN_REACHED_CODEHEAP, "walkvm_fp_chain_reached_codeheap")    \
-  X(WALKVM_ANCHOR_NOT_IN_JAVA, "walkvm_anchor_not_in_java")                    \
+  X(WALKVM_ANCHOR_NOT_IN_JAVA,  "walkvm_anchor_not_in_java")                   \
+  X(WALKVM_CONT_BARRIER_HIT,    "walkvm_cont_barrier_hit")                     \
+  X(WALKVM_ENTER_SPECIAL_HIT,   "walkvm_enter_special_hit")                    \
+  X(WALKVM_CONT_SPECULATIVE_HIT,"walkvm_cont_speculative_hit")                 \
+  X(WALKVM_CONT_ENTRY_NULL,     "walkvm_cont_entry_null")                      \
   X(NATIVE_LIBS_DROPPED, "native_libs_dropped")                                \
   X(SIGACTION_PATCHED_LIBS, "sigaction_patched_libs")                          \
-  X(SIGACTION_INTERCEPTED, "sigaction_intercepted")
+  X(SIGACTION_INTERCEPTED, "sigaction_intercepted")                             \
+  X(CTIMER_SIGNAL_OWN, "ctimer_signal_own")                                     \
+  X(CTIMER_SIGNAL_FOREIGN, "ctimer_signal_foreign")                             \
+  X(WALLCLOCK_SIGNAL_OWN, "wallclock_signal_own")                               \
+  X(WALLCLOCK_SIGNAL_FOREIGN, "wallclock_signal_foreign")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS

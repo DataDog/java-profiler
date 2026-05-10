@@ -1,5 +1,6 @@
 /*
  * Copyright 2020 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -78,6 +79,7 @@ enum JfrType {
   T_DATADOG_CLASSREF_CACHE = 124,
   T_DATADOG_COUNTER = 125,
   T_UNWIND_FAILURE = 126,
+  T_MALLOC = 127,
   T_TASK_BLOCK = 127,
   T_SPAN_NODE = 128,
   T_ANNOTATION = 200,
@@ -261,6 +263,7 @@ public:
   JfrMetadata();
 
   static void initialize(const std::vector<std::string> &contextAttributes);
+  static void reset();
 
   static Element *root() { return &_root; }
 

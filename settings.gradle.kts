@@ -1,11 +1,19 @@
 pluginManagement {
   includeBuild("build-logic")
+  repositories {
+    gradlePluginPortal()
+    mavenCentral()
+  }
 }
 
 // Centralized dependency resolution - subprojects should not define their own repositories
 dependencyResolutionManagement {
   repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+  val mavenRepositoryProxy = providers.gradleProperty("mavenRepositoryProxy").orNull
   repositories {
+    if (mavenRepositoryProxy != null) {
+      maven { url = uri(mavenRepositoryProxy) }
+    }
     mavenCentral()
     gradlePluginPortal()
   }

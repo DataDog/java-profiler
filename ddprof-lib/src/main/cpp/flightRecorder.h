@@ -269,7 +269,8 @@ public:
 
   void writeUnwindFailures(Buffer *buf);
 
-  void writeContext(Buffer *buf, Context &context);
+  void writeContextSnapshot(Buffer *buf, Context &context);
+  void writeCurrentContext(Buffer *buf);
 
   void recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
                              ExecutionEvent *event);
@@ -283,6 +284,8 @@ public:
                       u64 startNanos, u64 durationNanos, u32 encodedOperation, u32 encodedResource);
   void recordAllocation(RecordingBuffer *buf, int tid, u64 call_trace_id,
                         AllocEvent *event);
+  void recordMallocSample(Buffer *buf, int tid, u64 call_trace_id,
+                          MallocEvent *event);
   void recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
                             ObjectLivenessEvent *event);
   void recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,

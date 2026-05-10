@@ -1,12 +1,13 @@
 #include "codeCache.h"
 #include "common.h"
+#include "findLibraryImpl.h"
+#include "hotspot/vmStructs.h"
 #include "libraries.h"
 #include "libraryPatcher.h"
 #include "log.h"
 #include "symbols.h"
 #include "symbols_linux.h"
 #include "vmEntry.h"
-#include "vmStructs.h"
 
 void Libraries::mangle(const char *name, char *buf, size_t size) {
   char *buf_end = buf + size;
@@ -99,13 +100,6 @@ CodeCache *Libraries::findLibraryByName(const char *lib_name) {
   return NULL;
 }
 
-CodeCache *Libraries::findLibraryByAddress(const void *address) {
-  const int native_lib_count = _native_libs.count();
-  for (int i = 0; i < native_lib_count; i++) {
-    CodeCache *lib = _native_libs[i];
-    if (lib != NULL && lib->contains(address)) {
-      return lib;
-    }
-  }
-  return NULL;
+CodeCache *Libraries::findLibraryByAddress(const void *address) const {
+  return findLibraryByAddressImpl<CodeCache>(_native_libs, address);
 }

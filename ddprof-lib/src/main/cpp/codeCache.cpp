@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -99,9 +100,13 @@ void CodeCache::copyFrom(const CodeCache& other) {
   _imports_patchable = other._imports_patchable;
 
   _dwarf_table_length = other._dwarf_table_length;
-  _dwarf_table = new FrameDesc[_dwarf_table_length];
-  memcpy(_dwarf_table, other._dwarf_table,
-         _dwarf_table_length * sizeof(FrameDesc));
+  if (_dwarf_table_length > 0) {
+    _dwarf_table = (FrameDesc*)malloc(_dwarf_table_length * sizeof(FrameDesc));
+    memcpy(_dwarf_table, other._dwarf_table,
+           _dwarf_table_length * sizeof(FrameDesc));
+  } else {
+    _dwarf_table = nullptr;
+  }
   _default_frame = other._default_frame;
 
   _capacity = other._capacity;
@@ -120,7 +125,7 @@ CodeCache &CodeCache::operator=(const CodeCache &other) {
   }
 
   NativeFunc::destroy(_name);
-  delete[] _dwarf_table;
+  free(_dwarf_table);
   delete[] _blobs;
   free(_build_id);
 
@@ -135,7 +140,7 @@ CodeCache::~CodeCache() {
   }
   NativeFunc::destroy(_name);
   delete[] _blobs;
-  delete[] _dwarf_table;
+  free(_dwarf_table);
   free(_build_id);  // Free build-id memory
 }
 
@@ -284,7 +289,7 @@ void CodeCache::findSymbolsByPrefix(std::vector<const char *> &prefixes,
   for (int i = 0; i < _count; i++) {
     const char *blob_name = _blobs[i]._name;
     if (blob_name != NULL) {
-      for (int i = 0; i < prefixes.size(); i++) {
+      for (size_t i = 0; i < prefixes.size(); i++) {
         if (strncmp(blob_name, prefixes[i], prefix_lengths[i]) == 0) {
           symbols.push_back(_blobs[i]._start);
         }
@@ -304,6 +309,11 @@ void CodeCache::saveImport(ImportId id, void** entry) {
 
 void CodeCache::addImport(void **entry, const char *name) {
     switch (name[0]) {
+      case 'a':
+          if (strcmp(name, "aligned_alloc") == 0) {
+              saveImport(im_aligned_alloc, entry);
+          }
+          break;
       case 'c':
           if (strcmp(name, "calloc") == 0) {
               saveImport(im_calloc, entry);
@@ -333,6 +343,8 @@ void CodeCache::addImport(void **entry, const char *name) {
               saveImport(im_pthread_setspecific, entry);
           } else if (strcmp(name, "poll") == 0) {
               saveImport(im_poll, entry);
+          } else if (strcmp(name, "posix_memalign") == 0) {
+              saveImport(im_posix_memalign, entry);
           }
           break;
       case 'r':

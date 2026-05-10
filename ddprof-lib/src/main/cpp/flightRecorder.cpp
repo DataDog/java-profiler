@@ -10,13 +10,13 @@
 #include "buffers.h"
 #include "callTraceHashTable.h"
 #include "context.h"
+#include "context_api.h"
 #include "counters.h"
 #include "dictionary.h"
 #include "flightRecorder.h"
 #include "incbin.h"
 #include "jfrMetadata.h"
 #include "jniHelper.h"
-#include "jvm.h"
 #include "os.h"
 #include "profiler.h"
 #include "rustDemangler.h"
@@ -26,7 +26,7 @@
 #include "threadFilter.h"
 #include "threadState.h"
 #include "tsc.h"
-#include "vmStructs.h"
+#include "hotspot/vmStructs.h"
 #include <arpa/inet.h>
 #include <cxxabi.h>
 #include <errno.h>
@@ -176,14 +176,18 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
     bool entry = false;
     if (VMMethod::check_jmethodID(method) &&
         jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
+        // GetMethodDeclaringClass may return a jclass wrapping a stale/garbage oop when the class was
+        // unloaded between sample capture and dump (TOCTOU race with class unloading). Guard against
+        // null handles before calling GetClassSignature.
+        method_class != NULL &&
         // On some older versions of J9, the JVMTI call to GetMethodDeclaringClass will return OK = 0, but when a
         // classloader is unloaded they free all JNIIDs. This means that anyone holding on to a jmethodID is
         // pointing to corrupt data and the behaviour is undefined.
         // The behaviour is adjusted so that when asgct() is used or if `-XX:+KeepJNIIDs` is specified,
         // when a classloader is unloaded, the jmethodIDs are not freed, but instead marked as -1.
-        // The nested check below is to mitigate these crashes.
-        // In more recent versions, the condition above will short-circuit safely.
-        ((!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) && jvmti->GetClassSignature(method_class, &class_name, NULL) == 0) &&
+        // The check below mitigates these crashes on J9.
+        (!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) &&
+        jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
         jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
 
       if (first_time) {
@@ -808,7 +812,7 @@ void Recording::writeMetadata(Buffer *buf) {
 
   std::vector<std::string> &strings = JfrMetadata::strings();
   buf->putVar64(strings.size());
-  for (int i = 0; i < strings.size(); i++) {
+  for (size_t i = 0; i < strings.size(); i++) {
     const char *string = strings[i].c_str();
     int length = strlen(string);
     flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - length);
@@ -842,14 +846,14 @@ void Recording::writeElement(Buffer *buf, const Element *e) {
   buf->putVar64(e->_name);
 
   buf->putVar64(e->_attributes.size());
-  for (int i = 0; i < e->_attributes.size(); i++) {
+  for (size_t i = 0; i < e->_attributes.size(); i++) {
     flushIfNeeded(buf);
     buf->putVar64(e->_attributes[i]._key);
     buf->putVar64(e->_attributes[i]._value);
   }
 
   buf->putVar64(e->_children.size());
-  for (int i = 0; i < e->_children.size(); i++) {
+  for (size_t i = 0; i < e->_children.size(); i++) {
     flushIfNeeded(buf);
     writeElement(buf, e->_children[i]);
   }
@@ -906,6 +910,12 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
 
   writeBoolSetting(buf, T_ALLOC, "enabled", args._record_allocations);
   writeBoolSetting(buf, T_HEAP_LIVE_OBJECT, "enabled", args._record_liveness);
+  writeBoolSetting(buf, T_MALLOC, "enabled", args._nativemem >= 0);
+  if (args._nativemem >= 0) {
+    writeIntSetting(buf, T_MALLOC, "nativemem", args._nativemem);
+    // samplingInterval=-1 means every allocation is recorded (nativemem=0).
+    writeIntSetting(buf, T_MALLOC, "samplingInterval", args._nativemem == 0 ? -1 : args._nativemem);
+  }
 
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "debugSymbols",
                    VMStructs::libjvm()->hasDebugSymbols());
@@ -1426,7 +1436,7 @@ void Recording::writeCounters(Buffer *buf) {
   long long *counters = Counters::getCounters();
   if (counters) {
     std::vector<const char *> names = Counters::describeCounters();
-    for (int i = 0; i < names.size(); i++) {
+    for (size_t i = 0; i < names.size(); i++) {
       int start = buf->skip(1);
       buf->putVar64(T_DATADOG_COUNTER);
       buf->putVar64(_start_ticks);
@@ -1454,26 +1464,28 @@ void Recording::writeUnwindFailures(Buffer *buf) {
   });
 }
 
-void Recording::writeContext(Buffer *buf, Context &context) {
+void Recording::writeContextSnapshot(Buffer *buf, Context &context) {
+  buf->putVar64(context.spanId);
+  buf->putVar64(context.rootSpanId);
+
+  for (size_t i = 0; i < Profiler::instance()->numContextAttributes(); i++) {
+    buf->putVar32(context.get_tag(i).value);
+  }
+}
+
+void Recording::writeCurrentContext(Buffer *buf) {
   u64 spanId = 0;
   u64 rootSpanId = 0;
-  u64 stored = context.checksum;
-  if (stored != 0) {
-    spanId = context.spanId;
-    rootSpanId = context.rootSpanId;
-    u64 computed = Contexts::checksum(spanId, rootSpanId);
-    if (stored != computed) {
-      TEST_LOG("Invalid context checksum: ctx=%p, tid=%d", &context, OS::threadId());
-      spanId = 0;
-      rootSpanId = 0;
-    }
-  }
+  bool hasContext = ContextApi::get(spanId, rootSpanId);
+  // spanId/rootSpanId are initialized to 0 above; ContextApi::get() only updates them
+  // on success, so 0s are always written when there is no valid context.
   buf->putVar64(spanId);
   buf->putVar64(rootSpanId);
 
-  for (size_t i = 0; i < Profiler::instance()->numContextAttributes(); i++) {
-    Tag tag = context.get_tag(i);
-    buf->putVar32(tag.value);
+  size_t numAttrs = Profiler::instance()->numContextAttributes();
+  ProfiledThread* thrd = hasContext ? ProfiledThread::currentSignalSafe() : nullptr;
+  for (size_t i = 0; i < numAttrs; i++) {
+    buf->putVar32(thrd != nullptr ? thrd->getOtelTagEncoding(i) : 0);
   }
 }
 
@@ -1493,7 +1505,7 @@ void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->put8(static_cast<int>(event->_thread_state));
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
-  writeContext(buf, Contexts::get());
+  writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1508,7 +1520,7 @@ void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->put8(static_cast<int>(event->_thread_state));
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
-  writeContext(buf, Contexts::get());
+  writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1603,33 +1615,7 @@ void Recording::recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event) {
   buf->putVar64(event->_scheduler);
   buf->putVar64(event->_queueType);
   buf->putVar64(event->_queueLength);
-  // The schema declares fields in this order:
-  //   spanId, localRootSpanId, submittingSpanId, contextAttr[0..n]
-  // writeContext() would emit spanId + localRootSpanId + contextAttrs[0..n] in one shot,
-  // leaving no room to insert submittingSpanId between localRootSpanId and contextAttrs.
-  // Inline the context fields manually so submittingSpanId lands at the correct position.
-  Context &ctx = Contexts::get();
-  u64 spanId = 0, rootSpanId = 0;
-  u64 stored = ctx.checksum;
-  if (stored != 0) {
-    spanId = ctx.spanId;
-    rootSpanId = ctx.rootSpanId;
-    if (stored != Contexts::checksum(spanId, rootSpanId)) {
-      spanId = 0;
-      rootSpanId = 0;
-    }
-  }
-  if (event->_consuming_span_id != 0) {
-    // Java requested an explicit consuming span (e.g. self-loop disambiguation); keep root
-    // from the active context when consistent with the current trace.
-    spanId = event->_consuming_span_id;
-  }
-  buf->putVar64(spanId);                      // schema pos: spanId
-  buf->putVar64(rootSpanId);                  // schema pos: localRootSpanId
-  buf->putVar64(event->_submitting_span_id);  // schema pos: submittingSpanId (CORRECT position)
-  for (size_t i = 0; i < Profiler::instance()->numContextAttributes(); i++) {
-    buf->putVar32(ctx.get_tag(i).value);      // schema pos: contextAttr[i]
-  }
+  writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1644,7 +1630,22 @@ void Recording::recordAllocation(RecordingBuffer *buf, int tid,
   buf->putVar64(event->_id);
   buf->putVar64(event->_size);
   buf->putFloat(event->_weight);
-  writeContext(buf, Contexts::get());
+  writeCurrentContext(buf);
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
+void Recording::recordMallocSample(Buffer *buf, int tid, u64 call_trace_id,
+                                   MallocEvent *event) {
+  int start = buf->skip(1);
+  buf->putVar64(T_MALLOC);
+  buf->putVar64(event->_start_time);
+  buf->putVar64(tid);
+  buf->putVar64(call_trace_id);
+  buf->putVar64(event->_address);
+  buf->putVar64(event->_size);
+  buf->putFloat(event->_weight);
+  writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1666,7 +1667,7 @@ void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
           ? ((event->_alloc._weight * event->_alloc._size) + event->_skipped) /
                 event->_alloc._size
           : 0);
-  writeContext(buf, event->_ctx);
+  writeContextSnapshot(buf, event->_ctx);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1682,7 +1683,7 @@ void Recording::recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,
   buf->putVar64(event->_id);
   buf->put8(0);
   buf->putVar64(event->_address);
-  writeContext(buf, Contexts::get());
+  writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1759,10 +1760,11 @@ void FlightRecorder::stop() {
 }
 
 Error FlightRecorder::dump(const char *filename, const int length) {
+  assert(length >= 0);
   ExclusiveLockGuard locker(&_rec_lock);
   Recording* rec = _rec;
   if (rec != nullptr) {
-    if (_filename.length() != length ||
+    if (_filename.length() != static_cast<size_t>(length) ||
         strncmp(filename, _filename.c_str(), length) != 0) {
       // if the filename to dump the recording to is specified move the current
       // working file there
@@ -1921,6 +1923,9 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
           break;
         case BCI_PARK:
           rec->recordThreadPark(buf, tid, call_trace_id, (LockEvent *)event);
+          break;
+        case BCI_NATIVE_MALLOC:
+          rec->recordMallocSample(buf, tid, call_trace_id, (MallocEvent *)event);
           break;
         }
         rec->flushIfNeeded(buf);

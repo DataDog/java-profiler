@@ -54,8 +54,8 @@ public class ProcessContextTest {
             return null;
         }
 
-        // Match memfd-backed mapping (/memfd:OTEL_CTX), anon mapping ([anon:OTEL_CTX]), or anon shmem ([anon_shmem:OTEL_CTX])
-        Pattern otelPattern = Pattern.compile("^([0-9a-f]+)-([0-9a-f]+)\\s+(\\S+)\\s+\\S+\\s+\\S+\\s+\\S+\\s*(?:/memfd:OTEL_CTX|\\[anon:OTEL_CTX\\]|\\[anon_shmem:OTEL_CTX\\]).*$");
+        // Match any mapping containing OTEL_CTX (memfd, anon, anon_shmem variants)
+        Pattern otelPattern = Pattern.compile("^([0-9a-f]+)-([0-9a-f]+)\\s+(\\S+)\\s+\\S+\\s+\\S+\\s+\\S+\\s*.*OTEL_CTX.*$");
 
         try (BufferedReader reader = Files.newBufferedReader(mapsFile)) {
             String line;
@@ -104,5 +104,42 @@ public class ProcessContextTest {
         assertEquals("java", readContext.telemetrySdkLanguage, "Tracer language should match");
         assertEquals(tracerVersion, readContext.telemetrySdkVersion, "Tracer version should match");
         assertEquals("dd-trace-java", readContext.telemetrySdkName, "Tracer name should match");
+    }
+
+    /**
+     * Tests that registerAttributeKeys correctly updates the process context.
+     * registerAttributeKeys reads the existing process context and republishes it
+     * with thread_ctx_config set. This test verifies that all original process
+     * context fields are preserved after that republish.
+     */
+    @Test
+    public void testRegisterAttributeKeysSetsProcessContext() {
+        Assumptions.assumeTrue(Platform.isLinux());
+
+        String env = "attr-keys-env";
+        String hostname = "attr-keys-host";
+        String runtimeId = "attr-keys-instance";
+        String service = "attr-keys-service";
+        String version = "2.0.0";
+        String tracerVersion = "4.1.0";
+
+        OTelContext context = OTelContext.getInstance();
+        context.setProcessContext(env, hostname, runtimeId, service, version, tracerVersion);
+
+        // registerAttributeKeys reads the existing process context and republishes
+        // it with thread_ctx_config populated. All original fields must survive.
+        context.registerAttributeKeys("http.route", "db.system");
+
+        OTelContext.ProcessContext readContext = context.readProcessContext();
+
+        assertNotNull(readContext, "Process context must still be readable after registerAttributeKeys");
+        assertEquals(env, readContext.deploymentEnvironmentName, "Environment name must survive registerAttributeKeys");
+        assertEquals(hostname, readContext.hostName, "Host name must survive registerAttributeKeys");
+        assertEquals(runtimeId, readContext.serviceInstanceId, "Service instance ID must survive registerAttributeKeys");
+        assertEquals(service, readContext.serviceName, "Service name must survive registerAttributeKeys");
+        assertEquals(version, readContext.serviceVersion, "Service version must survive registerAttributeKeys");
+        assertEquals("java", readContext.telemetrySdkLanguage, "Tracer language must survive registerAttributeKeys");
+        assertEquals(tracerVersion, readContext.telemetrySdkVersion, "Tracer version must survive registerAttributeKeys");
+        assertEquals("dd-trace-java", readContext.telemetrySdkName, "Tracer name must survive registerAttributeKeys");
     }
 }

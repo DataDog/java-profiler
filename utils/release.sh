@@ -54,6 +54,91 @@ print_info() {
     echo -e "${BLUE}$1${NC}"
 }
 
+# Read a single keypress (arrow keys, enter, q) from /dev/tty
+read_key() {
+    local key
+    IFS= read -rsn1 key </dev/tty
+
+    if [[ $key == $'\x1b' ]]; then
+        read -rsn2 key </dev/tty
+        case $key in
+            '[A') echo "up" ;;
+            '[B') echo "down" ;;
+            *) echo "other" ;;
+        esac
+    elif [[ $key == "" ]]; then
+        echo "enter"
+    elif [[ $key == "q" ]] || [[ $key == "Q" ]]; then
+        echo "quit"
+    else
+        echo "other"
+    fi
+}
+
+# Function to show interactive release branch picker (for patch releases)
+select_release_branch() {
+    mapfile -t branches < <(git branch -r --list 'origin/release/[0-9]*.[0-9]*._' \
+        | sed 's|[[:space:]]*origin/||' | sort -V 2>/dev/null)
+
+    if [ ${#branches[@]} -eq 0 ]; then
+        print_error "No release branches found matching release/X.Y._" >&2
+        exit 1
+    fi
+
+    if [ ! -t 0 ]; then
+        print_error "Interactive mode requires a terminal" >&2
+        print_error "Use --branch <name> to specify a release branch" >&2
+        exit 1
+    fi
+
+    local selected=0
+    local total=${#branches[@]}
+
+    display_branch_menu() {
+        clear >&2
+        echo "" >&2
+        echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}" >&2
+        echo -e "${BLUE}  Select Release Branch for Patch${NC}" >&2
+        echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}" >&2
+        echo "" >&2
+        echo "Use ↑/↓ arrow keys to navigate, Enter to select, 'q' to quit" >&2
+        echo "" >&2
+
+        for i in "${!branches[@]}"; do
+            if [ $i -eq $selected ]; then
+                echo -e "${GREEN}→ ${branches[$i]}${NC}" >&2
+            else
+                echo -e "  ${branches[$i]}" >&2
+            fi
+        done
+
+        echo "" >&2
+        echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}" >&2
+    }
+
+    while true; do
+        display_branch_menu
+        key=$(read_key)
+        case $key in
+            up)
+                [ $selected -gt 0 ] && ((selected--))
+                ;;
+            down)
+                [ $selected -lt $((total - 1)) ] && ((selected++))
+                ;;
+            enter)
+                echo "${branches[$selected]}"
+                return 0
+                ;;
+            quit)
+                echo "" >&2
+                print_info "Selection cancelled" >&2
+                exit 0
+                ;;
+        esac
+    done
+}
+
 # Function to show interactive commit selector
 select_commit() {
     local branch=$1
@@ -100,28 +185,6 @@ select_commit() {
 
         echo "" >&2
         echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}" >&2
-    }
-
-    # Read single keypress from /dev/tty
-    read_key() {
-        local key
-        IFS= read -rsn1 key </dev/tty
-
-        # Handle escape sequences (arrow keys)
-        if [[ $key == $'\x1b' ]]; then
-            read -rsn2 key </dev/tty
-            case $key in
-                '[A') echo "up" ;;
-                '[B') echo "down" ;;
-                *) echo "other" ;;
-            esac
-        elif [[ $key == "" ]]; then
-            echo "enter"
-        elif [[ $key == "q" ]] || [[ $key == "Q" ]]; then
-            echo "quit"
-        else
-            echo "other"
-        fi
     }
 
     # Main selection loop
@@ -173,7 +236,9 @@ Options:
 Examples:
   $0 minor                        # Dry-run, interactive commit selection
   $0 minor --no-dry-run           # Actual minor release
-  $0 patch --commit abc123        # Release specific commit
+  $0 patch                        # Interactive release-branch picker, then commit selection
+  $0 patch --branch release/1.2._ # Patch on a specific release branch
+  $0 patch --commit abc123        # Release specific commit (branch picked interactively if needed)
   $0 patch --skip-tests           # Emergency patch without tests (dry-run)
   $0 patch --no-dry-run --skip-tests  # Emergency patch without tests (real)
   $0 major --branch main          # Specify branch explicitly
@@ -264,13 +329,13 @@ fi
 # Validate branch rules BEFORE commit selection
 if [ "$RELEASE_TYPE" == "patch" ]; then
     if [[ ! "$BRANCH" =~ ^release/[0-9]+\.[0-9]+\._$ ]]; then
-        print_error "Patch releases can ONLY be performed from 'release/X.Y._' branches"
-        echo "Current branch: $BRANCH"
+        print_info "Patch releases require a release branch. Fetching available branches..."
+        git fetch --prune origin 'refs/heads/release/*:refs/remotes/origin/release/*' 2>/dev/null || true
         echo ""
-        echo "To create a patch release:"
-        echo "  1. Switch to a release branch: git checkout release/X.Y._"
-        echo "  2. Run: $0 patch"
-        exit 1
+        BRANCH=$(select_release_branch)
+        clear
+        print_info "Branch selected: $BRANCH"
+        echo ""
     fi
 else
     if [ "$BRANCH" != "main" ]; then

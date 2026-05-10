@@ -31,6 +31,11 @@ jmh {
   timeOnIteration.set("3s")
   warmup.set("1s")
   warmupIterations.set(3)
+
+  val jmhInclude: String? by project
+  if (jmhInclude != null) {
+    includes.set(listOf(jmhInclude!!))
+  }
 }
 
 // Configure all JMH-related JavaExec tasks to use the correct JDK

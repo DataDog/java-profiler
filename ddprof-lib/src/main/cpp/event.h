@@ -1,5 +1,6 @@
 /*
  * Copyright 2020 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -86,6 +87,16 @@ public:
   u64 _start_time;
   u64 _age;
   Context _ctx;
+};
+
+class MallocEvent : public Event {
+public:
+  u64 _start_time;
+  uintptr_t _address;
+  u64 _size;
+  float _weight;
+
+  MallocEvent() : Event(), _start_time(0), _address(0), _size(0), _weight(1.0f) {}
 };
 
 class WallClockEpochEvent {

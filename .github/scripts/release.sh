@@ -64,6 +64,48 @@ if [ "$TYPE" == "PATCH" ]; then
   create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
 fi
 
+# RETAG: re-point an existing tag at the current HEAD of a release branch.
+# Use when a partial release (tag + branch created, but no Maven artifacts and
+# no final GitHub release yet) needs additional commits (e.g. a cherry-picked fix).
+if [ "$TYPE" == "RETAG" ]; then
+  if [[ ! $BRANCH =~ ^release\/[0-9]+\.[0-9]+\._$ ]] && [ -z "$DRYRUN" ]; then
+    echo "Retag can only be performed from a 'release/*' branch."
+    exit 1
+  fi
+  TAG_NAME="v_${BASE}"
+  if ! git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+    echo "::error::Tag $TAG_NAME does not exist. Use a normal release to create a new tag."
+    exit 1
+  fi
+
+  # Refuse to retag if the GitHub release is already public
+  if command -v gh >/dev/null 2>&1; then
+    IS_DRAFT=$(gh release view "$TAG_NAME" --json isDraft --jq '.isDraft' 2>/dev/null || echo "not-found")
+    if [ "$IS_DRAFT" == "false" ]; then
+      echo "::error::GitHub release $TAG_NAME is already public. Retagging is not allowed."
+      exit 1
+    fi
+  fi
+
+  if [ -z "$DRYRUN" ]; then
+    git tag -f -a "$TAG_NAME" -m "Release v_${BASE} (retag) from ${BRANCH}"
+    git push --force-with-lease origin "$BRANCH"
+    git push origin :"$TAG_NAME"
+    git push origin "$TAG_NAME"
+  else
+    echo "[DRY-RUN] Would force-move tag $TAG_NAME to $(git rev-parse HEAD)"
+    echo "[DRY-RUN] Would push $BRANCH with --force-with-lease"
+    echo "[DRY-RUN] Would delete and re-push remote tag $TAG_NAME"
+  fi
+
+  echo "==================== RETAG SUMMARY ===================="
+  echo "Release Branch: $BRANCH"
+  echo "Retagged Version: $BASE"
+  echo "Tag: $TAG_NAME -> $(git rev-parse HEAD)"
+  echo "========================================================"
+  exit 0
+fi
+
 if [ "$BRANCH" != "$RELEASE_BRANCH" ]; then
   git checkout -b $RELEASE_BRANCH
   if ! git diff --quiet; then

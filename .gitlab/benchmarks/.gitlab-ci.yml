@@ -1,0 +1,101 @@
+variables:
+  PREPARE_IMAGE: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:latest
+  DD_OCTO_STS_IMAGE: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
+
+.benchmark_job:
+  extends: .deploy-sa
+  stage: benchmarks
+  timeout: 6h
+  variables:
+    ITERATIONS: "${BENCHMARK_ITERATIONS:-1}"
+    MODES: "${BENCHMARK_MODES:-cpu,wall,alloc,memleak}"
+  needs:
+    - job: get-versions
+      artifacts: true
+    - job: deploy-artifact
+      artifacts: false
+  rules:
+    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "pipeline"'
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: manual
+      allow_failure: true
+  script: |
+    # setup the env
+    export ARTIFACTS_DIR="$(pwd)/reports" && (mkdir "${ARTIFACTS_DIR}" || :)
+    export CANDIDATE_VERSION=${CURRENT_VERSION}
+    export BASELINE_VERSION=${PREVIOUS_VERSION}
+    export PLATFORM_DIR=".benchmarks/platform"
+
+    # check for missing candidate version
+    if [ -z "${CANDIDATE_VERSION}" ]; then echo "Missing candidate version. Skipping."; exit 0; fi
+
+    # fetch the common platform scripts
+    git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.ddbuild.io/DataDog/".insteadOf "https://github.com/DataDog/"
+    git clone --branch dd-trace-go https://github.com/DataDog/benchmarking-platform ${PLATFORM_DIR}
+
+    # apply the specific step scripts
+    cp -r .gitlab/benchmarks/steps/* ${PLATFORM_DIR}/steps/
+    chmod a+x ${PLATFORM_DIR}/steps/*
+
+    # check for mode validity
+    ${PLATFORM_DIR}/steps/check_modes.sh
+    if [ "$(cat .job_status)" == "SKIP" ]; then exit 0; fi
+
+    # run benchmarks
+    ${PLATFORM_DIR}/steps/capture-hardware-software-info.sh
+    ${PLATFORM_DIR}/steps/run-benchmarks.sh
+    ${PLATFORM_DIR}/steps/analyze-results.sh
+    ${PLATFORM_DIR}/steps/upload-results-to-s3.sh
+    ${PLATFORM_DIR}/steps/post-pr-comment.sh
+  parallel:
+    matrix:
+      - RUN_MODE: ["cpu", "wall", "alloc", "memleak", "cpu,wall", "memleak,alloc", "cpu,wall,alloc,memleak"]
+  artifacts:
+    when: always
+    name: "reports"
+    paths:
+      - reports/
+    expire_in: 3 months
+
+benchmarks-candidate-amd64:
+  extends: .benchmark_job
+  tags: ["arch:amd64"]
+  image: $BENCHMARK_IMAGE_AMD64
+
+benchmarks-candidate-aarch64:
+  extends: .benchmark_job
+  tags: ["arch:arm64"]
+  image: $BENCHMARK_IMAGE_ARM64
+  variables:
+    KUBERNETES_MEMORY_REQUEST: 200Gi
+    KUBERNETES_MEMORY_LIMIT: 200Gi
+
+publish-benchmark-gh-pages:
+  stage: benchmarks
+  tags: ["arch:arm64"]
+  image: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
+  id_tokens:
+    DDOCTOSTS_ID_TOKEN:
+      aud: dd-octo-sts
+  needs:
+    - job: benchmarks-candidate-amd64
+      artifacts: true
+    - job: benchmarks-candidate-aarch64
+      artifacts: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_BRANCH == "main"'
+      when: always
+  timeout: 10m
+  script:
+    - ./.gitlab/benchmarks/publish-gh-pages.sh
+  allow_failure: true
+
+include:
+  - local: .gitlab/common.yml
+  - local: .gitlab/benchmarks/images.yml

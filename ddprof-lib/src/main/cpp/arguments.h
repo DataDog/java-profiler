@@ -1,5 +1,6 @@
 /*
  * Copyright 2017 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -122,7 +123,8 @@ struct StackWalkFeatures {
     unsigned short vtable_target : 1;  // show receiver classes of vtable/itable stubs
     unsigned short comp_task     : 1;  // display current compilation task for JIT threads
     unsigned short pc_addr       : 1;  // record exact PC address for each sample
-    unsigned short _padding      : 3;  // pad structure to 16 bits
+    unsigned short carrier_frames: 1;  // walk through VT continuation boundary to carrier frames (enabled automatically with cstack=vmx)
+    unsigned short _padding      : 2;  // pad structure to 16 bits
 };
 
 struct Multiplier {
@@ -177,6 +179,7 @@ public:
   double _live_samples_ratio;
   bool _record_heap_usage;
   bool _gc_generations;
+  long _nativemem;
   int  _jstackdepth;
   int _safe_mode;
   StackWalkFeatures _features;
@@ -208,12 +211,14 @@ public:
         _wall_park(true),
         _wall_park_min_ns(1000000ULL),  // 1 ms default
         _wall_threads_per_tick(DEFAULT_WALL_THREADS_PER_TICK),
+        _wallclock_sampler(ASGCT),
         _memory(-1),
         _record_allocations(false),
         _record_liveness(false),
         _live_samples_ratio(0.1), // default to liveness-tracking 10% of the allocation samples
         _record_heap_usage(false),
         _gc_generations(false),
+        _nativemem(-1),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),
         _features{1, 1, 1, 1, 1, 1},
@@ -226,7 +231,6 @@ public:
         _clock(CLK_DEFAULT),
         _jfr_options(0),
         _context_attributes({}),
-        _wallclock_sampler(ASGCT),
         _lightweight(false),
         _enable_method_cleanup(true),
         _remote_symbolication(false) {}

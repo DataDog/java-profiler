@@ -32,4 +32,5 @@ inline size_t align_up(size_t size, size_t alignment) noexcept {
     return align_down(size + alignment - 1, alignment);
 }
 
+
 #endif // _UTILS_H

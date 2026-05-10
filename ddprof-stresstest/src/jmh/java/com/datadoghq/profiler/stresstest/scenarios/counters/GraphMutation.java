@@ -16,9 +16,9 @@ public class GraphMutation {
         public void link(GraphNode node) {
             nodes.add(node);
             
-            // Switch to new data structure every 100,000 operations
+            // Switch to new data structure every 1,000 operations
             // Other threads can finish with the old one
-            if (linkCount.incrementAndGet() % 100000 == 0) {
+            if (linkCount.incrementAndGet() % 1000 == 0) {
                 nodes = new ConcurrentLinkedQueue<>();
             }
         }

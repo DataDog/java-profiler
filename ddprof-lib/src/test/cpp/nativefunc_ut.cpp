@@ -122,16 +122,22 @@ TEST_F(NativeFuncTest, OverwriteMark) {
 }
 
 TEST_F(NativeFuncTest, MarkOnNonNativeFuncPointerReturnsSafe) {
-    // Test that reading marks from random strings returns safe defaults
-    // without crashing (due to alignment check protection)
-    const char* random_string = "not_a_nativefunc";
+    // Use a deliberately misaligned pointer rather than a string literal.
+    // String literals live in .rodata whose base address is linker-determined;
+    // on some platforms/compilers the literal ends up at an address where
+    // (ptr - sizeof(NativeFunc)) is also naturally aligned, causing the
+    // is_aligned() guard to pass and the methods to read garbage.
+    // A 64-byte-aligned buffer with a +1 offset is guaranteed to be misaligned
+    // with respect to sizeof(NativeFunc*) (4 or 8 bytes) on every platform,
+    // so the guard reliably rejects it and returns safe defaults.
+    alignas(64) char buf[64] = "not_a_nativefunc";
+    const char* unaligned = buf + 1;
 
-    // Should return safe defaults without crashing
-    EXPECT_FALSE(NativeFunc::is_marked(random_string))
+    EXPECT_FALSE(NativeFunc::is_marked(unaligned))
         << "is_marked() on non-NativeFunc string should return false (safe default)";
-    EXPECT_EQ(NativeFunc::read_mark(random_string), 0)
+    EXPECT_EQ(NativeFunc::read_mark(unaligned), 0)
         << "read_mark() on non-NativeFunc string should return 0 (safe default)";
-    EXPECT_EQ(NativeFunc::libIndex(random_string), -1)
+    EXPECT_EQ(NativeFunc::libIndex(unaligned), -1)
         << "libIndex() on non-NativeFunc string should return -1 (safe default)";
 }
 

@@ -16,14 +16,10 @@
 
 package com.datadoghq.profiler;
 
-import sun.misc.Unsafe;
-
 import java.io.IOException;
-import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -41,18 +37,6 @@ public final class JavaProfiler {
         static final long FREQUENCY = tscFrequency0();
     }
     private static JavaProfiler instance;
-    private static final int CONTEXT_SIZE = 64;
-    // must be kept in sync with PAGE_SIZE in context.h
-    private static final int PAGE_SIZE = 1024;
-    private static final int SPAN_OFFSET = 0;
-    private static final int ROOT_SPAN_OFFSET = 8;
-    private static final int CHECKSUM_OFFSET = 16;
-    private static final int DYNAMIC_TAGS_OFFSET = 24;
-    private static final ThreadLocal<Integer> TID = ThreadLocal.withInitial(JavaProfiler::getTid0);
-
-    private ByteBuffer[] contextStorage;
-    private long[] contextBaseOffsets;
-    private static final ByteBuffer SENTINEL = ByteBuffer.allocate(0);
 
     // Thread-local storage for profiling context
     private final ThreadLocal<ThreadContext> tlsContextStorage = ThreadLocal.withInitial(JavaProfiler::initializeThreadContext);
@@ -239,39 +223,49 @@ public final class JavaProfiler {
      * Passing context identifier to a profiler. This ID is thread-local and is dumped in
      * the JFR output only. 0 is a reserved value for "no-context".
      *
+     * <p>Note: {@code rootSpanId} maps to {@code localRootSpanId} internally. A synthetic
+     * trace_id of {@code [0, spanId]} is written to the OTEP record. For correct W3C
+     * trace ID interop use {@link #setContext(long, long, long, long)}.
+     *
      * @param spanId Span identifier that should be stored for current thread
-     * @param rootSpanId Root Span identifier that should be stored for current thread
+     * @param rootSpanId Local root span identifier (used for endpoint correlation)
+     * @deprecated Use {@link #setContext(long, long, long, long)} for full OTEP interop.
      */
+    @Deprecated
     public void setContext(long spanId, long rootSpanId) {
         tlsContextStorage.get().put(spanId, rootSpanId);
     }
 
     /**
-     * Clears context identifier for current thread.
+     * Sets trace context with full 128-bit W3C trace ID, span ID, and local root span ID.
+     *
+     * @param localRootSpanId Local root span ID (for endpoint correlation)
+     * @param spanId Span identifier
+     * @param traceIdHigh Upper 64 bits of the 128-bit trace ID
+     * @param traceIdLow Lower 64 bits of the 128-bit trace ID
      */
-    public void clearContext() {
-        setContext(0, 0);
+    public void setContext(long localRootSpanId, long spanId, long traceIdHigh, long traceIdLow) {
+        tlsContextStorage.get().put(localRootSpanId, spanId, traceIdHigh, traceIdLow);
     }
 
     /**
-     * Sets a context value
-     * @param offset the offset
-     * @param value the encoding of the value. Must have been encoded via @see JavaProfiler#registerConstant
+     * Resets the current thread's context to zero (traceId=0, spanId=0, localRootSpanId=0).
+     * Custom context attributes are also cleared.
      */
-    public void setContextValue(int offset, int value) {
-        tlsContextStorage.get().putCustom(offset, value);
+    public void clearContext() {
+        tlsContextStorage.get().put(0, 0, 0, 0);
+    }
+
+    public boolean setContextAttribute(int offset, String value) {
+        return tlsContextStorage.get().setContextAttribute(offset, value);
+    }
+
+    public void clearContextAttribute(int offset) {
+        tlsContextStorage.get().clearContextAttribute(offset);
     }
 
     void copyTags(int[] snapshot) {
         tlsContextStorage.get().copyCustoms(snapshot);
-    }
-
-    /**
-     * Registers a constant so that its encoding can be used in place of the string
-     * @param key the key to be written into the attribute value constant pool
-     */
-    int registerConstant(String key) {
-        return registerConstant0(key);
     }
 
     /**
@@ -379,9 +373,12 @@ public final class JavaProfiler {
     }
 
     private static ThreadContext initializeThreadContext() {
-        int[] offsets = new int[4];
-        ByteBuffer bb = initializeContextTls0(offsets);
-        return new ThreadContext(bb, offsets);
+        long[] metadata = new long[6];
+        ByteBuffer buffer = initializeContextTLS0(metadata);
+        if (buffer == null) {
+            throw new IllegalStateException("Failed to initialize OTEL TLS — ProfiledThread not available");
+        }
+        return new ThreadContext(buffer, metadata);
     }
 
     private static native boolean init0();
@@ -402,8 +399,6 @@ public final class JavaProfiler {
     private static native void parkExit0(long blocker, long unblockingSpanId);
 
     private static native void recordSpanNode0(long spanId, long parentSpanId, long rootSpanId, long startNanos, long durationNanos, int encodedOperation, int encodedResource);
-
-    private static native int registerConstant0(String value);
 
     private static native void dump0(String recordingFilePath);
 
@@ -432,7 +427,21 @@ public final class JavaProfiler {
 
     private static native String getStatus0();
 
-    private static native ByteBuffer initializeContextTls0(int[] offsets);
+    /**
+     * Initializes context TLS for the current thread and returns a single DirectByteBuffer
+     * spanning the OTEP record + tag-encoding sidecar + LRS (688 bytes, contiguous in
+     * ProfiledThread). Sets otel_thread_ctx_v1 permanently to the thread's
+     * OtelThreadContextRecord.
+     *
+     * @param metadata output array filled with absolute offsets into the returned buffer:
+     *   [0] VALID_OFFSET — offset of 'valid' field
+     *   [1] TRACE_ID_OFFSET — offset of 'trace_id' field
+     *   [2] SPAN_ID_OFFSET — offset of 'span_id' field
+     *   [3] ATTRS_DATA_SIZE_OFFSET — offset of 'attrs_data_size' field
+     *   [4] ATTRS_DATA_OFFSET — offset of 'attrs_data' field
+     *   [5] LRS_OFFSET — offset of local_root_span_id
+     */
+    private static native ByteBuffer initializeContextTLS0(long[] metadata);
 
     public ThreadContext getThreadContext() {
         return tlsContextStorage.get();
@@ -447,4 +456,13 @@ public final class JavaProfiler {
     public static native void testlog(String msg);
 
     public static native void dumpContext();
+
+    /**
+     * Resets the cached ThreadContext for the current thread.
+     * The next call to {@link #getThreadContext()} or any {@code setContext} overload
+     * will re-create it with fresh OTEL TLS buffers.
+     */
+    public void resetThreadContext() {
+        tlsContextStorage.remove();
+    }
 }

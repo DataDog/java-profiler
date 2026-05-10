@@ -2,6 +2,7 @@
 **/build_*/
 **/build-*/
 !build-logic/
+!.gitlab/build-deploy/
 /nbproject/
 /out/
 /.idea/

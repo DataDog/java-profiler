@@ -1,5 +1,5 @@
 /*
- * Copyright 2021, 2025, Datadog, Inc.
+ * Copyright 2021, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -10,6 +10,8 @@
 
 #include "arch.h"
 #include "context.h"
+#include "context_api.h"
+#include "hotspot/vmStructs.h"
 #include "incbin.h"
 #include "jniHelper.h"
 #include "livenessTracker.h"
@@ -18,7 +20,6 @@
 #include "profiler.h"
 #include "thread.h"
 #include "tsc.h"
-#include "vmStructs.h"
 #include <jni.h>
 #include <string.h>
 
@@ -97,7 +98,7 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
   _table_lock.lock();
 
   u32 sz;
-  for (int i = 0; i < (sz = _table_size); i++) {
+  for (u32 i = 0; i < (sz = _table_size); i++) {
     jobject ref = env->NewLocalRef(_table[i].ref);
     if (ref != nullptr) {
       if (tracked_thread_ids != nullptr) {
@@ -207,8 +208,6 @@ void LivenessTracker::stop() {
   // do not disable GC notifications here - the tracker is supposed to survive
   // multiple recordings
 }
-
-static int _min(int a, int b) { return a < b ? a : b; }
 
 Error LivenessTracker::initialize(Arguments &args) {
   _enabled = args._gc_generations || args._record_liveness;
@@ -323,7 +322,7 @@ retry:
     _table[idx].skipped = skipped;
     _table[idx].age = 0;
     _table[idx].call_trace_id = call_trace_id;
-    _table[idx].ctx = Contexts::get();
+    _table[idx].ctx = ContextApi::snapshot();
   }
 
   _table_lock.unlockShared();
