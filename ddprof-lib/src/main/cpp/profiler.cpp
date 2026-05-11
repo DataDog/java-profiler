@@ -86,7 +86,7 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 }
 
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::currentSignalSafe();
   int tid = -1;
   
   if (current != nullptr) {
