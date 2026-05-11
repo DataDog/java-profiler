@@ -95,16 +95,12 @@ public:
     _lock->lockShared();
   }
   ~SharedLockGuard() {
-    if (_lock != nullptr) {
-      _lock->unlockShared();
-    }
+    _lock->unlockShared();
   }
-  SharedLockGuard(SharedLockGuard&& other) : _lock(other._lock) {
-    other._lock = nullptr;
-  }
-  // Non-copyable, non-move-assignable
+  // Non-copyable and non-movable
   SharedLockGuard(const SharedLockGuard&) = delete;
   SharedLockGuard& operator=(const SharedLockGuard&) = delete;
+  SharedLockGuard(SharedLockGuard&&) = delete;
   SharedLockGuard& operator=(SharedLockGuard&&) = delete;
 };
 
@@ -124,12 +120,10 @@ public:
   }
   bool ownsLock() { return _lock != nullptr; }
 
-  OptionalSharedLockGuard(OptionalSharedLockGuard&& other) : _lock(other._lock) {
-    other._lock = nullptr;
-  }
-  // Non-copyable, non-move-assignable
+  // Non-copyable and non-movable
   OptionalSharedLockGuard(const OptionalSharedLockGuard&) = delete;
   OptionalSharedLockGuard& operator=(const OptionalSharedLockGuard&) = delete;
+  OptionalSharedLockGuard(OptionalSharedLockGuard&&) = delete;
   OptionalSharedLockGuard& operator=(OptionalSharedLockGuard&&) = delete;
 };
 
