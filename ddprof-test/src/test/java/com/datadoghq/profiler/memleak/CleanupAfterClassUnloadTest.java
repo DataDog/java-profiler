@@ -23,12 +23,12 @@ import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 
+import java.io.File;
 import java.io.IOException;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -201,9 +201,7 @@ public class CleanupAfterClassUnloadTest extends AbstractProfilerTest {
   }
 
   private static Path tempFile(String prefix) throws IOException {
-    Path dir = Paths.get("/tmp/recordings");
-    Files.createDirectories(dir);
-    return Files.createTempFile(dir, prefix + "-", ".jfr");
+    return File.createTempFile(prefix + "-", ".jfr").toPath();
   }
 
   private static class IsolatedClassLoader extends ClassLoader {
