@@ -530,8 +530,11 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     uintptr_t receiver = frame.jarg0();
                     if (receiver != 0) {
                         VMSymbol* symbol = VMKlass::fromOop(receiver)->name();
-                        u32 class_id = profiler->classMap()->lookup(symbol->body(), symbol->length());
-                        fillFrame(frames[depth++], BCI_ALLOC, class_id);
+                        int class_id = profiler->lookupClassSignalSafe(symbol->body(), symbol->length());
+                        // class_id > 0: valid hit (base_index=1, so 0 = miss sentinel, -1 = lock unavailable)
+                        if (class_id > 0) {
+                            fillFrame(frames[depth++], BCI_ALLOC, (u32)class_id);
+                        }
                     }
                 }
 

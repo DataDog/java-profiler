@@ -77,6 +77,8 @@ public:
   bool         check(const char* key);
   unsigned int lookup(const char *key);
   unsigned int lookup(const char *key, size_t length);
+  // Read-only lookup: returns 0 on miss without calling malloc — async-signal-safe.
+  unsigned int lookup_readonly(const char *key, size_t length);
   unsigned int bounded_lookup(const char *key, size_t length, int size_limit);
 
   void collect(std::map<unsigned int, const char *> &map);

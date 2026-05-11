@@ -1531,11 +1531,21 @@ void Profiler::shutdown(Arguments &args) {
 
 int Profiler::lookupClass(const char *key, size_t length) {
   if (_class_map_lock.tryLockShared()) {
-    int ret = _class_map.lookup(key, length);
+    int ret = (int)_class_map.lookup(key, length);
     _class_map_lock.unlockShared();
     return ret;
   }
-  // unable to lookup the class
+  return -1;
+}
+
+int Profiler::lookupClassSignalSafe(const char *key, size_t length) {
+  if (_class_map_lock.tryLockShared()) {
+    // lookup_readonly: for_insert=false, sentinel=0 — never calls malloc, async-signal-safe.
+    // Returns 0 on miss (base_index starts at 1, so 0 is never a valid ID).
+    int ret = (int)_class_map.lookup_readonly(key, length);
+    _class_map_lock.unlockShared();
+    return ret;
+  }
   return -1;
 }
 

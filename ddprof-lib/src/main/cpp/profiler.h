@@ -211,6 +211,7 @@ public:
 
   const char* cstack() const;
   int lookupClass(const char *key, size_t length);
+  int lookupClassSignalSafe(const char *key, size_t length);
   void processCallTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor) {
     if (!_omit_stacktraces) {
       _call_trace_storage.processTraces(processor);
