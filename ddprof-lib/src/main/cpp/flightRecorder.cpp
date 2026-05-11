@@ -313,7 +313,6 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       if (dealloc_err != JVMTI_ERROR_NONE) {
         TEST_LOG("Unexpected error while deallocating linenumber table: %d", dealloc_err);
       }
-      line_number_table = nullptr;
       if (owned_table != nullptr) {
         mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
             line_number_table_size, owned_table);

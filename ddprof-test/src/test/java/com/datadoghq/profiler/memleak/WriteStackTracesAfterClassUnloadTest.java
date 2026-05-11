@@ -9,20 +9,14 @@
  */
 package com.datadoghq.profiler.memleak;
 
-import com.datadoghq.profiler.AbstractProfilerTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.objectweb.asm.ClassWriter;
-import org.objectweb.asm.Label;
-import org.objectweb.asm.MethodVisitor;
-import org.objectweb.asm.Opcodes;
 
 import java.io.IOException;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -69,15 +63,13 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *       covered by {@code CleanupAfterClassUnloadTest}.</li>
  * </ul>
  */
-public class WriteStackTracesAfterClassUnloadTest extends AbstractProfilerTest {
+public class WriteStackTracesAfterClassUnloadTest extends AbstractDynamicClassTest {
 
   @Override
   protected String getProfilerCommand() {
     // Aggressive CPU sampling to ensure the dynamic class lands in many traces.
     return "cpu=1ms";
   }
-
-  private int classCounter = 0;
 
   @Test
   @Timeout(60)
@@ -141,7 +133,7 @@ public class WriteStackTracesAfterClassUnloadTest extends AbstractProfilerTest {
 
   private WeakReference<ClassLoader> loadAndProfileDynamicClass() throws Exception {
     String className = "com/datadoghq/profiler/generated/DynamicUnloadClass" + (classCounter++);
-    byte[] bytecode = generateClassBytecode(className);
+    byte[] bytecode = generateClassBytecode(className, 5);
 
     IsolatedClassLoader loader = new IsolatedClassLoader();
     Class<?> clazz = loader.defineClass(className.replace('/', '.'), bytecode);
@@ -170,55 +162,4 @@ public class WriteStackTracesAfterClassUnloadTest extends AbstractProfilerTest {
     return ref;
   }
 
-  private byte[] generateClassBytecode(String className) {
-    ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
-    cw.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC, className, null, "java/lang/Object", null);
-
-    MethodVisitor ctor = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
-    ctor.visitCode();
-    ctor.visitVarInsn(Opcodes.ALOAD, 0);
-    ctor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
-    ctor.visitInsn(Opcodes.RETURN);
-    ctor.visitMaxs(0, 0);
-    ctor.visitEnd();
-
-    // Several methods, each with multiple line number entries — guarantees a non-trivial
-    // line number table is allocated by JVMTI and stored in MethodInfo._line_number_table.
-    for (int i = 0; i < 5; i++) {
-      MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PUBLIC, "method" + i, "()I", null, null);
-      mv.visitCode();
-
-      Label l1 = new Label(); mv.visitLabel(l1); mv.visitLineNumber(100 + i * 3, l1);
-      mv.visitInsn(Opcodes.ICONST_0);
-      mv.visitVarInsn(Opcodes.ISTORE, 1);
-
-      Label l2 = new Label(); mv.visitLabel(l2); mv.visitLineNumber(101 + i * 3, l2);
-      mv.visitVarInsn(Opcodes.ILOAD, 1);
-      mv.visitInsn(Opcodes.ICONST_1);
-      mv.visitInsn(Opcodes.IADD);
-      mv.visitVarInsn(Opcodes.ISTORE, 1);
-
-      Label l3 = new Label(); mv.visitLabel(l3); mv.visitLineNumber(102 + i * 3, l3);
-      mv.visitVarInsn(Opcodes.ILOAD, 1);
-      mv.visitInsn(Opcodes.IRETURN);
-
-      mv.visitMaxs(0, 0);
-      mv.visitEnd();
-    }
-
-    cw.visitEnd();
-    return cw.toByteArray();
-  }
-
-  private static Path tempFile(String prefix) throws IOException {
-    Path dir = Paths.get("/tmp/recordings");
-    Files.createDirectories(dir);
-    return Files.createTempFile(dir, prefix + "-", ".jfr");
-  }
-
-  private static class IsolatedClassLoader extends ClassLoader {
-    public Class<?> defineClass(String name, byte[] bytecode) {
-      return defineClass(name, bytecode, 0, bytecode.length);
-    }
-  }
 }
