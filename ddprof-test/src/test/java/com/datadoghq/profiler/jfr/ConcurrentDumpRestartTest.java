@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026, Datadog, Inc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.datadoghq.profiler.jfr;
 
 import com.datadoghq.profiler.CStackAwareAbstractProfilerTest;
@@ -17,7 +32,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -35,6 +52,7 @@ public class ConcurrentDumpRestartTest extends CStackAwareAbstractProfilerTest {
 
     private static final int TEST_DURATION_SECS = 10;
     private static final int ALLOC_THREADS = 4;
+    private static volatile int allocSink;
 
     public ConcurrentDumpRestartTest(@CStack String cstack) {
         super(cstack);
@@ -59,6 +77,7 @@ public class ConcurrentDumpRestartTest extends CStackAwareAbstractProfilerTest {
 
         AtomicInteger dumpCount = new AtomicInteger(0);
         AtomicInteger restartCount = new AtomicInteger(0);
+        AtomicReference<Throwable> restarterError = new AtomicReference<>();
         CountDownLatch workersStarted = new CountDownLatch(1);
 
         long deadline = System.currentTimeMillis() + TEST_DURATION_SECS * 1000L;
@@ -69,8 +88,8 @@ public class ConcurrentDumpRestartTest extends CStackAwareAbstractProfilerTest {
             allocators.submit(() -> {
                 workersStarted.countDown();
                 while (!Thread.currentThread().isInterrupted() && System.currentTimeMillis() < deadline) {
-                    @SuppressWarnings("unused")
-                    byte[] ignored = new byte[1024];
+                    byte[] b = new byte[1024];
+                    allocSink = b[0];
                 }
             });
         }
@@ -86,13 +105,16 @@ public class ConcurrentDumpRestartTest extends CStackAwareAbstractProfilerTest {
                     profiler.stop();
                     Path restartJfr = Files.createTempFile("restart-", ".jfr");
                     try {
-                        profiler.execute("start,alloc=1ms,wall=5ms,cstack=vm,jfr,file=" + restartJfr.toAbsolutePath());
+                        profiler.execute("start," + getProfilerCommand() + ",cstack=" + cstack + ",jfr,file=" + restartJfr.toAbsolutePath());
                         restartCount.incrementAndGet();
                         Thread.sleep(50);
                     } finally {
                         Files.deleteIfExists(restartJfr);
                     }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                 } catch (Exception e) {
+                    restarterError.compareAndSet(null, e);
                     Thread.currentThread().interrupt();
                 }
             }
@@ -106,7 +128,9 @@ public class ConcurrentDumpRestartTest extends CStackAwareAbstractProfilerTest {
                 Path recording = Files.createTempFile("dump-restart-", ".jfr");
                 try {
                     profiler.dump(recording);
-                    dumpCount.incrementAndGet();
+                    if (Files.size(recording) > 0) {
+                        dumpCount.incrementAndGet();
+                    }
                 } finally {
                     Files.deleteIfExists(recording);
                 }
@@ -115,6 +139,7 @@ public class ConcurrentDumpRestartTest extends CStackAwareAbstractProfilerTest {
         } finally {
             restarter.interrupt();
             restarter.join(5000);
+            assertNull(restarterError.get(), "Restarter thread failed: " + restarterError.get());
             allocators.shutdown();
             if (!allocators.awaitTermination(5, TimeUnit.SECONDS)) {
                 allocators.shutdownNow();
