@@ -47,9 +47,9 @@ public:
   void unlock() { __sync_fetch_and_sub(&_lock, 1); }
 
   bool tryLockShared() {
-    // Spins until the exclusive lock is released, then acquires a shared lock.
-    // Returns false ONLY when an exclusive lock is observed (_lock > 0); never
-    // returns false spuriously. Callers must be prepared for this to block.
+    // Spins while no exclusive lock is held and the CAS to acquire a shared
+    // lock fails (due to concurrent reader contention). Returns false ONLY when
+    // an exclusive lock is observed (_lock > 0); never returns false spuriously.
     int value;
     while ((value = __atomic_load_n(&_lock, __ATOMIC_ACQUIRE)) <= 0) {
       if (__sync_bool_compare_and_swap(&_lock, value, value - 1)) {
