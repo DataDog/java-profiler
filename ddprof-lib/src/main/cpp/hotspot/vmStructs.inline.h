@@ -17,7 +17,12 @@ VMThread* VMThread::current() {
 VMThread* VMThread::fromJavaThread(JNIEnv* env, jthread thread) {
     assert(_eetop != nullptr);
     if (_eetop != nullptr) {
-        return VMThread::cast((void*)env->GetLongField(thread, _eetop));
+        jlong eetop = env->GetLongField(thread, _eetop);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            return nullptr;
+        }
+        return eetop != 0 ? VMThread::cast((void*)eetop) : nullptr;
     } else {
         return nullptr;
     }
