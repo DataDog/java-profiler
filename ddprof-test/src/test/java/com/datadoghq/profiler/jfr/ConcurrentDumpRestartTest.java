@@ -52,7 +52,7 @@ public class ConcurrentDumpRestartTest extends CStackAwareAbstractProfilerTest {
 
     private static final int TEST_DURATION_SECS = 10;
     private static final int ALLOC_THREADS = 4;
-    private static volatile int allocSink;
+    private static volatile Object allocSink;
 
     public ConcurrentDumpRestartTest(@CStack String cstack) {
         super(cstack);
@@ -89,7 +89,7 @@ public class ConcurrentDumpRestartTest extends CStackAwareAbstractProfilerTest {
                 workersStarted.countDown();
                 while (!Thread.currentThread().isInterrupted() && System.currentTimeMillis() < deadline) {
                     byte[] b = new byte[1024];
-                    allocSink = b[0];
+                    allocSink = b;
                 }
             });
         }
