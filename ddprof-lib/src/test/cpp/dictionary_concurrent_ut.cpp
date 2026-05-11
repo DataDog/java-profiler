@@ -198,9 +198,9 @@ TEST(DictionaryConcurrent, SignalHandlerBoundedLookupVsDumpClear) {
     std::atomic<long> total_skips{0};
     std::atomic<long> total_clears{0};
 
-    // Simulate walkVM signal-handler threads: tryLockShared → bounded_lookup(0)
-    // → unlockShared. Mirrors the OptionalSharedLockGuard + ownsLock() guard in
-    // hotspotSupport.cpp.
+    // Simulate walkVM signal-handler threads: tryLockSharedBounded → bounded_lookup(0)
+    // → unlockShared. Mirrors the BoundedOptionalSharedLockGuard + ownsLock() guard in
+    // hotspotSupport.cpp (classMapTrySharedGuard()).
     std::vector<std::thread> signal_threads;
     signal_threads.reserve(kSignalThreads);
     for (int w = 0; w < kSignalThreads; ++w) {
@@ -211,7 +211,7 @@ TEST(DictionaryConcurrent, SignalHandlerBoundedLookupVsDumpClear) {
                 snprintf(buf, sizeof(buf), "Lcom/example/Preloaded%d;",
                          counter % kPreload);
                 size_t len = strlen(buf);
-                OptionalSharedLockGuard guard(&lock);
+                BoundedOptionalSharedLockGuard guard(&lock);
                 if (guard.ownsLock()) {
                     // Read-only; no malloc, no CAS — safe in signal context.
                     unsigned int id = dict.bounded_lookup(buf, len, 0);
