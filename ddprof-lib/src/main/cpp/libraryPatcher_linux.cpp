@@ -11,7 +11,6 @@
 #include "guards.h"
 
 #include <cassert>
-#include <cxxabi.h>
 #include <dlfcn.h>
 #include <limits.h>
 #include <string.h>
@@ -97,21 +96,19 @@ static void* start_routine_wrapper_spec(void* args) {
     init_tls_and_register();
     // Capture tid from TLS while it is guaranteed non-null (set by init_tls_and_register above).
     // Using a cached tid avoids the lazy-allocating ProfiledThread::current() path inside
-    // the catch block, which may call 'new' at an unsafe point during forced unwind.
+    // the cleanup destructor, which may call 'new' at an unsafe point during forced unwind.
     int tid = ProfiledThread::currentTid();
-    // IBM J9 (and glibc pthread_cancel) use abi::__forced_unwind for thread teardown.
-    // Catch it explicitly so cleanup runs even during forced unwind, then re-throw
-    // to allow the thread to exit properly.  A plain catch(...) without re-throw
-    // would swallow the forced unwind and prevent the thread from actually exiting.
-    try {
-        routine(params);
-    } catch (abi::__forced_unwind&) {
-        Profiler::unregisterThread(tid);
-        ProfiledThread::release();
-        throw;
-    }
-    Profiler::unregisterThread(tid);
-    ProfiledThread::release();
+    // RAII ensures cleanup runs on both normal exit and forced unwind (pthread_cancel /
+    // pthread_exit) on any platform, including musl where abi::__forced_unwind is not
+    // a named C++ exception type.
+    struct ThreadCleanup {
+        int tid;
+        ~ThreadCleanup() {
+            Profiler::unregisterThread(tid);
+            ProfiledThread::release();
+        }
+    } cleanup{tid};
+    routine(params);
     return nullptr;
 }
 
@@ -163,22 +160,18 @@ static void* start_routine_wrapper(void* args) {
         ProfiledThread::currentSignalSafe()->startInitWindow();
         Profiler::registerThread(tid);
     }
-    // IBM J9 (and glibc pthread_cancel) use abi::__forced_unwind for thread
-    // teardown.  pthread_cleanup_push/pop creates a __pthread_cleanup_class
-    // with an implicitly-noexcept destructor; when J9's forced-unwind
-    // propagates through it, the C++ runtime calls std::terminate() → abort().
-    // Replacing with an explicit catch ensures cleanup runs on forced unwind
-    // without triggering terminate, and the re-throw lets the thread exit cleanly.
-    // pthread_exit() is also covered: on glibc it raises its own __forced_unwind.
-    try {
-        routine(params);
-    } catch (abi::__forced_unwind&) {
-        Profiler::unregisterThread(tid);
-        ProfiledThread::release();
-        throw;
-    }
-    Profiler::unregisterThread(tid);
-    ProfiledThread::release();
+    // RAII ensures cleanup runs on both normal exit and forced unwind (pthread_cancel /
+    // pthread_exit) on any platform, including musl where abi::__forced_unwind is not
+    // a named C++ exception type.  This replaces the earlier catch(abi::__forced_unwind&)
+    // approach which was glibc-only and broke on musl.
+    struct ThreadCleanup {
+        int tid;
+        ~ThreadCleanup() {
+            Profiler::unregisterThread(tid);
+            ProfiledThread::release();
+        }
+    } cleanup{tid};
+    routine(params);
     return nullptr;
 }
 
