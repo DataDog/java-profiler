@@ -78,22 +78,27 @@ public class DumpWhileChurningThreadsTest extends CStackAwareAbstractProfilerTes
         }
 
         // Wait for at least one churn thread to be running before starting dumps
-        churnStarted.await(5, TimeUnit.SECONDS);
+        assertTrue(churnStarted.await(5, TimeUnit.SECONDS),
+            "Churn tasks did not start within 5 seconds");
 
         // Dump repeatedly while churn runs
-        while (System.currentTimeMillis() < deadline) {
-            Path recording = Files.createTempFile("dump-churn-", ".jfr");
-            try {
-                dump(recording);
-                dumpCount.incrementAndGet();
-            } finally {
-                Files.deleteIfExists(recording);
+        try {
+            while (System.currentTimeMillis() < deadline) {
+                Path recording = Files.createTempFile("dump-churn-", ".jfr");
+                try {
+                    dump(recording);
+                    dumpCount.incrementAndGet();
+                } finally {
+                    Files.deleteIfExists(recording);
+                }
+                Thread.sleep(200);
             }
-            Thread.sleep(200);
+        } finally {
+            executor.shutdown();
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
         }
-
-        executor.shutdown();
-        executor.awaitTermination(5, TimeUnit.SECONDS);
 
         assertTrue(dumpCount.get() >= 10,
             "Expected at least 10 dumps during churn, got " + dumpCount.get()
