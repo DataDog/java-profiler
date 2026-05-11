@@ -205,7 +205,7 @@ public:
 
   Dictionary *classMap() { return &_class_map; }
   SharedLockGuard classMapSharedGuard() { return SharedLockGuard(&_class_map_lock); }
-  OptionalSharedLockGuard classMapTrySharedGuard() { return OptionalSharedLockGuard(&_class_map_lock); }
+  BoundedOptionalSharedLockGuard classMapTrySharedGuard() { return BoundedOptionalSharedLockGuard(&_class_map_lock); }
   Dictionary *stringLabelMap() { return &_string_label_map; }
   Dictionary *contextValueMap() { return &_context_value_map; }
   u32 numContextAttributes() { return _num_context_attributes; }
