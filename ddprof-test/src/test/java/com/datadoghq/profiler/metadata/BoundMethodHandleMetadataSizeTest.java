@@ -33,10 +33,13 @@ public class BoundMethodHandleMetadataSizeTest extends AbstractProfilerTest {
         verifyEvents("datadog.MethodSample");
         Map<String, Long> counters = profiler.getDebugCounters();
         assertFalse(counters.isEmpty());
-        // Regression: tryLockSharedBounded(5) would fail under heavy wall-clock load
-        // on aarch64, causing class lookups to return -1 and the class map to stay empty.
-        assertTrue(counters.getOrDefault("dictionary_classes_keys", 0L) > 0,
-                "Classes must be registered despite heavy wall-clock sampling load");
+        if (!Platform.isJ9()) {
+            // Regression: tryLockSharedBounded(5) would fail under heavy wall-clock load
+            // on aarch64, causing class lookups to return -1 and the class map to stay empty.
+            // J9 uses a different stack-walker that doesn't populate the HotSpot class map.
+            assertTrue(counters.getOrDefault("dictionary_classes_keys", 0L) > 0,
+                    "Classes must be registered despite heavy wall-clock sampling load");
+        }
     }
 
 
