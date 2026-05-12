@@ -78,9 +78,9 @@ private:
   // --
 
   ThreadInfo _thread_info;
-  DoubleBufferedDictionary _class_map;
-  DoubleBufferedDictionary _string_label_map;
-  DoubleBufferedDictionary _context_value_map;
+  TripleBufferedDictionary _class_map;
+  TripleBufferedDictionary _string_label_map;
+  TripleBufferedDictionary _context_value_map;
   ThreadFilter _thread_filter;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
@@ -201,9 +201,9 @@ public:
   Engine *cpuEngine() { return _cpu_engine; }
   Engine *wallEngine() { return _wall_engine; }
 
-  DoubleBufferedDictionary *classMap() { return &_class_map; }
-  DoubleBufferedDictionary *stringLabelMap() { return &_string_label_map; }
-  DoubleBufferedDictionary *contextValueMap() { return &_context_value_map; }
+  TripleBufferedDictionary *classMap() { return &_class_map; }
+  TripleBufferedDictionary *stringLabelMap() { return &_string_label_map; }
+  TripleBufferedDictionary *contextValueMap() { return &_context_value_map; }
   u32 numContextAttributes() { return _num_context_attributes; }
   ThreadFilter *threadFilter() { return &_thread_filter; }
 
