@@ -3,9 +3,9 @@ layout: default
 title: glibc-arm64-openj9-jdk11
 ---
 
-## glibc-arm64-openj9-jdk11 - ✅ PASS
+## glibc-arm64-openj9-jdk11 - ❌ FAIL
 
-**Date:** 2026-05-12 04:52:50 EDT
+**Date:** 2026-05-12 05:19:43 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: glibc-arm64-openj9-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 56 |
-| CPU Cores (end) | 64 |
+| CPU Cores (start) | 34 |
+| CPU Cores (end) | 34 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ⚠️
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
+| Status | FAIL |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,29 +45,22 @@ title: glibc-arm64-openj9-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 56-64 cores)</summary>
+<summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
 
 ```
-1778575638 56
-1778575643 56
-1778575648 56
-1778575653 56
-1778575658 56
-1778575663 56
-1778575668 56
-1778575673 56
-1778575678 64
-1778575683 64
-1778575688 64
-1778575693 64
-1778575698 64
-1778575703 64
-1778575708 64
-1778575713 64
-1778575718 64
-1778575723 64
-1778575728 64
-1778575733 64
+1778577299 34
+1778577304 34
+1778577309 34
+1778577314 34
+1778577319 34
+1778577324 34
+1778577329 34
+1778577334 34
+1778577339 34
+1778577344 34
+1778577349 34
+1778577354 34
+1778577359 34
 ```
 </details>
 
