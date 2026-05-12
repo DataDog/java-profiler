@@ -3,9 +3,9 @@ layout: default
 title: glibc-x64-hotspot-jdk8
 ---
 
-## glibc-x64-hotspot-jdk8 - ❌ FAIL
+## glibc-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-05-12 09:20:28 EDT
+**Date:** 2026-05-12 09:35:56 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: glibc-x64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 55 |
-| CPU Cores (end) | 55 |
+| CPU Cores (start) | 87 |
+| CPU Cores (end) | 75 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ❌
+#### Scenario 1: Profiler-Only ⚠️
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
+| Status | N/A |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,22 +45,29 @@ title: glibc-x64-hotspot-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 55-55 cores)</summary>
+<summary>CPU Timeline (2 unique values: 75-87 cores)</summary>
 
 ```
-1778591618 55
-1778591623 55
-1778591628 55
-1778591633 55
-1778591638 55
-1778591643 55
-1778591648 55
-1778591653 55
-1778591658 55
-1778591663 55
-1778591668 55
-1778591673 55
-1778591678 55
+1778592666 87
+1778592671 87
+1778592676 87
+1778592681 75
+1778592686 75
+1778592691 75
+1778592696 75
+1778592701 75
+1778592706 75
+1778592711 75
+1778592716 75
+1778592721 75
+1778592726 75
+1778592731 75
+1778592736 75
+1778592741 75
+1778592746 75
+1778592751 75
+1778592756 75
+1778592761 75
 ```
 </details>
 
