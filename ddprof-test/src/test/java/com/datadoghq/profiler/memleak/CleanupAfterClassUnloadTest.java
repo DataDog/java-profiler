@@ -118,6 +118,7 @@ public class CleanupAfterClassUnloadTest extends AbstractProfilerTest {
           "Profiler produced no output — it may have crashed during method_map cleanup");
 
     } finally {
+      try { profiler.stop(); } catch (Exception ignored) {}
       try { Files.deleteIfExists(baseFile); } catch (IOException ignored) {}
       try { Files.deleteIfExists(dumpFile); } catch (IOException ignored) {}
     }
