@@ -58,15 +58,11 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
                                      jthread thread, int event_type,
                                      jobject object, jclass object_klass,
                                      jlong size) {
-  if (!(_gc_generations || _record_allocations || _record_liveness)) {
-    // nothing to do here, bail out
+  if (!_active) {
     return;
   }
 
-  // Phase guard: a SampledObjectAlloc callback can race with profiler
-  // teardown. If the global JVMTI env has already been cleared we must
-  // not issue any JVMTI calls.
-  if (jvmti == NULL || VM::jvmti() == NULL) {
+  if (jvmti == NULL) {
     return;
   }
 
@@ -81,6 +77,9 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
       class_name == NULL) {
     // Drop the sample: recording it under the default class id 0
     // would corrupt allocation attribution.
+    if (class_name != NULL) {
+      jvmti->Deallocate((unsigned char *)class_name);
+    }
     return;
   }
   const char *name_slice = NULL;
@@ -188,6 +187,7 @@ Error ObjectSampler::start(Arguments &args) {
     jvmti->SetHeapSamplingInterval(_interval);
     jvmti->SetEventNotificationMode(JVMTI_ENABLE,
                                     JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
+    _active = true;
     __atomic_store_n(&_last_config_update_ts, OS::nanotime(), __ATOMIC_RELEASE);
     // need to reset the running sum in order for 'updateConfiguration' to be
     // able to generate proper diffs
@@ -198,6 +198,7 @@ Error ObjectSampler::start(Arguments &args) {
 }
 
 void ObjectSampler::stop() {
+  _active = false;
   jvmtiEnv *jvmti = VM::jvmti();
   jvmti->SetEventNotificationMode(JVMTI_DISABLE,
                                   JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
