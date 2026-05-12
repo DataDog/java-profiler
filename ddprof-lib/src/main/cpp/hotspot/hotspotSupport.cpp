@@ -540,7 +540,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         // clear() concurrently frees. Take the lock shared via
                         // try-lock; if an exclusive clear() is in progress, drop
                         // the synthetic frame rather than read freed memory.
-                        OptionalSharedLockGuard guard(profiler->classMapLock());
+                        auto guard = profiler->classMapTrySharedGuard();
                         if (guard.ownsLock()) {
                             u32 class_id = profiler->classMap()->bounded_lookup(
                                 symbol->body(), symbol->length(), 0);
