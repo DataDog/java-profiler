@@ -21,7 +21,7 @@
  *
  *  2. FixedPath_LockedLookupRacesWithClear
  *     Wraps every lookup in tryLockShared() / unlockShared(), mirroring the
- *     Profiler::lookupClass() pattern.  Runs for at least 500 ms and must
+ *     Profiler::lookupClassSignalSafe() pattern.  Runs for at least 500 ms and must
  *     complete without any crash or data corruption.
  *
  * Key types used:
@@ -157,9 +157,9 @@ TEST_F(StressDictionaryTest, BrokenPath_DirectLookupRacesWithClear) {
 // ===========================================================================
 TEST_F(StressDictionaryTest, FixedPath_LockedLookupRacesWithClear) {
     /*
-     * This test mirrors Profiler::lookupClass():
+     * This test mirrors Profiler::lookupClassSignalSafe():
      *   if (_class_map_lock.tryLockShared()) {
-     *       int ret = _class_map.lookup(key, length);
+     *       int ret = _class_map.lookup_readonly(key, length);
      *       _class_map_lock.unlockShared();
      *       return ret;
      *   }
@@ -202,8 +202,8 @@ TEST_F(StressDictionaryTest, FixedPath_LockedLookupRacesWithClear) {
             for (int k = 0; k < NUM_PROBE_KEYS; ++k) {
                 const char* key = PROBE_KEYS[k];
                 if (lock.tryLockShared()) {
-                    // FIXED: shared lock held, safe to call lookup().
-                    (void)dict.lookup(key, strlen(key));
+                    // FIXED: shared lock held, mirrors signal-safe path.
+                    (void)dict.lookup_readonly(key, strlen(key));
                     lock.unlockShared();
                     lookups.fetch_add(1, std::memory_order_relaxed);
                 } else {
@@ -269,7 +269,7 @@ TEST_F(StressDictionaryTest, FixedPath_ExtendedDuration_NoRace) {
                 for (int k = 0; k < NUM_PROBE_KEYS; ++k) {
                     const char* key = PROBE_KEYS[k];
                     if (lock.tryLockShared()) {
-                        (void)dict.lookup(key, strlen(key));
+                        (void)dict.lookup_readonly(key, strlen(key));
                         lock.unlockShared();
                     }
                     // else: graceful skip
