@@ -34,6 +34,7 @@ class ObjectSampler : public Engine {
 private:
   static ObjectSampler *const _instance;
 
+  bool _active;
   int _interval;
   int _configured_interval;
   bool _record_allocations;
@@ -51,8 +52,9 @@ private:
   Error updateConfiguration(u64 events, double time_coefficient);
 
   ObjectSampler()
-      : _interval(0), _configured_interval(0), _record_allocations(false),
-        _record_liveness(false), _gc_generations(false), _max_stack_depth(0),
+      : _active(false), _interval(0), _configured_interval(0),
+        _record_allocations(false), _record_liveness(false),
+        _gc_generations(false), _max_stack_depth(0),
         _last_config_update_ts(0), _alloc_event_count(0),
         _disable_rate_limiting(false) {}
 

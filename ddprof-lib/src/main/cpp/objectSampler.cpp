@@ -58,7 +58,7 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
                                      jthread thread, int event_type,
                                      jobject object, jclass object_klass,
                                      jlong size) {
-  if (!_active) {
+  if (!__atomic_load_n(&_active, __ATOMIC_RELAXED)) {
     return;
   }
 
@@ -187,7 +187,7 @@ Error ObjectSampler::start(Arguments &args) {
     jvmti->SetHeapSamplingInterval(_interval);
     jvmti->SetEventNotificationMode(JVMTI_ENABLE,
                                     JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
-    _active = true;
+    __atomic_store_n(&_active, true, __ATOMIC_RELEASE);
     __atomic_store_n(&_last_config_update_ts, OS::nanotime(), __ATOMIC_RELEASE);
     // need to reset the running sum in order for 'updateConfiguration' to be
     // able to generate proper diffs
@@ -198,7 +198,7 @@ Error ObjectSampler::start(Arguments &args) {
 }
 
 void ObjectSampler::stop() {
-  _active = false;
+  __atomic_store_n(&_active, false, __ATOMIC_RELEASE);
   jvmtiEnv *jvmti = VM::jvmti();
   jvmti->SetEventNotificationMode(JVMTI_DISABLE,
                                   JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
