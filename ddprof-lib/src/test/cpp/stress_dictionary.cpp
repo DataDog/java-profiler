@@ -311,6 +311,7 @@ TEST_F(StressDictionaryTest, LookupReadonly_DoesNotInsertKeys) {
     constexpr auto DURATION = std::chrono::milliseconds(300);
     std::atomic<bool> stop{false};
     std::atomic<int>  lookups{0};
+    std::atomic<int>  violations{0};
 
     std::thread clearThread([&] {
         auto deadline = std::chrono::steady_clock::now() + DURATION;
@@ -330,8 +331,9 @@ TEST_F(StressDictionaryTest, LookupReadonly_DoesNotInsertKeys) {
                 if (lock.tryLockShared()) {
                     unsigned int id = dict.lookup_readonly(ghost_keys[k], strlen(ghost_keys[k]));
                     lock.unlockShared();
-                    // Ghost keys must never appear as inserted entries.
-                    EXPECT_EQ(0u, id) << "lookup_readonly must not insert ghost key " << ghost_keys[k];
+                    if (id != 0u) {
+                        violations.fetch_add(1, std::memory_order_relaxed);
+                    }
                 }
             }
             lookups.fetch_add(1, std::memory_order_relaxed);
@@ -348,5 +350,9 @@ TEST_F(StressDictionaryTest, LookupReadonly_DoesNotInsertKeys) {
     for (auto& t : workers) t.join();
 
     EXPECT_GT(lookups.load(), 0);
-    SUCCEED() << "lookup_readonly did not insert any ghost key. iterations=" << lookups.load();
+    int v = violations.load();
+    EXPECT_EQ(0, v)
+        << "lookup_readonly inserted a ghost key in " << v
+        << " iteration(s) -- no-insert invariant violated";
+    if (v == 0) SUCCEED() << "lookup_readonly did not insert any ghost key. iterations=" << lookups.load();
 }

@@ -21,7 +21,7 @@
 // Minimal stubs that mirror only what the guard logic needs
 // ---------------------------------------------------------------------------
 
-static constexpr int BCI_ALLOC = -3; // same sentinel used in production
+static constexpr int BCI_ALLOC = -12; // production value from vmEntry.h
 
 struct ASGCT_CallFrame {
     int bci;
