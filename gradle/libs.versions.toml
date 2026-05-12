@@ -21,6 +21,11 @@ zstd = "1.5.7-8"
 # Code analysis
 asm = "9.9.1"
 
+# Datadog tracer (compileOnly for the chaos harness — runtime is provided by dd-java-agent).
+# Dynamic version: always resolve to the latest released dd-trace-api so the chaos harness
+# tracks current annotation/API surface without manual bumps.
+dd-trace-api = "latest.release"
+
 # Benchmarking
 jmh = "1.37"
 
@@ -46,6 +51,9 @@ zstd = { module = "com.github.luben:zstd-jni", version.ref = "zstd" }
 
 # Bytecode analysis
 asm = { module = "org.ow2.asm:asm", version.ref = "asm" }
+
+# Datadog tracer API (annotations only; intercepted by dd-java-agent at runtime)
+dd-trace-api = { module = "com.datadoghq:dd-trace-api", version.ref = "dd-trace-api" }
 
 # JMH benchmarking
 jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }
