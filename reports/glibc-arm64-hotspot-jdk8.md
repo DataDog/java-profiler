@@ -3,9 +3,9 @@ layout: default
 title: glibc-arm64-hotspot-jdk8
 ---
 
-## glibc-arm64-hotspot-jdk8 - ❌ FAIL
+## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-05-12 04:02:13 EDT
+**Date:** 2026-05-12 04:52:50 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: glibc-arm64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 42 |
-| CPU Cores (end) | 42 |
+| CPU Cores (start) | 56 |
+| CPU Cores (end) | 56 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ❌
+#### Scenario 1: Profiler-Only ⚠️
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
+| Status | N/A |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,22 +45,29 @@ title: glibc-arm64-hotspot-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 42-42 cores)</summary>
+<summary>CPU Timeline (1 unique values: 56-56 cores)</summary>
 
 ```
-1778572538 42
-1778572543 42
-1778572548 42
-1778572553 42
-1778572558 42
-1778572563 42
-1778572568 42
-1778572573 42
-1778572578 42
-1778572583 42
-1778572588 42
-1778572593 42
-1778572598 42
+1778575619 56
+1778575624 56
+1778575629 56
+1778575634 56
+1778575639 56
+1778575644 56
+1778575649 56
+1778575654 56
+1778575659 56
+1778575664 56
+1778575669 56
+1778575674 56
+1778575680 56
+1778575685 56
+1778575690 56
+1778575695 56
+1778575700 56
+1778575705 56
+1778575710 56
+1778575715 56
 ```
 </details>
 
