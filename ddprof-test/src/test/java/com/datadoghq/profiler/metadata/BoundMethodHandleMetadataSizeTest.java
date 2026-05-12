@@ -33,7 +33,10 @@ public class BoundMethodHandleMetadataSizeTest extends AbstractProfilerTest {
         verifyEvents("datadog.MethodSample");
         Map<String, Long> counters = profiler.getDebugCounters();
         assertFalse(counters.isEmpty());
-        // assert about the size of metadata here
+        // Regression: tryLockSharedBounded(5) would fail under heavy wall-clock load
+        // on aarch64, causing class lookups to return -1 and the class map to stay empty.
+        assertTrue(counters.getOrDefault("dictionary_classes_keys", 0L) > 0,
+                "Classes must be registered despite heavy wall-clock sampling load");
     }
 
 

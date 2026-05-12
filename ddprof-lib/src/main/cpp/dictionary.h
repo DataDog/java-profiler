@@ -47,7 +47,7 @@ struct DictTable {
 class Dictionary {
 private:
   DictTable *_table;
-  const int _id;
+  int _id;
   volatile unsigned int _base_index;
   volatile int _size;
 
@@ -84,6 +84,88 @@ public:
   unsigned int bounded_lookup(const char *key, size_t length, int size_limit);
 
   void collect(std::map<unsigned int, const char *> &map);
+
+  int  counterId() const { return _id; }
+  void setCounterId(int id) { _id = id; }
+};
+
+// Double-buffered wrapper: signal-handler-safe writers always target the active
+// buffer; the dump thread reads from the standby buffer after rotate().
+//
+// Lifecycle per dump cycle:
+//   rotate()          — swap active <-> standby (call before lockAll/dump)
+//   standby()->...    — dump thread reads snapshot lock-free
+//   clearStandby()    — free old-active memory (call after dump)
+//
+// For profiler reset call clearAll().
+class DoubleBufferedDictionary {
+    Dictionary _a;
+    Dictionary _b;
+    // 0 = _a is active, 1 = _b is active. Accessed only via __atomic_*.
+    volatile int _active_index;
+
+    Dictionary* bufAt(int idx) { return idx == 0 ? &_a : &_b; }
+
+public:
+    // _a starts as active with the real counter id; _b starts as standby
+    // with id=0 (the aggregate/no-op slot) so that clearStandby() never
+    // corrupts the named counter slot.
+    DoubleBufferedDictionary(int id) : _a(id), _b(0), _active_index(0) {}
+
+    unsigned int lookup(const char* key, size_t length) {
+        return bufAt(__atomic_load_n(&_active_index, __ATOMIC_ACQUIRE))->lookup(key, length);
+    }
+
+    unsigned int bounded_lookup(const char* key, size_t length, int size_limit) {
+        return bufAt(__atomic_load_n(&_active_index, __ATOMIC_ACQUIRE))->bounded_lookup(key, length, size_limit);
+    }
+
+    // Returns the standby buffer for lock-free read by the dump thread.
+    // Only valid between rotate() and the next rotate().
+    Dictionary* standby() {
+        return bufAt(1 - __atomic_load_n(&_active_index, __ATOMIC_ACQUIRE));
+    }
+
+    // Atomically promotes standby to active and active to standby.
+    // Transfers counter id ownership so that only the active buffer ever
+    // touches the named counter slot; the standby uses id=0.
+    // The named counter slot is NOT reset here — it retains the old active's
+    // values so that writeCounters() / getDebugCounters() read the correct
+    // snapshot for the dump in progress.  The slot is reset in clearStandby()
+    // once the dump has finished.
+    // Call before the dump; all in-flight writers on the old active complete
+    // naturally (signal handlers: guaranteed by lockAll(); JNI threads: fast CAS).
+    void rotate() {
+        int old = __atomic_load_n(&_active_index, __ATOMIC_ACQUIRE);
+        Dictionary* oldActive  = bufAt(old);
+        Dictionary* newActive  = bufAt(1 - old);
+
+        // Swap counter ids: new active takes the real id, old active takes 0.
+        int realId = oldActive->counterId();
+        oldActive->setCounterId(newActive->counterId()); // oldActive gets 0
+        newActive->setCounterId(realId);
+
+        __atomic_store_n(&_active_index, 1 - old, __ATOMIC_RELEASE);
+    }
+
+    // Frees all entries in the standby buffer and resets the named counter
+    // slot to the new active's empty baseline.  Call after dump completes.
+    // standby()->_id is 0 after rotate(), so clear() only touches slot 0;
+    // the named slot is reset explicitly here.
+    void clearStandby() {
+        int realId = bufAt(__atomic_load_n(&_active_index, __ATOMIC_ACQUIRE))->counterId();
+        standby()->clear();
+        Counters::set(DICTIONARY_KEYS,       0,                 realId);
+        Counters::set(DICTIONARY_KEYS_BYTES, 0,                 realId);
+        Counters::set(DICTIONARY_BYTES,      sizeof(DictTable),  realId);
+        Counters::set(DICTIONARY_PAGES,      1,                 realId);
+    }
+
+    // Clears both buffers. Call on profiler reset (no concurrent writers).
+    void clearAll() {
+        _a.clear();
+        _b.clear();
+    }
 };
 
 #endif // _DICTIONARY_H
