@@ -86,7 +86,7 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 }
 
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::currentSignalSafe();
   int tid = -1;
   
   if (current != nullptr) {
@@ -881,6 +881,9 @@ void Profiler::updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
     assert(native_thread_id != -1);
   } else {
     native_thread_id = JVMThread::nativeThreadId(jni, thread);
+    if (jni->ExceptionCheck()) {
+      jni->ExceptionClear();
+    }
   }
 
   if (native_thread_id >= 0 &&
@@ -901,6 +904,9 @@ void Profiler::updateJavaThreadNames() {
 
   JNIEnv *jni = VM::jni();
   for (int i = 0; i < thread_count; i++) {
+    if (thread_objects[i] == nullptr) {
+      continue;
+    }
     updateThreadName(jvmti, jni, thread_objects[i]);
     jni->DeleteLocalRef(thread_objects[i]);
   }
@@ -1181,6 +1187,9 @@ Error Profiler::start(Arguments &args, bool reset) {
   JfrMetadata::reset();
   JfrMetadata::initialize(args._context_attributes);
   _num_context_attributes = args._context_attributes.size();
+  // Initialize the OTel thread context so external profilers can decode
+  // the per-thread context, including custom attributes
+  ContextApi::registerAttributeKeys(args._context_attributes);
   error = _jfr.start(args, reset);
   if (error) {
     disableEngines();

@@ -752,7 +752,7 @@ OSThreadState VMThread::getOSThreadState() {
 }
 
 int VMThread::osThreadId() {
-    const char* osthread = *(const char**) at(_thread_osthread_offset);
+    const char* osthread = (const char*) SafeAccess::load((void**) at(_thread_osthread_offset));
     if (osthread != NULL) {
         // Java thread may be in the middle of termination, and its osthread structure just released
         return SafeAccess::load32((int32_t*)(osthread + _osthread_id_offset), -1);
@@ -1034,7 +1034,7 @@ bool VMMethod::check_jmethodID_J9(jmethodID id) {
 
 OSThreadState VMThread::osThreadState() {
     if (VMStructs::thread_osthread_offset() >= 0 && VMStructs::osthread_state_offset() >= 0) {
-        const char *osthread = *(char **)at(VMStructs::thread_osthread_offset());
+        const char *osthread = (const char*) SafeAccess::load((void**) at(VMStructs::thread_osthread_offset()));
         if (osthread != nullptr) {
             // If the location is not accessible, the thread must have been terminated
             int value = SafeAccess::safeFetch32((int*)(osthread + VMStructs::osthread_state_offset()),
