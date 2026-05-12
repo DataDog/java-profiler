@@ -73,27 +73,50 @@ TEST(DictionaryTest, ClearResetsToEmpty) {
     EXPECT_EQ(m.size(), 0U);
 }
 
-// ── DoubleBufferedDictionary ────────────────────────────────────────────────
+// ── TripleBufferedDictionary ────────────────────────────────────────────────
 
-class DoubleBufferedDictionaryTest : public ::testing::Test {
+class TripleBufferedDictionaryTest : public ::testing::Test {
 protected:
     // id=1 exercises the named counter slot (DICTIONARY_CLASSES_*)
-    DoubleBufferedDictionary dict{1};
+    TripleBufferedDictionary dict{1};
 };
 
-TEST_F(DoubleBufferedDictionaryTest, LookupGoesToActive) {
+TEST_F(TripleBufferedDictionaryTest, LookupGoesToActive) {
     unsigned int id = dict.lookup("cls", 3);
     EXPECT_GT(id, 0U);
     EXPECT_EQ(id, dict.lookup("cls", 3));
 }
 
-TEST_F(DoubleBufferedDictionaryTest, BoundedLookupGoesToActive) {
+TEST_F(TripleBufferedDictionaryTest, BoundedLookupGoesToActive) {
     unsigned int id = dict.bounded_lookup("ep", 2, 100);
     EXPECT_NE(id, static_cast<unsigned int>(INT_MAX));
     EXPECT_EQ(id, dict.bounded_lookup("ep", 2, 100));
 }
 
-TEST_F(DoubleBufferedDictionaryTest, RotateMakesOldActiveReadableAsStandby) {
+// After rotate() + clearStandby() the dump buffer becomes recent.
+// A read-only bounded_lookup (size_limit=0) must find keys from recent.
+// After a second rotate() + clearStandby() the old recent is cleared and
+// those keys are no longer visible — synthetic-class churn cannot leak.
+TEST_F(TripleBufferedDictionaryTest, BoundedLookupReadOnlyFallsBackToRecent) {
+    unsigned int id = dict.lookup("cls", 3);
+    EXPECT_GT(id, 0U);
+
+    dict.rotate();
+    dict.clearStandby();  // dump buffer (has "cls") promoted to recent
+
+    // "cls" is now in recent; active is empty → fallback must find it
+    EXPECT_EQ(id, dict.bounded_lookup("cls", 3, 0));
+
+    // Unknown key must still return INT_MAX
+    EXPECT_EQ(static_cast<unsigned int>(INT_MAX), dict.bounded_lookup("missing", 7, 0));
+
+    // Second dump cycle clears the old recent → "cls" must disappear
+    dict.rotate();
+    dict.clearStandby();  // new dump buffer (empty) becomes recent; "cls" buffer freed
+    EXPECT_EQ(static_cast<unsigned int>(INT_MAX), dict.bounded_lookup("cls", 3, 0));
+}
+
+TEST_F(TripleBufferedDictionaryTest, RotateMakesOldActiveReadableAsStandby) {
     unsigned int id = dict.lookup("cls", 3);
     dict.rotate();
 
@@ -104,7 +127,7 @@ TEST_F(DoubleBufferedDictionaryTest, RotateMakesOldActiveReadableAsStandby) {
     EXPECT_EQ(snap.begin()->first, id);
 }
 
-TEST_F(DoubleBufferedDictionaryTest, InsertsAfterRotateGoToNewActiveNotStandby) {
+TEST_F(TripleBufferedDictionaryTest, InsertsAfterRotateGoToNewActiveNotStandby) {
     dict.lookup("a", 1);
     dict.rotate();
     dict.lookup("b", 1);  // must land in new active, not standby
@@ -113,15 +136,14 @@ TEST_F(DoubleBufferedDictionaryTest, InsertsAfterRotateGoToNewActiveNotStandby) 
     dict.standby()->collect(snap);
     EXPECT_EQ(snap.size(), 1U);  // only "a"
 
-    // "b" is in the new active
-    std::map<unsigned int, const char*> active_snap;
-    // rotate once more to promote new active → standby
+    // Promote new active → standby to inspect "b"
     dict.rotate();
+    std::map<unsigned int, const char*> active_snap;
     dict.standby()->collect(active_snap);
     EXPECT_EQ(active_snap.size(), 1U);  // only "b"
 }
 
-TEST_F(DoubleBufferedDictionaryTest, ClearStandbyDoesNotAffectActiveEntries) {
+TEST_F(TripleBufferedDictionaryTest, ClearStandbyDoesNotAffectActiveEntries) {
     dict.lookup("a", 1);
     dict.rotate();
     dict.lookup("b", 1);
@@ -136,18 +158,18 @@ TEST_F(DoubleBufferedDictionaryTest, ClearStandbyDoesNotAffectActiveEntries) {
     EXPECT_STREQ(snap.begin()->second, "b");
 }
 
-TEST_F(DoubleBufferedDictionaryTest, StandbyIsEmptyAfterClearStandbyAndRotate) {
+TEST_F(TripleBufferedDictionaryTest, StandbyIsEmptyAfterClearStandbyAndRotate) {
     dict.lookup("a", 1);
     dict.rotate();
-    dict.clearStandby();  // frees "a"
-    // After clear, old-active buffer is empty; promote it back to standby
+    dict.clearStandby();  // dump buffer (has "a") becomes recent; old recent cleared
+    // Next rotation: new active becomes the cleared old-recent; standby = next dump buffer (empty)
     dict.rotate();
     std::map<unsigned int, const char*> snap;
     dict.standby()->collect(snap);
     EXPECT_EQ(snap.size(), 0U);
 }
 
-TEST_F(DoubleBufferedDictionaryTest, MultiCycleRotateAndClearIsStable) {
+TEST_F(TripleBufferedDictionaryTest, MultiCycleRotateAndClearIsStable) {
     for (int cycle = 0; cycle < 10; cycle++) {
         std::string key = "key" + std::to_string(cycle);
         dict.lookup(key.c_str(), key.size());
@@ -162,13 +184,12 @@ TEST_F(DoubleBufferedDictionaryTest, MultiCycleRotateAndClearIsStable) {
     }
 }
 
-TEST_F(DoubleBufferedDictionaryTest, ClearAllResetsActiveToo) {
+TEST_F(TripleBufferedDictionaryTest, ClearAllResetsActiveToo) {
     dict.lookup("x", 1);
     dict.rotate();
     dict.lookup("y", 1);
     dict.clearAll();
 
-    // Both buffers should be empty; promote to standby to verify
     std::map<unsigned int, const char*> snap;
     dict.standby()->collect(snap);
     EXPECT_EQ(snap.size(), 0U);
@@ -178,42 +199,37 @@ TEST_F(DoubleBufferedDictionaryTest, ClearAllResetsActiveToo) {
     EXPECT_EQ(snap.size(), 0U);
 }
 
-// ── DoubleBufferedDictionary — counter-id ownership ────────────────────────
-// The active buffer always owns the real counter id; the standby buffer always
-// carries id=0.  This drives correct counter targeting without COUNTERS being
-// defined in the test build (Counters::set/get are no-ops there).
+// ── TripleBufferedDictionary — counter-id ownership ────────────────────────
+// All three buffers carry the real counter id so that insertions via the
+// active (signal-handler) AND via the dump buffer (fill-path during dump)
+// both land in the named counter slot.
 
-TEST_F(DoubleBufferedDictionaryTest, StandbyStartsWithIdZero) {
-    // id=1 passed to constructor → active (_a) holds id=1, standby (_b) holds id=0.
-    EXPECT_EQ(0, dict.standby()->counterId());
+TEST_F(TripleBufferedDictionaryTest, AllBuffersHaveRealId) {
+    EXPECT_EQ(1, dict.standby()->counterId());
 }
 
-TEST_F(DoubleBufferedDictionaryTest, RotateMovesIdZeroToNewStandby) {
-    // Invariant: standby always has id=0 regardless of how many rotates happened.
-    for (int i = 0; i < 6; i++) {
+TEST_F(TripleBufferedDictionaryTest, RotateKeepsRealIdOnAllBuffers) {
+    for (int i = 0; i < 9; i++) {
         dict.rotate();
-        EXPECT_EQ(0, dict.standby()->counterId()) << "after rotate #" << (i + 1);
+        EXPECT_EQ(1, dict.standby()->counterId()) << "after rotate #" << (i + 1);
     }
 }
 
-TEST_F(DoubleBufferedDictionaryTest, ClearStandbyKeepsStandbyAtIdZero) {
+TEST_F(TripleBufferedDictionaryTest, ClearStandbyKeepsRealIdOnAllBuffers) {
     dict.rotate();
     dict.clearStandby();
-    // standby still has id=0 after clear.
-    EXPECT_EQ(0, dict.standby()->counterId());
-    // And a subsequent rotate still produces standby with id=0.
+    EXPECT_EQ(1, dict.standby()->counterId());
     dict.rotate();
-    EXPECT_EQ(0, dict.standby()->counterId());
+    EXPECT_EQ(1, dict.standby()->counterId());
 }
 
-// ── DoubleBufferedDictionary — concurrent writes during rotate ─────────────
+// ── TripleBufferedDictionary — concurrent writes during rotate ──────────────
 
-TEST(DoubleBufferedDictionaryConcurrentTest, WritersDuringRotateProduceNoCorruption) {
-    DoubleBufferedDictionary dict(0);
+TEST(TripleBufferedDictionaryConcurrentTest, WritersDuringRotateProduceNoCorruption) {
+    TripleBufferedDictionary dict(0);
     std::atomic<bool> stop{false};
     std::atomic<int> write_count{0};
 
-    // Writer threads continuously insert unique keys
     auto writer = [&](int thread_id) {
         int n = 0;
         while (!stop.load(std::memory_order_relaxed)) {
@@ -226,7 +242,6 @@ TEST(DoubleBufferedDictionaryConcurrentTest, WritersDuringRotateProduceNoCorrupt
     std::vector<std::thread> writers;
     for (int i = 0; i < 4; i++) writers.emplace_back(writer, i);
 
-    // Perform several rotate+collect+clear cycles from the "dump thread"
     int collected_total = 0;
     for (int cycle = 0; cycle < 20; cycle++) {
         dict.rotate();
@@ -239,7 +254,6 @@ TEST(DoubleBufferedDictionaryConcurrentTest, WritersDuringRotateProduceNoCorrupt
     stop.store(true, std::memory_order_relaxed);
     for (auto& t : writers) t.join();
 
-    // Sanity: at least some writes were collected across cycles
     EXPECT_GT(collected_total, 0);
     // No crash = success (memory safety under concurrent access)
 }

@@ -18,6 +18,9 @@
 #define _DICTIONARY_H
 
 #include "counters.h"
+#include "refCountGuard.h"
+#include "tripleBuffer.h"
+#include <climits>
 #include <map>
 #include <stddef.h>
 #include <stdlib.h>
@@ -87,84 +90,104 @@ public:
 
   int  counterId() const { return _id; }
   void setCounterId(int id) { _id = id; }
+  int  size() const { return _size; }
 };
 
-// Double-buffered wrapper: signal-handler-safe writers always target the active
-// buffer; the dump thread reads from the standby buffer after rotate().
+// Triple-buffered wrapper for signal-handler-safe concurrent dictionary access.
+//
+// Three roles cycle through three Dictionary buffers:
+//
+//   active  — current writes (signal handlers + fill-path)
+//   dump    — snapshot being read by the current dump (old active after rotate)
+//   recent  — last *completed* dump's snapshot; stable between dumps;
+//             used for read-only fallback lookups (walkVM vtable-stub class
+//             resolution) via RefCountGuard-protected bounded_lookup
 //
 // Lifecycle per dump cycle:
-//   rotate()          — swap active <-> standby (call before lockAll/dump)
+//   rotate()          — advance active; dump thread reads standby()
 //   standby()->...    — dump thread reads snapshot lock-free
-//   clearStandby()    — free old-active memory (call after dump)
+//   clearStandby()    — publish standby as new recent, drain in-flight readers
+//                       via RefCountGuard::waitForRefCountToClear, then clear
+//                       the old recent (stale, two cycles old)
+//
+// Memory: at most two non-empty buffers at any time.
+// Churn: entries from dynamic classes purged after at most one full dump cycle.
 //
 // For profiler reset call clearAll().
-class DoubleBufferedDictionary {
+class TripleBufferedDictionary {
+    int _counter_id;
     Dictionary _a;
     Dictionary _b;
-    // 0 = _a is active, 1 = _b is active. Accessed only via __atomic_*.
-    volatile int _active_index;
-
-    Dictionary* bufAt(int idx) { return idx == 0 ? &_a : &_b; }
+    Dictionary _c;
+    // _c is the initial recent; active starts at _a (index 0).
+    TripleBufferRotator<Dictionary> _rot;
 
 public:
-    // _a starts as active with the real counter id; _b starts as standby
-    // with id=0 (the aggregate/no-op slot) so that clearStandby() never
-    // corrupts the named counter slot.
-    DoubleBufferedDictionary(int id) : _a(id), _b(0), _active_index(0) {}
+    // All three buffers carry the real counter id so that insertions through
+    // any buffer (signal-handler path via active, fill-path via dump buffer)
+    // are tracked in the named counter slot.  clearStandby() resets the slot.
+    TripleBufferedDictionary(int id)
+        : _counter_id(id), _a(id), _b(id), _c(id), _rot(&_a, &_b, &_c) {}
 
     unsigned int lookup(const char* key, size_t length) {
-        return bufAt(__atomic_load_n(&_active_index, __ATOMIC_ACQUIRE))->lookup(key, length);
+        return _rot.active()->lookup(key, length);
     }
 
+    // For read-only lookups (size_limit == 0, e.g. walkVM vtable-stub class
+    // resolution), falls back to the most recent completed dump's snapshot
+    // when the key is not found in the active buffer.
+    //
+    // The fallback is guarded by RefCountGuard (pointer-first protocol):
+    //   1. Load _recent_ptr, acquire guard (store ptr, increment count)
+    //   2. Revalidate: if _recent_ptr changed, drop (rare, ~10-100ns window)
+    //   3. Read from recent; guard destructor decrements count
+    //
+    // clearStandby() calls waitForRefCountToClear(old_recent) before freeing
+    // pages, ensuring no in-flight reader can access freed memory.
     unsigned int bounded_lookup(const char* key, size_t length, int size_limit) {
-        return bufAt(__atomic_load_n(&_active_index, __ATOMIC_ACQUIRE))->bounded_lookup(key, length, size_limit);
+        unsigned int result = _rot.active()->bounded_lookup(key, length, size_limit);
+        if (result == (unsigned int)INT_MAX && size_limit == 0) {
+            Dictionary* recent = _rot.recent();
+            if (recent == nullptr) return INT_MAX;
+            RefCountGuard guard((void*)recent);
+            if (_rot.recent() != recent) return INT_MAX;  // lost the race, drop
+            result = recent->bounded_lookup(key, length, 0);
+        }
+        return result;
     }
 
-    // Returns the standby buffer for lock-free read by the dump thread.
+    // Returns the dump buffer for lock-free read by the dump thread.
     // Only valid between rotate() and the next rotate().
     Dictionary* standby() {
-        return bufAt(1 - __atomic_load_n(&_active_index, __ATOMIC_ACQUIRE));
+        return _rot.dumpBuffer();
     }
 
-    // Atomically promotes standby to active and active to standby.
-    // Transfers counter id ownership so that only the active buffer ever
-    // touches the named counter slot; the standby uses id=0.
-    // The named counter slot is NOT reset here — it retains the old active's
-    // values so that writeCounters() / getDebugCounters() read the correct
-    // snapshot for the dump in progress.  The slot is reset in clearStandby()
-    // once the dump has finished.
-    // Call before the dump; all in-flight writers on the old active complete
-    // naturally (signal handlers: guaranteed by lockAll(); JNI threads: fast CAS).
-    void rotate() {
-        int old = __atomic_load_n(&_active_index, __ATOMIC_ACQUIRE);
-        Dictionary* oldActive  = bufAt(old);
-        Dictionary* newActive  = bufAt(1 - old);
+    // Atomically promotes the dump buffer to active.
+    // Call before the dump; in-flight writers on the old active complete
+    // naturally (signal handlers: per-thread locks; JNI threads: fast CAS).
+    void rotate() { _rot.rotate(); }
 
-        // Swap counter ids: new active takes the real id, old active takes 0.
-        int realId = oldActive->counterId();
-        oldActive->setCounterId(newActive->counterId()); // oldActive gets 0
-        newActive->setCounterId(realId);
-
-        __atomic_store_n(&_active_index, 1 - old, __ATOMIC_RELEASE);
-    }
-
-    // Frees all entries in the standby buffer and resets the named counter
-    // slot to the new active's empty baseline.  Call after dump completes.
-    // standby()->_id is 0 after rotate(), so clear() only touches slot 0;
-    // the named slot is reset explicitly here.
+    // Publishes the just-completed dump buffer as the new recent, then drains
+    // all in-flight bounded_lookup readers on the old recent via RefCountGuard
+    // before freeing its pages.  Call after dump completes.
     void clearStandby() {
-        int realId = bufAt(__atomic_load_n(&_active_index, __ATOMIC_ACQUIRE))->counterId();
-        standby()->clear();
-        Counters::set(DICTIONARY_KEYS,       0,                 realId);
-        Counters::set(DICTIONARY_KEYS_BYTES, 0,                 realId);
-        Counters::set(DICTIONARY_BYTES,      sizeof(DictTable),  realId);
-        Counters::set(DICTIONARY_PAGES,      1,                 realId);
+        Dictionary* old_recent = _rot.advanceRecent();
+        RefCountGuard::waitForRefCountToClear((void*)old_recent);
+        old_recent->clear();
+        // old_recent->clear() already zeroed the named counter slot via _id;
+        // restate explicitly for clarity and belt-and-suspenders.
+        Counters::set(DICTIONARY_KEYS,       0,                 _counter_id);
+        Counters::set(DICTIONARY_KEYS_BYTES, 0,                 _counter_id);
+        Counters::set(DICTIONARY_BYTES,      sizeof(DictTable), _counter_id);
+        Counters::set(DICTIONARY_PAGES,      1,                 _counter_id);
     }
 
-    // Clears both buffers. Call on profiler reset (no concurrent writers).
+    // Clears all three buffers. Call on profiler reset (no concurrent writers).
     void clearAll() {
         _a.clear();
         _b.clear();
+        _c.clear();
+        _rot.reset(&_c);
     }
 };
 
