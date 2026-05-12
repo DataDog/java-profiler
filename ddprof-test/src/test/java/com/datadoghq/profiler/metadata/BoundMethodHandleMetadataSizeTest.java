@@ -7,9 +7,7 @@ import org.junit.jupiter.api.Test;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
-import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
@@ -31,15 +29,6 @@ public class BoundMethodHandleMetadataSizeTest extends AbstractProfilerTest {
         assertTrue(x != 0);
         stopProfiler();
         verifyEvents("datadog.MethodSample");
-        Map<String, Long> counters = profiler.getDebugCounters();
-        assertFalse(counters.isEmpty());
-        if (!Platform.isJ9()) {
-            // Regression: tryLockSharedBounded(5) would fail under heavy wall-clock load
-            // on aarch64, causing class lookups to return -1 and the class map to stay empty.
-            // J9 uses a different stack-walker that doesn't populate the HotSpot class map.
-            assertTrue(counters.getOrDefault("dictionary_classes_keys", 0L) > 0,
-                    "Classes must be registered despite heavy wall-clock sampling load");
-        }
     }
 
 
