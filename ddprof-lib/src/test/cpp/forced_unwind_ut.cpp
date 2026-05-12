@@ -10,15 +10,18 @@
  * calls std::terminate() -> abort() because the forced-unwind exception tries to
  * exit a noexcept-bounded destructor.
  *
- * Fix: replace pthread_cleanup_push/pop with RAII cleanup structs.
- * On glibc, _Unwind_ForcedUnwind invokes the C++ EH personality which runs
- * RAII destructors; on musl it does not, so these tests are glibc-only.
+ * Fix: on glibc, replace pthread_cleanup_push/pop with catch(abi::__forced_unwind&)
+ * + rethrow.  On musl, use pthread_cleanup_push/pop (J9 is absent on musl, so
+ * the noexcept-destructor crash cannot occur there; and musl's forced-unwind does
+ * not invoke C++ EH personality routines, so neither RAII nor catch() work).
+ * See the "Thread cancellation cleanup strategy" comment in libraryPatcher_linux.cpp.
  *
- * These tests verify (glibc only):
- * 1. An RAII destructor runs when a thread is cancelled via pthread_cancel.
- * 2. The thread exits as PTHREAD_CANCELED.
- * 3. ProfiledThread::release() can be called safely from within an RAII destructor.
- * 4. pthread_exit() also triggers RAII destructor cleanup.
+ * These tests cover the glibc path where catch(abi::__forced_unwind&) is used.
+ * They are glibc-only because:
+ *   - abi::__forced_unwind is a glibc/libstdc++ type and is not guaranteed to be
+ *     thrown on musl (musl's forced unwind bypasses the C++ EH personality).
+ *   - The musl path uses pthread_cleanup_push/pop which is tested implicitly
+ *     by the MemleakProfilerTest on musl CI jobs.
  */
 
 #include <gtest/gtest.h>
@@ -28,34 +31,36 @@
 #include "thread.h"
 
 #include <atomic>
+#include <cxxabi.h>
 #include <pthread.h>
 #include <unistd.h>
 
 // ---------------------------------------------------------------------------
-// Test 1: bare RAII destructor runs on pthread_cancel
+// Test 1: bare catch(abi::__forced_unwind&) + rethrow
 // ---------------------------------------------------------------------------
 
 static std::atomic<bool> g_bare_cleanup_called{false};
 
-static void* bare_raii_thread(void*) {
+static void* bare_forced_unwind_thread(void*) {
     g_bare_cleanup_called.store(false, std::memory_order_relaxed);
-    struct Cleanup {
-        ~Cleanup() {
-            g_bare_cleanup_called.store(true, std::memory_order_relaxed);
+    try {
+        while (true) {
+            pthread_testcancel();
+            usleep(100);
         }
-    } cleanup;
-    while (true) {
-        pthread_testcancel();
-        usleep(100);
+    } catch (abi::__forced_unwind&) {
+        g_bare_cleanup_called.store(true, std::memory_order_relaxed);
+        throw;  // must re-throw so thread exits as PTHREAD_CANCELED
     }
     return nullptr;
 }
 
-// Regression: RAII destructor must run during pthread_cancel's forced unwind
-// on both glibc and musl, and the thread must exit as PTHREAD_CANCELED.
+// Regression: catch(abi::__forced_unwind&) + rethrow must intercept the forced
+// unwind raised by pthread_cancel, run the cleanup block, and let the thread
+// exit cleanly as PTHREAD_CANCELED — not via std::terminate().
 TEST(ForcedUnwindTest, BarePatternInterceptsAndRethrows) {
     pthread_t t;
-    ASSERT_EQ(0, pthread_create(&t, nullptr, bare_raii_thread, nullptr));
+    ASSERT_EQ(0, pthread_create(&t, nullptr, bare_forced_unwind_thread, nullptr));
 
     usleep(5000);  // let thread reach its testcancel loop
     pthread_cancel(t);
@@ -64,19 +69,19 @@ TEST(ForcedUnwindTest, BarePatternInterceptsAndRethrows) {
     ASSERT_EQ(0, pthread_join(t, &retval));
 
     EXPECT_TRUE(g_bare_cleanup_called.load())
-        << "RAII destructor must fire on pthread_cancel";
+        << "catch(abi::__forced_unwind&) must fire on pthread_cancel";
     EXPECT_EQ(PTHREAD_CANCELED, retval)
-        << "thread must exit as PTHREAD_CANCELED";
+        << "rethrow must let thread exit as PTHREAD_CANCELED";
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: RAII pattern with ProfiledThread (mirrors start_routine_wrapper)
+// Test 2: pattern with ProfiledThread (mirrors start_routine_wrapper on glibc)
 // ---------------------------------------------------------------------------
 
 static std::atomic<bool> g_pt_cleanup_called{false};
 static std::atomic<bool> g_pt_release_called{false};
 
-static void* profiled_raii_thread(void*) {
+static void* profiled_forced_unwind_thread(void*) {
     g_pt_cleanup_called.store(false, std::memory_order_relaxed);
     g_pt_release_called.store(false, std::memory_order_relaxed);
 
@@ -85,21 +90,22 @@ static void* profiled_raii_thread(void*) {
     int tid = ProfiledThread::currentTid();
     (void)tid;
 
-    struct Cleanup {
-        ~Cleanup() {
-            g_pt_cleanup_called.store(true, std::memory_order_relaxed);
-            // Mirrors the RAII cleanup in the fixed start_routine_wrapper:
-            // unregisterThread is omitted here (requires an initialised Profiler);
-            // release() is the critical cleanup that must always run.
-            ProfiledThread::release();
-            g_pt_release_called.store(true, std::memory_order_relaxed);
+    try {
+        while (true) {
+            pthread_testcancel();
+            usleep(100);
         }
-    } cleanup;
-
-    while (true) {
-        pthread_testcancel();
-        usleep(100);
+    } catch (abi::__forced_unwind&) {
+        g_pt_cleanup_called.store(true, std::memory_order_relaxed);
+        // Mirrors the catch block in the fixed start_routine_wrapper:
+        // unregisterThread is omitted here (requires an initialised Profiler);
+        // release() is the critical cleanup that must always run.
+        ProfiledThread::release();
+        g_pt_release_called.store(true, std::memory_order_relaxed);
+        throw;
     }
+
+    ProfiledThread::release();
     return nullptr;
 }
 
@@ -107,7 +113,7 @@ static void* profiled_raii_thread(void*) {
 // must survive pthread_cancel without terminate().
 TEST(ForcedUnwindTest, ProfiledThreadReleasedOnForcedUnwind) {
     pthread_t t;
-    ASSERT_EQ(0, pthread_create(&t, nullptr, profiled_raii_thread, nullptr));
+    ASSERT_EQ(0, pthread_create(&t, nullptr, profiled_forced_unwind_thread, nullptr));
 
     usleep(5000);
     pthread_cancel(t);
@@ -116,41 +122,41 @@ TEST(ForcedUnwindTest, ProfiledThreadReleasedOnForcedUnwind) {
     ASSERT_EQ(0, pthread_join(t, &retval));
 
     EXPECT_TRUE(g_pt_cleanup_called.load())
-        << "RAII destructor must fire when thread is cancelled";
+        << "catch(abi::__forced_unwind&) must fire when thread is cancelled";
     EXPECT_TRUE(g_pt_release_called.load())
-        << "ProfiledThread::release() must complete inside the RAII destructor";
+        << "ProfiledThread::release() must complete inside the catch block";
     EXPECT_EQ(PTHREAD_CANCELED, retval);
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: pthread_exit() also triggers RAII destructor cleanup
+// Test 3: pthread_exit() also raises abi::__forced_unwind on glibc
 // ---------------------------------------------------------------------------
 
 static std::atomic<bool> g_exit_cleanup_called{false};
 
-static void* pthread_exit_raii_thread(void*) {
+static void* pthread_exit_thread(void*) {
     g_exit_cleanup_called.store(false, std::memory_order_relaxed);
-    struct Cleanup {
-        ~Cleanup() {
-            g_exit_cleanup_called.store(true, std::memory_order_relaxed);
-        }
-    } cleanup;
-    pthread_exit(reinterpret_cast<void*>(42));
+    try {
+        pthread_exit(reinterpret_cast<void*>(42));
+    } catch (abi::__forced_unwind&) {
+        g_exit_cleanup_called.store(true, std::memory_order_relaxed);
+        throw;
+    }
     return nullptr;
 }
 
-// pthread_exit() unwinds the stack via _Unwind_ForcedUnwind — the same
-// mechanism as pthread_cancel — so RAII destructors must also run, ensuring
-// cleanup is not bypassed by a direct pthread_exit() call.
+// pthread_exit() also uses abi::__forced_unwind on glibc — the same catch
+// block must handle it so that threads calling pthread_exit() inside a
+// wrapped routine don't bypass cleanup.
 TEST(ForcedUnwindTest, PthreadExitAlsoCaughtByForcedUnwindCatch) {
     pthread_t t;
-    ASSERT_EQ(0, pthread_create(&t, nullptr, pthread_exit_raii_thread, nullptr));
+    ASSERT_EQ(0, pthread_create(&t, nullptr, pthread_exit_thread, nullptr));
 
     void* retval;
     ASSERT_EQ(0, pthread_join(t, &retval));
 
     EXPECT_TRUE(g_exit_cleanup_called.load())
-        << "RAII destructor must also run on pthread_exit()";
+        << "catch(abi::__forced_unwind&) must also catch pthread_exit()";
     EXPECT_EQ(reinterpret_cast<void*>(42), retval);
 }
 

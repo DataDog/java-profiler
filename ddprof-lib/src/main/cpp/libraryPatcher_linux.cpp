@@ -11,6 +11,9 @@
 #include "guards.h"
 
 #include <cassert>
+#ifdef __GLIBC__
+#include <cxxabi.h>
+#endif
 #include <dlfcn.h>
 #include <limits.h>
 #include <string.h>
@@ -53,6 +56,47 @@ public:
     return _args;
   }
 };
+
+// ---------------------------------------------------------------------------
+// Thread cancellation cleanup strategy
+//
+// When a JVM thread exits — whether by returning normally, via pthread_exit(),
+// or via pthread_cancel() — we must call Profiler::unregisterThread() and
+// ProfiledThread::release() so the profiler's thread registry stays consistent.
+// The correct mechanism depends on the C runtime:
+//
+// glibc (Ubuntu, RHEL, …)
+//   pthread_cancel() and pthread_exit() both drive _Unwind_ForcedUnwind, which
+//   on glibc IS backed by the libgcc C++ unwinder and DOES invoke C++ EH
+//   personality routines.  However, pthread_cleanup_push/pop is not usable here
+//   because it creates a __pthread_cleanup_class object whose destructor is
+//   implicitly noexcept; when IBM J9 raises its own _Unwind_ForcedUnwind (via
+//   libj9thr), the C++ runtime calls std::terminate() → abort() the moment the
+//   noexcept boundary is crossed.  Instead we catch abi::__forced_unwind
+//   explicitly and rethrow, which intercepts both glibc pthread_cancel and J9
+//   thread teardown without creating any noexcept-bounded frame.
+//
+// musl (Alpine Linux, …)
+//   pthread_cancel() delivers SIGRTMIN to the target thread; the signal handler
+//   calls _Unwind_ForcedUnwind, but musl's unwinder does NOT invoke C++ EH
+//   personality routines during a forced unwind.  As a result:
+//   • C++ RAII destructors do NOT run when a thread is cancelled.
+//   • catch(abi::__forced_unwind&) does NOT fire when a thread is cancelled.
+//   The only guaranteed cleanup path on musl is pthread_cleanup_push/pop, which
+//   is POSIX-mandated to execute on both normal exit and cancellation regardless
+//   of the EH mechanism.  IBM J9 is not available on musl, so the glibc+J9
+//   noexcept crash described above cannot occur here.
+//
+// The tid is passed as a value cast through void* to avoid taking the address of
+// a local variable that could be on a stack frame being torn down during unwind.
+// ---------------------------------------------------------------------------
+
+#ifndef __GLIBC__
+static void unregister_and_release(void* arg) {
+    Profiler::unregisterThread(static_cast<int>(reinterpret_cast<uintptr_t>(arg)));
+    ProfiledThread::release();
+}
+#endif
 
 #ifdef __aarch64__
 // Delete RoutineInfo with profiling signals blocked to prevent ASAN
@@ -98,19 +142,23 @@ static void* start_routine_wrapper_spec(void* args) {
     // Using a cached tid avoids the lazy-allocating ProfiledThread::current() path inside
     // the cleanup destructor, which may call 'new' at an unsafe point during forced unwind.
     int tid = ProfiledThread::currentTid();
-    // RAII ensures cleanup runs on normal exit and on glibc forced unwind
-    // (pthread_cancel / pthread_exit).  On musl, _Unwind_ForcedUnwind does not
-    // invoke the C++ EH personality, so the destructor runs only on normal return;
-    // that is acceptable — the key fix is avoiding the noexcept-destructor crash
-    // from pthread_cleanup_push on glibc+J9.
-    struct ThreadCleanup {
-        int tid;
-        ~ThreadCleanup() {
-            Profiler::unregisterThread(tid);
-            ProfiledThread::release();
-        }
-    } cleanup{tid};
+#ifdef __GLIBC__
+    // glibc path: see "Thread cancellation cleanup strategy" comment above.
+    try {
+        routine(params);
+    } catch (abi::__forced_unwind&) {
+        Profiler::unregisterThread(tid);
+        ProfiledThread::release();
+        throw;
+    }
+    Profiler::unregisterThread(tid);
+    ProfiledThread::release();
+#else
+    // musl path: see "Thread cancellation cleanup strategy" comment above.
+    pthread_cleanup_push(unregister_and_release, reinterpret_cast<void*>(static_cast<uintptr_t>(tid)));
     routine(params);
+    pthread_cleanup_pop(1);
+#endif
     return nullptr;
 }
 
@@ -162,20 +210,23 @@ static void* start_routine_wrapper(void* args) {
         ProfiledThread::currentSignalSafe()->startInitWindow();
         Profiler::registerThread(tid);
     }
-    // RAII ensures cleanup runs on normal exit and on glibc forced unwind
-    // (pthread_cancel / pthread_exit).  On musl, _Unwind_ForcedUnwind does not
-    // invoke the C++ EH personality, so the destructor runs only on normal return;
-    // that is acceptable — the key fix is avoiding the noexcept-destructor crash
-    // from pthread_cleanup_push on glibc+J9.  This replaces the earlier catch(abi::__forced_unwind&)
-    // approach which was glibc-only and broke on musl.
-    struct ThreadCleanup {
-        int tid;
-        ~ThreadCleanup() {
-            Profiler::unregisterThread(tid);
-            ProfiledThread::release();
-        }
-    } cleanup{tid};
+#ifdef __GLIBC__
+    // glibc path: see "Thread cancellation cleanup strategy" comment above.
+    try {
+        routine(params);
+    } catch (abi::__forced_unwind&) {
+        Profiler::unregisterThread(tid);
+        ProfiledThread::release();
+        throw;
+    }
+    Profiler::unregisterThread(tid);
+    ProfiledThread::release();
+#else
+    // musl path: see "Thread cancellation cleanup strategy" comment above.
+    pthread_cleanup_push(unregister_and_release, reinterpret_cast<void*>(static_cast<uintptr_t>(tid)));
     routine(params);
+    pthread_cleanup_pop(1);
+#endif
     return nullptr;
 }
 
