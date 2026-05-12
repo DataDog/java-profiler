@@ -65,7 +65,7 @@ public class ConcurrentDumpRestartTest extends CStackAwareAbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "alloc=1ms,wall=5ms";
+        return "memory=262144:a,wall=5ms";
     }
 
     @RetryTest(2)
