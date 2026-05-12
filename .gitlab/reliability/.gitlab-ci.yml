@@ -28,7 +28,7 @@ variables:
   after_script:
     - |
       if [[ "$CI_JOB_STATUS" == "failed" ]]; then
-        echo "REASON_${CONFIG}_${ALLOCATOR}_${ARCH}X${VARIANT}=Unknown failure, perhaps timeout" | tr '+' '_' >> build.env
+        grep -q "$(printf 'REASON_%s_%s_%sX%s=' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${VARIANT}" | tr '+' '_')" build.env 2>/dev/null || echo "REASON_${CONFIG}_${ALLOCATOR}_${ARCH}X${VARIANT}=Unknown failure, perhaps timeout" | tr '+' '_' >> build.env
       fi
   artifacts:
     name: "results-${ARCH}"
@@ -87,7 +87,7 @@ reliability-aarch64:
   after_script:
     - |
       if [[ "$CI_JOB_STATUS" == "failed" ]]; then
-        echo "REASON_${CONFIG}_${ALLOCATOR}_${ARCH}Xchaos=Unknown failure, perhaps timeout" | tr '+' '_' >> build.env
+        grep -q "$(printf 'REASON_%s_%s_%sXchaos=' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" | tr '+' '_')" build.env 2>/dev/null || echo "REASON_${CONFIG}_${ALLOCATOR}_${ARCH}Xchaos=Unknown failure, perhaps timeout" | tr '+' '_' >> build.env
       fi
   artifacts:
     name: "chaos-results-${ARCH}"
