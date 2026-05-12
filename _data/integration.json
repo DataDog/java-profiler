@@ -1,6 +1,70 @@
 {
   "runs": [
     {
+      "id": "112735873",
+      "timestamp": "2026-05-12T15:32:39Z",
+      "ddprof_branch": "main",
+      "ddprof_sha": "d49e4aba291b893393f1991f7dddcbf5c88a1140",
+      "ddprof_pr": null,
+      "pipeline": {
+        "id": "112735873",
+        "url": "https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/112735873"
+      },
+      "lib_version": "unknown",
+      "status": "failed",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 0,
+        "failed_jobs": 40,
+        "total_scenarios": 80,
+        "passed_scenarios": 0,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 80,
+        "failed_configs": [
+          "glibc-arm64-hotspot-jdk11",
+          "glibc-arm64-hotspot-jdk17",
+          "glibc-arm64-hotspot-jdk21",
+          "glibc-arm64-hotspot-jdk25",
+          "glibc-arm64-hotspot-jdk8",
+          "glibc-arm64-openj9-jdk11",
+          "glibc-arm64-openj9-jdk17",
+          "glibc-arm64-openj9-jdk21",
+          "glibc-arm64-openj9-jdk25",
+          "glibc-arm64-openj9-jdk8",
+          "glibc-x64-hotspot-jdk11",
+          "glibc-x64-hotspot-jdk17",
+          "glibc-x64-hotspot-jdk21",
+          "glibc-x64-hotspot-jdk25",
+          "glibc-x64-hotspot-jdk8",
+          "glibc-x64-openj9-jdk11",
+          "glibc-x64-openj9-jdk17",
+          "glibc-x64-openj9-jdk21",
+          "glibc-x64-openj9-jdk25",
+          "glibc-x64-openj9-jdk8",
+          "musl-arm64-hotspot-jdk11",
+          "musl-arm64-hotspot-jdk17",
+          "musl-arm64-hotspot-jdk21",
+          "musl-arm64-hotspot-jdk25",
+          "musl-arm64-hotspot-jdk8",
+          "musl-arm64-openj9-jdk11",
+          "musl-arm64-openj9-jdk17",
+          "musl-arm64-openj9-jdk21",
+          "musl-arm64-openj9-jdk25",
+          "musl-arm64-openj9-jdk8",
+          "musl-x64-hotspot-jdk11",
+          "musl-x64-hotspot-jdk17",
+          "musl-x64-hotspot-jdk21",
+          "musl-x64-hotspot-jdk25",
+          "musl-x64-hotspot-jdk8",
+          "musl-x64-openj9-jdk11",
+          "musl-x64-openj9-jdk17",
+          "musl-x64-openj9-jdk21",
+          "musl-x64-openj9-jdk25",
+          "musl-x64-openj9-jdk8"
+        ]
+      }
+    },
+    {
       "id": "112699279",
       "timestamp": "2026-05-12T13:35:53Z",
       "ddprof_branch": "main",
@@ -426,32 +490,6 @@
           "musl-arm64-openj9-jdk17",
           "musl-x64-openj9-jdk25",
           "musl-x64-openj9-jdk8"
-        ]
-      }
-    },
-    {
-      "id": "112670224",
-      "timestamp": "2026-05-12T10:45:00Z",
-      "ddprof_branch": "main",
-      "ddprof_sha": "6d11068297dca0410277350f145330a78b395b61",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "112670224",
-        "url": "https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/112670224"
-      },
-      "lib_version": "unknown",
-      "status": "partial",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 38,
-        "failed_jobs": 2,
-        "total_scenarios": 78,
-        "passed_scenarios": 76,
-        "failed_scenarios": 2,
-        "unknown_scenarios": 0,
-        "failed_configs": [
-          "glibc-arm64-openj9-jdk25",
-          "musl-arm64-openj9-jdk21"
         ]
       }
     }
