@@ -22,6 +22,8 @@
 #include <signal.h>
 #include <pthread.h>
 
+class ProfiledThread;
+
 /**
  * Race-free critical section using atomic compare-and-swap.
  *
@@ -67,6 +69,7 @@ private:
     bool _using_fallback;   // Track which storage mechanism we're using
     uint32_t _word_index;   // For fallback bitmap cleanup
     uint64_t _bit_mask;     // For fallback bitmap cleanup
+    ProfiledThread* _thread_ptr; // ProfiledThread captured at construction
 
 public:
     CriticalSection();
