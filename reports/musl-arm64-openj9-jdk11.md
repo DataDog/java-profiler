@@ -3,9 +3,9 @@ layout: default
 title: musl-arm64-openj9-jdk11
 ---
 
-## musl-arm64-openj9-jdk11 - ✅ PASS
+## musl-arm64-openj9-jdk11 - ❌ FAIL
 
-**Date:** 2026-05-12 03:36:05 EDT
+**Date:** 2026-05-12 03:57:42 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: musl-arm64-openj9-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 48 |
-| CPU Cores (end) | N/A |
-| Throttling | N/A% |
+| CPU Cores (start) | 64 |
+| CPU Cores (end) | 64 |
+| Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ⚠️
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
+| Status | FAIL |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,12 +45,22 @@ title: musl-arm64-openj9-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
+<summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1778571096 48
-1778571102 48
-1778571107 48
+1778572267 64
+1778572272 64
+1778572277 64
+1778572282 64
+1778572287 64
+1778572292 64
+1778572297 64
+1778572302 64
+1778572307 64
+1778572312 64
+1778572317 64
+1778572322 64
+1778572327 64
 ```
 </details>
 
