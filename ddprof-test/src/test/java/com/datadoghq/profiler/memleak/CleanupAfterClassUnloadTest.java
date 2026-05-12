@@ -37,13 +37,18 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * Regression test for PROF-14545: SIGSEGV in Recording::cleanupUnreferencedMethods.
  *
  * <p>The bug: cleanupUnreferencedMethods() was called after finishChunk() released its
- * GetLoadedClasses pins. On JVM implementations that free JVMTI-allocated line number
- * table memory when a class is unloaded, the jvmti->Deallocate() call in
- * SharedLineNumberTable::~SharedLineNumberTable() would access freed memory → SIGSEGV.
+ * GetLoadedClasses pins. The class pins are JNI local references that prevent concurrent
+ * GC from unloading a class between resolveMethod() JVMTI calls and the Deallocate that
+ * frees the line-number-table buffer. Calling cleanupUnreferencedMethods() after the pins
+ * were released created a window where, on JVM implementations that free JVMTI-allocated
+ * line-number-table memory on class unload, Deallocate could access freed memory → SIGSEGV.
  *
  * <p>The fix: cleanupUnreferencedMethods() is now called inside finishChunk(), before
- * DeleteLocalRef releases the GetLoadedClasses pins, ensuring Deallocate is always called
- * while the corresponding class is still loaded and pinned in memory.
+ * DeleteLocalRef releases the pins, closing the concurrent-unload race window during
+ * finishChunk(). Note: this ordering does not protect against classes that were already
+ * fully unloaded before finishChunk() began; for those, correctness relies on the JVMTI
+ * contract that the caller owns memory returned by GetLineNumberTable and the JVM must
+ * not reclaim it on class unload.
  *
  * <p>This test reproduces the crash scenario:
  * <ol>
@@ -53,9 +58,6 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *   <li>AGE_THRESHOLD+1 dump cycles are triggered to age the method out of the method_map</li>
  *   <li>cleanupUnreferencedMethods() must not SIGSEGV when freeing the line number table</li>
  * </ol>
- *
- * <p>Without the fix, this test may crash with SIGSEGV on JVM implementations that free
- * JVMTI-allocated memory on class unload. With the fix, it reliably passes.
  */
 public class CleanupAfterClassUnloadTest extends AbstractProfilerTest {
 
