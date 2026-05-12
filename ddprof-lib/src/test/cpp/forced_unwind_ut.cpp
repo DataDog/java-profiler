@@ -10,12 +10,11 @@
  * calls std::terminate() -> abort() because the forced-unwind exception tries to
  * exit a noexcept-bounded destructor.
  *
- * Fix: replace pthread_cleanup_push/pop (and the earlier glibc-only
- * catch(abi::__forced_unwind&) approach) with RAII cleanup structs whose
- * destructors run during any C++ stack unwinding — including forced unwind on
- * both glibc and musl.
+ * Fix: replace pthread_cleanup_push/pop with RAII cleanup structs.
+ * On glibc, _Unwind_ForcedUnwind invokes the C++ EH personality which runs
+ * RAII destructors; on musl it does not, so these tests are glibc-only.
  *
- * These tests verify:
+ * These tests verify (glibc only):
  * 1. An RAII destructor runs when a thread is cancelled via pthread_cancel.
  * 2. The thread exits as PTHREAD_CANCELED.
  * 3. ProfiledThread::release() can be called safely from within an RAII destructor.
@@ -24,7 +23,7 @@
 
 #include <gtest/gtest.h>
 
-#ifdef __linux__
+#if defined(__linux__) && defined(__GLIBC__)
 
 #include "thread.h"
 
@@ -155,4 +154,4 @@ TEST(ForcedUnwindTest, PthreadExitAlsoCaughtByForcedUnwindCatch) {
     EXPECT_EQ(reinterpret_cast<void*>(42), retval);
 }
 
-#endif  // __linux__
+#endif  // defined(__linux__) && defined(__GLIBC__)

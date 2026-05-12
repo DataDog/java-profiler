@@ -98,9 +98,11 @@ static void* start_routine_wrapper_spec(void* args) {
     // Using a cached tid avoids the lazy-allocating ProfiledThread::current() path inside
     // the cleanup destructor, which may call 'new' at an unsafe point during forced unwind.
     int tid = ProfiledThread::currentTid();
-    // RAII ensures cleanup runs on both normal exit and forced unwind (pthread_cancel /
-    // pthread_exit) on any platform, including musl where abi::__forced_unwind is not
-    // a named C++ exception type.
+    // RAII ensures cleanup runs on normal exit and on glibc forced unwind
+    // (pthread_cancel / pthread_exit).  On musl, _Unwind_ForcedUnwind does not
+    // invoke the C++ EH personality, so the destructor runs only on normal return;
+    // that is acceptable — the key fix is avoiding the noexcept-destructor crash
+    // from pthread_cleanup_push on glibc+J9.
     struct ThreadCleanup {
         int tid;
         ~ThreadCleanup() {
@@ -160,9 +162,11 @@ static void* start_routine_wrapper(void* args) {
         ProfiledThread::currentSignalSafe()->startInitWindow();
         Profiler::registerThread(tid);
     }
-    // RAII ensures cleanup runs on both normal exit and forced unwind (pthread_cancel /
-    // pthread_exit) on any platform, including musl where abi::__forced_unwind is not
-    // a named C++ exception type.  This replaces the earlier catch(abi::__forced_unwind&)
+    // RAII ensures cleanup runs on normal exit and on glibc forced unwind
+    // (pthread_cancel / pthread_exit).  On musl, _Unwind_ForcedUnwind does not
+    // invoke the C++ EH personality, so the destructor runs only on normal return;
+    // that is acceptable — the key fix is avoiding the noexcept-destructor crash
+    // from pthread_cleanup_push on glibc+J9.  This replaces the earlier catch(abi::__forced_unwind&)
     // approach which was glibc-only and broke on musl.
     struct ThreadCleanup {
         int tid;
