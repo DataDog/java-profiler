@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-05-12 06:42:13 EDT
+**Date:** 2026-05-12 06:42:58 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 83 |
-| Sample Rate | 1.38/sec |
-| Health Score | 86% |
-| Threads | 10 |
+| CPU Samples | 93 |
+| Sample Rate | 1.55/sec |
+| Health Score | 97% |
+| Threads | 9 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 35 |
-| Sample Rate | 0.58/sec |
-| Health Score | 36% |
-| Threads | 8 |
+| CPU Samples | 107 |
+| Sample Rate | 1.78/sec |
+| Health Score | 111% |
+| Threads | 11 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 57-57 cores)</summary>
 
 ```
-1778582222 57
-1778582227 57
-1778582232 57
-1778582237 57
-1778582242 57
-1778582247 57
-1778582252 57
-1778582257 57
-1778582262 57
-1778582267 57
-1778582272 57
-1778582277 57
-1778582282 57
-1778582287 57
-1778582293 57
-1778582298 57
-1778582303 57
-1778582308 57
-1778582313 57
-1778582318 57
+1778582332 57
+1778582337 57
+1778582342 57
+1778582347 57
+1778582352 57
+1778582357 57
+1778582362 57
+1778582367 57
+1778582372 57
+1778582377 57
+1778582382 57
+1778582387 57
+1778582392 57
+1778582397 57
+1778582402 57
+1778582407 57
+1778582412 57
+1778582417 57
+1778582422 57
+1778582427 57
 ```
 </details>
 
