@@ -175,7 +175,7 @@ jobs:
        config: ${{ fromJson(needs.filter-musl-configs.outputs.configs) }}
     runs-on: ubuntu-latest
     container:
-      image: "alpine:3.21"
+      image: "alpine:3.23"
       options: --cpus 4 --workdir /github/workspace -v /home/runner/work/_temp:/home/runner/work/_temp
     timeout-minutes: 180
     steps:

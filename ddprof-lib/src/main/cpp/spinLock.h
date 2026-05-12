@@ -47,8 +47,27 @@ public:
   void unlock() { __sync_fetch_and_sub(&_lock, 1); }
 
   bool tryLockShared() {
+    // Spins while no exclusive lock is held and the CAS to acquire a shared
+    // lock fails (due to concurrent reader contention). Returns false ONLY when
+    // an exclusive lock is observed (_lock > 0); never returns false spuriously.
     int value;
     while ((value = __atomic_load_n(&_lock, __ATOMIC_ACQUIRE)) <= 0) {
+      if (__sync_bool_compare_and_swap(&_lock, value, value - 1)) {
+        return true;
+      }
+      spinPause();
+    }
+    return false;
+  }
+
+  // Signal-safe variant: returns false after at most 5 CAS attempts.
+  // Use only in signal-handler paths where spinning indefinitely is unsafe.
+  bool tryLockSharedBounded() {
+    for (int attempts = 0; attempts < 5; ++attempts) {
+      int value = __atomic_load_n(&_lock, __ATOMIC_ACQUIRE);
+      if (value > 0) {
+        return false;
+      }
       if (__sync_bool_compare_and_swap(&_lock, value, value - 1)) {
         return true;
       }
@@ -88,9 +107,9 @@ public:
 class OptionalSharedLockGuard {
   SpinLock* _lock;
 public:
-  OptionalSharedLockGuard(SpinLock* lock) : _lock(lock) {
+  explicit OptionalSharedLockGuard(SpinLock* lock) : _lock(lock) {
     if (!_lock->tryLockShared()) {
-      // Locking failed, no need to unlock.
+      // Exclusive lock is held; no unlock needed. Only fails when an exclusive lock is observed.
       _lock = nullptr;
     }
   }
@@ -106,6 +125,33 @@ public:
   OptionalSharedLockGuard& operator=(const OptionalSharedLockGuard&) = delete;
   OptionalSharedLockGuard(OptionalSharedLockGuard&&) = delete;
   OptionalSharedLockGuard& operator=(OptionalSharedLockGuard&&) = delete;
+};
+
+// Signal-safe variant of OptionalSharedLockGuard: uses bounded CAS retries
+// and may fail spuriously when racing other shared lockers. Use ONLY in
+// signal-handler paths where spinning indefinitely is unsafe; do NOT use
+// in hot recording paths where silent acquisition failures would drop events.
+class BoundedOptionalSharedLockGuard {
+  SpinLock* _lock;
+public:
+  explicit BoundedOptionalSharedLockGuard(SpinLock* lock) : _lock(lock) {
+    if (!_lock->tryLockSharedBounded()) {
+      // Locking failed (bounded retries exhausted or exclusive lock held); no unlock needed.
+      _lock = nullptr;
+    }
+  }
+  ~BoundedOptionalSharedLockGuard() {
+    if (_lock != nullptr) {
+      _lock->unlockShared();
+    }
+  }
+  bool ownsLock() { return _lock != nullptr; }
+
+  // Non-copyable and non-movable
+  BoundedOptionalSharedLockGuard(const BoundedOptionalSharedLockGuard&) = delete;
+  BoundedOptionalSharedLockGuard& operator=(const BoundedOptionalSharedLockGuard&) = delete;
+  BoundedOptionalSharedLockGuard(BoundedOptionalSharedLockGuard&&) = delete;
+  BoundedOptionalSharedLockGuard& operator=(BoundedOptionalSharedLockGuard&&) = delete;
 };
 
 class ExclusiveLockGuard {

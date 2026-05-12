@@ -75,6 +75,10 @@ public:
   void clear();
 
   bool         check(const char* key);
+  // NOT signal-safe: the inserting lookup overloads call malloc/calloc on miss
+  // (see allocateKey and the calloc in dictionary.cpp). Signal handlers must use
+  // bounded_lookup(key, length, 0) instead, which never inserts and returns
+  // INT_MAX on miss.
   unsigned int lookup(const char *key);
   unsigned int lookup(const char *key, size_t length);
   unsigned int bounded_lookup(const char *key, size_t length, int size_limit);

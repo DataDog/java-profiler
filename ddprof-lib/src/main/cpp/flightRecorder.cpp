@@ -1168,9 +1168,10 @@ void Recording::writeCpool(Buffer *buf) {
   // constant pool count - bump each time a new pool is added
   buf->put8(12);
 
-  // Profiler::instance()->classMap() provides access to non-locked _class_map
-  // instance The non-locked access is ok here as this code will never run
-  // concurrently to _class_map.clear()
+  // classMap() is shared across the dump (this thread) and the JVMTI shared-lock
+  // writers (Profiler::lookupClass and friends). writeClasses() holds
+  // classMapSharedGuard() for its full duration; the exclusive classMap()->clear()
+  // in Profiler::dump runs only after this method returns.
   Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
   writeFrameTypes(buf);
   writeThreadStates(buf);
@@ -1384,8 +1385,11 @@ void Recording::writeMethods(Buffer *buf, Lookup *lookup) {
 
 void Recording::writeClasses(Buffer *buf, Lookup *lookup) {
   std::map<u32, const char *> classes;
-  // no need to lock _classes as this code will never run concurrently with
-  // resetting that dictionary
+  // Hold classMapSharedGuard() for the full function. The const char* pointers
+  // stored in classes point into dictionary row storage; clear() frees that
+  // storage under the exclusive lock, so we must not release the shared lock
+  // until we have finished iterating.
+  auto guard = Profiler::instance()->classMapSharedGuard();
   lookup->_classes->collect(classes);
 
   buf->putVar64(T_CLASS);
