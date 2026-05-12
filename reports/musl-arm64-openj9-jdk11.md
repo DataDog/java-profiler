@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk11
 
 ## musl-arm64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-05-12 12:58:32 EDT
+**Date:** 2026-05-12 13:04:48 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,9 +18,9 @@ title: musl-arm64-openj9-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 45 |
-| CPU Cores (end) | N/A |
-| Throttling | N/A% |
+| CPU Cores (start) | 52 |
+| CPU Cores (end) | 52 |
+| Throttling | 0% |
 
 ### Test Results
 
@@ -45,11 +45,29 @@ title: musl-arm64-openj9-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 45-45 cores)</summary>
+<summary>CPU Timeline (1 unique values: 52-52 cores)</summary>
 
 ```
-1778604447 45
-1778604452 45
+1778605254 52
+1778605259 52
+1778605264 52
+1778605269 52
+1778605274 52
+1778605279 52
+1778605284 52
+1778605289 52
+1778605294 52
+1778605299 52
+1778605304 52
+1778605309 52
+1778605314 52
+1778605319 52
+1778605325 52
+1778605330 52
+1778605335 52
+1778605340 52
+1778605345 52
+1778605350 52
 ```
 </details>
 
