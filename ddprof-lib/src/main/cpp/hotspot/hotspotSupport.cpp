@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <climits>
 #include <cstdlib>
 #include <setjmp.h>
 #include "asyncSampleMutex.h"

@@ -1539,9 +1539,10 @@ int Profiler::lookupClass(const char *key, size_t length) {
 }
 
 int Profiler::lookupClassSignalSafe(const char *key, size_t length) {
-  if (_class_map_lock.tryLockShared()) {
-    // lookup_readonly: for_insert=false, sentinel=0 — never calls malloc, async-signal-safe.
-    // Returns 0 on miss (base_index starts at 1, so 0 is never a valid ID).
+  // tryLockSharedBounded: bounded CAS retries (≤5), safe in a signal handler.
+  // lookup_readonly: for_insert=false, sentinel=0 — never calls malloc.
+  // Returns 0 on miss, -1 when the lock is unavailable.
+  if (_class_map_lock.tryLockSharedBounded()) {
     int ret = (int)_class_map.lookup_readonly(key, length);
     _class_map_lock.unlockShared();
     return ret;

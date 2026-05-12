@@ -1,5 +1,6 @@
 /*
  * Copyright 2022 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +23,7 @@
 #include "jfrMetadata.h"
 #include "livenessTracker.h"
 #include <jvmti.h>
+#include <stddef.h>
 #include <time.h>
 
 typedef int (*get_sampling_interval)();
@@ -32,6 +34,7 @@ class ObjectSampler : public Engine {
 private:
   static ObjectSampler *const _instance;
 
+  bool _active;
   int _interval;
   int _configured_interval;
   bool _record_allocations;
@@ -49,8 +52,9 @@ private:
   Error updateConfiguration(u64 events, double time_coefficient);
 
   ObjectSampler()
-      : _interval(0), _configured_interval(0), _record_allocations(false),
-        _record_liveness(false), _gc_generations(false), _max_stack_depth(0),
+      : _active(false), _interval(0), _configured_interval(0),
+        _record_allocations(false), _record_liveness(false),
+        _gc_generations(false), _max_stack_depth(0),
         _last_config_update_ts(0), _alloc_event_count(0),
         _disable_rate_limiting(false) {}
 
@@ -71,6 +75,13 @@ public:
   static void JNICALL SampledObjectAlloc(jvmtiEnv *jvmti, JNIEnv *jni,
                                          jthread thread, jobject object,
                                          jclass object_klass, jlong size);
+
+  // Strips the "L...;" wrapper from a JVMTI class signature for
+  // Profiler::lookupClass. Returns false (and leaves outputs untouched)
+  // when class_name is null/empty, the L-form is malformed, or either
+  // out pointer is null. Public for unit testing.
+  static bool normalizeClassSignature(const char *class_name,
+                                      const char **out_name, size_t *out_len);
 };
 
 #endif // _OBJECTSAMPLER_H

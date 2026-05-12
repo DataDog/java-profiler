@@ -20,6 +20,33 @@
 
 ObjectSampler *const ObjectSampler::_instance = new ObjectSampler();
 
+bool ObjectSampler::normalizeClassSignature(const char *class_name,
+                                            const char **out_name,
+                                            size_t *out_len) {
+  if (out_name == NULL || out_len == NULL) {
+    return false;
+  }
+  if (class_name == NULL) {
+    return false;
+  }
+  size_t len = strlen(class_name);
+  if (len == 0) {
+    return false;
+  }
+  if (class_name[0] == 'L') {
+    // "Lname;" must have at least 3 chars (one body char) and a trailing ';'.
+    if (len < 3 || class_name[len - 1] != ';') {
+      return false;
+    }
+    *out_name = class_name + 1;
+    *out_len = len - 2;
+  } else {
+    *out_name = class_name;
+    *out_len = len;
+  }
+  return true;
+}
+
 void ObjectSampler::SampledObjectAlloc(jvmtiEnv *jvmti, JNIEnv *jni,
                                        jthread thread, jobject object,
                                        jclass object_klass, jlong size) {
@@ -31,8 +58,11 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
                                      jthread thread, int event_type,
                                      jobject object, jclass object_klass,
                                      jlong size) {
-  if (!(_gc_generations || _record_allocations || _record_liveness)) {
-    // nothing to do here, bail out
+  if (!__atomic_load_n(&_active, __ATOMIC_RELAXED)) {
+    return;
+  }
+
+  if (jvmti == NULL) {
     return;
   }
 
@@ -40,21 +70,29 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
 
   AllocEvent event;
 
-  char *class_name;
-  if (jvmti->GetClassSignature(object_klass, &class_name, NULL) == 0) {
-    int id = -1;
-    if (class_name[0] == 'L') {
-      id = Profiler::instance()->lookupClass(class_name + 1,
-                                             strlen(class_name) - 2);
-    } else {
-      id = Profiler::instance()->lookupClass(class_name, strlen(class_name));
+  // Initialise so a JVMTI impl that returns JVMTI_ERROR_NONE without
+  // populating class_name cannot hand a stack-garbage pointer to Deallocate.
+  char *class_name = NULL;
+  if (jvmti->GetClassSignature(object_klass, &class_name, NULL) != 0 ||
+      class_name == NULL) {
+    // Drop the sample: recording it under the default class id 0
+    // would corrupt allocation attribution.
+    if (class_name != NULL) {
+      jvmti->Deallocate((unsigned char *)class_name);
     }
-    jvmti->Deallocate((unsigned char *)class_name);
-    if (id == -1) {
-      return;
-    }
-    event._id = id;
+    return;
   }
+  const char *name_slice = NULL;
+  size_t name_len = 0;
+  int id = -1;
+  if (normalizeClassSignature(class_name, &name_slice, &name_len)) {
+    id = Profiler::instance()->lookupClass(name_slice, name_len);
+  }
+  jvmti->Deallocate((unsigned char *)class_name);
+  if (id == -1) {
+    return;
+  }
+  event._id = id;
 
   u64 call_trace_id = 0;
   // we do record the details and stacktraces only for when recording
@@ -149,6 +187,7 @@ Error ObjectSampler::start(Arguments &args) {
     jvmti->SetHeapSamplingInterval(_interval);
     jvmti->SetEventNotificationMode(JVMTI_ENABLE,
                                     JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
+    __atomic_store_n(&_active, true, __ATOMIC_RELEASE);
     __atomic_store_n(&_last_config_update_ts, OS::nanotime(), __ATOMIC_RELEASE);
     // need to reset the running sum in order for 'updateConfiguration' to be
     // able to generate proper diffs
@@ -159,6 +198,7 @@ Error ObjectSampler::start(Arguments &args) {
 }
 
 void ObjectSampler::stop() {
+  __atomic_store_n(&_active, false, __ATOMIC_RELEASE);
   jvmtiEnv *jvmti = VM::jvmti();
   jvmti->SetEventNotificationMode(JVMTI_DISABLE,
                                   JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
