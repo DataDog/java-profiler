@@ -18,6 +18,16 @@
 
 typedef void* (*func_start_routine)(void*);
 
+#ifndef __GLIBC__
+// On musl, thread cancellation uses signal-based cleanup that invokes C-style
+// pthread_cleanup_push callbacks but does NOT invoke C++ destructors.
+// This function is used as the cleanup callback on non-glibc platforms.
+static void thread_cleanup(void* arg) {
+    Profiler::unregisterThread(*static_cast<int*>(arg));
+    ProfiledThread::release();
+}
+#endif
+
 SpinLock LibraryPatcher::_lock;
 const char* LibraryPatcher::_profiler_name = nullptr;
 PatchEntry LibraryPatcher::_patched_entries[MAX_NATIVE_LIBS];
@@ -94,23 +104,29 @@ static void* start_routine_wrapper_spec(void* args) {
     void* params = thr->args();
     delete_routine_info(thr);
     init_tls_and_register();
-    // Capture tid from TLS while it is guaranteed non-null (set by init_tls_and_register above).
-    // Using a cached tid avoids the lazy-allocating ProfiledThread::current() path inside
-    // the cleanup destructor, which may call 'new' at an unsafe point during forced unwind.
+    // Cache tid from TLS before entering the cleanup region; avoids allocating
+    // ProfiledThread::current() at a potentially unsafe point during cleanup.
     int tid = ProfiledThread::currentTid();
-    // RAII guard: destructor runs on normal return, C++ exceptions, pthread_cancel,
-    // pthread_exit, and IBM J9 forced-unwind thread teardown.  Avoids the implicit
-    // noexcept destructor of pthread_cleanup_push/pop that caused the J9 abort (SCP-1154).
+#ifdef __GLIBC__
+    // On glibc: RAII. pthread_cleanup_push creates __pthread_cleanup_class with an implicit
+    // noexcept destructor; IBM J9's forced-unwind propagates through it as a C++ exception,
+    // triggering std::terminate (SCP-1154). RAII avoids that.
     struct Cleanup {
-        int tid;
-        explicit Cleanup(int t) : tid(t) {}
-        ~Cleanup() {
-            Profiler::unregisterThread(tid);
-            ProfiledThread::release();
-        }
+        int t;
+        explicit Cleanup(int t) : t(t) {}
+        ~Cleanup() { Profiler::unregisterThread(t); ProfiledThread::release(); }
     } cleanup(tid);
     routine(params);
     return nullptr;
+#else
+    // On musl: pthread_cleanup_push/pop registers a C callback that musl's signal-based
+    // cancellation mechanism honors. C++ destructors are NOT invoked by musl during
+    // thread cancellation, so RAII alone is insufficient.
+    pthread_cleanup_push(thread_cleanup, &tid);
+    routine(params);
+    pthread_cleanup_pop(1);
+    return nullptr;
+#endif
 }
 
 static int pthread_create_hook_spec(pthread_t* thread,
@@ -161,19 +177,26 @@ static void* start_routine_wrapper(void* args) {
         ProfiledThread::currentSignalSafe()->startInitWindow();
         Profiler::registerThread(tid);
     }
-    // RAII guard: destructor runs on normal return, C++ exceptions, pthread_cancel,
-    // pthread_exit, and IBM J9 forced-unwind thread teardown.  Avoids the implicit
-    // noexcept destructor of pthread_cleanup_push/pop that caused the J9 abort (SCP-1154).
+#ifdef __GLIBC__
+    // On glibc: RAII. pthread_cleanup_push creates __pthread_cleanup_class with an implicit
+    // noexcept destructor; IBM J9's forced-unwind propagates through it as a C++ exception,
+    // triggering std::terminate (SCP-1154). RAII avoids that.
     struct Cleanup {
-        int tid;
-        explicit Cleanup(int t) : tid(t) {}
-        ~Cleanup() {
-            Profiler::unregisterThread(tid);
-            ProfiledThread::release();
-        }
+        int t;
+        explicit Cleanup(int t) : t(t) {}
+        ~Cleanup() { Profiler::unregisterThread(t); ProfiledThread::release(); }
     } cleanup(tid);
     routine(params);
     return nullptr;
+#else
+    // On musl: pthread_cleanup_push/pop registers a C callback that musl's signal-based
+    // cancellation mechanism honors. C++ destructors are NOT invoked by musl during
+    // thread cancellation, so RAII alone is insufficient.
+    pthread_cleanup_push(thread_cleanup, &tid);
+    routine(params);
+    pthread_cleanup_pop(1);
+    return nullptr;
+#endif
 }
 
 static int pthread_create_hook(pthread_t* thread,
