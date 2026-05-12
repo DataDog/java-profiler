@@ -90,6 +90,19 @@ static void init_tls_and_register() {
     Profiler::registerThread(ProfiledThread::currentTid());
 }
 
+#ifndef __GLIBC__
+// Kept noinline for the same stack-protector reason as delete_routine_info and
+// init_tls_and_register: pthread_cleanup_push expands to a struct __ptcb on the
+// stack, which must not appear in start_routine_wrapper_spec's own frame on
+// musl/aarch64 or it re-triggers the stack-guard corruption described below.
+__attribute__((noinline))
+static void run_with_musl_cleanup(func_start_routine routine, void* params, int tid) {
+    pthread_cleanup_push(thread_cleanup, &tid);
+    routine(params);
+    pthread_cleanup_pop(1);
+}
+#endif
+
 // Wrapper around the real start routine.
 // The wrapper:
 // 1. Register the newly created thread to profiler
@@ -122,9 +135,9 @@ static void* start_routine_wrapper_spec(void* args) {
     // On musl: pthread_cleanup_push/pop registers a C callback that musl's signal-based
     // cancellation mechanism honors. C++ destructors are NOT invoked by musl during
     // thread cancellation, so RAII alone is insufficient.
-    pthread_cleanup_push(thread_cleanup, &tid);
-    routine(params);
-    pthread_cleanup_pop(1);
+    // run_with_musl_cleanup is noinline so pthread_cleanup_push's struct __ptcb
+    // stays off this frame — same pattern as delete_routine_info/init_tls_and_register.
+    run_with_musl_cleanup(routine, params, tid);
     return nullptr;
 #endif
 }
