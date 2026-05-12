@@ -3,9 +3,9 @@ layout: default
 title: glibc-x64-openj9-jdk11
 ---
 
-## glibc-x64-openj9-jdk11 - ✅ PASS
+## glibc-x64-openj9-jdk11 - ❌ FAIL
 
-**Date:** 2026-05-12 09:12:13 EDT
+**Date:** 2026-05-12 09:20:28 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: glibc-x64-openj9-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 14 |
-| CPU Cores (end) | 32 |
+| CPU Cores (start) | 64 |
+| CPU Cores (end) | 64 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ⚠️
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
+| Status | FAIL |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,29 +45,22 @@ title: glibc-x64-openj9-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (3 unique values: 14-37 cores)</summary>
+<summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1778591115 14
-1778591120 14
-1778591125 14
-1778591130 14
-1778591135 14
-1778591140 14
-1778591145 14
-1778591150 14
-1778591155 14
-1778591160 14
-1778591165 14
-1778591170 14
-1778591175 14
-1778591180 14
-1778591185 14
-1778591190 14
-1778591195 14
-1778591200 14
-1778591205 14
-1778591210 37
+1778591636 64
+1778591641 64
+1778591646 64
+1778591651 64
+1778591656 64
+1778591661 64
+1778591666 64
+1778591671 64
+1778591676 64
+1778591681 64
+1778591686 64
+1778591691 64
+1778591696 64
 ```
 </details>
 

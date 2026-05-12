@@ -3,9 +3,9 @@ layout: default
 title: glibc-x64-hotspot-jdk8
 ---
 
-## glibc-x64-hotspot-jdk8 - ✅ PASS
+## glibc-x64-hotspot-jdk8 - ❌ FAIL
 
-**Date:** 2026-05-12 09:12:13 EDT
+**Date:** 2026-05-12 09:20:28 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: glibc-x64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 28 |
-| CPU Cores (end) | 28 |
+| CPU Cores (start) | 55 |
+| CPU Cores (end) | 55 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ⚠️
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
+| Status | FAIL |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,29 +45,22 @@ title: glibc-x64-hotspot-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 28-28 cores)</summary>
+<summary>CPU Timeline (1 unique values: 55-55 cores)</summary>
 
 ```
-1778591135 28
-1778591140 28
-1778591145 28
-1778591150 28
-1778591155 28
-1778591160 28
-1778591165 28
-1778591170 28
-1778591175 28
-1778591180 28
-1778591185 28
-1778591190 28
-1778591195 28
-1778591200 28
-1778591205 28
-1778591210 28
-1778591215 28
-1778591220 28
-1778591225 28
-1778591230 28
+1778591618 55
+1778591623 55
+1778591628 55
+1778591633 55
+1778591638 55
+1778591643 55
+1778591648 55
+1778591653 55
+1778591658 55
+1778591663 55
+1778591668 55
+1778591673 55
+1778591678 55
 ```
 </details>
 
