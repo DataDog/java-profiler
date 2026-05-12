@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk8
 
 ## glibc-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-05-11 20:50:52 EDT
+**Date:** 2026-05-11 20:52:52 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 89 |
-| Sample Rate | 1.48/sec |
-| Health Score | 92% |
+| CPU Samples | 94 |
+| Sample Rate | 1.57/sec |
+| Health Score | 98% |
 | Threads | 10 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 90 |
-| Sample Rate | 1.50/sec |
-| Health Score | 94% |
-| Threads | 13 |
+| CPU Samples | 87 |
+| Sample Rate | 1.45/sec |
+| Health Score | 91% |
+| Threads | 9 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1778546846 64
-1778546851 64
-1778546856 64
-1778546861 64
-1778546866 64
-1778546871 64
-1778546876 64
-1778546881 64
-1778546886 64
-1778546891 64
-1778546896 64
-1778546901 64
-1778546906 64
-1778546911 64
-1778546916 64
-1778546921 64
-1778546926 64
-1778546931 64
-1778546936 64
-1778546941 64
+1778546975 64
+1778546980 64
+1778546985 64
+1778546990 64
+1778546995 64
+1778547000 64
+1778547005 64
+1778547010 64
+1778547015 64
+1778547020 64
+1778547025 64
+1778547030 64
+1778547035 64
+1778547040 64
+1778547045 64
+1778547050 64
+1778547055 64
+1778547060 64
+1778547065 64
+1778547070 64
 ```
 </details>
 
