@@ -60,9 +60,17 @@ public:
 
     // Advance _active_index by 1 mod 3.
     // After this call the old active is accessible via dumpBuffer().
+    // Uses a CAS loop so concurrent callers (e.g. stop() racing dump()) each
+    // advance by exactly one step without silently aliasing the same index.
     void rotate() {
         int old = __atomic_load_n(&_active_index, __ATOMIC_ACQUIRE);
-        __atomic_store_n(&_active_index, (old + 1) % 3, __ATOMIC_RELEASE);
+        int next = (old + 1) % 3;
+        while (!__atomic_compare_exchange_n(&_active_index, &old, next,
+                                            /*weak=*/false,
+                                            __ATOMIC_ACQ_REL,
+                                            __ATOMIC_ACQUIRE)) {
+            next = (old + 1) % 3;
+        }
     }
 
     // Reset to initial state (no concurrent writers/readers).

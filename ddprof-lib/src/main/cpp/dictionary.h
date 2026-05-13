@@ -18,6 +18,7 @@
 #define _DICTIONARY_H
 
 #include "counters.h"
+#include "refCountGuard.h"
 #include "tripleBuffer.h"
 #include <map>
 #include <stddef.h>
@@ -48,7 +49,7 @@ struct DictTable {
 class Dictionary {
 private:
   DictTable *_table;
-  int _id;
+  const int _id;
   volatile unsigned int _base_index;
   volatile int _size;
 
@@ -61,6 +62,8 @@ private:
 
   unsigned int lookup(const char *key, size_t length, bool for_insert,
                       unsigned int sentinel);
+
+  void mergeFrom(const DictTable *table);
 
 public:
   Dictionary() : Dictionary(0) {}
@@ -86,8 +89,11 @@ public:
 
   void collect(std::map<unsigned int, const char *> &map);
 
+  // Re-inserts all entries from src into this dictionary.  Called from the
+  // dump thread during rotatePersistent(); not signal-safe (calls malloc).
+  void mergeFrom(const Dictionary &src);
+
   int  counterId() const { return _id; }
-  void setCounterId(int id) { _id = id; }
   int  size() const { return _size; }
 };
 
@@ -97,24 +103,32 @@ public:
 //
 //   active  — current writes (signal handlers + fill-path)
 //   dump    — snapshot being read by the current dump (old active after rotate)
-//   scratch — two rotations behind active; cleared lock-free by clearStandby()
+//   scratch — two rotations behind active; ready to be cleared by clearStandby()
 //
-// The scratch role exists for safe lock-free reclamation: when a buffer is in
-// the scratch role, at least one full dump cycle has passed since it was last
-// in the "active" or "dump" role.  Signal handlers (per-thread locks drained
-// by lockAll) and JNI writers (microsecond lookups) cannot still hold a stale
-// pointer to it after such a long grace period, so it is safe to clear without
-// any explicit drain.
+// Concurrency safety:
+//   lookup() and bounded_lookup() acquire a per-thread RefCountGuard on the
+//   active buffer pointer before touching it.  rotate() and rotatePersistent()
+//   call RefCountGuard::waitForRefCountToClear(old_active) after advancing the
+//   active index, which provably drains all in-flight callers (signal handlers
+//   AND JNI threads) before the old buffer is handed to the dump thread.
+//   clearStandby() clears the scratch buffer, which was already drained by the
+//   rotate() two cycles earlier — no additional drain is needed.
+//
+//   Trace-drop window: RefCountGuard uses a pointer-first activation protocol
+//   (see refCountGuard.h).  In the theoretical window between storing the active
+//   pointer and incrementing the reference count a scanner could skip the slot.
+//   In practice signal handlers complete in microseconds and a buffer is only
+//   cleared after TWO dump cycles (seconds), so this window is never hit.
+//   Should it occur, bounded_lookup returns INT_MAX (miss) — a dropped trace or
+//   generic vtable frame — not a crash.
 //
 // Lifecycle per dump cycle:
-//   rotate()        — advance active; dump thread reads standby()
-//   standby()->...  — dump thread reads snapshot lock-free
-//   clearStandby()  — clear the scratch buffer (NOT the just-completed dump
-//                     buffer — that becomes scratch next cycle and is cleared
-//                     one cycle later)
+//   rotate()        — advance active; drain old active via RefCountGuard
+//   standby()->...  — dump thread reads stable snapshot
+//   clearStandby()  — clear the scratch buffer (safe: drained two cycles ago)
 //
 // Memory: at most two non-empty buffers at any time (active + dump).
-// Churn: entries from dynamic classes purged after at most two full dump cycles.
+// Churn: entries purged after at most two full dump cycles.
 //
 // For profiler reset call clearAll().
 class TripleBufferedDictionary {
@@ -126,45 +140,63 @@ class TripleBufferedDictionary {
 
 public:
     // All three buffers carry the real counter id so that insertions through
-    // any buffer (signal-handler path via active, fill-path via dump buffer)
-    // are tracked in the named counter slot.  clearStandby() resets the slot.
+    // any buffer are tracked in the named counter slot.
     TripleBufferedDictionary(int id)
         : _counter_id(id), _a(id), _b(id), _c(id), _rot(&_a, &_b, &_c) {}
 
     unsigned int lookup(const char* key, size_t length) {
-        return _rot.active()->lookup(key, length);
+        Dictionary* active = _rot.active();
+        RefCountGuard guard(active);
+        return active->lookup(key, length);
     }
 
-    // Signal-safe lookup against the active buffer only.  Returns INT_MAX if
-    // the key is not yet present; callers must tolerate misses — there is no
-    // fallback to older snapshots.
+    // Signal-safe: acquires a per-thread RefCountGuard then performs a
+    // read-only probe (size_limit=0 never calls malloc).  Returns INT_MAX
+    // on miss; callers must tolerate misses.
     unsigned int bounded_lookup(const char* key, size_t length, int size_limit) {
-        return _rot.active()->bounded_lookup(key, length, size_limit);
+        Dictionary* active = _rot.active();
+        RefCountGuard guard(active);
+        return active->bounded_lookup(key, length, size_limit);
     }
 
-    // Returns the dump buffer for lock-free read by the dump thread.
-    // Only valid between rotate() and the next rotate().
+    // Returns the dump buffer for read by the dump thread.
+    // Safe to read after rotate() returns (all in-flight writers drained).
     Dictionary* standby() {
         return _rot.dumpBuffer();
     }
 
-    // Atomically promotes the dump buffer to active.
-    // Call before the dump; in-flight writers on the old active complete
-    // naturally (signal handlers: per-thread locks; JNI threads: fast CAS).
-    void rotate() { _rot.rotate(); }
+    // Advances the active buffer and drains all in-flight accesses to the
+    // old active via RefCountGuard before returning.  After this call the
+    // dump thread may read standby() safely.
+    void rotate() {
+        Dictionary* old_active = _rot.active();
+        _rot.rotate();
+        RefCountGuard::waitForRefCountToClear(old_active);
+    }
 
-    // Clears the scratch buffer (two rotations behind active).  Safe to do
-    // lock-free: the grace period since its last use as active or dump is one
-    // full dump cycle, much longer than any in-flight signal-handler or JNI
-    // lookup.  Call after the dump completes.
+    // Variant of rotate() for persistent dictionaries (e.g. class map) whose
+    // entries must survive across dump cycles.
+    //
+    // Before rotating, all entries from the current active are merged into the
+    // current clearTarget (the future active after rotation).  Signal handlers
+    // observe no gap: they use the old active — still live during the merge —
+    // and after rotate() the new active is already fully populated.
+    void rotatePersistent() {
+        Dictionary* old_active = _rot.active();
+        _rot.clearTarget()->mergeFrom(*old_active);
+        _rot.rotate();
+        RefCountGuard::waitForRefCountToClear(old_active);
+    }
+
+    // Clears the scratch buffer (two rotations behind active).
+    // The scratch buffer was drained by the rotate() call two cycles ago;
+    // no additional synchronisation is required here.
     void clearStandby() {
         _rot.clearTarget()->clear();
-        // clearTarget()->clear() already zeroed the named counter slot via _id;
-        // restate explicitly for clarity and belt-and-suspenders.
-        Counters::set(DICTIONARY_KEYS,       0,                 _counter_id);
-        Counters::set(DICTIONARY_KEYS_BYTES, 0,                 _counter_id);
-        Counters::set(DICTIONARY_BYTES,      sizeof(DictTable), _counter_id);
-        Counters::set(DICTIONARY_PAGES,      1,                 _counter_id);
+        // Dictionary::clear() zeroed the shared DICTIONARY_KEYS slot.  Re-set it
+        // to the active buffer's actual insertion count so that monitoring sees
+        // only live entries, not the just-cleared scratch buffer's (zero) state.
+        Counters::set(DICTIONARY_KEYS, _rot.active()->size(), _counter_id);
     }
 
     // Clears all three buffers. Call on profiler reset (no concurrent writers).

@@ -25,7 +25,6 @@ import org.openjdk.jmc.common.item.IMemberAccessor;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -35,9 +34,9 @@ import static org.openjdk.jmc.common.item.Attribute.attr;
 import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
 
 /**
- * Verifies that the DoubleBufferedDictionary rotate+clearStandby cycle correctly:
+ * Verifies that the TripleBufferedDictionary rotate+clearStandby cycle correctly:
  * - Exposes only pre-dump entries in the dump snapshot.
- * - Resets the live counter to zero after clearStandby().
+ * - Recalibrates the live counter to reflect the active buffer after clearStandby().
  * - Accumulates post-dump entries in the new active buffer.
  */
 public class DictionaryRotationTest extends AbstractProfilerTest {
@@ -56,12 +55,12 @@ public class DictionaryRotationTest extends AbstractProfilerTest {
         }
 
         // dump() triggers: rotate() → lockAll() → jfr.dump(snapshot) → unlockAll()
-        //                            → clearStandby() (resets counter to 0, frees pre-dump buffer)
-        Path snapshot = Files.createTempFile(Paths.get("/tmp/recordings"), "DictionaryRotation_snapshot_", ".jfr");
+        //                            → clearStandby() (recalibrates counter to active size, frees scratch buffer)
+        Path snapshot = Files.createTempFile("DictionaryRotation_snapshot_", ".jfr");
         try {
             dump(snapshot);
 
-            // Counter is reset to 0 by clearStandby() — no endpoint writes since dump
+            // Counter recalibrated to active buffer size — 0 because no post-dump inserts yet
             Map<String, Long> afterDump = profiler.getDebugCounters();
             assertEquals(0L, afterDump.getOrDefault("dictionary_endpoints_keys", -1L),
                     "dictionary_endpoints_keys must be 0 after clearStandby");
