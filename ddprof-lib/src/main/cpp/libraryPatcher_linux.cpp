@@ -11,13 +11,13 @@
 #include "guards.h"
 
 #include <cassert>
-#include <cxxabi.h>
 #include <dlfcn.h>
 #include <limits.h>
 #include <string.h>
 #include <stdlib.h>
 
 typedef void* (*func_start_routine)(void*);
+
 
 SpinLock LibraryPatcher::_lock;
 const char* LibraryPatcher::_profiler_name = nullptr;
@@ -86,33 +86,54 @@ static void init_tls_and_register() {
 // 1. Register the newly created thread to profiler
 // 2. Call real start routine
 // 3. Unregister the thread from profiler once the routine is completed.
-// This version is to workaround a precarious stack guard corruption,
-// which only happens in Linux/musl/aarch64/jdk11
-__attribute__((visibility("hidden")))
+// This version works around stack corruption observed on musl/aarch64/JDK11:
+//
+// Empirical observation (hs_err analysis): after DEOPT PACKING fires on a
+// thread running compiled lambda$measureContention$0 at sp=0x...49d0, this
+// wrapper's frame (sp=0x...5020, ~144 bytes below thread stack top) shows a
+// corrupted FP (odd address 0x...5001) and a corrupted stack canary.  The
+// corruption is confined to the top ~224 bytes of the stack (the region between
+// DEOPT PACKING sp and the thread stack top).
+//
+// The source of the corruption is the interpreter-frame rebuild sequence in
+// HotSpot's deoptimization blob (generate_deopt_blob in
+// sharedRuntime_aarch64.cpp, openjdk/jdk11u).  After popping the compiled
+// frame the blob executes "sub sp, sp, caller_adjustment" followed by a loop
+// of enter() calls (each doing "stp rfp, lr, [sp, #-16]!") to lay down
+// replacement interpreter frames.  When musl's small thread stack places this
+// wrapper immediately above the compiled frame, the enter() writes can reach
+// into this wrapper's frame, corrupting the saved FP and stack canary.
+// The mechanism is the same "precarious stack guard corruption" the noinline
+// helpers above already defend against for SignalBlocker's sigset_t.
+//
+// Two symptoms arise from this corruption:
+//
+// (a) Stack-canary crash: -fstack-protector-strong inserts a canary whenever
+//     the frame has a non-trivially destructed local (e.g. a Cleanup struct).
+//     That canary lands in the corruption zone; the epilogue fires
+//     __stack_chk_fail.  no_stack_protector removes the canary.
+//
+// (b) Corrupted-LR crash: even without a canary, `return` loads the saved LR
+//     from the corrupted frame and jumps to a garbage address.  pthread_exit()
+//     terminates the thread without using LR.  HotSpot on musl returns normally
+//     from java_start (no forced-unwind), so no exception-based cleanup path
+//     is needed.
+//
+// Cleanup reads tid from TLS (via ProfiledThread::currentTid()) rather than
+// from a stack variable, so it is correct even after the frame is corrupted.
+__attribute__((visibility("hidden"), no_stack_protector))
 static void* start_routine_wrapper_spec(void* args) {
     RoutineInfo* thr = (RoutineInfo*)args;
     func_start_routine routine = thr->routine();
     void* params = thr->args();
     delete_routine_info(thr);
     init_tls_and_register();
-    // Capture tid from TLS while it is guaranteed non-null (set by init_tls_and_register above).
-    // Using a cached tid avoids the lazy-allocating ProfiledThread::current() path inside
-    // the catch block, which may call 'new' at an unsafe point during forced unwind.
-    int tid = ProfiledThread::currentTid();
-    // IBM J9 (and glibc pthread_cancel) use abi::__forced_unwind for thread teardown.
-    // Catch it explicitly so cleanup runs even during forced unwind, then re-throw
-    // to allow the thread to exit properly.  A plain catch(...) without re-throw
-    // would swallow the forced unwind and prevent the thread from actually exiting.
-    try {
-        routine(params);
-    } catch (abi::__forced_unwind&) {
-        Profiler::unregisterThread(tid);
-        ProfiledThread::release();
-        throw;
-    }
-    Profiler::unregisterThread(tid);
+    routine(params);
+    Profiler::unregisterThread(ProfiledThread::currentTid());
     ProfiledThread::release();
-    return nullptr;
+    // pthread_exit instead of 'return': the saved LR in this frame is corrupted
+    // by DEOPT PACKING; returning would jump to a garbage address.
+    pthread_exit(nullptr);
 }
 
 static int pthread_create_hook_spec(pthread_t* thread,
@@ -141,7 +162,6 @@ static void* start_routine_wrapper(void* args) {
     RoutineInfo* thr = (RoutineInfo*)args;
     func_start_routine routine;
     void* params;
-    int tid;
     {
         // Block profiling signals while accessing and freeing RoutineInfo
         // and during TLS initialization. Under ASAN, new/delete/
@@ -159,26 +179,15 @@ static void* start_routine_wrapper(void* args) {
         params = thr->args();
         delete thr;
         ProfiledThread::initCurrentThread();
-        tid = ProfiledThread::currentTid();
         ProfiledThread::currentSignalSafe()->startInitWindow();
-        Profiler::registerThread(tid);
+        Profiler::registerThread(ProfiledThread::currentTid());
     }
-    // IBM J9 (and glibc pthread_cancel) use abi::__forced_unwind for thread
-    // teardown.  pthread_cleanup_push/pop creates a __pthread_cleanup_class
-    // with an implicitly-noexcept destructor; when J9's forced-unwind
-    // propagates through it, the C++ runtime calls std::terminate() → abort().
-    // Replacing with an explicit catch ensures cleanup runs on forced unwind
-    // without triggering terminate, and the re-throw lets the thread exit cleanly.
-    // pthread_exit() is also covered: on glibc it raises its own __forced_unwind.
-    try {
-        routine(params);
-    } catch (abi::__forced_unwind&) {
-        Profiler::unregisterThread(tid);
-        ProfiledThread::release();
-        throw;
-    }
-    Profiler::unregisterThread(tid);
-    ProfiledThread::release();
+    // RAII cleanup: reads tid from TLS in the destructor (same rationale as
+    // start_routine_wrapper_spec: avoids storing state on a potentially corruptible frame).
+    struct Cleanup {
+        ~Cleanup() { Profiler::unregisterThread(ProfiledThread::currentTid()); ProfiledThread::release(); }
+    } cleanup;
+    routine(params);
     return nullptr;
 }
 
