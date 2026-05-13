@@ -55,6 +55,20 @@ public:
   }
 };
 
+// Unregister the current thread from the profiler and release its TLS under a
+// single SignalBlocker to close the race window between unregisterThread()
+// returning and release() acquiring its internal guard (PROF-14603).  Without
+// this, a SIGVTALRM delivered in that window could call currentSignalSafe()
+// and dereference a now-freed ProfiledThread.  Kept noinline so the
+// SignalBlocker's sigset_t does not appear in the caller's stack frame on
+// musl/aarch64 where the deopt blob may corrupt the wrapper's stack guard.
+__attribute__((noinline))
+static void unregister_and_release(int tid) {
+    SignalBlocker blocker;
+    Profiler::unregisterThread(tid);
+    ProfiledThread::release();
+}
+
 #ifdef __aarch64__
 // Delete RoutineInfo with profiling signals blocked to prevent ASAN
 // allocator lock reentrancy. Kept noinline so SignalBlocker's sigset_t
@@ -129,8 +143,9 @@ static void* start_routine_wrapper_spec(void* args) {
     delete_routine_info(thr);
     init_tls_and_register();
     routine(params);
-    Profiler::unregisterThread(ProfiledThread::currentTid());
-    ProfiledThread::release();
+    // unregister_and_release() holds SignalBlocker for the duration, closing the
+    // race window between unregisterThread() and release() (PROF-14603).
+    unregister_and_release(ProfiledThread::currentTid());
     // pthread_exit instead of 'return': the saved LR in this frame is corrupted
     // by DEOPT PACKING; returning would jump to a garbage address.
     pthread_exit(nullptr);
@@ -184,8 +199,9 @@ static void* start_routine_wrapper(void* args) {
     }
     // RAII cleanup: reads tid from TLS in the destructor (same rationale as
     // start_routine_wrapper_spec: avoids storing state on a potentially corruptible frame).
+    // unregister_and_release() wraps the two calls under SignalBlocker (PROF-14603).
     struct Cleanup {
-        ~Cleanup() { Profiler::unregisterThread(ProfiledThread::currentTid()); ProfiledThread::release(); }
+        ~Cleanup() { unregister_and_release(ProfiledThread::currentTid()); }
     } cleanup;
     routine(params);
     return nullptr;
