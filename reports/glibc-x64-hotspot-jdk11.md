@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk11
 
 ## glibc-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-05-13 05:39:38 EDT
+**Date:** 2026-05-13 06:45:08 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 86 |
-| CPU Cores (end) | 81 |
+| CPU Cores (start) | 84 |
+| CPU Cores (end) | 79 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-hotspot-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 81-86 cores)</summary>
+<summary>CPU Timeline (3 unique values: 75-84 cores)</summary>
 
 ```
-1778664877 86
-1778664882 86
-1778664887 86
-1778664892 86
-1778664897 81
-1778664902 81
-1778664907 81
-1778664912 81
-1778664917 81
-1778664922 81
-1778664927 81
-1778664932 81
-1778664937 81
-1778664942 81
-1778664947 81
-1778664952 81
-1778664957 81
-1778664962 81
-1778664967 81
-1778664972 81
+1778668843 84
+1778668848 84
+1778668853 84
+1778668858 84
+1778668863 75
+1778668868 75
+1778668873 75
+1778668878 75
+1778668883 75
+1778668888 79
+1778668893 79
+1778668898 79
+1778668903 79
+1778668908 79
+1778668913 79
+1778668918 79
+1778668923 79
+1778668928 79
+1778668933 79
+1778668938 79
 ```
 </details>
 
