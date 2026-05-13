@@ -145,6 +145,22 @@ void Dictionary::collect(std::map<unsigned int, const char *> &map) {
   collect(map, _table);
 }
 
+void Dictionary::mergeFrom(const Dictionary &src) {
+  mergeFrom(src._table);
+}
+
+void Dictionary::mergeFrom(const DictTable *table) {
+  for (int i = 0; i < ROWS; i++) {
+    const DictRow *row = &table->rows[i];
+    for (int j = 0; j < CELLS; j++) {
+      if (const char *key = row->keys[j]) {
+        lookup(key, strlen(key));
+      }
+    }
+    if (row->next) mergeFrom(row->next);
+  }
+}
+
 void Dictionary::collect(std::map<unsigned int, const char *> &map,
                          DictTable *table) {
   for (int i = 0; i < ROWS; i++) {

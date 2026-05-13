@@ -56,7 +56,7 @@ int RefCountGuard::getThreadRefCountSlot() {
     return -1;
 }
 
-RefCountGuard::RefCountGuard(CallTraceHashTable* resource) : _active(true), _my_slot(-1) {
+RefCountGuard::RefCountGuard(void* resource) : _active(true), _my_slot(-1) {
     // Get thread refcount slot using signal-safe collision resolution
     _my_slot = getThreadRefCountSlot();
 
@@ -76,7 +76,7 @@ RefCountGuard::RefCountGuard(CallTraceHashTable* resource) : _active(true), _my_
     //   - Safe: we haven't "activated" protection yet
     //
     // After step 2, slot is fully active and protects the resource
-    __atomic_store_n(&refcount_slots[_my_slot].active_table, resource, __ATOMIC_RELEASE);
+    __atomic_store_n(&refcount_slots[_my_slot].active_ptr, resource, __ATOMIC_RELEASE);
     __atomic_fetch_add(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
 }
 
@@ -90,7 +90,7 @@ RefCountGuard::~RefCountGuard() {
         // Step 2 clears the pointer (cleanup)
         // No window where scanner thinks slot protects a table it doesn't
         __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
-        __atomic_store_n(&refcount_slots[_my_slot].active_table, nullptr, __ATOMIC_RELEASE);
+        __atomic_store_n(&refcount_slots[_my_slot].active_ptr, nullptr, __ATOMIC_RELEASE);
 
         // Release slot ownership
         __atomic_store_n(&slot_owners[_my_slot], 0, __ATOMIC_RELEASE);
@@ -106,7 +106,7 @@ RefCountGuard& RefCountGuard::operator=(RefCountGuard&& other) noexcept {
         // Clean up current state with same ordering as destructor
         if (_active && _my_slot >= 0) {
             __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
-            __atomic_store_n(&refcount_slots[_my_slot].active_table, nullptr, __ATOMIC_RELEASE);
+            __atomic_store_n(&refcount_slots[_my_slot].active_ptr, nullptr, __ATOMIC_RELEASE);
             __atomic_store_n(&slot_owners[_my_slot], 0, __ATOMIC_RELEASE);
         }
 
@@ -120,7 +120,7 @@ RefCountGuard& RefCountGuard::operator=(RefCountGuard&& other) noexcept {
     return *this;
 }
 
-void RefCountGuard::waitForRefCountToClear(CallTraceHashTable* table_to_delete) {
+void RefCountGuard::waitForRefCountToClear(void* table_to_delete) {
     // Check refcount slots for the table we want to delete
     //
     // POINTER-FIRST PROTOCOL GUARANTEES:
@@ -150,7 +150,7 @@ void RefCountGuard::waitForRefCountToClear(CallTraceHashTable* table_to_delete) 
             }
 
             // Count > 0, so slot is active - check which table it protects
-            CallTraceHashTable* table = __atomic_load_n(&refcount_slots[i].active_table, __ATOMIC_ACQUIRE);
+            void* table = __atomic_load_n(&refcount_slots[i].active_ptr, __ATOMIC_ACQUIRE);
             if (table == table_to_delete) {
                 all_clear = false;
                 break;
@@ -176,7 +176,7 @@ void RefCountGuard::waitForRefCountToClear(CallTraceHashTable* table_to_delete) 
                 continue;
             }
 
-            CallTraceHashTable* table = __atomic_load_n(&refcount_slots[i].active_table, __ATOMIC_ACQUIRE);
+            void* table = __atomic_load_n(&refcount_slots[i].active_ptr, __ATOMIC_ACQUIRE);
             if (table == table_to_delete) {
                 all_clear = false;
                 break;
@@ -266,15 +266,15 @@ CallTraceStorage::CallTraceStorage() : _active_storage(nullptr), _standby_storag
     _preserve_set_buffer.rehash(static_cast<size_t>(1024 / 0.75f));
 
     // Initialize triple-buffered storage
-    auto active_table = std::make_unique<CallTraceHashTable>();
-    active_table->setInstanceId(getNextInstanceId());
-    active_table->setParentStorage(this);
-    __atomic_store_n(&_active_storage, active_table.release(), __ATOMIC_RELEASE);
+    auto active_ptr = std::make_unique<CallTraceHashTable>();
+    active_ptr->setInstanceId(getNextInstanceId());
+    active_ptr->setParentStorage(this);
+    __atomic_store_n(&_active_storage, active_ptr.release(), __ATOMIC_RELEASE);
 
-    auto standby_table = std::make_unique<CallTraceHashTable>();
-    standby_table->setParentStorage(this);
-    standby_table->setInstanceId(getNextInstanceId());
-    __atomic_store_n(&_standby_storage, standby_table.release(), __ATOMIC_RELEASE);
+    auto standby_ptr = std::make_unique<CallTraceHashTable>();
+    standby_ptr->setParentStorage(this);
+    standby_ptr->setInstanceId(getNextInstanceId());
+    __atomic_store_n(&_standby_storage, standby_ptr.release(), __ATOMIC_RELEASE);
     
     auto scratch_table = std::make_unique<CallTraceHashTable>();
     scratch_table->setParentStorage(this);

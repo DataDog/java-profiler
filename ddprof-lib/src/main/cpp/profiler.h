@@ -57,9 +57,8 @@ class VM;
 
 enum State { NEW, IDLE, RUNNING, TERMINATED };
 
-// Aligned to satisfy SpinLock member alignment requirement (64 bytes)  
-// Required because this class contains multiple SpinLock members:
-// _class_map_lock and _locks[]
+// Aligned to satisfy SpinLock member alignment requirement (64 bytes)
+// Required because this class contains the _locks[] SpinLock array.
 class alignas(alignof(SpinLock)) Profiler {
   friend VM;
 
@@ -79,9 +78,9 @@ private:
   // --
 
   ThreadInfo _thread_info;
-  Dictionary _class_map;
-  Dictionary _string_label_map;
-  Dictionary _context_value_map;
+  TripleBufferedDictionary _class_map;
+  TripleBufferedDictionary _string_label_map;
+  TripleBufferedDictionary _context_value_map;
   ThreadFilter _thread_filter;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
@@ -99,7 +98,6 @@ private:
   volatile u64 _total_samples;
   u64 _failures[ASGCT_FAILURE_TYPES];
 
-  SpinLock _class_map_lock;
   SpinLock _locks[CONCURRENCY_LEVEL];
   CallTraceBuffer *_calltrace_buffer[CONCURRENCY_LEVEL];
   int _max_stack_depth;
@@ -155,7 +153,7 @@ public:
         _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
         _alloc_engine(NULL), _event_mask(0),
         _start_time(0), _stop_time(0), _epoch(0), _timer_id(NULL),
-        _total_samples(0), _failures(), _class_map_lock(),
+        _total_samples(0), _failures(),
         _max_stack_depth(0), _features(), _safe_mode(0), _cstack(CSTACK_NO),
         _thread_events_state(JVMTI_DISABLE), _libs(Libraries::instance()),
         _num_context_attributes(0), _omit_stacktraces(false),
@@ -203,11 +201,9 @@ public:
   Engine *cpuEngine() { return _cpu_engine; }
   Engine *wallEngine() { return _wall_engine; }
 
-  Dictionary *classMap() { return &_class_map; }
-  SharedLockGuard classMapSharedGuard() { return SharedLockGuard(&_class_map_lock); }
-  BoundedOptionalSharedLockGuard classMapTrySharedGuard() { return BoundedOptionalSharedLockGuard(&_class_map_lock); }
-  Dictionary *stringLabelMap() { return &_string_label_map; }
-  Dictionary *contextValueMap() { return &_context_value_map; }
+  TripleBufferedDictionary *classMap() { return &_class_map; }
+  TripleBufferedDictionary *stringLabelMap() { return &_string_label_map; }
+  TripleBufferedDictionary *contextValueMap() { return &_context_value_map; }
   u32 numContextAttributes() { return _num_context_attributes; }
   ThreadFilter *threadFilter() { return &_thread_filter; }
 

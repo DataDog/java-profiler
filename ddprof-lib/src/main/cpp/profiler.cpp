@@ -1079,12 +1079,10 @@ Error Profiler::start(Arguments &args, bool reset) {
     _total_samples = 0;
     memset(_failures, 0, sizeof(_failures));
 
-    // Reset dictionaries and bitmaps
-    // Reset class map under lock because ObjectSampler may try to use it while
-    // it is being cleaned up
-    _class_map_lock.lock();
-    _class_map.clear();
-    _class_map_lock.unlock();
+    // Reset dictionaries
+    _class_map.clearAll();
+    _string_label_map.clearAll();
+    _context_value_map.clearAll();
 
     // Reset call trace storage
     if (!_omit_stacktraces) {
@@ -1300,6 +1298,12 @@ Error Profiler::stop() {
   // correct counts in the recording
   _thread_info.reportCounters();
 
+  // Promote accumulated writes to standby so that writeCpool() (called from
+  // ~Recording() inside _jfr.stop()) reads a complete, stable snapshot.
+  _class_map.rotatePersistent();
+  _string_label_map.rotate();
+  _context_value_map.rotate();
+
   // Acquire all spinlocks to avoid race with remaining signals
   lockAll();
   _jfr.stop();  // JFR serialization must complete before unpatching libraries
@@ -1388,18 +1392,30 @@ Error Profiler::dump(const char *path, const int length) {
     Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
                   native_libs.memoryUsage());
 
+    // Promote current writes to standby before blocking signal handlers.
+    // After lockAll() returns, all in-flight signal-handler writes to the old
+    // active have completed (signal handlers hold per-thread locks).  JNI writers
+    // to string/context maps also complete quickly; any that sneak past rotate()
+    // land in the new active and are picked up in the next cycle.
+    //
+    // rotatePersistent() pre-populates the future active from the current
+    // active so that bounded_lookup never misses a previously-registered class.
+    _class_map.rotatePersistent();
+    _string_label_map.rotate();
+    _context_value_map.rotate();
+
     lockAll();
     Error err = _jfr.dump(path, length);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
 
-    // Note: No need to clear call trace storage here - the double buffering system
-    // in processTraces() already handles clearing old traces while preserving
+    // Note: No need to clear call trace storage here - the triple-buffering in
+    // processTraces() already handles clearing old traces while preserving
     // traces referenced by surviving LivenessTracker objects
     unlockAll();
-    // Reset classmap
-    _class_map_lock.lock();
-    _class_map.clear();
-    _class_map_lock.unlock();
+
+    _class_map.clearStandby();
+    _string_label_map.clearStandby();
+    _context_value_map.clearStandby();
 
     _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();
@@ -1530,13 +1546,7 @@ void Profiler::shutdown(Arguments &args) {
 }
 
 int Profiler::lookupClass(const char *key, size_t length) {
-  if (_class_map_lock.tryLockShared()) {
-    int ret = _class_map.lookup(key, length);
-    _class_map_lock.unlockShared();
-    return ret;
-  }
-  // unable to lookup the class
-  return -1;
+  return _class_map.lookup(key, length);
 }
 
 int Profiler::status(char* status, int max_len) {
