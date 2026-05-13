@@ -184,8 +184,11 @@ static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
     return result;
   } else {
     int tid = ProfiledThread::currentTid();
-    Profiler::unregisterThread(tid);
-    ProfiledThread::release();
+    {
+      SignalBlocker blocker;
+      Profiler::unregisterThread(tid);
+      ProfiledThread::release();
+    }
     return pthread_setspecific(key, value);
   }
 }
