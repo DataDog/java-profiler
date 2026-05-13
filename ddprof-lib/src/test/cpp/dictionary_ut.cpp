@@ -93,27 +93,21 @@ TEST_F(TripleBufferedDictionaryTest, BoundedLookupGoesToActive) {
     EXPECT_EQ(id, dict.bounded_lookup("ep", 2, 100));
 }
 
-// After rotate() + clearStandby() the dump buffer becomes recent.
-// A read-only bounded_lookup (size_limit=0) must find keys from recent.
-// After a second rotate() + clearStandby() the old recent is cleared and
-// those keys are no longer visible — synthetic-class churn cannot leak.
-TEST_F(TripleBufferedDictionaryTest, BoundedLookupReadOnlyFallsBackToRecent) {
+// bounded_lookup with size_limit=0 is read-only and checks the active buffer
+// only — there is no fallback to older snapshots.  Keys inserted before rotate
+// move to the dump buffer and are no longer visible from bounded_lookup.
+TEST_F(TripleBufferedDictionaryTest, BoundedLookupReadOnlyDoesNotFallBack) {
     unsigned int id = dict.lookup("cls", 3);
     EXPECT_GT(id, 0U);
 
-    dict.rotate();
-    dict.clearStandby();  // dump buffer (has "cls") promoted to recent
-
-    // "cls" is now in recent; active is empty → fallback must find it
+    // Before rotate: key is in active → visible
     EXPECT_EQ(id, dict.bounded_lookup("cls", 3, 0));
 
-    // Unknown key must still return INT_MAX
-    EXPECT_EQ(static_cast<unsigned int>(INT_MAX), dict.bounded_lookup("missing", 7, 0));
-
-    // Second dump cycle clears the old recent → "cls" must disappear
     dict.rotate();
-    dict.clearStandby();  // new dump buffer (empty) becomes recent; "cls" buffer freed
+
+    // After rotate: key is in dump buffer, new active is empty → INT_MAX
     EXPECT_EQ(static_cast<unsigned int>(INT_MAX), dict.bounded_lookup("cls", 3, 0));
+    EXPECT_EQ(static_cast<unsigned int>(INT_MAX), dict.bounded_lookup("missing", 7, 0));
 }
 
 TEST_F(TripleBufferedDictionaryTest, RotateMakesOldActiveReadableAsStandby) {
