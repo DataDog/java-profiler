@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk17
 
 ## musl-arm64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-05-13 09:58:40 EDT
+**Date:** 2026-05-13 10:29:47 EDT
 
 ### Configuration
 | Setting | Value |
@@ -24,50 +24,50 @@ title: musl-arm64-openj9-jdk17
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ✅
+#### Scenario 1: Profiler-Only ⚠️
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 549 |
-| Sample Rate | 9.15/sec |
-| Health Score | 572% |
-| Threads | 9 |
-| Allocations | 375 |
+| Status | N/A |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
-#### Scenario 2: Tracer+Profiler ✅
+#### Scenario 2: Tracer+Profiler ⚠️
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 822 |
-| Sample Rate | 13.70/sec |
-| Health Score | 856% |
-| Threads | 11 |
-| Allocations | 525 |
+| Status | N/A |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 <details>
 <summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1778680389 64
-1778680394 64
-1778680399 64
-1778680404 64
-1778680409 64
-1778680414 64
-1778680419 64
-1778680424 64
-1778680429 64
-1778680434 64
-1778680439 64
-1778680444 64
-1778680449 64
-1778680454 64
-1778680459 64
-1778680464 64
-1778680469 64
-1778680474 64
-1778680479 64
-1778680484 64
+1778682275 64
+1778682281 64
+1778682286 64
+1778682291 64
+1778682296 64
+1778682301 64
+1778682306 64
+1778682311 64
+1778682316 64
+1778682321 64
+1778682326 64
+1778682331 64
+1778682336 64
+1778682341 64
+1778682346 64
+1778682351 64
+1778682356 64
+1778682361 64
+1778682366 64
+1778682371 64
 ```
 </details>
 
