@@ -13,36 +13,34 @@
  *
  *   active   — receives new writes (signal handlers, fill-path)
  *   dump     — snapshot being read by the current dump (old active after rotate)
- *   recent   — last *completed* dump's snapshot; stable for the full profiling
- *              interval between dumps; used for read-only fallback lookups
- *              (e.g. walkVM vtable-stub class resolution)
+ *   scratch  — two rotations behind active; ready to be cleared.  At least one
+ *              full dump cycle has elapsed since this buffer was last in the
+ *              "dump" role, which gives any writer that loaded a stale active
+ *              pointer time to complete its lookup before the buffer is freed.
  *
  * Lifecycle per dump cycle:
  *   rotate()        — advance active index; dump thread reads dumpBuffer()
  *   ...dump runs, populating dumpBuffer() with fill-path data...
- *   advanceRecent() — publish dumpBuffer() as the new recent; returns the
- *                     old recent so the caller can drain in-flight readers
- *                     (RefCountGuard::waitForRefCountToClear) then clear it
+ *   ...caller clears clearTarget() (the scratch buffer)...
  *
- * Memory: at most two non-empty buffers at any time (recent + active).
- * Churn: stale entries purged after at most one full dump cycle.
+ * Memory: at most two non-empty buffers at any time (active + dump).
  *
  * Thread safety:
- *   _active_index and _recent_ptr are accessed via __atomic_* with
- *   acquire/release ordering.  Callers that read from recent() must
- *   protect against concurrent advanceRecent()+clear() via RefCountGuard.
+ *   _active_index is accessed via __atomic_* with acquire/release ordering.
+ *   Writers may briefly operate on a buffer that has just transitioned to
+ *   "dump" or "scratch" (TOCTOU at rotate); this is safe because Dictionary
+ *   (and similar) operations are lock-free internally and the scratch buffer
+ *   is not cleared until one full dump cycle later.
  */
 template<typename T>
 class TripleBufferRotator {
     T* const _buf[3];
     volatile int _active_index;   // 0/1/2; cycles on rotate()
-    T* volatile _recent_ptr;      // last completed dump's buffer
 
 public:
     // a/b/c must remain valid for the lifetime of this rotator.
-    // c is used as the initial recent pointer (empty at construction).
     TripleBufferRotator(T* a, T* b, T* c)
-        : _buf{a, b, c}, _active_index(0), _recent_ptr(c) {}
+        : _buf{a, b, c}, _active_index(0) {}
 
     T* active() const {
         return _buf[__atomic_load_n(&_active_index, __ATOMIC_ACQUIRE)];
@@ -53,9 +51,11 @@ public:
         return _buf[(__atomic_load_n(&_active_index, __ATOMIC_ACQUIRE) + 2) % 3];
     }
 
-    // Last completed dump's buffer.  Stable between advanceRecent() calls.
-    T* recent() const {
-        return __atomic_load_n(const_cast<T* const volatile*>(&_recent_ptr), __ATOMIC_ACQUIRE);
+    // Buffer scheduled for the next clear: (active_index + 1) % 3.
+    // At least one full dump cycle has elapsed since this buffer was the
+    // "dump" role, so any stale writer pointer to it is no longer in use.
+    T* clearTarget() const {
+        return _buf[(__atomic_load_n(&_active_index, __ATOMIC_ACQUIRE) + 1) % 3];
     }
 
     // Advance _active_index by 1 mod 3.
@@ -65,23 +65,9 @@ public:
         __atomic_store_n(&_active_index, (old + 1) % 3, __ATOMIC_RELEASE);
     }
 
-    // Atomically publish dumpBuffer() as the new recent.
-    // Returns the previous recent; the caller must:
-    //   1. RefCountGuard::waitForRefCountToClear(old_recent)
-    //   2. old_recent->clear()  (or equivalent cleanup)
-    T* advanceRecent() {
-        T* new_recent = dumpBuffer();
-        return __atomic_exchange_n(
-            const_cast<T**>(const_cast<T* const volatile*>(&_recent_ptr)),
-            new_recent, __ATOMIC_ACQ_REL);
-    }
-
     // Reset to initial state (no concurrent writers/readers).
-    void reset(T* initial_recent) {
+    void reset() {
         __atomic_store_n(&_active_index, 0, __ATOMIC_RELEASE);
-        __atomic_store_n(
-            const_cast<T**>(const_cast<T* const volatile*>(&_recent_ptr)),
-            initial_recent, __ATOMIC_RELEASE);
     }
 };
 

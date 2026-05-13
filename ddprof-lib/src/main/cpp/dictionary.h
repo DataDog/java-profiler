@@ -18,9 +18,7 @@
 #define _DICTIONARY_H
 
 #include "counters.h"
-#include "refCountGuard.h"
 #include "tripleBuffer.h"
-#include <climits>
 #include <map>
 #include <stddef.h>
 #include <stdlib.h>
@@ -99,19 +97,24 @@ public:
 //
 //   active  — current writes (signal handlers + fill-path)
 //   dump    — snapshot being read by the current dump (old active after rotate)
-//   recent  — last *completed* dump's snapshot; entries may be up to one full
-//             dump interval stale; used as a best-effort read-only fallback
-//             (size_limit=0, no malloc) for signal-safe lookups that miss active
+//   scratch — two rotations behind active; cleared lock-free by clearStandby()
+//
+// The scratch role exists for safe lock-free reclamation: when a buffer is in
+// the scratch role, at least one full dump cycle has passed since it was last
+// in the "active" or "dump" role.  Signal handlers (per-thread locks drained
+// by lockAll) and JNI writers (microsecond lookups) cannot still hold a stale
+// pointer to it after such a long grace period, so it is safe to clear without
+// any explicit drain.
 //
 // Lifecycle per dump cycle:
-//   rotate()          — advance active; dump thread reads standby()
-//   standby()->...    — dump thread reads snapshot lock-free
-//   clearStandby()    — publish standby as new recent, drain in-flight readers
-//                       via RefCountGuard::waitForRefCountToClear, then clear
-//                       the old recent (stale, two cycles old)
+//   rotate()        — advance active; dump thread reads standby()
+//   standby()->...  — dump thread reads snapshot lock-free
+//   clearStandby()  — clear the scratch buffer (NOT the just-completed dump
+//                     buffer — that becomes scratch next cycle and is cleared
+//                     one cycle later)
 //
-// Memory: at most two non-empty buffers at any time.
-// Churn: entries from dynamic classes purged after at most one full dump cycle.
+// Memory: at most two non-empty buffers at any time (active + dump).
+// Churn: entries from dynamic classes purged after at most two full dump cycles.
 //
 // For profiler reset call clearAll().
 class TripleBufferedDictionary {
@@ -119,7 +122,6 @@ class TripleBufferedDictionary {
     Dictionary _a;
     Dictionary _b;
     Dictionary _c;
-    // _c is the initial recent; active starts at _a (index 0).
     TripleBufferRotator<Dictionary> _rot;
 
 public:
@@ -133,28 +135,11 @@ public:
         return _rot.active()->lookup(key, length);
     }
 
-    // For read-only lookups (size_limit == 0), falls back to the last completed
-    // dump's snapshot when the key is not found in active.  The fallback data
-    // may be up to one full dump interval stale; callers must tolerate misses
-    // for keys not yet seen in any completed dump.
-    //
-    // The fallback is guarded by RefCountGuard (pointer-first protocol):
-    //   1. Load _recent_ptr, acquire guard (store ptr, increment count)
-    //   2. Revalidate: if _recent_ptr changed, drop (rare, ~10-100ns window)
-    //   3. Read from recent; guard destructor decrements count
-    //
-    // clearStandby() calls waitForRefCountToClear(old_recent) before freeing
-    // pages, ensuring no in-flight reader can access freed memory.
+    // Signal-safe lookup against the active buffer only.  Returns INT_MAX if
+    // the key is not yet present; callers must tolerate misses — there is no
+    // fallback to older snapshots.
     unsigned int bounded_lookup(const char* key, size_t length, int size_limit) {
-        unsigned int result = _rot.active()->bounded_lookup(key, length, size_limit);
-        if (result == (unsigned int)INT_MAX && size_limit == 0) {
-            Dictionary* recent = _rot.recent();
-            if (recent == nullptr) return INT_MAX;
-            RefCountGuard guard((void*)recent);
-            if (_rot.recent() != recent) return INT_MAX;  // lost the race, drop
-            result = recent->bounded_lookup(key, length, 0);
-        }
-        return result;
+        return _rot.active()->bounded_lookup(key, length, size_limit);
     }
 
     // Returns the dump buffer for lock-free read by the dump thread.
@@ -168,14 +153,13 @@ public:
     // naturally (signal handlers: per-thread locks; JNI threads: fast CAS).
     void rotate() { _rot.rotate(); }
 
-    // Publishes the just-completed dump buffer as the new recent, then drains
-    // all in-flight bounded_lookup readers on the old recent via RefCountGuard
-    // before freeing its pages.  Call after dump completes.
+    // Clears the scratch buffer (two rotations behind active).  Safe to do
+    // lock-free: the grace period since its last use as active or dump is one
+    // full dump cycle, much longer than any in-flight signal-handler or JNI
+    // lookup.  Call after the dump completes.
     void clearStandby() {
-        Dictionary* old_recent = _rot.advanceRecent();
-        RefCountGuard::waitForRefCountToClear((void*)old_recent);
-        old_recent->clear();
-        // old_recent->clear() already zeroed the named counter slot via _id;
+        _rot.clearTarget()->clear();
+        // clearTarget()->clear() already zeroed the named counter slot via _id;
         // restate explicitly for clarity and belt-and-suspenders.
         Counters::set(DICTIONARY_KEYS,       0,                 _counter_id);
         Counters::set(DICTIONARY_KEYS_BYTES, 0,                 _counter_id);
@@ -188,7 +172,7 @@ public:
         _a.clear();
         _b.clear();
         _c.clear();
-        _rot.reset(&_c);
+        _rot.reset();
     }
 };
 
