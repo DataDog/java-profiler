@@ -250,6 +250,38 @@ TEST(DictionaryConcurrent, SignalHandlerBoundedLookupVsDumpClear) {
     EXPECT_GT(total_clears.load(), 0L);
 }
 
+// (4a) Bulk exclusive-lock insert (mimicking preregisterLoadedClasses) followed
+// by read-only bounded_lookup(0) on each inserted key. Verifies that the
+// pre-registration contract holds: every key inserted while the exclusive lock
+// is held is subsequently visible to bounded_lookup(0) from a shared context.
+TEST(DictionaryConcurrent, BulkInsertThenBoundedLookupHitsMirrorInsertedIds) {
+    Dictionary dict(/*id=*/0);
+
+    constexpr int kBulk = 50;
+    char keys[kBulk][64];
+    unsigned int inserted_ids[kBulk];
+
+    // Bulk insert under an exclusive lock — mirrors preregisterLoadedClasses.
+    for (int i = 0; i < kBulk; i++) {
+        snprintf(keys[i], sizeof(keys[i]), "java/util/BulkClass%d", i);
+        inserted_ids[i] = dict.lookup(keys[i], strlen(keys[i]));
+        ASSERT_NE(0u, inserted_ids[i]);
+        ASSERT_NE(static_cast<unsigned int>(INT_MAX), inserted_ids[i]);
+    }
+
+    // Read back with bounded_lookup(0) — must return the same id, no malloc.
+    for (int i = 0; i < kBulk; i++) {
+        unsigned int found = dict.bounded_lookup(keys[i], strlen(keys[i]), 0);
+        EXPECT_EQ(inserted_ids[i], found)
+            << "bounded_lookup returned wrong id for key " << keys[i];
+    }
+
+    // A never-inserted key must return INT_MAX.
+    const char* absent = "java/util/NeverInserted";
+    EXPECT_EQ(static_cast<unsigned int>(INT_MAX),
+              dict.bounded_lookup(absent, strlen(absent), 0));
+}
+
 // (4) Same race as (3) but using BoundedOptionalSharedLockGuard, which is the
 // guard classMapTrySharedGuard() now returns in hotspotSupport.cpp. The bounded
 // variant may fail spuriously under reader pressure (≤5 CAS attempts); this

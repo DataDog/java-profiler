@@ -1084,6 +1084,9 @@ Error Profiler::start(Arguments &args, bool reset) {
     // it is being cleaned up
     _class_map_lock.lock();
     _class_map.clear();
+    if (args._features.vtable_target && VMStructs::hasClassNames()) {
+      preregisterLoadedClasses(VM::jvmti());
+    }
     _class_map_lock.unlock();
 
     // Reset call trace storage
@@ -1399,6 +1402,9 @@ Error Profiler::dump(const char *path, const int length) {
     // Reset classmap
     _class_map_lock.lock();
     _class_map.clear();
+    if (_features.vtable_target && VMStructs::hasClassNames()) {
+      preregisterLoadedClasses(VM::jvmti());
+    }
     _class_map_lock.unlock();
 
     _thread_info.clearAll(thread_ids);
@@ -1537,6 +1543,38 @@ int Profiler::lookupClass(const char *key, size_t length) {
   }
   // unable to lookup the class
   return -1;
+}
+
+void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti) {
+  if (jvmti == nullptr) {
+    return;
+  }
+  jint class_count = 0;
+  jclass* classes = nullptr;
+  if (jvmti->GetLoadedClasses(&class_count, &classes) != JVMTI_ERROR_NONE ||
+      classes == nullptr) {
+    return;
+  }
+  for (jint i = 0; i < class_count; i++) {
+    char* sig = nullptr;
+    if (jvmti->GetClassSignature(classes[i], &sig, nullptr) != JVMTI_ERROR_NONE ||
+        sig == nullptr) {
+      if (sig != nullptr) {
+        jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
+      }
+      continue;
+    }
+    const char* slice = nullptr;
+    size_t slice_len = 0;
+    if (ObjectSampler::normalizeClassSignature(sig, &slice, &slice_len)) {
+      // Caller holds _class_map_lock exclusively — call _class_map.lookup
+      // directly. Do NOT call lookupClass(), which would re-attempt
+      // tryLockShared() and deadlock.
+      (void)_class_map.lookup(slice, slice_len);
+    }
+    jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
+  }
+  jvmti->Deallocate(reinterpret_cast<unsigned char*>(classes));
 }
 
 int Profiler::status(char* status, int max_len) {

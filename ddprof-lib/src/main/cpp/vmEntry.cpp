@@ -575,6 +575,34 @@ void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
     }
 }
 
+void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
+                               jclass klass) {
+  loadMethodIDs(jvmti, jni, klass);
+
+  // Pre-populate _class_map for vtable_target signal-safe lookup. ClassPrepare
+  // runs on a JVM thread (never a signal handler) so malloc inside
+  // _class_map.lookup is legal. Gate on vtable_target to avoid overhead when
+  // the feature is disabled.
+  Profiler* profiler = Profiler::instance();
+  if (profiler == nullptr || !profiler->stackWalkFeatures().vtable_target) {
+    return;
+  }
+  char* sig = nullptr;
+  if (jvmti->GetClassSignature(klass, &sig, nullptr) != JVMTI_ERROR_NONE ||
+      sig == nullptr) {
+    if (sig != nullptr) {
+      jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
+    }
+    return;
+  }
+  const char* slice = nullptr;
+  size_t slice_len = 0;
+  if (ObjectSampler::normalizeClassSignature(sig, &slice, &slice_len)) {
+    (void)profiler->lookupClass(slice, slice_len);
+  }
+  jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
+}
+
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     ready(jvmti, jni);
     loadAllMethodIDs(jvmti, jni);

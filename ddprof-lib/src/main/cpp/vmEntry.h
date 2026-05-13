@@ -198,10 +198,8 @@ public:
     // Needed only for AsyncGetCallTrace support
   }
 
-  static void JNICALL ClassPrepare(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
-                                   jclass klass) {
-    loadMethodIDs(jvmti, jni, klass);
-  }
+  static void JNICALL ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
+                                   jclass klass);
 
   static jvmtiError JNICALL
   RedefineClassesHook(jvmtiEnv *jvmti, jint class_count,
