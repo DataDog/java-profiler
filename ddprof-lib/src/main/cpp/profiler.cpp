@@ -1405,8 +1405,8 @@ Error Profiler::dump(const char *path, const int length) {
     Error err = _jfr.dump(path, length);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
 
-    // Note: No need to clear call trace storage here - the double buffering system
-    // in processTraces() already handles clearing old traces while preserving
+    // Note: No need to clear call trace storage here - the triple-buffering in
+    // processTraces() already handles clearing old traces while preserving
     // traces referenced by surviving LivenessTracker objects
     unlockAll();
 
