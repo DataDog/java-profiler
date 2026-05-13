@@ -99,9 +99,9 @@ public:
 //
 //   active  — current writes (signal handlers + fill-path)
 //   dump    — snapshot being read by the current dump (old active after rotate)
-//   recent  — last *completed* dump's snapshot; stable between dumps;
-//             used for read-only fallback lookups (walkVM vtable-stub class
-//             resolution) via RefCountGuard-protected bounded_lookup
+//   recent  — last *completed* dump's snapshot; entries may be up to one full
+//             dump interval stale; used as a best-effort read-only fallback
+//             (size_limit=0, no malloc) for signal-safe lookups that miss active
 //
 // Lifecycle per dump cycle:
 //   rotate()          — advance active; dump thread reads standby()
@@ -133,9 +133,10 @@ public:
         return _rot.active()->lookup(key, length);
     }
 
-    // For read-only lookups (size_limit == 0, e.g. walkVM vtable-stub class
-    // resolution), falls back to the most recent completed dump's snapshot
-    // when the key is not found in the active buffer.
+    // For read-only lookups (size_limit == 0), falls back to the last completed
+    // dump's snapshot when the key is not found in active.  The fallback data
+    // may be up to one full dump interval stale; callers must tolerate misses
+    // for keys not yet seen in any completed dump.
     //
     // The fallback is guarded by RefCountGuard (pointer-first protocol):
     //   1. Load _recent_ptr, acquire guard (store ptr, increment count)
