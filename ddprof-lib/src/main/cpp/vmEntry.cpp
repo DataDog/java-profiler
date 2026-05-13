@@ -588,11 +588,12 @@ void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
     return;
   }
   char* sig = nullptr;
-  if (jvmti->GetClassSignature(klass, &sig, nullptr) != JVMTI_ERROR_NONE ||
-      sig == nullptr) {
-    if (sig != nullptr) {
-      jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
-    }
+  jvmtiError err = jvmti->GetClassSignature(klass, &sig, nullptr);
+  if (err != JVMTI_ERROR_NONE) {
+    Log::warn("ClassPrepare: GetClassSignature failed (%d) — class skipped for vtable-target pre-registration", err);
+    return;
+  }
+  if (sig == nullptr) {
     return;
   }
   const char* slice = nullptr;

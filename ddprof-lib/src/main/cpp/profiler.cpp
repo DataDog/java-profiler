@@ -1551,17 +1551,20 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti) {
   }
   jint class_count = 0;
   jclass* classes = nullptr;
-  if (jvmti->GetLoadedClasses(&class_count, &classes) != JVMTI_ERROR_NONE ||
-      classes == nullptr) {
+  jvmtiError err = jvmti->GetLoadedClasses(&class_count, &classes);
+  if (err != JVMTI_ERROR_NONE) {
+    Log::warn("preregisterLoadedClasses: GetLoadedClasses failed (%d) — vtable-target frames will miss until ClassPrepare fires", err);
+    return;
+  }
+  if (classes == nullptr) {
     return;
   }
   for (jint i = 0; i < class_count; i++) {
     char* sig = nullptr;
-    if (jvmti->GetClassSignature(classes[i], &sig, nullptr) != JVMTI_ERROR_NONE ||
-        sig == nullptr) {
-      if (sig != nullptr) {
-        jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
-      }
+    if (jvmti->GetClassSignature(classes[i], &sig, nullptr) != JVMTI_ERROR_NONE) {
+      continue;
+    }
+    if (sig == nullptr) {
       continue;
     }
     const char* slice = nullptr;
