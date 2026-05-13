@@ -384,6 +384,29 @@ arm64 has a weakly-ordered memory model (unlike x86 TSO). Incorrect ordering cau
 - **Architecture Support**: x64, arm64 with architecture-specific stack walking
 - **Debug Symbol Handling**: Split debug information for production deployments
 
+#### musl/aarch64/JDK11 — `start_routine_wrapper_spec` minimal-frame invariant
+
+`start_routine_wrapper_spec` (`libraryPatcher_linux.cpp`) has a known "precarious stack guard
+corruption" on musl/aarch64/JDK11 (see the comment at the function definition). The root cause
+is that musl places the stack canary close to the frame boundary, so any substantial stack
+allocation inside `start_routine_wrapper_spec` corrupts it.
+
+**Rule:** Any code placed inside `start_routine_wrapper_spec` that allocates meaningful stack
+objects MUST be extracted into a separate `__attribute__((noinline))` helper so those objects
+live in the helper's own frame, not in `start_routine_wrapper_spec`'s frame.
+
+Existing helpers follow this pattern:
+- `delete_routine_info` — isolates `SignalBlocker` (`sigset_t`, 128 bytes on musl)
+- `init_tls_and_register` — same reason
+- `run_with_musl_cleanup` — isolates `struct __ptcb` from `pthread_cleanup_push` (24 bytes)
+
+**Trigger:** `pthread_cleanup_push` is a macro that declares `struct __ptcb __cb` on the
+caller's stack. If called directly inside `start_routine_wrapper_spec` it re-triggers the
+corruption. Always wrap it in a `noinline` helper.
+
+This only affects the `#ifdef __aarch64__` / `#ifndef __GLIBC__` code path. Other platforms
+and libc combinations do not have this constraint.
+
 ## Development Guidelines
 
 ### Code Organization Principles

@@ -271,10 +271,10 @@ CallTraceStorage::CallTraceStorage() : _active_storage(nullptr), _standby_storag
     active_ptr->setParentStorage(this);
     __atomic_store_n(&_active_storage, active_ptr.release(), __ATOMIC_RELEASE);
 
-    auto standby_table = std::make_unique<CallTraceHashTable>();
-    standby_table->setParentStorage(this);
-    standby_table->setInstanceId(getNextInstanceId());
-    __atomic_store_n(&_standby_storage, standby_table.release(), __ATOMIC_RELEASE);
+    auto standby_ptr = std::make_unique<CallTraceHashTable>();
+    standby_ptr->setParentStorage(this);
+    standby_ptr->setInstanceId(getNextInstanceId());
+    __atomic_store_n(&_standby_storage, standby_ptr.release(), __ATOMIC_RELEASE);
     
     auto scratch_table = std::make_unique<CallTraceHashTable>();
     scratch_table->setParentStorage(this);

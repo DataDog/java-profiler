@@ -193,6 +193,53 @@ TEST_F(TripleBufferedDictionaryTest, ClearAllResetsActiveToo) {
     EXPECT_EQ(snap.size(), 0U);
 }
 
+// ── TripleBufferedDictionary — rotatePersistent ────────────────────────────
+// rotatePersistent() pre-populates the future active from the current active
+// so that previously-registered entries are always visible after rotation.
+
+TEST_F(TripleBufferedDictionaryTest, RotatePersistentKeepsEntryInActive) {
+    unsigned int id = dict.lookup("cls", 3);
+    dict.rotatePersistent();
+
+    // The new active was pre-populated: bounded_lookup must find the entry.
+    EXPECT_EQ(id, dict.bounded_lookup("cls", 3, 0));
+}
+
+TEST_F(TripleBufferedDictionaryTest, RotatePersistentOldActiveBecomesStandby) {
+    unsigned int id = dict.lookup("cls", 3);
+    dict.rotatePersistent();
+
+    std::map<unsigned int, const char*> snap;
+    dict.standby()->collect(snap);
+    ASSERT_EQ(snap.size(), 1U);
+    EXPECT_EQ(snap.begin()->first, id);
+    EXPECT_STREQ(snap.begin()->second, "cls");
+}
+
+TEST_F(TripleBufferedDictionaryTest, RotatePersistentWithClearStandbyPreservesEntries) {
+    unsigned int id = dict.lookup("cls", 3);
+
+    // Full cycle: rotatePersistent + clearStandby, repeated.
+    for (int cycle = 0; cycle < 5; cycle++) {
+        dict.rotatePersistent();
+        dict.clearStandby();
+        // Entry must still be visible in the active buffer every cycle.
+        EXPECT_EQ(id, dict.bounded_lookup("cls", 3, 0)) << "cycle " << cycle;
+    }
+}
+
+TEST_F(TripleBufferedDictionaryTest, RotatePersistentNewEntriesAccumulate) {
+    dict.lookup("a", 1);
+    dict.rotatePersistent();
+    dict.lookup("b", 1);
+    dict.rotatePersistent();
+    dict.clearStandby();
+
+    // Both "a" and "b" must be visible in the current active.
+    EXPECT_NE(dict.bounded_lookup("a", 1, 0), static_cast<unsigned int>(INT_MAX));
+    EXPECT_NE(dict.bounded_lookup("b", 1, 0), static_cast<unsigned int>(INT_MAX));
+}
+
 // ── TripleBufferedDictionary — counter-id ownership ────────────────────────
 // All three buffers carry the real counter id so that insertions via the
 // active (signal-handler) AND via the dump buffer (fill-path during dump)

@@ -1300,7 +1300,7 @@ Error Profiler::stop() {
 
   // Promote accumulated writes to standby so that writeCpool() (called from
   // ~Recording() inside _jfr.stop()) reads a complete, stable snapshot.
-  _class_map.rotate();
+  _class_map.rotatePersistent();
   _string_label_map.rotate();
   _context_value_map.rotate();
 
@@ -1308,6 +1308,10 @@ Error Profiler::stop() {
   lockAll();
   _jfr.stop();  // JFR serialization must complete before unpatching libraries
   unlockAll();
+
+  _class_map.clearStandby();
+  _string_label_map.clearStandby();
+  _context_value_map.clearStandby();
 
   // Unpatch libraries AFTER JFR serialization completes
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
@@ -1397,7 +1401,10 @@ Error Profiler::dump(const char *path, const int length) {
     // active have completed (signal handlers hold per-thread locks).  JNI writers
     // to string/context maps also complete quickly; any that sneak past rotate()
     // land in the new active and are picked up in the next cycle.
-    _class_map.rotate();
+    //
+    // rotatePersistent() pre-populates the future active from the current
+    // active so that bounded_lookup never misses a previously-registered class.
+    _class_map.rotatePersistent();
     _string_label_map.rotate();
     _context_value_map.rotate();
 
