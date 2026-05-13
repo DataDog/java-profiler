@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk11
 
 ## glibc-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-05-13 11:08:22 EDT
+**Date:** 2026-05-13 12:00:46 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,56 +18,56 @@ title: glibc-x64-openj9-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 30 |
-| CPU Cores (end) | 30 |
+| CPU Cores (start) | 71 |
+| CPU Cores (end) | 71 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ✅
+#### Scenario 1: Profiler-Only ⚠️
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 485 |
-| Sample Rate | 8.08/sec |
-| Health Score | 505% |
-| Threads | 8 |
-| Allocations | 385 |
+| Status | N/A |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
-#### Scenario 2: Tracer+Profiler ✅
+#### Scenario 2: Tracer+Profiler ⚠️
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 836 |
-| Sample Rate | 13.93/sec |
-| Health Score | 871% |
-| Threads | 10 |
-| Allocations | 489 |
+| Status | N/A |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 30-30 cores)</summary>
+<summary>CPU Timeline (2 unique values: 66-71 cores)</summary>
 
 ```
-1778684569 30
-1778684574 30
-1778684579 30
-1778684584 30
-1778684589 30
-1778684594 30
-1778684599 30
-1778684604 30
-1778684609 30
-1778684614 30
-1778684619 30
-1778684624 30
-1778684629 30
-1778684634 30
-1778684639 30
-1778684644 30
-1778684649 30
-1778684654 30
-1778684659 30
-1778684664 30
+1778687772 71
+1778687777 71
+1778687782 66
+1778687787 66
+1778687792 66
+1778687797 66
+1778687802 66
+1778687807 66
+1778687812 66
+1778687817 66
+1778687822 66
+1778687827 66
+1778687833 66
+1778687838 66
+1778687843 66
+1778687848 66
+1778687853 66
+1778687858 71
+1778687863 71
+1778687868 71
 ```
 </details>
 
