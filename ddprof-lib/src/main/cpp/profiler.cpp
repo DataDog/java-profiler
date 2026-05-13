@@ -1309,10 +1309,6 @@ Error Profiler::stop() {
   _jfr.stop();  // JFR serialization must complete before unpatching libraries
   unlockAll();
 
-  _class_map.clearStandby();
-  _string_label_map.clearStandby();
-  _context_value_map.clearStandby();
-
   // Unpatch libraries AFTER JFR serialization completes
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
   // owned by library metadata, so we must keep library patches active until after serialization
