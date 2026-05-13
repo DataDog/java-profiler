@@ -18,25 +18,6 @@
 
 typedef void* (*func_start_routine)(void*);
 
-#ifndef __GLIBC__
-// On musl, thread cancellation uses signal-based cleanup that invokes C-style
-// pthread_cleanup_push callbacks but does NOT invoke C++ destructors.
-// This function is used as the cleanup callback on non-glibc platforms.
-static void thread_cleanup(void* arg) {
-    Profiler::unregisterThread(*static_cast<int*>(arg));
-    ProfiledThread::release();
-}
-
-// Kept noinline so pthread_cleanup_push's struct __ptcb stays in this frame, not the
-// caller's. On musl/aarch64 any substantial stack object in start_routine_wrapper(_spec)
-// corrupts the stack canary (see "precarious stack guard corruption" below).
-__attribute__((noinline))
-static void run_with_musl_cleanup(func_start_routine routine, void* params, int tid) {
-    pthread_cleanup_push(thread_cleanup, &tid);
-    routine(params);
-    pthread_cleanup_pop(1);
-}
-#endif
 
 SpinLock LibraryPatcher::_lock;
 const char* LibraryPatcher::_profiler_name = nullptr;
@@ -117,10 +98,12 @@ static void* start_routine_wrapper_spec(void* args) {
     // Cache tid from TLS before entering the cleanup region; avoids allocating
     // ProfiledThread::current() at a potentially unsafe point during cleanup.
     int tid = ProfiledThread::currentTid();
-#ifdef __GLIBC__
-    // On glibc: RAII. pthread_cleanup_push creates __pthread_cleanup_class with an implicit
-    // noexcept destructor; IBM J9's forced-unwind propagates through it as a C++ exception,
-    // triggering std::terminate (SCP-1154). RAII avoids that.
+    // RAII cleanup: runs on normal return and on C++ exception (including glibc's
+    // _Unwind_ForcedUnwind from IBM J9). pthread_cleanup_push is intentionally avoided
+    // here: on musl/aarch64 its struct __ptcb corrupts the stack canary regardless
+    // of which frame holds it (see "precarious stack guard corruption" comment above).
+    // HotSpot exits threads via pthread_exit(), not pthread_cancel(), so the RAII
+    // destructor is always reached.
     struct Cleanup {
         int t;
         explicit Cleanup(int t) : t(t) {}
@@ -128,15 +111,6 @@ static void* start_routine_wrapper_spec(void* args) {
     } cleanup(tid);
     routine(params);
     return nullptr;
-#else
-    // On musl: pthread_cleanup_push/pop registers a C callback that musl's signal-based
-    // cancellation mechanism honors. C++ destructors are NOT invoked by musl during
-    // thread cancellation, so RAII alone is insufficient.
-    // run_with_musl_cleanup is noinline so pthread_cleanup_push's struct __ptcb
-    // stays off this frame — same pattern as delete_routine_info/init_tls_and_register.
-    run_with_musl_cleanup(routine, params, tid);
-    return nullptr;
-#endif
 }
 
 static int pthread_create_hook_spec(pthread_t* thread,
@@ -187,10 +161,7 @@ static void* start_routine_wrapper(void* args) {
         ProfiledThread::currentSignalSafe()->startInitWindow();
         Profiler::registerThread(tid);
     }
-#ifdef __GLIBC__
-    // On glibc: RAII. pthread_cleanup_push creates __pthread_cleanup_class with an implicit
-    // noexcept destructor; IBM J9's forced-unwind propagates through it as a C++ exception,
-    // triggering std::terminate (SCP-1154). RAII avoids that.
+    // RAII cleanup: see start_routine_wrapper_spec for rationale.
     struct Cleanup {
         int t;
         explicit Cleanup(int t) : t(t) {}
@@ -198,15 +169,6 @@ static void* start_routine_wrapper(void* args) {
     } cleanup(tid);
     routine(params);
     return nullptr;
-#else
-    // On musl: pthread_cleanup_push/pop registers a C callback that musl's signal-based
-    // cancellation mechanism honors. C++ destructors are NOT invoked by musl during
-    // thread cancellation, so RAII alone is insufficient.
-    // run_with_musl_cleanup is noinline so pthread_cleanup_push's struct __ptcb
-    // stays off this frame — same pattern as delete_routine_info/init_tls_and_register.
-    run_with_musl_cleanup(routine, params, tid);
-    return nullptr;
-#endif
 }
 
 static int pthread_create_hook(pthread_t* thread,
