@@ -204,6 +204,9 @@ class GtestTaskBuilder(
             args.add("-D__musl__")
         }
 
+        // Mark unit-test builds so test-only production APIs are compiled in.
+        args.add("-DUNIT_TEST")
+
         return args
     }
 }

@@ -55,10 +55,22 @@ public:
   }
 };
 
+// Unregister the current thread from the profiler and release its TLS under a
+// single SignalBlocker to close the race window between unregisterThread()
+// returning and release() acquiring its internal guard.  Kept noinline so
+// SignalBlocker's sigset_t does not appear in the caller's stack frame,
+// preventing false stack-protector canary trips on musl/aarch64.
+__attribute__((noinline))
+static void unregister_and_release(int tid) {
+    SignalBlocker blocker;
+    Profiler::unregisterThread(tid);
+    ProfiledThread::release();
+}
+
 #ifdef __aarch64__
 // Delete RoutineInfo with profiling signals blocked to prevent ASAN
 // allocator lock reentrancy. Kept noinline so SignalBlocker's sigset_t
-// does not trigger stack-protector canary in the caller on aarch64.
+// does not appear in the caller's stack frame on musl/aarch64.
 __attribute__((noinline))
 static void delete_routine_info(RoutineInfo* thr) {
     SignalBlocker blocker;
@@ -104,10 +116,12 @@ static void* start_routine_wrapper_spec(void* args) {
     // of which frame holds it (see "precarious stack guard corruption" comment above).
     // HotSpot exits threads via pthread_exit(), not pthread_cancel(), so the RAII
     // destructor is always reached.
+    // unregister_and_release() holds SignalBlocker for the duration, closing the race
+    // window between unregisterThread() and release() (PROF-14603).
     struct Cleanup {
         int t;
         explicit Cleanup(int t) : t(t) {}
-        ~Cleanup() { Profiler::unregisterThread(t); ProfiledThread::release(); }
+        ~Cleanup() { unregister_and_release(t); }
     } cleanup(tid);
     routine(params);
     return nullptr;
@@ -162,10 +176,11 @@ static void* start_routine_wrapper(void* args) {
         Profiler::registerThread(tid);
     }
     // RAII cleanup: see start_routine_wrapper_spec for rationale.
+    // unregister_and_release() holds SignalBlocker, closing the PROF-14603 race window.
     struct Cleanup {
         int t;
         explicit Cleanup(int t) : t(t) {}
-        ~Cleanup() { Profiler::unregisterThread(t); ProfiledThread::release(); }
+        ~Cleanup() { unregister_and_release(t); }
     } cleanup(tid);
     routine(params);
     return nullptr;
