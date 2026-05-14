@@ -318,7 +318,10 @@ TEST(ThreadTeardownSafetyTest, HighFrequencySignalsDuringThreadChurn) {
 static void *t10_body(void *) {
   ProfiledThread::initCurrentThread();
   ProfiledThread *pt = ProfiledThread::currentSignalSafe();
-  ASSERT_NE(nullptr, pt);
+  if (pt == nullptr) {
+    ADD_FAILURE() << "currentSignalSafe() returned nullptr";
+    return nullptr;
+  }
 
   // Outer critical section must succeed.
   EXPECT_TRUE(pt->tryEnterCriticalSection());
