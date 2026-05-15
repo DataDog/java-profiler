@@ -69,8 +69,10 @@ static void *t01_body(void *) {
   g_t01_seen.store(kNotYetRun, std::memory_order_relaxed);
   pthread_kill(pthread_self(), SIGVTALRM);
   ProfiledThread *t01_pre = g_t01_seen.load(std::memory_order_relaxed);
-  ASSERT_NE(kNotYetRun, t01_pre)
-      << "SIGVTALRM handler must have run before release() (handler did not execute)";
+  if (t01_pre == kNotYetRun) {
+    ADD_FAILURE() << "SIGVTALRM handler must have run before release() (handler did not execute)";
+    return nullptr;
+  }
   EXPECT_NE(nullptr, t01_pre)
       << "currentSignalSafe() must return non-null while ProfiledThread is live";
 
@@ -79,8 +81,10 @@ static void *t01_body(void *) {
   g_t01_seen.store(kNotYetRun, std::memory_order_relaxed);
   pthread_kill(pthread_self(), SIGVTALRM);
   ProfiledThread *t01_post = g_t01_seen.load(std::memory_order_relaxed);
-  ASSERT_NE(kNotYetRun, t01_post)
-      << "SIGVTALRM handler must have run after release() (handler did not execute)";
+  if (t01_post == kNotYetRun) {
+    ADD_FAILURE() << "SIGVTALRM handler must have run after release() (handler did not execute)";
+    return nullptr;
+  }
   EXPECT_EQ(nullptr, t01_post)
       << "currentSignalSafe() must return null after release()";
 
