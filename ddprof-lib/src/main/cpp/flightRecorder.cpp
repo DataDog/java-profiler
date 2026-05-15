@@ -56,7 +56,7 @@ SharedLineNumberTable::~SharedLineNumberTable() {
 
 void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
                                   const char *lib_name) {
-  mi->_class = _classes->lookup("");
+  mi->_class = _classes->lookupDuringDump("", 0);
   // TODO return the library name once we figured out how to cooperate with the
   // backend
   //        if (lib_name == NULL) {
@@ -105,7 +105,7 @@ void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
 
 void Lookup::fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi) {
   // Store build-id in the class name field
-  mi->_class = _classes->lookup(rfi->build_id);
+  mi->_class = _classes->lookupDuringDump(rfi->build_id, strlen(rfi->build_id));
 
   // Store PC offset in hex format in the signature field
   char offset_hex[32];
@@ -228,8 +228,9 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       // constants...
       if (has_prefix(class_name,
                      "Ljdk/internal/reflect/GeneratedConstructorAccessor")) {
-        class_name_id = _classes->lookup(
-            "jdk/internal/reflect/GeneratedConstructorAccessor");
+        class_name_id = _classes->lookupDuringDump(
+            "jdk/internal/reflect/GeneratedConstructorAccessor",
+            strlen("jdk/internal/reflect/GeneratedConstructorAccessor"));
         method_name_id =
             _symbols.lookup("Object "
                             "jdk.internal.reflect.GeneratedConstructorAccessor."
@@ -238,7 +239,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       } else if (has_prefix(class_name,
                             "Lsun/reflect/GeneratedConstructorAccessor")) {
         class_name_id =
-            _classes->lookup("sun/reflect/GeneratedConstructorAccessor");
+            _classes->lookupDuringDump("sun/reflect/GeneratedConstructorAccessor",
+                                       strlen("sun/reflect/GeneratedConstructorAccessor"));
         method_name_id = _symbols.lookup(
             "Object "
             "sun.reflect.GeneratedConstructorAccessor.newInstance(Object[])");
@@ -246,7 +248,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       } else if (has_prefix(class_name,
                             "Ljdk/internal/reflect/GeneratedMethodAccessor")) {
         class_name_id =
-            _classes->lookup("jdk/internal/reflect.GeneratedMethodAccessor");
+            _classes->lookupDuringDump("jdk/internal/reflect.GeneratedMethodAccessor",
+                                       strlen("jdk/internal/reflect.GeneratedMethodAccessor"));
         method_name_id =
             _symbols.lookup("Object "
                             "jdk.internal.reflect.GeneratedMethodAccessor."
@@ -254,7 +257,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         method_sig_id = _symbols.lookup(method_sig);
       } else if (has_prefix(class_name,
                             "Lsun/reflect/GeneratedMethodAccessor")) {
-        class_name_id = _classes->lookup("sun/reflect/GeneratedMethodAccessor");
+        class_name_id = _classes->lookupDuringDump("sun/reflect/GeneratedMethodAccessor",
+                                                    strlen("sun/reflect/GeneratedMethodAccessor"));
         method_name_id = _symbols.lookup(
             "Object sun.reflect.GeneratedMethodAccessor.invoke(Object, "
             "Object[])");
@@ -265,27 +269,30 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         // we want to normalise to java/lang/invoke/LambdaForm$MH,
         // java/lang/invoke/LambdaForm$DMH, java/lang/invoke/LambdaForm$BMH,
         if (has_prefix(class_name + lambdaFormPrefixLength, "MH")) {
-          class_name_id = _classes->lookup("java/lang/invoke/LambdaForm$MH");
+          class_name_id = _classes->lookupDuringDump("java/lang/invoke/LambdaForm$MH",
+                                                      strlen("java/lang/invoke/LambdaForm$MH"));
         } else if (has_prefix(class_name + lambdaFormPrefixLength, "BMH")) {
-          class_name_id = _classes->lookup("java/lang/invoke/LambdaForm$BMH");
+          class_name_id = _classes->lookupDuringDump("java/lang/invoke/LambdaForm$BMH",
+                                                      strlen("java/lang/invoke/LambdaForm$BMH"));
         } else if (has_prefix(class_name + lambdaFormPrefixLength, "DMH")) {
-          class_name_id = _classes->lookup("java/lang/invoke/LambdaForm$DMH");
+          class_name_id = _classes->lookupDuringDump("java/lang/invoke/LambdaForm$DMH",
+                                                      strlen("java/lang/invoke/LambdaForm$DMH"));
         } else {
           // don't recognise the suffix, so don't normalise
           class_name_id =
-              _classes->lookup(class_name + 1, strlen(class_name) - 2);
+              _classes->lookupDuringDump(class_name + 1, strlen(class_name) - 2);
         }
         method_name_id = _symbols.lookup(method_name);
         method_sig_id = _symbols.lookup(method_sig);
       } else {
         class_name_id =
-            _classes->lookup(class_name + 1, strlen(class_name) - 2);
+            _classes->lookupDuringDump(class_name + 1, strlen(class_name) - 2);
         method_name_id = _symbols.lookup(method_name);
         method_sig_id = _symbols.lookup(method_sig);
       }
     } else {
       Counters::increment(JMETHODID_SKIPPED);
-      class_name_id = _classes->lookup("");
+      class_name_id = _classes->lookupDuringDump("", 0);
       method_name_id = _symbols.lookup("jvmtiError");
       method_sig_id = _symbols.lookup("()L;");
     }
@@ -1174,7 +1181,7 @@ void Recording::writeCpool(Buffer *buf) {
 
   // All three dictionaries have been rotated before dump(); standby() returns
   // the old-active snapshot which is stable for the lifetime of this call.
-  Lookup lookup(this, &_method_map, Profiler::instance()->classMap()->standby());
+  Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
   writeFrameTypes(buf);
   writeThreadStates(buf);
   writeExecutionModes(buf);
@@ -1387,7 +1394,7 @@ void Recording::writeMethods(Buffer *buf, Lookup *lookup) {
 
 void Recording::writeClasses(Buffer *buf, Lookup *lookup) {
   std::map<u32, const char *> classes;
-  lookup->_classes->collect(classes);
+  lookup->_classes->standby()->collect(classes);
 
   buf->putVar64(T_CLASS);
   buf->putVar64(classes.size());
@@ -1436,6 +1443,13 @@ void Recording::writeConstantPoolSection(Buffer *buf, JfrType type,
                                          Dictionary *dictionary) {
   std::map<u32, const char *> constants;
   dictionary->collect(constants);
+  writeConstantPoolSection(buf, type, constants);
+}
+
+void Recording::writeConstantPoolSection(Buffer *buf, JfrType type,
+                                         StringDictionaryBuffer *buffer) {
+  std::map<u32, const char *> constants;
+  buffer->collect(constants);
   writeConstantPoolSection(buf, type, constants);
 }
 

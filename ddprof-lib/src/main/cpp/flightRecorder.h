@@ -18,6 +18,7 @@
 #include "buffers.h"
 #include "counters.h"
 #include "dictionary.h"
+#include "stringDictionary.h"
 #include "event.h"
 #include "frame.h"
 #include "jfrMetadata.h"
@@ -265,6 +266,8 @@ public:
 
   void writeConstantPoolSection(Buffer *buf, JfrType type,
                                 Dictionary *dictionary);
+  void writeConstantPoolSection(Buffer *buf, JfrType type,
+                                StringDictionaryBuffer *buffer);
 
   void writeLogLevels(Buffer *buf);
 
@@ -305,7 +308,7 @@ class Lookup {
 public:
   Recording *_rec;
   MethodMap *_method_map;
-  Dictionary *_classes;
+  StringDictionary *_classes;
   Dictionary _packages;
   Dictionary _symbols;
 
@@ -320,7 +323,7 @@ private:
   }
 
 public:
-  Lookup(Recording *rec, MethodMap *method_map, Dictionary *classes)
+  Lookup(Recording *rec, MethodMap *method_map, StringDictionary *classes)
       : _rec(rec), _method_map(method_map), _classes(classes), _packages(),
         _symbols() {}
 
