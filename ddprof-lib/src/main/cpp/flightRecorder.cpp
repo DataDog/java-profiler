@@ -1489,6 +1489,24 @@ void Recording::writeCurrentContext(Buffer *buf) {
   }
 }
 
+void Recording::writeQueueTimeContext(Buffer *buf, QueueTimeEvent *event) {
+  u64 spanId = 0;
+  u64 rootSpanId = 0;
+  bool hasContext = ContextApi::get(spanId, rootSpanId);
+  if (event->_consuming_span_id != 0) {
+    spanId = event->_consuming_span_id;
+  }
+  buf->putVar64(spanId);
+  buf->putVar64(rootSpanId);
+  buf->putVar64(event->_submitting_span_id);
+
+  size_t numAttrs = Profiler::instance()->numContextAttributes();
+  ProfiledThread* thrd = hasContext ? ProfiledThread::currentSignalSafe() : nullptr;
+  for (size_t i = 0; i < numAttrs; i++) {
+    buf->putVar32(thrd != nullptr ? thrd->getOtelTagEncoding(i) : 0);
+  }
+}
+
 void Recording::writeEventSizePrefix(Buffer *buf, int start) {
   int size = buf->offset() - start;
   assert(size < MAX_JFR_EVENT_SIZE);
@@ -1615,7 +1633,7 @@ void Recording::recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event) {
   buf->putVar64(event->_scheduler);
   buf->putVar64(event->_queueType);
   buf->putVar64(event->_queueLength);
-  writeCurrentContext(buf);
+  writeQueueTimeContext(buf, event);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }

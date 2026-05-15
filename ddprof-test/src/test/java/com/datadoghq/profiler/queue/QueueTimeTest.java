@@ -18,6 +18,7 @@ import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 import java.util.concurrent.ArrayBlockingQueue;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
 import static org.openjdk.jmc.common.unit.UnitLookup.*;
@@ -143,6 +144,63 @@ public class QueueTimeTest extends AbstractProfilerTest {
             }
         }
         assertTrue(found, "Expected QueueTime with spanId=88 from override");
+    }
+
+    @Test
+    public void testQueueTimeSubmittingSpanDoesNotShiftContextAttributes() throws Exception {
+        IAttribute<IQuantity> submittingSpanIdAttr = attr("submittingSpanId", "", "", NUMBER);
+
+        Thread origin = Thread.currentThread();
+        origin.setName("origin-context-attributes");
+        long start = profiler.getCurrentTicks();
+        Runnable worker = () -> {
+            profiler.setContext(7, 42);
+            assertTrue(profiler.setContextAttribute(0, "route-queue-time"));
+            assertTrue(profiler.setContextAttribute(1, "postgres"));
+            assertTrue(profiler.setContextAttribute(2, "worker-pool"));
+            long now = profiler.getCurrentTicks();
+            profiler.recordQueueTime(
+                    start,
+                    now,
+                    QueueTimeTest.class,
+                    QueueTimeTest.class,
+                    ArrayBlockingQueue.class,
+                    1,
+                    origin,
+                    99L,
+                    88L);
+            profiler.clearContext();
+        };
+        Thread thread = new Thread(worker, "destination-context-attributes");
+        Thread.sleep(10);
+        thread.start();
+        thread.join();
+        stopProfiler();
+
+        IItemCollection events = verifyEvents("datadog.QueueTime");
+        boolean found = false;
+        for (IItemIterable it : events) {
+            IMemberAccessor<IQuantity, IItem> spanIdAccessor = SPAN_ID.getAccessor(it.getType());
+            IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(it.getType());
+            IMemberAccessor<IQuantity, IItem> submittingAccessor = submittingSpanIdAttr.getAccessor(it.getType());
+            IMemberAccessor<String, IItem> tag1Accessor = TAG_1.getAccessor(it.getType());
+            IMemberAccessor<String, IItem> tag2Accessor = TAG_2.getAccessor(it.getType());
+            IMemberAccessor<String, IItem> tag3Accessor = TAG_3.getAccessor(it.getType());
+            assertNotNull(tag1Accessor);
+            assertNotNull(tag2Accessor);
+            assertNotNull(tag3Accessor);
+            for (IItem item : it) {
+                if (spanIdAccessor.getMember(item).longValue() == 88) {
+                    found = true;
+                    assertEquals(42, rootSpanIdAccessor.getMember(item).longValue(), "localRootSpanId must remain before submittingSpanId");
+                    assertEquals(99, submittingAccessor.getMember(item).longValue(), "submittingSpanId must not shift context attributes");
+                    assertEquals("route-queue-time", tag1Accessor.getMember(item));
+                    assertEquals("postgres", tag2Accessor.getMember(item));
+                    assertEquals("worker-pool", tag3Accessor.getMember(item));
+                }
+            }
+        }
+        assertTrue(found, "Expected QueueTime with overridden spanId=88");
     }
 
     @Test
