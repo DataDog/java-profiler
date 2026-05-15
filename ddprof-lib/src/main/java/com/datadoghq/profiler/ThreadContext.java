@@ -547,5 +547,60 @@ public final class ThreadContext {
         return sb.toString();
     }
 
+    /**
+     * Push a pre-computed encoding id into this thread's sidecar slot for {@code keyIndex},
+     * without touching the OTEP {@code attrs_data} record. Intended for the "encode once,
+     * push many" fast path — eager encoding at span construction followed by scope-activation
+     * pushes on possibly-different worker threads.
+     *
+     * <p>The encoding id must have been obtained from a prior {@link #registerConstant(String)}
+     * or {@link #setContextAttribute(int, String)} call (same process — the native
+     * {@code _context_value_map} is process-wide). The DD JFR signal-handler reader picks up
+     * the sidecar int and resolves it via the JFR {@code T_ATTRIBUTE_VALUE} constant pool.
+     *
+     * <p>OTEP-reading external profilers will not observe values pushed via this path; they
+     * only see attributes set through {@link #setContextAttribute(int, String)}, which writes
+     * both the sidecar slot and the OTEP {@code attrs_data} record. Use the String overload
+     * when you need {@code attrs_data} parity. {@code encoding == 0} simply zeros the
+     * sidecar slot; for a full clear that also removes the OTEP entry, call
+     * {@link #clearContextAttribute(int)}.
+     *
+     * <p>Atomicity: the sidecar slot is a 4-byte aligned {@code putInt}, atomic on the
+     * supported little-endian architectures, so the signal handler running on this thread
+     * never observes a torn read.
+     *
+     * @return {@code true} on success, {@code false} if {@code keyIndex} is out of range
+     */
+    public boolean setEncodedAttribute(int keyIndex, int encoding) {
+        if (keyIndex < 0 || keyIndex >= MAX_CUSTOM_SLOTS) {
+            return false;
+        }
+        ctxBuffer.putInt(TAG_ENCODINGS_OFFSET + keyIndex * Integer.BYTES, encoding);
+        return true;
+    }
+
+    /**
+     * Register a context-attribute string value in the native {@code _context_value_map}
+     * Dictionary and return its stable encoding id. Idempotent: repeated calls with the
+     * same value return the same id.
+     *
+     * <p>This is the public entry point used by callers that want the encoding without
+     * also pushing it into a per-thread sidecar slot — e.g. dd-trace-java's eager
+     * {@code DDSpanContext} construction path, where the operation name is encoded
+     * once at span creation and the encoded id is then handed to
+     * {@code setContextValue(offset, encoding)} on every scope activation.
+     *
+     * <p>Returns {@code 0} for {@code null} input or when the Dictionary is full, so
+     * callers can treat {@code 0} uniformly as "no encoding". A {@code 0} id is also
+     * the natural empty-string sentinel in the JFR constant pool.
+     */
+    public int registerConstant(String value) {
+        if (value == null) {
+            return 0;
+        }
+        int encoding = registerConstant0(value);
+        return encoding < 0 ? 0 : encoding;
+    }
+
     private static native int registerConstant0(String value);
 }

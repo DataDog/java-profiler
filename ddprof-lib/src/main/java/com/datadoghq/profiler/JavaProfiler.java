@@ -260,6 +260,37 @@ public final class JavaProfiler {
         return tlsContextStorage.get().setContextAttribute(offset, value);
     }
 
+    /**
+     * Push a pre-computed encoding id into this thread's sidecar slot for {@code offset}.
+     * Companion to {@link #registerConstant(String)} for the "encode-once, push-many" fast
+     * path used by consumers that cache the encoding on a shared object (e.g. dd-trace-java
+     * caches it on {@code DDSpanContext} at construction and pushes it on every scope
+     * activation).
+     *
+     * <p>This path is sidecar-only — it does not update OTEP {@code attrs_data}. External
+     * OTEP-reading profilers observe values only when they are written via
+     * {@link #setContextAttribute(int, String)}. See
+     * {@link ThreadContext#setEncodedAttribute(int, int)} for the full contract.
+     *
+     * @return {@code true} on success, {@code false} if {@code offset} is out of range
+     */
+    public boolean setContextValue(int offset, int encoding) {
+        return tlsContextStorage.get().setEncodedAttribute(offset, encoding);
+    }
+
+    /**
+     * Register a context-attribute string in the native context-value Dictionary and
+     * return its stable encoding id. Used by consumers (e.g. dd-trace-java) that encode
+     * eagerly at span construction and push the encoded id via
+     * {@link #setContextValue(int, int)} on every scope activation, avoiding the JNI
+     * + UTF-8 cost of {@link #setContextAttribute(int, String)} on the hot path.
+     *
+     * <p>Returns {@code 0} for {@code null} input or when the Dictionary is full.
+     */
+    public int registerConstant(String value) {
+        return tlsContextStorage.get().registerConstant(value);
+    }
+
     public void clearContextAttribute(int offset) {
         tlsContextStorage.get().clearContextAttribute(offset);
     }

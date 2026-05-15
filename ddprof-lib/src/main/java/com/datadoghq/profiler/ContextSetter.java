@@ -39,6 +39,19 @@ public class ContextSetter {
         return attributes.indexOf(attribute);
     }
 
+    /**
+     * Register a context-attribute string value and return its stable encoding id.
+     * Consumers that encode eagerly (e.g. dd-trace-java's {@code DDSpanContext}
+     * construction path) call this once per distinct value, cache the id on the
+     * span, and later push it into the per-thread sidecar via
+     * {@link #setContextValue(int, int)} on every scope activation.
+     *
+     * <p>Returns {@code 0} for {@code null} input or when the Dictionary is full.
+     */
+    public int encode(String value) {
+        return profiler.registerConstant(value);
+    }
+
     public boolean setContextValue(String attribute, String value) {
         return setContextValue(offsetOf(attribute), value);
     }
