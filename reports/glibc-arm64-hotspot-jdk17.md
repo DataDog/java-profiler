@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk17
 
 ## glibc-arm64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-05-14 13:55:54 EDT
+**Date:** 2026-05-15 02:41:26 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-hotspot-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 59 |
-| CPU Cores (end) | 59 |
+| CPU Cores (start) | 64 |
+| CPU Cores (end) | 64 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-arm64-hotspot-jdk17
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 59-59 cores)</summary>
+<summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1778781096 59
-1778781101 59
-1778781106 59
-1778781111 59
-1778781116 59
-1778781121 59
-1778781126 59
-1778781131 59
-1778781136 59
-1778781141 59
-1778781146 59
-1778781151 59
-1778781156 59
-1778781161 59
-1778781166 59
-1778781171 59
-1778781176 59
-1778781181 59
-1778781186 59
-1778781191 59
+1778827079 64
+1778827084 64
+1778827089 64
+1778827094 64
+1778827099 64
+1778827104 64
+1778827109 64
+1778827114 64
+1778827119 64
+1778827124 64
+1778827129 64
+1778827134 64
+1778827139 64
+1778827144 64
+1778827149 64
+1778827154 64
+1778827159 64
+1778827164 64
+1778827169 64
+1778827174 64
 ```
 </details>
 
