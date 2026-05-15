@@ -184,4 +184,115 @@ public:
     int size() const { return _size.load(std::memory_order_relaxed); }
 };
 
+// ─── StringDictionary ─────────────────────────────────────────────────────
+//
+// Triple-buffered wrapper around StringDictionaryBuffer.
+//
+// Roles cycle through three buffers:
+//   active  — receives new writes (lookup, insert_with_id)
+//   dump    — stable snapshot for the current JFR chunk (after rotate())
+//   scratch — two rotations behind; cleared by clearStandby()
+//
+// _next_id is a global monotonic counter that never resets until clearAll().
+// rotate() does a two-phase ID-preserving copy so no entry is lost due to
+// concurrent inserts in the rotation window:
+//   phase 1: copy active → clearTarget (before rotate)
+//   phase 2: copy old_active → new_active (after drain, catch late inserts)
+// lookupDuringDump(key): probes dump then active; inserts into both if new,
+//   using the existing global ID (or a new fetch-add if truly new everywhere).
+//
+// Signal safety:
+//   bounded_lookup acquires RefCountGuard on active before reading.
+//   lookup also acquires RefCountGuard before inserting (not signal-safe due to
+//   malloc, but the guard protects the buffer pointer lifetime).
+//   lookupDuringDump is NOT signal-safe; call from dump thread only.
+class StringDictionary {
+    std::atomic<u32> _next_id{1};  // starts at 1; id=0 reserved as "no entry"
+    StringDictionaryBuffer _a, _b, _c;
+    TripleBufferRotator<StringDictionaryBuffer> _rot;
+
+    u32 nextId() {
+        return _next_id.fetch_add(1, std::memory_order_relaxed);
+    }
+
+public:
+    StringDictionary() : _rot(&_a, &_b, &_c) {}
+
+    // Insert into active buffer; returns globally stable id.  NOT signal-safe.
+    u32 lookup(const char* key, size_t len) {
+        StringDictionaryBuffer* active = _rot.active();
+        RefCountGuard guard(active);
+        u32 id = active->lookup(key, len);
+        if (id != 0) return id;
+        u32 new_id = nextId();
+        return active->insert_with_id(key, len, new_id);
+    }
+
+    // Signal-safe read-only probe of active. Returns 0 on miss.
+    u32 bounded_lookup(const char* key, size_t len) {
+        StringDictionaryBuffer* active = _rot.active();
+        RefCountGuard guard(active);
+        return active->lookup(key, len);
+    }
+
+    // Returns the dump buffer (snapshot of old active after rotate()).
+    StringDictionaryBuffer* standby() {
+        return _rot.dumpBuffer();
+    }
+
+    // Two-phase ID-preserving rotate.
+    void rotate() {
+        StringDictionaryBuffer* old_active = _rot.active();
+        // Phase 1: pre-populate clearTarget from active (before rotate).
+        _rot.clearTarget()->copyFrom(*old_active);
+        _rot.rotate();
+        // Drain all in-flight accessors on old_active (now the dump buffer).
+        RefCountGuard::waitForRefCountToClear(old_active);
+        // Phase 2: copy old_active → new active to catch late inserts.
+        _rot.active()->copyFrom(*old_active);
+    }
+
+    // Resolve a key during the dump phase.  Safe to call from the dump thread
+    // after rotate(); must NOT be called from signal handlers or concurrently
+    // with another lookupDuringDump call.
+    u32 lookupDuringDump(const char* key, size_t len) {
+        StringDictionaryBuffer* dump = _rot.dumpBuffer();
+
+        u32 id = dump->lookup(key, len);
+        if (id != 0) return id;
+
+        {
+            StringDictionaryBuffer* active = _rot.active();
+            RefCountGuard guard(active);
+            id = active->lookup(key, len);
+        }
+        if (id != 0) {
+            dump->insert_with_id(key, len, id);
+            return id;
+        }
+
+        u32 new_id = nextId();
+        {
+            StringDictionaryBuffer* active = _rot.active();
+            RefCountGuard guard(active);
+            new_id = active->insert_with_id(key, len, new_id);
+        }
+        dump->insert_with_id(key, len, new_id);
+        return new_id;
+    }
+
+    // Clear the scratch buffer (two rotations behind active; safe to clear).
+    void clearStandby() {
+        _rot.clearTarget()->clear();
+    }
+
+    // Reset all three buffers. Call only during profiler stop (no concurrent
+    // writers or readers).
+    void clearAll() {
+        _a.clear(); _b.clear(); _c.clear();
+        _rot.reset();
+        _next_id.store(1, std::memory_order_relaxed);
+    }
+};
+
 #endif // _STRINGDICTIONARY_H

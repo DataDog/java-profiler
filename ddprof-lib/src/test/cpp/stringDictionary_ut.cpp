@@ -75,3 +75,94 @@ TEST(StringDictionaryBufferTest, ClearResetsToEmpty) {
     buf.collect(out);
     EXPECT_EQ(0u, out.size());
 }
+
+// ── StringDictionary (persistent, global IDs) ─────────────────────────────
+
+class StringDictionaryTest : public ::testing::Test {
+protected:
+    StringDictionary dict;
+};
+
+TEST_F(StringDictionaryTest, LookupAssignsGlobalId) {
+    u32 id = dict.lookup("java/lang/String", 16);
+    EXPECT_GT(id, 0u);
+    EXPECT_EQ(id, dict.lookup("java/lang/String", 16));
+}
+
+TEST_F(StringDictionaryTest, BoundedLookupFindsActiveEntry) {
+    u32 id = dict.lookup("Foo", 3);
+    EXPECT_EQ(id, dict.bounded_lookup("Foo", 3));
+}
+
+TEST_F(StringDictionaryTest, BoundedLookupReturnsZeroOnMiss) {
+    EXPECT_EQ(0u, dict.bounded_lookup("Absent", 6));
+}
+
+TEST_F(StringDictionaryTest, IdStableAcrossRotations) {
+    u32 id = dict.lookup("java/lang/String", 16);
+    for (int cycle = 0; cycle < 10; cycle++) {
+        dict.rotate();
+        dict.clearStandby();
+        EXPECT_EQ(id, dict.bounded_lookup("java/lang/String", 16))
+            << "id changed at cycle " << cycle;
+    }
+}
+
+TEST_F(StringDictionaryTest, AllEntriesPresentInStandbyAfterRotate) {
+    u32 id1 = dict.lookup("a", 1);
+    u32 id2 = dict.lookup("b", 1);
+    dict.rotate();
+
+    std::map<u32, const char*> snap;
+    dict.standby()->collect(snap);
+    ASSERT_EQ(2u, snap.size());
+    EXPECT_EQ(snap[id1], std::string("a"));
+    EXPECT_EQ(snap[id2], std::string("b"));
+}
+
+TEST_F(StringDictionaryTest, NewEntryAfterRotateIsInNewActive) {
+    dict.lookup("early", 5);
+    dict.rotate();
+    u32 id = dict.lookup("late", 4);
+
+    EXPECT_EQ(id, dict.bounded_lookup("late", 4));
+
+    dict.rotate();
+    std::map<u32, const char*> snap;
+    dict.standby()->collect(snap);
+    bool found = false;
+    for (auto& kv : snap) if (strcmp(kv.second, "late") == 0) { found = true; break; }
+    EXPECT_TRUE(found);
+}
+
+TEST_F(StringDictionaryTest, LookupDuringDumpFindsPreregisteredKey) {
+    u32 id = dict.lookup("java/lang/String", 16);
+    dict.rotate();
+    EXPECT_EQ(id, dict.lookupDuringDump("java/lang/String", 16));
+}
+
+TEST_F(StringDictionaryTest, LookupDuringDumpAlsoAddsToStandby) {
+    dict.rotate();
+    u32 id = dict.lookup("late/Class", 10);
+
+    u32 found = dict.lookupDuringDump("late/Class", 10);
+    EXPECT_EQ(id, found);
+
+    std::map<u32, const char*> snap;
+    dict.standby()->collect(snap);
+    EXPECT_EQ(1u, snap.count(id));
+}
+
+TEST_F(StringDictionaryTest, ClearAllResetsEverything) {
+    u32 id = dict.lookup("x", 1);
+    (void)id;
+    dict.rotate();
+    dict.clearAll();
+    EXPECT_EQ(0u, dict.bounded_lookup("x", 1));
+    dict.rotate();
+    std::map<u32, const char*> snap;
+    dict.standby()->collect(snap);
+    EXPECT_EQ(0u, snap.size());
+    u32 new_id = dict.lookup("x", 1);
+    EXPECT_EQ(1u, new_id);
+}
