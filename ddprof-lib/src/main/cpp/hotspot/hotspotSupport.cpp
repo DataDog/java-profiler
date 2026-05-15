@@ -531,12 +531,10 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     uintptr_t receiver = frame.jarg0();
                     if (receiver != 0) {
                         VMSymbol* symbol = VMKlass::fromOop(receiver)->name();
-                        // classMap() is a TripleBufferedDictionary: writers and
-                        // readers target the active buffer lock-free; bounded_lookup
-                        // with size_limit=0 is read-only and never calls malloc.
+                        // bounded_lookup is a signal-safe read-only probe of active.
                         u32 class_id = profiler->classMap()->bounded_lookup(
-                            symbol->body(), symbol->length(), 0);
-                        if (class_id != INT_MAX) {
+                            symbol->body(), symbol->length());
+                        if (class_id != 0) {
                             fillFrame(frames[depth++], BCI_ALLOC, class_id);
                         }
                     }

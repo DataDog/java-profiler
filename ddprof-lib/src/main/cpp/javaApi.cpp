@@ -201,15 +201,15 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
     JNIEnv *env, jclass unused, jlong rootSpanId, jstring endpoint,
     jstring operation, jint sizeLimit) {
   JniString endpoint_str(env, endpoint);
-  u32 endpointLabel = Profiler::instance()->stringLabelMap()->bounded_lookup(
-      endpoint_str.c_str(), endpoint_str.length(), sizeLimit);
-  bool acceptValue = endpointLabel != INT_MAX;
+  u32 endpointLabel = Profiler::instance()->stringLabelMap()->lookup(
+      endpoint_str.c_str(), endpoint_str.length());
+  bool acceptValue = endpointLabel != 0;
   if (acceptValue) {
     u32 operationLabel = 0;
     if (operation != NULL) {
       JniString operation_str(env, operation);
-      operationLabel = Profiler::instance()->contextValueMap()->bounded_lookup(
-          operation_str.c_str(), operation_str.length(), 1 << 16);
+      operationLabel = Profiler::instance()->contextValueMap()->lookup(
+          operation_str.c_str(), operation_str.length());
     }
     TraceRootEvent event(rootSpanId, endpointLabel, operationLabel);
     int tid = ProfiledThread::currentTid();
@@ -593,9 +593,9 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jcla
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_ThreadContext_registerConstant0(JNIEnv* env, jclass unused, jstring value) {
   JniString value_str(env, value);
-  u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
-      value_str.c_str(), value_str.length(), 1 << 16);
-  return encoding == INT_MAX ? -1 : encoding;
+  u32 encoding = Profiler::instance()->contextValueMap()->lookup(
+      value_str.c_str(), value_str.length());
+  return encoding == 0 ? -1 : (jint)encoding;
 }
 
 extern "C" DLLEXPORT void JNICALL
