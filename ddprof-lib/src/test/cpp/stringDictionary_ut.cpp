@@ -166,3 +166,18 @@ TEST_F(StringDictionaryTest, ClearAllResetsEverything) {
     u32 new_id = dict.lookup("x", 1);
     EXPECT_EQ(1u, new_id);
 }
+
+TEST_F(StringDictionaryTest, LookupDuringDumpInsertsNewKeyIntoActivAndStandby) {
+    dict.rotate();  // empty active becomes dump, fresh active
+    // Key is not in dump and not in active — lookupDuringDump must insert into both.
+    u32 id = dict.lookupDuringDump("brand/New", 9);
+    EXPECT_GT(id, 0u);
+
+    // Must be in dump (standby)
+    std::map<u32, const char*> snap;
+    dict.standby()->collect(snap);
+    EXPECT_EQ(1u, snap.count(id));
+
+    // Must be in active (bounded_lookup is a probe of active)
+    EXPECT_EQ(id, dict.bounded_lookup("brand/New", 9));
+}

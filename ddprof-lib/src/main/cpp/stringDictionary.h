@@ -224,6 +224,8 @@ public:
         RefCountGuard guard(active);
         u32 id = active->lookup(key, len);
         if (id != 0) return id;
+        // nextId() may be consumed without assignment if a concurrent insert wins
+        // the CAS for the same key; IDs are unique but not guaranteed to be dense.
         u32 new_id = nextId();
         return active->insert_with_id(key, len, new_id);
     }
@@ -286,8 +288,10 @@ public:
         _rot.clearTarget()->clear();
     }
 
-    // Reset all three buffers. Call only during profiler stop (no concurrent
-    // writers or readers).
+    // Reset all three buffers and restart the ID counter.
+    // Caller must ensure all signal handlers are quiesced before calling
+    // (e.g., via RefCountGuard::waitForAllRefCountsToClear()) — concurrent
+    // readers accessing freed keys are undefined behaviour.
     void clearAll() {
         _a.clear(); _b.clear(); _c.clear();
         _rot.reset();
