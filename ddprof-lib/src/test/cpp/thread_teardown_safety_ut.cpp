@@ -68,14 +68,20 @@ static void *t01_body(void *) {
   install_handler(SIGVTALRM, t01_handler);
   g_t01_seen.store(kNotYetRun, std::memory_order_relaxed);
   pthread_kill(pthread_self(), SIGVTALRM);
-  EXPECT_NE(nullptr, g_t01_seen.load(std::memory_order_relaxed))
+  ProfiledThread *t01_pre = g_t01_seen.load(std::memory_order_relaxed);
+  ASSERT_NE(kNotYetRun, t01_pre)
+      << "SIGVTALRM handler must have run before release() (handler did not execute)";
+  EXPECT_NE(nullptr, t01_pre)
       << "currentSignalSafe() must return non-null while ProfiledThread is live";
 
   ProfiledThread::release();
 
   g_t01_seen.store(kNotYetRun, std::memory_order_relaxed);
   pthread_kill(pthread_self(), SIGVTALRM);
-  EXPECT_EQ(nullptr, g_t01_seen.load(std::memory_order_relaxed))
+  ProfiledThread *t01_post = g_t01_seen.load(std::memory_order_relaxed);
+  ASSERT_NE(kNotYetRun, t01_post)
+      << "SIGVTALRM handler must have run after release() (handler did not execute)";
+  EXPECT_EQ(nullptr, t01_post)
       << "currentSignalSafe() must return null after release()";
 
   return nullptr;
@@ -197,8 +203,6 @@ static void *t06_body(void *) {
   sigset_t before, during, after;
 
   pthread_sigmask(SIG_SETMASK, nullptr, &before);
-  EXPECT_FALSE(sigismember(&before, SIGVTALRM));
-  EXPECT_FALSE(sigismember(&before, SIGPROF));
 
   {
     SignalBlocker blocker;
@@ -210,10 +214,10 @@ static void *t06_body(void *) {
   }
 
   pthread_sigmask(SIG_SETMASK, nullptr, &after);
-  EXPECT_FALSE(sigismember(&after, SIGVTALRM))
-      << "SignalBlocker must restore SIGVTALRM on exit";
-  EXPECT_FALSE(sigismember(&after, SIGPROF))
-      << "SignalBlocker must restore SIGPROF on exit";
+  EXPECT_EQ(sigismember(&before, SIGVTALRM), sigismember(&after, SIGVTALRM))
+      << "SignalBlocker must restore SIGVTALRM to its initial state on exit";
+  EXPECT_EQ(sigismember(&before, SIGPROF), sigismember(&after, SIGPROF))
+      << "SignalBlocker must restore SIGPROF to its initial state on exit";
   return nullptr;
 }
 

@@ -44,17 +44,23 @@ abstract class AbstractDynamicClassTest extends AbstractProfilerTest {
       MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PUBLIC, "method" + i, "()I", null, null);
       mv.visitCode();
 
-      Label l1 = new Label(); mv.visitLabel(l1); mv.visitLineNumber(100 + i * 3, l1);
+      Label l1 = new Label();
+      mv.visitLabel(l1);
+      mv.visitLineNumber(100 + i * 3, l1);
       mv.visitInsn(Opcodes.ICONST_0);
       mv.visitVarInsn(Opcodes.ISTORE, 1);
 
-      Label l2 = new Label(); mv.visitLabel(l2); mv.visitLineNumber(101 + i * 3, l2);
+      Label l2 = new Label();
+      mv.visitLabel(l2);
+      mv.visitLineNumber(101 + i * 3, l2);
       mv.visitVarInsn(Opcodes.ILOAD, 1);
       mv.visitInsn(Opcodes.ICONST_1);
       mv.visitInsn(Opcodes.IADD);
       mv.visitVarInsn(Opcodes.ISTORE, 1);
 
-      Label l3 = new Label(); mv.visitLabel(l3); mv.visitLineNumber(102 + i * 3, l3);
+      Label l3 = new Label();
+      mv.visitLabel(l3);
+      mv.visitLineNumber(102 + i * 3, l3);
       mv.visitVarInsn(Opcodes.ILOAD, 1);
       mv.visitInsn(Opcodes.IRETURN);
 
