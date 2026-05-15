@@ -59,6 +59,9 @@ struct CpuTimes {
 class SharedLineNumberTable {
 public:
   int _size;
+  // Owned malloc'd buffer holding a copy of the JVMTI line number table.
+  // Owning the memory (instead of holding the JVMTI-allocated pointer
+  // directly) keeps lifetime independent of class unload.
   void *_ptr;
 
   SharedLineNumberTable(int size, void *ptr) : _size(size), _ptr(ptr) {}
@@ -192,7 +195,7 @@ public:
   void copyTo(int target_fd);
   off_t finishChunk();
 
-  off_t finishChunk(bool end_recording);
+  off_t finishChunk(bool end_recording, bool do_cleanup = false);
   void switchChunk(int fd);
 
   void cpuMonitorCycle();
