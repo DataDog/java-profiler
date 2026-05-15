@@ -149,6 +149,7 @@ static void* start_routine_wrapper_spec(void* args) {
     // pthread_exit instead of 'return': the saved LR in this frame is corrupted
     // by DEOPT PACKING; returning would jump to a garbage address.
     pthread_exit(nullptr);
+    __builtin_unreachable();
 }
 
 static int pthread_create_hook_spec(pthread_t* thread,

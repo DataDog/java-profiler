@@ -597,14 +597,11 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   _buf->reset();
 
   // Run method_map cleanup while the class pins from GetLoadedClasses are still
-  // held.  This closes the concurrent-unload race: a class that is still loaded
-  // at this point cannot be unloaded by the GC until the pins are released below.
-  // On JVM implementations that free JVMTI-allocated line-number-table memory on
-  // class unload this ordering ensures Deallocate() is called before the memory
-  // is reclaimed.  Classes that were already unloaded before finishChunk() was
-  // entered are not in the pin list and are unaffected by this ordering — for
-  // those, jvmti->Deallocate() follows the JVMTI contract (caller owns the
-  // memory) and is safe as long as the JVM honours that contract.
+  // held.  Line number tables are now malloc'd copies (fillJavaMethodInfo copies
+  // the JVMTI buffer and calls Deallocate() immediately), so ~SharedLineNumberTable()
+  // calls free() — safe regardless of class-unload state.  Cleanup runs before
+  // DeleteLocalRef to ensure erased jmethodID keys have not yet been recycled by
+  // a newly-loaded class.
   if (do_cleanup) {
     cleanupUnreferencedMethods();
   }

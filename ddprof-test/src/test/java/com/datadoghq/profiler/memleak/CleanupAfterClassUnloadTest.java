@@ -37,18 +37,18 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * Regression test for PROF-14545: SIGSEGV in Recording::cleanupUnreferencedMethods.
  *
  * <p>The bug: cleanupUnreferencedMethods() was called after finishChunk() released its
- * GetLoadedClasses pins. The class pins are JNI local references that prevent concurrent
- * GC from unloading a class between resolveMethod() JVMTI calls and the Deallocate that
- * frees the line-number-table buffer. Calling cleanupUnreferencedMethods() after the pins
- * were released created a window where, on JVM implementations that free JVMTI-allocated
- * line-number-table memory on class unload, Deallocate could access freed memory → SIGSEGV.
+ * GetLoadedClasses pins. ~SharedLineNumberTable() called jvmti-&gt;Deallocate() on
+ * JVMTI-allocated line-number-table memory that the JVM had already freed on class
+ * unload → SIGSEGV.
  *
- * <p>The fix: cleanupUnreferencedMethods() is now called inside finishChunk(), before
- * DeleteLocalRef releases the pins, closing the concurrent-unload race window during
- * finishChunk(). Note: this ordering does not protect against classes that were already
- * fully unloaded before finishChunk() began; for those, correctness relies on the JVMTI
- * contract that the caller owns memory returned by GetLineNumberTable and the JVM must
- * not reclaim it on class unload.
+ * <p>The fix: two complementary changes:
+ * <ol>
+ *   <li>cleanupUnreferencedMethods() is now called inside finishChunk(), before
+ *       DeleteLocalRef releases the GetLoadedClasses pins.</li>
+ *   <li>fillJavaMethodInfo() copies the JVMTI line-number-table into a malloc'd buffer
+ *       and immediately calls jvmti-&gt;Deallocate() on the original; cleanup calls free()
+ *       on the malloc'd copy, which is safe regardless of class-unload state.</li>
+ * </ol>
  *
  * <p>This test reproduces the crash scenario:
  * <ol>

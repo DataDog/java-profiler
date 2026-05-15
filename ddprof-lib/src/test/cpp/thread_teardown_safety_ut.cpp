@@ -42,6 +42,17 @@ static inline void install_handler(int sig, void (*handler)(int)) {
   sigaction(sig, &sa, nullptr);
 }
 
+// RAII helper: saves the current sigaction for `sig` and restores it on
+// destruction, preventing signal-disposition leaks across tests.
+struct SigGuard {
+  int sig;
+  struct sigaction saved;
+  explicit SigGuard(int s) : sig(s) { sigaction(s, nullptr, &saved); }
+  ~SigGuard() { sigaction(sig, &saved, nullptr); }
+  SigGuard(const SigGuard&) = delete;
+  SigGuard& operator=(const SigGuard&) = delete;
+};
+
 // ── T-01: currentSignalSafe() is non-null while live, null after release ─────
 
 static std::atomic<ProfiledThread *> g_t01_seen{nullptr};
@@ -53,6 +64,7 @@ static void t01_handler(int) {
 static void *t01_body(void *) {
   ProfiledThread::initCurrentThread();
 
+  SigGuard guard(SIGVTALRM);
   install_handler(SIGVTALRM, t01_handler);
   g_t01_seen.store(kNotYetRun, std::memory_order_relaxed);
   pthread_kill(pthread_self(), SIGVTALRM);
@@ -66,7 +78,6 @@ static void *t01_body(void *) {
   EXPECT_EQ(nullptr, g_t01_seen.load(std::memory_order_relaxed))
       << "currentSignalSafe() must return null after release()";
 
-  signal(SIGVTALRM, SIG_IGN);
   return nullptr;
 }
 
@@ -88,6 +99,7 @@ static void t02_handler(int) {
 static void *t02_body(void *) {
   ProfiledThread::initCurrentThread();
 
+  SigGuard guard(SIGVTALRM);
   install_handler(SIGVTALRM, t02_handler);
   g_t02_seen.store(kNotYetRun, std::memory_order_relaxed);
 
@@ -99,7 +111,6 @@ static void *t02_body(void *) {
   EXPECT_EQ(nullptr, g_t02_seen.load(std::memory_order_relaxed))
       << "currentSignalSafe() must return null in the TLS-clear/delete window";
 
-  signal(SIGVTALRM, SIG_IGN);
   // release() with TLS already null must not double-free.
   ProfiledThread::release();
   return nullptr;
@@ -137,12 +148,12 @@ static void t04_handler(int) {
 
 static void *t04_body(void *) {
   // Intentionally no initCurrentThread().
+  SigGuard guard(SIGVTALRM);
   install_handler(SIGVTALRM, t04_handler);
   g_t04_seen.store(kNotYetRun, std::memory_order_relaxed);
   pthread_kill(pthread_self(), SIGVTALRM);
   EXPECT_EQ(nullptr, g_t04_seen.load(std::memory_order_relaxed))
       << "currentSignalSafe() must return null for unregistered threads";
-  signal(SIGVTALRM, SIG_IGN);
   return nullptr;
 }
 
@@ -155,8 +166,10 @@ TEST(ThreadTeardownSafetyTest, SignalSafeAccessorReturnsNullWithoutInit) {
 // ── T-05: Concurrent signals during teardown stress ──────────────────────────
 
 static void *t05_worker(void *) {
-  signal(SIGVTALRM, SIG_IGN);
-  signal(SIGPROF, SIG_IGN);
+  SigGuard gVtalrm(SIGVTALRM);
+  SigGuard gProf(SIGPROF);
+  install_handler(SIGVTALRM, SIG_IGN);
+  install_handler(SIGPROF, SIG_IGN);
   ProfiledThread::initCurrentThread();
   for (int i = 0; i < 10; ++i) {
     pthread_kill(pthread_self(), SIGVTALRM);
@@ -211,15 +224,20 @@ TEST(ThreadTeardownSafetyTest, SignalBlockerMasksAndRestoresProfSignals) {
 }
 
 // ── T-07: Forced unwind with concurrent signal does not crash ─────────────────
+// Cancellation mechanism differs between glibc (abi::__forced_unwind via C++
+// unwinder) and musl (C-style pthread_cleanup_push callbacks).
 
 static std::atomic<bool> g_t07_cleanup_ran{false};
 static std::atomic<bool> g_t07_release_ran{false};
+
+#ifdef __GLIBC__
 
 static void *t07_body(void *) {
   g_t07_cleanup_ran.store(false, std::memory_order_relaxed);
   g_t07_release_ran.store(false, std::memory_order_relaxed);
 
-  signal(SIGVTALRM, SIG_IGN);
+  SigGuard guard(SIGVTALRM);
+  install_handler(SIGVTALRM, SIG_IGN);
   ProfiledThread::initCurrentThread();
 
   try {
@@ -238,6 +256,36 @@ static void *t07_body(void *) {
   ProfiledThread::release();
   return nullptr;
 }
+
+#else  // !__GLIBC__ — musl: cancellation runs C cleanup callbacks
+
+static void t07_cleanup_fn(void *) {
+  g_t07_cleanup_ran.store(true, std::memory_order_relaxed);
+  ProfiledThread::release();
+  g_t07_release_ran.store(true, std::memory_order_relaxed);
+}
+
+static void *t07_body(void *) {
+  g_t07_cleanup_ran.store(false, std::memory_order_relaxed);
+  g_t07_release_ran.store(false, std::memory_order_relaxed);
+
+  SigGuard guard(SIGVTALRM);
+  install_handler(SIGVTALRM, SIG_IGN);
+  ProfiledThread::initCurrentThread();
+
+  pthread_cleanup_push(t07_cleanup_fn, nullptr);
+  // Inject a signal before the cancellation point to exercise the combined path.
+  pthread_kill(pthread_self(), SIGVTALRM);
+  while (true) {
+    pthread_testcancel();
+    usleep(100);
+  }
+  pthread_cleanup_pop(0);
+  ProfiledThread::release();
+  return nullptr;
+}
+
+#endif  // __GLIBC__
 
 TEST(ThreadTeardownSafetyTest, ForcedUnwindWithConcurrentSignalDoesNotCrash) {
   pthread_t t;
@@ -286,7 +334,8 @@ static void *t09_injector(void *) {
 }
 
 static void *t09_worker(void *) {
-  signal(SIGVTALRM, SIG_IGN);
+  SigGuard guard(SIGVTALRM);
+  install_handler(SIGVTALRM, SIG_IGN);
   ProfiledThread::initCurrentThread();
   usleep(100);
   ProfiledThread::release();
@@ -296,7 +345,8 @@ static void *t09_worker(void *) {
 // Mirrors DumpWhileChurningThreadsTest at native level: 100 short-lived threads
 // under continuous SIGVTALRM injection must complete without crash.
 TEST(ThreadTeardownSafetyTest, HighFrequencySignalsDuringThreadChurn) {
-  signal(SIGVTALRM, SIG_IGN);
+  SigGuard testGuard(SIGVTALRM);
+  install_handler(SIGVTALRM, SIG_IGN);
 
   g_t09_stop.store(false, std::memory_order_relaxed);
   pthread_t injector;
@@ -310,7 +360,6 @@ TEST(ThreadTeardownSafetyTest, HighFrequencySignalsDuringThreadChurn) {
 
   g_t09_stop.store(true, std::memory_order_relaxed);
   pthread_join(injector, nullptr);
-  signal(SIGVTALRM, SIG_DFL);
 }
 
 // ── T-10: CriticalSection reentrancy guard prevents double-entry ──────────────
