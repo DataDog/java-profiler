@@ -13,6 +13,7 @@
 #include "codeCache.h"
 #include "common.h"
 #include "dictionary.h"
+#include "stringDictionary.h"
 #include "engine.h"
 #include "event.h"
 #include "flightRecorder.h"
@@ -78,9 +79,9 @@ private:
   // --
 
   ThreadInfo _thread_info;
-  TripleBufferedDictionary _class_map;
-  TripleBufferedDictionary _string_label_map;
-  TripleBufferedDictionary _context_value_map;
+  StringDictionary _class_map;
+  StringDictionary _string_label_map;
+  StringDictionary _context_value_map;
   ThreadFilter _thread_filter;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
@@ -148,8 +149,8 @@ private:
 public:
   Profiler()
       : _state_lock(), _state(NEW), _class_unload_hook_trap(2),
-        _notify_class_unloaded_func(NULL), _thread_info(), _class_map(1),
-        _string_label_map(2), _context_value_map(3), _thread_filter(),
+        _notify_class_unloaded_func(NULL), _thread_info(), _class_map(),
+        _string_label_map(), _context_value_map(), _thread_filter(),
         _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
         _alloc_engine(NULL), _event_mask(0),
         _start_time(0), _stop_time(0), _epoch(0), _timer_id(NULL),
@@ -201,9 +202,9 @@ public:
   Engine *cpuEngine() { return _cpu_engine; }
   Engine *wallEngine() { return _wall_engine; }
 
-  TripleBufferedDictionary *classMap() { return &_class_map; }
-  TripleBufferedDictionary *stringLabelMap() { return &_string_label_map; }
-  TripleBufferedDictionary *contextValueMap() { return &_context_value_map; }
+  StringDictionary *classMap() { return &_class_map; }
+  StringDictionary *stringLabelMap() { return &_string_label_map; }
+  StringDictionary *contextValueMap() { return &_context_value_map; }
   u32 numContextAttributes() { return _num_context_attributes; }
   ThreadFilter *threadFilter() { return &_thread_filter; }
 

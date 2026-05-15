@@ -1300,7 +1300,7 @@ Error Profiler::stop() {
 
   // Promote accumulated writes to standby so that writeCpool() (called from
   // ~Recording() inside _jfr.stop()) reads a complete, stable snapshot.
-  _class_map.rotatePersistent();
+  _class_map.rotate();
   _string_label_map.rotate();
   _context_value_map.rotate();
 
@@ -1398,9 +1398,9 @@ Error Profiler::dump(const char *path, const int length) {
     // to string/context maps also complete quickly; any that sneak past rotate()
     // land in the new active and are picked up in the next cycle.
     //
-    // rotatePersistent() pre-populates the future active from the current
-    // active so that bounded_lookup never misses a previously-registered class.
-    _class_map.rotatePersistent();
+    // rotate() does a two-phase ID-preserving copy from current active to
+    // standby so that lookup never misses a previously-registered class.
+    _class_map.rotate();
     _string_label_map.rotate();
     _context_value_map.rotate();
 
