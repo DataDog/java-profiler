@@ -18,7 +18,6 @@
 
 typedef void* (*func_start_routine)(void*);
 
-
 SpinLock LibraryPatcher::_lock;
 const char* LibraryPatcher::_profiler_name = nullptr;
 PatchEntry LibraryPatcher::_patched_entries[MAX_NATIVE_LIBS];
