@@ -18,7 +18,6 @@
 
 typedef void* (*func_start_routine)(void*);
 
-
 SpinLock LibraryPatcher::_lock;
 const char* LibraryPatcher::_profiler_name = nullptr;
 PatchEntry LibraryPatcher::_patched_entries[MAX_NATIVE_LIBS];
@@ -95,6 +94,16 @@ static void init_tls_and_register() {
     Profiler::registerThread(ProfiledThread::currentTid());
 }
 
+// pthread_cleanup_push callback for start_routine_wrapper_spec.
+// Fires when the wrapped routine calls pthread_exit() or the thread is
+// canceled.  Kept noinline so its stack frame (which may hold a SignalBlocker
+// via unregister_and_release) lives outside the DEOPT-corruption zone of
+// start_routine_wrapper_spec.
+__attribute__((noinline))
+static void cleanup_unregister(void*) {
+    unregister_and_release(ProfiledThread::currentTid());
+}
+
 // Wrapper around the real start routine.
 // The wrapper:
 // 1. Register the newly created thread to profiler
@@ -135,6 +144,8 @@ static void init_tls_and_register() {
 //
 // Cleanup reads tid from TLS (via ProfiledThread::currentTid()) rather than
 // from a stack variable, so it is correct even after the frame is corrupted.
+// pthread_cleanup_push/pop ensures unregister_and_release() also runs when the
+// wrapped routine calls pthread_exit() or the thread is canceled.
 __attribute__((visibility("hidden"), no_stack_protector))
 static void* start_routine_wrapper_spec(void* args) {
     RoutineInfo* thr = (RoutineInfo*)args;
@@ -142,13 +153,16 @@ static void* start_routine_wrapper_spec(void* args) {
     void* params = thr->args();
     delete_routine_info(thr);
     init_tls_and_register();
+    // cleanup_unregister fires on pthread_exit() or cancellation from within
+    // routine(params).  pthread_cleanup_pop(1) executes and removes the handler
+    // on the normal return path, so unregister_and_release() is not called twice.
+    pthread_cleanup_push(cleanup_unregister, nullptr);
     routine(params);
-    // unregister_and_release() holds SignalBlocker for the duration, closing the
-    // race window between unregisterThread() and release() (PROF-14603).
-    unregister_and_release(ProfiledThread::currentTid());
+    pthread_cleanup_pop(1);
     // pthread_exit instead of 'return': the saved LR in this frame is corrupted
     // by DEOPT PACKING; returning would jump to a garbage address.
     pthread_exit(nullptr);
+    __builtin_unreachable();
 }
 
 static int pthread_create_hook_spec(pthread_t* thread,
