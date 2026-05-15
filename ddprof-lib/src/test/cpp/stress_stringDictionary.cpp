@@ -235,7 +235,7 @@ TEST(StressStringDictionary, LookupDuringDumpSafeUnderConcurrentInserts) {
     for (auto& key : makeKeys(99, 20)) dict.lookup(key.c_str(), key.size());
     dict.rotate();
 
-    // Concurrent inserts into new active while dump thread calls lookupDuringDump.
+    // Start inserters FIRST so lookupDuringDump races with active inserts.
     std::atomic<bool> done{false};
     std::vector<std::thread> inserters;
     for (int t = 0; t < N_INSERTERS; t++) {
@@ -247,7 +247,7 @@ TEST(StressStringDictionary, LookupDuringDumpSafeUnderConcurrentInserts) {
         });
     }
 
-    // Dump thread probes the pre-populated keys via lookupDuringDump.
+    // Dump thread probes pre-populated keys concurrently with active inserts.
     std::vector<std::pair<std::string, u32>> dump_results;
     for (auto& key : makeKeys(99, 20)) {
         u32 id = dict.lookupDuringDump(key.c_str(), key.size());
@@ -258,13 +258,11 @@ TEST(StressStringDictionary, LookupDuringDumpSafeUnderConcurrentInserts) {
     done.store(true);
     for (auto& th : inserters) th.join();
 
-    // All results from lookupDuringDump must be in the dump buffer (standby).
+    // All keys returned by lookupDuringDump must be in the dump buffer (standby).
     std::map<u32, const char*> snap;
     dict.standby()->collect(snap);
     for (auto& kv : dump_results) {
         EXPECT_EQ(1u, snap.count(kv.second))
             << "key '" << kv.first << "' with id " << kv.second << " not in standby";
     }
-
-    SUCCEED();
 }
