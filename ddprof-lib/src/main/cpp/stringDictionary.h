@@ -28,7 +28,6 @@ struct SBTable;
 
 struct SBRow {
     char*    keys[CELLS];    // null = empty; CAS-claimed by the inserting thread
-    u32      keylens[CELLS]; // set before key CAS (relaxed)
     u32      ids[CELLS];     // set before key CAS (relaxed); read via acquire of keys[]
     SBTable* next;           // overflow chain; CAS-created on overflow
 };
@@ -91,7 +90,7 @@ private:
             const SBRow* row = &table->rows[i];
             for (int j = 0; j < CELLS; j++) {
                 const char* k = __atomic_load_n(&row->keys[j], __ATOMIC_ACQUIRE);
-                if (k) out[row->ids[j]] = k;
+                if (k) out[__atomic_load_n(&row->ids[j], __ATOMIC_RELAXED)] = k;
             }
             if (row->next) collectTable(row->next, out);
         }
@@ -116,7 +115,7 @@ public:
             for (int c = 0; c < CELLS; c++) {
                 const char* k = __atomic_load_n(&row->keys[c], __ATOMIC_ACQUIRE);
                 if (!k) return 0;
-                if (keyEquals(k, key, len)) return row->ids[c];
+                if (keyEquals(k, key, len)) return __atomic_load_n(&row->ids[c], __ATOMIC_RELAXED);
             }
             table = row->next;
             h = (h >> ROW_BITS) | (h << (32 - ROW_BITS));
@@ -136,10 +135,10 @@ public:
                 char* existing = __atomic_load_n(&row->keys[c], __ATOMIC_ACQUIRE);
                 if (!existing) {
                     char* new_key = (char*)malloc(len + 1);
+                    if (!new_key) return 0;
                     memcpy(new_key, key, len);
                     new_key[len] = '\0';
-                    row->keylens[c] = (u32)len;
-                    row->ids[c] = id;
+                    __atomic_store_n(&row->ids[c], id, __ATOMIC_RELAXED);
                     if (__sync_bool_compare_and_swap(&row->keys[c], nullptr, new_key)) {
                         _size.fetch_add(1, std::memory_order_relaxed);
                         return id;
@@ -148,7 +147,7 @@ public:
                     existing = __atomic_load_n(&row->keys[c], __ATOMIC_ACQUIRE);
                 }
                 if (existing && keyEquals(existing, key, len)) {
-                    return row->ids[c];
+                    return __atomic_load_n(&row->ids[c], __ATOMIC_RELAXED);
                 }
             }
             if (!row->next) {
