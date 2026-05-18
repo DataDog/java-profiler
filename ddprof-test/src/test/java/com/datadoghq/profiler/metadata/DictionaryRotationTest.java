@@ -34,7 +34,7 @@ import static org.openjdk.jmc.common.item.Attribute.attr;
 import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
 
 /**
- * Verifies that the TripleBufferedDictionary rotate+clearStandby cycle correctly:
+ * Verifies that the dictionary rotate+clearStandby cycle correctly:
  * - Exposes only pre-dump entries in the dump snapshot.
  * - Recalibrates the live counter to reflect the active buffer after clearStandby().
  * - Accumulates post-dump entries in the new active buffer.
