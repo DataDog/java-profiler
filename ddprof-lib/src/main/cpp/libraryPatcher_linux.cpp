@@ -104,6 +104,19 @@ static void cleanup_unregister(void*) {
     unregister_and_release(ProfiledThread::currentTid());
 }
 
+// pthread_cleanup_push declares `struct __ptcb` in the caller's frame.  If that
+// frame is start_routine_wrapper_spec, the structure sits inside the ~224-byte
+// DEOPT-corruption zone and pthread_cleanup_pop(1) would invoke a clobbered
+// function pointer.  This noinline + no_stack_protector helper hoists the
+// cleanup-handler frame out of the corruption zone — its own frame lives
+// safely above start_routine_wrapper_spec's.
+__attribute__((noinline, no_stack_protector))
+static void run_with_musl_cleanup(func_start_routine routine, void* params) {
+    pthread_cleanup_push(cleanup_unregister, nullptr);
+    routine(params);
+    pthread_cleanup_pop(1);
+}
+
 // Wrapper around the real start routine.
 // The wrapper:
 // 1. Register the newly created thread to profiler
@@ -154,11 +167,9 @@ static void* start_routine_wrapper_spec(void* args) {
     delete_routine_info(thr);
     init_tls_and_register();
     // cleanup_unregister fires on pthread_exit() or cancellation from within
-    // routine(params).  pthread_cleanup_pop(1) executes and removes the handler
-    // on the normal return path, so unregister_and_release() is not called twice.
-    pthread_cleanup_push(cleanup_unregister, nullptr);
-    routine(params);
-    pthread_cleanup_pop(1);
+    // routine(params).  The push/pop pair lives inside run_with_musl_cleanup so
+    // that `struct __ptcb` does not land in this frame's DEOPT-corruption zone.
+    run_with_musl_cleanup(routine, params);
     // pthread_exit instead of 'return': the saved LR in this frame is corrupted
     // by DEOPT PACKING; returning would jump to a garbage address.
     pthread_exit(nullptr);

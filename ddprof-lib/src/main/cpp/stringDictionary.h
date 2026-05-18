@@ -72,28 +72,48 @@ private:
         return strncmp(candidate, key, length) == 0 && candidate[length] == '\0';
     }
 
+    // Iterative DFS walk of the overflow tree.  Each frame tracks one table and
+    // the next row to visit.  Because we descend into row->next immediately and
+    // only pop the frame after every row has been processed, the stack holds at
+    // most one frame per overflow-chain level — bounded by the 32-bit hash
+    // rotation period (32 / gcd(32, ROW_BITS)).  Sizing stk[] at 34 leaves
+    // headroom; a recursive traversal could blow the stack on pathological
+    // hash-collision chains.
     static void freeTable(SBTable* table) {
-        for (int i = 0; i < ROWS; i++) {
-            SBRow* row = &table->rows[i];
+        struct Frame { SBTable* t; int row; };
+        Frame stk[34];
+        int top = 0;
+        stk[top++] = {table, 0};
+        while (top > 0) {
+            Frame& f = stk[top - 1];
+            if (f.row >= ROWS) {
+                if (f.t != table) free(f.t);
+                --top;
+                continue;
+            }
+            SBRow* row = &f.t->rows[f.row++];
             for (int j = 0; j < CELLS; j++) {
                 if (row->keys[j]) free(row->keys[j]);
             }
-            if (row->next) {
-                freeTable(row->next);
-                free(row->next);
-            }
+            if (row->next) stk[top++] = {row->next, 0};
         }
     }
 
     static void collectTable(const SBTable* table,
                              std::map<u32, const char*>& out) {
-        for (int i = 0; i < ROWS; i++) {
-            const SBRow* row = &table->rows[i];
+        struct Frame { const SBTable* t; int row; };
+        Frame stk[34];
+        int top = 0;
+        stk[top++] = {table, 0};
+        while (top > 0) {
+            Frame& f = stk[top - 1];
+            if (f.row >= ROWS) { --top; continue; }
+            const SBRow* row = &f.t->rows[f.row++];
             for (int j = 0; j < CELLS; j++) {
                 const char* k = __atomic_load_n(&row->keys[j], __ATOMIC_ACQUIRE);
                 if (k) out[__atomic_load_n(&row->ids[j], __ATOMIC_RELAXED)] = k;
             }
-            if (row->next) collectTable(row->next, out);
+            if (row->next) stk[top++] = {row->next, 0};
         }
     }
 

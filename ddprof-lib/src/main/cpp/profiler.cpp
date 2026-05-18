@@ -1397,26 +1397,33 @@ Error Profiler::dump(const char *path, const int length) {
     Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
                   native_libs.memoryUsage());
 
-    // Promote current writes to standby before blocking signal handlers.
-    // After lockAll() returns, all in-flight signal-handler writes to the old
-    // active have completed (signal handlers hold per-thread locks).  JNI writers
-    // to string/context maps also complete quickly; any that sneak past rotate()
-    // land in the new active and are picked up in the next cycle.
+    // Rotate under lock so the swap is atomic with respect to JNI writers and
+    // signal handlers: while all per-thread spin locks are held, no writer can
+    // insert into the new active and emit a TraceRootEvent referencing that ID
+    // before writeCpool() reads the standby snapshot.  Rotating before lockAll()
+    // left that race window open — writers could land an ID in the new active
+    // and reference it from a TraceRootEvent that arrived in the JFR file before
+    // writeCpool() ran, leaving a dangling reference.
     //
     // rotate() does a two-phase ID-preserving copy from current active to
     // standby so that lookup never misses a previously-registered class.
+    //
+    // Locks are released as soon as the rotation completes — _jfr.dump() then
+    // reads the stable standby snapshot while JNI writers continue inserting
+    // into the new active concurrently.  This is the whole point of the
+    // triple-buffered design.
+    lockAll();
     _class_map.rotate();
     _string_label_map.rotate();
     _context_value_map.rotate();
+    unlockAll();
 
-    lockAll();
     Error err = _jfr.dump(path, length);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
 
     // Note: No need to clear call trace storage here - the triple-buffering in
     // processTraces() already handles clearing old traces while preserving
     // traces referenced by surviving LivenessTracker objects
-    unlockAll();
 
     _class_map.clearStandby();
     _string_label_map.clearStandby();
