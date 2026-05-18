@@ -580,9 +580,11 @@ void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
   loadMethodIDs(jvmti, jni, klass);
 
   // Pre-populate _class_map for vtable_target signal-safe lookup. ClassPrepare
-  // runs on a JVM thread (never a signal handler) so malloc inside
-  // _class_map.lookup is legal. Gate on vtable_target to avoid overhead when
-  // the feature is disabled.
+  // runs on a JVM thread (never a signal handler), so we take a blocking
+  // shared lock via classMapSharedGuard() rather than the best-effort
+  // tryLockShared() in lookupClass(). This ensures newly prepared classes are
+  // never silently skipped while an exclusive dump/reset is in flight. Gate on
+  // vtable_target to avoid overhead when the feature is disabled.
   Profiler* profiler = Profiler::instance();
   if (profiler == nullptr || !profiler->stackWalkFeatures().vtable_target) {
     return;
@@ -596,10 +598,17 @@ void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
   if (sig == nullptr) {
     return;
   }
+  // Only 'L'-type (reference) signatures can ever match vtable_target lookup
+  // keys; skip primitives and arrays.
+  if (sig[0] != 'L') {
+    jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
+    return;
+  }
   const char* slice = nullptr;
   size_t slice_len = 0;
   if (ObjectSampler::normalizeClassSignature(sig, &slice, &slice_len)) {
-    (void)profiler->lookupClass(slice, slice_len);
+    SharedLockGuard guard = profiler->classMapSharedGuard();
+    (void)profiler->classMap()->lookup(slice, slice_len);
   }
   jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
 }

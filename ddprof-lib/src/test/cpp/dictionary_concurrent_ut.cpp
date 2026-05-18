@@ -250,10 +250,12 @@ TEST(DictionaryConcurrent, SignalHandlerBoundedLookupVsDumpClear) {
     EXPECT_GT(total_clears.load(), 0L);
 }
 
-// (4a) Bulk exclusive-lock insert (mimicking preregisterLoadedClasses) followed
-// by read-only bounded_lookup(0) on each inserted key. Verifies that the
-// pre-registration contract holds: every key inserted while the exclusive lock
-// is held is subsequently visible to bounded_lookup(0) from a shared context.
+// (4a) Single-threaded bulk insert (mimicking the inserts preregisterLoadedClasses
+// performs while holding _class_map_lock exclusively in production) followed by
+// read-only bounded_lookup(0) on each inserted key. Verifies the pre-registration
+// contract: every key inserted via Dictionary::lookup() is subsequently visible
+// to bounded_lookup(0). This test takes no external lock — the production
+// exclusive-lock protocol is exercised by the other tests in this file.
 TEST(DictionaryConcurrent, BulkInsertThenBoundedLookupHitsMirrorInsertedIds) {
     Dictionary dict(/*id=*/0);
 
@@ -261,7 +263,8 @@ TEST(DictionaryConcurrent, BulkInsertThenBoundedLookupHitsMirrorInsertedIds) {
     char keys[kBulk][64];
     unsigned int inserted_ids[kBulk];
 
-    // Bulk insert under an exclusive lock — mirrors preregisterLoadedClasses.
+    // Bulk insert — mirrors the per-class lookup() calls preregisterLoadedClasses
+    // issues from a JVM thread.
     for (int i = 0; i < kBulk; i++) {
         snprintf(keys[i], sizeof(keys[i]), "java/util/BulkClass%d", i);
         inserted_ids[i] = dict.lookup(keys[i], strlen(keys[i]));

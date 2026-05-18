@@ -213,10 +213,12 @@ public:
 
   const char* cstack() const;
   int lookupClass(const char *key, size_t length);
-  // Pre-populate _class_map with all currently-loaded reference classes so that
-  // signal-safe lookups in walkVM (vtable_target) can resolve them without ever
-  // needing to malloc. Caller MUST hold _class_map_lock EXCLUSIVELY. Runs on a
-  // JVM thread (never in a signal handler).
+  // Pre-populate _class_map with all currently-loaded 'L'-type (reference)
+  // class signatures so that signal-safe lookups in walkVM (vtable_target) can
+  // resolve them without ever needing to malloc. Primitives and arrays are
+  // skipped — they never match vtable lookup keys. Caller MUST hold
+  // _class_map_lock EXCLUSIVELY. Runs on a JVM thread (never in a signal
+  // handler).
   void preregisterLoadedClasses(jvmtiEnv* jvmti);
   void processCallTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor) {
     if (!_omit_stacktraces) {

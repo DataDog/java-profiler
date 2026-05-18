@@ -1549,6 +1549,7 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti) {
   if (jvmti == nullptr) {
     return;
   }
+  JNIEnv* jni = VM::jni();
   jint class_count = 0;
   jclass* classes = nullptr;
   jvmtiError err = jvmti->GetLoadedClasses(&class_count, &classes);
@@ -1559,12 +1560,24 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti) {
   if (classes == nullptr) {
     return;
   }
+  // Each classes[i] is a JNI local reference allocated by JVMTI; delete it at
+  // every loop exit so the local-reference table does not grow across repeated
+  // start/dump calls on large applications.
   for (jint i = 0; i < class_count; i++) {
     char* sig = nullptr;
     if (jvmti->GetClassSignature(classes[i], &sig, nullptr) != JVMTI_ERROR_NONE) {
+      if (jni != nullptr) jni->DeleteLocalRef(classes[i]);
       continue;
     }
     if (sig == nullptr) {
+      if (jni != nullptr) jni->DeleteLocalRef(classes[i]);
+      continue;
+    }
+    // Only 'L'-type (reference) signatures can ever match vtable_target lookup
+    // keys; skip primitives, arrays, and other non-reference signatures.
+    if (sig[0] != 'L') {
+      jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
+      if (jni != nullptr) jni->DeleteLocalRef(classes[i]);
       continue;
     }
     const char* slice = nullptr;
@@ -1576,6 +1589,7 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti) {
       (void)_class_map.lookup(slice, slice_len);
     }
     jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
+    if (jni != nullptr) jni->DeleteLocalRef(classes[i]);
   }
   jvmti->Deallocate(reinterpret_cast<unsigned char*>(classes));
 }
