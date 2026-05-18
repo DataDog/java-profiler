@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk8
 
 ## musl-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-05-18 12:55:18 EDT
+**Date:** 2026-05-18 16:00:01 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 50 |
-| CPU Cores (end) | 40 |
+| CPU Cores (start) | 5 |
+| CPU Cores (end) | 5 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: musl-x64-openj9-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (3 unique values: 40-50 cores)</summary>
+<summary>CPU Timeline (1 unique values: 5-5 cores)</summary>
 
 ```
-1779122960 50
-1779122965 50
-1779122970 45
-1779122975 45
-1779122980 45
-1779122985 45
-1779122990 45
-1779122995 45
-1779123000 40
-1779123005 40
-1779123010 40
-1779123015 40
-1779123020 40
-1779123025 40
-1779123030 40
-1779123035 40
-1779123040 40
-1779123045 40
-1779123050 40
-1779123055 40
+1779133787 5
+1779133792 5
+1779133797 5
+1779133802 5
+1779133807 5
+1779133812 5
+1779133817 5
+1779133822 5
+1779133827 5
+1779133832 5
+1779133837 5
+1779133842 5
+1779133847 5
+1779133852 5
+1779133857 5
+1779133862 5
+1779133867 5
+1779133872 5
+1779133877 5
+1779133882 5
 ```
 </details>
 
