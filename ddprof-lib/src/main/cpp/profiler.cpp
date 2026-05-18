@@ -1305,9 +1305,20 @@ Error Profiler::stop() {
 
   // Promote accumulated writes to standby so that writeCpool() (called from
   // ~Recording() inside _jfr.stop()) reads a complete, stable snapshot.
-  _class_map.rotate();
-  _string_label_map.rotate();
-  _context_value_map.rotate();
+  //
+  // Rotate under SignalBlocker + lockAll so the swap is atomic from every
+  // observer — SignalBlocker masks SIGPROF/SIGVTALRM on this thread so an
+  // in-thread async-signal handler cannot interrupt the multi-step rotate,
+  // and lockAll blocks JNI writers and other threads' signal-handler
+  // tryLock paths.  Locks are released as soon as the rotation completes.
+  {
+    SignalBlocker blocker;
+    lockAll();
+    _class_map.rotate();
+    _string_label_map.rotate();
+    _context_value_map.rotate();
+    unlockAll();
+  }
 
   // Acquire all spinlocks to avoid race with remaining signals
   lockAll();
@@ -1397,13 +1408,17 @@ Error Profiler::dump(const char *path, const int length) {
     Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
                   native_libs.memoryUsage());
 
-    // Rotate under lock so the swap is atomic with respect to JNI writers and
-    // signal handlers: while all per-thread spin locks are held, no writer can
-    // insert into the new active and emit a TraceRootEvent referencing that ID
-    // before writeCpool() reads the standby snapshot.  Rotating before lockAll()
-    // left that race window open — writers could land an ID in the new active
-    // and reference it from a TraceRootEvent that arrived in the JFR file before
-    // writeCpool() ran, leaving a dangling reference.
+    // Rotate under SignalBlocker + lockAll so the swap is atomic from every
+    // observer:
+    //   - SignalBlocker masks SIGPROF/SIGVTALRM on this thread so an in-thread
+    //     async-signal handler cannot interrupt the multi-step rotate (the
+    //     three maps must rotate together, and rotate() itself is not signal
+    //     reentrant).
+    //   - lockAll() holds every per-thread spin lock, blocking JNI writers
+    //     (recordTraceRoot) and signal-handler tryLock() paths on other
+    //     threads.  This closes the race where a writer could insert into the
+    //     new active and emit a TraceRootEvent referencing that ID before
+    //     writeCpool() reads the standby snapshot, leaving a dangling reference.
     //
     // rotate() does a two-phase ID-preserving copy from current active to
     // standby so that lookup never misses a previously-registered class.
@@ -1412,11 +1427,14 @@ Error Profiler::dump(const char *path, const int length) {
     // reads the stable standby snapshot while JNI writers continue inserting
     // into the new active concurrently.  This is the whole point of the
     // triple-buffered design.
-    lockAll();
-    _class_map.rotate();
-    _string_label_map.rotate();
-    _context_value_map.rotate();
-    unlockAll();
+    {
+        SignalBlocker blocker;
+        lockAll();
+        _class_map.rotate();
+        _string_label_map.rotate();
+        _context_value_map.rotate();
+        unlockAll();
+    }
 
     Error err = _jfr.dump(path, length);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
