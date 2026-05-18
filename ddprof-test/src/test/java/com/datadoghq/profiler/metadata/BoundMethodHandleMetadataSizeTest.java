@@ -26,7 +26,9 @@ public class BoundMethodHandleMetadataSizeTest extends AbstractProfilerTest {
         assumeFalse(Platform.isJ9() && Platform.isJavaVersion(17)); // JVMTI::GetClassSignature() is reliably crashing on a valid 'class' instance
         assumeFalse(Platform.isAarch64() && Platform.isMusl() && !Platform.isJavaVersionAtLeast(11)); // aarch64 + musl + jdk 8 will crash very often
         registerCurrentThreadForWallClockProfiling();
-        int numBoundMethodHandles = 10_000;
+        // Reduce workload on aarch64+asan: ASAN slows each invocation enough that the test
+        // takes 3+ minutes, generating a 56MB JFR that OOMs the 512MB test-runner heap.
+        int numBoundMethodHandles = isAsan() && Platform.isAarch64() ? 1_000 : 10_000;
         int x = generateBoundMethodHandles(numBoundMethodHandles);
         assertTrue(x != 0);
         stopProfiler();
