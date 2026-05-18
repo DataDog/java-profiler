@@ -1320,8 +1320,8 @@ Error Profiler::stop() {
   // Holding lockAll across rotate + _jfr.stop() closes this race: while held,
   // recordTraceRoot's tryLock fails and no late event reaches the final
   // chunk.  Dictionary inserts via bounded_lookup remain lock-free during
-  // the dump — only the JFR event-write path is serialised (as it was
-  // before this PR).
+  // the dump — only the JFR event-write path is serialised, which is
+  // intrinsic to its non-lock-free byte-stream design.
   //
   // SignalBlocker masks SIGPROF/SIGVTALRM on this thread so an in-thread
   // async-signal handler cannot interrupt the multi-step rotate (the three
@@ -1453,7 +1453,8 @@ Error Profiler::dump(const char *path, const int length) {
     // What lockAll does NOT block: dictionary inserts via bounded_lookup
     // (refcount only) — the triple-buffered design preserves lock-free
     // inserts.  The only thing serialised here is the JFR event-write path,
-    // which was never lock-free to begin with.
+    // which is intrinsically a non-lock-free byte-stream append and must be
+    // serialised regardless.
     //
     // SignalBlocker masks SIGPROF/SIGVTALRM on this thread so an in-thread
     // async-signal handler cannot interrupt the multi-step rotate (the three
