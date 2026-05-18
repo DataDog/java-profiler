@@ -6,6 +6,7 @@
 
 #include "callTraceStorage.h"
 #include "counters.h"
+#include "log.h"
 #include "os.h"
 #include "common.h"
 #include "thread.h"
@@ -41,9 +42,11 @@ int RefCountGuard::getThreadRefCountSlot() {
             return slot;
         }
 
-        // Check if we already own this slot (for reentrant calls)
+        // Check if we already own this slot (reentrant signal delivery).
+        // Return slot + MAX_THREADS so the caller can detect reentrancy and
+        // save/restore active_ptr instead of clearing it on exit.
         if (__atomic_load_n(&slot_owners[slot], __ATOMIC_ACQUIRE) == tid) {
-            return slot;
+            return slot + MAX_THREADS;
         }
 
         // Move to next slot using probe
@@ -56,48 +59,58 @@ int RefCountGuard::getThreadRefCountSlot() {
     return -1;
 }
 
-RefCountGuard::RefCountGuard(void* resource) : _active(true), _my_slot(-1) {
-    // Get thread refcount slot using signal-safe collision resolution
-    _my_slot = getThreadRefCountSlot();
+RefCountGuard::RefCountGuard(void* resource) : _active(true), _is_reentrant(false), _my_slot(-1), _saved_ptr(nullptr) {
+    // Get thread refcount slot using signal-safe collision resolution.
+    // Raw slot >= MAX_THREADS means this thread already owns the slot
+    // (reentrant signal delivery); normalize and set _is_reentrant.
+    int raw = getThreadRefCountSlot();
 
-    if (_my_slot == -1) {
+    if (raw == -1) {
         // Slot allocation failed - refcount guard is inactive
         _active = false;
         return;
     }
 
-    // CRITICAL ORDERING: Store pointer FIRST, then increment count
-    // This ensures the pointer-first protocol for race-free operation
-    //
-    // Why this ordering is safe:
-    // Between step 1 and 2, if scanner runs:
-    //   - Scanner loads count=0 (not yet incremented)
-    //   - Scanner sees slot as inactive, skips it
-    //   - Safe: we haven't "activated" protection yet
-    //
-    // After step 2, slot is fully active and protects the resource
-    __atomic_store_n(&refcount_slots[_my_slot].active_ptr, resource, __ATOMIC_RELEASE);
-    __atomic_fetch_add(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
+    _is_reentrant = (raw >= MAX_THREADS);
+    _my_slot = _is_reentrant ? (raw - MAX_THREADS) : raw;
+
+    if (_is_reentrant) {
+        // Save the outer guard's pointer so we can restore it on exit.
+        _saved_ptr = __atomic_load_n(&refcount_slots[_my_slot].active_ptr, __ATOMIC_ACQUIRE);
+        // Reentrant: increment count BEFORE overwriting active_ptr.
+        // The outer guard already has count>0; by bumping first the scanner
+        // still sees the outer resource (via the unchanged active_ptr) while
+        // count is elevated, preventing a false "outer resource is clear" result.
+        __atomic_fetch_add(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
+        __atomic_store_n(&refcount_slots[_my_slot].active_ptr, resource, __ATOMIC_RELEASE);
+    } else {
+        // Non-reentrant (count was 0): store pointer first so the scanner skips
+        // this slot during the activation window (count=0 → treated as inactive).
+        __atomic_store_n(&refcount_slots[_my_slot].active_ptr, resource, __ATOMIC_RELEASE);
+        __atomic_fetch_add(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
+    }
 }
 
 RefCountGuard::~RefCountGuard() {
     if (_active && _my_slot >= 0) {
-        // CRITICAL ORDERING: Decrement count FIRST, then clear pointer
-        // This ensures safe deactivation
-        //
-        // Why this ordering is safe:
-        // After step 1, count=0 so scanner will skip this slot
-        // Step 2 clears the pointer (cleanup)
-        // No window where scanner thinks slot protects a table it doesn't
-        __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
-        __atomic_store_n(&refcount_slots[_my_slot].active_ptr, nullptr, __ATOMIC_RELEASE);
-
-        // Release slot ownership
-        __atomic_store_n(&slot_owners[_my_slot], 0, __ATOMIC_RELEASE);
+        if (_is_reentrant) {
+            // Reentrant: restore outer active_ptr BEFORE decrementing count so the
+            // scanner always observes the outer resource while count is still elevated.
+            __atomic_store_n(&refcount_slots[_my_slot].active_ptr, _saved_ptr, __ATOMIC_RELEASE);
+            __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
+        } else {
+            // Non-reentrant: decrement first so the scanner skips this slot (count=0),
+            // then clear the pointer and release the slot.
+            __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
+            __atomic_store_n(&refcount_slots[_my_slot].active_ptr, nullptr, __ATOMIC_RELEASE);
+            __atomic_store_n(&slot_owners[_my_slot], 0, __ATOMIC_RELEASE);
+        }
     }
 }
 
-RefCountGuard::RefCountGuard(RefCountGuard&& other) noexcept : _active(other._active), _my_slot(other._my_slot) {
+RefCountGuard::RefCountGuard(RefCountGuard&& other) noexcept
+    : _active(other._active), _is_reentrant(other._is_reentrant),
+      _my_slot(other._my_slot), _saved_ptr(other._saved_ptr) {
     other._active = false;
 }
 
@@ -105,14 +118,21 @@ RefCountGuard& RefCountGuard::operator=(RefCountGuard&& other) noexcept {
     if (this != &other) {
         // Clean up current state with same ordering as destructor
         if (_active && _my_slot >= 0) {
-            __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
-            __atomic_store_n(&refcount_slots[_my_slot].active_ptr, nullptr, __ATOMIC_RELEASE);
-            __atomic_store_n(&slot_owners[_my_slot], 0, __ATOMIC_RELEASE);
+            if (_is_reentrant) {
+                __atomic_store_n(&refcount_slots[_my_slot].active_ptr, _saved_ptr, __ATOMIC_RELEASE);
+                __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
+            } else {
+                __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
+                __atomic_store_n(&refcount_slots[_my_slot].active_ptr, nullptr, __ATOMIC_RELEASE);
+                __atomic_store_n(&slot_owners[_my_slot], 0, __ATOMIC_RELEASE);
+            }
         }
 
         // Move from other
-        _active = other._active;
-        _my_slot = other._my_slot;
+        _active       = other._active;
+        _is_reentrant = other._is_reentrant;
+        _my_slot      = other._my_slot;
+        _saved_ptr    = other._saved_ptr;
 
         // Clear other
         other._active = false;
@@ -191,8 +211,10 @@ void RefCountGuard::waitForRefCountToClear(void* table_to_delete) {
         nanosleep(&sleep_time, nullptr);
     }
 
-    // If we reach here, some refcounts didn't clear in time
-    // This shouldn't happen in normal operation but we log it for debugging
+    // If we reach here, some refcounts didn't clear in time — proceed anyway
+    // to avoid an infinite hang; the caller is the only thread that frees the
+    // buffer, so proceeding is safe in practice.
+    Log::warn("waitForRefCountToClear: timeout waiting for %p, proceeding", table_to_delete);
 }
 
 void RefCountGuard::waitForAllRefCountsToClear() {

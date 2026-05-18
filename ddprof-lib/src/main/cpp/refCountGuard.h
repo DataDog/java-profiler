@@ -54,6 +54,18 @@ struct alignas(DEFAULT_CACHE_LINE_SIZE) RefCountSlot {
  * - Pointer stored BEFORE count increment (activation)
  * - Count decremented BEFORE pointer cleared (deactivation)
  * - Scanner checks count first, ensuring consistent view
+ *
+ * Reentrancy:
+ * - A signal handler may create a RefCountGuard while a JNI thread already
+ *   holds one on the same slot (same tid).  getThreadRefCountSlot() returns
+ *   slot + MAX_THREADS to signal this case.  The inner guard saves and restores
+ *   the outer guard's active_ptr instead of clearing it, so the scanner never
+ *   sees a null pointer for an active outer guard.
+ * - Ordering invariants differ for the reentrant case:
+ *   Constructor: count incremented BEFORE overwriting active_ptr (outer resource
+ *     stays visible to the scanner until the new pointer is installed).
+ *   Destructor: active_ptr restored to saved outer pointer BEFORE decrementing
+ *     count (scanner always sees outer resource while count is still elevated).
  */
 class RefCountGuard {
 public:
@@ -64,9 +76,14 @@ public:
     static int slot_owners[MAX_THREADS];
 
 private:
-    bool _active;
-    int _my_slot;
+    bool  _active;
+    bool  _is_reentrant;
+    int   _my_slot;
+    void* _saved_ptr;
 
+    // Returns slot index in [0, MAX_THREADS) on fresh claim.
+    // Returns slot + MAX_THREADS when the calling thread already owns that slot
+    // (reentrant signal delivery); the caller must save/restore active_ptr.
     static int getThreadRefCountSlot();
 
 public:

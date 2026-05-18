@@ -1079,10 +1079,15 @@ Error Profiler::start(Arguments &args, bool reset) {
     _total_samples = 0;
     memset(_failures, 0, sizeof(_failures));
 
-    // Reset dictionaries
+    // Reset dictionaries: lockAll() gates new signal-handler entries; then
+    // waitForAllRefCountsToClear() drains handlers already inside bounded_lookup()
+    // that hold a RefCountGuard but have not acquired any _locks[] slot yet.
+    lockAll();
+    RefCountGuard::waitForAllRefCountsToClear();
     _class_map.clearAll();
     _string_label_map.clearAll();
     _context_value_map.clearAll();
+    unlockAll();
 
     // Reset call trace storage
     if (!_omit_stacktraces) {
