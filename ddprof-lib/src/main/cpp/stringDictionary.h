@@ -6,6 +6,7 @@
 #ifndef _STRINGDICTIONARY_H
 #define _STRINGDICTIONARY_H
 
+#include "counters.h"
 #include "refCountGuard.h"
 #include "tripleBuffer.h"
 #include "arch.h"
@@ -210,13 +211,20 @@ class StringDictionary {
     std::atomic<u32> _next_id{1};  // starts at 1; id=0 reserved as "no entry"
     StringDictionaryBuffer _a, _b, _c;
     TripleBufferRotator<StringDictionaryBuffer> _rot;
+    int _counter_offset;  // offset into DICTIONARY_KEYS / DICTIONARY_KEYS_BYTES counter rows
 
     u32 nextId() {
         return _next_id.fetch_add(1, std::memory_order_relaxed);
     }
 
+    void countInsert(size_t len) {
+        Counters::increment(DICTIONARY_KEYS, 1, _counter_offset);
+        Counters::increment(DICTIONARY_KEYS_BYTES, (long long)(len + 1), _counter_offset);
+    }
+
 public:
-    StringDictionary() : _rot(&_a, &_b, &_c) {}
+    explicit StringDictionary(int counter_offset = 0)
+        : _rot(&_a, &_b, &_c), _counter_offset(counter_offset) {}
 
     // Insert into active buffer; returns globally stable id.  NOT signal-safe.
     u32 lookup(const char* key, size_t len) {
@@ -227,7 +235,23 @@ public:
         // nextId() may be consumed without assignment if a concurrent insert wins
         // the CAS for the same key; IDs are unique but not guaranteed to be dense.
         u32 new_id = nextId();
-        return active->insert_with_id(key, len, new_id);
+        u32 result = active->insert_with_id(key, len, new_id);
+        if (result == new_id) countInsert(len);
+        return result;
+    }
+
+    // Insert into active buffer if size < size_limit; returns 0 when at cap.
+    // NOT signal-safe.
+    u32 bounded_lookup(const char* key, size_t len, int size_limit) {
+        StringDictionaryBuffer* active = _rot.active();
+        RefCountGuard guard(active);
+        u32 id = active->lookup(key, len);
+        if (id != 0) return id;
+        if (active->size() >= size_limit) return 0;
+        u32 new_id = nextId();
+        u32 result = active->insert_with_id(key, len, new_id);
+        if (result == new_id) countInsert(len);
+        return result;
     }
 
     // Signal-safe read-only probe of active. Returns 0 on miss.
@@ -284,8 +308,11 @@ public:
     }
 
     // Clear the scratch buffer (two rotations behind active; safe to clear).
+    // Also resets the live-insert counter so it reflects only the active buffer.
     void clearStandby() {
         _rot.clearTarget()->clear();
+        Counters::set(DICTIONARY_KEYS, 0, _counter_offset);
+        Counters::set(DICTIONARY_KEYS_BYTES, 0, _counter_offset);
     }
 
     // Reset all three buffers and restart the ID counter.
@@ -296,6 +323,8 @@ public:
         _a.clear(); _b.clear(); _c.clear();
         _rot.reset();
         _next_id.store(1, std::memory_order_relaxed);
+        Counters::set(DICTIONARY_KEYS, 0, _counter_offset);
+        Counters::set(DICTIONARY_KEYS_BYTES, 0, _counter_offset);
     }
 };
 

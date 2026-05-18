@@ -149,8 +149,8 @@ private:
 public:
   Profiler()
       : _state_lock(), _state(NEW), _class_unload_hook_trap(2),
-        _notify_class_unloaded_func(NULL), _thread_info(), _class_map(),
-        _string_label_map(), _context_value_map(), _thread_filter(),
+        _notify_class_unloaded_func(NULL), _thread_info(), _class_map(1),
+        _string_label_map(2), _context_value_map(3), _thread_filter(),
         _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
         _alloc_engine(NULL), _event_mask(0),
         _start_time(0), _stop_time(0), _epoch(0), _timer_id(NULL),
