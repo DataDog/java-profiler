@@ -3,13 +3,13 @@
 [versions]
 cpp-standard = "17"
 kotlin = "1.9.22"
-spotless = "8.4.0"
+spotless = "8.5.1"
 
 # Testing
 junit = "5.14.3"
 junit-platform = "1.14.3"  # JUnit Platform version corresponding to JUnit Jupiter 5.9.2
 junit-pioneer = "1.9.1"
-slf4j = "2.0.17"
+slf4j = "2.0.18"
 
 # Profiler runtime
 jmc = "8.3.1"
@@ -19,7 +19,7 @@ snappy = "1.1.10.8"
 zstd = "1.5.7-8"
 
 # Code analysis
-asm = "9.9.1"
+asm = "9.10"
 
 # Datadog tracer (compileOnly for the chaos harness — runtime is provided by dd-java-agent).
 # Dynamic version: always resolve to the latest released dd-trace-api so the chaos harness
