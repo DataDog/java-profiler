@@ -1303,27 +1303,39 @@ Error Profiler::stop() {
   // correct counts in the recording
   _thread_info.reportCounters();
 
-  // Promote accumulated writes to standby so that writeCpool() (called from
-  // ~Recording() inside _jfr.stop()) reads a complete, stable snapshot.
+  // Rotate AND _jfr.stop() under one SignalBlocker + lockAll critical section.
   //
-  // Rotate under SignalBlocker + lockAll so the swap is atomic from every
-  // observer — SignalBlocker masks SIGPROF/SIGVTALRM on this thread so an
-  // in-thread async-signal handler cannot interrupt the multi-step rotate,
-  // and lockAll blocks JNI writers and other threads' signal-handler
-  // tryLock paths.  Locks are released as soon as the rotation completes.
+  // writeCpool() (invoked from ~Recording() inside _jfr.stop()) runs at the
+  // END of the chunk and reads only the standby snapshot.  If we released
+  // lockAll between rotate and _jfr.stop(), a JNI writer could still:
+  //   (1) bounded_lookup → insert Y into the new active (no _locks taken
+  //       — bounded_lookup is refcount-only),
+  //   (2) recordTraceRoot → tryLock succeeds, TraceRootEvent(Y) lands in
+  //       a per-thread JFR buffer,
+  //   (3) _jfr.stop() flushes that buffer into the final chunk,
+  //   (4) writeCpool reads standby, does not see Y,
+  // => the final chunk contains a TraceRootEvent referencing an ID missing
+  //    from its cpool.
+  //
+  // Holding lockAll across rotate + _jfr.stop() closes this race: while held,
+  // recordTraceRoot's tryLock fails and no late event reaches the final
+  // chunk.  Dictionary inserts via bounded_lookup remain lock-free during
+  // the dump — only the JFR event-write path is serialised (as it was
+  // before this PR).
+  //
+  // SignalBlocker masks SIGPROF/SIGVTALRM on this thread so an in-thread
+  // async-signal handler cannot interrupt the multi-step rotate (the three
+  // maps must rotate atomically together — rotate() itself is not signal
+  // reentrant).
   {
     SignalBlocker blocker;
     lockAll();
     _class_map.rotate();
     _string_label_map.rotate();
     _context_value_map.rotate();
+    _jfr.stop();  // JFR serialization must complete before unpatching libraries
     unlockAll();
   }
-
-  // Acquire all spinlocks to avoid race with remaining signals
-  lockAll();
-  _jfr.stop();  // JFR serialization must complete before unpatching libraries
-  unlockAll();
 
   // Unpatch libraries AFTER JFR serialization completes
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
@@ -1408,40 +1420,65 @@ Error Profiler::dump(const char *path, const int length) {
     Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
                   native_libs.memoryUsage());
 
-    // Rotate under SignalBlocker + lockAll so the swap is atomic from every
-    // observer:
-    //   - SignalBlocker masks SIGPROF/SIGVTALRM on this thread so an in-thread
-    //     async-signal handler cannot interrupt the multi-step rotate (the
-    //     three maps must rotate together, and rotate() itself is not signal
-    //     reentrant).
-    //   - lockAll() holds every per-thread spin lock, blocking JNI writers
-    //     (recordTraceRoot) and signal-handler tryLock() paths on other
-    //     threads.  This closes the race where a writer could insert into the
-    //     new active and emit a TraceRootEvent referencing that ID before
-    //     writeCpool() reads the standby snapshot, leaving a dangling reference.
+    // Rotate AND dump under one SignalBlocker + lockAll critical section.
+    //
+    // Why both rotate and _jfr.dump() need to be inside the same locked
+    // window — even though the rotating dictionary is lock-free on its own:
+    //
+    //   The dictionary insert path (bounded_lookup) is refcount-only; it does
+    //   not touch _locks[].  But emitting a TraceRootEvent (recordTraceRoot)
+    //   takes _locks[lock_index] via tryLock and writes the event into the
+    //   per-thread JFR buffer — a non-lock-free byte stream that _jfr.dump()
+    //   later flushes into the chunk.  writeCpool() runs at the END of the
+    //   chunk and reads only the standby snapshot.
+    //
+    //   If we released lockAll() after rotate() and ran _jfr.dump() unlocked,
+    //   a JNI writer could:
+    //     (1) bounded_lookup → insert Y into the new active (Y not in standby),
+    //     (2) recordTraceRoot → tryLock succeeds, TraceRootEvent(Y) lands in
+    //         a per-thread JFR buffer,
+    //     (3) _jfr.dump() flushes that buffer into the chunk,
+    //     (4) writeCpool() at chunk end reads standby, does not see Y,
+    //     => the chunk contains a TraceRootEvent referencing an ID missing
+    //        from its cpool — dangling reference written to disk.
+    //
+    //   Holding lockAll() across _jfr.dump() closes this race: while held,
+    //   recordTraceRoot's tryLock fails and no late event lands in the chunk.
+    //   Late inserts into the new active still happen (good — bounded_lookup
+    //   stays lock-free), but the matching TraceRootEvent will be recorded
+    //   only after unlockAll(), into the NEXT chunk's per-thread buffer,
+    //   where the next rotate will place Y into standby for that chunk's
+    //   writeCpool() to emit.  No dangling reference.
+    //
+    // What lockAll does NOT block: dictionary inserts via bounded_lookup
+    // (refcount only) — the triple-buffered design preserves lock-free
+    // inserts.  The only thing serialised here is the JFR event-write path,
+    // which was never lock-free to begin with.
+    //
+    // SignalBlocker masks SIGPROF/SIGVTALRM on this thread so an in-thread
+    // async-signal handler cannot interrupt the multi-step rotate (the three
+    // maps must rotate atomically together — rotate() itself is not signal
+    // reentrant).
     //
     // rotate() does a two-phase ID-preserving copy from current active to
-    // standby so that lookup never misses a previously-registered class.
-    //
-    // Locks are released as soon as the rotation completes — _jfr.dump() then
-    // reads the stable standby snapshot while JNI writers continue inserting
-    // into the new active concurrently.  This is the whole point of the
-    // triple-buffered design.
+    // standby so that lookup never misses a previously-registered class;
+    // RefCountGuard::waitForRefCountToClear inside rotate() drains in-flight
+    // writers on the old active before Phase 2 copy, so the dump buffer has
+    // no live writers by the time writeCpool reads it.
+    Error err;
     {
         SignalBlocker blocker;
         lockAll();
         _class_map.rotate();
         _string_label_map.rotate();
         _context_value_map.rotate();
+        err = _jfr.dump(path, length);
+        __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
+        // Note: No need to clear call trace storage here - the triple-buffering
+        // in processTraces() already handles clearing old traces while
+        // preserving traces referenced by surviving LivenessTracker objects.
         unlockAll();
     }
-
-    Error err = _jfr.dump(path, length);
-    __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
-
-    // Note: No need to clear call trace storage here - the triple-buffering in
-    // processTraces() already handles clearing old traces while preserving
-    // traces referenced by surviving LivenessTracker objects
 
     _class_map.clearStandby();
     _string_label_map.clearStandby();
