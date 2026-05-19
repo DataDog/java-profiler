@@ -8,6 +8,7 @@
 #include "vmEntry.h"
 #include "arguments.h"
 #include "context.h"
+#include "counters.h"
 #include "j9/j9Support.h"
 #include "jniHelper.h"
 #include "jvmThread.h"
@@ -41,6 +42,9 @@ bool VM::_zing = false;
 bool VM::_can_sample_objects = false;
 bool VM::_can_intercept_binding = false;
 bool VM::_is_adaptive_gc_boundary_flag_set = false;
+
+jvmtiExtensionFunction VM::_request_stack_trace = nullptr;
+jvmtiExtensionFunction VM::_init_request_stack_trace = nullptr;
 
 jvmtiError(JNICALL *VM::_orig_RedefineClasses)(jvmtiEnv *, jint,
                                                const jvmtiClassDefinition *);
@@ -375,6 +379,56 @@ bool VM::initLibrary(JavaVM *vm) {
   return true;
 }
 
+void VM::probeJFRRequestStackTrace() {
+  jint ext_count = 0;
+  jvmtiExtensionFunctionInfo *ext_functions = nullptr;
+  if (_jvmti->GetExtensionFunctions(&ext_count, &ext_functions) == 0) {
+    for (jint i = 0; i < ext_count; i++) {
+      if (strcmp(ext_functions[i].id,
+                 "com.sun.hotspot.functions.RequestStackTrace") == 0) {
+        __atomic_store_n(&_request_stack_trace, ext_functions[i].func, __ATOMIC_RELEASE);
+      } else if (strcmp(ext_functions[i].id,
+                        "com.sun.hotspot.functions.InitializeRequestStackTrace") == 0) {
+        _init_request_stack_trace = ext_functions[i].func;
+      }
+      for (jint j = 0; j < ext_functions[i].param_count; j++) {
+        _jvmti->Deallocate((unsigned char *)ext_functions[i].params[j].name);
+      }
+      _jvmti->Deallocate((unsigned char *)ext_functions[i].params);
+      _jvmti->Deallocate((unsigned char *)ext_functions[i].errors);
+      _jvmti->Deallocate((unsigned char *)ext_functions[i].id);
+      _jvmti->Deallocate((unsigned char *)ext_functions[i].short_description);
+    }
+    _jvmti->Deallocate((unsigned char *)ext_functions);
+  }
+
+  if (_agent_args._jvmtistacks) {
+    if (_request_stack_trace == nullptr || _init_request_stack_trace == nullptr) {
+      Log::warn("jvmtistacks requested but HotSpot RequestStackTrace extension "
+                "is not available on this JVM");
+      Counters::increment(JVMTI_STACKS_INIT_FAILED);
+    } else {
+      initializeRequestStackTrace();
+    }
+  }
+}
+
+// Must not be called from a signal handler — invokes JVMTI which is not async-signal-safe.
+bool VM::initializeRequestStackTrace() {
+  if (__atomic_load_n(&_request_stack_trace, __ATOMIC_RELAXED) == nullptr || _init_request_stack_trace == nullptr) {
+    return false;
+  }
+  jvmtiError rc = _init_request_stack_trace(_jvmti);
+  if (rc == JVMTI_ERROR_NONE) {
+    Counters::increment(JVMTI_STACKS_INIT_OK);
+    return true;
+  }
+  Log::warn("InitializeRequestStackTrace failed: %d", rc);
+  __atomic_store_n(&_request_stack_trace, (jvmtiExtensionFunction)nullptr, __ATOMIC_RELEASE);
+  Counters::increment(JVMTI_STACKS_INIT_FAILED);
+  return false;
+}
+
 bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   TEST_LOG("VM::initProfilerBridge");
   if (!initShared(vm)) {
@@ -425,6 +479,10 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   capabilities.can_tag_objects = 1;
 
   _jvmti->AddCapabilities(&capabilities);
+
+  if (_hotspot) {
+    probeJFRRequestStackTrace();
+  }
 
   jvmtiEventCallbacks callbacks = {0};
   callbacks.VMInit = VMInit;
