@@ -1563,9 +1563,11 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti) {
   // Each classes[i] is a JNI local reference allocated by JVMTI; delete it at
   // every loop exit so the local-reference table does not grow across repeated
   // start/dump calls on large applications.
+  jint sig_failures = 0;
   for (jint i = 0; i < class_count; i++) {
     char* sig = nullptr;
     if (jvmti->GetClassSignature(classes[i], &sig, nullptr) != JVMTI_ERROR_NONE) {
+      sig_failures++;
       if (jni != nullptr) jni->DeleteLocalRef(classes[i]);
       continue;
     }
@@ -1592,6 +1594,9 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti) {
     if (jni != nullptr) jni->DeleteLocalRef(classes[i]);
   }
   jvmti->Deallocate(reinterpret_cast<unsigned char*>(classes));
+  if (sig_failures > 0) {
+    Log::warn("preregisterLoadedClasses: GetClassSignature failed for %d of %d classes — those classes skipped for vtable-target pre-registration", sig_failures, class_count);
+  }
 }
 
 int Profiler::status(char* status, int max_len) {
