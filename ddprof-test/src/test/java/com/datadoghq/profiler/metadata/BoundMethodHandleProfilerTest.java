@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
-public class BoundMethodHandleMetadataSizeTest extends AbstractProfilerTest {
+public class BoundMethodHandleProfilerTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
         return Platform.isJ9() ? "wall=100ms" : "wall=100us";
@@ -45,7 +45,7 @@ public class BoundMethodHandleMetadataSizeTest extends AbstractProfilerTest {
     public static int generateBoundMethodHandles(int howMany) throws Throwable {
         int total = 0;
         MethodHandle append = MethodHandles.lookup()
-                .findStatic(BoundMethodHandleMetadataSizeTest.class,
+                .findStatic(BoundMethodHandleProfilerTest.class,
                         "append",
                         MethodType.methodType(String.class, String.class, int.class));
         for (int i = 0; i < howMany; i++) {

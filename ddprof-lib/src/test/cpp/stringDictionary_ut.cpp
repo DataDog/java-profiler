@@ -167,7 +167,7 @@ TEST_F(StringDictionaryTest, ClearAllResetsEverything) {
     EXPECT_EQ(1u, new_id);
 }
 
-TEST_F(StringDictionaryTest, LookupDuringDumpInsertsNewKeyIntoActivAndStandby) {
+TEST_F(StringDictionaryTest, LookupDuringDumpInsertsNewKeyIntoActiveAndStandby) {
     dict.rotate();  // empty active becomes dump, fresh active
     // Key is not in dump and not in active — lookupDuringDump must insert into both.
     u32 id = dict.lookupDuringDump("brand/New", 9);

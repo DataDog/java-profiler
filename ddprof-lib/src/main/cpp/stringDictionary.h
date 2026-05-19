@@ -248,37 +248,46 @@ public:
 
     // Insert into active buffer; returns globally stable id.  NOT signal-safe.
     u32 lookup(const char* key, size_t len) {
-        StringDictionaryBuffer* active = _rot.active();
-        RefCountGuard guard(active);
-        u32 id = active->lookup(key, len);
-        if (id != 0) return id;
-        // nextId() may be consumed without assignment if a concurrent insert wins
-        // the CAS for the same key; IDs are unique but not guaranteed to be dense.
-        u32 new_id = nextId();
-        u32 result = active->insert_with_id(key, len, new_id);
-        if (result == new_id) countInsert(len);
-        return result;
+        while (true) {
+            StringDictionaryBuffer* active = _rot.active();
+            RefCountGuard guard(active);
+            if (_rot.active() != active) continue;
+            u32 id = active->lookup(key, len);
+            if (id != 0) return id;
+            // nextId() may be consumed without assignment if a concurrent insert wins
+            // the CAS for the same key; IDs are unique but not guaranteed to be dense.
+            u32 new_id = nextId();
+            u32 result = active->insert_with_id(key, len, new_id);
+            if (result == new_id) countInsert(len);
+            return result;
+        }
     }
 
     // Insert into active buffer if size < size_limit; returns 0 when at cap.
     // NOT signal-safe.
     u32 bounded_lookup(const char* key, size_t len, int size_limit) {
-        StringDictionaryBuffer* active = _rot.active();
-        RefCountGuard guard(active);
-        u32 id = active->lookup(key, len);
-        if (id != 0) return id;
-        if (active->size() >= size_limit) return 0;
-        u32 new_id = nextId();
-        u32 result = active->insert_with_id(key, len, new_id);
-        if (result == new_id) countInsert(len);
-        return result;
+        while (true) {
+            StringDictionaryBuffer* active = _rot.active();
+            RefCountGuard guard(active);
+            if (_rot.active() != active) continue;
+            u32 id = active->lookup(key, len);
+            if (id != 0) return id;
+            if (active->size() >= size_limit) return 0;
+            u32 new_id = nextId();
+            u32 result = active->insert_with_id(key, len, new_id);
+            if (result == new_id) countInsert(len);
+            return result;
+        }
     }
 
     // Signal-safe read-only probe of active. Returns 0 on miss.
     u32 bounded_lookup(const char* key, size_t len) {
-        StringDictionaryBuffer* active = _rot.active();
-        RefCountGuard guard(active);
-        return active->lookup(key, len);
+        while (true) {
+            StringDictionaryBuffer* active = _rot.active();
+            RefCountGuard guard(active);
+            if (_rot.active() != active) continue;
+            return active->lookup(key, len);
+        }
     }
 
     // Returns the dump buffer (snapshot of old active after rotate()).
@@ -328,7 +337,7 @@ public:
     }
 
     // Clear the scratch buffer (two rotations behind active; safe to clear).
-    // Also resets the live-insert counter so it reflects only the active buffer.
+    // Resets per-dump counters to 0 so they track only post-clearStandby inserts.
     void clearStandby() {
         _rot.clearTarget()->clear();
         Counters::set(DICTIONARY_KEYS, 0, _counter_offset);

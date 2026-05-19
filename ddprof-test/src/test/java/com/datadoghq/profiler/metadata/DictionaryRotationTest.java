@@ -55,12 +55,12 @@ public class DictionaryRotationTest extends AbstractProfilerTest {
         }
 
         // dump() triggers: rotate() → lockAll() → jfr.dump(snapshot) → unlockAll()
-        //                            → clearStandby() (recalibrates counter to active size, frees scratch buffer)
+        //                            → clearStandby() (resets per-dump counters to 0, frees scratch buffer)
         Path snapshot = Files.createTempFile("DictionaryRotation_snapshot_", ".jfr");
         try {
             dump(snapshot);
 
-            // Counter recalibrated to active buffer size — 0 because no post-dump inserts yet
+            // Counter reset to 0 by clearStandby() — tracks only post-clearStandby inserts
             Map<String, Long> afterDump = profiler.getDebugCounters();
             assertEquals(0L, afterDump.getOrDefault("dictionary_endpoints_keys", -1L),
                     "dictionary_endpoints_keys must be 0 after clearStandby");

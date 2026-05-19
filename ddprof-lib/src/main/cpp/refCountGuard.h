@@ -23,9 +23,9 @@
  * increment of count where the scanner sees count=0 and may skip the slot.
  * For signal handlers this window is never observed in practice: handlers
  * complete within microseconds while a buffer can only be cleared after TWO
- * full dump cycles (typically seconds).  If the window were hit, the operation
- * would return INT_MAX (miss) — an observable incorrect-state outcome that
- * callers handle as a dropped trace or generic vtable frame, not a crash.
+ * full dump cycles (typically 60+ seconds).  If the window were hit, the caller
+ * observes a miss (e.g. 0 or equivalent sentinel) and handles it gracefully
+ * — a dropped trace or generic vtable frame, not a crash.
  */
 struct alignas(DEFAULT_CACHE_LINE_SIZE) RefCountSlot {
     volatile uint32_t count;                    // Reference count (0 = inactive)
