@@ -1074,6 +1074,21 @@ Error Profiler::start(Arguments &args, bool reset) {
     return Error("No profiling events specified");
   }
 
+  // Commit _features before the reset/preregister block so ClassPrepare
+  // callbacks (which gate on _features.vtable_target) see the correct enabled
+  // state from the moment preregisterLoadedClasses releases the class-map lock.
+  _features = args._features;
+  if (VM::hotspot_version() < 8) {
+      _features.java_anchor = 0;
+      _features.gc_traces = 0;
+  }
+  if (!VMStructs::hasClassNames()) {
+      _features.vtable_target = 0;
+  }
+  if (!VMStructs::hasCompilerStructs()) {
+      _features.comp_task = 0;
+  }
+
   if (reset || _start_time == 0) {
     // Reset counters
     _total_samples = 0;
@@ -1099,6 +1114,13 @@ Error Profiler::start(Arguments &args, bool reset) {
 
     // Reset thread names and IDs
     _thread_info.clearAll();
+  } else if (_features.vtable_target && VMStructs::hasClassNames()) {
+    // Resume: classes loaded while the profiler was stopped miss ClassPrepare
+    // (JVMTI events are off while stopped). Re-snapshot without clearing so
+    // existing valid entries are preserved.
+    _class_map_lock.lock();
+    preregisterLoadedClasses(VM::jvmti());
+    _class_map_lock.unlock();
   }
 
   // (Re-)allocate calltrace buffers
@@ -1120,17 +1142,6 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Remote symbolication is now inline in ASGCT_CallFrame
   // No separate pool allocation needed!
 
-  _features = args._features;
-  if (VM::hotspot_version() < 8) {
-      _features.java_anchor = 0;
-      _features.gc_traces = 0;
-  }
-  if (!VMStructs::hasClassNames()) {
-      _features.vtable_target = 0;
-  }
-  if (!VMStructs::hasCompilerStructs()) {
-      _features.comp_task = 0;
-  }
   _safe_mode = args._safe_mode;
   if (VM::hotspot_version() < 8 || VM::isZing()) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
@@ -1567,7 +1578,7 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti) {
   for (jint i = 0; i < class_count; i++) {
     char* sig = nullptr;
     if (jvmti->GetClassSignature(classes[i], &sig, nullptr) != JVMTI_ERROR_NONE) {
-      sig_failures++;
+      ++sig_failures;
       if (jni != nullptr) jni->DeleteLocalRef(classes[i]);
       continue;
     }
@@ -1595,7 +1606,7 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti) {
   }
   jvmti->Deallocate(reinterpret_cast<unsigned char*>(classes));
   if (sig_failures > 0) {
-    Log::warn("preregisterLoadedClasses: GetClassSignature failed for %d of %d classes — those classes skipped for vtable-target pre-registration", sig_failures, class_count);
+    Log::warn("preregisterLoadedClasses: GetClassSignature failed for %d/%d class(es) — those vtable-target frames may be missing until ClassPrepare fires", sig_failures, class_count);
   }
 }
 
