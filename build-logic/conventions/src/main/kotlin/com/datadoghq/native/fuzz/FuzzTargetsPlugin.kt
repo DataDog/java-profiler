@@ -86,7 +86,7 @@ class FuzzTargetsPlugin : Plugin<Project> {
         val includeFiles = buildIncludePaths(project, extension, homebrewLLVM)
 
         // Build compiler/linker args
-        val compilerArgs = buildFuzzCompilerArgs()
+        val compilerArgs = buildFuzzCompilerArgs(project)
         val linkerArgs = buildFuzzLinkerArgs(homebrewLLVM, clangResourceDir, project.logger)
 
         val fuzzSourceDir = extension.fuzzSourceDir.get().asFile
@@ -194,7 +194,8 @@ class FuzzTargetsPlugin : Plugin<Project> {
         return includes
     }
 
-    private fun buildFuzzCompilerArgs(): List<String> {
+    private fun buildFuzzCompilerArgs(project: Project): List<String> {
+        val version = project.version.toString()
         val args = mutableListOf(
             "-O1",
             "-g",
@@ -202,7 +203,8 @@ class FuzzTargetsPlugin : Plugin<Project> {
             "-fsanitize=fuzzer,address,undefined",
             "-fvisibility=hidden",
             "-std=c++17",
-            "-DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION"
+            "-DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION",
+            "-DPROFILER_VERSION=\"$version\""
         )
         if (PlatformUtils.currentPlatform == Platform.LINUX && PlatformUtils.isMusl()) {
             args.add("-D__musl__")

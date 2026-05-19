@@ -15,6 +15,38 @@ jobs:
     uses: ./.github/workflows/test_workflow.yml
     with:
       configuration: '["asan"]' # Ignoring tsan for now '["asan", "tsan"]'
+  fuzz:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Cache Gradle Wrapper Binaries
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-wrapper-${{ runner.os }}-
+      - name: Cache Gradle User Home
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.gradle/caches
+          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-caches-${{ runner.os }}-
+      - name: Setup OS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+      - name: Fuzz
+        run: ./gradlew :ddprof-lib:fuzz:fuzz -Pfuzz-duration=120 --no-daemon
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crashes
+          path: ddprof-lib/fuzz/build/fuzz-crashes/
   report-failures:
     runs-on: ubuntu-latest
     needs: run-test
