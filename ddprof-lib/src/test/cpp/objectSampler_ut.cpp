@@ -225,7 +225,7 @@ TEST_F(ObjectSamplerDeallocateTest, DeallocateNotCalledOnErrorWithNonNullSentine
 // ---------------------------------------------------------------------------
 // T-02: GetClassSignature succeeds with a valid class name.
 // Deallocate IS called exactly once (on the success path).
-// Note: after Deallocate, lookupClass returns -1 (empty class map) and the
+// Note: lookupClass returns -1 because the class map is empty, so the
 // method returns without recording — that is the expected behaviour.
 // ---------------------------------------------------------------------------
 TEST_F(ObjectSamplerDeallocateTest, DeallocateCalledOnceOnGetClassSignatureSuccess) {
