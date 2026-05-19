@@ -18,7 +18,6 @@
 #include "dwarf.h"
 #include "common.h"
 #include "log.h"
-#include <assert.h>
 #include <stdlib.h>
 
 enum {
@@ -525,13 +524,12 @@ int DwarfParser::parseExpression() {
 
 void DwarfParser::addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off,
                             int pc_off) {
-  // Sanity asserts to be able to pack those two values into one u32 vq
-  // Assert that the cfa_reg fits in 8 bits (0 to 255)
-  assert(cfa_reg <= 0xFF);
-
-  // Assert that the cfa_off fits in a 24-bit signed range.
-  // Signed 24-bit integer range: -2^23 (-8,388,608) to 2^23 - 1 (8,388,607)
-  assert(cfa_off >= -8388608 && cfa_off <= 8388607);
+  // cfa_reg must fit in 8 bits and cfa_off must fit in a 24-bit signed range
+  // so both can be packed into a single u32.  Silently skip records that exceed
+  // these bounds — they arise from malformed or unsupported DWARF and are not
+  // meaningful for stack unwinding.
+  if (cfa_reg > 0xFF) return;
+  if (cfa_off < -8388608 || cfa_off > 8388607) return;
 
   // cfa_reg and cfa_off can be encoded to a single 32 bit value, considering the existing and supported systems
   u32 cfa = static_cast<u32>(cfa_off) << 8 | static_cast<u32>(cfa_reg & 0xff);
