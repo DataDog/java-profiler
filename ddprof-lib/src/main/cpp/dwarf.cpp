@@ -319,7 +319,7 @@ void DwarfParser::parseInstructions(u32 loc, const char *end) {
   int rem_pc_off = -EMPTY_FRAME_SIZE;
 
   while (_ptr < end) {
-    u8 op = get8();
+    u8 op = get8(end);
     switch (op >> 6) {
     case 0:
       switch (op) {
@@ -329,38 +329,38 @@ void DwarfParser::parseInstructions(u32 loc, const char *end) {
         break;
       case DW_CFA_advance_loc1:
         addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off);
-        loc += get8() * code_align;
+        loc += get8(end) * code_align;
         break;
       case DW_CFA_advance_loc2:
         addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off);
-        loc += get16() * code_align;
+        loc += get16(end) * code_align;
         break;
       case DW_CFA_advance_loc4:
         addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off);
-        loc += get32() * code_align;
+        loc += get32(end) * code_align;
         break;
       case DW_CFA_offset_extended:
-        switch (getLeb()) {
+        switch (getLeb(end)) {
         case DW_REG_FP:
-          fp_off = getLeb() * data_align;
+          fp_off = getLeb(end) * data_align;
           break;
         case DW_REG_PC:
-          pc_off = getLeb() * data_align;
+          pc_off = getLeb(end) * data_align;
           break;
         default:
-          skipLeb();
+          skipLeb(end);
         }
         break;
       case DW_CFA_restore_extended:
       case DW_CFA_undefined:
       case DW_CFA_same_value:
-        if (getLeb() == DW_REG_FP) {
+        if (getLeb(end) == DW_REG_FP) {
           fp_off = DW_SAME_FP;
         }
         break;
       case DW_CFA_register:
-        skipLeb();
-        skipLeb();
+        skipLeb(end);
+        skipLeb(end);
         break;
       case DW_CFA_remember_state:
         rem_cfa_reg = cfa_reg;
@@ -375,58 +375,61 @@ void DwarfParser::parseInstructions(u32 loc, const char *end) {
         pc_off = rem_pc_off;
         break;
       case DW_CFA_def_cfa:
-        cfa_reg = getLeb();
-        cfa_off = getLeb();
+        cfa_reg = getLeb(end);
+        cfa_off = getLeb(end);
         break;
       case DW_CFA_def_cfa_register:
-        cfa_reg = getLeb();
+        cfa_reg = getLeb(end);
         break;
       case DW_CFA_def_cfa_offset:
-        cfa_off = getLeb();
+        cfa_off = getLeb(end);
         break;
       case DW_CFA_def_cfa_expression: {
-        u32 len = getLeb();
+        u32 len = getLeb(end);
         cfa_reg = len == 11 ? DW_REG_PLT : DW_REG_INVALID;
         cfa_off = DW_STACK_SLOT;
-        _ptr += len;
+        if ((size_t)(end - _ptr) < len) _ptr = end; else _ptr += len;
         break;
       }
-      case DW_CFA_expression:
-        skipLeb();
-        _ptr += getLeb();
+      case DW_CFA_expression: {
+        skipLeb(end);
+        u32 len = getLeb(end);
+        if ((size_t)(end - _ptr) < len) _ptr = end; else _ptr += len;
         break;
+      }
       case DW_CFA_offset_extended_sf:
-        switch (getLeb()) {
+        switch (getLeb(end)) {
         case DW_REG_FP:
-          fp_off = getSLeb() * data_align;
+          fp_off = getSLeb(end) * data_align;
           break;
         case DW_REG_PC:
-          pc_off = getSLeb() * data_align;
+          pc_off = getSLeb(end) * data_align;
           break;
         default:
-          skipLeb();
+          skipLeb(end);
         }
         break;
       case DW_CFA_def_cfa_sf:
-        cfa_reg = getLeb();
-        cfa_off = getSLeb() * data_align;
+        cfa_reg = getLeb(end);
+        cfa_off = getSLeb(end) * data_align;
         break;
       case DW_CFA_def_cfa_offset_sf:
-        cfa_off = getSLeb() * data_align;
+        cfa_off = getSLeb(end) * data_align;
         break;
       case DW_CFA_val_offset:
       case DW_CFA_val_offset_sf:
-        skipLeb();
-        skipLeb();
+        skipLeb(end);
+        skipLeb(end);
         break;
       case DW_CFA_val_expression:
-        if (getLeb() == DW_REG_PC) {
-          int pc_off = parseExpression();
+        if (getLeb(end) == DW_REG_PC) {
+          int pc_off = parseExpression(end);
           if (pc_off != 0) {
             fp_off = DW_PC_OFFSET | (pc_off << 1);
           }
         } else {
-          _ptr += getLeb();
+          u32 len = getLeb(end);
+          if ((size_t)(end - _ptr) < len) _ptr = end; else _ptr += len;
         }
         break;
 #ifdef __aarch64__
@@ -434,7 +437,7 @@ void DwarfParser::parseInstructions(u32 loc, const char *end) {
         break;
 #endif
       case DW_CFA_GNU_args_size:
-        skipLeb();
+        skipLeb(end);
         break;
       default:
         Log::warn("Unknown DWARF instruction 0x%x in %s", op, _name);
@@ -448,13 +451,13 @@ void DwarfParser::parseInstructions(u32 loc, const char *end) {
     case DW_CFA_offset:
       switch (op & 0x3f) {
       case DW_REG_FP:
-        fp_off = getLeb() * data_align;
+        fp_off = getLeb(end) * data_align;
         break;
       case DW_REG_PC:
-        pc_off = getLeb() * data_align;
+        pc_off = getLeb(end) * data_align;
         break;
       default:
-        skipLeb();
+        skipLeb(end);
       }
       break;
     case DW_CFA_restore:
@@ -471,40 +474,41 @@ void DwarfParser::parseInstructions(u32 loc, const char *end) {
 // Parse a limited subset of DWARF expressions, which is used in
 // DW_CFA_val_expression to point to the previous PC relative to the current PC.
 // Returns the offset of the previous PC from the current PC.
-int DwarfParser::parseExpression() {
+int DwarfParser::parseExpression(const char* section_end) {
   int pc_off = 0;
   int tos = 0;
 
-  u32 len = getLeb();
+  u32 len = getLeb(section_end);
   const char *end = _ptr + len;
+  if (end > section_end) end = section_end;
 
   while (_ptr < end) {
-    u8 op = get8();
+    u8 op = get8(end);
     switch (op) {
     case DW_OP_breg_pc:
-      pc_off = getSLeb();
+      pc_off = getSLeb(end);
       break;
     case DW_OP_const1u:
-      tos = get8();
+      tos = get8(end);
       break;
     case DW_OP_const1s:
-      tos = (signed char)get8();
+      tos = (signed char)get8(end);
       break;
     case DW_OP_const2u:
-      tos = get16();
+      tos = get16(end);
       break;
     case DW_OP_const2s:
-      tos = (short)get16();
+      tos = (short)get16(end);
       break;
     case DW_OP_const4u:
     case DW_OP_const4s:
-      tos = get32();
+      tos = get32(end);
       break;
     case DW_OP_constu:
-      tos = getLeb();
+      tos = getLeb(end);
       break;
     case DW_OP_consts:
-      tos = getSLeb();
+      tos = getSLeb(end);
       break;
     case DW_OP_minus:
       pc_off -= tos;

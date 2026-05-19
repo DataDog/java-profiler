@@ -201,6 +201,31 @@ class DwarfParser {
         while (*_ptr++ & 0x80) {}
     }
 
+    u8 get8(const char* end) {
+        if (_ptr >= end) { _ptr = end; return 0; }
+        return *_ptr++;
+    }
+
+    u16 get16(const char* end) {
+        if (_ptr + 2 > end) { _ptr = end; return 0; }
+        const char* ptr = add(2);
+        u16 result;
+        memcpy(&result, ptr, sizeof(u16));
+        return result;
+    }
+
+    u32 get32(const char* end) {
+        if (_ptr + 4 > end) { _ptr = end; return 0; }
+        const char* ptr = add(4);
+        u32 result;
+        memcpy(&result, ptr, sizeof(u32));
+        return result;
+    }
+
+    void skipLeb(const char* end) {
+        while (_ptr < end && (*_ptr++ & 0x80)) {}
+    }
+
     const char* getPtr() {
         const char* ptr = _ptr;
         const char* offset_ptr = add(4);
@@ -215,7 +240,7 @@ class DwarfParser {
     void parseCie();
     void parseFde();
     void parseInstructions(u32 loc, const char* end);
-    int parseExpression();
+    int parseExpression(const char* section_end);
 
     void addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off, int pc_off);
     FrameDesc* addRecordRaw(u32 loc, int cfa, int fp_off, int pc_off);
