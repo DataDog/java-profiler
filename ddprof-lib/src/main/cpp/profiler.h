@@ -197,6 +197,11 @@ public:
     return _features;
   }
 
+  inline bool isRunning() {
+    MutexLocker ml(_state_lock);
+    return _state == RUNNING;
+  }
+
   u64 total_samples() { return _total_samples; }
   int max_stack_depth() { return _max_stack_depth; }
   time_t uptime() { return time(NULL) - _start_time; }
@@ -216,9 +221,9 @@ public:
   // Pre-populate _class_map with all currently-loaded 'L'-type (reference)
   // class signatures so that signal-safe lookups in walkVM (vtable_target) can
   // resolve them without ever needing to malloc. Primitives and arrays are
-  // skipped — they never match vtable lookup keys. Caller MUST hold
-  // _class_map_lock EXCLUSIVELY. Runs on a JVM thread (never in a signal
-  // handler).
+  // skipped — they never match vtable lookup keys. Caller must NOT hold
+  // _class_map_lock; this function acquires it internally for the bulk-insert
+  // phase only. Runs on a JVM thread (never in a signal handler).
   void preregisterLoadedClasses(jvmtiEnv* jvmti);
   void processCallTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor) {
     if (!_omit_stacktraces) {

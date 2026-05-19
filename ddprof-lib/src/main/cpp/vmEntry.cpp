@@ -18,6 +18,7 @@
 #include "safeAccess.h"
 #include "hotspot/vmStructs.h"
 #include "hotspot/jitCodeCache.h"
+#include <atomic>
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
@@ -586,13 +587,16 @@ void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
   // never silently skipped while an exclusive dump/reset is in flight. Gate on
   // vtable_target to avoid overhead when the feature is disabled.
   Profiler* profiler = Profiler::instance();
-  if (profiler == nullptr || !profiler->stackWalkFeatures().vtable_target) {
+  if (profiler == nullptr || !profiler->isRunning() || !profiler->stackWalkFeatures().vtable_target) {
     return;
   }
   char* sig = nullptr;
   jvmtiError err = jvmti->GetClassSignature(klass, &sig, nullptr);
   if (err != JVMTI_ERROR_NONE) {
-    Log::warn("ClassPrepare: GetClassSignature failed (%d) — class skipped for vtable-target pre-registration", err);
+    static std::atomic<int> warn_count{0};
+    if (warn_count.fetch_add(1, std::memory_order_relaxed) == 0) {
+      Log::warn("ClassPrepare: GetClassSignature failed (%d) — class skipped for vtable-target pre-registration (further failures suppressed)", err);
+    }
     return;
   }
   if (sig == nullptr) {

@@ -42,6 +42,8 @@
 #include <fstream>
 #include <memory>
 #include <set>
+#include <string>
+#include <vector>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1099,10 +1101,12 @@ Error Profiler::start(Arguments &args, bool reset) {
     // it is being cleaned up
     _class_map_lock.lock();
     _class_map.clear();
-    if (args._features.vtable_target && VMStructs::hasClassNames()) {
+    _class_map_lock.unlock();
+    // preregisterLoadedClasses manages _class_map_lock internally; callers must
+    // not hold it (JVMTI enumeration is lock-free; inserts take the lock).
+    if (_features.vtable_target && VMStructs::hasClassNames()) {
       preregisterLoadedClasses(VM::jvmti());
     }
-    _class_map_lock.unlock();
 
     // Reset call trace storage
     if (!_omit_stacktraces) {
@@ -1118,9 +1122,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     // Resume: classes loaded while the profiler was stopped miss ClassPrepare
     // (JVMTI events are off while stopped). Re-snapshot without clearing so
     // existing valid entries are preserved.
-    _class_map_lock.lock();
     preregisterLoadedClasses(VM::jvmti());
-    _class_map_lock.unlock();
   }
 
   // (Re-)allocate calltrace buffers
@@ -1413,10 +1415,10 @@ Error Profiler::dump(const char *path, const int length) {
     // Reset classmap
     _class_map_lock.lock();
     _class_map.clear();
+    _class_map_lock.unlock();
     if (_features.vtable_target && VMStructs::hasClassNames()) {
       preregisterLoadedClasses(VM::jvmti());
     }
-    _class_map_lock.unlock();
 
     _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();
@@ -1571,9 +1573,11 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti) {
   if (classes == nullptr) {
     return;
   }
-  // Each classes[i] is a JNI local reference allocated by JVMTI; delete it at
-  // every loop exit so the local-reference table does not grow across repeated
-  // start/dump calls on large applications.
+  // Phase 1 (no lock): enumerate signatures and copy normalized slices.
+  // normalizeClassSignature returns a pointer INTO the JVMTI sig buffer, so
+  // the slice is copied into a std::string before Deallocate invalidates it.
+  std::vector<std::string> sigs;
+  sigs.reserve(class_count);
   jint sig_failures = 0;
   for (jint i = 0; i < class_count; i++) {
     char* sig = nullptr;
@@ -1586,8 +1590,6 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti) {
       if (jni != nullptr) jni->DeleteLocalRef(classes[i]);
       continue;
     }
-    // Only 'L'-type (reference) signatures can ever match vtable_target lookup
-    // keys; skip primitives, arrays, and other non-reference signatures.
     if (sig[0] != 'L') {
       jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
       if (jni != nullptr) jni->DeleteLocalRef(classes[i]);
@@ -1596,10 +1598,7 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti) {
     const char* slice = nullptr;
     size_t slice_len = 0;
     if (ObjectSampler::normalizeClassSignature(sig, &slice, &slice_len)) {
-      // Caller holds _class_map_lock exclusively — call _class_map.lookup
-      // directly. Do NOT call lookupClass(), which would re-attempt
-      // tryLockShared() and deadlock.
-      (void)_class_map.lookup(slice, slice_len);
+      sigs.emplace_back(slice, slice_len);
     }
     jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
     if (jni != nullptr) jni->DeleteLocalRef(classes[i]);
@@ -1608,6 +1607,13 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti) {
   if (sig_failures > 0) {
     Log::warn("preregisterLoadedClasses: GetClassSignature failed for %d/%d class(es) — those vtable-target frames may be missing until ClassPrepare fires", sig_failures, class_count);
   }
+  // Phase 2 (exclusive lock): bulk-insert the collected names. Only the cheap
+  // Dictionary pointer operations happen under the lock — no JVMTI calls.
+  _class_map_lock.lock();
+  for (const std::string& s : sigs) {
+    (void)_class_map.lookup(s.c_str(), s.size());
+  }
+  _class_map_lock.unlock();
 }
 
 int Profiler::status(char* status, int max_len) {
