@@ -96,6 +96,8 @@ FrameDesc FrameDesc::no_dwarf_frame = {0, DW_REG_INVALID, DW_REG_INVALID, DW_REG
 void DwarfParser::init(const char *name, const char *image_base) {
   _name = name;
   _image_base = image_base;
+  _hdr_start = nullptr;
+  _hdr_end = nullptr;
 
   _capacity = 128;
   _count = 0;
@@ -109,13 +111,13 @@ void DwarfParser::init(const char *name, const char *image_base) {
 }
 
 DwarfParser::DwarfParser(const char *name, const char *image_base,
-                         const char *eh_frame_hdr) {
+                         const char *eh_frame_hdr, size_t size) {
   init(name, image_base);
-  parse(eh_frame_hdr);
+  parse(eh_frame_hdr, size);
 }
 
 DwarfParser::DwarfParser(const char *name, const char *image_base,
-                         const char *eh_frame, size_t eh_frame_size) {
+                         size_t eh_frame_size, const char *eh_frame) {
   init(name, image_base);
   parseEhFrame(eh_frame, eh_frame_size);
 }
@@ -130,7 +132,9 @@ static constexpr u8 omit_sign_bit_mask_low(u8 value) {
   return value & 0x7;
 }
 
-void DwarfParser::parse(const char *eh_frame_hdr) {
+void DwarfParser::parse(const char *eh_frame_hdr, size_t size) {
+  if (size < 16) return;
+
   u8 version = eh_frame_hdr[0];
   u8 eh_frame_ptr_enc = eh_frame_hdr[1];
   u8 fde_count_enc = eh_frame_hdr[2];
@@ -147,10 +151,21 @@ void DwarfParser::parse(const char *eh_frame_hdr) {
     return;
   }
 
+  _hdr_start = eh_frame_hdr;
+  _hdr_end = eh_frame_hdr + size;
+
   int fde_count = *(int *)(eh_frame_hdr + 8);
+  // Each table entry is two 4-byte values; clamp to what actually fits.
+  int max_entries = (int)((size - 16) / 8);
+  if (fde_count < 0 || fde_count > max_entries) {
+    fde_count = max_entries;
+  }
+
   int *table = (int *)(eh_frame_hdr + 16);
   for (int i = 0; i < fde_count; i++) {
-    _ptr = eh_frame_hdr + table[i * 2];
+    int fde_offset = table[i * 2];
+    if (fde_offset < 0 || (size_t)fde_offset + 8 > size) continue;
+    _ptr = eh_frame_hdr + fde_offset;
     parseFde();
   }
 }
@@ -243,21 +258,26 @@ void DwarfParser::parseEhFrame(const char *eh_frame, size_t size) {
 }
 
 void DwarfParser::parseCie() {
+  if (_hdr_end && _ptr + 4 > _hdr_end) return;
   u32 cie_len = get32();
   if (cie_len == 0 || cie_len == 0xffffffff) {
     return;
   }
 
   const char *cie_start = _ptr;
+  const char *cie_end = cie_start + cie_len;
+  if (_hdr_end && cie_end > _hdr_end) cie_end = _hdr_end;
+
+  if (cie_end - _ptr < 5) { _ptr = cie_start + cie_len; return; }
   _ptr += 5;
-  while (*_ptr++) {
-  }
-  _code_align = getLeb();
-  _data_align = getSLeb();
+  while (_ptr < cie_end && *_ptr++) {}
+  _code_align = getLeb(cie_end);
+  _data_align = getSLeb(cie_end);
   _ptr = cie_start + cie_len;
 }
 
 void DwarfParser::parseFde() {
+  if (_hdr_end && _ptr + 8 > _hdr_end) return;
   u32 fde_len = get32();
   if (fde_len == 0 || fde_len == 0xffffffff) {
     return;
@@ -266,15 +286,21 @@ void DwarfParser::parseFde() {
   const char *fde_start = _ptr;
   u32 cie_offset = get32();
   if (_count == 0) {
-    _ptr = fde_start - cie_offset;
-    parseCie();
+    const char *cie_ptr = fde_start - cie_offset;
+    if (!_hdr_end || (cie_ptr >= _hdr_start && cie_ptr + 4 <= _hdr_end)) {
+      _ptr = cie_ptr;
+      parseCie();
+    }
     _ptr = fde_start + 4;
   }
 
+  if (_hdr_end && _ptr + 8 > _hdr_end) return;
   u32 range_start = getPtr() - _image_base;
   u32 range_len = get32();
-  _ptr += getLeb();
-  parseInstructions(range_start, fde_start + fde_len);
+  const char *fde_end = fde_start + fde_len;
+  if (_hdr_end && fde_end > _hdr_end) fde_end = _hdr_end;
+  _ptr += getLeb(fde_end);
+  parseInstructions(range_start, fde_end);
   addRecord(range_start + range_len, DW_REG_FP, LINKED_FRAME_SIZE,
             -LINKED_FRAME_SIZE, -LINKED_FRAME_SIZE + DW_STACK_SLOT);
 }

@@ -108,6 +108,8 @@ class DwarfParser {
     const char* _name;
     const char* _image_base;
     const char* _ptr;
+    const char* _hdr_start;  // start of eh_frame_hdr buffer; guards parse()/parseFde()/parseCie()
+    const char* _hdr_end;    // one-past-end of same
 
     int _capacity;
     int _count;
@@ -208,7 +210,7 @@ class DwarfParser {
     }
 
     void init(const char* name, const char* image_base);
-    void parse(const char* eh_frame_hdr);
+    void parse(const char* eh_frame_hdr, size_t size);
     void parseEhFrame(const char* eh_frame, size_t size);
     void parseCie();
     void parseFde();
@@ -219,8 +221,10 @@ class DwarfParser {
     FrameDesc* addRecordRaw(u32 loc, int cfa, int fp_off, int pc_off);
 
   public:
-    DwarfParser(const char* name, const char* image_base, const char* eh_frame_hdr);
-    DwarfParser(const char* name, const char* image_base, const char* eh_frame, size_t eh_frame_size);
+    // Parse .eh_frame_hdr (Linux, contains sorted FDE index; size bounds all pointer arithmetic)
+    DwarfParser(const char* name, const char* image_base, const char* eh_frame_hdr, size_t size);
+    // Parse raw .eh_frame (macOS __eh_frame; linear CIE/FDE sequence)
+    DwarfParser(const char* name, const char* image_base, size_t eh_frame_size, const char* eh_frame);
 
     ~DwarfParser() {
         free(_table);

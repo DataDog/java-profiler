@@ -177,7 +177,7 @@ class MachOParser {
         }
 
         if (DWARF_SUPPORTED && eh_frame != NULL && eh_frame_size > 0) {
-            DwarfParser dwarf(_cc->name(), _vmaddr_slide, eh_frame, eh_frame_size);
+            DwarfParser dwarf(_cc->name(), _vmaddr_slide, eh_frame_size, eh_frame);
             _cc->setDwarfTable(dwarf.table(), dwarf.count(), dwarf.detectedDefaultFrame());
         } else {
             // No __eh_frame (clang compact-unwind-only libraries): fall back to the
