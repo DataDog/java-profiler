@@ -92,8 +92,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     try {
         DwarfParser parser(name, image_base, eh_frame_hdr);
         // If we get here, the parser successfully built an unwind table.
-        // The parser allocates a FrameDesc table internally; destructor
-        // will clean it up.
+        // Destructor frees _table if table() was never called.
     } catch (...) {
         // Expected for malformed input - the parser may throw on invalid data
     }

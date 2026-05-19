@@ -8,6 +8,7 @@
 #define _DWARF_H
 
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 #include "arch.h"
 
@@ -221,11 +222,17 @@ class DwarfParser {
     DwarfParser(const char* name, const char* image_base, const char* eh_frame_hdr);
     DwarfParser(const char* name, const char* image_base, const char* eh_frame, size_t eh_frame_size);
 
+    ~DwarfParser() {
+        free(_table);
+    }
+
     // Ownership of the returned pointer transfers to the caller.
     // The caller is responsible for freeing it with free() (not delete[]).
-    // DwarfParser has no destructor; _table is left dangling after this call is used.
-    FrameDesc* table() const {
-        return _table;
+    // Nulls the internal pointer so the destructor does not double-free.
+    FrameDesc* table() {
+        FrameDesc* t = _table;
+        _table = nullptr;
+        return t;
     }
 
     int count() const {
