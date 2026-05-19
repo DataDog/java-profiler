@@ -1466,7 +1466,7 @@ Error Profiler::dump(const char *path, const int length) {
     // RefCountGuard::waitForRefCountToClear inside rotate() drains in-flight
     // writers on the old active before Phase 2 copy, so the dump buffer has
     // no live writers by the time writeCpool reads it.
-    Error err;
+    Error err = Error::OK;
     {
         SignalBlocker blocker;
         lockAll();
