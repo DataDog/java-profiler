@@ -29,7 +29,7 @@ struct SBTable;
 
 struct SBRow {
     char*    keys[CELLS];    // null = empty; CAS-claimed by the inserting thread
-    u32      ids[CELLS];     // set before key CAS (relaxed); read via acquire of keys[]
+    u32      ids[CELLS];     // set AFTER winning the key CAS (release); 0 until published
     SBTable* next;           // overflow chain; CAS-created on overflow
 };
 
@@ -44,13 +44,13 @@ struct SBTable {
 // Concurrency model:
 //   - Inserts (insert_with_id, copyFrom): use __sync_bool_compare_and_swap on
 //     keys[c] (full fence on GCC) to claim a slot.  id and keylen are stored
-//     BEFORE the CAS (relaxed); the CAS acts as a release fence so that any
-//     reader that observes keys[c] != null via an acquire load also sees id and
-//     keylen.  On x86 the CAS already implies a full memory barrier; on ARM the
-//     acquire/release pairing provides the required ordering.
+//     AFTER the CAS wins (release); a reader that observes keys[c] != null via
+//     an acquire load must also check ids[c] != 0 before using it.  On x86 the
+//     CAS already implies a full memory barrier; on ARM the acquire/release
+//     pairing provides the required ordering.  id remains 0 until published.
 //   - Reads (lookup): acquire-load keys[c]; if non-null and key matches, return
-//     the id (visible after the acquire).  Null means "slot unclaimed or not yet
-//     written" — treated as miss.  There is a narrow window where a concurrent
+//     the id — only if ids[c] != 0 (not yet published = miss).  Null means
+//     "slot unclaimed" — treated as miss.  There is a narrow window where a
 //     inserter has started but not yet committed the CAS; this is safe (returns
 //     miss = 0), identical to the existing Dictionary behaviour.
 //   - clear(): called only when no concurrent readers/writers are active.
@@ -76,9 +76,11 @@ private:
     // the next row to visit.  Because we descend into row->next immediately and
     // only pop the frame after every row has been processed, the stack holds at
     // most one frame per overflow-chain level — bounded by the 32-bit hash
-    // rotation period (32 / gcd(32, ROW_BITS)).  Sizing stk[] at 34 leaves
-    // headroom; a recursive traversal could blow the stack on pathological
-    // hash-collision chains.
+    // rotation period (32 / gcd(32, ROW_BITS)), giving a proven maximum of 33
+    // frames (32 overflow levels + 1 root).  Sizing stk[] at 34 is sufficient.
+    // The top < 34 push guard is a belt-and-suspenders check consistent with
+    // that bound; it silently truncates any chain that somehow exceeds it rather
+    // than overwriting adjacent stack memory.
     static void freeTable(SBTable* table) {
         struct Frame { SBTable* t; int row; };
         Frame stk[34];
@@ -95,7 +97,7 @@ private:
             for (int j = 0; j < CELLS; j++) {
                 if (row->keys[j]) free(row->keys[j]);
             }
-            if (row->next) stk[top++] = {row->next, 0};
+            if (row->next && top < 34) stk[top++] = {row->next, 0};
         }
     }
 
@@ -111,9 +113,12 @@ private:
             const SBRow* row = &f.t->rows[f.row++];
             for (int j = 0; j < CELLS; j++) {
                 const char* k = __atomic_load_n(&row->keys[j], __ATOMIC_ACQUIRE);
-                if (k) out[__atomic_load_n(&row->ids[j], __ATOMIC_RELAXED)] = k;
+                if (k) {
+                    u32 eid = __atomic_load_n(&row->ids[j], __ATOMIC_ACQUIRE);
+                    if (eid != 0) out[eid] = k;
+                }
             }
-            if (row->next) stk[top++] = {row->next, 0};
+            if (row->next && top < 34) stk[top++] = {row->next, 0};
         }
     }
 
@@ -136,7 +141,10 @@ public:
             for (int c = 0; c < CELLS; c++) {
                 const char* k = __atomic_load_n(&row->keys[c], __ATOMIC_ACQUIRE);
                 if (!k) return 0;
-                if (keyEquals(k, key, len)) return __atomic_load_n(&row->ids[c], __ATOMIC_RELAXED);
+                if (keyEquals(k, key, len)) {
+                    u32 id = __atomic_load_n(&row->ids[c], __ATOMIC_ACQUIRE);
+                    return id;
+                }
             }
             table = row->next;
             h = (h >> ROW_BITS) | (h << (32 - ROW_BITS));
@@ -159,8 +167,8 @@ public:
                     if (!new_key) return 0;
                     memcpy(new_key, key, len);
                     new_key[len] = '\0';
-                    __atomic_store_n(&row->ids[c], id, __ATOMIC_RELAXED);
                     if (__sync_bool_compare_and_swap(&row->keys[c], nullptr, new_key)) {
+                        __atomic_store_n(&row->ids[c], id, __ATOMIC_RELEASE);
                         _size.fetch_add(1, std::memory_order_relaxed);
                         return id;
                     }
@@ -168,7 +176,9 @@ public:
                     existing = __atomic_load_n(&row->keys[c], __ATOMIC_ACQUIRE);
                 }
                 if (existing && keyEquals(existing, key, len)) {
-                    return __atomic_load_n(&row->ids[c], __ATOMIC_RELAXED);
+                    u32 stored_id;
+                    while ((stored_id = __atomic_load_n(&row->ids[c], __ATOMIC_ACQUIRE)) == 0) {}
+                    return stored_id;
                 }
             }
             if (!row->next) {
@@ -251,6 +261,7 @@ public:
         while (true) {
             StringDictionaryBuffer* active = _rot.active();
             RefCountGuard guard(active);
+            if (!guard.isActive()) return 0;
             if (_rot.active() != active) continue;
             u32 id = active->lookup(key, len);
             if (id != 0) return id;
@@ -269,6 +280,7 @@ public:
         while (true) {
             StringDictionaryBuffer* active = _rot.active();
             RefCountGuard guard(active);
+            if (!guard.isActive()) return 0;
             if (_rot.active() != active) continue;
             u32 id = active->lookup(key, len);
             if (id != 0) return id;
@@ -285,6 +297,7 @@ public:
         while (true) {
             StringDictionaryBuffer* active = _rot.active();
             RefCountGuard guard(active);
+            if (!guard.isActive()) return 0;
             if (_rot.active() != active) continue;
             return active->lookup(key, len);
         }
@@ -319,6 +332,7 @@ public:
         {
             StringDictionaryBuffer* active = _rot.active();
             RefCountGuard guard(active);
+            if (!guard.isActive()) return 0;
             id = active->lookup(key, len);
         }
         if (id != 0) {
@@ -326,14 +340,15 @@ public:
             return id;
         }
 
-        u32 new_id = nextId();
         {
             StringDictionaryBuffer* active = _rot.active();
             RefCountGuard guard(active);
+            if (!guard.isActive()) return 0;
+            u32 new_id = nextId();
             new_id = active->insert_with_id(key, len, new_id);
+            dump->insert_with_id(key, len, new_id);
+            return new_id;
         }
-        dump->insert_with_id(key, len, new_id);
-        return new_id;
     }
 
     // Clear the scratch buffer (two rotations behind active; safe to clear).
