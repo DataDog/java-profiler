@@ -1419,10 +1419,10 @@ Error Profiler::dump(const char *path, const int length) {
     // traces referenced by surviving LivenessTracker objects
     unlockAll();
     if (_features.vtable_target && VMStructs::hasClassNames()) {
-      // clear_first=true: clears the old epoch's entries under the exclusive
-      // lock BEFORE the JVMTI enumeration begins, giving only a nanosecond-scale
-      // empty window instead of the millisecond-scale window of a bare clear()
-      // followed by a long JVMTI call.
+      // clear_first=true: clear runs under the exclusive lock so signal
+      // handlers are blocked only for the duration of the clear itself.
+      // ClassPrepare callbacks that fire during the JVMTI enumeration (Phase 1)
+      // insert via shared lock and survive — Phase 2 does not clear.
       preregisterLoadedClasses(VM::jvmti(), /*clear_first=*/true);
     } else {
       ExclusiveLockGuard guard(&_class_map_lock);
@@ -1572,10 +1572,10 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti, bool clear_first) {
     return;
   }
   // Phase 0: clear under exclusive lock BEFORE the JVMTI enumeration.
-  // This gives a nanosecond-scale empty window (just the clear itself) instead
-  // of a millisecond-scale window (the full enumeration). ClassPrepare callbacks
-  // that fire during Phase 1 insert via shared lock and are preserved — Phase 2
-  // does not clear, so those entries survive the bulk-insert.
+  // Signal handlers are blocked only for the duration of the clear itself;
+  // during Phase 1 they can still acquire the shared lock and see an empty map.
+  // The benefit: ClassPrepare callbacks that fire during Phase 1 insert via
+  // shared lock and survive — Phase 2 does not clear.
   if (clear_first) {
     ExclusiveLockGuard guard(&_class_map_lock);
     _class_map.clear();
