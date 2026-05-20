@@ -26,6 +26,7 @@
 #include "threadInfo.h"
 #include "trap.h"
 #include "vmEntry.h"
+#include <atomic>
 #include <iostream>
 #include <map>
 #include <time.h>
@@ -71,7 +72,7 @@ private:
   static volatile bool _need_JDK_8313796_workaround;
 
   Mutex _state_lock;
-  State _state;
+  std::atomic<State> _state;
   // class unload hook
   Trap _class_unload_hook_trap;
   typedef void (*NotifyClassUnloadedFunc)(void *);
@@ -147,9 +148,13 @@ private:
 
   static Profiler *const _instance;
 
+  inline State state() const {
+    return _state.load(std::memory_order_relaxed);
+  }
+
 public:
   Profiler()
-      : _state_lock(), _state(NEW), _class_unload_hook_trap(2),
+      : _state_lock(), _state(State::NEW), _class_unload_hook_trap(2),
         _notify_class_unloaded_func(NULL), _thread_info(), _class_map(1),
         _string_label_map(2), _context_value_map(3), _thread_filter(),
         _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
@@ -198,8 +203,7 @@ public:
   }
 
   inline bool isRunning() {
-    MutexLocker ml(_state_lock);
-    return _state == RUNNING;
+    return _state.load(std::memory_order_acquire) == RUNNING;
   }
 
   u64 total_samples() { return _total_samples; }
@@ -224,7 +228,7 @@ public:
   // primitive type descriptors (I, B, C, etc.) are skipped. Caller must NOT hold
   // _class_map_lock; this function acquires it internally for the bulk-insert
   // phase only. Runs on a JVM thread (never in a signal handler).
-  void preregisterLoadedClasses(jvmtiEnv* jvmti);
+  void preregisterLoadedClasses(jvmtiEnv* jvmti, bool clear_first = false);
   void processCallTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor) {
     if (!_omit_stacktraces) {
       _call_trace_storage.processTraces(processor);

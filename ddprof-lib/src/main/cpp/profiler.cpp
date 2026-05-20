@@ -1052,7 +1052,7 @@ void Profiler::check_JDK_8313796_workaround() {
 
 Error Profiler::start(Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
-  if (_state > IDLE) {
+  if (state() > IDLE) {
     return Error("Profiler already started");
   }
 
@@ -1099,9 +1099,10 @@ Error Profiler::start(Arguments &args, bool reset) {
     // Reset dictionaries and bitmaps
     // Reset class map under lock because ObjectSampler may try to use it while
     // it is being cleaned up
-    _class_map_lock.lock();
-    _class_map.clear();
-    _class_map_lock.unlock();
+    {
+      ExclusiveLockGuard guard(&_class_map_lock);
+      _class_map.clear();
+    }
     // preregisterLoadedClasses manages _class_map_lock internally; callers must
     // not hold it (JVMTI enumeration is lock-free; inserts take the lock).
     if (_features.vtable_target && VMStructs::hasClassNames()) {
@@ -1272,10 +1273,14 @@ Error Profiler::start(Arguments &args, bool reset) {
     // TODO: find a better way to resolve the thread name.
     onThreadStart(nullptr, nullptr, nullptr);
 
-    _state = RUNNING;
+    _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
-
+    // Second snapshot: catch classes prepared during the engine-startup window
+    // (between _features.vtable_target=1 and the RUNNING store above).
+    if (_features.vtable_target && VMStructs::hasClassNames()) {
+      preregisterLoadedClasses(VM::jvmti());
+    }
     return Error::OK;
   }
   // no engine was activated; perform cleanup
@@ -1292,7 +1297,7 @@ Error Profiler::start(Arguments &args, bool reset) {
 
 Error Profiler::stop() {
   MutexLocker ml(_state_lock);
-  if (_state != RUNNING) {
+  if (state() != RUNNING) {
     return Error("Profiler is not active");
   }
 
@@ -1326,13 +1331,13 @@ Error Profiler::stop() {
   // owned by library metadata, so we must keep library patches active until after serialization
   LibraryPatcher::unpatch_libraries();
 
-  _state = IDLE;
+  _state.store(IDLE, std::memory_order_release);
   return Error::OK;
 }
 
 Error Profiler::check(Arguments &args) {
   MutexLocker ml(_state_lock);
-  if (_state > IDLE) {
+  if (state() > IDLE) {
     return Error("Profiler already started");
   }
 
@@ -1369,7 +1374,7 @@ Error Profiler::check(Arguments &args) {
 
 Error Profiler::flushJfr() {
   MutexLocker ml(_state_lock);
-  if (_state != RUNNING) {
+  if (state() != RUNNING) {
     return Error("Profiler is not active");
   }
 
@@ -1385,11 +1390,12 @@ Error Profiler::flushJfr() {
 
 Error Profiler::dump(const char *path, const int length) {
   MutexLocker ml(_state_lock);
-  if (_state != IDLE && _state != RUNNING) {
+  State cur_state = state();
+  if (cur_state != IDLE && cur_state != RUNNING) {
     return Error("Profiler has not started");
   }
 
-  if (_state == RUNNING) {
+  if (cur_state == RUNNING) {
     std::set<int> thread_ids;
     // flush the liveness tracker instance and note all the threads referenced
     // by the live objects
@@ -1412,12 +1418,15 @@ Error Profiler::dump(const char *path, const int length) {
     // in processTraces() already handles clearing old traces while preserving
     // traces referenced by surviving LivenessTracker objects
     unlockAll();
-    // Reset classmap
-    _class_map_lock.lock();
-    _class_map.clear();
-    _class_map_lock.unlock();
     if (_features.vtable_target && VMStructs::hasClassNames()) {
-      preregisterLoadedClasses(VM::jvmti());
+      // clear_first=true: clears the old epoch's entries under the exclusive
+      // lock BEFORE the JVMTI enumeration begins, giving only a nanosecond-scale
+      // empty window instead of the millisecond-scale window of a bare clear()
+      // followed by a long JVMTI call.
+      preregisterLoadedClasses(VM::jvmti(), /*clear_first=*/true);
+    } else {
+      ExclusiveLockGuard guard(&_class_map_lock);
+      _class_map.clear();
     }
 
     _thread_info.clearAll(thread_ids);
@@ -1481,7 +1490,7 @@ Error Profiler::runInternal(Arguments &args, std::ostream &out) {
   }
   case ACTION_STATUS: {
     MutexLocker ml(_state_lock);
-    if (_state == RUNNING) {
+    if (state() == RUNNING) {
       out << "Profiling is running for " << uptime() << " seconds\n";
     } else {
       out << "Profiler is not active\n";
@@ -1537,7 +1546,7 @@ void Profiler::shutdown(Arguments &args) {
   MutexLocker ml(_state_lock);
 
   // The last chance to dump profile before VM terminates
-  if (_state == RUNNING) {
+  if (state() == RUNNING) {
     args._action = ACTION_STOP;
     Error error = run(args);
     if (error) {
@@ -1545,7 +1554,7 @@ void Profiler::shutdown(Arguments &args) {
     }
   }
 
-  _state = TERMINATED;
+  _state.store(TERMINATED, std::memory_order_release);
 }
 
 int Profiler::lookupClass(const char *key, size_t length) {
@@ -1558,9 +1567,18 @@ int Profiler::lookupClass(const char *key, size_t length) {
   return -1;
 }
 
-void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti) {
+void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti, bool clear_first) {
   if (jvmti == nullptr) {
     return;
+  }
+  // Phase 0: clear under exclusive lock BEFORE the JVMTI enumeration.
+  // This gives a nanosecond-scale empty window (just the clear itself) instead
+  // of a millisecond-scale window (the full enumeration). ClassPrepare callbacks
+  // that fire during Phase 1 insert via shared lock and are preserved — Phase 2
+  // does not clear, so those entries survive the bulk-insert.
+  if (clear_first) {
+    ExclusiveLockGuard guard(&_class_map_lock);
+    _class_map.clear();
   }
   JNIEnv* jni = VM::jni();
   jint class_count = 0;
@@ -1609,11 +1627,14 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti) {
   }
   // Phase 2 (exclusive lock): bulk-insert the collected names. Only the cheap
   // Dictionary pointer operations happen under the lock — no JVMTI calls.
-  _class_map_lock.lock();
-  for (const std::string& s : sigs) {
-    (void)_class_map.lookup(s.c_str(), s.size());
+  // NOTE: no clear here; clear_first already ran before Phase 1, so any
+  // ClassPrepare insertions made during the Phase 1 window are preserved.
+  {
+    ExclusiveLockGuard guard(&_class_map_lock);
+    for (const std::string& s : sigs) {
+      (void)_class_map.lookup(s.c_str(), s.size());
+    }
   }
-  _class_map_lock.unlock();
 }
 
 int Profiler::status(char* status, int max_len) {
@@ -1623,7 +1644,7 @@ int Profiler::status(char* status, int max_len) {
     " CPU Engine       : %s\n"
     " WallClock Engine : %s\n"
     " Allocations      : %s\n",
-    _state == RUNNING ? "true" : "false",
+    state() == RUNNING ? "true" : "false",
     _cpu_engine != nullptr ? _cpu_engine->name() : "None",
     _wall_engine != nullptr ? _wall_engine->name() : "None",
     _alloc_engine != nullptr ? _alloc_engine->name() : "None");
