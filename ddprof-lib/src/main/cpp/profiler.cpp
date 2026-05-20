@@ -1492,9 +1492,18 @@ Error Profiler::flushJfr() {
   updateJavaThreadNames();
   updateNativeThreadNames();
 
-  lockAll();
-  _jfr.flush();
-  unlockAll();
+  {
+    SignalBlocker blocker;
+    lockAll();
+    _class_map.rotate();
+    _string_label_map.rotate();
+    _context_value_map.rotate();
+    _jfr.flush();
+    unlockAll();
+  }
+  _class_map.clearStandby();
+  _string_label_map.clearStandby();
+  _context_value_map.clearStandby();
 
   return Error::OK;
 }

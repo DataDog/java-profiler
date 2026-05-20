@@ -1179,7 +1179,7 @@ void Recording::writeCpool(Buffer *buf) {
   // constant pool count - bump each time a new pool is added
   buf->put8(12);
 
-  // All three dictionaries have been rotated before dump(); standby() returns
+  // All three dictionaries have been rotated before dump() or flush(); standby() returns
   // the old-active snapshot which is stable for the lifetime of this call.
   Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
   writeFrameTypes(buf);
