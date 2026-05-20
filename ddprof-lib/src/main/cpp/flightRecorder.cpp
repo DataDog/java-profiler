@@ -179,9 +179,9 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         (!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) &&
         jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
         jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
-      // PROF-14623: the JVMTI strings should be non-null and mapped per spec,
-      // but crash telemetry shows both `strncmp` and `jvmti_Deallocate` faulting
-      // on them. Probe each pointer over a range covering the longest prefix
+      // The JVMTI strings should be non-null and mapped per spec, but crash
+      // telemetry shows both `strncmp` and `jvmti_Deallocate` faulting on them.
+      // Probe each pointer over a range covering the longest prefix
       // compared below (~50 bytes) plus headroom for strlen, and NULL any that
       // fails so the unconditional Deallocate block at end of this function
       // skips it (os::free faults on an unmapped pointer just like strncmp).
