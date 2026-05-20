@@ -1141,9 +1141,10 @@ Error Profiler::start(Arguments &args, bool reset) {
     _total_samples = 0;
     memset(_failures, 0, sizeof(_failures));
 
-    // Reset dictionaries: lockAll() gates new signal-handler entries; then
-    // waitForAllRefCountsToClear() drains handlers already inside bounded_lookup()
-    // that hold a RefCountGuard but have not acquired any _locks[] slot yet.
+    // Reset dictionaries. lockAll() gates signal-handler event writes; the
+    // pre-drain here reduces the work inside each clearAll(). clearAll() itself
+    // sets _accepting=false and drains again to close the window between this
+    // drain and the first clear call, then re-enables lookups after the reset.
     lockAll();
     RefCountGuard::waitForAllRefCountsToClear();
     _class_map.clearAll();

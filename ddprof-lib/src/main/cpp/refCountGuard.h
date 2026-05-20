@@ -84,6 +84,7 @@ public:
 private:
     bool  _active;
     bool  _is_reentrant;
+    bool  _set_outer_ptr;  // true if this guard wrote outer_ptr (first reentrancy level only)
     int   _my_slot;
     void* _saved_ptr;
 

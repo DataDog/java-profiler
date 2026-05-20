@@ -30,7 +30,16 @@ int RefCountGuard::getThreadRefCountSlot() {
         }
 
         if (__atomic_load_n(&slot_owners[slot], __ATOMIC_ACQUIRE) == tid) {
-            return slot + MAX_THREADS;
+            // Only treat as reentrant if the outer guard is still active.
+            // When count==0 the outer guard has already decremented and is
+            // just clearing slot_owners; creating a "reentrant" guard on a
+            // dying slot would publish active_ptr while the outer destructor
+            // is about to overwrite it, causing waitForRefCountToClear to
+            // miss the new resource.
+            if (__atomic_load_n(&refcount_slots[slot].count, __ATOMIC_ACQUIRE) > 0) {
+                return slot + MAX_THREADS;
+            }
+            // Fall through: probe for a fresh slot instead.
         }
 
         if (probe.hasNext()) {
@@ -41,7 +50,7 @@ int RefCountGuard::getThreadRefCountSlot() {
     return -1;
 }
 
-RefCountGuard::RefCountGuard(void* resource) : _active(true), _is_reentrant(false), _my_slot(-1), _saved_ptr(nullptr) {
+RefCountGuard::RefCountGuard(void* resource) : _active(true), _is_reentrant(false), _set_outer_ptr(false), _my_slot(-1), _saved_ptr(nullptr) {
     int raw = getThreadRefCountSlot();
 
     if (raw == -1) {
@@ -54,10 +63,18 @@ RefCountGuard::RefCountGuard(void* resource) : _active(true), _is_reentrant(fals
 
     if (_is_reentrant) {
         _saved_ptr = __atomic_load_n(&refcount_slots[_my_slot].active_ptr, __ATOMIC_ACQUIRE);
-        // Reentrant: increment count first, then publish outer_ptr so the scanner
-        // sees the outer resource while active_ptr is updated to the inner one.
+        // Reentrant: increment count first so the scanner always sees the outer
+        // resource while active_ptr is being updated.
         __atomic_fetch_add(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
-        __atomic_store_n(&refcount_slots[_my_slot].outer_ptr, _saved_ptr, __ATOMIC_RELEASE);
+        // Only write outer_ptr on the FIRST level of reentrancy (when it is still
+        // null).  If a second signal nests inside the first, outer_ptr already
+        // holds the outermost resource; overwriting it would lose that pointer and
+        // let waitForRefCountToClear miss it while all three guards are live.
+        void* existing_outer = __atomic_load_n(&refcount_slots[_my_slot].outer_ptr, __ATOMIC_ACQUIRE);
+        _set_outer_ptr = (existing_outer == nullptr);
+        if (_set_outer_ptr) {
+            __atomic_store_n(&refcount_slots[_my_slot].outer_ptr, _saved_ptr, __ATOMIC_RELEASE);
+        }
         __atomic_store_n(&refcount_slots[_my_slot].active_ptr, resource, __ATOMIC_RELEASE);
     } else {
         // Non-reentrant (count was 0): store pointer first so the scanner skips
@@ -70,10 +87,15 @@ RefCountGuard::RefCountGuard(void* resource) : _active(true), _is_reentrant(fals
 RefCountGuard::~RefCountGuard() {
     if (_active && _my_slot >= 0) {
         if (_is_reentrant) {
-            // Restore outer active_ptr first, then clear outer_ptr, then decrement
-            // count; scanner always observes the outer resource while count > 0.
+            // Restore outer active_ptr first, then (if we set outer_ptr) clear it,
+            // then decrement count; scanner always observes the outer resource while
+            // count > 0.  We only clear outer_ptr when we were the one who set it
+            // (first reentrancy level); deeper levels must leave it pointing at the
+            // outermost resource so the scanner can still find it.
             __atomic_store_n(&refcount_slots[_my_slot].active_ptr, _saved_ptr, __ATOMIC_RELEASE);
-            __atomic_store_n(&refcount_slots[_my_slot].outer_ptr, nullptr, __ATOMIC_RELEASE);
+            if (_set_outer_ptr) {
+                __atomic_store_n(&refcount_slots[_my_slot].outer_ptr, nullptr, __ATOMIC_RELEASE);
+            }
             __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
         } else {
             __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
@@ -85,6 +107,7 @@ RefCountGuard::~RefCountGuard() {
 
 RefCountGuard::RefCountGuard(RefCountGuard&& other) noexcept
     : _active(other._active), _is_reentrant(other._is_reentrant),
+      _set_outer_ptr(other._set_outer_ptr),
       _my_slot(other._my_slot), _saved_ptr(other._saved_ptr) {
     other._active = false;
 }
@@ -94,7 +117,9 @@ RefCountGuard& RefCountGuard::operator=(RefCountGuard&& other) noexcept {
         if (_active && _my_slot >= 0) {
             if (_is_reentrant) {
                 __atomic_store_n(&refcount_slots[_my_slot].active_ptr, _saved_ptr, __ATOMIC_RELEASE);
-                __atomic_store_n(&refcount_slots[_my_slot].outer_ptr, nullptr, __ATOMIC_RELEASE);
+                if (_set_outer_ptr) {
+                    __atomic_store_n(&refcount_slots[_my_slot].outer_ptr, nullptr, __ATOMIC_RELEASE);
+                }
                 __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
             } else {
                 __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
@@ -102,11 +127,12 @@ RefCountGuard& RefCountGuard::operator=(RefCountGuard&& other) noexcept {
                 __atomic_store_n(&slot_owners[_my_slot], 0, __ATOMIC_RELEASE);
             }
         }
-        _active       = other._active;
-        _is_reentrant = other._is_reentrant;
-        _my_slot      = other._my_slot;
-        _saved_ptr    = other._saved_ptr;
-        other._active = false;
+        _active        = other._active;
+        _is_reentrant  = other._is_reentrant;
+        _set_outer_ptr = other._set_outer_ptr;
+        _my_slot       = other._my_slot;
+        _saved_ptr     = other._saved_ptr;
+        other._active  = false;
     }
     return *this;
 }

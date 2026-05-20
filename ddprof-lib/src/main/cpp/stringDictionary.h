@@ -239,7 +239,8 @@ public:
 //   malloc, but the guard protects the buffer pointer lifetime).
 //   lookupDuringDump is NOT signal-safe; call from dump thread only.
 class StringDictionary {
-    std::atomic<u32> _next_id{1};  // starts at 1; id=0 reserved as "no entry"
+    std::atomic<u32>  _next_id{1};      // starts at 1; id=0 reserved as "no entry"
+    std::atomic<bool> _accepting{true}; // false while clearAll() is resetting buffers
     StringDictionaryBuffer _a, _b, _c;
     TripleBufferRotator<StringDictionaryBuffer> _rot;
     int _counter_offset;  // offset into DICTIONARY_KEYS / DICTIONARY_KEYS_BYTES counter rows
@@ -278,6 +279,9 @@ public:
     // Insert into active buffer if size < size_limit; returns 0 when at cap.
     // NOT signal-safe.
     u32 bounded_lookup(const char* key, size_t len, int size_limit) {
+        // Bail immediately if clearAll() is resetting the buffers; creating a
+        // RefCountGuard here could race with freeTable() inside clear().
+        if (!_accepting.load(std::memory_order_acquire)) return 0;
         while (true) {
             StringDictionaryBuffer* active = _rot.active();
             RefCountGuard guard(active);
@@ -295,6 +299,7 @@ public:
 
     // Signal-safe read-only probe of active. Returns 0 on miss.
     u32 bounded_lookup(const char* key, size_t len) {
+        if (!_accepting.load(std::memory_order_acquire)) return 0;
         while (true) {
             StringDictionaryBuffer* active = _rot.active();
             RefCountGuard guard(active);
@@ -361,15 +366,23 @@ public:
     }
 
     // Reset all three buffers and restart the ID counter.
-    // Caller must ensure all signal handlers are quiesced before calling
-    // (e.g., via RefCountGuard::waitForAllRefCountsToClear()) — concurrent
-    // readers accessing freed keys are undefined behaviour.
+    // Sets _accepting=false so that bounded_lookup callers that bypass lockAll()
+    // (JNI paths) do not create new RefCountGuards after the caller's initial
+    // waitForAllRefCountsToClear() drains.  Drains again internally to catch any
+    // guard that started between the caller's drain and this flag flip, then
+    // clears, then re-enables lookups.
     void clearAll() {
+        _accepting.store(false, std::memory_order_seq_cst);
+        // Drain guards that were already past the _accepting check when the flag
+        // was set.  After this returns, no new guards will be created (they all
+        // see _accepting=false) so the clear below is safe.
+        RefCountGuard::waitForAllRefCountsToClear();
         _a.clear(); _b.clear(); _c.clear();
         _rot.reset();
         _next_id.store(1, std::memory_order_relaxed);
         Counters::set(DICTIONARY_KEYS, 0, _counter_offset);
         Counters::set(DICTIONARY_KEYS_BYTES, 0, _counter_offset);
+        _accepting.store(true, std::memory_order_release);
     }
 };
 
