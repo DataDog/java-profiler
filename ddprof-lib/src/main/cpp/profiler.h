@@ -17,6 +17,7 @@
 #include "engine.h"
 #include "event.h"
 #include "flightRecorder.h"
+#include "guards.h"
 #include "libraries.h"
 #include "log.h"
 #include "mutex.h"
@@ -142,6 +143,27 @@ private:
   void lockAll();
   void unlockAll();
 
+  // Rotate all three dictionaries under a SignalBlocker + lockAll() critical
+  // section, invoke jfr_op (stop/dump/flush), then clear standby buffers.
+  // This protocol is required so writeCpool() reads a consistent standby
+  // snapshot: without the rotate, values inserted into active after the last
+  // rotate remain invisible to writeCpool() and produce dangling cpool refs.
+  // lockAll() across jfr_op prevents JNI writers from racing TraceRootEvents
+  // into the chunk after writeCpool() has already read the snapshot.
+  template<typename F>
+  void rotateDictsAndRun(F jfr_op) {
+    SignalBlocker blocker;
+    lockAll();
+    _class_map.rotate();
+    _string_label_map.rotate();
+    _context_value_map.rotate();
+    jfr_op();
+    unlockAll();
+    _class_map.clearStandby();
+    _string_label_map.clearStandby();
+    _context_value_map.clearStandby();
+  }
+
   static int crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext);
   static void check_JDK_8313796_workaround();
 
@@ -237,7 +259,6 @@ public:
   Error check(Arguments &args);
   Error start(Arguments &args, bool reset);
   Error stop();
-  Error flushJfr();
   Error dump(const char *path, const int length);
   void logStats();
   void switchThreadEvents(jvmtiEventMode mode);
