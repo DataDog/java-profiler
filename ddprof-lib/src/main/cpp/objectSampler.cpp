@@ -77,9 +77,10 @@ void ObjectSampler::recordAllocation(jvmtiEnv *jvmti, JNIEnv *jni,
       class_name == NULL) {
     // Drop the sample: recording it under the default class id 0
     // would corrupt allocation attribution.
-    if (class_name != NULL) {
-      jvmti->Deallocate((unsigned char *)class_name);
-    }
+    // NOTE: Do NOT call Deallocate here. The JVMTI spec does not guarantee
+    // output buffers are populated on a non-JVMTI_ERROR_NONE return; the
+    // pointer value is unspecified, so passing it to Deallocate is unsafe
+    // in practice and observed to crash with SIGSEGV.
     return;
   }
   const char *name_slice = NULL;
