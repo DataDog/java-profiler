@@ -184,7 +184,7 @@ public:
                 }
                 if (existing && keyEquals(existing, key, len)) {
                     u32 stored_id;
-                    while ((stored_id = __atomic_load_n(&row->ids[c], __ATOMIC_ACQUIRE)) == 0) {}
+                    while ((stored_id = __atomic_load_n(&row->ids[c], __ATOMIC_ACQUIRE)) == 0) { spinPause(); }
                     return stored_id;
                 }
             }
