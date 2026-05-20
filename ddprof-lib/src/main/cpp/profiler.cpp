@@ -455,11 +455,20 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
   }
   u64 call_trace_id = 0;
   if (!_omit_stacktraces) {
+    // Defensive: the buffer slot can be observed as nullptr in pathological
+    // start sequences (e.g. a calloc failure path in Profiler::start before
+    // engines are enabled). Drop the sample rather than dereferencing.
+    CallTraceBuffer *buf = _calltrace_buffer[lock_index];
+    if (buf == nullptr) {
+      atomicIncRelaxed(_failures[-ticks_skipped]);
+      _locks[lock_index].unlock();
+      return 0;
+    }
 #ifdef COUNTERS
     u64 startTime = TSC::ticks();
 #endif // COUNTERS
-    ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
-    jvmtiFrameInfo *jvmti_frames = _calltrace_buffer[lock_index]->_jvmti_frames;
+    ASGCT_CallFrame *frames = buf->_asgct_frames;
+    jvmtiFrameInfo *jvmti_frames = buf->_jvmti_frames;
 
     int num_frames = 0;
 
@@ -1104,13 +1113,24 @@ Error Profiler::start(Arguments &args, bool reset) {
     size_t nelem = _max_stack_depth + RESERVED_FRAMES;
 
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
-      free(_calltrace_buffer[i]);
-      _calltrace_buffer[i] = (CallTraceBuffer*)calloc(nelem, sizeof(CallTraceBuffer));
-      if (_calltrace_buffer[i] == NULL) {
+      // Allocate the replacement before touching the slot so a calloc failure
+      // does not leave the slot pointing at freed memory.
+      CallTraceBuffer *fresh =
+          (CallTraceBuffer*)calloc(nelem, sizeof(CallTraceBuffer));
+      if (fresh == NULL) {
         _max_stack_depth = 0;
         return Error("Not enough memory to allocate stack trace buffers (try "
                      "smaller jstackdepth)");
       }
+      // Swap under the per-shard lock so a reader holding the same lock via
+      // tryLock cannot observe a freed pointer mid-replacement. The previous
+      // buffer is freed only after the lock is released, by which point no
+      // reader can be using it.
+      _locks[i].lock();
+      CallTraceBuffer *prev = _calltrace_buffer[i];
+      _calltrace_buffer[i] = fresh;
+      _locks[i].unlock();
+      free(prev);
     }
   }
 
