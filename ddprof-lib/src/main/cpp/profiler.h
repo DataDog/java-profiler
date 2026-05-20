@@ -144,7 +144,7 @@ private:
   void unlockAll();
 
   // Rotate all three dictionaries under a SignalBlocker + lockAll() critical
-  // section, invoke jfr_op (stop/dump/flush), then clear standby buffers.
+  // section, invoke jfr_op (stop/dump), then clear standby buffers.
   // This protocol is required so writeCpool() reads a consistent standby
   // snapshot: without the rotate, values inserted into active after the last
   // rotate remain invisible to writeCpool() and produce dangling cpool refs.

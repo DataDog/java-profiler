@@ -248,8 +248,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       } else if (has_prefix(class_name,
                             "Ljdk/internal/reflect/GeneratedMethodAccessor")) {
         class_name_id =
-            _classes->lookupDuringDump("jdk/internal/reflect.GeneratedMethodAccessor",
-                                       strlen("jdk/internal/reflect.GeneratedMethodAccessor"));
+            _classes->lookupDuringDump("jdk/internal/reflect/GeneratedMethodAccessor",
+                                       strlen("jdk/internal/reflect/GeneratedMethodAccessor"));
         method_name_id =
             _symbols.lookup("Object "
                             "jdk.internal.reflect.GeneratedMethodAccessor."
