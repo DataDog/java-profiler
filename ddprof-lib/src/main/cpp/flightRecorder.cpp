@@ -163,6 +163,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   jvmti->GetPhase(&phase);
   if ((phase & (JVMTI_PHASE_START | JVMTI_PHASE_LIVE)) != 0) {
     bool entry = false;
+    bool readable = false;
     if (VMMethod::check_jmethodID(method) &&
         jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
         // GetMethodDeclaringClass may return a jclass wrapping a stale/garbage oop when the class was
@@ -177,17 +178,26 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         // The check below mitigates these crashes on J9.
         (!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) &&
         jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
-        jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0 &&
-        // PROF-14623: the JVMTI strings should be non-null and mapped, but crash
-        // telemetry shows strncmp dereferences on unmapped memory anyway. Probe a
-        // range covering the longest prefix compared below ("Ljdk/internal/reflect/
-        // GeneratedConstructorAccessor", ~50 bytes) plus headroom for strlen() at
-        // line 282. Best-effort only: a concurrent munmap between the probe and the
-        // string reads can still fault; the SIGSEGV handler is the second line of
-        // defence. On any failure fall through to JMETHODID_SKIPPED.
-        class_name != nullptr && SafeAccess::isReadableRange(class_name, 256) &&
-        method_name != nullptr && SafeAccess::isReadableRange(method_name, 256) &&
-        method_sig != nullptr && SafeAccess::isReadableRange(method_sig, 256)) {
+        jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
+      // PROF-14623: the JVMTI strings should be non-null and mapped per spec,
+      // but crash telemetry shows both `strncmp` and `jvmti_Deallocate` faulting
+      // on them. Probe each pointer over a range covering the longest prefix
+      // compared below (~50 bytes) plus headroom for strlen, and NULL any that
+      // fails so the unconditional Deallocate block at end of this function
+      // skips it (os::free faults on an unmapped pointer just like strncmp).
+      // Accept a small leak on the corruption path. Probes run independently
+      // so a single bad pointer does not leak its siblings. Best-effort only:
+      // a concurrent munmap between probe and use can still fault; the SIGSEGV
+      // handler is the second line of defence.
+      bool class_name_ok = class_name != nullptr && SafeAccess::isReadableRange(class_name, 256);
+      bool method_name_ok = method_name != nullptr && SafeAccess::isReadableRange(method_name, 256);
+      bool method_sig_ok = method_sig != nullptr && SafeAccess::isReadableRange(method_sig, 256);
+      if (!class_name_ok) class_name = nullptr;
+      if (!method_name_ok) method_name = nullptr;
+      if (!method_sig_ok) method_sig = nullptr;
+      readable = class_name_ok && method_name_ok && method_sig_ok;
+    }
+    if (readable) {
 
       if (first_time) {
         jvmtiError line_table_error = jvmti->GetLineNumberTable(method, &line_number_table_size,
