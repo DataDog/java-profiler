@@ -118,7 +118,8 @@ private:
                     if (eid != 0) out[eid] = k;
                 }
             }
-            if (row->next && top < 34) stk[top++] = {row->next, 0};
+            const SBTable* next = __atomic_load_n(&row->next, __ATOMIC_ACQUIRE);
+            if (next && top < 34) stk[top++] = {next, 0};
         }
     }
 
@@ -146,7 +147,7 @@ public:
                     return id;
                 }
             }
-            table = row->next;
+            table = __atomic_load_n(&row->next, __ATOMIC_ACQUIRE);
             h = (h >> ROW_BITS) | (h << (32 - ROW_BITS));
         }
         return 0;
@@ -346,7 +347,7 @@ public:
             if (!guard.isActive()) return 0;
             u32 new_id = nextId();
             new_id = active->insert_with_id(key, len, new_id);
-            dump->insert_with_id(key, len, new_id);
+            if (new_id != 0) dump->insert_with_id(key, len, new_id);
             return new_id;
         }
     }

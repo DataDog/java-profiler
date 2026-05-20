@@ -1714,7 +1714,8 @@ void Profiler::shutdown(Arguments &args) {
 }
 
 int Profiler::lookupClass(const char *key, size_t length) {
-  return _class_map.lookup(key, length);
+  u32 id = _class_map.lookup(key, length);
+  return id != 0 ? static_cast<int>(id) : -1;
 }
 
 int Profiler::status(char* status, int max_len) {

@@ -54,7 +54,7 @@ public class DictionaryRotationTest extends AbstractProfilerTest {
             profiler.recordTraceRoot(i, preDump[i], null, sizeLimit);
         }
 
-        // dump() triggers: rotate() → lockAll() → jfr.dump(snapshot) → unlockAll()
+        // dump() triggers: lockAll() → rotate() → jfr.dump(snapshot) → unlockAll()
         //                            → clearStandby() (resets per-dump counters to 0, frees scratch buffer)
         Path snapshot = Files.createTempFile("DictionaryRotation_snapshot_", ".jfr");
         try {

@@ -26,16 +26,22 @@
  * full dump cycles (typically 60+ seconds).  If the window were hit, the caller
  * observes a miss (e.g. 0 or equivalent sentinel) and handles it gracefully
  * — a dropped trace or generic vtable frame, not a crash.
+ *
+ * REENTRANT NESTING: when a signal fires inside an outer guard (same thread),
+ * outer_ptr preserves the outer resource so waitForRefCountToClear() can see
+ * it even while active_ptr is updated to the inner resource.
+ * Ordering: outer_ptr must be stored AFTER count++ but BEFORE active_ptr is
+ * overwritten; cleared AFTER active_ptr is restored but BEFORE count--.
  */
 struct alignas(DEFAULT_CACHE_LINE_SIZE) RefCountSlot {
     volatile uint32_t count;                    // Reference count (0 = inactive)
     alignas(alignof(void*)) void* active_ptr;   // Which resource is being referenced
+    void* outer_ptr;                            // Outer guard's resource when reentrant (else null)
     // Remaining padding: accounts for the alignment gap between count and active_ptr.
-    // Formula: total - alignof(void*) - sizeof(void*) is correct on both 32-bit and
-    // 64-bit because alignof(void*) equals sizeof(uint32_t) + implicit_gap on 64-bit.
-    char padding[DEFAULT_CACHE_LINE_SIZE - alignof(void*) - sizeof(void*)];
+    // Formula: total - alignof(void*) - 2*sizeof(void*) on 64-bit (count=4+4gap, active=8, outer=8).
+    char padding[DEFAULT_CACHE_LINE_SIZE - alignof(void*) - 2 * sizeof(void*)];
 
-    RefCountSlot() : count(0), active_ptr(nullptr), padding{} {
+    RefCountSlot() : count(0), active_ptr(nullptr), outer_ptr(nullptr), padding{} {
         static_assert(sizeof(RefCountSlot) == DEFAULT_CACHE_LINE_SIZE,
                       "RefCountSlot must be exactly one cache line");
     }

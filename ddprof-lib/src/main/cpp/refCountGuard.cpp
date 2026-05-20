@@ -54,9 +54,10 @@ RefCountGuard::RefCountGuard(void* resource) : _active(true), _is_reentrant(fals
 
     if (_is_reentrant) {
         _saved_ptr = __atomic_load_n(&refcount_slots[_my_slot].active_ptr, __ATOMIC_ACQUIRE);
-        // Reentrant: increment count BEFORE overwriting active_ptr so the scanner
-        // still sees the outer resource while count is elevated.
+        // Reentrant: increment count first, then publish outer_ptr so the scanner
+        // sees the outer resource while active_ptr is updated to the inner one.
         __atomic_fetch_add(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
+        __atomic_store_n(&refcount_slots[_my_slot].outer_ptr, _saved_ptr, __ATOMIC_RELEASE);
         __atomic_store_n(&refcount_slots[_my_slot].active_ptr, resource, __ATOMIC_RELEASE);
     } else {
         // Non-reentrant (count was 0): store pointer first so the scanner skips
@@ -69,9 +70,10 @@ RefCountGuard::RefCountGuard(void* resource) : _active(true), _is_reentrant(fals
 RefCountGuard::~RefCountGuard() {
     if (_active && _my_slot >= 0) {
         if (_is_reentrant) {
-            // Restore outer active_ptr BEFORE decrementing so the scanner always
-            // observes the outer resource while count is still elevated.
+            // Restore outer active_ptr first, then clear outer_ptr, then decrement
+            // count; scanner always observes the outer resource while count > 0.
             __atomic_store_n(&refcount_slots[_my_slot].active_ptr, _saved_ptr, __ATOMIC_RELEASE);
+            __atomic_store_n(&refcount_slots[_my_slot].outer_ptr, nullptr, __ATOMIC_RELEASE);
             __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
         } else {
             __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
@@ -92,6 +94,7 @@ RefCountGuard& RefCountGuard::operator=(RefCountGuard&& other) noexcept {
         if (_active && _my_slot >= 0) {
             if (_is_reentrant) {
                 __atomic_store_n(&refcount_slots[_my_slot].active_ptr, _saved_ptr, __ATOMIC_RELEASE);
+                __atomic_store_n(&refcount_slots[_my_slot].outer_ptr, nullptr, __ATOMIC_RELEASE);
                 __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
             } else {
                 __atomic_fetch_sub(&refcount_slots[_my_slot].count, 1, __ATOMIC_RELEASE);
@@ -116,7 +119,8 @@ void RefCountGuard::waitForRefCountToClear(void* table_to_delete) {
             uint32_t count = __atomic_load_n(&refcount_slots[i].count, __ATOMIC_ACQUIRE);
             if (count == 0) continue;
             void* table = __atomic_load_n(&refcount_slots[i].active_ptr, __ATOMIC_ACQUIRE);
-            if (table == table_to_delete) { all_clear = false; break; }
+            void* outer = __atomic_load_n(&refcount_slots[i].outer_ptr, __ATOMIC_ACQUIRE);
+            if (table == table_to_delete || outer == table_to_delete) { all_clear = false; break; }
         }
         if (all_clear) return;
         spinPause();
@@ -130,7 +134,8 @@ void RefCountGuard::waitForRefCountToClear(void* table_to_delete) {
             uint32_t count = __atomic_load_n(&refcount_slots[i].count, __ATOMIC_ACQUIRE);
             if (count == 0) continue;
             void* table = __atomic_load_n(&refcount_slots[i].active_ptr, __ATOMIC_ACQUIRE);
-            if (table == table_to_delete) { all_clear = false; break; }
+            void* outer = __atomic_load_n(&refcount_slots[i].outer_ptr, __ATOMIC_ACQUIRE);
+            if (table == table_to_delete || outer == table_to_delete) { all_clear = false; break; }
         }
         if (all_clear) return;
         nanosleep(&sleep_time, nullptr);
