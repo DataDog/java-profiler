@@ -75,12 +75,17 @@ private:
     // Iterative DFS walk of the overflow tree.  Each frame tracks one table and
     // the next row to visit.  Because we descend into row->next immediately and
     // only pop the frame after every row has been processed, the stack holds at
-    // most one frame per overflow-chain level — bounded by the 32-bit hash
-    // rotation period (32 / gcd(32, ROW_BITS)), giving a proven maximum of 33
-    // frames (32 overflow levels + 1 root).  Sizing stk[] at 34 is sufficient.
-    // The top < 34 push guard is a belt-and-suspenders check consistent with
-    // that bound; it silently truncates any chain that somehow exceeds it rather
-    // than overwriting adjacent stack memory.
+    // most one frame per overflow-chain level.  The hash rotation has period
+    // 32 / gcd(32, ROW_BITS) = 32: after 32 levels the row index cycles back to
+    // the original.  In practice, reaching level N requires N*CELLS keys with
+    // identical 32-bit FNV hashes (gcd(7,32)=1 means any two keys that share
+    // the same row index across all 32 rotation steps must hash identically).
+    // A chain longer than 33 levels therefore requires 99+ exact FNV collisions
+    // — statistically negligible for real-world string inputs.  stk[34] covers
+    // this practical bound; the top < 34 guard is safety-overflow protection.
+    // If it ever fires, entries beyond level 33 are silently dropped rather than
+    // crashing — acceptable given how the bound is reached only by adversarial
+    // or degenerate inputs.
     static void freeTable(SBTable* table) {
         struct Frame { SBTable* t; int row; };
         Frame stk[34];
