@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk11
 
 ## glibc-arm64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-05-20 11:10:32 EDT
+**Date:** 2026-05-20 11:10:54 EDT
 
 ### Configuration
 | Setting | Value |
@@ -48,6 +48,7 @@ title: glibc-arm64-openj9-jdk11
 <summary>CPU Timeline (1 unique values: 56-56 cores)</summary>
 
 ```
+1779289592 56
 1779289597 56
 1779289602 56
 1779289607 56
@@ -67,7 +68,6 @@ title: glibc-arm64-openj9-jdk11
 1779289677 56
 1779289682 56
 1779289687 56
-1779289692 56
 ```
 </details>
 
