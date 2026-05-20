@@ -45,23 +45,11 @@ static const char *const SETTING_RING[] = {NULL, "kernel", "user", "any"};
 static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 
 SharedLineNumberTable::~SharedLineNumberTable() {
-  // Always attempt to deallocate if we have a valid pointer
-  // JVMTI spec requires that memory allocated by GetLineNumberTable
-  // must be freed with Deallocate
+  // _ptr is a malloc'd copy of the JVMTI line number table (see
+  // Lookup::fillJavaMethodInfo). Freeing here is independent of class
+  // unload, preventing use-after-free in ~SharedLineNumberTable and getLineNumber.
   if (_ptr != nullptr) {
-    jvmtiEnv *jvmti = VM::jvmti();
-    if (jvmti != nullptr) {
-      jvmtiError err = jvmti->Deallocate((unsigned char *)_ptr);
-      // If Deallocate fails, log it for debugging (this could indicate a JVM bug)
-      // JVMTI_ERROR_ILLEGAL_ARGUMENT means the memory wasn't allocated by JVMTI
-      // which would be a serious bug in GetLineNumberTable
-      if (err != JVMTI_ERROR_NONE) {
-        TEST_LOG("Unexpected error while deallocating linenumber table: %d", err);
-      }
-    } else {
-      TEST_LOG("WARNING: Cannot deallocate line number table - JVMTI is null");
-    }
-    // Decrement counter whenever destructor runs (symmetric with increment at creation)
+    free(_ptr);
     Counters::decrement(LINE_NUMBER_TABLES);
   }
 }
@@ -308,10 +296,29 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
     mi->_type = FRAME_INTERPRETED;
     mi->_is_entry = entry;
     if (line_number_table != nullptr) {
-      mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
-          line_number_table_size, line_number_table);
-      // Increment counter for tracking live line number tables
-      Counters::increment(LINE_NUMBER_TABLES);
+      // Detach from JVMTI lifetime: copy into our own buffer and deallocate
+      // the JVMTI-allocated memory immediately. This keeps _ptr valid even
+      // after the underlying class is unloaded.
+      void *owned_table = nullptr;
+      if (line_number_table_size > 0) {
+        size_t bytes = (size_t)line_number_table_size * sizeof(jvmtiLineNumberEntry);
+        owned_table = malloc(bytes);
+        if (owned_table != nullptr) {
+          memcpy(owned_table, line_number_table, bytes);
+        } else {
+          TEST_LOG("Failed to allocate %zu bytes for line number table copy", bytes);
+        }
+      }
+      jvmtiError dealloc_err = jvmti->Deallocate((unsigned char *)line_number_table);
+      if (dealloc_err != JVMTI_ERROR_NONE) {
+        TEST_LOG("Unexpected error while deallocating linenumber table: %d", dealloc_err);
+      }
+      if (owned_table != nullptr) {
+        mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
+            line_number_table_size, owned_table);
+        // Increment counter for tracking live line number tables
+        Counters::increment(LINE_NUMBER_TABLES);
+      }
     }
 
     // strings are null or came from JVMTI
@@ -484,14 +491,20 @@ void Recording::copyTo(int target_fd) {
 
 off_t Recording::finishChunk() { return finishChunk(false); }
 
-off_t Recording::finishChunk(bool end_recording) {
+off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   jvmtiEnv *jvmti = VM::jvmti();
   JNIEnv *env = VM::jni();
 
   jclass *classes;
   jint count = 0;
-  // obtaining the class list will create local refs to all loaded classes,
-  // effectively preventing them from being unloaded while flushing
+  // Pin all currently-loaded classes for the duration of finishChunk().
+  // resolveMethod() calls GetLineNumberTable/GetClassSignature/GetMethodName on
+  // jmethodIDs of classes that were loaded when the sample was taken but could
+  // be unloaded concurrently by the GC before we flush.  Holding a local JNI
+  // reference to each class makes it a GC root, closing that race window.
+  // Note: this only guards against concurrent unloading that starts AFTER this
+  // call.  Classes already unloaded before finishChunk() was entered are not
+  // present in the list and receive no protection here.
   jvmtiError err = jvmti->GetLoadedClasses(&count, &classes);
 
   flush(&_cpu_monitor_buf);
@@ -583,6 +596,16 @@ off_t Recording::finishChunk(bool end_recording) {
 
   _buf->reset();
 
+  // Run method_map cleanup while the class pins from GetLoadedClasses are still
+  // held.  Line number tables are now malloc'd copies (fillJavaMethodInfo copies
+  // the JVMTI buffer and calls Deallocate() immediately), so ~SharedLineNumberTable()
+  // calls free() — safe regardless of class-unload state.  Cleanup runs before
+  // DeleteLocalRef to ensure erased jmethodID keys have not yet been recycled by
+  // a newly-loaded class.
+  if (do_cleanup) {
+    cleanupUnreferencedMethods();
+  }
+
   if (!err) {
     // delete all local references
     for (int i = 0; i < count; i++) {
@@ -595,10 +618,7 @@ off_t Recording::finishChunk(bool end_recording) {
 }
 
 void Recording::switchChunk(int fd) {
-  _chunk_start = finishChunk(fd > -1);
-
-  // Cleanup unreferenced methods after finishing the chunk
-  cleanupUnreferencedMethods();
+  _chunk_start = finishChunk(fd > -1, /*do_cleanup=*/true);
 
   TEST_LOG("MethodMap: %zu methods after cleanup", _method_map.size());
 
@@ -913,8 +933,8 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
   writeBoolSetting(buf, T_MALLOC, "enabled", args._nativemem >= 0);
   if (args._nativemem >= 0) {
     writeIntSetting(buf, T_MALLOC, "nativemem", args._nativemem);
-    // samplingInterval=-1 means every allocation is recorded (nativemem=0).
-    writeIntSetting(buf, T_MALLOC, "samplingInterval", args._nativemem == 0 ? -1 : args._nativemem);
+    // samplingInterval=-1 signals "record every allocation"; mirrors shouldSample's interval<=1 threshold.
+    writeIntSetting(buf, T_MALLOC, "samplingInterval", args._nativemem <= 1 ? -1 : args._nativemem);
   }
 
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "debugSymbols",
@@ -1500,6 +1520,7 @@ void Recording::writeEventSizePrefix(Buffer *buf, int start) {
 }
 
 void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
+                                      u64 correlation_id,
                                       ExecutionEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_EXECUTION_SAMPLE);
@@ -1509,12 +1530,14 @@ void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->put8(static_cast<int>(event->_thread_state));
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
+  buf->putVar64(correlation_id);
   writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
 
 void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
+                                   u64 correlation_id,
                                    ExecutionEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_METHOD_SAMPLE);
@@ -1524,6 +1547,7 @@ void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->put8(static_cast<int>(event->_thread_state));
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
+  buf->putVar64(correlation_id);
   writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
@@ -1742,8 +1766,10 @@ void FlightRecorder::flush() {
 
     jclass* classes = NULL;
     jint count = 0;
-    // obtaining the class list will create local refs to all loaded classes,
-    // effectively preventing them from being unloaded while flushing
+    // Pin currently-loaded classes for the duration of switchChunk() so that
+    // resolveMethod() can safely call JVMTI methods on jmethodIDs whose classes
+    // might otherwise be concurrently unloaded by the GC.  See the matching
+    // comment in finishChunk() for scope and limitations of this protection.
     jvmtiError err = jvmti->GetLoadedClasses(&count, &classes);
     rec->switchChunk(-1);
     if (!err) {
@@ -1826,11 +1852,11 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
       RecordingBuffer *buf = rec->buffer(lock_index);
       switch (event_type) {
       case BCI_CPU:
-          rec->recordExecutionSample(buf, tid, call_trace_id,
+          rec->recordExecutionSample(buf, tid, call_trace_id, 0,
                                      (ExecutionEvent *)event);
           break;
         case BCI_WALL:
-          rec->recordMethodSample(buf, tid, call_trace_id,
+          rec->recordMethodSample(buf, tid, call_trace_id, 0,
                                   (ExecutionEvent *)event);
           break;
         case BCI_ALLOC:
@@ -1853,6 +1879,32 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
         rec->flushIfNeeded(buf);
         rec->addThread(lock_index, tid);
       }
+  }
+}
+
+void FlightRecorder::recordEventDelegated(int lock_index, int tid,
+                                          u64 correlation_id, int event_type,
+                                          Event *event) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      RecordingBuffer *buf = rec->buffer(lock_index);
+      switch (event_type) {
+        case BCI_CPU:
+          rec->recordExecutionSample(buf, tid, 0, correlation_id,
+                                     (ExecutionEvent *)event);
+          break;
+        case BCI_WALL:
+          rec->recordMethodSample(buf, tid, 0, correlation_id,
+                                  (ExecutionEvent *)event);
+          break;
+        default:
+          // Delegation is only wired for CPU/wall samples in v1.
+          break;
+      }
+      rec->addThread(lock_index, tid);
+    }
   }
 }
 

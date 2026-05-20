@@ -59,6 +59,9 @@ struct CpuTimes {
 class SharedLineNumberTable {
 public:
   int _size;
+  // Owned malloc'd buffer holding a copy of the JVMTI line number table.
+  // Owning the memory (instead of holding the JVMTI-allocated pointer
+  // directly) keeps lifetime independent of class unload.
   void *_ptr;
 
   SharedLineNumberTable(int size, void *ptr) : _size(size), _ptr(ptr) {}
@@ -192,7 +195,7 @@ public:
   void copyTo(int target_fd);
   off_t finishChunk();
 
-  off_t finishChunk(bool end_recording);
+  off_t finishChunk(bool end_recording, bool do_cleanup = false);
   void switchChunk(int fd);
 
   void cpuMonitorCycle();
@@ -273,9 +276,9 @@ public:
   void writeCurrentContext(Buffer *buf);
 
   void recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
-                             ExecutionEvent *event);
+                             u64 correlation_id, ExecutionEvent *event);
   void recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
-                          ExecutionEvent *event);
+                          u64 correlation_id, ExecutionEvent *event);
   void recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event);
   void recordTraceRoot(Buffer *buf, int tid, TraceRootEvent *event);
   void recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event);
@@ -352,6 +355,13 @@ public:
 
   void recordEvent(int lock_index, int tid, u64 call_trace_id, int event_type,
                    Event *event);
+
+  // Emit a BCI_CPU / BCI_WALL sample with no stack-trace attached to our
+  // recording. `correlation_id` is the same jlong passed to the HotSpot
+  // RequestStackTrace extension so downstream tooling can join our event with
+  // the JVM-emitted jdk.StackTraceRequest.
+  void recordEventDelegated(int lock_index, int tid, u64 correlation_id,
+                            int event_type, Event *event);
 
   void recordLog(LogLevel level, const char *message, size_t len);
 
