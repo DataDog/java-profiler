@@ -219,9 +219,9 @@ public:
   const char* cstack() const;
   int lookupClass(const char *key, size_t length);
   // Pre-populate _class_map with all currently-loaded 'L'-type (reference)
-  // class signatures so that signal-safe lookups in walkVM (vtable_target) can
-  // resolve them without ever needing to malloc. Primitives and arrays are
-  // skipped — they never match vtable lookup keys. Caller must NOT hold
+  // and array ('[') class signatures so that signal-safe lookups in walkVM
+  // (vtable_target) can resolve them without ever needing to malloc. Only bare
+  // primitive type descriptors (I, B, C, etc.) are skipped. Caller must NOT hold
   // _class_map_lock; this function acquires it internally for the bulk-insert
   // phase only. Runs on a JVM thread (never in a signal handler).
   void preregisterLoadedClasses(jvmtiEnv* jvmti);

@@ -602,9 +602,9 @@ void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
   if (sig == nullptr) {
     return;
   }
-  // Only 'L'-type (reference) signatures can ever match vtable_target lookup
-  // keys; skip primitives and arrays.
-  if (sig[0] != 'L') {
+  // Only 'L'-type (reference) and array ('[') signatures can match vtable_target
+  // lookup keys; skip bare primitive type descriptors (I, B, C, etc.).
+  if (sig[0] != 'L' && sig[0] != '[') {
     jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
     return;
   }

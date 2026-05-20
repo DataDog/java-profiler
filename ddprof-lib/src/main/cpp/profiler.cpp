@@ -1590,7 +1590,7 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti) {
       if (jni != nullptr) jni->DeleteLocalRef(classes[i]);
       continue;
     }
-    if (sig[0] != 'L') {
+    if (sig[0] != 'L' && sig[0] != '[') {
       jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
       if (jni != nullptr) jni->DeleteLocalRef(classes[i]);
       continue;
