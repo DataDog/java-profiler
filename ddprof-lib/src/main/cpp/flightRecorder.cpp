@@ -20,6 +20,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "rustDemangler.h"
+#include "safeAccess.h"
 #include "spinLock.h"
 #include "unwindStats.h"
 #include "symbols.h"
@@ -176,7 +177,13 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         // The check below mitigates these crashes on J9.
         (!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) &&
         jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
-        jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
+        jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0 &&
+        // PROF-14623: the JVMTI strings should be non-null and mapped, but crash
+        // telemetry shows strncmp dereferences on unmapped memory anyway. Page-level
+        // probe of each pointer; on failure fall through to JMETHODID_SKIPPED.
+        class_name != nullptr && SafeAccess::isReadable(class_name) &&
+        method_name != nullptr && SafeAccess::isReadable(method_name) &&
+        method_sig != nullptr && SafeAccess::isReadable(method_sig)) {
 
       if (first_time) {
         jvmtiError line_table_error = jvmti->GetLineNumberTable(method, &line_number_table_size,
