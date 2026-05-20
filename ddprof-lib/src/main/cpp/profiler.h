@@ -80,9 +80,9 @@ private:
   // --
 
   ThreadInfo _thread_info;
-  StringDictionary _class_map;
-  StringDictionary _string_label_map;
-  StringDictionary _context_value_map;
+  StringDictionary _class_map{1};
+  StringDictionary _string_label_map{2};
+  StringDictionary _context_value_map{3};
   ThreadFilter _thread_filter;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
