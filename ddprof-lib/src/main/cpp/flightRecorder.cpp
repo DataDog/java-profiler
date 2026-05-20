@@ -189,9 +189,16 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       // so a single bad pointer does not leak its siblings. Best-effort only:
       // a concurrent munmap between probe and use can still fault; the SIGSEGV
       // handler is the second line of defence.
-      bool class_name_ok = class_name != nullptr && SafeAccess::isReadableRange(class_name, 256);
-      bool method_name_ok = method_name != nullptr && SafeAccess::isReadableRange(method_name, 256);
-      bool method_sig_ok = method_sig != nullptr && SafeAccess::isReadableRange(method_sig, 256);
+      const uintptr_t probe_len = 256;
+      bool class_name_ok = class_name != nullptr &&
+                           reinterpret_cast<uintptr_t>(class_name) <= UINTPTR_MAX - (probe_len - 1) &&
+                           SafeAccess::isReadableRange(class_name, probe_len);
+      bool method_name_ok = method_name != nullptr &&
+                            reinterpret_cast<uintptr_t>(method_name) <= UINTPTR_MAX - (probe_len - 1) &&
+                            SafeAccess::isReadableRange(method_name, probe_len);
+      bool method_sig_ok = method_sig != nullptr &&
+                           reinterpret_cast<uintptr_t>(method_sig) <= UINTPTR_MAX - (probe_len - 1) &&
+                           SafeAccess::isReadableRange(method_sig, probe_len);
       if (!class_name_ok) class_name = nullptr;
       if (!method_name_ok) method_name = nullptr;
       if (!method_sig_ok) method_sig = nullptr;
