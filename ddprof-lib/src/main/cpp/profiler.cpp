@@ -1122,10 +1122,10 @@ Error Profiler::start(Arguments &args, bool reset) {
         return Error("Not enough memory to allocate stack trace buffers (try "
                      "smaller jstackdepth)");
       }
-      // Swap under the per-shard lock so a reader holding the same lock via
-      // tryLock cannot observe a freed pointer mid-replacement. The previous
-      // buffer is freed only after the lock is released, by which point no
-      // reader can be using it.
+      // Swap under the per-shard lock: tryLock-based readers (e.g. recordJVMTISample)
+      // cannot observe a freed pointer mid-replacement. Lock-free readers
+      // (e.g. recordExternalSample) are safe because this swap completes before
+      // enableEngines() is called — no sampling engine is active yet.
       _locks[i].lock();
       CallTraceBuffer *prev = _calltrace_buffer[i];
       _calltrace_buffer[i] = fresh;
