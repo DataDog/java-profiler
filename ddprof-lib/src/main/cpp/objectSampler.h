@@ -30,6 +30,7 @@ typedef int (*get_sampling_interval)();
 
 class ObjectSampler : public Engine {
   friend Recording;
+  friend class ObjectSamplerTestAccessor;
 
 private:
   static ObjectSampler *const _instance;
