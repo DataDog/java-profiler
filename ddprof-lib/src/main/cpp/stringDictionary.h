@@ -129,8 +129,9 @@ public:
     }
 
     ~StringDictionaryBuffer() {
-        freeTable(_table);
+        if (_table != nullptr) { freeTable(_table); }
         free(_table);
+        _table = nullptr;
     }
 
     // Signal-safe read-only probe. Returns 0 on miss.
@@ -184,9 +185,10 @@ public:
             }
             if (!row->next) {
                 SBTable* nt = (SBTable*)calloc(1, sizeof(SBTable));
+                if (nt == nullptr) return 0;
                 if (!__sync_bool_compare_and_swap(&row->next, nullptr, nt)) free(nt);
             }
-            table = row->next;
+            table = __atomic_load_n(&row->next, __ATOMIC_ACQUIRE);
             h = (h >> ROW_BITS) | (h << (32 - ROW_BITS));
         }
     }
@@ -208,6 +210,7 @@ public:
 
     // Free all keys and reset to empty. Call only with no concurrent accessors.
     void clear() {
+        if (_table == nullptr) { _size.store(0, std::memory_order_relaxed); return; }
         freeTable(_table);
         memset(_table, 0, sizeof(SBTable));
         _size.store(0, std::memory_order_relaxed);
@@ -260,6 +263,9 @@ public:
 
     // Insert into active buffer; returns globally stable id.  NOT signal-safe.
     u32 lookup(const char* key, size_t len) {
+        // Bail immediately if clearAll() is resetting the buffers; creating a
+        // RefCountGuard here could race with freeTable() inside clear().
+        if (!_accepting.load(std::memory_order_acquire)) return 0;
         while (true) {
             StringDictionaryBuffer* active = _rot.active();
             RefCountGuard guard(active);
