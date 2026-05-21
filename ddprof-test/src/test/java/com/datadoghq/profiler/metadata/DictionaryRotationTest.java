@@ -69,12 +69,12 @@ public class DictionaryRotationTest extends AbstractProfilerTest {
                 profiler.recordTraceRoot(preDump.length + i, postDump[i], null, sizeLimit);
             }
 
-            stopProfiler();
-
             // Live counter reflects only post-dump insertions
             Map<String, Long> live = profiler.getDebugCounters();
             assertEquals((long) postDump.length, live.get("dictionary_endpoints_keys"),
                     "Live counter must equal number of post-dump endpoints");
+
+            stopProfiler();
 
             // Snapshot contains pre-dump endpoints only
             Set<String> inSnapshot = endpointNames(verifyEvents(snapshot, "datadog.Endpoint", true));

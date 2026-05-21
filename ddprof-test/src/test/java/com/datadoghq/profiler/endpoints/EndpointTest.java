@@ -40,6 +40,8 @@ public class EndpointTest extends AbstractProfilerTest {
         // reject above size limit
         record(new Endpoint(0, UUID.randomUUID().toString(), UUID.randomUUID().toString()), false, sizeLimit);
 
+        Map<String, Long> debugCounters = profiler.getDebugCounters();
+        assertEquals(endpoints.length, debugCounters.get("dictionary_endpoints_keys"));
         stopProfiler();
         IItemCollection events = verifyEvents("datadog.Endpoint");
         IAttribute<String> endpointAttribute = attr("endpoint", "endpoint", "endpoint",
@@ -64,8 +66,6 @@ public class EndpointTest extends AbstractProfilerTest {
         for (int i = 0; i < endpoints.length; i++) {
             assertTrue(recovered.get(i), i + " not tested");
         }
-        Map<String, Long> debugCounters = profiler.getDebugCounters();
-        assertEquals(endpoints.length, debugCounters.get("dictionary_endpoints_keys"));
         assertEquals(Arrays.stream(endpoints).mapToInt(ep -> ep.endpoint.length() + 1).sum(), debugCounters.get("dictionary_endpoints_keys_bytes"));
         assertBoundedBy(debugCounters.get("dictionary_endpoints_pages"), 300, "endpoint storage too many pages");
         assertBoundedBy(debugCounters.get("dictionary_endpoints_bytes"), 300 * DICTIONARY_PAGE_SIZE, "endpoint storage too many pages");
