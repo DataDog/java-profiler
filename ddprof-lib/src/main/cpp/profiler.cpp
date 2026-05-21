@@ -1671,7 +1671,17 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti, bool clear_first) {
   if (jvmti == nullptr) {
     return;
   }
-  // Phase 0: clear under exclusive lock BEFORE the JVMTI enumeration.
+  JNIEnv* jni = VM::jni();
+  jint class_count = 0;
+  jclass* classes = nullptr;
+  jvmtiError err = jvmti->GetLoadedClasses(&class_count, &classes);
+  if (err != JVMTI_ERROR_NONE) {
+    // Leave the map unchanged (may be stale); vtable-target frames will be
+    // resolved gradually as ClassPrepare events fire for affected classes.
+    Log::warn("preregisterLoadedClasses: GetLoadedClasses failed (%d) — class map left unchanged, vtable-target frames may miss until ClassPrepare fires", err);
+    return;
+  }
+  // Phase 0: clear the map after GetLoadedClasses succeeds, before Phase 1.
   // Signal handlers are blocked only for the duration of the clear itself;
   // during Phase 1 they can still acquire the shared lock and see an empty map.
   // The benefit: ClassPrepare callbacks that fire during Phase 1 insert via
@@ -1680,16 +1690,8 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti, bool clear_first) {
     ExclusiveLockGuard guard(&_class_map_lock);
     _class_map.clear();
   }
-  JNIEnv* jni = VM::jni();
-  jint class_count = 0;
-  jclass* classes = nullptr;
-  jvmtiError err = jvmti->GetLoadedClasses(&class_count, &classes);
-  if (err != JVMTI_ERROR_NONE) {
-    Log::warn("preregisterLoadedClasses: GetLoadedClasses failed (%d) — vtable-target frames will miss until ClassPrepare fires", err);
-    return;
-  }
   if (classes == nullptr) {
-    return;
+    return;  // Zero classes loaded (class_count == 0); nothing to enumerate.
   }
   // Phase 1 (no lock): enumerate signatures and copy normalized slices.
   // normalizeClassSignature returns a pointer INTO the JVMTI sig buffer, so
@@ -1727,8 +1729,9 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti, bool clear_first) {
   }
   // Phase 2 (exclusive lock): bulk-insert the collected names. Only the cheap
   // Dictionary pointer operations happen under the lock — no JVMTI calls.
-  // NOTE: no clear here; clear_first already ran before Phase 1, so any
-  // ClassPrepare insertions made during the Phase 1 window are preserved.
+  // NOTE: no clear here. When clear_first=true, Phase 0 already cleared the map
+  // before Phase 1, so concurrent ClassPrepare insertions from that window survive.
+  // When clear_first=false the map is additive and no ClassPrepare entries are lost.
   {
     ExclusiveLockGuard guard(&_class_map_lock);
     for (const std::string& s : sigs) {
