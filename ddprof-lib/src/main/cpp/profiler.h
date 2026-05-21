@@ -153,6 +153,19 @@ private:
     return _state.load(std::memory_order_relaxed);
   }
 
+  // Pre-populate _class_map with all currently-loaded 'L'-type (reference)
+  // and array ('[') class signatures so that signal-safe lookups in walkVM
+  // (vtable_target) can resolve them without ever needing to malloc. Only bare
+  // primitive type descriptors (I, B, C, etc.) are skipped. Caller must NOT hold
+  // _class_map_lock; this function acquires it internally across three phases:
+  //   Phase 0 (clear_first=true only): exclusive lock to clear the map.
+  //   Phase 1 (no lock): JVMTI snapshot + local enumeration; concurrent
+  //     ClassPrepare callbacks may insert via shared lock during this window.
+  //   Phase 2 (always): exclusive lock for the bulk-insert of Phase 1 names;
+  //     no re-clear here, so any Phase 1 ClassPrepare insertions survive.
+  // Runs on a JVM thread (never in a signal handler).
+  void preregisterLoadedClasses(jvmtiEnv* jvmti, bool clear_first = false);
+
 public:
   Profiler()
       : _state_lock(), _state(State::NEW), _class_unload_hook_trap(2),
@@ -223,18 +236,6 @@ public:
 
   const char* cstack() const;
   int lookupClass(const char *key, size_t length);
-  // Pre-populate _class_map with all currently-loaded 'L'-type (reference)
-  // and array ('[') class signatures so that signal-safe lookups in walkVM
-  // (vtable_target) can resolve them without ever needing to malloc. Only bare
-  // primitive type descriptors (I, B, C, etc.) are skipped. Caller must NOT hold
-  // _class_map_lock; this function acquires it internally across three phases:
-  //   Phase 0 (clear_first=true only): exclusive lock to clear the map.
-  //   Phase 1 (no lock): JVMTI snapshot + local enumeration; concurrent
-  //     ClassPrepare callbacks may insert via shared lock during this window.
-  //   Phase 2 (always): exclusive lock for the bulk-insert of Phase 1 names;
-  //     no re-clear here, so any Phase 1 ClassPrepare insertions survive.
-  // Runs on a JVM thread (never in a signal handler).
-  void preregisterLoadedClasses(jvmtiEnv* jvmti, bool clear_first = false);
   void processCallTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor) {
     if (!_omit_stacktraces) {
       _call_trace_storage.processTraces(processor);

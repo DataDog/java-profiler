@@ -1668,6 +1668,13 @@ int Profiler::lookupClass(const char *key, size_t length) {
 }
 
 void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti, bool clear_first) {
+#ifndef NDEBUG
+  bool can_take_shared = _class_map_lock.tryLockShared();
+  assert(can_take_shared && "Caller must not hold _class_map_lock exclusively");
+  if (can_take_shared) {
+    _class_map_lock.unlockShared();
+  }
+#endif
   if (jvmti == nullptr) {
     return;
   }
