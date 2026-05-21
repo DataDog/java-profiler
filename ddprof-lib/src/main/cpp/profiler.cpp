@@ -1519,10 +1519,10 @@ Error Profiler::dump(const char *path, const int length) {
     // traces referenced by surviving LivenessTracker objects
     unlockAll();
     if (_features.vtable_target && VMStructs::hasClassNames()) {
-      // clear_first=true: clear runs under the exclusive lock so signal
-      // handlers are blocked only for the duration of the clear itself.
-      // ClassPrepare callbacks that fire during the JVMTI enumeration (Phase 1)
-      // insert via shared lock and survive — Phase 2 does not clear.
+      // clear_first=true: clears the map before GetLoadedClasses to close the
+      // race where a ClassPrepare insertion (between the old-placement clear and
+      // the snapshot) would be wiped. ClassPrepare callbacks that fire after the
+      // clear insert via shared lock and survive — Phase 2 does not clear.
       preregisterLoadedClasses(VM::jvmti(), /*clear_first=*/true);
     } else {
       ExclusiveLockGuard guard(&_class_map_lock);
@@ -1681,24 +1681,31 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti, bool clear_first) {
   if (jvmti == nullptr) {
     return;
   }
+  // Phase 0: clear the map BEFORE taking the GetLoadedClasses snapshot.
+  // This closes the race: any ClassPrepare that fires after the clear
+  // inserts into the map via shared lock, and Phase 2 does not re-clear,
+  // so those insertions survive.
+  // Tradeoff: the window where signal handlers see an empty map is widened
+  // to GetLoadedClasses + Phase-1 duration; this is an accepted cost of
+  // eliminating the race.
+  if (clear_first) {
+    ExclusiveLockGuard guard(&_class_map_lock);
+    _class_map.clear();
+  }
   JNIEnv* jni = VM::jni();
   jint class_count = 0;
   jclass* classes = nullptr;
   jvmtiError err = jvmti->GetLoadedClasses(&class_count, &classes);
   if (err != JVMTI_ERROR_NONE) {
-    // Leave the map unchanged (may be stale); vtable-target frames will be
-    // resolved gradually as ClassPrepare events fire for affected classes.
-    Log::warn("preregisterLoadedClasses: GetLoadedClasses failed (%d) — class map left unchanged, vtable-target frames may miss until ClassPrepare fires", err);
+    // If clear_first=false the map retains stale entries; if clear_first=true
+    // it was already cleared above and is now empty. Either way, vtable-target
+    // frames will be resolved gradually as ClassPrepare events fire.
+    if (clear_first) {
+      Log::warn("preregisterLoadedClasses: GetLoadedClasses failed (%d) — class map was cleared and is now empty, vtable-target frames may miss until ClassPrepare fires", err);
+    } else {
+      Log::warn("preregisterLoadedClasses: GetLoadedClasses failed (%d) — class map left unchanged (may be stale), vtable-target frames may miss until ClassPrepare fires", err);
+    }
     return;
-  }
-  // Phase 0: clear the map after GetLoadedClasses succeeds, before Phase 1.
-  // Signal handlers are blocked only for the duration of the clear itself;
-  // during Phase 1 they can still acquire the shared lock and see an empty map.
-  // The benefit: ClassPrepare callbacks that fire during Phase 1 insert via
-  // shared lock and survive — Phase 2 does not clear.
-  if (clear_first) {
-    ExclusiveLockGuard guard(&_class_map_lock);
-    _class_map.clear();
   }
   if (classes == nullptr) {
     return;  // Zero classes loaded (class_count == 0); nothing to enumerate.
