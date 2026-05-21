@@ -164,6 +164,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   if ((phase & (JVMTI_PHASE_START | JVMTI_PHASE_LIVE)) != 0) {
     bool entry = false;
     bool readable = false;
+    const size_t probe_len = 256;
     if (VMMethod::check_jmethodID(method) &&
         jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
         // GetMethodDeclaringClass may return a jclass wrapping a stale/garbage oop when the class was
@@ -189,20 +190,14 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       // so a single bad pointer does not leak its siblings. Best-effort only:
       // a concurrent munmap between probe and use can still fault; the SIGSEGV
       // handler is the second line of defence.
-      const uintptr_t probe_len = 256;
-      bool class_name_ok = class_name != nullptr &&
-                           reinterpret_cast<uintptr_t>(class_name) <= UINTPTR_MAX - (probe_len - 1) &&
-                           SafeAccess::isReadableRange(class_name, probe_len);
-      bool method_name_ok = method_name != nullptr &&
-                            reinterpret_cast<uintptr_t>(method_name) <= UINTPTR_MAX - (probe_len - 1) &&
-                            SafeAccess::isReadableRange(method_name, probe_len);
-      bool method_sig_ok = method_sig != nullptr &&
-                           reinterpret_cast<uintptr_t>(method_sig) <= UINTPTR_MAX - (probe_len - 1) &&
-                           SafeAccess::isReadableRange(method_sig, probe_len);
-      if (!class_name_ok) class_name = nullptr;
-      if (!method_name_ok) method_name = nullptr;
-      if (!method_sig_ok) method_sig = nullptr;
-      readable = class_name_ok && method_name_ok && method_sig_ok;
+      auto probe = [&](const char*& ptr) -> bool {
+        if (ptr == nullptr || !SafeAccess::isReadableRange(ptr, probe_len)) {
+          ptr = nullptr;
+          return false;
+        }
+        return true;
+      };
+      readable = probe(class_name) & probe(method_name) & probe(method_sig);
     }
     if (readable) {
 
@@ -301,13 +296,13 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         } else {
           // don't recognise the suffix, so don't normalise
           class_name_id =
-              _classes->lookup(class_name + 1, strlen(class_name) - 2);
+              _classes->lookup(class_name + 1, strnlen(class_name, 65536) - 2);
         }
         method_name_id = _symbols.lookup(method_name);
         method_sig_id = _symbols.lookup(method_sig);
       } else {
         class_name_id =
-            _classes->lookup(class_name + 1, strlen(class_name) - 2);
+            _classes->lookup(class_name + 1, strnlen(class_name, 65536) - 2);
         method_name_id = _symbols.lookup(method_name);
         method_sig_id = _symbols.lookup(method_sig);
       }
