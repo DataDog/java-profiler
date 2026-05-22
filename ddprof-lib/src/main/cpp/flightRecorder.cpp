@@ -1395,6 +1395,10 @@ void Recording::writeMethods(Buffer *buf, Lookup *lookup) {
 
 void Recording::writeClasses(Buffer *buf, Lookup *lookup) {
   std::map<u32, const char *> classes;
+  // standby() returns the dump buffer — the stable snapshot captured by
+  // rotate() for this recording cycle.  No other thread writes to this
+  // buffer after rotate() completes: rotate() drained all in-flight
+  // cross-thread writers via waitForRefCountToClear() before returning.
   lookup->_classes->standby()->collect(classes);
 
   buf->putVar64(T_CLASS);

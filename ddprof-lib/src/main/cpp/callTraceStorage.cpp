@@ -42,15 +42,15 @@ CallTraceStorage::CallTraceStorage() : _active_storage(nullptr), _standby_storag
     _preserve_set_buffer.rehash(static_cast<size_t>(1024 / 0.75f));
 
     // Initialize triple-buffered storage
-    auto active_ptr = std::make_unique<CallTraceHashTable>();
-    active_ptr->setInstanceId(getNextInstanceId());
-    active_ptr->setParentStorage(this);
-    __atomic_store_n(&_active_storage, active_ptr.release(), __ATOMIC_RELEASE);
+    auto active_table = std::make_unique<CallTraceHashTable>();
+    active_table->setInstanceId(getNextInstanceId());
+    active_table->setParentStorage(this);
+    __atomic_store_n(&_active_storage, active_table.release(), __ATOMIC_RELEASE);
 
-    auto standby_ptr = std::make_unique<CallTraceHashTable>();
-    standby_ptr->setParentStorage(this);
-    standby_ptr->setInstanceId(getNextInstanceId());
-    __atomic_store_n(&_standby_storage, standby_ptr.release(), __ATOMIC_RELEASE);
+    auto standby_table = std::make_unique<CallTraceHashTable>();
+    standby_table->setParentStorage(this);
+    standby_table->setInstanceId(getNextInstanceId());
+    __atomic_store_n(&_standby_storage, standby_table.release(), __ATOMIC_RELEASE);
     
     auto scratch_table = std::make_unique<CallTraceHashTable>();
     scratch_table->setParentStorage(this);

@@ -1141,10 +1141,11 @@ Error Profiler::start(Arguments &args, bool reset) {
     _total_samples = 0;
     memset(_failures, 0, sizeof(_failures));
 
-    // Reset dictionaries. lockAll() gates signal-handler event writes; the
-    // pre-drain here reduces the work inside each clearAll(). clearAll() itself
-    // sets _accepting=false and drains again to close the window between this
-    // drain and the first clear call, then re-enables lookups after the reset.
+    // Reset dictionaries. lockAll() blocks calltrace recording paths (signal
+    // handlers and JNI calls use tryLock() before writing). Dictionary access
+    // is not gated by lockAll(); clearAll() handles that via _accepting=false
+    // and RefCountGuard drain. The explicit waitForAllRefCountsToClear() below
+    // pre-drains in-flight guards, reducing each clearAll() drain time.
     lockAll();
     RefCountGuard::waitForAllRefCountsToClear();
     _class_map.clearAll();
@@ -1608,6 +1609,8 @@ void Profiler::shutdown(Arguments &args) {
 }
 
 int Profiler::lookupClass(const char *key, size_t length) {
+  // StringDictionary::lookup() is internally thread-safe via _accepting +
+  // RefCountGuard; no external lock required (unlike the old Dictionary).
   u32 id = _class_map.lookup(key, length);
   return id != 0 ? static_cast<int>(id) : -1;
 }

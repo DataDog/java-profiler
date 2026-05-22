@@ -203,6 +203,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
   JniString endpoint_str(env, endpoint);
   u32 endpointLabel = Profiler::instance()->stringLabelMap()->bounded_lookup(
       endpoint_str.c_str(), endpoint_str.length(), sizeLimit);
+  // StringDictionary reserves 0 as "no entry"; valid IDs start at 1.
   bool acceptValue = endpointLabel != 0;
   if (acceptValue) {
     u32 operationLabel = 0;
