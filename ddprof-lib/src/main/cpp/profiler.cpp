@@ -1669,11 +1669,13 @@ int Profiler::lookupClass(const char *key, size_t length) {
 
 void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti, bool clear_first) {
 #ifndef NDEBUG
-  // SpinLock has no owner-tracking API. We assert the public precondition
-  // ("caller must not hold _class_map_lock exclusively") by checking that a
-  // shared acquisition succeeds at function entry.
+  // SpinLock has no owner-tracking API, so this check is partial.
+  // tryLockShared() succeeding proves no thread currently holds the lock
+  // exclusively, but it cannot detect a caller that already holds a shared
+  // lock — such a caller would self-deadlock when Phase 0 or Phase 2 tries
+  // to acquire an exclusive lock.
   bool can_take_shared = _class_map_lock.tryLockShared();
-  assert(can_take_shared && "Caller must not hold _class_map_lock exclusively");
+  assert(can_take_shared && "_class_map_lock must not be exclusively held on entry (shared-holder self-deadlock undetectable)");
   if (can_take_shared) {
     _class_map_lock.unlockShared();
   }
