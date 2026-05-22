@@ -40,6 +40,7 @@ class BaseWallClock : public Engine {
     }
 
     bool isEnabled() const;
+    static bool inSyscall(void* ucontext);
 
     template <typename ThreadType, typename CollectThreadsFunc, typename SampleThreadsFunc, typename CleanThreadFunc>
     void timerLoopCommon(CollectThreadsFunc collectThreads, SampleThreadsFunc sampleThreads, CleanThreadFunc cleanThreads, int reservoirSize, u64 interval) {
@@ -142,8 +143,6 @@ class WallClockASGCT : public BaseWallClock {
   private:
     bool _collapsing;
 
-    static bool inSyscall(void* ucontext);
-
     static void sharedSignalHandler(int signo, siginfo_t* siginfo, void* ucontext);
     void signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64 last_sample);
 
@@ -163,8 +162,6 @@ class WallClockASGCT : public BaseWallClock {
 // VM::canRequestStackTrace().
 class WallClockJvmti : public BaseWallClock {
   private:
-    static bool inSyscall(void* ucontext);
-
     static void sharedSignalHandler(int signo, siginfo_t* siginfo, void* ucontext);
     void signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64 last_sample);
 

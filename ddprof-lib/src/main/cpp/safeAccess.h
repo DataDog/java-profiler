@@ -83,16 +83,21 @@ public:
 
   static inline bool isReadableRange(const void* start, size_t size) {
     assert(size > 0);
+    // Reject addresses where start + size - 1 would wrap around UINTPTR_MAX,
+    // which would produce a bogus end_page below start_page.
+    if (reinterpret_cast<uintptr_t>(start) > UINTPTR_MAX - (size - 1)) {
+      return false;
+    }
     void* start_page = (void*)align_down((uintptr_t)start, OS::page_size);
     void* end_page = (void*)align_down((uintptr_t)start + size - 1, OS::page_size);
-    // Memory readability is determined at the page level, so we check each page in the range for readability. 
-    // This is more efficient than checking each byte.
-    for (void* page = start_page; page <= end_page; page = (void*)((uintptr_t)page + OS::page_size)) {
+    // Check readability page by page. The loop only increments when page != end_page,
+    // so (uintptr_t)page + OS::page_size never wraps even when end_page is near UINTPTR_MAX.
+    for (void* page = start_page; page != end_page; page = (void*)((uintptr_t)page + OS::page_size)) {
       if (!isReadable(page)) {
         return false;
       }
     }
-    return true;
+    return isReadable(end_page);
   }
 };
 
