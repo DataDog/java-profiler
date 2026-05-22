@@ -27,7 +27,7 @@
 
 std::atomic<bool> BaseWallClock::_enabled{false};
 
-bool WallClockASGCT::inSyscall(void *ucontext) {
+bool BaseWallClock::inSyscall(void *ucontext) {
   StackFrame frame(ucontext);
   uintptr_t pc = frame.pc();
 
@@ -226,27 +226,6 @@ void WallClockASGCT::timerLoop() {
 // instead of invoking ASGCT. Used only when VM::canRequestStackTrace() is true
 // and the profiler has opted into jvmtistacks.
 
-bool WallClockJvmti::inSyscall(void *ucontext) {
-  StackFrame frame(ucontext);
-  uintptr_t pc = frame.pc();
-
-  if (StackFrame::isSyscall((instruction_t *)pc)) {
-    return true;
-  }
-
-  uintptr_t prev_pc = pc - SYSCALL_SIZE;
-  if ((pc & 0xfff) >= SYSCALL_SIZE ||
-      Libraries::instance()->findLibraryByAddress((instruction_t *)prev_pc) !=
-          NULL) {
-    if (StackFrame::isSyscall((instruction_t *)prev_pc) &&
-        frame.checkInterruptedSyscall()) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
 void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
                                          void *ucontext) {
   WallClockJvmti *engine =
@@ -327,6 +306,8 @@ void WallClockJvmti::timerLoop() {
           threads_already_exited++;
         } else if (errno == EPERM) {
           permission_denied++;
+        } else if (errno == EAGAIN) {
+          // Signal queue limit (RLIMIT_SIGPENDING) reached — count as missed.
         } else {
           Log::debug("unexpected error %s", strerror(errno));
         }
