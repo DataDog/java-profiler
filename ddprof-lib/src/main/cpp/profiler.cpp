@@ -685,24 +685,28 @@ void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
   CriticalSection cs;
   atomicIncRelaxed(_total_samples);
 
-  // Convert ASGCT_CallFrame to ASGCT_CallFrame
-  // External samplers (like ObjectSampler) provide standard frames only
   u32 lock_index = getLockIndex(tid);
-  ASGCT_CallFrame *extended_frames = _calltrace_buffer[lock_index]->_asgct_frames;
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    atomicIncRelaxed(_failures[-ticks_skipped]);
+    return;
+  }
+
+  CallTraceBuffer *buf = _calltrace_buffer[lock_index];
+  if (buf == nullptr) {
+    atomicIncRelaxed(_failures[-ticks_skipped]);
+    _locks[lock_index].unlock();
+    return;
+  }
+  // External samplers (like ObjectSampler) provide standard frames only
+  ASGCT_CallFrame *extended_frames = buf->_asgct_frames;
   for (int i = 0; i < num_frames; i++) {
     extended_frames[i] = frames[i];
   }
 
   u64 call_trace_id =
       _call_trace_storage.put(num_frames, extended_frames, truncated, weight);
-  if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
-    // Too many concurrent signals already
-    atomicIncRelaxed(_failures[-ticks_skipped]);
-    return;
-  }
-
   _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
 
   _locks[lock_index].unlock();
@@ -1184,10 +1188,9 @@ Error Profiler::start(Arguments &args, bool reset) {
         return Error("Not enough memory to allocate stack trace buffers (try "
                      "smaller jstackdepth)");
       }
-      // Swap under the per-shard lock: tryLock-based readers (e.g. recordJVMTISample)
-      // cannot observe a freed pointer mid-replacement. Lock-free readers
-      // (e.g. recordExternalSample) are safe because this swap completes before
-      // enableEngines() is called — no sampling engine is active yet.
+      // Swap under the per-shard lock: all readers (recordJVMTISample,
+      // recordExternalSample) acquire this lock via tryLock before reading
+      // _calltrace_buffer, so no reader can observe a freed pointer mid-replacement.
       _locks[i].lock();
       CallTraceBuffer *prev = _calltrace_buffer[i];
       _calltrace_buffer[i] = fresh;
