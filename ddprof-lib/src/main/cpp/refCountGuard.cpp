@@ -183,12 +183,14 @@ void RefCountGuard::waitForAllRefCountsToClear() {
 
     const int MAX_WAIT_ITERATIONS = 5000;
     struct timespec sleep_time = {0, 100000};
+    int last_nonzero_slot = -1;  // for timeout diagnostic below
     for (int wait_count = 0; wait_count < MAX_WAIT_ITERATIONS; ++wait_count) {
         bool any = false;
         for (int i = 0; i < MAX_THREADS; ++i) {
-            if (__atomic_load_n(&refcount_slots[i].count, __ATOMIC_ACQUIRE) > 0) { any = true; break; }
+            if (__atomic_load_n(&refcount_slots[i].count, __ATOMIC_ACQUIRE) > 0) { any = true; last_nonzero_slot = i; break; }
         }
         if (!any) return;
         nanosleep(&sleep_time, nullptr);
     }
+    Log::warn("waitForAllRefCountsToClear: timeout after ~500ms; slot %d last seen non-zero, proceeding", last_nonzero_slot);
 }

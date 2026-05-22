@@ -326,6 +326,23 @@ public:
     }
 
     // Two-phase ID-preserving rotate.
+    // Invariant: all insert paths are blocked for the duration of rotate():
+    //   - Signal-path lookup() callers are blocked by SignalBlocker at the
+    //     rotateDictsAndRun call site, which masks SIGPROF and SIGVTALRM
+    //     (the profiling signals) on the calling thread before rotate() is
+    //     invoked.
+    //   - JNI recording methods (e.g. recordTraceRoot) call
+    //     _locks[lock_index].tryLock() at the Profiler level before reaching
+    //     bounded_lookup(); lockAll() holds all _locks[], so those tryLock()
+    //     calls fail and the recording method returns without ever calling
+    //     bounded_lookup().
+    //   - lookupDuringDump() is only called on the dump thread, which is the
+    //     same thread executing rotateDictsAndRun() — no concurrency possible.
+    // clearTarget() returns the scratch buffer that becomes the new active
+    //   after rotate(). It is always empty on entry because clearStandby()
+    //   is called after each cycle in rotateDictsAndRun() and JFR operations
+    //   are serialized by _state_lock, so cycle N+1 always starts after
+    //   clearStandby() of cycle N completes.
     void rotate() {
         StringDictionaryBuffer* old_active = _rot.active();
         // Phase 1: pre-populate clearTarget from active (before rotate).
@@ -333,7 +350,8 @@ public:
         _rot.rotate();
         // Drain all in-flight accessors on old_active (now the dump buffer).
         RefCountGuard::waitForRefCountToClear(old_active);
-        // Phase 2: copy old_active → new active to catch late inserts.
+        // Phase 2: all insert paths are blocked, so old_active cannot have
+        // gained new entries between phase 1 and phase 2.
         _rot.active()->copyFrom(*old_active);
     }
 
