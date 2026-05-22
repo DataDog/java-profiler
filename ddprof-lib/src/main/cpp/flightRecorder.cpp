@@ -190,7 +190,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       // so a single bad pointer does not leak its siblings. Best-effort only:
       // a concurrent munmap between probe and use can still fault; the SIGSEGV
       // handler is the second line of defence.
-      auto probe = [&](const char*& ptr) -> bool {
+      auto probe = [&](char*& ptr) -> bool {
         if (ptr == nullptr || !SafeAccess::isReadableRange(ptr, probe_len)) {
           ptr = nullptr;
           return false;
