@@ -10,40 +10,38 @@ import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
+import java.util.concurrent.ThreadLocalRandom;
+
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class VtableTargetPreregistrationTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "cpu=10ms";
+        return "cpu=1ms";
     }
 
     abstract static class Shape {
         abstract int area();
     }
 
+    // Three implementations force megamorphic vtable dispatch (JIT won't inline).
+    // ThreadLocalRandom bodies ensure each variant is non-trivial and CPU-bound.
     static class Circle extends Shape {
-        private final int r;
-        Circle(int r) { this.r = r; }
-        @Override public int area() { return r * r; }
+        @Override public int area() { return ThreadLocalRandom.current().nextInt() | 1; }
     }
 
     static class Square extends Shape {
-        private final int s;
-        Square(int s) { this.s = s; }
-        @Override public int area() { return s * s; }
+        @Override public int area() { return ThreadLocalRandom.current().nextInt() | 2; }
     }
 
     static class Triangle extends Shape {
-        private final int b;
-        Triangle(int b) { this.b = b; }
-        @Override public int area() { return b * b / 2; }
+        @Override public int area() { return ThreadLocalRandom.current().nextInt() | 4; }
     }
 
     private int profiledWork(Shape... shapes) {
         int result = 0;
-        for (int i = 0; i < 1_000_000; i++) {
+        for (int i = 0; i < 10_000_000; i++) {
             for (Shape shape : shapes) {
                 result += shape.area();
             }
@@ -51,19 +49,14 @@ public class VtableTargetPreregistrationTest extends AbstractProfilerTest {
         return result;
     }
 
-    @RetryingTest(3)
-    public void testClassMapPopulatedOnCpuStart() {
-        stopProfiler();
-        assertTrue(getRecordedCounterValue("dictionary_classes_keys") > 0,
-                "dictionary_classes_keys must be > 0: preregisterLoadedClasses() was not called on profiler start");
-    }
-
-    // jvmtiError is the expected synthetic receiver-class frame that vtable_target inserts;
-    // contrast with SmokeCpuTest which asserts its absence for non-vtable workloads.
+    // jvmtiError is the expected synthetic receiver-class frame that vtable_target inserts when
+    // the class map is populated (PR #527 fix). The class map is populated by
+    // preregisterLoadedClasses() at CPU-only profiler start; if that call is absent (the bug),
+    // bounded_lookup returns INT_MAX and no synthetic frame is inserted — jvmtiError never appears.
     @RetryingTest(5)
     public void testVtableReceiverFrameInCpuSamples() {
         Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
-        int result = profiledWork(new Circle(3), new Square(4), new Triangle(5));
+        int result = profiledWork(new Circle(), new Square(), new Triangle());
         System.err.println(result);
         stopProfiler();
 
@@ -82,6 +75,7 @@ public class VtableTargetPreregistrationTest extends AbstractProfilerTest {
             if (foundVtableWithReceiver) break;
         }
         assertTrue(foundVtableWithReceiver,
-                "No CPU sample contained both a vtable stub frame and a jvmtiError receiver frame");
+                "No CPU sample contained both a vtable stub frame and a jvmtiError receiver frame; " +
+                "preregisterLoadedClasses() may not have run at CPU-only profiler start (PR #527 regression)");
     }
 }
