@@ -200,6 +200,11 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       readable = probe(class_name) & probe(method_name) & probe(method_sig);
     }
     if (readable) {
+      const size_t class_name_len = strnlen(class_name, 65536);
+      const char* normalized_class_name =
+          class_name_len >= 2 ? class_name + 1 : "";
+      const size_t normalized_class_name_len =
+          class_name_len >= 2 ? class_name_len - 2 : 0;
 
       if (first_time) {
         jvmtiError line_table_error = jvmti->GetLineNumberTable(method, &line_number_table_size,
@@ -303,13 +308,13 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         } else {
           // don't recognise the suffix, so don't normalise
           class_name_id = _classes->lookupDuringDump(
-              class_name + 1, strnlen(class_name, 65536) - 2);
+              normalized_class_name, normalized_class_name_len);
         }
         method_name_id = _symbols.lookup(method_name);
         method_sig_id = _symbols.lookup(method_sig);
       } else {
-        class_name_id = _classes->lookupDuringDump(class_name + 1,
-                                                   strnlen(class_name, 65536) - 2);
+        class_name_id = _classes->lookupDuringDump(normalized_class_name,
+                                                   normalized_class_name_len);
         method_name_id = _symbols.lookup(method_name);
         method_sig_id = _symbols.lookup(method_sig);
       }
