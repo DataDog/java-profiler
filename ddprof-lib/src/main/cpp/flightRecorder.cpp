@@ -1926,6 +1926,7 @@ void FlightRecorder::recordEventDelegated(int lock_index, int tid,
           // Delegation is only wired for CPU/wall samples in v1.
           break;
       }
+      rec->flushIfNeeded(buf);
       rec->addThread(lock_index, tid);
     }
   }

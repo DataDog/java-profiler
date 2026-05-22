@@ -50,6 +50,8 @@ gtest {
     "$javaHome/include/$platformInclude",
     project(":malloc-shim").file("src/main/public"),
   )
+
+  failFast.set(true)
 }
 
 // Java configuration - using sourceCompatibility (not --release 8)
