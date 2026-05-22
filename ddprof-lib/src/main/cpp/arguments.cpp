@@ -163,6 +163,7 @@ Error Arguments::parse(const char *args) {
       if (_cpu < 0) {
         msg = "cpu must be >= 0";
       }
+      _features.vtable_target = 1;
 
       CASE("wall")
       if (value == NULL) {
