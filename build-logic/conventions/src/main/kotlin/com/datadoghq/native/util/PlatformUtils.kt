@@ -136,6 +136,8 @@ object PlatformUtils {
             val archSuffix = when (currentArchitecture) {
                 Architecture.X64 -> "x86_64"
                 Architecture.ARM64 -> "aarch64"
+                Architecture.X86 -> "i386"
+                Architecture.ARM -> "arm"
             }
             val clangAsan = locateLibrary("libclang_rt.asan-$archSuffix", compiler)
             if (clangAsan != null) return clangAsan
