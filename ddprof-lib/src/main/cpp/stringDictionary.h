@@ -37,30 +37,122 @@ struct SBTable {
     SBRow rows[ROWS];
 };
 
+// ─── StringArena ──────────────────────────────────────────────────────────
+//
+// Auto-growing bump allocator for key strings inside StringDictionaryBuffer.
+//
+// Memory is organised as a linked list of 512 KB chunks.  alloc() is a single
+// atomic fetch_add on the current chunk — fully contention-free as long as
+// the chunk is not full.  When a chunk fills up, grow() serialises creation of
+// the next chunk via a CAS spinlock; contention here is extremely rare.
+//
+// Threads that lose a CAS race in insert_with_id leave their arena allocation
+// as waste; space is recovered on the next reset().
+//
+// reset() frees all chunks after the first and resets the first chunk's
+// position counter.  The first chunk is kept to avoid a malloc on the next
+// use.  reset() must only be called when no concurrent alloc() calls are in
+// flight.
+class StringArena {
+    static constexpr size_t CHUNK_SIZE = 512 * 1024;
+
+    // Plain struct allocated via calloc (zero-initialised); pos accessed via
+    // __atomic builtins, consistent with the rest of the file.
+    struct Chunk {
+        Chunk* next;        // singly-linked for traversal in reset() / ~StringArena()
+        size_t pos;         // bump pointer within data[]
+        char   data[CHUNK_SIZE];
+    };
+
+    Chunk*              _first;            // head of chain; kept across resets
+    std::atomic<Chunk*> _active;           // current allocation target
+    std::atomic<bool>   _growing{false};   // serialises new-chunk creation
+
+    static Chunk* make_chunk() {
+        return static_cast<Chunk*>(calloc(1, sizeof(Chunk)));
+    }
+
+    void grow(Chunk* full) {
+        // One thread at a time creates the next chunk.  Others spin briefly
+        // then re-check _active; if it has already advanced they return.
+        bool expected = false;
+        while (!_growing.compare_exchange_weak(expected, true,
+               std::memory_order_acquire, std::memory_order_relaxed)) {
+            if (_active.load(std::memory_order_relaxed) != full) return;
+            expected = false;
+            spinPause();
+        }
+        if (_active.load(std::memory_order_relaxed) != full) {
+            _growing.store(false, std::memory_order_release);
+            return;
+        }
+        Chunk* fresh = make_chunk();
+        // On OOM store nullptr so alloc() returns nullptr instead of spinning.
+        _active.store(fresh, std::memory_order_release);
+        if (fresh) full->next = fresh;   // link into chain for reset() traversal
+        _growing.store(false, std::memory_order_release);
+    }
+
+public:
+    StringArena() : _first(make_chunk()), _active(_first) {}
+
+    ~StringArena() {
+        Chunk* c = _first;
+        while (c) { Chunk* n = c->next; free(c); c = n; }
+    }
+
+    StringArena(const StringArena&) = delete;
+    StringArena& operator=(const StringArena&) = delete;
+
+    char* alloc(size_t n) {
+        n = (n + alignof(void*) - 1) & ~(alignof(void*) - 1);
+        for (;;) {
+            Chunk* c = _active.load(std::memory_order_acquire);
+            if (!c) return nullptr;  // OOM
+            size_t off = __atomic_fetch_add(&c->pos, n, __ATOMIC_RELAXED);
+            if (off + n <= CHUNK_SIZE) return c->data + off;
+            grow(c);
+        }
+    }
+
+    // Free all chunks after the first; reset the first.
+    // O(extra_chunks).  Also clears the OOM state: if alloc() had returned
+    // nullptr after a failed make_chunk(), the next alloc() after reset()
+    // will succeed again (up to one chunk's worth).
+    void reset() {
+        Chunk* c = _first ? _first->next : nullptr;
+        while (c) { Chunk* n = c->next; free(c); c = n; }
+        if (_first) {
+            _first->next = nullptr;
+            __atomic_store_n(&_first->pos, (size_t)0, __ATOMIC_RELAXED);
+        }
+        _active.store(_first, std::memory_order_release);
+    }
+};
+
 // ─── StringDictionaryBuffer ────────────────────────────────────────────────
 //
 // Open-addressing concurrent hash table mapping string keys to u32 IDs.
 //
+// Key strings are owned by the per-buffer StringArena.  Overflow SBTable
+// nodes are heap-allocated (calloc) and freed by freeOverflowNodes() on
+// clear() and destruction.  This makes clear() O(number-of-overflow-nodes)
+// rather than O(number-of-entries), and eliminates per-key malloc/free.
+//
 // Concurrency model:
-//   - Inserts (insert_with_id, copyFrom): use __sync_bool_compare_and_swap on
-//     keys[c] (full fence on GCC) to claim a slot.  id and keylen are stored
-//     AFTER the CAS wins (release); a reader that observes keys[c] != null via
-//     an acquire load must also check ids[c] != 0 before using it.  On x86 the
-//     CAS already implies a full memory barrier; on ARM the acquire/release
-//     pairing provides the required ordering.  id remains 0 until published.
-//   - Reads (lookup): acquire-load keys[c]; if non-null and key matches, return
-//     the id — only if ids[c] != 0 (not yet published = miss).  Null means
-//     "slot unclaimed" — treated as miss.  There is a narrow window where a
-//     inserter has started but not yet committed the CAS; this is safe (returns
-//     miss = 0), identical to the existing Dictionary behaviour.
+//   - Inserts (insert_with_id, copyFrom): CAS on keys[c] to claim a slot.
+//     id stored AFTER winning CAS (release); readers check ids[c] != 0.
+//     Losers of the CAS leave their arena allocation as recoverable waste.
+//   - Reads (lookup): acquire-load keys[c]; miss on null or unpublished id.
 //   - clear(): called only when no concurrent readers/writers are active.
 //
-// Not signal-safe for insert_with_id / copyFrom (call malloc).
+// Not signal-safe for insert_with_id / copyFrom (arena alloc + calloc).
 // Signal-safe for lookup (read-only, no allocation).
 class StringDictionaryBuffer {
 private:
     SBTable*           _table;
     std::atomic<int>   _size{0};
+    StringArena        _arena;
 
     static unsigned int hash(const char* key, size_t length) {
         unsigned int h = 2166136261U;
@@ -72,21 +164,9 @@ private:
         return strncmp(candidate, key, length) == 0 && candidate[length] == '\0';
     }
 
-    // Iterative DFS walk of the overflow tree.  Each frame tracks one table and
-    // the next row to visit.  Because we descend into row->next immediately and
-    // only pop the frame after every row has been processed, the stack holds at
-    // most one frame per overflow-chain level.  The hash rotation has period
-    // 32 / gcd(32, ROW_BITS) = 32: after 32 levels the row index cycles back to
-    // the original.  In practice, reaching level N requires N*CELLS keys with
-    // identical 32-bit FNV hashes (gcd(7,32)=1 means any two keys that share
-    // the same row index across all 32 rotation steps must hash identically).
-    // A chain longer than 33 levels therefore requires 99+ exact FNV collisions
-    // — statistically negligible for real-world string inputs.  stk[34] covers
-    // this practical bound; the top < 34 guard is safety-overflow protection.
-    // If it ever fires, entries beyond level 33 are silently dropped rather than
-    // crashing — acceptable given how the bound is reached only by adversarial
-    // or degenerate inputs.
-    static void freeTable(SBTable* table) {
+    // Free only overflow SBTable chain nodes (not key strings — arena-owned).
+    // Same DFS traversal as the old freeTable but without the per-key free.
+    static void freeOverflowNodes(SBTable* table) {
         struct Frame { SBTable* t; int row; };
         Frame stk[34];
         int top = 0;
@@ -99,9 +179,6 @@ private:
                 continue;
             }
             SBRow* row = &f.t->rows[f.row++];
-            for (int j = 0; j < CELLS; j++) {
-                if (row->keys[j]) free(row->keys[j]);
-            }
             if (row->next && top < 34) stk[top++] = {row->next, 0};
         }
     }
@@ -130,14 +207,21 @@ private:
 
 public:
     StringDictionaryBuffer() {
-        _table = (SBTable*)calloc(1, sizeof(SBTable));
+        _table = static_cast<SBTable*>(calloc(1, sizeof(SBTable)));
     }
 
     ~StringDictionaryBuffer() {
-        if (_table != nullptr) { freeTable(_table); }
-        free(_table);
-        _table = nullptr;
+        if (_table != nullptr) {
+            freeOverflowNodes(_table);
+            free(_table);
+            _table = nullptr;
+        }
     }
+
+    StringDictionaryBuffer(const StringDictionaryBuffer&)            = delete;
+    StringDictionaryBuffer& operator=(const StringDictionaryBuffer&) = delete;
+    StringDictionaryBuffer(StringDictionaryBuffer&&)                 = delete;
+    StringDictionaryBuffer& operator=(StringDictionaryBuffer&&)      = delete;
 
     // Signal-safe read-only probe. Returns 0 on miss.
     u32 lookup(const char* key, size_t len) const {
@@ -159,9 +243,8 @@ public:
         return 0;
     }
 
-    // Insert with the given id. Returns the id stored for this key
-    // (either the given id on a new slot, or the existing id on a duplicate).
-    // NOT signal-safe (calls malloc).
+    // Insert with the given id. Returns the id stored for this key.
+    // NOT signal-safe (arena alloc; calloc for overflow nodes).
     u32 insert_with_id(const char* key, size_t len, u32 id) {
         SBTable* table = _table;
         unsigned int h = hash(key, len);
@@ -170,7 +253,7 @@ public:
             for (int c = 0; c < CELLS; c++) {
                 char* existing = __atomic_load_n(&row->keys[c], __ATOMIC_ACQUIRE);
                 if (!existing) {
-                    char* new_key = (char*)malloc(len + 1);
+                    char* new_key = _arena.alloc(len + 1);
                     if (!new_key) return 0;
                     memcpy(new_key, key, len);
                     new_key[len] = '\0';
@@ -179,7 +262,7 @@ public:
                         _size.fetch_add(1, std::memory_order_relaxed);
                         return id;
                     }
-                    free(new_key);
+                    // CAS lost — new_key is arena waste, recovered on clear().
                     existing = __atomic_load_n(&row->keys[c], __ATOMIC_ACQUIRE);
                 }
                 if (existing && keyEquals(existing, key, len)) {
@@ -189,7 +272,7 @@ public:
                 }
             }
             if (!row->next) {
-                SBTable* nt = (SBTable*)calloc(1, sizeof(SBTable));
+                SBTable* nt = static_cast<SBTable*>(calloc(1, sizeof(SBTable)));
                 if (nt == nullptr) return 0;
                 if (!__sync_bool_compare_and_swap(&row->next, nullptr, nt)) free(nt);
             }
@@ -213,11 +296,13 @@ public:
         collectTable(_table, out);
     }
 
-    // Free all keys and reset to empty. Call only with no concurrent accessors.
+    // Free overflow nodes, zero the root table, reset the arena.
+    // Call only with no concurrent accessors.
     void clear() {
         if (_table == nullptr) { _size.store(0, std::memory_order_relaxed); return; }
-        freeTable(_table);
+        freeOverflowNodes(_table);
         memset(_table, 0, sizeof(SBTable));
+        _arena.reset();
         _size.store(0, std::memory_order_relaxed);
     }
 
@@ -238,14 +323,20 @@ public:
 // concurrent inserts in the rotation window:
 //   phase 1: copy active → clearTarget (before rotate)
 //   phase 2: copy old_active → new_active (after drain, catch late inserts)
-// lookupDuringDump(key): probes dump then active; inserts into both if new,
-//   using the existing global ID (or a new fetch-add if truly new everywhere).
+// lookupDuringDump(key): probes dump then active; inserts into both if new.
 //
-// Signal safety:
+// Concurrency:
 //   bounded_lookup acquires RefCountGuard on active before reading.
 //   lookup also acquires RefCountGuard before inserting (not signal-safe due to
-//   malloc, but the guard protects the buffer pointer lifetime).
+//   arena alloc, but the guard protects the buffer pointer lifetime).
 //   lookupDuringDump is NOT signal-safe; call from dump thread only.
+//
+//   _accepting gates new RefCountGuard creation during clearAll().  The
+//   key-string arena makes the TOCTOU window between the _accepting acquire-
+//   load and the RefCountGuard count++ benign: even if clearAll()'s drain
+//   misses a racing caller, that caller reads from the zeroed root table and
+//   returns 0.  The seq_cst recheck previously needed to close this window
+//   is therefore unnecessary and has been removed from the hot path.
 class StringDictionary {
     std::atomic<u32>  _next_id{1};      // starts at 1; id=0 reserved as "no entry"
     std::atomic<bool> _accepting{true}; // false while clearAll() is resetting buffers
@@ -268,8 +359,6 @@ public:
 
     // Insert into active buffer; returns globally stable id.  NOT signal-safe.
     u32 lookup(const char* key, size_t len) {
-        // Bail immediately if clearAll() is resetting the buffers; creating a
-        // RefCountGuard here could race with freeTable() inside clear().
         if (!_accepting.load(std::memory_order_acquire)) return 0;
         while (true) {
             StringDictionaryBuffer* active = _rot.active();
@@ -278,8 +367,6 @@ public:
             if (_rot.active() != active) continue;
             u32 id = active->lookup(key, len);
             if (id != 0) return id;
-            // nextId() may be consumed without assignment if a concurrent insert wins
-            // the CAS for the same key; IDs are unique but not guaranteed to be dense.
             u32 new_id = nextId();
             u32 result = active->insert_with_id(key, len, new_id);
             if (result == new_id) countInsert(len);
@@ -290,8 +377,6 @@ public:
     // Insert into active buffer if size < size_limit; returns 0 when at cap.
     // NOT signal-safe.
     u32 bounded_lookup(const char* key, size_t len, int size_limit) {
-        // Bail immediately if clearAll() is resetting the buffers; creating a
-        // RefCountGuard here could race with freeTable() inside clear().
         if (!_accepting.load(std::memory_order_acquire)) return 0;
         while (true) {
             StringDictionaryBuffer* active = _rot.active();
@@ -326,23 +411,22 @@ public:
     }
 
     // Two-phase ID-preserving rotate.
-    // Invariant: all insert paths are blocked for the duration of rotate():
-    //   - Signal-path lookup() callers are blocked by SignalBlocker at the
-    //     rotateDictsAndRun call site, which masks SIGPROF and SIGVTALRM
-    //     (the profiling signals) on the calling thread before rotate() is
-    //     invoked.
-    //   - JNI recording methods (e.g. recordTraceRoot) call
-    //     _locks[lock_index].tryLock() at the Profiler level before reaching
-    //     bounded_lookup(); lockAll() holds all _locks[], so those tryLock()
-    //     calls fail and the recording method returns without ever calling
-    //     bounded_lookup().
-    //   - lookupDuringDump() is only called on the dump thread, which is the
-    //     same thread executing rotateDictsAndRun() — no concurrency possible.
-    // clearTarget() returns the scratch buffer that becomes the new active
-    //   after rotate(). It is always empty on entry because clearStandby()
-    //   is called after each cycle in rotateDictsAndRun() and JFR operations
-    //   are serialized by _state_lock, so cycle N+1 always starts after
-    //   clearStandby() of cycle N completes.
+    // StringDictionary makes no assumption about which callers are blocked.
+    // In the Profiler context, three caller-side invariants reduce the
+    // concurrency that phase 2 must handle:
+    //   - Signal paths: the caller (rotateDictsAndRun) holds a SignalBlocker
+    //     that masks SIGPROF/SIGVTALRM on the calling thread during rotate(),
+    //     so no profiler signal fires on this thread between Phase 1 and 2.
+    //   - JNI callers (e.g. recordTrace0): they bypass lockAll() and CAN
+    //     still insert into old_active after Phase 1.  Phase 2's
+    //     waitForRefCountToClear(old_active) drains those in-flight inserts
+    //     before copying — that is the reason phase 2 exists.
+    //   - lookupDuringDump(): same thread as the rotate() caller — no
+    //     concurrency.
+    // clearTarget() is the buffer that becomes the new active after rotate().
+    // The caller is responsible for ensuring it is empty on entry (Profiler
+    // achieves this by calling clearStandby() after every cycle and
+    // serialising JFR operations with _state_lock).
     void rotate() {
         StringDictionaryBuffer* old_active = _rot.active();
         // Phase 1: pre-populate clearTarget from active (before rotate).
@@ -350,8 +434,8 @@ public:
         _rot.rotate();
         // Drain all in-flight accessors on old_active (now the dump buffer).
         RefCountGuard::waitForRefCountToClear(old_active);
-        // Phase 2: all insert paths are blocked, so old_active cannot have
-        // gained new entries between phase 1 and phase 2.
+        // Phase 2: catch any entries inserted into old_active between Phase 1
+        // and the drain completing.
         _rot.active()->copyFrom(*old_active);
     }
 
@@ -395,16 +479,12 @@ public:
     }
 
     // Reset all three buffers and restart the ID counter.
-    // Sets _accepting=false so that bounded_lookup callers that bypass lockAll()
-    // (JNI paths) do not create new RefCountGuards after the caller's initial
-    // waitForAllRefCountsToClear() drains.  Drains again internally to catch any
-    // guard that started between the caller's drain and this flag flip, then
-    // clears, then re-enables lookups.
+    // _accepting=false gates new RefCountGuard creation; the subsequent drain
+    // ensures no concurrent accessor is mid-read when clear() zeroes the root
+    // table.  clear() is O(overflow_nodes + extra_arena_chunks); both are
+    // typically zero for small-to-medium dictionaries.
     void clearAll() {
         _accepting.store(false, std::memory_order_seq_cst);
-        // Drain guards that were already past the _accepting check when the flag
-        // was set.  After this returns, no new guards will be created (they all
-        // see _accepting=false) so the clear below is safe.
         RefCountGuard::waitForAllRefCountsToClear();
         _a.clear(); _b.clear(); _c.clear();
         _rot.reset();
