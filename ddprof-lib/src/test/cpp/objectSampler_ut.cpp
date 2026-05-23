@@ -90,7 +90,9 @@ protected:
 
   static jvmtiError JNICALL mock_Deallocate(jvmtiEnv * /*env*/,
                                             unsigned char * /*mem*/) {
-    ++active_fixture->deallocate_calls;
+    if (active_fixture != nullptr) {
+      ++active_fixture->deallocate_calls;
+    }
     return JVMTI_ERROR_NONE;
   }
 };
