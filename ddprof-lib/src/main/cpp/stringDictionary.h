@@ -153,6 +153,7 @@ private:
     SBTable*           _table;
     std::atomic<int>   _size{0};
     StringArena        _arena;
+    int                _counter_offset{0};  // 0 = no page/byte tracking
 
     static unsigned int hash(const char* key, size_t length) {
         unsigned int h = 2166136261U;
@@ -165,22 +166,24 @@ private:
     }
 
     // Free only overflow SBTable chain nodes (not key strings — arena-owned).
-    // Same DFS traversal as the old freeTable but without the per-key free.
-    static void freeOverflowNodes(SBTable* table) {
+    // Returns the number of overflow nodes freed (excludes the root table).
+    static int freeOverflowNodes(SBTable* table) {
         struct Frame { SBTable* t; int row; };
         Frame stk[34];
         int top = 0;
+        int freed = 0;
         stk[top++] = {table, 0};
         while (top > 0) {
             Frame& f = stk[top - 1];
             if (f.row >= ROWS) {
-                if (f.t != table) free(f.t);
+                if (f.t != table) { free(f.t); freed++; }
                 --top;
                 continue;
             }
             SBRow* row = &f.t->rows[f.row++];
             if (row->next && top < 34) stk[top++] = {row->next, 0};
         }
+        return freed;
     }
 
     static void collectTable(const SBTable* table,
@@ -222,6 +225,16 @@ public:
     StringDictionaryBuffer& operator=(const StringDictionaryBuffer&) = delete;
     StringDictionaryBuffer(StringDictionaryBuffer&&)                 = delete;
     StringDictionaryBuffer& operator=(StringDictionaryBuffer&&)      = delete;
+
+    // Enable DICTIONARY_PAGES / DICTIONARY_BYTES tracking for this buffer.
+    // Called by StringDictionary after construction; counts the root SBTable.
+    void initCounters(int offset) {
+        _counter_offset = offset;
+        if (_table != nullptr) {
+            Counters::increment(DICTIONARY_PAGES, 1, offset);
+            Counters::increment(DICTIONARY_BYTES, (long long)sizeof(SBTable), offset);
+        }
+    }
 
     // Signal-safe read-only probe. Returns 0 on miss.
     u32 lookup(const char* key, size_t len) const {
@@ -274,7 +287,12 @@ public:
             if (!row->next) {
                 SBTable* nt = static_cast<SBTable*>(calloc(1, sizeof(SBTable)));
                 if (nt == nullptr) return 0;
-                if (!__sync_bool_compare_and_swap(&row->next, nullptr, nt)) free(nt);
+                if (!__sync_bool_compare_and_swap(&row->next, nullptr, nt)) {
+                    free(nt);
+                } else if (_counter_offset != 0) {
+                    Counters::increment(DICTIONARY_PAGES, 1, _counter_offset);
+                    Counters::increment(DICTIONARY_BYTES, (long long)sizeof(SBTable), _counter_offset);
+                }
             }
             table = __atomic_load_n(&row->next, __ATOMIC_ACQUIRE);
             h = (h >> ROW_BITS) | (h << (32 - ROW_BITS));
@@ -300,10 +318,14 @@ public:
     // Call only with no concurrent accessors.
     void clear() {
         if (_table == nullptr) { _size.store(0, std::memory_order_relaxed); return; }
-        freeOverflowNodes(_table);
+        int freed = freeOverflowNodes(_table);
         memset(_table, 0, sizeof(SBTable));
         _arena.reset();
         _size.store(0, std::memory_order_relaxed);
+        if (_counter_offset != 0 && freed > 0) {
+            Counters::decrement(DICTIONARY_PAGES, freed, _counter_offset);
+            Counters::decrement(DICTIONARY_BYTES, (long long)(freed * sizeof(SBTable)), _counter_offset);
+        }
     }
 
     int size() const { return _size.load(std::memory_order_relaxed); }
@@ -355,7 +377,13 @@ class StringDictionary {
 
 public:
     explicit StringDictionary(int counter_offset = 0)
-        : _rot(&_a, &_b, &_c), _counter_offset(counter_offset) {}
+        : _rot(&_a, &_b, &_c), _counter_offset(counter_offset) {
+        if (counter_offset != 0) {
+            _a.initCounters(counter_offset);
+            _b.initCounters(counter_offset);
+            _c.initCounters(counter_offset);
+        }
+    }
 
     // Insert into active buffer; returns globally stable id.  NOT signal-safe.
     u32 lookup(const char* key, size_t len) {
