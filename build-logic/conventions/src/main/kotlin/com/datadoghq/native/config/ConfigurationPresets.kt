@@ -187,18 +187,22 @@ object ConfigurationPresets {
                 config.compilerArgs.set(asanCompilerArgs + commonLinuxCompilerArgs(version))
 
                 val libasan = PlatformUtils.locateLibasan(compiler)
-                // Do not add -lasan/-lubsan explicitly: clang links its own
-                // libclang_rt.asan via -fsanitize=address, and combining that
-                // with an explicit -lasan (GCC's runtime) puts two incompatible
-                // ASan runtimes into the binary's NEEDED entries, causing an
-                // immediate "incompatible ASan runtimes" abort at startup.
-                // -fsanitize=address/-fsanitize=undefined handle the runtime
-                // link correctly for both GCC and clang.
-                val asanLinkerArgs = listOf(
-                    "-fsanitize=address",
-                    "-fsanitize=undefined",
-                    "-fno-omit-frame-pointer"
-                )
+                // Link against the sanitizer runtime that matches the compiler:
+                // - clang: locateLibasan returns libclang_rt.asan-<arch>.so, which
+                //   includes UBSan symbols; -lclang_rt.asan-<arch> satisfies -z defs
+                //   for both __asan_* and __ubsan_* and matches the runtime that
+                //   -fsanitize=address links into executables — one runtime, no conflict.
+                // - gcc: locateLibasan returns libasan.so; -lasan + -lubsan as before.
+                val asanLinkerArgs = if (libasan != null) {
+                    val asanLibName = File(libasan).nameWithoutExtension.removePrefix("lib")
+                    val ubsanLibs = if (asanLibName.startsWith("clang_rt")) emptyList()
+                                    else listOf("-lubsan")
+                    listOf("-L${File(libasan).parent}", "-l$asanLibName") +
+                    ubsanLibs +
+                    listOf("-fsanitize=address", "-fsanitize=undefined", "-fno-omit-frame-pointer")
+                } else {
+                    listOf("-fsanitize=address", "-fsanitize=undefined", "-fno-omit-frame-pointer")
+                }
 
                 config.linkerArgs.set(commonLinuxLinkerArgs() + asanLinkerArgs)
 
