@@ -187,18 +187,18 @@ object ConfigurationPresets {
                 config.compilerArgs.set(asanCompilerArgs + commonLinuxCompilerArgs(version))
 
                 val libasan = PlatformUtils.locateLibasan(compiler)
-                val asanLinkerArgs = if (libasan != null) {
-                    listOf(
-                        "-L${File(libasan).parent}",
-                        "-lasan",
-                        "-lubsan",
-                        "-fsanitize=address",
-                        "-fsanitize=undefined",
-                        "-fno-omit-frame-pointer"
-                    )
-                } else {
-                    emptyList()
-                }
+                // Do not add -lasan/-lubsan explicitly: clang links its own
+                // libclang_rt.asan via -fsanitize=address, and combining that
+                // with an explicit -lasan (GCC's runtime) puts two incompatible
+                // ASan runtimes into the binary's NEEDED entries, causing an
+                // immediate "incompatible ASan runtimes" abort at startup.
+                // -fsanitize=address/-fsanitize=undefined handle the runtime
+                // link correctly for both GCC and clang.
+                val asanLinkerArgs = listOf(
+                    "-fsanitize=address",
+                    "-fsanitize=undefined",
+                    "-fno-omit-frame-pointer"
+                )
 
                 config.linkerArgs.set(commonLinuxLinkerArgs() + asanLinkerArgs)
 
