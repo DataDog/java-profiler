@@ -131,8 +131,9 @@ private:
   // HotSpot JFR async stack-trace extension (optional, JDK 27+).
   // _request_stack_trace is atomic (RELEASE/ACQUIRE) because canRequestStackTrace()
   // is called from signal handlers; _init_request_stack_trace is plain because it
-  // is only ever read by initializeRequestStackTrace(), called once from the same
-  // init thread before any signal handlers are installed.
+  // is read only during single-threaded OnLoad/Attach initialization
+  // (probeJFRRequestStackTrace and initializeRequestStackTrace), before any
+  // signal handlers are installed.
   static jvmtiExtensionFunction _request_stack_trace;
   static jvmtiExtensionFunction _init_request_stack_trace;
 

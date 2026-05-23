@@ -1188,9 +1188,10 @@ Error Profiler::start(Arguments &args, bool reset) {
         return Error("Not enough memory to allocate stack trace buffers (try "
                      "smaller jstackdepth)");
       }
-      // Swap under the per-shard lock: all readers (recordJVMTISample,
-      // recordExternalSample) acquire this lock via tryLock before reading
-      // _calltrace_buffer, so no reader can observe a freed pointer mid-replacement.
+      // Swap under the per-shard lock: all signal-handler readers
+      // (recordJVMTISample, recordExternalSample, recordSample) acquire this
+      // lock via tryLock before reading _calltrace_buffer, so no reader can
+      // observe a freed pointer mid-replacement.
       _locks[i].lock();
       CallTraceBuffer *prev = _calltrace_buffer[i];
       _calltrace_buffer[i] = fresh;

@@ -307,7 +307,8 @@ void WallClockJvmti::timerLoop() {
         } else if (errno == EPERM) {
           permission_denied++;
         } else if (errno == EAGAIN) {
-          // Signal queue limit (RLIMIT_SIGPENDING) reached — count as missed.
+          // Signal queue limit (RLIMIT_SIGPENDING) reached; num_failures already
+          // counted above — suppress the noisy Log::debug in the else branch.
         } else {
           Log::debug("unexpected error %s", strerror(errno));
         }
