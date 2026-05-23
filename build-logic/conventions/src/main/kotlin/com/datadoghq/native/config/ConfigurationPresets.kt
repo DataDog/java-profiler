@@ -194,10 +194,12 @@ object ConfigurationPresets {
                 //   -fsanitize=address links into executables — one runtime, no conflict.
                 // - gcc: locateLibasan returns libasan.so; -lasan + -lubsan as before.
                 val asanLinkerArgs = if (libasan != null) {
+                    val asanLibDir = File(libasan).parent
                     val asanLibName = File(libasan).nameWithoutExtension.removePrefix("lib")
                     val ubsanLibs = if (asanLibName.startsWith("clang_rt")) emptyList()
                                     else listOf("-lubsan")
-                    listOf("-L${File(libasan).parent}", "-l$asanLibName") +
+                    listOf("-L$asanLibDir", "-l$asanLibName",
+                           "-Wl,-rpath,$asanLibDir") +
                     ubsanLibs +
                     listOf("-fsanitize=address", "-fsanitize=undefined", "-fno-omit-frame-pointer")
                 } else {
