@@ -104,7 +104,14 @@ class GtestTaskBuilder(
     }
 
     private fun buildLinkTask(compileTask: TaskProvider<NativeCompileTask>): TaskProvider<NativeLinkExecutableTask> {
-        val linkerArgs = config.linkerArgs.get()
+        // For executables, clang's -fsanitize=address statically embeds the full
+        // ASan runtime (--whole-archive libclang_rt.asan*.a). Adding an explicit
+        // -lclang_rt.asan or -lasan on top produces a second dynamic NEEDED entry,
+        // which triggers "incompatible ASan runtimes" at startup (two __asan_init
+        // calls). Strip the explicit sanitizer -l/-L/-rpath flags here so the
+        // executable relies solely on clang's automatic static embedding.
+        val sanitizerLibPattern = Regex("^(-lasan|-lubsan|-lclang_rt\\.asan.*|-lclang_rt\\.ubsan.*|-L.*/clang.*/|-Wl,-rpath,.*/clang.*/)")
+        val linkerArgs = config.linkerArgs.get().filter { !sanitizerLibPattern.containsMatchIn(it) }
         val objDir = project.file("${project.layout.buildDirectory.get()}/obj/gtest/${config.name}/$testName")
         val binary = project.file("${project.layout.buildDirectory.get()}/bin/gtest/${config.name}_$testName/$testName")
 
