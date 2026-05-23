@@ -1876,7 +1876,6 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
           rec->recordMallocSample(buf, tid, call_trace_id, (MallocEvent *)event);
           break;
         }
-        rec->flushIfNeeded(buf);
         rec->addThread(lock_index, tid);
       }
   }
@@ -1903,7 +1902,6 @@ void FlightRecorder::recordEventDelegated(int lock_index, int tid,
           // Delegation is only wired for CPU/wall samples in v1.
           break;
       }
-      rec->flushIfNeeded(buf);
       rec->addThread(lock_index, tid);
     }
   }
