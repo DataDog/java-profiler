@@ -5,7 +5,7 @@
 
 .sanitizer_job:
   stage: sanitizer
-  extends: .cache-config-pull
+  extends: .cache-config
   needs: []
   timeout: 30m
   rules:
