@@ -2,12 +2,10 @@
 #
 # These run on every branch push (not MR pipelines — GitHub Actions handles those).
 # Sanitizers require the native gtest binaries; no JVM is involved.
-#
-# TSan requires vm.mmap_rnd_bits ≤ 28. On the Datadog GitLab runners this is
-# set at the host level for benchmark stability, so no sysctl call is needed.
 
 .sanitizer_job:
   stage: sanitizer
+  extends: .cache-config-pull
   needs: []
   timeout: 30m
   rules:
@@ -17,10 +15,12 @@
       when: never
     - when: on_success
   interruptible: true
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq cmake libgtest-dev libgmock-dev binutils libc6-dbg
+    # TSan requires vm.mmap_rnd_bits ≤ 28; runners may have higher ASLR entropy.
+    - sysctl -w vm.mmap_rnd_bits=28 2>/dev/null || true
   script:
-    - |
-      apt-get update -qq
-      apt-get install -y -qq cmake libgtest-dev libgmock-dev binutils libc6-dbg
     - ./gradlew :ddprof-lib:gtest${SANITIZER_CONFIG} --no-daemon
   artifacts:
     when: always
