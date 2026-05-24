@@ -202,6 +202,31 @@ class GtestPlugin : Plugin<Project> {
             description = "Compile and link all Google Tests for the ${config.name} build (no run)"
         }
 
+        // Compile all library sources ONCE for this config. Each test binary
+        // only compiles its own test file and links against these shared objects,
+        // reducing compilations from O(n_tests × n_sources) to O(n_sources + n_tests).
+        val sharedCompilerArgs = GtestTaskBuilder(project, extension, config)
+            .withCompiler(compiler)
+            .withIncludes(includeFiles)
+            .onlyIfGtest(hasGtest)
+            .sharedCompilerArgs()
+        val sharedLibCompileTask = project.tasks.register(
+            "compileGtestLibrary${config.capitalizedName()}",
+            com.datadoghq.native.tasks.NativeCompileTask::class.java
+        ) {
+            onlyIf { hasGtest && !project.hasProperty("skip-tests") && !project.hasProperty("skip-native") && !project.hasProperty("skip-gtest") }
+            group = "build"
+            description = "Compile shared library sources for ${config.name} gtest binaries"
+
+            this.compiler.set(compiler)
+            this.compilerArgs.set(sharedCompilerArgs)
+            sources.from(project.fileTree(extension.mainSourceDir.get()) { include("**/*.cpp") })
+            includes.from(includeFiles)
+            objectFileDir.set(project.file(
+                "${project.layout.buildDirectory.get()}/obj/gtest/${config.name}/lib"
+            ))
+        }
+
         // Discover and create tasks for each test file using builder
         val testDir = extension.testSourceDir.get().asFile
         if (!testDir.exists()) {
@@ -214,6 +239,7 @@ class GtestPlugin : Plugin<Project> {
                 .forTest(testFile)
                 .withCompiler(compiler)
                 .withIncludes(includeFiles)
+                .withSharedLibObjects(sharedLibCompileTask)
                 .onlyIfGtest(hasGtest)
                 .build()
 
