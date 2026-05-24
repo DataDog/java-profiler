@@ -171,12 +171,17 @@ class GtestTaskBuilder(
             inputs.files(binary)
 
             // Route test binary output to /dev/stdout and /dev/stderr to bypass
-            // Gradle's logging infrastructure entirely. System.out/err are wrapped
-            // by Gradle's console at configuration time and suppress child output
-            // unless --info is passed. /dev/std* always reaches the terminal/CI log.
+            // Gradle's logging infrastructure entirely. The default Exec task
+            // behaviour buffers child output in a ByteArrayOutputStream and
+            // discards it when the task fails. /dev/std* streams directly to
+            // fd 1/2 of the Gradle JVM as bytes arrive, so sanitizer reports
+            // (ASan/TSan/UBSan) are always visible in the CI log.
             if (PlatformUtils.currentPlatform == Platform.LINUX) {
-                standardOutput = java.io.FileOutputStream("/dev/stdout")
-                errorOutput = java.io.FileOutputStream("/dev/stderr")
+                val devStdout = java.io.FileOutputStream("/dev/stdout")
+                val devStderr = java.io.FileOutputStream("/dev/stderr")
+                standardOutput = devStdout
+                errorOutput = devStderr
+                doLast { devStdout.flush(); devStderr.flush() }
             }
 
             if (extension.alwaysRun.get()) {
