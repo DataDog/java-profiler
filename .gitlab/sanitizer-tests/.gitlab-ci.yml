@@ -63,26 +63,38 @@ gtest-tsan-amd64:
   extends: .sanitizer_job
   allow_failure: true
   # docker-in-docker:amd64 runs on Kata Containers (kata-qemu micro VMs).
-  # Each job gets its OWN isolated kernel — sysctl only affects this job,
-  # not the shared Kubernetes node. No docker run --privileged needed;
-  # the runner is already configured with privileged=true inside the micro VM.
-  # Same pattern as the arm64 EC2 job.
+  # Each job gets its OWN isolated kernel so sysctl only affects this job.
+  # docker run --privileged is still needed to get CAP_SYS_ADMIN for the
+  # non-namespaced sysctl write; the outer container doesn't have it even
+  # though the runner is privileged=true.
+  # Pipe through `cat` to force line-buffered streaming and avoid truncation.
   tags: [ "docker-in-docker:amd64" ]
-  image: $BUILD_IMAGE_X64
+  image: $DOCKER_IMAGE
   variables:
     SANITIZER_CONFIG: Tsan
     SANITIZER_LC: tsan
+    GRADLE_USER_HOME: .gradle
   script:
-    - sysctl -w vm.mmap_rnd_bits=28
-    - ./gradlew :ddprof-lib:buildGtest${SANITIZER_CONFIG} --no-daemon --parallel --build-cache
     - |
-      find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
-        | grep "/${SANITIZER_LC}_" | sort | while read binary; do
-          echo "=== $(basename $binary) ==="
-          GTEST_DEATH_TEST_STYLE=threadsafe "$binary"
-          rc=$?
-          [ $rc -ne 0 ] && { echo "FAILED: $(basename $binary) exited $rc"; exit $rc; }
-        done
+      docker run --rm --privileged \
+        -v "$CI_PROJECT_DIR:/workspace" \
+        -w /workspace \
+        -e GRADLE_USER_HOME=/workspace/.gradle \
+        "$BUILD_IMAGE_X64" \
+        bash -c '
+          set -e
+          apt-get update -qq
+          apt-get install -y -qq cmake libgtest-dev libgmock-dev binutils libc6-dbg llvm
+          sysctl -w vm.mmap_rnd_bits=28
+          ./gradlew :ddprof-lib:buildGtestTsan --no-daemon --parallel --build-cache
+          find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
+            | grep /tsan_ | sort | while read binary; do
+            echo "=== $(basename $binary) ==="
+            GTEST_DEATH_TEST_STYLE=threadsafe "$binary"
+            rc=$?
+            [ $rc -ne 0 ] && { echo "FAILED: $(basename $binary) exited $rc"; exit $rc; }
+          done
+        ' 2>&1 | cat
 
 gtest-asan-arm64:
   extends: .sanitizer_job
@@ -105,8 +117,14 @@ gtest-tsan-arm64:
   script:
     - ./gradlew :ddprof-lib:buildGtest${SANITIZER_CONFIG} --no-daemon --parallel --build-cache
     - |
+      # Disable ASLR completely — vm.mmap_rnd_bits=28 still leaves the fixed
+      # 128GB mapping that conflicts with TSan's 39-bit shadow. randomize_va_space=0
+      # prevents any new randomised placement there.
+      sysctl -w kernel.randomize_va_space=0 2>/dev/null || true
       sysctl -w vm.mmap_rnd_bits=28 2>/dev/null || true
-      sysctl -w vm.mmap_rnd_bits_compat=16 2>/dev/null || true
+      # Diagnostic: show what is mapped at 0x002000000000 (TSan's conflict address)
+      echo "=== Mappings near 0x002000000000 ==="
+      grep -E "002[0-9a-f]{9}" /proc/self/maps || echo "(nothing found)"
       find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
         | grep "/${SANITIZER_LC}_" | sort | while read binary; do
           echo "=== $(basename $binary) ==="
