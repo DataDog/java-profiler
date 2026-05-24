@@ -170,12 +170,14 @@ class GtestTaskBuilder(
 
             inputs.files(binary)
 
-            // Route test binary stdout/stderr directly to the process streams so
-            // sanitizer reports (ASan/TSan/UBSan) appear in the CI log.
-            // Without this, Gradle sends child output to INFO level which is
-            // suppressed in default console mode.
-            standardOutput = System.out
-            errorOutput = System.err
+            // Route test binary output to /dev/stdout and /dev/stderr to bypass
+            // Gradle's logging infrastructure entirely. System.out/err are wrapped
+            // by Gradle's console at configuration time and suppress child output
+            // unless --info is passed. /dev/std* always reaches the terminal/CI log.
+            if (PlatformUtils.currentPlatform == Platform.LINUX) {
+                standardOutput = java.io.FileOutputStream("/dev/stdout")
+                errorOutput = java.io.FileOutputStream("/dev/stderr")
+            }
 
             if (extension.alwaysRun.get()) {
                 outputs.upToDateWhen { false }
