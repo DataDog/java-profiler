@@ -120,6 +120,7 @@ java -javaagent:${PATCHED_AGENT} \
      -Ddd.env=java-profiler-stability \
      -Ddd.service=java-profiler-chaos \
      -Xmx2g -Xms2g \
+     -XX:MaxMetaspaceSize=384m \
      -XX:ErrorFile=${HERE}/../../hs_err.log \
      -XX:OnError="${HERE}/../../dd_crash_uploader.sh %p" \
      -jar ${CHAOS_JAR} \
