@@ -2,6 +2,13 @@
 #
 # These run on every branch push (not MR pipelines — GitHub Actions handles those).
 # Sanitizers require the native gtest binaries; no JVM is involved.
+#
+# TSan requires ASLR to be disabled or have low entropy (vm.mmap_rnd_bits ≤ 28).
+# The runners are Kubernetes pods: sysctl is not available (vm.* sysctls are
+# non-namespaced). Instead we wrap the Gradle command with `setarch -R` which
+# calls personality(ADDR_NO_RANDOMIZE) before exec; this is inherited by all
+# children including the TSan binary. This works as long as the Kubernetes
+# seccomp profile allows the personality(2) syscall.
 
 .sanitizer_job:
   stage: sanitizer
@@ -17,11 +24,9 @@
   interruptible: true
   before_script:
     - apt-get update -qq
-    - apt-get install -y -qq cmake libgtest-dev libgmock-dev binutils libc6-dbg
-    # TSan requires vm.mmap_rnd_bits ≤ 28; runners may have higher ASLR entropy.
-    - sysctl -w vm.mmap_rnd_bits=28 2>/dev/null || true
+    - apt-get install -y -qq cmake libgtest-dev libgmock-dev binutils libc6-dbg util-linux
   script:
-    - ./gradlew :ddprof-lib:gtest${SANITIZER_CONFIG} --no-daemon
+    - setarch $(uname -m) -R ./gradlew :ddprof-lib:gtest${SANITIZER_CONFIG} --no-daemon
   artifacts:
     when: always
     paths:
