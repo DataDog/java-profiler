@@ -83,15 +83,21 @@ gtest-tsan-amd64:
         "$BUILD_IMAGE_X64" \
         bash -c '
           set -e
+          # LLVM 11 (default in Debian 11 build image) crashes on kernel 6.8.
+          # Install LLVM 18 which has proper support for modern kernels.
           apt-get update -qq
-          apt-get install -y -qq cmake libgtest-dev libgmock-dev binutils libc6-dbg llvm
+          apt-get install -y -qq wget gnupg2 cmake libgtest-dev libgmock-dev binutils libc6-dbg
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | gpg --dearmor > /usr/share/keyrings/llvm-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] \
+            http://apt.llvm.org/bullseye/ llvm-toolchain-bullseye-18 main" \
+            > /etc/apt/sources.list.d/llvm-18.list
+          apt-get update -qq
+          apt-get install -y -qq clang-18 llvm-18
+          echo "=== compiler ===" && clang++-18 --version | head -1
           sysctl -w vm.mmap_rnd_bits=28
-          echo "=== compiler version ===" && clang++ --version
-          echo "=== kernel ===" && uname -r
-          echo "=== vm.mmap_rnd_bits ===" && sysctl vm.mmap_rnd_bits
-          ./gradlew :ddprof-lib:buildGtestTsan --no-daemon --parallel --build-cache
-          first=$(find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable | grep /tsan_ | sort | head -1)
-          echo "=== TSan init probe: $first ===" && TSAN_OPTIONS="verbosity=1" "$first" --gtest_list_tests 2>&1 | head -20 || true
+          ./gradlew :ddprof-lib:buildGtestTsan -Pnative.forceCompiler=clang++-18 \
+            --no-daemon --parallel --build-cache
           find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
             | grep /tsan_ | sort | while read binary; do
             echo "=== $(basename $binary) ==="
