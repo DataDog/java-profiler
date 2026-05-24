@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk21
 
 ## glibc-arm64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-05-24 03:18:13 EDT
+**Date:** 2026-05-24 04:51:01 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-hotspot-jdk21
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 48 |
-| CPU Cores (end) | 48 |
+| CPU Cores (start) | 43 |
+| CPU Cores (end) | 43 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-arm64-hotspot-jdk21
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
+<summary>CPU Timeline (1 unique values: 43-43 cores)</summary>
 
 ```
-1779606610 48
-1779606615 48
-1779606620 48
-1779606625 48
-1779606630 48
-1779606635 48
-1779606640 48
-1779606645 48
-1779606650 48
-1779606655 48
-1779606660 48
-1779606665 48
-1779606670 48
-1779606675 48
-1779606680 48
-1779606685 48
-1779606690 48
-1779606695 48
-1779606700 48
-1779606705 48
+1779612430 43
+1779612435 43
+1779612440 43
+1779612445 43
+1779612450 43
+1779612455 43
+1779612460 43
+1779612465 43
+1779612470 43
+1779612475 43
+1779612480 43
+1779612485 43
+1779612490 43
+1779612495 43
+1779612500 43
+1779612505 43
+1779612510 43
+1779612515 43
+1779612520 43
+1779612525 43
 ```
 </details>
 
