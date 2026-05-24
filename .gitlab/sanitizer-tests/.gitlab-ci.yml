@@ -33,7 +33,7 @@
     - apt-get update -qq
     - apt-get install -y -qq cmake libgtest-dev libgmock-dev binutils libc6-dbg util-linux
   script:
-    - ./gradlew :ddprof-lib:buildGtest${SANITIZER_CONFIG} --no-daemon
+    - ./gradlew :ddprof-lib:buildGtest${SANITIZER_CONFIG} --no-daemon --parallel --build-cache
     - |
       failed=0
       find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
