@@ -87,7 +87,7 @@ gtest-tsan-amd64:
           find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
             | grep /tsan_ | sort | while read binary; do
             echo "=== $(basename $binary) ==="
-            "$binary"
+            GTEST_DEATH_TEST_STYLE=threadsafe "$binary"
             rc=$?
             [ $rc -ne 0 ] && { echo "FAILED: $(basename $binary) exited $rc"; exit $rc; }
           done
@@ -119,7 +119,7 @@ gtest-tsan-arm64:
       find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
         | grep "/${SANITIZER_LC}_" | sort | while read binary; do
           echo "=== $(basename $binary) ==="
-          "$binary"
+          GTEST_DEATH_TEST_STYLE=threadsafe "$binary"
           rc=$?
           [ $rc -ne 0 ] && { echo "FAILED: $(basename $binary) exited $rc"; exit $rc; }
         done
