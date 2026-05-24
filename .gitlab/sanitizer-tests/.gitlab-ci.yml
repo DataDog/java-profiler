@@ -7,11 +7,8 @@
 # set at the host level for benchmark stability, so no sysctl call is needed.
 
 .sanitizer_job:
-  stage: integration-test
+  stage: build
   timeout: 30m
-  needs:
-    - job: prepare:start
-      artifacts: false
   rules:
     - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
       when: never
