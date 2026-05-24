@@ -188,10 +188,18 @@ class GtestPlugin : Plugin<Project> {
         val compiler = findCompiler(project)
         val includeFiles = extension.includes.plus(project.files(getGtestIncludes(extension)))
 
-        // Create per-config aggregation task
+        // Create per-config aggregation task (compile + link + run)
         val gtestConfigTask = project.tasks.register("gtest${config.capitalizedName()}") {
             group = "verification"
             description = "Run all Google Tests for the ${config.name} build of the library"
+        }
+
+        // Create per-config build-only aggregation task (compile + link, no run).
+        // Useful in CI environments where binaries need to be executed directly
+        // (e.g. when the Gradle daemon's stdout is not connected to the terminal).
+        val buildGtestConfigTask = project.tasks.register("buildGtest${config.capitalizedName()}") {
+            group = "build"
+            description = "Compile and link all Google Tests for the ${config.name} build (no run)"
         }
 
         // Discover and create tasks for each test file using builder
@@ -202,15 +210,19 @@ class GtestPlugin : Plugin<Project> {
         }
 
         testDir.listFiles()?.filter { it.name.endsWith(".cpp") }?.forEach { testFile ->
-            val executeTask = GtestTaskBuilder(project, extension, config)
+            val taskBundle = GtestTaskBuilder(project, extension, config)
                 .forTest(testFile)
                 .withCompiler(compiler)
                 .withIncludes(includeFiles)
                 .onlyIfGtest(hasGtest)
                 .build()
 
-            gtestConfigTask.configure { dependsOn(executeTask) }
-            gtestAll.configure { dependsOn(executeTask) }
+            gtestConfigTask.configure { dependsOn(taskBundle) }
+            gtestAll.configure { dependsOn(taskBundle) }
+            // buildGtest depends on the link task, not the run task
+            buildGtestConfigTask.configure {
+                dependsOn("linkGtest${config.capitalizedName()}_${testFile.nameWithoutExtension}")
+            }
         }
     }
 
