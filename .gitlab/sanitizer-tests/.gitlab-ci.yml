@@ -3,12 +3,14 @@
 # These run on every branch push (not MR pipelines — GitHub Actions handles those).
 # Sanitizers require the native gtest binaries; no JVM is involved.
 #
-# TSan requires ASLR to be disabled or have low entropy (vm.mmap_rnd_bits ≤ 28).
-# The runners are Kubernetes pods: sysctl is not available (vm.* sysctls are
-# non-namespaced). Instead we wrap the Gradle command with `setarch -R` which
-# calls personality(ADDR_NO_RANDOMIZE) before exec; this is inherited by all
-# children including the TSan binary. This works as long as the Kubernetes
-# seccomp profile allows the personality(2) syscall.
+# Strategy: use Gradle only for compile+link (buildGtest{Config}), then run
+# each binary directly from the shell. This bypasses Gradle's daemon I/O
+# infrastructure, which swallows child output when the daemon's fd 1/2 are
+# not connected to the terminal (as is the case on Kubernetes runners).
+#
+# ASLR: vm.mmap_rnd_bits is a non-namespaced kernel parameter, unwritable
+# from inside Kubernetes pods. setarch -R calls personality(ADDR_NO_RANDOMIZE)
+# instead; the flag is inherited by fork/exec so all children run with ASLR off.
 
 .sanitizer_job:
   stage: sanitizer
@@ -26,7 +28,22 @@
     - apt-get update -qq
     - apt-get install -y -qq cmake libgtest-dev libgmock-dev binutils libc6-dbg util-linux
   script:
-    - setarch $(uname -m) -R ./gradlew :ddprof-lib:gtest${SANITIZER_CONFIG} --no-daemon
+    - setarch $(uname -m) -R ./gradlew :ddprof-lib:buildGtest${SANITIZER_CONFIG} --no-daemon
+    - |
+      failed=0
+      find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
+        | grep "/${SANITIZER_LC}_" \
+        | sort \
+        | while read binary; do
+          echo ""
+          echo "=== $(basename $binary) ==="
+          setarch $(uname -m) -R "$binary"
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "FAILED: $(basename $binary) exited $rc"
+            exit $rc
+          fi
+        done
   artifacts:
     when: always
     paths:
