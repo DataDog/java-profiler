@@ -125,7 +125,25 @@ object PlatformUtils {
         return null
     }
 
-    fun locateLibasan(compiler: String = "gcc"): String? = locateLibrary("libasan", compiler)
+    fun locateLibasan(compiler: String = "gcc"): String? {
+        if (currentPlatform != Platform.LINUX) return null
+        // For clang, prefer the architecture-specific clang_rt.asan library over
+        // GCC's libasan. Using GCC's runtime alongside clang's libclang_rt.asan
+        // (which -fsanitize=address links for executables) causes "incompatible
+        // ASan runtimes" at startup. The clang runtime also includes UBSan symbols,
+        // so no separate -lubsan is needed.
+        if (compiler.contains("clang")) {
+            val archSuffix = when (currentArchitecture) {
+                Architecture.X64 -> "x86_64"
+                Architecture.ARM64 -> "aarch64"
+                Architecture.X86 -> "i386"
+                Architecture.ARM -> "arm"
+            }
+            val clangAsan = locateLibrary("libclang_rt.asan-$archSuffix", compiler)
+            if (clangAsan != null) return clangAsan
+        }
+        return locateLibrary("libasan", compiler)
+    }
 
     fun locateLibtsan(compiler: String = "gcc"): String? = locateLibrary("libtsan", compiler)
 
