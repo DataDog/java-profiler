@@ -211,10 +211,12 @@ build-artifact:
       artifacts: false
     - job: gtest-tsan-amd64
       artifacts: false
+      optional: true
     - job: gtest-asan-arm64
       artifacts: false
     - job: gtest-tsan-arm64
       artifacts: false
+      optional: true
   when: on_success
   tags: [ "arch:amd64" ]
   image: ${BUILD_IMAGE_X64}
