@@ -62,18 +62,18 @@ gtest-asan-amd64:
 gtest-tsan-amd64:
   extends: .sanitizer_job
   allow_failure: true
-  # docker-in-docker:amd64 has Docker socket access. Use a one-shot privileged
-  # container to set vm.mmap_rnd_bits=28 on the host kernel (non-namespaced,
-  # only writable by a privileged container), then run everything directly in
-  # the outer shell — same pattern as the arm64 EC2 job but without a real
-  # sysctl on the host.
+  # docker-in-docker:amd64 runs on Kata Containers (kata-qemu micro VMs).
+  # Each job gets its OWN isolated kernel — sysctl only affects this job,
+  # not the shared Kubernetes node. No docker run --privileged needed;
+  # the runner is already configured with privileged=true inside the micro VM.
+  # Same pattern as the arm64 EC2 job.
   tags: [ "docker-in-docker:amd64" ]
   image: $BUILD_IMAGE_X64
   variables:
     SANITIZER_CONFIG: Tsan
     SANITIZER_LC: tsan
   script:
-    - docker run --rm --privileged "$BUILD_IMAGE_X64" sysctl -w vm.mmap_rnd_bits=28
+    - sysctl -w vm.mmap_rnd_bits=28
     - ./gradlew :ddprof-lib:buildGtest${SANITIZER_CONFIG} --no-daemon --parallel --build-cache
     - |
       find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
