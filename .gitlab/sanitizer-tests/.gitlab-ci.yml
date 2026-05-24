@@ -5,12 +5,6 @@
 # Strategy: use Gradle only for compile+link (buildGtest{Config}), then run
 # each binary directly from the shell. This bypasses Gradle's daemon I/O
 # which swallows child process output when fd 1/2 are not the terminal.
-#
-# TSan note: the Kubernetes pod's kernel vDSO is mapped at a fixed address
-# (0x002000000000) that TSan reserves for shadow memory. This cannot be fixed
-# from inside a pod (vm.mmap_rnd_bits and personality() are both unavailable).
-# TSan jobs are marked allow_failure so they don't block the pipeline but
-# still provide coverage when the environment allows TSan to run.
 
 .sanitizer_job:
   stage: sanitizer
@@ -62,50 +56,26 @@ gtest-asan-amd64:
 gtest-tsan-amd64:
   extends: .sanitizer_job
   allow_failure: true
-  # docker-in-docker:amd64 runs on Kata Containers (kata-qemu micro VMs).
-  # Each job gets its OWN isolated kernel so sysctl only affects this job.
-  # docker run --privileged is still needed to get CAP_SYS_ADMIN for the
-  # non-namespaced sysctl write; the outer container doesn't have it even
-  # though the runner is privileged=true.
-  # Pipe through `cat` to force line-buffered streaming and avoid truncation.
+  # docker-in-docker:amd64 = Kata Containers (kata-qemu micro VMs).
+  # Kata maps host-guest communication structures at fixed high addresses
+  # that land in TSan's shadow region regardless of LLVM version or sysctl.
+  # TSan on amd64 requires a non-Kata runner (EC2 or bare metal).
+  # Kept allow_failure so it runs and provides coverage if the environment is fixed.
   tags: [ "docker-in-docker:amd64" ]
-  image: $DOCKER_IMAGE
+  image: $BUILD_IMAGE_X64
   variables:
     SANITIZER_CONFIG: Tsan
     SANITIZER_LC: tsan
-    GRADLE_USER_HOME: .gradle
   script:
+    - ./gradlew :ddprof-lib:buildGtest${SANITIZER_CONFIG} --no-daemon --parallel --build-cache
     - |
-      docker run --rm --privileged \
-        -v "$CI_PROJECT_DIR:/workspace" \
-        -w /workspace \
-        -e GRADLE_USER_HOME=/workspace/.gradle \
-        "$BUILD_IMAGE_X64" \
-        bash -c '
-          set -e
-          # LLVM 11 (default in Debian 11 build image) crashes on kernel 6.8.
-          # Install LLVM 18 which has proper support for modern kernels.
-          apt-get update -qq
-          apt-get install -y -qq wget gnupg2 cmake libgtest-dev libgmock-dev binutils libc6-dbg
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-            | gpg --dearmor > /usr/share/keyrings/llvm-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] \
-            http://apt.llvm.org/bullseye/ llvm-toolchain-bullseye-18 main" \
-            > /etc/apt/sources.list.d/llvm-18.list
-          apt-get update -qq
-          apt-get install -y -qq clang-18 llvm-18
-          echo "=== compiler ===" && clang++-18 --version | head -1
-          sysctl -w vm.mmap_rnd_bits=28
-          ./gradlew :ddprof-lib:buildGtestTsan -Pnative.forceCompiler=clang++-18 \
-            --no-daemon --parallel --build-cache
-          find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
-            | grep /tsan_ | sort | while read binary; do
-            echo "=== $(basename $binary) ==="
-            GTEST_DEATH_TEST_STYLE=threadsafe "$binary"
-            rc=$?
-            [ $rc -ne 0 ] && { echo "FAILED: $(basename $binary) exited $rc"; exit $rc; }
-          done
-        ' 2>&1 | cat
+      find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
+        | grep "/${SANITIZER_LC}_" | sort | while read binary; do
+          echo "=== $(basename $binary) ==="
+          GTEST_DEATH_TEST_STYLE=threadsafe "$binary"
+          rc=$?
+          [ $rc -ne 0 ] && { echo "FAILED: $(basename $binary) exited $rc"; exit $rc; }
+        done
 
 gtest-asan-arm64:
   extends: .sanitizer_job
@@ -118,8 +88,13 @@ gtest-asan-arm64:
 gtest-tsan-arm64:
   extends: .sanitizer_job
   allow_failure: true
-  # docker-in-docker:arm64 runs on EC2 (not Kubernetes) — full VM access.
-  # sysctl vm.mmap_rnd_bits=28 should work directly without DinD.
+  # docker-in-docker:arm64 = EC2 VM. sysctl works directly.
+  # vm.mmap_rnd_bits=28 is sufficient — TSan's LLVM re-exec handles the rare
+  # case where a library lands in the shadow region by re-running the process
+  # via personality(ADDR_NO_RANDOMIZE).
+  # Do NOT set kernel.randomize_va_space=0: with ASLR fully off, ld-linux-aarch64.so
+  # loads at its fixed default address (0x002000000000) which is exactly TSan's
+  # 39-bit shadow start — guaranteed conflict every time.
   tags: [ "docker-in-docker:arm64" ]
   image: $BUILD_IMAGE_ARM64
   variables:
@@ -128,14 +103,7 @@ gtest-tsan-arm64:
   script:
     - ./gradlew :ddprof-lib:buildGtest${SANITIZER_CONFIG} --no-daemon --parallel --build-cache
     - |
-      # Disable ASLR completely — vm.mmap_rnd_bits=28 still leaves the fixed
-      # 128GB mapping that conflicts with TSan's 39-bit shadow. randomize_va_space=0
-      # prevents any new randomised placement there.
-      sysctl -w kernel.randomize_va_space=0 2>/dev/null || true
       sysctl -w vm.mmap_rnd_bits=28 2>/dev/null || true
-      # Diagnostic: show what is mapped at 0x002000000000 (TSan's conflict address)
-      echo "=== Mappings near 0x002000000000 ==="
-      grep -E "002[0-9a-f]{9}" /proc/self/maps || echo "(nothing found)"
       find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
         | grep "/${SANITIZER_LC}_" | sort | while read binary; do
           echo "=== $(basename $binary) ==="
