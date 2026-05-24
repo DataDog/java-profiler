@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk21
 
 ## glibc-x64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-05-24 00:52:19 EDT
+**Date:** 2026-05-24 03:06:39 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk21
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 60 |
-| CPU Cores (end) | 60 |
+| CPU Cores (start) | 56 |
+| CPU Cores (end) | 76 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-hotspot-jdk21
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 60-60 cores)</summary>
+<summary>CPU Timeline (2 unique values: 56-76 cores)</summary>
 
 ```
-1779598088 60
-1779598093 60
-1779598098 60
-1779598103 60
-1779598108 60
-1779598113 60
-1779598118 60
-1779598123 60
-1779598128 60
-1779598133 60
-1779598138 60
-1779598143 60
-1779598148 60
-1779598153 60
-1779598158 60
-1779598163 60
-1779598168 60
-1779598173 60
-1779598178 60
-1779598183 60
+1779606067 56
+1779606072 56
+1779606077 56
+1779606082 56
+1779606087 56
+1779606092 56
+1779606097 76
+1779606102 76
+1779606107 76
+1779606112 76
+1779606117 76
+1779606122 76
+1779606127 76
+1779606132 76
+1779606137 76
+1779606142 76
+1779606147 76
+1779606152 76
+1779606157 76
+1779606162 76
 ```
 </details>
 
