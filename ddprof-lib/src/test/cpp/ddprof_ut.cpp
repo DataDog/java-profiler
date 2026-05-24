@@ -373,6 +373,9 @@ static DdprofGlobalSetup ddprof_global_setup;
     // This test exercises the exact race window by calling clearCurrentThreadTLS()
     // inside a live CriticalSection scope, then verifying the flag is cleared.
     // Without the fix tryEnterCriticalSection() returns false (exit 5).
+    // fork() is unsupported under TSan: the child inherits shadow memory in an
+    // inconsistent state and crashes before any TSan report can be written.
+    #if !defined(__SANITIZE_THREAD__)
     TEST(ProfiledThreadTeardown, CriticalSectionExitsEvenAfterTLSCleared) {
         pid_t pid = fork();
         ASSERT_NE(-1, pid);
@@ -410,6 +413,7 @@ static DdprofGlobalSetup ddprof_global_setup;
         ASSERT_TRUE(WIFEXITED(status)) << "child crashed (signal " << WTERMSIG(status) << ")";
         ASSERT_EQ(0, WEXITSTATUS(status)) << "child exited with code " << WEXITSTATUS(status);
     }
+    #endif // !__SANITIZE_THREAD__
 
     int main(int argc, char **argv) {
       ::testing::InitGoogleTest(&argc, argv);
