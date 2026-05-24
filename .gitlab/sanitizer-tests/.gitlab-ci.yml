@@ -17,6 +17,11 @@
   extends: .cache-config
   needs: []
   timeout: 30m
+  variables:
+    # The build image sets GRADLE_USER_HOME=/gradle-cache but .cache-config
+    # caches .gradle/ — they don't match so the wrapper is re-downloaded every
+    # run. Override to .gradle so the cache key matches.
+    GRADLE_USER_HOME: .gradle
   rules:
     - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
       when: never
