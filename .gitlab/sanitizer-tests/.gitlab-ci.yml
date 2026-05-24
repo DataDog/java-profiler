@@ -62,31 +62,36 @@ gtest-asan-amd64:
 gtest-tsan-amd64:
   extends: .sanitizer_job
   allow_failure: true
-  tags: [ "arch:amd64" ]
-  image: $BUILD_IMAGE_X64
+  # docker-in-docker:amd64 is the Kubernetes runner with Docker socket access.
+  # With $DOCKER_IMAGE + docker run --privileged we can set vm.mmap_rnd_bits=28
+  # (a privileged container can write non-namespaced kernel params on the host).
+  tags: [ "docker-in-docker:amd64" ]
+  image: $DOCKER_IMAGE
   variables:
     SANITIZER_CONFIG: Tsan
     SANITIZER_LC: tsan
-  # TSan requires vm.mmap_rnd_bits ≤ 28. On shared Kubernetes runners every
-  # approach to set this from userspace is blocked (non-namespaced sysctl,
-  # personality() via seccomp, docker --privileged via no socket).
-  # Fix requires infra: set vm.mmap_rnd_bits=28 on runner nodes via DaemonSet,
-  # or provision a runner with personality() allowed in seccomp.
+    GRADLE_USER_HOME: .gradle
   script:
-    - ./gradlew :ddprof-lib:buildGtest${SANITIZER_CONFIG} --no-daemon --parallel --build-cache
     - |
-      find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
-        | grep "/${SANITIZER_LC}_" | sort \
-        | while read binary; do
-          echo ""
-          echo "=== $(basename $binary) ==="
-          setarch $(uname -m) -R "$binary" 2>&1 || true
-          rc=$?
-          if [ $rc -ne 0 ]; then
-            echo "FAILED: $(basename $binary) exited $rc"
-            exit $rc
-          fi
-        done
+      docker run --rm --privileged \
+        -v "$CI_PROJECT_DIR:/workspace" \
+        -w /workspace \
+        -e GRADLE_USER_HOME=/workspace/.gradle \
+        "$BUILD_IMAGE_X64" \
+        bash -c '
+          set -e
+          apt-get update -qq
+          apt-get install -y -qq cmake libgtest-dev libgmock-dev binutils libc6-dbg llvm
+          sysctl -w vm.mmap_rnd_bits=28
+          ./gradlew :ddprof-lib:buildGtestTsan --no-daemon --parallel --build-cache
+          find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
+            | grep /tsan_ | sort | while read binary; do
+            echo "=== $(basename $binary) ==="
+            "$binary"
+            rc=$?
+            [ $rc -ne 0 ] && { echo "FAILED: $(basename $binary) exited $rc"; exit $rc; }
+          done
+        '
 
 gtest-asan-arm64:
   extends: .sanitizer_job
@@ -99,7 +104,9 @@ gtest-asan-arm64:
 gtest-tsan-arm64:
   extends: .sanitizer_job
   allow_failure: true
-  tags: [ "arch:arm64" ]
+  # docker-in-docker:arm64 runs on EC2 (not Kubernetes) — full VM access.
+  # sysctl vm.mmap_rnd_bits=28 should work directly without DinD.
+  tags: [ "docker-in-docker:arm64" ]
   image: $BUILD_IMAGE_ARM64
   variables:
     SANITIZER_CONFIG: Tsan
@@ -107,15 +114,12 @@ gtest-tsan-arm64:
   script:
     - ./gradlew :ddprof-lib:buildGtest${SANITIZER_CONFIG} --no-daemon --parallel --build-cache
     - |
+      sysctl -w vm.mmap_rnd_bits=28 2>/dev/null || true
+      sysctl -w vm.mmap_rnd_bits_compat=16 2>/dev/null || true
       find ddprof-lib/build/bin/gtest -mindepth 2 -maxdepth 2 -type f -executable \
-        | grep "/${SANITIZER_LC}_" | sort \
-        | while read binary; do
-          echo ""
+        | grep "/${SANITIZER_LC}_" | sort | while read binary; do
           echo "=== $(basename $binary) ==="
-          setarch $(uname -m) -R "$binary" 2>&1 || true
+          "$binary"
           rc=$?
-          if [ $rc -ne 0 ]; then
-            echo "FAILED: $(basename $binary) exited $rc"
-            exit $rc
-          fi
+          [ $rc -ne 0 ] && { echo "FAILED: $(basename $binary) exited $rc"; exit $rc; }
         done
