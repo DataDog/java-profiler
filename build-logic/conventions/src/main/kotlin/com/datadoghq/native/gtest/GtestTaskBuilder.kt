@@ -148,7 +148,6 @@ class GtestTaskBuilder(
             linker.set(compiler)
             this.linkerArgs.set(linkerArgs)
             objectFiles.from(project.fileTree(objDir) { include("*.o") })
-            // Include shared library objects when the shared compile task is present.
             sharedLibCompileTask?.let { sharedTask ->
                 dependsOn(sharedTask)
                 objectFiles.from(sharedTask.map { it.objectFileDir.get().asFileTree.matching { include("*.o") } })
@@ -199,18 +198,19 @@ class GtestTaskBuilder(
 
             inputs.files(binary)
 
-            // Route test binary output to /dev/stdout and /dev/stderr to bypass
-            // Gradle's logging infrastructure entirely. The default Exec task
-            // behaviour buffers child output in a ByteArrayOutputStream and
-            // discards it when the task fails. /dev/std* streams directly to
-            // fd 1/2 of the Gradle JVM as bytes arrive, so sanitizer reports
-            // (ASan/TSan/UBSan) are always visible in the CI log.
+            // Gradle's default Exec task buffers child output and discards it on
+            // failure. /dev/std* bypass the logging infrastructure and stream
+            // bytes directly to fd 1/2 of the Gradle JVM so sanitizer reports
+            // are always visible in CI.
             if (PlatformUtils.currentPlatform == Platform.LINUX) {
                 val devStdout = java.io.FileOutputStream("/dev/stdout")
                 val devStderr = java.io.FileOutputStream("/dev/stderr")
                 standardOutput = devStdout
                 errorOutput = devStderr
-                doLast { devStdout.flush(); devStderr.flush() }
+                doLast {
+                    devStdout.flush(); devStdout.close()
+                    devStderr.flush(); devStderr.close()
+                }
             }
 
             if (extension.alwaysRun.get()) {
@@ -221,7 +221,7 @@ class GtestTaskBuilder(
         }
     }
 
-    private fun skipConditions(): Boolean {
+    fun skipConditions(): Boolean {
         return project.hasProperty("skip-tests") ||
                project.hasProperty("skip-native") ||
                project.hasProperty("skip-gtest")
