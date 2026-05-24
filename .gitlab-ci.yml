@@ -21,6 +21,7 @@ stages:
   - images
   - generate-signing-key
   - prepare
+  - sanitizer
   - build
   - stresstest
   - deploy
