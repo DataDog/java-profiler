@@ -11,20 +11,23 @@ they require:
 
 | Tier | System | When | Sanitizers | Purpose |
 |------|--------|------|-----------|---------|
-| **C++ unit tests** | GitHub Actions | Every PR | ASan + TSan | Data races and memory errors in native internals |
+| **C++ unit tests** | GitLab | Every branch push | ASan + TSan | Data races and memory errors in native internals |
 | **Java functional tests** | GitHub Actions | Nightly | ASan | Correctness + memory errors in JVMTI paths |
 | **dd-trace integration** | GitLab | Every branch push | None | Compatibility with the tracer agent |
 | **Chaos / reliability** | GitLab | Nightly scheduled | None | Long-duration stability and probabilistic crash detection |
 
 ---
 
-## Tier 1 — C++ Unit Tests (Every PR)
+## Tier 1 — C++ Unit Tests (Every Branch Push)
 
-**Workflow:** `.github/workflows/ci.yml`, job `native-sanitizer-tests`
+**Pipeline:** `.gitlab/sanitizer-tests/.gitlab-ci.yml`, `build` stage
+
+**Jobs:** `gtest-asan-amd64`, `gtest-tsan-amd64`, `gtest-asan-arm64`, `gtest-tsan-arm64`
 
 **Gradle tasks:** `:ddprof-lib:gtestAsan`, `:ddprof-lib:gtestTsan`
 
-**Runs on:** amd64 and aarch64 (Ubuntu), on every PR regardless of labels
+**Runs on:** amd64 and aarch64, using the standard `BUILD_IMAGE_X64` / `BUILD_IMAGE_ARM64`
+images, on every branch push (same trigger as the dd-trace integration tests)
 
 The C++ gtest suite in `ddprof-lib/src/test/cpp/` exercises profiler internals
 directly, without a JVM. This makes both ASan and TSan effective:
@@ -40,6 +43,12 @@ patterns (lock-free GC internals, biased locking) that produce too many false
 positives in the Java functional tier. `gradle/sanitizers/tsan.supp` captures
 suppressions from earlier attempts; it exists for the benefit of any future JVM-level
 TSan runs, but is not applied here since these tests never load a JVM.
+
+**Why GitLab and not GitHub Actions:** TSan requires `vm.mmap_rnd_bits ≤ 28` and its
+re-exec fallback (`personality(ADDR_NO_RANDOMIZE)`) to handle ASLR conflicts. GitHub
+Actions' ubuntu-latest runners have `vm.mmap_rnd_bits=32` and their seccomp profile
+blocks the `personality` syscall. The Datadog GitLab runners have stable kernel
+settings tuned for benchmark workloads.
 
 **Key test files:**
 
@@ -69,11 +78,14 @@ TSan runs, but is not applied here since these tests never load a JVM.
 
 Prerequisites on Ubuntu:
 ```bash
-sudo apt-get install -y libgtest-dev libgmock-dev libasan6 libtsan0 cmake g++ clang
+sudo apt-get install -y libgtest-dev libgmock-dev cmake g++ clang
 ```
 
-On TSan failure CI uploads `/tmp/tsan_*.log` as artifacts. Locally the same files
-appear at that path; they contain the full race report with stack traces.
+The sanitizer runtimes are bundled with `g++` and `clang` on modern Ubuntu — no
+separate `libasan` or `libtsan` package is needed.
+
+On TSan failure the report is written to stderr and appears directly in the GitLab
+job log.
 
 ---
 
