@@ -8,6 +8,7 @@
 
 .sanitizer_job:
   stage: sanitizer
+  needs: []
   timeout: 30m
   rules:
     - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
