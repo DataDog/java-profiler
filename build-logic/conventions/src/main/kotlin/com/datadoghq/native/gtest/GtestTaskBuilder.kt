@@ -37,6 +37,7 @@ class GtestTaskBuilder(
     private lateinit var compiler: String
     private lateinit var includeFiles: FileCollection
     private var hasGtest: Boolean = true
+    private var sharedLibCompileTask: TaskProvider<NativeCompileTask>? = null
 
     private val configName: String get() = config.capitalizedName()
 
@@ -74,6 +75,23 @@ class GtestTaskBuilder(
     }
 
     /**
+     * Provide the shared library compile task whose objects are linked into
+     * every test binary.  Allows the library sources to be compiled once
+     * instead of once per test file.
+     */
+    fun withSharedLibObjects(task: TaskProvider<NativeCompileTask>): GtestTaskBuilder {
+        sharedLibCompileTask = task
+        return this
+    }
+
+    /**
+     * Returns the compiler args used for compiling library and test sources.
+     * Exposed so GtestPlugin can configure the shared library compile task
+     * with identical flags without duplicating the adjustment logic.
+     */
+    fun sharedCompilerArgs(): List<String> = adjustCompilerArgs()
+
+    /**
      * Build all tasks (compile, link, execute) and return the execute task provider.
      */
     fun build(): TaskProvider<Exec> {
@@ -94,10 +112,16 @@ class GtestTaskBuilder(
             this.compiler.set(this@GtestTaskBuilder.compiler)
             this.compilerArgs.set(compilerArgs)
 
-            sources.from(
-                project.fileTree(extension.mainSourceDir.get()) { include("**/*.cpp") },
-                testFile
-            )
+            // When a shared library compile task is provided, library sources
+            // are compiled once there.  Only compile the test file itself here.
+            if (sharedLibCompileTask != null) {
+                sources.from(testFile)
+            } else {
+                sources.from(
+                    project.fileTree(extension.mainSourceDir.get()) { include("**/*.cpp") },
+                    testFile
+                )
+            }
             includes.from(includeFiles)
             objectFileDir.set(objDir)
         }
@@ -117,6 +141,10 @@ class GtestTaskBuilder(
             linker.set(compiler)
             this.linkerArgs.set(linkerArgs)
             objectFiles.from(project.fileTree(objDir) { include("*.o") })
+            sharedLibCompileTask?.let { sharedTask ->
+                dependsOn(sharedTask)
+                objectFiles.from(sharedTask.map { it.objectFileDir.get().asFileTree.matching { include("*.o") } })
+            }
             outputFile.set(binary)
 
             // Add gtest library paths
@@ -171,7 +199,7 @@ class GtestTaskBuilder(
         }
     }
 
-    private fun skipConditions(): Boolean {
+    fun skipConditions(): Boolean {
         return project.hasProperty("skip-tests") ||
                project.hasProperty("skip-native") ||
                project.hasProperty("skip-gtest")
