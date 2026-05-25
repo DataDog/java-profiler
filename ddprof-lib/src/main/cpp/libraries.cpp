@@ -88,23 +88,10 @@ void *Libraries::refresherLoop(void *arg) {
   self->_refresher_tid.store(OS::threadId(), std::memory_order_release);
 
   while (self->_refresher_running.load(std::memory_order_acquire)) {
-    // Sleep until the next tick or until interrupted.  OS::sleep wraps a
-    // single nanosleep that returns early on EINTR; loop on the remaining
-    // time so unrelated unmasked signals (SIGCHLD, debugger SIGSTOP/CONT,
-    // etc.) do not cause premature ticks.  The stopRefresher path sends
-    // SIGIO and flips _refresher_running first, so the outer-loop check
-    // catches the wake-up and exits without sleeping again.
-    u64 remaining = REFRESH_INTERVAL_NS;
-    while (remaining > 0 &&
-           self->_refresher_running.load(std::memory_order_acquire)) {
-      u64 before = OS::nanotime();
-      OS::sleep(remaining);
-      u64 elapsed = OS::nanotime() - before;
-      if (elapsed >= remaining) {
-        break;
-      }
-      remaining -= elapsed;
-    }
+    // Absolute-deadline sleep that resumes across EINTR (SIGCHLD, debugger
+    // SIGSTOP/SIGCONT, etc.) and wakes early when stopRefresher() flips
+    // _refresher_running false and sends SIGIO.  See OS::sleepWhile.
+    OS::sleepWhile(REFRESH_INTERVAL_NS, self->_refresher_running);
     if (!self->_refresher_running.load(std::memory_order_acquire)) {
       break;
     }

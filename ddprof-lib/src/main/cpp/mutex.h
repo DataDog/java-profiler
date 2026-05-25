@@ -19,8 +19,6 @@ class Mutex {
 
     void lock();
     void unlock();
-    // async-signal-safe: pthread_mutex_trylock is on the POSIX AS-safe list
-    bool tryLock() { return pthread_mutex_trylock(&_mutex) == 0; }
 };
 
 class WaitableMutex : public Mutex {

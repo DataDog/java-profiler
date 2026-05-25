@@ -28,13 +28,6 @@ int getInSignalDepth() {
     return pt != nullptr ? static_cast<int>(pt->signalDepth()) : 0;
 }
 
-bool isInSignalContext() {
-    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
-    // null ProfiledThread = no thread context yet; treat as "assume signal"
-    // so AS-safety gates default to the conservative deferred path.
-    return pt == nullptr || pt->signalDepth() != 0;
-}
-
 bool isInTrackedSignalContext() {
     ProfiledThread *pt = ProfiledThread::currentSignalSafe();
     // null ProfiledThread = no thread context; the SignalHandlerScope

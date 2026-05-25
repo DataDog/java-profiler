@@ -25,51 +25,51 @@
 class ProfiledThread;
 
 // ---------------------------------------------------------------------------
-// Signal-context depth tracking.
+// Signal-context depth tracking — always on.
 //
-// Code paths that must choose between an async-signal-safe deferred path and
-// a synchronous path (e.g. Profiler::dlopen_hook, which defers refresh() when
-// a library is loaded from signal context) query isInSignalContext().  The
-// debug-only DEBUG_ASSERT_NOT_IN_SIGNAL() macro in signalSafety.h asserts on
-// the same counter.
+// Profiler::dlopen_hook is the production caller — it queries
+// isInTrackedSignalContext() to decide between the synchronous refresh()
+// path and the deferred markDirty() path.  The debug-only
+// DEBUG_ASSERT_NOT_IN_SIGNAL() macro in signalSafety.h asserts on the
+// same counter.
 //
 // Storage: the depth lives in ProfiledThread::_signal_depth.  An earlier
 // design used a thread_local int, but on Graal aarch64 the lazy DTV slot
 // allocation triggered malloc inside our signal handler and deadlocked
-// against the JVMCI compiler holding the heap lock.  initial-exec fixed the
-// malloc but tripped the static TLS surplus and broke dlopen on Graal.
-// ProfiledThread is already AS-safe-accessible via pthread_getspecific
-// (POSIX guarantees it does not allocate; returns nullptr when unset).
+// against the JVMCI compiler holding the heap lock.  initial-exec fixed
+// the malloc but tripped the static TLS surplus and broke dlopen on
+// Graal.  ProfiledThread is already AS-safe-accessible via
+// pthread_getspecific (POSIX guarantees it does not allocate; returns
+// nullptr when unset).
 //
-// When ProfiledThread is null on a thread, we don't yet have a thread
+// When ProfiledThread is null on a thread we don't yet have a thread
 // context — uninstrumented JVM-internal threads (VM Thread, JIT, GC) fall
-// into this bucket too, and they can receive signals.  isInSignalContext()
-// treats null as "assume signal" so dlopen_hook defers conservatively
-// rather than risking a synchronous refresh from a signal frame.
-// DEBUG_ASSERT_NOT_IN_SIGNAL skips the check when null so well-behaved
-// non-signal code on uninstrumented threads doesn't trip a false abort.
+// into this bucket too, and they can receive signals.  The
+// SignalHandlerScope guard is a no-op on those threads (nothing to
+// update), so isInTrackedSignalContext() returns false: production code
+// prefers synchronous refresh() on null-PT threads because (a) those
+// threads regularly call dlopen during normal JVM operation, and (b)
+// wasmtime's broken sigaction patching depends on switchLibraryTrap
+// running work inline.  The residual risk — an uninstrumented thread
+// calling dlopen from inside a foreign signal handler — is small in
+// practice: prewarmUnwinder() closes the known libgcc_s lazy-load case
+// and mainstream JVM signal handlers are AS-safe by design.
+//
+// DEBUG_ASSERT_NOT_IN_SIGNAL likewise skips its check when ProfiledThread
+// is null so well-behaved non-signal code on uninstrumented threads
+// doesn't trip a false abort.
 // ---------------------------------------------------------------------------
 
 // Returns the signal-handler depth for the calling thread, or 0 if the
-// thread has no ProfiledThread yet.  Use isInSignalContext() instead when
-// you only need a boolean — it handles the "no thread context" case
-// conservatively (returns true).
+// thread has no ProfiledThread yet.  Intended for tests and diagnostic
+// code; production callers should use isInTrackedSignalContext().
 int getInSignalDepth();
 
-// True when the calling thread is either inside an installed signal
-// handler (depth > 0) or has no thread context yet (treat as "unknown,
-// assume signal" — fail-safe for AS-safety gating).
-bool isInSignalContext();
-
-// Returns true ONLY when we have positively tracked entering one of our
-// installed signal handlers on this thread.  null ProfiledThread → false
-// (we have no way to know, so callers that prefer to do work
-// synchronously on uninstrumented threads — Profiler::dlopen_hook —
-// can use this.)  Accepts the small theoretical risk that an
-// uninstrumented JVM-internal thread (VM Thread, JIT, GC) doing a dlopen
-// from inside a *foreign* signal handler will look like regular code;
-// prewarmUnwinder() covers the known libgcc_s case and JVM-internal
-// signal handlers are generally AS-safe by design.
+// Returns true only when we have positively tracked entering one of our
+// installed signal handlers on this thread (depth > 0 on a non-null
+// ProfiledThread).  null ProfiledThread → false, matching the
+// SignalHandlerScope semantics (the guard is a no-op there).
+// Used by Profiler::dlopen_hook to gate the deferred-refresh branch.
 bool isInTrackedSignalContext();
 
 // Internal RAII type — do not instantiate directly; use the macros below.
