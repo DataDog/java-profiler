@@ -25,7 +25,7 @@
 class ProfiledThread;
 
 // ---------------------------------------------------------------------------
-// Signal-context depth tracking — always on.
+// Signal-context depth tracking.
 //
 // Code paths that must choose between an async-signal-safe deferred path and
 // a synchronous path (e.g. Profiler::dlopen_hook, which defers refresh() when
@@ -33,40 +33,44 @@ class ProfiledThread;
 // debug-only DEBUG_ASSERT_NOT_IN_SIGNAL() macro in signalSafety.h asserts on
 // the same counter.
 //
-// TLS model: initial-exec.  Default (global-dynamic) lazily allocates the
-// dtv slot via malloc on first access — and the *first* access happens
-// inside our signal handler (SIGNAL_HANDLER_GUARD).  That malloc takes the
-// heap lock and deadlocks when the holder is paused for a safepoint
-// (observed on Graal aarch64 / libjvmcicompiler.so).  initial-exec instructs
-// the loader to allocate the slot from the static TLS surplus at library
-// load — every existing thread is fixed up at dlopen and every new thread
-// gets the slot at pthread_create.  Access is a register-relative load with
-// no malloc, lock, or syscall, so it is async-signal-safe by construction.
+// Storage: the depth lives in ProfiledThread::_signal_depth.  An earlier
+// design used a thread_local int, but on Graal aarch64 the lazy DTV slot
+// allocation triggered malloc inside our signal handler and deadlocked
+// against the JVMCI compiler holding the heap lock.  initial-exec fixed the
+// malloc but tripped the static TLS surplus and broke dlopen on Graal.
+// ProfiledThread is already AS-safe-accessible via pthread_getspecific
+// (POSIX guarantees it does not allocate; returns nullptr when unset).
 //
-// uint8_t is sufficient: realistic max depth is 3 (e.g. SIGSEGV nested in
-// SIGPROF nested in something else); using a byte over an int makes the
-// "tiny counter, never grows" intent explicit.  Slot alignment is the same.
+// When ProfiledThread is null on a thread, we don't yet have a thread
+// context — uninstrumented JVM-internal threads (VM Thread, JIT, GC) fall
+// into this bucket too, and they can receive signals.  isInSignalContext()
+// treats null as "assume signal" so dlopen_hook defers conservatively
+// rather than risking a synchronous refresh from a signal frame.
+// DEBUG_ASSERT_NOT_IN_SIGNAL skips the check when null so well-behaved
+// non-signal code on uninstrumented threads doesn't trip a false abort.
 // ---------------------------------------------------------------------------
 
-#define _PROFILER_TLS_IE __attribute__((tls_model("initial-exec")))
+// Returns the signal-handler depth for the calling thread, or 0 if the
+// thread has no ProfiledThread yet.  Use isInSignalContext() instead when
+// you only need a boolean — it handles the "no thread context" case
+// conservatively (returns true).
+int getInSignalDepth();
 
-// Counter so nested signals (e.g. SIGSEGV inside SIGPROF) keep the flag
-// asserted until the outermost handler returns.
-extern thread_local uint8_t _in_signal_handler_depth _PROFILER_TLS_IE;
-
-inline int getInSignalDepth()    { return _in_signal_handler_depth; }
-inline bool isInSignalContext()  { return _in_signal_handler_depth != 0; }
+// True when the calling thread is either inside an installed signal
+// handler (depth > 0) or has no thread context yet (treat as "unknown,
+// assume signal" — fail-safe for AS-safety gating).
+bool isInSignalContext();
 
 // Internal RAII type — do not instantiate directly; use the macros below.
 class SignalHandlerScope {
 public:
-    SignalHandlerScope()  { ++_in_signal_handler_depth; }
-    ~SignalHandlerScope() { if (_active) --_in_signal_handler_depth; }
-    void release()        { if (_active) { --_in_signal_handler_depth; _active = false; } }
+    SignalHandlerScope();
+    ~SignalHandlerScope();
+    void release();
     SignalHandlerScope(const SignalHandlerScope&)            = delete;
     SignalHandlerScope& operator=(const SignalHandlerScope&) = delete;
 private:
-    bool _active = true;
+    bool _active;
 };
 
 // Declare a scope guard local that increments the depth on entry and
@@ -84,11 +88,8 @@ private:
 // Call at the setjmp landing point AFTER a known longjmp originated from
 // within a signal handler frame (e.g. HotSpot's checkFault → longjmp recovery
 // in walkVM).
-#define SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP()           \
-    do {                                                \
-        if (_in_signal_handler_depth > 0)               \
-            --_in_signal_handler_depth;                 \
-    } while (0)
+void signalHandlerUnwindAfterLongjmp();
+#define SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP() signalHandlerUnwindAfterLongjmp()
 
 /**
  * Race-free critical section using atomic compare-and-swap.

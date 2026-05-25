@@ -17,7 +17,8 @@
 #ifndef _SIGNAL_SAFETY_H
 #define _SIGNAL_SAFETY_H
 
-#include "guards.h"  // _in_signal_handler_depth, SIGNAL_HANDLER_GUARD, ...
+#include "guards.h"   // isInSignalContext, SIGNAL_HANDLER_GUARD, ...
+#include "thread.h"   // ProfiledThread::currentSignalSafe
 
 // Detect ASAN using compiler-provided macros so the ASAN_ENABLED guard below
 // works in every TU that includes this header, independent of include order.
@@ -38,9 +39,12 @@
 // invoked from inside a signal handler in debug / ASAN builds; compiles to a
 // no-op in release builds (NDEBUG).
 //
-// The depth counter itself lives in guards.h (always-on, needed by
-// Profiler::dlopen_hook for the AS-safe deferred path).  Only the diagnostic
-// abort is conditional.
+// The depth counter itself lives in ProfiledThread::_signal_depth (see
+// guards.h for the rationale).  The check is skipped when ProfiledThread
+// is null — uninstrumented threads (VM Thread, JIT, GC) have no thread
+// context, so the assertion has no way to know whether they're really in
+// a signal frame.  Treating "unknown" as a violation would produce false
+// positives every time AS-unsafe code legitimately ran on such a thread.
 //
 // write(2) is POSIX async-signal-safe.  abort() generates a core dump and
 // triggers ASAN's stack-trace symbolization, making it far more debuggable
@@ -59,7 +63,9 @@
 
 #define DEBUG_ASSERT_NOT_IN_SIGNAL()                                                        \
     do {                                                                                     \
-        if (_in_signal_handler_depth != 0) {                                                 \
+        ProfiledThread *_pt_for_assert = ProfiledThread::currentSignalSafe();                \
+        /* Skip when no thread context — see comment above. */                              \
+        if (_pt_for_assert != nullptr && _pt_for_assert->signalDepth() != 0) {              \
             static const char _msg[] =                                                       \
                 "[java-profiler] AS-safety violation at "                                    \
                 __FILE__ ":" _SIGNAL_SAFETY_TOSTR(__LINE__)                                  \

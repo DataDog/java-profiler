@@ -15,13 +15,23 @@
  */
 
 #include "signalSafety.h"
+#include "thread.h"
 #include <gtest/gtest.h>
 
 class SignalSafetyTest : public ::testing::Test {
 protected:
+    void SetUp() override {
+        // SignalHandlerScope reads/writes ProfiledThread::_signal_depth — the
+        // tests need a thread context to exist on the gtest thread, otherwise
+        // every scope is a no-op (which is the intended production behavior
+        // on uninstrumented threads, but not what these unit tests assert).
+        ProfiledThread::initCurrentThread();
+    }
+
     void TearDown() override {
         // Catch leaked depth from a failed test so subsequent tests start clean.
         ASSERT_EQ(0, getInSignalDepth()) << "depth not zero after test — check for leaked SignalHandlerScope";
+        ProfiledThread::release();
     }
 };
 
@@ -49,5 +59,12 @@ TEST_F(SignalSafetyTest, NestedDepth) {
         }
         EXPECT_EQ(1, getInSignalDepth());
     }
+    EXPECT_EQ(0, getInSignalDepth());
+}
+
+TEST(SignalSafetyTestNoContext, NullProfiledThreadIsTreatedAsSignal) {
+    // No ProfiledThread on this thread — isInSignalContext() must return
+    // true (conservative default for AS-safety gates like dlopen_hook).
+    EXPECT_TRUE(isInSignalContext());
     EXPECT_EQ(0, getInSignalDepth());
 }

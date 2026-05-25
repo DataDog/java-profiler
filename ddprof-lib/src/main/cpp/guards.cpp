@@ -19,8 +19,56 @@
 #include "os.h"
 #include "thread.h"
 
-// Always-on signal-context depth counter; see comments in guards.h.
-thread_local uint8_t _in_signal_handler_depth _PROFILER_TLS_IE = 0;
+// Signal-context tracking — backed by ProfiledThread::_signal_depth; see
+// the comment block in guards.h for the rationale (initial-exec TLS was
+// rejected because of the static TLS surplus on Graal).
+
+int getInSignalDepth() {
+    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    return pt != nullptr ? static_cast<int>(pt->signalDepth()) : 0;
+}
+
+bool isInSignalContext() {
+    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    // null ProfiledThread = no thread context yet; treat as "assume signal"
+    // so AS-safety gates default to the conservative deferred path.
+    return pt == nullptr || pt->signalDepth() != 0;
+}
+
+SignalHandlerScope::SignalHandlerScope() : _active(true) {
+    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    if (pt != nullptr) {
+        pt->enterSignalScope();
+    } else {
+        // No thread context: nothing to update; mark inactive so destructor
+        // and release() are no-ops.
+        _active = false;
+    }
+}
+
+SignalHandlerScope::~SignalHandlerScope() {
+    if (!_active) return;
+    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    if (pt != nullptr) {
+        pt->exitSignalScope();
+    }
+}
+
+void SignalHandlerScope::release() {
+    if (!_active) return;
+    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    if (pt != nullptr) {
+        pt->exitSignalScope();
+    }
+    _active = false;
+}
+
+void signalHandlerUnwindAfterLongjmp() {
+    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    if (pt != nullptr) {
+        pt->exitSignalScope();
+    }
+}
 
 // Static bitmap storage for fallback cases
 uint64_t CriticalSection::_fallback_bitmap[CriticalSection::FALLBACK_BITMAP_WORDS] = {};
