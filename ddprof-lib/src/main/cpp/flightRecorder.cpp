@@ -403,6 +403,17 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
         TEST_LOG("WARNING: Library lookup failed for index %u", lib_index);
         fillNativeMethodInfo(mi, "unknown_library", nullptr);
       }
+    } else if (bci == BCI_ALLOC) {
+      // Synthetic vtable-receiver frame from hotspotSupport.cpp:walkVM.
+      // method_id holds a class_id from _class_map (the same Dictionary as _classes).
+      // Use it directly as the JFR class reference; emit "<vtable_receiver>" as the
+      // method name. Passing class_id to fillJavaMethodInfo would produce "jvmtiError"
+      // because JVMTI rejects small integers as jmethodID pointers.
+      mi->_class = (u32)(uintptr_t)method;
+      mi->_name = _symbols.lookup("<vtable_receiver>");
+      mi->_sig = _symbols.lookup("()V");
+      mi->_type = FRAME_NATIVE;
+      mi->_is_entry = false;
     } else {
       fillJavaMethodInfo(mi, method, first_time);
     }

@@ -49,16 +49,16 @@ public class VtableTargetPreregistrationTest extends AbstractProfilerTest {
         return result;
     }
 
-    // The vtable_target feature inserts a synthetic frame whose method_id holds a class_id
-    // (u32 integer from _class_map) — not a real jmethodID pointer. When the flight recorder
-    // resolves this frame, JVMTI rejects the fake jmethodID and falls back to the "jvmtiError"
-    // placeholder. So every vtable stub whose receiver class is registered in _class_map will
-    // have a companion "jvmtiError" frame in the JFR output. If preregisterLoadedClasses() was
-    // not called (the bug), bounded_lookup returns INT_MAX, no synthetic frame is inserted, and
-    // "jvmtiError" never appears next to a vtable stub.
+    // The vtable_target feature inserts a synthetic <vtable_receiver> frame immediately
+    // below a vtable stub frame in the call stack. The receiver class (Circle/Square/Triangle)
+    // is resolved from _class_map and emitted as the class name for the synthetic frame.
+    // If preregisterLoadedClasses() was not called (the bug), bounded_lookup returns INT_MAX,
+    // no synthetic frame is inserted, and the receiver class name never appears next to a
+    // vtable stub in the JFR output.
     @RetryingTest(5)
-    public void testVtableReceiverFrameInCpuSamples() {
+    public void testVtableReceiverFrameInCpuSamples() throws Exception {
         Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
+        waitForProfilerReady(2000);
         int result = profiledWork(new Circle(), new Square(), new Triangle());
         System.err.println(result);
         stopProfiler();
@@ -68,9 +68,14 @@ public class VtableTargetPreregistrationTest extends AbstractProfilerTest {
         for (IItemIterable cpuSamples : events) {
             IMemberAccessor<String, IItem> frameAccessor =
                     JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
+            if (frameAccessor == null) continue;
             for (IItem sample : cpuSamples) {
                 String stackTrace = frameAccessor.getMember(sample);
-                if (stackTrace.contains(".vtable stub()") && stackTrace.contains("jvmtiError")) {
+                if (stackTrace != null
+                        && stackTrace.contains(".vtable stub()")
+                        && (stackTrace.contains("Circle")
+                                || stackTrace.contains("Square")
+                                || stackTrace.contains("Triangle"))) {
                     foundVtableWithReceiver = true;
                     break;
                 }
@@ -78,8 +83,8 @@ public class VtableTargetPreregistrationTest extends AbstractProfilerTest {
             if (foundVtableWithReceiver) break;
         }
         assertTrue(foundVtableWithReceiver,
-                "No CPU sample contained both a vtable stub frame and a synthetic receiver-class frame " +
-                "(appears as \"jvmtiError\" because the class_id is not a real jmethodID); " +
-                "preregisterLoadedClasses() may not have run at CPU-only profiler start");
+                "No CPU sample contained both a vtable stub frame and a receiver-class frame " +
+                "(Circle/Square/Triangle); preregisterLoadedClasses() may not have run at " +
+                "CPU-only profiler start");
     }
 }

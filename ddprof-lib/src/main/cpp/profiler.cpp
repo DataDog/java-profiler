@@ -1709,8 +1709,11 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti, bool clear_first) {
     }
     return;
   }
-  if (classes == nullptr) {
-    return;  // Zero classes loaded (class_count == 0); nothing to enumerate.
+  if (class_count == 0) {
+    if (classes != nullptr) {
+      jvmti->Deallocate(reinterpret_cast<unsigned char*>(classes));
+    }
+    return;
   }
   // Phase 1 (no lock): enumerate signatures and copy normalized slices.
   // normalizeClassSignature returns a pointer INTO the JVMTI sig buffer, so
