@@ -49,10 +49,13 @@ public class VtableTargetPreregistrationTest extends AbstractProfilerTest {
         return result;
     }
 
-    // jvmtiError is the expected synthetic receiver-class frame that vtable_target inserts when
-    // the class map is populated (PR #527 fix). The class map is populated by
-    // preregisterLoadedClasses() at CPU-only profiler start; if that call is absent (the bug),
-    // bounded_lookup returns INT_MAX and no synthetic frame is inserted — jvmtiError never appears.
+    // The vtable_target feature inserts a synthetic frame whose method_id holds a class_id
+    // (u32 integer from _class_map) — not a real jmethodID pointer. When the flight recorder
+    // resolves this frame, JVMTI rejects the fake jmethodID and falls back to the "jvmtiError"
+    // placeholder. So every vtable stub whose receiver class is registered in _class_map will
+    // have a companion "jvmtiError" frame in the JFR output. If preregisterLoadedClasses() was
+    // not called (the bug), bounded_lookup returns INT_MAX, no synthetic frame is inserted, and
+    // "jvmtiError" never appears next to a vtable stub.
     @RetryingTest(5)
     public void testVtableReceiverFrameInCpuSamples() {
         Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
@@ -75,7 +78,8 @@ public class VtableTargetPreregistrationTest extends AbstractProfilerTest {
             if (foundVtableWithReceiver) break;
         }
         assertTrue(foundVtableWithReceiver,
-                "No CPU sample contained both a vtable stub frame and a jvmtiError receiver frame; " +
-                "preregisterLoadedClasses() may not have run at CPU-only profiler start (PR #527 regression)");
+                "No CPU sample contained both a vtable stub frame and a synthetic receiver-class frame " +
+                "(appears as \"jvmtiError\" because the class_id is not a real jmethodID); " +
+                "preregisterLoadedClasses() may not have run at CPU-only profiler start");
     }
 }

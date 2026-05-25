@@ -1746,13 +1746,17 @@ void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti, bool clear_first) {
   if (sig_failures > 0) {
     Log::warn("preregisterLoadedClasses: GetClassSignature failed for %d/%d class(es) — those vtable-target frames may be missing until ClassPrepare fires", sig_failures, class_count);
   }
-  // Phase 2 (exclusive lock): bulk-insert the collected names. Only the cheap
-  // Dictionary pointer operations happen under the lock — no JVMTI calls.
+  // Phase 2 (shared lock): bulk-insert the collected names. SharedLockGuard is
+  // sufficient: concurrent inserters (ClassPrepare callbacks, lookupClass) already
+  // run under the shared lock; only clear() in Phase 0 needs the exclusive lock.
+  // Using ExclusiveLockGuard here would block signal-handler readers (bounded_lookup
+  // in vtable_target and tryLockShared in object sampler) for the full bulk-insert
+  // duration, dropping samples unnecessarily.
   // NOTE: no clear here. When clear_first=true, Phase 0 already cleared the map
   // before Phase 1, so concurrent ClassPrepare insertions from that window survive.
   // When clear_first=false the map is additive and no ClassPrepare entries are lost.
   {
-    ExclusiveLockGuard guard(&_class_map_lock);
+    SharedLockGuard guard(&_class_map_lock);
     for (const std::string& s : sigs) {
       (void)_class_map.lookup(s.c_str(), s.size());
     }
