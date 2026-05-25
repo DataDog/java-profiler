@@ -24,6 +24,60 @@
 
 class ProfiledThread;
 
+// ---------------------------------------------------------------------------
+// Signal-context depth tracking — always on.
+//
+// Code paths that must choose between an async-signal-safe deferred path and
+// a synchronous path (e.g. Profiler::dlopen_hook, which has to defer when a
+// library is lazily loaded from signal context) query isInSignalContext().
+// The debug-only DEBUG_ASSERT_NOT_IN_SIGNAL() macro in signalSafety.h
+// asserts on the same counter.
+//
+// Cost in release: ~2 thread-local writes per signal handler invocation
+// (negligible).  Pre-warming libgcc_s in Profiler::start() closes the
+// known case; this counter is the safety net for the remainder.
+// ---------------------------------------------------------------------------
+
+// Counter so nested signals (e.g. SIGSEGV inside SIGPROF) keep the flag
+// asserted until the outermost handler returns.
+extern thread_local int _in_signal_handler_depth;
+
+inline int getInSignalDepth()    { return _in_signal_handler_depth; }
+inline bool isInSignalContext()  { return _in_signal_handler_depth != 0; }
+
+// Internal RAII type — do not instantiate directly; use the macros below.
+class SignalHandlerScope {
+public:
+    SignalHandlerScope()  { ++_in_signal_handler_depth; }
+    ~SignalHandlerScope() { if (_active) --_in_signal_handler_depth; }
+    void release()        { if (_active) { --_in_signal_handler_depth; _active = false; } }
+    SignalHandlerScope(const SignalHandlerScope&)            = delete;
+    SignalHandlerScope& operator=(const SignalHandlerScope&) = delete;
+private:
+    bool _active = true;
+};
+
+// Declare a scope guard local that increments the depth on entry and
+// decrements on scope exit.  Use as the very first statement in every
+// installed signal handler.
+#define SIGNAL_HANDLER_GUARD() SignalHandlerScope _signal_handler_scope
+
+// Manually release the most recent SIGNAL_HANDLER_GUARD() before chaining to
+// another handler that may longjmp through us (e.g. J9's SIGSEGV null-pointer
+// check handler).  After release(), depth has already been decremented; the
+// destructor becomes a no-op.
+#define SIGNAL_HANDLER_GUARD_RELEASE() _signal_handler_scope.release()
+
+// Compensate for a longjmp that bypassed a SignalHandlerScope's destructor.
+// Call at the setjmp landing point AFTER a known longjmp originated from
+// within a signal handler frame (e.g. HotSpot's checkFault → longjmp recovery
+// in walkVM).
+#define SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP()           \
+    do {                                                \
+        if (_in_signal_handler_depth > 0)               \
+            --_in_signal_handler_depth;                 \
+    } while (0)
+
 /**
  * Race-free critical section using atomic compare-and-swap.
  *

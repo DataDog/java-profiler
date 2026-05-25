@@ -19,6 +19,7 @@
 #include "jniHelper.h"
 #include "os.h"
 #include "profiler.h"
+#include "signalSafety.h"
 #include "rustDemangler.h"
 #include "safeAccess.h"
 #include "spinLock.h"
@@ -1411,6 +1412,7 @@ void Recording::writeMethods(Buffer *buf, Lookup *lookup) {
 }
 
 void Recording::writeClasses(Buffer *buf, Lookup *lookup) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   std::map<u32, const char *> classes;
   // Hold classMapSharedGuard() for the full function. The const char* pointers
   // stored in classes point into dictionary row storage; clear() frees that
@@ -1720,10 +1722,11 @@ void Recording::recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
 // assumption is that we hold the lock (with lock_index)
 void Recording::addThread(int lock_index, int tid) {
     int active = _active_index.load(std::memory_order_acquire);
-    _thread_ids[lock_index][active].insert(tid);
+    _thread_ids[lock_index][active].insert(tid);  // ThreadIdTable::insert is signal-safe (atomics only)
 }
 
 Error FlightRecorder::start(Arguments &args, bool reset) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   ExclusiveLockGuard locker(&_rec_lock);
   const char *file = args.file();
   if (file == NULL || file[0] == 0) {
@@ -1751,6 +1754,7 @@ Error FlightRecorder::newRecording(bool reset) {
 }
 
 void FlightRecorder::stop() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   ExclusiveLockGuard locker(&_rec_lock);
   Recording* rec = _rec;
   if (rec != nullptr) {
@@ -1761,6 +1765,7 @@ void FlightRecorder::stop() {
 }
 
 Error FlightRecorder::dump(const char *filename, const int length) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   assert(length >= 0);
   ExclusiveLockGuard locker(&_rec_lock);
   Recording* rec = _rec;
@@ -1781,6 +1786,7 @@ Error FlightRecorder::dump(const char *filename, const int length) {
 }
 
 void FlightRecorder::flush() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   ExclusiveLockGuard locker(&_rec_lock);
   Recording* rec = _rec;
   if (rec != nullptr) {
@@ -1845,6 +1851,7 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid,
 void FlightRecorder::recordDatadogSetting(int lock_index, int length,
                                           const char *name, const char *value,
                                           const char *unit) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
     Recording* rec = _rec;
@@ -1856,6 +1863,7 @@ void FlightRecorder::recordDatadogSetting(int lock_index, int length,
 }
 
 void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
     Recording* rec = _rec;

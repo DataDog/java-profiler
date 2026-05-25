@@ -21,6 +21,7 @@
 #include "hotspot/jitCodeCache.h"
 #include <dlfcn.h>
 #include <stdlib.h>
+#include "guards.h"
 #include <string.h>
 #include <sys/mman.h>
 
@@ -56,6 +57,7 @@ AsyncGetCallTrace VM::_asyncGetCallTrace;
 JVM_GetManagement VM::_getManagement;
 
 static void wakeupHandler(int signo) {
+  SIGNAL_HANDLER_GUARD();
   // Dummy handler for interrupting syscalls
 }
 

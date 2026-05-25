@@ -17,6 +17,7 @@
 #include "dictionary.h"
 #include "arch.h"
 #include "counters.h"
+#include "signalSafety.h"
 #include <climits>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +42,7 @@ Dictionary::~Dictionary() {
 }
 
 void Dictionary::clear() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   clear(_table, _id);
   memset(_table, 0, sizeof(DictTable));
   _table->base_index = _base_index = 1;
@@ -79,10 +81,12 @@ unsigned int Dictionary::hash(const char *key, size_t length) {
 }
 
 unsigned int Dictionary::lookup(const char *key) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   return lookup(key, strlen(key));
 }
 
 unsigned int Dictionary::lookup(const char *key, size_t length) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   return lookup(key, length, true, 0);
 }
 

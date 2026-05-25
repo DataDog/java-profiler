@@ -11,6 +11,7 @@
 #include "context.h"
 #include "context_api.h"
 #include "guards.h"
+#include "signalSafety.h"
 #include "common.h"
 #include "counters.h"
 #include "ctimer.h"
@@ -801,10 +802,18 @@ void Profiler::disableEngines() {
 }
 
 void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  // J9 installs a SIGSEGV handler that uses siglongjmp() to recover from
+  // null-pointer-check faults during normal Java execution.  When we chain to
+  // it, that longjmp unwinds past our stack frame and skips the RAII
+  // destructor, permanently leaking depth on the thread.  Release the guard
+  // before chaining so depth is correct whether the chained handler returns
+  // or longjmps.
+  SIGNAL_HANDLER_GUARD();
   if (crashHandlerInternal(signo, siginfo, ucontext)) {
-    return;  // Handled
+    return;  // Handled — destructor decrements depth
   }
-  // Not handled, chain to next handler
+  SIGNAL_HANDLER_GUARD_RELEASE();
+  // Not handled, chain to next handler (may longjmp; never return through us)
   SigAction chain = OS::getSegvChainTarget();
   if (chain != nullptr) {
     chain(signo, siginfo, ucontext);
@@ -814,9 +823,13 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 }
 
 void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  // See segvHandler: release before chaining in case the chained handler
+  // longjmps through us.
+  SIGNAL_HANDLER_GUARD();
   if (crashHandlerInternal(signo, siginfo, ucontext)) {
-    return;  // Handled
+    return;  // Handled — destructor decrements depth
   }
+  SIGNAL_HANDLER_GUARD_RELEASE();
   // Not handled, chain to next handler
   SigAction chain = OS::getBusChainTarget();
   if (chain != nullptr) {
