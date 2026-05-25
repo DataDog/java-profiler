@@ -28,19 +28,31 @@ class ProfiledThread;
 // Signal-context depth tracking — always on.
 //
 // Code paths that must choose between an async-signal-safe deferred path and
-// a synchronous path (e.g. Profiler::dlopen_hook, which has to defer when a
-// library is lazily loaded from signal context) query isInSignalContext().
-// The debug-only DEBUG_ASSERT_NOT_IN_SIGNAL() macro in signalSafety.h
-// asserts on the same counter.
+// a synchronous path (e.g. Profiler::dlopen_hook, which defers refresh() when
+// a library is loaded from signal context) query isInSignalContext().  The
+// debug-only DEBUG_ASSERT_NOT_IN_SIGNAL() macro in signalSafety.h asserts on
+// the same counter.
 //
-// Cost in release: ~2 thread-local writes per signal handler invocation
-// (negligible).  Pre-warming libgcc_s in Profiler::start() closes the
-// known case; this counter is the safety net for the remainder.
+// TLS model: initial-exec.  Default (global-dynamic) lazily allocates the
+// dtv slot via malloc on first access — and the *first* access happens
+// inside our signal handler (SIGNAL_HANDLER_GUARD).  That malloc takes the
+// heap lock and deadlocks when the holder is paused for a safepoint
+// (observed on Graal aarch64 / libjvmcicompiler.so).  initial-exec instructs
+// the loader to allocate the slot from the static TLS surplus at library
+// load — every existing thread is fixed up at dlopen and every new thread
+// gets the slot at pthread_create.  Access is a register-relative load with
+// no malloc, lock, or syscall, so it is async-signal-safe by construction.
+//
+// uint8_t is sufficient: realistic max depth is 3 (e.g. SIGSEGV nested in
+// SIGPROF nested in something else); using a byte over an int makes the
+// "tiny counter, never grows" intent explicit.  Slot alignment is the same.
 // ---------------------------------------------------------------------------
+
+#define _PROFILER_TLS_IE __attribute__((tls_model("initial-exec")))
 
 // Counter so nested signals (e.g. SIGSEGV inside SIGPROF) keep the flag
 // asserted until the outermost handler returns.
-extern thread_local int _in_signal_handler_depth;
+extern thread_local uint8_t _in_signal_handler_depth _PROFILER_TLS_IE;
 
 inline int getInSignalDepth()    { return _in_signal_handler_depth; }
 inline bool isInSignalContext()  { return _in_signal_handler_depth != 0; }

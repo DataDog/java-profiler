@@ -20,7 +20,7 @@
 #include "thread.h"
 
 // Always-on signal-context depth counter; see comments in guards.h.
-thread_local int _in_signal_handler_depth = 0;
+thread_local uint8_t _in_signal_handler_depth _PROFILER_TLS_IE = 0;
 
 // Static bitmap storage for fallback cases
 uint64_t CriticalSection::_fallback_bitmap[CriticalSection::FALLBACK_BITMAP_WORDS] = {};

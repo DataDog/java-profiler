@@ -14,7 +14,9 @@
 // Cadence for the background refresher thread.  Bounds the window during
 // which a library lazily loaded from signal context (and therefore unable
 // to call refresh() synchronously) is unresolvable by the stack walker.
-static constexpr u64 REFRESH_INTERVAL_NS = 5ULL * 1'000'000'000ULL;
+// 500 ms is short enough that frame resolution gaps are barely observable
+// in typical sampling, and the refresher only wakes once per tick (cheap).
+static constexpr u64 REFRESH_INTERVAL_NS = 500ULL * 1'000'000ULL;
 
 void Libraries::mangle(const char *name, char *buf, size_t size) {
   char *buf_end = buf + size;
