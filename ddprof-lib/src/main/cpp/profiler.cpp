@@ -11,7 +11,6 @@
 #include "context.h"
 #include "context_api.h"
 #include "guards.h"
-#include "signalSafety.h"
 #include "common.h"
 #include "counters.h"
 #include "ctimer.h"
@@ -749,20 +748,50 @@ void Profiler::writeHeapUsage(long value, bool live) {
   _locks[lock_index].unlock();
 }
 
+void Profiler::prewarmUnwinder() {
+#ifdef __linux__
+  // J9 on aarch64 (and other JVMs) lazily loads libgcc_s.so.1 from its DWARF
+  // unwinder during stack walks. When that happens inside a signal handler
+  // frame, our dlopen_hook fires from signal context and tries to refresh the
+  // library list — Mutex::lock and malloc on a signal stack.  By forcing the
+  // load here, before any signal handler is installed, subsequent calls find
+  // libgcc_s already mapped and the lazy-load path never runs.
+  //
+  // The handle is intentionally leaked: keeping the refcount > 0 prevents the
+  // library from being unmapped for the remainder of the process lifetime.
+  //
+  // SONAME note: "libgcc_s.so.1" is hardcoded deliberately. Referencing
+  // _Unwind_Backtrace from C++ would normally let the linker resolve the
+  // SONAME implicitly, but our release build uses -static-libgcc
+  // (ConfigurationPresets.kt: "-static-libgcc"), which embeds the unwinder
+  // into libjavaProfiler.so and removes libgcc_s.so from our NEEDED entries
+  // — so a symbol reference would not trigger the shared-library load.
+  // dlopen by SONAME is the only mechanism that works under static-libgcc.
+  // libgcc_s.so.1 has been the stable SONAME since 2002; a bump would
+  // constitute a glibc/GCC C++ ABI break and is treated as a fixed contract.
+  (void)dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL);
+#endif
+}
+
 void *Profiler::dlopen_hook(const char *filename, int flags) {
   void *result = dlopen(filename, flags);
 
   if (result != NULL) {
-    // Static function of Profiler -> can not use the instance variable _libs
-    // Since Libraries is a singleton, this does not matter
-    Libraries::instance()->updateSymbols(false);
-    // Patch sigaction in newly loaded libraries
-    LibraryPatcher::patch_sigaction();
-    MallocTracer::installHooks();
-    // Extract build-ids for newly loaded libraries if remote symbolication is enabled
-    Profiler* profiler = instance();
-    if (profiler != nullptr && profiler->_remote_symbolication) {
-      Libraries::instance()->updateBuildIds();
+    if (!isInSignalContext()) {
+      // Normal (non-signal) dlopen: refresh synchronously so symbols in
+      // the new library are resolved immediately.
+      Libraries::instance()->refresh();
+    } else {
+      // Async-signal context.  Profiler::prewarmUnwinder closes the known
+      // libgcc_s case, but JVM/JIT lazy loads have been observed from
+      // signal handlers under Graal on aarch64.  refresh() must NOT run
+      // here — parseLibraries acquires a Mutex and calls malloc, both
+      // AS-unsafe.  Mark the library set dirty; the Libraries refresher
+      // thread picks it up within REFRESH_INTERVAL_NS (5s), bounding the
+      // window during which the new library is unresolvable.  flushJfr /
+      // dump / stop also call refresh() unconditionally, so this works
+      // even before the refresher thread starts.
+      Libraries::instance()->markDirty();
     }
   }
 
@@ -1140,6 +1169,10 @@ Error Profiler::start(Arguments &args, bool reset) {
     return Error("Profiler already started");
   }
 
+  // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
+  // unwinder cannot lazy-load it later from signal context.
+  prewarmUnwinder();
+
   Error error = checkJvmCapabilities();
   if (error) {
     return error;
@@ -1147,6 +1180,7 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   _omit_stacktraces = args._lightweight;
   _remote_symbolication = args._remote_symbolication;
+  _libs->setRemoteSymbolication(_remote_symbolication);
   _event_mask =
       ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
                                                                      : 0) |
@@ -1282,6 +1316,11 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Always enable library trap to catch wasmtime loading and patch its broken sigaction
   switchLibraryTrap(true);
 
+  // Refresher must be running before the trap fires: dlopen_hook's
+  // signal-context branch only marks dirty and relies on the refresher
+  // to call refresh() within ~5s.
+  _libs->startRefresher();
+
   JfrMetadata::reset();
   JfrMetadata::initialize(args._context_attributes);
   _num_context_attributes = args._context_attributes.size();
@@ -1292,6 +1331,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (error) {
     disableEngines();
     switchLibraryTrap(false);
+    _libs->stopRefresher();
     return error;
   }
 
@@ -1334,6 +1374,7 @@ Error Profiler::start(Arguments &args, bool reset) {
         // nativemem is the only requested mode: propagate the real error
         disableEngines();
         switchLibraryTrap(false);
+        _libs->stopRefresher();
         lockAll();
         _jfr.stop();
         unlockAll();
@@ -1363,6 +1404,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   // no engine was activated; perform cleanup
   disableEngines();
   switchLibraryTrap(false);
+  _libs->stopRefresher();
 
   lockAll();
   _jfr.stop();
@@ -1390,7 +1432,11 @@ Error Profiler::stop() {
     _cpu_engine->stop();
 
   switchLibraryTrap(false);
+  // Stop the refresher before the final refresh() so it doesn't race the
+  // teardown.  startRefresher/stopRefresher are idempotent.
+  _libs->stopRefresher();
   switchThreadEvents(JVMTI_DISABLE);
+  Libraries::instance()->refresh();
   updateJavaThreadNames();
   updateNativeThreadNames();
 
@@ -1493,6 +1539,7 @@ Error Profiler::flushJfr() {
     return Error("Profiler is not active");
   }
 
+  Libraries::instance()->refresh();
   updateJavaThreadNames();
   updateNativeThreadNames();
 
@@ -1515,6 +1562,7 @@ Error Profiler::dump(const char *path, const int length) {
     // by the live objects
     LivenessTracker::instance()->flush(thread_ids);
 
+    Libraries::instance()->refresh();
     updateJavaThreadNames();
     updateNativeThreadNames();
 
