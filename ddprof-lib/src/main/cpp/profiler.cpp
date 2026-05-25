@@ -777,20 +777,24 @@ void *Profiler::dlopen_hook(const char *filename, int flags) {
   void *result = dlopen(filename, flags);
 
   if (result != NULL) {
-    if (!isInSignalContext()) {
-      // Normal (non-signal) dlopen: refresh synchronously so symbols in
-      // the new library are resolved immediately.
+    if (!isInTrackedSignalContext()) {
+      // Either confirmed non-signal context, or no ProfiledThread on this
+      // thread (uninstrumented JVM internals — VM Thread, JIT, GC).  We
+      // prefer synchronous refresh for the null-PT case too because (a)
+      // those threads call dlopen synchronously during normal JVM
+      // operation, and (b) wasmtime's broken sigaction patching depends
+      // on switchLibraryTrap running its work inline (the original reason
+      // for the trap).  The residual risk — an uninstrumented thread
+      // calling dlopen from inside a foreign signal handler — is small:
+      // prewarmUnwinder() closes the known libgcc_s lazy-load case, and
+      // mainstream JVM signal handlers are AS-safe by design.
       Libraries::instance()->refresh();
     } else {
-      // Async-signal context.  Profiler::prewarmUnwinder closes the known
-      // libgcc_s case, but JVM/JIT lazy loads have been observed from
-      // signal handlers under Graal on aarch64.  refresh() must NOT run
-      // here — parseLibraries acquires a Mutex and calls malloc, both
-      // AS-unsafe.  Mark the library set dirty; the Libraries refresher
-      // thread picks it up within REFRESH_INTERVAL_NS (5s), bounding the
-      // window during which the new library is unresolvable.  flushJfr /
-      // dump / stop also call refresh() unconditionally, so this works
-      // even before the refresher thread starts.
+      // Confirmed signal context (one of our SignalHandlerScopes is on
+      // the stack).  refresh() must NOT run here — parseLibraries
+      // acquires a Mutex and calls malloc, both AS-unsafe.  Mark the
+      // library set dirty; the Libraries refresher thread picks it up
+      // within REFRESH_INTERVAL_NS (500 ms).
       Libraries::instance()->markDirty();
     }
   }
@@ -837,6 +841,13 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // destructor, permanently leaking depth on the thread.  Release the guard
   // before chaining so depth is correct whether the chained handler returns
   // or longjmps.
+  //
+  // Sanitizer-coverage note: this also means depth == 0 inside the chained
+  // handler, so DEBUG_ASSERT_NOT_IN_SIGNAL() will NOT fire for AS-unsafe
+  // code reachable from a chained handler that returns normally.  This is
+  // the lesser of two evils — leaking depth on longjmp would silently
+  // break the production deferred-refresh gate, while the sanitizer gap
+  // is bounded to third-party signal handler code we don't own.
   SIGNAL_HANDLER_GUARD();
   if (crashHandlerInternal(signo, siginfo, ucontext)) {
     return;  // Handled — destructor decrements depth
@@ -1313,13 +1324,13 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   enableEngines();
 
-  // Always enable library trap to catch wasmtime loading and patch its broken sigaction
-  switchLibraryTrap(true);
-
   // Refresher must be running before the trap fires: dlopen_hook's
   // signal-context branch only marks dirty and relies on the refresher
-  // to call refresh() within ~5s.
+  // to call refresh() within REFRESH_INTERVAL_NS (500 ms).
   _libs->startRefresher();
+
+  // Always enable library trap to catch wasmtime loading and patch its broken sigaction
+  switchLibraryTrap(true);
 
   JfrMetadata::reset();
   JfrMetadata::initialize(args._context_attributes);

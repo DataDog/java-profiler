@@ -69,14 +69,13 @@ void Libraries::refresh() {
 void *Libraries::refresherLoop(void *arg) {
   Libraries *self = static_cast<Libraries *>(arg);
 
-  // Publish our TID so sampler thread-list enumerations can skip us.
-  self->_refresher_tid.store(OS::threadId(), std::memory_order_release);
-
-  // Block profiling signals so this thread is never sampled.  Without
-  // this, SIGPROF can fire on the refresher and run the full stack-walk
-  // path here — pure overhead, and in debug builds with
-  // DDPROF_FORCE_STACKWALK_CRASH it inflates the SIGSEGV recovery count
-  // enough to starve the test work thread and break
+  // Block profiling signals BEFORE publishing our TID.  Otherwise a
+  // SIGPROF / SIGVTALRM armed for this thread (e.g. a stale per-thread
+  // timer from a previous lifecycle, or an in-flight signal queued during
+  // pthread_create) could fire on us between TID-publish and sigmask, and
+  // run the full stack-walk path here — pure overhead, and in debug
+  // builds with DDPROF_FORCE_STACKWALK_CRASH it inflates the SIGSEGV
+  // recovery count enough to starve the test work thread and break
   // vmStackwalkerCrashRecoveryTest.  SIGIO (WAKEUP_SIGNAL) is left
   // unmasked because stopRefresher() relies on it to interrupt sleep.
   sigset_t mask;
@@ -85,10 +84,27 @@ void *Libraries::refresherLoop(void *arg) {
   sigaddset(&mask, SIGVTALRM);
   pthread_sigmask(SIG_BLOCK, &mask, nullptr);
 
+  // Publish our TID so sampler thread-list enumerations can skip us.
+  self->_refresher_tid.store(OS::threadId(), std::memory_order_release);
+
   while (self->_refresher_running.load(std::memory_order_acquire)) {
-    // OS::sleep uses nanosleep, which returns early on EINTR — the wakeup
-    // signal sent from stopRefresher() will interrupt this immediately.
-    OS::sleep(REFRESH_INTERVAL_NS);
+    // Sleep until the next tick or until interrupted.  OS::sleep wraps a
+    // single nanosleep that returns early on EINTR; loop on the remaining
+    // time so unrelated unmasked signals (SIGCHLD, debugger SIGSTOP/CONT,
+    // etc.) do not cause premature ticks.  The stopRefresher path sends
+    // SIGIO and flips _refresher_running first, so the outer-loop check
+    // catches the wake-up and exits without sleeping again.
+    u64 remaining = REFRESH_INTERVAL_NS;
+    while (remaining > 0 &&
+           self->_refresher_running.load(std::memory_order_acquire)) {
+      u64 before = OS::nanotime();
+      OS::sleep(remaining);
+      u64 elapsed = OS::nanotime() - before;
+      if (elapsed >= remaining) {
+        break;
+      }
+      remaining -= elapsed;
+    }
     if (!self->_refresher_running.load(std::memory_order_acquire)) {
       break;
     }

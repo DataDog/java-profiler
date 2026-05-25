@@ -61,6 +61,17 @@ int getInSignalDepth();
 // assume signal" — fail-safe for AS-safety gating).
 bool isInSignalContext();
 
+// Returns true ONLY when we have positively tracked entering one of our
+// installed signal handlers on this thread.  null ProfiledThread → false
+// (we have no way to know, so callers that prefer to do work
+// synchronously on uninstrumented threads — Profiler::dlopen_hook —
+// can use this.)  Accepts the small theoretical risk that an
+// uninstrumented JVM-internal thread (VM Thread, JIT, GC) doing a dlopen
+// from inside a *foreign* signal handler will look like regular code;
+// prewarmUnwinder() covers the known libgcc_s case and JVM-internal
+// signal handlers are generally AS-safe by design.
+bool isInTrackedSignalContext();
+
 // Internal RAII type — do not instantiate directly; use the macros below.
 class SignalHandlerScope {
 public:

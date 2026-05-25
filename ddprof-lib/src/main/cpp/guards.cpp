@@ -35,6 +35,14 @@ bool isInSignalContext() {
     return pt == nullptr || pt->signalDepth() != 0;
 }
 
+bool isInTrackedSignalContext() {
+    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    // null ProfiledThread = no thread context; the SignalHandlerScope
+    // never ran, so we have no positive evidence of a signal frame.
+    // See header comment for the rationale of returning false here.
+    return pt != nullptr && pt->signalDepth() != 0;
+}
+
 SignalHandlerScope::SignalHandlerScope() : _active(true) {
     ProfiledThread *pt = ProfiledThread::currentSignalSafe();
     if (pt != nullptr) {

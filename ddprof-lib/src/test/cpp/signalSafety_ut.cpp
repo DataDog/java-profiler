@@ -68,3 +68,20 @@ TEST(SignalSafetyTestNoContext, NullProfiledThreadIsTreatedAsSignal) {
     EXPECT_TRUE(isInSignalContext());
     EXPECT_EQ(0, getInSignalDepth());
 }
+
+TEST(SignalSafetyTestNoContext, NullProfiledThreadIsNotTrackedSignal) {
+    // isInTrackedSignalContext() returns false on null because the
+    // SignalHandlerScope never ran — used by Profiler::dlopen_hook so
+    // uninstrumented JVM threads doing a normal dlopen take the fast
+    // (synchronous refresh) path instead of deferring.
+    EXPECT_FALSE(isInTrackedSignalContext());
+}
+
+TEST_F(SignalSafetyTest, TrackedSignalContextRequiresScope) {
+    EXPECT_FALSE(isInTrackedSignalContext());
+    {
+        SignalHandlerScope scope;
+        EXPECT_TRUE(isInTrackedSignalContext());
+    }
+    EXPECT_FALSE(isInTrackedSignalContext());
+}
