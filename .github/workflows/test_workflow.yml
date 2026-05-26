@@ -6,6 +6,11 @@ on:
       configuration:
         required: true
         type: string
+      skip_gtest:
+        description: "Skip C++ gtest execution (use when gtests run in a separate job)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -111,7 +116,7 @@ jobs:
 
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
             mkdir -p build/logs
-            ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+            ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
               | tee -a build/test-raw.log \
               | python3 -u .github/scripts/filter_gradle_log.py
             EXIT_CODE=${PIPESTATUS[0]}
@@ -399,7 +404,7 @@ jobs:
 
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
             mkdir -p build/logs
-            ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+            ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
               | tee -a build/test-raw.log \
               | python3 -u .github/scripts/filter_gradle_log.py
             EXIT_CODE=${PIPESTATUS[0]}

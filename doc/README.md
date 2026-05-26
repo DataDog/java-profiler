@@ -24,6 +24,7 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 - [BuildSystemGuide](build/BuildSystemGuide.md) - Comprehensive build system documentation
 - [GradleTasks](build/GradleTasks.md) - Available Gradle tasks reference
 - [NativeBuildPlugin](build/NativeBuildPlugin.md) - Native C++ compilation plugin
+- [TestingGuide](build/TestingGuide.md) - Test strategy: tiers, sanitizers, CI layout, and local workflows
 
 ### Reference
 - [ProfilerMemoryRequirements](reference/ProfilerMemoryRequirements.md) - Memory usage and limits

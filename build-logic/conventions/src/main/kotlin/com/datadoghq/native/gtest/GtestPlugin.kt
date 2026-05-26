@@ -236,7 +236,7 @@ class GtestPlugin : Plugin<Project> {
         }
 
         testDir.listFiles()?.filter { it.name.endsWith(".cpp") }?.forEach { testFile ->
-            val executeTask = GtestTaskBuilder(project, extension, config)
+            val taskBundle = GtestTaskBuilder(project, extension, config)
                 .forTest(testFile)
                 .withCompiler(compiler)
                 .withIncludes(includeFiles)
@@ -244,8 +244,8 @@ class GtestPlugin : Plugin<Project> {
                 .onlyIfGtest(hasGtest)
                 .build()
 
-            gtestConfigTask.configure { dependsOn(executeTask) }
-            gtestAll.configure { dependsOn(executeTask) }
+            gtestConfigTask.configure { dependsOn(taskBundle) }
+            gtestAll.configure { dependsOn(taskBundle) }
             // buildGtest depends on the link task, not the run task
             buildGtestConfigTask.configure {
                 dependsOn("linkGtest${config.capitalizedName()}_${testFile.nameWithoutExtension}")

@@ -14,7 +14,10 @@ jobs:
   run-test:
     uses: ./.github/workflows/test_workflow.yml
     with:
-      configuration: '["asan"]' # Ignoring tsan for now '["asan", "tsan"]'
+      configuration: '["asan"]'
+      # C++ gtests (ASan + TSan) run on every PR via native-sanitizer-tests in ci.yml.
+      # Skip them here so the nightly focuses on Java functional tests under ASan.
+      skip_gtest: true
   report-failures:
     runs-on: ubuntu-latest
     needs: run-test

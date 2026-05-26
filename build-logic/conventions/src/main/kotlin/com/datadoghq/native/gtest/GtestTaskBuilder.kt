@@ -76,7 +76,7 @@ class GtestTaskBuilder(
 
     /**
      * Provide the shared library compile task whose objects are linked into
-     * every test binary.  Allows the library sources to be compiled once
+     * every test binary. Allows the 59 library sources to be compiled once
      * instead of once per test file.
      */
     fun withSharedLibObjects(task: TaskProvider<NativeCompileTask>): GtestTaskBuilder {
@@ -112,8 +112,8 @@ class GtestTaskBuilder(
             this.compiler.set(this@GtestTaskBuilder.compiler)
             this.compilerArgs.set(compilerArgs)
 
-            // When a shared library compile task is provided, library sources
-            // are compiled once there.  Only compile the test file itself here.
+            // When a shared library compile task is provided, library sources are
+            // compiled once there. Only compile the test file itself here.
             if (sharedLibCompileTask != null) {
                 sources.from(testFile)
             } else {
@@ -128,7 +128,14 @@ class GtestTaskBuilder(
     }
 
     private fun buildLinkTask(compileTask: TaskProvider<NativeCompileTask>): TaskProvider<NativeLinkExecutableTask> {
-        val linkerArgs = config.linkerArgs.get()
+        // For executables, clang's -fsanitize=address statically embeds the full
+        // ASan runtime (--whole-archive libclang_rt.asan*.a). Adding an explicit
+        // -lclang_rt.asan or -lasan on top produces a second dynamic NEEDED entry,
+        // which triggers "incompatible ASan runtimes" at startup (two __asan_init
+        // calls). Strip the explicit sanitizer -l/-L/-rpath flags here so the
+        // executable relies solely on clang's automatic static embedding.
+        val sanitizerLibPattern = Regex("^(-lasan|-lubsan|-lclang_rt\\.asan.*|-lclang_rt\\.ubsan.*|-L.*/clang.*/|-Wl,-rpath,.*/clang.*/)")
+        val linkerArgs = config.linkerArgs.get().filter { !sanitizerLibPattern.containsMatchIn(it) }
         val objDir = project.file("${project.layout.buildDirectory.get()}/obj/gtest/${config.name}/$testName")
         val binary = project.file("${project.layout.buildDirectory.get()}/bin/gtest/${config.name}_$testName/$testName")
 
@@ -190,6 +197,21 @@ class GtestTaskBuilder(
                 .forEach { (key, value) -> environment(key, value) }
 
             inputs.files(binary)
+
+            // Gradle's default Exec task buffers child output and discards it on
+            // failure. /dev/std* bypass the logging infrastructure and stream
+            // bytes directly to fd 1/2 of the Gradle JVM so sanitizer reports
+            // are always visible in CI.
+            if (PlatformUtils.currentPlatform == Platform.LINUX) {
+                val devStdout = java.io.FileOutputStream("/dev/stdout")
+                val devStderr = java.io.FileOutputStream("/dev/stderr")
+                standardOutput = devStdout
+                errorOutput = devStderr
+                doLast {
+                    devStdout.flush(); devStdout.close()
+                    devStderr.flush(); devStderr.close()
+                }
+            }
 
             if (extension.alwaysRun.get()) {
                 outputs.upToDateWhen { false }
