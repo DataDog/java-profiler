@@ -34,6 +34,25 @@ enum ASGCT_CallFrameType {
   BCI_ERROR = -18,              // method_id is an error string
   BCI_NATIVE_FRAME_REMOTE = -19, // method_id points to RemoteFrameInfo for remote symbolication
   BCI_NATIVE_MALLOC = -20,       // native malloc/free sample (size stored in counter)
+  // method_id holds a VMSymbol* (the receiver class's name Symbol),
+  // NOT a jmethodID. The pointer is captured in the signal handler
+  // (hotspotSupport.cpp:walkVM) and resolved at dump time via SafeAccess
+  // in Lookup::resolveVTableReceiver. Same precedent as BCI_NATIVE_FRAME
+  // (const char* in method_id) and BCI_NATIVE_FRAME_REMOTE (packed
+  // 64-bit blob). Any reader iterating frames must check bci BEFORE
+  // dereferencing method_id as a jmethodID.
+  //
+  // Limitation: CallTraceHashTable::calcHash mixes the raw bytes of the
+  // frames array (including method_id) into the trace id. Two samples
+  // of the same logical class whose Symbol* address differs (class
+  // unload + reload within a chunk) produce distinct trace ids; this
+  // is accepted because normalising at sample time would require an
+  // in-signal-handler Symbol read, which the redesign explicitly
+  // avoids. The dump-time MethodMap key is class_id-based (see
+  // MethodMap::makeKey(u32)), so the synthetic <vtable_receiver>
+  // MethodInfo collapses across distinct Symbol* addresses even though
+  // the CallTrace itself does not.
+  BCI_VTABLE_RECEIVER = -21,
 };
 
 // See hotspot/src/share/vm/prims/forte.cpp

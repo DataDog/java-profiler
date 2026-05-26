@@ -164,9 +164,11 @@ Error Arguments::parse(const char *args) {
         msg = "cpu must be >= 0";
       }
       // vtable_target: resolve vtable/itable stub receiver classes in CPU traces.
-      // Cost: one JVMTI GetLoadedClasses enumeration at profiler start and at
-      // each JFR dump; incremental per-class insert on ClassPrepare. The
-      // signal-handler path itself only does a lock-free bounded_lookup (no malloc).
+      // Signal handler stores the raw receiver VMSymbol* in a BCI_VTABLE_RECEIVER
+      // frame (no lock, no map lookup, no allocation). Resolution happens at dump
+      // time via SafeAccess-protected reads in Lookup::resolveVTableReceiver,
+      // which is crash-safe against concurrent class unloading. _class_map only
+      // grows with classes actually sampled during the chunk.
       _features.vtable_target = 1;
 
       CASE("wall")

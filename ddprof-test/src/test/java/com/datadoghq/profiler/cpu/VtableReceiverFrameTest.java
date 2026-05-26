@@ -14,7 +14,7 @@ import java.util.concurrent.ThreadLocalRandom;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class VtableTargetPreregistrationTest extends AbstractProfilerTest {
+public class VtableReceiverFrameTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
@@ -51,10 +51,9 @@ public class VtableTargetPreregistrationTest extends AbstractProfilerTest {
 
     // The vtable_target feature inserts a synthetic <vtable_receiver> frame immediately
     // below a vtable stub frame in the call stack. The receiver class (Circle/Square/Triangle)
-    // is resolved from _class_map and emitted as the class name for the synthetic frame.
-    // If preregisterLoadedClasses() was not called (the bug), bounded_lookup returns INT_MAX,
-    // no synthetic frame is inserted, and the receiver class name never appears next to a
-    // vtable stub in the JFR output.
+    // is captured as a VMSymbol* in the signal handler and resolved to a class name at
+    // dump time via SafeAccess-protected reads. If resolution fails or the synthetic frame
+    // is dropped, the receiver class name will not appear next to a vtable stub in JFR.
     @RetryingTest(5)
     public void testVtableReceiverFrameInCpuSamples() throws Exception {
         Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
@@ -71,6 +70,9 @@ public class VtableTargetPreregistrationTest extends AbstractProfilerTest {
             if (frameAccessor == null) continue;
             for (IItem sample : cpuSamples) {
                 String stackTrace = frameAccessor.getMember(sample);
+                if (stackTrace != null && stackTrace.contains(".vtable stub()")) {
+                    System.err.println("=VTABLE STUB TRACE=\n" + stackTrace + "\n=END=");
+                }
                 if (stackTrace != null
                         && stackTrace.contains(".vtable stub()")
                         && stackTrace.contains("<vtable_receiver>")
@@ -85,7 +87,7 @@ public class VtableTargetPreregistrationTest extends AbstractProfilerTest {
         }
         assertTrue(foundVtableWithReceiver,
                 "No CPU sample contained a vtable stub frame, a <vtable_receiver> synthetic frame, " +
-                "and a receiver class (Circle/Square/Triangle); preregisterLoadedClasses() may not " +
-                "have run at CPU-only profiler start, or resolveMethod BCI_ALLOC is broken");
+                "and a receiver class (Circle/Square/Triangle); signal-handler VMSymbol* capture or " +
+                "dump-time SafeAccess resolution in Lookup::resolveVTableReceiver is broken");
     }
 }

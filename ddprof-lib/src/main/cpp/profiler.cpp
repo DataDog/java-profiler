@@ -1207,9 +1207,9 @@ Error Profiler::start(Arguments &args, bool reset) {
     return Error("No profiling events specified");
   }
 
-  // Commit _features before the reset/preregister block so ClassPrepare
-  // callbacks (which gate on _features.vtable_target) see the correct enabled
-  // state from the moment preregisterLoadedClasses releases the class-map lock.
+  // Commit _features before the reset block so any signal-handler code that
+  // reads _features.* observes the correct enabled state once profiling
+  // engines start.
   _features = args._features;
   if (VM::hotspot_version() < 8) {
       _features.java_anchor = 0;
@@ -1236,11 +1236,6 @@ Error Profiler::start(Arguments &args, bool reset) {
       ExclusiveLockGuard guard(&_class_map_lock);
       _class_map.clear();
     }
-    // preregisterLoadedClasses manages _class_map_lock internally; callers must
-    // not hold it (JVMTI enumeration is lock-free; inserts take the lock).
-    if (_features.vtable_target && VMStructs::hasClassNames()) {
-      preregisterLoadedClasses(VM::jvmti());
-    }
 
     // Reset call trace storage
     if (!_omit_stacktraces) {
@@ -1252,11 +1247,6 @@ Error Profiler::start(Arguments &args, bool reset) {
 
     // Reset thread names and IDs
     _thread_info.clearAll();
-  } else if (_features.vtable_target && VMStructs::hasClassNames()) {
-    // Resume: classes loaded while the profiler was stopped miss ClassPrepare
-    // (JVMTI events are off while stopped). Re-snapshot without clearing so
-    // existing valid entries are preserved.
-    preregisterLoadedClasses(VM::jvmti());
   }
 
   // (Re-)allocate calltrace buffers
@@ -1426,11 +1416,6 @@ Error Profiler::start(Arguments &args, bool reset) {
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
-    // Second snapshot: catch classes prepared during the engine-startup window
-    // (between _features.vtable_target=1 and the RUNNING store above).
-    if (_features.vtable_target && VMStructs::hasClassNames()) {
-      preregisterLoadedClasses(VM::jvmti());
-    }
     return Error::OK;
   }
   // no engine was activated; perform cleanup
@@ -1613,13 +1598,12 @@ Error Profiler::dump(const char *path, const int length) {
     // in processTraces() already handles clearing old traces while preserving
     // traces referenced by surviving LivenessTracker objects
     unlockAll();
-    if (_features.vtable_target && VMStructs::hasClassNames()) {
-      // clear_first=true: clears the map before GetLoadedClasses to close the
-      // race where a ClassPrepare insertion (between the old-placement clear and
-      // the snapshot) would be wiped. ClassPrepare callbacks that fire after the
-      // clear insert via shared lock and survive — Phase 2 does not clear.
-      preregisterLoadedClasses(VM::jvmti(), /*clear_first=*/true);
-    } else {
+    // Clear the class map at end-of-dump. Class IDs are per-chunk in the JFR
+    // format, so the dump just completed re-populated _classes from the names
+    // it actually needed; the runtime map can start fresh for the next chunk.
+    // Working-set bound: only classes touched by the next chunk's samples
+    // re-enter the map.
+    {
       ExclusiveLockGuard guard(&_class_map_lock);
       _class_map.clear();
     }
@@ -1760,107 +1744,6 @@ int Profiler::lookupClass(const char *key, size_t length) {
   }
   // unable to lookup the class
   return -1;
-}
-
-void Profiler::preregisterLoadedClasses(jvmtiEnv* jvmti, bool clear_first) {
-#ifndef NDEBUG
-  // SpinLock has no owner-tracking API, so this check is partial.
-  // Partial re-entrancy check: tryLockShared() succeeding proves no thread
-  // holds the lock exclusively right now, so Phase 0's exclusive-lock attempt
-  // will not immediately deadlock. It does NOT detect a caller that already
-  // holds a shared lock — that caller would deadlock if Phase 0 later tries to
-  // upgrade to exclusive. No known call path creates that scenario, but the
-  // check is advisory only, not a full safety guarantee.
-  bool can_take_shared = _class_map_lock.tryLockShared();
-  assert(can_take_shared && "_class_map_lock must not be held exclusively on entry");
-  if (can_take_shared) {
-    _class_map_lock.unlockShared();
-  }
-#endif
-  if (jvmti == nullptr) {
-    return;
-  }
-  // Phase 0: clear the map BEFORE taking the GetLoadedClasses snapshot.
-  // This closes the race: any ClassPrepare that fires after the clear
-  // inserts into the map via shared lock, and Phase 2 does not re-clear,
-  // so those insertions survive.
-  // Tradeoff: the window where signal handlers see an empty map is widened
-  // to GetLoadedClasses + Phase-1 duration; this is an accepted cost of
-  // eliminating the race.
-  if (clear_first) {
-    ExclusiveLockGuard guard(&_class_map_lock);
-    _class_map.clear();
-  }
-  JNIEnv* jni = VM::jni();
-  jint class_count = 0;
-  jclass* classes = nullptr;
-  jvmtiError err = jvmti->GetLoadedClasses(&class_count, &classes);
-  if (err != JVMTI_ERROR_NONE) {
-    // If clear_first=false the map retains stale entries; if clear_first=true
-    // it was already cleared above and is now empty. Either way, vtable-target
-    // frames will be resolved gradually as ClassPrepare events fire.
-    if (clear_first) {
-      Log::warn("preregisterLoadedClasses: GetLoadedClasses failed (%d) — class map was cleared and is now empty, vtable-target frames may miss until ClassPrepare fires", err);
-    } else {
-      Log::warn("preregisterLoadedClasses: GetLoadedClasses failed (%d) — class map left unchanged (may be stale), vtable-target frames may miss until ClassPrepare fires", err);
-    }
-    return;
-  }
-  if (class_count == 0) {
-    if (classes != nullptr) {
-      jvmti->Deallocate(reinterpret_cast<unsigned char*>(classes));
-    }
-    return;
-  }
-  // Phase 1 (no lock): enumerate signatures and copy normalized slices.
-  // normalizeClassSignature returns a pointer INTO the JVMTI sig buffer, so
-  // the slice is copied into a std::string before Deallocate invalidates it.
-  std::vector<std::string> sigs;
-  sigs.reserve(class_count);
-  jint sig_failures = 0;
-  for (jint i = 0; i < class_count; i++) {
-    char* sig = nullptr;
-    if (jvmti->GetClassSignature(classes[i], &sig, nullptr) != JVMTI_ERROR_NONE) {
-      ++sig_failures;
-      if (jni != nullptr) jni->DeleteLocalRef(classes[i]);
-      continue;
-    }
-    if (sig == nullptr) {
-      if (jni != nullptr) jni->DeleteLocalRef(classes[i]);
-      continue;
-    }
-    if (sig[0] != 'L' && sig[0] != '[') {
-      jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
-      if (jni != nullptr) jni->DeleteLocalRef(classes[i]);
-      continue;
-    }
-    const char* slice = nullptr;
-    size_t slice_len = 0;
-    if (ObjectSampler::normalizeClassSignature(sig, &slice, &slice_len)) {
-      sigs.emplace_back(slice, slice_len);
-    }
-    jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
-    if (jni != nullptr) jni->DeleteLocalRef(classes[i]);
-  }
-  jvmti->Deallocate(reinterpret_cast<unsigned char*>(classes));
-  if (sig_failures > 0) {
-    Log::warn("preregisterLoadedClasses: GetClassSignature failed for %d/%d class(es) — those vtable-target frames may be missing until ClassPrepare fires", sig_failures, class_count);
-  }
-  // Phase 2 (shared lock): bulk-insert the collected names. SharedLockGuard is
-  // sufficient: concurrent inserters (ClassPrepare callbacks, lookupClass) already
-  // run under the shared lock; only clear() in Phase 0 needs the exclusive lock.
-  // Using ExclusiveLockGuard here would block signal-handler readers (bounded_lookup
-  // in vtable_target and tryLockShared in object sampler) for the full bulk-insert
-  // duration, dropping samples unnecessarily.
-  // NOTE: no clear here. When clear_first=true, Phase 0 already cleared the map
-  // before Phase 1, so concurrent ClassPrepare insertions from that window survive.
-  // When clear_first=false the map is additive and no ClassPrepare entries are lost.
-  {
-    SharedLockGuard guard(&_class_map_lock);
-    for (const std::string& s : sigs) {
-      (void)_class_map.lookup(s.c_str(), s.size());
-    }
-  }
 }
 
 int Profiler::status(char* status, int max_len) {

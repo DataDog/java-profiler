@@ -157,22 +157,6 @@ private:
     return _state.load(std::memory_order_relaxed);
   }
 
-  // Pre-populate _class_map with all currently-loaded 'L'-type (reference)
-  // and array ('[') class signatures so that signal-safe lookups in walkVM
-  // (vtable_target) can resolve them without ever needing to malloc. Only bare
-  // primitive type descriptors (I, B, C, etc.) are skipped. Caller must NOT hold
-  // _class_map_lock; this function acquires it internally across three phases:
-  //   Phase 0 (clear_first=true only): exclusive lock to clear the map.
-  //   Phase 1 (no lock): JVMTI snapshot + local enumeration; concurrent
-  //     ClassPrepare callbacks may insert via shared lock during this window.
-  //   Phase 2 (always): shared lock for the bulk-insert of Phase 1 names;
-  //     multiple concurrent shared-lock holders are safe because Dictionary
-  //     uses CAS for slot allocation; exclusive lock from Phase 0 is what
-  //     prevents a concurrent clear() from running during Phase 1 or 2;
-  //     no re-clear here, so any Phase 1 ClassPrepare insertions survive.
-  // Runs on a JVM thread (never in a signal handler).
-  void preregisterLoadedClasses(jvmtiEnv* jvmti, bool clear_first = false);
-
 public:
   Profiler()
       : _state_lock(), _state(State::NEW), _class_unload_hook_trap(2),
@@ -235,7 +219,6 @@ public:
 
   Dictionary *classMap() { return &_class_map; }
   SharedLockGuard classMapSharedGuard() { return SharedLockGuard(&_class_map_lock); }
-  BoundedOptionalSharedLockGuard classMapTrySharedGuard() { return BoundedOptionalSharedLockGuard(&_class_map_lock); }
   Dictionary *stringLabelMap() { return &_string_label_map; }
   Dictionary *contextValueMap() { return &_context_value_map; }
   u32 numContextAttributes() { return _num_context_attributes; }

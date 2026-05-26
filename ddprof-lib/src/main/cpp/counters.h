@@ -67,6 +67,7 @@
   X(REMOTE_SYMBOLICATION_FRAMES, "remote_symbolication_frames")                \
   X(REMOTE_SYMBOLICATION_LIBS_WITH_BUILD_ID, "remote_symbolication_libs_with_build_id") \
   X(REMOTE_SYMBOLICATION_BUILD_ID_CACHE_HITS, "remote_symbolication_build_id_cache_hits") \
+  X(VTABLE_RECEIVER_RESOLVE_FAILED, "vtable_receiver_resolve_failed")           \
   X(THREAD_ENTRY_MARK_DETECTIONS, "thread_entry_mark_detections")              \
   X(WALKVM_THREAD_INACCESSIBLE, "walkvm_thread_inaccessible")                  \
   X(WALKVM_ANCHOR_NULL, "walkvm_anchor_null")                                  \

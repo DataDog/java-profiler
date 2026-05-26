@@ -639,46 +639,6 @@ void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
 void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
                                jclass klass) {
   loadMethodIDs(jvmti, jni, klass);
-
-  // Pre-populate _class_map for vtable_target signal-safe lookup. ClassPrepare
-  // runs on a JVM thread (never a signal handler), so we take a blocking
-  // shared lock via classMapSharedGuard() rather than the best-effort
-  // tryLockShared() in lookupClass(). This ensures newly prepared classes are
-  // never silently skipped while an exclusive dump/reset is in flight. Gate on
-  // vtable_target to avoid overhead when the feature is disabled.
-  // Memory-ordering: _features.vtable_target is written in Profiler::start()
-  // before the release store to _state. The acquire load of _state in
-  // isRunning() above establishes happens-before with that write, so reading
-  // _features.vtable_target here is safe without a separate atomic.
-  Profiler* profiler = Profiler::instance();
-  if (profiler == nullptr || !profiler->isRunning() || !profiler->stackWalkFeatures().vtable_target) {
-    return;
-  }
-  char* sig = nullptr;
-  jvmtiError err = jvmti->GetClassSignature(klass, &sig, nullptr);
-  if (err != JVMTI_ERROR_NONE) {
-    static std::atomic<int> warn_count{0};
-    if (warn_count.fetch_add(1, std::memory_order_relaxed) == 0) {
-      Log::warn("ClassPrepare: GetClassSignature failed (%d) — class skipped for vtable-target pre-registration (further failures suppressed)", err);
-    }
-    return;
-  }
-  if (sig == nullptr) {
-    return;
-  }
-  // Only 'L'-type (reference) and array ('[') signatures can match vtable_target
-  // lookup keys; skip bare primitive type descriptors (I, B, C, etc.).
-  if (sig[0] != 'L' && sig[0] != '[') {
-    jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
-    return;
-  }
-  const char* slice = nullptr;
-  size_t slice_len = 0;
-  if (ObjectSampler::normalizeClassSignature(sig, &slice, &slice_len)) {
-    SharedLockGuard guard = profiler->classMapSharedGuard();
-    (void)profiler->classMap()->lookup(slice, slice_len);
-  }
-  jvmti->Deallocate(reinterpret_cast<unsigned char*>(sig));
 }
 
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
