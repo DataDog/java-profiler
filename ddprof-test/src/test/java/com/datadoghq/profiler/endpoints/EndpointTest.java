@@ -67,15 +67,16 @@ public class EndpointTest extends AbstractProfilerTest {
             assertTrue(recovered.get(i), i + " not tested");
         }
         assertEquals(Arrays.stream(endpoints).mapToInt(ep -> ep.endpoint.length() + 1).sum(), debugCounters.get("dictionary_endpoints_keys_bytes"));
-        // SBTable geometry (post-StringDictionary refactor): 3 buffers each with
-        // 1 root SBTable + a small number of overflow nodes for 1000 hot keys.
-        // 30 pages is a generous upper bound; tighten if calibration shows
-        // headroom.
-        assertBoundedBy(debugCounters.get("dictionary_endpoints_pages"), 30,
+        // SBTable geometry (post-StringDictionary refactor): ROWS=128, CELLS=3.
+        // 1000 keys distribute ~8 entries per row, so nearly every row in the
+        // active buffer overflows, allocating one new SBTable per row → up to
+        // ~129 pages per buffer (1 root + 128 overflow). With 3 buffers and
+        // potential dump-cycle rotation, 512 is a safe upper bound.
+        assertBoundedBy(debugCounters.get("dictionary_endpoints_pages"), 512,
                 "endpoint storage too many SBTable pages");
         // dictionary_endpoints_bytes covers SBTable nodes plus arena Chunk(s).
         // Worst case for 1000 short keys: 3 buffers × (sizeof(SBTable) +
-        // sizeof(Chunk)) ≈ 1.6 MB; bound at 4 MB for safety.
+        // sizeof(Chunk)) ≈ 2.3 MB; bound at 4 MB for safety.
         assertBoundedBy(debugCounters.get("dictionary_endpoints_bytes"), 4L * 1024 * 1024,
                 "endpoint storage too many bytes");
     }
