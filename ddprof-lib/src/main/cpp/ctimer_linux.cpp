@@ -205,6 +205,9 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   SIGNAL_HANDLER_GUARD();
   if (!OS::shouldProcessSignal(siginfo, SI_TIMER, SignalCookie::cpu())) {
     Counters::increment(CTIMER_SIGNAL_FOREIGN);
+    // Chained handler may siglongjmp; release the guard so our depth
+    // counter does not leak (mirrors profiler.cpp segv/busHandler).
+    SIGNAL_HANDLER_GUARD_RELEASE();
     OS::forwardForeignSignal(signo, siginfo, ucontext);
     return;
   }
@@ -256,6 +259,9 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // threads we never registered — see doc/plans/SignalOriginValidation.md.
   if (!OS::shouldProcessSignal(siginfo, SI_TIMER, SignalCookie::cpu())) {
     Counters::increment(CTIMER_SIGNAL_FOREIGN);
+    // Chained handler may siglongjmp; release the guard so our depth
+    // counter does not leak (mirrors profiler.cpp segv/busHandler).
+    SIGNAL_HANDLER_GUARD_RELEASE();
     OS::forwardForeignSignal(signo, siginfo, ucontext);
     return;
   }

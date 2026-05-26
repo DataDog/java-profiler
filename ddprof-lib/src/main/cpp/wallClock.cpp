@@ -60,6 +60,9 @@ void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
   // would otherwise drive our wallclock sampling path.
   if (!OS::shouldProcessSignal(siginfo, SI_QUEUE, SignalCookie::wallclock())) {
     Counters::increment(WALLCLOCK_SIGNAL_FOREIGN);
+    // Chained handler may siglongjmp; release the guard so our depth
+    // counter does not leak (mirrors profiler.cpp segv/busHandler).
+    SIGNAL_HANDLER_GUARD_RELEASE();
     OS::forwardForeignSignal(signo, siginfo, ucontext);
     return;
   }
@@ -180,6 +183,9 @@ void WallClockASGCT::timerLoop() {
       // Otherwise list all threads in the system
       const int refresher_tid = Libraries::instance()->refresherTid();
       if (Profiler::instance()->threadFilter()->enabled()) {
+        // The filter only ever contains tracer-registered threads; the
+        // Libraries refresher is profiler-internal and never registered
+        // there, so no additional exclusion is needed.
         Profiler::instance()->threadFilter()->collect(tids);
       } else {
         ThreadList *thread_list = OS::listThreads();
@@ -291,6 +297,9 @@ void WallClockJvmti::timerLoop() {
   auto collectThreads = [&](std::vector<int> &tids) {
     const int refresher_tid = Libraries::instance()->refresherTid();
     if (Profiler::instance()->threadFilter()->enabled()) {
+      // The filter only contains tracer-registered threads; the Libraries
+      // refresher is profiler-internal and never registered, so no
+      // additional exclusion is needed.
       Profiler::instance()->threadFilter()->collect(tids);
     } else {
       ThreadList *thread_list = OS::listThreads();
