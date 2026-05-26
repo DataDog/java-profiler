@@ -209,11 +209,13 @@ build-artifact:
       artifacts: true
     - job: gtest-asan-amd64
       artifacts: false
+      optional: true
     - job: gtest-tsan-amd64
       artifacts: false
       optional: true
     - job: gtest-asan-arm64
       artifacts: false
+      optional: true
     - job: gtest-tsan-arm64
       artifacts: false
       optional: true
