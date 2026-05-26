@@ -17,6 +17,7 @@
 #include "dictionary.h"
 #include "arch.h"
 #include "counters.h"
+#include "signalSafety.h"
 #include <climits>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +42,7 @@ Dictionary::~Dictionary() {
 }
 
 void Dictionary::clear() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   clear(_table, _id);
   memset(_table, 0, sizeof(DictTable));
   _table->base_index = _base_index = 1;
@@ -88,6 +90,15 @@ unsigned int Dictionary::lookup(const char *key, size_t length) {
 
 unsigned int Dictionary::lookup(const char *key, size_t length, bool for_insert,
                                 unsigned int sentinel) {
+  // The insert path mallocs (allocateKey) and may calloc a DictTable —
+  // both AS-unsafe.  Read-only lookups (for_insert == false, used by
+  // check() and bounded_lookup at capacity) only touch already-allocated
+  // memory and are AS-safe.  Assert here rather than in the overloads
+  // so bounded_lookup's runtime-decided for_insert is also covered.
+  if (for_insert) {
+    DEBUG_ASSERT_NOT_IN_SIGNAL();
+  }
+
   DictTable *table = _table;
   unsigned int h = hash(key, length);
 
