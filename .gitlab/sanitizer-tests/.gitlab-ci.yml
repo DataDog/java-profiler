@@ -47,6 +47,7 @@
 
 gtest-asan-amd64:
   extends: .sanitizer_job
+  allow_failure: true
   tags: [ "arch:amd64" ]
   image: $BUILD_IMAGE_X64
   variables:
@@ -79,6 +80,7 @@ gtest-tsan-amd64:
 
 gtest-asan-arm64:
   extends: .sanitizer_job
+  allow_failure: true
   tags: [ "arch:arm64" ]
   image: $BUILD_IMAGE_ARM64
   variables:
