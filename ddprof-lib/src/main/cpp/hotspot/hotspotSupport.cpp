@@ -13,6 +13,7 @@
 #include "hotspot/vmStructs.inline.h"
 #include "jvmSupport.h"
 #include "profiler.h"
+#include "guards.h"
 #include "stackWalker.inline.h"
 #include "frames.h"
 
@@ -187,6 +188,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             profiled_thread->setCrashProtectionActive(true);
         }
         if (setjmp(crash_protection_ctx) != 0) {
+            // checkFault() does a longjmp from inside segvHandler, bypassing
+            // segvHandler's SignalHandlerScope destructor.  Compensate.
+            SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
             if (profiled_thread != nullptr) {
                 profiled_thread->setCrashProtectionActive(false);
             }
