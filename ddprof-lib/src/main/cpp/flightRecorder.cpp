@@ -565,18 +565,6 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   return mi;
 }
 
-void Lookup::initClassCache() {
-  // Snapshot _classes into _class_cache for use by resolveMethod(BCI_ALLOC).
-  // Must be called before writeStackTraces() so the snapshot covers all
-  // vtable-receiver classes (pre-registered before profiling starts).
-  // This snapshot is intentionally NOT used by writeClasses(): regular Java
-  // classes are inserted into _classes by fillJavaMethodInfo() during
-  // writeStackTraces/writeMethods, so writeClasses() must re-collect after
-  // those passes to obtain the complete class pool.
-  auto guard = Profiler::instance()->classMapSharedGuard();
-  _classes->collect(_class_cache);
-}
-
 u32 Lookup::getPackage(const char *class_name) {
   const char *package = strrchr(class_name, '/');
   if (package == NULL) {
@@ -1338,16 +1326,11 @@ void Recording::writeCpool(Buffer *buf) {
   // constant pool count - bump each time a new pool is added
   buf->put8(12);
 
-  // Two-phase classMap locking: initClassCache() takes the shared lock early to
-  // snapshot vtable-receiver class names for resolveMethod(BCI_ALLOC).  The snapshot
-  // is valid for the whole writeCpool() call because classMap()->clear() (exclusive
-  // lock) only runs in Profiler::dump after writeCpool() returns.
-  // writeClasses() takes the shared lock a second time to collect the COMPLETE class
-  // set: fillJavaMethodInfo() inserts every Java class into _classes during
-  // writeStackTraces/writeMethods, so the early snapshot would miss them all and
-  // produce a class pool with null class names in every stack frame.
+  // writeClasses() takes the classMap shared lock to collect the complete
+  // class set after fillJavaMethodInfo() has populated _classes during
+  // writeStackTraces/writeMethods.  The exclusive lock (classMap()->clear())
+  // runs in Profiler::dump only after writeCpool() returns.
   Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
-  lookup.initClassCache();
   writeFrameTypes(buf);
   writeThreadStates(buf);
   writeExecutionModes(buf);
