@@ -127,9 +127,20 @@ void OS::sleep(u64 nanos) {
     nanosleep(&ts, NULL);
 }
 
-void OS::uninterruptibleSleep(u64 nanos, volatile bool* flag) {
-    struct timespec ts = {(time_t)(nanos / 1000000000), (long)(nanos % 1000000000)};
-    while (*flag && nanosleep(&ts, &ts) < 0 && errno == EINTR);
+void OS::sleepWhile(u64 max_nanos, std::atomic<bool>& keep_sleeping) {
+    // macOS does not expose clock_nanosleep(TIMER_ABSTIME).  Recompute the
+    // remaining interval against OS::nanotime() each iteration so spurious
+    // wake-ups don't shorten the wait, mirroring the Linux semantics.
+    u64 deadline = OS::nanotime() + max_nanos;
+    while (keep_sleeping.load(std::memory_order_acquire)) {
+        u64 now = OS::nanotime();
+        if (now >= deadline) {
+            return;
+        }
+        u64 remaining = deadline - now;
+        struct timespec ts = {(time_t)(remaining / 1000000000ULL), (long)(remaining % 1000000000ULL)};
+        nanosleep(&ts, nullptr);
+    }
 }
 
 u64 OS::overrun(siginfo_t* siginfo) {

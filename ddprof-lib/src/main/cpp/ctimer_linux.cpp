@@ -202,6 +202,7 @@ Error CTimerJvmti::start(Arguments &args) {
 }
 
 void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  SIGNAL_HANDLER_GUARD();
   if (!OS::shouldProcessSignal(siginfo, SI_TIMER, SignalCookie::cpu())) {
     Counters::increment(CTIMER_SIGNAL_FOREIGN);
     OS::forwardForeignSignal(signo, siginfo, ucontext);
@@ -248,6 +249,7 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 }
 
 void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  SIGNAL_HANDLER_GUARD();
   // Reject signals that did not originate from our timer_create timers.
   // This guards against Go's process-wide setitimer(ITIMER_PROF) and other
   // foreign SIGPROF sources that would otherwise drive our handler onto

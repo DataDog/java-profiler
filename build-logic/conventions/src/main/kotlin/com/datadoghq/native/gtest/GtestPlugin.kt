@@ -194,17 +194,18 @@ class GtestPlugin : Plugin<Project> {
             description = "Run all Google Tests for the ${config.name} build of the library"
         }
 
-        // Create per-config build-only aggregation task (compile + link, no run).
-        // Useful in CI environments where binaries need to be executed directly
-        // (e.g. when the Gradle daemon's stdout is not connected to the terminal).
+        // Per-config build-only aggregation task (compile + link, no run).
+        // Useful in CI where binaries are executed directly without going
+        // through Gradle's logging infrastructure.
         val buildGtestConfigTask = project.tasks.register("buildGtest${config.capitalizedName()}") {
             group = "build"
             description = "Compile and link all Google Tests for the ${config.name} build (no run)"
         }
 
-        // Compile all library sources ONCE for this config. Each test binary
-        // only compiles its own test file and links against these shared objects,
-        // reducing compilations from O(n_tests × n_sources) to O(n_sources + n_tests).
+        // Compile all library sources ONCE for this config.  Each test
+        // binary only compiles its own test file and links against these
+        // shared objects, reducing compilations from O(n_tests × n_sources)
+        // to O(n_sources + n_tests).
         val sharedBuilder = GtestTaskBuilder(project, extension, config)
             .withCompiler(compiler)
             .withIncludes(includeFiles)

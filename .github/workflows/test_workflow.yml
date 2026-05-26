@@ -169,6 +169,13 @@ jobs:
         with:
           name: (test-reports) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: test-reports
+      - name: Upload signal-safety violation log
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+          path: /tmp/signal-safety-violation.txt
+          if-no-files-found: ignore
 
   test-linux-musl-amd64:
     needs: [cache-jdks, filter-musl-configs]
@@ -288,6 +295,13 @@ jobs:
         with:
           name: (test-reports) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: test-reports
+      - name: Upload signal-safety violation log
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+          path: /tmp/signal-safety-violation.txt
+          if-no-files-found: ignore
 
   test-linux-glibc-aarch64:
     needs: cache-jdks
@@ -448,6 +462,13 @@ jobs:
         with:
           name: (test-reports) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: test-reports
+      - name: Upload signal-safety violation log
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+          path: /tmp/signal-safety-violation.txt
+          if-no-files-found: ignore
 
   test-linux-musl-aarch64:
      needs: [cache-jdks, filter-musl-configs]
@@ -545,3 +566,10 @@ jobs:
          with:
            name: (test-reports) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
            path: test-reports
+       - name: Upload signal-safety violation log
+         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+         if: failure()
+         with:
+           name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+           path: /tmp/signal-safety-violation.txt
+           if-no-files-found: ignore

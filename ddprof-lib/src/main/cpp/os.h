@@ -7,6 +7,7 @@
 #ifndef _OS_H
 #define _OS_H
 
+#include <atomic>
 #include <functional>
 #include <signal.h>
 #include <stddef.h>
@@ -104,7 +105,22 @@ class OS {
     static u64 micros();
     static u64 processStartTime();
     static void sleep(u64 nanos);
-    static void uninterruptibleSleep(u64 nanos, volatile bool* flag);
+
+    // Sleep for up to max_nanos, restarting against an absolute monotonic
+    // deadline on EINTR so unrelated signals (SIGCHLD, debugger
+    // SIGSTOP/SIGCONT, etc.) do not shorten the wait.  Returns early when
+    // keep_sleeping becomes false — used by background threads (e.g. the
+    // Libraries refresher) to respond to a stop request without waiting
+    // out the full interval.  Pair with pthread_kill(thread, SOMESIG) +
+    // keep_sleeping=false in the caller's stop path: the signal triggers
+    // EINTR, the loop re-checks the flag, and the function returns.
+    //
+    // On Linux this uses clock_nanosleep with TIMER_ABSTIME + CLOCK_MONOTONIC
+    // so the deadline is absolute and arithmetic-free.  On macOS we fall
+    // back to nanosleep with a recomputed remainder (clock_nanosleep with
+    // TIMER_ABSTIME is unavailable there).
+    static void sleepWhile(u64 max_nanos, std::atomic<bool>& keep_sleeping);
+
     static u64 overrun(siginfo_t* siginfo);
 
     static u64 hton64(u64 x);

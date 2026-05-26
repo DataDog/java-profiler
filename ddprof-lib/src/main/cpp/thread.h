@@ -55,6 +55,7 @@ private:
   u32 _misc_flags;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
+  uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
   UnwindFailures _unwind_failures;
   bool _otel_ctx_initialized;
   bool _crash_protection_active;
@@ -73,6 +74,7 @@ private:
   ProfiledThread(int tid)
       : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _init_window(0),
+        _signal_depth(0),
         _otel_ctx_initialized(false), _crash_protection_active(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
 
@@ -167,6 +169,14 @@ public:
   bool isDeepCrashHandler() {
     return _crash_depth > CRASH_HANDLER_NESTING_LIMIT;
   }
+
+  // Signal-handler depth counter used by SignalHandlerScope (guards.h).  All
+  // access happens on the owning thread (signal handlers are delivered to the
+  // thread that's interrupted), so plain reads/writes are AS-safe — no locks,
+  // no malloc, no syscalls.  See guards.h for the public API.
+  inline uint8_t signalDepth() const { return _signal_depth; }
+  inline void enterSignalScope()    { ++_signal_depth; }
+  inline void exitSignalScope()     { if (_signal_depth > 0) --_signal_depth; }
 
   UnwindFailures* unwindFailures(bool reset = true) {
     if (reset) {

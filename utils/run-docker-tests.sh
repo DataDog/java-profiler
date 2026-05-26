@@ -8,7 +8,7 @@
 #
 # Usage: ./utils/run-docker-tests.sh [options]
 #   --libc=glibc|musl        (default: glibc)
-#   --jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9  (default: 21)
+#   --jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9|17-graal|21-graal|25-graal  (default: 21)
 #   --arch=x64|aarch64       (default: auto-detect)
 #   --config=debug|release|asan|tsan   (default: debug)
 #   --tests="TestPattern"    (optional, specific test to run)
@@ -90,6 +90,25 @@ get_glibc_jdk_url() {
         21-aarch64) echo "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.8%2B9/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.8_9.tar.gz" ;;
         25-x64)     echo "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.2%2B10/OpenJDK25U-jdk_x64_linux_hotspot_25.0.2_10.tar.gz" ;;
         25-aarch64) echo "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.2%2B10/OpenJDK25U-jdk_aarch64_linux_hotspot_25.0.2_10.tar.gz" ;;
+        *)          echo "" ;;
+    esac
+}
+
+# JDK Download URLs (Oracle GraalVM)
+# Versions match the SDKMAN-installed builds used in CI (java_setup.sh +
+# cache_java.yml: JAVA_<v>_GRAAL_VERSION).  Using Oracle's stable archive
+# URLs (not "latest") so the docker images match the CI configuration.
+get_graal_jdk_url() {
+    local version=$1
+    local arch=$2
+    # Oracle GraalVM archive arch labels: x64 / aarch64 (same as our $arch)
+    case "$version-$arch" in
+        17-x64)     echo "https://download.oracle.com/graalvm/17/archive/graalvm-jdk-17.0.12_linux-x64_bin.tar.gz" ;;
+        17-aarch64) echo "https://download.oracle.com/graalvm/17/archive/graalvm-jdk-17.0.12_linux-aarch64_bin.tar.gz" ;;
+        21-x64)     echo "https://download.oracle.com/graalvm/21/archive/graalvm-jdk-21.0.4_linux-x64_bin.tar.gz" ;;
+        21-aarch64) echo "https://download.oracle.com/graalvm/21/archive/graalvm-jdk-21.0.4_linux-aarch64_bin.tar.gz" ;;
+        25-x64)     echo "https://download.oracle.com/graalvm/25/archive/graalvm-jdk-25_linux-x64_bin.tar.gz" ;;
+        25-aarch64) echo "https://download.oracle.com/graalvm/25/archive/graalvm-jdk-25_linux-aarch64_bin.tar.gz" ;;
         *)          echo "" ;;
     esac
 }
@@ -205,6 +224,12 @@ if [[ "$JDK_VARIANT" == "j9" ]]; then
         exit 1
     fi
     JDK_URL=$(get_j9_jdk_url "$JDK_BASE_VERSION" "$ARCH")
+elif [[ "$JDK_VARIANT" == "graal" ]]; then
+    if [[ "$LIBC" == "musl" ]]; then
+        echo "Error: GraalVM is not available for musl libc"
+        exit 1
+    fi
+    JDK_URL=$(get_graal_jdk_url "$JDK_BASE_VERSION" "$ARCH")
 elif [[ "$LIBC" == "musl" ]]; then
     JDK_URL=$(get_musl_jdk_url "$JDK_BASE_VERSION" "$ARCH")
 else
@@ -212,7 +237,7 @@ else
 fi
 
 if [[ -z "$JDK_URL" ]]; then
-    echo "Error: --jdk must be one of: 8, 11, 17, 21, 25, 8-j9, 11-j9, 17-j9, 21-j9"
+    echo "Error: --jdk must be one of: 8, 11, 17, 21, 25, 8-j9, 11-j9, 17-j9, 21-j9, 17-graal, 21-graal, 25-graal"
     exit 1
 fi
 
