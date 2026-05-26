@@ -771,7 +771,16 @@ void Profiler::prewarmUnwinder() {
   // dlopen by SONAME is the only mechanism that works under static-libgcc.
   // libgcc_s.so.1 has been the stable SONAME since 2002; a bump would
   // constitute a glibc/GCC C++ ABI break and is treated as a fixed contract.
-  (void)dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL);
+  // Surface a warning if the load fails so a future SONAME bump (or a
+  // packaging quirk that removes the library) does not silently resurrect
+  // the original lazy-load-from-signal-handler deadlock.
+  static const char *soname = "libgcc_s.so.1";
+  if (dlopen(soname, RTLD_LAZY | RTLD_GLOBAL) == nullptr) {
+    const char *err = dlerror();
+    Log::warn("prewarmUnwinder: dlopen(%s) failed: %s — signal-handler "
+              "stack walks may deadlock on lazy libgcc_s load",
+              soname, err ? err : "(no diagnostic)");
+  }
 #endif
 }
 
