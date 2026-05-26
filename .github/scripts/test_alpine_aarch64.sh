@@ -33,4 +33,9 @@ apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ cl
 # Install debug symbols for musl libc
 apk add musl-dbg
 
-./gradlew -PCI -PkeepJFRs :ddprof-test:test${CONFIG} --no-daemon --parallel --build-cache --no-watch-fs
+SKIP_GTEST_FLAG=""
+if [ -n "${SKIP_GTEST}" ]; then
+  SKIP_GTEST_FLAG="-Pskip-gtest"
+fi
+
+./gradlew -PCI -PkeepJFRs ${SKIP_GTEST_FLAG} :ddprof-test:test${CONFIG} --no-daemon --parallel --build-cache --no-watch-fs

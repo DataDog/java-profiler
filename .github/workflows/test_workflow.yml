@@ -249,7 +249,7 @@ jobs:
           echo "JAVA_VERSION=${JAVA_VERSION}"
 
           mkdir -p build/logs
-          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+          ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
             | tee -a build/test-raw.log \
             | python3 -u .github/scripts/filter_gradle_log.py
           EXIT_CODE=${PIPESTATUS[0]}
@@ -511,7 +511,7 @@ jobs:
            set +e
            # the effective JAVA_VERSION is computed in the test_alpine_aarch64.sh script
            mkdir -p build/logs
-           docker run --cpus 4 --rm -v /tmp:/tmp -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" -w "${GITHUB_WORKSPACE}" alpine:3.21 /bin/sh -c "
+           docker run --cpus 4 --rm -e SKIP_GTEST="${{ inputs.skip_gtest == true && '1' || '' }}" -v /tmp:/tmp -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" -w "${GITHUB_WORKSPACE}" alpine:3.21 /bin/sh -c "
              \"$GITHUB_WORKSPACE/.github/scripts/test_alpine_aarch64.sh\" \
              \"${{ github.sha }}\" \"musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64\" \
              \"${{ matrix.config }}\" \"${{ env.JAVA_HOME }}\" \"${{ env.JAVA_TEST_HOME }}\"
