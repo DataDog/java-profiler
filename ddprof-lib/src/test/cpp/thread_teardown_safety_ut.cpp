@@ -176,10 +176,6 @@ TEST(ThreadTeardownSafetyTest, SignalSafeAccessorReturnsNullWithoutInit) {
 // ── T-05: Concurrent signals during teardown stress ──────────────────────────
 
 static void *t05_worker(void *) {
-  SigGuard gVtalrm(SIGVTALRM);
-  SigGuard gProf(SIGPROF);
-  install_handler(SIGVTALRM, SIG_IGN);
-  install_handler(SIGPROF, SIG_IGN);
   ProfiledThread::initCurrentThread();
   for (int i = 0; i < 10; ++i) {
     pthread_kill(pthread_self(), SIGVTALRM);
@@ -189,7 +185,14 @@ static void *t05_worker(void *) {
 }
 
 // 20 threads × 5 rounds with signal spray; no crash expected.
+// Signal dispositions are process-wide — set SIG_IGN once from the test body
+// before spawning workers so concurrent SigGuard restore races cannot re-expose
+// the default (terminate) disposition while a worker is mid-flight.
 TEST(ThreadTeardownSafetyTest, ConcurrentSignalsDuringTeardownStress) {
+  SigGuard gVtalrm(SIGVTALRM);
+  SigGuard gProf(SIGPROF);
+  install_handler(SIGVTALRM, SIG_IGN);
+  install_handler(SIGPROF, SIG_IGN);
   for (int round = 0; round < 5; ++round) {
     std::vector<pthread_t> threads(20);
     for (auto &tid : threads) {

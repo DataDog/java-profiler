@@ -98,8 +98,11 @@ private:
   void *_timer_id;
 
   volatile u64 _total_samples;
+  // On a separate cache line: incremented from every signal handler via
+  // recordSampleDelegated; must not share a line with _failures (written by
+  // ASGCT paths) or _total_samples (written by every recording path).
   alignas(DEFAULT_CACHE_LINE_SIZE) volatile u64 _sample_seq;
-  u64 _failures[ASGCT_FAILURE_TYPES];
+  alignas(DEFAULT_CACHE_LINE_SIZE) u64 _failures[ASGCT_FAILURE_TYPES];
 
   SpinLock _class_map_lock;
   SpinLock _locks[CONCURRENCY_LEVEL];
@@ -120,6 +123,7 @@ private:
   void **_dlopen_entry;
   static void *dlopen_hook(const char *filename, int flags);
   void switchLibraryTrap(bool enable);
+  static void prewarmUnwinder();
 
   void enableEngines();
   void disableEngines();

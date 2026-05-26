@@ -27,7 +27,7 @@
 
 std::atomic<bool> BaseWallClock::_enabled{false};
 
-bool WallClockASGCT::inSyscall(void *ucontext) {
+bool BaseWallClock::inSyscall(void *ucontext) {
   StackFrame frame(ucontext);
   uintptr_t pc = frame.pc();
 
@@ -54,6 +54,7 @@ bool WallClockASGCT::inSyscall(void *ucontext) {
 
 void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
                                     void *ucontext) {
+  SIGNAL_HANDLER_GUARD();
   // Reject any SIGVTALRM that did not originate from our rt_tgsigqueueinfo
   // send. Defends against stray in-process tgkill / external sigqueue that
   // would otherwise drive our wallclock sampling path.
@@ -177,14 +178,18 @@ void WallClockASGCT::timerLoop() {
     auto collectThreads = [&](std::vector<int>& tids) {
       // Get thread IDs from the filter if it's enabled
       // Otherwise list all threads in the system
+      const int refresher_tid = Libraries::instance()->refresherTid();
       if (Profiler::instance()->threadFilter()->enabled()) {
         Profiler::instance()->threadFilter()->collect(tids);
       } else {
         ThreadList *thread_list = OS::listThreads();
         while (thread_list->hasNext()) {
           int tid = thread_list->next();
-          // Don't include the current thread
-          if (tid != OS::threadId()) {
+          // Don't include the current thread, nor the Libraries refresher
+          // thread (profiler-internal — masking SIGVTALRM there is not
+          // enough; we also want to avoid the kill() round-trip and any
+          // pending-signal accumulation).
+          if (tid != OS::threadId() && tid != refresher_tid) {
             tids.push_back(tid);
           }
         }
@@ -226,29 +231,9 @@ void WallClockASGCT::timerLoop() {
 // instead of invoking ASGCT. Used only when VM::canRequestStackTrace() is true
 // and the profiler has opted into jvmtistacks.
 
-bool WallClockJvmti::inSyscall(void *ucontext) {
-  StackFrame frame(ucontext);
-  uintptr_t pc = frame.pc();
-
-  if (StackFrame::isSyscall((instruction_t *)pc)) {
-    return true;
-  }
-
-  uintptr_t prev_pc = pc - SYSCALL_SIZE;
-  if ((pc & 0xfff) >= SYSCALL_SIZE ||
-      Libraries::instance()->findLibraryByAddress((instruction_t *)prev_pc) !=
-          NULL) {
-    if (StackFrame::isSyscall((instruction_t *)prev_pc) &&
-        frame.checkInterruptedSyscall()) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
 void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
                                          void *ucontext) {
+  SIGNAL_HANDLER_GUARD();
   WallClockJvmti *engine =
       reinterpret_cast<WallClockJvmti *>(Profiler::instance()->wallEngine());
   if (signo == SIGVTALRM) {
@@ -304,13 +289,16 @@ void WallClockJvmti::initialize(Arguments &args) {
 
 void WallClockJvmti::timerLoop() {
   auto collectThreads = [&](std::vector<int> &tids) {
+    const int refresher_tid = Libraries::instance()->refresherTid();
     if (Profiler::instance()->threadFilter()->enabled()) {
       Profiler::instance()->threadFilter()->collect(tids);
     } else {
       ThreadList *thread_list = OS::listThreads();
       while (thread_list->hasNext()) {
         int tid = thread_list->next();
-        if (tid != OS::threadId()) {
+        // Exclude the wallclock timer thread itself and the Libraries
+        // refresher (profiler-internal).
+        if (tid != OS::threadId() && tid != refresher_tid) {
           tids.push_back(tid);
         }
       }
@@ -327,6 +315,8 @@ void WallClockJvmti::timerLoop() {
           threads_already_exited++;
         } else if (errno == EPERM) {
           permission_denied++;
+        } else if (errno == EAGAIN) {
+          // Signal queue limit (RLIMIT_SIGPENDING) reached — count as missed.
         } else {
           Log::debug("unexpected error %s", strerror(errno));
         }

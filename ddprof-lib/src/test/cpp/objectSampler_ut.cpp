@@ -6,7 +6,16 @@
 #include <cstddef>
 #include <cstring>
 #include "../../main/cpp/objectSampler.h"
+#include "../../main/cpp/gtest_crash_handler.h"
 #include "vmEntry.h"
+
+static constexpr char OBJECT_SAMPLER_TEST_NAME[] = "ObjectSamplerTest";
+class ObjectSamplerGlobalSetup {
+public:
+  ObjectSamplerGlobalSetup()  { installGtestCrashHandler<OBJECT_SAMPLER_TEST_NAME>(); }
+  ~ObjectSamplerGlobalSetup() { restoreDefaultSignalHandlers(); }
+};
+static ObjectSamplerGlobalSetup object_sampler_global_setup;
 
 // ---------------------------------------------------------------------------
 // ObjectSamplerTestAccessor — friend of ObjectSampler, exposes internals
@@ -46,10 +55,7 @@ protected:
   _jvmtiEnv mock_env{};
   int deallocate_calls = 0;
 
-  // Active fixture pointer used by the C-style mock callbacks to reach
-  // per-instance state. Reset in SetUp/TearDown so the mocks never see a
-  // stale fixture even if a previous test crashed mid-run.
-  static thread_local ObjectSamplerDeallocateTest *active_fixture;
+  static ObjectSamplerDeallocateTest *active_fixture;
 
   void SetUp() override {
     deallocate_calls = 0;
@@ -71,22 +77,27 @@ protected:
     tbl.GetClassSignature = fn;
   }
 
-  // Mock Deallocate increments the per-fixture counter; it never frees the
-  // pointer because the mock signature buffer is statically allocated.
+  void runAndExpect(
+      jvmtiError(JNICALL *mock)(jvmtiEnv *, jclass, char **, char **),
+      bool active, int expected_calls) {
+    setMockGetClassSignature(mock);
+    ObjectSampler *s = ObjectSampler::instance();
+    ObjectSamplerTestAccessor::setActive(s, active);
+    ObjectSamplerTestAccessor::callRecordAllocation(
+        s, &mock_env, nullptr, nullptr, BCI_ALLOC, nullptr, nullptr, 1024);
+    EXPECT_EQ(deallocate_calls, expected_calls);
+  }
+
   static jvmtiError JNICALL mock_Deallocate(jvmtiEnv * /*env*/,
                                             unsigned char * /*mem*/) {
-    if (active_fixture) {
-      ++active_fixture->deallocate_calls;
-    }
+    ++active_fixture->deallocate_calls;
     return JVMTI_ERROR_NONE;
   }
 };
 
-thread_local ObjectSamplerDeallocateTest *
+ObjectSamplerDeallocateTest *
     ObjectSamplerDeallocateTest::active_fixture = nullptr;
 
-// GetClassSignature mock: returns JVMTI_ERROR_NONE and writes
-// g_mock_class_name into *signature_ptr.
 static jvmtiError JNICALL mock_GetClassSignature_success(
     jvmtiEnv * /*env*/, jclass /*klass*/,
     char **signature_ptr, char ** /*generic_ptr*/) {
@@ -96,28 +107,24 @@ static jvmtiError JNICALL mock_GetClassSignature_success(
   return JVMTI_ERROR_NONE;
 }
 
-// GetClassSignature mock: returns an error AND writes a non-NULL sentinel
-// into *signature_ptr (the UAF scenario we are guarding against).
+// Returns error but writes a non-NULL sentinel into *signature_ptr — the UAF
+// scenario the fix guards against (Deallocate must not be called on error).
 static jvmtiError JNICALL mock_GetClassSignature_error_with_sentinel(
     jvmtiEnv * /*env*/, jclass /*klass*/,
     char **signature_ptr, char ** /*generic_ptr*/) {
   if (signature_ptr) {
-    *signature_ptr = g_mock_class_name; // sentinel: non-NULL despite error
+    *signature_ptr = g_mock_class_name;
   }
   return JVMTI_ERROR_INVALID_CLASS;
 }
 
-// GetClassSignature mock: returns an error and leaves *signature_ptr at NULL.
 static jvmtiError JNICALL mock_GetClassSignature_error_null(
     jvmtiEnv * /*env*/, jclass /*klass*/,
     char **signature_ptr, char ** /*generic_ptr*/) {
-  // Leave *signature_ptr unchanged (NULL as initialised by recordAllocation).
   (void)signature_ptr;
   return JVMTI_ERROR_INVALID_CLASS;
 }
 
-// GetClassSignature mock: returns JVMTI_ERROR_NONE but writes NULL into
-// *signature_ptr — a misbehaving JVMTI impl.
 static jvmtiError JNICALL mock_GetClassSignature_success_null_name(
     jvmtiEnv * /*env*/, jclass /*klass*/,
     char **signature_ptr, char ** /*generic_ptr*/) {
@@ -208,74 +215,34 @@ TEST(ObjectSamplerTest, NormalizePassesThroughObjectArray) {
     EXPECT_EQ(out_len, strlen("[Ljava/lang/String;"));
 }
 
-// ---------------------------------------------------------------------------
 // T-01: GetClassSignature returns error with non-NULL sentinel in *signature_ptr.
 // Deallocate MUST NOT be called.
-// ---------------------------------------------------------------------------
 TEST_F(ObjectSamplerDeallocateTest, DeallocateNotCalledOnErrorWithNonNullSentinel) {
-    setMockGetClassSignature(mock_GetClassSignature_error_with_sentinel);
-    ObjectSampler *s = ObjectSampler::instance();
-    ObjectSamplerTestAccessor::setActive(s, true);
-    ObjectSamplerTestAccessor::callRecordAllocation(
-        s, &mock_env, nullptr, nullptr, BCI_ALLOC,
-        nullptr, nullptr, 1024);
-    EXPECT_EQ(deallocate_calls, 0);
+    runAndExpect(mock_GetClassSignature_error_with_sentinel, true, 0);
 }
 
-// ---------------------------------------------------------------------------
 // T-02: GetClassSignature succeeds with a valid class name.
 // Deallocate IS called exactly once (on the success path).
 // Note: lookupClass returns -1 because the class map is empty, so the
 // method returns without recording — that is the expected behaviour.
-// ---------------------------------------------------------------------------
 TEST_F(ObjectSamplerDeallocateTest, DeallocateCalledOnceOnGetClassSignatureSuccess) {
-    setMockGetClassSignature(mock_GetClassSignature_success);
-    ObjectSampler *s = ObjectSampler::instance();
-    ObjectSamplerTestAccessor::setActive(s, true);
-    ObjectSamplerTestAccessor::callRecordAllocation(
-        s, &mock_env, nullptr, nullptr, BCI_ALLOC,
-        nullptr, nullptr, 1024);
-    EXPECT_EQ(deallocate_calls, 1);
+    runAndExpect(mock_GetClassSignature_success, true, 1);
 }
 
-// ---------------------------------------------------------------------------
 // T-03: GetClassSignature fails and leaves class_name at NULL.
 // Deallocate MUST NOT be called.
-// ---------------------------------------------------------------------------
 TEST_F(ObjectSamplerDeallocateTest, DeallocateNotCalledOnErrorWithNullName) {
-    setMockGetClassSignature(mock_GetClassSignature_error_null);
-    ObjectSampler *s = ObjectSampler::instance();
-    ObjectSamplerTestAccessor::setActive(s, true);
-    ObjectSamplerTestAccessor::callRecordAllocation(
-        s, &mock_env, nullptr, nullptr, BCI_ALLOC,
-        nullptr, nullptr, 1024);
-    EXPECT_EQ(deallocate_calls, 0);
+    runAndExpect(mock_GetClassSignature_error_null, true, 0);
 }
 
-// ---------------------------------------------------------------------------
 // T-04: GetClassSignature succeeds but writes NULL into *signature_ptr.
 // Deallocate MUST NOT be called (the NULL guard in the condition fires).
-// ---------------------------------------------------------------------------
 TEST_F(ObjectSamplerDeallocateTest, DeallocateNotCalledWhenSuccessButNullName) {
-    setMockGetClassSignature(mock_GetClassSignature_success_null_name);
-    ObjectSampler *s = ObjectSampler::instance();
-    ObjectSamplerTestAccessor::setActive(s, true);
-    ObjectSamplerTestAccessor::callRecordAllocation(
-        s, &mock_env, nullptr, nullptr, BCI_ALLOC,
-        nullptr, nullptr, 1024);
-    EXPECT_EQ(deallocate_calls, 0);
+    runAndExpect(mock_GetClassSignature_success_null_name, true, 0);
 }
 
-// ---------------------------------------------------------------------------
 // T-05: _active is false — recordAllocation returns immediately.
 // Deallocate MUST NOT be called.
-// ---------------------------------------------------------------------------
 TEST_F(ObjectSamplerDeallocateTest, DeallocateNotCalledWhenNotActive) {
-    setMockGetClassSignature(mock_GetClassSignature_success);
-    ObjectSampler *s = ObjectSampler::instance();
-    ObjectSamplerTestAccessor::setActive(s, false);
-    ObjectSamplerTestAccessor::callRecordAllocation(
-        s, &mock_env, nullptr, nullptr, BCI_ALLOC,
-        nullptr, nullptr, 1024);
-    EXPECT_EQ(deallocate_calls, 0);
+    runAndExpect(mock_GetClassSignature_success, false, 0);
 }
