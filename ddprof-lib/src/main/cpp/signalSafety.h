@@ -35,6 +35,22 @@
 #  endif
 #endif
 
+// Detect TSAN.  clang exposes TSan via __has_feature(thread_sanitizer);
+// gcc defines __SANITIZE_THREAD__.  Use both so callers don't have to know
+// which compiler is in use.
+#ifdef __has_feature
+#  if __has_feature(thread_sanitizer)
+#    ifndef TSAN_ENABLED
+#      define TSAN_ENABLED 1
+#    endif
+#  endif
+#endif
+#ifdef __SANITIZE_THREAD__
+#  ifndef TSAN_ENABLED
+#    define TSAN_ENABLED 1
+#  endif
+#endif
+
 // Debug-only AS-safety assertion.  Aborts with a file:line diagnostic when
 // invoked from inside a signal handler in debug / ASAN builds; compiles to a
 // no-op in release builds (NDEBUG).

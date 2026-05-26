@@ -13,6 +13,24 @@
 #include <cstdio>
 #include <cstdlib>
 
+// Detect TSan in a compiler-agnostic way.  clang exposes TSan via
+// __has_feature(thread_sanitizer); gcc defines __SANITIZE_THREAD__.
+// Test both so clang+TSan builds correctly skip handler installation
+// (TSan installs its own SIGSEGV/SIGBUS/SIGABRT/SIGFPE/SIGILL interceptors
+// and overriding them prevents TSan from writing its report).
+#ifdef __has_feature
+#  if __has_feature(thread_sanitizer)
+#    ifndef TSAN_ENABLED
+#      define TSAN_ENABLED 1
+#    endif
+#  endif
+#endif
+#ifdef __SANITIZE_THREAD__
+#  ifndef TSAN_ENABLED
+#    define TSAN_ENABLED 1
+#  endif
+#endif
+
 // Platform detection for execinfo.h availability
 #if defined(__GLIBC__) || (defined(__APPLE__) && defined(__MACH__)) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
     #define HAVE_EXECINFO_H 1
@@ -123,7 +141,7 @@ void specificCrashHandler(int sig, siginfo_t *info, void *context) {
 // and overriding them causes TSan to crash before it can write its report.
 template<const char* TestName>
 void installGtestCrashHandler() {
-#if !defined(__SANITIZE_THREAD__)
+#if !defined(TSAN_ENABLED)
     struct sigaction sa;
     sa.sa_flags = SA_SIGINFO;  // Get detailed info, keep handler active
     sigemptyset(&sa.sa_mask);
@@ -140,7 +158,7 @@ void installGtestCrashHandler() {
 
 // Restore default signal handlers.
 inline void restoreDefaultSignalHandlers() {
-#if !defined(__SANITIZE_THREAD__)
+#if !defined(TSAN_ENABLED)
     signal(SIGSEGV, SIG_DFL);
     signal(SIGBUS, SIG_DFL);
     signal(SIGABRT, SIG_DFL);
