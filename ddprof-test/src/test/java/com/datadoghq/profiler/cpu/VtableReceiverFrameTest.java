@@ -73,9 +73,13 @@ public class VtableReceiverFrameTest extends AbstractProfilerTest {
                 if (stackTrace != null && stackTrace.contains(".vtable stub()")) {
                     System.err.println("=VTABLE STUB TRACE=\n" + stackTrace + "\n=END=");
                 }
+                // JMC's STACK_TRACE_STRING HTML-escapes angle brackets in method
+                // names (it does the same for <init>/<clinit>), so the synthetic
+                // method appears as "&lt;vtable_receiver&gt;" in the rendered string.
+                // Match on the bare token so the test is robust to either form.
                 if (stackTrace != null
                         && stackTrace.contains(".vtable stub()")
-                        && stackTrace.contains("<vtable_receiver>")
+                        && stackTrace.contains("vtable_receiver")
                         && (stackTrace.contains("Circle")
                                 || stackTrace.contains("Square")
                                 || stackTrace.contains("Triangle"))) {
@@ -86,7 +90,7 @@ public class VtableReceiverFrameTest extends AbstractProfilerTest {
             if (foundVtableWithReceiver) break;
         }
         assertTrue(foundVtableWithReceiver,
-                "No CPU sample contained a vtable stub frame, a <vtable_receiver> synthetic frame, " +
+                "No CPU sample contained a vtable stub frame, a vtable_receiver synthetic frame, " +
                 "and a receiver class (Circle/Square/Triangle); signal-handler VMSymbol* capture or " +
                 "dump-time SafeAccess resolution in Lookup::resolveVTableReceiver is broken");
     }
