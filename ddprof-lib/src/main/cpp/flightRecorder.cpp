@@ -430,10 +430,19 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     } else if (bci == BCI_ALLOC) {
       // Synthetic vtable-receiver frame from hotspotSupport.cpp:walkVM.
       // method_id holds a raw class_id from _class_map (the same Dictionary as _classes).
-      // Use the pre-collected _class_cache snapshot (populated once at Lookup construction)
-      // to look up the raw name, then apply the same prefix-based normalisation as
-      // fillJavaMethodInfo (strips digit suffixes from generated accessor classes,
-      // canonicalises LambdaForm sub-types). No lock or collect needed here.
+      //
+      // _class_cache is safe to use here because vtable-receiver classes are always
+      // pre-registered via preregisterLoadedClasses() before profiling starts.
+      // walkVM uses bounded_lookup(size_limit=0), which never inserts, so a non-INT_MAX
+      // class_id guarantees the class was already in _class_map when initClassCache()
+      // ran.  No lock is needed: the snapshot pointers remain valid for the full
+      // writeCpool() duration because _class_map.clear() only runs after writeCpool returns.
+      //
+      // _class_cache is intentionally NOT used as the source for writeClasses().
+      // fillJavaMethodInfo() (called during writeStackTraces/writeMethods) inserts
+      // every Java class into _classes.  writeClasses() must collect _classes fresh
+      // after those insertions to obtain the complete class pool; otherwise class names
+      // would be missing from JFR and stack-trace strings would show null class names.
       u32 raw_class_id = (u32)(uintptr_t)method;
       u32 class_id = raw_class_id;
       auto it = _class_cache.find(raw_class_id);
@@ -474,6 +483,13 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
 }
 
 void Lookup::initClassCache() {
+  // Snapshot _classes into _class_cache for use by resolveMethod(BCI_ALLOC).
+  // Must be called before writeStackTraces() so the snapshot covers all
+  // vtable-receiver classes (pre-registered before profiling starts).
+  // This snapshot is intentionally NOT used by writeClasses(): regular Java
+  // classes are inserted into _classes by fillJavaMethodInfo() during
+  // writeStackTraces/writeMethods, so writeClasses() must re-collect after
+  // those passes to obtain the complete class pool.
   auto guard = Profiler::instance()->classMapSharedGuard();
   _classes->collect(_class_cache);
 }
@@ -1239,10 +1255,14 @@ void Recording::writeCpool(Buffer *buf) {
   // constant pool count - bump each time a new pool is added
   buf->put8(12);
 
-  // classMap() is shared across the dump (this thread) and the JVMTI shared-lock
-  // writers (Profiler::lookupClass and friends). writeClasses() holds
-  // classMapSharedGuard() for its full duration; the exclusive classMap()->clear()
-  // in Profiler::dump runs only after this method returns.
+  // Two-phase classMap locking: initClassCache() takes the shared lock early to
+  // snapshot vtable-receiver class names for resolveMethod(BCI_ALLOC).  The snapshot
+  // is valid for the whole writeCpool() call because classMap()->clear() (exclusive
+  // lock) only runs in Profiler::dump after writeCpool() returns.
+  // writeClasses() takes the shared lock a second time to collect the COMPLETE class
+  // set: fillJavaMethodInfo() inserts every Java class into _classes during
+  // writeStackTraces/writeMethods, so the early snapshot would miss them all and
+  // produce a class pool with null class names in every stack frame.
   Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
   lookup.initClassCache();
   writeFrameTypes(buf);
@@ -1457,10 +1477,13 @@ void Recording::writeMethods(Buffer *buf, Lookup *lookup) {
 
 void Recording::writeClasses(Buffer *buf, Lookup *lookup) {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
-  // Use the pre-collected snapshot from Lookup::initClassCache(). The shared
-  // lock was held during that collect; clear() cannot run until after the full
-  // constant-pool section is written, so the const char* pointers remain valid.
-  const std::map<u32, const char *>& classes = lookup->_class_cache;
+  // Hold classMapSharedGuard() for the full function. The const char* pointers
+  // stored in classes point into dictionary row storage; clear() frees that
+  // storage under the exclusive lock, so we must not release the shared lock
+  // until we have finished iterating.
+  std::map<u32, const char *> classes;
+  auto guard = Profiler::instance()->classMapSharedGuard();
+  lookup->_classes->collect(classes);
 
   buf->putVar64(T_CLASS);
   buf->putVar64(classes.size());

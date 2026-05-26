@@ -163,6 +163,10 @@ Error Arguments::parse(const char *args) {
       if (_cpu < 0) {
         msg = "cpu must be >= 0";
       }
+      // vtable_target: resolve vtable/itable stub receiver classes in CPU traces.
+      // Cost: one JVMTI GetLoadedClasses enumeration at profiler start and at
+      // each JFR dump; incremental per-class insert on ClassPrepare. The
+      // signal-handler path itself only does a lock-free bounded_lookup (no malloc).
       _features.vtable_target = 1;
 
       CASE("wall")

@@ -73,6 +73,7 @@ public class VtableTargetPreregistrationTest extends AbstractProfilerTest {
                 String stackTrace = frameAccessor.getMember(sample);
                 if (stackTrace != null
                         && stackTrace.contains(".vtable stub()")
+                        && stackTrace.contains("<vtable_receiver>")
                         && (stackTrace.contains("Circle")
                                 || stackTrace.contains("Square")
                                 || stackTrace.contains("Triangle"))) {
@@ -83,8 +84,8 @@ public class VtableTargetPreregistrationTest extends AbstractProfilerTest {
             if (foundVtableWithReceiver) break;
         }
         assertTrue(foundVtableWithReceiver,
-                "No CPU sample contained both a vtable stub frame and a receiver-class frame " +
-                "(Circle/Square/Triangle); preregisterLoadedClasses() may not have run at " +
-                "CPU-only profiler start");
+                "No CPU sample contained a vtable stub frame, a <vtable_receiver> synthetic frame, " +
+                "and a receiver class (Circle/Square/Triangle); preregisterLoadedClasses() may not " +
+                "have run at CPU-only profiler start, or resolveMethod BCI_ALLOC is broken");
     }
 }

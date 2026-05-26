@@ -646,6 +646,10 @@ void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
   // tryLockShared() in lookupClass(). This ensures newly prepared classes are
   // never silently skipped while an exclusive dump/reset is in flight. Gate on
   // vtable_target to avoid overhead when the feature is disabled.
+  // Memory-ordering: _features.vtable_target is written in Profiler::start()
+  // before the release store to _state. The acquire load of _state in
+  // isRunning() above establishes happens-before with that write, so reading
+  // _features.vtable_target here is safe without a separate atomic.
   Profiler* profiler = Profiler::instance();
   if (profiler == nullptr || !profiler->isRunning() || !profiler->stackWalkFeatures().vtable_target) {
     return;

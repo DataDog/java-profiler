@@ -166,7 +166,9 @@ private:
   //   Phase 1 (no lock): JVMTI snapshot + local enumeration; concurrent
   //     ClassPrepare callbacks may insert via shared lock during this window.
   //   Phase 2 (always): shared lock for the bulk-insert of Phase 1 names;
-  //     shared suffices because Dictionary::lookup uses CAS internally;
+  //     multiple concurrent shared-lock holders are safe because Dictionary
+  //     uses CAS for slot allocation; exclusive lock from Phase 0 is what
+  //     prevents a concurrent clear() from running during Phase 1 or 2;
   //     no re-clear here, so any Phase 1 ClassPrepare insertions survive.
   // Runs on a JVM thread (never in a signal handler).
   void preregisterLoadedClasses(jvmtiEnv* jvmti, bool clear_first = false);
