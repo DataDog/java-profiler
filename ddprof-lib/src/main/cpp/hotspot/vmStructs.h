@@ -606,6 +606,12 @@ DECLARE(VMSymbol)
         assert(_symbol_body_offset >= 0);
         return at(_symbol_body_offset);
     }
+
+    // Public accessors for safefetch-based dump-time resolution (no `this`
+    // deref): used to compute the address of the length/body fields without
+    // touching the Symbol's memory, so callers can probe with SafeAccess.
+    static int lengthOffset() { return _symbol_length_offset; }
+    static int bodyOffset()   { return _symbol_body_offset; }
 DECLARE_END
 
 DECLARE(VMClassLoaderData)

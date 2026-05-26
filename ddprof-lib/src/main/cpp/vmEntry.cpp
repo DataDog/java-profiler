@@ -19,6 +19,7 @@
 #include "safeAccess.h"
 #include "hotspot/vmStructs.h"
 #include "hotspot/jitCodeCache.h"
+#include <atomic>
 #include <dlfcn.h>
 #include <stdlib.h>
 #include "guards.h"
@@ -633,6 +634,11 @@ void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
       }
       jvmti->Deallocate((unsigned char *)classes);
     }
+}
+
+void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
+                               jclass klass) {
+  loadMethodIDs(jvmti, jni, klass);
 }
 
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {

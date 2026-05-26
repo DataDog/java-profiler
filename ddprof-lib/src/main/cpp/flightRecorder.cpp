@@ -359,18 +359,128 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   jni->PopLocalFrame(NULL);
 }
 
+bool Lookup::resolveVTableReceiver(VMSymbol *sym, char *buf, size_t bufsize,
+                                    u32 *out_class_id) {
+  if (sym == nullptr || !SafeAccess::isReadable(sym)) {
+    return false;
+  }
+  // Read the 4-byte word containing the u2 length field. In all HotSpot
+  // versions we support the length is at offset 0 of Symbol; we still go
+  // through VMStructs in case that ever changes. The low 16 bits hold the
+  // length on little-endian targets (all supported platforms).
+  int32_t *len_word_addr =
+      (int32_t *)((char *)sym + VMSymbol::lengthOffset());
+  int32_t w1 = SafeAccess::safeFetch32(len_word_addr, -1);
+  int32_t w2 = SafeAccess::safeFetch32(len_word_addr, 0);
+  if (w1 == -1 && w2 == 0) {
+    return false;
+  }
+  unsigned len = (unsigned)(w1 & 0xFFFF);
+  // Bounds: a usable internal class name needs at least 1 byte (single-char
+  // descriptors like "B"/"C" for primitives never appear as vtable receivers
+  // because primitives can't be receivers of virtual or interface dispatch).
+  // Upper bound is the caller-provided buffer; class names above this length
+  // are dropped — operators see VTABLE_RECEIVER_RESOLVE_FAILED rise.
+  if (len == 0 || len > bufsize) {
+    return false;
+  }
+  const void *body = (const char *)sym + VMSymbol::bodyOffset();
+  if (!SafeAccess::safeCopy(buf, body, len)) {
+    return false;
+  }
+  // Reject anything that doesn't look like a JVM internal class name.
+  // Valid bytes for slash-separated internal names: '/', '$', '[', ';', '_',
+  // alnum. Rejecting reduces — but does not eliminate — the case where the
+  // Symbol slot was reused for unrelated data that happens to be printable.
+  for (unsigned i = 0; i < len; i++) {
+    unsigned char c = (unsigned char)buf[i];
+    if (c < 0x20 || c >= 0x7F) {
+      return false;
+    }
+  }
+  u32 class_id = _classes->lookup(buf, len);
+  // Apply synthetic-accessor/LambdaForm normalisation so that the many
+  // distinct names HotSpot generates for these families (..Accessor1234,
+  // LambdaForm$MH/0x...) collapse to one bucket each in the JFR class pool.
+  // Folding the normalisation inside resolveVTableReceiver keeps the call
+  // site in resolveMethod minimal and ensures the cache stores normalised
+  // class ids (so MethodMap deduplication works for these families too).
+  if (has_prefix_n(buf, len,
+                   "jdk/internal/reflect/GeneratedConstructorAccessor")) {
+    class_id =
+        _classes->lookup("jdk/internal/reflect/GeneratedConstructorAccessor");
+  } else if (has_prefix_n(buf, len, "sun/reflect/GeneratedConstructorAccessor")) {
+    class_id = _classes->lookup("sun/reflect/GeneratedConstructorAccessor");
+  } else if (has_prefix_n(buf, len,
+                          "jdk/internal/reflect/GeneratedMethodAccessor")) {
+    class_id = _classes->lookup("jdk/internal/reflect/GeneratedMethodAccessor");
+  } else if (has_prefix_n(buf, len, "sun/reflect/GeneratedMethodAccessor")) {
+    class_id = _classes->lookup("sun/reflect/GeneratedMethodAccessor");
+  } else if (has_prefix_n(buf, len, "java/lang/invoke/LambdaForm$")) {
+    size_t prefix_len = strlen("java/lang/invoke/LambdaForm$");
+    const char *suffix = buf + prefix_len;
+    size_t suffix_len = len - prefix_len;
+    if (suffix_len >= 2 && suffix[0] == 'M' && suffix[1] == 'H') {
+      class_id = _classes->lookup("java/lang/invoke/LambdaForm$MH");
+    } else if (suffix_len >= 3 && suffix[0] == 'B' && suffix[1] == 'M' &&
+               suffix[2] == 'H') {
+      class_id = _classes->lookup("java/lang/invoke/LambdaForm$BMH");
+    } else if (suffix_len >= 3 && suffix[0] == 'D' && suffix[1] == 'M' &&
+               suffix[2] == 'H') {
+      class_id = _classes->lookup("java/lang/invoke/LambdaForm$DMH");
+    }
+  }
+  *out_class_id = class_id;
+  return true;
+}
+
+u32 Lookup::resolveVTableReceiverCached(void *sym) {
+  auto cached = _vtable_receiver_cache.find(sym);
+  if (cached != _vtable_receiver_cache.end()) {
+    return cached->second;
+  }
+  // Stack buffer sized to fit virtually every real class name. HotSpot
+  // Symbol length is u2 (max 65535); names beyond 4096 bytes are rare
+  // (deeply nested LambdaForm signatures, large CGLIB proxies) and are
+  // recorded as resolve failures via the sentinel below.
+  char buf[4096];
+  u32 class_id = 0;
+  if (!resolveVTableReceiver((VMSymbol *)sym, buf, sizeof(buf), &class_id)) {
+    Counters::increment(VTABLE_RECEIVER_RESOLVE_FAILED);
+    // Explicit sentinel so JFR renders an obvious "we couldn't read it"
+    // marker instead of an empty class name (which is indistinguishable
+    // from a parser/encoder error downstream).
+    class_id = _classes->lookup("<unresolved_vtable_receiver>");
+  }
+  _vtable_receiver_cache[sym] = class_id;
+  return class_id;
+}
+
 MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   static const char* UNKNOWN = "unknown";
   unsigned long key;
   jint bci = frame.bci;
 
   jmethodID method = frame.method_id;
+
+  // BCI_VTABLE_RECEIVER: method holds a VMSymbol* (see vmEntry.h). Resolve
+  // to a class_id via the per-dump cache once, then key MethodMap by the
+  // resolved class_id so two distinct Symbol addresses for the same class
+  // name (class unload + reload within a chunk) collapse to one MethodInfo
+  // row.
+  u32 vtable_class_id = 0;
+  if (bci == BCI_VTABLE_RECEIVER) {
+    vtable_class_id = resolveVTableReceiverCached((void *)method);
+  }
+
   if (method == nullptr) {
     key = MethodMap::makeKey(UNKNOWN);
   } else if (bci == BCI_ERROR || bci == BCI_NATIVE_FRAME) {
     key = MethodMap::makeKey(frame.native_function_name);
   } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
     key = MethodMap::makeKey(frame.packed_remote_frame);
+  } else if (bci == BCI_VTABLE_RECEIVER) {
+    key = MethodMap::makeVTableReceiverKey(vtable_class_id);
   } else {
     FrameTypeId frame_type = FrameType::decode(bci);
     assert(frame_type == FRAME_INTERPRETED || frame_type == FRAME_JIT_COMPILED ||
@@ -427,12 +537,36 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
         TEST_LOG("WARNING: Library lookup failed for index %u", lib_index);
         fillNativeMethodInfo(mi, "unknown_library", nullptr);
       }
+    } else if (bci == BCI_VTABLE_RECEIVER) {
+      // Synthetic vtable-receiver frame: method_id holds a VMSymbol*
+      // captured in walkVM. The Symbol -> class_id resolution (with
+      // synthetic-accessor/LambdaForm normalisation) was already done
+      // above via resolveVTableReceiverCached, which also handles
+      // resolution failures by mapping them to "<unresolved_vtable_receiver>"
+      // and incrementing VTABLE_RECEIVER_RESOLVE_FAILED.
+      mi->_class = vtable_class_id;
+      mi->_name = _symbols.lookup("<vtable_receiver>");
+      mi->_sig = _symbols.lookup("()V");
+      mi->_type = FRAME_NATIVE;
+      mi->_is_entry = false;
     } else {
       fillJavaMethodInfo(mi, method, first_time);
     }
   }
 
   return mi;
+}
+
+void Lookup::initClassCache() {
+  // Snapshot _classes into _class_cache for use by resolveMethod(BCI_ALLOC).
+  // Must be called before writeStackTraces() so the snapshot covers all
+  // vtable-receiver classes (pre-registered before profiling starts).
+  // This snapshot is intentionally NOT used by writeClasses(): regular Java
+  // classes are inserted into _classes by fillJavaMethodInfo() during
+  // writeStackTraces/writeMethods, so writeClasses() must re-collect after
+  // those passes to obtain the complete class pool.
+  auto guard = Profiler::instance()->classMapSharedGuard();
+  _classes->collect(_class_cache);
 }
 
 u32 Lookup::getPackage(const char *class_name) {
@@ -1196,11 +1330,16 @@ void Recording::writeCpool(Buffer *buf) {
   // constant pool count - bump each time a new pool is added
   buf->put8(12);
 
-  // classMap() is shared across the dump (this thread) and the JVMTI shared-lock
-  // writers (Profiler::lookupClass and friends). writeClasses() holds
-  // classMapSharedGuard() for its full duration; the exclusive classMap()->clear()
-  // in Profiler::dump runs only after this method returns.
+  // Two-phase classMap locking: initClassCache() takes the shared lock early to
+  // snapshot vtable-receiver class names for resolveMethod(BCI_ALLOC).  The snapshot
+  // is valid for the whole writeCpool() call because classMap()->clear() (exclusive
+  // lock) only runs in Profiler::dump after writeCpool() returns.
+  // writeClasses() takes the shared lock a second time to collect the COMPLETE class
+  // set: fillJavaMethodInfo() inserts every Java class into _classes during
+  // writeStackTraces/writeMethods, so the early snapshot would miss them all and
+  // produce a class pool with null class names in every stack frame.
   Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
+  lookup.initClassCache();
   writeFrameTypes(buf);
   writeThreadStates(buf);
   writeExecutionModes(buf);
@@ -1413,11 +1552,11 @@ void Recording::writeMethods(Buffer *buf, Lookup *lookup) {
 
 void Recording::writeClasses(Buffer *buf, Lookup *lookup) {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
-  std::map<u32, const char *> classes;
   // Hold classMapSharedGuard() for the full function. The const char* pointers
   // stored in classes point into dictionary row storage; clear() frees that
   // storage under the exclusive lock, so we must not release the shared lock
   // until we have finished iterating.
+  std::map<u32, const char *> classes;
   auto guard = Profiler::instance()->classMapSharedGuard();
   lookup->_classes->collect(classes);
 
