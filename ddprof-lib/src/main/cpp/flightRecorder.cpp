@@ -364,6 +364,14 @@ bool Lookup::resolveVTableReceiver(VMSymbol *sym, char *buf, size_t bufsize,
   if (sym == nullptr || !SafeAccess::isReadable(sym)) {
     return false;
   }
+  // VMSymbol offsets must have been resolved from VMStructs.  On JVMs whose
+  // metadata is missing either field (stripped HotSpot derivatives, some
+  // Substrate/Graal native images, OpenJ9 compat shims) the offset is -1;
+  // computing sym + (-1) and dereferencing it is UB / produces garbage that
+  // happens to bypass the safefetch (the page is readable).
+  if (VMSymbol::lengthOffset() < 0 || VMSymbol::bodyOffset() < 0) {
+    return false;
+  }
   // Read the 4-byte word containing the u2 length field. In all HotSpot
   // versions we support the length is at offset 0 of Symbol; we still go
   // through VMStructs in case that ever changes. The low 16 bits hold the

@@ -1215,7 +1215,16 @@ Error Profiler::start(Arguments &args, bool reset) {
       _features.java_anchor = 0;
       _features.gc_traces = 0;
   }
-  if (!VMStructs::hasClassNames()) {
+  // BCI_VTABLE_RECEIVER frames depend on HotSpot-specific VMStructs metadata
+  // (Klass::_name, Symbol::_length/_body, oop->klass layout) walked by the
+  // HotSpot stack walker. On non-HotSpot VMs (OpenJ9, Zing, etc.) the stack
+  // walker is different and never emits these frames, and the dump-time
+  // resolver would produce nothing or garbage for unrelated bytes. Force the
+  // feature off so the producer-side check in hotspotSupport.cpp short-
+  // circuits before the isVTableStub() probe, and so the dump-time
+  // resolver is never reached — saving CPU on every stack walk and every
+  // class-pool emit.
+  if (!VM::isHotspot() || !VMStructs::hasClassNames()) {
       _features.vtable_target = 0;
   }
   if (!VMStructs::hasCompilerStructs()) {
