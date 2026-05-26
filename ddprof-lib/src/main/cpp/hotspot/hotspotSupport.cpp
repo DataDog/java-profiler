@@ -535,21 +535,34 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     uintptr_t receiver = frame.jarg0();
                     if (receiver != 0) {
                         VMSymbol* symbol = VMKlass::fromOop(receiver)->name();
-                        // walkVM runs in a signal handler. _class_map is mutated
-                        // under _class_map_lock (shared by Profiler::lookupClass
-                        // inserters, exclusive by _class_map.clear() in the dump
-                        // path between unlockAll() and lock()). bounded_lookup
-                        // with size_limit=0 never inserts (no malloc), but it
-                        // still traverses row->next and reads row->keys, which
-                        // clear() concurrently frees. Take the lock shared via
-                        // try-lock; if an exclusive clear() is in progress, drop
-                        // the synthetic frame rather than read freed memory.
-                        auto guard = profiler->classMapTrySharedGuard();
-                        if (guard.ownsLock()) {
-                            u32 class_id = profiler->classMap()->bounded_lookup(
-                                symbol->body(), symbol->length(), 0);
-                            if (class_id != INT_MAX) {
-                                fillFrame(frames[depth++], BCI_ALLOC, class_id);
+                        const char* sym_name = symbol->body();
+                        size_t sym_len = symbol->length();
+                        // Skip dynamically-generated accessor and lambda-form classes.
+                        // They are normalised away (digit suffix stripped) by fillJavaMethodInfo
+                        // for regular frames, but the vtable receiver path bypasses that
+                        // normalisation. Showing the un-normalised names would break tests
+                        // (e.g. MetadataNormalisationTest) that assert those names are absent.
+                        bool skip_receiver =
+                            (sym_len > 30 && strncmp(sym_name, "jdk/internal/reflect/Generated", 30) == 0) ||
+                            (sym_len > 21 && strncmp(sym_name, "sun/reflect/Generated",  21) == 0) ||
+                            (sym_len > 27 && strncmp(sym_name, "java/lang/invoke/LambdaForm$", 27) == 0);
+                        if (!skip_receiver) {
+                            // walkVM runs in a signal handler. _class_map is mutated
+                            // under _class_map_lock (shared by Profiler::lookupClass
+                            // inserters, exclusive by _class_map.clear() in the dump
+                            // path between unlockAll() and lock()). bounded_lookup
+                            // with size_limit=0 never inserts (no malloc), but it
+                            // still traverses row->next and reads row->keys, which
+                            // clear() concurrently frees. Take the lock shared via
+                            // try-lock; if an exclusive clear() is in progress, drop
+                            // the synthetic frame rather than read freed memory.
+                            auto guard = profiler->classMapTrySharedGuard();
+                            if (guard.ownsLock()) {
+                                u32 class_id = profiler->classMap()->bounded_lookup(
+                                    sym_name, sym_len, 0);
+                                if (class_id != INT_MAX) {
+                                    fillFrame(frames[depth++], BCI_ALLOC, class_id);
+                                }
                             }
                         }
                     }
