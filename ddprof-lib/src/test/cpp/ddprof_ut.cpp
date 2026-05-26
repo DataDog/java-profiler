@@ -4,8 +4,10 @@
     #include "buffers.h"
     #include "context.h"
     #include "counters.h"
+    #include "guards.h"
     #include "mutex.h"
     #include "os.h"
+    #include "thread.h"
     #include "unwindStats.h"
     #include "threadFilter.h"
     #include "threadInfo.h"
@@ -16,8 +18,8 @@
     #include <thread>
     #include <vector>
     #include <algorithm>  // For std::sort
-    #include <thread>
-    #include <atomic>
+    #include <sys/wait.h>
+    #include <unistd.h>
 
 // Test name for crash handler
 static constexpr char DDPROF_TEST_NAME[] = "DdprofTest";
@@ -355,6 +357,58 @@ static DdprofGlobalSetup ddprof_global_setup;
         globalCount += count;
       }
       EXPECT_TRUE(globalCount > 0);
+    }
+
+    // Deterministic regression for the CriticalSection::_thread_ptr capture fix.
+    //
+    // Bug: the old destructor re-fetched currentSignalSafe() at destruction time.
+    // If TLS was cleared between the ctor and dtor (e.g. release() called inside
+    // the CS scope as it was in the old onThreadEnd), the re-fetch returned nullptr
+    // and exitCriticalSection() was silently skipped, leaving _in_critical_section
+    // stuck true so no subsequent CS could enter on that ProfiledThread.
+    //
+    // Fix: the ctor captures _thread_ptr once; the dtor uses that pointer regardless
+    // of TLS state at destruction time.
+    //
+    // This test exercises the exact race window by calling clearCurrentThreadTLS()
+    // inside a live CriticalSection scope, then verifying the flag is cleared.
+    // Without the fix tryEnterCriticalSection() returns false (exit 5).
+    TEST(ProfiledThreadTeardown, CriticalSectionExitsEvenAfterTLSCleared) {
+        pid_t pid = fork();
+        ASSERT_NE(-1, pid);
+
+        if (pid == 0) {
+            // ---- child process (fork isolates TLS from other tests) ----
+            ProfiledThread::initCurrentThread();
+            ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+            if (pt == nullptr) _exit(2);
+
+            // Baseline: entering critical section works.
+            if (!pt->tryEnterCriticalSection()) _exit(3);
+            pt->exitCriticalSection();
+
+            // Simulate the race: CriticalSection is constructed while TLS is valid
+            // (so _thread_ptr is captured), then TLS is cleared before the dtor runs.
+            {
+                CriticalSection cs;
+                if (!cs.entered()) _exit(4);
+                // Mimics the moment inside release() after pthread_setspecific(NULL).
+                ProfiledThread::clearCurrentThreadTLS();
+            } // dtor: old code → re-fetch nullptr → skip exit → _in_critical_section stuck
+              //        new code → _thread_ptr captured at ctor → exitCriticalSection called
+
+            // _in_critical_section must be false; if the bug is present this fails.
+            if (!pt->tryEnterCriticalSection()) _exit(5);
+            pt->exitCriticalSection();
+
+            _exit(0); // destructor is private; OS reclaims memory on exit.
+        }
+
+        // ---- parent: reap child and check exit code ----
+        int status = 0;
+        ASSERT_NE(-1, waitpid(pid, &status, 0));
+        ASSERT_TRUE(WIFEXITED(status)) << "child crashed (signal " << WTERMSIG(status) << ")";
+        ASSERT_EQ(0, WEXITSTATUS(status)) << "child exited with code " << WEXITSTATUS(status);
     }
 
     int main(int argc, char **argv) {

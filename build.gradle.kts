@@ -5,7 +5,11 @@ buildscript {
     classpath("com.dipien:semantic-version-gradle-plugin:2.0.0")
   }
   repositories {
+    val mavenRepositoryProxy = providers.gradleProperty("mavenRepositoryProxy").orNull
     mavenLocal()
+    if (mavenRepositoryProxy != null) {
+      maven { url = uri(mavenRepositoryProxy) }
+    }
     mavenCentral()
     gradlePluginPortal()
   }

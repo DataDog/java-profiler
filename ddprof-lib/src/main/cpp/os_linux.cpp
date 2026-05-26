@@ -171,11 +171,18 @@ void OS::sleep(u64 nanos) {
     nanosleep(&ts, NULL);
 }
 
-void OS::uninterruptibleSleep(u64 nanos, volatile bool* flag) {
-    // Workaround nanosleep bug: https://man7.org/linux/man-pages/man2/nanosleep.2.html#BUGS
-    u64 deadline = OS::nanotime() + nanos;
-    struct timespec ts = {(time_t)(deadline / 1000000000), (long)(deadline % 1000000000)};
-    while (*flag && clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, &ts) == EINTR);
+void OS::sleepWhile(u64 max_nanos, std::atomic<bool>& keep_sleeping) {
+    // Compute the deadline once and reuse it across EINTR retries so
+    // unrelated signals don't shorten the wait.
+    u64 deadline = OS::nanotime() + max_nanos;
+    struct timespec ts;
+    ts.tv_sec  = (time_t)(deadline / 1000000000ULL);
+    ts.tv_nsec = (long)(deadline % 1000000000ULL);
+    while (keep_sleeping.load(std::memory_order_acquire) &&
+           clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr) == EINTR) {
+        // Re-issue against the same absolute deadline.  EINTR absorbs
+        // SIGCHLD, SIGSTOP/CONT, etc. without arithmetic on remaining time.
+    }
 }
 
 u64 OS::overrun(siginfo_t* siginfo) {

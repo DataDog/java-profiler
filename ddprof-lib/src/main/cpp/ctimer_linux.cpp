@@ -163,15 +163,13 @@ Error CTimer::start(Arguments &args) {
 
   OS::installSignalHandler(_signal, signalHandler);
 
-  // Register all existing threads
-  Error result = Error::OK;
+  // Register all existing threads. Individual failures are benign — a thread
+  // may exit between listThreads() and registerThread(), and new threads
+  // will register themselves on creation. check() already validated that the
+  // timer mechanism works on this system.
   ThreadList *thread_list = OS::listThreads();
-  while (thread_list->hasNext()) { 
-    int tid = thread_list->next();
-    int err = registerThread(tid);
-    if (err != 0) {
-      result = Error("Failed to register thread");
-    }
+  while (thread_list->hasNext()) {
+    registerThread(thread_list->next());
   }
   delete thread_list;
 
@@ -184,7 +182,74 @@ void CTimer::stop() {
   }
 }
 
+Error CTimerJvmti::check(Arguments &args) {
+  if (!VM::canRequestStackTrace()) {
+    return Error("HotSpot RequestStackTrace JVMTI extension not available");
+  }
+  return CTimer::check(args);
+}
+
+Error CTimerJvmti::start(Arguments &args) {
+  if (!VM::canRequestStackTrace()) {
+    return Error("HotSpot RequestStackTrace JVMTI extension not available");
+  }
+  Error result = CTimer::start(args);
+  if (result) return result;
+  // Override the signal handler installed by CTimer::start with our own,
+  // which delegates stack walking to the HotSpot JFR extension.
+  OS::installSignalHandler(_signal, CTimerJvmti::signalHandler);
+  return Error::OK;
+}
+
+void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  SIGNAL_HANDLER_GUARD();
+  if (!OS::shouldProcessSignal(siginfo, SI_TIMER, SignalCookie::cpu())) {
+    Counters::increment(CTIMER_SIGNAL_FOREIGN);
+    OS::forwardForeignSignal(signo, siginfo, ucontext);
+    return;
+  }
+  Counters::increment(CTIMER_SIGNAL_OWN);
+
+  CriticalSection cs;
+  if (!cs.entered()) {
+    return;
+  }
+  int saved_errno = errno;
+  if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
+    errno = saved_errno;
+    return;
+  }
+  int tid = 0;
+  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  assert(current == nullptr || !current->isDeepCrashHandler());
+  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
+      && current->inInitWindow()) {
+    current->tickInitWindow();
+    errno = saved_errno;
+    return;
+  }
+  if (current != NULL) {
+    current->noteCPUSample(Profiler::instance()->recordingEpoch());
+    tid = current->tid();
+  } else {
+    tid = OS::threadId();
+  }
+  Shims::instance().setSighandlerTid(tid);
+
+  ExecutionEvent event;
+  event._execution_mode = getThreadExecutionMode();
+  // Opted into JVMTI delegation; drop the sample if the JVM rejects the
+  // request (WRONG_PHASE if JFR is not recording, NOT_AVAILABLE if
+  // jdk.StackTraceRequest is disabled). recordSampleDelegated() bumps the
+  // failure counters; there is no fallback to ASGCT in this engine.
+  Profiler::instance()->recordSampleDelegated(ucontext, _interval, tid,
+                                               BCI_CPU, &event);
+  Shims::instance().setSighandlerTid(-1);
+  errno = saved_errno;
+}
+
 void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  SIGNAL_HANDLER_GUARD();
   // Reject signals that did not originate from our timer_create timers.
   // This guards against Go's process-wide setitimer(ITIMER_PROF) and other
   // foreign SIGPROF sources that would otherwise drive our handler onto

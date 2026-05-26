@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <climits>
 #include <cstdlib>
 #include <setjmp.h>
 #include "asyncSampleMutex.h"
@@ -14,6 +15,7 @@
 #include "methodInfo.h"
 #include "jvmSupport.h"
 #include "profiler.h"
+#include "guards.h"
 #include "stackWalker.inline.h"
 #include "frames.h"
 
@@ -216,6 +218,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             profiled_thread->setCrashProtectionActive(true);
         }
         if (setjmp(crash_protection_ctx) != 0) {
+            // checkFault() does a longjmp from inside segvHandler, bypassing
+            // segvHandler's SignalHandlerScope destructor.  Compensate.
+            SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
             if (profiled_thread != nullptr) {
                 profiled_thread->setCrashProtectionActive(false);
             }
@@ -584,8 +589,23 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     uintptr_t receiver = frame.jarg0();
                     if (receiver != 0) {
                         VMSymbol* symbol = VMKlass::fromOop(receiver)->name();
-                        u32 class_id = profiler->classMap()->lookup(symbol->body(), symbol->length());
-                        fillFrame(frames[depth++], BCI_ALLOC, class_id);
+                        // walkVM runs in a signal handler. _class_map is mutated
+                        // under _class_map_lock (shared by Profiler::lookupClass
+                        // inserters, exclusive by _class_map.clear() in the dump
+                        // path between unlockAll() and lock()). bounded_lookup
+                        // with size_limit=0 never inserts (no malloc), but it
+                        // still traverses row->next and reads row->keys, which
+                        // clear() concurrently frees. Take the lock shared via
+                        // try-lock; if an exclusive clear() is in progress, drop
+                        // the synthetic frame rather than read freed memory.
+                        auto guard = profiler->classMapTrySharedGuard();
+                        if (guard.ownsLock()) {
+                            u32 class_id = profiler->classMap()->bounded_lookup(
+                                symbol->body(), symbol->length(), 0);
+                            if (class_id != INT_MAX) {
+                                fillFrame(frames[depth++], BCI_ALLOC, class_id);
+                            }
+                        }
                     }
                 }
 

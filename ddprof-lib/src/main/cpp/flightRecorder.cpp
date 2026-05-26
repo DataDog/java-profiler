@@ -20,7 +20,9 @@
 #include "lookup.h"
 #include "os.h"
 #include "profiler.h"
+#include "signalSafety.h"
 #include "rustDemangler.h"
+#include "safeAccess.h"
 #include "spinLock.h"
 #include "unwindStats.h"
 #include "symbols.h"
@@ -105,14 +107,20 @@ void Recording::copyTo(int target_fd) {
 
 off_t Recording::finishChunk() { return finishChunk(false); }
 
-off_t Recording::finishChunk(bool end_recording) {
+off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   jvmtiEnv *jvmti = VM::jvmti();
   JNIEnv *env = VM::jni();
 
   jclass *classes;
   jint count = 0;
-  // obtaining the class list will create local refs to all loaded classes,
-  // effectively preventing them from being unloaded while flushing
+  // Pin all currently-loaded classes for the duration of finishChunk().
+  // resolveMethod() calls GetLineNumberTable/GetClassSignature/GetMethodName on
+  // jmethodIDs of classes that were loaded when the sample was taken but could
+  // be unloaded concurrently by the GC before we flush.  Holding a local JNI
+  // reference to each class makes it a GC root, closing that race window.
+  // Note: this only guards against concurrent unloading that starts AFTER this
+  // call.  Classes already unloaded before finishChunk() was entered are not
+  // present in the list and receive no protection here.
   jvmtiError err = jvmti->GetLoadedClasses(&count, &classes);
 
   flush(&_cpu_monitor_buf);
@@ -204,6 +212,16 @@ off_t Recording::finishChunk(bool end_recording) {
 
   _buf->reset();
 
+  // Run method_map cleanup while the class pins from GetLoadedClasses are still
+  // held.  Line number tables are now malloc'd copies (fillJavaMethodInfo copies
+  // the JVMTI buffer and calls Deallocate() immediately), so ~SharedLineNumberTable()
+  // calls free() — safe regardless of class-unload state.  Cleanup runs before
+  // DeleteLocalRef to ensure erased jmethodID keys have not yet been recycled by
+  // a newly-loaded class.
+  if (do_cleanup) {
+    cleanupUnreferencedMethods();
+  }
+
   if (!err) {
     // delete all local references
     for (int i = 0; i < count; i++) {
@@ -216,10 +234,7 @@ off_t Recording::finishChunk(bool end_recording) {
 }
 
 void Recording::switchChunk(int fd) {
-  _chunk_start = finishChunk(fd > -1);
-
-  // Cleanup unreferenced methods after finishing the chunk
-  cleanupUnreferencedMethods();
+  _chunk_start = finishChunk(fd > -1, /*do_cleanup=*/true);
 
   TEST_LOG("MethodMap: %zu methods after cleanup", _method_map.size());
 
@@ -534,8 +549,8 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
   writeBoolSetting(buf, T_MALLOC, "enabled", args._nativemem >= 0);
   if (args._nativemem >= 0) {
     writeIntSetting(buf, T_MALLOC, "nativemem", args._nativemem);
-    // samplingInterval=-1 means every allocation is recorded (nativemem=0).
-    writeIntSetting(buf, T_MALLOC, "samplingInterval", args._nativemem == 0 ? -1 : args._nativemem);
+    // samplingInterval=-1 signals "record every allocation"; mirrors shouldSample's interval<=1 threshold.
+    writeIntSetting(buf, T_MALLOC, "samplingInterval", args._nativemem <= 1 ? -1 : args._nativemem);
   }
 
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "debugSymbols",
@@ -773,9 +788,10 @@ void Recording::writeCpool(Buffer *buf) {
   // constant pool count - bump each time a new pool is added
   buf->put8(12);
 
-  // Profiler::instance()->classMap() provides access to non-locked _class_map
-  // instance The non-locked access is ok here as this code will never run
-  // concurrently to _class_map.clear()
+  // classMap() is shared across the dump (this thread) and the JVMTI shared-lock
+  // writers (Profiler::lookupClass and friends). writeClasses() holds
+  // classMapSharedGuard() for its full duration; the exclusive classMap()->clear()
+  // in Profiler::dump runs only after this method returns.
   Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
   writeFrameTypes(buf);
   writeThreadStates(buf);
@@ -988,9 +1004,13 @@ void Recording::writeMethods(Buffer *buf, Lookup *lookup) {
 }
 
 void Recording::writeClasses(Buffer *buf, Lookup *lookup) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   std::map<u32, const char *> classes;
-  // no need to lock _classes as this code will never run concurrently with
-  // resetting that dictionary
+  // Hold classMapSharedGuard() for the full function. The const char* pointers
+  // stored in classes point into dictionary row storage; clear() frees that
+  // storage under the exclusive lock, so we must not release the shared lock
+  // until we have finished iterating.
+  auto guard = Profiler::instance()->classMapSharedGuard();
   lookup->_classes->collect(classes);
 
   buf->putVar64(T_CLASS);
@@ -1117,6 +1137,7 @@ void Recording::writeEventSizePrefix(Buffer *buf, int start) {
 }
 
 void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
+                                      u64 correlation_id,
                                       ExecutionEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_EXECUTION_SAMPLE);
@@ -1126,12 +1147,14 @@ void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->put8(static_cast<int>(event->_thread_state));
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
+  buf->putVar64(correlation_id);
   writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
 
 void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
+                                   u64 correlation_id,
                                    ExecutionEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_METHOD_SAMPLE);
@@ -1141,6 +1164,7 @@ void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->put8(static_cast<int>(event->_thread_state));
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
+  buf->putVar64(correlation_id);
   writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
@@ -1290,10 +1314,11 @@ void Recording::recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
 // assumption is that we hold the lock (with lock_index)
 void Recording::addThread(int lock_index, int tid) {
     int active = _active_index.load(std::memory_order_acquire);
-    _thread_ids[lock_index][active].insert(tid);
+    _thread_ids[lock_index][active].insert(tid);  // ThreadIdTable::insert is signal-safe (atomics only)
 }
 
 Error FlightRecorder::start(Arguments &args, bool reset) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   ExclusiveLockGuard locker(&_rec_lock);
   const char *file = args.file();
   if (file == NULL || file[0] == 0) {
@@ -1321,6 +1346,7 @@ Error FlightRecorder::newRecording(bool reset) {
 }
 
 void FlightRecorder::stop() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   ExclusiveLockGuard locker(&_rec_lock);
   Recording* rec = _rec;
   if (rec != nullptr) {
@@ -1331,6 +1357,7 @@ void FlightRecorder::stop() {
 }
 
 Error FlightRecorder::dump(const char *filename, const int length) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   assert(length >= 0);
   ExclusiveLockGuard locker(&_rec_lock);
   Recording* rec = _rec;
@@ -1351,6 +1378,7 @@ Error FlightRecorder::dump(const char *filename, const int length) {
 }
 
 void FlightRecorder::flush() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   ExclusiveLockGuard locker(&_rec_lock);
   Recording* rec = _rec;
   if (rec != nullptr) {
@@ -1359,8 +1387,10 @@ void FlightRecorder::flush() {
 
     jclass* classes = NULL;
     jint count = 0;
-    // obtaining the class list will create local refs to all loaded classes,
-    // effectively preventing them from being unloaded while flushing
+    // Pin currently-loaded classes for the duration of switchChunk() so that
+    // resolveMethod() can safely call JVMTI methods on jmethodIDs whose classes
+    // might otherwise be concurrently unloaded by the GC.  See the matching
+    // comment in finishChunk() for scope and limitations of this protection.
     jvmtiError err = jvmti->GetLoadedClasses(&count, &classes);
     rec->switchChunk(-1);
     if (!err) {
@@ -1413,6 +1443,7 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid,
 void FlightRecorder::recordDatadogSetting(int lock_index, int length,
                                           const char *name, const char *value,
                                           const char *unit) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
     Recording* rec = _rec;
@@ -1424,6 +1455,7 @@ void FlightRecorder::recordDatadogSetting(int lock_index, int length,
 }
 
 void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
     Recording* rec = _rec;
@@ -1443,11 +1475,11 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
       RecordingBuffer *buf = rec->buffer(lock_index);
       switch (event_type) {
       case BCI_CPU:
-          rec->recordExecutionSample(buf, tid, call_trace_id,
+          rec->recordExecutionSample(buf, tid, call_trace_id, 0,
                                      (ExecutionEvent *)event);
           break;
         case BCI_WALL:
-          rec->recordMethodSample(buf, tid, call_trace_id,
+          rec->recordMethodSample(buf, tid, call_trace_id, 0,
                                   (ExecutionEvent *)event);
           break;
         case BCI_ALLOC:
@@ -1470,6 +1502,33 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
         rec->flushIfNeeded(buf);
         rec->addThread(lock_index, tid);
       }
+  }
+}
+
+void FlightRecorder::recordEventDelegated(int lock_index, int tid,
+                                          u64 correlation_id, int event_type,
+                                          Event *event) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      RecordingBuffer *buf = rec->buffer(lock_index);
+      switch (event_type) {
+        case BCI_CPU:
+          rec->recordExecutionSample(buf, tid, 0, correlation_id,
+                                     (ExecutionEvent *)event);
+          break;
+        case BCI_WALL:
+          rec->recordMethodSample(buf, tid, 0, correlation_id,
+                                  (ExecutionEvent *)event);
+          break;
+        default:
+          // Delegation is only wired for CPU/wall samples in v1.
+          break;
+      }
+      rec->flushIfNeeded(buf);
+      rec->addThread(lock_index, tid);
+    }
   }
 }
 

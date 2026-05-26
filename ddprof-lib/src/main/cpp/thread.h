@@ -38,30 +38,15 @@ private:
   static constexpr u32 CRASH_HANDLER_NESTING_LIMIT = 5;
   static pthread_key_t _tls_key;
   static bool _tls_key_initialized;
-  static int _buffer_size;
-  static volatile int _running_buffer_pos;
-  static ProfiledThread** _buffer;
-
-  // Free slot recycling - lock-free stack of available buffer slots
-  // Note: Using plain int with GCC atomic builtins instead of std::atomic
-  // because std::atomic is not guaranteed async-signal-safe (may use mutexes)
-  static volatile int _free_stack_top;
-  static int* _free_slots;  // Array to store free slot indices
 
   static void initTLSKey();
   static void doInitTLSKey();
   static inline void freeKey(void *key);
-  static void cleanupBuffer();
-
-  // Free slot management - lock-free operations
-  static int popFreeSlot();    // Returns -1 if no free slots
-  static void pushFreeSlot(int slot_index);
 
   u64 _pc;
   u64 _sp;
   u64 _span_id;  // Wall-clock collapsing cache: last-seen span ID (not a context store — read from _otel_ctx_record on each signal, cached here to detect "same as last time")
   volatile u32 _crash_depth;
-  int _buffer_pos;
   int _tid;
   u32 _cpu_epoch;
   u32 _wall_epoch;
@@ -70,6 +55,7 @@ private:
   u32 _misc_flags;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
+  uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
   UnwindFailures _unwind_failures;
   bool _otel_ctx_initialized;
   bool _crash_protection_active;
@@ -85,22 +71,28 @@ private:
   alignas(8) u32 _otel_tag_encodings[DD_TAGS_CAPACITY];
   u64 _otel_local_root_span_id;
 
-  ProfiledThread(int buffer_pos, int tid)
-      : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _buffer_pos(buffer_pos), _tid(tid), _cpu_epoch(0),
+  ProfiledThread(int tid)
+      : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _init_window(0),
+        _signal_depth(0),
         _otel_ctx_initialized(false), _crash_protection_active(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
 
   virtual ~ProfiledThread() { }
-  void releaseFromBuffer();
 public:
-  static ProfiledThread *forTid(int tid) { return new ProfiledThread(-1, tid); }
-  static ProfiledThread *inBuffer(int buffer_pos) {
-    return new ProfiledThread(buffer_pos, 0);
-  }
+  static ProfiledThread *forTid(int tid) { return new ProfiledThread(tid); }
 
   static void initCurrentThread();
   static void release();
+#ifdef UNIT_TEST
+  // Simulates the moment inside release() after pthread_setspecific(NULL) but
+  // before delete — the race window the clearCurrentThreadTLS fix covers.
+  static void clearCurrentThreadTLS() {
+    if (__atomic_load_n(&_tls_key_initialized, __ATOMIC_ACQUIRE)) {
+      pthread_setspecific(_tls_key, nullptr);
+    }
+  }
+#endif
 
   static ProfiledThread *current();
   static ProfiledThread *currentSignalSafe(); // Signal-safe version that never allocates
@@ -177,6 +169,14 @@ public:
   bool isDeepCrashHandler() {
     return _crash_depth > CRASH_HANDLER_NESTING_LIMIT;
   }
+
+  // Signal-handler depth counter used by SignalHandlerScope (guards.h).  All
+  // access happens on the owning thread (signal handlers are delivered to the
+  // thread that's interrupted), so plain reads/writes are AS-safe — no locks,
+  // no malloc, no syscalls.  See guards.h for the public API.
+  inline uint8_t signalDepth() const { return _signal_depth; }
+  inline void enterSignalScope()    { ++_signal_depth; }
+  inline void exitSignalScope()     { if (_signal_depth > 0) --_signal_depth; }
 
   UnwindFailures* unwindFailures(bool reset = true) {
     if (reset) {

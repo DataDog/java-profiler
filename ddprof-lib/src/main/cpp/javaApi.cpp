@@ -504,6 +504,22 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
     }
   }
 
+  // Extract attribute_key_map from thread_ctx_config (NULL if no config was published)
+  jobjectArray jAttributeKeyMap = nullptr;
+  if (result.data.thread_ctx_config != NULL && result.data.thread_ctx_config->attribute_key_map != NULL) {
+    int n = 0;
+    while (result.data.thread_ctx_config->attribute_key_map[n] != NULL) n++;
+    jclass stringClass = env->FindClass("java/lang/String");
+    if (stringClass != nullptr) {
+      jAttributeKeyMap = env->NewObjectArray(n, stringClass, nullptr);
+      for (int i = 0; i < n; i++) {
+        jstring jKey = env->NewStringUTF(result.data.thread_ctx_config->attribute_key_map[i]);
+        env->SetObjectArrayElement(jAttributeKeyMap, i, jKey);
+        env->DeleteLocalRef(jKey);
+      }
+    }
+  }
+
   otel_process_ctx_read_drop(&result);
 
   // Find the ProcessContext class
@@ -514,14 +530,14 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
 
   // Find the constructor
   jmethodID constructor = env->GetMethodID(processContextClass, "<init>",
-    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
+    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;)V");
   if (!constructor) {
     return nullptr;
   }
 
   // Create the ProcessContext object
   jobject processContext = env->NewObject(processContextClass, constructor,
-    jDeploymentEnvironmentName, jHostName, jServiceInstanceId, jServiceName, jServiceVersion, jTelemetrySdkLanguage, jTelemetrySdkVersion, jTelemetrySdkName);
+    jDeploymentEnvironmentName, jHostName, jServiceInstanceId, jServiceName, jServiceVersion, jTelemetrySdkLanguage, jTelemetrySdkVersion, jTelemetrySdkName, jAttributeKeyMap);
 
   return processContext;
 #else

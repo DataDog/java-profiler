@@ -184,8 +184,11 @@ static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
     return result;
   } else {
     int tid = ProfiledThread::currentTid();
-    Profiler::unregisterThread(tid);
-    ProfiledThread::release();
+    {
+      SignalBlocker blocker;
+      Profiler::unregisterThread(tid);
+      ProfiledThread::release();
+    }
     return pthread_setspecific(key, value);
   }
 }
@@ -727,6 +730,7 @@ u64 PerfEvents::readCounter(siginfo_t *siginfo, void *ucontext) {
 }
 
 void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  SIGNAL_HANDLER_GUARD();
   if (siginfo->si_code <= 0) {
     // Looks like an external signal; don't treat as a profiling event
     return;

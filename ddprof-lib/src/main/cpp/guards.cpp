@@ -19,14 +19,66 @@
 #include "os.h"
 #include "thread.h"
 
+// Signal-context tracking — backed by ProfiledThread::_signal_depth; see
+// the comment block in guards.h for the rationale (initial-exec TLS was
+// rejected because of the static TLS surplus on Graal).
+
+int getInSignalDepth() {
+    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    return pt != nullptr ? static_cast<int>(pt->signalDepth()) : 0;
+}
+
+bool isInTrackedSignalContext() {
+    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    // null ProfiledThread = no thread context; the SignalHandlerScope
+    // never ran, so we have no positive evidence of a signal frame.
+    // See header comment for the rationale of returning false here.
+    return pt != nullptr && pt->signalDepth() != 0;
+}
+
+SignalHandlerScope::SignalHandlerScope() : _active(true) {
+    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    if (pt != nullptr) {
+        pt->enterSignalScope();
+    } else {
+        // No thread context: nothing to update; mark inactive so destructor
+        // and release() are no-ops.
+        _active = false;
+    }
+}
+
+SignalHandlerScope::~SignalHandlerScope() {
+    if (!_active) return;
+    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    if (pt != nullptr) {
+        pt->exitSignalScope();
+    }
+}
+
+void SignalHandlerScope::release() {
+    if (!_active) return;
+    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    if (pt != nullptr) {
+        pt->exitSignalScope();
+    }
+    _active = false;
+}
+
+void signalHandlerUnwindAfterLongjmp() {
+    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    if (pt != nullptr) {
+        pt->exitSignalScope();
+    }
+}
+
 // Static bitmap storage for fallback cases
 uint64_t CriticalSection::_fallback_bitmap[CriticalSection::FALLBACK_BITMAP_WORDS] = {};
 
-CriticalSection::CriticalSection() : _entered(false), _using_fallback(false), _word_index(0), _bit_mask(0) {
-    ProfiledThread* current = ProfiledThread::currentSignalSafe();
-    if (current != nullptr) {
+CriticalSection::CriticalSection() : _entered(false), _using_fallback(false), _word_index(0), _bit_mask(0), _thread_ptr(nullptr) {
+    _thread_ptr = ProfiledThread::currentSignalSafe();
+    if (_thread_ptr != nullptr) {
         // Primary path: Use ProfiledThread storage (fast and memory-efficient)
-        _entered = current->tryEnterCriticalSection();
+        _entered = _thread_ptr->tryEnterCriticalSection();
     } else {
         // Fallback path: Use hash-based bitmap for stress tests and edge cases
         _using_fallback = true;
@@ -51,10 +103,9 @@ CriticalSection::~CriticalSection() {
             // Use RELEASE ordering to ensure protected data writes are visible before releasing
             __atomic_fetch_and(&_fallback_bitmap[_word_index], ~_bit_mask, __ATOMIC_RELEASE);
         } else {
-            // Release ProfiledThread flag
-            ProfiledThread* current = ProfiledThread::currentSignalSafe();
-            if (current != nullptr) {
-                current->exitCriticalSection();
+            // Release ProfiledThread flag using the pointer captured at construction
+            if (_thread_ptr != nullptr) {
+                _thread_ptr->exitCriticalSection();
             }
         }
     }

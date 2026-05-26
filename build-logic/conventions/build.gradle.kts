@@ -3,13 +3,17 @@ plugins {
 }
 
 repositories {
+    val mavenRepositoryProxy = providers.gradleProperty("mavenRepositoryProxy").orNull
+    if (mavenRepositoryProxy != null) {
+        maven { url = uri(mavenRepositoryProxy) }
+    }
     gradlePluginPortal()
     mavenCentral()
 }
 
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib")
-    implementation("com.diffplug.spotless:spotless-plugin-gradle:8.4.0")
+    implementation("com.diffplug.spotless:spotless-plugin-gradle:8.5.1")
 }
 
 gradlePlugin {
