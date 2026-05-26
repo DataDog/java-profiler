@@ -64,6 +64,14 @@ public:
     return safefetch64_impl(ptr, errorValue);
   }
 
+  // Copies up to len bytes from src to dst using safefetch32_impl so that a
+  // page-unmap or repurpose of src memory during the copy does not crash the
+  // process. Returns true on full success, false if any read faulted. dst must
+  // have at least len bytes capacity; reads from src may over-read up to 3
+  // bytes past src+len (over-read is also safefetch-protected).
+  NOINLINE
+  static bool safeCopy(void* dst, const void* src, size_t len);
+
   static bool handle_safefetch(int sig, void* context);
 
   // NOINLINE functions with stable addresses for JVM patching (vmStructs.cpp)

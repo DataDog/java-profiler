@@ -42,6 +42,8 @@
 #include <fstream>
 #include <memory>
 #include <set>
+#include <string>
+#include <vector>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1176,7 +1178,7 @@ void Profiler::check_JDK_8313796_workaround() {
 
 Error Profiler::start(Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
-  if (_state > IDLE) {
+  if (state() > IDLE) {
     return Error("Profiler already started");
   }
 
@@ -1205,6 +1207,21 @@ Error Profiler::start(Arguments &args, bool reset) {
     return Error("No profiling events specified");
   }
 
+  // Commit _features before the reset block so any signal-handler code that
+  // reads _features.* observes the correct enabled state once profiling
+  // engines start.
+  _features = args._features;
+  if (VM::hotspot_version() < 8) {
+      _features.java_anchor = 0;
+      _features.gc_traces = 0;
+  }
+  if (!VMStructs::hasClassNames()) {
+      _features.vtable_target = 0;
+  }
+  if (!VMStructs::hasCompilerStructs()) {
+      _features.comp_task = 0;
+  }
+
   if (reset || _start_time == 0) {
     // Reset counters. _sample_seq is intentionally not reset: it is a
     // monotonically increasing uniqueness generator for correlation IDs and
@@ -1215,9 +1232,10 @@ Error Profiler::start(Arguments &args, bool reset) {
     // Reset dictionaries and bitmaps
     // Reset class map under lock because ObjectSampler may try to use it while
     // it is being cleaned up
-    _class_map_lock.lock();
-    _class_map.clear();
-    _class_map_lock.unlock();
+    {
+      ExclusiveLockGuard guard(&_class_map_lock);
+      _class_map.clear();
+    }
 
     // Reset call trace storage
     if (!_omit_stacktraces) {
@@ -1260,17 +1278,6 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Remote symbolication is now inline in ASGCT_CallFrame
   // No separate pool allocation needed!
 
-  _features = args._features;
-  if (VM::hotspot_version() < 8) {
-      _features.java_anchor = 0;
-      _features.gc_traces = 0;
-  }
-  if (!VMStructs::hasClassNames()) {
-      _features.vtable_target = 0;
-  }
-  if (!VMStructs::hasCompilerStructs()) {
-      _features.comp_task = 0;
-  }
   _safe_mode = args._safe_mode;
   if (VM::hotspot_version() < 8 || VM::isZing()) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
@@ -1406,10 +1413,9 @@ Error Profiler::start(Arguments &args, bool reset) {
     // TODO: find a better way to resolve the thread name.
     onThreadStart(nullptr, nullptr, nullptr);
 
-    _state = RUNNING;
+    _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
-
     return Error::OK;
   }
   // no engine was activated; perform cleanup
@@ -1427,7 +1433,7 @@ Error Profiler::start(Arguments &args, bool reset) {
 
 Error Profiler::stop() {
   MutexLocker ml(_state_lock);
-  if (_state != RUNNING) {
+  if (state() != RUNNING) {
     return Error("Profiler is not active");
   }
 
@@ -1503,13 +1509,13 @@ Error Profiler::stop() {
   // owned by library metadata, so we must keep library patches active until after serialization
   LibraryPatcher::unpatch_libraries();
 
-  _state = IDLE;
+  _state.store(IDLE, std::memory_order_release);
   return Error::OK;
 }
 
 Error Profiler::check(Arguments &args) {
   MutexLocker ml(_state_lock);
-  if (_state > IDLE) {
+  if (state() > IDLE) {
     return Error("Profiler already started");
   }
 
@@ -1546,7 +1552,7 @@ Error Profiler::check(Arguments &args) {
 
 Error Profiler::flushJfr() {
   MutexLocker ml(_state_lock);
-  if (_state != RUNNING) {
+  if (state() != RUNNING) {
     return Error("Profiler is not active");
   }
 
@@ -1563,11 +1569,12 @@ Error Profiler::flushJfr() {
 
 Error Profiler::dump(const char *path, const int length) {
   MutexLocker ml(_state_lock);
-  if (_state != IDLE && _state != RUNNING) {
+  State cur_state = state();
+  if (cur_state != IDLE && cur_state != RUNNING) {
     return Error("Profiler has not started");
   }
 
-  if (_state == RUNNING) {
+  if (cur_state == RUNNING) {
     std::set<int> thread_ids;
     // flush the liveness tracker instance and note all the threads referenced
     // by the live objects
@@ -1591,10 +1598,15 @@ Error Profiler::dump(const char *path, const int length) {
     // in processTraces() already handles clearing old traces while preserving
     // traces referenced by surviving LivenessTracker objects
     unlockAll();
-    // Reset classmap
-    _class_map_lock.lock();
-    _class_map.clear();
-    _class_map_lock.unlock();
+    // Clear the class map at end-of-dump. Class IDs are per-chunk in the JFR
+    // format, so the dump just completed re-populated _classes from the names
+    // it actually needed; the runtime map can start fresh for the next chunk.
+    // Working-set bound: only classes touched by the next chunk's samples
+    // re-enter the map.
+    {
+      ExclusiveLockGuard guard(&_class_map_lock);
+      _class_map.clear();
+    }
 
     _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();
@@ -1657,7 +1669,7 @@ Error Profiler::runInternal(Arguments &args, std::ostream &out) {
   }
   case ACTION_STATUS: {
     MutexLocker ml(_state_lock);
-    if (_state == RUNNING) {
+    if (state() == RUNNING) {
       out << "Profiling is running for " << uptime() << " seconds\n";
     } else {
       out << "Profiler is not active\n";
@@ -1713,7 +1725,7 @@ void Profiler::shutdown(Arguments &args) {
   MutexLocker ml(_state_lock);
 
   // The last chance to dump profile before VM terminates
-  if (_state == RUNNING) {
+  if (state() == RUNNING) {
     args._action = ACTION_STOP;
     Error error = run(args);
     if (error) {
@@ -1721,7 +1733,7 @@ void Profiler::shutdown(Arguments &args) {
     }
   }
 
-  _state = TERMINATED;
+  _state.store(TERMINATED, std::memory_order_release);
 }
 
 int Profiler::lookupClass(const char *key, size_t length) {
@@ -1741,7 +1753,7 @@ int Profiler::status(char* status, int max_len) {
     " CPU Engine       : %s\n"
     " WallClock Engine : %s\n"
     " Allocations      : %s\n",
-    _state == RUNNING ? "true" : "false",
+    state() == RUNNING ? "true" : "false",
     _cpu_engine != nullptr ? _cpu_engine->name() : "None",
     _wall_engine != nullptr ? _wall_engine->name() : "None",
     _alloc_engine != nullptr ? _alloc_engine->name() : "None");

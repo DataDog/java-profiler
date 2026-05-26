@@ -26,6 +26,7 @@
 #include "threadInfo.h"
 #include "trap.h"
 #include "vmEntry.h"
+#include <atomic>
 #include <iostream>
 #include <map>
 #include <time.h>
@@ -71,7 +72,7 @@ private:
   static volatile bool _need_JDK_8313796_workaround;
 
   Mutex _state_lock;
-  State _state;
+  std::atomic<State> _state;
   // class unload hook
   Trap _class_unload_hook_trap;
   typedef void (*NotifyClassUnloadedFunc)(void *);
@@ -152,9 +153,13 @@ private:
 
   static Profiler *const _instance;
 
+  inline State state() const {
+    return _state.load(std::memory_order_relaxed);
+  }
+
 public:
   Profiler()
-      : _state_lock(), _state(NEW), _class_unload_hook_trap(2),
+      : _state_lock(), _state(State::NEW), _class_unload_hook_trap(2),
         _notify_class_unloaded_func(NULL), _thread_info(), _class_map(1),
         _string_label_map(2), _context_value_map(3), _thread_filter(),
         _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
@@ -202,6 +207,10 @@ public:
     return _features;
   }
 
+  inline bool isRunning() {
+    return _state.load(std::memory_order_acquire) == RUNNING;
+  }
+
   u64 total_samples() { return _total_samples; }
   int max_stack_depth() { return _max_stack_depth; }
   time_t uptime() { return time(NULL) - _start_time; }
@@ -210,7 +219,6 @@ public:
 
   Dictionary *classMap() { return &_class_map; }
   SharedLockGuard classMapSharedGuard() { return SharedLockGuard(&_class_map_lock); }
-  BoundedOptionalSharedLockGuard classMapTrySharedGuard() { return BoundedOptionalSharedLockGuard(&_class_map_lock); }
   Dictionary *stringLabelMap() { return &_string_label_map; }
   Dictionary *contextValueMap() { return &_context_value_map; }
   u32 numContextAttributes() { return _num_context_attributes; }
