@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-05-25 18:31:34 EDT
+**Date:** 2026-05-26 00:57:17 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 8 |
-| CPU Cores (end) | 6 |
+| CPU Cores (start) | 44 |
+| CPU Cores (end) | 44 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-openj9-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (3 unique values: 6-10 cores)</summary>
+<summary>CPU Timeline (1 unique values: 44-44 cores)</summary>
 
 ```
-1779748054 8
-1779748059 10
-1779748064 10
-1779748069 6
-1779748074 6
-1779748079 6
-1779748084 6
-1779748089 6
-1779748094 6
-1779748099 6
-1779748104 6
-1779748109 6
-1779748114 6
-1779748119 6
-1779748124 6
-1779748129 6
-1779748134 6
-1779748139 6
-1779748144 6
-1779748149 6
+1779770928 44
+1779770933 44
+1779770938 44
+1779770943 44
+1779770948 44
+1779770953 44
+1779770958 44
+1779770963 44
+1779770968 44
+1779770973 44
+1779770978 44
+1779770983 44
+1779770988 44
+1779770993 44
+1779770998 44
+1779771003 44
+1779771008 44
+1779771013 44
+1779771018 44
+1779771023 44
 ```
 </details>
 
