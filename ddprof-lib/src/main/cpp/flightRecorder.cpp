@@ -430,40 +430,33 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     } else if (bci == BCI_ALLOC) {
       // Synthetic vtable-receiver frame from hotspotSupport.cpp:walkVM.
       // method_id holds a raw class_id from _class_map (the same Dictionary as _classes).
-      // Collect the class names under the shared lock, look up the raw name, apply the
-      // same prefix-based normalisation as fillJavaMethodInfo (strips digit suffixes from
-      // generated accessor classes, canonicalises LambdaForm sub-types), then emit
-      // "<vtable_receiver>" as the method name.
-      // The method map caches this MethodInfo per class_id, so the collect runs at most
-      // once per unique receiver class across the entire dump.
+      // Use the pre-collected _class_cache snapshot (populated once at Lookup construction)
+      // to look up the raw name, then apply the same prefix-based normalisation as
+      // fillJavaMethodInfo (strips digit suffixes from generated accessor classes,
+      // canonicalises LambdaForm sub-types). No lock or collect needed here.
       u32 raw_class_id = (u32)(uintptr_t)method;
       u32 class_id = raw_class_id;
-      {
-        std::map<u32, const char*> class_names;
-        auto guard = Profiler::instance()->classMapSharedGuard();
-        _classes->collect(class_names);
-        auto it = class_names.find(raw_class_id);
-        if (it != class_names.end()) {
-          const char* name = it->second;
-          // Mirrors the normalisation in fillJavaMethodInfo. class_names stores
-          // slash-separated names without L-prefix or ;-suffix.
-          if (has_prefix(name, "jdk/internal/reflect/GeneratedConstructorAccessor")) {
-            class_id = _classes->lookup("jdk/internal/reflect/GeneratedConstructorAccessor");
-          } else if (has_prefix(name, "sun/reflect/GeneratedConstructorAccessor")) {
-            class_id = _classes->lookup("sun/reflect/GeneratedConstructorAccessor");
-          } else if (has_prefix(name, "jdk/internal/reflect/GeneratedMethodAccessor")) {
-            class_id = _classes->lookup("jdk/internal/reflect/GeneratedMethodAccessor");
-          } else if (has_prefix(name, "sun/reflect/GeneratedMethodAccessor")) {
-            class_id = _classes->lookup("sun/reflect/GeneratedMethodAccessor");
-          } else if (has_prefix(name, "java/lang/invoke/LambdaForm$")) {
-            const char* suffix = name + strlen("java/lang/invoke/LambdaForm$");
-            if (has_prefix(suffix, "MH")) {
-              class_id = _classes->lookup("java/lang/invoke/LambdaForm$MH");
-            } else if (has_prefix(suffix, "BMH")) {
-              class_id = _classes->lookup("java/lang/invoke/LambdaForm$BMH");
-            } else if (has_prefix(suffix, "DMH")) {
-              class_id = _classes->lookup("java/lang/invoke/LambdaForm$DMH");
-            }
+      auto it = _class_cache.find(raw_class_id);
+      if (it != _class_cache.end()) {
+        const char* name = it->second;
+        // Mirrors normalisation in fillJavaMethodInfo; names are slash-separated,
+        // no L-prefix or ;-suffix.
+        if (has_prefix(name, "jdk/internal/reflect/GeneratedConstructorAccessor")) {
+          class_id = _classes->lookup("jdk/internal/reflect/GeneratedConstructorAccessor");
+        } else if (has_prefix(name, "sun/reflect/GeneratedConstructorAccessor")) {
+          class_id = _classes->lookup("sun/reflect/GeneratedConstructorAccessor");
+        } else if (has_prefix(name, "jdk/internal/reflect/GeneratedMethodAccessor")) {
+          class_id = _classes->lookup("jdk/internal/reflect/GeneratedMethodAccessor");
+        } else if (has_prefix(name, "sun/reflect/GeneratedMethodAccessor")) {
+          class_id = _classes->lookup("sun/reflect/GeneratedMethodAccessor");
+        } else if (has_prefix(name, "java/lang/invoke/LambdaForm$")) {
+          const char* suffix = name + strlen("java/lang/invoke/LambdaForm$");
+          if (has_prefix(suffix, "MH")) {
+            class_id = _classes->lookup("java/lang/invoke/LambdaForm$MH");
+          } else if (has_prefix(suffix, "BMH")) {
+            class_id = _classes->lookup("java/lang/invoke/LambdaForm$BMH");
+          } else if (has_prefix(suffix, "DMH")) {
+            class_id = _classes->lookup("java/lang/invoke/LambdaForm$DMH");
           }
         }
       }
@@ -478,6 +471,11 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   }
 
   return mi;
+}
+
+void Lookup::initClassCache() {
+  auto guard = Profiler::instance()->classMapSharedGuard();
+  _classes->collect(_class_cache);
 }
 
 u32 Lookup::getPackage(const char *class_name) {
@@ -1246,6 +1244,7 @@ void Recording::writeCpool(Buffer *buf) {
   // classMapSharedGuard() for its full duration; the exclusive classMap()->clear()
   // in Profiler::dump runs only after this method returns.
   Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
+  lookup.initClassCache();
   writeFrameTypes(buf);
   writeThreadStates(buf);
   writeExecutionModes(buf);
@@ -1458,13 +1457,10 @@ void Recording::writeMethods(Buffer *buf, Lookup *lookup) {
 
 void Recording::writeClasses(Buffer *buf, Lookup *lookup) {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
-  std::map<u32, const char *> classes;
-  // Hold classMapSharedGuard() for the full function. The const char* pointers
-  // stored in classes point into dictionary row storage; clear() frees that
-  // storage under the exclusive lock, so we must not release the shared lock
-  // until we have finished iterating.
-  auto guard = Profiler::instance()->classMapSharedGuard();
-  lookup->_classes->collect(classes);
+  // Use the pre-collected snapshot from Lookup::initClassCache(). The shared
+  // lock was held during that collect; clear() cannot run until after the full
+  // constant-pool section is written, so the const char* pointers remain valid.
+  const std::map<u32, const char *>& classes = lookup->_class_cache;
 
   buf->putVar64(T_CLASS);
   buf->putVar64(classes.size());
