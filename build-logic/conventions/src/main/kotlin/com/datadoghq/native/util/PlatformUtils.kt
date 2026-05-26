@@ -129,6 +129,33 @@ object PlatformUtils {
 
     fun locateLibtsan(compiler: String = "gcc"): String? = locateLibrary("libtsan", compiler)
 
+    fun isClangCompiler(compiler: String): Boolean {
+        return File(compiler).name.startsWith("clang")
+    }
+
+    /**
+     * Locate LLVM's ASan shared library (libclang_rt.asan-*.so) for use with clang.
+     * Returns null if the compiler is not clang or the library cannot be found.
+     * This library contains both ASan and UBSan symbols needed for LD_PRELOAD.
+     */
+    fun locateClangRtAsan(compiler: String): String? {
+        if (!isClangCompiler(compiler)) return null
+        return try {
+            val process = ProcessBuilder(compiler, "--print-resource-dir")
+                .redirectErrorStream(true)
+                .start()
+            val resourceDir = process.inputStream.bufferedReader().readText().trim()
+            process.waitFor()
+            if (process.exitValue() != 0) return null
+
+            File("$resourceDir/lib/linux").listFiles()
+                ?.firstOrNull { it.name.matches(Regex("libclang_rt\\.asan-.*\\.so")) }
+                ?.absolutePath
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     fun checkFuzzerSupport(): Boolean {
         return try {
             val testFile = createTempFile("fuzzer_check", ".cpp")
@@ -155,7 +182,12 @@ object PlatformUtils {
     }
 
     fun hasAsan(compiler: String = "gcc"): Boolean {
-        return !isMusl() && locateLibasan(compiler) != null
+        if (isMusl()) return false
+        return if (isClangCompiler(compiler)) {
+            locateClangRtAsan(compiler) != null
+        } else {
+            locateLibasan(compiler) != null
+        }
     }
 
     fun hasTsan(compiler: String = "gcc"): Boolean {

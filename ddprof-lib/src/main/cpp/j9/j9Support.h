@@ -20,6 +20,7 @@
 
 #include <jvmti.h>
 
+#include "frame.h"
 #include "log.h"
 #include "vmEntry.h"
 

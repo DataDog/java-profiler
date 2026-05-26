@@ -27,6 +27,8 @@ public class CollapsingSleepTest extends AbstractProfilerTest {
         stopProfiler();
         IItemCollection events = verifyEvents("datadog.MethodSample");
         assertTrue(events.hasItems());
+
+        System.out.println("Weight: " + events.getAggregate(Aggregators.sum(WEIGHT)).longValue() + " count = " + events.getAggregate(Aggregators.count()).longValue());
         assertTrue(events.getAggregate(Aggregators.sum(WEIGHT)).longValue() > 700);
         assertTrue(events.getAggregate(Aggregators.count()).longValue() > 9);
     }

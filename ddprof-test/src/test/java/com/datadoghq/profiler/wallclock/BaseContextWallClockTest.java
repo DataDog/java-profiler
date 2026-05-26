@@ -100,6 +100,10 @@ final class BaseContextWallClockTest {
             IMemberAccessor<String, IItem> modeAccessor = THREAD_EXECUTION_MODE.getAccessor(wallclockSamples.getType());
             for (IItem sample : wallclockSamples) {
                 String stackTrace = frameAccessor.getMember(sample);
+                System.out.println("StackTrace:");
+                System.out.println(stackTrace);
+                System.out.println();
+
                 long spanId = spanIdAccessor.getMember(sample).longValue();
                 long rootSpanId = rootSpanIdAccessor.getMember(sample).longValue();
                 long weight = weightAccessor.getMember(sample).longValue();
