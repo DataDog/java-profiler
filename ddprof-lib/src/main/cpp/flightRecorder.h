@@ -19,6 +19,7 @@
 #include "buffers.h"
 #include "counters.h"
 #include "dictionary.h"
+#include "stringDictionary.h"
 #include "event.h"
 #include "frame.h"
 #include "jfrMetadata.h"
@@ -280,6 +281,8 @@ public:
 
   void writeConstantPoolSection(Buffer *buf, JfrType type,
                                 Dictionary *dictionary);
+  void writeConstantPoolSection(Buffer *buf, JfrType type,
+                                StringDictionaryBuffer *buffer);
 
   void writeLogLevels(Buffer *buf);
 
@@ -320,8 +323,8 @@ class Lookup {
 public:
   Recording *_rec;
   MethodMap *_method_map;
-  Dictionary *_classes;
-  std::map<u32, const char*> _class_cache;  // snapshot of _classes, populated once at dump time
+  StringDictionary *_classes;
+  std::map<u32, const char*> _class_cache;  // snapshot of _classes->standby() at dump time
   // Per-dump VMSymbol* -> resolved class_id cache for BCI_VTABLE_RECEIVER
   // frames. Two purposes: (1) amortise the SafeAccess work to once per
   // distinct Symbol pointer per dump; (2) the resolved class_id is used
@@ -366,13 +369,16 @@ private:
   u32 resolveVTableReceiverCached(void *sym);
 
 public:
-  Lookup(Recording *rec, MethodMap *method_map, Dictionary *classes)
+  Lookup(Recording *rec, MethodMap *method_map, StringDictionary *classes)
       : _rec(rec), _method_map(method_map), _classes(classes), _packages(),
         _symbols() {}
 
-  // Call once before writeStackTraces. Collects the class-map snapshot under
-  // the shared lock so that resolveMethod (BCI_ALLOC) and writeClasses can
-  // both use _class_cache without a second collect.
+  // Call once before writeStackTraces.  Populates _class_cache from
+  // _classes->standby() under the shared lock.  NOTE: _class_cache is
+  // currently write-only — writeClasses() re-collects from standby() and
+  // resolveMethod() inserts via lookupDuringDump() rather than reading
+  // this cache.  Kept for compatibility with #527's API and as a hook
+  // for future readers; safe to remove if no consumer materialises.
   void initClassCache();
 
   MethodInfo *resolveMethod(ASGCT_CallFrame &frame);

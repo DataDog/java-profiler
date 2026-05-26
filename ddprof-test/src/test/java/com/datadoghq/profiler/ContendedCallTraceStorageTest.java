@@ -43,7 +43,10 @@ public class ContendedCallTraceStorageTest extends AbstractProfilerTest {
 
     @Override
     protected boolean isPlatformSupported() {
-        return !Platform.isJ9(); // Avoid J9-specific issues
+        // CTimer::unregisterThread races with concurrent thread teardown on musl-aarch64 debug;
+        // tracked separately as a pre-existing native bug:
+        // https://github.com/DataDog/java-profiler/issues/534
+        return !Platform.isJ9() && !(Platform.isMusl() && Platform.isAarch64());
     }
 
     @Test

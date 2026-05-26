@@ -203,7 +203,8 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
   JniString endpoint_str(env, endpoint);
   u32 endpointLabel = Profiler::instance()->stringLabelMap()->bounded_lookup(
       endpoint_str.c_str(), endpoint_str.length(), sizeLimit);
-  bool acceptValue = endpointLabel != INT_MAX;
+  // StringDictionary reserves 0 as "no entry"; valid IDs start at 1.
+  bool acceptValue = endpointLabel != 0;
   if (acceptValue) {
     u32 operationLabel = 0;
     if (operation != NULL) {
@@ -595,7 +596,7 @@ Java_com_datadoghq_profiler_ThreadContext_registerConstant0(JNIEnv* env, jclass 
   JniString value_str(env, value);
   u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
       value_str.c_str(), value_str.length(), 1 << 16);
-  return encoding == INT_MAX ? -1 : encoding;
+  return encoding == 0 ? -1 : (jint)encoding;
 }
 
 extern "C" DLLEXPORT void JNICALL
