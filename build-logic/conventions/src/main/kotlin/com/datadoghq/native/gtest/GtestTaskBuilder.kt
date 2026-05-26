@@ -202,14 +202,26 @@ class GtestTaskBuilder(
             // failure. /dev/std* bypass the logging infrastructure and stream
             // bytes directly to fd 1/2 of the Gradle JVM so sanitizer reports
             // are always visible in CI.
+            //
+            // FDs are opened in doFirst (execution time), not the configuration
+            // closure: under the daemon, opening at configuration time binds to
+            // /dev/stdout of the daemon JVM (the terminal that first started
+            // the daemon), not the current invocation's terminal. doFirst runs
+            // in the executing JVM where fd 1/2 are correctly attached.
             if (PlatformUtils.currentPlatform == Platform.LINUX) {
-                val devStdout = java.io.FileOutputStream("/dev/stdout")
-                val devStderr = java.io.FileOutputStream("/dev/stderr")
-                standardOutput = devStdout
-                errorOutput = devStderr
+                var devStdout: java.io.FileOutputStream? = null
+                var devStderr: java.io.FileOutputStream? = null
+                doFirst {
+                    val outFd = java.io.FileOutputStream("/dev/stdout")
+                    val errFd = java.io.FileOutputStream("/dev/stderr")
+                    devStdout = outFd
+                    devStderr = errFd
+                    standardOutput = outFd
+                    errorOutput = errFd
+                }
                 doLast {
-                    devStdout.flush(); devStdout.close()
-                    devStderr.flush(); devStderr.close()
+                    devStdout?.run { flush(); close() }
+                    devStderr?.run { flush(); close() }
                 }
             }
 
