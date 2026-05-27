@@ -20,12 +20,6 @@
 #include "tsc.h"
 #include "vmEntry.h"
 
-#ifdef __clang__
-#  define NO_OPTIMIZE __attribute__((optnone))
-#else
-#  define NO_OPTIMIZE __attribute__((optimize("-fno-omit-frame-pointer,-fno-optimize-sibling-calls")))
-#endif
-
 #define SAVE_IMPORT(FUNC) \
     do { \
         void** _entry = lib->findImport(im_##FUNC); \
@@ -33,7 +27,6 @@
     } while (0)
 
 static void* (*_orig_malloc)(size_t);
-static void (*_orig_free)(void*);
 static void* (*_orig_calloc)(size_t, size_t);
 static void* (*_orig_realloc)(void*, size_t);
 static int (*_orig_posix_memalign)(void**, size_t, size_t);
@@ -72,12 +65,6 @@ extern "C" void* calloc_hook(size_t num, size_t size) {
     return ret;
 }
 
-// Make sure this is not optimized away (function-scoped -fno-optimize-sibling-calls)
-extern "C" NO_OPTIMIZE
-void* calloc_hook_dummy(size_t num, size_t size) {
-    return _orig_calloc(num, size);
-}
-
 extern "C" void* realloc_hook(void* addr, size_t size) {
     void* ret = _orig_realloc(addr, size);
     // Record every successful realloc, regardless of whether addr was NULL.
@@ -101,12 +88,6 @@ extern "C" int posix_memalign_hook(void** memptr, size_t alignment, size_t size)
     return ret;
 }
 
-// Make sure this is not optimized away (function-scoped -fno-optimize-sibling-calls)
-extern "C" NO_OPTIMIZE
-int posix_memalign_hook_dummy(void** memptr, size_t alignment, size_t size) {
-    return _orig_posix_memalign(memptr, alignment, size);
-}
-
 extern "C" void* aligned_alloc_hook(size_t alignment, size_t size) {
     void* ret = _orig_aligned_alloc(alignment, size);
     maybeRecord(ret, size);
@@ -125,9 +106,6 @@ PidController MallocTracer::_pid(MallocTracer::TARGET_SAMPLES_PER_WINDOW,
 Mutex MallocHooker::_patch_lock;
 int MallocHooker::_patched_libs = 0;
 bool MallocHooker::_initialized = false;
-void* MallocHooker::_calloc_hook_fn = nullptr;
-void* MallocHooker::_posix_memalign_hook_fn = nullptr;
-
 // xoroshiro128+ PRNG state — shared, relaxed atomics.
 // Benign races are acceptable: occasional duplicate output is harmless
 // for a sampling PRNG and thread_local cannot be used on the malloc path.
@@ -184,7 +162,7 @@ void MallocHooker::detectNestedMalloc() {
                 void* pm_probe = NULL;
                 _orig_posix_memalign(&pm_probe, sizeof(void*), sizeof(void*));
                 _current_thread = pthread_t(0);
-                if (pm_probe != NULL) _orig_free(pm_probe);
+                if (pm_probe != NULL) free(pm_probe);
 
                 // Restore original aligned_alloc so libc doesn't carry the probe hook.
                 libc->patchImport(im_aligned_alloc, (void*)_orig_aligned_alloc);
@@ -238,7 +216,6 @@ bool MallocHooker::initialize() {
     resolveMallocSymbols();
 
     SAVE_IMPORT(malloc);
-    SAVE_IMPORT(free);
     SAVE_IMPORT(calloc);
     SAVE_IMPORT(realloc);
     SAVE_IMPORT(posix_memalign);
@@ -246,18 +223,12 @@ bool MallocHooker::initialize() {
 
     detectNestedMalloc();
 
-    // Pre-compute hook pointers so patchLibraries() avoids repeated conditionals.
-    _calloc_hook_fn = _nested_malloc ? (void*)calloc_hook_dummy : (void*)calloc_hook;
-    _posix_memalign_hook_fn = _nested_posix_memalign ? (void*)posix_memalign_hook_dummy : (void*)posix_memalign_hook;
-
     lib->mark(
         [](const char* s) -> bool {
             return strcmp(s, "malloc_hook") == 0
                 || strcmp(s, "calloc_hook") == 0
-                || strcmp(s, "calloc_hook_dummy") == 0
                 || strcmp(s, "realloc_hook") == 0
                 || strcmp(s, "posix_memalign_hook") == 0
-                || strcmp(s, "posix_memalign_hook_dummy") == 0
                 || strcmp(s, "aligned_alloc_hook") == 0;
         },
         MARK_ASYNC_PROFILER);
@@ -297,8 +268,10 @@ void MallocHooker::patchLibraries() {
         if (_orig_malloc) cc->patchImport(im_malloc, (void*)malloc_hook);
         if (_orig_realloc) cc->patchImport(im_realloc, (void*)realloc_hook);
         if (_orig_aligned_alloc) cc->patchImport(im_aligned_alloc, (void*)aligned_alloc_hook);
-        if (_orig_calloc) cc->patchImport(im_calloc, _calloc_hook_fn);
-        if (_orig_posix_memalign) cc->patchImport(im_posix_memalign, _posix_memalign_hook_fn);
+        // On musl, calloc/posix_memalign delegate to malloc/aligned_alloc internally;
+        // hooking them too would double-count. Leave the GOT entry untouched instead.
+        if (_orig_calloc && !_nested_malloc) cc->patchImport(im_calloc, (void*)calloc_hook);
+        if (_orig_posix_memalign && !_nested_posix_memalign) cc->patchImport(im_posix_memalign, (void*)posix_memalign_hook);
     }
 }
 
