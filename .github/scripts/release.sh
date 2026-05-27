@@ -127,7 +127,21 @@ CANDIDATE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 
 git add build.gradle.kts
 git commit -m "[Automated] Bump dev version to ${CANDIDATE}"
 
-git push $DRYRUN --atomic --set-upstream origin $BRANCH
+if [ -z "$DRYRUN" ]; then
+  BUMP_BRANCH="automated/bump-${CANDIDATE//./-}"
+  git checkout -b "$BUMP_BRANCH"
+  git push --set-upstream origin "$BUMP_BRANCH"
+  BUMP_PR_URL=$(gh pr create \
+    --title "[Automated] Bump dev version to ${CANDIDATE}" \
+    --body "Automated version bump after releasing v${BASE}. Please review and merge." \
+    --base "$BRANCH" \
+    --head "$BUMP_BRANCH")
+  echo "BUMP_PR_URL=$BUMP_PR_URL" >> "${GITHUB_OUTPUT:-/dev/null}"
+  echo "⚠ Version bump PR requires manual approval: $BUMP_PR_URL"
+else
+  git push $DRYRUN --atomic --set-upstream origin $BRANCH
+fi
+
 git push $DRYRUN --atomic --tags
 
 echo "==================== RELEASE SUMMARY ===================="

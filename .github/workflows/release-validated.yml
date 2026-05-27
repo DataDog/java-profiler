@@ -27,6 +27,7 @@ on:
 permissions:
   contents: write
   actions: read
+  pull-requests: write
 
 jobs:
   validate-inputs:
@@ -193,6 +194,7 @@ jobs:
           java-version: '21'
 
       - name: Create release
+        id: create-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -209,6 +211,8 @@ jobs:
 
       - name: Output Release Summary
         if: ${{ inputs.dry_run != true }}
+        env:
+          BUMP_PR_URL: ${{ steps.create-release.outputs.BUMP_PR_URL }}
         run: |
           echo "## ✅ Release Created Successfully" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -216,6 +220,12 @@ jobs:
           echo "- **Tag**: v_${{ needs.validate-inputs.outputs.release_version }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Branch**: ${{ needs.validate-inputs.outputs.release_branch }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$BUMP_PR_URL" ]; then
+            echo "### ⚠ Action Required" >> $GITHUB_STEP_SUMMARY
+            echo "A version bump PR needs review and merge before the next snapshot builds carry the correct version:" >> $GITHUB_STEP_SUMMARY
+            echo "- $BUMP_PR_URL" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "### Next Steps (Automatic)" >> $GITHUB_STEP_SUMMARY
           echo "1. 🔨 GitLab pipeline will build multi-platform artifacts" >> $GITHUB_STEP_SUMMARY
           echo "2. 📦 GitLab will publish to Maven Central" >> $GITHUB_STEP_SUMMARY
