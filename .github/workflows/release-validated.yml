@@ -56,16 +56,18 @@ jobs:
           echo "Current branch: $BRANCH"
           echo "Release type: $TYPE"
 
-          # Branch validation
-          if [ "$TYPE" == "patch" ] || [ "$TYPE" == "retag" ]; then
-            if [[ ! $BRANCH =~ ^release/[0-9]+\.[0-9]+\._$ ]]; then
-              echo "::error::${TYPE^} can only be performed from 'release/*' branches (format: release/X.Y._)"
-              exit 1
-            fi
-          else
-            if [ "$BRANCH" != "main" ]; then
-              echo "::error::Major or minor releases can only be performed from 'main' branch"
-              exit 1
+          # Branch validation (skipped for dry-run to allow testing from any branch)
+          if [ "${{ inputs.dry_run }}" != "true" ]; then
+            if [ "$TYPE" == "patch" ] || [ "$TYPE" == "retag" ]; then
+              if [[ ! $BRANCH =~ ^release/[0-9]+\.[0-9]+\._$ ]]; then
+                echo "::error::${TYPE^} can only be performed from 'release/*' branches (format: release/X.Y._)"
+                exit 1
+              fi
+            else
+              if [ "$BRANCH" != "main" ]; then
+                echo "::error::Major or minor releases can only be performed from 'main' branch"
+                exit 1
+              fi
             fi
           fi
 
