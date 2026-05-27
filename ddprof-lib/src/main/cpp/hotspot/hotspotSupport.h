@@ -9,6 +9,7 @@
 
 #include "hotspot/hotspotStackFrame.h"
 #include "hotspot/jitCodeCache.h"
+#include "profiler.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
 
@@ -32,12 +33,16 @@ private:
                                  int max_depth, StackContext *java_ctx,
                                  bool *truncated);
                                  
-    static bool loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 public:
     static void checkFault(ProfiledThread* thrd = nullptr);
     static int walkJavaStack(StackWalkRequest& request);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc) {
         return HotspotStackFrame::unwindAtomicStub(frame, pc);
+    }
+
+    // Hotspot CSTACK_VM walker does not use jmethodID
+    static inline bool needJMethodIDs() {
+        return Profiler::instance()->cstackMode() != CSTACK_VM;
     }
 
     static inline bool isJitCode(const void* p) {

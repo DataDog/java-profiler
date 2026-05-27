@@ -12,7 +12,6 @@
 #include "hotspot/jitCodeCache.h"
 #include "hotspot/vmStructs.inline.h"
 #include "jvmSupport.h"
-#include "profiler.h"
 #include "guards.h"
 #include "stackWalker.inline.h"
 #include "frames.h"
@@ -1149,13 +1148,4 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     }
   }
   return java_frames; 
-}
-
-// Hotspot CSTACK_VM walker does not use jmethodID, so don't preload it
-bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-    if (Profiler::instance()->cstackMode() == CSTACK_VM) {
-        return false;
-    } else {
-        return JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);
-    }
 }
