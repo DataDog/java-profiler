@@ -416,12 +416,12 @@ public:
 //   arena alloc, but the guard protects the buffer pointer lifetime).
 //   lookupDuringDump is NOT signal-safe; call from dump thread only.
 //
-//   _accepting gates new RefCountGuard creation during clearAll().  The
-//   key-string arena makes the TOCTOU window between the _accepting acquire-
-//   load and the RefCountGuard count++ benign: even if clearAll()'s drain
-//   misses a racing caller, that caller reads from the zeroed root table and
-//   returns 0.  The seq_cst recheck previously needed to close this window
-//   is therefore unnecessary and has been removed from the hot path.
+//   _accepting gates new guard creation during clearAll().  A thread that
+//   passed the outer acquire-load check before clearAll() sets _accepting=false
+//   may create its guard after waitForAllRefCountsToClear() returns, missing
+//   the drain.  A seq_cst recheck inside the guard scope catches this TOCTOU
+//   window: the thread sees _accepting=false and returns 0 before touching any
+//   buffer data (overflow nodes or arena chunks that clearAll() is freeing).
 class StringDictionary {
     std::atomic<u32>  _next_id{1};      // starts at 1; id=0 reserved as "no entry"
     std::atomic<bool> _accepting{true}; // false while clearAll() is resetting buffers
@@ -462,6 +462,11 @@ public:
             StringDictionaryBuffer* active = _rot.active();
             RefCountGuard guard(active);
             if (!guard.isActive()) return 0;
+            // Re-check _accepting after guard creation to close the TOCTOU window:
+            // clearAll() sets _accepting=false then drains; a thread that passed the
+            // outer check but hadn't yet incremented its guard count would be missed
+            // by the drain and could access freed overflow nodes or arena chunks.
+            if (!_accepting.load(std::memory_order_seq_cst)) return 0;
             if (_rot.active() != active) continue;
             u32 id = active->lookup(key, len);
             if (id != 0) return id;
@@ -480,6 +485,7 @@ public:
             StringDictionaryBuffer* active = _rot.active();
             RefCountGuard guard(active);
             if (!guard.isActive()) return 0;
+            if (!_accepting.load(std::memory_order_seq_cst)) return 0;
             if (_rot.active() != active) continue;
             u32 id = active->lookup(key, len);
             if (id != 0) return id;
@@ -498,6 +504,7 @@ public:
             StringDictionaryBuffer* active = _rot.active();
             RefCountGuard guard(active);
             if (!guard.isActive()) return 0;
+            if (!_accepting.load(std::memory_order_seq_cst)) return 0;
             if (_rot.active() != active) continue;
             return active->lookup(key, len);
         }
