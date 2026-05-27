@@ -1150,3 +1150,12 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   }
   return java_frames; 
 }
+
+// Hotspot CSTACK_VM walker does not use jmethodID, so don't preload it
+bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
+    if (Profiler::instance()->cstackMode() == CSTACK_VM) {
+        return false;
+    } else {
+        return JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);
+    }
+}

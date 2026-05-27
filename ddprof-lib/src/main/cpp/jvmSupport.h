@@ -20,13 +20,19 @@ enum StackRecovery {
   PROBE_SP = 0x100,
 };
 
-
 class JVMSupport {
+    friend class HotspotSupport;
+
     static int asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* ucontext);
+    // J9 and Zing shared implementation
+    static bool loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 public:
     static int walkJavaStack(StackWalkRequest& request);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc);
     static inline bool isJitCode(const void* pc);
+
+    static void loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni);
+    static bool loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 };
 
 #endif // _JVMSUPPORT_H

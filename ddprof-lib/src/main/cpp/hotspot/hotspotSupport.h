@@ -12,9 +12,14 @@
 #include "stackFrame.h"
 #include "stackWalker.h"
 
+#include <jni.h>
+#include <jvmti.h>
+
 class ProfiledThread;
 
 class HotspotSupport {
+    friend class JVMSupport;
+
 private:
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                       StackWalkFeatures features, EventType event_type,
@@ -26,7 +31,8 @@ private:
     static int getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
                                  int max_depth, StackContext *java_ctx,
                                  bool *truncated);
-
+                                 
+    static bool loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 public:
     static void checkFault(ProfiledThread* thrd = nullptr);
     static int walkJavaStack(StackWalkRequest& request);
