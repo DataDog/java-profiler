@@ -60,13 +60,9 @@ jobs:
           mv ${LIB_BASE_DIR}/linux-x64-musl/libjavaProfiler.so assets/libjavaProfiler_linux-x64-musl.so
       - name: Update release ${{ inputs.release_tag }}
         id: update-release
-        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1.21.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag: "v_${{ env.VERSION }}"
-          allowUpdates: true
-          generateReleaseNotes: true
-          omitBodyDuringUpdate: true
-          artifacts: assets/ddprof*.jar,assets/*.so
-          draft: false
-          makeLatest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v_${VERSION}"
+          gh release upload "${TAG}" assets/ddprof*.jar assets/*.so --clobber
+          gh release edit "${TAG}" --draft=false --latest
