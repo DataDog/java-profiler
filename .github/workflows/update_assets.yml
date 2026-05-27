@@ -62,6 +62,7 @@ jobs:
         id: update-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           TAG="v_${VERSION}"
           gh release upload "${TAG}" assets/ddprof*.jar assets/*.so --clobber
