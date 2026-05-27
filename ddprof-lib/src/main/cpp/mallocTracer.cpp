@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "codeCache.h"
+#include "guards.h"
 #include "libraries.h"
 #include "mallocTracer.h"
 #include "os.h"
@@ -39,9 +40,18 @@ static int (*_orig_posix_memalign)(void**, size_t, size_t);
 static void* (*_orig_aligned_alloc)(size_t, size_t);
 
 // Inline helper to avoid repeating the running+ret+size guard in each hook.
+// CriticalSection prevents reentrancy: profiler-internal allocations triggered
+// inside recordMalloc (e.g. sample buffer allocation) re-enter these hooks via
+// the patched GOT; without the guard they would be double-counted.
+// Acquiring the CS here also blocks concurrent same-thread timer samples
+// (SIGPROF/SIGVTALRM) for the duration of recordMalloc; this is acceptable
+// because the window is short.
 static inline void maybeRecord(void* ret, size_t size) {
     if (MallocTracer::running() && ret && size) {
-        MallocTracer::recordMalloc(ret, size);
+        CriticalSection cs;
+        if (cs.entered()) {
+            MallocTracer::recordMalloc(ret, size);
+        }
     }
 }
 
@@ -53,9 +63,11 @@ extern "C" void* malloc_hook(size_t size) {
 
 extern "C" void* calloc_hook(size_t num, size_t size) {
     void* ret = _orig_calloc(num, size);
-    // ret != NULL guarantees no overflow per POSIX, so num * size is safe.
-    if (MallocTracer::running() && ret && num && size) {
-        MallocTracer::recordMalloc(ret, num * size);
+    // num * size may wrap on size_t, but the wrapped value is only forwarded
+    // to maybeRecord, which discards it when ret == NULL (the libc returns
+    // NULL on overflow per POSIX).
+    if (num && size) {
+        maybeRecord(ret, num * size);
     }
     return ret;
 }
@@ -68,16 +80,23 @@ void* calloc_hook_dummy(size_t num, size_t size) {
 
 extern "C" void* realloc_hook(void* addr, size_t size) {
     void* ret = _orig_realloc(addr, size);
-    if (MallocTracer::running() && ret != NULL && size > 0) {
-        MallocTracer::recordMalloc(ret, size);
-    }
+    // Record every successful realloc, regardless of whether addr was NULL.
+    // Without a free hook we cannot subtract the prior allocation, so a
+    // realloc that grows an existing buffer is double-counted against the
+    // original malloc when both were sampled. This is benign for the leak
+    // detector: the prior sample (if any) ages out as the freed address is
+    // never seen again, and missing the realloc entirely would leave a
+    // phantom live allocation on the freed old address.
+    maybeRecord(ret, size);
     return ret;
 }
 
 extern "C" int posix_memalign_hook(void** memptr, size_t alignment, size_t size) {
     int ret = _orig_posix_memalign(memptr, alignment, size);
-    if (MallocTracer::running() && ret == 0 && memptr && *memptr && size) {
-        MallocTracer::recordMalloc(*memptr, size);
+    if (ret == 0 && memptr) {
+        // POSIX guarantees *memptr is set to the allocated block when ret == 0;
+        // maybeRecord is the sole NULL/size gate for non-conforming libc.
+        maybeRecord(*memptr, size);
     }
     return ret;
 }
@@ -248,15 +267,10 @@ bool MallocHooker::initialize() {
     return _orig_malloc != NULL;
 }
 
-// To avoid complexity in hooking and tracking reentrancy, a TLS-based approach is not used.
-// Reentrant allocation calls would result in double-accounting. However, this does not impact
-// the leak detector, as it correctly tracks memory as freed regardless of how many times
-// recordMalloc is called with the same address.
 void MallocHooker::patchLibraries() {
-    // If initialize() hasn't resolved _orig_malloc yet, advancing _patched_libs here
-    // would consume library slots without patching them, causing a later real call
-    // (from MallocTracer::start) to find _patched_libs == native_lib_count and skip
-    // all libraries. This happens when dlopen_hook fires during a non-nativemem session.
+    // Defensive guard: _orig_malloc is set by initialize(), which runs in
+    // MallocTracer::start() before _running is set and this path is reached.
+    // Guards against stale or unexpected direct calls.
     if (_orig_malloc == NULL) return;
 
     MutexLocker ml(_patch_lock);
