@@ -217,7 +217,10 @@ build-artifact:
     - job: gtest-tsan-arm64
       artifacts: false
       optional: true
-  when: on_success
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^release\//'
+      when: never
+    - when: on_success
   tags: [ "arch:amd64" ]
   image: ${BUILD_IMAGE_X64}
 
@@ -250,7 +253,10 @@ deploy-artifact:
       artifacts: true
     - job: build:arm64-musl
       artifacts: true
-  when: on_success
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^release\//'
+      when: never
+    - when: on_success
   tags: [ "arch:amd64" ]
   image: ${BUILD_IMAGE_X64}
 
