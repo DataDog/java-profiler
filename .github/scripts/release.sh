@@ -131,13 +131,10 @@ if [ -z "$DRYRUN" ]; then
   BUMP_BRANCH="automated/bump-${CANDIDATE//./-}"
   git checkout -b "$BUMP_BRANCH"
   git push --set-upstream origin "$BUMP_BRANCH"
-  BUMP_PR_URL=$(gh pr create \
-    --title "[Automated] Bump dev version to ${CANDIDATE}" \
-    --body "Automated version bump after releasing v${BASE}. Please review and merge." \
-    --base "$BRANCH" \
-    --head "$BUMP_BRANCH")
+  REPO="${GITHUB_REPOSITORY:-$(git remote get-url origin | sed 's|.*github.com[:/]\(.*\)\.git|\1|')}"
+  BUMP_PR_URL="https://github.com/${REPO}/compare/${BRANCH}...${BUMP_BRANCH}?quick_pull=1&title=%5BAutomated%5D+Bump+dev+version+to+${CANDIDATE}"
   echo "BUMP_PR_URL=$BUMP_PR_URL" >> "${GITHUB_OUTPUT:-/dev/null}"
-  echo "⚠ Version bump PR requires manual approval: $BUMP_PR_URL"
+  echo "⚠ Open this URL to create the version bump PR: $BUMP_PR_URL"
 else
   git push $DRYRUN --atomic --set-upstream origin $BRANCH
 fi
