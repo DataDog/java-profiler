@@ -1229,13 +1229,17 @@ Error Profiler::start(Arguments &args, bool reset) {
     _total_samples = 0;
     memset(_failures, 0, sizeof(_failures));
 
-    // Reset dictionaries and bitmaps
-    // Reset class map under lock because ObjectSampler may try to use it while
-    // it is being cleaned up
+    // Reset dictionaries. StringDictionary::clearAll() manages its own
+    // synchronisation (RefCountGuard drain). The exclusive _class_map_lock
+    // additionally fences out shared-lock readers introduced by #527
+    // (deferred vtable receiver resolution) so they cannot observe a
+    // half-cleared class map.
     {
       ExclusiveLockGuard guard(&_class_map_lock);
-      _class_map.clear();
+      _class_map.clearAll();
     }
+    _string_label_map.clearAll();
+    _context_value_map.clearAll();
 
     // Reset call trace storage
     if (!_omit_stacktraces) {
@@ -1499,10 +1503,7 @@ Error Profiler::stop() {
   // correct counts in the recording
   _thread_info.reportCounters();
 
-  // Acquire all spinlocks to avoid race with remaining signals
-  lockAll();
-  _jfr.stop();  // JFR serialization must complete before unpatching libraries
-  unlockAll();
+  rotateDictsAndRun([&]{ _jfr.stop(); });
 
   // Unpatch libraries AFTER JFR serialization completes
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
@@ -1550,23 +1551,6 @@ Error Profiler::check(Arguments &args) {
   return error;
 }
 
-Error Profiler::flushJfr() {
-  MutexLocker ml(_state_lock);
-  if (state() != RUNNING) {
-    return Error("Profiler is not active");
-  }
-
-  Libraries::instance()->refresh();
-  updateJavaThreadNames();
-  updateNativeThreadNames();
-
-  lockAll();
-  _jfr.flush();
-  unlockAll();
-
-  return Error::OK;
-}
-
 Error Profiler::dump(const char *path, const int length) {
   MutexLocker ml(_state_lock);
   State cur_state = state();
@@ -1590,23 +1574,17 @@ Error Profiler::dump(const char *path, const int length) {
     Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
                   native_libs.memoryUsage());
 
-    lockAll();
-    Error err = _jfr.dump(path, length);
-    __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
-
-    // Note: No need to clear call trace storage here - the double buffering system
-    // in processTraces() already handles clearing old traces while preserving
-    // traces referenced by surviving LivenessTracker objects
-    unlockAll();
-    // Clear the class map at end-of-dump. Class IDs are per-chunk in the JFR
-    // format, so the dump just completed re-populated _classes from the names
-    // it actually needed; the runtime map can start fresh for the next chunk.
-    // Working-set bound: only classes touched by the next chunk's samples
-    // re-enter the map.
-    {
-      ExclusiveLockGuard guard(&_class_map_lock);
-      _class_map.clear();
-    }
+    Error err = Error::OK;
+    // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
+    // dump (fences ASGCT/JNI writers to CallTraceStorage), then clearStandby()s
+    // the rotated buffers.  StringDictionary's RefCountGuard protocol handles
+    // its own writer/reader coordination; #527's classMapSharedGuard readers
+    // (deferred vtable receiver resolution) are coordinated through
+    // _class_map_lock.
+    rotateDictsAndRun([&]{
+      err = _jfr.dump(path, length);
+      __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
+    });
 
     _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();
@@ -1737,13 +1715,10 @@ void Profiler::shutdown(Arguments &args) {
 }
 
 int Profiler::lookupClass(const char *key, size_t length) {
-  if (_class_map_lock.tryLockShared()) {
-    int ret = _class_map.lookup(key, length);
-    _class_map_lock.unlockShared();
-    return ret;
-  }
-  // unable to lookup the class
-  return -1;
+  // StringDictionary::lookup() is internally thread-safe via _accepting +
+  // RefCountGuard; no external lock required (unlike the old Dictionary).
+  u32 id = _class_map.lookup(key, length);
+  return id != 0 ? static_cast<int>(id) : -1;
 }
 
 int Profiler::status(char* status, int max_len) {

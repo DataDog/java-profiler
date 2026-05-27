@@ -13,9 +13,11 @@
 #include "codeCache.h"
 #include "common.h"
 #include "dictionary.h"
+#include "stringDictionary.h"
 #include "engine.h"
 #include "event.h"
 #include "flightRecorder.h"
+#include "guards.h"
 #include "libraries.h"
 #include "log.h"
 #include "mutex.h"
@@ -58,9 +60,8 @@ class VM;
 
 enum State { NEW, IDLE, RUNNING, TERMINATED };
 
-// Aligned to satisfy SpinLock member alignment requirement (64 bytes)  
-// Required because this class contains multiple SpinLock members:
-// _class_map_lock and _locks[]
+// Aligned to satisfy SpinLock member alignment requirement (64 bytes)
+// Required because this class contains the _locks[] SpinLock array.
 class alignas(alignof(SpinLock)) Profiler {
   friend VM;
 
@@ -80,9 +81,9 @@ private:
   // --
 
   ThreadInfo _thread_info;
-  Dictionary _class_map;
-  Dictionary _string_label_map;
-  Dictionary _context_value_map;
+  StringDictionary _class_map{1};
+  StringDictionary _string_label_map{2};
+  StringDictionary _context_value_map{3};
   ThreadFilter _thread_filter;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
@@ -147,6 +148,31 @@ private:
 
   void lockAll();
   void unlockAll();
+
+  // Rotate all three dictionaries, then run jfr_op under lockAll().
+  //
+  // rotate() is self-contained: it uses _accepting + RefCountGuard to drain
+  // concurrent JNI readers, and SignalBlocker prevents profiling signals on
+  // this thread from inserting into old_active between Phase 1 and Phase 2.
+  // No external lock is required for rotation.
+  //
+  // lockAll() wraps jfr_op only — to gate call-trace writers (signal handlers
+  // and JNI paths that write to CallTraceStorage) from racing with the dump.
+  // Dictionary writers that bypass lockAll() (e.g. recordTrace0) are handled
+  // by the dictionary's own RefCountGuard protocol, not by lockAll().
+  template<typename F>
+  void rotateDictsAndRun(F jfr_op) {
+    SignalBlocker blocker;
+    _class_map.rotate();
+    _string_label_map.rotate();
+    _context_value_map.rotate();
+    lockAll();
+    jfr_op();
+    unlockAll();
+    _class_map.clearStandby();
+    _string_label_map.clearStandby();
+    _context_value_map.clearStandby();
+  }
 
   static int crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext);
   static void check_JDK_8313796_workaround();
@@ -217,10 +243,10 @@ public:
   Engine *cpuEngine() { return _cpu_engine; }
   Engine *wallEngine() { return _wall_engine; }
 
-  Dictionary *classMap() { return &_class_map; }
+  StringDictionary *classMap() { return &_class_map; }
   SharedLockGuard classMapSharedGuard() { return SharedLockGuard(&_class_map_lock); }
-  Dictionary *stringLabelMap() { return &_string_label_map; }
-  Dictionary *contextValueMap() { return &_context_value_map; }
+  StringDictionary *stringLabelMap() { return &_string_label_map; }
+  StringDictionary *contextValueMap() { return &_context_value_map; }
   u32 numContextAttributes() { return _num_context_attributes; }
   ThreadFilter *threadFilter() { return &_thread_filter; }
 
@@ -252,7 +278,6 @@ public:
   Error check(Arguments &args);
   Error start(Arguments &args, bool reset);
   Error stop();
-  Error flushJfr();
   Error dump(const char *path, const int length);
   void logStats();
   void switchThreadEvents(jvmtiEventMode mode);

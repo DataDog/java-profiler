@@ -17,6 +17,8 @@ All documentation files use **PascalCase** naming (e.g., `BuildSystemGuide.md`).
 
 ### Architecture
 - [CallTraceStorage](architecture/CallTraceStorage.md) - Triple-buffer architecture for call traces
+- [RefCountGuard](architecture/RefCountGuard.md) - Lock-free RAII reference-counting primitive used to drain readers before resource reclamation
+- [StringDictionary](architecture/StringDictionary.md) - Concurrency model: RefCountGuard, clearAll, and rotation protocols
 - [TLSContext](architecture/TLSContext.md) - Thread-local context for distributed tracing
 - [TLSPriming](architecture/TLSPriming.md) - Signal-safe TLS initialization
 

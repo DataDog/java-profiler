@@ -37,6 +37,11 @@
   X(DICTIONARY_CLASSES_KEYS_BYTES, "dictionary_classes_keys_bytes")            \
   X(DICTIONARY_ENDPOINTS_KEYS_BYTES, "dictionary_endpoints_keys_bytes")        \
   X(DICTIONARY_CONTEXT_KEYS_BYTES, "dictionary_context_keys_bytes")            \
+  X(DICTIONARY_ARENA_WASTE_BYTES, "dictionary_arena_waste_bytes")              \
+  X(DICTIONARY_CLASSES_ARENA_WASTE_BYTES, "dictionary_classes_arena_waste_bytes")     \
+  X(DICTIONARY_ENDPOINTS_ARENA_WASTE_BYTES, "dictionary_endpoints_arena_waste_bytes") \
+  X(DICTIONARY_CONTEXT_ARENA_WASTE_BYTES, "dictionary_context_arena_waste_bytes")     \
+  X(DICTIONARY_DRAIN_TIMEOUTS, "dictionary_drain_timeouts")                    \
   X(CONTEXT_STORAGE_BYTES, "context_storage_bytes")                            \
   X(CONTEXT_STORAGE_PAGES, "context_storage_pages")                            \
   X(CONTEXT_BOUNDS_MISS_INITS, "context_bounds_miss_inits")                    \
