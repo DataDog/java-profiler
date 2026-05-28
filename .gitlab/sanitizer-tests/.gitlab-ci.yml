@@ -47,7 +47,6 @@
 
 gtest-asan-amd64:
   extends: .sanitizer_job
-  allow_failure: true
   tags: [ "arch:amd64" ]
   image: $BUILD_IMAGE_X64
   variables:
@@ -56,12 +55,10 @@ gtest-asan-amd64:
 
 gtest-tsan-amd64:
   extends: .sanitizer_job
-  allow_failure: true
   # docker-in-docker:amd64 = Kata Containers (kata-qemu micro VMs).
   # Kata maps host-guest communication structures at fixed high addresses
   # that land in TSan's shadow region regardless of LLVM version or sysctl.
   # TSan on amd64 requires a non-Kata runner (EC2 or bare metal).
-  # Kept allow_failure so it runs and provides coverage if the environment is fixed.
   tags: [ "docker-in-docker:amd64" ]
   image: $BUILD_IMAGE_X64
   variables:
@@ -80,7 +77,6 @@ gtest-tsan-amd64:
 
 gtest-asan-arm64:
   extends: .sanitizer_job
-  allow_failure: true
   tags: [ "arch:arm64" ]
   image: $BUILD_IMAGE_ARM64
   variables:
@@ -89,7 +85,6 @@ gtest-asan-arm64:
 
 gtest-tsan-arm64:
   extends: .sanitizer_job
-  allow_failure: true
   # docker-in-docker:arm64 = EC2 VM. sysctl works directly.
   # vm.mmap_rnd_bits=28 is sufficient — TSan's LLVM re-exec handles the rare
   # case where a library lands in the shadow region by re-running the process
