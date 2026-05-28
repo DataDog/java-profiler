@@ -103,19 +103,28 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
       _thread_filter.unregisterThread(slot_id);
       current->setFilterSlotId(-1);
     }
-    
-    ProfiledThread::release();
-  } else {
-    // ProfiledThread already cleaned up - try to get tid from JVMTI as fallback
-    tid = JVMThread::nativeThreadId(jni, thread);
-    if (tid < 0) {
-      // No ProfiledThread AND can't get tid from JVMTI - nothing we can do
-      return;
+
+    updateThreadName(jvmti, jni, thread, false);
+    // Block profiling signals around engine unregistration + TLS release to
+    // close the window where a wall-clock/CPU signal could sample a
+    // partially-torn-down thread (PROF-14674).
+    {
+      SignalBlocker blocker;
+      _cpu_engine->unregisterThread(tid);
+      _wall_engine->unregisterThread(tid);
+      ProfiledThread::release();
     }
+    return;
   }
-  
-  // These can run if we have a valid tid
-  updateThreadName(jvmti, jni, thread, false);  // false = not self
+
+  // ProfiledThread already cleaned up - try to get tid from JVMTI as fallback
+  tid = JVMThread::nativeThreadId(jni, thread);
+  if (tid < 0) {
+    // No ProfiledThread AND can't get tid from JVMTI - nothing we can do
+    return;
+  }
+
+  updateThreadName(jvmti, jni, thread, false);
   _cpu_engine->unregisterThread(tid);
   _wall_engine->unregisterThread(tid);
 }
