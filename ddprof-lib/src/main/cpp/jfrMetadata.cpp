@@ -124,7 +124,6 @@ void JfrMetadata::initialize(
                   << field("state", T_THREAD_STATE, "Thread State", F_CPOOL)
                   << field("mode", T_EXECUTION_MODE, "Execution Mode", F_CPOOL)
                   << field("weight", T_LONG, "Sample weight")
-                  << field("correlationId", T_LONG, "Async Stack Trace Correlation ID")
                   << field("spanId", T_LONG, "Span ID")
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
               contextAttributes)
@@ -138,24 +137,31 @@ void JfrMetadata::initialize(
                   << field("state", T_THREAD_STATE, "Thread State", F_CPOOL)
                   << field("mode", T_EXECUTION_MODE, "Execution Mode", F_CPOOL)
                   << field("weight", T_LONG, "Sample weight")
-                  << field("correlationId", T_LONG, "Async Stack Trace Correlation ID")
                   << field("spanId", T_LONG, "Span ID")
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
               contextAttributes)
 
           << (type("datadog.WallClockSamplingEpoch", T_WALLCLOCK_SAMPLE_EPOCH,
-                   "WallClock Sampling Epoch")
+                   "Wall Clock Sampling Epoch")
               << category("Datadog", "Profiling")
               << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
               << field("duration", T_LONG, "Duration", F_DURATION_MILLIS)
               << field("samplePoolSize", T_INT, "Sample Pool Size")
               << field("numSuccessfulSamples", T_INT,
-                       "Number of Successful Samples")
-              << field("numFailedSamples", T_INT, "Number of Failed Samples")
+                       "SIGVTALRM deliveries attempted successfully, accumulated since the last "
+                       "emitted epoch")
+              << field("numFailedSamples", T_INT,
+                       "Failed signal deliveries, accumulated since the last emitted epoch")
               << field("numExitedThreads", T_INT,
-                       "Number of Exited Threads Before Handling Signal")
+                       "Threads already exited (ESRCH), accumulated since the last emitted epoch")
               << field("numPermissionDenied", T_INT,
-                       "Number of Permission Denied Errors"))
+                       "EPERM signal failures, accumulated since the last emitted epoch")
+              << field("numSuppressedSampledRun", T_LONG,
+                       "Signals suppressed by the once-per-run wall-clock filter, accumulated "
+                       "since the last emitted epoch. After the first MethodSample of a "
+                       "SLEEPING / CONDVAR_WAIT run is emitted, subsequent signals on that "
+                       "thread are suppressed until the OS state leaves the skip set. Covers "
+                       "sleep, park/parkNanos, JDK 21+ Thread.sleep via condvar wait, etc."))
 
           << (type("datadog.ObjectSample", T_ALLOC, "Allocation sample")
                   << category("Datadog", "Profiling")

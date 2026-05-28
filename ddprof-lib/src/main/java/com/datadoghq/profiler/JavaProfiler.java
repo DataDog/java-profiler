@@ -50,7 +50,7 @@ public final class JavaProfiler {
      * before linking.
      */
     public static JavaProfiler getInstance() throws IOException {
-        return getInstance(null, null);
+        return getInstance(null, null, false, false);
     }
 
     /**
@@ -60,7 +60,7 @@ public final class JavaProfiler {
      * @param scratchDir directory where the bundled library will be exploded before linking
      */
     public static JavaProfiler getInstance(String scratchDir) throws IOException {
-        return getInstance(null, scratchDir);
+        return getInstance(null, scratchDir, false, false);
     }
 
     /**
@@ -278,6 +278,21 @@ public final class JavaProfiler {
     }
 
     /**
+     * Called before {@code LockSupport.park}; native wall-clock sampling may skip SIGVTALRM for
+     * this interval. Span context is captured natively from the OTEP TLS sidecar.
+     */
+    public void parkEnter() {
+        parkEnter0();
+    }
+
+    /**
+     * Called after {@code LockSupport.park}; clears parked state and may emit {@code datadog.TaskBlock}.
+     */
+    public void parkExit(long blocker, long unblockingSpanId) {
+        parkExit0(blocker, unblockingSpanId);
+    }
+
+    /**
      * Get the ticks for the current thread.
      * @return ticks
      */
@@ -331,6 +346,10 @@ public final class JavaProfiler {
     private static native void recordSettingEvent0(String name, String value, String unit);
 
     private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin, String queueType, int queueLength);
+
+    private static native void parkEnter0();
+
+    private static native void parkExit0(long blocker, long unblockingSpanId);
 
     private static native long currentTicks0();
 

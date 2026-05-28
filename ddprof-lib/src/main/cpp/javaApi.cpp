@@ -24,7 +24,7 @@
 #include "counters.h"
 #include "common.h"
 #include "engine.h"
-#include "hotspot/vmStructs.h"
+#include "hotspot/vmStructs.inline.h"
 #include "incbin.h"
 #include "jvmThread.h"
 #include "os.h"
@@ -68,7 +68,7 @@ public:
 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_init0(JNIEnv *env, jclass unused) {
-  // JavaVM* has already been stored when the native library was loaded so we can pass nullptr here
+  // JavaVM* has already been stored when the native library was loaded so we can pass nullptr here.
   return VM::initProfilerBridge(nullptr, true);
 }
 
@@ -150,15 +150,21 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
   
   int slot_id = current->filterSlotId();
   if (unlikely(slot_id == -1)) {
-    // Thread doesn't have a slot ID yet (e.g., main thread), so register it
-    // Happens when we are not enabled before thread start
+    // Thread doesn't have a slot ID yet (e.g., main thread or profiler started
+    // after thread creation). Register now.
     slot_id = thread_filter->registerThread();
     current->setFilterSlotId(slot_id);
   }
-  
+
   if (unlikely(slot_id == -1)) {
     return;  // Failed to register thread
   }
+  // Refresh HotSpot VMThread* for wall thread-filter precheck (vmStructs OS state).
+  // HotSpot only: VMThread::current() asserts VM::isHotspot(). OpenJ9/Zing: leave null.
+  thread_filter->setVMThread(slot_id, VM::isHotspot() ? VMThread::current() : nullptr);
+  // Reset once-per-run suppression state so the new occupant of this slot does not
+  // inherit stale park-suppression from the previous thread. Must happen before add().
+  thread_filter->resetSlotRunState(slot_id);
   thread_filter->add(tid, slot_id);
 }
 
@@ -311,6 +317,28 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   event._queueType = queue_type_offset;
   event._queueLength = queueLength;
   Profiler::instance()->recordQueueTime(tid, &event);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) {
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) {
+    return;
+  }
+  current->parkEnter(TSC::ticks());
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
+    JNIEnv *env, jclass unused, jlong blocker, jlong unblockingSpanId) {
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) {
+    return;
+  }
+  u64 start_ticks = 0;
+  Context park_context = {};
+  // Clear the parked flag; TaskBlock recording added in the next PR.
+  current->parkExit(start_ticks, park_context);
 }
 
 extern "C" DLLEXPORT jlong JNICALL

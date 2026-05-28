@@ -60,6 +60,8 @@
   X(AGCT_NATIVE_NO_JAVA_CONTEXT, "agct_native_no_java_context")                \
   X(AGCT_BLOCKED_IN_VM, "agct_blocked_in_vm")                                  \
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
+  X(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN, "wc_signals_suppressed_sampled_run")     \
+  X(WC_SIGNAL_QUEUE_FULL, "wc_signals_queue_full")                             \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
   X(CALLTRACE_STORAGE_DROPPED, "calltrace_storage_dropped_traces")             \
@@ -98,17 +100,11 @@
   X(WALKVM_CONT_ENTRY_NULL,     "walkvm_cont_entry_null")                      \
   X(NATIVE_LIBS_DROPPED, "native_libs_dropped")                                \
   X(SIGACTION_PATCHED_LIBS, "sigaction_patched_libs")                          \
-  X(SIGACTION_INTERCEPTED, "sigaction_intercepted")                            \
-  X(CTIMER_SIGNAL_OWN, "ctimer_signal_own")                                    \
-  X(CTIMER_SIGNAL_FOREIGN, "ctimer_signal_foreign")                            \
-  X(WALLCLOCK_SIGNAL_OWN, "wallclock_signal_own")                              \
-  X(WALLCLOCK_SIGNAL_FOREIGN, "wallclock_signal_foreign")                      \
-  X(JVMTI_STACKS_INIT_OK, "jvmti_stacks_init_ok")                             \
-  X(JVMTI_STACKS_INIT_FAILED, "jvmti_stacks_init_failed")                     \
-  X(JVMTI_STACKS_REQUESTED, "jvmti_stacks_requested")                         \
-  X(JVMTI_STACKS_FAILED_WRONG_PHASE, "jvmti_stacks_failed_wrong_phase")       \
-  X(JVMTI_STACKS_FAILED_OTHER, "jvmti_stacks_failed_other")                  \
-  X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")
+  X(SIGACTION_INTERCEPTED, "sigaction_intercepted")                             \
+  X(CTIMER_SIGNAL_OWN, "ctimer_signal_own")                                     \
+  X(CTIMER_SIGNAL_FOREIGN, "ctimer_signal_foreign")                             \
+  X(WALLCLOCK_SIGNAL_OWN, "wallclock_signal_own")                               \
+  X(WALLCLOCK_SIGNAL_FOREIGN, "wallclock_signal_foreign")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS

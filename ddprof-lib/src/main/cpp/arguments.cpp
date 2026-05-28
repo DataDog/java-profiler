@@ -364,19 +364,14 @@ Error Arguments::parse(const char *args) {
         _remote_symbolication = true;
       }
 
-      CASE("jvmtistacks")
+      CASE("wallprecheck")
       if (value != NULL) {
-        switch (value[0]) {
-        case 'y': // yes
-        case 't': // true
-        case '1': // 1
-          _jvmtistacks = true;
-          break;
-        default:
-          _jvmtistacks = false;
-        }
+        _wall_precheck = strcmp(value, "false") != 0 && strcmp(value, "0") != 0;
       } else {
-        _jvmtistacks = true;
+        // No value means disable: wallprecheck is opt-in and requires explicit =true.
+        // Unlike most boolean flags (where bare presence implies enable), this feature
+        // triggers broad class-load ASM rewriting and must not activate silently.
+        _wall_precheck = false;
       }
 
       CASE("wallsampler")

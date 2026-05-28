@@ -64,7 +64,6 @@ void ProfiledThread::release() {
   }
 }
 
-
 int ProfiledThread::currentTid() {
   ProfiledThread *tls = current();
   if (tls != NULL) {

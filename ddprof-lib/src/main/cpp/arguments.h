@@ -168,6 +168,7 @@ public:
   long _cpu;
   long _wall;
   bool _wall_collapsing;
+  bool _wall_precheck;
   int _wall_threads_per_tick;
   WallclockSampler _wallclock_sampler;
   long _memory;
@@ -192,7 +193,6 @@ public:
   bool _lightweight;
   bool _enable_method_cleanup;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
-  bool _jvmtistacks;           // Delegate CPU/wall stack walks to HotSpot JFR RequestStackTrace extension
 
   Arguments(bool persistent = false)
       : _buf(NULL),
@@ -205,6 +205,7 @@ public:
         _cpu(-1),
         _wall(-1),
         _wall_collapsing(false),
+        _wall_precheck(false),
         _wall_threads_per_tick(DEFAULT_WALL_THREADS_PER_TICK),
         _wallclock_sampler(ASGCT),
         _memory(-1),
@@ -228,8 +229,7 @@ public:
         _context_attributes({}),
         _lightweight(false),
         _enable_method_cleanup(true),
-        _remote_symbolication(false),
-        _jvmtistacks(false) {}
+        _remote_symbolication(false) {}
 
   ~Arguments();
 

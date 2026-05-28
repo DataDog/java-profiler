@@ -1,5 +1,5 @@
 /*
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -7,9 +7,11 @@
 #define _THREAD_H
 
 #include "context.h"
+#include "context_api.h"
 #include "otel_context.h"
 #include "os.h"
 #include "threadLocalData.h"
+#include "threadState.h"
 #include "unwindStats.h"
 #include <atomic>
 #include <cstdint>
@@ -19,7 +21,7 @@
 #include <sys/types.h>
 #include <vector>
 
-class ProfiledThread : public ThreadLocalData {    
+class ProfiledThread : public ThreadLocalData {
 public:
   enum ThreadType : u32 {
     TYPE_UNKNOWN = 0,
@@ -27,6 +29,8 @@ public:
     TYPE_NOT_JAVA_THREAD = 0x2,
     TYPE_MASK = TYPE_JAVA_THREAD | TYPE_NOT_JAVA_THREAD
   };
+
+  static constexpr u32 FLAG_PARKED = 0x4u;
 
 private:
   // We are allowing several levels of nesting because we can be
@@ -53,6 +57,8 @@ private:
   u64 _call_trace_id;
   u32 _recording_epoch;
   u32 _misc_flags;
+  u64 _park_start_ticks;
+  Context _park_context;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   UnwindFailures _unwind_failures;
@@ -70,9 +76,19 @@ private:
   alignas(8) u32 _otel_tag_encodings[DD_TAGS_CAPACITY];
   u64 _otel_local_root_span_id;
 
+  // Wall-clock once-per-run filter state used to live here (per ProfiledThread). It now
+  // lives on ThreadFilter::Slot — the wall-clock timer needs to read it cross-thread for
+  // its IPI fast-path, and ProfiledThread instances are deleted on thread exit, which
+  // made the cross-thread deref a use-after-free. ThreadFilter::Slot instances are
+  // JVM-process stable, eliminating the hazard. The handler still writes the state
+  // (via current->filterSlotId() → threadFilter()->slotForId() → markSampledThisRun/
+  // resetSampledRun); see WallClockASGCT::signalHandler in wallClock.cpp.
+
   ProfiledThread(int tid)
       : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
-        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _init_window(0),
+        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
+        _park_start_ticks(0), _park_context{},
+        _filter_slot_id(-1), _init_window(0),
         _otel_ctx_initialized(false), _crash_protection_active(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
 
@@ -82,15 +98,14 @@ public:
 
   static void initCurrentThread();
   static void release();
-#ifdef UNIT_TEST
-  // Simulates the moment inside release() after pthread_setspecific(NULL) but
-  // before delete — the race window the clearCurrentThreadTLS fix covers.
+  // Clears TLS without deleting the ProfiledThread. For unit tests only:
+  // simulates the moment inside release() after pthread_setspecific(NULL) but
+  // before delete, which is the race window the _thread_ptr fix covers.
   static void clearCurrentThreadTLS() {
     if (__atomic_load_n(&_tls_key_initialized, __ATOMIC_ACQUIRE)) {
       pthread_setspecific(_tls_key, nullptr);
     }
   }
-#endif
 
   static ProfiledThread *current();
   static ProfiledThread *currentSignalSafe(); // Signal-safe version that never allocates
@@ -211,13 +226,21 @@ public:
     return &_otel_ctx_record;
   }
 
-  // Record java thread state
+  // Record java thread state.
+  // Uses a CAS RMW instead of a plain load-mask-store to avoid silently clobbering FLAG_PARKED:
+  // vmStructs.cpp::isJavaThread() can call this from signal-handler context, where a prior
+  // parkExit() on the same thread (also running in the handler) may have just cleared FLAG_PARKED.
+  // A plain store of the pre-signal load value would restore the cleared flag. The CAS correctly
+  // updates only the TYPE_MASK bits and retries if any other bit changed under us.
   inline void setJavaThread(bool is_java) {
-    if (is_java) {
-      _misc_flags = ((_misc_flags & ~TYPE_MASK) | TYPE_JAVA_THREAD);
-    } else {
-      _misc_flags = ((_misc_flags & ~TYPE_MASK) | TYPE_NOT_JAVA_THREAD);
-    }
+    const u32 type_bits = is_java ? static_cast<u32>(TYPE_JAVA_THREAD) : static_cast<u32>(TYPE_NOT_JAVA_THREAD);
+    u32 cur = __atomic_load_n(&_misc_flags, __ATOMIC_RELAXED);
+    u32 desired;
+    do {
+      desired = (cur & ~static_cast<u32>(TYPE_MASK)) | type_bits;
+    } while (!__atomic_compare_exchange_n(&_misc_flags, &cur, desired,
+                                          /*weak=*/true,
+                                          __ATOMIC_ACQ_REL, __ATOMIC_RELAXED));
   }
 
   inline enum ThreadType threadType() const {
@@ -239,6 +262,35 @@ public:
     memset(_otel_tag_encodings, 0, sizeof(_otel_tag_encodings));
     _otel_local_root_span_id = 0;
   }
+
+  inline void parkEnter(u64 start_ticks) {
+    // Snapshot the OTEP TLS context atomically (spanId/rootSpanId/tags captured under the
+    // single validity gate inside ContextApi::snapshot). This replaces the prior hand-rolled
+    // tag loop and removes the JNI-passed spanId/rootSpanId override path.
+    _park_context = ContextApi::snapshot();
+    _park_start_ticks = start_ticks;
+    // Set FLAG_PARKED without disturbing other _misc_flags bits (thread type, etc.).
+    // Release ordering pairs with the ACQ_REL in parkExit(), ensuring that _park_start_ticks
+    // and _park_context are fully visible before FLAG_PARKED is observed as set. Both
+    // operations run on the owning thread; no cross-thread reader accesses FLAG_PARKED.
+    __atomic_fetch_or(&_misc_flags, FLAG_PARKED, __ATOMIC_RELEASE);
+  }
+
+  inline bool parkExit(u64 &start_ticks, Context &park_context) {
+    u32 prev = __atomic_fetch_and(&_misc_flags, ~FLAG_PARKED, __ATOMIC_ACQ_REL);
+    if ((prev & FLAG_PARKED) == 0) {
+      return false;
+    }
+    start_ticks = _park_start_ticks;
+    park_context = _park_context;
+    return true;
+  }
+
+  // Wall-clock once-per-run filter accessors live on ThreadFilter::Slot
+  // (see threadFilter.h Slot::sampledThisRun/lastSampledState/markSampledThisRun/
+  // resetSampledRun). Reaching them from the signal handler:
+  //   ThreadFilter::Slot* slot =
+  //       Profiler::instance()->threadFilter()->slotForId(current->filterSlotId());
 
   Context snapshotContext(size_t numAttrs);
 

@@ -216,12 +216,14 @@ Error LivenessTracker::initialize(Arguments &args) {
     return Error::OK;
   }
 
-  // _record_heap_usage controls per-session JFR event emission only, not the
-  // tracking table. Update it before the _initialized guard so each profiler
-  // start gets the correct setting even when the table persists across recordings.
-  _record_heap_usage = args._record_heap_usage;
-
   if (_initialized) {
+    // Tracker settings are sticky across recordings. Preserve the historical
+    // table/config behavior, but allow HeapUsage recording to be enabled later
+    // (e.g. if an earlier test initialized liveness without ':L'). Once heap usage
+    // recording has been requested for this JVM lifetime, keep emitting HeapUsage
+    // even if a later recording omits the flag — avoids dropping JVM heap telemetry
+    // when liveness was turned on first without ':L'.
+    _record_heap_usage = _record_heap_usage || args._record_heap_usage;
     // if the tracker was previously initialized return the stored result for
     // consistency this hack also means that if the profiler is started with
     // different arguments for liveness tracking those will be ignored it is
@@ -269,6 +271,8 @@ Error LivenessTracker::initialize(Arguments &args) {
       std::min(2048, _table_max_cap); // with default 512k sampling interval, it's
                                    // enough for 1G of heap
   _table = (TrackingEntry *)malloc(sizeof(TrackingEntry) * _table_cap);
+
+  _record_heap_usage = args._record_heap_usage;
 
   _gc_epoch = 0;
   _last_gc_epoch = 0;

@@ -16,6 +16,7 @@
 #include "threadFilter.h"
 #include "threadState.h"
 #include "tsc.h"
+#include "wallClockCounters.h"
 
 class BaseWallClock : public Engine {
   private:
@@ -40,7 +41,6 @@ class BaseWallClock : public Engine {
     }
 
     bool isEnabled() const;
-    static bool inSyscall(void* ucontext);
 
     template <typename ThreadType, typename CollectThreadsFunc, typename SampleThreadsFunc, typename CleanThreadFunc>
     void timerLoopCommon(CollectThreadsFunc collectThreads, SampleThreadsFunc sampleThreads, CleanThreadFunc cleanThreads, int reservoirSize, u64 interval) {
@@ -82,18 +82,24 @@ class BaseWallClock : public Engine {
         int num_failures = 0;
         int threads_already_exited = 0;
         int permission_denied = 0;
+        u32 num_successful_samples = 0;
         std::vector<ThreadType> sample = reservoir.sample(threads);
         for (ThreadType thread : sample) {
-          if (!sampleThreads(thread, num_failures, threads_already_exited, permission_denied)) {
-            continue;
+          if (sampleThreads(thread, num_failures, threads_already_exited, permission_denied)) {
+            num_successful_samples++;
           }
         }
 
         epoch.updateNumSamplableThreads(threads.size());
-        epoch.updateNumFailedSamples(num_failures);
-        epoch.updateNumSuccessfulSamples(sample.size() - num_failures);
-        epoch.updateNumExitedThreads(threads_already_exited);
-        epoch.updateNumPermissionDenied(permission_denied);
+        epoch.addNumFailedSamples(num_failures);
+        epoch.addNumSuccessfulSamples(num_successful_samples);
+        WallClockCounterSnapshot counter_snapshot = WallClockCounters::drain();
+        epoch.addNumSuppressedSampledRun(counter_snapshot.suppressed_sampled_run);
+        epoch.addNumTaskBlockEmitted(counter_snapshot.task_block_emitted);
+        epoch.addNumTaskBlockSkippedSpanZero(counter_snapshot.task_block_skipped_span_zero);
+        epoch.addNumTaskBlockSkippedTooShort(counter_snapshot.task_block_skipped_too_short);
+        epoch.addNumExitedThreads(threads_already_exited);
+        epoch.addNumPermissionDenied(permission_denied);
         u64 endTime = TSC::ticks();
         u64 duration = TSC::ticks_to_millis(endTime - startTime);
         if (epoch.hasChanged() || duration >= 1000) {
@@ -142,6 +148,9 @@ public:
 class WallClockASGCT : public BaseWallClock {
   private:
     bool _collapsing;
+    bool _precheck;
+
+    static bool inSyscall(void* ucontext);
 
     static void sharedSignalHandler(int signo, siginfo_t* siginfo, void* ucontext);
     void signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64 last_sample);
@@ -150,28 +159,9 @@ class WallClockASGCT : public BaseWallClock {
     void timerLoop() override;
 
   public:
-    WallClockASGCT() : BaseWallClock(), _collapsing(false) {}
+    WallClockASGCT() : BaseWallClock(), _collapsing(false), _precheck(false) {}
     const char* name() override {
         return "WallClock (ASGCT)";
-    }
-};
-
-// Wall-clock engine that uses BaseWallClock's pthread reservoir sampling loop
-// to signal target threads, but in its signal handler delegates the stack walk
-// to HotSpot's JFR RequestStackTrace JVMTI extension. Requires
-// VM::canRequestStackTrace().
-class WallClockJvmti : public BaseWallClock {
-  private:
-    static void sharedSignalHandler(int signo, siginfo_t* siginfo, void* ucontext);
-    void signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64 last_sample);
-
-    void initialize(Arguments& args) override;
-    void timerLoop() override;
-
-  public:
-    WallClockJvmti() : BaseWallClock() {}
-    const char* name() override {
-        return "WallClock (JVMTI)";
     }
 };
 
