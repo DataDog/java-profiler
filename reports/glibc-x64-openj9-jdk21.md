@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk21
 
 ## glibc-x64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-05-28 12:40:14 EDT
+**Date:** 2026-05-28 15:05:55 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk21
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 28 |
-| CPU Cores (end) | 36 |
+| CPU Cores (start) | 8 |
+| CPU Cores (end) | 10 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-openj9-jdk21
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (5 unique values: 24-36 cores)</summary>
+<summary>CPU Timeline (2 unique values: 8-10 cores)</summary>
 
 ```
-1779985947 28
-1779985952 28
-1779985957 28
-1779985962 28
-1779985967 28
-1779985972 28
-1779985977 28
-1779985982 28
-1779985987 28
-1779985992 28
-1779985997 28
-1779986002 28
-1779986007 28
-1779986012 28
-1779986017 24
-1779986022 24
-1779986027 32
-1779986032 32
-1779986037 32
-1779986042 32
+1779994900 8
+1779994905 8
+1779994910 8
+1779994915 8
+1779994920 8
+1779994925 8
+1779994930 8
+1779994935 8
+1779994940 8
+1779994945 8
+1779994950 8
+1779994955 8
+1779994960 8
+1779994965 8
+1779994970 8
+1779994975 8
+1779994980 8
+1779994985 10
+1779994990 10
+1779994995 10
 ```
 </details>
 
