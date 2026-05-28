@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk21
 
 ## glibc-x64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-05-28 11:12:01 EDT
+**Date:** 2026-05-28 11:27:27 EDT
 
 ### Configuration
 | Setting | Value |
@@ -24,50 +24,50 @@ title: glibc-x64-hotspot-jdk21
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ⚠️
+#### Scenario 1: Profiler-Only ✅
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| Status | PASS |
+| CPU Samples | 491 |
+| Sample Rate | 8.18/sec |
+| Health Score | 511% |
+| Threads | 9 |
+| Allocations | 349 |
 
-#### Scenario 2: Tracer+Profiler ⚠️
+#### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| Status | PASS |
+| CPU Samples | 591 |
+| Sample Rate | 9.85/sec |
+| Health Score | 616% |
+| Threads | 10 |
+| Allocations | 480 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 70-70 cores)</summary>
+<summary>CPU Timeline (2 unique values: 68-70 cores)</summary>
 
 ```
-1779980646 70
-1779980651 70
-1779980656 70
-1779980661 70
-1779980666 70
-1779980671 70
-1779980677 70
-1779980682 70
-1779980687 70
-1779980692 70
-1779980697 70
-1779980702 70
-1779980707 70
-1779980712 70
-1779980717 70
-1779980722 70
-1779980727 70
-1779980732 70
-1779980737 70
-1779980742 70
+1779981625 70
+1779981630 70
+1779981635 70
+1779981640 70
+1779981645 70
+1779981650 70
+1779981655 70
+1779981660 70
+1779981665 70
+1779981670 70
+1779981675 70
+1779981680 70
+1779981685 70
+1779981690 70
+1779981695 70
+1779981700 70
+1779981705 70
+1779981710 70
+1779981715 70
+1779981720 70
 ```
 </details>
 
