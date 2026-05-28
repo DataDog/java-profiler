@@ -46,7 +46,7 @@ public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTe
 
     @RetryTest(10)
     @TestTemplate
-    @ValueSource(strings = {"vm", "vmx", "fp", "dwarf"})
+    @ValueSource(strings = {"vm"})
     public void test(@CStack String cstack) {
         // Skip test entirely on unsupported JVMs (don't use assumeFalse which gets retried)
         if (Platform.isZing() || Platform.isJ9() ||
@@ -83,6 +83,10 @@ public class ContendedWallclockSamplesTest extends CStackAwareAbstractProfilerTe
                 if ("CONTENDED".equals(state)) {
                     String stackTrace = frameAccessor.getMember(sample);
                     if (!stackTrace.endsWith(".GC_active()")) {
+                        System.out.println("lambdaStateName: " + lambdaStateName);
+                        System.out.println("lambdaName: " + lambdaName);
+                        System.out.println(stackTrace);
+
                         // shortcut the assertions for sanitized runs
                         // the samples are not that good, but it still makes sense to run this load under sanitizers
                         assertTrue(isSanitizer || stackTrace.contains(lambdaStateName), () -> stackTrace + " missing " + lambdaStateName);

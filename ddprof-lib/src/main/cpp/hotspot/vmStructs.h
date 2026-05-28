@@ -47,6 +47,17 @@ inline T* cast_to(const void* ptr) {
     return reinterpret_cast<T*>(const_cast<void*>(ptr));
 }
 
+template <typename T>
+inline T* cast_or_null(const void* ptr) {
+    assert(VM::isHotspot()); // This should only be used in HotSpot-specific code
+    assert(T::type_size() > 0); // Ensure type size has been initialized
+    if(ptr == nullptr || SafeAccess::isReadableRange(ptr, T::type_size())) {
+        return reinterpret_cast<T*>(const_cast<void*>(ptr));
+    } else {
+        return nullptr;
+    }
+}
+
 #define TYPE_SIZE_NAME(name)    _##name##_size
 
 // MATCH_SYMBOLS macro expands into a string list, that is consumed by matchAny() method
@@ -72,10 +83,11 @@ inline T* cast_to(const void* ptr) {
       public: \
         static uint64_t type_size() { return TYPE_SIZE_NAME(name); } \
         static name * cast(const void* ptr) { return cast_to<name>(ptr); } \
+        static name * cast_or_null(const void* ptr) { return ::cast_or_null<name>(ptr); } \
         static name * cast_raw(const void* ptr) { return (name *)ptr; } \
         static name * load_then_cast(const void* ptr) { \
-            assert(ptr != nullptr); \
-            return cast(*(const void**)ptr); }
+            if (ptr == nullptr) return nullptr; \
+            return cast_or_null(*(const void**)ptr); }
 
 #define DECLARE_END  };
 
@@ -202,6 +214,8 @@ typedef void* address;
     type_begin(VMConstMethod, MATCH_SYMBOLS("ConstMethod"))                                                         \
         field(_constmethod_constants_offset, offset, MATCH_SYMBOLS("_constants"))                                   \
         field(_constmethod_idnum_offset, offset, MATCH_SYMBOLS("_method_idnum"))                                    \
+        field(_constmethod_name_index_offset, offset, MATCH_SYMBOLS("_name_index"))                                 \
+        field(_constmethod_sig_index_offset, offset, MATCH_SYMBOLS("_signature_index"))                             \
     type_end()                                                                                                      \
     type_begin(VMConstantPool, MATCH_SYMBOLS("ConstantPool"))                                                       \
         field(_pool_holder_offset, offset, MATCH_SYMBOLS("_pool_holder"))                                           \
@@ -435,6 +449,12 @@ class VMStructs {
     static const void *findHeapUsageFunc();
 
     const char* at(int offset) {
+        const char* ptr = (const char*)this + offset;
+        assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
+        return ptr;
+    }
+
+    const char* at(int offset) const {
         const char* ptr = (const char*)this + offset;
         assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
         return ptr;
@@ -869,8 +889,24 @@ private:
 
 DECLARE_END
 
-DECLARE(VMConstMethod)
+DECLARE(VMConstantPool)
+public:
+    inline VMKlass* holder_or_null() const;
+    inline VMSymbol* symbolAt(u16 index) const;
+ private:
+    inline intptr_t* base() const;
 DECLARE_END
+
+DECLARE(VMConstMethod)
+public:
+    inline VMConstantPool* constants_or_null() const;
+    inline VMSymbol* name() const;
+    inline VMSymbol* signature() const;
+    inline int16_t idnum() const;
+private:
+    inline u16 nameIndex() const;
+    inline u16 signatureIndex() const;
+ DECLARE_END
 
 
 DECLARE(VMMethod)   
@@ -879,10 +915,10 @@ DECLARE(VMMethod)
     static bool check_jmethodID_hotspot(jmethodID id);
 
   public:
-    jmethodID id();
+    inline jmethodID id();
 
     // Performs extra validation when VMMethod comes from incomplete frame
-    jmethodID validatedId();
+    inline jmethodID validatedId();
 
     // Workaround for JDK-8313816
     static bool isStaleMethodId(jmethodID id) {
@@ -897,6 +933,7 @@ DECLARE(VMMethod)
         return *(const char**) at(_method_constmethod_offset) + VMConstMethod::type_size();
     }
 
+    inline VMConstMethod* constMethod_or_null() const;
     inline VMNMethod* code();
 
     static bool check_jmethodID(jmethodID id);

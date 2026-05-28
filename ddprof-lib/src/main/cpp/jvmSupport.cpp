@@ -63,8 +63,7 @@ void JVMSupport::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
     jclass *classes = nullptr;
     int loaded_count = 0;
 
-    if ((!VM::isHotspot() || HotspotSupport::needJMethodIDs()) &&
-        jvmti->GetLoadedClasses(&class_count, &classes) == JVMTI_ERROR_NONE) {
+    if (jvmti->GetLoadedClasses(&class_count, &classes) == JVMTI_ERROR_NONE) {
         for (int i = 0; i < class_count; i++) {
             if(loadMethodIDs(jvmti, jni, classes[i])) {
                 loaded_count++;
@@ -76,32 +75,14 @@ void JVMSupport::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
 }
 
 bool JVMSupport::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-    if (!VM::isHotspot() || HotspotSupport::needJMethodIDs()) {
+    if (VM::isHotspot()) {
+        return HotspotSupport::loadMethodIDsImpl(jvmti, jni, klass);
+    } else {
         return loadMethodIDsImpl(jvmti, jni, klass);
     }
-    return false;
 }
 
 bool JVMSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-  bool needs_patch = VM::isHotspot() && VM::hotspot_version() == 8;
-  if (needs_patch) {
-    // Workaround for JVM bug https://bugs.openjdk.org/browse/JDK-8062116
-    // Preallocate space for jmethodIDs at the beginning of the list (rather than at the end)
-    // This is relevant only for JDK 8 - later versions do not have this bug
-    if (VMStructs::hasClassLoaderData()) {
-      VMKlass *vmklass = VMKlass::fromJavaClass(jni, klass);
-      int method_count = vmklass->methodCount();
-      if (method_count > 0) {
-        VMClassLoaderData *cld = vmklass->classLoaderData();
-        cld->lock();
-        for (int i = 0; i < method_count; i += MethodList::SIZE) {
-          *cld->methodList() = new MethodList(*cld->methodList());
-        }
-        cld->unlock();
-      }
-    }
-  }
- 
   // CRITICAL: GetClassMethods must be called to preallocate jmethodIDs for AsyncGetCallTrace.
   // AGCT operates in signal handlers where lock acquisition is forbidden, so jmethodIDs must
   // exist before profiling encounters them. Without preallocation, AGCT cannot identify methods

@@ -33,6 +33,9 @@ public:
 
     static void loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni);
     static bool loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
+
+    // Resolve method pointer to jmethodID
+    static inline jmethodID resolve(const void* method);
 };
 
 #endif // _JVMSUPPORT_H

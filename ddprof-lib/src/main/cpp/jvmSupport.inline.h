@@ -26,4 +26,14 @@ bool JVMSupport::isJitCode(const void* pc) {
     }
 }
 
+// Resolve method pointer to jmethodID
+jmethodID JVMSupport::resolve(const void* method) {
+    if (VM::isHotspot()) {
+        return HotspotSupport::resolve(method);
+    } else {
+        assert(false && "Should not reach here");
+        return nullptr;
+    }
+}
+
 #endif // _JVMSUPPORT_INLINE_H

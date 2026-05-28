@@ -72,4 +72,108 @@ VMMethod* VMThread::compiledMethod() {
     return NULL;
 }
 
+VMConstMethod* VMMethod::constMethod_or_null() const {
+    assert(_method_constmethod_offset >= 0);
+    return VMConstMethod::load_then_cast(at(_method_constmethod_offset));
+}
+
+jmethodID VMMethod::id() {
+    // We may find a bogus NMethod during stack walking, it does not always point to a valid VMMethod
+    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
+    if (!goodPtr(const_method)) {
+        return JMETHODID_NOT_WALKABLE;
+    }
+
+    const char* cpool = (const char*) SafeAccess::load((void**)(const_method + _constmethod_constants_offset));
+    unsigned short num = (unsigned short) SafeAccess::load32((int32_t*)(const_method + _constmethod_idnum_offset), 0);
+    if (goodPtr(cpool)) {
+        VMKlass* holder = (VMKlass*) SafeAccess::loadPtr((void**)(cpool + _pool_holder_offset), nullptr);
+        if (goodPtr(holder)) {
+            jmethodID* ids = (jmethodID*) SafeAccess::loadPtr((void**)((char*)holder + _jmethod_ids_offset), nullptr);
+            if (ids != NULL) {
+                size_t len = (size_t) SafeAccess::load32((int32_t*)ids, 0);
+                if (num < len) {
+                    return (jmethodID) SafeAccess::loadPtr((void**)(ids + num + 1), JMETHODID_NOT_WALKABLE);
+                } else {
+                    // The jmethodID is not populated
+                    return nullptr;
+                }
+            } else {
+                // No jmethodID was populated
+                return nullptr;
+            }
+        }
+    }
+    return JMETHODID_NOT_WALKABLE;
+}
+
+
+jmethodID VMMethod::validatedId() {
+    jmethodID method_id = id();
+    if (method_id != JMETHODID_NOT_WALKABLE && method_id != nullptr) {
+        if (!_can_dereference_jmethod_id ||
+            ((goodPtr(method_id) && SafeAccess::loadPtr((void**)method_id, nullptr) == this))) {
+            TEST_LOG("validatedId = 0x%zx", (unsigned long)method_id);
+            return method_id;
+        } else {
+            TEST_LOG("validatedId = Invalid jmethodID");
+            return JMETHODID_NOT_WALKABLE;
+        }
+    }
+    if (method_id != nullptr) {
+        TEST_LOG("validatedId = Invalid jmethodID - id");
+    } else {
+        TEST_LOG("validatedId == nullptr");
+    }
+    return method_id;
+}
+
+VMKlass* VMConstantPool::holder_or_null() const {
+    assert(_pool_holder_offset >= 0);
+    return VMKlass::load_then_cast(at(_pool_holder_offset));   
+}
+VMSymbol* VMConstantPool::symbolAt(u16 index) const {
+    return VMSymbol::cast_or_null(*(void**)&base()[index]);
+}
+
+intptr_t* VMConstantPool::base() const {
+    assert(_VMConstantPool_size > 0);
+    return (intptr_t*)(((char*)this) + _VMConstantPool_size);
+}
+
+VMConstantPool* VMConstMethod::constants_or_null() const {
+    return VMConstantPool::load_then_cast(at(_constmethod_constants_offset));
+}
+
+VMSymbol* VMConstMethod::name() const {
+    VMConstantPool* cpool = constants_or_null();
+    if (cpool == nullptr) return nullptr;
+
+    u16 name_index = nameIndex();
+    return cpool->symbolAt(name_index);
+}
+
+VMSymbol* VMConstMethod::signature() const {
+    VMConstantPool* cpool = constants_or_null();
+    if (cpool == nullptr) return nullptr;
+
+    u16 sig_index = nameIndex();
+    return cpool->symbolAt(sig_index);
+}
+
+int16_t VMConstMethod::idnum() const {
+    return (int16_t)SafeAccess::load32((int32_t*)at(_constmethod_idnum_offset), -1);
+}
+
+u16 VMConstMethod::nameIndex() const {
+    assert(_constmethod_name_index_offset >= 0 && "Invalid name index");
+    return *(u16*)at(_constmethod_name_index_offset);
+}
+
+u16 VMConstMethod::signatureIndex() const {
+    assert(_constmethod_sig_index_offset >= 0 && "Invalid signature index");
+    return *(u16*)at(_constmethod_sig_index_offset);
+}
+
+
 #endif // _HOTSPOT_VMSTRUCTS_INLINE_H

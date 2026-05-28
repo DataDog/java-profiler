@@ -32,7 +32,8 @@ private:
     static int getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
                                  int max_depth, StackContext *java_ctx,
                                  bool *truncated);
-                                 
+
+    static bool loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);                             
 public:
     static void checkFault(ProfiledThread* thrd = nullptr);
     static int walkJavaStack(StackWalkRequest& request);
@@ -40,14 +41,11 @@ public:
         return HotspotStackFrame::unwindAtomicStub(frame, pc);
     }
 
-    // Hotspot CSTACK_VM walker does not use jmethodID
-    static inline bool needJMethodIDs() {
-        return Profiler::instance()->cstackMode() != CSTACK_VM;
-    }
-
     static inline bool isJitCode(const void* p) {
         return JitCodeCache::isJitCode(p);
     }
+
+    static jmethodID resolve(const void* method);
 };
 
 #endif // _HOTSPOT_HOTSPOTSUPPORT_H

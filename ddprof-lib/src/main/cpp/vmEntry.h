@@ -12,13 +12,16 @@
 
 #include "arch.h"
 #include "codeCache.h"
-#include "frame.h"
 
 #ifdef __clang__
 #define DLLEXPORT __attribute__((visibility("default")))
 #else
 #define DLLEXPORT __attribute__((visibility("default"), externally_visible))
 #endif
+
+#ifndef JMETHODID_NOT_WALKABLE
+#define JMETHODID_NOT_WALKABLE  (jmethodID)((uintptr_t)-1)
+#endif // JMETHODID_NOT_WALKABLE
 
 // Denotes ASGCT_CallFrame where method_id has special meaning (not jmethodID)
 enum ASGCT_CallFrameType {
@@ -95,6 +98,7 @@ typedef struct _asgct_callframe {
         jmethodID method_id;
         unsigned long packed_remote_frame; // packed RemoteFrameInfo data
         const char* native_function_name;
+        const void* method; // Hotspot only, direct pointer to JVM method
     };
 } ASGCT_CallFrame;
 
