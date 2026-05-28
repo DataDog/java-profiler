@@ -8,6 +8,10 @@ race:libj9*.so
 race:libjli.so
 # Suppress data races in libz.so
 race:libz.so
+# Suppress races in JDK NIO/IO/java.so: file-descriptor management in the JVM
+# is not TSan-clean (concurrent close vs read on the same fd).
+race:libnio.so
+race:libjava.so
 
 
 # # Suppress data race in G1Allocator::survivor_attempt_allocation

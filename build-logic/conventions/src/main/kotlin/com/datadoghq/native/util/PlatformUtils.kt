@@ -145,7 +145,23 @@ object PlatformUtils {
         return locateLibrary("libasan", compiler)
     }
 
-    fun locateLibtsan(compiler: String = "gcc"): String? = locateLibrary("libtsan", compiler)
+    fun locateLibtsan(compiler: String = "gcc"): String? {
+        if (currentPlatform != Platform.LINUX) return null
+        // For clang, prefer the architecture-specific clang_rt.tsan library over
+        // GCC's libtsan. GCC 11's libtsan only handles 39-bit VMA on aarch64;
+        // clang's compiler-rt tsan handles both 39-bit and 48-bit VMA.
+        if (compiler.contains("clang")) {
+            val archSuffix = when (currentArchitecture) {
+                Architecture.X64 -> "x86_64"
+                Architecture.ARM64 -> "aarch64"
+                Architecture.X86 -> "i386"
+                Architecture.ARM -> "arm"
+            }
+            val clangTsan = locateLibrary("libclang_rt.tsan-$archSuffix", compiler)
+            if (clangTsan != null) return clangTsan
+        }
+        return locateLibrary("libtsan", compiler)
+    }
 
     fun checkFuzzerSupport(): Boolean {
         return try {

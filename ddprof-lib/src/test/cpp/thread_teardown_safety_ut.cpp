@@ -114,7 +114,7 @@ static void *t02_body(void *) {
   g_t02_seen.store(kNotYetRun, std::memory_order_relaxed);
 
   // Simulate the race window: TLS cleared but object not yet freed.
-  ProfiledThread::clearCurrentThreadTLS();
+  ProfiledThread *detached = ProfiledThread::clearCurrentThreadTLS();
 
   // Signal delivered in the race window must see null, not a dangling pointer.
   pthread_kill(pthread_self(), SIGVTALRM);
@@ -123,6 +123,9 @@ static void *t02_body(void *) {
 
   // release() with TLS already null must not double-free.
   ProfiledThread::release();
+  // Complete the simulated teardown: delete the object (mirrors what freeKey
+  // would do). Destructor is private so we need the test helper.
+  ProfiledThread::deleteForTest(detached);
   return nullptr;
 }
 
