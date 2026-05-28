@@ -361,6 +361,9 @@ retry:
           } else {
               Log::debug("Cannot add sampled object to Liveness tracking table, "
                          "resize attempt failed, the table is overflowing");
+              _table_lock.unlock();
+              env->DeleteWeakGlobalRef(ref);
+              return;
           }
         }
 
@@ -370,6 +373,7 @@ retry:
       } else {
         Log::debug("Cannot add sampled object to Liveness tracking table, it's "
                    "overflowing");
+        env->DeleteWeakGlobalRef(ref);
       }
     }
   }
