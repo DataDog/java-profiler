@@ -315,6 +315,25 @@ EOF
         else
             CLANG_RT_PKG=""
         fi
+        # On aarch64, install clang-17 + libclang-rt-17-dev from the LLVM apt repository.
+        # GCC 11's libtsan only knows 39-bit VMA; the linuxkit kernel (Docker Desktop)
+        # uses 48-bit VMA, so GCC 11's TSan crashes with "unexpected memory mapping".
+        # Clang-17's compiler-rt TSan runtime handles both 39-bit and 48-bit VMA.
+        # libclang-rt-17-dev provides libclang_rt.tsan-aarch64.{a,so} that clang-17
+        # needs when linking executables with -fsanitize=thread.
+        if [[ "$ARCH" == "aarch64" ]]; then
+            CLANG17_BLOCK='
+# Install clang-17 + compiler-rt for TSan 48-bit VMA support (aarch64 only)
+RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+        | gpg --dearmor -o /etc/apt/trusted.gpg.d/llvm.gpg \
+    && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" \
+        > /etc/apt/sources.list.d/llvm.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends clang-17 libclang-rt-17-dev \
+    && rm -rf /var/lib/apt/lists/*'
+        else
+            CLANG17_BLOCK=''
+        fi
         cat > "$DOCKERFILE_DIR/Dockerfile.base" <<EOF
 FROM ubuntu:22.04
 
@@ -324,14 +343,16 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install build dependencies
 # - libasan/libtsan for GCC sanitizers
 # - libclang-rt-dev for clang sanitizers and libFuzzer (x64 only)
+# - gnupg for LLVM apt key import
 # - openssh-client for git clone over SSH
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        curl wget bash make g++ clang git jq cmake \
+        curl wget gnupg bash make g++ clang git jq cmake \
         libgtest-dev libgmock-dev tar binutils libc6-dbg \
         ca-certificates linux-libc-dev \
         libasan6 libtsan0 ${CLANG_RT_PKG} openssh-client build-essential gdb && \
     rm -rf /var/lib/apt/lists/*
+${CLANG17_BLOCK}
 
 # Set up Gradle cache directory
 ENV GRADLE_USER_HOME=/gradle-cache
@@ -456,12 +477,31 @@ fi
 if ! $GTEST_ENABLED; then
     GRADLE_CMD="$GRADLE_CMD -Pskip-gtest"
 fi
+# On aarch64 glibc, TSan needs clang-17's embedded runtime (supports 48-bit VMA).
+# GCC 11's libtsan is linked by default but only knows 39-bit VMA, causing a crash.
+if [[ "$CONFIG" == "tsan" ]] && [[ "$ARCH" == "aarch64" ]] && [[ "$LIBC" == "glibc" ]]; then
+    GRADLE_CMD="$GRADLE_CMD -Pnative.forceCompiler=clang++-17"
+fi
 GRADLE_CMD="$GRADLE_CMD --no-daemon --parallel --build-cache --no-watch-fs"
+
+# On aarch64 glibc TSan: reduce ASLR entropy so TSan's shadow doesn't conflict with
+# initial library load addresses. Requires --privileged for sysctl in the container.
+# Do NOT set kernel.randomize_va_space=0: ld-linux-aarch64.so loads at 0x2000000000
+# (TSan's shadow start) with full ASLR off.
+SYSCTL_PREP=""
+NEEDS_PRIVILEGED=false
+if [[ "$CONFIG" == "tsan" ]] && [[ "$ARCH" == "aarch64" ]] && [[ "$LIBC" == "glibc" ]]; then
+    SYSCTL_PREP="sysctl -w vm.mmap_rnd_bits=28 2>/dev/null || true && "
+    NEEDS_PRIVILEGED=true
+fi
 
 # Build Docker run command base
 DOCKER_CMD="docker run --rm"
 if $SHELL_MODE; then
     DOCKER_CMD="$DOCKER_CMD -it --init --ulimit core=-1 --cap-add=SYS_PTRACE"
+fi
+if $NEEDS_PRIVILEGED; then
+    DOCKER_CMD="$DOCKER_CMD --privileged"
 fi
 DOCKER_CMD="$DOCKER_CMD $DOCKER_PLATFORM"
 DOCKER_CMD="$DOCKER_CMD -e LIBC=$LIBC"
@@ -477,7 +517,7 @@ if $MOUNT_MODE; then
     if $SHELL_MODE; then
         CONTAINER_CMD="/bin/bash"
     else
-        CONTAINER_CMD="$GRADLE_CMD"
+        CONTAINER_CMD="${SYSCTL_PREP}${GRADLE_CMD}"
     fi
 
     echo ""
@@ -494,7 +534,7 @@ else
     if $SHELL_MODE; then
         CLONE_CMD="git clone --depth 1 file:///source /workspace && cd /workspace && /bin/bash"
     else
-        CLONE_CMD="git clone --depth 1 file:///source /workspace && cd /workspace && $GRADLE_CMD"
+        CLONE_CMD="git clone --depth 1 file:///source /workspace && cd /workspace && ${SYSCTL_PREP}${GRADLE_CMD}"
     fi
 
     echo ""

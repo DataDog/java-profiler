@@ -347,7 +347,10 @@ public:
                     return stored_id;
                 }
             }
-            if (!row->next) {
+            // Relaxed is fine here: the optimization hint may be stale; the CAS
+            // below will handle that, and the ACQUIRE on line 360 provides the
+            // necessary happens-before for the newly-created SBTable's contents.
+            if (!__atomic_load_n(&row->next, __ATOMIC_RELAXED)) {
                 SBTable* nt = static_cast<SBTable*>(calloc(1, sizeof(SBTable)));
                 if (nt == nullptr) return 0;
                 if (!__sync_bool_compare_and_swap(&row->next, nullptr, nt)) {

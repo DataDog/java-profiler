@@ -251,7 +251,10 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
                           bool truncated, u64 weight) {
   u64 hash = calcHash(num_frames, frames, truncated);
 
-  LongHashTable *table = _table;
+  // ACQUIRE pairs with the ACQ_REL CAS in the expansion path below, ensuring
+  // that if another thread published a new (expanded) table we see its fully
+  // initialised contents.
+  LongHashTable *table = __atomic_load_n(&_table, __ATOMIC_ACQUIRE);
   if (table == nullptr) {
     // Table allocation failed or was cleared - drop sample
     Counters::increment(CALLTRACE_STORAGE_DROPPED);
