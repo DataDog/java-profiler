@@ -13,10 +13,11 @@ jobs:
     steps:
       - name: Get next minor version
         id: semvers
+        env:
+          MILESTONE_TITLE: ${{ github.event.milestone.title }}
         run: |
-          VERSION="${{ github.event.milestone.title }}"
-          MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          MAJOR=$(echo "$MILESTONE_TITLE" | cut -d. -f1)
+          MINOR=$(echo "$MILESTONE_TITLE" | cut -d. -f2)
           echo "minor=${MAJOR}.$((MINOR + 1)).0" >> "$GITHUB_OUTPUT"
       - name: Create next milestone
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # 9.0.0

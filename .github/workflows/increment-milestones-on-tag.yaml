@@ -53,10 +53,11 @@ jobs:
       - name: Get next minor version
         if: fromJSON(steps.milestone.outputs.result)
         id: semvers
+        env:
+          MILESTONE_TITLE: ${{ steps.milestoneTitle.outputs.result }}
         run: |
-          VERSION="${{ steps.milestoneTitle.outputs.result }}"
-          MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          MAJOR=$(echo "$MILESTONE_TITLE" | cut -d. -f1)
+          MINOR=$(echo "$MILESTONE_TITLE" | cut -d. -f2)
           echo "minor=${MAJOR}.$((MINOR + 1)).0" >> "$GITHUB_OUTPUT"
       - name: Create next milestone
         if: fromJSON(steps.milestone.outputs.result)
