@@ -175,6 +175,13 @@ TEST(ThreadTeardownSafetyTest, SignalSafeAccessorReturnsNullWithoutInit) {
 
 // ── T-05: Concurrent signals during teardown stress ──────────────────────────
 
+static std::atomic<int> g_t05_signal_count{0};
+
+static void t05_handler(int) {
+  (void)ProfiledThread::currentSignalSafe();
+  g_t05_signal_count.fetch_add(1, std::memory_order_relaxed);
+}
+
 static void *t05_worker(void *) {
   ProfiledThread::initCurrentThread();
   for (int i = 0; i < 10; ++i) {
@@ -184,14 +191,14 @@ static void *t05_worker(void *) {
   return nullptr;
 }
 
-// 20 threads × 5 rounds with signal spray; no crash expected.
-// Signal dispositions are process-wide — set SIG_IGN once from the test body
-// before spawning workers so concurrent SigGuard restore races cannot re-expose
-// the default (terminate) disposition while a worker is mid-flight.
+// 20 threads × 5 rounds with signal spray; handler invocation is verified.
+// Signal dispositions are process-wide — install once from the test body so
+// no worker can race to restore SIG_DFL (terminate) mid-flight.
 TEST(ThreadTeardownSafetyTest, ConcurrentSignalsDuringTeardownStress) {
   SigGuard gVtalrm(SIGVTALRM);
   SigGuard gProf(SIGPROF);
-  install_handler(SIGVTALRM, SIG_IGN);
+  g_t05_signal_count.store(0, std::memory_order_relaxed);
+  install_handler(SIGVTALRM, t05_handler);
   install_handler(SIGPROF, SIG_IGN);
   for (int round = 0; round < 5; ++round) {
     std::vector<pthread_t> threads(20);
@@ -202,6 +209,8 @@ TEST(ThreadTeardownSafetyTest, ConcurrentSignalsDuringTeardownStress) {
       pthread_join(tid, nullptr);
     }
   }
+  EXPECT_GT(g_t05_signal_count.load(std::memory_order_relaxed), 0)
+      << "SIGVTALRM handler must have been invoked at least once";
 }
 
 // ── T-06: SignalBlocker masks SIGPROF + SIGVTALRM and restores on exit ────────
@@ -335,6 +344,12 @@ TEST(ThreadTeardownSafetyTest, DoubleInitIsIdempotent) {
 // ── T-09: High-frequency signals during thread churn ─────────────────────────
 
 static std::atomic<bool> g_t09_stop{false};
+static std::atomic<int> g_t09_signal_count{0};
+
+static void t09_handler(int) {
+  (void)ProfiledThread::currentSignalSafe();
+  g_t09_signal_count.fetch_add(1, std::memory_order_relaxed);
+}
 
 static void *t09_injector(void *) {
   while (!g_t09_stop.load(std::memory_order_relaxed)) {
@@ -345,8 +360,6 @@ static void *t09_injector(void *) {
 }
 
 static void *t09_worker(void *) {
-  SigGuard guard(SIGVTALRM);
-  install_handler(SIGVTALRM, SIG_IGN);
   ProfiledThread::initCurrentThread();
   usleep(100);
   ProfiledThread::release();
@@ -354,10 +367,12 @@ static void *t09_worker(void *) {
 }
 
 // Mirrors DumpWhileChurningThreadsTest at native level: 100 short-lived threads
-// under continuous SIGVTALRM injection must complete without crash.
+// under continuous SIGVTALRM injection must complete without crash; handler
+// invocation is verified.
 TEST(ThreadTeardownSafetyTest, HighFrequencySignalsDuringThreadChurn) {
   SigGuard testGuard(SIGVTALRM);
-  install_handler(SIGVTALRM, SIG_IGN);
+  g_t09_signal_count.store(0, std::memory_order_relaxed);
+  install_handler(SIGVTALRM, t09_handler);
 
   g_t09_stop.store(false, std::memory_order_relaxed);
   pthread_t injector;
@@ -371,6 +386,8 @@ TEST(ThreadTeardownSafetyTest, HighFrequencySignalsDuringThreadChurn) {
 
   g_t09_stop.store(true, std::memory_order_relaxed);
   pthread_join(injector, nullptr);
+  EXPECT_GT(g_t09_signal_count.load(std::memory_order_relaxed), 0)
+      << "SIGVTALRM handler must have been invoked at least once";
 }
 
 // ── T-10: CriticalSection reentrancy guard prevents double-entry ──────────────
