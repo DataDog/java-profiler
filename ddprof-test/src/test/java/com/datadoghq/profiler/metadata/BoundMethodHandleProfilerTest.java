@@ -8,12 +8,11 @@ import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.util.Map;
-
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
-public class BoundMethodHandleMetadataSizeTest extends AbstractProfilerTest {
+public class BoundMethodHandleProfilerTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
         return Platform.isJ9() ? "wall=100ms" : "wall=100us";
@@ -34,8 +33,7 @@ public class BoundMethodHandleMetadataSizeTest extends AbstractProfilerTest {
         stopProfiler();
         verifyEvents("datadog.MethodSample");
         Map<String, Long> counters = profiler.getDebugCounters();
-        assertFalse(counters.isEmpty());
-        // assert about the size of metadata here
+        assertFalse(counters.isEmpty(), "profiler debug counters must not be empty after BoundMethodHandle workload");
     }
 
 
@@ -47,7 +45,7 @@ public class BoundMethodHandleMetadataSizeTest extends AbstractProfilerTest {
     public static int generateBoundMethodHandles(int howMany) throws Throwable {
         int total = 0;
         MethodHandle append = MethodHandles.lookup()
-                .findStatic(BoundMethodHandleMetadataSizeTest.class,
+                .findStatic(BoundMethodHandleProfilerTest.class,
                         "append",
                         MethodType.methodType(String.class, String.class, int.class));
         for (int i = 0; i < howMany; i++) {

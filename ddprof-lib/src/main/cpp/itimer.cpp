@@ -31,6 +31,7 @@ long ITimer::_interval;
 CStack ITimer::_cstack;
 
 void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  SIGNAL_HANDLER_GUARD();
   // NOTE: ITimer uses setitimer(ITIMER_PROF) which delivers signals with
   // si_code==SI_KERNEL — no sival payload is available. The signal-origin
   // check implemented in CTimer/WallClock cannot be applied here. ITimer
@@ -102,6 +103,7 @@ volatile bool ITimerJvmti::_enabled = false;
 long ITimerJvmti::_interval = 0;
 
 void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  SIGNAL_HANDLER_GUARD();
   CriticalSection cs;
   if (!cs.entered()) {
     return;

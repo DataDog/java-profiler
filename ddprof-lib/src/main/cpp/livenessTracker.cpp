@@ -217,12 +217,8 @@ Error LivenessTracker::initialize(Arguments &args) {
   }
 
   if (_initialized) {
-    // Tracker settings are sticky across recordings. Preserve the historical
-    // table/config behavior, but allow HeapUsage recording to be enabled later
-    // (e.g. if an earlier test initialized liveness without ':L'). Once heap usage
-    // recording has been requested for this JVM lifetime, keep emitting HeapUsage
-    // even if a later recording omits the flag — avoids dropping JVM heap telemetry
-    // when liveness was turned on first without ':L'.
+    // Once heap usage recording has been enabled it stays on for the JVM lifetime,
+    // so a later recording without ':L' does not silently drop HeapUsage events.
     _record_heap_usage = _record_heap_usage || args._record_heap_usage;
     // if the tracker was previously initialized return the stored result for
     // consistency this hack also means that if the profiler is started with

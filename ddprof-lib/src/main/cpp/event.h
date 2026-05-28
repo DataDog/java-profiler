@@ -119,10 +119,6 @@ public:
 
   bool hasChanged() { return _dirty; }
 
-  // Snapshot semantics: _num_samplable_threads tracks the current count of
-  // profilable threads at the time of the iteration. Dirties only on change,
-  // so steady-state thread counts collapse adjacent iterations into a single
-  // emitted epoch.
   void updateNumSamplableThreads(u32 num_samplable_threads) {
     if (_num_samplable_threads != num_samplable_threads) {
       _dirty = true;
@@ -130,41 +126,31 @@ public:
     }
   }
 
-  // Accumulator semantics: the addNum*() methods accumulate per-iteration
-  // event counts into a since-last-emit total. This guarantees that when
-  // multiple iterations collapse into a single emitted epoch (because
-  // hasChanged() stays false across them — e.g. steady-state workloads where
-  // adjacent drained counter values happen to match), the per-iteration
-  // contributions are summed into the next emit rather than discarded.
-  // newEpoch() resets these fields to 0 at emit boundaries so each emitted
-  // epoch reports drained-counter activity for its own _duration_millis
-  // interval. JFR consumers can sum the field across all epochs to recover
-  // the exact cumulative count over the recording.
-  void addNumSuccessfulSamples(u32 n) {
-    if (n > 0) {
+  void updateNumSuccessfulSamples(u32 num_successful_samples) {
+    if (_num_successful_samples != num_successful_samples) {
       _dirty = true;
-      _num_successful_samples += n;
+      _num_successful_samples = num_successful_samples;
     }
   }
 
-  void addNumFailedSamples(u32 n) {
-    if (n > 0) {
+  void updateNumFailedSamples(u32 num_failed_samples) {
+    if (_num_failed_samples != num_failed_samples) {
       _dirty = true;
-      _num_failed_samples += n;
+      _num_failed_samples = num_failed_samples;
     }
   }
 
-  void addNumExitedThreads(u32 n) {
-    if (n > 0) {
+  void updateNumExitedThreads(u32 num_exited_threads) {
+    if (_num_exited_threads != num_exited_threads) {
       _dirty = true;
-      _num_exited_threads += n;
+      _num_exited_threads = num_exited_threads;
     }
   }
 
-  void addNumPermissionDenied(u32 n) {
-    if (n > 0) {
+  void updateNumPermissionDenied(u32 num_permission_denied) {
+    if (_num_permission_denied != num_permission_denied) {
       _dirty = true;
-      _num_permission_denied += n;
+      _num_permission_denied = num_permission_denied;
     }
   }
 
@@ -179,18 +165,9 @@ public:
 
   void clean() { _dirty = false; }
 
-  // Reset the accumulator fields at emit boundaries so each emitted epoch
-  // reports only the activity that occurred since the previous emit.
-  // _num_samplable_threads is a snapshot (current count), not an accumulator,
-  // and is intentionally preserved across newEpoch() so steady-state thread
-  // counts continue to collapse via the != check in updateNumSamplableThreads.
   void newEpoch(u64 start_time) {
     _dirty = false;
     _start_time = start_time;
-    _num_successful_samples = 0;
-    _num_failed_samples = 0;
-    _num_exited_threads = 0;
-    _num_permission_denied = 0;
     _num_suppressed_sampled_run = 0;
   }
 };

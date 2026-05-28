@@ -187,17 +187,23 @@ object ConfigurationPresets {
                 config.compilerArgs.set(asanCompilerArgs + commonLinuxCompilerArgs(version))
 
                 val libasan = PlatformUtils.locateLibasan(compiler)
+                // Link against the sanitizer runtime that matches the compiler:
+                // - clang: locateLibasan returns libclang_rt.asan-<arch>.so, which
+                //   includes UBSan symbols; -lclang_rt.asan-<arch> satisfies -z defs
+                //   for both __asan_* and __ubsan_* and matches the runtime that
+                //   -fsanitize=address links into executables — one runtime, no conflict.
+                // - gcc: locateLibasan returns libasan.so; -lasan + -lubsan as before.
                 val asanLinkerArgs = if (libasan != null) {
-                    listOf(
-                        "-L${File(libasan).parent}",
-                        "-lasan",
-                        "-lubsan",
-                        "-fsanitize=address",
-                        "-fsanitize=undefined",
-                        "-fno-omit-frame-pointer"
-                    )
+                    val asanLibDir = File(libasan).parent
+                    val asanLibName = File(libasan).nameWithoutExtension.removePrefix("lib")
+                    val ubsanLibs = if (asanLibName.startsWith("clang_rt")) emptyList()
+                                    else listOf("-lubsan")
+                    listOf("-L$asanLibDir", "-l$asanLibName",
+                           "-Wl,-rpath,$asanLibDir") +
+                    ubsanLibs +
+                    listOf("-fsanitize=address", "-fsanitize=undefined", "-fno-omit-frame-pointer")
                 } else {
-                    emptyList()
+                    listOf("-fsanitize=address", "-fsanitize=undefined", "-fno-omit-frame-pointer")
                 }
 
                 config.linkerArgs.set(commonLinuxLinkerArgs() + asanLinkerArgs)
@@ -205,8 +211,8 @@ object ConfigurationPresets {
                 if (libasan != null) {
                     config.testEnvironment.apply {
                         put("LD_PRELOAD", libasan)
-                        put("ASAN_OPTIONS", "allocator_may_return_null=1:unwind_abort_on_malloc=1:use_sigaltstack=0:detect_stack_use_after_return=0:handle_segv=0:halt_on_error=0:abort_on_error=0:print_stacktrace=1:symbolize=1:log_path=/tmp/asan_%p.log:suppressions=$rootDir/gradle/sanitizers/asan.supp")
-                        put("UBSAN_OPTIONS", "halt_on_error=0:abort_on_error=0:print_stacktrace=1:log_path=/tmp/ubsan_%p.log:suppressions=$rootDir/gradle/sanitizers/ubsan.supp")
+                        put("ASAN_OPTIONS", "allocator_may_return_null=1:unwind_abort_on_malloc=1:use_sigaltstack=0:detect_stack_use_after_return=0:handle_segv=0:halt_on_error=0:abort_on_error=0:print_stacktrace=1:symbolize=1:suppressions=$rootDir/gradle/sanitizers/asan.supp")
+                        put("UBSAN_OPTIONS", "halt_on_error=0:abort_on_error=0:print_stacktrace=1:suppressions=$rootDir/gradle/sanitizers/ubsan.supp")
                         put("LSAN_OPTIONS", "detect_leaks=0")
                     }
                 }
@@ -260,7 +266,7 @@ object ConfigurationPresets {
                 if (libtsan != null) {
                     config.testEnvironment.apply {
                         put("LD_PRELOAD", libtsan)
-                        put("TSAN_OPTIONS", "suppressions=$rootDir/gradle/sanitizers/tsan.supp:log_path=/tmp/tsan_%p.log")
+                        put("TSAN_OPTIONS", "suppressions=$rootDir/gradle/sanitizers/tsan.supp")
                     }
                 }
             }

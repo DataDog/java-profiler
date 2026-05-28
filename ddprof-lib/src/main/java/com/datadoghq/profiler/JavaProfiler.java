@@ -50,7 +50,7 @@ public final class JavaProfiler {
      * before linking.
      */
     public static JavaProfiler getInstance() throws IOException {
-        return getInstance(null, null, false, false);
+        return getInstance(null, null);
     }
 
     /**
@@ -60,7 +60,7 @@ public final class JavaProfiler {
      * @param scratchDir directory where the bundled library will be exploded before linking
      */
     public static JavaProfiler getInstance(String scratchDir) throws IOException {
-        return getInstance(null, scratchDir, false, false);
+        return getInstance(null, scratchDir);
     }
 
     /**

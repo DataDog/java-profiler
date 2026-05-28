@@ -21,6 +21,7 @@ stages:
   - images
   - generate-signing-key
   - prepare
+  - sanitizer
   - build
   - stresstest
   - deploy
@@ -160,3 +161,4 @@ include:
   - local: .gitlab/benchmarks/.gitlab-ci.yml
   - local: .gitlab/reliability/.gitlab-ci.yml
   - local: .gitlab/dd-trace-integration/.gitlab-ci.yml
+  - local: .gitlab/sanitizer-tests/.gitlab-ci.yml

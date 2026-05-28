@@ -91,15 +91,15 @@ class BaseWallClock : public Engine {
         }
 
         epoch.updateNumSamplableThreads(threads.size());
-        epoch.addNumFailedSamples(num_failures);
-        epoch.addNumSuccessfulSamples(num_successful_samples);
+        epoch.updateNumFailedSamples(num_failures);
+        epoch.updateNumSuccessfulSamples(num_successful_samples);
         WallClockCounterSnapshot counter_snapshot = WallClockCounters::drain();
         epoch.addNumSuppressedSampledRun(counter_snapshot.suppressed_sampled_run);
         epoch.addNumTaskBlockEmitted(counter_snapshot.task_block_emitted);
         epoch.addNumTaskBlockSkippedSpanZero(counter_snapshot.task_block_skipped_span_zero);
         epoch.addNumTaskBlockSkippedTooShort(counter_snapshot.task_block_skipped_too_short);
-        epoch.addNumExitedThreads(threads_already_exited);
-        epoch.addNumPermissionDenied(permission_denied);
+        epoch.updateNumExitedThreads(threads_already_exited);
+        epoch.updateNumPermissionDenied(permission_denied);
         u64 endTime = TSC::ticks();
         u64 duration = TSC::ticks_to_millis(endTime - startTime);
         if (epoch.hasChanged() || duration >= 1000) {

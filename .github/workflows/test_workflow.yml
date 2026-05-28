@@ -6,6 +6,11 @@ on:
       configuration:
         required: true
         type: string
+      skip_gtest:
+        description: "Skip C++ gtest execution (use when gtests run in a separate job)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -111,7 +116,7 @@ jobs:
 
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
             mkdir -p build/logs
-            ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+            ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
               | tee -a build/test-raw.log \
               | python3 -u .github/scripts/filter_gradle_log.py
             EXIT_CODE=${PIPESTATUS[0]}
@@ -164,6 +169,13 @@ jobs:
         with:
           name: (test-reports) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: test-reports
+      - name: Upload signal-safety violation log
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+          path: /tmp/signal-safety-violation.txt
+          if-no-files-found: ignore
 
   test-linux-musl-amd64:
     needs: [cache-jdks, filter-musl-configs]
@@ -283,6 +295,13 @@ jobs:
         with:
           name: (test-reports) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: test-reports
+      - name: Upload signal-safety violation log
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+          path: /tmp/signal-safety-violation.txt
+          if-no-files-found: ignore
 
   test-linux-glibc-aarch64:
     needs: cache-jdks
@@ -385,7 +404,7 @@ jobs:
 
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
             mkdir -p build/logs
-            ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+            ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
               | tee -a build/test-raw.log \
               | python3 -u .github/scripts/filter_gradle_log.py
             EXIT_CODE=${PIPESTATUS[0]}
@@ -443,6 +462,13 @@ jobs:
         with:
           name: (test-reports) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
           path: test-reports
+      - name: Upload signal-safety violation log
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+          path: /tmp/signal-safety-violation.txt
+          if-no-files-found: ignore
 
   test-linux-musl-aarch64:
      needs: [cache-jdks, filter-musl-configs]
@@ -540,3 +566,10 @@ jobs:
          with:
            name: (test-reports) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
            path: test-reports
+       - name: Upload signal-safety violation log
+         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+         if: failure()
+         with:
+           name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+           path: /tmp/signal-safety-violation.txt
+           if-no-files-found: ignore

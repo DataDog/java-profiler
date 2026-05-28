@@ -163,6 +163,13 @@ Error Arguments::parse(const char *args) {
       if (_cpu < 0) {
         msg = "cpu must be >= 0";
       }
+      // vtable_target: resolve vtable/itable stub receiver classes in CPU traces.
+      // Signal handler stores the raw receiver VMSymbol* in a BCI_VTABLE_RECEIVER
+      // frame (no lock, no map lookup, no allocation). Resolution happens at dump
+      // time via SafeAccess-protected reads in Lookup::resolveVTableReceiver,
+      // which is crash-safe against concurrent class unloading. _class_map only
+      // grows with classes actually sampled during the chunk.
+      _features.vtable_target = 1;
 
       CASE("wall")
       if (value == NULL) {
@@ -364,14 +371,27 @@ Error Arguments::parse(const char *args) {
         _remote_symbolication = true;
       }
 
+      CASE("jvmtistacks")
+      if (value != NULL) {
+        switch (value[0]) {
+        case 'y': // yes
+        case 't': // true
+        case '1': // 1
+          _jvmtistacks = true;
+          break;
+        default:
+          _jvmtistacks = false;
+        }
+      } else {
+        _jvmtistacks = true;
+      }
+
       CASE("wallprecheck")
       if (value != NULL) {
         _wall_precheck = strcmp(value, "false") != 0 && strcmp(value, "0") != 0;
       } else {
-        // No value means disable: wallprecheck is opt-in and requires explicit =true.
-        // Unlike most boolean flags (where bare presence implies enable), this feature
-        // triggers broad class-load ASM rewriting and must not activate silently.
-        _wall_precheck = false;
+        // No value means enable
+        _wall_precheck = true;
       }
 
       CASE("wallsampler")

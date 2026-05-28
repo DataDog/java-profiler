@@ -288,8 +288,6 @@ void ThreadFilter::collect(std::vector<int>& tids) const {
     }
 }
 
-// Cleared to nullptr on thread unregister/end before the filter slot is reclaimed so the
-// wall-clock timer never follows a stale VMThread* after native teardown ordering completes.
 void ThreadFilter::setVMThread(SlotID slot_id, VMThread* vm_thread) {
     if (slot_id < 0) return;
     int chunk_idx = slot_id >> kChunkShift;
@@ -306,10 +304,8 @@ void ThreadFilter::resetSlotRunState(SlotID slot_id) {
     int slot_idx  = slot_id & kChunkMask;
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
     if (chunk != nullptr) {
-        // Slot reuse: clear stale once-per-run filter state left by the previous occupant.
-        // Without this, a slot whose previous owner exited mid-park
-        // (sampledThisRun=true, lastSampledState=CONDVAR_WAIT) could stuck-suppress the
-        // new owner's first park signal. Done on every thread registration — cheap, idempotent.
+        // Clear stale suppression state so a new thread in this slot is not
+        // silently suppressed due to its predecessor's park state.
         chunk->slots[slot_idx].resetSampledRun(OSThreadState::UNKNOWN);
     }
 }

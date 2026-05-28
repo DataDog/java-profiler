@@ -68,7 +68,7 @@ public:
 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_init0(JNIEnv *env, jclass unused) {
-  // JavaVM* has already been stored when the native library was loaded so we can pass nullptr here.
+  // JavaVM* has already been stored when the native library was loaded so we can pass nullptr here
   return VM::initProfilerBridge(nullptr, true);
 }
 
@@ -150,8 +150,8 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
   
   int slot_id = current->filterSlotId();
   if (unlikely(slot_id == -1)) {
-    // Thread doesn't have a slot ID yet (e.g., main thread or profiler started
-    // after thread creation). Register now.
+    // Thread doesn't have a slot ID yet (e.g., main thread), so register it
+    // Happens when we are not enabled before thread start
     slot_id = thread_filter->registerThread();
     current->setFilterSlotId(slot_id);
   }
@@ -159,11 +159,9 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
   if (unlikely(slot_id == -1)) {
     return;  // Failed to register thread
   }
-  // Refresh HotSpot VMThread* for wall thread-filter precheck (vmStructs OS state).
-  // HotSpot only: VMThread::current() asserts VM::isHotspot(). OpenJ9/Zing: leave null.
   thread_filter->setVMThread(slot_id, VM::isHotspot() ? VMThread::current() : nullptr);
-  // Reset once-per-run suppression state so the new occupant of this slot does not
-  // inherit stale park-suppression from the previous thread. Must happen before add().
+  // Reset suppression state so a new thread occupying this slot does not inherit
+  // stale state from its predecessor. Must happen before add().
   thread_filter->resetSlotRunState(slot_id);
   thread_filter->add(tid, slot_id);
 }
@@ -209,7 +207,8 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
   JniString endpoint_str(env, endpoint);
   u32 endpointLabel = Profiler::instance()->stringLabelMap()->bounded_lookup(
       endpoint_str.c_str(), endpoint_str.length(), sizeLimit);
-  bool acceptValue = endpointLabel != INT_MAX;
+  // StringDictionary reserves 0 as "no entry"; valid IDs start at 1.
+  bool acceptValue = endpointLabel != 0;
   if (acceptValue) {
     u32 operationLabel = 0;
     if (operation != NULL) {
@@ -337,7 +336,6 @@ Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
   }
   u64 start_ticks = 0;
   Context park_context = {};
-  // Clear the parked flag; TaskBlock recording added in the next PR.
   current->parkExit(start_ticks, park_context);
 }
 
@@ -623,7 +621,7 @@ Java_com_datadoghq_profiler_ThreadContext_registerConstant0(JNIEnv* env, jclass 
   JniString value_str(env, value);
   u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
       value_str.c_str(), value_str.length(), 1 << 16);
-  return encoding == INT_MAX ? -1 : encoding;
+  return encoding == 0 ? -1 : (jint)encoding;
 }
 
 extern "C" DLLEXPORT void JNICALL
