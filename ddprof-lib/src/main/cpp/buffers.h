@@ -65,29 +65,22 @@ public:
 
   void reset() { _offset = 0; }
 
-  #ifdef __aarch64__
-  // the trickery of RecordingBuffer extending Buffer::_data array may trip off asan on aarch64
   __attribute__((no_sanitize("bounds")))
-  #endif
   void put(const char *v, u32 len) {
     assert(static_cast<int>(_offset + len) < limit());
     memcpy(_data + _offset, v, len);
     _offset += (int)len;
   }
 
-  #ifdef __aarch64__
-  // the trickery of RecordingBuffer extending Buffer::_data array may trip off asan on aarch64
+  // RecordingBuffer extends _data[] beyond its declared size via struct layout;
+  // suppress bounds sanitizer on all architectures to avoid false positives.
   __attribute__((no_sanitize("bounds")))
-  #endif
   void put8(char v) {
     assert(_offset < limit());
     _data[_offset++] = v;
   }
 
-  #ifdef __aarch64__
-  // the trickery of RecordingBuffer extending Buffer::_data array may trip off asan on aarch64
   __attribute__((no_sanitize("bounds")))
-  #endif
   void put16(short v) {
     assert(_offset + 2 < limit());
     *(short *)(_data + _offset) = htons(v);
@@ -97,11 +90,8 @@ public:
   //    java-profiler/ddprof-lib/src/main/cpp/buffers.h:92:34: runtime error:
   //    store to misaligned address 0x7f3c446ec81e for type 'int', which
   //    requires 4 byte alignment 0x7f3c446ec81e: note: pointer points here
-  __attribute__((no_sanitize("undefined"))) 
-  #ifdef __aarch64__
-  // the trickery of RecordingBuffer extending Buffer::_data array may trip off asan on aarch64
+  __attribute__((no_sanitize("undefined")))
   __attribute__((no_sanitize("bounds")))
-  #endif
   void put32(int v) {
     assert(_offset + 4 < limit());
     *(int *)(_data + _offset) = htonl(v);
@@ -113,10 +103,7 @@ public:
   //    'u64', which requires 8 byte alignment
   //         0x766bb5a1e814: note: pointer points here
   __attribute__((no_sanitize("undefined")))
-  #ifdef __aarch64__
-  // the trickery of RecordingBuffer extending Buffer::_data array may trip off asan on aarch64
   __attribute__((no_sanitize("bounds")))
-  #endif
   void put64(u64 v) {
     assert(_offset + 8 < limit());
     *(u64 *)(_data + _offset) = OS::hton64(v);
@@ -135,10 +122,7 @@ public:
     put32(u.i);
   }
 
-  #ifdef __aarch64__
-  // the trickery of RecordingBuffer extending Buffer::_data array may trip off asan on aarch64
   __attribute__((no_sanitize("bounds")))
-  #endif
   void putVar32(u32 v) {
     assert(_offset + 5 < limit());
     while (v > 0x7f) {
@@ -149,10 +133,7 @@ public:
     assert(_offset < limit());
   }
 
-  #ifdef __aarch64__
-  // the trickery of RecordingBuffer extending Buffer::_data array may trip off asan on aarch64
   __attribute__((no_sanitize("bounds")))
-  #endif
   void putVar64(u64 v) {
     assert(_offset + 9 < limit());
     int iter = 0;
@@ -185,10 +166,7 @@ public:
     }
   }
 
-  #ifdef __aarch64__
-  // the trickery of RecordingBuffer extending Buffer::_data array may trip off asan on aarch64
   __attribute__((no_sanitize("bounds")))
-  #endif
   void putUtf8(const char *v, u32 len) {
     len = len < MAX_STRING_LENGTH ? len : MAX_STRING_LENGTH;
     put8(3);
@@ -196,16 +174,10 @@ public:
     put(v, len);
   }
 
-  #ifdef __aarch64__
-  // the trickery of RecordingBuffer extending Buffer::_data array may trip off asan on aarch64
   __attribute__((no_sanitize("bounds")))
-  #endif
   void put8(int offset, char v) { _data[offset] = v; }
 
-  #ifdef __aarch64__
-  // the trickery of RecordingBuffer extending Buffer::_data array may trip off asan on aarch64
   __attribute__((no_sanitize("bounds")))
-  #endif
   void putVar32(int offset, u32 v) {
     assert(offset + 4 < limit());
     _data[offset] = v | 0x80;
