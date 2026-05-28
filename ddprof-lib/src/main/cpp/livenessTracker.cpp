@@ -363,6 +363,7 @@ retry:
                          "resize attempt failed, the table is overflowing");
               _table_lock.unlock();
               env->DeleteWeakGlobalRef(ref);
+              skipped = 0;
               return;
           }
         }
@@ -375,6 +376,8 @@ retry:
                    "overflowing");
         env->DeleteWeakGlobalRef(ref);
       }
+    } else {
+      env->DeleteWeakGlobalRef(ref);
     }
   }
   skipped = 0; // reset the subsampling skipped bytes
