@@ -50,7 +50,9 @@ public class PrecheckTest extends AbstractProfilerTest {
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
         registerCurrentThreadForWallClockProfiling();
 
-        // Run the same 300ms sleep but with wallprecheck=false in a second recording.
+        // Stop the wallprecheck=true recording started by @BeforeEach before starting a new one.
+        stopProfiler();
+
         Map<String, Long> before = profiler.getDebugCounters();
         if (!before.containsKey("wc_signals_suppressed_sampled_run")) {
             return; // counter not available in this build

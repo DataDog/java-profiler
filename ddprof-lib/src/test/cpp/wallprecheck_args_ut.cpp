@@ -26,17 +26,16 @@ TEST(WallPrecheckArgsTest, ExplicitBooleanValues) {
     EXPECT_FALSE(error);
     EXPECT_TRUE(args._wall_precheck);
 
-    args = Arguments();
+    // parse() frees the previous _buf before allocating a new one, so reusing
+    // the same args object is correct and avoids leaking the intermediate buffers.
     error = args.parse("wallprecheck=false");
     EXPECT_FALSE(error);
     EXPECT_FALSE(args._wall_precheck);
 
-    args = Arguments();
     error = args.parse("wallprecheck=1");
     EXPECT_FALSE(error);
     EXPECT_TRUE(args._wall_precheck);
 
-    args = Arguments();
     error = args.parse("wallprecheck=0");
     EXPECT_FALSE(error);
     EXPECT_FALSE(args._wall_precheck);

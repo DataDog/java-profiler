@@ -106,8 +106,11 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
           return;  // suppress: same blocked-state run, already sampled
         }
         slot->markSampledThisRun(precheck_state); // arm: first signal of this run
-      } else {
-        slot->resetSampledRun(precheck_state); // disarm: thread left the skip set
+      } else if (!slot->inParkRun()) {
+        // Only disarm when the thread is genuinely outside a park run. Transient
+        // RUNNABLE states from SIGVTALRM-driven EINTR re-entry would otherwise
+        // disarm the slot, causing the timer to re-send the next tick.
+        slot->resetSampledRun(precheck_state);
       }
     }
   }
@@ -232,10 +235,15 @@ void WallClockASGCT::timerLoop() {
       // before the slot is recycled, so a null check here is sufficient.
       if (_precheck && entry.vm_thread != nullptr && entry.slot != nullptr) {
         OSThreadState peek_state = entry.vm_thread->osThreadState();
-        if (peek_state == OSThreadState::SLEEPING || peek_state == OSThreadState::CONDVAR_WAIT) {
-          // sampledThisRun() uses acquire — must precede the relaxed lastSampledState() read.
-          if (entry.slot->sampledThisRun() &&
-              peek_state == entry.slot->lastSampledState()) {
+        bool in_skip_state = (peek_state == OSThreadState::SLEEPING ||
+                              peek_state == OSThreadState::CONDVAR_WAIT);
+        // Also suppress when the thread is transiently RUNNABLE between consecutive
+        // pthread_cond_timedwait calls after SIGVTALRM-driven EINTR re-entry.
+        // inParkRun() is set by parkEnter0 and cleared by parkExit0, so it remains
+        // true for the entire logical park run including the brief RUNNABLE gaps.
+        if ((in_skip_state || entry.slot->inParkRun()) && entry.slot->sampledThisRun()) {
+          // For skip-set states, also verify the state hasn't changed (e.g. SLEEP→CONDVAR).
+          if (!in_skip_state || peek_state == entry.slot->lastSampledState()) {
             Counters::increment(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN);
             WallClockCounters::incrementSuppressedSampledRun();
             return false;

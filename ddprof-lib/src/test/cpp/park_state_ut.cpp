@@ -35,6 +35,7 @@ TEST(ProfiledThreadParkStateTest, ParkFlagLifecycle) {
   EXPECT_EQ(0ULL, park_context.rootSpanId);
 
   EXPECT_FALSE(thread->parkExit(start_ticks, park_context)); // idempotent after clear
+  ProfiledThread::deleteForTest(thread);
 }
 
 TEST(ProfiledThreadParkStateTest, NewThreadStartsNotParked) {
@@ -44,6 +45,7 @@ TEST(ProfiledThreadParkStateTest, NewThreadStartsNotParked) {
   EXPECT_FALSE(thread->parkExit(start_ticks, park_context));
   // Out-params must not be touched on failed exit.
   EXPECT_EQ(0ULL, start_ticks);
+  ProfiledThread::deleteForTest(thread);
 }
 
 TEST(ProfiledThreadParkStateTest, SecondParkEnterOverwritesTicks) {
@@ -58,6 +60,7 @@ TEST(ProfiledThreadParkStateTest, SecondParkEnterOverwritesTicks) {
 
   // Flag is now clear; second exit is a no-op.
   EXPECT_FALSE(thread->parkExit(start_ticks, park_context));
+  ProfiledThread::deleteForTest(thread);
 }
 
 TEST(WallClockOncePerRunFilterTest, SlotStateTransitions) {

@@ -52,11 +52,15 @@ public:
         // pairs with relaxed last_sampled_state, following the standard flag+payload pattern.
         std::atomic<OSThreadState> last_sampled_state{OSThreadState::UNKNOWN};  // 4 bytes
         std::atomic<bool>          sampled_this_run{false};                     // 1 byte
+        // Set by parkEnter0/exitParkRun; lets the timer suppress transient RUNNABLE
+        // ticks that occur when SIGVTALRM interrupts pthread_cond_timedwait (EINTR re-entry).
+        std::atomic<bool>          in_park_run{false};                          // 1 byte
         char padding[DEFAULT_CACHE_LINE_SIZE
                      - sizeof(std::atomic<VMThread*>)
                      - sizeof(std::atomic<int>)
                      - sizeof(std::atomic<OSThreadState>)
-                     - sizeof(std::atomic<bool>)];
+                     - sizeof(std::atomic<bool>)  // sampled_this_run
+                     - sizeof(std::atomic<bool>)]; // in_park_run
 
         inline bool sampledThisRun() const {
             return sampled_this_run.load(std::memory_order_acquire);
@@ -71,6 +75,12 @@ public:
         inline void resetSampledRun(OSThreadState state) {
             last_sampled_state.store(state, std::memory_order_relaxed);
             sampled_this_run.store(false, std::memory_order_release);
+        }
+        inline bool inParkRun() const {
+            return in_park_run.load(std::memory_order_acquire);
+        }
+        inline void setInParkRun(bool value) {
+            in_park_run.store(value, std::memory_order_release);
         }
     };
     static_assert(sizeof(Slot) == DEFAULT_CACHE_LINE_SIZE, "Slot must be exactly one cache line");
@@ -92,6 +102,8 @@ public:
     void collect(std::vector<int>& tids) const;
     void setVMThread(SlotID slot_id, VMThread* vm_thread);
     void resetSlotRunState(SlotID slot_id);
+    void enterParkRun(SlotID slot_id);
+    void exitParkRun(SlotID slot_id);
     void collectWithState(std::vector<ThreadEntry>& entries) const;
 
     // Returns nullptr if slot_id is invalid or its chunk has not been allocated.
