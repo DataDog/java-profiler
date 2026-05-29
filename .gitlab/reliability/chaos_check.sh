@@ -13,7 +13,14 @@ echo "Chaos run: runtime=${RUNTIME}s config=${CONFIG} allocator=${ALLOCATOR}"
 
 curl -s "https://get.sdkman.io" | bash
 source "/root/.sdkman/bin/sdkman-init.sh" 1>/dev/null 2>/dev/null
-timeout 300 sdk install java 21.0.3-tem 1>/dev/null 2>/dev/null
+CHAOS_JDK="${CHAOS_JDK:-21.0.3-tem}"
+timeout 300 sdk install java "${CHAOS_JDK}" 1>/dev/null 2>/dev/null
+sdk use java "${CHAOS_JDK}"
+ACTIVE_JDK=$(java -version 2>&1 | head -1)
+if [[ "$ACTIVE_JDK" != *"${CHAOS_JDK%%-*}"* ]]; then
+  echo "FAIL:wrong JDK active (expected ${CHAOS_JDK}, got: ${ACTIVE_JDK})" >&2
+  exit 1
+fi
 
 # Resolve ddprof.jar: prefer local build artifact, fall back to Maven snapshot.
 # Running mvn from /tmp avoids the empty pom.xml at the repo root.
@@ -74,12 +81,12 @@ case $CONFIG in
     echo "Running with profiler only"
     ENABLEMENT="-Ddd.profiling.enabled=true -Ddd.trace.enabled=false"
     # @Trace is a no-op without the tracer, so trace-context is excluded here.
-    ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave"
+    ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm"
     ;;
   profiler+tracer)
     echo "Running with profiler and tracer"
     ENABLEMENT="-Ddd.profiling.enabled=true -Ddd.trace.enabled=true"
-    ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,trace-context,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave"
+    ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,trace-context,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm"
     ;;
   *)
     echo "Unknown configuration: $CONFIG"

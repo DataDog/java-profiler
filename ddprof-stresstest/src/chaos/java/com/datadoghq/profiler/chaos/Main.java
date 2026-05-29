@@ -88,6 +88,8 @@ public final class Main {
                 return new DirectMemoryAntagonist();
             case "weakref-wave":
                 return new WeakRefWaveAntagonist();
+            case "dump-storm":
+                return new DumpStormAntagonist();
             // Deferred: dlopen-churn (needs per-arch dummy .so built in CI prep).
             default:
                 throw new IllegalArgumentException("unknown antagonist: " + name);

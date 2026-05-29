@@ -78,16 +78,17 @@ reliability-aarch64:
     matrix:
       - CONFIG: ["profiler", "profiler+tracer"]
         ALLOCATOR: ["gmalloc", "jemalloc", "tcmalloc"]
+        CHAOS_JDK: ["21.0.3-tem", "25.0.3-tem"]
   script:
     - set +e
-    - echo "runtime=${RUNTIME}, config=${CONFIG}, allocator=${ALLOCATOR}, arch=${ARCH}"
-    - .gitlab/reliability/chaos_check.sh "$RUNTIME" "$CONFIG" "$ALLOCATOR" 2>err.log | tee out.log
+    - echo "runtime=${RUNTIME}, config=${CONFIG}, allocator=${ALLOCATOR}, arch=${ARCH}, jdk=${CHAOS_JDK}"
+    - CHAOS_JDK="${CHAOS_JDK}" .gitlab/reliability/chaos_check.sh "$RUNTIME" "$CONFIG" "$ALLOCATOR" 2>err.log 1>out.log
     - REASON=$(cat err.log | grep "FAIL:" | cut -f2 -d':') || true
-    - if [ -n "${REASON}" ]; then echo "REASON_${CONFIG}_${ALLOCATOR}_${ARCH}Xchaos=${REASON}" | tr '+' '_' >> build.env; exit 1; fi
+    - if [ -n "${REASON}" ]; then echo "REASON_${CONFIG}_${ALLOCATOR}_${ARCH}_${CHAOS_JDK//./_}Xchaos=${REASON}" | tr '+' '_' >> build.env; exit 1; fi
   after_script:
     - |
       if [[ "$CI_JOB_STATUS" == "failed" ]]; then
-        grep -q "$(printf 'REASON_%s_%s_%sXchaos=' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" | tr '+' '_')" build.env 2>/dev/null || echo "REASON_${CONFIG}_${ALLOCATOR}_${ARCH}Xchaos=Unknown failure, perhaps timeout" | tr '+' '_' >> build.env
+        grep -q "$(printf 'REASON_%s_%s_%s_%sXchaos=' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${CHAOS_JDK//./_}" | tr '+' '_')" build.env 2>/dev/null || echo "REASON_${CONFIG}_${ALLOCATOR}_${ARCH}_${CHAOS_JDK//./_}Xchaos=Unknown failure, perhaps timeout" | tr '+' '_' >> build.env
       fi
   artifacts:
     name: "chaos-results-${ARCH}"
