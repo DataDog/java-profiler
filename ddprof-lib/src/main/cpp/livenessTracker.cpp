@@ -370,7 +370,10 @@ retry:
       } else {
         Log::debug("Cannot add sampled object to Liveness tracking table, it's "
                    "overflowing");
+        env->DeleteWeakGlobalRef(ref);
       }
+    } else {
+      env->DeleteWeakGlobalRef(ref);
     }
   }
   skipped = 0; // reset the subsampling skipped bytes
