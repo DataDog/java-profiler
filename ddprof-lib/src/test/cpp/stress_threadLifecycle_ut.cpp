@@ -15,10 +15,10 @@
 
 #include "callTraceStorage.h"
 #include "callTraceHashTable.h"
-#include "dictionary.h"
 #include "threadFilter.h"
 #include "thread.h"
 #include "arch.h"
+#include "spinLock.h"
 
 #include <atomic>
 #include <thread>
@@ -35,16 +35,58 @@ static constexpr const char STRESS_TEST_NAME[] = "StressThreadLifecycle";
 static constexpr int kChurnWorkers = 16;
 static constexpr int kChurnIterations = 2000;
 
-// Shared dump-side structures. They are exercised concurrently by the dump
-// thread and (for the put() path) by the churn workers.
+// Shared dump-side storage. Churn workers write it through the same shard-lock
+// protocol as profiler sample paths; the dump thread processes it under
+// lock_all(), matching Profiler::rotateDictsAndRun().
 static CallTraceStorage g_storage;
-static Dictionary g_dict;
 static std::atomic<bool> g_run{false};
 
-// Record a small fake call trace plus a dictionary lookup, mirroring what the
-// profiler does for every sample. ASGCT_CallFrame uses `bci` (jint) and the
-// `method_id` union member (see vmEntry.h).
-static void record_trace(int salt) {
+// Mirrors Profiler::_locks. Sample writers take one shard lock with tryLock();
+// dump takes all shard locks before processing/clearing shared dump-side state.
+static constexpr int kLockCount = 16;
+static SpinLock g_locks[kLockCount];
+
+static u32 lock_index_for_tid(int tid) {
+  u32 lock_index = tid;
+  lock_index ^= lock_index >> 8;
+  lock_index ^= lock_index >> 4;
+  return lock_index % kLockCount;
+}
+
+static bool try_record_lock(int tid, u32* lock_index) {
+  *lock_index = lock_index_for_tid(tid);
+  if (g_locks[*lock_index].tryLock()) {
+    return true;
+  }
+  *lock_index = (*lock_index + 1) % kLockCount;
+  if (g_locks[*lock_index].tryLock()) {
+    return true;
+  }
+  *lock_index = (*lock_index + 1) % kLockCount;
+  return g_locks[*lock_index].tryLock();
+}
+
+static void lock_all() {
+  for (int i = 0; i < kLockCount; i++) {
+    g_locks[i].lock();
+  }
+}
+
+static void unlock_all() {
+  for (int i = 0; i < kLockCount; i++) {
+    g_locks[i].unlock();
+  }
+}
+
+// Record a small fake call trace, mirroring profiler sample paths that hold a
+// shard lock while writing to CallTraceStorage. ASGCT_CallFrame uses `bci`
+// (jint) and the `method_id` union member (see vmEntry.h).
+static void record_trace(int salt, int tid) {
+  u32 lock_index;
+  if (!try_record_lock(tid, &lock_index)) {
+    return;
+  }
+
   ASGCT_CallFrame frames[4];
   std::memset(frames, 0, sizeof(frames));
   for (int i = 0; i < 4; i++) {
@@ -53,7 +95,8 @@ static void record_trace(int salt) {
         reinterpret_cast<jmethodID>(static_cast<intptr_t>(0x1000 + i + salt));
   }
   g_storage.put(4, frames, false, 1);
-  g_dict.lookup("logs-backend-sim");
+
+  g_locks[lock_index].unlock();
 }
 
 // onThreadStart -> work -> onThreadEnd loop, mirroring the profiler's per-thread
@@ -78,7 +121,7 @@ static void churn_worker(ThreadFilter* filter, bool with_dump) {
     }
 
     if (with_dump) {
-      record_trace(i);
+      record_trace(i, self->tid());
     }
     std::this_thread::yield();
 
@@ -91,19 +134,12 @@ static void churn_worker(ThreadFilter* filter, bool with_dump) {
   }
 }
 
-// Continuously dumps the trace storage and clears both the dictionary and the
-// storage, racing against concurrent put() / lookup() from churn workers.
-//
-// Intentional divergence from production: production wraps clear() in
-// lockAll()/unlockAll() (profiler.cpp) so clear() never races put(). Here
-// we drop that guard deliberately so ASan/TSan can observe a UAF at its
-// origin. A crash in this reproducer may surface a real bug or a test-only
-// race; cross-reference with the Layer-2 DumpStormAntagonist (JVM-level)
-// to confirm which it is. The CallTraceStorage concurrency contract
-// (refcount-guard + CriticalSection) prevents permanent corruption from
-// clear()-vs-put() racing, so this does not cause silent data loss.
+// Continuously processes the trace storage under lock_all(), matching the JFR
+// dump path where Profiler::rotateDictsAndRun() holds all shard locks while
+// writeStackTraces() calls processCallTraces().
 static void dump_thread() {
   while (g_run.load(std::memory_order_relaxed)) {
+    lock_all();
     g_storage.processTraces([](const std::unordered_set<CallTrace*>& traces) {
       volatile size_t n = 0;
       for (CallTrace* t : traces) {
@@ -113,16 +149,12 @@ static void dump_thread() {
       }
       (void)n;
     });
-    // dict.clear() races dict.lookup() on churn threads — intentional (see above).
-    g_dict.clear();
-    g_storage.clear();
+    unlock_all();
   }
 }
 
 TEST(StressThreadLifecycle, Smoke) {
   CallTraceStorage storage;
-  Dictionary dict;
-  dict.lookup("smoke");
   storage.clear();
   SUCCEED();
 }
